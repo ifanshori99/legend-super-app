@@ -1723,6 +1723,13 @@
       "when": 1794340000000,
       "tag": "0259_hpp_recompute",
       "breakpoints": true
+    },
+    {
+      "idx": 260,
+      "version": "7",
+      "when": 1794341000000,
+      "tag": "0260_order_issue_paid_value",
+      "breakpoints": true
     }
   ]
 }

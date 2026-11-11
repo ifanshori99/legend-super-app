@@ -16,7 +16,10 @@
 // - Half-up on a positive value: floor(x + 1/2); ties go up.
 
 import { describe, expect, it } from "vitest";
-import { recoveryRefundSplit } from "../services/order-recovery-refund-amount.ts";
+import {
+  recoveryRefundReplaySplit,
+  recoveryRefundSplit,
+} from "../services/order-recovery-refund-amount.ts";
 
 type OrderInput = Parameters<typeof recoveryRefundSplit>[0]["order"];
 
@@ -771,5 +774,341 @@ describe("legend-h1dyy recoveryRefundSplit: goodsIdr untuk buku promo (refunded_
     });
     expect(result.amountIdr).toBe(50_000);
     expect(result.goodsIdr).toBe(50_000);
+  });
+});
+
+// legend-fwe4l (Q17): the replay of a failed refund is capped by the value of the
+// replacement line (`capIdr`), so a swap to a cheaper item never pays the old
+// item's money again next to the voucher for the difference. Contract:
+// docs/briefs/sub-fwe4l-swap-cap.md. Cap below wanted: the amount asked is the
+// cap and discount, service and PBJT scale by cap / wanted (gross is the rest),
+// like a cut to the room; the room applies afterwards; `shortfallIdr` comes only
+// from the room, never from the cap.
+describe("legend-fwe4l recoveryRefundReplaySplit dengan capIdr", () => {
+  // gross 20.000 - discount 12.000 + service 500 + PBJT 1.500 = wanted 10.000.
+  const failed = {
+    wantedIdr: 10_000,
+    grossSalesIdr: 20_000,
+    discountIdr: 12_000,
+    serviceChargeIdr: 500,
+    pbjtIdr: 1_500,
+  };
+  const roomy = { totalIdr: 100_000, depositAppliedIdr: 0 };
+
+  it("cap di bawah wanted: jumlah = cap, bagian proporsional, shortfall 0", () => {
+    const result = recoveryRefundReplaySplit({
+      order: roomy,
+      ...failed,
+      releasedIdr: 0,
+      capIdr: 5_000,
+    });
+    expect(result).toMatchObject({
+      wantedIdr: 5_000,
+      amountIdr: 5_000,
+      shortfallIdr: 0,
+      grossSalesIdr: 10_000,
+      discountIdr: 6_000,
+      serviceChargeIdr: 250,
+      pbjtIdr: 750,
+    });
+  });
+
+  it("cap yang tidak membagi rata: jumlah bagian tetap = jumlah, tidak ada bagian negatif, tiap bagian mendekati proporsi", () => {
+    const result = recoveryRefundReplaySplit({
+      order: roomy,
+      ...failed,
+      releasedIdr: 0,
+      capIdr: 3_333,
+    });
+    expect(result.amountIdr).toBe(3_333);
+    expect(result.wantedIdr).toBe(3_333);
+    expect(result.shortfallIdr).toBe(0);
+    expect(
+      result.grossSalesIdr -
+        result.discountIdr +
+        result.serviceChargeIdr +
+        result.pbjtIdr,
+    ).toBe(3_333);
+    for (const part of [
+      result.grossSalesIdr,
+      result.discountIdr,
+      result.serviceChargeIdr,
+      result.pbjtIdr,
+    ])
+      expect(part).toBeGreaterThanOrEqual(0);
+    // discount 12.000, service 500, PBJT 1.500 scaled by 3.333 / 10.000.
+    expect(Math.abs(result.discountIdr - 3_999.6)).toBeLessThanOrEqual(1);
+    expect(Math.abs(result.serviceChargeIdr - 166.65)).toBeLessThanOrEqual(1);
+    expect(Math.abs(result.pbjtIdr - 499.95)).toBeLessThanOrEqual(1);
+  });
+
+  it("cap sama dengan atau di atas wanted: hasil tidak berubah dari tanpa cap", () => {
+    const without = recoveryRefundReplaySplit({
+      order: roomy,
+      ...failed,
+      releasedIdr: 0,
+    });
+    expect(without.amountIdr).toBe(10_000);
+    for (const capIdr of [10_000, 10_001, 500_000])
+      expect(
+        recoveryRefundReplaySplit({
+          order: roomy,
+          ...failed,
+          releasedIdr: 0,
+          capIdr,
+        }),
+      ).toEqual(without);
+  });
+
+  it("cap dan room: room yang lebih kecil menang; shortfall dihitung dari wanted setelah cap", () => {
+    // room = 12.000 - 0 - 10.000 = 2.000, below the cap of 5.000.
+    const result = recoveryRefundReplaySplit({
+      order: { totalIdr: 12_000, depositAppliedIdr: 0 },
+      ...failed,
+      releasedIdr: 10_000,
+      capIdr: 5_000,
+    });
+    expect(result).toMatchObject({
+      wantedIdr: 5_000,
+      amountIdr: 2_000,
+      shortfallIdr: 3_000,
+      grossSalesIdr: 4_000,
+      discountIdr: 2_400,
+      serviceChargeIdr: 100,
+      pbjtIdr: 300,
+    });
+  });
+
+  it("cap dan room: room yang lebih besar dari cap tidak mengubah apa pun (tanpa shortfall)", () => {
+    const result = recoveryRefundReplaySplit({
+      order: { totalIdr: 12_000, depositAppliedIdr: 0 },
+      ...failed,
+      releasedIdr: 4_000,
+      capIdr: 5_000,
+    });
+    expect(result.amountIdr).toBe(5_000);
+    expect(result.shortfallIdr).toBe(0);
+  });
+});
+
+// legend-fwe4l round 2: `recoveryRefundSplit` takes the same `capIdr` (the refund of
+// a replacement line after a swap, also when no failed refund is replayed). Same
+// rules as the replay split: cap below wanted -> amount asked = cap, discount,
+// service and PBJT scale by cap / wanted (half-up), gross is the rest; then the
+// room applies; `shortfallIdr` comes only from the room. `goodsIdr` (the promo
+// ledger's goods, recorded BEFORE the cap) is not pinned here: where the pre-cap
+// goods is carried is the implementer's choice; the DB test checks the ledger.
+describe("legend-fwe4l recoveryRefundSplit dengan capIdr", () => {
+  const DISCOUNT_ORDER = makeOrder({
+    subtotal: 100_000,
+    discount: 10_000,
+    service: 4_500,
+    tax: 9_450,
+  });
+
+  it("cap di bawah wanted: jumlah = cap, bagian dikali cap / wanted, shortfall 0", () => {
+    // Line 40.000 of the brief order: wanted 46.200 (gross 40.000, service 2.000,
+    // PBJT 4.200); k = 23.100 / 46.200 = 1/2.
+    expect(
+      recoveryRefundSplit({
+        order: BRIEF_ORDER,
+        lineTotalIdr: 40_000,
+        priorLinesIdr: 0,
+        releasedIdr: 0,
+        capIdr: 23_100,
+      }),
+    ).toMatchObject({
+      wantedIdr: 23_100,
+      amountIdr: 23_100,
+      shortfallIdr: 0,
+      grossSalesIdr: 20_000,
+      discountIdr: 0,
+      serviceChargeIdr: 1_000,
+      pbjtIdr: 2_100,
+    });
+  });
+
+  it("cap dengan diskon order: diskon ikut diskalakan, gross adalah sisa", () => {
+    // Line 50.000: gross 50.000, discount 5.000, service 2.250, PBJT 4.725,
+    // wanted 51.975; k = 20.790 / 51.975 = 0,4.
+    expect(
+      recoveryRefundSplit({
+        order: DISCOUNT_ORDER,
+        lineTotalIdr: 50_000,
+        priorLinesIdr: 0,
+        releasedIdr: 0,
+        capIdr: 20_790,
+      }),
+    ).toMatchObject({
+      wantedIdr: 20_790,
+      amountIdr: 20_790,
+      shortfallIdr: 0,
+      grossSalesIdr: 20_000,
+      discountIdr: 2_000,
+      serviceChargeIdr: 900,
+      pbjtIdr: 1_890,
+    });
+  });
+
+  it("cap pada hitungan promo: wanted promo 34.650, cap 3.465 -> bagian dikali 1/10", () => {
+    const order = makeOrder({
+      subtotal: 120_000,
+      discount: 20_000,
+      service: 5_000,
+      tax: 10_500,
+    });
+    expect(
+      recoveryRefundSplit({
+        order,
+        lineTotalIdr: 50_000,
+        priorLinesIdr: 0,
+        releasedIdr: 0,
+        promo: {
+          refundedSubtotalIdr: 50_000,
+          goodsDueIdr: 30_000,
+          remainingPaidIdr: 100_000,
+        },
+        capIdr: 3_465,
+      }),
+    ).toMatchObject({
+      wantedIdr: 3_465,
+      amountIdr: 3_465,
+      shortfallIdr: 0,
+      grossSalesIdr: 5_000,
+      discountIdr: 2_000,
+      serviceChargeIdr: 150,
+      pbjtIdr: 315,
+    });
+  });
+
+  it("cap yang tidak membagi rata: jumlah bagian tetap = jumlah, tidak ada bagian negatif", () => {
+    const result = recoveryRefundSplit({
+      order: DISCOUNT_ORDER,
+      lineTotalIdr: 50_000,
+      priorLinesIdr: 0,
+      releasedIdr: 0,
+      capIdr: 12_345,
+    });
+    expect(result.amountIdr).toBe(12_345);
+    expect(result.wantedIdr).toBe(12_345);
+    expect(result.shortfallIdr).toBe(0);
+    expect(
+      result.grossSalesIdr -
+        result.discountIdr +
+        result.serviceChargeIdr +
+        result.pbjtIdr,
+    ).toBe(12_345);
+    for (const part of [
+      result.grossSalesIdr,
+      result.discountIdr,
+      result.serviceChargeIdr,
+      result.pbjtIdr,
+    ])
+      expect(part).toBeGreaterThanOrEqual(0);
+  });
+
+  it("cap sama dengan atau di atas wanted: hasil tidak berubah dari tanpa cap", () => {
+    const base = {
+      order: BRIEF_ORDER,
+      lineTotalIdr: 40_000,
+      priorLinesIdr: 0,
+      releasedIdr: 0,
+    };
+    const without = recoveryRefundSplit(base);
+    expect(without.amountIdr).toBe(46_200);
+    for (const capIdr of [46_200, 46_201, 500_000])
+      expect(recoveryRefundSplit({ ...base, capIdr })).toEqual(without);
+  });
+
+  it("cap dan room: room yang lebih kecil menang; shortfall dihitung dari wanted setelah cap", () => {
+    // room = 115.500 - 100.000 = 15.500 < cap 23.100: after the cap the cut is
+    // 15.500 / 23.100 (service 1.000 -> 671, PBJT 2.100 -> 1.409, gross 13.420).
+    expect(
+      recoveryRefundSplit({
+        order: BRIEF_ORDER,
+        lineTotalIdr: 40_000,
+        priorLinesIdr: 0,
+        releasedIdr: 100_000,
+        capIdr: 23_100,
+      }),
+    ).toMatchObject({
+      wantedIdr: 23_100,
+      amountIdr: 15_500,
+      shortfallIdr: 7_600,
+      grossSalesIdr: 13_420,
+      discountIdr: 0,
+      serviceChargeIdr: 671,
+      pbjtIdr: 1_409,
+    });
+  });
+
+  it("cap dan room: room yang lebih besar dari cap tidak mengubah apa pun (tanpa shortfall)", () => {
+    // room = 115.500 - 50.000 = 65.500 > cap 23.100.
+    expect(
+      recoveryRefundSplit({
+        order: BRIEF_ORDER,
+        lineTotalIdr: 40_000,
+        priorLinesIdr: 0,
+        releasedIdr: 50_000,
+        capIdr: 23_100,
+      }),
+    ).toMatchObject({
+      wantedIdr: 23_100,
+      amountIdr: 23_100,
+      shortfallIdr: 0,
+      grossSalesIdr: 20_000,
+      serviceChargeIdr: 1_000,
+      pbjtIdr: 2_100,
+    });
+  });
+});
+
+// legend-fwe4l round 3: `goodsIdr` (the promo ledger's goods) is the goods BEFORE the
+// cap and is cut by the room only when the room is below the amount AFTER the cap.
+// A room between the cap and the pre-cap amount leaves the refund at the cap and the
+// goods whole, so the difference is not paid again on the next item.
+// Promo order: subtotal 120.000, discount 20.000, service 5.000, PBJT 10.500, total
+// 115.500; line 50.000, goods due 30.000 -> pre-cap wanted 34.650, cap 3.465.
+describe("legend-fwe4l recoveryRefundSplit: goodsIdr dengan cap dan room", () => {
+  const order = makeOrder({
+    subtotal: 120_000,
+    discount: 20_000,
+    service: 5_000,
+    tax: 10_500,
+  });
+  const promo = {
+    refundedSubtotalIdr: 50_000,
+    goodsDueIdr: 30_000,
+    remainingPaidIdr: 100_000,
+  };
+  const base = {
+    order,
+    lineTotalIdr: 50_000,
+    priorLinesIdr: 0,
+    promo,
+    capIdr: 3_465,
+  };
+
+  it("room di antara cap dan jumlah pra-cap (10.000): jumlah = cap, tanpa selisih, goods tetap penuh 30.000", () => {
+    // room = 115.500 - 105.500 = 10.000: above the cap, below 34.650.
+    const result = recoveryRefundSplit({ ...base, releasedIdr: 105_500 });
+    expect(result.amountIdr).toBe(3_465);
+    expect(result.wantedIdr).toBe(3_465);
+    expect(result.shortfallIdr).toBe(0);
+    expect(result.goodsIdr).toBe(30_000);
+  });
+
+  it("room besar: goods pra-cap penuh 30.000 (kopi keluar penuh dari promo)", () => {
+    const result = recoveryRefundSplit({ ...base, releasedIdr: 0 });
+    expect(result.amountIdr).toBe(3_465);
+    expect(result.goodsIdr).toBe(30_000);
+  });
+
+  it("room di bawah jumlah pasca-cap (2.000): jumlah = room, selisih 1.465, goods ikut terpotong (di bawah 30.000, di atas 0)", () => {
+    const result = recoveryRefundSplit({ ...base, releasedIdr: 113_500 });
+    expect(result.amountIdr).toBe(2_000);
+    expect(result.shortfallIdr).toBe(1_465);
+    expect(result.goodsIdr).toBeGreaterThan(0);
+    expect(result.goodsIdr).toBeLessThan(30_000);
   });
 });

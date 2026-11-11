@@ -23,7 +23,7 @@
 //   idempotency table); another request under the same key is a 409.
 
 import { createHash, randomInt } from "node:crypto";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { AccessError } from "@starter/shared/access";
 import {
   assertOutletInScope,
@@ -56,6 +56,7 @@ import { openSecret, sealSecret } from "../lib/secrets.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { appendPromoEvent, hashPromoCode } from "./crm-promo-engine.ts";
+import { voucherRoomOf } from "./order-recovery-paid-value.ts";
 import { promoIdempotentCommand } from "./crm-promo-idempotency.ts";
 import type { Tx } from "./menu-internals.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
@@ -599,6 +600,7 @@ type IssueLock = {
   outletId: string;
   orderId: string;
   orderItemId: string;
+  type: string;
   status: string;
 };
 
@@ -799,6 +801,7 @@ export async function issueApologyVoucherForStaff(
           outletId: orderIssues.outletId,
           orderId: orderIssues.orderId,
           orderItemId: orderIssues.orderItemId,
+          type: orderIssues.type,
           status: orderIssues.status,
         })
         .from(orderIssues)
@@ -867,6 +870,50 @@ export async function issueApologyVoucherForStaff(
         "CONFLICT",
         "Laporan ini sudah diselesaikan atau dibatalkan.",
       );
+    if (issue !== null && orderIssueId !== null) {
+      // The line is already settled by another live issue: settling this one
+      // would break order_issues_resolved_item_once_idx (a 500), so answer
+      // 409 before anything is minted.
+      const [settled] =
+        issue.type !== "unfulfillable"
+          ? []
+          : await tx
+              .select({ id: orderIssues.id })
+              .from(orderIssues)
+              .where(
+                and(
+                  eq(orderIssues.tenantId, tenantId),
+                  eq(orderIssues.orderItemId, issue.orderItemId),
+                  ne(orderIssues.id, orderIssueId),
+                  eq(orderIssues.type, "unfulfillable"),
+                  isNotNull(orderIssues.resolution),
+                  ne(orderIssues.status, "cancelled"),
+                  isNull(orderIssues.refundRejectedAt),
+                ),
+              )
+              .limit(1);
+      if (settled)
+        throw new CoreError(
+          "CONFLICT",
+          "Item ini sudah diselesaikan lewat laporan lain.",
+        );
+      // legend-rat9r, legend-eajpb (founder W4 Q25): a voucher that settles an
+      // issue stays under what the item's paid value still leaves (computed
+      // from the order when no swap stored one). Order lock after the issue
+      // lock (the consumer's sequence).
+      const room = await voucherRoomOf(tx, context, {
+        orderId: issue.orderId,
+        issueId: orderIssueId,
+        lineId: issue.orderItemId,
+        at: now,
+      });
+      if (input.valueIdr > room)
+        throw unprocessable(
+          room <= 0
+            ? "Nilai item ini sudah dikembalikan penuh lewat voucher atau refund sebelumnya. Minta bantuan staf."
+            : `Voucher maaf melebihi sisa nilai yang dibayar tamu untuk item ini (maks ${room}).`,
+        );
+    }
 
     let approvalRequestId: string | null = input.approvalRequestId ?? null;
     if (approvalRequestId !== null) {

@@ -32,6 +32,16 @@
 // holds (the `order.refunded` payload checks it) and no component is negative.
 // `goodsIdr` is what the refund pays for the goods on the promo ledger basis
 // (exclusive: gross - discount; inclusive: the amount), after the cut.
+//
+// Replay (legend-pti5r): a line reported again after a final failure of its
+// refund (not `rejected`) pays the failed refund's amount with its split, cut
+// to the room the same way (`recoveryRefundReplaySplit`). When the chain holds
+// a swap to a cheaper line (legend-fwe4l) the replay is first cut to that
+// line's value (`capIdr`): the guest already got the difference as a voucher.
+//
+// Remaining components (legend-hhm5m 5, `capPartsToRemaining`): a pay-first
+// refund's service, PBJT and gross are clamped to what the order still holds
+// after the live `order.refunded` of its other issues.
 
 import {
   orderRevenueSplit,
@@ -192,6 +202,37 @@ function promoParts(
   return { gross, discount: gross - net, service, pbjt };
 }
 
+/**
+ * Cuts parts that want `wanted` to `room`: the amount is the smaller of the
+ * two. A cut scales discount, service and PBJT by `amount / wanted` and takes
+ * gross as the rest, so `gross - discount + service + pbjt = amount` still
+ * holds and no component is negative.
+ */
+function cutToRoom(
+  parts: Parts,
+  wanted: bigint,
+  room: bigint,
+): { amount: bigint; parts: Parts } {
+  const amount = wanted < room ? wanted : room;
+  if (amount >= wanted) return { amount, parts };
+  let { gross, discount, service, pbjt } = parts;
+  discount = mulDivHalfUp(discount, amount, wanted);
+  service = mulDivHalfUp(service, amount, wanted);
+  pbjt = mulDivHalfUp(pbjt, amount, wanted);
+  gross = amount + discount - service - pbjt;
+  if (gross < 0n) {
+    // Rounding pushed the taxes past what the amount carries: take the
+    // excess from PBJT first, then from the service charge.
+    let excess = -gross;
+    const fromPbjt = excess < pbjt ? excess : pbjt;
+    pbjt -= fromPbjt;
+    excess -= fromPbjt;
+    service -= excess;
+    gross = 0n;
+  }
+  return { amount, parts: { gross, discount, service, pbjt } };
+}
+
 /** The CRM promo port result for this refund (`recomputeAfterPartialRefund`). */
 export type RecoveryRefundPromo = {
   /** Item-price subtotal of the refunded line(s). */
@@ -210,6 +251,14 @@ export function recoveryRefundSplit(input: {
   /** Already released by other issues of this order. */
   releasedIdr: number;
   promo?: RecoveryRefundPromo;
+  /**
+   * legend-fwe4l: value of the line this refund pays for (a swap replacement).
+   * Below the wanted amount it replaces the amount; the parts are cut like a
+   * room cut. Not a shortfall: that money was never owed. `goodsIdr` stays
+   * the goods money before the cap (the promo ledger paid the original out
+   * in full).
+   */
+  capIdr?: number;
 }): RecoveryRefundSplit {
   const { order, releasedIdr } = input;
   if (order.subtotalIdr <= 0 || input.lineTotalIdr <= 0) return { ...ZERO };
@@ -218,30 +267,36 @@ export function recoveryRefundSplit(input: {
     ? promoParts(order, split, input.promo)
     : proRataParts(order, split, input.lineTotalIdr, input.priorLinesIdr);
   if (!parts) return { ...ZERO };
-  let { gross, discount, service, pbjt } = parts;
-  const wanted = gross - discount + service + pbjt;
-  if (wanted <= 0n) return { ...ZERO };
+  const uncappedWanted =
+    parts.gross - parts.discount + parts.service + parts.pbjt;
+  if (uncappedWanted <= 0n) return { ...ZERO };
 
   const room = BigInt(
     Math.max(0, order.totalIdr - order.depositAppliedIdr - releasedIdr),
   );
-  const amount = wanted < room ? wanted : room;
-  if (amount < wanted) {
-    discount = mulDivHalfUp(discount, amount, wanted);
-    service = mulDivHalfUp(service, amount, wanted);
-    pbjt = mulDivHalfUp(pbjt, amount, wanted);
-    gross = amount + discount - service - pbjt;
-    if (gross < 0n) {
-      // Rounding pushed the taxes past what the amount carries: take the
-      // excess from PBJT first, then from the service charge.
-      let excess = -gross;
-      const fromPbjt = excess < pbjt ? excess : pbjt;
-      pbjt -= fromPbjt;
-      excess -= fromPbjt;
-      service -= excess;
-      gross = 0n;
-    }
+  let wanted = uncappedWanted;
+  let startParts = parts;
+  const capped = input.capIdr !== undefined && big(input.capIdr) < wanted;
+  if (capped) {
+    const cutByCap = cutToRoom(startParts, wanted, big(input.capIdr as number));
+    wanted = cutByCap.amount;
+    startParts = cutByCap.parts;
+    if (wanted <= 0n) return { ...ZERO };
   }
+  const { amount, parts: cut } = cutToRoom(startParts, wanted, room);
+  const { gross, discount, service, pbjt } = cut;
+  // The goods money on the promo ledger basis is the one before the cap (the
+  // ledger paid the original out in full). The room cuts it only when it is
+  // below the post-cap amount, scaled by `amount / wanted` of that amount.
+  const goodsOf = (p: Parts, total: bigint): bigint =>
+    order.pricesIncludeTax ? total : p.gross - p.discount;
+  const goodsIdr = Number(
+    capped
+      ? amount < wanted
+        ? mulDivHalfUp(goodsOf(parts, uncappedWanted), amount, wanted)
+        : goodsOf(parts, uncappedWanted)
+      : goodsOf(cut, amount),
+  );
   return {
     wantedIdr: Number(wanted),
     amountIdr: Number(amount),
@@ -250,7 +305,141 @@ export function recoveryRefundSplit(input: {
     discountIdr: Number(discount),
     serviceChargeIdr: Number(service),
     pbjtIdr: Number(pbjt),
-    goodsIdr: Number(order.pricesIncludeTax ? amount : gross - discount),
+    goodsIdr,
+  };
+}
+
+/**
+ * legend-k0ub4: the goods money of a line on the promo ledger basis, before any
+ * cap or room cut (the ledger paid the line out in full). For a line that
+ * ends `nothing_left` while the promo recompute already took it out: the
+ * ledger must hold its full share, or a later refund of another item would
+ * pay part of it. `recordPartialRefundPayout` caps it to what remains paid.
+ */
+export function recoveryRefundGoodsIdr(input: {
+  order: OrderRevenueInput & { depositAppliedIdr: number };
+  lineTotalIdr: number;
+  priorLinesIdr: number;
+  promo?: RecoveryRefundPromo;
+}): number {
+  const { order } = input;
+  if (order.subtotalIdr <= 0 || input.lineTotalIdr <= 0) return 0;
+  const split = orderRevenueSplit(order);
+  const parts = input.promo
+    ? promoParts(order, split, input.promo)
+    : proRataParts(order, split, input.lineTotalIdr, input.priorLinesIdr);
+  if (!parts) return 0;
+  const wanted = parts.gross - parts.discount + parts.service + parts.pbjt;
+  if (wanted <= 0n) return 0;
+  return Number(order.pricesIncludeTax ? wanted : parts.gross - parts.discount);
+}
+
+/**
+ * legend-pti5r: the refund of a line reported again after a final failure
+ * (not `rejected`) pays what the failed refund asked, with the same split
+ * (`wantedIdr` and the `order.refunded` parts of the first filing). The promo
+ * ledger already holds that line's payout, so nothing is recomputed. Cut to
+ * the order's current room like `recoveryRefundSplit`; `goodsIdr` is 0
+ * because a replay records no payout.
+ */
+export function recoveryRefundReplaySplit(input: {
+  order: { totalIdr: number; depositAppliedIdr: number };
+  wantedIdr: number;
+  grossSalesIdr: number;
+  discountIdr: number;
+  serviceChargeIdr: number;
+  pbjtIdr: number;
+  /** Already released by other issues of this order. */
+  releasedIdr: number;
+  /**
+   * legend-fwe4l: value of the line this refund pays for (a swap replacement).
+   * Below `wantedIdr` it replaces the amount; the parts are cut like a room
+   * cut. Not a shortfall: that money was never owed.
+   */
+  capIdr?: number;
+}): RecoveryRefundSplit {
+  let wanted = big(input.wantedIdr);
+  if (wanted <= 0n) return { ...ZERO };
+  let startParts: Parts = {
+    gross: big(input.grossSalesIdr),
+    discount: big(input.discountIdr),
+    service: big(input.serviceChargeIdr),
+    pbjt: big(input.pbjtIdr),
+  };
+  if (input.capIdr !== undefined && big(input.capIdr) < wanted) {
+    const capped = cutToRoom(startParts, wanted, big(input.capIdr));
+    wanted = capped.amount;
+    startParts = capped.parts;
+    if (wanted <= 0n) return { ...ZERO };
+  }
+  const room = BigInt(
+    Math.max(
+      0,
+      input.order.totalIdr - input.order.depositAppliedIdr - input.releasedIdr,
+    ),
+  );
+  const { amount, parts } = cutToRoom(startParts, wanted, room);
+  return {
+    wantedIdr: Number(wanted),
+    amountIdr: Number(amount),
+    shortfallIdr: Number(wanted - amount),
+    grossSalesIdr: Number(parts.gross),
+    discountIdr: Number(parts.discount),
+    serviceChargeIdr: Number(parts.service),
+    pbjtIdr: Number(parts.pbjt),
+    goodsIdr: 0,
+  };
+}
+
+/** What the order's components still hold after the live `order.refunded`. */
+export type RecoveryRemainingParts = {
+  grossSalesIdr: number;
+  serviceChargeIdr: number;
+  pbjtIdr: number;
+};
+
+/**
+ * legend-hhm5m 5: a pay-first refund never reverses more of a component than
+ * the order still holds after the live refunds of its other issues. The
+ * cumulative split gives each filing a rounding slot; a final failure frees
+ * its slot for the next filing, and its replay then repeats the old split, so
+ * two refunds can hold one slot (PBJT reversed 317 of 316). Service and PBJT
+ * are clamped to what remains; the gross takes the rest
+ * (`gross = amount + discount - service - pbjt`); a gross above what remains
+ * cuts the amount (reported as shortfall). `goodsIdr` is left as it is (the
+ * promo ledger books the line before any cut).
+ */
+export function capPartsToRemaining(
+  split: RecoveryRefundSplit,
+  remaining: RecoveryRemainingParts,
+): RecoveryRefundSplit {
+  if (split.amountIdr <= 0) return split;
+  const service = Math.min(
+    split.serviceChargeIdr,
+    Math.max(0, remaining.serviceChargeIdr),
+  );
+  const pbjt = Math.min(split.pbjtIdr, Math.max(0, remaining.pbjtIdr));
+  let amount = split.amountIdr;
+  let gross = amount + split.discountIdr - service - pbjt;
+  const grossRoom = Math.max(0, remaining.grossSalesIdr);
+  if (gross > grossRoom) {
+    amount -= gross - grossRoom;
+    gross = grossRoom;
+  }
+  if (amount <= 0)
+    return {
+      ...ZERO,
+      wantedIdr: split.wantedIdr,
+      shortfallIdr: split.wantedIdr,
+      goodsIdr: split.goodsIdr,
+    };
+  return {
+    ...split,
+    amountIdr: amount,
+    shortfallIdr: split.wantedIdr - amount,
+    grossSalesIdr: gross,
+    serviceChargeIdr: service,
+    pbjtIdr: pbjt,
   };
 }
 

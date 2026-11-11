@@ -28,9 +28,41 @@
 //   failed item was never delivered, whatever happened to its refund, so the
 //   kept lines leave out the item of every manual_refund issue of the order,
 //   and a rejected refund keeps its promo payout (the money is not owed).
+// - Replay (legend-pti5r): a final failure that is not `rejected` leaves the
+//   promo ledger as it is (the payout stays reserved for that line, so no
+//   other issue absorbs it; a withdrawn promo cannot be undone). When the
+//   same item is reported again, the new issue files the failed refund's
+//   amount and `order.refunded` split again, without a promo recompute and
+//   without a second payout, cut to the room the intent still has
+//   (`replayOfIssueId` on its idempotency response and audit row). A rejected
+//   earlier issue or a live or paid refund takes the normal path; so does a
+//   pay-first earlier refund without an `order.refunded` split. An open bill
+//   files no split: it replays the failed amount whole. A chain of replays
+//   follows `replayOfIssueId` back to the root issue.
+// - Swap (replacement item): the predecessor of a replay (or a `rejected`
+//   marker) is matched through the swap chain (`toOriginal`) only on an order
+//   with a live promo (Round 3 design; the swap decision on a promo order is
+//   with the CTO). Without a promo it must be the same line
+//   (`row.orderItemId === issue.orderItemId`): a replacement item is another
+//   line with its own price, so a swap to a cheaper item that then fails is
+//   paid its own normal amount, never the earlier failed line's amount, and a
+//   rejected refund of the original does not turn the replacement into
+//   `nothing_left`.
+// - Paid value (legend-rat9r, founder W4 Q25): a swap stores what the guest
+//   paid for the item (`order_issues.paid_value_idr`); without one the
+//   refund's own amount (wanted, or the replay's) stands for it. Every refund
+//   (first filing or replay) is capped at that value less what the item
+//   already gave back (`voucherCapIdr`), on top of the swap cap, and cut to
+//   what the order still leaves as a room cut (`orderGivenOf`: vouchers,
+//   live recovery refunds, POS refunds; architect Q25 #1). A promo order cut to Rp0 this way books its goods money on the
+//   promo ledger once, as a Rp0 replacement does (legend-k0ub4).
+// - Promo ledger (legend-hhm5m 3): after a recompute the line's full goods
+//   money is booked before any cap or room cut, with the refund row or the
+//   `nothing_left` mark, so a room another refund held cannot leave it unpaid
+//   for a later refund to take.
 // Events of another tenant or outlet, and every other event, are ignored.
 
-import { and, eq, gte, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, ne, sql } from "drizzle-orm";
 import {
   createUlid,
   idr,
@@ -60,9 +92,25 @@ import {
 } from "./order-promo-refund.ts";
 import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
 import {
+  capPartsToRemaining,
+  recoveryRefundGoodsIdr,
+  recoveryRefundReplaySplit,
   recoveryRefundSplit,
   type RecoveryRefundPromo,
 } from "./order-recovery-refund-amount.ts";
+import {
+  findRecoveryRefundReplay,
+  filingSeqsOf,
+  orderRecoveryRefundKey,
+  recoveryChainOf,
+  recoveryIssuesOf,
+  recoveryKeptLines,
+  recoveryOrderItemsOf,
+  recoveryReleasedOf,
+  recoverySwapChain,
+  REPLAY_REJECTED,
+  type RecoveryRefundReplaySource,
+} from "./order-recovery-paid-value.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
@@ -95,13 +143,16 @@ const AUDIT_SAFE_FIELDS = [
   "status",
   "blockedReason",
   "failureReason",
+  "replayOfIssueId",
+  "swapCapIdr",
+  "voucherCapIdr",
+  "filingSeq",
 ];
 
 const REVERSAL_EVENT = "order_issue.refund_reversal_requested";
 const REVERSAL_DESTINATION = "cloud-sync";
 
-export const orderRecoveryRefundKey = (orderIssueId: string) =>
-  `order-recovery-refund:${orderIssueId}`;
+export { orderRecoveryRefundKey };
 
 /**
  * Applies one `order_issue.manual_refund_approved` event in the consumption
@@ -325,36 +376,11 @@ export async function deliverOrderRecoveryRefundEvent(
     return;
   }
 
-  // What other issues of this order already gave back: per issue the largest
-  // refund, whatever its status. An issue gives money back only while it has
-  // a live refund (`status <> 'failed'`, same rule as qrSaleInUseOfIntent):
-  // once every refund of it is `failed` (`rejected` or any final failure) its
-  // journal is reversed and the sale holds that money again. A line can be
-  // reported again after such a final failure
-  // (order_issues.refund_rejected_at, legend-wumm8); any other settled issue
-  // of the line still blocks a second one (order_issues_resolved_item_once_idx).
-  // The same issues give the line totals already refunded (`priorLinesIdr`,
-  // cumulative rounding).
-  const releasedResult = await tx.execute(sql`
-    SELECT coalesce(sum(m.amt), 0)::text AS released,
-           coalesce(sum(m.line_total), 0)::text AS prior_lines
-      FROM (
-      SELECT max(r.amount_idr) AS amt,
-             max(oi.line_total_idr) AS line_total
-        FROM payment_refunds r
-        JOIN order_issues i
-          ON i.tenant_id = r.tenant_id AND i.id = r.order_issue_id
-        LEFT JOIN order_items oi
-          ON oi.tenant_id = i.tenant_id AND oi.id = i.order_item_id
-       WHERE r.tenant_id = ${tenantId}
-         AND i.order_id = ${orderUuid}::uuid
-         AND r.order_issue_id <> ${issue.id}::uuid
-       GROUP BY r.order_issue_id
-      HAVING coalesce(bool_or(r.status <> 'failed'), false)) m
-  `);
-  const released = releasedResult.rows[0];
-  let releasedIdr = Number(String(released?.released ?? "0"));
-  const priorLinesIdr = Number(String(released?.prior_lines ?? "0"));
+  // What other issues of this order already gave back, and their line totals
+  // (`recoveryReleasedOf`, order-recovery-paid-value.ts).
+  const released = await recoveryReleasedOf(tx, tenantId, order.id, issue.id);
+  let releasedIdr = released.releasedIdr;
+  const priorLinesIdr = released.priorLinesIdr;
   if (!payFirst) {
     // 6. Open bill: the intent's own cap bounds the refund, whatever else the
     // bill holds. Reading the room as released money makes the split cut to it.
@@ -368,184 +394,204 @@ export async function deliverOrderRecoveryRefundEvent(
 
   let split: ReturnType<typeof recoveryRefundSplit>;
   let promo: RecoveryRefundPromo | undefined;
+  let replay: RecoveryRefundReplaySource | null = null;
+  let swapCapIdr: number | undefined;
+  let swapCapCuts = false;
+  // legend-rat9r: what the item may still give back under its paid value.
+  let voucherCapIdr: number | undefined;
+  let voucherCapCuts = false;
+  let capIdr: number | undefined;
+  // legend-k0ub4: line total of the original the reported replacement stands
+  // for (promo order, recompute path only).
+  let originalLineTotalIdr = 0;
   try {
     // Order amounts that fail their tax-mode identity are refused before the
     // promo port changes anything.
     orderRevenueSplit(order);
+    // legend-pti5r: the same item reported again after a final failure of its
+    // refund (not `rejected`) replays that refund's amount and split, for every
+    // order (promo or not, pay-first or open bill): a new split could differ by
+    // a rounding step. The promo ledger still holds its payout, so a replay
+    // recomputes and records nothing.
+    // The swap chain (`recoverySwapChain`): a failed replacement maps back
+    // to its original, which the promo was priced on.
+    const issues = await recoveryIssuesOf(tx, tenantId, order.id);
+    const chain = recoverySwapChain(issues);
+    const { originalOf, toOriginal } = chain;
     // A live promo: the port re-prices the order without the failed lines
     // (founder Q41/Q19). It records no payout here (`deferPayout`): the
     // refund records what it files below.
-    if (await livePromoApplicationOf(tx, context, order.id)) {
-      const issues = await tx
-        .select({
-          id: orderIssues.id,
-          orderItemId: orderIssues.orderItemId,
-          replacementOrderItemId: orderIssues.replacementOrderItemId,
-          status: orderIssues.status,
-          resolution: orderIssues.resolution,
-        })
-        .from(orderIssues)
-        .where(
-          and(
-            eq(orderIssues.tenantId, tenantId),
-            eq(orderIssues.orderId, order.id),
-          ),
-        );
-      const items = await tx
-        .select({
-          id: orderItems.id,
-          menuItemId: orderItems.menuItemId,
-          quantity: orderItems.quantity,
-          unitPriceIdr: orderItems.unitPriceIdr,
-          modifiersTotalIdr: orderItems.modifiersTotalIdr,
-          status: orderItems.status,
-        })
-        .from(orderItems)
-        .where(
-          and(
-            eq(orderItems.tenantId, tenantId),
-            eq(orderItems.orderId, order.id),
-          ),
-        )
-        .orderBy(orderItems.id);
-      // The promo was priced on the checkout lines: a swap (legend-zm1e6)
-      // voids the original line and adds a replacement at the swap price, so
-      // the original stands for both and the replacement is left out. A
-      // failed replacement maps back to its original.
-      const originalOf = new Map<string, string>();
-      for (const row of issues)
-        if (row.replacementOrderItemId !== null)
-          originalOf.set(row.replacementOrderItemId, row.orderItemId);
-      const toOriginal = (itemId: string) => {
-        let id = itemId;
-        for (let hop = 0; hop <= issues.length; hop++) {
-          const original = originalOf.get(id);
-          if (original === undefined) break;
-          id = original;
-        }
-        return id;
-      };
-      const swappedOriginals = new Set(originalOf.values());
-      // A failed item was never delivered, whatever happened to its refund
-      // (nothing_left, rejected, ...): the item of every other manual_refund
-      // issue this consumer already processed is out of the kept lines, this
-      // one included. Processed = it has a refund row (any status) or a
-      // `refund_blocked` audit row for nothing_left (its recompute ran). A
-      // promo_state_mismatch issue is not: its recompute never ran, so the
-      // promo still holds its line and a later refund must not pay it. An
-      // issue whose event has not run yet keeps its item here: its own event
-      // refunds it later (two items resolved before either event runs).
-      const others = issues
-        .filter(
-          (row) =>
-            row.id !== issue.id &&
-            row.status === "resolved" &&
-            row.resolution === "manual_refund",
-        )
-        .map((row) => row.id);
-      const processed = new Set<string>();
-      if (others.length > 0) {
-        const refunded = await tx
-          .selectDistinct({ id: paymentRefunds.orderIssueId })
-          .from(paymentRefunds)
-          .where(
-            and(
-              eq(paymentRefunds.tenantId, tenantId),
-              inArray(paymentRefunds.orderIssueId, others),
-            ),
-          );
-        for (const row of refunded) if (row.id !== null) processed.add(row.id);
-        const blockedIssues = await tx
-          .select({ id: sql<string>`${auditLogs.event}->>'objectId'` })
-          .from(auditLogs)
-          .where(
-            and(
-              eq(auditLogs.tenantId, tenantId),
-              // Written after the order existed: bounds the scan.
-              gte(auditLogs.createdAt, order.createdAt),
-              sql`${auditLogs.event}->>'action' = ${AUDIT_BLOCKED}`,
-              sql`${auditLogs.event}->>'objectId' IN (${sql.join(
-                others.map((id) => sql`${id}`),
-                sql`, `,
-              )})`,
-              sql`${auditLogs.event}->'maskedChanges'->'after'->>'blockedReason' = 'nothing_left'`,
-            ),
-          );
-        for (const row of blockedIssues) processed.add(row.id);
-      }
-      const failed = new Set<string>([toOriginal(line.id)]);
-      for (const row of issues)
-        if (processed.has(row.id)) failed.add(toOriginal(row.orderItemId));
-      // Kept lines priced as at checkout (`toPromoLines`, order-promo.ts):
-      // unit = item or variant price + modifiers.
-      const keptLines = items
-        .filter(
-          (item) =>
-            !originalOf.has(item.id) &&
-            (item.status !== "voided" || swappedOriginals.has(item.id)) &&
-            !failed.has(item.id),
-        )
-        .map((item) => {
-          const unitPriceIdr = item.unitPriceIdr + item.modifiersTotalIdr;
-          return {
-            menuItemId: item.menuItemId,
-            quantity: item.quantity,
-            unitPriceIdr: idr(unitPriceIdr),
-            lineTotalIdr: idr(unitPriceIdr * item.quantity),
-          };
-        });
-      let recomputed: Awaited<
-        ReturnType<
-          typeof orderPromoPartialRefundPort.recomputeAfterPartialRefund
-        >
-      >;
-      try {
-        recomputed =
-          await orderPromoPartialRefundPort.recomputeAfterPartialRefund(
-            tx,
-            context,
-            {
-              orderId: order.id,
-              keptLines,
-              reason: REFUND_REASON,
-              actorUserId,
-              at,
-              deferPayout: true,
-            },
-          );
-      } catch (error) {
-        // A void released the promo in between: a retry cannot fix it.
-        if (
-          error instanceof HttpError &&
-          error.status === 409 &&
-          error.code === "PROMO_APPLICATION_RELEASED"
-        ) {
-          await blocked("promo_released");
-          return;
-        }
-        // The kept lines do not fit the promo ledger (e.g. more than it
-        // still stands): a retry gives the same answer, so the event must
-        // not loop. A person looks at the audit row.
-        if (error instanceof HttpError && error.status === 422) {
-          await blocked("promo_state_mismatch");
-          return;
-        }
-        throw error;
-      }
-      if (recomputed.adjusted)
-        promo = {
-          refundedSubtotalIdr: recomputed.refundedSubtotalIdr,
-          goodsDueIdr: recomputed.refundDueIdr,
-          remainingPaidIdr: recomputed.remainingPaidIdr,
-        };
+    const hasLivePromo = Boolean(
+      await livePromoApplicationOf(tx, context, order.id),
+    );
+    const found = await findRecoveryRefundReplay(
+      tx,
+      tenantId,
+      order.id,
+      issue,
+      issues,
+      toOriginal,
+      payFirst,
+      hasLivePromo,
+    );
+    if (found !== REPLAY_REJECTED) replay = found;
+    // legend-h1dyy: the earlier refund of this item was `rejected`: the money
+    // is not owed, so a re-report gives nothing back. A promo order reaches
+    // the same end below: the rejected item stays out of the kept lines.
+    if (found === REPLAY_REJECTED && !hasLivePromo) {
+      await blocked("nothing_left");
+      return;
     }
-    split = recoveryRefundSplit({
-      order,
-      lineTotalIdr: line.lineTotalIdr,
-      priorLinesIdr,
+    if (hasLivePromo) {
+      const items = await recoveryOrderItemsOf(tx, tenantId, order.id);
+      if (replay === null) {
+        const keptLines = await recoveryKeptLines(tx, tenantId, {
+          order,
+          issueId: issue.id,
+          failedLineId: line.id,
+          issues,
+          chain,
+          items,
+        });
+        let recomputed: Awaited<
+          ReturnType<
+            typeof orderPromoPartialRefundPort.recomputeAfterPartialRefund
+          >
+        >;
+        try {
+          recomputed =
+            await orderPromoPartialRefundPort.recomputeAfterPartialRefund(
+              tx,
+              context,
+              {
+                orderId: order.id,
+                keptLines,
+                reason: REFUND_REASON,
+                actorUserId,
+                at,
+                deferPayout: true,
+              },
+            );
+        } catch (error) {
+          // A void released the promo in between: a retry cannot fix it.
+          if (
+            error instanceof HttpError &&
+            error.status === 409 &&
+            error.code === "PROMO_APPLICATION_RELEASED"
+          ) {
+            await blocked("promo_released");
+            return;
+          }
+          // The kept lines do not fit the promo ledger (e.g. more than it
+          // still stands): a retry gives the same answer, so the event must
+          // not loop. A person looks at the audit row.
+          if (error instanceof HttpError && error.status === 422) {
+            await blocked("promo_state_mismatch");
+            return;
+          }
+          throw error;
+        }
+        const originalId = toOriginal(issue.orderItemId);
+        originalLineTotalIdr =
+          items.find((item) => item.id === originalId)?.lineTotalIdr ?? 0;
+        if (recomputed.adjusted)
+          promo = {
+            refundedSubtotalIdr: recomputed.refundedSubtotalIdr,
+            goodsDueIdr: recomputed.refundDueIdr,
+            remainingPaidIdr: recomputed.remainingPaidIdr,
+          };
+      }
+    }
+    // legend-fwe4l: the reported line is a swap replacement: it pays its own
+    // value, not the original's amount (the guest got the difference as a
+    // voucher), whether the original's refund was replayed or the promo
+    // recompute counted the original as failed. The replacement line carries
+    // no promo price.
+    if (
+      replay !== null
+        ? replay.rootOrderItemId !== issue.orderItemId
+        : originalOf.has(issue.orderItemId)
+    )
+      swapCapIdr = recoveryRefundSplit({
+        order,
+        lineTotalIdr: line.lineTotalIdr,
+        priorLinesIdr,
+        releasedIdr,
+      }).wantedIdr;
+    // legend-rat9r (founder W4 Q25), architect Q25 #1: the swap voucher and
+    // every refund of the item (original or replacement, first filing or
+    // replay) stay within what the guest paid for it: the value stored at a
+    // swap (`paidValueIdr`), else what this refund would pay uncapped (the
+    // line's wanted amount or the replay's). The cap is that value less what
+    // the item already gave back (vouchers, live refunds, POS refunds naming
+    // it). The order room (paid less every voucher and refund of the order)
+    // is read as released money, so the split cuts to it as a room cut (a
+    // shortfall, audited), as the open bill's intent room above.
+    const given = await recoveryChainOf(
+      tx,
+      tenantId,
+      { id: issue.id, orderItemId: issue.orderItemId, orderId: order.id },
+      issues,
+      toOriginal,
+    );
+    releasedIdr = Math.max(
       releasedIdr,
-      ...(promo === undefined ? {} : { promo }),
-    });
+      order.totalIdr - order.depositAppliedIdr - given.orderRoomIdr,
+    );
+    const uncappedIdr =
+      replay === null
+        ? recoveryRefundSplit({
+            order,
+            lineTotalIdr: line.lineTotalIdr,
+            priorLinesIdr,
+            releasedIdr,
+            ...(promo === undefined ? {} : { promo }),
+          }).wantedIdr
+        : replay.amountIdr;
+    voucherCapIdr = Math.max(
+      0,
+      (given.paidValueIdr ?? uncappedIdr) - given.givenIdr,
+    );
+    capIdr =
+      swapCapIdr === undefined
+        ? voucherCapIdr
+        : Math.min(swapCapIdr, voucherCapIdr);
+    swapCapCuts = swapCapIdr !== undefined && swapCapIdr < uncappedIdr;
+    voucherCapCuts = voucherCapIdr < uncappedIdr;
+    split =
+      replay === null
+        ? recoveryRefundSplit({
+            order,
+            lineTotalIdr: line.lineTotalIdr,
+            priorLinesIdr,
+            releasedIdr,
+            ...(promo === undefined ? {} : { promo }),
+            capIdr,
+          })
+        : recoveryRefundReplaySplit({
+            order,
+            wantedIdr: replay.amountIdr,
+            capIdr,
+            grossSalesIdr: replay.grossSalesIdr,
+            discountIdr: replay.discountIdr,
+            serviceChargeIdr: replay.serviceChargeIdr,
+            pbjtIdr: replay.pbjtIdr,
+            releasedIdr,
+          });
+    // legend-hhm5m 5: the journal reverses what `order.refunded` says, so a
+    // pay-first refund (first filing or replay) never reverses more of a
+    // component than the order still holds after the live refunds of the
+    // other issues: a replay must not reuse a rounding slot a later filing
+    // took over after the final failure.
+    if (payFirst) {
+      const whole = orderRevenueSplit(order);
+      split = capPartsToRemaining(split, {
+        grossSalesIdr: whole.grossSalesIdr - released.reversed.grossSalesIdr,
+        serviceChargeIdr:
+          whole.serviceChargeIdr - released.reversed.serviceChargeIdr,
+        pbjtIdr: whole.pbjtIdr - released.reversed.pbjtIdr,
+      });
+    }
   } catch (error) {
     // Order amounts that fail their tax-mode identity: a retry cannot fix them.
     if (error instanceof OrderRevenueMismatch) {
@@ -567,9 +613,66 @@ export async function deliverOrderRecoveryRefundEvent(
       },
       "Refund item gagal dipotong sisa yang bisa dikembalikan",
     );
+  // legend-hhm5m 3: a recompute that adjusted the promo took the original out
+  // of it, so its full goods money (before any cap or room cut) goes on the
+  // promo ledger, in the same transaction as the refund row or the
+  // `nothing_left` mark. A cut (another refund holds the room, a swap or
+  // voucher cap) must not leave that share for a later refund of another item
+  // to pay once the room opens again. A replay records nothing.
+  const promoGoodsIdr =
+    promo === undefined || replay !== null
+      ? 0
+      : recoveryRefundGoodsIdr({
+          order,
+          lineTotalIdr: originalLineTotalIdr,
+          priorLinesIdr,
+          promo,
+        });
   // A promo order with nothing due (a returned free item) ends here too: the
   // promo recompute above stays, the item really failed.
   if (split.amountIdr <= 0) {
+    // legend-k0ub4: a replacement of a completed order carries Rp0 (its value
+    // stays on the original line), so the cap is 0 and nothing is refunded;
+    // legend-rat9r: so does an item whose swap voucher already holds its whole
+    // paid value (voucher cap 0); legend-hhm5m 3: and an item cut to Rp0 by
+    // the room another refund holds. The recompute above still took the
+    // original out of the promo, so its goods money goes on the promo ledger,
+    // once per issue. The `nothing_left` audit row of this issue is the
+    // once-only mark (the event is replayed).
+    if (promo !== undefined && replay === null) {
+      const goodsIdr = promoGoodsIdr;
+      const [done] = await tx
+        .select({ id: auditLogs.id })
+        .from(auditLogs)
+        .where(
+          and(
+            eq(auditLogs.tenantId, tenantId),
+            gte(auditLogs.createdAt, auditSince),
+            sql`${auditLogs.event}->>'objectId' = ${issue.id}`,
+            sql`${auditLogs.event}->>'action' = ${AUDIT_BLOCKED}`,
+            sql`${auditLogs.event}->'maskedChanges'->'after'->>'blockedReason' = 'nothing_left'`,
+          ),
+        )
+        .limit(1);
+      if (!done) {
+        if (goodsIdr > 0)
+          await orderPromoPartialRefundPort.recordPartialRefundPayout(
+            tx,
+            context,
+            { orderId: order.id, payoutIdr: goodsIdr, at },
+          );
+        await audit(
+          AUDIT_BLOCKED,
+          {
+            id: issue.id,
+            orderId: order.id,
+            blockedReason: "nothing_left",
+          },
+          "Refund item gagal tidak dibuka",
+        );
+      }
+      return;
+    }
     await blocked("nothing_left");
     return;
   }
@@ -587,6 +690,27 @@ export async function deliverOrderRecoveryRefundEvent(
       approvedBy: payload.data.approvedBy,
     },
     async () => {
+      // legend-ti19m: still under the intent row lock taken above.
+      const orderIssueIds = await tx
+        .select({ id: orderIssues.id })
+        .from(orderIssues)
+        .where(
+          and(
+            eq(orderIssues.tenantId, tenantId),
+            eq(orderIssues.orderId, order.id),
+          ),
+        );
+      const filingSeq =
+        Math.max(
+          0,
+          ...(
+            await filingSeqsOf(
+              tx,
+              tenantId,
+              orderIssueIds.map((row) => row.id),
+            )
+          ).values(),
+        ) + 1;
       // A QR pay-first sale: the journal reverses this line's revenue.
       if (payFirst)
         await appendPosEvent(tx, context, "order.refunded", {
@@ -629,10 +753,12 @@ export async function deliverOrderRecoveryRefundEvent(
         amountIdr: split.amountIdr,
         at,
       });
-      // The goods part of the refund goes on the promo ledger, on its
-      // item-price basis (`goodsIdr`: tax included for inclusive prices).
-      // Only after a recompute that adjusted the promo (never a released
-      // application, which the recompute refuses).
+      // The goods part of the line goes on the promo ledger, on its
+      // item-price basis (tax included for inclusive prices), in full before
+      // any cap or room cut (legend-hhm5m 3, `promoGoodsIdr`). Only after a
+      // recompute that adjusted the promo (never a released application,
+      // which the recompute refuses).
+      // A replay records nothing: the ledger already holds this line's payout.
       const promoRecordedIdr =
         promo === undefined
           ? 0
@@ -640,7 +766,7 @@ export async function deliverOrderRecoveryRefundEvent(
               await orderPromoPartialRefundPort.recordPartialRefundPayout(
                 tx,
                 context,
-                { orderId: order.id, payoutIdr: split.goodsIdr, at },
+                { orderId: order.id, payoutIdr: promoGoodsIdr, at },
               )
             ).recordedIdr;
       await audit(
@@ -652,6 +778,10 @@ export async function deliverOrderRecoveryRefundEvent(
           refundId: row.id,
           amountIdr: row.amountIdr,
           status: row.status,
+          ...(replay === null ? {} : { replayOfIssueId: replay.issueId }),
+          ...(swapCapCuts ? { swapCapIdr } : {}),
+          ...(voucherCapCuts ? { voucherCapIdr } : {}),
+          filingSeq,
         },
         REFUND_REASON,
       );
@@ -660,6 +790,8 @@ export async function deliverOrderRecoveryRefundEvent(
         resolvedBy: actorUserId,
         approvedBy: payload.data.approvedBy,
         promoRecordedIdr,
+        filingSeq,
+        ...(replay === null ? {} : { replayOfIssueId: replay.issueId }),
       };
     },
   );
@@ -864,11 +996,17 @@ async function requestRecoveryRefundReversal(
  * back, the sale holds the money again and the line may be reported again
  * (`refund_rejected_at`, legend-wumm8), since a person cannot refund a
  * source-document intent by hand and the money would be stuck.
+ * legend-pti5r: a final failure leaves the promo ledger untouched (the payout
+ * stays reserved for the line). The same item reported again re-files the
+ * failed refund's amount and split (replay, `deliverOrderRecoveryRefundEvent`).
  * No new `order.refunded`: the revenue was already reversed. Idempotent per
  * failed refund (key `order-recovery-refund:<issueId>:<failedRefundId>`); the
  * resolver and approver are copied from the first filing's idempotency row,
  * which four-eyes reads. Without that row nothing is filed: the parties
  * would be unknown (`order_issue.refund_refile_blocked`).
+ * A repeated call for the same failed refund changes nothing: its audit rows
+ * (`refund_rejected`, `refund_refile_blocked`) are written once per refund id,
+ * the `refund_rejected_at` stamp and the reversal event are set once.
  * The caller holds the refund graph locks (intent row first).
  */
 export async function refileRecoveryRefundAfterFailure(
@@ -885,7 +1023,7 @@ export async function refileRecoveryRefundAfterFailure(
   )
     return;
   const tenantId = failedRefund.tenantId;
-  const auditIssue = (
+  const auditIssueRow = (
     action: string,
     after: Record<string, string | number>,
     reason: string,
@@ -912,6 +1050,32 @@ export async function refileRecoveryRefundAfterFailure(
       },
       AUDIT_SAFE_FIELDS,
     );
+  // The hook can run again for the same failed refund (a backfill helper, a
+  // retried failure): its audit row is written once per refund id.
+  const auditIssue = async (
+    action: string,
+    after: Record<string, string | number>,
+    reason: string,
+  ): Promise<void> => {
+    const [existing] = await tx
+      .select({ id: auditLogs.id })
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.tenantId, tenantId),
+          // Written after the refund existed: bounds the scan.
+          gte(
+            auditLogs.createdAt,
+            new Date(failedRefund.createdAt.getTime() - 24 * 60 * 60 * 1000),
+          ),
+          sql`${auditLogs.event}->>'objectId' = ${issueId}`,
+          sql`${auditLogs.event}->>'action' = ${action}`,
+          sql`${auditLogs.event}->'maskedChanges'->'after'->>'refundId' = ${failedRefund.id}`,
+        ),
+      )
+      .limit(1);
+    if (!existing) await auditIssueRow(action, after, reason);
+  };
   // A final failure (`rejected`, a person-needed failure, `refile_limit`,
   // `no_first_filing`) gives the sale its money back (legend-iu91r): the line
   // may be reported again (legend-wumm8, same idempotent stamp as `rejected`)
@@ -953,6 +1117,7 @@ export async function refileRecoveryRefundAfterFailure(
     // legend-h1dyy: the promo payout this refund recorded stays on the promo
     // ledger. The approver decided the money is not owed, so a later refund
     // of this order must not pay it (the item stays out of the kept lines).
+    // legend-pti5r: no replay either; a re-report of it stays nothing_left.
     return;
   }
   if (
