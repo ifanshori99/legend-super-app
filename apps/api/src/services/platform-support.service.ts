@@ -78,7 +78,7 @@ type Page = {
   data: SupportAccessGrant[];
   meta: { limit: number; nextCursor: string | null };
 };
-type EndCause = "expired" | "ended_by_super_admin";
+type EndCause = "expired" | "ended_by_super_admin" | "revoked_by_tenant_admin";
 
 /** A write session is an explicit choice (accessMode defaults to read_only)
  * and is capped shorter than a read session. PRD §3 F4 is silent on the cap;
@@ -1153,18 +1153,33 @@ export async function listSupportAccess(
   return toPage(rows, query.limit);
 }
 
-async function allTenantIds(): Promise<string[]> {
-  const rows = await db
-    .select({ id: tenants.id })
-    .from(tenants)
-    .orderBy(asc(tenants.id));
-  return rows.map((row) => row.id);
+/**
+ * Tenants that hold a grant matching the filter, from the SECURITY DEFINER
+ * function app.support_access_grant_tenants (legend-ca4l). It names tenant ids
+ * only; the grant rows themselves are still read per tenant under RLS.
+ * `grantId`: the tenant of that grant. `adminUserId` + `at`: tenants where that
+ * admin holds a grant live at `at`. No filter: every tenant with any grant.
+ */
+async function grantTenantIds(filter: {
+  grantId?: string;
+  adminUserId?: string;
+  at?: Date;
+}): Promise<string[]> {
+  const result = await db.execute<{ tenant_id: string }>(
+    sql`SELECT app.support_access_grant_tenants(
+      ${filter.grantId ?? null}::uuid,
+      ${filter.adminUserId ?? null}::text,
+      ${filter.at?.toISOString() ?? null}::timestamptz
+    ) AS tenant_id`,
+  );
+  return result.rows.map((row) => row.tenant_id);
 }
 
 /**
  * Platform view (GET /api/platform/support-access). Grants are tenant-owned
- * under RLS, so without a tenant filter each tenant is read in its own
- * transaction and the pages are merged on the same (startedAt, id) order.
+ * under RLS, so without a tenant filter each tenant that has a grant is read
+ * in its own transaction (tenants without one are not opened) and the pages
+ * are merged on the same (startedAt, id) order.
  */
 export async function listPlatformSupportAccess(query: {
   limit: number;
@@ -1172,7 +1187,7 @@ export async function listPlatformSupportAccess(query: {
   tenantId?: string;
 }): Promise<Page> {
   const tenantIds =
-    query.tenantId === undefined ? await allTenantIds() : [query.tenantId];
+    query.tenantId === undefined ? await grantTenantIds({}) : [query.tenantId];
   const rows: GrantRow[] = [];
   for (const tenantId of tenantIds)
     rows.push(
@@ -1189,7 +1204,7 @@ export async function listPlatformSupportAccess(query: {
 // ---------------------------------------------------------------- end
 
 async function findGrantTenant(grantId: string): Promise<string | null> {
-  for (const tenantId of await allTenantIds()) {
+  for (const tenantId of await grantTenantIds({ grantId })) {
     const found = await withTenant(
       db,
       platformTenantContext(tenantId),
@@ -1213,22 +1228,26 @@ async function findGrantTenant(grantId: string): Promise<string | null> {
 }
 
 /**
- * Ends a session early; an ended session is history and stays readable.
- * Idempotent: ending an ended session returns it unchanged, and ending a
- * lapsed one records its expiry instead (no second audit row or event).
- * The tenant is optional (the platform contract carries only the grant id).
+ * Shared core of endSupportAccess (Super Admin) and revokeSupportAccess
+ * (tenant admin): ends one grant of `context`'s tenant early. Idempotent:
+ * ending an ended session returns it unchanged, and ending a lapsed one
+ * records its expiry instead (no second audit row or event). The cause picks
+ * the audit text and the support_access.ended event cause.
  */
-export async function endSupportAccess(input: {
-  tenantId?: string;
-  grantId: string;
-  actorUserId: string;
-  now?: Date;
-}): Promise<SupportAccessGrant> {
-  const now = input.now ?? new Date();
-  const tenantId = input.tenantId ?? (await findGrantTenant(input.grantId));
-  if (tenantId === null)
-    throw new HttpError(404, "NOT_FOUND", "Support session not found.");
-  const context = platformTenantContext(tenantId);
+async function endGrantEarly(
+  context: ScopedTenantContext,
+  input: {
+    grantId: string;
+    actorUserId: string;
+    now: Date;
+    cause: Extract<
+      EndCause,
+      "ended_by_super_admin" | "revoked_by_tenant_admin"
+    >;
+  },
+): Promise<SupportAccessGrant> {
+  const tenantId = context.tenant.tenantId;
+  const { now } = input;
   const grant = await withTenant(db, context, async (tx) => {
     const [current] = await tx
       .select()
@@ -1265,12 +1284,16 @@ export async function endSupportAccess(input: {
       actorId: input.actorUserId,
       action: "support_access.ended",
       objectId: row.id,
-      reason: "Sesi support access diakhiri lebih awal.",
+      reason:
+        input.cause === "revoked_by_tenant_admin"
+          ? "Sesi support access dicabut oleh admin tenant."
+          : "Sesi support access diakhiri lebih awal.",
       before: { status: "active" },
       after: {
         status: "ended",
         superAdminUserId: row.superAdminUserId,
         endedAt: now.toISOString(),
+        cause: input.cause,
       },
       sensitiveAccess: false,
     });
@@ -1281,7 +1304,7 @@ export async function endSupportAccess(input: {
       payload: {
         grantId: row.id,
         endedAt: now.toISOString(),
-        cause: "ended_by_super_admin" satisfies EndCause,
+        cause: input.cause satisfies EndCause,
       },
     });
     return toGrant(row);
@@ -1302,6 +1325,49 @@ export async function endSupportAccess(input: {
     );
   }
   return grant;
+}
+
+/**
+ * Ends a session early; an ended session is history and stays readable.
+ * Idempotent: see endGrantEarly.
+ * The tenant is optional (the platform contract carries only the grant id).
+ */
+export async function endSupportAccess(input: {
+  tenantId?: string;
+  grantId: string;
+  actorUserId: string;
+  now?: Date;
+}): Promise<SupportAccessGrant> {
+  const now = input.now ?? new Date();
+  const tenantId = input.tenantId ?? (await findGrantTenant(input.grantId));
+  if (tenantId === null)
+    throw new HttpError(404, "NOT_FOUND", "Support session not found.");
+  return endGrantEarly(platformTenantContext(tenantId), {
+    grantId: input.grantId,
+    actorUserId: input.actorUserId,
+    now,
+    cause: "ended_by_super_admin",
+  });
+}
+
+/**
+ * legend-8en8 (TEN-04): a tenant admin revokes a Super Admin's support access
+ * to their own tenant at once. The grant must belong to the caller's tenant
+ * (anything else is a 404, never a hint that it exists elsewhere). Idempotent
+ * like endSupportAccess; the support sessions the grant carried end with it.
+ */
+export function revokeSupportAccess(
+  context: ScopedTenantContext,
+  actor: { userId: string },
+  grantId: string,
+  now: Date = new Date(),
+): Promise<SupportAccessGrant> {
+  return endGrantEarly(context, {
+    grantId,
+    actorUserId: actor.userId,
+    now,
+    cause: "revoked_by_tenant_admin",
+  });
 }
 
 // -------------------------------------------------------------- sweep
@@ -1462,12 +1528,15 @@ export async function findImpersonationGrants(input: {
   targetUserId: string;
   now: Date;
   at?: Date;
-  /** Only these tenants (default: every tenant). */
+  /** Only these tenants (default: the tenants where the admin holds a grant live at `at`). */
   tenantIds?: readonly string[];
 }): Promise<ImpersonationMatch[]> {
   const at = input.at ?? input.now;
   const matches: ImpersonationMatch[] = [];
-  for (const tenantId of input.tenantIds ?? (await allTenantIds())) {
+  const tenantIds =
+    input.tenantIds ??
+    (await grantTenantIds({ adminUserId: input.adminUserId, at }));
+  for (const tenantId of tenantIds) {
     const match = await withTenant(
       db,
       platformTenantContext(tenantId),
@@ -1516,15 +1585,16 @@ export async function findImpersonationGrants(input: {
 /*
  * One POST /api/auth/admin/impersonate-user checks the same impersonation
  * three times (hooks.before, session.create.before, session.create.after;
- * legend-npkpz). Grants are tenant-owned under forced RLS, so only a scan of
- * every tenant (one tenant transaction each) can find them. The first
+ * legend-npkpz). Grants are tenant-owned under forced RLS, so they are read
+ * one tenant transaction at a time, only for the tenants where the admin holds
+ * a live grant (app.support_access_grant_tenants, legend-ca4l). The first
  * successful scan of a request remembers which tenants matched; the later
  * checks of that request scan again, fresh, but only those tenants. A grant
  * or role assignment that ends in between is therefore still seen, and a
  * tenant outside the first match could only add a match, never remove one.
  * The memo is keyed on the request's AsyncLocalStorage store, which dies with
  * the request. Outside an HTTP request (server-side auth.api.impersonateUser)
- * there is no store and every check scans every tenant.
+ * there is no store and every check looks the tenants up again.
  */
 const requestScans = new WeakMap<object, Map<string, string[]>>();
 

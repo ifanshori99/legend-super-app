@@ -3230,3 +3230,11 @@ Langkah berikut CTO baru:
 - Uang: efek merge pada 6 file batas diskon (pos-order.service, core/money, tenant-config-access, access/config-codec, platform/config, pos/schemas) identik dengan niat cabang; reviewer sonnet bersih. Ambang 1..5000 saat tulis, dipotong 5000 saat baca.
 - Gerbang: typecheck 3 paket + root hijau; lint 0 error (1 error `_kind` unused di tests/platform-config-codecs.test.mjs dari 5cwrq dibetulkan, 2 warning react-hooks lama); vitest API 12618 lulus, 1 gagal (menu-print-db "concurrent renders", lulus 3/3 sendiri: flake-suite-isolation belum menghilangkannya di suite penuh); e2e 18 lulus, 1 skip; suite root 2049 tes, 2046 lulus, 3 gagal SUDAH ADA DI m1 (file dan qr-order/guest.ts identik dengan m1): tests/qr-journey-mock.test.mjs ORD-06 x2 ("Data pembayaran tidak valid") dan tests/split-bill-contract.test.mjs getSplitClaim (kontrak POST sejak legend-r77pq, test masih menuntut GET).
 - Biaya sesi (session-usage): total 1087k, utama sonnet 62 req, subagent 28 req.
+
+## 2026-11-11: ws/dheu-secrets-support (legend-dheu, legend-ca4l, legend-8en8; basis m1 3c7217b2)
+
+- dheu: key ring DATA_ENCRYPTION_KEYS + DATA_ENCRYPTION_ACTIVE_KEY_VERSION (byte versi amplop = versi kunci, 1..255; versi 1 = DATA_ENCRYPTION_KEY). `sealSecretBaseKey` untuk HRIS/payroll agar versi 1 mereka tidak ikut pindah; blindIndex tetap kunci 1. rotateIntegrationCredentials kini benar-benar menyegel ulang ke kunci aktif.
+- ca4l: migrasi sementara 0287 `app.support_access_grant_tenants` (SECURITY DEFINER, hanya id tenant, EXECUTE hanya legend_app); list/end/impersonasi global hanya membuka tenant yang punya grant (allTenantIds dihapus).
+- 8en8: `POST /api/org/support-access/:grantId/revoke` (guard sama dengan approve/reject, MFA, bukan sesi impersonasi), cause `revoked_by_tenant_admin`, idempoten, sesi impersonasi ikut berakhir; `cause` dibuka di allowlist audit.
+- Bukti: gagal-dulu di basis m1 (14 gagal + secrets-key-ring gagal impor); 161 test terarah lulus setelah; typecheck API 0; eslint + prettier hijau; db:generate kosong.
+- Catatan merge: nomor 0287 sementara (idx = tag), `when` 1794331000000 harus tetap lebih besar dari migrasi yang masuk lebih dulu saat dinomori ulang. Kunci versi 1 tidak bisa dipensiunkan selama ada baris HRIS/payroll versi 1 (docs/deployment.md).

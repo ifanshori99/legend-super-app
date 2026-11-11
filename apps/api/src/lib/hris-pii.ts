@@ -27,7 +27,7 @@ import {
   blindIndex,
   openSecret,
   openSecretWithKey,
-  sealSecret,
+  sealSecretBaseKey,
   sealSecretWithKey,
 } from "./secrets.ts";
 import { HttpError } from "./http-error.ts";
@@ -196,7 +196,9 @@ export function sealHrisPii(
   const aad = aadOf(binding, keyVersion);
   const extra = EXTRA_KEYS.get(keyVersion);
   return Buffer.from(
-    extra ? sealSecretWithKey(extra, value, aad) : sealSecret(value, aad),
+    extra
+      ? sealSecretWithKey(extra, value, aad)
+      : sealSecretBaseKey(value, aad),
     "base64",
   );
 }

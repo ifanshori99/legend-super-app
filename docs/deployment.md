@@ -300,6 +300,17 @@ Rotation: add a new kid to `ATTENDANCE_SELFIE_SEAL_KEYS`, switch `ATTENDANCE_SEL
 
 Release order: cloud first (this endpoint and the `attendance.logged` v2 applier), then the edges. Cloud orphan sweep: a received selfie that no attendance log references after 14 days is deleted from storage (the receipt stays).
 
+## Rotasi kunci data (DATA_ENCRYPTION_KEY)
+
+Rahasia tersegel lewat `sealSecret` dan `openSecret` (`apps/api/src/lib/secrets.ts`) memakai byte pertama amplop sebagai versi kunci. Versi 1 adalah `DATA_ENCRYPTION_KEY`; versi 2 sampai 255 diambil dari `DATA_ENCRYPTION_KEYS` (`2:<base64>,3:<base64>`, format sama dengan `HRIS_PII_KEYS`). `DATA_ENCRYPTION_ACTIVE_KEY_VERSION` (default 1, harus 1 atau terdaftar) memilih kunci untuk segel baru. Nilai lama tetap terbuka karena versinya terbaca dari amplop. Indeks buta (`blindIndex`) selalu memakai versi 1, jadi `DATA_ENCRYPTION_KEY` tetap harus diisi.
+
+1. Buat kunci dengan `openssl rand -base64 32`. Jangan cetak atau tempel nilainya di chat, log, atau berkas repo.
+2. Tambahkan `N:<base64>` ke `DATA_ENCRYPTION_KEYS`, set `DATA_ENCRYPTION_ACTIVE_KEY_VERSION=N`, restart API dan worker dengan env yang sama.
+3. Segel ulang kredensial yang sudah tersimpan lewat `rotateIntegrationCredentials` (integrasi platform) dan `rotateAiProviderKeys` (kunci penyedia AI). Baris yang sudah di versi aktif dilewati.
+4. Jangan membuang kunci lama dari ring selama masih ada nilai tersegel di bawahnya, termasuk backup yang mungkin dipulihkan. Jangan menurunkan versi aktif.
+
+Catatan: jalur versi 1 HRIS dan payroll (`pii_key_version = 1`) memakai `sealSecret`, jadi ketika versi aktif data bukan 1, segel itu ikut ditulis di bawah kunci aktif (amplop berbayte N). Kunci itu tidak boleh dipensiunkan sebelum baris HRIS dan payroll dipindah ke kunci HRIS bernomor 2 ke atas.
+
 ## Rotasi kunci HRIS dan payroll
 
 Versi kunci 1 adalah `DATA_ENCRYPTION_KEY`. Versi 2 dan seterusnya diambil dari `HRIS_PII_KEYS`. Data HRIS yang disegel (karyawan dan kontrak) serta dua kolom payroll (`employee_pay_components.amount_encrypted` dan `payslips.calculation_encrypted`) memakai ring kunci yang sama. Kolom `pii_key_version` mencatat versi yang dipakai tiap baris. Job reseal ikut memindahkan kedua tabel payroll.

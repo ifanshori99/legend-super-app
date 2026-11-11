@@ -9,6 +9,11 @@ import { normalizeHostname } from "@starter/shared/platform";
 import { parseEdgeRuntimeConfig } from "../edge/config.ts";
 import { unsafeAiUrlReason } from "../lib/ai/url-guard.ts";
 import {
+  DATA_ENCRYPTION_MAX_KEY_VERSION,
+  assertDataEncryptionActiveVersion,
+  parseDataEncryptionKeys,
+} from "../lib/data-encryption-keys.ts";
+import {
   HRIS_PII_MAX_KEY_VERSION,
   assertHrisPiiActiveVersion,
   parseHrisPiiKeys,
@@ -96,6 +101,18 @@ const schema = z
         "Use base64 of 32 bytes.",
       )
       .optional(),
+    // Data key rotation (legend-dheu, lib/secrets.ts). Extra keys as
+    // `<version>:<base64 32 bytes>` entries, comma separated, versions 2..255
+    // (version 1 is DATA_ENCRYPTION_KEY; the version is the envelope's first
+    // byte). The active version is the one new seals use; it must be 1 or
+    // listed in DATA_ENCRYPTION_KEYS.
+    DATA_ENCRYPTION_KEYS: z.string().optional(),
+    DATA_ENCRYPTION_ACTIVE_KEY_VERSION: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(DATA_ENCRYPTION_MAX_KEY_VERSION)
+      .default(1),
     // HRIS PII key rotation (legend-33mj, lib/hris-pii.ts). Extra data keys as
     // `<version>:<base64 32 bytes>` entries, comma separated, versions >= 2
     // (version 1 is DATA_ENCRYPTION_KEY). The active version is the one new
@@ -417,6 +434,23 @@ const schema = z
   })
   .superRefine((values, ctx) => {
     // Messages name the problem only, never the key material.
+    try {
+      assertDataEncryptionActiveVersion(
+        values.DATA_ENCRYPTION_ACTIVE_KEY_VERSION,
+        parseDataEncryptionKeys(values.DATA_ENCRYPTION_KEYS),
+      );
+    } catch (error) {
+      ctx.addIssue({
+        code: "custom",
+        path: [
+          error instanceof Error &&
+          error.message.startsWith("DATA_ENCRYPTION_ACTIVE")
+            ? "DATA_ENCRYPTION_ACTIVE_KEY_VERSION"
+            : "DATA_ENCRYPTION_KEYS",
+        ],
+        message: error instanceof Error ? error.message : "Invalid value.",
+      });
+    }
     try {
       assertHrisPiiActiveVersion(
         values.HRIS_PII_ACTIVE_KEY_VERSION,
