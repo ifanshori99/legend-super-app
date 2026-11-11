@@ -24,6 +24,7 @@ const STAFF_PIN_RECORDS_PATH = "/api/edge-sync/staff-pin-records";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LIMIT = 100;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const RECEIPT_REFUSAL_RETRY_MS = 60 * 60 * 1000;
 
 // Node's fetch honours `cache`, but the Node typings omit it from RequestInit.
 type EdgeRequestInit = RequestInit & { cache: "no-store" };
@@ -232,7 +233,7 @@ export function createDeviceRecordsFetcher(
   // Fail fast on a bad URL when the fetcher is built, as before.
   cloudHttpBaseUrl(options.cloudUrl);
   const limit = options.limit ?? DEFAULT_LIMIT;
-  let cloudRejectsRefusals = false;
+  let receiptRefusalsRetryAt = 0;
 
   const pathFor = (
     since: string | null,
@@ -281,7 +282,8 @@ export function createDeviceRecordsFetcher(
       );
       throw new EdgeCloudHttpError("INVALID_RECEIPT_RUN_REPORT");
     }
-    const pendingRefusals = cloudRejectsRefusals ? undefined : refusals;
+    const pendingRefusals =
+      Date.now() < receiptRefusalsRetryAt ? undefined : refusals;
     try {
       return await cloudGetJson({
         ...options,
@@ -335,9 +337,10 @@ export function createDeviceRecordsFetcher(
             path: pathFor(since, true, receiptRuns),
             signal,
           });
-          // Only confirm incompatibility when dropping this one parameter
-          // succeeds; another failing opt-in must not suppress future reports.
-          cloudRejectsRefusals = true;
+          // Suppress the parameter for an hour only when dropping it succeeds;
+          // re-probe after that so a cloud upgrade can resume healing runs.
+          // Another failing opt-in must not suppress future refusal reports.
+          receiptRefusalsRetryAt = Date.now() + RECEIPT_REFUSAL_RETRY_MS;
           return result;
         } catch (second) {
           if (

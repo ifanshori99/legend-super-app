@@ -175,6 +175,41 @@ describe("legend-c4ejw caches confirmed receipt refusal incompatibility", () => 
     expect(urls[firstCount + 1]!.searchParams.has("receiptRefused")).toBe(true);
   });
 
+  it("retries a rejected refusal report after one hour and resumes reporting to an upgraded cloud", async () => {
+    const started = Date.parse("2026-11-12T00:00:00Z");
+    let now = started;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    let rejectsRefusals = true;
+    const urls: URL[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      urls.push(url);
+      return rejectsRefusals && url.searchParams.has("receiptRefused")
+        ? new Response("{}", { status: 400 })
+        : ok();
+    });
+    const pull = fetcher(fetchImpl);
+    await pull("initial", signal(), runs, refusals);
+    expect(urls).toHaveLength(3);
+    now = started + 60 * 60_000 - 1;
+    await pull("before-expiry", signal(), runs, refusals);
+    expect(urls).toHaveLength(4);
+    expect(urls.at(-1)!.searchParams.has("receiptRefused")).toBe(false);
+    rejectsRefusals = false;
+    now = started + 60 * 60_000;
+    await pull("at-expiry", signal(), runs, refusals);
+    expect(urls).toHaveLength(5);
+    expect(urls.at(-1)!.searchParams.get("receiptRefused")).toBe(
+      `${RUN}:prefix_used`,
+    );
+    expect(urls.at(-1)!.searchParams.get("receiptRuns")).toBe("P1:7");
+    expect(urls.at(-1)!.searchParams.get("since")).toBe("at-expiry");
+    now += 1;
+    await pull("after-upgrade", signal(), runs, refusals);
+    expect(urls).toHaveLength(6);
+    expect(urls.at(-1)!.searchParams.has("receiptRefused")).toBe(true);
+  });
+
   it("does not cache rejection when the refusal-free attempt also fails", async () => {
     const urls: URL[] = [];
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
