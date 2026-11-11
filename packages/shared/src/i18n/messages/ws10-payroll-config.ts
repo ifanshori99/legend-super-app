@@ -582,6 +582,10 @@ export const payrollConfigMessages = {
       "PIN slip gaji terkunci sementara karena terlalu banyak percobaan.",
     PAYSLIP_PIN_NOT_SET:
       "PIN slip gaji belum dibuat. Buat PIN terlebih dahulu.",
+    PAYSLIP_PIN_RESET_WHATSAPP_UNAVAILABLE:
+      "Reset lewat WhatsApp belum tersedia untuk akun ini. Hubungi HR untuk reset PIN.",
+    PAYSLIP_PIN_RESET_PROOF_INVALID:
+      "Verifikasi WhatsApp tidak berlaku. Mulai ulang reset PIN.",
     PAYROLL_BANK_FILE_MISMATCH:
       "File transfer tidak cocok dengan payroll yang dipilih.",
     PAYROLL_PPH21_STATUS_UNSUPPORTED:
