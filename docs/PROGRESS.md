@@ -3287,3 +3287,12 @@ Langkah berikut CTO baru:
 - Gerbang: typecheck shared, web, api, root hijau; lint 0 error setelah perbaikan 8 error dari merge (body tak terpakai di identity-auth.routes, `any` di 2 test, `_omit`); vitest API penuh 12791 lulus; test root 2077/2078 lalu perbaikan komentar docs/ di e2e/legend-kmndq.mock.spec.ts (aturan legend-nt8q), 11/11 file terkait lulus; e2e 18 lulus 1 skip. 8 gagal saat 4 file identitas jalan bersamaan (kartu legend-ongp7), lulus semua per file (10, 9, 20, 32).
 - Review architect xhigh (K): tanpa BLOCKER; 1 MAJOR (lint, dibetulkan), komentar nomor lama dibetulkan. MINOR tersisa: balasan 204 untuk confirm yang kalah balapan lawan cancel (identity-login.service ~909; tidak ada sesi terbit).
 - Catatan lnbtp: requireConfirm kini wajib di route; UI kmndq ikut di batch yang sama.
+
+## 2026-11-11: WS-01 identitas (ws/ws01-identity, basis origin/ws/sec-small 8c197789)
+
+- Commit: tct8 c587bccb (codec section config, 9 codec; loyalty_policy dan payroll_settings belum ada tabel, tanpa codec), 6vgv 7eeccf25 (PUT /api/me/active-outlet, migrasi 0324), jemg c86136f1 (passkey enrol+verify, migrasi 0325, @simplewebauthn/server 14.0.3, snapshot 0256 agar db:generate kosong), 7wzy 5aba809a (unlink WA diaudit, izin baru `crm.customer.identity.unlink`).
+- Unlink WA hanya mengosongkan tautan profil pelanggan tenant pemanggil; baris global `user_identities` tidak dihapus (akan mematikan login WA, PIN slip gaji, login owner tenant lain). Wajib MFA segar dan `reason`.
+- Review architect xhigh: 2 blocker + 1 medium + lows dibetulkan (unlink tenant-scoped, izin baru, MFA segar untuk faktor kedua, kunci codec).
+- Bukti: vitest terarah 17 file hijau; tsc shared/api/web 0; db:generate kosong; root mjs 2053 lulus, 4 gagal = tes DB yang butuh DB terisolasi (belum dijalankan terpisah).
+- Belum: migrasi backfill baris peran untuk izin baru (batas 0324-0325), keputusan CTO soal profil `active` turun ke `pending_verification` saat unlink, hapus identitas global (step-up pemilik atau support platform).
+- Biaya sesi: total 10949k (utama sonnet 6696k, subagent sonnet 3548k, opus 582k, haiku 123k); 22 subagent tercatat; 13:03-13:56 UTC.
