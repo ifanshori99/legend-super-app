@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/sheet";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
+import { AiActionForApproval } from "@/features/ws12-ai-action/components/ai-action-summary";
 import { useApproval, useNow } from "../hooks";
 import {
   actionLabelKey,
@@ -68,6 +69,8 @@ export function ApprovalDetailBody({
       </div>
 
       <AgentDraftNotice source={request.source} onBehalfOf={requester} />
+
+      <AiActionForApproval approvalRequestId={request.id} />
 
       <dl className="divide-y">
         <Fact label={t("approvals.detail.module")}>
