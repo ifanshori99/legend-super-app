@@ -78,24 +78,65 @@ REVOKE UPDATE ON public.kitchen_station_feed FROM legend_app;
 
 -- 4. Breakfast pay-before-kitchen (bead oa0qk, owner Q43; migration 0321).
 --    Backstop for every path (retry, edge sync, captain, resend, worker): a
---    ticket for an `orders.channel = 'facility'` order is refused unless its
+--    kitchen ticket or item for a breakfast order is refused unless its
 --    `facility_linked_orders` row is paid (paid_at set, status paid / fired).
---    The service checks first (HttpError 409 BREAKFAST_NOT_PAID); this raises
---    23514 with constraint `kitchen_tickets_breakfast_paid`. Runs as the
---    caller, so RLS applies like any kitchen write.
+--    The service checks first (HttpError 409 BREAKFAST_NOT_PAID); the triggers
+--    raise 23514 with constraint `kitchen_tickets_breakfast_paid`. The lookups
+--    run in SECURITY DEFINER helpers owned by the migrator (BYPASSRLS,
+--    docs/deployment.md; same as ai.custom.sql) so RLS scope cannot hide the
+--    order and make the check pass. Breakfast = orders.channel = 'facility' OR
+--    a facility_linked_orders row exists.
+CREATE FUNCTION app.breakfast_order_unpaid(p_tenant uuid, p_order uuid) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT (
+           EXISTS (
+             SELECT 1 FROM public.orders o
+             WHERE o.tenant_id = p_tenant AND o.id = p_order AND o.channel = 'facility'
+           )
+           OR EXISTS (
+             SELECT 1 FROM public.facility_linked_orders f
+             WHERE f.tenant_id = p_tenant AND f.order_id = p_order
+           )
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM public.facility_linked_orders f
+           WHERE f.tenant_id = p_tenant AND f.order_id = p_order
+             AND f.paid_at IS NOT NULL AND f.status IN ('paid', 'fired')
+         );
+$$;
+--> statement-breakpoint
+-- The same answer for a kitchen item: the order it names, the order of the
+-- order line it points at, and the order of its ticket. Also SECURITY DEFINER
+-- so the order_items / kitchen_tickets lookups are not hidden by RLS either.
+CREATE FUNCTION app.breakfast_order_item_unpaid(
+  p_tenant uuid, p_order uuid, p_order_item uuid, p_ticket uuid
+) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT app.breakfast_order_unpaid(p_tenant, p_order)
+      OR EXISTS (
+           SELECT 1 FROM public.order_items i
+           WHERE i.tenant_id = p_tenant AND i.id = p_order_item
+             AND app.breakfast_order_unpaid(p_tenant, i.order_id)
+         )
+      OR EXISTS (
+           SELECT 1 FROM public.kitchen_tickets t
+           WHERE t.tenant_id = p_tenant AND t.id = p_ticket
+             AND app.breakfast_order_unpaid(p_tenant, t.order_id)
+         );
+$$;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION app.breakfast_order_unpaid(uuid, uuid) FROM PUBLIC;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION app.breakfast_order_item_unpaid(uuid, uuid, uuid, uuid) FROM PUBLIC;
+--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION app.breakfast_order_unpaid(uuid, uuid) TO legend_app;
+--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION app.breakfast_order_item_unpaid(uuid, uuid, uuid, uuid) TO legend_app;
+--> statement-breakpoint
 CREATE FUNCTION app.kitchen_tickets_breakfast_paid() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
-  IF EXISTS (
-       SELECT 1 FROM public.orders o
-       WHERE o.tenant_id = NEW.tenant_id AND o.id = NEW.order_id
-         AND o.channel = 'facility'
-     )
-     AND NOT EXISTS (
-       SELECT 1 FROM public.facility_linked_orders f
-       WHERE f.tenant_id = NEW.tenant_id AND f.order_id = NEW.order_id
-         AND f.paid_at IS NOT NULL AND f.status IN ('paid', 'fired')
-     ) THEN
+  IF app.breakfast_order_unpaid(NEW.tenant_id, NEW.order_id) THEN
     RAISE EXCEPTION 'breakfast order % is not paid and cannot reach the kitchen', NEW.order_id
       USING ERRCODE = '23514', CONSTRAINT = 'kitchen_tickets_breakfast_paid';
   END IF;
@@ -105,5 +146,21 @@ END $$;
 REVOKE ALL ON FUNCTION app.kitchen_tickets_breakfast_paid() FROM PUBLIC;
 --> statement-breakpoint
 CREATE TRIGGER "kitchen_tickets_breakfast_paid_trg"
-  BEFORE INSERT ON "kitchen_tickets"
+  BEFORE INSERT OR UPDATE OF order_id ON "kitchen_tickets"
   FOR EACH ROW EXECUTE FUNCTION app.kitchen_tickets_breakfast_paid();
+--> statement-breakpoint
+CREATE FUNCTION app.kitchen_ticket_items_breakfast_paid() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF app.breakfast_order_item_unpaid(NEW.tenant_id, NEW.order_id, NEW.order_item_id, NEW.ticket_id) THEN
+    RAISE EXCEPTION 'breakfast order % is not paid and cannot reach the kitchen', NEW.order_id
+      USING ERRCODE = '23514', CONSTRAINT = 'kitchen_tickets_breakfast_paid';
+  END IF;
+  RETURN NEW;
+END $$;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION app.kitchen_ticket_items_breakfast_paid() FROM PUBLIC;
+--> statement-breakpoint
+CREATE TRIGGER "kitchen_ticket_items_breakfast_paid_trg"
+  BEFORE INSERT OR UPDATE ON "kitchen_ticket_items"
+  FOR EACH ROW EXECUTE FUNCTION app.kitchen_ticket_items_breakfast_paid();
