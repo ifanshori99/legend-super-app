@@ -115,3 +115,15 @@ I6: `routes/facility-breakfast.routes.ts` + registrasi `routes/index.ts` memakai
 Order `awaiting_payment` yang lewat fire_at TIDAK dibatalkan langsung: tamu masih boleh bayar sampai sesi tiket berakhir (`access_tickets.ends_at`);
 bila lunas setelah fire_at, sweep berikut langsung mengirim. Sweep membatalkan order unpaid hanya bila now >= ends_at tiket atau tiket mati
 (DEAD_TICKET_STATUSES). Pembayaran yang datang setelah batal -> refund penuh (sudah ada).
+
+### Temuan architect (HEAD 1bdcffbc) -> perbaikan
+- A (money.ts + accounting): (1) fire tidak membukukan penjualan: emit `order.paid` seperti `appendQrOrderPaid` + `recordTaxSnapshots` bila taxResult ada;
+  tambah 'facility' di guard akuntansi `accounting-auto-journal-guards.ts:462,849`, `accounting-auto-journal-amounts.ts:872`. Pajak sarapan (order dibuat
+  tanpa taxResult) -> JANGAN ubah harga; laporkan sebagai follow-up. (2a) `cancelBreakfastOrderTx` menutup link bayar (`cancelPaymentLinkInTx`) di semua batal.
+  (6) catat saja.
+- B (service + consumers): (2b) pay menolak tiket mati / sesi berakhir -> 422 BREAKFAST_UNAVAILABLE; (4) sweep tidak macet oleh baris yang selalu gagal
+  (mis. urut fire_at lalu updated_at, bump updated_at saat gagal, log). Jangan edit money.ts.
+- C (SQL + KDS): (3) trigger + `assertBreakfastPaid` hanya terima status 'fired' (paid_at NOT NULL); (7) trigger item `BEFORE INSERT OR UPDATE OF order_id,
+  order_item_id, ticket_id`. Edit 0321 + kds.custom.sql + kds.service.ts. db:generate tetap kosong.
+- D test-writer: ubah test kontrol "trigger lets a paid order through" -> hanya 'fired' lolos, 'paid' ditolak; test pay setelah batal / tiket berakhir -> 422
+  dan link tertutup; test fire menulis event order.paid. File test breakfast saja.
