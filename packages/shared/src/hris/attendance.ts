@@ -382,6 +382,7 @@ export const attendanceStoredFlagReasonSchema = z.enum([
   "edge_roster_stale",
   "employee_inactive",
   "selfie_unlinked",
+  "leave_approved",
 ]);
 export type AttendanceStoredFlagReason = z.infer<
   typeof attendanceStoredFlagReasonSchema
@@ -402,10 +403,18 @@ export type AttendanceReviewSource = z.infer<
   typeof attendanceReviewSourceSchema
 >;
 
+/**
+ * `keep_leave` / `cancel_leave` decide a clock-in on a day of approved leave
+ * (flag reason `leave_approved`): keep the leave (the day stays paid as leave)
+ * or cancel it (the day is paid as worked). They are not validity transitions
+ * of `transitionAttendanceValidity`.
+ */
 export const attendanceReviewActionSchema = z.enum([
   "flag",
   "accept",
   "reject",
+  "keep_leave",
+  "cancel_leave",
 ]);
 
 /** One entry of the supervisor review queue. */

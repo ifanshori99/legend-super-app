@@ -662,6 +662,71 @@ describe("legend-0wvoz T6 receive: linking with the attendance log in either ord
     expect(log.review_status).toBe("pending");
     expect(await fx.logCount()).toBeGreaterThanOrEqual(1);
   });
+
+  it("a failed link keeps a leave_approved flag that lands while it runs (atomic append, no lost update)", async () => {
+    const objectId = randomUUID();
+    const { event, attendanceLogId } = fx.attendanceEvent({
+      selfieObjectId: objectId,
+    });
+    await fx.applyEvent(event);
+    const before = (await fx.logByClientEvent(attendanceLogId))!;
+
+    // A concurrent transaction flags the log for leave and commits only after
+    // the link has read the old flag_reasons and queued on the row.
+    const a = await fx.owner.connect();
+    let committed = false;
+    let upload: ReturnType<typeof put> | null = null;
+    try {
+      await a.query("BEGIN");
+      await a.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [fx.tenantId],
+      );
+      await a.query(
+        `UPDATE attendance_logs
+            SET validity = 'flagged', review_status = 'pending',
+                flag_reasons = flag_reasons || '["leave_approved"]'::jsonb
+          WHERE tenant_id = $1 AND id = $2`,
+        [fx.tenantId, before.id],
+      );
+      upload = put(
+        objectId,
+        await seal(objectId, {
+          meta: { outletId: fx.outletA, ownerUserId: fx.otherEmployee.userId },
+        }),
+      );
+      const settled = upload.then(
+        (value) => value,
+        (error) => error,
+      );
+      const deadline = Date.now() + 20_000;
+      for (;;) {
+        const { rows } = await fx.owner.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_locks
+            WHERE NOT granted AND locktype IN ('transactionid', 'tuple')`,
+        );
+        if (rows[0]!.n > 0) break;
+        if (Date.now() > deadline)
+          throw new Error("the link never queued on the log row");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await a.query("COMMIT");
+      committed = true;
+      expect((await settled).status).toBe(201);
+    } finally {
+      if (!committed) await a.query("ROLLBACK").catch(() => undefined);
+      a.release();
+      if (upload) await Promise.resolve(upload).catch(() => undefined);
+    }
+    const log = (await fx.logByClientEvent(attendanceLogId))!;
+    expect(log.photo_key).toBeNull();
+    expect(log.flag_reasons).toEqual(
+      expect.arrayContaining(["offline_unverified", "selfie_unlinked", "leave_approved"]),
+    );
+    expect(
+      log.flag_reasons.filter((reason: string) => reason === "selfie_unlinked"),
+    ).toHaveLength(1);
+  });
 });
 
 describe("legend-0wvoz receiveEdgeSelfie service", () => {

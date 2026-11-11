@@ -1,0 +1,12 @@
+# 452: temuan architect (xhigh) atas 7df3cfa9, wajib dibetulkan
+
+Tiap perbaikan: tambah test gagal-dulu di file test yang sudah ada milik area itu (jalankan `LEGEND_TEST_FILES="src/test/<file>" heavy pnpm test` dari ROOT worktree, satu file per invocation), lalu perbaiki.
+
+## Paket A (hris-leave-request.service.ts, packages/shared/src/hris/events.ts, fixtures.ts, catalog bila perlu; test: hris-leave-changed-event.test.ts)
+- P2-1 deadlock: `createLeaveRequest` mengunci saldo (`lockBalanceForUpdate`, ~:857) lebih dulu, lalu kunci karyawan (~:988); `applyOutcome` terbalik (karyawan :1461, lalu saldo `moveBalance` :1473). Perbaikan: panggil `lockEmployeeLeaveAttendance` TANPA SYARAT tepat sesudah kunci `hris:leave` (~:760) di createLeaveRequest, sehingga urutan di semua jalur: `hris:leave`, karyawan, saldo. Hapus panggilan di cabang else yang jadi berlebih (atau biarkan, idempoten). Pastikan `applyOutcome` dan jalur batal oleh pemohon/HR memakai urutan yang sama (kunci karyawan sebelum kunci saldo).
+- Rendah 4: `cancelLeaveRequest` oleh pemohon (~:1148-1161) tidak menerbitkan `leave.changed`; tambah `changeReason` baru `requester_cancelled` (status cancelled) di kontrak + appender + test.
+
+## Paket B (apps/api/drizzle/0278_leave_clash_backfill.sql, hris-attendance-correction.service.ts, edge-selfie-link.ts; test: hris-leave-clash-backfill.test.ts, hris-attendance-correction-leave-day.test.ts, test edge-selfie yang ada)
+- P2-2: backfill 0278 (UPDATE dan fungsi `flag_attendance_for_leave`) membuka ulang log `accepted` di periode payroll yang sudah terkunci/dibayar. Kecualikan `business_date` yang masuk periode payroll terkunci/dibayar (pakai aturan yang sama dengan `isPayrollClosed`; baca definisinya di kode) dari backfill. Untuk fungsi `flag_attendance_for_leave` (runtime) cukup tidak membuka ulang log `accepted` di periode terkunci; log `valid`/`flagged` tetap ditandai. Migrasi belum dirilis, boleh diedit di tempat (snapshot tetap sama).
+- Rendah 3: di hris-attendance-correction.service.ts `settleAttendanceCorrection` mengecek cuti (~:829) sebelum kunci karyawan (diambil di `applyApproved` ~:692). Ambil `lockEmployeeLeaveAttendance` sebelum pengecekan itu, agar koreksi yang kalah balapan berakhir `rejected` cause `leave_approved`, bukan tertahan pending.
+- Rendah 5: `edge-selfie-link.ts:95-104` membaca lalu menulis ulang `flag_reasons` tanpa kunci; ganti dengan append jsonb atomik di SQL (`flag_reasons || '["..."]'` bila belum ada) supaya `leave_approved` tidak hilang.
