@@ -45,6 +45,7 @@ import {
 import { inventoryItems, stockLocations, uoms } from "./inventory.ts";
 import { modifiers } from "./menu.ts";
 import { brands, outlets, tenants } from "./platform-org.ts";
+import { syncTxidColumn } from "./sync-txid.ts";
 import { user } from "./user.ts";
 
 /**
@@ -69,18 +70,23 @@ export const recipes = pgTable(
     theoreticalCostIdr: decimal4Column("theoretical_cost_idr")
       .notNull()
       .default(sql`'0'`),
-    updatedBy: text("updated_by")
-      .notNull()
-      .references(() => user.id),
+    /**
+     * Nullable (bead legend-24318): the cloud always fills it, but an outlet
+     * edge copy keeps null when the author (an HQ user) is not in the edge's
+     * `user` table, so a recipe page never stalls the catalog checkpoint.
+     */
+    updatedBy: text("updated_by").references(() => user.id),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
     unique("recipes_tenant_id_id_key").on(table.tenantId, table.id),
+    index("recipes_sync_txid_idx").on(table.tenantId, table.syncTxid, table.id),
     foreignKey({
       name: "recipes_brand_fk",
       columns: [table.tenantId, table.brandId],

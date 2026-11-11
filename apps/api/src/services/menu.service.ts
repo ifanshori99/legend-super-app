@@ -68,6 +68,7 @@ import {
   modifierGroups,
   outlets,
   priceListItems,
+  priceLists,
   stations,
 } from "../db/schema";
 import { db } from "../db";
@@ -1422,6 +1423,33 @@ export async function deleteItem(
       tenantId: context.tenant.tenantId,
       brandId: existing.brandId,
     });
+    // A deleted item must not keep a price on any outlet: the edge receives
+    // price lists as whole documents, so the parent list is touched too (its
+    // `updated_at` and `sync_txid` move) and the edge drops the item's prices.
+    const unpriced = await tx
+      .update(priceListItems)
+      .set({ deletedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(priceListItems.tenantId, context.tenant.tenantId),
+          eq(priceListItems.itemId, itemId),
+          isNull(priceListItems.deletedAt),
+        ),
+      )
+      .returning({ priceListId: priceListItems.priceListId });
+    const touchedListIds = [
+      ...new Set(unpriced.map((entry) => entry.priceListId)),
+    ];
+    if (touchedListIds.length > 0)
+      await tx
+        .update(priceLists)
+        .set({ updatedAt: now })
+        .where(
+          and(
+            eq(priceLists.tenantId, context.tenant.tenantId),
+            inArray(priceLists.id, touchedListIds),
+          ),
+        );
     await appendMenuEvent(tx, context, menuItemUpdatedEvent, {
       aggregateId: itemId,
       actorUserId,

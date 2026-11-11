@@ -1730,6 +1730,20 @@
       "when": 1794342000000,
       "tag": "0260_recipe_line_deduction_location",
       "breakpoints": true
+    },
+    {
+      "idx": 261,
+      "version": "7",
+      "when": 1794343000000,
+      "tag": "0261_catalog_pull_checkpoints",
+      "breakpoints": true
+    },
+    {
+      "idx": 262,
+      "version": "7",
+      "when": 1794344000000,
+      "tag": "0262_catalog_sync_txid",
+      "breakpoints": true
     }
   ]
 }

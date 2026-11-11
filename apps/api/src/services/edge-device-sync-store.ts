@@ -15,11 +15,13 @@
 //   (TEN-02); the composite foreign key keeps the row on that node.
 import { and, eq } from "drizzle-orm";
 import type { ScopedTenantContext } from "@starter/shared/core";
+import type { CatalogSyncStream } from "@starter/shared/edge";
 import { db } from "../db/index.ts";
 import { edgeNodes, edgePullCheckpoints } from "../db/schema/edge-node.ts";
 import { withTenant } from "../db/tenant.ts";
 
-export type EdgePullStream = "device_registry" | "staff_pins";
+export type EdgePullStream =
+  "device_registry" | "staff_pins" | `catalog:${CatalogSyncStream}`;
 
 export type DeviceRegistryCheckpoint = {
   watermark: string | null;

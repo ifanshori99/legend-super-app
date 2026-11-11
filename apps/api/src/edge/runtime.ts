@@ -94,7 +94,17 @@ import {
   saveEdgePeppers,
 } from "./staff-pin-pepper-store.ts";
 import { createPeopleSnapshotPuller } from "./people-snapshot-pull.ts";
-import { startEdgeMasterSyncLoop } from "./master-sync.ts";
+import {
+  seedCatalogFreshness,
+  startEdgeMasterSyncLoop,
+} from "./master-sync.ts";
+import {
+  catalogStaleForHeartbeat,
+  createCatalogFreshness,
+  type CatalogFreshnessTracker,
+} from "./catalog-freshness.ts";
+import { withTenant } from "../db/tenant.ts";
+import { notifyEdgeCatalogStale } from "../services/edge-sync-conflict-alert.ts";
 import { parseEdgeRuntimeConfig } from "./config.ts";
 import { createDbLinkStore } from "./db-link-store.ts";
 import {
@@ -102,7 +112,7 @@ import {
   type EdgeLinkClientState,
 } from "./link-client.ts";
 import type { LinkScope } from "./link-peer.ts";
-import { LINK_CLOSE } from "./protocol.ts";
+import { LINK_CLOSE, type CatalogStale } from "./protocol.ts";
 import { recordUploaderRejection } from "./selfie-health.ts";
 import { startEdgeSelfieSweep } from "./selfie-retention.ts";
 import { createEdgeSelfieUploader } from "./selfie-uploader.ts";
@@ -115,6 +125,38 @@ import {
   type DeviceRegistryPuller,
   type DeviceRegistrySyncState,
 } from "./device-registry-puller.ts";
+
+/** Episodes already alerted by this process; the notification tables dedupe too. */
+const catalogStaleAlerted = new Set<string>();
+
+/**
+ * legend-10nex: the edge says critical catalog streams are stale for over 30
+ * minutes while it reaches the cloud. Notify the outlet's supervisors and
+ * owners once per edge, stream and episode (stable alert id).
+ */
+async function notifyCatalogStale(
+  identity: AuthenticatedEdgeNode & EdgeLinkIdentity,
+  stale: CatalogStale | undefined,
+): Promise<void> {
+  if (!stale || stale.length === 0) return;
+  const outletId = outletIdSchema.parse(identity.scope.outletId);
+  for (const entry of stale) {
+    const key = `${identity.scope.edgeNodeId}:${entry.stream}:${entry.staleSince}`;
+    if (catalogStaleAlerted.has(key)) continue;
+    await withTenant(db, identity.context, (tx) =>
+      notifyEdgeCatalogStale(tx, identity.context, {
+        tenantId: identity.context.tenant.tenantId,
+        outletId,
+        edgeNodeId: identity.scope.edgeNodeId,
+        stream: entry.stream,
+        staleSince: entry.staleSince,
+        reason: entry.reason,
+      }),
+    );
+    if (catalogStaleAlerted.size >= 1000) catalogStaleAlerted.clear();
+    catalogStaleAlerted.add(key);
+  }
+}
 
 /** Tables the edge runtime needs; missing ones mean migrations did not run. */
 export const EDGE_REQUIRED_TABLES = [
@@ -201,6 +243,13 @@ let registryPuller: DeviceRegistryPuller | null = null;
 /** Device-registry pull state (edge only); null on the cloud or before boot. */
 export function getDeviceRegistrySyncState(): DeviceRegistrySyncState | null {
   return registryPuller?.getState() ?? null;
+}
+
+let catalogFreshness: CatalogFreshnessTracker | null = null;
+
+/** Critical catalog stream freshness (edge only); null on the cloud or before boot. */
+export function getCatalogFreshness(): CatalogFreshnessTracker | null {
+  return catalogFreshness;
 }
 
 /** Test seam: install a runtime state without starting a link. */
@@ -714,6 +763,12 @@ export async function startEdgeRuntime(
         );
     },
     onError: (error) => logger.warn(safeError(error), "Edge link error"),
+    // legend-10nex: stale prices/product status reach the owner through the
+    // cloud, which only hears the edge while this link is up.
+    catalogStale: () =>
+      catalogFreshness
+        ? catalogStaleForHeartbeat(catalogFreshness.snapshot())
+        : [],
     // A protocol refusal (1008) carries a fixed reason from the link code, no
     // payload; it tells the operator why the link keeps dropping (legend-a9iby:
     // a restored or cloned database). See docs/deployment.md, item 5.
@@ -933,12 +988,45 @@ export async function startEdgeRuntime(
     maxAgeDays: env.EDGE_SELFIE_MAX_AGE_DAYS,
   });
   // legend-6xcy (legend-9ppw): re-pull stock locations, UOMs and the chart of
-  // accounts. No tick at start: a fresh bootstrap (or missing masters) syncs at
-  // boot, a restarted node first refreshes one interval later. A failure is logged by class only and the loop keeps
-  // its schedule.
+  // accounts. No master tick at start: a fresh bootstrap (or missing masters)
+  // syncs at boot, a restarted node first refreshes one interval later.
+  // legend-24318: each tick then pulls the catalog (menu, prices, recipes,
+  // stations, inventory items); one catalog-only run starts at boot without
+  // blocking it. A failure is logged by class only and the loop keeps its
+  // schedule.
+  // legend-10nex: prices and product status stale for 30 minutes while the
+  // cloud answers (a purely offline edge never alarms). Selling is never
+  // blocked; the cashier only sees the warning on /api/edge/status. The owner
+  // is notified by the cloud: the link heartbeat carries the stale streams
+  // (`catalogStale`), a local notification would never reach the cloud.
+  const freshness = createCatalogFreshness({
+    onOwnerAlarm: (alarm) =>
+      logger.warn(
+        { streams: alarm.streams.map((entry) => entry.stream) },
+        "Edge catalog is stale while the cloud is reachable",
+      ),
+  });
+  catalogFreshness = freshness;
+  // A restart must not hide a stale catalog: start from the checkpoint's last
+  // success (none on a new edge). A read failure leaves the tracker unseeded.
+  try {
+    await seedCatalogFreshness(
+      freshness,
+      local.context,
+      local.scope.edgeNodeId,
+    );
+  } catch (error) {
+    logger.warn(safeError(error), "Edge catalog freshness seed failed");
+  }
   const masterSync = startEdgeMasterSyncLoop({
     config,
     intervalMs: EDGE_MASTER_SYNC_INTERVAL_MS,
+    catalog: {
+      context: local.context,
+      edgeNodeId: local.scope.edgeNodeId,
+      freshness,
+    },
+    catalogOnStart: true,
     onError: (error) =>
       logger.warn(safeError(error), "Edge master sync failed"),
   });
@@ -992,6 +1080,7 @@ export async function startEdgeRuntime(
         client.stop(),
       ]);
       if (registryPuller === puller) registryPuller = null;
+      if (catalogFreshness === freshness) catalogFreshness = null;
       state = { ...state, link: disconnected };
     },
   };
@@ -1045,12 +1134,18 @@ export async function registerEdgeLink(
         edgeInstanceId: identity.edgeInstanceId,
         outboundDirection: "cloud_to_edge",
       }),
-    onHeartbeat: (identity, frame) =>
-      recordEdgeHeartbeat(
+    onHeartbeat: async (identity, frame) => {
+      await recordEdgeHeartbeat(
         identity.context,
         identity.scope.edgeNodeId,
         frame.version,
-      ),
+      );
+      // legend-10nex: a failure here never fails the heartbeat; the edge
+      // repeats `catalogStale` with every heartbeat while it lasts.
+      await notifyCatalogStale(identity, frame.catalogStale).catch((error) =>
+        logger.warn(safeError(error), "Edge catalog stale alert failed"),
+      );
+    },
     onConnectionChange: (identity, connected) =>
       logger.info(
         { edgeNodeId: identity.scope.edgeNodeId, connected },

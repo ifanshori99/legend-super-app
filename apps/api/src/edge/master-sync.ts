@@ -55,6 +55,13 @@
 // Never put the credential or SQL parameters in an error: codes only.
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import {
+  CATALOG_PROTOCOL_VERSION,
+  CATALOG_SYNC_LIMIT_DEFAULT,
+  EDGE_CATALOG_SYNC_PATH,
+  type CatalogSyncStream,
+} from "@starter/shared/edge";
+import type { ScopedTenantContext } from "@starter/shared/core";
+import {
   EDGE_MASTER_SNAPSHOT_PATH,
   edgeMasterSnapshotSchema,
   partitionEdgeMasterMappings,
@@ -64,8 +71,14 @@ import { guardDataImport } from "../config/data-import.ts";
 import { db } from "../db/index.ts";
 import { accountMappings, chartOfAccounts } from "../db/schema/accounting.ts";
 import { stockLocations, uoms } from "../db/schema/inventory.ts";
+import { edgePullCheckpoints } from "../db/schema/edge-node.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
+import {
+  CRITICAL_CATALOG_STREAMS,
+  isOfflineFailureCode,
+  type CatalogFreshnessTracker,
+} from "./catalog-freshness.ts";
 import { logger } from "../lib/logger.ts";
 import { edgeBootstrapSignatureMatches } from "../services/edge-bootstrap.service.ts";
 import { edgeNodeContext } from "../services/edge-node.service.ts";
@@ -75,12 +88,76 @@ import {
 } from "../services/tenant-config-locks.ts";
 import type { EdgeBootstrapConfig, EdgeBootstrapOptions } from "./bootstrap.ts";
 import { cloudGetJson, EdgeCloudHttpError } from "./cloud-http.ts";
+import {
+  catalogCheckpointStream,
+  pullCatalog,
+  type PullCatalogOptions,
+} from "./catalog-puller.ts";
 import { parseEdgeCredential } from "./credential.ts";
 
 type Claims = NonNullable<ReturnType<typeof parseEdgeCredential>>;
 type Tx = Parameters<Parameters<typeof withTenant>[2]>[0];
 
 const MIN_SYNC_INTERVAL_MS = 60_000;
+/** Catalog pulls in one tick while a stream reports a backlog (bounded). */
+const MAX_CATALOG_ROUNDS = 20;
+
+/**
+ * legend-10nex: the last success of each critical catalog stream, from its
+ * pull checkpoint (`edge_pull_checkpoints.last_success_at`, written by every
+ * finished pull). Boot seeds the freshness tracker with it so a restart does
+ * not hide a stale catalog. No row (a new edge) = no entry.
+ */
+export async function loadCatalogLastSuccess(
+  context: ScopedTenantContext,
+  edgeNodeId: string,
+  database: typeof db = db,
+): Promise<Map<string, Date>> {
+  const keys = CRITICAL_CATALOG_STREAMS.map((stream) =>
+    catalogCheckpointStream(stream),
+  );
+  const rows = await withTenant(database, context, (tx) =>
+    tx
+      .select({
+        stream: edgePullCheckpoints.stream,
+        lastSuccessAt: edgePullCheckpoints.lastSuccessAt,
+      })
+      .from(edgePullCheckpoints)
+      .where(
+        and(
+          eq(edgePullCheckpoints.edgeNodeId, edgeNodeId),
+          inArray(edgePullCheckpoints.stream, keys),
+        ),
+      ),
+  );
+  const seeded = new Map<string, Date>();
+  for (const stream of CRITICAL_CATALOG_STREAMS) {
+    const row = rows.find(
+      (entry) => entry.stream === catalogCheckpointStream(stream),
+    );
+    if (row) seeded.set(stream, row.lastSuccessAt);
+  }
+  return seeded;
+}
+
+/**
+ * Boot: seed the freshness tracker with each critical stream's last success
+ * from the pull checkpoint, so a restart neither hides a stale catalog nor
+ * dates it differently from the pull (same `last_success_at` value).
+ */
+export async function seedCatalogFreshness(
+  freshness: CatalogFreshnessTracker,
+  context: ScopedTenantContext,
+  edgeNodeId: string,
+  database: typeof db = db,
+): Promise<void> {
+  for (const [stream, at] of await loadCatalogLastSuccess(
+    context,
+    edgeNodeId,
+    database,
+  ))
+    freshness.seedLastSuccess(stream, at);
+}
 
 export type EdgeMasterSyncCounts = {
   uoms: number;
@@ -489,17 +566,54 @@ export async function syncEdgeMasters(
   return applyEdgeMasterSnapshot(claims, snapshot);
 }
 
+/** A catalog stream stopped early (legend-24318); code only, never record data. */
+export class EdgeCatalogSyncError extends Error {
+  readonly code: string;
+  readonly stream: string;
+
+  constructor(stream: string, code: string) {
+    super(`Edge catalog sync failed (${stream}: ${code})`);
+    this.name = "EdgeCatalogSyncError";
+    this.code = code;
+    this.stream = stream;
+  }
+}
+
 /**
- * Periodic `syncEdgeMasters`. No immediate run (bootstrap already syncs). The
- * timer is unref'd, a tick is skipped while a run is in flight, and `stop`
- * aborts that run's request and waits for it. `intervalMs` must be finite and
- * >= 60 s (RangeError at start). Errors go to `onError`; the loop keeps going.
+ * Periodic `syncEdgeMasters`, then `pullCatalog` (legend-24318): masters
+ * first because inventory items need their uoms. A failure of one does not
+ * stop the other; every error goes to `onError`
+ * (a catalog stream error as `EdgeCatalogSyncError`). A catalog backlog is
+ * pulled on in the same tick, up to 20 rounds. No immediate master run
+ * (bootstrap already syncs); with `catalogOnStart` one catalog-only run starts
+ * right away without blocking the caller. The timer is unref'd, a tick is
+ * skipped while a run is in flight, and `stop` aborts that run's request and
+ * waits for it. `intervalMs` must be finite and >= 60 s (RangeError at start).
+ * Errors go to `onError`; the loop keeps going.
  */
 export function startEdgeMasterSyncLoop(input: {
   config: EdgeBootstrapConfig;
   intervalMs: number;
   onError?: (error: unknown) => void;
   options?: EdgeBootstrapOptions;
+  /**
+   * Optional overrides of the catalog pull. By default the node's scope and
+   * `edge_nodes.id` come from the credential, like the masters apply.
+   */
+  catalog?: {
+    /** The node's own scope: where catalog rows land. */
+    context?: ScopedTenantContext;
+    /** This node's `edge_nodes.id` (the checkpoint rows belong to it). */
+    edgeNodeId?: string;
+    /** Default `pullCatalog`; tests inject their own. */
+    pull?: typeof pullCatalog;
+    /**
+     * legend-10nex: records, per critical stream, when the last pull
+     * succeeded or why it failed. Without it the failures are only reported.
+     */
+    freshness?: CatalogFreshnessTracker;
+  };
+  catalogOnStart?: boolean;
 }): { stop(): Promise<void> } {
   if (
     !Number.isFinite(input.intervalMs) ||
@@ -512,32 +626,120 @@ export function startEdgeMasterSyncLoop(input: {
   let inFlight: Promise<void> | null = null;
   let stopped = false;
 
-  const tick = () => {
-    if (stopped || inFlight) return;
-    const run = syncEdgeMasters(input.config, {
-      ...input.options,
+  const report = (error: unknown) => {
+    // stop() aborts an in-flight fetch: a normal shutdown, not an error.
+    if (stopped) return;
+    try {
+      input.onError?.(error);
+    } catch {
+      // A broken logger must not stop the schedule.
+    }
+  };
+
+  const fetchCatalogPage: PullCatalogOptions["fetchPage"] = (stream, since) =>
+    cloudGetJson({
+      cloudUrl: input.config.cloudUrl,
+      credential: input.config.credential,
+      path: catalogPath(stream, since),
+      fetchImpl: input.options?.fetchImpl,
+      timeoutMs: input.options?.timeoutMs,
       signal: abort.signal,
-    })
-      .then((counts) => {
-        logger.debug({ ...counts }, "Edge master sync applied");
-      })
-      .catch((error: unknown) => {
-        // stop() aborts an in-flight fetch: a normal shutdown, not an error.
-        if (stopped) return;
-        try {
-          input.onError?.(error);
-        } catch {
-          // A broken logger must not stop the schedule.
-        }
-      })
-      .finally(() => {
-        if (inFlight === run) inFlight = null;
+    });
+
+  const pullCatalogRounds = async (): Promise<void> => {
+    const claims = parseEdgeCredential(input.config.credential);
+    if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
+    guardMasterImport();
+    const catalog = input.catalog;
+    const context = catalog?.context ?? edgeNodeContext(claims);
+    const edgeNodeId = catalog?.edgeNodeId ?? claims.edgeNodeId;
+    const pull = catalog?.pull ?? pullCatalog;
+    const freshness = catalog?.freshness;
+    for (let round = 0; round < MAX_CATALOG_ROUNDS && !stopped; round += 1) {
+      const result = await pull({
+        context,
+        edgeNodeId,
+        fetchPage: fetchCatalogPage,
       });
+      const entries = Object.entries(result.streams);
+      // A stream skipped after its parent failed (CATALOG_PARENT_FAILED) is
+      // unreachable only when every root failure of the round was.
+      const roots = entries.filter(
+        ([, outcome]) =>
+          outcome?.error && outcome.error.code !== "CATALOG_PARENT_FAILED",
+      );
+      const cascadeOffline =
+        roots.length > 0 &&
+        roots.every(([, outcome]) =>
+          isOfflineFailureCode(outcome?.error?.code ?? ""),
+        );
+      for (const [stream, outcome] of entries) {
+        if (!outcome) continue;
+        if (outcome.error) {
+          const code = outcome.error.code;
+          if (!stopped)
+            freshness?.recordFailure(stream, {
+              reason: code,
+              cloudReachable: !(code === "CATALOG_PARENT_FAILED"
+                ? cascadeOffline
+                : isOfflineFailureCode(code)),
+            });
+          report(new EdgeCatalogSyncError(stream, code));
+        } else if (!stopped)
+          freshness?.recordSuccess(stream, outcome.lastSuccessAt ?? undefined);
+      }
+      if (!result.backlog) break;
+    }
+  };
+
+  const runCatalog = async (): Promise<void> => {
+    try {
+      await pullCatalogRounds();
+    } catch (error) {
+      // Before or around the pull (credential, import guard, bad context):
+      // every critical stream failed this run. The cloud is not implicated.
+      // `stop()` aborting the request is a shutdown, not a failure.
+      if (!stopped)
+        for (const stream of CRITICAL_CATALOG_STREAMS)
+          input.catalog?.freshness?.recordFailure(stream, {
+            reason:
+              error instanceof EdgeMasterSyncError
+                ? error.code
+                : "CATALOG_PULL_FAILED",
+            cloudReachable: true,
+          });
+      throw error;
+    }
+  };
+
+  const tick = (withMasters = true) => {
+    if (stopped || inFlight) return;
+    const run = (async () => {
+      if (withMasters)
+        try {
+          const counts = await syncEdgeMasters(input.config, {
+            ...input.options,
+            signal: abort.signal,
+          });
+          logger.debug({ ...counts }, "Edge master sync applied");
+        } catch (error) {
+          report(error);
+        }
+      if (stopped) return;
+      try {
+        await runCatalog();
+      } catch (error) {
+        report(error);
+      }
+    })().finally(() => {
+      if (inFlight === run) inFlight = null;
+    });
     inFlight = run;
   };
 
-  const timer = setInterval(tick, input.intervalMs);
+  const timer = setInterval(() => tick(), input.intervalMs);
   timer.unref();
+  if (input.catalogOnStart === true) tick(false);
 
   return {
     async stop() {
@@ -547,4 +749,16 @@ export function startEdgeMasterSyncLoop(input: {
       if (inFlight) await inFlight;
     },
   };
+}
+
+function catalogPath(stream: CatalogSyncStream, since: string | null): string {
+  const query = new URLSearchParams({
+    stream,
+    limit: String(CATALOG_SYNC_LIMIT_DEFAULT),
+    // Tells the cloud this edge reads the page version. A cloud that predates
+    // it rejects the unknown parameter (HTTP 400): see catalog-puller.ts.
+    protocolVersion: String(CATALOG_PROTOCOL_VERSION),
+  });
+  if (since !== null) query.set("since", since);
+  return `${EDGE_CATALOG_SYNC_PATH}?${query.toString()}`;
 }

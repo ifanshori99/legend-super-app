@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { run } from "./check.mjs";
+import { parseXminAge, run } from "./check.mjs";
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), "legend-monitor-"));
@@ -53,4 +53,47 @@ test("legend-az9 retries a failed relay delivery and rejects missing routing", a
     run({ ...config, ALERT_EMAIL_RELAY_URL: "" }, fetcher),
     /relay is required/,
   );
+});
+
+test("legend-9h0kg alerts when the oldest open transaction is older than the limit", async (t) => {
+  const config = {
+    ...(await fixture(t)),
+    MONITOR_XMIN_ENABLED: "true",
+    MONITOR_XMIN_MAX_AGE_SECONDS: "600",
+  };
+  const alerts = [];
+  const fetcher = async (url, options) => {
+    if (options.method === "POST") {
+      const body = JSON.parse(options.body);
+      alerts.push(`${body.check}:${body.status}`);
+    }
+    return { ok: true };
+  };
+  let age = 601;
+  await run(config, fetcher, async () => age);
+  await run(config, fetcher, async () => age);
+  age = 600;
+  await run(config, fetcher, async () => age);
+  await run(config, fetcher, async () => {
+    throw new Error("psql missing");
+  });
+  assert.deepEqual(alerts, [
+    "xmin_age:down",
+    "xmin_age:recovered",
+    "xmin_age:down",
+  ]);
+  const off = await fixture(t);
+  await run(off, fetcher, async () => {
+    throw new Error("must not run when disabled");
+  });
+});
+
+test("legend-9h0kg xmin probe output: a login that cannot see other sessions is an error, not age 0", () => {
+  assert.equal(parseXminAge("t|601\n"), 601);
+  assert.equal(parseXminAge("t|0\n"), 0);
+  assert.throws(() => parseXminAge("f|0\n"), /pg_read_all_stats/);
+  assert.throws(() => parseXminAge(""), /pg_read_all_stats/);
+  assert.throws(() => parseXminAge("t|\n"), /Bad xmin age/);
+  assert.throws(() => parseXminAge("t|abc\n"), /Bad xmin age/);
+  assert.throws(() => parseXminAge("t|1|2\n"), /Bad xmin age/);
 });

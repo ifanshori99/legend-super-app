@@ -42,6 +42,7 @@ import type {
 import { idrColumn, businessDate } from "../columns";
 import { idr } from "@starter/shared/core";
 import { brands, outlets, tenants } from "./platform-org";
+import { syncTxidColumn } from "./sync-txid";
 
 /** PRD §6 C: timestamps are TIMESTAMPTZ. */
 const createdAt = timestamp("created_at", { withTimezone: true })
@@ -73,8 +74,14 @@ export const menuCategories = pgTable(
     createdAt,
     updatedAt,
     deletedAt,
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("menu_categories_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("menu_categories_tenant_id_id_key").on(table.tenantId, table.id),
     foreignKey({
       name: "menu_categories_brand_fk",
@@ -119,8 +126,14 @@ export const stations = pgTable(
     createdAt,
     updatedAt,
     deletedAt,
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("stations_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("stations_tenant_id_id_key").on(table.tenantId, table.id),
     foreignKey({
       name: "stations_outlet_fk",
@@ -185,8 +198,14 @@ export const menuItems = pgTable(
     createdAt,
     updatedAt,
     deletedAt,
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("menu_items_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("menu_items_tenant_id_id_key").on(table.tenantId, table.id),
     foreignKey({
       name: "menu_items_brand_fk",
@@ -242,8 +261,14 @@ export const itemVariants = pgTable(
     createdAt,
     updatedAt,
     deletedAt,
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("item_variants_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("item_variants_tenant_id_id_key").on(table.tenantId, table.id),
     foreignKey({
       name: "item_variants_item_fk",
@@ -274,8 +299,14 @@ export const modifierGroups = pgTable(
     createdAt,
     updatedAt,
     deletedAt,
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("modifier_groups_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("modifier_groups_tenant_id_id_key").on(table.tenantId, table.id),
     index("modifier_groups_name_idx").on(table.tenantId, table.name, table.id),
     index("modifier_groups_replication_idx").on(
@@ -304,8 +335,14 @@ export const modifiers = pgTable(
     createdAt,
     updatedAt,
     deletedAt,
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("modifiers_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("modifiers_tenant_id_id_key").on(table.tenantId, table.id),
     foreignKey({
       name: "modifiers_group_fk",
@@ -345,8 +382,15 @@ export const menuItemModifierGroups = pgTable(
     createdAt,
     updatedAt,
     deletedAt,
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("menu_item_modifier_groups_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.menuItemId,
+      table.groupId,
+    ),
     unique("menu_item_modifier_groups_tenant_item_group_key").on(
       table.tenantId,
       table.menuItemId,
@@ -462,8 +506,14 @@ export const priceLists = pgTable(
     createdAt,
     updatedAt,
     deletedAt,
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("price_lists_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("price_lists_tenant_id_id_key").on(table.tenantId, table.id),
     foreignKey({
       name: "price_lists_outlet_fk",

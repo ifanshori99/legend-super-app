@@ -1,0 +1,2 @@
+ALTER TABLE "edge_pull_checkpoints" DROP CONSTRAINT "edge_pull_checkpoints_stream_check";--> statement-breakpoint
+ALTER TABLE "edge_pull_checkpoints" ADD CONSTRAINT "edge_pull_checkpoints_stream_check" CHECK ("edge_pull_checkpoints"."stream" IN ('device_registry', 'staff_pins') OR "edge_pull_checkpoints"."stream" LIKE 'catalog:%');

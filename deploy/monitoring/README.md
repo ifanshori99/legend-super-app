@@ -27,6 +27,23 @@ health and delivery-failure records without URLs or tokens. Protect and persist
 its state directory. Set an appropriate public web URL and the private
 `/api/health/ready` URL; the latter tests database readiness as well.
 
+**Sync horizon (legend-9h0kg).** One idle open transaction holds
+`pg_snapshot_xmin` back and stops edge catalog and PIN sync. Set
+`MONITOR_XMIN_ENABLED=true` to add an `xmin_age` check that runs `psql` against
+the cloud database and alerts (`down`, then `recovered`) when the oldest open
+transaction that holds an id, or the oldest prepared transaction, is older than
+`MONITOR_XMIN_MAX_AGE_SECONDS` (default 600, ten minutes). The age counts from
+`xact_start`, the start of the transaction rather than of its id, so it can
+over-estimate; that is safe, it only alerts earlier. Give the job the libpq variables `PGHOST`,
+`PGUSER`, `PGPASSWORD`, `PGDATABASE` and `PGSSLMODE` in its environment file,
+never in arguments. The login must be a superuser or a member of `pg_read_all_stats`; without that
+`xact_start` of other sessions is hidden, so the probe fails (counts as down)
+instead of reading 0. `psql` runs with `-w` (never prompts for a password) and
+must be installed on the machine that runs the probe. A failed query counts as
+down.
+Because this check needs the database, run it on the VM or a host with private
+database access, not from the independent uptime host.
+
 **Not yet wired:** the API currently has no production device registry
 heartbeat route or deployed edge-status endpoint; `@starter/shared/edge`
 contains contracts and mock fixtures only. Therefore this probe cannot detect

@@ -3,6 +3,7 @@
 // well as locally: a monitor on the same VM cannot report loss of that VM.
 import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { execFile } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 function endpoint(value, name) {
@@ -33,6 +34,75 @@ export async function probe(url, fetcher = fetch) {
   }
 }
 
+// Age in seconds of the oldest open transaction that holds an id, or of the
+// oldest prepared transaction, which is what pins pg_snapshot_xmin and stops
+// edge catalog and PIN sync (legend-9h0kg). The age counts from xact_start (the
+// start of the transaction, not of its id), so it can over-estimate: that errs
+// on the side of alerting.
+// psql reads the connection from the libpq environment (PGHOST, PGUSER,
+// PGPASSWORD, PGDATABASE, PGSSLMODE), so no secret appears in the arguments;
+// -w makes it fail instead of prompting for a password.
+// Without superuser or pg_read_all_stats, xact_start of other sessions is NULL
+// and the age would read 0 forever, so the query also reports whether the login
+// may see them and the probe fails when it may not.
+const XMIN_AGE_SQL = `SELECT (r.rolsuper OR pg_has_role(r.oid, 'pg_read_all_stats', 'USAGE')),
+  coalesce(extract(epoch FROM now() - least(
+    (SELECT min(xact_start) FROM pg_stat_activity WHERE backend_xid IS NOT NULL),
+    (SELECT min(prepared) FROM pg_prepared_xacts)
+  )), 0)::int
+FROM pg_roles r WHERE r.rolname = current_user`;
+
+// psql --tuples-only --no-align prints `t|<seconds>`.
+export function parseXminAge(stdout) {
+  const [visible, seconds, ...extra] = stdout.trim().split("|");
+  if (visible !== "t")
+    throw new Error(
+      "The monitoring login needs superuser or pg_read_all_stats",
+    );
+  const age = Number(seconds);
+  if (
+    extra.length ||
+    !/^\d+$/.test(seconds ?? "") ||
+    !Number.isSafeInteger(age)
+  )
+    throw new Error("Bad xmin age");
+  return age;
+}
+
+export function queryXminAge() {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "psql",
+      [
+        "-w",
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        XMIN_AGE_SQL,
+      ],
+      { timeout: 5000, env: process.env },
+      (error, stdout) => {
+        if (error) return reject(error);
+        try {
+          resolve(parseXminAge(stdout));
+        } catch (parseError) {
+          reject(parseError);
+        }
+      },
+    );
+  });
+}
+
+// A failed query counts as down: silence must not look healthy.
+export async function xminWithinLimit(maxAgeSeconds, query = queryXminAge) {
+  try {
+    return (await query()) <= maxAgeSeconds;
+  } catch {
+    return false;
+  }
+}
+
 // An adapter is an operator-provided authenticated alert relay, not an assumed
 // KirimDev or email API. Relay implementations deliver to their named channel.
 export async function sendAlert(url, token, alert, fetcher = fetch) {
@@ -50,11 +120,21 @@ export async function sendAlert(url, token, alert, fetcher = fetch) {
   if (!result.ok) throw new Error(`Alert relay returned ${result.status}`);
 }
 
-export async function run(config, fetcher = fetch) {
+export async function run(config, fetcher = fetch, queryAge = queryXminAge) {
+  const apiUrl = endpoint(config.API_HEALTH_URL, "API_HEALTH_URL");
+  const webUrl = endpoint(config.WEB_HEALTH_URL, "WEB_HEALTH_URL");
   const checks = [
-    ["api_readiness", endpoint(config.API_HEALTH_URL, "API_HEALTH_URL")],
-    ["web", endpoint(config.WEB_HEALTH_URL, "WEB_HEALTH_URL")],
+    ["api_readiness", () => probe(apiUrl, fetcher)],
+    ["web", () => probe(webUrl, fetcher)],
   ];
+  if (config.MONITOR_XMIN_ENABLED === "true") {
+    const maxAge = Number(config.MONITOR_XMIN_MAX_AGE_SECONDS ?? 600);
+    if (!Number.isInteger(maxAge) || maxAge <= 0)
+      throw new Error(
+        "MONITOR_XMIN_MAX_AGE_SECONDS must be a positive integer",
+      );
+    checks.push(["xmin_age", () => xminWithinLimit(maxAge, queryAge)]);
+  }
   const channels = [
     ["email", config.ALERT_EMAIL_RELAY_URL, config.ALERT_EMAIL_RELAY_TOKEN],
     [
@@ -78,8 +158,8 @@ export async function run(config, fetcher = fetch) {
   }
   const next = { ...previous };
   let deliveryFailed = false;
-  for (const [name, url] of checks) {
-    const ok = await probe(url, fetcher);
+  for (const [name, check] of checks) {
+    const ok = await check();
     for (const [channel, relay, token] of channels) {
       const key = `${name}:${channel}`;
       // First healthy observation does not generate a recovery alert.

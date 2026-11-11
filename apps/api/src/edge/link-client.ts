@@ -22,6 +22,7 @@ import {
   LINK_REFUSED_CREDENTIAL,
   LINK_REFUSED_HEADER,
   encodeFrame,
+  type CatalogStale,
 } from "./protocol.ts";
 
 export const RECONNECT_BASE_MS = 1_000;
@@ -68,6 +69,13 @@ export type EdgeLinkClientOptions = {
   random?: () => number;
   ackTimeoutMs?: number;
   heartbeatIntervalMs?: number;
+  /**
+   * Catalog streams stale for over 30 minutes while the cloud answers
+   * (legend-10nex); sent with every heartbeat while they last, so a lost
+   * frame repeats itself. The heartbeat only flows while the link is up: an
+   * offline edge never reports.
+   */
+  catalogStale?: () => CatalogStale;
 };
 
 export type EdgeLinkClient = {
@@ -136,14 +144,21 @@ export function createEdgeLinkClient(
       setState({ cloudLink: "connected", lastConnectedAt: new Date() });
       linkPeer.start();
       const sendHeartbeat = () => {
-        if (ws.readyState === WebSocket.OPEN)
-          ws.send(
-            encodeFrame({
-              type: "heartbeat",
-              version: options.version,
-              occurredAt: new Date().toISOString(),
-            }),
-          );
+        if (ws.readyState !== WebSocket.OPEN) return;
+        let catalogStale: CatalogStale = [];
+        try {
+          catalogStale = options.catalogStale?.() ?? [];
+        } catch {
+          // A broken status source must not stop the heartbeat.
+        }
+        ws.send(
+          encodeFrame({
+            type: "heartbeat",
+            version: options.version,
+            occurredAt: new Date().toISOString(),
+            ...(catalogStale.length > 0 ? { catalogStale } : {}),
+          }),
+        );
       };
       sendHeartbeat();
       heartbeat = setInterval(
