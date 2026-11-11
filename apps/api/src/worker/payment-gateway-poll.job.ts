@@ -14,7 +14,10 @@ import {
 } from "@starter/shared/core";
 import { logger } from "../lib/logger";
 import { pollPendingGatewayIntents } from "../services/payment.service.ts";
-import { promoteDueSubscriptionPeriods } from "../services/payment-recurring.service.ts";
+import {
+  markOverdueSubscriptionsPastDue,
+  promoteDueSubscriptionPeriods,
+} from "../services/payment-recurring.service.ts";
 import { reprocessDuitkuWebhookEvents } from "../services/payment-duitku-webhook.service.ts";
 import {
   purgeRejectedWebhookEvents,
@@ -31,6 +34,7 @@ export type PaymentGatewayPollResult = {
   polled: { checked: number; settled: number };
   webhooks: { checked: number; processed: number };
   promoted: number;
+  pastDue: number;
 };
 
 export async function runPaymentGatewayPollJob(
@@ -53,6 +57,7 @@ export async function runPaymentGatewayPollJob(
     polled: { checked: 0, settled: 0 },
     webhooks: { checked: 0, processed: 0 },
     promoted: 0,
+    pastDue: 0,
   };
   let failed = false;
   try {
@@ -98,6 +103,19 @@ export async function runPaymentGatewayPollJob(
         errorName: error instanceof Error ? error.name : "unknown",
       },
       "Subscription period promotion failed",
+    );
+  }
+  try {
+    // Active subscriptions whose invoice stayed unpaid past the grace period.
+    // Idempotent and best effort, like the promotion above.
+    result.pastDue = await markOverdueSubscriptionsPastDue(context, now);
+  } catch (error) {
+    logger.warn(
+      {
+        job: "payment_gateway_poll",
+        errorName: error instanceof Error ? error.name : "unknown",
+      },
+      "Subscription past-due marking failed",
     );
   }
   try {

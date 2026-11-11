@@ -599,16 +599,11 @@ describe("REC-28 an event for an unknown subscription is kept and processed when
     expect((await eventRow(second.body.id))?.status).toBe("failed");
     expect(await invoiceRows(second.body.data.invoice.id)).toHaveLength(0);
 
-    // An unnarrowed run honors the back-off: nothing is due yet.
+    // Round 4: an unnarrowed run skips the back-off for an event whose
+    // subscription now exists, so it is processed at once.
     await reprocessParkedRecurringEvents(context(), new Date());
-    expect((await eventRow(second.body.id))?.status).toBe("failed");
-
-    // Once the back-off has elapsed it is processed.
-    await reprocessParkedRecurringEvents(
-      context(),
-      new Date(Date.now() + 3 * 3_600_000),
-    );
     expect((await eventRow(second.body.id))?.status).toBe("processed");
+    expect(await invoiceRows(second.body.data.invoice.id)).toHaveLength(1);
   });
 
   it("REC-28 an event whose subscription still does not exist stays failed UNKNOWN_SUBSCRIPTION after a parked run", async () => {

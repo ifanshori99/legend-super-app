@@ -107,6 +107,9 @@ const SIGNATURE_MESSAGE = "Tanda tangan webhook tidak valid.";
  * attempt, for events received within this window. Older rows that are still
  * `failed` stay `failed` for manual review. */
 export const WEBHOOK_RETRY_WINDOW_MS = 24 * 3_600_000;
+/** A `received` event not finished after this long is picked up by the sweep
+ * even beyond the retry window. */
+export const WEBHOOK_STUCK_RECEIVED_MS = 5 * 60_000;
 const WEBHOOK_RETRY_MAX_BACKOFF_MINUTES = 60;
 /** An event for a reference we do not know yet may just be early (the intent
  * stores its provider ref after the create call): retried this long. */
@@ -123,11 +126,13 @@ const REFUND_MISMATCH_AUDIT_FIELDS = [
 /** Audit snapshot keys of a refund event with unreadable facts (ids only). */
 const REFUND_FACTS_AUDIT_FIELDS = ["eventId", "refundId", "invalid"] as const;
 
+/** `parked`: stored durably, waiting for its local subscription (answered
+ * 200: the sweep processes it once the subscription exists). */
 export type WebhookResultStatus =
-  "processed" | "duplicate" | "ignored" | "failed";
+  "processed" | "duplicate" | "ignored" | "failed" | "parked";
 
 type DoitWebhookEvent = ReturnType<typeof doitWebhookEventSchema.parse>;
-type ProcessOutcome = "processed" | "ignored" | "failed";
+type ProcessOutcome = "processed" | "ignored" | "failed" | "parked";
 /** A verified event after parsing: payment events carry a payment object,
  * refund events only the facts of `readDoitRefundFacts`. */
 type ParsedEvent =
@@ -1416,7 +1421,7 @@ async function processInvoiceEvent(
         { status: "failed", lastErrorCode: "UNKNOWN_SUBSCRIPTION" },
         now,
       );
-      return "failed";
+      return "parked";
     }
     if (result.outcome === "unknown_invoice") {
       await markRow(
@@ -1878,10 +1883,24 @@ export async function reprocessStoredWebhookEvents(
           eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
           eq(gatewayWebhookEvents.provider, PROVIDER),
           eq(gatewayWebhookEvents.signatureValid, true),
-          inArray(gatewayWebhookEvents.status, ["received", "failed"]),
           isNotNull(gatewayWebhookEvents.payload),
-          gt(gatewayWebhookEvents.receivedAt, windowStart),
-          sql`${gatewayWebhookEvents.updatedAt} + ${backoff} <= ${now.toISOString()}::timestamptz`,
+          or(
+            and(
+              inArray(gatewayWebhookEvents.status, ["received", "failed"]),
+              gt(gatewayWebhookEvents.receivedAt, windowStart),
+              sql`${gatewayWebhookEvents.updatedAt} + ${backoff} <= ${now.toISOString()}::timestamptz`,
+            ),
+            // Stuck `received` (the request died mid-processing): retried
+            // after a short wait even past the 24 h window, so a recurring
+            // invoice event is never stranded. Idempotent via the dedupe.
+            and(
+              eq(gatewayWebhookEvents.status, "received"),
+              lt(
+                gatewayWebhookEvents.updatedAt,
+                new Date(now.getTime() - WEBHOOK_STUCK_RECEIVED_MS),
+              ),
+            ),
+          ),
         ),
       )
       .orderBy(asc(gatewayWebhookEvents.receivedAt))
@@ -1912,7 +1931,7 @@ export async function reprocessStoredWebhookEvents(
         now,
         verifiedSecret,
       );
-      if (outcome !== "failed") processed += 1;
+      if (outcome !== "failed" && outcome !== "parked") processed += 1;
     } catch {
       // Already recorded on the row; the next run retries.
     }
@@ -1925,7 +1944,7 @@ export async function reprocessStoredWebhookEvents(
  * subscription matched yet (UNKNOWN_SUBSCRIPTION), or hit by any later error.
  * No error-code filter, so a later error cannot orphan a parked event. They
  * stay without a time limit and are processed once the subscription exists:
- * by the worker sweep (with backoff), or right after a start when
+ * by the worker sweep (with backoff, skipped once the subscription exists), or right after a start when
  * `providerSubscriptionId` names the new subscription (the backoff is skipped
  * then). `invoice.created` runs before `invoice.paid`, then oldest first.
  * Processed with the binding stored at receipt, like every other invoice
@@ -1953,8 +1972,11 @@ export async function reprocessParkedRecurringEvents(
       sql`${gatewayWebhookEvents.payload}->'data'->'invoice'->>'subscription_id' = ${opts.providerSubscriptionId}`,
     );
   else
+    // Backoff is skipped once the subscription the event names exists
+    // locally: it is processed on the next sweep, not minutes later, so
+    // created-before-paid holds across sweeps.
     conditions.push(
-      sql`${gatewayWebhookEvents.updatedAt} + ${backoff} <= ${now.toISOString()}::timestamptz`,
+      sql`(${gatewayWebhookEvents.updatedAt} + ${backoff} <= ${now.toISOString()}::timestamptz or exists (select 1 from ${paymentRecurringSubscriptions} where ${paymentRecurringSubscriptions.tenantId} = ${context.tenant.tenantId} and ${paymentRecurringSubscriptions.providerSubscriptionId} = ${gatewayWebhookEvents.payload}->'data'->'invoice'->>'subscription_id'))`,
     );
   const rows = await withTenant(db, context, async (tx) =>
     tx
@@ -1988,7 +2010,7 @@ export async function reprocessParkedRecurringEvents(
         parsed.event,
         now,
       );
-      if (outcome !== "failed") processed += 1;
+      if (outcome !== "failed" && outcome !== "parked") processed += 1;
     } catch {
       // Already recorded on the row; the next run retries.
     }

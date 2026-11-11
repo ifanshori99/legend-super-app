@@ -335,26 +335,56 @@ const KEY_REUSED = (): CoreError =>
     "Kunci permintaan sudah dipakai untuk permintaan lain.",
   );
 
+/** A start older than this is never retried automatically: DOIT's idempotency
+ * window may be over and a retry could create a second subscription. */
+const START_RETRY_WINDOW_MS = 24 * 3_600_000;
+
 /** Marks a start whose outcome at the gateway is unconfirmed. Guarded: only a
  * row that never got a provider id moves, and a failed write is logged, never
- * allowed to hide the original error. */
+ * allowed to hide the original error. `providerSubscriptionId` (a plan
+ * mismatch: DOIT did create a subscription) is stored with it so the row can
+ * still be paused or cancelled; an id another local row owns is not stored. */
 async function markStartNeedsReconcile(
   context: ScopedTenantContext,
   subscriptionId: string,
-  reason: "PROVIDER_ERROR" | "DUPLICATE_AT_PROVIDER" | "PLAN_MISMATCH",
+  reason:
+    | "PROVIDER_ERROR"
+    | "DUPLICATE_AT_PROVIDER"
+    | "PLAN_MISMATCH"
+    | "INTENT_EXPIRED",
+  providerSubscriptionId?: string,
 ): Promise<void> {
   try {
-    await withTenant(db, context, (tx) =>
-      tx
+    await withTenant(db, context, async (tx) => {
+      const tenantId = context.tenant.tenantId;
+      let storeProviderId = false;
+      if (providerSubscriptionId) {
+        const [taken] = await tx
+          .select({ id: paymentRecurringSubscriptions.id })
+          .from(paymentRecurringSubscriptions)
+          .where(
+            and(
+              eq(paymentRecurringSubscriptions.tenantId, tenantId),
+              eq(
+                paymentRecurringSubscriptions.providerSubscriptionId,
+                providerSubscriptionId,
+              ),
+              ne(paymentRecurringSubscriptions.id, subscriptionId),
+            ),
+          );
+        storeProviderId = taken === undefined;
+      }
+      await tx
         .update(paymentRecurringSubscriptions)
         .set({
           status: "needs_reconcile",
           reconcileReason: reason,
+          ...(storeProviderId ? { providerSubscriptionId } : {}),
           updatedAt: new Date(),
         })
         .where(
           and(
-            eq(paymentRecurringSubscriptions.tenantId, context.tenant.tenantId),
+            eq(paymentRecurringSubscriptions.tenantId, tenantId),
             eq(paymentRecurringSubscriptions.id, subscriptionId),
             isNull(paymentRecurringSubscriptions.providerSubscriptionId),
             inArray(paymentRecurringSubscriptions.status, [
@@ -362,8 +392,8 @@ async function markStartNeedsReconcile(
               "needs_reconcile",
             ]),
           ),
-        ),
-    );
+        );
+    });
   } catch (error) {
     logger.error(
       {
@@ -447,6 +477,9 @@ export async function startSubscription(
                 paymentRecurringSubscriptions.customerProfileId,
                 input.customerProfileId,
               ),
+              // A mismatch row that holds a DOIT id can be paused/cancelled on
+              // its own: it does not block a new key.
+              isNull(paymentRecurringSubscriptions.providerSubscriptionId),
               inArray(paymentRecurringSubscriptions.status, [
                 "provisioning",
                 "needs_reconcile",
@@ -476,6 +509,15 @@ export async function startSubscription(
     // Finished earlier: an idempotent replay, DOIT is not called again.
     if (existing.providerSubscriptionId !== null)
       return { subscription: existing, firstInvoiceUrl: null };
+    // An unconfirmed start older than DOIT's idempotency window is not retried
+    // (a second subscription could be created): park it for reconciliation.
+    if (Date.now() - existing.createdAt.getTime() > START_RETRY_WINDOW_MS) {
+      await markStartNeedsReconcile(context, existing.id, "INTENT_EXPIRED");
+      throw new CoreError(
+        "CONFLICT",
+        "Permintaan langganan ini sudah terlalu lama untuk diulang otomatis. Status di gateway perlu dicek manual.",
+      );
+    }
   } else {
     if (plan.status !== "active")
       throw new CoreError("CONFLICT", "Paket sudah tidak aktif.");
@@ -568,7 +610,12 @@ export async function startSubscription(
         );
   }
   if (provider.plan_id !== plan.providerPlanId) {
-    await markStartNeedsReconcile(context, intent.id, "PLAN_MISMATCH");
+    await markStartNeedsReconcile(
+      context,
+      intent.id,
+      "PLAN_MISMATCH",
+      provider.id,
+    );
     throw new CoreError(
       "CONFLICT",
       "Langganan di gateway tidak sesuai dengan paket. Status di gateway belum dapat dipastikan.",
@@ -642,10 +689,20 @@ async function loadSubscription(
 
 // -- Next period: access and promotion -------------------------------------------
 
+/** Founder decision pending (legend-rsrcb): does access continue through the
+ * grace days after the paid period ends? `false` (restrictive, default): access
+ * stops at the end of the paid period and the grace days only delay the
+ * `past_due` status. `true`: access of the current period runs to
+ * `period_end + RECURRING_GRACE_DAYS`. Change only this constant to flip it. */
+export const RECURRING_ACCESS_DURING_GRACE = false;
+
 /** True while the subscription is `active` and today (Asia/Jakarta) is inside
  * the current period or inside the paid next period; the start is inclusive,
- * the end exclusive. Every other status (pending, past_due, paused, cancelled,
- * provisioning, needs_reconcile) never has access. */
+ * the end exclusive. With RECURRING_ACCESS_DURING_GRACE false the grace days
+ * (RECURRING_GRACE_DAYS) never add access: a day after the paid period has no
+ * access even while the status is still `active`. Every other status (pending,
+ * past_due, paused, cancelled, provisioning, needs_reconcile) never has
+ * access. */
 export function subscriptionHasAccess(
   subscription: Pick<
     PaymentRecurringSubscription,
@@ -661,10 +718,19 @@ export function subscriptionHasAccess(
   const today = businessDateOf(now);
   const inside = (start: string | null, end: string | null) =>
     start !== null && end !== null && start <= today && today < end;
+  const currentEnd =
+    RECURRING_ACCESS_DURING_GRACE && subscription.currentPeriodEnd !== null
+      ? addDaysToDate(subscription.currentPeriodEnd, RECURRING_GRACE_DAYS)
+      : subscription.currentPeriodEnd;
   return (
-    inside(subscription.currentPeriodStart, subscription.currentPeriodEnd) ||
+    inside(subscription.currentPeriodStart, currentEnd) ||
     inside(subscription.nextPeriodStart, subscription.nextPeriodEnd)
   );
+}
+
+/** `YYYY-MM-DD` plus whole days. */
+function addDaysToDate(date: string, days: number): string {
+  return subtractDays(date, -days);
 }
 
 /** One UPDATE: for live rows whose next period has started, the next period
@@ -713,6 +779,68 @@ export async function promoteDueSubscriptionPeriods(
     promoteDueRows(tx, context.tenant.tenantId, now),
   );
   return { promoted: rows.length };
+}
+
+/** Days after the due date (the start of the unpaid period) an open invoice
+ * may stay unpaid before the subscription turns `past_due` (PRD): due D stays
+ * `active` through D+3 and is `past_due` from D+4. The grace never extends
+ * access: `subscriptionHasAccess` stops at the end of the paid period. */
+export const RECURRING_GRACE_DAYS = 3;
+
+/** `YYYY-MM-DD` minus whole days. */
+function subtractDays(date: string, days: number): string {
+  const [year, month, day] = date.split("-").map(Number) as [
+    number,
+    number,
+    number,
+  ];
+  return new Date(Date.UTC(year, month - 1, day - days))
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** `active` -> `past_due` for subscriptions with an `open` invoice for a period
+ * beyond everything paid (`next_period_end`, else `current_period_end`) whose
+ * start date plus the grace has passed. Idempotent: a second run finds nothing
+ * left to change. Rows are locked first and the condition is checked again in
+ * a new statement, so a payment that commits meanwhile is never overwritten.
+ * Returns the number of rows changed. A later verified `invoice.paid` turns the
+ * row `active` again (same period rules, no extra period). */
+export async function markOverdueSubscriptionsPastDue(
+  context: ScopedTenantContext,
+  now: Date,
+): Promise<number> {
+  const t = paymentRecurringSubscriptions;
+  const i = subscriptionInvoices;
+  const tenantId = context.tenant.tenantId;
+  const cutoff = subtractDays(businessDateOf(now), RECURRING_GRACE_DAYS);
+  const overdue = and(
+    eq(t.tenantId, tenantId),
+    eq(t.status, "active"),
+    sql`EXISTS (SELECT 1 FROM ${i} WHERE ${i.tenantId} = ${t.tenantId} AND ${i.subscriptionId} = ${t.id} AND ${i.status} = 'open' AND ${i.periodStart} >= COALESCE(${t.nextPeriodEnd}, ${t.currentPeriodEnd}) AND ${i.periodStart} < ${cutoff}::date)`,
+  );
+  return withTenant(db, context, async (tx) => {
+    const candidates = await tx
+      .select({ id: t.id })
+      .from(t)
+      .where(overdue)
+      .for("update");
+    if (candidates.length === 0) return 0;
+    const changed = await tx
+      .update(t)
+      .set({ status: "past_due", updatedAt: now })
+      .where(
+        and(
+          overdue,
+          inArray(
+            t.id,
+            candidates.map((row) => row.id),
+          ),
+        ),
+      )
+      .returning({ id: t.id });
+    return changed.length;
+  });
 }
 
 /** The row itself, or its promoted version when its next period is due. */
@@ -789,9 +917,22 @@ async function changeSubscription(
   if (action === "pause" && current.status === "paused") return current;
   if (current.status === "cancelled")
     throw new CoreError("CONFLICT", "Langganan sudah dibatalkan.");
-  if (action === "pause" && !["active", "past_due"].includes(current.status))
+  // A mismatch row that holds a DOIT id can still be paused/resumed/cancelled:
+  // DOIT may be charging for it, so the tenant must be able to act on it.
+  // Exception: a PLAN_MISMATCH row (DOIT holds another plan) may only be
+  // cancelled. Resuming it would clear the marker and every invoice would still
+  // land in `needs_review`, so the guest would pay without ever getting access.
+  const reconcilable =
+    current.status === "needs_reconcile" &&
+    current.providerSubscriptionId !== null &&
+    (action === "cancel" || current.reconcileReason !== "PLAN_MISMATCH");
+  if (
+    action === "pause" &&
+    !reconcilable &&
+    !["active", "past_due"].includes(current.status)
+  )
     throw new CoreError("CONFLICT", "Hanya langganan aktif yang dapat dijeda.");
-  if (action === "resume" && current.status !== "paused")
+  if (action === "resume" && !reconcilable && current.status !== "paused")
     throw new CoreError(
       "CONFLICT",
       "Hanya langganan yang dijeda yang dapat dilanjutkan.",
@@ -882,8 +1023,11 @@ async function changeSubscription(
     // the period of an earlier verified payment still runs, otherwise to
     // `past_due` until the next verified invoice.paid (or the promotion of a
     // paid next period that has started).
+    // A confirmed answer on a `needs_reconcile` row applies the normal status
+    // rule and clears the reconcile reason.
     const patch: Partial<typeof paymentRecurringSubscriptions.$inferInsert> = {
       updatedAt: now,
+      reconcileReason: null,
     };
     if (action === "pause") {
       patch.status = "paused";
@@ -897,7 +1041,12 @@ async function changeSubscription(
         locked.currentPeriodEnd !== null &&
         locked.currentPeriodEnd > businessDateOf(now)
           ? "active"
-          : "past_due";
+          : locked.activatedAt === null &&
+              locked.currentPeriodEnd === null &&
+              current.status === "needs_reconcile"
+            ? // Never paid: wait for the first verified payment, no access.
+              "pending_first_payment"
+            : "past_due";
       patch.pausedAt = null;
     }
     const [updated] = await tx
