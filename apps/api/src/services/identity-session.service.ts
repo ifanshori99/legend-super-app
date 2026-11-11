@@ -17,6 +17,10 @@
 
 import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import {
   MANAGEMENT_IDLE_MINUTES,
   MINUTE_MS,
   newSessionExpiry,
@@ -32,6 +36,8 @@ import { db } from "../db";
 import { session } from "../db/schema";
 import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
+import { withTenant } from "../db/tenant";
+import { appendSessionRevoked } from "./identity-events";
 import {
   IMPERSONATION_SESSION_MAX_SECONDS,
   recordImpersonationEnded,
@@ -278,6 +284,10 @@ export async function revokeOwnSession(input: {
   // the wire schema requires) and in the past for any session older than a
   // millisecond. `revoked_at` keeps the audit trail.
   const expiresAt = new Date(row.createdAt.getTime() + 1);
+  // `created_at` may come from the database clock while `now` is the API
+  // clock; a few ms of skew must not put revoked_at before created_at (the
+  // wire schema rejects it and the revoke would 422).
+  const revokedAt = new Date(Math.max(now.getTime(), row.createdAt.getTime()));
   if (row.impersonatedBy !== null) {
     // legend-rzirp: a support (impersonated) session is deleted, not kept as
     // a revoked row, and its end is audited here with cause "revoked". A
@@ -299,13 +309,55 @@ export async function revokeOwnSession(input: {
         "failed to audit impersonation end",
       );
     }
-    return toWireSession({ ...row, revokedAt: now, expiresAt });
+    return toWireSession({ ...row, revokedAt, expiresAt });
   }
-  await db
-    .update(session)
-    .set({ revokedAt: now, expiresAt })
-    .where(eq(session.id, row.id));
-  return toWireSession({ ...row, revokedAt: now, expiresAt });
+  if (row.tenantId === null) {
+    // Platform session: no tenant stream, so no outbox event.
+    await db
+      .update(session)
+      .set({ revokedAt, expiresAt })
+      .where(eq(session.id, row.id));
+    return toWireSession({ ...row, revokedAt, expiresAt });
+  }
+  // legend-83ll: the revoke and its `session.revoked` outbox row commit in one
+  // tenant transaction. The row is re-read under its lock, so two concurrent
+  // revokes emit one event.
+  const context = establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: row.tenantId,
+      brandId: null,
+      source: "session",
+    }),
+    { kind: "tenant" },
+  );
+  const revoked = await withTenant(db, context, async (tx) => {
+    const [locked] = await tx
+      .select()
+      .from(session)
+      .where(eq(session.id, row.id))
+      .for("update");
+    if (!locked || locked.revokedAt !== null) return false;
+    await tx
+      .update(session)
+      .set({ revokedAt, expiresAt })
+      .where(eq(session.id, row.id));
+    await appendSessionRevoked(tx, context, {
+      sessionId: row.id,
+      userId: row.userId,
+      cause: "revoked_by_user",
+      now,
+    });
+    return true;
+  });
+  if (!revoked) {
+    const [current] = await db
+      .select()
+      .from(session)
+      .where(eq(session.id, row.id))
+      .limit(1);
+    return toWireSession(current ?? row);
+  }
+  return toWireSession({ ...row, revokedAt, expiresAt });
 }
 
 /** Same status as a missing row and as another user's row (no enumeration). */

@@ -68,6 +68,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { seedTenantRoleTemplates } from "./access.service.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { nextSequence } from "./menu-internals.ts";
 import { toOutlet } from "./org.service.ts";
 import { provisionStandardUoms } from "./inventory-provisioning.service.ts";
 import { provisionFirstTenantAdmin } from "./platform-admin-provision.service.ts";
@@ -190,6 +191,65 @@ export async function getTenantOrThrow(tenantId: string): Promise<Tenant> {
 
 /** Consumers receive platform events through the cloud sync stream. */
 const EVENT_DESTINATION = "cloud-sync";
+
+type EventTx = Parameters<typeof appendOutbox>[0];
+
+/**
+ * A change of an existing tenant (`tenant.status_changed`,
+ * `tenant.package_changed`), appended on the caller's transaction so the
+ * change, its audit row and the event commit together. `tenant.created` is
+ * sequence 1 of the same aggregate stream, so this takes the next one.
+ */
+async function appendTenantChangeEvent(
+  tx: EventTx,
+  context: ScopedTenantContext,
+  name: "tenant.status_changed" | "tenant.package_changed",
+  payload: Record<string, unknown>,
+  actorUserId: string,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const definition = platformEvents[name];
+  const sequence = await nextSequence(
+    tx,
+    tenantId,
+    definition.entry.aggregateType,
+    tenantId,
+  );
+  const event = definition.envelopeSchema.parse({
+    id: createUlid(now.getTime()),
+    tenantId,
+    outletId: null,
+    name: definition.name,
+    version: definition.version,
+    aggregateType: definition.entry.aggregateType,
+    aggregateId: tenantId,
+    sequence,
+    occurredAt: now.toISOString(),
+    actor: { type: "user", id: actorUserId },
+    deviceId: null,
+    idempotencyKey: `${definition.name}:${tenantId}:${sequence}`,
+    payloadSchemaRef: definition.payloadSchemaRef,
+    payload,
+  });
+  await appendOutbox(tx, context, {
+    id: createUlid(now.getTime()),
+    event,
+    destination: EVENT_DESTINATION,
+    direction: null,
+    peerId: null,
+  });
+}
+
+/** Keys of `limits` whose value differs, for `tenant.package_changed`. */
+function changedLimitKeys(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): string[] {
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .filter((key) => before[key] !== after[key])
+    .sort();
+}
 
 /**
  * Tenant-wide context for a platform action on `tenantId`. The id is chosen by
@@ -440,6 +500,15 @@ export async function setTenantStatus(
       },
       { tx, context },
     );
+    // legend-fy5y (TEN-06): consumers stop or resume serving the tenant.
+    await appendTenantChangeEvent(
+      tx,
+      context,
+      "tenant.status_changed",
+      { from: current.status, to: row.status, reason: input.reason },
+      actorUserId,
+      now,
+    );
     return toTenant(row);
   });
 }
@@ -661,6 +730,7 @@ export async function setTenantPackage(
   tenantId: string,
   input: SetTenantPackageInput,
   actorUserId: string,
+  now: Date = new Date(),
 ): Promise<Tenant> {
   const pkg = await assignablePackage(input.plan);
   const outside = modulesOutsidePackage(input.featureFlags.modules, pkg);
@@ -707,6 +777,23 @@ export async function setTenantPackage(
         sensitiveAccess: false,
       },
       { tx, context },
+    );
+    // legend-fy5y: consumers re-read the module gate and the quotas.
+    const before = new Set<string>(current.featureFlags.modules);
+    const after = new Set<string>(row.featureFlags.modules);
+    await appendTenantChangeEvent(
+      tx,
+      context,
+      "tenant.package_changed",
+      {
+        plan: row.plan,
+        modulesEnabled: [...after].filter((module) => !before.has(module)),
+        modulesDisabled: [...before].filter((module) => !after.has(module)),
+        limitsChanged: changedLimitKeys(current.limits, row.limits),
+        reason: input.reason,
+      },
+      actorUserId,
+      now,
     );
     return toTenant(row);
   });
