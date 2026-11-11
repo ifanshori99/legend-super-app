@@ -74,6 +74,17 @@ export const STATUS_READ_PERMISSIONS: readonly PermissionCode[] = [
 ];
 
 const statusDevices = new WeakMap<Request, string>();
+const requestTimes = new WeakMap<Request, Date>();
+
+/** One trusted instant for authorization and the operation it authorizes. */
+function edgeRequestNow(req: Request): Date {
+  let now = requestTimes.get(req);
+  if (!now) {
+    now = catalogOverrideNow();
+    requestTimes.set(req, now);
+  }
+  return now;
+}
 
 function edgeIdentity() {
   const runtime = getEdgeRuntimeState();
@@ -123,6 +134,7 @@ const deviceReader: RequestHandler = async (req, _res, next) => {
 /** The signed-in user's access snapshot for this node's tenant. */
 async function sessionSnapshot(req: Request) {
   const { identity } = edgeIdentity();
+  const now = edgeRequestNow(req);
   const userId = getAuth(req).user.id;
   const tenantWide = establishScopedTenantContext(identity.context.tenant, {
     kind: "tenant",
@@ -132,8 +144,8 @@ async function sessionSnapshot(req: Request) {
     tenant: identity.context.tenant,
     userId,
     ...data,
-    mfaVerified: (await sessionMfaVerifiedAt(req)) !== null,
-    now: new Date(),
+    mfaVerified: (await sessionMfaVerifiedAt(req, now)) !== null,
+    now,
   });
 }
 
@@ -186,7 +198,7 @@ const ownerReader: RequestHandler = async (req, _res, next) => {
  */
 const recentSecondFactor: RequestHandler = async (req, _res, next) => {
   const session = await loadSessionRow(getAuth(req).session.id);
-  const now = Date.now();
+  const now = edgeRequestNow(req).getTime();
   if (
     session &&
     (session.revokedAt !== null || session.expiresAt.getTime() <= now)
@@ -290,11 +302,11 @@ edgeRouter.get(
   requireAuth,
   rejectActingStaff,
   ownerReader,
-  async (_req, res) => {
+  async (req, res) => {
     const { deps, edgeNodeId } = overrideDeps();
     const active = await loadActiveCatalogOverride(deps, {
       edgeNodeId,
-      now: catalogOverrideNow(),
+      now: edgeRequestNow(req),
     });
     res.setHeader("Cache-Control", "private, no-store");
     res.json({ data: active ? overrideToDto(active) : null });
@@ -317,7 +329,7 @@ edgeRouter.post(
       ...body,
       edgeNodeId,
       userId: z.string().min(1).parse(getAuth(req).user.id),
-      now: catalogOverrideNow(),
+      now: edgeRequestNow(req),
     }).catch((error: unknown) => {
       // The trusted clock is not ready: no grant can be timed yet.
       if ((error as { code?: unknown } | null)?.code === "EDGE_CLOCK_NOT_READY")

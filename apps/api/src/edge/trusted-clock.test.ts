@@ -232,3 +232,68 @@ describe("legend-10nex a late-adopted high water", () => {
     expect(regressedOf(clock)).toBe(false);
   });
 });
+
+// Codex 520/521: advancing the wall clock must also advance the monotonic
+// anchor, otherwise an override can outlive its real-time duration.
+describe("521 trusted clock after a forward jump", () => {
+  it("expires a four-hour override after four real hours when a 48-hour jump is reverted", () => {
+    const { clock, tick, setWall } = rig();
+    setWall(new Date(T0.getTime() + 48 * HOUR));
+    const grantedAt = clock.now();
+    const untilAt = new Date(grantedAt.getTime() + 4 * HOUR);
+
+    setWall(T0);
+    tick(4 * HOUR - 1);
+    expect(clock.now().getTime()).toBe(untilAt.getTime() - 1);
+    tick(1);
+    expect(clock.now().getTime()).toBe(untilAt.getTime());
+  });
+
+  it("reanchors each later wall-clock increase rather than only the first one", () => {
+    const { clock, tick, setWall } = rig();
+    setWall(new Date(T0.getTime() + 48 * HOUR));
+    clock.now();
+    tick(HOUR);
+    setWall(new Date(T0.getTime() + 72 * HOUR));
+    const raisedAgain = clock.highWater().getTime();
+    setWall(T0);
+    tick(HOUR);
+    expect(clock.now().getTime()).toBe(raisedAgain + HOUR);
+  });
+});
+
+// The persisted high water only proves a lower bound: at an offline reboot
+// with the wall clock reset to that value, powered-off elapsed time is unknown.
+describe("521 trusted clock reports unproven offline elapsed time", () => {
+  const elapsedTimeUnproven = (clock: unknown) =>
+    (clock as { elapsedTimeUnproven(): boolean }).elapsedTimeUnproven();
+
+  it("does not treat a reboot at the persisted high water as proof of elapsed time", () => {
+    const beforeShutdown = rig();
+    beforeShutdown.tick(HOUR);
+    const persisted = beforeShutdown.clock.highWater();
+    // The terminal was off for days, then its date was restored to this stamp.
+    const rebooted = rig(persisted, persisted);
+    expect(elapsedTimeUnproven(rebooted.clock)).toBe(true);
+    expect(rebooted.clock.regressed()).toBe(false);
+    rebooted.tick(4 * HOUR);
+    // A running monotonic clock cannot prove the time spent powered off.
+    expect(elapsedTimeUnproven(rebooted.clock)).toBe(true);
+  });
+
+  it("does not invent an unproven reboot without a persisted high water", () => {
+    expect(elapsedTimeUnproven(rig().clock)).toBe(false);
+  });
+
+  it("accepts elapsed time when the boot wall clock is well ahead of high water", () => {
+    const rebooted = rig(T0, new Date(T0.getTime() + HOUR));
+    expect(elapsedTimeUnproven(rebooted.clock)).toBe(false);
+  });
+
+  it("also recognizes missing powered-off time when the high water loads late", () => {
+    const { clock, tick } = rig();
+    tick(HOUR);
+    clock.adoptHighWater(T0);
+    expect(elapsedTimeUnproven(clock)).toBe(true);
+  });
+});

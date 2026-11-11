@@ -37,6 +37,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CRITICAL_CATALOG_STREAMS,
+  catalogStaleForHeartbeat,
   createCatalogFreshness,
 } from "./catalog-freshness.ts";
 
@@ -536,6 +537,27 @@ describe("legend-10nex an alarm needs a failure that lasts, not one failed tick"
 });
 
 describe("legend-10nex recordSuccess uses the time the page was stored", () => {
+  it("521 stamps a successful sync with trusted time after the wall clock goes back", () => {
+    const trustedAt = new Date(T0.getTime() + 48 * 60 * MIN);
+    const freshness = createCatalogFreshness({
+      clock: { now: () => trustedAt },
+      now: () => T0,
+    });
+
+    // The successful pull's wall timestamp is behind the trusted high water.
+    // It is a fresh sync, so this must not immediately re-age it by two days.
+    for (const stream of CRITICAL_CATALOG_STREAMS)
+      freshness.recordSuccess(stream, T0);
+
+    const snapshot = freshness.snapshot();
+    for (const stream of CRITICAL_CATALOG_STREAMS)
+      expect(snapshot.streams[stream]).toMatchObject({
+        lastSuccessAt: trustedAt,
+        ageMs: 0,
+      });
+    expect(snapshot.salesBlocked).toBe(false);
+  });
+
   it("dates the last success from `at`, so staleSince matches the checkpoint after a restart", () => {
     const { freshness, advance } = setup();
     const stored = new Date(T0.getTime() - 2 * MIN);
@@ -549,6 +571,212 @@ describe("legend-10nex recordSuccess uses the time the page was stored", () => {
       cloudReachable: true,
     });
     expect(freshness.snapshot().alarmStreams[0]?.staleSince).toEqual(stored);
+  });
+});
+
+describe("521 Q62 elapsed time cannot be proven after an offline restart", () => {
+  function unprovenTracker(initiallyUnproven = true) {
+    let at = T0.getTime();
+    let unproven = initiallyUnproven;
+    const onOwnerAlarm = vi.fn();
+    const freshness = createCatalogFreshness({
+      clock: {
+        now: () => new Date(at),
+        elapsedTimeUnproven: () => unproven,
+      },
+      onOwnerAlarm,
+    });
+    return {
+      freshness,
+      onOwnerAlarm,
+      advance: (ms: number) => {
+        at += ms;
+      },
+      markUnproven: () => {
+        unproven = true;
+      },
+    };
+  }
+
+  it("warns and queues an owner alarm immediately while permitting sales even beyond 24 hours", () => {
+    const { freshness, onOwnerAlarm, advance } = unprovenTracker();
+    for (const stream of CRITICAL_CATALOG_STREAMS)
+      freshness.seedLastSuccess(stream, T0);
+
+    const snapshot = freshness.snapshot();
+    expect(snapshot.stale).toBe(true);
+    expect(snapshot.ownerAlarm).toBe(true);
+    expect(snapshot.cashierWarning).toContain("waktu");
+    expect(snapshot.salesBlocked).toBe(false);
+    expect(catalogStaleForHeartbeat(snapshot)).toEqual(
+      CRITICAL_CATALOG_STREAMS.map((stream) => ({
+        stream,
+        staleSince: T0.toISOString(),
+        reason: "CLOCK_ELAPSED_UNPROVEN",
+      })),
+    );
+    expect(onOwnerAlarm).toHaveBeenCalledTimes(1);
+
+    advance(48 * 60 * MIN);
+    freshness.recordFailure("price_lists", {
+      reason: "NETWORK",
+      cloudReachable: false,
+    });
+    expect(freshness.snapshot().salesGate.stale24h).toBe(false);
+    expect(freshness.snapshot().ownerAlarm).toBe(true);
+    expect(onOwnerAlarm).toHaveBeenCalledTimes(1);
+  });
+
+  it("a checkpoint seed cannot prove elapsed time, but a live sync recovers each critical stream", () => {
+    const { freshness } = unprovenTracker();
+    for (const stream of CRITICAL_CATALOG_STREAMS)
+      freshness.seedLastSuccess(stream, T0);
+    freshness.recordSuccess("price_lists");
+    expect(
+      freshness.snapshot().alarmStreams.map((entry) => entry.stream),
+    ).not.toContain("price_lists");
+    expect(freshness.snapshot().stale).toBe(true);
+    for (const stream of CRITICAL_CATALOG_STREAMS)
+      freshness.recordSuccess(stream);
+    expect(freshness.snapshot()).toMatchObject({
+      stale: false,
+      ownerAlarm: false,
+      cashierWarning: null,
+    });
+    // The boot clock flag remains latched; recovered streams stay recovered.
+    expect(freshness.snapshot().stale).toBe(false);
+  });
+
+  it("adopts uncertainty when the database high water arrives after provisional boot", () => {
+    const { freshness, markUnproven, onOwnerAlarm } = unprovenTracker(false);
+    for (const stream of CRITICAL_CATALOG_STREAMS)
+      freshness.recordSuccess(stream);
+    expect(freshness.snapshot().stale).toBe(false);
+    markUnproven();
+    freshness.adoptTrackingStartedAt(T0);
+    expect(freshness.snapshot().stale).toBe(true);
+    expect(freshness.snapshot().ownerAlarm).toBe(true);
+    expect(onOwnerAlarm).toHaveBeenCalledTimes(1);
+  });
+
+  it("still blocks proven catalog data once it is older than 24 hours after a live recovery", () => {
+    const { freshness, advance } = unprovenTracker();
+    for (const stream of CRITICAL_CATALOG_STREAMS)
+      freshness.recordSuccess(stream);
+    advance(24 * 60 * MIN + 1);
+    expect(freshness.snapshot().salesGate.stale24h).toBe(true);
+  });
+
+  it("preserves a proven 24-hour block when a saved success was already old at the persisted high water", () => {
+    const alreadyOld = new Date(T0.getTime() - 48 * 60 * MIN);
+    // Only the added downtime is unknown. The two days between the saved
+    // success and the persisted high water were already observed before boot.
+    const restarted = createCatalogFreshness({
+      clock: { now: () => T0, elapsedTimeUnproven: () => true },
+    });
+    for (const stream of CRITICAL_CATALOG_STREAMS)
+      restarted.seedLastSuccess(
+        stream,
+        stream === "price_lists" ? alreadyOld : T0,
+      );
+    expect(restarted.snapshot().salesGate).toMatchObject({
+      stale24h: true,
+      staleSince: alreadyOld,
+      staleStreams: ["price_lists"],
+    });
+    expect(restarted.snapshot().salesBlocked).toBe(true);
+  });
+
+  it("keeps the queued uncertainty alarm identity stable when saved checkpoints load after boot", () => {
+    const onOwnerAlarm = vi.fn();
+    const freshness = createCatalogFreshness({
+      clock: { now: () => T0, elapsedTimeUnproven: () => true },
+      trackingStartedAt: new Date(T0.getTime() - 48 * 60 * MIN),
+      onOwnerAlarm,
+    });
+    const queued = onOwnerAlarm.mock.calls[0]![0].streams.map(
+      (entry: { stream: string; staleSince: Date; reason: string }) => ({
+        stream: entry.stream,
+        staleSince: entry.staleSince.toISOString(),
+        reason: entry.reason,
+      }),
+    );
+    for (const stream of CRITICAL_CATALOG_STREAMS)
+      freshness.seedLastSuccess(stream, new Date(T0.getTime() - 60 * MIN));
+    expect(catalogStaleForHeartbeat(freshness.snapshot())).toEqual(queued);
+    expect(onOwnerAlarm).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues distinct uncertainty alarms for two boots separated by live recovery even with the same saved tracking start", () => {
+    const trackingStartedAt = new Date(T0.getTime() - 48 * 60 * MIN);
+    const bootAndRecover = (bootAt: Date, checkpointAt: Date) => {
+      let current = bootAt.getTime();
+      const queued: ReturnType<typeof catalogStaleForHeartbeat>[] = [];
+      const freshness = createCatalogFreshness({
+        clock: {
+          now: () => new Date(current),
+          elapsedTimeUnproven: () => true,
+        },
+        trackingStartedAt,
+        onOwnerAlarm: (alarm) => {
+          queued.push(
+            alarm.streams.map((entry) => ({
+              stream: entry.stream,
+              staleSince: entry.staleSince.toISOString(),
+              reason: entry.reason,
+            })),
+          );
+        },
+      });
+      expect(queued).toHaveLength(1);
+      const bootAlarm = queued[0]!;
+      for (const stream of CRITICAL_CATALOG_STREAMS)
+        freshness.seedLastSuccess(stream, checkpointAt);
+      expect(catalogStaleForHeartbeat(freshness.snapshot())).toEqual(bootAlarm);
+
+      current += 30 * MIN;
+      for (const stream of CRITICAL_CATALOG_STREAMS)
+        freshness.recordFailure(stream, {
+          reason: "NETWORK",
+          cloudReachable: false,
+        });
+      expect(catalogStaleForHeartbeat(freshness.snapshot())).toEqual(bootAlarm);
+      expect(queued).toHaveLength(1);
+
+      // Internet returns and each stream succeeds before the next shutdown.
+      for (const stream of CRITICAL_CATALOG_STREAMS)
+        freshness.recordSuccess(stream);
+      expect(freshness.snapshot().stale).toBe(false);
+      expect(catalogStaleForHeartbeat(freshness.snapshot())).toEqual([]);
+      expect(queued).toHaveLength(1);
+      return { bootAlarm, lastSuccessAt: new Date(current) };
+    };
+
+    const first = bootAndRecover(T0, new Date(T0.getTime() - MIN));
+    const nextBootAt = new Date(T0.getTime() + 6 * 60 * MIN);
+    const second = bootAndRecover(nextBootAt, first.lastSuccessAt);
+
+    expect(first.bootAlarm).toEqual(
+      CRITICAL_CATALOG_STREAMS.map((stream) => ({
+        stream,
+        staleSince: T0.toISOString(),
+        reason: "CLOCK_ELAPSED_UNPROVEN",
+      })),
+    );
+    expect(second.bootAlarm).toEqual(
+      CRITICAL_CATALOG_STREAMS.map((stream) => ({
+        stream,
+        staleSince: nextBootAt.toISOString(),
+        reason: "CLOCK_ELAPSED_UNPROVEN",
+      })),
+    );
+    const firstIds = first.bootAlarm.map(
+      (entry) => `${entry.stream}:${entry.staleSince}:${entry.reason}`,
+    );
+    const secondIds = second.bootAlarm.map(
+      (entry) => `${entry.stream}:${entry.staleSince}:${entry.reason}`,
+    );
+    for (const id of secondIds) expect(firstIds).not.toContain(id);
   });
 });
 

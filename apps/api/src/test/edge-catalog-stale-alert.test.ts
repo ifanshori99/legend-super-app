@@ -330,4 +330,36 @@ describe("legend-10nex cloud notifies supervisors and owners once per episode", 
     await send(episode({ staleSince: "2026-11-11T08:00:00.000Z" }));
     expect(await notificationRows()).toHaveLength(6);
   });
+
+  it("Q62 reports the historical alarm without asserting that sales are currently open", async () => {
+    const unproven = episode({
+      reason: "CLOCK_ELAPSED_UNPROVEN",
+      staleSince: "2026-11-11T09:00:00.000Z",
+    });
+    const before = (await notificationRows()).length;
+    await send(unproven);
+    await send(unproven);
+    const rows = await notificationRows();
+    expect(rows).toHaveLength(before + 2);
+    const unprovenRows = rows.filter(
+      (row) => row.title === "Usia katalog edge sempat belum dapat dibuktikan",
+    );
+    expect(unprovenRows.map((row) => row.user_id).sort()).toEqual(
+      [supervisorUserId, ownerUserId].sort(),
+    );
+    for (const row of unprovenRows) {
+      expect(row.body).toContain(
+        "Jika tidak ada alasan lain yang menahan penjualan",
+      );
+      expect(row.body).toContain(
+        "penjualan boleh berjalan dengan harga normal",
+      );
+      expect(row.body).toContain("promo dan voucher dimatikan");
+      expect(row.body).toContain(
+        "Alarm ini tercatat pada 2026-11-11T09:00:00.000Z",
+      );
+      expect(row.body).toContain("jam mundur atau katalog yang terbukti basi");
+      expect(row.body).not.toContain("Penjualan tetap berjalan");
+    }
+  });
 });

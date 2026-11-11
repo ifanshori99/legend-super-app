@@ -314,6 +314,7 @@ export async function notifyEdgeCatalogStale(
   now: Date = new Date(),
 ): Promise<void> {
   const id = edgeCatalogStaleAlertId(stale);
+  const elapsedTimeUnproven = stale.reason === "CLOCK_ELAPSED_UNPROVEN";
   await notifyOutletSupervisors(
     tx,
     context,
@@ -331,8 +332,12 @@ export async function notifyEdgeCatalogStale(
         staleSince: stale.staleSince,
         reason: stale.reason,
       },
-      title: "Katalog edge belum diperbarui",
-      body: "Harga atau status produk di server lokal gagal diperbarui padahal internet tersambung. Jika belum tersinkron lebih dari 24 jam, penjualan ditahan sampai owner mengizinkan; periksa sinkronisasi.",
+      title: elapsedTimeUnproven
+        ? "Usia katalog edge sempat belum dapat dibuktikan"
+        : "Katalog edge belum diperbarui",
+      body: elapsedTimeUnproven
+        ? `Alarm ini tercatat pada ${stale.staleSince}: usia katalog server lokal belum dapat dibuktikan setelah perangkat menyala kembali. Jika tidak ada alasan lain yang menahan penjualan, penjualan boleh berjalan dengan harga normal; promo dan voucher dimatikan selama usia data belum dapat dibuktikan. Alarm dapat tertunda saat offline; periksa status terbaru karena jam mundur atau katalog yang terbukti basi tetap dapat menahan penjualan.`
+        : "Harga atau status produk di server lokal gagal diperbarui padahal internet tersambung. Jika belum tersinkron lebih dari 24 jam, penjualan ditahan sampai owner mengizinkan; periksa sinkronisasi.",
     },
     now,
   );

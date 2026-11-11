@@ -22,6 +22,7 @@
 // Errors from the link are logged by name/code only: driver errors can carry
 // SQL parameters (event payloads), and the credential must never be logged.
 import type { IncomingMessage, Server } from "node:http";
+import { join } from "node:path";
 import type { Pool, PoolClient } from "pg";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -94,7 +95,8 @@ import {
   saveEdgePeppers,
 } from "./staff-pin-pepper-store.ts";
 import { createPeopleSnapshotPuller } from "./people-snapshot-pull.ts";
-import { startCatalogGate } from "./catalog-gate.ts";
+import { CATALOG_GATE_PERSIST_MS, startCatalogGate } from "./catalog-gate.ts";
+import { openCatalogAlarmQueue } from "./catalog-alarm-queue.ts";
 import { startPromoGate } from "./promo-gate-runtime.ts";
 import {
   closeCatalogOverrides,
@@ -107,6 +109,7 @@ import {
   startEdgeMasterSyncLoop,
 } from "./master-sync.ts";
 import {
+  CATALOG_CLOUD_OUTDATED_REASON,
   catalogStaleForHeartbeat,
   type CatalogFreshnessTracker,
 } from "./catalog-freshness.ts";
@@ -747,6 +750,18 @@ export async function startEdgeRuntime(
       ).entries(),
     ].map(([version, pepper]) => ({ version, pepper })),
   );
+  const reportCatalogAlarmError = (error: unknown): void => {
+    try {
+      logger.warn(safeError(error), "Edge catalog alarm persistence failed");
+    } catch {
+      // Reporting a disk failure must not turn it into a sales outage.
+    }
+  };
+  const catalogAlarmQueue = await openCatalogAlarmQueue({
+    directory: join(env.EDGE_SELFIE_DIR, "catalog-alarms"),
+    edgeNodeId: local.scope.edgeNodeId,
+    onError: reportCatalogAlarmError,
+  });
   const client = createEdgeLinkClient({
     url: config.cloudUrl,
     credential: config.credential,
@@ -772,10 +787,19 @@ export async function startEdgeRuntime(
     onError: (error) => logger.warn(safeError(error), "Edge link error"),
     // legend-10nex: stale prices/product status reach the owner through the
     // cloud, which only hears the edge while this link is up.
-    catalogStale: () =>
-      catalogFreshness
-        ? catalogStaleForHeartbeat(catalogFreshness.snapshot())
-        : [],
+    catalogStale: () => {
+      const snapshot = catalogFreshness?.snapshot();
+      // Older clouds reject this heartbeat field: preserve the queue until
+      // a compatible cloud is available, just like live freshness alarms.
+      if (
+        !snapshot ||
+        Object.values(snapshot.streams).some(
+          (stream) => stream.failureReason === CATALOG_CLOUD_OUTDATED_REASON,
+        )
+      )
+        return catalogAlarmQueue.heartbeat(null);
+      return catalogAlarmQueue.heartbeat(catalogStaleForHeartbeat(snapshot));
+    },
     // A protocol refusal (1008) carries a fixed reason from the link code, no
     // payload; it tells the operator why the link keeps dropping (legend-a9iby:
     // a restored or cloned database). See docs/deployment.md, item 5.
@@ -1029,11 +1053,28 @@ export async function startEdgeRuntime(
         );
       },
     },
-    onOwnerAlarm: (alarm) =>
+    onOwnerAlarm: async (alarm) => {
       logger.warn(
         { streams: alarm.streams.map((entry) => entry.stream) },
-        "Edge catalog is stale while the cloud is reachable",
-      ),
+        "Edge catalog freshness needs owner attention",
+      );
+      const unproven = alarm.streams.filter(
+        (entry) => entry.reason === "CLOCK_ELAPSED_UNPROVEN",
+      );
+      if (unproven.length)
+        await catalogAlarmQueue
+          .enqueue(
+            unproven.map((entry) => ({
+              stream: entry.stream,
+              staleSince: entry.staleSince.toISOString(),
+              reason: entry.reason,
+            })),
+          )
+          .catch((error: unknown) => {
+            reportCatalogAlarmError(error);
+            throw error;
+          });
+    },
     // A restart must not hide a stale catalog: start from the checkpoint's
     // last success (none on a new edge). A read failure leaves the tracker
     // unseeded; unseeded streams age from the persisted tracking start.
@@ -1050,6 +1091,16 @@ export async function startEdgeRuntime(
         "Edge wall clock is behind the saved high water; sales are held (CLOCK_REGRESSED) until it catches up or an owner allows them",
       ),
   });
+  // Freshness evaluates its boot alarm synchronously; await its disk write
+  // before startup completes so an immediate restart cannot lose the alarm.
+  await catalogAlarmQueue.flush().catch(reportCatalogAlarmError);
+  // A failed write stays dirty even if no second alarm is emitted; retry in
+  // the background without holding Q62 sales or waiting for a reconnect.
+  const catalogAlarmRetry = setInterval(
+    () => void catalogAlarmQueue.flush().catch(reportCatalogAlarmError),
+    CATALOG_GATE_PERSIST_MS,
+  );
+  catalogAlarmRetry.unref();
   const freshness = catalogGate.freshness;
   catalogFreshness = freshness;
   // The owner grants an override on the edge API: the provider must see it now.
@@ -1117,6 +1168,7 @@ export async function startEdgeRuntime(
   return {
     async stop() {
       clearInterval(sweep);
+      clearInterval(catalogAlarmRetry);
       await wifiQuotaWorker.stop();
       await wifi?.stop();
       stopPrune();
@@ -1136,6 +1188,7 @@ export async function startEdgeRuntime(
       setCatalogOverrideClock(null);
       promoGate.stop();
       await catalogGate.stop();
+      await catalogAlarmQueue.flush().catch(reportCatalogAlarmError);
       if (registryPuller === puller) registryPuller = null;
       if (catalogFreshness === freshness) catalogFreshness = null;
       state = { ...state, link: disconnected };

@@ -660,6 +660,10 @@ export function startEdgeMasterSyncLoop(input: {
         context,
         edgeNodeId,
         fetchPage: fetchCatalogPage,
+        // The persisted success stamp must use the same clock as the live
+        // freshness tracker; a rolled-back wall clock must not age a fresh
+        // catalog immediately, including after the next restart.
+        now: freshness ? () => freshness.now() : undefined,
       });
       const entries = Object.entries(result.streams);
       // A stream skipped after its parent failed (CATALOG_PARENT_FAILED) is

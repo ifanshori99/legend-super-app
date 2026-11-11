@@ -634,3 +634,229 @@ describe("legend-10nex a grant made during startup is visible after the reload",
     expect(getSalesGateState().override?.reason).toBe("Saat startup");
   });
 });
+
+describe("521 override reloads cannot replace a newer committed decision", () => {
+  const makeOverride = (reason: string): CatalogGateOverride => ({
+    id: randomUUID(),
+    grantedBy: randomUUID(),
+    grantedAt: T0,
+    untilAt: new Date(T0.getTime() + 4 * HOUR),
+    reason,
+  });
+
+  it("an older reload returning null cannot remove a grant committed during its await", async () => {
+    const rig = await newEdge();
+    const clock = clocks(T0);
+    let release: (value: CatalogGateOverride | null) => void = () => undefined;
+    let boot = true;
+    const overrides: CatalogGateOverrides = {
+      load: async () => {
+        if (boot) {
+          boot = false;
+          return null;
+        }
+        return new Promise<CatalogGateOverride | null>((resolve) => {
+          release = resolve;
+        });
+      },
+      close: async () => undefined,
+    };
+    const gate = await start(rig, clock, { overrides, seed: T0 });
+    const reload = gate.refreshOverride();
+    const granted = makeOverride("Grant terbaru");
+    await gate.applyOverrideChange(granted);
+    release(null);
+    await reload;
+    expect(getSalesGateState().override?.id).toBe(granted.id);
+  });
+
+  it("an older reload returning an override cannot restore a subsequently closed override", async () => {
+    const rig = await newEdge();
+    const clock = clocks(T0);
+    const old = makeOverride("Lama");
+    let release: (value: CatalogGateOverride | null) => void = () => undefined;
+    let boot = true;
+    const overrides: CatalogGateOverrides = {
+      load: async () => {
+        if (boot) {
+          boot = false;
+          return old;
+        }
+        return new Promise<CatalogGateOverride | null>((resolve) => {
+          release = resolve;
+        });
+      },
+      close: async () => undefined,
+    };
+    const gate = await start(rig, clock, { overrides, seed: T0 });
+    const reload = gate.refreshOverride();
+    await gate.applyOverrideChange(null);
+    release(old);
+    await reload;
+    expect(getSalesGateState().override).toBeNull();
+  });
+
+  it("two reloads resolved out of order keep the most recently started reload", async () => {
+    const rig = await newEdge();
+    const clock = clocks(T0);
+    const releases: ((value: CatalogGateOverride | null) => void)[] = [];
+    let boot = true;
+    const overrides: CatalogGateOverrides = {
+      load: async () => {
+        if (boot) {
+          boot = false;
+          return null;
+        }
+        return new Promise<CatalogGateOverride | null>((resolve) => {
+          releases.push(resolve);
+        });
+      },
+      close: async () => undefined,
+    };
+    const gate = await start(rig, clock, { overrides, seed: T0 });
+    const older = gate.refreshOverride();
+    const newer = gate.refreshOverride();
+    const granted = makeOverride("Reload terbaru");
+    releases[1]!(granted);
+    await newer;
+    releases[0]!(null);
+    await older;
+    expect(getSalesGateState().override?.id).toBe(granted.id);
+  });
+});
+
+describe("521 a healthy catalog does not close an override while the clock is regressed", () => {
+  it("keeps the episode until both the critical streams and device clock have recovered", async () => {
+    const rig = await newEdge();
+    const high = new Date(T0.getTime() + DAY);
+    await saveCatalogGateState(rig.context, rig.scope, {
+      trackingStartedAt: T0,
+      clockHighWaterAt: high,
+    });
+    const clock = clocks(T0);
+    const granted: CatalogGateOverride = {
+      id: randomUUID(),
+      grantedBy: randomUUID(),
+      grantedAt: high,
+      untilAt: new Date(high.getTime() + 4 * HOUR),
+      reason: "Jam perangkat salah",
+    };
+    const stubbed = overrideStub(granted);
+    const gate = await start(rig, clock, {
+      overrides: stubbed.stub,
+      seed: high,
+    });
+    // Live success proves the catalog recovered despite the regressed clock;
+    // seeded checkpoints alone cannot prove the powered-off interval.
+    for (const stream of STREAMS) gate.freshness.recordSuccess(stream);
+    expect(gate.clock.regressed()).toBe(true);
+    expect(getSalesGateState().blocked).toBe(false);
+    await gate.tick();
+    expect(stubbed.close).not.toHaveBeenCalled();
+    expect(getSalesGateState().override?.id).toBe(granted.id);
+
+    clock.setWall(high);
+    expect(gate.clock.regressed()).toBe(false);
+    await gate.tick();
+    expect(stubbed.close).toHaveBeenCalledTimes(1);
+    expect(stubbed.close.mock.calls[0]![1]).toBe("SYNC_OK");
+    expect(getSalesGateState().override).toBeNull();
+    expect(getSalesGateState().blocked).toBe(false);
+  });
+});
+
+describe("521 an override episode closes only after the catalog recovers", () => {
+  const makeOverride = (): CatalogGateOverride => ({
+    id: randomUUID(),
+    grantedBy: randomUUID(),
+    grantedAt: T0,
+    untilAt: new Date(T0.getTime() + 4 * HOUR),
+    reason: "Pemulihan katalog",
+  });
+
+  it("does not close on a reachable catalog failure younger than 24 hours", async () => {
+    const rig = await newEdge();
+    const clock = clocks(T0);
+    const granted = makeOverride();
+    const stubbed = overrideStub(granted);
+    const gate = await start(rig, clock, { overrides: stubbed.stub, seed: T0 });
+    gate.freshness.recordFailure(STREAMS[0]!, {
+      reason: "HTTP_500",
+      cloudReachable: true,
+    });
+    expect(gate.freshness.snapshot()).toMatchObject({
+      stale: true,
+      salesGate: { stale24h: false },
+    });
+    await gate.tick();
+    expect(stubbed.close).not.toHaveBeenCalled();
+    expect(getSalesGateState().override?.id).toBe(granted.id);
+    gate.freshness.recordSuccess(STREAMS[0]!);
+    await gate.tick();
+    expect(stubbed.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not close on seeded checkpoints with unproven offline age", async () => {
+    const rig = await newEdge();
+    await saveCatalogGateState(rig.context, rig.scope, {
+      trackingStartedAt: T0,
+      clockHighWaterAt: T0,
+    });
+    const granted = makeOverride();
+    const stubbed = overrideStub(granted);
+    const gate = await start(rig, clocks(T0), {
+      overrides: stubbed.stub,
+      seed: T0,
+    });
+    expect(gate.clock.elapsedTimeUnproven()).toBe(true);
+    expect(gate.freshness.snapshot()).toMatchObject({
+      stale: true,
+      salesGate: { stale24h: false },
+    });
+    await gate.tick();
+    expect(stubbed.close).not.toHaveBeenCalled();
+    expect(getSalesGateState().override?.id).toBe(granted.id);
+    for (const stream of STREAMS) gate.freshness.recordSuccess(stream);
+    await gate.tick();
+    expect(stubbed.close).toHaveBeenCalledTimes(1);
+    expect(getSalesGateState().override).toBeNull();
+  });
+});
+
+describe("521 a reload of the same override during its committed close cannot resurrect it", () => {
+  it("drops the closed cached override even when a concurrent reload observed the same id", async () => {
+    const rig = await newEdge();
+    const clock = clocks(T0);
+    const granted: CatalogGateOverride = {
+      id: randomUUID(),
+      grantedBy: randomUUID(),
+      grantedAt: T0,
+      untilAt: new Date(T0.getTime() + 4 * HOUR),
+      reason: "Katalog pulih",
+    };
+    let begin: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      begin = resolve;
+    });
+    let release: () => void = () => undefined;
+    const closing = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const overrides: CatalogGateOverrides = {
+      load: async () => granted,
+      close: async () => {
+        begin();
+        await closing;
+      },
+    };
+    const gate = await start(rig, clock, { overrides, seed: T0 });
+    const ticking = gate.tick();
+    await started;
+    // This SELECT sees the pre-commit row; closing still owns the same id.
+    await gate.refreshOverride();
+    expect(getSalesGateState().override?.id).toBe(granted.id);
+    release();
+    await ticking;
+    expect(getSalesGateState().override).toBeNull();
+  });
+});

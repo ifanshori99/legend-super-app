@@ -202,6 +202,8 @@ export async function startCatalogGate(options: {
   let ready = first !== null;
 
   let override: CatalogGateOverride | null = null;
+  // Every cache decision invalidates loads started before that decision.
+  let overrideGeneration = 0;
   let stopped = false;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -220,8 +222,11 @@ export async function startCatalogGate(options: {
     }
   };
   const refreshOverride = async () => {
+    const generation = ++overrideGeneration;
     try {
-      override = await overrides.load(clock.now());
+      const loaded = await overrides.load(clock.now());
+      // A committed grant/close or a newer reload wins over this old read.
+      if (!stopped && generation === overrideGeneration) override = loaded;
     } catch (error) {
       onError(error);
     }
@@ -258,13 +263,22 @@ export async function startCatalogGate(options: {
 
   const tick = async () => {
     if (stopped || !ready) return;
-    // All critical streams within 24 h again: the episode ends.
+    // Close only once the catalog and device clock have both recovered.
     const observed = override;
-    if (observed && !freshness.snapshot().salesGate.stale24h) {
+    const snapshot = freshness.snapshot();
+    if (
+      observed &&
+      !snapshot.stale &&
+      !snapshot.salesGate.stale24h &&
+      !clock.regressed()
+    ) {
       try {
         await overrides.close(clock.now(), "SYNC_OK", observed.id);
         // A grant that landed during the await replaced the cache: keep it.
-        if (override?.id === observed.id) override = null;
+        if (override?.id === observed.id) {
+          override = null;
+          overrideGeneration += 1;
+        }
       } catch (error) {
         onError(error);
       }
@@ -321,6 +335,7 @@ export async function startCatalogGate(options: {
     freshness,
     clock,
     async applyOverrideChange(next) {
+      overrideGeneration += 1;
       override = next;
       await persist();
     },

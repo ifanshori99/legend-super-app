@@ -30,7 +30,8 @@ export type PromoGateHandle = {
 export function startPromoGate(options: {
   context: ScopedTenantContext;
   edgeNodeId: string;
-  clock: Pick<TrustedClock, "now">;
+  clock: Pick<TrustedClock, "now"> &
+    Partial<Pick<TrustedClock, "elapsedTimeUnproven">>;
   onError?: (error: unknown) => void;
   intervalMs?: number;
   database?: typeof db;
@@ -65,10 +66,17 @@ export function startPromoGate(options: {
     }
   };
   installPromoFreshnessProvider(() => {
+    // Fresh-looking saved checkpoints cannot prove time spent powered off.
+    // Q62 allows ordinary sales in this case, while discounts stay closed.
+    // Reopening needs proven time on a later boot or an explicit live-sync
+    // proof API when these streams exist; saved timestamps are not that proof.
+    if (options.clock.elapsedTimeUnproven?.()) return false;
     const at = options.clock.now().getTime();
     return PROMO_CHECKPOINT_STREAMS.every((stream) => {
       const last = lastSuccess.get(stream);
-      return last !== undefined && at - last.getTime() <= PROMO_STALE_AFTER_MS;
+      if (!last) return false;
+      const age = at - last.getTime();
+      return age >= 0 && age <= PROMO_STALE_AFTER_MS;
     });
   });
   void refresh();

@@ -44,6 +44,10 @@ import {
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { parseEdgeRuntimeConfig } from "../edge/config.ts";
 import { startEdgeMasterSyncLoop } from "../edge/master-sync.ts";
+import {
+  CRITICAL_CATALOG_STREAMS,
+  createCatalogFreshness,
+} from "../edge/catalog-freshness.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
@@ -215,6 +219,48 @@ afterAll(async () => {
 });
 
 describe("24318 the master-sync loop pulls the catalog", () => {
+  it("521 persists the trusted sync time so a wall rollback cannot make a successful catalog stale again after restart", async () => {
+    // The high water was accepted with the wall two days ahead; the wall
+    // has since returned to its current value while trusted time stays ahead.
+    const trustedAt = new Date(new Date().getTime() + 48 * 60 * 60_000);
+    const freshness = createCatalogFreshness({
+      clock: { now: () => trustedAt },
+    });
+    const spy = spyCloud({ masters: mastersFail, catalog: catalogEmpty });
+    const config = loopConfig();
+    if (!config.edgeMode) throw new Error("Expected an edge runtime config");
+    loop = startEdgeMasterSyncLoop({
+      config,
+      intervalMs: INTERVAL,
+      onError,
+      catalog: { freshness },
+      catalogOnStart: true,
+    });
+    await firstRound(spy);
+    await vi.waitFor(() => {
+      for (const stream of CRITICAL_CATALOG_STREAMS)
+        expect(
+          freshness.snapshot().streams[stream]?.lastSuccessAt,
+        ).not.toBeNull();
+    });
+    await loop.stop();
+    loop = null;
+
+    const stored = await owner.query<{ stream: string; last_success_at: Date }>(
+      "SELECT stream, last_success_at FROM edge_pull_checkpoints WHERE edge_node_id = $1",
+      [edgeNodeId],
+    );
+    for (const stream of CRITICAL_CATALOG_STREAMS) {
+      const checkpoint = stored.rows.find(
+        (row) => row.stream === `catalog:${stream}`,
+      );
+      expect(checkpoint?.last_success_at).toEqual(trustedAt);
+      expect(freshness.snapshot().streams[stream]?.lastSuccessAt).toEqual(
+        trustedAt,
+      );
+    }
+  });
+
   it("every tick syncs the masters first and then asks the cloud for every catalog stream in pull order, authenticated with the node credential", async () => {
     const spy = spyCloud({
       masters: () => {

@@ -7,7 +7,9 @@
 // `anchorMono = monoNow`. The monotonic clock is not affected by wall clock
 // changes, so a backward wall clock (while running, or across a restart via
 // the persisted high water) never reduces `now()`. A wall clock set forward is
-// accepted: it can only block earlier, and an owner override still works.
+// accepted and reanchors both clocks, so rolling it back cannot freeze an
+// override's remaining lifetime. A persisted stamp cannot prove the time spent
+// powered off when a reboot's wall clock is still at that stamp.
 export type TrustedClock = {
   now(): Date;
   /**
@@ -16,6 +18,13 @@ export type TrustedClock = {
    * stays false.
    */
   regressed(): boolean;
+  /**
+   * A reboot at or behind the persisted high water cannot prove how long the
+   * device was powered off. This stays true: the running monotonic clock only
+   * measures time since this boot. Fresh catalog syncs provide separate proof
+   * of catalog age; they do not prove the missing powered-off time.
+   */
+  elapsedTimeUnproven(): boolean;
   /** Highest trusted time returned so far; persist this. */
   highWater(): Date;
   /**
@@ -49,16 +58,25 @@ export function createTrustedClock(
     bootWall < persistedMs - CLOCK_REGRESSION_TOLERANCE_MS
       ? persistedMs
       : null;
+  let unproven =
+    persistedMs !== null &&
+    bootWall <= persistedMs + CLOCK_REGRESSION_TOLERANCE_MS;
   let anchorMono = mono();
   let high = anchorWall;
 
   const read = (): number => {
+    const monoNow = mono();
     const value = Math.max(
       wall().getTime(),
-      anchorWall + (mono() - anchorMono),
+      anchorWall + (monoNow - anchorMono),
     );
-    // Never goes down, even if the wall clock jumped forward and back.
-    if (value > high) high = value;
+    if (value > high) {
+      high = value;
+      // A forward wall jump becomes the new origin for elapsed real time.
+      // Keeping only `high` would freeze time until the old origin caught up.
+      anchorWall = value;
+      anchorMono = monoNow;
+    }
     return high;
   };
 
@@ -69,10 +87,13 @@ export function createTrustedClock(
       if (wall().getTime() >= regressedUntil) regressedUntil = null;
       return regressedUntil !== null;
     },
+    elapsedTimeUnproven: () => unproven,
     highWater: () => new Date(read()),
     adoptHighWater: (late) => {
       const lateMs = late.getTime();
       if (!Number.isFinite(lateMs)) return;
+      // Compare with the original boot wall, even if DB recovery takes hours.
+      if (bootWall <= lateMs + CLOCK_REGRESSION_TOLERANCE_MS) unproven = true;
       const current = read();
       if (lateMs > current) {
         anchorWall = lateMs;

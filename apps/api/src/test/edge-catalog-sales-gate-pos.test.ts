@@ -22,11 +22,20 @@
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   idr,
   outletIdSchema,
   tenantIdSchema,
+  ulidToUuid,
   userIdSchema,
 } from "@starter/shared/core";
 import {
@@ -38,12 +47,26 @@ import type { PosReceipt } from "@starter/shared/pos";
 import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
 import {
+  saveCatalogGateState,
+  startCatalogGate,
+} from "../edge/catalog-gate.ts";
+import { CRITICAL_CATALOG_STREAMS } from "../edge/catalog-freshness.ts";
+import { startPromoGate } from "../edge/promo-gate-runtime.ts";
+import {
+  promosEnabled,
+  setPromoGateEdgeModeForTests,
+  withPromoFreshness,
+} from "../edge/promo-gate.ts";
+import { registerEdgeNode } from "../services/edge-node.service.ts";
+import type { OrderPromoPort } from "../services/order-promo-port.ts";
+import {
   installSalesGateProvider,
   setSalesGateEdgeModeForTests,
   type SalesGateState,
 } from "../edge/sales-gate.ts";
 import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
 import {
+  setPosOrderPromoPort,
   setPosReceiptPort,
   type PosReceiptPort,
 } from "../services/pos-order-ports.ts";
@@ -181,6 +204,15 @@ function pos() {
         items: [{ menuItemId: ids.kopi, quantity: 2, modifierIds: [] }],
         ...body,
       }),
+    discount: (orderId: string, source: "promo" | "voucher") =>
+      send(`/${orderId}/discounts`, {
+        source,
+        kind: "amount",
+        reason: "promo_engine",
+        ...(source === "promo"
+          ? { promoCode: "OLD-PROMO" }
+          : { voucherCode: "OLD-VOUCHER" }),
+      }),
     submit: (orderId: string, expectedStatus: string) =>
       send(`/${orderId}/submit`, { expectedStatus }),
     cash: (orderId: string, expectedStatus: string, receivedIdr: number) =>
@@ -241,6 +273,7 @@ beforeAll(async () => {
         "order.view",
         "pos.sale.create",
         "pos.payment.accept",
+        "pos.discount.apply",
         "shift.cash.operate",
       ]),
     ],
@@ -315,6 +348,8 @@ beforeAll(async () => {
 afterEach(() => {
   installSalesGateProvider(null);
   setSalesGateEdgeModeForTests(null);
+  setPromoGateEdgeModeForTests(null);
+  setPosOrderPromoPort(null);
 });
 
 afterAll(async () => {
@@ -435,5 +470,140 @@ describe("legend-10nex the cloud is never held", () => {
     installSalesGateProvider(() => held);
     const res = await pos().create();
     expect(res.status, JSON.stringify(res.body)).toBe(201);
+  });
+});
+
+describe("521 Q62 unproven offline time keeps the outlet whole", () => {
+  it("sells at normal price, refuses promo/voucher without financial writes, and never returns excess change", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "device",
+      }),
+      { kind: "outlets", outletIds: [outletIdSchema.parse(tenant.outletId)] },
+    );
+    const registration = await registerEdgeNode(
+      context,
+      userIdSchema.parse(cashier.userId),
+      {
+        outletId: tenant.outletId,
+        role: "standby",
+        label: "Q62 POS boot offline",
+      },
+    );
+    const scope = {
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      edgeNodeId: registration.edgeNode.id,
+    };
+    const at = new Date();
+    await saveCatalogGateState(context, scope, {
+      trackingStartedAt: at,
+      clockHighWaterAt: at,
+    });
+    // The device was powered off for an unknowable duration and rebooted with
+    // its clock exactly at the last saved high water/checkpoint.
+    for (const stream of ["catalog:promotions", "catalog:vouchers"])
+      await owner.query(
+        `INSERT INTO edge_pull_checkpoints (tenant_id, outlet_id, edge_node_id, stream, last_success_at)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [tenant.tenantId, tenant.outletId, scope.edgeNodeId, stream, at],
+      );
+    const alarm = vi.fn();
+    const gate = await startCatalogGate({
+      context,
+      scope,
+      overrides: { load: async () => null, close: async () => undefined },
+      wall: () => at,
+      mono: () => 0,
+      persistMs: 24 * 60 * 60_000,
+      seed: async (freshness) => {
+        for (const stream of CRITICAL_CATALOG_STREAMS)
+          freshness.seedLastSuccess(stream, at);
+      },
+      onOwnerAlarm: alarm,
+    });
+    const promoGate = startPromoGate({
+      context,
+      edgeNodeId: scope.edgeNodeId,
+      clock: gate.clock,
+      intervalMs: 24 * 60 * 60_000,
+    });
+    const inner: OrderPromoPort = {
+      quote: async () => ({
+        result: { evaluations: [], totalDiscountIdr: idr(10_000) },
+        totalDiscountIdr: idr(10_000),
+      }),
+      redeem: async () => ({
+        result: { evaluations: [], totalDiscountIdr: idr(10_000) },
+        totalDiscountIdr: idr(10_000),
+      }),
+      release: async () => ({ released: true, releasedDiscountIdr: idr(0) }),
+    };
+    setPosOrderPromoPort(withPromoFreshness(inner));
+    setSalesGateEdgeModeForTests(() => true);
+    setPromoGateEdgeModeForTests(() => true);
+    try {
+      await promoGate.refresh();
+      expect(promosEnabled()).toBe(false);
+      expect(gate.freshness.snapshot()).toMatchObject({
+        stale: true,
+        ownerAlarm: true,
+      });
+      expect(gate.freshness.snapshot().cashierWarning).toBeTruthy();
+      expect(alarm).toHaveBeenCalled();
+      const created = await pos().create();
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+      const orderId = created.body.data.id as string;
+      const status = created.body.data.status as string;
+      const fullPrice = 2 * KOPI_IDR + 5_000;
+      expect(created.body.data.discountIdr).toBe(0);
+      expect(created.body.data.totalIdr).toBe(fullPrice);
+      const before = await owner.query(
+        "SELECT (SELECT count(*) FROM orders WHERE tenant_id=$1)::int AS orders, (SELECT count(*) FROM pos_order_discounts WHERE tenant_id=$1)::int AS discounts, (SELECT count(*) FROM pos_order_tenders WHERE tenant_id=$1)::int AS tenders",
+        [tenant.tenantId],
+      );
+      for (const source of ["promo", "voucher"] as const) {
+        const refused = await pos().discount(orderId, source);
+        expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+        expect(JSON.stringify(refused.body)).toContain(
+          "Promo dan voucher dimatikan",
+        );
+      }
+      const after = await owner.query(
+        "SELECT (SELECT count(*) FROM orders WHERE tenant_id=$1)::int AS orders, (SELECT count(*) FROM pos_order_discounts WHERE tenant_id=$1)::int AS discounts, (SELECT count(*) FROM pos_order_tenders WHERE tenant_id=$1)::int AS tenders",
+        [tenant.tenantId],
+      );
+      expect(after.rows).toEqual(before.rows);
+      const submitted = await pos().submit(orderId, status);
+      expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+      const paid = await pos().cash(
+        orderId,
+        submitted.body.data.status as string,
+        fullPrice + 5_000,
+      );
+      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+      const tender = await owner.query<{
+        amount_idr: number;
+        received_idr: number;
+        change_idr: number;
+      }>(
+        "SELECT amount_idr::int, received_idr::int, change_idr::int FROM pos_order_tenders WHERE tenant_id=$1 AND order_id=$2",
+        [tenant.tenantId, ulidToUuid(orderId)],
+      );
+      expect(tender.rows).toHaveLength(1);
+      expect(tender.rows[0]).toEqual({
+        amount_idr: fullPrice,
+        received_idr: fullPrice + 5_000,
+        change_idr: 5_000,
+      });
+      const row = tender.rows[0]!;
+      expect(row.received_idr - row.change_idr).toBe(fullPrice);
+      expect(row.change_idr).toBeLessThanOrEqual(row.received_idr - fullPrice);
+    } finally {
+      promoGate.stop();
+      await gate.stop();
+    }
   });
 });

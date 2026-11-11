@@ -114,6 +114,8 @@ export type CatalogFreshnessSnapshot = {
 };
 
 export type CatalogFreshnessTracker = {
+  /** The same trusted time used to age catalog data and stamp pull checkpoints. */
+  now(): Date;
   /** `at`: when the stream's last page was stored (default now). */
   recordSuccess(stream: string, at?: Date): void;
   recordFailure(
@@ -135,6 +137,8 @@ export type CatalogFreshnessTracker = {
 
 type StreamState = {
   lastSuccessAt: Date | null;
+  /** A live successful pull, not a saved checkpoint, is needed to prove freshness. */
+  timeUnproven: boolean;
   /** Failure since the last success. */
   failure: {
     firstAt: Date;
@@ -152,7 +156,7 @@ function isCritical(stream: string): boolean {
 export function createCatalogFreshness(
   options: {
     /** Trusted clock (edge/trusted-clock.ts); wins over `now`. */
-    clock?: { now(): Date };
+    clock?: { now(): Date; elapsedTimeUnproven?(): boolean };
     now?: () => Date;
     /** First boot of the freshness tracking (default: now). */
     trackingStartedAt?: Date;
@@ -184,10 +188,22 @@ export function createCatalogFreshness(
   const states = new Map<string, StreamState>(
     CRITICAL_CATALOG_STREAMS.map((stream) => [
       stream,
-      { lastSuccessAt: null, failure: null },
+      { lastSuccessAt: null, timeUnproven: false, failure: null },
     ]),
   );
   let episodeAlarmed = false;
+  let observedUnprovenTime = false;
+  let unprovenAgeLowerBoundAt: number | null = null;
+
+  // A high water loaded after a database outage can discover uncertainty
+  // after this tracker was created. Adopt it once, then allow each live pull
+  // to recover its own stream without the clock's latched boot flag undoing it.
+  const observeUnprovenTime = () => {
+    if (observedUnprovenTime || !trustedClock?.elapsedTimeUnproven?.()) return;
+    observedUnprovenTime = true;
+    unprovenAgeLowerBoundAt = now().getTime();
+    for (const state of states.values()) state.timeUnproven = true;
+  };
 
   // A success stamp from a wall clock ahead of the trusted one (the puller
   // stamps with `new Date()`) must not hide a stale catalog: never in the future.
@@ -204,6 +220,7 @@ export function createCatalogFreshness(
   });
 
   const snapshot = (): CatalogFreshnessSnapshot => {
+    observeUnprovenTime();
     const at = now().getTime();
     const streams: Record<string, CatalogStreamFreshness> = {};
     const staleStates: StreamState[] = [];
@@ -213,15 +230,38 @@ export function createCatalogFreshness(
       // Age basis of the sales rule: last success, or tracking start when
       // the stream never succeeded. Independent of any recorded failure.
       const basis = state.lastSuccessAt ?? trackingStartedAt;
-      if (at - basis.getTime() > blockAfterMs)
+      // Q62 does not turn unknown downtime into a 24-hour hold. It also does
+      // not erase age already proven at the saved high water: an already-old
+      // checkpoint remains blocked. Freeze this lower bound until live sync.
+      const ageReference = state.timeUnproven
+        ? (unprovenAgeLowerBoundAt ?? at)
+        : at;
+      if (ageReference - basis.getTime() > blockAfterMs)
         blockedStreams.push({ stream, since: basis });
       streams[stream] = {
         lastSuccessAt: state.lastSuccessAt,
-        ageMs: state.lastSuccessAt
-          ? Math.max(0, at - state.lastSuccessAt.getTime())
-          : null,
-        failureReason: state.failure?.reason ?? null,
+        ageMs:
+          state.lastSuccessAt && !state.timeUnproven
+            ? Math.max(0, at - state.lastSuccessAt.getTime())
+            : null,
+        failureReason:
+          state.failure?.reason ??
+          (state.timeUnproven ? "CLOCK_ELAPSED_UNPROVEN" : null),
       };
+      if (state.timeUnproven) {
+        staleStates.push(state);
+        // This is a queued alarm even without a reachable cloud. The runtime
+        // persists it locally and the heartbeat delivers it after reconnect.
+        alarmStreams.push({
+          stream,
+          // Seeding checkpoints after the immediate boot alarm must not
+          // create a second notification identity for the same episode.
+          staleSince: new Date(unprovenAgeLowerBoundAt ?? at),
+          lastSuccessAt: state.lastSuccessAt,
+          reason: "CLOCK_ELAPSED_UNPROVEN",
+        });
+        continue;
+      }
       if (!state.failure) continue;
       staleStates.push(state);
       const since = state.lastSuccessAt ?? state.failure.firstAt;
@@ -239,6 +279,7 @@ export function createCatalogFreshness(
         });
     }
     const stale = staleStates.length > 0;
+    const timeUnproven = staleStates.some((state) => state.timeUnproven);
     const stale24h = blockedStreams.length > 0;
     const blockedSince =
       blockedStreams
@@ -256,9 +297,11 @@ export function createCatalogFreshness(
       ownerAlarm: alarmStreams.length > 0,
       cashierWarning: !stale
         ? null
-        : neverSynced || !oldest
-          ? "katalog belum pernah diperbarui sejak edge menyala"
-          : `katalog belum diperbarui sejak ${clock.format(oldest)}`,
+        : timeUnproven
+          ? "waktu sejak pembaruan katalog tidak dapat dipastikan; promo dan voucher dinonaktifkan"
+          : neverSynced || !oldest
+            ? "katalog belum pernah diperbarui sejak edge menyala"
+            : `katalog belum diperbarui sejak ${clock.format(oldest)}`,
       salesBlocked: stale24h,
       salesGate: {
         stale24h,
@@ -292,11 +335,19 @@ export function createCatalogFreshness(
     }
   };
 
+  // Queue the boot warning/alarm even if no checkpoint or failed tick exists.
+  evaluate();
+
   return {
+    now,
     recordSuccess(stream, at) {
       const state = isCritical(stream) ? states.get(stream) : undefined;
       if (!state) return;
-      state.lastSuccessAt = clampToNow(at);
+      observeUnprovenTime();
+      // Explicit dates on older call sites came from the wall clock. Once a
+      // trusted clock is installed, a successful live sync uses that basis.
+      state.lastSuccessAt = trustedClock ? now() : clampToNow(at);
+      state.timeUnproven = false;
       state.failure = null;
       evaluate();
     },
@@ -328,8 +379,8 @@ export function createCatalogFreshness(
     adoptTrackingStartedAt(at) {
       if (at.getTime() < trackingStartedAt.getTime()) {
         trackingStartedAt = at;
-        evaluate();
       }
+      evaluate();
     },
     snapshot,
   };

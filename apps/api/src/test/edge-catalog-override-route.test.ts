@@ -409,3 +409,85 @@ describe("legend-10nex granting waits for the trusted clock", () => {
     expect([200, 201], JSON.stringify(again.body)).toContain(again.status);
   });
 });
+
+describe("521 override authentication uses the trusted edge clock", () => {
+  it("refuses wall-clock-fresh MFA after trusted time advanced 48 hours and writes nothing", async () => {
+    const staff = await staffWithRole(app, {
+      template: "owner",
+      label: "Owner Trusted MFA Basi",
+    });
+    const trustedNow = new Date(Date.now() + 48 * 60 * 60_000);
+    setCatalogOverrideClock(() => trustedNow);
+    try {
+      const res = await post(staff, { minutes: 240, reason: REASON });
+      expect(res.status, JSON.stringify(res.body)).toBe(401);
+      expect(errorCode(res.body)).toBe("REAUTH_REQUIRED");
+      expect(await rowsOf(staff.userId)).toHaveLength(0);
+      expect(await auditCount(staff.userId)).toBe(0);
+    } finally {
+      setCatalogOverrideClock(() => new Date());
+      await pool.query(
+        "DELETE FROM edge_catalog_sale_overrides WHERE granted_by = $1",
+        [staff.userId],
+      );
+    }
+  });
+
+  it("accepts MFA fresh on trusted time after the wall clock was restored", async () => {
+    const staff = await staffWithRole(app, {
+      template: "owner",
+      label: "Owner Trusted MFA Segar",
+    });
+    const trustedNow = new Date(Date.now() + 48 * 60 * 60_000);
+    await pool.query(
+      `UPDATE "session" SET mfa_verified_at = $2
+       WHERE revoked_at IS NULL AND user_id = $1`,
+      [staff.userId, new Date(trustedNow.getTime() - 60_000)],
+    );
+    setCatalogOverrideClock(() => trustedNow);
+    try {
+      const res = await post(staff, { minutes: 240, reason: REASON });
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      const stored = await rowsOf(staff.userId);
+      expect(stored).toHaveLength(1);
+      expect(stored[0]!.granted_at).toEqual(trustedNow);
+      expect(stored[0]!.until_at.getTime()).toBe(
+        trustedNow.getTime() + 240 * 60_000,
+      );
+    } finally {
+      setCatalogOverrideClock(() => new Date());
+      await pool.query(
+        "DELETE FROM edge_catalog_sale_overrides WHERE granted_by = $1",
+        [staff.userId],
+      );
+    }
+  });
+
+  it("refuses a session expired on trusted time even when MFA is fresh on both clocks", async () => {
+    const staff = await staffWithRole(app, {
+      template: "owner",
+      label: "Owner Trusted Sesi Kedaluwarsa",
+    });
+    const wallNow = Date.now();
+    const trustedNow = new Date(wallNow + 2 * 60_000);
+    await pool.query(
+      `UPDATE "session" SET mfa_verified_at = $2, expires_at = $3
+       WHERE revoked_at IS NULL AND user_id = $1`,
+      [staff.userId, new Date(wallNow), new Date(wallNow + 60_000)],
+    );
+    setCatalogOverrideClock(() => trustedNow);
+    try {
+      const res = await post(staff, { minutes: 240, reason: REASON });
+      expect(res.status, JSON.stringify(res.body)).toBe(401);
+      expect(errorCode(res.body)).toBe("REAUTH_REQUIRED");
+      expect(await rowsOf(staff.userId)).toHaveLength(0);
+      expect(await auditCount(staff.userId)).toBe(0);
+    } finally {
+      setCatalogOverrideClock(() => new Date());
+      await pool.query(
+        "DELETE FROM edge_catalog_sale_overrides WHERE granted_by = $1",
+        [staff.userId],
+      );
+    }
+  });
+});
