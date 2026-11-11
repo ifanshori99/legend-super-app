@@ -46,6 +46,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
+import { orderGivenOf, type OrderGiven } from "./order-given.ts";
 import { livePromoApplicationOf } from "./order-promo-refund.ts";
 import {
   assertBusinessDayOpen,
@@ -579,6 +580,74 @@ export function refundLinesByTender(
   return lines;
 }
 
+type LineItem = Pick<
+  Awaited<ReturnType<typeof itemsOf>>[number]["item"],
+  "id" | "quantity" | "lineTotalIdr"
+>;
+
+/**
+ * legend-5g9sn (Q25 per item): what the lines named by a POS refund still
+ * hold. Per original line (a replacement maps back through the swap chain):
+ * its share of the bill (line total x total / subtotal, floor) less the
+ * vouchers and live recovery refunds of its issues and its part of the earlier
+ * POS refunds that named items (each row split over its items by value, the
+ * last item taking the rest). Rows without items are covered by the order room.
+ */
+export function lineRoomIdr(
+  order: { totalIdr: number; subtotalIdr: number },
+  items: readonly LineItem[],
+  refunds: readonly Pick<RefundRow, "amountIdr" | "items">[],
+  given: Pick<OrderGiven, "lineGivenIdr" | "toOriginal">,
+  requested: readonly { itemId: string }[],
+): number {
+  const byId = new Map(items.map((item) => [item.id as string, item]));
+  const valueOf = (itemId: string, quantity: number) => {
+    const item = byId.get(itemId);
+    return item && item.quantity > 0
+      ? (Number(item.lineTotalIdr) * quantity) / item.quantity
+      : 0;
+  };
+  const priorPos = new Map<string, number>();
+  for (const row of refunds) {
+    if (row.items.length === 0) continue;
+    const weights = row.items.map((entry) =>
+      valueOf(entry.itemId, entry.quantity),
+    );
+    const total = weights.reduce((sum, weight) => sum + weight, 0);
+    let left = Number(row.amountIdr);
+    row.items.forEach((entry, index) => {
+      const share =
+        index === row.items.length - 1
+          ? left
+          : total > 0
+            ? Math.floor((row.amountIdr * weights[index]!) / total)
+            : 0;
+      left -= share;
+      const line = given.toOriginal(entry.itemId);
+      priorPos.set(line, (priorPos.get(line) ?? 0) + share);
+    });
+  }
+  const lines = new Set(
+    requested.map((entry) => given.toOriginal(entry.itemId)),
+  );
+  let room = 0;
+  for (const line of lines) {
+    const item = byId.get(line);
+    const paid =
+      item && order.subtotalIdr > 0
+        ? Number(
+            (BigInt(item.lineTotalIdr) * BigInt(order.totalIdr)) /
+              BigInt(order.subtotalIdr),
+          )
+        : 0;
+    room += Math.max(
+      0,
+      paid - (given.lineGivenIdr.get(line) ?? 0) - (priorPos.get(line) ?? 0),
+    );
+  }
+  return room;
+}
+
 /** POST .../corrections/refund — linked refund against a paid sale (POS-04). */
 export async function refundPosOrder(
   context: ScopedTenantContext,
@@ -608,15 +677,22 @@ export async function refundPosOrder(
         .filter((tender) => tender.status === "captured")
         .reduce((sum, tender) => sum + Number(tender.amountIdr), 0);
       const refunded = refunds.reduce((sum, row) => sum + row.amountIdr, 0);
+      // legend-5g9sn (Q25): the vouchers and the live recovery refunds of the
+      // order count against what the guest paid too (order level, read without
+      // lock: only the order lock above, never an issue lock).
+      const given = await orderGivenOf(tx, context.tenant.tenantId, order.id);
+      const recoveryGivenIdr = given.vouchersIdr + given.recoveryRefundsIdr;
+      const roomIdr = Math.max(0, paid - refunded - recoveryGivenIdr);
 
       // Items: quantities already refunded by earlier rows, then this request.
       const requested = (input.items ?? []).map(({ itemId, quantity }) => ({
         itemId,
         quantity,
       }));
-      const liveItems = (await itemsOf(tx, context, order.id))
-        .map(({ item }) => item)
-        .filter((item) => item.status !== "voided");
+      const allItems = (await itemsOf(tx, context, order.id)).map(
+        ({ item }) => item,
+      );
+      const liveItems = allItems.filter((item) => item.status !== "voided");
       const refundedBefore = new Map<string, number>();
       for (const row of refunds)
         for (const entry of row.items)
@@ -764,7 +840,7 @@ export async function refundPosOrder(
           // payout below what is due would lock the rest for good. Asking
           // less is refused before anything is written; asking more is
           // capped to what is due (unchanged).
-          const owedIdr = Math.min(dueBill, Math.max(0, paid - refunded));
+          const owedIdr = Math.min(dueBill, roomIdr);
           // legend-186 (s7rx B): owed, but only from the deposit (the tenders
           // are used up): the item still comes back as a Rp0 return and the
           // rest stays on the deposit side.
@@ -797,8 +873,32 @@ export async function refundPosOrder(
             "Tidak ada dana yang perlu dikembalikan.",
           );
       }
+      // legend-5g9sn: a refund above what the vouchers and recovery refunds
+      // left is cut to it (as the promo payout is capped to what is due);
+      // nothing left is refused.
+      if (!promoApplication && recoveryGivenIdr > 0) {
+        payout = Math.min(payout, roomIdr);
+        // Q25 is per item: a refund that names items is also bound by what
+        // each named line still holds (paid share of its original line less
+        // the vouchers, live recovery refunds and earlier POS refunds of it).
+        if (requested.length > 0)
+          payout = Math.min(
+            payout,
+            lineRoomIdr(order, allItems, refunds, given, requested),
+          );
+        if (payout <= 0)
+          throw new HttpError(
+            422,
+            "REFUND_NOTHING_DUE",
+            "Tidak ada dana yang perlu dikembalikan.",
+          );
+      }
       if (!goodsReturnOnly)
-        assertRefundWithinPaid(idr(paid), idr(refunded), idr(payout));
+        assertRefundWithinPaid(
+          idr(paid),
+          idr(Math.min(paid, refunded + recoveryGivenIdr)),
+          idr(payout),
+        );
       const override = await consumeApproval(tx, context, {
         action: "refund",
         purpose: "refund",
