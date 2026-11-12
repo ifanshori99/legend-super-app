@@ -232,7 +232,7 @@ describe("legend-dysef cashier catalog", () => {
     const unselected = await fixture.create({
       items: [fixture.line({ menuItemId: variantItem.id })],
     });
-    expect(unselected.status, JSON.stringify(unselected.body)).toBe(400);
+    expect(unselected.status, JSON.stringify(unselected.body)).toBe(422);
     expect(unselected.body.error).toMatchObject({
       code: "VALIDATION_ERROR",
       message: "Pilih varian untuk menu ini.",

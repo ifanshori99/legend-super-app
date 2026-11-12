@@ -74,6 +74,7 @@ import {
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { reservationDepositAllocations } from "../db/schema/reservation.ts";
 import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
 import {
   cancelKitchenItemsForVoidedLines,
@@ -729,7 +730,7 @@ export async function createPosOrder(
                   "CONFLICT",
                   `ORD-05: menu baris ${index + 1} sedang tidak dapat dijual.`,
                 )
-              : new CoreError("VALIDATION_ERROR", resolution.message);
+              : new HttpError(422, "VALIDATION_ERROR", resolution.message);
           return {
             id: createUlid(now.getTime() + index + 1),
             line,
