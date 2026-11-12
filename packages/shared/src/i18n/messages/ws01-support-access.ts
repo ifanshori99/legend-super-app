@@ -21,6 +21,10 @@ export const supportAccessMessages = {
     alreadyActive:
       "Anda sudah punya sesi aktif untuk tenant ini. Akhiri sesi itu dulu jika ingin memulai ulang.",
     notFound: "Sesi tidak ditemukan. Muat ulang daftar.",
+    ownerApprovalRequired:
+      "Akses baca dan tulis harus disetujui owner tenant. Ajukan sebagai permintaan, bukan sesi langsung.",
+    impersonationNotAllowed:
+      "Keputusan ini tidak bisa dibuat dari sesi dukungan. Masuk dengan akun owner sendiri.",
   },
 
   platform: {
@@ -74,6 +78,13 @@ export const supportAccessMessages = {
     durationDefault: "{minutes} menit (bawaan)",
     scope: "Cakupan akses",
     scopeValue: "Hanya baca",
+    scopeReadOnly: "Hanya baca",
+    scopeReadWrite: "Baca dan tulis (perlu persetujuan owner)",
+    scopeWriteHint:
+      "Akses baca dan tulis tidak langsung aktif. Owner tenant menerima permintaan ini dan punya 24 jam untuk menyetujui atau menolak. Sesi hanya berjalan setelah disetujui, maksimal 30 menit.",
+    submitWrite: "Kirim permintaan ke owner",
+    sentToOwner:
+      "Permintaan terkirim ke owner tenant. Sesi dimulai setelah disetujui.",
     scopeHint:
       "Sesi ini hanya dapat melihat data. Tidak ada perubahan yang bisa dibuat atas nama tenant.",
     mfaTitle: "Verifikasi dua langkah",

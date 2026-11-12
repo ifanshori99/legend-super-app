@@ -2,11 +2,15 @@
 // tenant, written reason (required), duration (60 minutes by default),
 // read-only scope and a fresh authenticator code.
 import * as React from "react";
-import { Eye, ShieldCheck } from "lucide-react";
+import { Eye, Pencil, ShieldCheck } from "lucide-react";
 import {
   requestSupportAccessInputSchema,
+  requestSupportWriteAccessInputSchema,
   SUPPORT_ACCESS_DEFAULT_MINUTES,
   SUPPORT_ACCESS_DURATIONS,
+  SUPPORT_ACCESS_WRITE_DEFAULT_MINUTES,
+  SUPPORT_ACCESS_WRITE_DURATIONS,
+  type SupportAccessMode,
   type Tenant,
 } from "@starter/shared/platform";
 import { useT } from "@/components/i18n";
@@ -31,7 +35,10 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { supportErrorMessage } from "../errors.ts";
-import { useRequestSupportAccess } from "../hooks.ts";
+import {
+  useRequestSupportAccess,
+  useRequestSupportWriteAccess,
+} from "../hooks.ts";
 import {
   REASON_MAX_LENGTH,
   REASON_MIN_LENGTH,
@@ -55,7 +62,17 @@ export function RequestSupportAccessDialog({
 }: Props) {
   const t = useT();
   const toast = useToast();
-  const request = useRequestSupportAccess();
+  const readRequest = useRequestSupportAccess();
+  const writeRequest = useRequestSupportWriteAccess();
+  const [mode, setMode] = React.useState<SupportAccessMode>("read_only");
+  const writeMode = mode === "read_write";
+  const request = writeMode ? writeRequest : readRequest;
+  const durations: readonly number[] = writeMode
+    ? SUPPORT_ACCESS_WRITE_DURATIONS
+    : SUPPORT_ACCESS_DURATIONS;
+  const defaultMinutes = writeMode
+    ? SUPPORT_ACCESS_WRITE_DEFAULT_MINUTES
+    : SUPPORT_ACCESS_DEFAULT_MINUTES;
 
   const [tenantId, setTenantId] = React.useState("");
   const [reason, setReason] = React.useState("");
@@ -71,14 +88,30 @@ export function RequestSupportAccessDialog({
     setReason("");
     setDuration(String(SUPPORT_ACCESS_DEFAULT_MINUTES));
     setCode("");
+    setMode("read_only");
     setErrors({});
     setServerError(null);
-    request.reset();
+    readRequest.reset();
+    writeRequest.reset();
   };
 
   const changeOpen = (next: boolean) => {
     if (!next) reset();
     onOpenChange(next);
+  };
+
+  const changeMode = (next: string) => {
+    const nextMode = next as SupportAccessMode;
+    setMode(nextMode);
+    // 60 and 120 minutes are read-only durations; read_write caps at 30.
+    setDuration(
+      String(
+        nextMode === "read_write"
+          ? SUPPORT_ACCESS_WRITE_DEFAULT_MINUTES
+          : SUPPORT_ACCESS_DEFAULT_MINUTES,
+      ),
+    );
+    setServerError(null);
   };
 
   const submit = (event: React.FormEvent) => {
@@ -87,10 +120,14 @@ export function RequestSupportAccessDialog({
     const nextErrors: Errors = {};
     if (!tenantId)
       nextErrors.tenant = t("supportAccess.request.tenantRequired");
-    const parsed = requestSupportAccessInputSchema.safeParse({
+    const parsed = (
+      writeMode
+        ? requestSupportWriteAccessInputSchema
+        : requestSupportAccessInputSchema
+    ).safeParse({
       reason,
       durationMinutes: Number(duration),
-      accessMode: "read_only",
+      ...(writeMode ? {} : { accessMode: "read_only" }),
       mfaCode: code,
     });
     if (!parsed.success) {
@@ -105,16 +142,38 @@ export function RequestSupportAccessDialog({
     }
     setErrors(nextErrors);
     if (!parsed.success || nextErrors.tenant) return;
-    request.mutate(
-      { tenantId, body: parsed.data },
-      {
-        onSuccess: () => {
-          toast({ title: t("supportAccess.request.started") });
-          changeOpen(false);
-        },
-        onError: (failure) => setServerError(supportErrorMessage(failure, t)),
+    const handlers = {
+      onSuccess: () => {
+        toast({
+          title: t(
+            writeMode
+              ? "supportAccess.request.sentToOwner"
+              : "supportAccess.request.started",
+          ),
+        });
+        changeOpen(false);
       },
-    );
+      onError: (failure: unknown) =>
+        setServerError(supportErrorMessage(failure, t)),
+    };
+    if (writeMode)
+      writeRequest.mutate(
+        {
+          tenantId,
+          body: parsed.data as Parameters<
+            typeof writeRequest.mutate
+          >[0]["body"],
+        },
+        handlers,
+      );
+    else
+      readRequest.mutate(
+        {
+          tenantId,
+          body: parsed.data as Parameters<typeof readRequest.mutate>[0]["body"],
+        },
+        handlers,
+      );
   };
 
   return (
@@ -195,10 +254,10 @@ export function RequestSupportAccessDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {SUPPORT_ACCESS_DURATIONS.map((minutes) => (
+                  {durations.map((minutes) => (
                     <SelectItem key={minutes} value={String(minutes)}>
                       {t(
-                        minutes === SUPPORT_ACCESS_DEFAULT_MINUTES
+                        minutes === defaultMinutes
                           ? "supportAccess.request.durationDefault"
                           : "supportAccess.request.durationOption",
                         { minutes },
@@ -208,18 +267,43 @@ export function RequestSupportAccessDialog({
                 </SelectContent>
               </Select>
             </FormField>
-            <div className="grid content-start gap-1.5">
-              <p className="text-sm font-semibold">
-                {t("supportAccess.request.scope")}
-              </p>
-              <p className="inline-flex min-h-control items-center gap-2 rounded-control border-(length:--border-w) bg-surface-2 px-3 text-sm font-semibold">
-                <Eye className="size-4 text-info" aria-hidden="true" />
-                {t("supportAccess.request.scopeValue")}
-              </p>
-            </div>
+            <FormField
+              id="support-request-scope"
+              label={t("supportAccess.request.scope")}
+              required
+            >
+              <Select value={mode} onValueChange={changeMode}>
+                <SelectTrigger id="support-request-scope">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="read_only">
+                    {t("supportAccess.request.scopeReadOnly")}
+                  </SelectItem>
+                  <SelectItem value="read_write">
+                    {t("supportAccess.request.scopeReadWrite")}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </FormField>
           </div>
           <p className="-mt-2 text-sm text-muted-foreground">
-            {t("supportAccess.request.scopeHint")}
+            {writeMode ? (
+              <Pencil
+                className="mr-1 inline size-4 text-warning"
+                aria-hidden="true"
+              />
+            ) : (
+              <Eye
+                className="mr-1 inline size-4 text-info"
+                aria-hidden="true"
+              />
+            )}
+            {t(
+              writeMode
+                ? "supportAccess.request.scopeWriteHint"
+                : "supportAccess.request.scopeHint",
+            )}
           </p>
 
           <div className="grid gap-3 rounded-container border-(length:--border-w) p-3">
@@ -263,7 +347,11 @@ export function RequestSupportAccessDialog({
               {t("supportAccess.request.cancel")}
             </Button>
             <Button type="submit" loading={request.isPending}>
-              {t("supportAccess.request.submit")}
+              {t(
+                writeMode
+                  ? "supportAccess.request.submitWrite"
+                  : "supportAccess.request.submit",
+              )}
             </Button>
           </DialogFooter>
         </form>

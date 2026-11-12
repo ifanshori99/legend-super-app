@@ -7,6 +7,10 @@ export function supportErrorMessage(error: unknown, t: Translate): string {
   switch (error.code) {
     case "SUPPORT_ACCESS_ALREADY_ACTIVE":
       return t("supportAccess.errors.alreadyActive");
+    case "SUPPORT_ACCESS_OWNER_APPROVAL_REQUIRED":
+      return t("supportAccess.errors.ownerApprovalRequired");
+    case "IMPERSONATION_NOT_ALLOWED":
+      return t("supportAccess.errors.impersonationNotAllowed");
     case "REAUTH_REQUIRED":
     case "MFA_INVALID":
     case "MFA_REQUIRED":
