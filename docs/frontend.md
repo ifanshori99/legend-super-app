@@ -387,7 +387,7 @@ Ten slowest spec files in the same sample (sum of test time):
 
 Obvious waste, biggest first:
 
-1. The warm-up repeats for every shard and for every single-spec run: `globalSetup` warms all 41 routes (~30 s measured) even when a shard needs a fraction of them, and `pnpm test:e2e:mock e2e/one.spec.ts` pays the full warm-up for one test. Warming only the routes of the specs in the run would cut most of CI's fixed cost; an env opt-out would help the single-spec loop. (No change in this bead.)
+1. By default, `globalSetup` warms the full route list on every run and shard (~30 s in the sample above). For a focused run, set `LEGEND_MOCK_WARM_ROUTES` to the comma-separated local paths needed by all selected specs, including paths reached by clicking. For example, `LEGEND_MOCK_WARM_ROUTES=/kelola/pengadaan,/kds pnpm test:e2e:mock e2e/legend-1j7.mock.spec.ts e2e/legend-10n.mock.spec.ts`. Set it to `none` to skip warm-up entirely; a cold first page can then time out. The setup logs the selected paths. Selection is manual: unset keeps the full list, including in CI shards. Check the selection helper itself with `heavy node --test e2e/warm-routes.test.ts`.
 2. The slowest tests are multi-state journeys (`?mock=slow` latency, retry and offline paths) and multi-viewport visual checks. Those states are the subject of the specs, not waste — do not speed them up by dropping assertions.
 3. The two CI shards get 113 and 111 tests because whole files are assigned in file order; that is even enough that `PWTEST_SHARD_WEIGHTS` is not worth setting yet.
 

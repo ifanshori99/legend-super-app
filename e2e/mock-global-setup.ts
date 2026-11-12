@@ -7,15 +7,17 @@
 // later tests on the same route passed, because the modules were warm by then.
 //
 // Playwright starts the webServer before globalSetup and the first test after
-// it, so this setup opens every route area in a real Chromium page until the
+// it, so this setup opens selected route areas in a real Chromium page until the
 // route answers and its client modules have loaded. Specs then run against a
-// warm server and keep their normal timeouts. No per-spec sleeps.
+// warm server and keep their normal timeouts. No per-spec sleeps. By default all
+// routes are warmed; LEGEND_MOCK_WARM_ROUTES can select paths or skip them.
 //
 // Keep the list in sync with apps/web/src/routes when a new area lands; the ids
 // are the fixtures the existing mock specs use (legend-2m4 table token,
 // legend-kaqr facility/ticket, legend-2w5 payment link).
 import { chromium } from "@playwright/test";
 import { MOCK_WEB_URL } from "./mock-server.ts";
+import { selectWarmRoutes } from "./warm-routes.ts";
 
 /** Valid mock fixture ids, so every warmed route renders (not a not-found). */
 const TABLE_TOKEN = `v1.${"C".repeat(40)}.${"D".repeat(43)}`; // table A01
@@ -66,6 +68,18 @@ const WARM_ROUTES: readonly string[] = [
   "/shareholder",
   "/platform",
   "/karyawan",
+  "/karyawan/absensi",
+  "/karyawan/absensi/riwayat",
+  "/karyawan/slip-gaji",
+  "/karyawan/slip-gaji/lupa-pin",
+  "/karyawan/slip-gaji/ubah-pin",
+  "/karyawan/slip-gaji/00000000-0000-4000-8000-000000005701",
+  "/karyawan/kasbon",
+  "/karyawan/reimbursement",
+  "/kelola/payroll/run",
+  "/kelola/payroll/run/00000000-0000-4000-8000-000000005202",
+  "/kelola/payroll/service-charge",
+  "/kelola/payroll/pengaturan",
   `/t/${TABLE_TOKEN}`, // QR customer journey
   `/t/${TABLE_TOKEN}/cart`,
   `/t/${TABLE_TOKEN}/checkout`,
@@ -150,14 +164,22 @@ async function warmRoute(
 export default async function warmMockServer() {
   const startedAt = Date.now();
   const deadline = startedAt + DEADLINE_MS;
+  const routes = selectWarmRoutes(
+    process.env.LEGEND_MOCK_WARM_ROUTES,
+    WARM_ROUTES,
+  );
+  console.log(
+    `[mock-global-setup] routes: ${routes.length ? routes.join(", ") : "none"}`,
+  );
+  if (routes.length === 0) return;
   const browser = await chromium.launch();
   try {
     const context = await browser.newContext();
     const results: WarmResult[] = [];
     let next = 0;
     const worker = async () => {
-      while (next < WARM_ROUTES.length) {
-        const route = WARM_ROUTES[next++]!;
+      while (next < routes.length) {
+        const route = routes[next++]!;
         results.push(await warmRoute(context, route, deadline));
       }
     };
