@@ -119,4 +119,4 @@ export const fetchPbjtRecap = (query: PbjtRecapQuery) =>
 // back to the zone id instead of blocking the tax screens.
 
 export const fetchFloorZones = (outletId: string) =>
-  callEndpoint(getFloorBoard, { params: { outletId } });
+  callEndpoint(getFloorBoard, { params: { outletId }, query: {} });

@@ -113,6 +113,8 @@ const MINE: Record<Stream, string[]> = {
   menu_item_modifier_groups: [],
   price_lists: [ids.plA, ids.plX, ids.plY],
   recipes: [],
+  promotions: [],
+  vouchers: [],
 };
 const ORDER: Stream[] = [...CATALOG_SYNC_STREAMS];
 const isMine = (stream: Stream, rec: Rec) =>

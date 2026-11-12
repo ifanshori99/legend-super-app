@@ -253,6 +253,40 @@ test("OPS-03 prep labels carry a use-by linked to a batch and past-due labels ar
   );
 });
 
+test("legend-do1o A24 shelf life is 90 elapsed minutes across the spring DST change", () => {
+  // New York skips 02:00 on this day: 01:30 EST + 90 minutes is 04:00 EDT.
+  assert.equal(
+    operations.calculatePrepUseBy("2030-03-10T01:30:00-05:00", 90),
+    "2030-03-10T08:00:00.000Z",
+  );
+});
+
+test("legend-do1o A24 shelf life honors each offset during the repeated fall DST hour", () => {
+  // The two 01:30 readings name different instants; neither loses its offset.
+  assert.equal(
+    operations.calculatePrepUseBy("2030-11-03T01:30:00-04:00", 90),
+    "2030-11-03T07:00:00.000Z",
+  );
+  assert.equal(
+    operations.calculatePrepUseBy("2030-11-03T01:30:00-05:00", 90),
+    "2030-11-03T08:00:00.000Z",
+  );
+});
+
+test("legend-do1o A24 invalid shelf life, invalid dates and expiry overflow are refused", () => {
+  for (const minutes of [null, 0, -1, 1.5, Number.NaN, 2_147_483_648])
+    assert.equal(
+      operations.calculatePrepUseBy("2030-01-15T03:00:00.000Z", minutes),
+      null,
+    );
+  for (const producedAt of ["not-a-date", "2030-02-30T03:00:00.000Z"])
+    assert.equal(operations.calculatePrepUseBy(producedAt, 90), null);
+  assert.equal(
+    operations.calculatePrepUseBy("9999-12-31T23:59:00.000Z", 2_147_483_647),
+    null,
+  );
+});
+
 test("OPS-04 a ticket that marks equipment broken disables its mapped menu items", () => {
   const blender = equipmentByName("Blender");
   assert.equal(blender.status, "broken");

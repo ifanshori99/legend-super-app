@@ -17,10 +17,9 @@
 // - `facility_rewards` are minimum-spend facility access rewards (WS-09 issues
 //   the entitlement from the `promo_application.redeemed` event).
 //
-// Customer profiles (legend-111j), orders (WS-04) and facility products (WS-09)
-// are not in this database yet, so those ids carry no foreign key; follow-up
-// beads add the composite keys when the tables land. Tenant RLS and outlet RLS
-// are installed in migration 0034_promo_rls.
+// Customer quota, voucher and facility reward references use composite keys
+// after customer profiles and facility products landed (legend-ba8p). Tenant
+// RLS and outlet RLS are installed in migration 0034_promo_rls.
 import { sql } from "drizzle-orm";
 import {
   boolean,
@@ -52,6 +51,7 @@ import type {
   VoucherStatus,
 } from "@starter/shared/crm";
 import type { UserId } from "@starter/shared/core";
+import type { VoucherSyncRecord } from "@starter/shared/edge";
 import {
   businessDate,
   idrColumn,
@@ -60,6 +60,9 @@ import {
   ulidInUuid,
 } from "../columns";
 import { outlets, tenants } from "./platform-org";
+import { customerProfiles } from "./crm-member";
+import { facilityProducts } from "./facility";
+import { syncTxidColumn } from "./sync-txid";
 
 const createdAt = timestamp("created_at", { withTimezone: true })
   .notNull()
@@ -106,8 +109,14 @@ export const promotions = pgTable(
     updatedBy: text("updated_by").$type<UserId>(),
     createdAt,
     updatedAt,
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("promotions_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("promotions_tenant_id_id_key").on(table.tenantId, table.id),
     uniqueIndex("promotions_tenant_code_hash_key")
       .on(table.tenantId, table.codeHash)
@@ -173,6 +182,11 @@ export const promotionCustomerUsage = pgTable(
       columns: [table.tenantId, table.promotionId],
       foreignColumns: [promotions.tenantId, promotions.id],
     }),
+    foreignKey({
+      name: "promotion_customer_usage_profile_fk",
+      columns: [table.tenantId, table.customerProfileId],
+      foreignColumns: [customerProfiles.tenantId, customerProfiles.id],
+    }),
     check("promotion_customer_usage_uses_check", sql`${table.uses} >= 0`),
   ],
 );
@@ -202,14 +216,26 @@ export const vouchers = pgTable(
     redeemedAt: timestamp("redeemed_at", { withTimezone: true }),
     redeemedOrderId: ulidInUuid("redeemed_order_id"),
     cancelledReason: varchar("cancelled_reason", { length: 300 }),
+    syncTxid: syncTxidColumn(),
   },
   (table) => [
+    index("vouchers_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
+    ),
     unique("vouchers_tenant_id_id_key").on(table.tenantId, table.id),
     unique("vouchers_tenant_code_hash_key").on(table.tenantId, table.codeHash),
     foreignKey({
       name: "vouchers_promotion_fk",
       columns: [table.tenantId, table.promotionId],
       foreignColumns: [promotions.tenantId, promotions.id],
+    }),
+    // Already installed by migration 0207; keep the schema snapshot aligned.
+    foreignKey({
+      name: "vouchers_profile_fk",
+      columns: [table.tenantId, table.customerProfileId],
+      foreignColumns: [customerProfiles.tenantId, customerProfiles.id],
     }),
     index("vouchers_tenant_status_idx").on(
       table.tenantId,
@@ -247,6 +273,29 @@ export const vouchers = pgTable(
     check(
       "vouchers_cancelled_check",
       sql`(${table.status} = 'cancelled') = (${table.cancelledReason} IS NOT NULL)`,
+    ),
+  ],
+);
+
+/**
+ * Read-only cloud voucher catalog on an edge. Holder and redeemed-order ids
+ * stay in the validated payload without customer/order FKs: those aggregates
+ * need not be replicated before catalog freshness can be proven. Redemption
+ * never reads this table; only the cloud's canonical vouchers carry authority.
+ */
+export const edgeVoucherCatalog = pgTable(
+  "edge_voucher_catalog",
+  {
+    id: uuid("id").primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    payload: jsonb("payload").$type<VoucherSyncRecord>().notNull(),
+    syncTxid: syncTxidColumn(),
+  },
+  (table) => [
+    index("edge_voucher_catalog_sync_txid_idx").on(
+      table.tenantId,
+      table.syncTxid,
+      table.id,
     ),
   ],
 );
@@ -472,6 +521,20 @@ export const facilityRewards = pgTable(
       columns: [table.tenantId, table.promotionId],
       foreignColumns: [promotions.tenantId, promotions.id],
     }),
+    foreignKey({
+      name: "facility_rewards_profile_fk",
+      columns: [table.tenantId, table.customerProfileId],
+      foreignColumns: [customerProfiles.tenantId, customerProfiles.id],
+    }),
+    foreignKey({
+      name: "facility_rewards_product_fk",
+      columns: [table.tenantId, table.outletId, table.facilityProductId],
+      foreignColumns: [
+        facilityProducts.tenantId,
+        facilityProducts.outletId,
+        facilityProducts.id,
+      ],
+    }),
     uniqueIndex("facility_rewards_order_promotion_key").on(
       table.tenantId,
       table.sourceOrderId,
@@ -536,6 +599,7 @@ export const promotionOutlets = pgTable(
 
 /** Tenant stacking policy ("aturan tumpang tindih", PRD §3.21). */
 export const promoSettings = pgTable("promo_settings", {
+  syncTxid: syncTxidColumn(),
   tenantId: tenantIdColumn(() => tenants.id)
     .notNull()
     .primaryKey(),

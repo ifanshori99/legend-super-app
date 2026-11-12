@@ -31,12 +31,14 @@ import {
   getPrepList as getPrepListEndpoint,
   listChecklistRuns as listChecklistRunsEndpoint,
   listChecklistTemplates as listChecklistTemplatesEndpoint,
+  listPrepItemSettings as listPrepItemSettingsEndpoint,
   listPrepLabels as listPrepLabelsEndpoint,
   listPrepLists as listPrepListsEndpoint,
   listTemperatureLogs as listTemperatureLogsEndpoint,
   postChecklistRunTransition as postChecklistRunTransitionEndpoint,
   postPrepListTransition as postPrepListTransitionEndpoint,
   printPrepLabel as printPrepLabelEndpoint,
+  putPrepItemSetting as putPrepItemSettingEndpoint,
   recordChecklistItemResult as recordChecklistItemResultEndpoint,
   updateChecklistTemplate as updateChecklistTemplateEndpoint,
 } from "@starter/shared/operations";
@@ -241,6 +243,37 @@ operationsRouter.post(
 );
 
 // ------------------------------------------------------------------ prep
+
+operationsRouter.get(
+  "/prep-item-settings",
+  ...guards,
+  PREP,
+  async (req, res) => {
+    const query = listPrepItemSettingsEndpoint.query.parse(req.query);
+    res.json(await foodSafety.listPrepItemSettings(contextOf(req), query));
+  },
+);
+
+operationsRouter.put(
+  "/prep-item-settings/:inventoryItemId",
+  ...guards,
+  PREP,
+  jsonBody,
+  async (req, res) => {
+    const { inventoryItemId } = putPrepItemSettingEndpoint.params.parse(
+      req.params,
+    );
+    const input = putPrepItemSettingEndpoint.body.parse(req.body);
+    res.json({
+      data: await foodSafety.upsertPrepItemSetting(
+        contextOf(req),
+        actorOf(req),
+        inventoryItemId,
+        input,
+      ),
+    });
+  },
+);
 
 operationsRouter.get("/prep-labels", ...guards, PREP, async (req, res) => {
   const query = listPrepLabelsEndpoint.query.parse(req.query);

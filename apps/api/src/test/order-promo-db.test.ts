@@ -29,6 +29,8 @@ import {
   taxCalculationInputSchema,
 } from "@starter/shared/tax";
 import { db } from "../db";
+import { promotions } from "../db/schema";
+import type { Tx } from "../services/permission-resolver";
 import { withTenant } from "../db/tenant";
 import {
   ORDER_PROMO_RELEASE_REASONS,
@@ -616,6 +618,89 @@ async function expectRowsMatchApplication(orderId: string) {
   expect(sum).toBe(await applicationDiscount(orderId));
 }
 
+/** Simulates an unavailable current rule; application and monetary writes stay real. */
+function withoutPromotionRule(tx: Tx, hiddenId: string): Tx {
+  return new Proxy(tx, {
+    get(target, property) {
+      const member = Reflect.get(target, property);
+      if (property !== "select")
+        return typeof member === "function" ? member.bind(target) : member;
+      return (...fields: unknown[]) => {
+        const selection = Reflect.apply(target.select, target, fields);
+        return new Proxy(selection, {
+          get(query, key) {
+            const operation = Reflect.get(query, key);
+            if (key !== "from")
+              return typeof operation === "function"
+                ? operation.bind(query)
+                : operation;
+            return (table: unknown) => {
+              const statement = Reflect.apply(operation, query, [table]);
+              if (table !== promotions) return statement;
+              if (typeof statement !== "object" || statement === null)
+                throw new Error("Expected a promotion select query");
+              const filtered: typeof statement = new Proxy(statement, {
+                get(current, name) {
+                  if (name === "then") {
+                    const then = Reflect.get(current, name);
+                    if (typeof then !== "function")
+                      throw new Error("Expected an awaitable promotion query");
+                    return (
+                      resolve: (rows: { id: string }[]) => unknown,
+                      reject: (error: unknown) => unknown,
+                    ) =>
+                      Reflect.apply(then, current, [
+                        (rows: { id: string }[]) =>
+                          resolve(rows.filter((row) => row.id !== hiddenId)),
+                        reject,
+                      ]);
+                  }
+                  const value = Reflect.get(current, name);
+                  return typeof value === "function"
+                    ? (...args: unknown[]) => {
+                        const result = Reflect.apply(value, current, args);
+                        return result === current ? filtered : result;
+                      }
+                    : value;
+                },
+              });
+              return filtered;
+            };
+          },
+        });
+      };
+    },
+  });
+}
+
+describe("legend-77r0 live application lookup through the refund port", () => {
+  it("returns only a live application visible to the tenant and outlet, then hides its release", async () => {
+    const coffee = randomUUID();
+    await seedPromotion(coffee);
+    const orderId = createUlid();
+    const lookup = (scoped = context()) =>
+      withTenant(db, scoped, (tx) =>
+        orderPromoPartialRefundPort.livePromoApplicationOf(tx, scoped, orderId),
+      );
+    expect(await lookup()).toBeNull();
+    await redeem(orderId, [priced(coffee, 100_000)]);
+    expect(await lookup()).toEqual({ status: "applied" });
+    expect(await lookup(scopeFor(randomUUID()))).toBeNull();
+    const otherOutlet = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "session" }),
+      {
+        kind: "outlets",
+        outletIds: [
+          outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[1].id),
+        ],
+      },
+    );
+    expect(await lookup(otherOutlet)).toBeNull();
+    await release(orderId);
+    expect(await lookup()).toBeNull();
+  });
+});
+
 describe("legend-15by Q19b stack-ordered per-line kept discount at the refund port", () => {
   const items = () => ({
     coffee: randomUUID(),
@@ -674,6 +759,222 @@ describe("legend-15by Q19b stack-ordered per-line kept discount at the refund po
       await expectRowsMatchApplication(orderId);
     });
   });
+
+  it.each(["item tier", "bill priority"] as const)(
+    "[A4YD-1] an unavailable %s rule keeps its checkout stack position and cannot overpay",
+    async (kind) => {
+      await withStacking(async () => {
+        const coffee = randomUUID();
+        const tea = randomUUID();
+        const preserved = await seedPromotion(
+          kind === "item tier" ? tea : coffee,
+          {
+            benefit:
+              kind === "item tier"
+                ? {
+                    kind: "free_items",
+                    menuItemIds: [coffee],
+                    quantityPerMultiple: 1,
+                  }
+                : { kind: "nominal_off", amountIdr: 60_000 },
+            budgetIdr: 1_000_000,
+          },
+        );
+        const percent = await seedPromotion(coffee, {
+          benefit: {
+            kind: "percent_off",
+            percentBp: 5000,
+            maxDiscountIdr: null,
+          },
+          budgetIdr: 1_000_000,
+        });
+        await asOwner((client) =>
+          client.query(
+            `UPDATE promotions SET priority = CASE id WHEN $2 THEN $3 ELSE 10 END
+              WHERE tenant_id = $1 AND id = ANY($4::uuid[])`,
+            [
+              tenantId,
+              preserved,
+              kind === "item tier" ? 0 : 20,
+              [preserved, percent],
+            ],
+          ),
+        );
+        const orderId = createUlid();
+        const redeemed = await redeem(orderId, [
+          priced(coffee, 60_000),
+          priced(tea, 20_000, 7),
+        ]);
+        expect(redeemed.totalDiscountIdr).toBe(130_000);
+        const scoped = context();
+        const refund = () =>
+          withTenant(db, scoped, (tx) =>
+            orderPromoPartialRefundPort.recomputeAfterPartialRefund(
+              withoutPromotionRule(tx, preserved),
+              scoped,
+              {
+                orderId,
+                keptLines: [priced(coffee, 60_000), priced(tea, 20_000, 2)],
+                reason: "Refund dengan aturan asal tidak tersedia",
+                actorUserId: actor,
+                at: new Date(),
+              },
+            ),
+          );
+        const result = await refund();
+        expect(result).toMatchObject({
+          adjusted: true,
+          totalDiscountIdr: 50_000,
+          keptPayableIdr: 50_000,
+          remainingPaidIdr: 70_000,
+          refundDueIdr: 20_000,
+        });
+        if (!result.adjusted) throw new Error("The sale must have promotions");
+        expect(result.refundDueIdr + result.keptPayableIdr).toBe(70_000);
+        expect(await counters(preserved)).toEqual({ uses: 1, spent: 30_000 });
+        expect(await counters(percent)).toEqual({ uses: 1, spent: 20_000 });
+        await expectRowsMatchApplication(orderId);
+        expect(await refund()).toMatchObject({
+          adjusted: true,
+          refundDueIdr: 0,
+        });
+        await expectRowsMatchApplication(orderId);
+      });
+    },
+  );
+
+  it.each([false, true])(
+    "[A4YD-2] editing priorities cannot overpay (legacy snapshot: %s)",
+    async (legacy) => {
+      await withStacking(async () => {
+        const coffee = randomUUID();
+        const nominal = await seedPromotion(coffee, {
+          benefit: { kind: "nominal_off", amountIdr: 60_000 },
+          budgetIdr: 1_000_000,
+        });
+        const percent = await seedPromotion(coffee, {
+          benefit: {
+            kind: "percent_off",
+            percentBp: 5000,
+            maxDiscountIdr: null,
+          },
+          budgetIdr: 1_000_000,
+        });
+        await asOwner((client) =>
+          client.query(
+            `UPDATE promotions SET priority = CASE id WHEN $2 THEN 20 ELSE 10 END
+            WHERE tenant_id = $1 AND id = ANY($3::uuid[])`,
+            [tenantId, nominal, [nominal, percent]],
+          ),
+        );
+        const orderId = createUlid();
+        const redeemed = await redeem(orderId, [priced(coffee, 100_000, 2)]);
+        expect(redeemed.totalDiscountIdr).toBe(130_000);
+        await asOwner((client) =>
+          client.query(
+            `UPDATE promotions SET priority = CASE id WHEN $2 THEN 0 ELSE 30 END
+            WHERE tenant_id = $1 AND id = ANY($3::uuid[])`,
+            [tenantId, nominal, [nominal, percent]],
+          ),
+        );
+        if (legacy)
+          await asOwner((client) =>
+            client.query(
+              `UPDATE promotion_order_applications
+                SET rules_snapshot = (
+                  SELECT jsonb_object_agg(key, value - 'priority')
+                    FROM jsonb_each(rules_snapshot))
+              WHERE tenant_id = $1 AND order_id = $2::uuid`,
+              [tenantId, ulidToUuid(orderId as never)],
+            ),
+          );
+        const scoped = context();
+        const refund = () =>
+          withTenant(db, scoped, (tx) =>
+            orderPromoPartialRefundPort.recomputeAfterPartialRefund(
+              tx,
+              scoped,
+              {
+                orderId,
+                keptLines: [priced(coffee, 100_000)],
+                reason: "Satu kopi dibatalkan setelah prioritas diubah",
+                actorUserId: actor,
+                at: new Date(),
+              },
+            ),
+          );
+        if (legacy) {
+          // Candidate/evaluation order did not persist the checkout stack order.
+          // Do not guess a legacy priority and pay an unproven amount.
+          await expect(refund()).rejects.toMatchObject({
+            status: 409,
+            code: "PROMO_REFUND_SNAPSHOT_INCOMPLETE",
+          });
+          expect(await counters(nominal)).toEqual({ uses: 1, spent: 60_000 });
+          expect(await counters(percent)).toEqual({ uses: 1, spent: 70_000 });
+          expect(await applicationDiscount(orderId)).toBe(130_000);
+          const application = await asOwner((client) =>
+            client.query(
+              `SELECT refunded_subtotal_idr, refunded_paid_idr
+               FROM promotion_order_applications
+              WHERE tenant_id = $1 AND order_id = $2::uuid`,
+              [tenantId, ulidToUuid(orderId as never)],
+            ),
+          );
+          expect(Number(application.rows[0].refunded_subtotal_idr)).toBe(0);
+          expect(Number(application.rows[0].refunded_paid_idr)).toBe(0);
+          await expectRowsMatchApplication(orderId);
+          const returnAll = () =>
+            withTenant(db, scoped, (tx) =>
+              orderPromoPartialRefundPort.recomputeAfterPartialRefund(
+                tx,
+                scoped,
+                {
+                  orderId,
+                  keptLines: [],
+                  reason: "Semua kopi dikembalikan",
+                  actorUserId: actor,
+                  at: new Date(),
+                },
+              ),
+            );
+          expect(await returnAll()).toMatchObject({
+            adjusted: true,
+            refundDueIdr: 70_000,
+            keptPayableIdr: 0,
+          });
+          expect(await returnAll()).toMatchObject({
+            adjusted: true,
+            refundDueIdr: 0,
+          });
+          expect(await counters(nominal)).toEqual({ uses: 0, spent: 0 });
+          expect(await counters(percent)).toEqual({ uses: 0, spent: 0 });
+          await expectRowsMatchApplication(orderId);
+          return;
+        }
+        // Checkout paid 70k. Kept discount is nominal30k + percent20k:
+        // the outlet retains 50k and refunds 20k, never the live-order 35k.
+        const result = await refund();
+        expect(result).toMatchObject({
+          adjusted: true,
+          totalDiscountIdr: 50_000,
+          keptPayableIdr: 50_000,
+          remainingPaidIdr: 70_000,
+          refundDueIdr: 20_000,
+        });
+        if (!result.adjusted) throw new Error("The sale must have promotions");
+        expect(result.refundDueIdr + result.keptPayableIdr).toBe(70_000);
+        expect(await counters(nominal)).toEqual({ uses: 1, spent: 30_000 });
+        expect(await counters(percent)).toEqual({ uses: 1, spent: 20_000 });
+        await expectRowsMatchApplication(orderId);
+        expect(await refund()).toMatchObject({
+          adjusted: true,
+          refundDueIdr: 0,
+        });
+        await expectRowsMatchApplication(orderId);
+      });
+    },
+  );
 
   it("(c) BOGO + Rp10.000 value voucher (200k: 50k free + 10k, paid 140k): returning 1 coffee lowers the BOGO by its own 25k cut and the voucher only by its own share", async () => {
     await withStacking(async () => {

@@ -237,33 +237,8 @@ export function personName(userId: string): string | null {
   return knownPeople.get(userId) ?? null;
 }
 
-/**
- * Suggested use-by for a new prep label: the batch's expiry date at the
- * produced time. The contract has no shelf-life field, so the safest
- * suggestion never exceeds the inventory batch expiry; an expired batch
- * yields no suggestion (the user must type a valid use-by, OPS-03).
- */
-export function suggestUseBy(
-  producedAtIso: string,
-  expiresOn: string | null,
-  timeZone: string,
-): string | null {
-  if (expiresOn === null) return null;
-  const produced = wallClock(new Date(producedAtIso), timeZone);
-  const [year, month, day] = expiresOn.split("-").map(Number);
-  if (
-    !Number.isInteger(year) ||
-    !Number.isInteger(month) ||
-    !Number.isInteger(day)
-  )
-    return null;
-  const suggestion = fromDateTimeLocalValue(
-    `${expiresOn}T${pad(produced.hour)}:${pad(produced.minute)}`,
-    timeZone,
-  );
-  if (suggestion === null) return null;
-  return Date.parse(suggestion) > Date.parse(producedAtIso) ? suggestion : null;
-}
+/** The caller already converted the outlet-local production time to ISO. */
+export { calculatePrepUseBy as suggestUseBy } from "@starter/shared/operations";
 
 /** Positive NUMERIC(14,4) check for the prep-list quantity fields. */
 export function isPositiveQuantity(value: string): boolean {

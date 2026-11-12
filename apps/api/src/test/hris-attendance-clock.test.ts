@@ -719,6 +719,31 @@ describe("device binding", () => {
 // ---- rotating QR -------------------------------------------------------------
 
 describe("rotating QR", () => {
+  it("[legend-je1f HR-02] QR carries exact server time independently of its rotation boundary", async () => {
+    const before = Date.now();
+    const qr = await mgr.get(`/api/hris/attendance/qr?outletId=${qrOutlet}`);
+    const after = Date.now();
+    expect(qr.status, JSON.stringify(qr.body)).toBe(200);
+    const serverTime = Date.parse(qr.body.data.serverTime as string);
+    expect(serverTime).toBeGreaterThanOrEqual(before);
+    expect(serverTime).toBeLessThanOrEqual(after);
+    expect(serverTime).toBeGreaterThanOrEqual(
+      Date.parse(qr.body.data.issuedAt as string),
+    );
+    expect(serverTime).toBeLessThan(
+      Date.parse(qr.body.data.expiresAt as string),
+    );
+  });
+
+  it("[legend-je1f TEN-02] client cannot substitute QR serverTime through the query", async () => {
+    const qr = await mgr.get(`/api/hris/attendance/qr?outletId=${qrOutlet}`);
+    expect(qr.status, JSON.stringify(qr.body)).toBe(200);
+    const spoof = await mgr.get(
+      `/api/hris/attendance/qr?outletId=${qrOutlet}&serverTime=2099-01-01T00%3A00%3A00.000Z`,
+    );
+    expect(spoof.status, JSON.stringify(spoof.body)).toBe(422);
+  });
+
   it("[F25] the current outlet QR is accepted", async () => {
     const staff = await newStaff(qrOutlet);
     const qr = await mgr.get(`/api/hris/attendance/qr?outletId=${qrOutlet}`);

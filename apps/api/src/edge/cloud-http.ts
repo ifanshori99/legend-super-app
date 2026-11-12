@@ -13,6 +13,7 @@
 import {
   encodeReceiptRunReport,
   encodeReceiptRunRefusals,
+  receiptRunReportQuerySchema,
   type ReceiptRunRefusalReport,
   type ReceiptRunReport,
 } from "@starter/shared/edge";
@@ -22,6 +23,8 @@ const DEVICE_RECORDS_PATH = "/api/edge-sync/device-records";
 const STAFF_PIN_RECORDS_PATH = "/api/edge-sync/staff-pin-records";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LIMIT = 100;
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const RECEIPT_REFUSAL_RETRY_MS = 60 * 60 * 1000;
 
 // Node's fetch honours `cache`, but the Node typings omit it from RequestInit.
 type EdgeRequestInit = RequestInit & { cache: "no-store" };
@@ -39,7 +42,7 @@ export function cloudHttpBaseUrl(linkUrl: string): string {
   throw new Error("EDGE_CLOUD_URL must be a ws:// or wss:// URL");
 }
 
-/** code: HTTP_<status>, TIMEOUT, NETWORK, ABORTED or BAD_JSON. */
+/** Status and local validation codes only; never response or request contents. */
 export class EdgeCloudHttpError extends Error {
   readonly code: string;
 
@@ -55,10 +58,67 @@ export type CloudGetOptions = {
   credential: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /**
+   * The cloud's server time, read from the `Date` header of a 2xx response
+   * whose body parsed (533b). Not called for a non-2xx, a 304, a missing or
+   * unparseable header. A throwing callback is ignored.
+   */
+  onServerTime?: (serverTime: Date) => void;
 };
 
 type CloudGetResult =
   { status: 304 } | { status: 200; body: unknown; headers: Headers };
+
+function reportServerTime(
+  headers: Headers,
+  onServerTime: CloudGetOptions["onServerTime"],
+): void {
+  if (!onServerTime) return;
+  const header = headers.get("Date");
+  if (header === null) return;
+  const serverTime = new Date(header);
+  if (Number.isNaN(serverTime.getTime())) return;
+  try {
+    onServerTime(serverTime);
+  } catch {
+    // A broken evidence sink must not fail the pull.
+  }
+}
+
+async function readBoundedJson(response: Response): Promise<unknown> {
+  // Reject an advertised oversized response before reading it, but also count
+  // the actual bytes: Content-Length can be absent, compressed, or incorrect.
+  const contentLength = response.headers.get("Content-Length");
+  if (
+    contentLength !== null &&
+    /^\d+$/.test(contentLength) &&
+    Number(contentLength) > MAX_RESPONSE_BYTES
+  ) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new EdgeCloudHttpError("RESPONSE_TOO_LARGE");
+  }
+  const reader = response.body?.getReader();
+  if (reader === undefined) throw new EdgeCloudHttpError("BAD_JSON");
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new EdgeCloudHttpError("RESPONSE_TOO_LARGE");
+      }
+      chunks.push(chunk.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return JSON.parse(
+    new TextDecoder().decode(Buffer.concat(chunks, bytes)),
+  ) as unknown;
+}
 
 async function cloudGet(
   options: CloudGetOptions & {
@@ -104,16 +164,16 @@ async function cloudGet(
       await response.body?.cancel().catch(() => undefined);
       throw new EdgeCloudHttpError(`HTTP_${response.status}`);
     }
+    let body: unknown;
     try {
-      return {
-        status: 200,
-        body: (await response.json()) as unknown,
-        headers: response.headers,
-      };
+      body = await readBoundedJson(response);
     } catch (error) {
+      if (error instanceof EdgeCloudHttpError) throw error;
       if (request.signal.aborted) throw error;
       throw new EdgeCloudHttpError("BAD_JSON");
     }
+    reportServerTime(response.headers, options.onServerTime);
+    return { status: 200, body, headers: response.headers };
   } catch (error) {
     if (error instanceof EdgeCloudHttpError) throw error;
     if (timedOut) throw new EdgeCloudHttpError("TIMEOUT");
@@ -194,6 +254,7 @@ export function createDeviceRecordsFetcher(
   // Fail fast on a bad URL when the fetcher is built, as before.
   cloudHttpBaseUrl(options.cloudUrl);
   const limit = options.limit ?? DEFAULT_LIMIT;
+  let receiptRefusalsRetryAt = 0;
 
   const pathFor = (
     since: string | null,
@@ -229,10 +290,25 @@ export function createDeviceRecordsFetcher(
   };
 
   return async (since, signal, receiptRuns, refusals) => {
+    if (
+      receiptRuns !== undefined &&
+      !receiptRunReportQuerySchema.safeParse(
+        encodeReceiptRunReport(receiptRuns),
+      ).success
+    ) {
+      // A malformed local report must not masquerade as an old cloud and
+      // silently disable its restored-database check. Do not log its contents.
+      logger.error(
+        "edge receipt run report is invalid; refusing the cloud pull",
+      );
+      throw new EdgeCloudHttpError("INVALID_RECEIPT_RUN_REPORT");
+    }
+    const pendingRefusals =
+      Date.now() < receiptRefusalsRetryAt ? undefined : refusals;
     try {
       return await cloudGetJson({
         ...options,
-        path: pathFor(since, true, receiptRuns, refusals, true),
+        path: pathFor(since, true, receiptRuns, pendingRefusals, true),
         signal,
       });
     } catch (error) {
@@ -259,7 +335,7 @@ export function createDeviceRecordsFetcher(
       try {
         return await cloudGetJson({
           ...options,
-          path: pathFor(since, true, receiptRuns, refusals),
+          path: pathFor(since, true, receiptRuns, pendingRefusals),
           signal,
         });
       } catch (second) {
@@ -272,16 +348,21 @@ export function createDeviceRecordsFetcher(
       // legend-hfq3z: a request that carried `receiptRefused` first retries
       // without it but keeps `receiptRuns` (a yd0h8 cloud); only a second 400
       // continues into the staged chain below.
-      if (refusals !== undefined && refusals.size > 0) {
+      if (pendingRefusals !== undefined && pendingRefusals.size > 0) {
         logger.warn(
           "cloud refused the receipt run refusal report; retrying the page without it",
         );
         try {
-          return await cloudGetJson({
+          const result = await cloudGetJson({
             ...options,
             path: pathFor(since, true, receiptRuns),
             signal,
           });
+          // Suppress the parameter for an hour only when dropping it succeeds;
+          // re-probe after that so a cloud upgrade can resume healing runs.
+          // Another failing opt-in must not suppress future refusal reports.
+          receiptRefusalsRetryAt = Date.now() + RECEIPT_REFUSAL_RETRY_MS;
+          return result;
         } catch (second) {
           if (
             !(second instanceof EdgeCloudHttpError) ||

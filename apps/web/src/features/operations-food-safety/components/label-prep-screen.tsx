@@ -1,5 +1,5 @@
 // Prep labels (PRD v1.7 §3 F41 "Label Prep", OPS-03): an expiry alert list
-// first, the create form with a use-by suggested from the batch expiry, and a
+// first, the create form with configured per-item shelf life, and a
 // printable label preview. Printing records `printedAt` through
 // `printPrepLabel`; the print stylesheet limits the sheet to 90 × 60 mm on A4.
 import * as React from "react";
@@ -13,6 +13,7 @@ import {
 import {
   expiredPrepLabels,
   isPrepLabelExpired,
+  shelfLifeMinutesSchema,
   type PrepLabel,
 } from "@starter/shared/operations";
 import { useT } from "@/components/i18n";
@@ -43,12 +44,13 @@ import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
 import {
   useCreatePrepLabel,
   useInventoryItems,
+  usePrepItemSetting,
   usePrepLabels,
   usePrintPrepLabel,
+  usePutPrepItemSetting,
   useStockBatches,
 } from "../hooks.ts";
 import {
-  formatBusinessDate,
   formatDateTime,
   fromDateTimeLocalValue,
   personName,
@@ -109,8 +111,15 @@ const FORM_FIELD_IDS = {
   batch: "prep-label-batch",
   producedAt: "prep-label-produced-at",
   useBy: "prep-label-use-by",
+  shelfLife: "prep-label-shelf-life",
 } as const;
-const FORM_FIELD_ORDER = ["item", "batch", "producedAt", "useBy"] as const;
+const FORM_FIELD_ORDER = [
+  "item",
+  "shelfLife",
+  "batch",
+  "producedAt",
+  "useBy",
+] as const;
 
 function PrepLabelsScreenContent({
   responsibleName,
@@ -133,6 +142,7 @@ function PrepLabelsScreenContent({
   });
   const createLabel = useCreatePrepLabel();
   const printLabel = usePrintPrepLabel();
+  const saveSetting = usePutPrepItemSetting();
 
   const labels = React.useMemo(
     () =>
@@ -181,8 +191,16 @@ function PrepLabelsScreenContent({
   const [producedAt, setProducedAt] = React.useState(() =>
     toDateTimeLocalValue(new Date(), clock.timeZone),
   );
-  const [useByInput, setUseByInput] = React.useState("");
-  const [useByTouched, setUseByTouched] = React.useState(false);
+  const [shelfLifeDrafts, setShelfLifeDrafts] = React.useState<
+    Record<string, string | undefined>
+  >({});
+  const settingsResult = usePrepItemSetting(outlet?.id, itemId || undefined);
+  const setting = settingsResult.data?.data[0] ?? null;
+  const shelfLifeInput =
+    shelfLifeDrafts[itemId] ??
+    (setting ? String(setting.shelfLifeMinutes) : "");
+  const shelfLifeChanged =
+    shelfLifeInput !== (setting ? String(setting.shelfLifeMinutes) : "");
   const [errors, setErrors] = React.useState<
     Record<string, string | undefined>
   >({});
@@ -197,29 +215,63 @@ function PrepLabelsScreenContent({
   );
   const selectedBatch = batches.find((batch) => batch.id === batchId) ?? null;
 
-  // OPS-03: suggest the use-by from the batch expiry (never later than the
-  // batch) until the staff member edits the field themselves. Derived during
-  // render, so changing the batch or produced time updates the suggestion
-  // without a state-syncing effect.
-  const suggestedUseBy = React.useMemo(() => {
-    if (selectedBatch === null || producedAt === "") return "";
+  // Derive from the saved item setting; changing a draft duration never
+  // silently changes the lifetime before the setting is persisted.
+  const calculatedUseBy = React.useMemo(() => {
+    if (producedAt === "" || setting === null) return null;
     const producedIso = fromDateTimeLocalValue(producedAt, clock.timeZone);
-    if (producedIso === null) return "";
-    const suggestion = suggestUseBy(
-      producedIso,
-      selectedBatch.expiresOn,
-      clock.timeZone,
-    );
-    return suggestion === null
+    if (producedIso === null) return null;
+    return suggestUseBy(producedIso, setting.shelfLifeMinutes);
+  }, [clock.timeZone, producedAt, setting]);
+  // The local display loses the UTC offset during a repeated DST hour; keep
+  // the calculated instant for validation rather than parsing the display.
+  const useBy =
+    calculatedUseBy === null
       ? ""
-      : toDateTimeLocalValue(new Date(suggestion), clock.timeZone);
-  }, [clock.timeZone, producedAt, selectedBatch]);
-  const useBy = useByTouched ? useByInput : suggestedUseBy;
+      : toDateTimeLocalValue(new Date(calculatedUseBy), clock.timeZone);
+
+  function persistShelfLife() {
+    const parsed = shelfLifeMinutesSchema.safeParse(Number(shelfLifeInput));
+    if (outlet === null || itemId === "" || !parsed.success) {
+      setErrors((current) => ({
+        ...current,
+        shelfLife: t("opsFoodSafety.prepLabels.form.errors.shelfLife"),
+      }));
+      return;
+    }
+    const savedItemId = itemId;
+    saveSetting.mutate(
+      {
+        params: { inventoryItemId: inventoryItemIdSchema.parse(savedItemId) },
+        body: {
+          outletId: outlet.id,
+          shelfLifeMinutes: parsed.data,
+          idempotencyKey: newIdempotencyKey(),
+        },
+      },
+      {
+        onSuccess: () => {
+          setShelfLifeDrafts((current) => ({
+            ...current,
+            [savedItemId]: undefined,
+          }));
+          setErrors((current) => ({ ...current, shelfLife: undefined }));
+          toast({
+            title: t("opsFoodSafety.prepLabels.form.shelfLifeSaved"),
+            tone: "success",
+          });
+        },
+        onError: () =>
+          setErrors((current) => ({
+            ...current,
+            shelfLife: t("opsFoodSafety.prepLabels.form.shelfLifeSaveFailed"),
+          })),
+      },
+    );
+  }
 
   function resetForm() {
     setBatchId("");
-    setUseByInput("");
-    setUseByTouched(false);
     setErrors({});
     setFormError(undefined);
     setProducedAt(toDateTimeLocalValue(new Date(), clock.timeZone));
@@ -235,6 +287,16 @@ function PrepLabelsScreenContent({
     const nextErrors: Record<string, string | undefined> = {};
     if (itemId === "")
       nextErrors.item = t("opsFoodSafety.prepLabels.form.errors.item");
+    if (
+      itemId !== "" &&
+      (setting === null ||
+        shelfLifeChanged ||
+        settingsResult.isError ||
+        settingsResult.isFetching)
+    )
+      nextErrors.shelfLife = t(
+        "opsFoodSafety.prepLabels.form.errors.shelfLifeRequired",
+      );
     if (selectedBatch === null || selectedBatch.inventoryItemId !== itemId)
       nextErrors.batch = t("opsFoodSafety.prepLabels.form.errors.batch");
     const producedIso = fromDateTimeLocalValue(producedAt, clock.timeZone);
@@ -242,7 +304,7 @@ function PrepLabelsScreenContent({
       nextErrors.producedAt = t(
         "opsFoodSafety.prepLabels.form.errors.producedAt",
       );
-    const useByIso = fromDateTimeLocalValue(useBy, clock.timeZone);
+    const useByIso = calculatedUseBy;
     if (useByIso === null)
       nextErrors.useBy = t("opsFoodSafety.prepLabels.form.errors.useBy");
     else if (
@@ -284,7 +346,6 @@ function PrepLabelsScreenContent({
         inventoryItemId: inventoryItemIdSchema.parse(itemId),
         batchId: selectedBatch.id,
         producedAt: producedIso,
-        useBy: useByIso,
         idempotencyKey: newIdempotencyKey(),
       },
       {
@@ -787,8 +848,6 @@ function PrepLabelsScreenContent({
                     onValueChange={(value) => {
                       setItemId(value);
                       setBatchId("");
-                      setUseByTouched(false);
-                      setUseByInput("");
                       setErrors((current) => ({
                         ...current,
                         item: undefined,
@@ -812,6 +871,86 @@ function PrepLabelsScreenContent({
                     </SelectContent>
                   </Select>
                 </FormField>
+
+                <div className="grid gap-2">
+                  <FormField
+                    label={t("opsFoodSafety.prepLabels.form.shelfLife")}
+                    id="prep-label-shelf-life"
+                    required
+                    hint={
+                      settingsResult.isFetching
+                        ? t("opsFoodSafety.prepLabels.form.shelfLifeLoading")
+                        : t("opsFoodSafety.prepLabels.form.shelfLifeHint")
+                    }
+                    error={
+                      errors.shelfLife ??
+                      (settingsResult.isError
+                        ? t("opsFoodSafety.prepLabels.form.shelfLifeLoadFailed")
+                        : undefined)
+                    }
+                  >
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      step={1}
+                      autoComplete="off"
+                      value={shelfLifeInput}
+                      disabled={
+                        itemId === "" ||
+                        settingsResult.isFetching ||
+                        saveSetting.isPending
+                      }
+                      onChange={(event) => {
+                        setShelfLifeDrafts((current) => ({
+                          ...current,
+                          [itemId]: event.target.value,
+                        }));
+                        setErrors((current) => ({
+                          ...current,
+                          shelfLife: undefined,
+                        }));
+                      }}
+                      onBlur={() => {
+                        if (
+                          !shelfLifeMinutesSchema.safeParse(
+                            Number(shelfLifeInput),
+                          ).success
+                        )
+                          setErrors((current) => ({
+                            ...current,
+                            shelfLife: t(
+                              "opsFoodSafety.prepLabels.form.errors.shelfLife",
+                            ),
+                          }));
+                      }}
+                    />
+                  </FormField>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    {settingsResult.isError && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void settingsResult.refetch()}
+                      >
+                        {t("opsFoodSafety.prepLabels.form.shelfLifeRetry")}
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      loading={saveSetting.isPending}
+                      disabled={
+                        itemId === "" ||
+                        !shelfLifeChanged ||
+                        settingsResult.isFetching
+                      }
+                      onClick={persistShelfLife}
+                    >
+                      {t("opsFoodSafety.prepLabels.form.shelfLifeSave")}
+                    </Button>
+                  </div>
+                </div>
 
                 <FormField
                   label={t("opsFoodSafety.prepLabels.form.batch")}
@@ -865,7 +1004,6 @@ function PrepLabelsScreenContent({
                     value={producedAt}
                     onChange={(event) => {
                       setProducedAt(event.target.value);
-                      setUseByTouched(false);
                     }}
                     onBlur={() => validateOnBlur("producedAt")}
                   />
@@ -876,13 +1014,11 @@ function PrepLabelsScreenContent({
                   id="prep-label-use-by"
                   required
                   hint={
-                    useByTouched
-                      ? t("opsFoodSafety.prepLabels.form.useByHint")
-                      : selectedBatch?.expiresOn
-                        ? t("opsFoodSafety.prepLabels.form.useBySuggested", {
-                            date: formatBusinessDate(selectedBatch.expiresOn),
-                          })
-                        : t("opsFoodSafety.prepLabels.form.useByHint")
+                    setting
+                      ? t("opsFoodSafety.prepLabels.form.useBySuggested", {
+                          minutes: setting.shelfLifeMinutes,
+                        })
+                      : t("opsFoodSafety.prepLabels.form.useByHint")
                   }
                   error={errors.useBy}
                 >
@@ -891,11 +1027,7 @@ function PrepLabelsScreenContent({
                     name="useBy"
                     autoComplete="off"
                     value={useBy}
-                    onChange={(event) => {
-                      setUseByInput(event.target.value);
-                      setUseByTouched(true);
-                    }}
-                    onBlur={() => validateOnBlur("useBy")}
+                    readOnly
                   />
                 </FormField>
 
@@ -919,7 +1051,14 @@ function PrepLabelsScreenContent({
                 )}
 
                 <div className="flex justify-end">
-                  <Button type="submit" loading={createLabel.isPending}>
+                  <Button
+                    type="submit"
+                    loading={createLabel.isPending}
+                    disabled={
+                      saveSetting.isPending ||
+                      (itemId !== "" && settingsResult.isFetching)
+                    }
+                  >
                     {t("opsFoodSafety.prepLabels.form.save")}
                   </Button>
                 </div>

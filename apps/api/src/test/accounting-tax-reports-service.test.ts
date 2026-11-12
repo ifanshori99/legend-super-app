@@ -417,18 +417,54 @@ describe("legend-5nhkp generate draft", () => {
     await expect(generate({ entity, p })).rejects.toThrow();
   });
 
-  it("PPh 21, PPh 23 and PPN have no data source yet (default source)", async () => {
+  // The default sources are real now (legend-v4v7c). PPh 21 needs the
+  // pph21_payable ledger role and fails closed when it is unmapped; PPh 23 and
+  // PPN always read their ledger roles, so with the roles mapped and nothing on
+  // the ledger or in the records they give an empty draft of amount 0 (ledger
+  // activity without records, unmapped roles and mismatches are 422s, see
+  // accounting-tax-source-vat-wht*.test.ts).
+  it("PPh 21 fails closed without a ledger mapping; PPh 23 and PPN give an empty draft when roles are mapped and there is nothing to report (default source)", async () => {
     const fx = await fresh();
-    for (const type of ["pph21", "pph23", "ppn"] as const)
-      await expectCode(
-        generateTaxReport(scopedContext(), actor(), {
-          legalEntityId: fx.entity,
-          type,
-          period: fx.p.period,
-        } as never),
-        "TAX_REPORT_SOURCE_UNAVAILABLE",
-        422,
+    const roles = ["pph23_payable", "ppn_input", "tax_payable_ppn"] as const;
+    for (const role of roles) {
+      const accountId = randomUUID();
+      await owner.query(
+        `INSERT INTO chart_of_accounts (id, tenant_id, legal_entity_id, code, name, type, report_group)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          accountId,
+          tenantA,
+          fx.entity,
+          `9${roles.indexOf(role)}01`,
+          role,
+          role === "ppn_input" ? "asset" : "liability",
+          role === "ppn_input" ? "current_asset" : "current_liability",
+        ],
       );
+      await owner.query(
+        `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+         VALUES ($1, $2, $3, $4)`,
+        [tenantA, fx.entity, role, accountId],
+      );
+    }
+    await expectCode(
+      generateTaxReport(scopedContext(), actor(), {
+        legalEntityId: fx.entity,
+        type: "pph21",
+        period: fx.p.period,
+      } as never),
+      "TAX_REPORT_SOURCE_UNAVAILABLE",
+      422,
+    );
+    for (const type of ["pph23", "ppn"] as const) {
+      const report = await generateTaxReport(scopedContext(), actor(), {
+        legalEntityId: fx.entity,
+        type,
+        period: fx.p.period,
+      } as never);
+      expect(report.lines, type).toEqual([]);
+      expect(report.amountIdr, type).toBe(0);
+    }
   });
 });
 

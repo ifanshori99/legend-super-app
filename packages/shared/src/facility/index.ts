@@ -17,3 +17,4 @@ export * from "./customer.ts";
 export * from "./events.ts";
 export * from "./fixtures.ts";
 export * from "./breakfast.ts";
+export * from "./config-codec.ts";

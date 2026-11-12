@@ -4,9 +4,8 @@
 //
 // The structure is tenant-wide master data without PII. Reading it needs an
 // HR read code (hr.employee.view / hr.employee.manage / payroll.view) with
-// any reach; creating it needs tenant-wide `hr.employee.manage` (the contract
-// has no create endpoints yet, so these are service-level for import tooling
-// and the onboarding bead).
+// any reach; creating it needs tenant-wide `hr.employee.manage` through the
+// master-data write endpoints, import tooling or onboarding.
 
 import { and, asc, eq, gt, or, type SQL } from "drizzle-orm";
 import {
@@ -37,9 +36,12 @@ import {
   cursorPair,
   forbidden,
   loadHrisAccess,
+  notFound,
   uniqueViolation,
   type Tx,
 } from "./hris-access.ts";
+
+import { idempotentHrisWrite } from "./hris-employee.service.ts";
 
 type Page<T> = {
   data: T[];
@@ -246,44 +248,90 @@ async function auditCreated(
 export async function createOrgUnit(
   context: ScopedTenantContext,
   actorUserId: string,
-  input: Pick<OrgUnit, "parentId" | "code" | "name"> & { isActive?: boolean },
+  input: Pick<OrgUnit, "parentId" | "code" | "name"> & {
+    isActive?: boolean;
+    idempotencyKey?: string;
+  },
   now = new Date(),
 ): Promise<OrgUnit> {
   return withTenant(db, context, async (tx) => {
     const actor = await assertCanManage(tx, context, actorUserId);
-    const [row] = await tx
-      .insert(orgUnits)
-      .values({
-        tenantId: context.tenant.tenantId,
-        parentId: input.parentId,
-        code: input.code,
-        name: input.name,
-        isActive: input.isActive ?? true,
-      })
-      .returning()
-      .catch((error: unknown) => conflict(error, "Kode unit sudah dipakai."));
-    if (!row) throw new Error("Org unit insert returned no row");
-    await auditCreated(tx, context, actor, now, "org_unit", row.id);
-    return toOrgUnit(row);
+    if (input.parentId !== null) {
+      const [parent] = await tx
+        .select({ id: orgUnits.id })
+        .from(orgUnits)
+        .where(
+          and(
+            eq(orgUnits.tenantId, context.tenant.tenantId),
+            eq(orgUnits.id, input.parentId),
+          ),
+        )
+        .limit(1);
+      if (!parent) throw notFound();
+    }
+    const { idempotencyKey, ...values } = input;
+    const create = async () => {
+      const [row] = await tx
+        .insert(orgUnits)
+        .values({
+          tenantId: context.tenant.tenantId,
+          parentId: input.parentId,
+          code: input.code,
+          name: input.name,
+          isActive: input.isActive ?? true,
+        })
+        .returning()
+        .catch((error: unknown) => conflict(error, "Kode unit sudah dipakai."));
+      if (!row) throw new Error("Org unit insert returned no row");
+      await auditCreated(tx, context, actor, now, "org_unit", row.id);
+      return toOrgUnit(row);
+    };
+    return idempotencyKey === undefined
+      ? create()
+      : idempotentHrisWrite(
+          tx,
+          context,
+          idempotencyKey,
+          "createOrgUnit",
+          { actor, input: values },
+          create,
+        );
   });
 }
 
 export async function createPositionGrade(
   context: ScopedTenantContext,
   actorUserId: string,
-  input: Pick<PositionGrade, "code" | "name" | "level">,
+  input: Pick<PositionGrade, "code" | "name" | "level"> & {
+    idempotencyKey?: string;
+  },
   now = new Date(),
 ): Promise<PositionGrade> {
   return withTenant(db, context, async (tx) => {
     const actor = await assertCanManage(tx, context, actorUserId);
-    const [row] = await tx
-      .insert(positionGrades)
-      .values({ tenantId: context.tenant.tenantId, ...input })
-      .returning()
-      .catch((error: unknown) => conflict(error, "Kode grade sudah dipakai."));
-    if (!row) throw new Error("Grade insert returned no row");
-    await auditCreated(tx, context, actor, now, "position_grade", row.id);
-    return toGrade(row);
+    const { idempotencyKey, ...values } = input;
+    const create = async () => {
+      const [row] = await tx
+        .insert(positionGrades)
+        .values({ tenantId: context.tenant.tenantId, ...values })
+        .returning()
+        .catch((error: unknown) =>
+          conflict(error, "Kode grade sudah dipakai."),
+        );
+      if (!row) throw new Error("Grade insert returned no row");
+      await auditCreated(tx, context, actor, now, "position_grade", row.id);
+      return toGrade(row);
+    };
+    return idempotencyKey === undefined
+      ? create()
+      : idempotentHrisWrite(
+          tx,
+          context,
+          idempotencyKey,
+          "createPositionGrade",
+          { actor, input: values },
+          create,
+        );
   });
 }
 
@@ -293,24 +341,54 @@ export async function createPosition(
   input: Pick<
     Position,
     "name" | "gradeId" | "orgUnitId" | "serviceChargePoints"
-  > & { isActive?: boolean },
+  > & { isActive?: boolean; idempotencyKey?: string },
   now = new Date(),
 ): Promise<Position> {
   return withTenant(db, context, async (tx) => {
     const actor = await assertCanManage(tx, context, actorUserId);
-    const [row] = await tx
-      .insert(positions)
-      .values({
-        tenantId: context.tenant.tenantId,
-        name: input.name,
-        gradeId: input.gradeId,
-        orgUnitId: input.orgUnitId,
-        serviceChargePoints: input.serviceChargePoints,
-        isActive: input.isActive ?? true,
-      })
-      .returning();
-    if (!row) throw new Error("Position insert returned no row");
-    await auditCreated(tx, context, actor, now, "position", row.id);
-    return toPosition(row);
+    for (const [table, referenceId] of [
+      [orgUnits, input.orgUnitId],
+      [positionGrades, input.gradeId],
+    ] as const) {
+      if (referenceId === null) continue;
+      const [reference] = await tx
+        .select({ id: table.id })
+        .from(table)
+        .where(
+          and(
+            eq(table.tenantId, context.tenant.tenantId),
+            eq(table.id, referenceId),
+          ),
+        )
+        .limit(1);
+      if (!reference) throw notFound();
+    }
+    const { idempotencyKey, ...values } = input;
+    const create = async () => {
+      const [row] = await tx
+        .insert(positions)
+        .values({
+          tenantId: context.tenant.tenantId,
+          name: input.name,
+          gradeId: input.gradeId,
+          orgUnitId: input.orgUnitId,
+          serviceChargePoints: input.serviceChargePoints,
+          isActive: input.isActive ?? true,
+        })
+        .returning();
+      if (!row) throw new Error("Position insert returned no row");
+      await auditCreated(tx, context, actor, now, "position", row.id);
+      return toPosition(row);
+    };
+    return idempotencyKey === undefined
+      ? create()
+      : idempotentHrisWrite(
+          tx,
+          context,
+          idempotencyKey,
+          "createPosition",
+          { actor, input: values },
+          create,
+        );
   });
 }

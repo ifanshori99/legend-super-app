@@ -630,6 +630,55 @@ describe("legend-c9kbk TEN-04 24 hours without an answer", () => {
   });
 });
 
+describe("legend-wvy9r and legend-8iuos owner support access", () => {
+  it("shows the requesting support member's name to the owner", async () => {
+    const owner = await newOwner();
+    const admin = await newSuperAdmin();
+    const request = await requestWrite(tenantId, admin.userId);
+    const listed = await owner.client.get("/api/org/support-access/requests");
+    expect(listed.status).toBe(200);
+    expect(listed.body.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: request.id,
+          requesterName: "Super Admin Persetujuan",
+        }),
+      ]),
+    );
+  });
+
+  it("lets a verified owner end access immediately and audits the owner", async () => {
+    const owner = await newOwner();
+    const admin = await newSuperAdmin();
+    const request = await requestWrite(tenantId, admin.userId);
+    const approved = await approve(owner, request.id);
+    const grantId = approved.grantId!;
+    const response = await postDecision(
+      owner.client,
+      `/api/org/support-access/${grantId}/end`,
+    );
+    expect(response.status).toBe(200);
+    expect(response.body.data.endedAt).toEqual(expect.any(String));
+    await expectImpersonationRefused(admin, owner.userId);
+    const audit = await auditRows(tenantId, "support_access.ended", grantId);
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({ actorId: owner.userId });
+  });
+
+  it("refuses a non-owner and an owner without verified MFA", async () => {
+    const owner = await newOwner();
+    const finance = await newTenantUser("finance");
+    const unverified = await newTenantUser("owner", { verifyMfa: false });
+    const admin = await newSuperAdmin();
+    const request = await requestWrite(tenantId, admin.userId);
+    const approved = await approve(owner, request.id);
+    const path = `/api/org/support-access/${approved.grantId}/end`;
+    expect((await postDecision(finance.client, path)).status).toBe(403);
+    expect((await postDecision(unverified.client, path)).status).toBe(403);
+    expect((await tryImpersonate(admin, owner.userId)).status).toBe(200);
+  });
+});
+
 describe("legend-c9kbk TEN-04 who may decide (HTTP)", () => {
   it("legend-c9kbk TEN-04 an owner approves over HTTP and the tenant lists the request", async () => {
     const owner = await newOwner();

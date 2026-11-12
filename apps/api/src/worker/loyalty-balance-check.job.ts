@@ -40,6 +40,11 @@ export async function runLoyaltyBalanceCheck(
   const tenantId = context.tenant.tenantId;
   const day = businessDateOf(now, DAY_CLOCK);
   return withTenant(database, context, async (tx) => {
+    // The check and insert must share a cross-worker lock: two transactions
+    // can otherwise both observe that today's anomaly has not been written.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`loyalty-balance-check:${tenantId}:${day}`}, 0))`,
+    );
     const result = await tx.execute(sql`
       SELECT p.id::text AS profile_id,
              p.points_balance::text AS balance,

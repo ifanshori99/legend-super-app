@@ -576,6 +576,7 @@ const decideAs = (
 ) =>
   post(client, `/api/hris/leave/requests/${leaveId}/decision`, {
     action,
+    ...(action === "reject" ? { rejectionReason: "Jadwal penuh" } : {}),
     idempotencyKey: key(),
   });
 

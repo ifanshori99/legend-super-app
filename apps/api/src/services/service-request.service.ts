@@ -57,7 +57,7 @@ import {
   type ZoneWaiterAssignment,
 } from "@starter/shared/qr-order";
 import { db } from "../db";
-import { floorZones, tableSessions } from "../db/schema/floor";
+import { floorZones, tableSessions, tables } from "../db/schema/floor";
 import { outletOpenBillPolicies } from "../db/schema/open-bill";
 import {
   notificationPolicies,
@@ -115,13 +115,14 @@ const ZONE_WAITER_AUDIT_FIELDS = [
 const iso = (value: Date | null): string | null =>
   value ? toIsoDateTime(value) : null;
 
-function toRequest(row: Row): ServiceRequest {
+function toRequest(row: Row, tableLabel: string): ServiceRequest {
   return serviceRequestSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
     outletId: row.outletId,
     tableSessionId: row.tableSessionId,
     tableId: row.tableId,
+    tableLabel,
     zoneId: row.zoneId,
     type: row.type,
     reason: row.reason,
@@ -366,7 +367,7 @@ export async function createServiceRequest(
           "IDEMPOTENCY_KEY_REUSED",
           "Idempotency key already used for a different request.",
         );
-      return { request: toRequest(replay), created: false };
+      return { request: toRequest(replay, table.code), created: false };
     }
 
     // Dedupe: one open request per table and kind; return it instead.
@@ -388,8 +389,8 @@ export async function createServiceRequest(
       return {
         request:
           open.tableSessionId === session.id
-            ? toRequest(open)
-            : { ...toRequest(open), message: null },
+            ? toRequest(open, table.code)
+            : { ...toRequest(open, table.code), message: null },
         created: false,
       };
 
@@ -453,7 +454,7 @@ export async function createServiceRequest(
       },
       now,
     );
-    return { request: toRequest(row), created: true };
+    return { request: toRequest(row, table.code), created: true };
   });
 }
 
@@ -491,20 +492,28 @@ export async function listServiceRequests(
       );
     }
     const rows = await tx
-      .select()
+      .select({ row: serviceRequests, tableLabel: tables.code })
       .from(serviceRequests)
+      .innerJoin(
+        tables,
+        and(
+          eq(tables.tenantId, serviceRequests.tenantId),
+          eq(tables.outletId, serviceRequests.outletId),
+          eq(tables.id, serviceRequests.tableId),
+        ),
+      )
       .where(and(...conditions))
       .orderBy(desc(serviceRequests.createdAt), desc(serviceRequests.id))
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
     return {
-      data: page.map(toRequest),
+      data: page.map(({ row, tableLabel }) => toRequest(row, tableLabel)),
       meta: {
         limit: query.limit,
         nextCursor:
           rows.length > query.limit && last
-            ? encodeCursor([last.createdAt.toISOString(), last.id])
+            ? encodeCursor([last.row.createdAt.toISOString(), last.row.id])
             : null,
       },
     };
@@ -544,18 +553,27 @@ async function transition(
   note: string | null,
 ): Promise<ServiceRequest> {
   return withTenant(db, context, async (tx) => {
-    const [row] = await tx
-      .select()
+    const [found] = await tx
+      .select({ row: serviceRequests, tableLabel: tables.code })
       .from(serviceRequests)
+      .innerJoin(
+        tables,
+        and(
+          eq(tables.tenantId, serviceRequests.tenantId),
+          eq(tables.outletId, serviceRequests.outletId),
+          eq(tables.id, serviceRequests.tableId),
+        ),
+      )
       .where(
         and(
           eq(serviceRequests.tenantId, context.tenant.tenantId),
           eq(serviceRequests.id, serviceRequestId),
         ),
       )
-      .for("update");
-    if (!row)
+      .for("update", { of: serviceRequests });
+    if (!found)
       throw new CoreError("NOT_FOUND", "Permintaan layanan tidak ditemukan.");
+    const { row, tableLabel } = found;
     assertOutletInScope(context.outletScope, row.outletId);
 
     const target = action === "acknowledge" ? "acknowledged" : "resolved";
@@ -564,8 +582,17 @@ async function transition(
     // (resolvedBy keeps the first resolver), never a 409.
     if (row.status === target) {
       if (action === "resolve" || row.assignedTo === actorUserId)
-        return toRequest(row);
+        return toRequest(row, tableLabel);
     }
+    if (
+      action === "resolve" &&
+      row.type === "request_bill" &&
+      row.status === "pending"
+    )
+      throw new CoreError(
+        "CALL_NOT_ACKNOWLEDGED",
+        "Permintaan tagihan harus diambil waiter sebelum diselesaikan.",
+      );
     let next;
     try {
       next = transitionServiceRequest(row.status, action);
@@ -630,7 +657,7 @@ async function transition(
         },
         AUDIT_SAFE_FIELDS,
       );
-    return toRequest(updated);
+    return toRequest(updated, tableLabel);
   });
 }
 
@@ -651,7 +678,7 @@ export function acknowledgeServiceRequest(
   );
 }
 
-/** Staff: done (acknowledged, or still pending, -> resolved). */
+/** Staff: done; bill requests require prior acknowledgement. */
 export function resolveServiceRequest(
   context: ScopedTenantContext,
   serviceRequestId: string,

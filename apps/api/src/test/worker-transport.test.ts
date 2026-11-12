@@ -284,6 +284,34 @@ describe("legend-18qw worker transport (edge)", () => {
     ]);
   });
 
+  it("legend-pd9t rolls back the queued event with its consuming transaction", async () => {
+    const transport = createBuiltinWorkerTransport({
+      database: db,
+      env: edgeEnv(edgeToken),
+    });
+    const context = jobContext();
+    const event = orderEvent(outletA, 1);
+    const queuedRows = () =>
+      withTenant(db, context, (tx) =>
+        tx.execute(
+          sql`SELECT event_id FROM edge_outbound_queue WHERE edge_node_id = ${edgeNodeId}::uuid AND event_id = ${ulidToUuid(event.id)}::uuid`,
+        ),
+      );
+
+    await expect(
+      withTenant(db, context, async (tx) => {
+        await transport.deliverEvent(context, event, event.id, tx, route());
+        throw new Error("abort consumer transaction");
+      }),
+    ).rejects.toThrow("abort consumer transaction");
+    expect((await queuedRows()).rows).toHaveLength(0);
+
+    await withTenant(db, context, (tx) =>
+      transport.deliverEvent(context, event, event.id, tx, route()),
+    );
+    expect((await queuedRows()).rows).toHaveLength(1);
+  });
+
   it("legend-18qw edge tenant-wide event throws", async () => {
     const transport = createBuiltinWorkerTransport({
       database: db,

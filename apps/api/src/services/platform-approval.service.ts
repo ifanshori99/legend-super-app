@@ -110,6 +110,7 @@ import {
 import { PROFIT_SHARE_APPROVAL_SOURCE_MODULE } from "./profit-share-approval";
 import {
   lockRefundApprovalScope,
+  refundChainDecisionTime,
   refundApprovalLimitRefused,
   refundApprovalWithinLimit,
 } from "./payment-refund-approval-limits.ts";
@@ -1357,6 +1358,9 @@ export async function decideApprovalRequest(
     // Payment limits serialize by bill before the chain lock, matching the
     // payment service's group -> intent -> refund -> chain lock order.
     let paymentRefund: typeof paymentRefunds.$inferSelect | null = null;
+    // legend-ykk88: a refund approval fact follows commit order, so its time is
+    // taken after the scope lock rather than from the pre-lock request clock.
+    let decisionAt = now;
     if (
       input.decision === "approved" &&
       found.sourceModule === "payment" &&
@@ -1380,6 +1384,7 @@ export async function decideApprovalRequest(
           tenant.tenantId,
           refund.paymentIntentId,
         );
+        decisionAt = await refundChainDecisionTime(tx, refund, now);
       }
     }
     await lockChain(tx, found.chainId);
@@ -1499,11 +1504,11 @@ export async function decideApprovalRequest(
       .set({
         status: decided.status,
         decidedBy: approverId,
-        decidedAt: now,
+        decidedAt: decisionAt,
         reason,
         decisionFingerprint,
         decisionIdempotencyKey: key,
-        updatedAt: now,
+        updatedAt: decisionAt,
       })
       .where(
         and(
@@ -1518,7 +1523,7 @@ export async function decideApprovalRequest(
       chainId: row.chainId,
       outletId: row.outletId,
       actor,
-      now,
+      now: decisionAt,
       destinations: [EVENT_DESTINATION],
       payload: {
         requestId: row.id,
@@ -1576,7 +1581,14 @@ export async function decideApprovalRequest(
         payload: requestedPayload(next),
       });
     } else {
-      await emitResolved(tx, context, updated, input.decision, actor, now);
+      await emitResolved(
+        tx,
+        context,
+        updated,
+        input.decision,
+        actor,
+        decisionAt,
+      );
     }
 
     await recordAudit(

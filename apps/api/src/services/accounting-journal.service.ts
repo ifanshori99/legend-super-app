@@ -69,6 +69,7 @@ import {
   type JournalLineInput,
   type JournalSourceType,
   type LegalEntityId,
+  type PostingAccountRole,
 } from "@starter/shared/accounting";
 import {
   assertTrustedScopedContext,
@@ -127,6 +128,12 @@ export type PostJournalInput = {
   readonly expectedPeriodVersion?: number | null;
   /** Business date the fact really happened on, when it posts into a later open period. */
   readonly lateAdjustmentFrom?: string | null;
+  /** Order (uuid form) of a sale or refund journal; null for other sources. */
+  readonly orderId?: string | null;
+  /** Internal immutable record of the exact role identities used to post. */
+  readonly postingAccountSnapshot?: Partial<
+    Record<PostingAccountRole, string>
+  > | null;
 };
 
 /** A module posts its event through a catalogued posting rule (contract). */
@@ -144,6 +151,9 @@ export type PostFromRuleInput = {
   readonly costCenter?: string | null;
   readonly expectedPeriodVersion?: number | null;
   readonly lateAdjustmentFrom?: string | null;
+  readonly orderId?: string | null;
+  /** Trusted internal role identities recovered from the original sale. */
+  readonly accountOverrides?: Partial<Record<PostingAccountRole, string>>;
 };
 
 type ParsedPost = PostJournalInput & {
@@ -503,6 +513,8 @@ export async function postJournalInTransaction(
       idempotencyKey: parsed.idempotencyKey,
       requestFingerprint: fingerprint,
       lateAdjustmentFrom: parsed.lateAdjustmentFrom ?? null,
+      orderId: parsed.orderId ?? null,
+      postingAccountSnapshot: parsed.postingAccountSnapshot ?? null,
     })
     .onConflictDoNothing({
       target: [journalEntries.tenantId, journalEntries.idempotencyKey],
@@ -570,17 +582,30 @@ export async function postJournalFromRuleInTransaction(
       ),
     )
     .orderBy(asc(accountMappings.role));
-  const accountMap = accountMapFor(
-    mappingRows.map((row) =>
-      accountMappingSchema.parse({
-        tenantId: row.tenantId,
-        legalEntityId: row.legalEntityId,
-        role: row.role,
-        accountId: row.accountId,
-      }),
+  const accountMap = new Map(
+    accountMapFor(
+      mappingRows.map((row) =>
+        accountMappingSchema.parse({
+          tenantId: row.tenantId,
+          legalEntityId: row.legalEntityId,
+          role: row.role,
+          accountId: row.accountId,
+        }),
+      ),
+      input.legalEntityId as LegalEntityId,
     ),
-    input.legalEntityId as LegalEntityId,
   );
+  for (const [role, accountId] of Object.entries(
+    input.accountOverrides ?? {},
+  )) {
+    const mapping = accountMappingSchema.parse({
+      tenantId: context.tenant.tenantId,
+      legalEntityId: input.legalEntityId,
+      role,
+      accountId,
+    });
+    accountMap.set(mapping.role, mapping.accountId);
+  }
   const lines = buildJournalLinesFromRule(rule, input.amounts, accountMap, {
     outletId: input.outletId as OutletId | null,
     costCenter: input.costCenter ?? null,
@@ -600,6 +625,8 @@ export async function postJournalFromRuleInTransaction(
       idempotencyKey: input.idempotencyKey,
       expectedPeriodVersion: input.expectedPeriodVersion,
       lateAdjustmentFrom: input.lateAdjustmentFrom ?? null,
+      orderId: input.orderId ?? null,
+      postingAccountSnapshot: Object.fromEntries(accountMap),
     },
     now,
   );

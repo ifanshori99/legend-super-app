@@ -117,7 +117,6 @@ type Page<T> = {
 };
 
 const APPROVE_REASON = "Cuti disetujui";
-const REJECT_REASON = "Cuti ditolak";
 const REQUEST_REASON = "Pengajuan cuti";
 
 const lower = (value: string) => value.toLowerCase();
@@ -192,6 +191,7 @@ export function toLeaveRequest(
     endDate: row.endDate,
     days: row.days,
     reason: row.reason,
+    rejectionReason: row.rejectionReason,
     attachmentUrl,
     status: row.status,
     requestedAt: row.requestedAt.toISOString(),
@@ -519,7 +519,7 @@ function canSee(access: HrisAccess, row: LeaveRequestRow): boolean {
 
 /**
  * The DTO with the signed attachment URL. Only a viewer who can see the
- * request (the requester, HR manage reach or approve reach at its outlet) gets
+ * request (the requester or approver at its outlet) gets
  * one; each URL issued is audited with a sensitive-access reason.
  */
 async function presentRequest(
@@ -530,7 +530,13 @@ async function presentRequest(
   signer: HrisFileSigner,
   now: Date,
 ): Promise<LeaveRequest> {
-  if (row.attachmentKey === null || !canSee(access, row))
+  const canOpenAttachment =
+    (access.own !== null && lower(access.own.id) === lower(row.employeeId)) ||
+    access.snapshot.allows("hr.leave.approve", {
+      type: "outlet",
+      id: row.outletId,
+    });
+  if (row.attachmentKey === null || !canOpenAttachment)
     return toLeaveRequest(row);
   const url = await signer(context, row.attachmentKey, tx);
   if (url !== null)
@@ -556,8 +562,10 @@ const UUID_PATTERN =
 const ATTACHMENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
- * The upload must be a fresh `document` object at the requester's home outlet
- * that nothing else references, uploaded by the requester (`owner_user_id`).
+ * The upload must be a fresh `document` object preclassified as
+ * `leave_request` at the requester's home outlet, uploaded by the requester.
+ * Preclassification prevents a generic document reader from receiving a URL
+ * just before the object is attached as sensitive leave evidence.
  * Ownership stops attaching someone else's private file (an HR employee
  * document, another request's proof) or an unowned system file (the printed
  * menu PDF); freshness plus single use still bound reuse.
@@ -575,6 +583,7 @@ async function assertAttachmentUsable(
         .select({
           outletId: coreStorageObjects.outletId,
           purpose: coreStorageObjects.purpose,
+          sourceKind: coreStorageObjects.sourceKind,
           createdAt: coreStorageObjects.createdAt,
           ownerUserId: coreStorageObjects.ownerUserId,
         })
@@ -601,6 +610,7 @@ async function assertAttachmentUsable(
   if (
     !object ||
     object.purpose !== "document" ||
+    object.sourceKind !== "leave_request" ||
     policy?.visibility !== "private" ||
     object.outletId === null ||
     lower(object.outletId) !== lower(homeOutletId) ||
@@ -1142,7 +1152,10 @@ export async function decideLeaveRequest(
         gate.openId,
         {
           decision: input.action === "approve" ? "approved" : "rejected",
-          reason: input.action === "approve" ? APPROVE_REASON : REJECT_REASON,
+          reason:
+            input.action === "approve"
+              ? APPROVE_REASON
+              : input.rejectionReason!,
         } as Parameters<typeof decideApprovalRequest>[3],
         {
           mfaVerified: options.mfaVerified,
@@ -1623,6 +1636,7 @@ async function applyOutcome(
     .select({
       decidedBy: approvalRequests.decidedBy,
       decidedAt: approvalRequests.decidedAt,
+      reason: approvalRequests.reason,
     })
     .from(approvalRequests)
     .where(
@@ -1645,6 +1659,7 @@ async function applyOutcome(
     .update(leaveRequests)
     .set({
       status: "rejected",
+      rejectionReason: systemEnded ? null : (last?.reason ?? null),
       decidedBy:
         systemEnded || !last?.decidedBy
           ? null

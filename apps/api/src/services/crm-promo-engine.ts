@@ -94,6 +94,12 @@ import {
 } from "../db/schema";
 import { maskAuditChanges } from "@starter/shared/audit";
 import { HttpError } from "../lib/http-error";
+import {
+  assertEdgePromoCodeAllowed,
+  isPromoEdgeMode,
+  promoEvaluationAt,
+  promoRequestEnabled,
+} from "../edge/promo-gate.ts";
 import { recordAudit } from "./core-audit";
 import { isTrainingOrder } from "./device-training";
 import { appendOutbox } from "./core-outbox";
@@ -432,6 +438,7 @@ export async function resolveCode(
   code: string,
   lock: boolean,
 ): Promise<ResolvedCode | null> {
+  assertEdgePromoCodeAllowed(code);
   const codeHash = hashPromoCode(code);
   const voucherQuery = tx
     .select()
@@ -551,6 +558,25 @@ const COUNTER_INDEPENDENT_REJECTIONS: ReadonlySet<PromoRejectionReason> =
     "voucher_required",
     "no_matching_items",
   ]);
+
+/**
+ * Independent edge databases cannot reserve shared caps or enforce the
+ * once-per-customer/day facility reward across edge and cloud checkouts.
+ */
+function canApplyPromotionHere(
+  promotion: Pick<
+    Promotion,
+    "quotaTotal" | "quotaPerCustomer" | "budgetIdr" | "benefit"
+  >,
+): boolean {
+  return (
+    !isPromoEdgeMode() ||
+    (promotion.quotaTotal === null &&
+      promotion.quotaPerCustomer === null &&
+      promotion.budgetIdr === null &&
+      promotion.benefit.kind !== "facility_entitlement")
+  );
+}
 
 /**
  * Redeem-path lock set (bead legend-9w77; LOY-03 race safety; PRD §3.21).
@@ -676,6 +702,7 @@ async function prepare(
   lock: boolean,
 ): Promise<Prepared> {
   assertTrustedScopedContext(context);
+  assertEdgePromoCodeAllowed(checkout.voucherCode);
   const outlet = await requirePromoOutlet(tx, context, checkout.outletId);
   if (checkout.lines.length === 0)
     throw new HttpError(422, "VALIDATION_ERROR", "Keranjang kosong.");
@@ -745,7 +772,7 @@ async function prepare(
   // Never locked here: redeem locks only the candidates for this bill below
   // (lockCandidatePromotions), not every active promotion of the tenant.
   const rows = await query;
-  const candidates = rows.map(toPromotion);
+  const candidates = rows.filter(canApplyPromotionHere).map(toPromotion);
   // A value voucher, or a code promotion that is not active right now, still
   // goes to the evaluator so the caller sees why it does not apply.
   if (
@@ -828,11 +855,49 @@ async function prepare(
     usage,
     customerId,
   );
+  let currentCandidates = locked.candidates
+    .filter(canApplyPromotionHere)
+    .map(sameDay);
+  let currentInput = input;
+  let currentPolicy = policy;
+  if (isPromoEdgeMode()) {
+    // A catalog transaction can commit while we wait for a candidate lock.
+    // Its outlet switch and stacking policy must be read after that wait.
+    const lockedIds = [...locked.lockedIds];
+    const eligibleRows =
+      lockedIds.length === 0
+        ? []
+        : await tx
+            .select({ id: promotions.id })
+            .from(promotions)
+            .where(
+              and(
+                eq(promotions.tenantId, context.tenant.tenantId),
+                inArray(promotions.id, lockedIds),
+                promotionEnabledAtOutlet(checkout.outletId),
+              ),
+            );
+    const eligibleIds = new Set(eligibleRows.map((row) => row.id));
+    // Only rows we locked may become eligible as trusted time advances.
+    currentCandidates = currentCandidates.filter((promotion) =>
+      eligibleIds.has(promotion.id),
+    );
+    currentPolicy = await loadStackingPolicy(tx, context);
+    const currentAt = promoEvaluationAt(checkout.at);
+    const currentClock = outletLocalClock(currentAt, outlet.timezone);
+    currentInput = {
+      ...input,
+      at: currentAt.toISOString(),
+      localDayOfWeek: currentClock.localDayOfWeek,
+      localTime: currentClock.localTime,
+    };
+  }
   return {
-    input,
-    candidates: locked.candidates.map(sameDay),
+    input: currentInput,
+    // Re-check rules read under lock: an admin can add a cap after the scan.
+    candidates: currentCandidates,
     usage: locked.usage,
-    policy,
+    policy: currentPolicy,
     voucher,
     voucherEvaluationId,
     lockedPromotionIds: locked.lockedIds,
@@ -846,7 +911,13 @@ export async function quotePromotions(
   context: ScopedTenantContext,
   checkout: PromoCheckoutInput,
 ): Promise<PromotionApplicationResult> {
+  assertTrustedScopedContext(context);
+  if (!promoRequestEnabled(checkout.voucherCode))
+    return { evaluations: [], totalDiscountIdr: idr(0) };
+  checkout = { ...checkout, at: promoEvaluationAt(checkout.at) };
   const prepared = await prepare(tx, context, checkout, false);
+  if (!promoRequestEnabled(checkout.voucherCode))
+    return { evaluations: [], totalDiscountIdr: idr(0) };
   return applyPromotions(
     prepared.candidates,
     prepared.input,
@@ -1069,16 +1140,32 @@ export async function redeemPromotions(
   redeem: RedeemPromotionsInput,
 ): Promise<PromotionApplicationResult> {
   assertTrustedScopedContext(context);
+  if (
+    !promoRequestEnabled(redeem.voucherCode, redeem.expected?.totalDiscountIdr)
+  )
+    return { evaluations: [], totalDiscountIdr: idr(0) };
+  redeem = { ...redeem, at: promoEvaluationAt(redeem.at) };
   const tenantId = context.tenant.tenantId;
   const orderId = orderIdSchema.parse(redeem.orderId);
   const fingerprint = fingerprintOf(redeem);
   await lockOrder(tx, tenantId, orderId);
+  if (
+    !promoRequestEnabled(redeem.voucherCode, redeem.expected?.totalDiscountIdr)
+  )
+    return { evaluations: [], totalDiscountIdr: idr(0) };
 
   // legend-dbrw3: a training sale prices the promotions (the cashier can
   // rehearse) but consumes nothing: no voucher, quota, budget, customer use,
   // facility reward, application row or event.
   if (await isTrainingOrder(tx, tenantId, orderId)) {
     const trained = await prepare(tx, context, redeem, false);
+    if (
+      !promoRequestEnabled(
+        redeem.voucherCode,
+        redeem.expected?.totalDiscountIdr,
+      )
+    )
+      return { evaluations: [], totalDiscountIdr: idr(0) };
     const quoted = applyPromotions(
       trained.candidates,
       trained.input,
@@ -1122,6 +1209,12 @@ export async function redeemPromotions(
   }
 
   const prepared = await prepare(tx, context, redeem, true);
+  // Pending sync or elapsed freshness can close the gate during a lock wait.
+  // Refuse before application, quota, voucher, reward, audit or outbox writes.
+  if (
+    !promoRequestEnabled(redeem.voucherCode, redeem.expected?.totalDiscountIdr)
+  )
+    return { evaluations: [], totalDiscountIdr: idr(0) };
   const result = applyPromotions(
     prepared.candidates,
     prepared.input,
@@ -1131,7 +1224,7 @@ export async function redeemPromotions(
   if (redeem.expected && !sameApplication(redeem.expected, result))
     throw changedError(redeem.expected, result);
 
-  const now = redeem.at;
+  const now = new Date(prepared.input.at);
   const outlet = await requirePromoOutlet(tx, context, redeem.outletId);
   const outletId = redeem.outletId;
   const customerId = redeem.customer?.customerProfileId ?? null;
@@ -1158,6 +1251,7 @@ export async function redeemPromotions(
     rulesSnapshot[evaluation.promotionId] = {
       conditions: raw.conditions,
       benefit: raw.benefit,
+      priority: raw.priority,
     };
   }
 

@@ -24,6 +24,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
+import { formatPickupCode } from "@starter/shared/kitchen";
 import {
   assertOutletInScope,
   businessDateOf,
@@ -55,6 +56,7 @@ import {
   floorZones,
   menuItems,
   outlets,
+  pickupCalls,
   posOverrides,
   tableSessions,
   tables,
@@ -811,8 +813,8 @@ async function categoriesOf(
 /**
  * The reservation deposit (WS-08 `depositCreditForSession`, through the QR
  * port so one wiring serves both bills) this order may use: the session's
- * credit minus what its other live orders already applied, never above the
- * order total (same rule as the QR checkout).
+ * credit minus what its other payable orders already applied, never above
+ * the order total (same rule as the QR checkout). Draft snapshots reserve none.
  */
 async function depositFor(
   tx: Tx,
@@ -836,6 +838,7 @@ async function depositFor(
       and(
         eq(orders.tenantId, tenantId),
         eq(orders.tableSessionId, order.tableSessionId),
+        ne(orders.status, "draft"),
         ne(orders.status, "voided"),
         ne(orders.id, order.id),
       ),
@@ -924,9 +927,10 @@ export async function repriceOrder(
   });
   if (bill.discountIdr !== discountTotal)
     throw new PosError("DISCOUNT_EXCEEDS_SUBTOTAL");
-  const deposit = input.releaseDeposit
-    ? 0
-    : await depositFor(tx, context, order, bill.totalIdr);
+  const deposit =
+    input.releaseDeposit || order.status === "draft"
+      ? 0
+      : await depositFor(tx, context, order, bill.totalIdr);
   const [updated] = await tx
     .update(orders)
     .set({
@@ -1022,12 +1026,22 @@ export async function orderDetail(
   locked: Locked,
 ): Promise<PosOrderDetail> {
   const { order, pos } = locked;
-  const [items, tenders, discounts, receipt, swaps] = await Promise.all([
+  const [items, tenders, discounts, receipt, swaps, calls] = await Promise.all([
     itemsOf(tx, context, order.id),
     tendersOf(tx, context, order.id),
     liveDiscountsOf(tx, context, order.id),
     posReceiptPort().findForOrder(tx, context, order.id),
     swapLinksOf(tx, context, order.id),
+    tx
+      .select({ number: pickupCalls.number })
+      .from(pickupCalls)
+      .where(
+        and(
+          eq(pickupCalls.tenantId, context.tenant.tenantId),
+          eq(pickupCalls.outletId, order.outletId),
+          eq(pickupCalls.orderId, order.id),
+        ),
+      ),
   ]);
   // A voided order's schema counts every line, so it carries no adjustment.
   const swapReplacementIdr =
@@ -1053,6 +1067,7 @@ export async function orderDetail(
     tenantId: order.tenantId,
     outletId: order.outletId,
     number: order.number,
+    callNumber: calls[0] ? formatPickupCode(calls[0].number) : null,
     channel: order.channel,
     serviceType: order.serviceType,
     tableSessionId: order.tableSessionId,

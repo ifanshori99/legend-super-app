@@ -308,6 +308,9 @@ const schema = z
     // Edge selfie store: sealed LSS1 files wait here until the cloud takes
     // them. EDGE_SELFIE_MAX_BYTES caps the bytes of files not yet uploaded.
     EDGE_SELFIE_DIR: z.string().min(1).default("/var/lib/legend/edge-selfies"),
+    // Edge local state files (catalog owner-alarm queue, 533 A5): kept apart
+    // from the selfie store, whose sweeps and volume checks own that tree.
+    EDGE_STATE_DIR: z.string().min(1).default("/var/lib/legend/edge-state"),
     EDGE_SELFIE_MAX_BYTES: z.coerce
       .number()
       .int()

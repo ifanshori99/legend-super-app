@@ -20,6 +20,7 @@ import { OperationsError } from "./errors.ts";
 import {
   checklistItemResultIssues,
   isTemperatureInRange,
+  shelfLifeMinutesSchema,
   shiftHandoverSchema,
   temperatureThresholdSchema,
 } from "./schemas.ts";
@@ -197,6 +198,22 @@ export function assertTemperatureLogAllowed(
 
 // ---- Prep labels (OPS-03) ------------------------------------------------
 
+/** Add the configured elapsed duration to an ISO production instant. The UI
+ * converts from/to the outlet wall clock at its boundary; UTC arithmetic
+ * preserves the configured lifetime across midnight and DST transitions. */
+export function calculatePrepUseBy(
+  producedAtIso: string,
+  shelfLifeMinutes: number | null,
+): IsoDateTime | null {
+  const produced = isoDateTimeSchema.safeParse(producedAtIso);
+  const lifetime = shelfLifeMinutesSchema.safeParse(shelfLifeMinutes);
+  if (!produced.success || !lifetime.success) return null;
+  const at = new Date(Date.parse(produced.data) + lifetime.data * MINUTE);
+  if (!Number.isFinite(at.getTime())) return null;
+  const parsed = isoDateTimeSchema.safeParse(at.toISOString());
+  return parsed.success ? parsed.data : null;
+}
+
 /** OPS-03: a label past its use-by appears in the expiry alerts. */
 export function isPrepLabelExpired(
   prepLabel: Pick<PrepLabel, "useBy">,
@@ -341,8 +358,24 @@ export function shiftHandoverCanClose(handover: ShiftHandover): boolean {
 }
 
 export function assertShiftHandoverClosable(handover: ShiftHandover): void {
+  if (handover.status === "closed")
+    throw new OperationsError("HANDOVER_ALREADY_CLOSED");
   if (!shiftHandoverCanClose(handover))
     throw new OperationsError("HANDOVER_ACKNOWLEDGEMENT_REQUIRED");
+}
+
+/** The persisted close keeps the receiving shift's acknowledgement intact. */
+export function closeShiftHandover(
+  handover: ShiftHandover,
+  closure: { closedBy: UserId; closedAt: IsoDateTime },
+): ShiftHandover {
+  assertShiftHandoverClosable(handover);
+  return shiftHandoverSchema.parse({
+    ...handover,
+    status: "closed",
+    closedBy: closure.closedBy,
+    closedAt: isoDateTimeSchema.parse(closure.closedAt),
+  });
 }
 
 /**
@@ -353,7 +386,7 @@ export function acknowledgeShiftHandover(
   handover: ShiftHandover,
   confirmation: { acknowledgedBy: UserId; acknowledgedAt: IsoDateTime },
 ): ShiftHandover {
-  if (handover.status === "acknowledged")
+  if (handover.status !== "submitted")
     throw new OperationsError("HANDOVER_ALREADY_ACKNOWLEDGED");
   if (confirmation.acknowledgedBy === handover.submittedBy)
     throw new OperationsError("HANDOVER_SELF_ACKNOWLEDGEMENT");

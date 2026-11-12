@@ -120,7 +120,7 @@ export const opsFoodSafetyMessages = {
     },
     form: {
       title: "Buat label prep",
-      hint: "Batas pakai disarankan dari tanggal kedaluwarsa batch; periksa sebelum menyimpan.",
+      hint: "Batas pakai dihitung dari waktu produksi dan masa simpan bahan prep yang tersimpan di outlet ini.",
       item: "Bahan",
       itemPlaceholder: "Pilih bahan",
       batch: "Batch inventori",
@@ -129,9 +129,20 @@ export const opsFoodSafetyMessages = {
       batchEmpty: "Bahan ini belum memiliki batch.",
       producedAt: "Waktu produksi",
       useBy: "Batas pakai",
-      useByHint: "Batas pakai harus setelah waktu produksi.",
+      shelfLife: "Masa simpan bahan prep (menit)",
+      shelfLifeHint:
+        "Simpan masa simpan bahan ini untuk menghitung batas pakai label baru. Label yang sudah dibuat tetap memakai batas pakai semula.",
+      shelfLifeSave: "Simpan masa simpan",
+      shelfLifeSaved: "Masa simpan bahan prep disimpan.",
+      shelfLifeSaveFailed:
+        "Masa simpan belum tersimpan. Periksa koneksi dan coba lagi.",
+      shelfLifeLoading: "Memuat masa simpan bahan prep…",
+      shelfLifeLoadFailed:
+        "Masa simpan belum dapat dimuat. Coba muat ulang sebelum membuat label.",
+      shelfLifeRetry: "Muat ulang masa simpan",
+      useByHint: "Simpan masa simpan bahan prep untuk menghitung batas pakai.",
       useBySuggested:
-        "Disarankan dari kedaluwarsa batch {date}. Sesuaikan dengan masa simpan bahan prep; jangan melebihi tanggal batch.",
+        "Dihitung {minutes} menit setelah waktu produksi, ditampilkan dalam zona waktu outlet.",
       responsible: "Penanggung jawab",
       responsibleHint: "Diisi sistem dari sesi petugas yang mencatat.",
       save: "Buat label",
@@ -143,6 +154,10 @@ export const opsFoodSafetyMessages = {
         producedAt: "Isi waktu produksi yang valid.",
         useBy: "Isi batas pakai yang valid.",
         useByOrder: "Batas pakai harus setelah waktu produksi.",
+        shelfLife:
+          "Isi masa simpan dalam jumlah menit bulat yang lebih dari nol.",
+        shelfLifeRequired:
+          "Muat dan simpan masa simpan bahan prep sebelum membuat label.",
         batchItem: "Batch tidak sesuai dengan bahan yang dipilih.",
       },
     },

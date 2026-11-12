@@ -13,13 +13,17 @@ import {
   type PrintJobListQuery,
 } from "@starter/shared/edge";
 import { createUlid } from "@starter/shared/core";
+import { apiFetch } from "@/lib/api/client";
 import { callEndpoint } from "@/lib/api/endpoint";
 
 export function fetchEdgeStatus(signal?: AbortSignal) {
   return callEndpoint(getEdgeStatus, undefined, { signal });
 }
 
-export function fetchEdgeDevices(query: DeviceListQuery, signal?: AbortSignal) {
+export function fetchEdgeDevices(
+  query: DeviceListQuery & { outletId?: string },
+  signal?: AbortSignal,
+) {
   return callEndpoint(listEdgeDevices, { query }, { signal });
 }
 
@@ -48,6 +52,20 @@ export function setDeviceTrainingModeCall(
   return callEndpoint(setOutletDeviceTrainingMode, {
     params: { deviceId },
     body: { trainingMode },
+  });
+}
+
+/**
+ * Owner override of the 24 hour catalog sales gate (legend-10nex). The edge
+ * API takes `{ minutes, reason }` and answers owners only, offline included.
+ */
+export function grantCatalogOverrideCall(body: {
+  minutes: number;
+  reason: string;
+}) {
+  return apiFetch<{ data: unknown }>("/api/edge/catalog-override", {
+    method: "POST",
+    body,
   });
 }
 

@@ -824,6 +824,96 @@ describe("scope and permissions", () => {
   });
 });
 
+// legend-aad54: managing announcements (publish, receipts list) needs
+// hr.announcement.manage. hr.sop.manage no longer opens it, at any scope.
+describe("[aad54] announcement manage permission", () => {
+  it("[aad54] a role with only hr.sop.manage (tenant-wide or outlet) cannot publish or list receipts (403)", async () => {
+    const created = await createAnnouncement(
+      tenantScope(),
+      managerAll,
+      input({ audience: outletsAudience(outletA) }),
+    );
+    const sopTenant = await actor(["hr.sop.manage"], { type: "tenant" });
+    const sopOutlet = await actor(["hr.sop.manage"], {
+      type: "outlet",
+      id: outletA,
+    });
+    for (const [scope, user] of [
+      [tenantScope(), sopTenant],
+      [outletScope(outletA), sopOutlet],
+    ] as const) {
+      expect(
+        (await failure(createAnnouncement(scope, user, input()))).status,
+      ).toBe(403);
+      expect(
+        (
+          await failure(
+            listAnnouncementReceipts(scope, user, created.id, { limit: 20 }),
+          )
+        ).status,
+      ).toBe(403);
+    }
+  });
+
+  it("[aad54] hr.announcement.manage together with hr.sop.manage still publishes, and the permission alone is enough", async () => {
+    const both = await actor(["hr.sop.manage", "hr.announcement.manage"], {
+      type: "tenant",
+    });
+    const published = await createAnnouncement(
+      tenantScope(),
+      both,
+      input({ audience: outletsAudience(outletA) }),
+    );
+    expect(published.id).toBeTruthy();
+    const receipts = await listAnnouncementReceipts(
+      tenantScope(),
+      both,
+      published.id,
+      { limit: 20 },
+    );
+    expect(receipts.data.length).toBeGreaterThan(0);
+  });
+
+  it("[aad54] a manager of another tenant cannot target this tenant's outlet, and their announcement never reaches this tenant", async () => {
+    const refused = await failure(
+      createAnnouncement(
+        tenantScope(otherTenant),
+        managerOther,
+        input({ audience: outletsAudience(outletA) }),
+      ),
+    );
+    expect([403, 404]).toContain(refused.status);
+
+    const foreign = await createAnnouncement(
+      tenantScope(otherTenant),
+      managerOther,
+      input({ title: `Tenant lain ${run}` }),
+    );
+    const feed = await listAnnouncements(outletScope(outletA), staffA1, {
+      limit: 100,
+    });
+    expect(feed.data.map((item) => item.id)).not.toContain(foreign.id);
+    // The other tenant's manager cannot read receipts of this tenant either.
+    const own = await createAnnouncement(
+      tenantScope(),
+      managerAll,
+      input({ title: `Tenant ini ${run}` }),
+    );
+    expect(
+      (
+        await failure(
+          listAnnouncementReceipts(
+            tenantScope(otherTenant),
+            managerOther,
+            own.id,
+            { limit: 20 },
+          ),
+        )
+      ).status,
+    ).toBe(404);
+  });
+});
+
 describe("cross-tenant isolation", () => {
   let created: Announcement;
   beforeAll(async () => {
@@ -1018,6 +1108,44 @@ describe("announcements over HTTP", () => {
       `/api/hris/announcements/${id}/receipts`,
     );
     expect(receipts.status).toBe(403);
+  });
+
+  it("[aad54] a tenant-wide hr.sop.manage role answers 403 on publish and receipts; hr.announcement.manage plus hr.sop.manage is allowed", async () => {
+    const sopTenant = (
+      await signedIn("SopTenant", ["hr.sop.manage"], { type: "tenant" }, null)
+    ).client;
+    const both = (
+      await signedIn(
+        "SopAnn",
+        ["hr.sop.manage", "hr.announcement.manage"],
+        { type: "tenant" },
+        null,
+      )
+    ).client;
+    const body = {
+      title: `Tenant sop ${run}`,
+      body: "Isi.",
+      audience: { kind: "all" },
+      requiresReceipt: false,
+      expiresAt: null,
+    };
+    const denied = await sopTenant
+      .post("/api/hris/announcements")
+      .set(originHeader)
+      .send(body);
+    expect(denied.status).toBe(403);
+    const allowed = await both
+      .post("/api/hris/announcements")
+      .set(originHeader)
+      .send(body);
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+    const id = allowed.body.data.id as string;
+    expect(
+      (await sopTenant.get(`/api/hris/announcements/${id}/receipts`)).status,
+    ).toBe(403);
+    expect(
+      (await both.get(`/api/hris/announcements/${id}/receipts`)).status,
+    ).toBe(200);
   });
 
   it("[legend-poxk] a kitchen_lead (template permissions) still reads the feed but cannot publish", async () => {

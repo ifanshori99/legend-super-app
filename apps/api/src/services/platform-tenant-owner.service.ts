@@ -29,7 +29,12 @@ import {
   type TenantOwnerAssignment,
 } from "@starter/shared/platform";
 import { db } from "../db/index.ts";
-import { roleAssignments, roles, user } from "../db/schema/index.ts";
+import {
+  roleAssignments,
+  roles,
+  supportAccessGrants,
+  user,
+} from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { SYSTEM_ACCOUNT_ID } from "../lib/system-account.ts";
@@ -47,7 +52,8 @@ import type { Tx } from "./permission-resolver.ts";
 
 type AssignmentRow = typeof roleAssignments.$inferSelect;
 type AccountKind = TenantOwnerAssignment["account"];
-type DeniedCause = "impersonated_session" | "mfa_not_verified";
+type DeniedCause =
+  "impersonated_session" | "mfa_not_verified" | "read_only_support";
 
 const OWNER_TEMPLATE = "owner";
 const OBJECT_TYPE = "role_assignment";
@@ -521,6 +527,39 @@ async function changeOwner(
     // that committed while this call waited is then already in the past and
     // seen as ended, so both paths cannot each end the other's Owner.
     const now = request.now ?? new Date();
+    // A platform registry grant does not turn an active read-only support
+    // session into write access. Check under this target tenant's RLS and the
+    // owner-change lock, before resolving accounts or changing assignments.
+    const [readOnlySupport] = await tx
+      .select({ id: supportAccessGrants.id })
+      .from(supportAccessGrants)
+      .where(
+        and(
+          eq(supportAccessGrants.tenantId, tenantId),
+          eq(supportAccessGrants.superAdminUserId, actorUserId),
+          eq(supportAccessGrants.accessMode, "read_only"),
+          lte(supportAccessGrants.startedAt, now),
+          gt(supportAccessGrants.expiresAt, now),
+          isNull(supportAccessGrants.endedAt),
+          isNull(supportAccessGrants.expiryRecordedAt),
+        ),
+      )
+      .limit(1);
+    if (readOnlySupport) {
+      // Use a separate transaction: throwing below rolls this one back, but
+      // the refused attempt must remain visible in the tenant audit log.
+      await auditDenied(
+        context,
+        actorUserId,
+        "read_only_support",
+        input.reason,
+      );
+      throw new HttpError(
+        403,
+        "FORBIDDEN",
+        "Sesi dukungan read-only tidak dapat mengubah Owner tenant.",
+      );
+    }
     const roleId = await ownerRoleId(tx, tenantId);
     const replaced =
       replacedAssignmentId === null

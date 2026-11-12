@@ -190,6 +190,16 @@ export function useAcknowledgeHandover() {
   );
 }
 
+export function useCloseHandover() {
+  return useHandoverMutation(
+    (input: { handoverId: string; idempotencyKey: string }) =>
+      api.closeShiftHandover(
+        { handoverId: input.handoverId },
+        { idempotencyKey: input.idempotencyKey },
+      ),
+  );
+}
+
 /**
  * One idempotency key per business attempt (Opus review, legend-1j7): a retry
  * of the same payload after a timeout or network drop must reuse its key, or

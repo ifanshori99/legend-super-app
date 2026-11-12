@@ -40,7 +40,8 @@ import {
   tenantIdColumn,
 } from "../columns.ts";
 import { inventoryItems, uoms } from "./inventory.ts";
-import { outlets, tenants } from "./platform-org.ts";
+import { journalEntries } from "./accounting.ts";
+import { legalEntities, outlets, tenants } from "./platform-org.ts";
 import { user } from "./user.ts";
 
 /**
@@ -54,7 +55,12 @@ export const suppliers = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
     name: varchar("name", { length: 150 }).notNull(),
+    kind: varchar("kind", { length: 20, enum: ["goods", "maintenance"] })
+      .default("goods")
+      .notNull(),
     legalName: varchar("legal_name", { length: 200 }),
+    /** NPWP as the supplier states it (digits, dots and dashes); optional. */
+    npwp: varchar("npwp", { length: 20 }),
     contactName: varchar("contact_name", { length: 150 }),
     phone: varchar("phone", { length: 16 }),
     email: varchar("email", { length: 254 }),
@@ -86,8 +92,78 @@ export const suppliers = pgTable(
     ),
     check("suppliers_payment_terms_check", sql`${table.paymentTermsDays} >= 0`),
     check(
+      "suppliers_kind_check",
+      sql`${table.kind} IN ('goods', 'maintenance')`,
+    ),
+    check(
       "suppliers_rating_check",
       sql`${table.rating} IS NULL OR ${table.rating} BETWEEN 1 AND 5`,
+    ),
+  ],
+);
+
+/**
+ * `supplier_invoices` (T): the structured record of an AP supplier invoice
+ * (legend-v4v7c, 538-G3 slice D), written in the same transaction as its
+ * payable open item (`id` = the open item id). `dpp_idr` is the tax base
+ * (goods + price variance + services); the PPN input and the PPh 23 withheld
+ * are the amounts the invoice journal booked. `npwp_snapshot` keeps the
+ * supplier NPWP at the time of the invoice, so a later edit of the supplier
+ * never rewrites a filed tax line.
+ */
+export const supplierInvoices = pgTable(
+  "supplier_invoices",
+  {
+    id: uuid("id").primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    legalEntityId: uuid("legal_entity_id").notNull(),
+    supplierId: uuid("supplier_id").notNull(),
+    invoiceNumber: varchar("invoice_number", { length: 60 }).notNull(),
+    invoiceDate: businessDate("invoice_date").notNull(),
+    dppIdr: idrColumn("dpp_idr").notNull(),
+    ppnIdr: idrColumn("ppn_idr").notNull(),
+    pph23Idr: idrColumn("pph23_idr").notNull(),
+    payableIdr: idrColumn("payable_idr").notNull(),
+    journalEntryId: uuid("journal_entry_id"),
+    npwpSnapshot: varchar("npwp_snapshot", { length: 20 }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("supplier_invoices_tenant_id_id_key").on(table.tenantId, table.id),
+    unique("supplier_invoices_tenant_supplier_number_key").on(
+      table.tenantId,
+      table.supplierId,
+      table.invoiceNumber,
+    ),
+    foreignKey({
+      name: "supplier_invoices_supplier_fk",
+      columns: [table.tenantId, table.supplierId],
+      foreignColumns: [suppliers.tenantId, suppliers.id],
+    }),
+    foreignKey({
+      name: "supplier_invoices_legal_entity_fk",
+      columns: [table.tenantId, table.legalEntityId],
+      foreignColumns: [legalEntities.tenantId, legalEntities.id],
+    }),
+    foreignKey({
+      name: "supplier_invoices_journal_fk",
+      columns: [table.tenantId, table.journalEntryId],
+      foreignColumns: [journalEntries.tenantId, journalEntries.id],
+    }),
+    check(
+      "supplier_invoices_amounts_check",
+      sql`${table.dppIdr} >= 0 AND ${table.ppnIdr} >= 0 AND ${table.pph23Idr} >= 0 AND ${table.payableIdr} > 0`,
+    ),
+    check(
+      "supplier_invoices_number_check",
+      sql`length(btrim(${table.invoiceNumber})) > 0`,
+    ),
+    index("supplier_invoices_period_idx").on(
+      table.tenantId,
+      table.legalEntityId,
+      table.invoiceDate,
     ),
   ],
 );

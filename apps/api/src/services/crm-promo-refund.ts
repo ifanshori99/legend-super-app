@@ -200,6 +200,12 @@ export type PartialRefundResult =
  * it must refuse the partial refund rather than pay out the full amount.
  */
 export type PromoPartialRefundPort = {
+  /** A visible application that still carries a promotion; released rows are absent. */
+  livePromoApplicationOf(
+    tx: Tx,
+    context: ScopedTenantContext,
+    orderId: string,
+  ): Promise<{ status: string } | null>;
   recomputeAfterPartialRefund(
     tx: Tx,
     context: ScopedTenantContext,
@@ -284,7 +290,7 @@ function stillEarned(
 }
 
 /** Same stack order as `applyPromotions` (legend-7x4g): item-level first. */
-function stackTierOf(promotion: Promotion): number {
+function stackTierOf(promotion: Pick<Promotion, "benefit">): number {
   return promotion.benefit.kind === "free_items" ||
     promotion.benefit.kind === "bundle_price"
     ? 0
@@ -376,6 +382,23 @@ export async function recomputeAfterPartialRefund(
     ? promotionRuleSnapshotSchema.safeParse(application.rulesSnapshot)
     : null;
   const snapshot = parsedSnapshot?.success ? parsedSnapshot.data : null;
+  // Older applications did not persist priority, and evaluation order is the
+  // candidate order, not the checkout stack. A partial stacked refund cannot
+  // prove its payout without that order. A full return needs no stack replay.
+  if (
+    !returnsAll &&
+    lines.length > 1 &&
+    lines.some(
+      (line) =>
+        line.promotionId !== null &&
+        snapshot?.[line.promotionId]?.priority === undefined,
+    )
+  )
+    throw new HttpError(
+      409,
+      "PROMO_REFUND_SNAPSHOT_INCOMPLETE",
+      "Urutan promo saat penjualan tidak tersimpan. Refund sebagian ditahan.",
+    );
   const withSnapshot = (promotion: Promotion): Promotion => {
     const stored = snapshot?.[promotion.id];
     return stored
@@ -383,6 +406,7 @@ export async function recomputeAfterPartialRefund(
           ...promotion,
           conditions: stored.conditions,
           benefit: stored.benefit,
+          priority: stored.priority ?? promotion.priority,
         }
       : promotion;
   };
@@ -492,12 +516,14 @@ export async function recomputeAfterPartialRefund(
     recheck: KeptEntry["recheck"],
   ) => {
     const id = stackId ?? line.promotionId ?? line.id;
-    const isRule = typeof recheck !== "string";
+    const rule = typeof recheck !== "string" ? recheck : rules.get(id);
+    const stored = recheck === "voucher" ? undefined : snapshot?.[id];
+    const stackRule = recheck === "voucher" ? undefined : (stored ?? rule);
     keptEntries.push({
       line,
       originalIdr: originalById.get(id) ?? line.discountIdr,
-      tier: isRule ? stackTierOf(recheck) : 1,
-      priority: isRule ? recheck.priority : 0,
+      tier: stackRule ? stackTierOf(stackRule) : 1,
+      priority: stored?.priority ?? rule?.priority ?? 0,
       stackId: id,
       recheck,
     });
@@ -862,8 +888,32 @@ export async function recordPartialRefundPayout(
   return { recordedIdr };
 }
 
+/**
+ * The order's promo application unless it is missing or `released` (a void
+ * gives the promotion back, so a released row is no longer a live promo).
+ */
+export async function livePromoApplicationOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<{ status: string } | null> {
+  assertTrustedScopedContext(context);
+  const [application] = await tx
+    .select({ status: promotionOrderApplications.status })
+    .from(promotionOrderApplications)
+    .where(
+      and(
+        eq(promotionOrderApplications.tenantId, context.tenant.tenantId),
+        eq(promotionOrderApplications.orderId, orderId),
+      ),
+    )
+    .limit(1);
+  return application && application.status !== "released" ? application : null;
+}
+
 /** Default port: the real recompute (the refund module injects it). */
 export const promoPartialRefundPort: PromoPartialRefundPort = {
+  livePromoApplicationOf,
   recomputeAfterPartialRefund,
   recordPartialRefundPayout,
 };

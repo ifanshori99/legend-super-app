@@ -245,6 +245,10 @@ export const getFloorBoard = defineEndpoint({
   method: "GET",
   path: "/api/outlets/:outletId/floor",
   params: z.strictObject({ outletId: outletIdSchema }),
+  query: z.strictObject({
+    zoneId: floorZoneIdSchema.optional(),
+    assignedToMe: z.stringbool().optional(),
+  }),
   response: dataResponseSchema(floorBoardSchema),
 });
 

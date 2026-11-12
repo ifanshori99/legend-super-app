@@ -45,6 +45,7 @@ import { platformTenantsMessages } from "./ws01-platform-tenants.ts";
 import { tenantSettingsMessages } from "./ws01-tenant-settings.ts";
 import { supportAccessMessages } from "./ws01-support-access.ts";
 import { deviceRegistryMessages } from "./ws02-devices.ts";
+import { catalogSalesMessages } from "./ws02-catalog-sales.ts";
 import { inventoryStockMessages } from "./ws06-inventory.ts";
 import { opnameMessages, wasteMessages } from "./ws06-opname.ts";
 import { invfeNavMessages } from "./invfe-nav.ts";
@@ -165,6 +166,7 @@ export const id = {
   platformTenants: platformTenantsMessages,
   platformOps: platformOpsMessages,
   deviceRegistry: deviceRegistryMessages,
+  catalogSales: catalogSalesMessages,
   tenantSettings: tenantSettingsMessages,
   // WS-06 stock control screens (legend-vxj): stock card, balances/par,
   // expiry, purchase suggestions. Its own file for the same reason.

@@ -1912,6 +1912,160 @@
       "when": 1794416100000,
       "tag": "0286_refund_approval_matrix_data",
       "breakpoints": true
+    },
+    {
+      "idx": 287,
+      "version": "7",
+      "when": 1794416200000,
+      "tag": "0287_edge_catalog_sales_gate",
+      "breakpoints": true
+    },
+    {
+      "idx": 288,
+      "version": "7",
+      "when": 1794416300000,
+      "tag": "0288_edge_promo_streams",
+      "breakpoints": true
+    },
+    {
+      "idx": 289,
+      "version": "7",
+      "when": 1794416400000,
+      "tag": "0289_edge_voucher_catalog",
+      "breakpoints": true
+    },
+    {
+      "idx": 290,
+      "version": "7",
+      "when": 1794416500000,
+      "tag": "0290_attendance_review_case",
+      "breakpoints": true
+    },
+    {
+      "idx": 291,
+      "version": "7",
+      "when": 1794416600000,
+      "tag": "0291_leave_flag_reset_review_case",
+      "breakpoints": true
+    },
+    {
+      "idx": 292,
+      "version": "7",
+      "when": 1794416700000,
+      "tag": "0292_tax_payable_ppn_other_roles",
+      "breakpoints": true
+    },
+    {
+      "idx": 293,
+      "version": "7",
+      "when": 1794416800000,
+      "tag": "0293_journal_entry_order_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 294,
+      "version": "7",
+      "when": 1794416900000,
+      "tag": "0294_supplier_npwp",
+      "breakpoints": true
+    },
+    {
+      "idx": 295,
+      "version": "7",
+      "when": 1794417000000,
+      "tag": "0295_supplier_invoices",
+      "breakpoints": true
+    },
+    {
+      "idx": 296,
+      "version": "7",
+      "when": 1794417100000,
+      "tag": "0296_journal_posting_account_snapshot",
+      "breakpoints": true
+    },
+    {
+      "idx": 297,
+      "version": "7",
+      "when": 1794417200000,
+      "tag": "0297_promo_composite_fks",
+      "breakpoints": true
+    },
+    {
+      "idx": 298,
+      "version": "7",
+      "when": 1794417300000,
+      "tag": "0298_supplier_kind",
+      "breakpoints": true
+    },
+    {
+      "idx": 299,
+      "version": "7",
+      "when": 1794417400000,
+      "tag": "0299_waste_photo_source",
+      "breakpoints": true
+    },
+    {
+      "idx": 300,
+      "version": "7",
+      "when": 1794417500000,
+      "tag": "0300_payroll_run_approvers_not_creator",
+      "breakpoints": true
+    },
+    {
+      "idx": 301,
+      "version": "7",
+      "when": 1794417600000,
+      "tag": "0301_payroll_run_approvers_not_valid",
+      "breakpoints": true
+    },
+    {
+      "idx": 302,
+      "version": "7",
+      "when": 1794417700000,
+      "tag": "0302_payroll_rapel_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 303,
+      "version": "7",
+      "when": 1794417800000,
+      "tag": "0303_payroll_rapel_finalization",
+      "breakpoints": true
+    },
+    {
+      "idx": 304,
+      "version": "7",
+      "when": 1794417900000,
+      "tag": "0304_payroll_run_approver_write_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 305,
+      "version": "7",
+      "when": 1794418000000,
+      "tag": "0305_pos_parked_orders",
+      "breakpoints": true
+    },
+    {
+      "idx": 306,
+      "version": "7",
+      "when": 1794418100000,
+      "tag": "0306_shift_handover_close",
+      "breakpoints": true
+    },
+    {
+      "idx": 307,
+      "version": "7",
+      "when": 1794418200000,
+      "tag": "0307_prep_item_shelf_life",
+      "breakpoints": true
+    },
+    {
+      "idx": 308,
+      "version": "7",
+      "when": 1794465896647,
+      "tag": "0406_hris_u4",
+      "breakpoints": true
     }
   ]
 }

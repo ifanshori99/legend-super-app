@@ -193,6 +193,9 @@ export const POSTING_ACCOUNT_ROLES = {
   /** Customer advances: DP held, late or double gateway payments, refunds awaiting payout. */
   customer_deposit: "liability",
   tax_payable_pbjt: "liability",
+  /** PPN output and other taxes of a sale, split from PBJT per tax type (legend-xa9bc). */
+  tax_payable_ppn: "liability",
+  tax_payable_other: "liability",
   pph21_payable: "liability",
   pph23_payable: "liability",
   /** PPh withheld on profit-share / dividend payouts (§3.37 potongan pajak). */
@@ -427,6 +430,14 @@ const standardRows: Row[] = [
     "current_liability",
     "2200",
     ["dividend_tax_payable"],
+  ],
+  ["2205", "Utang PPN", "current_liability", "2200", ["tax_payable_ppn"]],
+  [
+    "2206",
+    "Utang Pajak Lainnya",
+    "current_liability",
+    "2200",
+    ["tax_payable_other"],
   ],
   ["3100", "Ekuitas", "equity", null],
   ["3101", "Modal Disetor", "equity", "3100"],

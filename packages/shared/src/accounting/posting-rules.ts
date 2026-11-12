@@ -231,6 +231,48 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["loyalty_liability", "credit", "refundPointsIdr"],
     ],
   ),
+  // legend-xa9bc: a sale with PPN / other tax books each tax type to its own
+  // payable account. Same lines as the base rules but the tax line is split;
+  // the base rules stay for PBJT-only and pre-cutover sales (all tax in PBJT).
+  rule(
+    { event: "order.paid", variant: "tax_split" },
+    "sale",
+    "Penjualan lunas per metode bayar (pajak per jenis)",
+    `${AUTO} (penjualan, pembayaran per metode); §3.20 Liabilitas Poin; POS-05`,
+    [
+      ["cash_on_hand", "debit", "paidCashIdr"],
+      ["customer_deposit", "debit", "paidGatewayIntentIdr"],
+      ["customer_deposit", "debit", "paidDepositIdr"],
+      ["gateway_clearing", "debit", "paidGatewayIdr"],
+      ["edc_clearing", "debit", "paidEdcIdr"],
+      ["loyalty_liability", "debit", "paidPointsIdr"],
+      ["sales_discount", "debit", "discountIdr"],
+      ["sales_revenue", "credit", "grossSalesIdr"],
+      ["service_charge", "credit", "serviceChargeIdr"],
+      ["tax_payable_pbjt", "credit", "pbjtIdr"],
+      ["tax_payable_ppn", "credit", "ppnIdr"],
+      ["tax_payable_other", "credit", "otherTaxIdr"],
+      ["rounding", "credit", "roundingIdr"],
+    ],
+  ),
+  rule(
+    { event: "order.refunded", variant: "tax_split" },
+    "refund",
+    "Refund penjualan per metode bayar (pajak per jenis)",
+    `${AUTO}; ORD-09`,
+    [
+      ["sales_revenue", "debit", "grossSalesIdr"],
+      ["service_charge", "debit", "serviceChargeIdr"],
+      ["tax_payable_pbjt", "debit", "pbjtIdr"],
+      ["tax_payable_ppn", "debit", "ppnIdr"],
+      ["tax_payable_other", "debit", "otherTaxIdr"],
+      ["sales_discount", "credit", "discountIdr"],
+      ["cash_on_hand", "credit", "refundCashIdr"],
+      ["customer_deposit", "credit", "refundGatewayIdr"],
+      ["edc_clearing", "credit", "refundEdcIdr"],
+      ["loyalty_liability", "credit", "refundPointsIdr"],
+    ],
+  ),
   rule(
     { event: "payment.paid" },
     "customer_deposit",

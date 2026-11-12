@@ -76,6 +76,15 @@ export type EdgeLinkClientOptions = {
    * offline edge never reports.
    */
   catalogStale?: () => CatalogStale;
+  /**
+   * The cloud's server time, read from the HTTP `Date` header of each
+   * successful upgrade (533 A2; link frames carry no server time). Delivered
+   * once per connection, when the socket opens (533b). Not called for a
+   * missing or unparseable header. A throwing callback is reported to onError.
+   */
+  onServerTime?: (serverTime: Date) => void;
+  /** Only a disabled purge is reported; normal heartbeats omit the field. */
+  auditRetentionDisabled?: () => boolean;
 };
 
 export type EdgeLinkClient = {
@@ -138,8 +147,27 @@ export function createEdgeLinkClient(
         close: (code, reason) => ws.close(code, reason.slice(0, 120)),
       },
     });
+    // 533b: the Date of the upgrade response is kept and delivered only once
+    // the socket is open, so a handshake that never completes proves nothing.
+    let upgradeServerTime: Date | undefined;
+    ws.on("upgrade", (response) => {
+      const header = response.headers.date;
+      if (typeof header !== "string") return;
+      const serverTime = new Date(header);
+      if (Number.isNaN(serverTime.getTime())) return;
+      upgradeServerTime = serverTime;
+    });
     ws.on("open", () => {
       attempt = 0;
+      const serverTime = upgradeServerTime;
+      upgradeServerTime = undefined;
+      if (serverTime) {
+        try {
+          options.onServerTime?.(serverTime);
+        } catch (error) {
+          options.onError?.(error);
+        }
+      }
       peer = linkPeer;
       setState({ cloudLink: "connected", lastConnectedAt: new Date() });
       linkPeer.start();
@@ -151,12 +179,19 @@ export function createEdgeLinkClient(
         } catch {
           // A broken status source must not stop the heartbeat.
         }
+        let auditRetentionDisabled = false;
+        try {
+          auditRetentionDisabled = options.auditRetentionDisabled?.() === true;
+        } catch {
+          // An unavailable maintenance status must not stop sync traffic.
+        }
         ws.send(
           encodeFrame({
             type: "heartbeat",
             version: options.version,
             occurredAt: new Date().toISOString(),
             ...(catalogStale.length > 0 ? { catalogStale } : {}),
+            ...(auditRetentionDisabled ? { auditRetentionDisabled: true } : {}),
           }),
         );
       };

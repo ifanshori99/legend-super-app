@@ -68,7 +68,7 @@ export const defaultRecapQuery = (outletId: string, period: string) =>
  */
 export function floorZonesQuery(outletId: string) {
   return {
-    ...endpointQueryOptions(getFloorBoard, { params: { outletId } }),
+    ...endpointQueryOptions(getFloorBoard, { params: { outletId }, query: {} }),
     staleTime: 5 * 60_000,
     retry: false,
   };

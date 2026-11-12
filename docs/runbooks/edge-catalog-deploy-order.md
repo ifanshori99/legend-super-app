@@ -48,3 +48,16 @@ Pulihkan dengan menaikkan cloud ke versi baru. Tidak perlu menyentuh edge atau d
 - **Edge dikembalikan, cloud tetap baru:** tidak ada data cloud yang berubah. Perilaku edge versi lama terhadap kursor `cat2` yang tersimpan dan terhadap record ber-`syncTxid` belum diverifikasi, jadi coba di satu outlet dulu.
 - **Cloud dikembalikan:** hanya bila edge semua sudah dikembalikan ke versi lama. Urutan rollback adalah kebalikan rilis: edge dulu, cloud kemudian.
 - Migrasi tidak ikut dibatalkan pada rollback kode. Jangan menurunkan skema (lihat `AGENTS.md`: jangan menulis ulang migrasi yang sudah terpakai).
+
+## Rollback 0288 dan 0289 (stream promosi dan voucher, brief 533)
+
+Migrasi 0288 (dulu 0333; `sync_txid` di `promotions`, `vouchers`, `promo_settings`, trigger) dan 0289 (dulu 0334; tabel `edge_voucher_catalog`) tidak ikut dibatalkan saat kode dikembalikan. Bila skema memang harus dikembalikan, pakai skrip `apps/api/scripts/rollback-0288-0289-edge-promo-streams.sql` (bukan migrasi, dijalankan manual lewat `psql`, satu transaksi).
+
+1. Edge semua outlet dikembalikan dulu, lalu kode cloud. Skrip dijalankan paling akhir, setelah tidak ada kode yang membaca kolom `sync_txid` promosi atau `edge_voucher_catalog`.
+2. Data yang hilang memang disengaja: stempel `sync_txid` dan isi `edge_voucher_catalog`. Aturan promosi, voucher, dan counter (`uses_total`, `spent_idr`) tidak tersentuh.
+3. Skrip juga menghapus baris migrasi 0288 dan 0289 dari `drizzle.__drizzle_migrations` supaya roll-forward berikutnya menerapkannya lagi.
+4. Stream voucher mengirim semua voucher tenant (belum hanya yang aktif); membatasi ke voucher aktif belum dikerjakan.
+
+## Catatan rilis: tidak perlu scrub `code_hash` lama (brief 533, keputusan CTO)
+
+Commit 528 (stream promosi dan voucher dengan `codeHash`) belum pernah sampai ke edge nyata, jadi tidak ada baris `promotions.code_hash` atau `edge_voucher_catalog.payload` berisi hash asli di edge produksi. Rilis pertama sudah membawa stream tanpa `codeHash` (promo berkode memakai `codeRef`); scrub satu kali tidak diperlukan. Bila ada edge uji yang pernah menyinkron dari commit 528, bangun ulang basis datanya.

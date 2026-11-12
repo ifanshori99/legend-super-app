@@ -155,6 +155,7 @@ const MOCK_LEAVE_REQUESTS = [
 
 type Decision = {
   status: Exclude<AttendanceReviewStatus, "none">;
+  action: "keep_leave" | "cancel_leave";
   reviewedAt: string;
 };
 type MockState = {
@@ -168,6 +169,77 @@ const store = createMockStore<MockState>(() => ({
   replays: {},
 }));
 
+/**
+ * The server-side case data of an item (legend-eps6t): employee name, business
+ * date, same-day clock-out and the leave snapshot, read from the same fixtures
+ * the other mock handlers serve.
+ */
+function caseFields(
+  log: AttendanceLog,
+): Pick<
+  AttendanceReviewItem,
+  | "employeeName"
+  | "businessDate"
+  | "clockOutAt"
+  | "caseKind"
+  | "canCancelLeave"
+  | "leave"
+  | "decisionAction"
+> {
+  const businessDate = localDateOf(log.occurredAt, MOCK_OUTLET.timeZone);
+  const employee = cafeLegendHrisFixtures.employees.find(
+    (row) => row.id === log.employeeId,
+  );
+  const request = MOCK_LEAVE_REQUESTS.find(
+    (row) =>
+      row.employeeId === log.employeeId &&
+      row.status === "approved" &&
+      row.startDate <= businessDate &&
+      row.endDate >= businessDate,
+  );
+  const clockOut = fixtureClockOutAt(log);
+  return {
+    employeeName: employee?.fullName ?? "",
+    businessDate,
+    clockOutAt: clockOut,
+    caseKind:
+      log.method === "manual_correction"
+        ? "manual_correction"
+        : request?.decidedAt != null &&
+            Date.parse(request.decidedAt) > Date.parse(log.occurredAt)
+          ? "leave_approved_later"
+          : "clock_in_on_leave",
+    canCancelLeave: !mockLeaveKeepOnly(),
+    leave:
+      request === undefined
+        ? null
+        : {
+            leaveRequestId: request.id,
+            leaveTypeId: request.leaveTypeId,
+            leaveTypeName:
+              leaveTypes.find((type) => type.id === request.leaveTypeId)
+                ?.name ?? "Cuti",
+            startDate: request.startDate,
+            endDate: request.endDate,
+          },
+    decisionAction: null,
+  };
+}
+
+/** The employee's first clock-out after `log`, from the shared fixtures. */
+function fixtureClockOutAt(log: AttendanceLog): string | null {
+  const later = attendanceLogs
+    .filter(
+      (row) =>
+        row.employeeId === log.employeeId &&
+        row.type === "out" &&
+        row.validity !== "rejected" &&
+        Date.parse(row.occurredAt) > Date.parse(log.occurredAt),
+    )
+    .sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt));
+  return later[0]?.occurredAt ?? null;
+}
+
 function seedItems(): AttendanceReviewItem[] {
   const flagged = (log: AttendanceLog): AttendanceReviewItem => ({
     log,
@@ -176,6 +248,7 @@ function seedItems(): AttendanceReviewItem[] {
     reviewStatus: "pending",
     reviewedBy: null,
     reviewedAt: null,
+    ...caseFields(log),
   });
   return [
     flagged(fixtureLog(ulid(104))),
@@ -199,6 +272,8 @@ function currentItems(): AttendanceReviewItem[] {
           reviewStatus: decision.status,
           reviewedBy: MOCK_REVIEWER_USER_ID,
           reviewedAt: decision.reviewedAt,
+          canCancelLeave: false,
+          decisionAction: decision.action,
         };
   });
 }
@@ -214,6 +289,7 @@ registerMock(listAttendanceReviewQueue, ({ query, scenario }) => {
         query.reviewStatus === undefined ||
         item.reviewStatus === query.reviewStatus,
     )
+    .filter((item) => query.logId === undefined || item.log.id === query.logId)
     .filter(
       (item) =>
         query.flagReason === undefined ||
@@ -282,12 +358,14 @@ registerMock(decideAttendanceReview, ({ params, body }) => {
   const state = store.get();
   const reviewedAt = new Date().toISOString();
   const status = body.action === "keep_leave" ? "rejected" : "accepted";
-  state.decisions[item.log.id] = { status, reviewedAt };
+  state.decisions[item.log.id] = { status, action: body.action, reviewedAt };
   const decided: AttendanceReviewItem = {
     ...item,
     reviewStatus: status,
     reviewedBy: MOCK_REVIEWER_USER_ID,
     reviewedAt,
+    canCancelLeave: false,
+    decisionAction: body.action,
   };
   state.replays[body.idempotencyKey] = { fingerprint, item: decided };
   return { data: decided };

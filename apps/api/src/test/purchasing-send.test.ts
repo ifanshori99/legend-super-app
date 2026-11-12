@@ -1452,3 +1452,109 @@ describe("8a9w ambiguous email attempt", () => {
     expect(calls).toBe(2);
   });
 });
+
+describe("legend-ca3c authenticated PO PDF preview", () => {
+  const preview = (
+    client: ReturnType<typeof agent>,
+    orderId: string,
+    host = seededHostname,
+  ) =>
+    client
+      .get(`/api/inventory/purchase-orders/${orderId}/preview.pdf`)
+      .set("Host", host);
+  it("renders a draft preview with no delivery, share-link or approval side effects", async () => {
+    const order = await seedOrder("draft");
+    const response = await preview(sender.client, order.id)
+      .buffer(true)
+      .parse((res, done) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => done(null, Buffer.concat(chunks)));
+      });
+    expect(response.status).toBe(200);
+    expect(response.headers["content-type"]).toContain("application/pdf");
+    expect(response.headers["content-disposition"]).toContain("inline;");
+    expect(response.headers["cache-control"]).toContain("no-store");
+    expect((response.body as Buffer).subarray(0, 5).toString()).toBe("%PDF-");
+    const { rows } = await owner.query(
+      `SELECT status, sent_at,
+      (SELECT count(*)::int FROM purchase_order_share_links WHERE purchase_order_id = $1) AS links,
+      (SELECT count(*)::int FROM purchase_order_email_deliveries WHERE purchase_order_id = $1) AS deliveries
+      FROM purchase_orders WHERE id = $1`,
+      [order.id],
+    );
+    expect(rows[0]).toMatchObject({
+      status: "draft",
+      sent_at: null,
+      links: 0,
+      deliveries: 0,
+    });
+  });
+  it("requires a session, purchasing permission and the order tenant", async () => {
+    const order = await seedOrder("draft");
+    expect((await preview(agent(app), order.id)).status).toBe(401);
+    expect((await preview(outsider.client, order.id)).status).toBe(403);
+    expect(
+      (await preview(staffB.client, order.id, tenantB.hostname)).status,
+    ).toBe(404);
+    expect((await preview(sender.client, randomUUID())).status).toBe(404);
+  });
+  it("keeps header totals and line values on one committed draft version during an edit", async () => {
+    const order = await seedOrder("draft");
+    const writer = await owner.connect();
+    let pending: Promise<import("supertest").Response> | undefined;
+    try {
+      await writer.query("BEGIN");
+      const pid = (await writer.query("SELECT pg_backend_pid() AS pid")).rows[0]
+        .pid as number;
+      await writer.query(
+        "SELECT id FROM purchase_orders WHERE id = $1 FOR UPDATE",
+        [order.id],
+      );
+      await writer.query(
+        "LOCK TABLE purchase_order_lines IN ACCESS EXCLUSIVE MODE",
+      );
+      await writer.query(
+        "UPDATE purchase_orders SET subtotal_idr = 74000, total_idr = 74000 WHERE id = $1",
+        [order.id],
+      );
+      await writer.query(
+        "UPDATE purchase_order_lines SET quantity = quantity * 2, line_total_idr = line_total_idr * 2 WHERE purchase_order_id = $1",
+        [order.id],
+      );
+      pending = preview(sender.client, order.id)
+        .buffer(true)
+        .parse((res, done) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk: Buffer) => chunks.push(chunk));
+          res.on("end", () => done(null, Buffer.concat(chunks)));
+        })
+        .then((response) => response);
+      let blocked = false;
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        const result = await owner.query(
+          "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS blocked",
+          [pid],
+        );
+        if (result.rows[0].blocked) {
+          blocked = true;
+          break;
+        }
+        await owner.query("SELECT pg_sleep(0.01)");
+      }
+      expect(blocked, "Preview must reach the controlled database lock").toBe(
+        true,
+      );
+      await writer.query("COMMIT");
+      const response = await pending;
+      expect(response.status).toBe(200);
+      const text = allText(response.body as Buffer);
+      expect(text).toContain("Rp 74.000");
+      expect(text).not.toContain("Rp 37.000");
+    } finally {
+      await writer.query("ROLLBACK");
+      writer.release();
+      await pending?.catch(() => undefined);
+    }
+  });
+});

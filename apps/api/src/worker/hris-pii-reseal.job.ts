@@ -48,6 +48,10 @@ import { db } from "../db/index.ts";
 import type * as schema from "../db/schema/index.ts";
 import { employees, employmentContracts } from "../db/schema/hris.ts";
 import { employeePayComponents, payslips } from "../db/schema/payroll.ts";
+import {
+  payrollRapels,
+  payrollRapelItems,
+} from "../db/schema/payroll-rapel.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   HRIS_PII_KEY_VERSION,
@@ -71,7 +75,12 @@ export const HRIS_PII_RESEAL_BATCH = 200;
 const HRIS_PII_RESEAL_EXPIRE_SECONDS = 60 * 60;
 
 type ResealTable =
-  "employees" | "employment_contracts" | "employee_pay_components" | "payslips";
+  | "employees"
+  | "employment_contracts"
+  | "employee_pay_components"
+  | "payslips"
+  | "payroll_rapels"
+  | "payroll_rapel_items";
 
 export type HrisPiiResealResult = {
   tenants: number;
@@ -79,6 +88,8 @@ export type HrisPiiResealResult = {
   contracts: number;
   payComponents: number;
   payslips: number;
+  rapels: number;
+  rapelItems: number;
   failedTenants: number;
   /** Tenants that still hold stale rows after the run (locked by others). */
   incompleteTenants: number;
@@ -174,11 +185,31 @@ async function countStale(
           ne(payslips.piiKeyVersion, active),
         ),
       );
+    const [staleRapels] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(payrollRapels)
+      .where(
+        and(
+          eq(payrollRapels.tenantId, tenantId),
+          ne(payrollRapels.piiKeyVersion, active),
+        ),
+      );
+    const [staleRapelItems] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(payrollRapelItems)
+      .where(
+        and(
+          eq(payrollRapelItems.tenantId, tenantId),
+          ne(payrollRapelItems.piiKeyVersion, active),
+        ),
+      );
     return (
       Number(staleEmployees?.n ?? 0) +
       Number(staleContracts?.n ?? 0) +
       Number(stalePayComponents?.n ?? 0) +
-      Number(stalePayslips?.n ?? 0)
+      Number(stalePayslips?.n ?? 0) +
+      Number(staleRapels?.n ?? 0) +
+      Number(staleRapelItems?.n ?? 0)
     );
   });
 }
@@ -407,6 +438,107 @@ async function resealPayslipBatch(
   });
 }
 
+/** Rapel targets and deltas are salary data on the same rotating key ring. */
+async function resealRapelBatch(
+  database: Database,
+  context: ScopedTenantContext,
+  batchSize: number,
+  active: number,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  return withTenant(database, context, async (tx) => {
+    await tx.execute(
+      sql`SELECT set_config('app.payroll_reseal', 'on', true), set_config('app.payroll_reseal_target_version', ${String(active)}, true)`,
+    );
+    const rows = await tx
+      .select()
+      .from(payrollRapels)
+      .where(
+        and(
+          eq(payrollRapels.tenantId, tenantId),
+          lt(payrollRapels.piiKeyVersion, active),
+        ),
+      )
+      .orderBy(asc(payrollRapels.id))
+      .limit(batchSize)
+      .for("update", { skipLocked: true });
+    for (const row of rows) {
+      const binding = {
+        tenantId,
+        table: "payroll_rapels",
+        rowId: row.id,
+        field: "amount",
+      } as const;
+      const newAmountEncrypted = sealPayrollAmount(
+        openPayrollAmount(row.newAmountEncrypted, binding, row.piiKeyVersion),
+        binding,
+        active,
+      );
+      await tx
+        .update(payrollRapels)
+        .set({ newAmountEncrypted, piiKeyVersion: active })
+        .where(
+          and(
+            eq(payrollRapels.tenantId, tenantId),
+            eq(payrollRapels.id, row.id),
+            lt(payrollRapels.piiKeyVersion, active),
+          ),
+        );
+    }
+    return rows.length;
+  });
+}
+
+async function resealRapelItemBatch(
+  database: Database,
+  context: ScopedTenantContext,
+  batchSize: number,
+  active: number,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  return withTenant(database, context, async (tx) => {
+    await tx.execute(
+      sql`SELECT set_config('app.payroll_reseal', 'on', true), set_config('app.payroll_reseal_target_version', ${String(active)}, true)`,
+    );
+    const rows = await tx
+      .select()
+      .from(payrollRapelItems)
+      .where(
+        and(
+          eq(payrollRapelItems.tenantId, tenantId),
+          lt(payrollRapelItems.piiKeyVersion, active),
+        ),
+      )
+      .orderBy(asc(payrollRapelItems.id))
+      .limit(batchSize)
+      .for("update", { skipLocked: true });
+    for (const row of rows) {
+      const binding = {
+        tenantId,
+        table: "payroll_rapel_items",
+        rowId: row.id,
+        field: "amount",
+      } as const;
+      const amountEncrypted = sealPayrollAmount(
+        openPayrollAmount(row.amountEncrypted, binding, row.piiKeyVersion),
+        binding,
+        active,
+      );
+      await tx
+        .update(payrollRapelItems)
+        .set({ amountEncrypted, piiKeyVersion: active })
+        .where(
+          and(
+            eq(payrollRapelItems.tenantId, tenantId),
+            eq(payrollRapelItems.id, row.id),
+            lt(payrollRapelItems.piiKeyVersion, active),
+          ),
+        );
+    }
+    return rows.length;
+  });
+}
+
 /** Re-seal every stale row of every tenant. */
 export async function runHrisPiiReseal(
   options: HrisPiiResealOptions = {},
@@ -429,6 +561,8 @@ export async function runHrisPiiReseal(
     contracts: 0,
     payComponents: 0,
     payslips: 0,
+    rapels: 0,
+    rapelItems: 0,
     failedTenants: 0,
     incompleteTenants: 0,
     aborted: false,
@@ -439,6 +573,8 @@ export async function runHrisPiiReseal(
     ["employment_contracts", resealContractBatch],
     ["employee_pay_components", resealPayComponentBatch],
     ["payslips", resealPayslipBatch],
+    ["payroll_rapels", resealRapelBatch],
+    ["payroll_rapel_items", resealRapelItemBatch],
   ];
   for (const tenantId of tenantIds) {
     if (options.signal?.aborted) {
@@ -460,7 +596,9 @@ export async function runHrisPiiReseal(
           else if (table === "employment_contracts") result.contracts += count;
           else if (table === "employee_pay_components")
             result.payComponents += count;
-          else result.payslips += count;
+          else if (table === "payslips") result.payslips += count;
+          else if (table === "payroll_rapels") result.rapels += count;
+          else result.rapelItems += count;
           await options.afterBatch?.({ tenantId, table, count });
         }
         if (result.aborted) break;

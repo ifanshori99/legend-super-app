@@ -15,11 +15,13 @@ import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
 import { requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
+import { loadRequestAccess } from "../middleware/permissions";
 import { requireTenantContext } from "../middleware/tenant";
 import {
   createFloorZoneInputSchema,
   createTableInputSchema,
   floorZoneIdSchema,
+  getFloorBoard as floorBoardEndpoint,
   saveFloorLayoutInputSchema,
   tableIdSchema,
   updateFloorZoneInputSchema,
@@ -49,6 +51,24 @@ function actorUserId(req: Request): string {
   return actorOf(req);
 }
 
+/** Resolve visibility on the server for every route exposing the board. */
+async function floorBoardFilters(
+  req: Request,
+  outletId: string,
+  query: { zoneId?: string; assignedToMe?: boolean },
+) {
+  const snapshot = await loadRequestAccess(req);
+  const managesFloor = snapshot.contextFor("floor.table.manage", {
+    type: "outlet",
+    id: outletId,
+  });
+  return {
+    zoneId: query.zoneId,
+    assignedWaiterId:
+      query.assignedToMe || !managesFloor ? actorUserId(req) : undefined,
+  };
+}
+
 export const floorRouter = Router();
 floorRouter.use(
   requireAuth,
@@ -59,11 +79,18 @@ floorRouter.use(
 
 /** Zones, tables and live sessions of the caller's outlet (editor read model). */
 floorRouter.get("/", async (req, res) => {
+  const query = floorBoardEndpoint.query.parse(req.query);
   const { context, outletId } = await resolveFloorContext(
     req,
     "floor.table.view",
   );
-  res.json({ data: await listFloorBoard(context, outletId) });
+  res.json({
+    data: await listFloorBoard(
+      context,
+      outletId,
+      await floorBoardFilters(req, outletId, query),
+    ),
+  });
 });
 
 floorRouter.post("/zones", jsonBody, async (req, res) => {
@@ -169,10 +196,14 @@ export const outletFloorRouter = Router();
 outletFloorRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
 
 outletFloorRouter.get("/:outletId/floor", async (req, res) => {
-  const context = await resolveOutletContext(
-    req,
-    "floor.table.view",
-    req.params.outletId,
-  );
-  res.json({ data: await listFloorBoard(context, req.params.outletId) });
+  const { outletId } = floorBoardEndpoint.params.parse(req.params);
+  const query = floorBoardEndpoint.query.parse(req.query);
+  const context = await resolveOutletContext(req, "floor.table.view", outletId);
+  res.json({
+    data: await listFloorBoard(
+      context,
+      outletId,
+      await floorBoardFilters(req, outletId, query),
+    ),
+  });
 });

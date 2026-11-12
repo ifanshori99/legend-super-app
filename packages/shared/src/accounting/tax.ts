@@ -41,8 +41,27 @@ export const taxReportLineSchema = z.strictObject({
   taxIdr: nonNegativeIdr,
   /** Source document numbers (invoice, payslip run) for the auditor. */
   references: z.array(z.string().max(60)).max(50),
+  /** PPN only: input tax (masukan) or output tax (keluaran); absent means keluaran. */
+  direction: z.enum(["masukan", "keluaran"]).optional(),
 });
 export type TaxReportLine = z.infer<typeof taxReportLineSchema>;
+
+/**
+ * Report amount: the sum of line tax, except PPN where it is the payable
+ * position, keluaran minus masukan, never negative (a lebih bayar position
+ * reports 0 and is noted in the line references, not paid out as a negative).
+ */
+export function taxReportAmountIdr(
+  type: TaxReportType,
+  lines: readonly Pick<TaxReportLine, "taxIdr" | "direction">[],
+): number {
+  let output = 0;
+  let input = 0;
+  for (const line of lines)
+    if (type === "ppn" && line.direction === "masukan") input += line.taxIdr;
+    else output += line.taxIdr;
+  return type === "ppn" ? Math.max(0, output - input) : output;
+}
 
 export const taxReportSchema = z
   .strictObject({
@@ -77,9 +96,8 @@ export const taxReportSchema = z
   .superRefine((report, ctx) => {
     const issue = (path: string, message: string) =>
       ctx.addIssue({ code: "custom", path: [path], message });
-    const sum = report.lines.reduce((total, line) => total + line.taxIdr, 0);
-    if (sum !== report.amountIdr)
-      issue("amountIdr", "amount = sum of line tax");
+    if (taxReportAmountIdr(report.type, report.lines) !== report.amountIdr)
+      issue("amountIdr", "amount = sum of line tax (PPN: keluaran - masukan)");
     const exported = report.status === "exported";
     if (
       exported !==

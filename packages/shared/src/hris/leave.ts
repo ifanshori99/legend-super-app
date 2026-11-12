@@ -254,6 +254,7 @@ export const leaveRequestSchema = z
     endDate: businessDateSchema,
     days: positiveDecimal,
     reason: reason.nullable(),
+    rejectionReason: z.string().min(1).max(500).nullable().default(null),
     /** Signed, short-lived URL of the private attachment (medical certificate). */
     attachmentUrl: z.string().min(1).max(2048).nullable(),
     status: leaveRequestStatusSchema,
@@ -339,6 +340,7 @@ export const overtimeRequestSchema = z
     date: businessDateSchema,
     minutes: z.number().int().min(1).max(720),
     reason,
+    rejectionReason: z.string().min(1).max(500).nullable().default(null),
     /** Day kind the pay tiers apply to; a holiday resolves to a rest-day type. */
     dayType: overtimeDayTypeSchema,
     /** Formula version pinned at request time; null when none was resolved. */

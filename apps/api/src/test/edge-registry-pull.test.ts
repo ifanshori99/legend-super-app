@@ -294,10 +294,13 @@ const bootEnv = () => ({
 
 type Handle = { stop(): Promise<void> };
 const handles: Handle[] = [];
-async function boot(): Promise<Handle> {
-  const handle = (await startEdgeRuntime(
-    bootEnv() as never,
-  )) as unknown as Handle;
+async function boot(
+  overrides: Record<string, string | undefined> = {},
+): Promise<Handle> {
+  const handle = (await startEdgeRuntime({
+    ...bootEnv(),
+    ...overrides,
+  })) as unknown as Handle;
   expect(handle).toBeTruthy();
   handles.push(handle);
   return handle;
@@ -373,33 +376,41 @@ afterAll(async () => {
 });
 
 describe("EDG-02 the edge pulls the cloud device registry", () => {
-  it("EDG-02 boot pulls at once with the edge credential, and stop() releases the puller", async () => {
-    const spy = spyFetch(cloudAnswer);
-    const handle = await boot();
+  it.each([undefined, "   "])(
+    "G5b P1 production boot without maintenance URL (%j) pulls at once with the edge credential, and stop() releases the puller",
+    async (maintenanceUrl) => {
+      const spy = spyFetch(cloudAnswer);
+      const handle = await boot({
+        NODE_ENV: "production",
+        MAINTENANCE_DATABASE_URL: maintenanceUrl,
+      });
 
-    // No interval elapsed: the boot itself triggers the first pull.
-    await vi.waitFor(() =>
-      expect(registryCalls(spy).length).toBeGreaterThan(0),
-    );
-    const first = registryCalls(spy)[0]!;
-    expect(urlOf(first).pathname).toBe(RECORDS_PATH);
-    expect(urlOf(first).host).toBe("cloud.registry-pull.test");
-    expect(urlOf(first).protocol).toBe("https:");
-    expect(headerOf(first, "authorization")).toBe(`Bearer ${node.credential}`);
-    // Nothing stored yet: the first pull starts from the beginning.
-    expect(urlOf(first).searchParams.get("since")).toBeNull();
+      // No interval elapsed: the boot itself triggers the first pull.
+      await vi.waitFor(() =>
+        expect(registryCalls(spy).length).toBeGreaterThan(0),
+      );
+      const first = registryCalls(spy)[0]!;
+      expect(urlOf(first).pathname).toBe(RECORDS_PATH);
+      expect(urlOf(first).host).toBe("cloud.registry-pull.test");
+      expect(urlOf(first).protocol).toBe("https:");
+      expect(headerOf(first, "authorization")).toBe(
+        `Bearer ${node.credential}`,
+      );
+      // Nothing stored yet: the first pull starts from the beginning.
+      expect(urlOf(first).searchParams.get("since")).toBeNull();
 
-    // The boot pull finishes and its watermark is stored.
-    await vi.waitFor(async () => expect(await checkpointRow()).toBeDefined());
+      // The boot pull finishes and its watermark is stored.
+      await vi.waitFor(async () => expect(await checkpointRow()).toBeDefined());
 
-    // The timer itself (no pull after stop, in-flight pull aborted) is proven
-    // with fake timers in edge/device-registry-puller.test.ts; here the
-    // runtime must drop its puller on stop.
-    expect(getDeviceRegistrySyncState()).not.toBeNull();
-    await handle.stop();
-    expect(getDeviceRegistrySyncState()).toBeNull();
-    handles.length = 0;
-  });
+      // The timer itself (no pull after stop, in-flight pull aborted) is proven
+      // with fake timers in edge/device-registry-puller.test.ts; here the
+      // runtime must drop its puller on stop.
+      expect(getDeviceRegistrySyncState()).not.toBeNull();
+      await handle.stop();
+      expect(getDeviceRegistrySyncState()).toBeNull();
+      handles.length = 0;
+    },
+  );
 
   it("EDG-02 the watermark is stored after a successful pull and the next pull resumes from it, rewound by the overlap", async () => {
     await enroll("Tarik watermark");

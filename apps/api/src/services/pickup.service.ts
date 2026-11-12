@@ -100,6 +100,36 @@ function toCall(row: CallRow): PickupCall {
 
 // ---- Number allocation -----------------------------------------------------
 
+/** Advisory only: reading the next code neither reserves nor consumes it. */
+export async function readNextPickupCall(
+  context: ScopedTenantContext,
+  outletId: string,
+  now = new Date(),
+) {
+  const outlet = outletIdSchema.parse(outletId);
+  return withTenant(db, context, async (tx) => {
+    const outletRow = await loadOutlet(tx, context, outlet);
+    const tenantId = context.tenant.tenantId;
+    const businessDate = businessDateFor(outletRow, now);
+    // Include collected calls and voided orders: a day's numbers are never
+    // reused. No lock is needed for a preview; create allocates under its lock.
+    const [top] = await tx
+      .select({
+        max: sql<number | null>`max(${pickupCalls.number})`.mapWith(Number),
+      })
+      .from(pickupCalls)
+      .where(
+        and(
+          eq(pickupCalls.tenantId, tenantId),
+          eq(pickupCalls.outletId, outlet),
+          eq(pickupCalls.businessDate, businessDate),
+        ),
+      );
+    const number = (top?.max ?? 0) + 1;
+    return { number, code: formatPickupCode(number), businessDate };
+  });
+}
+
 /**
  * Gives a takeaway or delivery-platform order its daily call number, on the
  * caller's tenant transaction (the order flow calls this inside its own

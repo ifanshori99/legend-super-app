@@ -18,6 +18,7 @@ import { businessDateOf } from "@starter/shared/core";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
+import { noteCatalogSalesBlocked } from "@/features/ws02-edge/hooks";
 import {
   approveShiftClose,
   cancelAttempt,
@@ -160,10 +161,13 @@ function useSessionMutation<TInput extends { orderId: string }>(
     onSuccess: (session, input) =>
       putSession(queryClient, outletId, input.orderId, session),
     // A refused call can still change what the screen must show.
-    onError: (_error, input) =>
+    onError: (error, input) => {
+      // Catalog over 24 hours old (legend-10nex): the notice shows the hold.
+      noteCatalogSalesBlocked(queryClient, error);
       void queryClient.invalidateQueries({
         queryKey: posKasirKeys.session(outletId, input.orderId),
-      }),
+      });
+    },
   });
 }
 

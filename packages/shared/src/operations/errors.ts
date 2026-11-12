@@ -9,6 +9,10 @@ export const operationsErrorHttpStatus = {
   CHECKLIST_ITEM_NOT_IN_RUN: 404,
   /** The checklist run status does not allow the requested action. */
   CHECKLIST_TRANSITION_INVALID: 409,
+  /** A queued answer belongs to the actor who captured it, before replay lookup. */
+  CHECKLIST_REPLAY_ACTOR_MISMATCH: 409,
+  /** A queued snapshot cannot replace an answer already confirmed by the server. */
+  CHECKLIST_ANSWER_CONFLICT: 409,
   /** OPS-02: an out-of-range temperature needs a corrective action before it can be saved. */
   TEMPERATURE_CORRECTIVE_ACTION_REQUIRED: 422,
   /** The temperature reading or threshold is not a valid number pair. */
@@ -27,6 +31,8 @@ export const operationsErrorHttpStatus = {
   HANDOVER_SELF_ACKNOWLEDGEMENT: 403,
   /** The handover was already acknowledged. */
   HANDOVER_ALREADY_ACKNOWLEDGED: 409,
+  /** A closed handover cannot close again with a different attempt. */
+  HANDOVER_ALREADY_CLOSED: 409,
 } as const satisfies Record<string, number>;
 
 export type OperationsErrorCode = keyof typeof operationsErrorHttpStatus;
@@ -42,6 +48,10 @@ const defaultMessages: Record<OperationsErrorCode, string> = {
     "Butir checklist ini tidak ada pada checklist tersebut.",
   CHECKLIST_TRANSITION_INVALID:
     "Checklist ini tidak dapat diubah ke status tersebut.",
+  CHECKLIST_REPLAY_ACTOR_MISMATCH:
+    "Jawaban antrean dibuat oleh akun lain. Masuk dengan akun yang membuat jawaban sebelum mencoba lagi.",
+  CHECKLIST_ANSWER_CONFLICT:
+    "Butir checklist ini sudah memiliki jawaban. Jawaban terbaru dipertahankan; periksa kembali sebelum mengirim ulang.",
   TEMPERATURE_CORRECTIVE_ACTION_REQUIRED:
     "Suhu di luar ambang wajib disertai tindakan korektif.",
   TEMPERATURE_READING_INVALID: "Pembacaan suhu tidak valid.",
@@ -58,6 +68,7 @@ const defaultMessages: Record<OperationsErrorCode, string> = {
   HANDOVER_SELF_ACKNOWLEDGEMENT:
     "Serah terima dikonfirmasi oleh shift penerima, bukan shift yang menyerahkan.",
   HANDOVER_ALREADY_ACKNOWLEDGED: "Serah terima ini sudah dikonfirmasi.",
+  HANDOVER_ALREADY_CLOSED: "Serah terima ini sudah ditutup.",
 };
 
 export class OperationsError extends Error {

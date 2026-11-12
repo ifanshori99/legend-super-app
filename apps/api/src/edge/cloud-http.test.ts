@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ReceiptRunRefusalReason } from "@starter/shared/edge";
 import {
   EdgeCloudHttpError,
+  cloudGetJson,
   cloudHttpBaseUrl,
   createDeviceRecordsFetcher,
 } from "./cloud-http.ts";
@@ -685,5 +686,96 @@ describe("createDeviceRecordsFetcher", () => {
     ).catch((e: unknown) => e);
     controller.abort();
     expect(((await pending) as EdgeCloudHttpError).code).toBe("ABORTED");
+  });
+});
+
+// 533b P1: every pull response is evidence of the cloud's time. The fetchers
+// accept a new option shared by all of them (CloudGetOptions):
+//   onServerTime?: (serverTime: Date) => void
+// It is called with the parsed `Date` response header of a successful (2xx)
+// response, never for a missing or unparseable header, never for an error
+// response (assumption: only trusted successful pulls count), and a throwing
+// callback must not fail the pull. The runtime wires it to the same proof
+// callback as the link client's `onServerTime`.
+describe("533b cloud pull responses report the cloud's server time", () => {
+  const SERVER_TIME = new Date("2026-11-11T03:05:07.000Z");
+
+  function responseWithDate(date: string | null, status = 200) {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+    };
+    if (date !== null) headers.Date = date;
+    return new Response(JSON.stringify({ data: [] }), { status, headers });
+  }
+
+  const pull = (fetchImpl: unknown, onServerTime: (serverTime: Date) => void) =>
+    createDeviceRecordsFetcher({
+      cloudUrl: "wss://cloud.example.com/api/edge-link",
+      credential: CREDENTIAL,
+      fetchImpl: fetchImpl as typeof fetch,
+      onServerTime,
+    } as Parameters<typeof createDeviceRecordsFetcher>[0])(
+      null,
+      new AbortController().signal,
+    );
+
+  it("calls onServerTime with the Date header of a successful pull", async () => {
+    const seen: Date[] = [];
+    const fetchImpl = vi.fn(async () =>
+      responseWithDate(SERVER_TIME.toUTCString()),
+    );
+    await pull(fetchImpl, (date) => seen.push(date));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeInstanceOf(Date);
+    expect(seen[0]!.getTime()).toBe(SERVER_TIME.getTime());
+  });
+
+  it("also reports from the generic cloudGetJson helper", async () => {
+    const seen: Date[] = [];
+    const fetchImpl = vi.fn(async () =>
+      responseWithDate(SERVER_TIME.toUTCString()),
+    );
+    await cloudGetJson({
+      cloudUrl: "wss://cloud.example.com/api/edge-link",
+      credential: CREDENTIAL,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      path: "/api/edge-sync/anything",
+      onServerTime: (date: Date) => seen.push(date),
+    } as Parameters<typeof cloudGetJson>[0]);
+    expect(seen.map((date) => date.getTime())).toEqual([SERVER_TIME.getTime()]);
+  });
+
+  it("does not call onServerTime when the Date header is missing or unparseable", async () => {
+    const seen: Date[] = [];
+    await pull(
+      vi.fn(async () => responseWithDate(null)),
+      (date) => seen.push(date),
+    );
+    await pull(
+      vi.fn(async () => responseWithDate("not a date")),
+      (date) => seen.push(date),
+    );
+    expect(seen).toEqual([]);
+  });
+
+  it("does not call onServerTime for an error response", async () => {
+    const seen: Date[] = [];
+    await expect(
+      pull(
+        vi.fn(async () => responseWithDate(SERVER_TIME.toUTCString(), 500)),
+        (date) => seen.push(date),
+      ),
+    ).rejects.toBeInstanceOf(EdgeCloudHttpError);
+    expect(seen).toEqual([]);
+  });
+
+  it("still returns the page when the onServerTime callback throws", async () => {
+    const result = await pull(
+      vi.fn(async () => responseWithDate(SERVER_TIME.toUTCString())),
+      () => {
+        throw new Error("clock sink failed");
+      },
+    );
+    expect(result).toEqual({ data: [] });
   });
 });

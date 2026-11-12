@@ -595,6 +595,8 @@ export const shiftSwapRequestSchema = z
     status: shiftSwapStatusSchema,
     complianceIssues: z.array(shiftComplianceIssueSchema),
     overrideReason: z.string().min(1).max(500).nullable(),
+    rejectionReason: z.string().min(1).max(500).nullable(),
+    peerAcceptedAt: isoDateTimeSchema.nullable(),
     approvedBy: userIdSchema.nullable(),
     requestedAt: isoDateTimeSchema,
     decidedAt: isoDateTimeSchema.nullable(),

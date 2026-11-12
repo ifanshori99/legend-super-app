@@ -28,6 +28,8 @@ import {
   attendanceCorrectionIdSchema,
   attendanceDeviceIdSchema,
   attendanceDutyMealIdSchema,
+  leaveRequestIdSchema,
+  leaveTypeIdSchema,
   shiftAssignmentIdSchema,
 } from "./ids.ts";
 
@@ -105,6 +107,8 @@ export const attendanceQrTokenSchema = z
     token: z.string().min(16).max(128),
     issuedAt: isoDateTimeSchema,
     expiresAt: isoDateTimeSchema,
+    /** Trusted server clock at issuance, independent of the rotation boundary. */
+    serverTime: isoDateTimeSchema,
     rotationSeconds: z.literal(ATTENDANCE_QR_ROTATION_SECONDS),
   })
   .superRefine((qr, ctx) => {
@@ -372,11 +376,12 @@ export type AttendancePolicyView = z.infer<typeof attendancePolicyViewSchema>;
 
 /**
  * The part of the effective policy a staff member sees on the clock-in screen
- * (GET /api/hris/me/attendance-policy). No retention days, sampling or ids.
+ * (GET /api/hris/me/attendance-policy). The effective outlet binds the selfie
+ * upload to the same shift outlet as the clock. No retention days or sampling.
  */
-export const myAttendancePolicySchema = attendancePolicySchema.omit({
-  selfieRetentionDays: true,
-});
+export const myAttendancePolicySchema = attendancePolicySchema
+  .omit({ selfieRetentionDays: true })
+  .extend({ outletId: outletIdSchema });
 export type MyAttendancePolicy = z.infer<typeof myAttendancePolicySchema>;
 
 /**
@@ -426,6 +431,29 @@ export const attendanceReviewActionSchema = z.enum([
   "cancel_leave",
 ]);
 
+/** What made a log a leave case. */
+export const attendanceCaseKindSchema = z.enum([
+  "clock_in_on_leave",
+  "leave_approved_later",
+  "manual_correction",
+]);
+export type AttendanceCaseKind = z.infer<typeof attendanceCaseKindSchema>;
+
+/**
+ * The leave behind a leave case, copied when HR first sees the case: it keeps
+ * naming the original leave and period after a cancel splits or shrinks it.
+ */
+export const attendanceLeaveSnapshotSchema = z.strictObject({
+  leaveRequestId: leaveRequestIdSchema,
+  leaveTypeId: leaveTypeIdSchema,
+  leaveTypeName: z.string().min(1).max(100),
+  startDate: businessDateSchema,
+  endDate: businessDateSchema,
+});
+export type AttendanceLeaveSnapshot = z.infer<
+  typeof attendanceLeaveSnapshotSchema
+>;
+
 /** One entry of the supervisor review queue. */
 export const attendanceReviewItemSchema = z.strictObject({
   log: attendanceLogSchema,
@@ -434,6 +462,20 @@ export const attendanceReviewItemSchema = z.strictObject({
   reviewStatus: attendanceReviewStatusSchema,
   reviewedBy: uuidSchema.nullable(),
   reviewedAt: isoDateTimeSchema.nullable(),
+  /** Full name of the log's employee. */
+  employeeName: z.string().max(200),
+  /** Outlet-local calendar day of the log. */
+  businessDate: businessDateSchema,
+  /** The employee's latest clock-out of that business date; null while none. */
+  clockOutAt: isoDateTimeSchema.nullable(),
+  /** Set for a leave case, null otherwise. */
+  caseKind: attendanceCaseKindSchema.nullable(),
+  /** hr.attendance.manage here and hr.leave.approve at the leave's outlet, still undecided. */
+  canCancelLeave: z.boolean(),
+  /** Null when the log is no leave case. */
+  leave: attendanceLeaveSnapshotSchema.nullable(),
+  /** The action that decided the item; null while pending. */
+  decisionAction: attendanceReviewActionSchema.nullable(),
 });
 export type AttendanceReviewItem = z.infer<typeof attendanceReviewItemSchema>;
 

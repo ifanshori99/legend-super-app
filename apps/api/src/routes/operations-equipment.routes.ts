@@ -27,6 +27,7 @@ import {
   postEquipmentTransition as postEquipmentTransitionEndpoint,
   postMaintenanceTicketTransition as postMaintenanceTicketTransitionEndpoint,
   postShiftHandoverAcknowledgement as postShiftHandoverAcknowledgementEndpoint,
+  postShiftHandoverClose as postShiftHandoverCloseEndpoint,
   updateEquipment as updateEquipmentEndpoint,
 } from "@starter/shared/operations";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
@@ -342,6 +343,27 @@ operationsEquipmentRouter.post(
     const input = postShiftHandoverAcknowledgementEndpoint.body.parse(req.body);
     res.json({
       data: await service.postShiftHandoverAcknowledgement(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        handoverId,
+        input,
+      ),
+    });
+  },
+);
+
+operationsEquipmentRouter.post(
+  "/shift-handovers/:handoverId/close",
+  ...common,
+  record,
+  jsonBody,
+  async (req, res) => {
+    const { handoverId } = postShiftHandoverCloseEndpoint.params.parse(
+      req.params,
+    );
+    const input = postShiftHandoverCloseEndpoint.body.parse(req.body);
+    res.json({
+      data: await service.postShiftHandoverClose(
         getScopedTenantContext(req),
         getAuth(req).user.id,
         handoverId,

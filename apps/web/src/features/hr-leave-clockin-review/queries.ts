@@ -7,8 +7,13 @@
 // browser after hydration (hooks.ts).
 import { queryOptions, replaceEqualDeep } from "@tanstack/react-query";
 import type { OutletId } from "@starter/shared/core";
+import type { AttendanceLogId } from "@starter/shared/hris";
 import { keepDecidedLeave } from "./enrich.ts";
-import { fetchLeaveReviewItems, loadLeaveClockinCases } from "./api.ts";
+import {
+  fetchLeaveReviewItemByLogId,
+  fetchLeaveReviewItems,
+  loadLeaveClockinCases,
+} from "./api.ts";
 import type { LeaveClockinCase } from "./types.ts";
 
 export const leaveClockinKeys = {
@@ -18,9 +23,6 @@ export const leaveClockinKeys = {
   detail: (outletId: string | undefined, logId: string) =>
     [...leaveClockinKeys.all, "case", outletId ?? "none", logId] as const,
 };
-
-/** Statuses searched for a deep-linked case: open first, then decided. */
-const DETAIL_STATUSES = ["pending", "accepted", "rejected"] as const;
 
 /** The queue of cases waiting for an HR decision (pending, leave flag only). */
 export function leaveClockinCasesQuery(
@@ -42,7 +44,7 @@ export function leaveClockinCasesQuery(
 
 /**
  * One case by log id, open or already decided (the result page and a deep
- * link both need it). Null = not found in any status.
+ * link both need it), read with the server's `logId` filter. Null = not found.
  */
 export function leaveClockinCaseQuery(
   outletId: OutletId | undefined,
@@ -53,19 +55,19 @@ export function leaveClockinCaseQuery(
     queryKey: leaveClockinKeys.detail(outletId, logId),
     queryFn: async ({ signal }): Promise<LeaveClockinCase | null> => {
       if (outletId === undefined) return null;
-      for (const status of DETAIL_STATUSES) {
-        const items = await fetchLeaveReviewItems(outletId, status, signal);
-        const item = items.find((row) => row.log.id === logId);
-        if (item === undefined) continue;
-        const [found] = await loadLeaveClockinCases(
-          [item],
-          outletId,
-          timeZone,
-          signal,
-        );
-        return found ?? null;
-      }
-      return null;
+      const item = await fetchLeaveReviewItemByLogId(
+        outletId,
+        logId as AttendanceLogId,
+        signal,
+      );
+      if (item === null) return null;
+      const [found] = await loadLeaveClockinCases(
+        [item],
+        outletId,
+        timeZone,
+        signal,
+      );
+      return found ?? null;
     },
     staleTime: 15_000,
     // A refetch after "cancel leave" finds no approved leave any more: keep the

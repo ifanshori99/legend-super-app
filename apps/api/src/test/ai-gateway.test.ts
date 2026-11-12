@@ -4,8 +4,20 @@
 // do the data checks), real users and the real tables.
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { AiError, type AiGovernanceSettings } from "@starter/shared/ai";
+import {
+  businessDateOf,
+  DEFAULT_BUSINESS_DAY_CLOCK,
+} from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createFakeProvider } from "../lib/ai/fake.ts";
@@ -143,6 +155,7 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   setAiProviderForTests(undefined);
   await resetUsage(tenantA);
   await resetUsage(tenantB);
@@ -253,40 +266,59 @@ describe("aiPreflight", () => {
     expect(blocked.rows[0].n).toBe(2);
   });
 
-  it("[AIG-01] daily quota: 30 employee / 100 management defaults, override by role; blocked calls do not count", async () => {
-    await seedSettings(tenantA, userA, {
-      features: [
-        {
-          feature: "AI-01",
-          isEnabled: true,
-          dailyLimitByRole: { employee: 2 },
-        },
-      ],
-    });
-    const employee = accessFor(tenantA, userA, ["employee"]);
-    expect(await code(ask(employee))).toBe("OK");
-    expect(await code(ask(employee))).toBe("OK");
-    expect(await code(ask(employee))).toBe("AI_QUOTA_EXCEEDED");
-    expect(await code(ask(employee))).toBe("AI_QUOTA_EXCEEDED");
-    const count = await owner.query(
-      `SELECT request_count FROM ai_usage_daily WHERE tenant_id = $1 AND user_id = $2`,
-      [tenantA, userA],
-    );
-    expect(count.rows[0].request_count).toBe(2);
-    // A caller holding a management role gets the higher limit.
-    const both = accessFor(tenantA, userA2, ["employee", "general_manager"]);
-    for (let i = 0; i < 3; i += 1) expect(await code(ask(both))).toBe("OK");
-    // Defaults without override: employee 30.
-    await seedSettings(tenantA, userA, {});
-    await owner.query(
-      `INSERT INTO ai_usage_daily (tenant_id, user_id, usage_date, request_count)
-       VALUES ($1, $2, (now() AT TIME ZONE 'Asia/Jakarta')::date, 29)
+  it.each([
+    ["01:18 WIB", "2026-11-12T01:18:00+07:00", "2026-11-11"],
+    ["12:00 WIB", "2026-11-12T12:00:00+07:00", "2026-11-12"],
+  ])(
+    "[AIG-01] daily quota at %s: 30 employee / 100 management defaults, override by role; blocked calls do not count",
+    async (_clock, now, expectedUsageDate) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date(now));
+      const usageDate = businessDateOf(new Date(), DEFAULT_BUSINESS_DAY_CLOCK);
+      expect(usageDate).toBe(expectedUsageDate);
+      await seedSettings(tenantA, userA, {
+        features: [
+          {
+            feature: "AI-01",
+            isEnabled: true,
+            dailyLimitByRole: { employee: 2 },
+          },
+        ],
+      });
+      const employee = accessFor(tenantA, userA, ["employee"]);
+      expect(await code(ask(employee))).toBe("OK");
+      expect(await code(ask(employee))).toBe("OK");
+      expect(await code(ask(employee))).toBe("AI_QUOTA_EXCEEDED");
+      expect(await code(ask(employee))).toBe("AI_QUOTA_EXCEEDED");
+      const count = await owner.query(
+        `SELECT usage_date::text, request_count FROM ai_usage_daily WHERE tenant_id = $1 AND user_id = $2`,
+        [tenantA, userA],
+      );
+      expect(count.rows).toEqual([
+        { usage_date: expectedUsageDate, request_count: 2 },
+      ]);
+      // A caller holding a management role gets the higher limit.
+      const both = accessFor(tenantA, userA2, ["employee", "general_manager"]);
+      for (let i = 0; i < 3; i += 1) expect(await code(ask(both))).toBe("OK");
+      // Defaults without override: employee 30.
+      await seedSettings(tenantA, userA, {});
+      await owner.query(
+        `INSERT INTO ai_usage_daily (tenant_id, user_id, usage_date, request_count)
+       VALUES ($1, $2, $3::date, 29)
        ON CONFLICT (tenant_id, user_id, usage_date) DO UPDATE SET request_count = 29`,
-      [tenantA, userA],
-    );
-    expect(await code(ask(employee))).toBe("OK");
-    expect(await code(ask(employee))).toBe("AI_QUOTA_EXCEEDED");
-  });
+        [tenantA, userA, usageDate],
+      );
+      expect(await code(ask(employee))).toBe("OK");
+      expect(await code(ask(employee))).toBe("AI_QUOTA_EXCEEDED");
+      const exhausted = await owner.query(
+        `SELECT usage_date::text, request_count FROM ai_usage_daily WHERE tenant_id = $1 AND user_id = $2`,
+        [tenantA, userA],
+      );
+      expect(exhausted.rows).toEqual([
+        { usage_date: expectedUsageDate, request_count: 30 },
+      ]);
+    },
+  );
 
   it("[AIG-01] two parallel calls at limit-1 let exactly one through", async () => {
     await seedSettings(tenantA, userA, {

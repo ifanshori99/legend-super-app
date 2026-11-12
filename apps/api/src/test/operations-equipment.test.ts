@@ -797,6 +797,186 @@ describe("Operations shift handover API (legend-i57s)", () => {
       listed.body.data.some((row: { id: string }) => row.id === handoverId),
     ).toBe(true);
   });
+
+  it("[legend-7j4e][OPS-05] close refuses an unconfirmed handover without changing its state", async () => {
+    const submitter = await ownerClient();
+    const created = await submitter.client
+      .post(handoverPath())
+      .set(originHeader)
+      .send(handoverBody());
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const handoverId = created.body.data.id as string;
+    createdHandoverIds.push(handoverId);
+
+    const closed = await submitter.client
+      .post(`${handoverPath(handoverId)}/close`)
+      .set(originHeader)
+      .send({ idempotencyKey: nextKey() });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(422);
+    expect(closed.body.error.code).toBe("HANDOVER_ACKNOWLEDGEMENT_REQUIRED");
+
+    const read = await submitter.client.get(handoverPath(handoverId));
+    expect(read.status, JSON.stringify(read.body)).toBe(200);
+    expect(read.body.data.status).toBe("submitted");
+    expect(read.body.data.acknowledgedAt).toBeNull();
+    expect(read.body.data.closedAt).toBeNull();
+    expect(read.body.data.closedBy).toBeNull();
+  });
+
+  it("[legend-7j4e][OPS-05] close persists its actor and time and replays the same key once", async () => {
+    const submitter = await ownerClient();
+    const receiver = await ownerClient();
+    const created = await submitter.client
+      .post(handoverPath())
+      .set(originHeader)
+      .send(handoverBody());
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const handoverId = created.body.data.id as string;
+    createdHandoverIds.push(handoverId);
+
+    const acknowledgeKey = nextKey();
+    const acknowledged = await receiver.client
+      .post(`${handoverPath(handoverId)}/acknowledge`)
+      .set(originHeader)
+      .send({ idempotencyKey: acknowledgeKey });
+    expect(acknowledged.status, JSON.stringify(acknowledged.body)).toBe(200);
+
+    const reused = await receiver.client
+      .post(`${handoverPath(handoverId)}/close`)
+      .set(originHeader)
+      .send({ idempotencyKey: acknowledgeKey });
+    expect(reused.status, JSON.stringify(reused.body)).toBe(409);
+    expect(reused.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    const beforeClose = await receiver.client.get(handoverPath(handoverId));
+    expect(beforeClose.status, JSON.stringify(beforeClose.body)).toBe(200);
+    expect(beforeClose.body.data.status).toBe("acknowledged");
+    expect(beforeClose.body.data.closedAt).toBeNull();
+    expect(beforeClose.body.data.closedBy).toBeNull();
+
+    const closeKey = nextKey();
+    const close = () =>
+      receiver.client
+        .post(`${handoverPath(handoverId)}/close`)
+        .set(originHeader)
+        .send({ idempotencyKey: closeKey });
+    const closed = await close();
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    getShiftHandover.response.parse(closed.body);
+    expect(closed.body.data.status).toBe("closed");
+    expect(closed.body.data.closedBy).toBe(receiver.userId);
+    expect(Number.isFinite(Date.parse(closed.body.data.closedAt))).toBe(true);
+    expect(closed.body.data.acknowledgedBy).toBe(receiver.userId);
+    expect(closed.body.data.acknowledgedAt).toBe(
+      acknowledged.body.data.acknowledgedAt,
+    );
+
+    const replay = await close();
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(replay.body.data).toEqual(closed.body.data);
+    const audit = await asTenant((client) =>
+      client.query(
+        `SELECT event FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'objectId' = $2
+            AND event->>'action' = 'shift_handover.closed'`,
+        [tenant.id, handoverId],
+      ),
+    );
+    expect(audit.rowCount).toBe(1);
+
+    const repeat = await receiver.client
+      .post(`${handoverPath(handoverId)}/close`)
+      .set(originHeader)
+      .send({ idempotencyKey: nextKey() });
+    expect(repeat.status, JSON.stringify(repeat.body)).toBe(409);
+    expect(repeat.body.error.code).toBe("HANDOVER_ALREADY_CLOSED");
+    const acknowledgeClosed = await receiver.client
+      .post(`${handoverPath(handoverId)}/acknowledge`)
+      .set(originHeader)
+      .send({ idempotencyKey: nextKey() });
+    expect(
+      acknowledgeClosed.status,
+      JSON.stringify(acknowledgeClosed.body),
+    ).toBe(409);
+    expect(acknowledgeClosed.body.error.code).toBe(
+      "HANDOVER_ALREADY_ACKNOWLEDGED",
+    );
+    for (const injected of [
+      { status: "submitted" },
+      { closedBy: submitter.userId },
+      { closedAt: "2030-01-15T03:00:00.000Z" },
+    ]) {
+      const invalid = await receiver.client
+        .post(`${handoverPath(handoverId)}/close`)
+        .set(originHeader)
+        .send({ idempotencyKey: nextKey(), ...injected });
+      expect(invalid.status, JSON.stringify(invalid.body)).toBe(422);
+    }
+    for (const missing of [
+      { closedBy: null },
+      { closedAt: null },
+      { acknowledgedBy: null },
+      { acknowledgedAt: null },
+    ])
+      expect(
+        getShiftHandover.response.safeParse({
+          data: { ...closed.body.data, ...missing },
+        }).success,
+      ).toBe(false);
+
+    const read = await receiver.client.get(handoverPath(handoverId));
+    expect(read.status, JSON.stringify(read.body)).toBe(200);
+    expect(read.body.data).toEqual(closed.body.data);
+    const listed = await receiver.client.get(
+      `${handoverPath()}?outletId=${outletA.id}&status=closed&limit=100`,
+    );
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    listShiftHandovers.response.parse(listed.body);
+    expect(
+      listed.body.data.some((row: { id: string }) => row.id === handoverId),
+    ).toBe(true);
+  });
+
+  it("[legend-7j4e][TEN-03] close hides another outlet and requires a trusted signed-in caller", async () => {
+    const submitter = await ownerClient();
+    const receiver = await ownerClient();
+    const created = await submitter.client
+      .post(handoverPath())
+      .set(originHeader)
+      .send(handoverBody());
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const handoverId = created.body.data.id as string;
+    createdHandoverIds.push(handoverId);
+    const closePath = `${handoverPath(handoverId)}/close`;
+
+    const acknowledged = await receiver.client
+      .post(`${handoverPath(handoverId)}/acknowledge`)
+      .set(originHeader)
+      .send({ idempotencyKey: nextKey() });
+    expect(acknowledged.status, JSON.stringify(acknowledged.body)).toBe(200);
+
+    const outsider = await outletClient(outletB.id);
+    const outOfScope = await outsider.client
+      .post(closePath)
+      .set(originHeader)
+      .send({ idempotencyKey: nextKey() });
+    expect(outOfScope.status, JSON.stringify(outOfScope.body)).toBe(404);
+    expect(outOfScope.body.error.code).toBe("NOT_FOUND");
+    const anonymous = await agent(app)
+      .post(closePath)
+      .set(originHeader)
+      .send({ idempotencyKey: nextKey() });
+    expect(anonymous.status, JSON.stringify(anonymous.body)).toBe(401);
+    const untrusted = await receiver.client
+      .post(closePath)
+      .set("Origin", "https://evil.example")
+      .send({ idempotencyKey: nextKey() });
+    expect(untrusted.status, JSON.stringify(untrusted.body)).toBe(403);
+
+    const read = await receiver.client.get(handoverPath(handoverId));
+    expect(read.status, JSON.stringify(read.body)).toBe(200);
+    expect(read.body.data.status).toBe("acknowledged");
+    expect(read.body.data.closedAt).toBeNull();
+  });
 });
 
 describe("Operations equipment API isolation (legend-i57s)", () => {

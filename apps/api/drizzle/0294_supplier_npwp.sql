@@ -1,0 +1,1 @@
+ALTER TABLE "suppliers" ADD COLUMN "npwp" varchar(20);

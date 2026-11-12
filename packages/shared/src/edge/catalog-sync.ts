@@ -47,8 +47,16 @@ import {
   isoDateTimeSchema,
   PAGE_LIMIT_MAX,
   uuidSchema,
+  userIdSchema,
   z,
 } from "../core/index.ts";
+
+import {
+  promotionObjectSchema,
+  promotionOutletScopeSchema,
+  promoStackingPolicySchema,
+  voucherObjectSchema,
+} from "../crm/promo.ts";
 
 export const EDGE_CATALOG_SYNC_PATH = "/api/edge-sync/catalog";
 
@@ -68,6 +76,8 @@ export const CATALOG_SYNC_STREAMS = [
   "menu_item_modifier_groups",
   "price_lists",
   "recipes",
+  "promotions",
+  "vouchers",
 ] as const;
 export const catalogSyncStreamSchema = z.enum(CATALOG_SYNC_STREAMS);
 export type CatalogSyncStream = z.infer<typeof catalogSyncStreamSchema>;
@@ -303,6 +313,52 @@ export const recipeSyncRecordSchema = z.strictObject({
   syncTxid: syncTxidSchema,
 });
 
+/**
+ * A complete rule document, including the requesting outlet's switch. The
+ * promo code hash never travels (a SHA-256 of a short code is brute-forceable
+ * if an outlet disk is stolen): `codeRef` is an irreversible stand-in derived
+ * from the promotion id, `null` when the promotion has no code. The edge
+ * refuses every code anyway (Q66), so it never needs the real hash.
+ */
+export const promotionSyncRecordSchema = promotionObjectSchema
+  .omit({ codeHash: true })
+  .extend({
+    codeRef: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable(),
+    outletId: uuidSchema,
+    outletScope: promotionOutletScopeSchema,
+    usesTotal: z.number().int().nonnegative(),
+    createdBy: userIdSchema.nullable(),
+    updatedBy: userIdSchema.nullable(),
+    syncTxid: syncTxidSchema,
+    outletOverrides: z.array(
+      z.strictObject({
+        outletId: uuidSchema,
+        enabled: z.boolean(),
+        updatedBy: userIdSchema.nullable(),
+        updatedAt: isoDateTimeSchema,
+      }),
+    ),
+    stackingSettings: z
+      .strictObject({
+        stackingPolicy: promoStackingPolicySchema,
+        updatedBy: userIdSchema.nullable(),
+        updatedAt: isoDateTimeSchema,
+        syncTxid: syncTxidSchema,
+      })
+      .nullable(),
+  });
+
+/** Single-use state travels read-only; edge redemption requires cloud authority. */
+export const voucherSyncRecordSchema = voucherObjectSchema
+  .omit({ codeHash: true })
+  .extend({
+    issuedBy: userIdSchema.nullable(),
+    syncTxid: syncTxidSchema,
+  });
+
 export const catalogSyncRecordSchemas = {
   stations: stationSyncRecordSchema,
   inventory_items: inventoryItemSyncRecordSchema,
@@ -314,6 +370,8 @@ export const catalogSyncRecordSchemas = {
   menu_item_modifier_groups: menuItemModifierGroupSyncRecordSchema,
   price_lists: priceListSyncRecordSchema,
   recipes: recipeSyncRecordSchema,
+  promotions: promotionSyncRecordSchema,
+  vouchers: voucherSyncRecordSchema,
 } as const;
 
 export type StationSyncRecord = z.infer<typeof stationSyncRecordSchema>;
@@ -336,6 +394,8 @@ export type PriceListSyncRecord = z.infer<typeof priceListSyncRecordSchema>;
 export type PriceListItemRecord = z.infer<typeof priceListItemRecordSchema>;
 export type RecipeSyncRecord = z.infer<typeof recipeSyncRecordSchema>;
 export type RecipeLineRecord = z.infer<typeof recipeLineRecordSchema>;
+export type PromotionSyncRecord = z.infer<typeof promotionSyncRecordSchema>;
+export type VoucherSyncRecord = z.infer<typeof voucherSyncRecordSchema>;
 
 export type CatalogSyncRecordOf<S extends CatalogSyncStream> = z.infer<
   (typeof catalogSyncRecordSchemas)[S]
@@ -367,5 +427,7 @@ export const catalogSyncPageSchema = z.discriminatedUnion("stream", [
   pageOf("menu_item_modifier_groups"),
   pageOf("price_lists"),
   pageOf("recipes"),
+  pageOf("promotions"),
+  pageOf("vouchers"),
 ]);
 export type CatalogSyncPage = z.infer<typeof catalogSyncPageSchema>;

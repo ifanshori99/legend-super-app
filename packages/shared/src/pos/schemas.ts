@@ -42,6 +42,7 @@ import type { Idr } from "../core/index.ts";
 import { posDiscountThresholdBpSchema } from "../core/money.ts";
 import { posOverrideIdSchema } from "../access/override.ts";
 import { orderIdSchema } from "../kitchen/schemas.ts";
+import { PICKUP_CODE_PATTERN } from "../kitchen/pickup-code.ts";
 import {
   discountLineSchema,
   fireStatusSchema,
@@ -144,6 +145,62 @@ export type OrderChannel = z.infer<typeof orderChannelSchema>;
 export const SERVICE_TYPES = ["dine_in", "takeaway", "delivery"] as const;
 export const serviceTypeSchema = z.enum(SERVICE_TYPES);
 export type ServiceType = z.infer<typeof serviceTypeSchema>;
+
+/** Advisory sequence preview; creating the order assigns its final number. */
+export const posNextCallNumberSchema = z.strictObject({
+  number: z.number().int().positive(),
+  code: z.string().regex(PICKUP_CODE_PATTERN),
+  businessDate: businessDateSchema,
+});
+export type PosNextCallNumber = z.infer<typeof posNextCallNumberSchema>;
+
+/** Server-priced choices for the cashier/captain item picker. */
+export const posCatalogSchema = z.strictObject({
+  categories: z.array(
+    z.strictObject({
+      id: uuidSchema,
+      name,
+      sortOrder: z.number().int().nonnegative(),
+    }),
+  ),
+  items: z.array(
+    z.strictObject({
+      id: uuidSchema,
+      categoryId: uuidSchema,
+      categoryName: name,
+      name,
+      /** Display price only: variant items still require a selected variant. */
+      basePriceIdr: positiveIdr,
+      plainPriceIdr: positiveIdr.nullable(),
+      variants: z.array(
+        z.strictObject({ id: uuidSchema, name, priceIdr: positiveIdr }),
+      ),
+      imageUrl: z.string().max(2048).nullable(),
+      course: z.string().max(20).nullable(),
+      code: z.string().max(100).nullable(),
+      soldOut: z.boolean(),
+      modifierGroups: z.array(
+        z.strictObject({
+          id: uuidSchema,
+          name,
+          required: z.boolean(),
+          min: z.number().int().nonnegative(),
+          max: z.number().int().nonnegative(),
+          options: z.array(
+            z.strictObject({
+              id: uuidSchema,
+              label: name,
+              priceDeltaIdr: nonnegativeIdr,
+            }),
+          ),
+        }),
+      ),
+    }),
+  ),
+  updatedAt: isoDateTimeSchema,
+  source: z.literal("live"),
+});
+export type PosCatalog = z.infer<typeof posCatalogSchema>;
 
 /** §6 `orders.status`, plus the POS actions that move between them. */
 export const POS_ORDER_STATUSES = [
@@ -1636,6 +1693,8 @@ export type PosReceipt = z.infer<typeof posReceiptSchema>;
  */
 export const posOrderDetailSchema = posOrderBaseSchema
   .extend({
+    /** The immutable code already assigned to this order, or no pickup call. */
+    callNumber: z.string().regex(PICKUP_CODE_PATTERN).nullable().default(null),
     items: z.array(posOrderItemSchema),
     tenders: z.array(posTenderSchema),
     discounts: z.array(posDiscountSchema),
@@ -2071,7 +2130,12 @@ export const customerDisplayStateSchema = z
     /** Cash rounding carried from the order, so the screen shows the final total. */
     roundingIdr: idrSchema,
     totalIdr: nonnegativeIdr,
+    /** Reservation credit already applied; absent in legacy display pushes. */
+    depositAppliedIdr: nonnegativeIdr.default(idr(0)),
+    /** Derived from the gross total less the deposit and captured tenders. */
+    remainingIdr: nonnegativeIdr.optional(),
     qris: customerDisplayQrisSchema.nullable(),
+    /** Captured amounts applied to the bill, excluding cash handed over. */
     tenders: z.array(posDocumentTenderSchema),
     changeIdr: nonnegativeIdr.nullable(),
     /** Monotonic per terminal so the display drops stale pushes. */
@@ -2104,6 +2168,34 @@ export const customerDisplayStateSchema = z
         message:
           "totalIdr must equal subtotal - discount + service + tax + rounding",
       });
+    const deposit = Number(state.depositAppliedIdr);
+    const captured = state.tenders.reduce(
+      (sum, tender) => sum + Number(tender.amountIdr),
+      0,
+    );
+    const remaining = Number(state.totalIdr) - deposit - captured;
+    if (deposit > Number(state.totalIdr))
+      ctx.addIssue({
+        code: "custom",
+        path: ["depositAppliedIdr"],
+        message: "depositAppliedIdr must not exceed totalIdr",
+      });
+    if (remaining < 0)
+      ctx.addIssue({
+        code: "custom",
+        path: ["tenders"],
+        message: "Captured tenders and deposit must not exceed the bill total",
+      });
+    if (
+      state.remainingIdr !== undefined &&
+      Number(state.remainingIdr) !== remaining
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["remainingIdr"],
+        message:
+          "remainingIdr must equal total less deposit and captured tenders",
+      });
     if (state.qris !== null) {
       if (state.state !== "awaiting_payment")
         ctx.addIssue({
@@ -2111,20 +2203,32 @@ export const customerDisplayStateSchema = z
           path: ["qris"],
           message: "QRIS is shown while the bill is awaiting payment",
         });
-      if (Number(state.qris?.amountIdr) !== Number(state.totalIdr))
+      if (remaining <= 0 || Number(state.qris.amountIdr) !== remaining)
         ctx.addIssue({
           code: "custom",
           path: ["qris", "amountIdr"],
-          message: "The QRIS amount is the bill total",
+          message: "The QRIS amount is the positive remaining bill balance",
         });
     }
-    if (state.state === "paid" && state.tenders.length === 0)
+    if (state.state === "paid" && remaining !== 0)
       ctx.addIssue({
         code: "custom",
         path: ["tenders"],
-        message: "A paid screen shows how it was paid",
+        message:
+          "A paid screen is fully covered by the deposit and captured tenders",
       });
-  });
+  })
+  .transform((state) => ({
+    ...state,
+    remainingIdr: idr(
+      Number(state.totalIdr) -
+        Number(state.depositAppliedIdr) -
+        state.tenders.reduce(
+          (sum, tender) => sum + Number(tender.amountIdr),
+          0,
+        ),
+    ),
+  }));
 export type CustomerDisplayState = z.infer<typeof customerDisplayStateSchema>;
 
 // ---- Fixture set ----------------------------------------------------------

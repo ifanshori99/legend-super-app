@@ -181,8 +181,16 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // founder Q63 (ws05-pay-admin)
   "0286_refund_approval_matrix_data.sql":
     "gives each tenant that still has the old default refund matrix (no refund row, or one row: floor 0, level 1, supervisor template) the missing default rows for outlet_manager, general_manager and owner; idempotent, never touches a tenant that configured its own refund matrix, FORCE RLS on roles and approval_policies lifted and restored",
+  "0288_edge_promo_streams.sql":
+    "trigger bodies that stamp sync_txid on promotions, vouchers and promo_settings at runtime and bump the parent promotion when its outlet rows change; no existing rows are rewritten",
   "0276_leave_flag_closed_payroll.sql":
     "redefines app.flag_attendance_for_leave (function body UPDATE of attendance_logs, now skipping logs in closed payroll runs); no rows written by the migration",
+  "0291_leave_flag_reset_review_case.sql":
+    "redefines the leave-flag reset function (function body UPDATE of attendance_logs that returns the reset rows, clearing review fields incl. decision_action); no rows written by the migration",
+  "0292_tax_payable_ppn_other_roles.sql":
+    "backfills accounts 2205 and 2206 and the tax_payable_ppn and tax_payable_other mappings for every already provisioned legal entity that lacks them (legend-xa9bc, 538-G3); idempotent, never updates or deletes, keeps a custom account with the same code, FORCE RLS lifted for those statements and restored",
+  "0293_journal_entry_order_id.sql":
+    "backfills the new journal_entries.order_id of existing sale and refund journals from their source ids (orders, pos_order_refunds, order_issues; legend-knfl6, 538-G3); only rows with order_id NULL, sets that one link column and no amount, date or account; the append-only trigger is disabled for these statements and enabled again, FORCE RLS lifted and restored",
 };
 
 // Entrypoints that open a database pool but import no data.
@@ -193,6 +201,8 @@ const POOL_OPENERS_NOT_IMPORTERS: Record<string, string> = {
     "one-off repair of refunds already in the database (UPDATE of payout state, dry-run by default), imports nothing",
   "apps/api/src/db/backfill-employee-managers.ts":
     "one-off repair of employees.manager_id on existing rows from an HR-reviewed manifest (dry-run by default), imports nothing (legend-qhqf8)",
+  "apps/api/src/db/repair-supplier-invoice-npwp.ts":
+    "explicit one-invoice repair of a legacy supplier_invoices.npwp_snapshot (one tenant, entity, invoice, actor and audited reason on the command line; the audit row shares the transaction), imports nothing (547b)",
   "apps/api/src/worker-main.ts":
     "job runner: delivery state of its own tenant's work, no imports",
   "apps/api/src/db/role.ts": "runtime role helper, no data writes",

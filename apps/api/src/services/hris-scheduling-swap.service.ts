@@ -47,6 +47,7 @@ import {
   decideShiftSwapRequest as decideShiftSwapRequestEndpoint,
   evaluateShiftSwapCompliance,
   listShiftSwapRequests as listShiftSwapRequestsEndpoint,
+  respondShiftSwapRequest as respondShiftSwapRequestEndpoint,
   transitionShiftAssignment,
   transitionShiftSwap,
   type ShiftAssignment,
@@ -92,6 +93,7 @@ type SwapRow = typeof shiftSwapRequests.$inferSelect;
 type AssignmentRow = typeof shiftAssignments.$inferSelect;
 type CreateBody = z.output<typeof createShiftSwapRequestEndpoint.body>;
 type DecideBody = z.output<typeof decideShiftSwapRequestEndpoint.body>;
+type PeerBody = z.output<typeof respondShiftSwapRequestEndpoint.body>;
 type CancelBody = z.output<typeof cancelShiftSwapRequestEndpoint.body>;
 type ListQuery = z.output<typeof listShiftSwapRequestsEndpoint.query>;
 type Page<T> = {
@@ -678,6 +680,12 @@ export async function decideShiftSwapRequest(
     if (row.status !== "pending")
       throw conflict("CONFLICT", `Permintaan tukar shift sudah ${row.status}.`);
 
+    if (!row.peerAcceptedAt)
+      throw conflict(
+        "CONFLICT",
+        "Rekan harus menerima permintaan terlebih dahulu.",
+      );
+
     const actor = access.actorUserId;
     if (input.action === "reject") {
       transitionShiftSwap(row.status, "reject");
@@ -685,6 +693,7 @@ export async function decideShiftSwapRequest(
         .update(shiftSwapRequests)
         .set({
           status: "rejected",
+          rejectionReason: input.rejectionReason ?? null,
           approvedBy: actor,
           decidedAt: now,
           updatedAt: now,
@@ -735,7 +744,8 @@ export async function decideShiftSwapRequest(
       )
         throw stale;
     }
-    if (!(await activeEmployee(tx, tenantId, row.toEmployeeId))) throw stale;
+    const target = await activeEmployee(tx, tenantId, row.toEmployeeId);
+    if (!target || !same(target.homeOutletId, row.outletId)) throw stale;
 
     // Recomputed against the roster as it is now; the copy on the row may be stale.
     const complianceIssues = await tenantWideSwapCompliance(
@@ -837,6 +847,116 @@ export async function decideShiftSwapRequest(
         : "hris.shift_swap.approved_with_override",
     );
     return toShiftSwapRequest(approved);
+  });
+}
+
+/** Active colleagues in the caller's own outlet; no other employee fields leave the API. */
+export async function listShiftSwapCandidates(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  outletId: string,
+  now = new Date(),
+): Promise<{ data: Array<{ id: string; name: string }> }> {
+  return withTenant(db, context, async (tx) => {
+    const access = await loadHrisAccess(tx, context, actorUserId, now);
+    const own = access.own;
+    if (
+      !own ||
+      !access.snapshot.permissions.includes("self.shift_swap.request")
+    )
+      throw forbidden();
+    if (
+      !same(own.homeOutletId, outletId) ||
+      !isOutletInScope(context.outletScope, outletId)
+    )
+      throw notFound("Outlet");
+    if (!(await activeEmployee(tx, context.tenant.tenantId, own.id)))
+      throw forbidden();
+    const rows = await tx
+      .select({ id: employees.id, name: employees.fullName })
+      .from(employees)
+      .where(
+        and(
+          eq(employees.tenantId, context.tenant.tenantId),
+          eq(employees.homeOutletId, outletId),
+          eq(employees.status, "active"),
+          sql`${employees.id} <> ${own.id}`,
+        ),
+      )
+      .orderBy(asc(employees.fullName), asc(employees.id));
+    return { data: rows };
+  });
+}
+
+/** Only the named colleague can respond; the row lock serializes manager decisions. */
+export async function respondShiftSwapRequest(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  swapId: string,
+  input: PeerBody,
+  now = new Date(),
+): Promise<ShiftSwapRequest> {
+  return withTenant(db, context, async (tx) => {
+    const access = await loadHrisAccess(tx, context, actorUserId, now);
+    const row = await findSwap(tx, context.tenant.tenantId, swapId, true);
+    if (!row || !canSee(access, row)) throw notFound("Permintaan tukar shift");
+    if (
+      !access.own ||
+      !same(access.own.id, row.toEmployeeId) ||
+      !access.snapshot.permissions.includes("self.shift_swap.request")
+    )
+      throw forbidden();
+    const target = await activeEmployee(
+      tx,
+      context.tenant.tenantId,
+      access.own.id,
+    );
+    if (!target || !same(target.homeOutletId, row.outletId)) throw forbidden();
+    if (
+      input.action === "reject" &&
+      row.status === "rejected" &&
+      row.approvedBy === access.actorUserId &&
+      row.rejectionReason === input.rejectionReason
+    )
+      return toShiftSwapRequest(row);
+    if (
+      input.action === "accept" &&
+      row.status === "pending" &&
+      row.peerAcceptedAt
+    )
+      return toShiftSwapRequest(row);
+    if (row.status !== "pending" || row.peerAcceptedAt)
+      throw conflict("CONFLICT", "Permintaan sudah diproses.");
+    const [updated] = await tx
+      .update(shiftSwapRequests)
+      .set(
+        input.action === "accept"
+          ? {
+              peerAcceptedAt: now,
+              updatedAt: now,
+            }
+          : {
+              status: "rejected",
+              rejectionReason: input.rejectionReason ?? null,
+              approvedBy: access.actorUserId,
+              decidedAt: now,
+              updatedAt: now,
+            },
+      )
+      .where(eq(shiftSwapRequests.id, row.id))
+      .returning();
+    if (!updated) throw new Error("Shift swap update returned no row");
+    await auditSwap(
+      tx,
+      context,
+      access.actorUserId,
+      now,
+      updated,
+      input.action === "accept"
+        ? "hris.shift_swap.peer_accepted"
+        : "hris.shift_swap.peer_rejected",
+    );
+    return toShiftSwapRequest(updated);
   });
 }
 

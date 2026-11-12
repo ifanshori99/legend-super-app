@@ -588,7 +588,11 @@ export async function run(options: {
             )})
             ORDER BY ra.id FOR SHARE OF ra`,
       );
-      const state = await loadTenantState(tx, tenantId, now);
+      // Time is taken after every lock: a long wait on a lock may have let a
+      // manager's assignment expire, and the time captured before the wait
+      // would still approve it.
+      const lockedNow = new Date();
+      const state = await loadTenantState(tx, tenantId, lockedNow);
       const index = buildIndex(state.employees, state.outletManagers);
       let count = 0;
       for (const candidate of candidates) {
@@ -607,7 +611,7 @@ export async function run(options: {
           continue;
         }
         const updated = await tx.execute(
-          sql`UPDATE employees SET manager_id = ${fresh.proposedManagerId}::uuid, updated_at = ${now}
+          sql`UPDATE employees SET manager_id = ${fresh.proposedManagerId}::uuid, updated_at = ${lockedNow}
               WHERE tenant_id = ${tenantId}::uuid AND id = ${employee.id}::uuid
                 AND status = 'active'
                 AND manager_id IS NOT DISTINCT FROM ${fresh.currentManagerId}::uuid
@@ -622,7 +626,7 @@ export async function run(options: {
           tx,
           context,
           {
-            id: createUlid(now.getTime()),
+            id: createUlid(lockedNow.getTime()),
             tenantId,
             outletId: employee.homeOutletId,
             actorType: "system",
@@ -639,7 +643,7 @@ export async function run(options: {
             ipHash: null,
             sensitiveAccess: false,
             retentionClass: "audit_2y",
-            createdAt: now.toISOString(),
+            createdAt: lockedNow.toISOString(),
           },
           ["managerId"],
         );

@@ -76,8 +76,11 @@ export * from "./edge-node";
 export * from "./edge-hris";
 export * from "./edge-sync-conflict";
 export * from "./edge-print";
+export * from "./edge-catalog-gate-state";
+export * from "./edge-catalog-sale-overrides";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+export * from "./pos-parked-order";
 // TEN-09 tenant config templates + import runs (legend-34c).
 export * from "./platform-config";
 export * from "./pos-receipt";
@@ -102,6 +105,7 @@ export * from "./pos-acting-staff";
 export * from "./payroll-pph21-policy";
 // WS-10 payroll core tables (legend-gfcr).
 export * from "./payroll";
+export * from "./payroll-rapel";
 // WS-10 payslip PIN and its WhatsApp reset challenges (legend-2ap3).
 export * from "./payslip-pin";
 // EDC agent framework (legend-apt).

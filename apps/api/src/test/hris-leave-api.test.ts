@@ -792,7 +792,11 @@ describe("§29 Pengajuan & Approval cuti", () => {
     const rejected = await post(
       managerAClient,
       `/api/hris/leave/requests/${created.body.data.id}/decision`,
-      { action: "reject", idempotencyKey: key() },
+      {
+        action: "reject",
+        rejectionReason: "Jadwal penuh",
+        idempotencyKey: key(),
+      },
     );
     expect(rejected.status, JSON.stringify(rejected.body)).toBe(200);
     expect(rejected.body.data).toMatchObject({
@@ -862,7 +866,11 @@ describe("§29 Pengajuan & Approval cuti", () => {
     const reject = await post(
       managerAClient,
       `/api/hris/leave/requests/${approvedId}/decision`,
-      { action: "reject", idempotencyKey: key() },
+      {
+        action: "reject",
+        rejectionReason: "Jadwal penuh",
+        idempotencyKey: key(),
+      },
     );
     expect(reject.status).toBe(409);
   });
@@ -1140,6 +1148,7 @@ describe("§29 Lembur", () => {
       (
         await post(managerAClient, path, {
           action: "reject",
+          rejectionReason: "Jadwal penuh",
           idempotencyKey: key(),
         })
       ).status,
@@ -1155,7 +1164,11 @@ describe("§29 Lembur", () => {
     const rejected = await post(
       managerAClient,
       `/api/hris/overtime-requests/${created.body.data.id}/decision`,
-      { action: "reject", idempotencyKey: key() },
+      {
+        action: "reject",
+        rejectionReason: "Jadwal penuh",
+        idempotencyKey: key(),
+      },
     );
     expect(rejected.status, JSON.stringify(rejected.body)).toBe(200);
     expect(rejected.body.data.status).toBe("rejected");

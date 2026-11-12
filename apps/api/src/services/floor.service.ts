@@ -50,13 +50,16 @@ import {
   brands,
   floorZones,
   outlets,
+  serviceRequests,
   tableSessions,
   tables,
+  zoneWaiterAssignments,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { sealSecret, openSecret } from "../lib/secrets";
 import { recordAudit } from "./core-audit";
 import { qrTokenHash, signTableQrToken } from "./qr-token";
+import { qrOrderSettlementLookup } from "./qr-order.service";
 import { lockTableLiveState } from "./table-session.service";
 
 type Database = NodePgDatabase<typeof schema>;
@@ -238,13 +241,14 @@ export async function listTenantOutletIds(
 
 /**
  * Zones, tables and the live session on each table for one outlet (PRD "Papan
- * Status", contract `floorBoardSchema`). `openServiceRequestCount` and
- * `outstandingIdr` stay 0 until WS-03's service requests (legend-7qg) and
- * orders (legend-e2x) tables land; the board then reads them instead.
+ * Status", contract `floorBoardSchema`). The captain route supplies a
+ * server-resolved waiter id to restrict the board to assigned zones. Bills
+ * share the guest bill/close settlement rules, including captured POS money.
  */
 export async function listFloorBoard(
   context: ScopedTenantContext,
   outletId: string,
+  filters: { zoneId?: string; assignedWaiterId?: string } = {},
   now = new Date(),
 ): Promise<FloorBoard> {
   const outlet = outletIdSchema.parse(outletId);
@@ -257,6 +261,28 @@ export async function listFloorBoard(
         and(
           eq(floorZones.tenantId, context.tenant.tenantId),
           eq(floorZones.outletId, outlet),
+          filters.zoneId ? eq(floorZones.id, filters.zoneId) : undefined,
+          filters.assignedWaiterId
+            ? inArray(
+                floorZones.id,
+                tx
+                  .select({ zoneId: zoneWaiterAssignments.zoneId })
+                  .from(zoneWaiterAssignments)
+                  .where(
+                    and(
+                      eq(
+                        zoneWaiterAssignments.tenantId,
+                        context.tenant.tenantId,
+                      ),
+                      eq(zoneWaiterAssignments.outletId, outlet),
+                      eq(
+                        zoneWaiterAssignments.userId,
+                        filters.assignedWaiterId,
+                      ),
+                    ),
+                  ),
+              )
+            : undefined,
         ),
       )
       .orderBy(asc(floorZones.sortOrder), asc(floorZones.id));
@@ -267,9 +293,21 @@ export async function listFloorBoard(
         and(
           eq(tables.tenantId, context.tenant.tenantId),
           eq(tables.outletId, outlet),
+          inArray(
+            tables.zoneId,
+            zoneRows.map((row) => row.id),
+          ),
         ),
       )
       .orderBy(asc(tables.code), asc(tables.id));
+    if (tableRows.length === 0)
+      return floorBoardSchema.parse({
+        outletId: outlet,
+        zones: zoneRows.map(toZone),
+        tables: [],
+        generatedAt: toIsoDateTime(now),
+      });
+    const tableIds = tableRows.map((row) => row.id);
     const sessionRows = await tx
       .select()
       .from(tableSessions)
@@ -277,11 +315,43 @@ export async function listFloorBoard(
         and(
           eq(tableSessions.tenantId, context.tenant.tenantId),
           eq(tableSessions.outletId, outlet),
+          inArray(tableSessions.tableId, tableIds),
           ACTIVE_SESSION_STATUSES,
         ),
       );
     const sessionByTable = new Map(
       sessionRows.map((row) => [row.tableId, row]),
+    );
+    const settlements = new Map<
+      string,
+      Awaited<ReturnType<typeof qrOrderSettlementLookup>>
+    >();
+    for (const session of sessionRows)
+      settlements.set(
+        session.id,
+        await qrOrderSettlementLookup({
+          tx,
+          tenantId: context.tenant.tenantId,
+          sessionId: session.id,
+        }),
+      );
+    const openCalls = await tx
+      .select({
+        tableId: serviceRequests.tableId,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(serviceRequests)
+      .where(
+        and(
+          eq(serviceRequests.tenantId, context.tenant.tenantId),
+          eq(serviceRequests.outletId, outlet),
+          inArray(serviceRequests.tableId, tableIds),
+          inArray(serviceRequests.status, ["pending", "acknowledged"]),
+        ),
+      )
+      .groupBy(serviceRequests.tableId);
+    const openCallCountByTable = new Map(
+      openCalls.map((row) => [row.tableId, row.count]),
     );
     const linkGroups = await linkGroupsForTables(
       tx,
@@ -293,6 +363,11 @@ export async function listFloorBoard(
       zones: zoneRows.map(toZone),
       tables: tableRows.map((row) => {
         const session = sessionByTable.get(row.id);
+        const settlement = session ? settlements.get(session.id) : undefined;
+        const linkGroup = linkGroups.get(row.id);
+        const visibleMembers = linkGroup?.tableIds.filter((id) =>
+          tableIds.includes(id),
+        );
         return tableLiveStatusSchema.parse({
           table: toTable(row),
           session:
@@ -305,11 +380,16 @@ export async function listFloorBoard(
                   paymentMode: session.paymentMode,
                   openedAt: session.openedAt.toISOString(),
                   lastActivityAt: session.lastActivityAt.toISOString(),
-                  billTotalIdr: 0,
+                  billTotalIdr: settlement?.billTotalIdr ?? 0,
                 }),
-          openServiceRequestCount: 0,
-          outstandingIdr: 0,
-          linkGroup: linkGroups.get(row.id) ?? null,
+          openServiceRequestCount: openCallCountByTable.get(row.id) ?? 0,
+          outstandingIdr: settlement
+            ? Math.max(0, settlement.billTotalIdr - settlement.paidIdr)
+            : 0,
+          linkGroup:
+            linkGroup && visibleMembers && visibleMembers.length >= 2
+              ? { id: linkGroup.id, tableIds: visibleMembers }
+              : null,
         });
       }),
       generatedAt: toIsoDateTime(now),

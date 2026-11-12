@@ -72,10 +72,12 @@ import {
 } from "./inventory-ops.shared.ts";
 import {
   loadPurchaseOrder,
+  requireAnyPurchasingPermission,
   translatePurchasingError,
   type PurchaseOrderRow,
 } from "./purchasing-flow.shared.ts";
 import { renderPurchaseOrderPdf } from "./purchasing-po-pdf.ts";
+import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 
 export type SendPurchaseOrderInput = z.infer<
   typeof sendPurchaseOrderInputSchema
@@ -776,81 +778,120 @@ export async function getPublicPurchaseOrderPdf(
       );
     if (!row || row.status === "cancelled" || row.status === "closed")
       throw documentNotFound();
-    const order = await loadPurchaseOrder(tx, row);
-    const [supplier] = await tx
-      .select({
-        name: suppliers.name,
-        address: suppliers.address,
-        phone: suppliers.phone,
-      })
-      .from(suppliers)
-      .where(
-        and(eq(suppliers.tenantId, tenantId), eq(suppliers.id, row.supplierId)),
-      );
-    const [tenant] = await tx
-      .select({ name: tenants.name })
-      .from(tenants)
-      .where(eq(tenants.id, tenantId));
-    const [outlet] = await tx
-      .select({ name: outlets.name })
-      .from(outlets)
-      .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, row.outletId)));
-    if (!supplier || !tenant || !outlet) throw documentNotFound();
-    const lineRows = await tx
-      .select({
-        line: purchaseOrderLines,
-        itemName: inventoryItems.name,
-        uomCode: uoms.code,
-      })
-      .from(purchaseOrderLines)
-      .innerJoin(
-        inventoryItems,
-        and(
-          eq(inventoryItems.tenantId, purchaseOrderLines.tenantId),
-          eq(inventoryItems.id, purchaseOrderLines.inventoryItemId),
-        ),
-      )
-      .innerJoin(
-        uoms,
-        and(
-          eq(uoms.tenantId, purchaseOrderLines.tenantId),
-          eq(uoms.id, purchaseOrderLines.uomId),
-        ),
-      )
-      .where(
-        and(
-          eq(purchaseOrderLines.tenantId, tenantId),
-          eq(purchaseOrderLines.purchaseOrderId, row.id),
-        ),
-      )
-      .orderBy(asc(purchaseOrderLines.lineNo), sql`${purchaseOrderLines.id}`);
-    const lines: (PurchaseOrderLine & { itemName: string; uomCode: string })[] =
-      lineRows.map(({ line, itemName, uomCode }) => ({
-        ...purchaseOrderLineSchema.parse({
-          id: line.id,
-          tenantId: line.tenantId,
-          purchaseOrderId: line.purchaseOrderId,
-          inventoryItemId: line.inventoryItemId,
-          quantity: line.quantity,
-          uomId: line.uomId,
-          unitPriceIdr: line.unitPriceIdr,
-          lineTotalIdr: line.lineTotalIdr,
-        }),
-        itemName,
-        uomCode,
-      }));
-    const pdf = await renderPurchaseOrderPdf({
-      tenantName: tenant.name,
-      outletName: outlet.name,
-      supplier,
-      order,
-      lines,
-      // Stable per order: a re-send renders the same bytes.
-      issuedAt: row.sentAt ?? row.createdAt,
-    });
-    return {
-      pdf,
-      filename: `${order.number.replace(/[^A-Za-z0-9_-]+/g, "-")}.pdf`,
-    };
+    return renderPurchaseOrderFile(tx, context, row);
   });
+}
+
+/** A preview is the same server PDF as sharing, without changing delivery state. */
+export async function getPurchaseOrderPdfPreview(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  purchaseOrderId: string,
+): Promise<PurchaseOrderPdfFile> {
+  assertTrustedScopedContext(context);
+  return withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(purchaseOrders)
+      .where(
+        and(
+          eq(purchaseOrders.tenantId, context.tenant.tenantId),
+          eq(purchaseOrders.id, purchaseOrderId),
+        ),
+      )
+      // Draft edits lock the header FOR UPDATE before replacing its lines.
+      // Hold that version stable until all PDF queries finish, so line values
+      // and header totals always come from the same committed draft.
+      .for("share");
+    if (!row) throw documentNotFound();
+    requireAnyPurchasingPermission(
+      await accessSnapshotInTransaction(tx, context, actorUserId, new Date()),
+      row.outletId,
+    );
+    return renderPurchaseOrderFile(tx, context, row);
+  });
+}
+
+async function renderPurchaseOrderFile(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: PurchaseOrderRow,
+): Promise<PurchaseOrderPdfFile> {
+  const tenantId = context.tenant.tenantId;
+  const order = await loadPurchaseOrder(tx, row);
+  const [supplier] = await tx
+    .select({
+      name: suppliers.name,
+      address: suppliers.address,
+      phone: suppliers.phone,
+    })
+    .from(suppliers)
+    .where(
+      and(eq(suppliers.tenantId, tenantId), eq(suppliers.id, row.supplierId)),
+    );
+  const [tenant] = await tx
+    .select({ name: tenants.name })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
+  const [outlet] = await tx
+    .select({ name: outlets.name })
+    .from(outlets)
+    .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, row.outletId)));
+  if (!supplier || !tenant || !outlet) throw documentNotFound();
+  const lineRows = await tx
+    .select({
+      line: purchaseOrderLines,
+      itemName: inventoryItems.name,
+      uomCode: uoms.code,
+    })
+    .from(purchaseOrderLines)
+    .innerJoin(
+      inventoryItems,
+      and(
+        eq(inventoryItems.tenantId, purchaseOrderLines.tenantId),
+        eq(inventoryItems.id, purchaseOrderLines.inventoryItemId),
+      ),
+    )
+    .innerJoin(
+      uoms,
+      and(
+        eq(uoms.tenantId, purchaseOrderLines.tenantId),
+        eq(uoms.id, purchaseOrderLines.uomId),
+      ),
+    )
+    .where(
+      and(
+        eq(purchaseOrderLines.tenantId, tenantId),
+        eq(purchaseOrderLines.purchaseOrderId, row.id),
+      ),
+    )
+    .orderBy(asc(purchaseOrderLines.lineNo), sql`${purchaseOrderLines.id}`);
+  const lines: (PurchaseOrderLine & { itemName: string; uomCode: string })[] =
+    lineRows.map(({ line, itemName, uomCode }) => ({
+      ...purchaseOrderLineSchema.parse({
+        id: line.id,
+        tenantId: line.tenantId,
+        purchaseOrderId: line.purchaseOrderId,
+        inventoryItemId: line.inventoryItemId,
+        quantity: line.quantity,
+        uomId: line.uomId,
+        unitPriceIdr: line.unitPriceIdr,
+        lineTotalIdr: line.lineTotalIdr,
+      }),
+      itemName,
+      uomCode,
+    }));
+  const pdf = await renderPurchaseOrderPdf({
+    tenantName: tenant.name,
+    outletName: outlet.name,
+    supplier,
+    order,
+    lines,
+    // Stable per order: a re-send renders the same bytes.
+    issuedAt: row.sentAt ?? row.createdAt,
+  });
+  return {
+    pdf,
+    filename: `${order.number.replace(/[^A-Za-z0-9_-]+/g, "-")}.pdf`,
+  };
 }

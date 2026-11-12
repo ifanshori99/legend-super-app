@@ -32,6 +32,8 @@ import { errorHandler, notFound } from "./middleware/error-handler";
 import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
 import { createStorageApiRouter } from "./routes/storage-api.routes";
+import { createPosCatalogRouter } from "./routes/pos-order.routes.ts";
+import { createMenuMediaUrls } from "./services/menu-media.service.ts";
 import {
   consoleLikeLog,
   createStorageRuntimeFromEnv,
@@ -45,6 +47,7 @@ import { createReportsRouter } from "./routes/reports.routes";
 import { setAuditWriter } from "./services/audit-writer";
 import { coreAuditWriter } from "./services/core-audit-writer";
 import { orderPromoPort } from "./services/order-promo";
+import { withPromoFreshness } from "./edge/promo-gate.ts";
 import { depositCreditForSession } from "./services/reservation-lifecycle";
 import {
   setQrOrderDepositCreditLookup,
@@ -87,7 +90,7 @@ import { installKdsServingEstimate } from "./services/kds-estimate.service.ts";
 // Tests may swap the writer; without one the port fails closed with a 503.
 setAuditWriter(coreAuditWriter);
 // WS-03 QR order wiring (legend-e2x/souz): promo engine port + ORD-10 settlement.
-setQrOrderPromoPort(orderPromoPort);
+setQrOrderPromoPort(withPromoFreshness(orderPromoPort));
 setQrOrderDepositCreditLookup(depositCreditForSession);
 // WS-04 order pacing (legend-gyc, KDS-05): queue-aware serving estimate.
 installKdsServingEstimate();
@@ -97,7 +100,7 @@ setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // numbering (legend-93a) is wired below; cashier shift (legend-6c0) and EDC
 // (legend-dahk) are wired below too. Points tenders keep their fail-closed
 // default (pos-order-ports.ts) until that bead lands.
-setPosOrderPromoPort(orderPromoPort);
+setPosOrderPromoPort(withPromoFreshness(orderPromoPort));
 setPosReceiptPort(createPosReceiptPort());
 // POS-06 (legend-ain0): the real gap lookup, so Tutup Hari refuses with
 // RECEIPT_SEQUENCE_GAP and the shift report lists the missing numbers. Before
@@ -124,6 +127,10 @@ const PHONE_LIKE_VALUE = /\d{6,}/;
 const ISO_DATE_VALUE = /^\d{4}-\d{2}-\d{2}(?:[T ][\d:.+Z-]*)?$/;
 const PUBLIC_PO_TOKEN_PATH = /^(\/api\/public\/purchase-orders\/)[^/]+/i;
 const ABSOLUTE_FORM_URL = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i;
+// A platform account search term can be a person's name or email, including
+// requests refused before authorization. Keep its paging metadata, never q.
+const PLATFORM_ACCOUNT_SEARCH_PATH =
+  /^\/api\/platform\/tenants\/[^/]+\/accounts\/?$/i;
 
 // The e-receipt token in the path is a bearer credential too (bead legend-93a).
 const PUBLIC_RECEIPT_PATH = /^(\/api\/public\/receipts\/)[^/?]+(\/pdf)?/i;
@@ -149,6 +156,9 @@ function safeUrl(url: string) {
   // A malformed percent-encoding makes the router reject the request (400);
   // the path may carry a credential in a param, so never log any of it.
   if (isMalformedPath(rawPath)) return "[malformed-url]";
+  const accountSearch = PLATFORM_ACCOUNT_SEARCH_PATH.test(
+    decodeURIComponent(rawPath),
+  );
   // The purchase order share token is a path segment: bearer credential.
   const path = rawPath
     .replace(PUBLIC_PO_TOKEN_PATH, "$1[redacted]")
@@ -158,6 +168,7 @@ function safeUrl(url: string) {
   for (const [key, value] of [...params.entries()])
     if (
       SENSITIVE_QUERY.test(key) ||
+      (accountSearch && key.toLowerCase() === "q") ||
       (!ISO_DATE_VALUE.test(value) &&
         PHONE_LIKE_VALUE.test(value.replace(/[\s+-]/g, "")))
     )
@@ -450,6 +461,12 @@ export function createApp({
       database: db,
       messaging: messagingProvider,
     }),
+  );
+  app.use(
+    "/api/outlets/:outletId/pos/catalog",
+    createPosCatalogRouter(
+      createMenuMediaUrls(storageRuntime?.storage ?? null),
+    ),
   );
   app.use("/api", apiRouter);
 

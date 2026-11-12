@@ -44,9 +44,11 @@ import {
   pairCustomerDisplayInputSchema,
   posApprovalPolicySchema,
   posCashMovementSchema,
+  posCatalogSchema,
   posDiscountIdSchema,
   posDiscountKindSchema,
   posDiscountSourceSchema,
+  posNextCallNumberSchema,
   posOrderActionSchema,
   posOrderDetailSchema,
   posOrderEventSchema,
@@ -120,9 +122,31 @@ const orderLineInputSchema = z.strictObject({
   note: z.string().max(200).nullable().optional(),
   /** F8 hold & fire: the course this line belongs to. */
   course: z.string().min(1).max(20).nullable().optional(),
+  /** Per-line hold overrides the order-wide holdItems fallback. */
+  hold: z.boolean().optional(),
 });
 
 // ---- Orders ---------------------------------------------------------------
+
+/** The effective outlet/channel catalog, including visible unavailable items. */
+export const getPosCatalog = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/catalog",
+  params: outletParams,
+  query: z.strictObject({
+    channel: orderChannelSchema.default("pos"),
+    serviceType: serviceTypeSchema.default("dine_in"),
+  }),
+  response: dataResponseSchema(posCatalogSchema),
+});
+
+/** Read-only hint: concurrent creates can assign a different final number. */
+export const getNextPosCallNumber = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/next-call-number",
+  params: outletParams,
+  response: dataResponseSchema(posNextCallNumberSchema),
+});
 
 export const listPosOrders = defineEndpoint({
   method: "GET",
@@ -150,7 +174,7 @@ export const getPosOrder = defineEndpoint({
  * Create a POS/captain order. The client sends menu ids, quantities,
  * modifiers and notes only: prices, totals, tax and service charge are computed
  * by the API from the channel price list and the tenant's tax configuration
- * (ORD-03). `holdItems` starts every line held for F8 hold & fire.
+ * (ORD-03). `holdItems` supplies the fallback when a line omits `hold`.
  */
 export const createPosOrder = defineEndpoint({
   method: "POST",

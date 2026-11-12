@@ -18,7 +18,9 @@ import {
   outletRefSchema,
   isoDateTimeSchema,
   businessDateSchema,
+  uuidSchema,
 } from "../core/index.ts";
+import { taxSchemeSchema } from "./payroll/components.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import {
   employeeIdSchema,
@@ -49,6 +51,9 @@ import {
 import {
   employeeSchema,
   employeeProfileSchema,
+  employeeShape,
+  employeeDocumentTypeSchema,
+  employmentTypeSchema,
   employeePiiSchema,
   employeeDocumentSchema,
   employmentContractSchema,
@@ -161,6 +166,37 @@ export const listEmployees = defineEndpoint({
   response: cursorPageSchema(employeeSchema),
 });
 
+/** HR-04: seat quota and the target outlet are checked by the server. */
+export const createEmployee = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/employees",
+  body: clientInputSchema({
+    userId: employeeShape.userId,
+    legalEntityId: employeeShape.legalEntityId,
+    employeeNo: employeeShape.employeeNo,
+    fullName: employeeShape.fullName,
+    positionId: employeeShape.positionId,
+    orgUnitId: employeeShape.orgUnitId,
+    managerId: employeeShape.managerId,
+    homeOutletId: employeeShape.homeOutletId,
+    employmentType: employeeShape.employmentType,
+    joinDate: employeeShape.joinDate,
+    endDate: employeeShape.endDate,
+    ptkpStatus: employeeShape.ptkpStatus,
+    status: z.enum(["onboarding", "active"]),
+    pii: updateEmployeePiiInputSchema.optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }).superRefine((employee, ctx) => {
+    if (employee.endDate !== null && employee.endDate < employee.joinDate)
+      ctx.addIssue({
+        code: "custom",
+        path: ["endDate"],
+        message: "End date cannot precede join date",
+      });
+  }),
+  response: dataResponseSchema(employeeSchema),
+});
+
 export const getEmployee = defineEndpoint({
   method: "GET",
   path: "/api/hris/employees/:employeeId",
@@ -203,11 +239,36 @@ export const listOrgUnits = defineEndpoint({
   response: cursorPageSchema(orgUnitSchema),
 });
 
+export const createOrgUnit = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/org-units",
+  body: clientInputSchema({
+    parentId: orgUnitSchema.shape.parentId,
+    code: orgUnitSchema.shape.code,
+    name: orgUnitSchema.shape.name,
+    isActive: z.boolean().optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(orgUnitSchema),
+});
+
 export const listPositionGrades = defineEndpoint({
   method: "GET",
   path: "/api/hris/position-grades",
   query: cursorPageQuerySchema,
   response: cursorPageSchema(positionGradeSchema),
+});
+
+export const createPositionGrade = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/position-grades",
+  body: clientInputSchema({
+    code: positionGradeSchema.shape.code,
+    name: positionGradeSchema.shape.name,
+    level: positionGradeSchema.shape.level,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(positionGradeSchema),
 });
 
 export const listPositions = defineEndpoint({
@@ -217,6 +278,76 @@ export const listPositions = defineEndpoint({
     orgUnitId: orgUnitIdSchema.optional(),
   }),
   response: cursorPageSchema(positionSchema),
+});
+
+export const createPosition = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/positions",
+  body: clientInputSchema({
+    name: positionSchema.shape.name,
+    gradeId: positionSchema.shape.gradeId,
+    orgUnitId: positionSchema.shape.orgUnitId,
+    serviceChargePoints: positionSchema.shape.serviceChargePoints,
+    isActive: z.boolean().optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(positionSchema),
+});
+
+export const createEmploymentContract = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/employment-contracts",
+  body: clientInputSchema({
+    employeeId: employeeIdSchema,
+    type: employmentTypeSchema,
+    taxScheme: taxSchemeSchema,
+    startDate: businessDateSchema,
+    endDate: businessDateSchema.nullable(),
+    renewedFromId: employmentContractIdSchema.nullable(),
+    salarySnapshotIdr: z
+      .number()
+      .int()
+      .min(0)
+      .max(Number.MAX_SAFE_INTEGER)
+      .nullable(),
+    fileObjectId: uuidSchema.nullable(),
+    reminderDaysBefore: z.number().int().min(1).max(180),
+    status: employmentContractStatusSchema.optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }).superRefine((contract, ctx) => {
+    if (contract.endDate !== null && contract.endDate < contract.startDate)
+      ctx.addIssue({
+        code: "custom",
+        path: ["endDate"],
+        message: "Contract end date cannot precede its start date",
+      });
+    if (contract.type === "pkwt" && contract.endDate === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["endDate"],
+        message: "A PKWT contract requires an end date",
+      });
+    if (contract.type === "pkwtt" && contract.endDate !== null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["endDate"],
+        message: "A PKWTT contract is permanent and has no end date",
+      });
+  }),
+  response: dataResponseSchema(employmentContractSchema),
+});
+
+export const createEmployeeDocument = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/employees/:employeeId/documents",
+  params: employeeIdParams,
+  body: clientInputSchema({
+    type: employeeDocumentTypeSchema,
+    storageObjectId: uuidSchema,
+    expiresOn: businessDateSchema.nullable(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(employeeDocumentSchema),
 });
 
 export const listEmploymentContracts = defineEndpoint({
@@ -553,6 +684,22 @@ export const bindAttendanceDevice = defineEndpoint({
   response: dataResponseSchema(attendanceDeviceSchema),
 });
 
+/**
+ * A supervisor or HR binds the phone for an employee in their reach
+ * (legend-bf20): same rules as the employee's own bind (one active device).
+ */
+export const bindAttendanceDeviceBySupervisor = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/attendance/devices/bind-by-supervisor",
+  body: clientInputSchema({
+    employeeId: employeeIdSchema,
+    deviceIdHash: z.string().regex(/^[0-9a-f]{64}$/),
+    label: z.string().min(1).max(100),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(attendanceDeviceSchema),
+});
+
 export const listAttendanceDevices = defineEndpoint({
   method: "GET",
   path: "/api/hris/attendance/devices",
@@ -612,6 +759,8 @@ export const listAttendanceReviewQueue = defineEndpoint({
     reviewStatus: attendanceReviewStatusSchema.optional(),
     /** Only logs carrying this flag reason (server-side; scope unchanged). */
     flagReason: attendanceStoredFlagReasonSchema.optional(),
+    /** Only this log (public ULID); scope unchanged. Any review status unless given. */
+    logId: attendanceLogIdSchema.optional(),
   }),
   response: cursorPageSchema(attendanceReviewItemSchema),
 });
@@ -868,9 +1017,57 @@ export const decideShiftSwapRequest = defineEndpoint({
   body: clientInputSchema({
     action: z.enum(["approve", "approve_with_override", "reject"]),
     overrideReason: z.string().min(1).max(500).nullable(),
+    rejectionReason: z.string().trim().min(1).max(500).nullable().optional(),
     idempotencyKey: idempotencyKeySchema,
+  }).superRefine((body, ctx) => {
+    if (body.action === "reject" && !body.rejectionReason)
+      ctx.addIssue({
+        code: "custom",
+        path: ["rejectionReason"],
+        message: "Rejection reason is required",
+      });
+    if (body.action !== "reject" && body.rejectionReason)
+      ctx.addIssue({
+        code: "custom",
+        path: ["rejectionReason"],
+        message: "Only rejection has a rejection reason",
+      });
   }),
   response: dataResponseSchema(shiftSwapRequestSchema),
+});
+
+export const respondShiftSwapRequest = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/shift-swaps/:swapId/peer-response",
+  params: z.strictObject({ swapId: shiftSwapRequestIdSchema }),
+  body: clientInputSchema({
+    action: z.enum(["accept", "reject"]),
+    rejectionReason: z.string().trim().min(1).max(500).nullable().optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }).superRefine((body, ctx) => {
+    if (body.action === "reject" && !body.rejectionReason)
+      ctx.addIssue({
+        code: "custom",
+        path: ["rejectionReason"],
+        message: "Rejection reason is required",
+      });
+    if (body.action === "accept" && body.rejectionReason)
+      ctx.addIssue({
+        code: "custom",
+        path: ["rejectionReason"],
+        message: "Only rejection has a rejection reason",
+      });
+  }),
+  response: dataResponseSchema(shiftSwapRequestSchema),
+});
+
+export const listShiftSwapCandidates = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/shift-swaps/candidates",
+  query: z.strictObject({ outletId: outletIdSchema }),
+  response: z.strictObject({
+    data: z.array(z.strictObject({ id: employeeIdSchema, name: z.string() })),
+  }),
 });
 
 // ---- Leave, balances, holidays, overtime --------------------------------
@@ -906,7 +1103,15 @@ export const decideLeaveRequest = defineEndpoint({
   params: z.strictObject({ leaveRequestId: leaveRequestIdSchema }),
   body: clientInputSchema({
     action: z.enum(["approve", "reject", "cancel"]),
+    rejectionReason: z.string().trim().min(3).max(500).optional(),
     idempotencyKey: idempotencyKeySchema,
+  }).superRefine((body, ctx) => {
+    if (body.action === "reject" && !body.rejectionReason)
+      ctx.addIssue({
+        code: "custom",
+        path: ["rejectionReason"],
+        message: "A rejection reason is required",
+      });
   }),
   response: dataResponseSchema(leaveRequestSchema),
 });
@@ -1064,7 +1269,15 @@ export const decideOvertimeRequest = defineEndpoint({
   params: z.strictObject({ overtimeRequestId: overtimeRequestIdSchema }),
   body: clientInputSchema({
     action: z.enum(["approve", "reject", "cancel"]),
+    rejectionReason: z.string().trim().min(3).max(500).optional(),
     idempotencyKey: idempotencyKeySchema,
+  }).superRefine((body, ctx) => {
+    if (body.action === "reject" && !body.rejectionReason)
+      ctx.addIssue({
+        code: "custom",
+        path: ["rejectionReason"],
+        message: "A rejection reason is required",
+      });
   }),
   response: dataResponseSchema(overtimeRequestSchema),
 });
@@ -1240,6 +1453,12 @@ export const markAnnouncementRead = defineEndpoint({
 
 /** Every endpoint of the domain, for route registration and client generation. */
 export const hrisEndpoints = [
+  createEmployee,
+  createOrgUnit,
+  createPositionGrade,
+  createPosition,
+  createEmploymentContract,
+  createEmployeeDocument,
   listEmployees,
   getEmployee,
   getEmployeePii,
@@ -1289,6 +1508,8 @@ export const hrisEndpoints = [
   cancelShiftSwapRequest,
   createShiftSwapRequest,
   decideShiftSwapRequest,
+  respondShiftSwapRequest,
+  listShiftSwapCandidates,
   listLeaveRequests,
   createLeaveRequest,
   decideLeaveRequest,

@@ -12,6 +12,7 @@ import {
   z,
   clientInputSchema,
   cursorPageQuerySchema,
+  cursorPageMetaSchema,
   cursorPageSchema,
   dataResponseSchema,
   idempotencyKeySchema,
@@ -41,17 +42,47 @@ export type CloudLink = z.infer<typeof cloudLinkSchema>;
 
 /**
  * Freshness of the critical catalog streams on this edge (legend-10nex).
- * Sales are never blocked while stale: the cashier only sees `cashierWarning`.
+ * Founder Q57: a critical stream without a successful sync for over 24 hours
+ * holds sales (`salesGate.blocked`) until an owner allows them for a limited
+ * time. The cashier warning stays whatever the gate says.
  */
 export const catalogFreshnessSchema = z.strictObject({
   /** A critical stream failed since its last success. */
   stale: z.boolean(),
-  /** Stale over 30 minutes while the cloud answers (owner notified). */
+  /** A stale stream fails with a reachable cloud (owner notified). */
   ownerAlarm: z.boolean(),
   /** Cashier text, e.g. "katalog belum diperbarui sejak 08:15"; null when fresh. */
   cashierWarning: z.string().nullable(),
-  /** Always false: a stale catalog never blocks selling. */
-  salesBlocked: z.literal(false),
+  /** Same as `salesGate.blocked`. */
+  salesBlocked: z.boolean(),
+  /** Optional: an edge image older than the 24 h sales gate does not send it. */
+  salesGate: z
+    .strictObject({
+      /** Sales are held now (24 h rule hit and no active owner override). */
+      blocked: z.boolean(),
+      /** The 24 h rule hit, even when an owner override allows selling. */
+      stale24h: z.boolean(),
+      reason: z
+        .enum(["CATALOG_STALE_24H", "CLOCK_REGRESSED", "GATE_UNAVAILABLE"])
+        .nullable(),
+      /** Oldest last success (or tracking start) among the offending streams. */
+      staleSince: isoDateTimeSchema.nullable(),
+      staleStreams: z.array(z.string()),
+      /** Active owner override, if any (who and why stay in the audit log). */
+      override: z
+        .strictObject({
+          grantedAt: isoDateTimeSchema,
+          untilAt: isoDateTimeSchema,
+        })
+        .nullable(),
+      /**
+       * Promos and vouchers are off on this edge (their data is over 24 hours
+       * old or was never synced): sales go at the normal price. The owner
+       * override does not change this.
+       */
+      promoDisabled: z.boolean().optional(),
+    })
+    .optional(),
   streams: z.record(
     z.string(),
     z.strictObject({
@@ -167,11 +198,18 @@ export type DeviceListQuery = z.infer<typeof deviceListQuerySchema>;
  * Perangkat). The connectivity kit reads heartbeats to alert supervisors when
  * a printer or KDS stops reporting (EDG-05).
  */
+export const edgeDeviceListQuerySchema = deviceListQuerySchema.extend({
+  outletId: outletIdSchema.optional(),
+});
+
 export const listEdgeDevices = defineEndpoint({
   method: "GET",
   path: "/api/edge/devices",
-  query: deviceListQuerySchema,
-  response: cursorPageSchema(deviceSchema),
+  query: edgeDeviceListQuerySchema,
+  response: z.object({
+    data: z.array(deviceSchema),
+    meta: cursorPageMetaSchema.extend({ serverTime: isoDateTimeSchema }),
+  }),
 });
 
 export const deviceParams = z.strictObject({ deviceId: uuidSchema });
@@ -236,6 +274,9 @@ export const revokeDevice = defineEndpoint({
   }),
   response: dataResponseSchema(deviceSchema),
 });
+
+/** Shared name used by the edge device registry panel. */
+export const revokeEdgeDevice = revokeDevice;
 
 /**
  * Training mode is per device and sandboxed from reports (F5 Mode Latihan).

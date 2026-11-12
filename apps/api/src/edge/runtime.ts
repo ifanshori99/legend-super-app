@@ -22,11 +22,17 @@
 // Errors from the link are logged by name/code only: driver errors can carry
 // SQL parameters (event payloads), and the credential must never be logged.
 import type { IncomingMessage, Server } from "node:http";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { parseEdgeHardeningEnv } from "@starter/shared/env";
-import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
+import {
+  outletIdSchema,
+  uuidToUlid,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import type { ReceiptRunRefusalReport } from "@starter/shared/edge";
 import { db, pool } from "../db/index.ts";
@@ -94,17 +100,29 @@ import {
   saveEdgePeppers,
 } from "./staff-pin-pepper-store.ts";
 import { createPeopleSnapshotPuller } from "./people-snapshot-pull.ts";
+import { CATALOG_GATE_PERSIST_MS, startCatalogGate } from "./catalog-gate.ts";
+import { openCatalogAlarmQueue } from "./catalog-alarm-queue.ts";
+import { startPromoGate } from "./promo-gate-runtime.ts";
+import {
+  closeCatalogOverrides,
+  loadActiveCatalogOverride,
+  setCatalogOverrideClock,
+  setCatalogOverrideListener,
+} from "./catalog-override.ts";
 import {
   seedCatalogFreshness,
   startEdgeMasterSyncLoop,
 } from "./master-sync.ts";
 import {
+  CATALOG_CLOUD_OUTDATED_REASON,
   catalogStaleForHeartbeat,
-  createCatalogFreshness,
   type CatalogFreshnessTracker,
 } from "./catalog-freshness.ts";
 import { withTenant } from "../db/tenant.ts";
-import { notifyEdgeCatalogStale } from "../services/edge-sync-conflict-alert.ts";
+import {
+  notifyEdgeCatalogStale,
+  notifyOutletSupervisors,
+} from "../services/edge-sync-conflict-alert.ts";
 import { parseEdgeRuntimeConfig } from "./config.ts";
 import { createDbLinkStore } from "./db-link-store.ts";
 import {
@@ -115,6 +133,11 @@ import type { LinkScope } from "./link-peer.ts";
 import { LINK_CLOSE, type CatalogStale } from "./protocol.ts";
 import { recordUploaderRejection } from "./selfie-health.ts";
 import { startEdgeSelfieSweep } from "./selfie-retention.ts";
+import {
+  startEdgeAuditRetention,
+  resolveEdgeAuditRetentionUrl,
+  type EdgeAuditRetentionHandle,
+} from "./audit-retention.ts";
 import { createEdgeSelfieUploader } from "./selfie-uploader.ts";
 import { createEdgeLinkServer, type EdgeLinkIdentity } from "./link-server.ts";
 import { installWifiAgent, wifiEnforcement } from "./wifi/port.ts";
@@ -128,6 +151,50 @@ import {
 
 /** Episodes already alerted by this process; the notification tables dedupe too. */
 const catalogStaleAlerted = new Set<string>();
+
+export async function reportEdgeAuditRetentionStatus(
+  identity: { context: ScopedTenantContext; scope: LinkScope },
+  disabled: boolean,
+  now: Date = new Date(),
+): Promise<void> {
+  if (!disabled) return;
+  // The day comes from the cloud clock. A deterministic source event id lets
+  // notification_outbox dedupe heartbeat retries, concurrent requests and
+  // process restarts, with at most one owner alarm per node per UTC day.
+  const day = now.toISOString().slice(0, 10);
+  const hex = createHash("sha256")
+    .update(
+      `edge_audit_retention.disabled\0${identity.scope.edgeNodeId}\0${day}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  const id = uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+  await withTenant(db, identity.context, (tx) =>
+    notifyOutletSupervisors(
+      tx,
+      identity.context,
+      {
+        tenantId: identity.context.tenant.tenantId,
+        outletId: outletIdSchema.parse(identity.scope.outletId),
+        alsoOwners: true,
+        id,
+        eventName: "edge_audit_retention.disabled",
+        aggregateType: "edge_audit_retention",
+        aggregateId: uuidToUlid(identity.scope.edgeNodeId),
+        payload: {
+          edgeNodeId: identity.scope.edgeNodeId,
+          reason: "maintenance_database_url_missing",
+          day,
+        },
+        title: "Pembersihan audit edge belum aktif",
+        body: "Server lokal belum memiliki koneksi pemeliharaan audit. Penjualan tetap berjalan; minta teknisi mengatur MAINTENANCE_DATABASE_URL untuk database lokal.",
+      },
+      now,
+    ),
+  );
+}
 
 /**
  * legend-10nex: the edge says critical catalog streams are stale for over 30
@@ -698,6 +765,10 @@ export async function startEdgeRuntime(
     throw new EdgeBootError(
       "STAFF_PIN_PEPPER (the root pepper) must not be set on an edge node: remove it from the edge environment; the cloud delivers the outlet pepper over the sync.",
     );
+  // Validate the configured URL before any database work, component or timer
+  // starts. A missing URL skips only the purge; the heartbeat alarms owners.
+  // Connection credentials/role are probed later with runtime cleanup on error.
+  const auditRetentionDisabled = resolveEdgeAuditRetentionUrl(source) === null;
   await assertEdgeSchemaReady();
   // legend-s4r6: cloud -> edge appliers, before the link can deliver.
   registerQrOrderEdgeApplier();
@@ -740,6 +811,63 @@ export async function startEdgeRuntime(
       ).entries(),
     ].map(([version, pepper]) => ({ version, pepper })),
   );
+  const reportCatalogAlarmError = (error: unknown): void => {
+    try {
+      logger.warn(safeError(error), "Edge catalog alarm persistence failed");
+    } catch {
+      // Reporting a disk failure must not turn it into a sales outage.
+    }
+  };
+  // 533 A2: the cloud's HTTP Date (link upgrade or catalog pull) proves the
+  // device clock after an offline restart. The link can come up before the
+  // catalog gate exists, so keep the last server time with a monotonic stamp and
+  // apply it later.
+  let catalogClock: {
+    now(): Date;
+    proveWithServerTime(serverTime: Date): void;
+    elapsedTimeUnproven(): boolean;
+  } | null = null;
+  // Clock for the alarm queue only. It is set as soon as the gate builds the
+  // trusted clock (before the boot alarm), while `catalogClock` stays null until
+  // the freshness tracker exists, so applyServerTime keeps its old timing.
+  let queueClock: { now(): Date } | null = null;
+  // Wall time of this boot, taken before the gate: alarms of this boot have a
+  // staleSince at or after it, alarms of earlier boots are older.
+  const bootAt = new Date();
+  const catalogAlarmQueue = await openCatalogAlarmQueue({
+    // 533 A5: its own state directory, not the selfie store.
+    directory: join(env.EDGE_STATE_DIR, "catalog-alarms"),
+    // Alarms queued by the previous build are imported once from here.
+    legacyDirectory: join(env.EDGE_SELFIE_DIR, "catalog-alarms"),
+    edgeNodeId: local.scope.edgeNodeId,
+    // 533b: the 7 day expiry runs on the trusted clock once it exists, so a
+    // wall clock set forward cannot age an alarm out.
+    now: () => (queueClock ? queueClock.now() : new Date()),
+    onError: reportCatalogAlarmError,
+  });
+  let lastServerTime: { serverTime: Date; receivedMono: number } | null = null;
+  const applyServerTime = (): void => {
+    if (!catalogClock || !lastServerTime) return;
+    const wasUnproven = catalogClock.elapsedTimeUnproven();
+    // Age the stamp by the monotonic time since it was received.
+    catalogClock.proveWithServerTime(
+      new Date(
+        lastServerTime.serverTime.getTime() +
+          (performance.now() - lastServerTime.receivedMono),
+      ),
+    );
+    if (!wasUnproven || catalogClock.elapsedTimeUnproven()) return;
+    // Proven: the unproven-time state and this boot's queued owner alarms are
+    // moot. Alarms of earlier boots stay: the owner may not have received them.
+    catalogFreshness?.clockProven();
+    void catalogAlarmQueue
+      .clearReason("CLOCK_ELAPSED_UNPROVEN", bootAt)
+      .catch(reportCatalogAlarmError);
+  };
+  const recordServerTime = (serverTime: Date): void => {
+    lastServerTime = { serverTime, receivedMono: performance.now() };
+    applyServerTime();
+  };
   const client = createEdgeLinkClient({
     url: config.cloudUrl,
     credential: config.credential,
@@ -763,12 +891,23 @@ export async function startEdgeRuntime(
         );
     },
     onError: (error) => logger.warn(safeError(error), "Edge link error"),
+    onServerTime: recordServerTime,
     // legend-10nex: stale prices/product status reach the owner through the
     // cloud, which only hears the edge while this link is up.
-    catalogStale: () =>
-      catalogFreshness
-        ? catalogStaleForHeartbeat(catalogFreshness.snapshot())
-        : [],
+    catalogStale: () => {
+      const snapshot = catalogFreshness?.snapshot();
+      // Older clouds reject this heartbeat field: preserve the queue until
+      // a compatible cloud is available, just like live freshness alarms.
+      if (
+        !snapshot ||
+        Object.values(snapshot.streams).some(
+          (stream) => stream.failureReason === CATALOG_CLOUD_OUTDATED_REASON,
+        )
+      )
+        return catalogAlarmQueue.heartbeat(null);
+      return catalogAlarmQueue.heartbeat(catalogStaleForHeartbeat(snapshot));
+    },
+    auditRetentionDisabled: () => auditRetentionDisabled,
     // A protocol refusal (1008) carries a fixed reason from the link code, no
     // payload; it tells the operator why the link keeps dropping (legend-a9iby:
     // a restored or cloned database). See docs/deployment.md, item 5.
@@ -994,30 +1133,111 @@ export async function startEdgeRuntime(
   // stations, inventory items); one catalog-only run starts at boot without
   // blocking it. A failure is logged by class only and the loop keeps its
   // schedule.
-  // legend-10nex: prices and product status stale for 30 minutes while the
-  // cloud answers (a purely offline edge never alarms). Selling is never
-  // blocked; the cashier only sees the warning on /api/edge/status. The owner
-  // is notified by the cloud: the link heartbeat carries the stale streams
-  // (`catalogStale`), a local notification would never reach the cloud.
-  const freshness = createCatalogFreshness({
-    onOwnerAlarm: (alarm) =>
+  // legend-10nex: prices and product status. While a critical stream failed
+  // since its last success the cashier sees the warning on /api/edge/status;
+  // a reachable-cloud failure that lasts alarms the owner through the cloud
+  // (the link heartbeat carries the stale streams as `catalogStale`, a local
+  // notification would never reach the cloud). Founder Q57: no successful
+  // sync of a critical stream for over 24 hours holds sales until an owner
+  // allows them (edge/sales-gate.ts). Ages use a trusted clock that a wall
+  // clock set backwards cannot shrink, persisted across restarts.
+  const catalogGate = await startCatalogGate({
+    context: local.context,
+    scope: {
+      tenantId: local.scope.tenantId,
+      outletId: local.scope.outletId,
+      edgeNodeId: local.scope.edgeNodeId,
+    },
+    overrides: {
+      load: (now) =>
+        loadActiveCatalogOverride(
+          { context: local.context, outletId: local.scope.outletId },
+          { edgeNodeId: local.scope.edgeNodeId, now },
+        ),
+      close: async (now, reason, onlyId) => {
+        await closeCatalogOverrides(
+          { context: local.context, outletId: local.scope.outletId },
+          { edgeNodeId: local.scope.edgeNodeId, now, reason, onlyId },
+        );
+      },
+    },
+    onOwnerAlarm: async (alarm) => {
       logger.warn(
         { streams: alarm.streams.map((entry) => entry.stream) },
-        "Edge catalog is stale while the cloud is reachable",
+        "Edge catalog freshness needs owner attention",
+      );
+      const unproven = alarm.streams.filter(
+        (entry) => entry.reason === "CLOCK_ELAPSED_UNPROVEN",
+      );
+      if (unproven.length)
+        await catalogAlarmQueue
+          .enqueue(
+            unproven.map((entry) => ({
+              stream: entry.stream,
+              staleSince: entry.staleSince.toISOString(),
+              reason: entry.reason,
+            })),
+          )
+          .catch((error: unknown) => {
+            reportCatalogAlarmError(error);
+            throw error;
+          });
+    },
+    // A restart must not hide a stale catalog: start from the checkpoint's
+    // last success (none on a new edge). A read failure leaves the tracker
+    // unseeded; unseeded streams age from the persisted tracking start.
+    seed: (tracker) =>
+      seedCatalogFreshness(tracker, local.context, local.scope.edgeNodeId),
+    // Before seed and the boot alarm: the alarm queue stamps enqueuedAt with
+    // the trusted clock, never a raw wall clock that may be dead (RTC 1970).
+    onClock: (clock) => {
+      queueClock = clock;
+    },
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge catalog sales gate step failed"),
+    onClockRegressed: ({ wallNow, highWater }) =>
+      logger.warn(
+        {
+          wallNow: wallNow.toISOString(),
+          highWater: highWater.toISOString(),
+        },
+        "Edge wall clock is behind the saved high water; sales are held (CLOCK_REGRESSED) until it catches up or an owner allows them",
       ),
   });
+  // Freshness evaluates its boot alarm synchronously; await its disk write
+  // before startup completes so an immediate restart cannot lose the alarm.
+  await catalogAlarmQueue.flush().catch(reportCatalogAlarmError);
+  // A failed write stays dirty even if no second alarm is emitted; retry in
+  // the background without holding Q62 sales or waiting for a reconnect.
+  const catalogAlarmRetry = setInterval(
+    () => void catalogAlarmQueue.flush().catch(reportCatalogAlarmError),
+    CATALOG_GATE_PERSIST_MS,
+  );
+  catalogAlarmRetry.unref();
+  const freshness = catalogGate.freshness;
   catalogFreshness = freshness;
-  // A restart must not hide a stale catalog: start from the checkpoint's last
-  // success (none on a new edge). A read failure leaves the tracker unseeded.
-  try {
-    await seedCatalogFreshness(
-      freshness,
-      local.context,
-      local.scope.edgeNodeId,
-    );
-  } catch (error) {
-    logger.warn(safeError(error), "Edge catalog freshness seed failed");
-  }
+  catalogClock = catalogGate.clock;
+  // The link may have connected before the gate existed.
+  applyServerTime();
+  // The owner grants an override on the edge API: the provider must see it now.
+  setCatalogOverrideClock(() => catalogGate.clock.now());
+  setCatalogOverrideListener((change) =>
+    catalogGate.applyOverrideChange(
+      change.kind === "granted" ? change.override : null,
+    ),
+  );
+  // A grant committed between the gate's boot load and the listener above
+  // would be missed: load the active override once more.
+  await catalogGate.refreshOverride();
+  // Promos and vouchers switch off (sales go on at the normal price) when
+  // their data is over 24 hours old; the owner override does not open them.
+  const promoGate = startPromoGate({
+    context: local.context,
+    edgeNodeId: local.scope.edgeNodeId,
+    clock: catalogGate.clock,
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge promo freshness step failed"),
+  });
   const masterSync = startEdgeMasterSyncLoop({
     config,
     intervalMs: EDGE_MASTER_SYNC_INTERVAL_MS,
@@ -1025,6 +1245,8 @@ export async function startEdgeRuntime(
       context: local.context,
       edgeNodeId: local.scope.edgeNodeId,
       freshness,
+      // 533b: the Date header of each catalog page is more proof of the clock.
+      onServerTime: recordServerTime,
     },
     catalogOnStart: true,
     onError: (error) =>
@@ -1061,9 +1283,11 @@ export async function startEdgeRuntime(
     edgeNodeId: local.scope.edgeNodeId,
     drain: config.role === "primary",
   });
-  return {
+  let auditRetention: EdgeAuditRetentionHandle | null = null;
+  const handle: EdgeRuntimeHandle = {
     async stop() {
       clearInterval(sweep);
+      clearInterval(catalogAlarmRetry);
       await wifiQuotaWorker.stop();
       await wifi?.stop();
       stopPrune();
@@ -1076,14 +1300,33 @@ export async function startEdgeRuntime(
         masterSync.stop(),
         selfieUploader.stop(),
         selfieSweep.stop(),
+        auditRetention?.stop(),
         stopWakeups(),
         client.stop(),
       ]);
+      setCatalogOverrideListener(null);
+      setCatalogOverrideClock(null);
+      promoGate.stop();
+      await catalogGate.stop();
+      await catalogAlarmQueue.flush().catch(reportCatalogAlarmError);
       if (registryPuller === puller) registryPuller = null;
       if (catalogFreshness === freshness) catalogFreshness = null;
       state = { ...state, link: disconnected };
     },
   };
+  // legend-0cqql: activate audit retention only after runtime initialization.
+  // A refused maintenance login closes every already-started component.
+  try {
+    auditRetention = await startEdgeAuditRetention({ source });
+  } catch (error) {
+    await handle
+      .stop()
+      .catch((stopError: unknown) =>
+        logger.error(safeError(stopError), "Edge runtime cleanup failed"),
+      );
+    throw error;
+  }
+  return handle;
 }
 
 export type EdgeLinkHandle = {
@@ -1145,6 +1388,13 @@ export async function registerEdgeLink(
       await notifyCatalogStale(identity, frame.catalogStale).catch((error) =>
         logger.warn(safeError(error), "Edge catalog stale alert failed"),
       );
+      if (frame.auditRetentionDisabled === true)
+        await reportEdgeAuditRetentionStatus(identity, true).catch((error) =>
+          logger.warn(
+            safeError(error),
+            "Edge audit retention owner alert failed",
+          ),
+        );
     },
     onConnectionChange: (identity, connected) =>
       logger.info(

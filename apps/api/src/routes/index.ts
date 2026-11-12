@@ -44,6 +44,8 @@ import { platformBrandRouter } from "./platform-brand.routes";
 import { platformTextOverridesRouter } from "./platform-text-overrides.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
+import { platformTenantDirectoryRouter } from "./platform-tenant-directory.routes";
+import { platformTenantResourcesRouter } from "./platform-tenant-resources.routes";
 import { platformConfigRouter } from "./platform-config.routes";
 import { platformPaymentGatewaysRouter } from "./platform-payment-gateways.routes";
 import { createNotificationRouter } from "./notification.routes";
@@ -89,6 +91,7 @@ import {
 } from "./payroll-loans.routes";
 import { payrollPolicyRouter, payrollThrRouter } from "./payroll-policy.routes";
 import { payrollServiceChargeRouter } from "./payroll-service-charge.routes";
+import { payrollRapelRouter } from "./payroll-rapel.routes";
 import {
   payrollMyReimbursementsRouter,
   payrollReimbursementCategoriesRouter,
@@ -122,6 +125,7 @@ import { kdsRouter } from "./kds.routes.ts";
 import { orderIssuesRouter } from "./order-issues.routes.ts";
 import { orderRecoveryChargeRouter } from "./order-recovery-charge.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
+import { posParkedOrderRouter } from "./pos-parked-order.routes.ts";
 import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
 import { posReceiptWriteoffRouter } from "./pos-receipt-writeoff.routes.ts";
 import { posShiftRouter } from "./pos-shift.routes.ts";
@@ -168,6 +172,8 @@ apiRouter.use("/health", healthRouter);
 apiRouter.use("/platform", platformUsageRouter);
 apiRouter.use("/platform/payment-gateways", platformPaymentGatewaysRouter);
 apiRouter.use("/platform", platformRouter);
+apiRouter.use("/platform", platformTenantDirectoryRouter);
+apiRouter.use("/platform", platformTenantResourcesRouter);
 apiRouter.use("/platform", platformConfigRouter);
 apiRouter.use("/org", orgIntegrationsRouter);
 apiRouter.use("/org", orgRouter);
@@ -234,6 +240,7 @@ apiRouter.use("/floor", floorRouter);
 // /api/outlets/:outletId/pos/*; the router merges params. Before the floor's
 // /outlets router so POS requests do not run its middleware too.
 apiRouter.use("/outlets/:outletId/pos", posOrderRouter);
+apiRouter.use("/outlets/:outletId/pos", posParkedOrderRouter);
 // WS-04 receipts, kuitansi and invoices (legend-93a): same prefix, own routes;
 // the order router passes unmatched paths through.
 apiRouter.use("/outlets/:outletId/pos", posReceiptRouter);
@@ -366,6 +373,7 @@ apiRouter.use("/hris/payroll/components", payrollComponentsRouter);
 apiRouter.use("/hris/payroll/employees", payrollEmployeeComponentsRouter);
 apiRouter.use("/hris/payroll/loans", payrollLoansRouter);
 apiRouter.use("/hris/payroll/service-charge-pools", payrollServiceChargeRouter);
+apiRouter.use("/hris/payroll/rapel", payrollRapelRouter);
 apiRouter.use(
   "/hris/payroll/reimbursement-categories",
   payrollReimbursementCategoriesRouter,

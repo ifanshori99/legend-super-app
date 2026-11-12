@@ -16,6 +16,21 @@ const device = (over = {}) =>
   });
 const ago = (ms) => new Date(NOW - ms).toISOString();
 
+test("legend-saag: server time corrects viewer clocks ahead and behind", () => {
+  const serverTime = new Date(NOW).toISOString();
+  for (const skew of [-60_000, 60_000]) {
+    const receivedAt = NOW + skew;
+    const offset = logic.serverClockOffsetMs(serverTime, receivedAt);
+    assert.equal(offset, -skew);
+    const lastSeen = device({ lastSeenAt: ago(45_000) });
+    assert.equal(
+      logic.heartbeatState(lastSeen, receivedAt + offset),
+      "offline",
+    );
+    assert.equal(logic.heartbeatAgeMs(lastSeen, receivedAt + offset), 45_000);
+  }
+});
+
 test("EDG-03: heartbeat state is online, stale, offline, never or revoked", () => {
   assert.equal(
     logic.heartbeatState(device({ lastSeenAt: ago(5_000) }), NOW),
@@ -114,7 +129,10 @@ test("EDG-03: heartbeat age uses the edge clock when the viewer clock runs behin
     device({ lastSeenAt: ago(0) }),
     device({ lastSeenAt: ago(45_000) }),
   ];
-  const offset = logic.serverClockOffsetMs(list, viewerReceivedAt);
+  const offset = logic.serverClockOffsetMs(
+    new Date(NOW).toISOString(),
+    viewerReceivedAt,
+  );
   assert.equal(offset, 60_000);
   // Without the offset the 45 s-old device would read "online".
   assert.equal(logic.heartbeatState(list[1], viewerReceivedAt), "online");
@@ -122,15 +140,15 @@ test("EDG-03: heartbeat age uses the edge clock when the viewer clock runs behin
     logic.heartbeatState(list[1], viewerReceivedAt + offset),
     "offline",
   );
-  // A viewer clock that runs ahead is never pulled back (safe direction).
-  assert.equal(logic.serverClockOffsetMs(list, NOW + 60_000), 0);
+  // A clock ahead of the server is corrected too.
   assert.equal(
-    logic.serverClockOffsetMs([device({ lastSeenAt: null })], NOW),
-    0,
+    logic.serverClockOffsetMs(new Date(NOW).toISOString(), NOW + 60_000),
+    -60_000,
   );
+  assert.equal(logic.serverClockOffsetMs("invalid", NOW), 0);
 });
 
-test("TEN-02: outlet filter only offers outlets present in the scoped device list", () => {
+test("TEN-02: outlet filter includes listed outlets even when they have no devices", () => {
   const d = device();
   const options = logic.outletOptions(
     [
@@ -139,7 +157,10 @@ test("TEN-02: outlet filter only offers outlets present in the scoped device lis
     ],
     [d],
   );
-  assert.deepEqual(options, [{ id: d.outletId, name: "Cafe Legend" }]);
+  assert.deepEqual(options, [
+    { id: d.outletId, name: "Cafe Legend" },
+    { id: "99999999-9999-4999-8999-999999999999", name: "Outlet lain" },
+  ]);
 });
 
 test("EDG-03: enrolling needs a device name of 1 to 255 characters", () => {

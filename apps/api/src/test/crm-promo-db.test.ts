@@ -30,6 +30,11 @@ import {
 import { orderPromoPartialRefundPort } from "../services/order-promo-refund";
 import { seedProfile } from "./member-loyalty-helpers";
 
+import {
+  seedPromoCustomer,
+  seedPromoFacilityProduct,
+} from "./crm-promo-test-helpers";
+
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const outletA = outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[0].id);
 const outletB = outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[1].id);
@@ -188,11 +193,8 @@ const priced = (item: string, unit: number, quantity = 1): PromoLine => ({
   lineTotalIdr: idr(unit * quantity),
 });
 
-const member = (id = randomUUID()): PromoCustomer => ({
-  customerProfileId: id,
-  tierId: null,
-  isMember: true,
-});
+const member = (id = randomUUID()): Promise<PromoCustomer> =>
+  asOwner(tenantId, (client) => seedPromoCustomer(client, tenantId, id));
 
 function redeemInput(
   lines: PromoLine[],
@@ -369,7 +371,7 @@ describe("LOY-03 race-safe quota, budget and voucher redemption", () => {
   it("[LOY-03] per-customer quota 1: the same customer wins once under concurrency, another customer still can", async () => {
     const item = randomUUID();
     const promotionId = await seedPromotion(item, { quotaPerCustomer: 1 });
-    const sari = member();
+    const sari = await member();
     const results = await Promise.all(
       Array.from({ length: 4 }, () =>
         redeem(redeemInput([priced(item, 30_000)], { customer: sari })),
@@ -379,7 +381,7 @@ describe("LOY-03 race-safe quota, budget and voucher redemption", () => {
       results.filter((result) => discountOf(result, promotionId)),
     ).toHaveLength(1);
     const other = await redeem(
-      redeemInput([priced(item, 30_000)], { customer: member() }),
+      redeemInput([priced(item, 30_000)], { customer: await member() }),
     );
     expect(discountOf(other, promotionId)).toBeTruthy();
     const anonymous = await redeem(redeemInput([priced(item, 30_000)]));
@@ -479,9 +481,11 @@ describe("Idempotent redeem and release on void", () => {
 
   it("release on void gives back quota, budget, the customer's use, the voucher and the facility reward, once", async () => {
     const item = randomUUID();
-    const facilityProductId = randomUUID();
+    const facilityProductId = await asOwner(tenantId, (client) =>
+      seedPromoFacilityProduct(client, tenantId, outletA),
+    );
     const voucherCode = code();
-    const sari = member();
+    const sari = await member();
     const percentId = await seedPromotion(item, {
       quotaTotal: 5,
       quotaPerCustomer: 1,
@@ -650,7 +654,7 @@ describe("Idempotent redeem and release on void", () => {
       redeem(
         redeemInput([priced(randomUUID(), 50_000)], {
           voucherCode,
-          customer: member(),
+          customer: await member(),
         }),
       ),
     ).rejects.toMatchObject({ status: 422, code: "VOUCHER_INVALID" });

@@ -990,6 +990,7 @@ const attendanceQr = attendanceQrTokenSchema.parse({
   token: "QR-BDG01-20261101T0930",
   issuedAt: "2026-11-01T02:30:00.000Z",
   expiresAt: fixtureTimeAfter({ minutes: 30, seconds: 30 }, now),
+  serverTime: "2026-11-01T02:30:12.000Z",
   rotationSeconds: 30,
 });
 
@@ -1227,6 +1228,8 @@ const shiftSwapRequests = [
     status: "pending",
     complianceIssues: swapComplianceIssues,
     overrideReason: null,
+    rejectionReason: null,
+    peerAcceptedAt: null,
     approvedBy: null,
     requestedAt: "2026-10-25T01:00:00.000Z",
     decidedAt: null,
@@ -1242,6 +1245,8 @@ const shiftSwapRequests = [
     status: "approved",
     complianceIssues: cleanSwapIssues,
     overrideReason: null,
+    rejectionReason: null,
+    peerAcceptedAt: "2026-10-25T02:30:00.000Z",
     approvedBy: userId(1001),
     requestedAt: "2026-10-25T02:00:00.000Z",
     decidedAt: "2026-10-25T03:00:00.000Z",

@@ -338,6 +338,8 @@ export const shiftSwapRequests = pgTable(
       .notNull()
       .default(sql`'[]'::jsonb`),
     overrideReason: varchar("override_reason", { length: 500 }),
+    rejectionReason: varchar("rejection_reason", { length: 500 }),
+    peerAcceptedAt: timestamp("peer_accepted_at", { withTimezone: true }),
     approvedBy: text("approved_by").$type<UserId>(),
     requestedByUserId: text("requested_by_user_id").$type<UserId>().notNull(),
     requestedAt: timestamp("requested_at", { withTimezone: true })

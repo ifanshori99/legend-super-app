@@ -36,6 +36,7 @@ stub fdesetup 'printf "%s\n" "$TEST_FDE"'
 
 me=$(id -un)
 selfies="$tmp/selfies"
+state="$tmp/state"
 cert="$tmp/edge.crt"
 key="$tmp/edge.key"
 envfile="$tmp/edge.env"
@@ -50,6 +51,9 @@ reset() {
   chmod 700 "$selfies"
   mkdir "$selfies/tenant-a"
   chmod 700 "$selfies/tenant-a"
+  rm -rf "$state"
+  mkdir "$state"
+  chmod 700 "$state"
   printf 'EDGE_MODE=true\n# ATTENDANCE_SELFIE_SEAL_KEYS=%s\nATTENDANCE_SELFIE_SEAL_ACTIVE_KID=\nEDGE_SELFIE_DIR=%s\nEDGE_SELFIE_MAX_BYTES=1073741824\n' "$secret" "$selfies" > "$envfile"
   export TEST_OS=Linux TEST_AVAIL_KB=4194304 TEST_OFFSET=0.000123456 TEST_LEAP=Normal \
     TEST_NTPSYNC=yes TEST_LSBLK='crypt' TEST_LSBLK_SELFIE='crypt' TEST_FDE='FileVault is On.'
@@ -63,7 +67,7 @@ printf "Reference ID    : C0A80001 (ntp.example.invalid)\nStratum         : 3\nS
 # run_check [extra args]: sets $status and $out; the default arguments are valid.
 run_check() {
   status=0
-  out=$(PATH="$bin" sh "$root/check-edge-host.sh" --env-file "$envfile" --service-user "$me" --cert "$cert_path" --selfie-dir "$selfies" "$@" 2>&1) || status=$?
+  out=$(PATH="$bin" sh "$root/check-edge-host.sh" --env-file "$envfile" --service-user "$me" --cert "$cert_path" --selfie-dir "$selfies" --state-dir "$state" "$@" 2>&1) || status=$?
 }
 
 expect_ok() {
@@ -254,5 +258,59 @@ ln -s "$selfies" "$tmp/selfies-link"
 run_check --selfie-dir "$tmp/selfies-link"
 rm -f "$tmp/selfies-link"
 expect_fail symlink-target-mode
+
+# State volume (EDGE_STATE_DIR, owner alarm queue): must exist, mode 0700, owned
+# by the service user. A missing or open directory is a FAIL.
+reset
+rm -rf "$state"
+run_check
+expect_fail state-dir-missing
+expect_out state-dir-missing 'state-dir'
+reset
+chmod 755 "$state"
+run_check
+expect_fail state-dir-open-mode
+expect_out state-dir-open-mode 'state-dir'
+reset
+run_check
+expect_ok state-dir-ok
+expect_out state-dir-ok 'PASS state-dir: mode 0700'
+reset
+printf 'EDGE_SELFIE_DIR=%s\nEDGE_STATE_DIR=%s\n' "$selfies" "$tmp/state-from-env" > "$envfile"
+run_check --state-dir ''
+expect_fail state-dir-from-env-missing
+mkdir "$tmp/state-from-env"
+chmod 700 "$tmp/state-from-env"
+run_check --state-dir ''
+expect_ok state-dir-from-env
+rm -rf "$tmp/state-from-env"
+
+# 11. Missing maintenance URL disables audit purge but must not disable POS.
+reset
+run_check
+expect_ok audit-retention-missing
+expect_out audit-retention-missing 'WARN audit-retention:'
+expect_out audit-retention-missing 'MAINTENANCE_DATABASE_URL'
+reset
+printf 'MAINTENANCE_DATABASE_URL="   "  # not configured\n' >> "$envfile"
+run_check
+expect_ok audit-retention-blank
+expect_out audit-retention-blank 'WARN audit-retention:'
+reset
+printf 'export MAINTENANCE_DATABASE_URL="postgres://maint:%s@localhost/edge"\n' "$secret" >> "$envfile"
+run_check
+expect_ok audit-retention-configured
+expect_out audit-retention-configured 'PASS audit-retention:'
+no_secret audit-retention-configured
+# The host check only checks presence; runtime validates the URL before boot.
+reset
+printf 'MAINTENANCE_DATABASE_URL=invalid-url-value\n' >> "$envfile"
+run_check
+expect_ok audit-retention-presence-only
+expect_out audit-retention-presence-only 'PASS audit-retention:'
+if printf '%s\n' "$out" | grep -F -- 'invalid-url-value' >/dev/null; then
+  printf 'FAIL test audit-retention-presence-only: an env value was printed\n' >&2
+  exit 1
+fi
 
 echo 'check-edge-host tests passed'

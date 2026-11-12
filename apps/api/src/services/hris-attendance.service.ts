@@ -20,17 +20,8 @@
 //   active for another employee cannot be bound (buddy punching).
 
 import { randomBytes } from "node:crypto";
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  gt,
-  lt,
-  or,
-  sql,
-  type SQL,
-} from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, or, sql, type SQL } from "drizzle-orm";
+import type { PermissionCode } from "@starter/shared/access";
 import {
   CoreError,
   businessDateSchema,
@@ -38,6 +29,7 @@ import {
   encodeCursor,
   isOutletInScope,
   localDateOf,
+  outletIdSchema,
   ulidToUuid,
   type ScopedTenantContext,
   type TenantId,
@@ -75,6 +67,7 @@ import {
   type AttendanceType,
   type ShiftAssignment,
   type bindAttendanceDevice as bindAttendanceDeviceEndpoint,
+  type bindAttendanceDeviceBySupervisor as bindAttendanceDeviceBySupervisorEndpoint,
   type clockAttendance as clockAttendanceEndpoint,
   type getAttendanceQr as getAttendanceQrEndpoint,
   type listAttendanceDevices as listAttendanceDevicesEndpoint,
@@ -173,6 +166,9 @@ type ListLogsQuery = z.output<typeof listAttendanceLogsEndpoint.query>;
 type GetQrQuery = z.output<typeof getAttendanceQrEndpoint.query>;
 type RotateQrBody = z.output<typeof rotateAttendanceQrSecretEndpoint.body>;
 type BindDeviceBody = z.output<typeof bindAttendanceDeviceEndpoint.body>;
+type BindDeviceBySupervisorBody = z.output<
+  typeof bindAttendanceDeviceBySupervisorEndpoint.body
+>;
 type ListDevicesQuery = z.output<typeof listAttendanceDevicesEndpoint.query>;
 type RevokeDeviceBody = z.output<typeof revokeAttendanceDeviceEndpoint.body>;
 type Page<T> = {
@@ -342,6 +338,7 @@ export async function getMyAttendancePolicy(
       target.outletId,
     );
     return {
+      outletId: outletIdSchema.parse(target.outletId),
       geofenceRadiusM: policy.geofenceRadiusM,
       outsideGeofenceAction: policy.outsideGeofenceAction,
       unboundDeviceAction: policy.unboundDeviceAction,
@@ -1631,6 +1628,7 @@ export async function getAttendanceQr(
       expiresAt: new Date(
         issuedAt + ATTENDANCE_QR_ROTATION_SECONDS * 1_000,
       ).toISOString(),
+      serverTime: now.toISOString(),
       rotationSeconds: ATTENDANCE_QR_ROTATION_SECONDS,
     });
   });
@@ -1695,6 +1693,108 @@ export async function rotateAttendanceQrSecret(
 const DEVICE_AUDIT_SAFE_FIELDS = [...HRIS_AUDIT_SAFE_FIELDS, "reason"] as const;
 
 /**
+ * Binds `body.deviceIdHash` to `own` inside the caller's transaction: shared by
+ * the employee's own bind and the supervisor bind. The same device again
+ * returns the stored binding (a revoked one is reactivated); another active
+ * device is a 409 until HR resets it.
+ */
+async function bindDeviceInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  access: HrisAccess,
+  own: { id: string; homeOutletId: string },
+  body: BindDeviceBody,
+  now: Date,
+): Promise<AttendanceDevice> {
+  const tenantId = context.tenant.tenantId;
+  // One bind at a time per employee: the active-device unique index would
+  // otherwise surface as a 500 for two concurrent first binds.
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`hris:attendance-device:${tenantId}:${own.id}`}, 0))`,
+  );
+  const rows = await tx
+    .select()
+    .from(attendanceDevices)
+    .where(
+      and(
+        eq(attendanceDevices.tenantId, tenantId),
+        or(
+          eq(attendanceDevices.employeeId, own.id),
+          and(
+            eq(attendanceDevices.deviceIdHash, body.deviceIdHash),
+            eq(attendanceDevices.status, "active"),
+          ),
+        ),
+      ),
+    );
+  const mine = rows.filter((row) => lower(row.employeeId) === lower(own.id));
+  const sameDevice = mine.find((row) => row.deviceIdHash === body.deviceIdHash);
+  if (sameDevice?.status === "active") return toAttendanceDevice(sameDevice);
+  if (rows.some((row) => lower(row.employeeId) !== lower(own.id)))
+    throw conflict(
+      "DEVICE_ALREADY_BOUND",
+      "Perangkat ini sudah terikat ke karyawan lain.",
+    );
+  if (mine.some((row) => row.status === "active"))
+    throw conflict(
+      "DEVICE_ALREADY_BOUND",
+      "Sudah ada perangkat terikat; minta HR mereset perangkat lama.",
+    );
+  const [saved] = sameDevice
+    ? await tx
+        .update(attendanceDevices)
+        .set({
+          status: "active",
+          label: body.label,
+          boundAt: now,
+          revokedAt: null,
+          revokedBy: null,
+        })
+        .where(
+          and(
+            eq(attendanceDevices.tenantId, tenantId),
+            eq(attendanceDevices.id, sameDevice.id),
+          ),
+        )
+        .returning()
+    : await tx
+        .insert(attendanceDevices)
+        .values({
+          tenantId,
+          employeeId: own.id,
+          deviceIdHash: body.deviceIdHash,
+          label: body.label,
+          boundAt: now,
+        })
+        .returning()
+        .catch((error: unknown) => {
+          if (
+            uniqueViolation(error)?.constraint ===
+            "attendance_devices_active_employee_key"
+          )
+            throw conflict(
+              "DEVICE_ALREADY_BOUND",
+              "Sudah ada perangkat terikat; minta HR mereset perangkat lama.",
+            );
+          throw error;
+        });
+  if (!saved) throw new Error("Attendance device save returned no row");
+  await recordAudit(
+    tx,
+    context,
+    hrisAuditEntry(context, access.actorUserId, now, {
+      outletId: own.homeOutletId,
+      action: "hris.attendance.device_bound",
+      objectType: ATTENDANCE_DEVICE_OBJECT_TYPE,
+      objectId: saved.id,
+      after: { status: saved.status },
+    }),
+    DEVICE_AUDIT_SAFE_FIELDS,
+  );
+  return toAttendanceDevice(saved);
+}
+
+/**
  * POST /api/hris/attendance/devices/bind — the employee binds their own phone.
  * The same device again returns the stored binding (a revoked one is
  * reactivated); another active device is a 409 until HR resets it.
@@ -1713,94 +1813,51 @@ export async function bindAttendanceDevice(
       !access.snapshot.permissions.includes(HRIS_ATTENDANCE_CLOCK_CODE)
     )
       throw forbidden();
+    return bindDeviceInTx(tx, context, access, own, body, now);
+  });
+}
+
+/**
+ * POST /api/hris/attendance/devices/bind-by-supervisor (legend-bf20) — a
+ * supervisor or HR binds the phone for an employee in reach. An employee
+ * outside the caller's tenant or outlet reach answers 404, like device reset;
+ * the rest of the rules are the employee's own bind.
+ */
+export async function bindAttendanceDeviceBySupervisor(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  body: BindDeviceBySupervisorBody,
+  codes: readonly PermissionCode[],
+  now = new Date(),
+): Promise<AttendanceDevice> {
+  return withTenant(db, context, async (tx) => {
+    const access = await loadHrisAccess(tx, context, actorUserId, now);
+    if (access.own && lower(access.own.id) === lower(body.employeeId))
+      throw forbidden();
     const tenantId = context.tenant.tenantId;
-    // One bind at a time per employee: the active-device unique index would
-    // otherwise surface as a 500 for two concurrent first binds.
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`hris:attendance-device:${tenantId}:${own.id}`}, 0))`,
-    );
-    const rows = await tx
-      .select()
-      .from(attendanceDevices)
+    const [target] = await tx
+      .select({ id: employees.id, homeOutletId: employees.homeOutletId })
+      .from(employees)
       .where(
         and(
-          eq(attendanceDevices.tenantId, tenantId),
-          or(
-            eq(attendanceDevices.employeeId, own.id),
-            and(
-              eq(attendanceDevices.deviceIdHash, body.deviceIdHash),
-              eq(attendanceDevices.status, "active"),
-            ),
-          ),
+          eq(employees.tenantId, tenantId),
+          eq(employees.id, body.employeeId),
         ),
-      );
-    const mine = rows.filter((row) => lower(row.employeeId) === lower(own.id));
-    const sameDevice = mine.find(
-      (row) => row.deviceIdHash === body.deviceIdHash,
-    );
-    if (sameDevice?.status === "active") return toAttendanceDevice(sameDevice);
-    if (rows.some((row) => lower(row.employeeId) !== lower(own.id)))
-      throw conflict(
-        "DEVICE_ALREADY_BOUND",
-        "Perangkat ini sudah terikat ke karyawan lain.",
-      );
-    if (mine.some((row) => row.status === "active"))
-      throw conflict(
-        "DEVICE_ALREADY_BOUND",
-        "Sudah ada perangkat terikat; minta HR mereset perangkat lama.",
-      );
-    const [saved] = sameDevice
-      ? await tx
-          .update(attendanceDevices)
-          .set({
-            status: "active",
-            label: body.label,
-            boundAt: now,
-            revokedAt: null,
-            revokedBy: null,
-          })
-          .where(
-            and(
-              eq(attendanceDevices.tenantId, tenantId),
-              eq(attendanceDevices.id, sameDevice.id),
-            ),
-          )
-          .returning()
-      : await tx
-          .insert(attendanceDevices)
-          .values({
-            tenantId,
-            employeeId: own.id,
-            deviceIdHash: body.deviceIdHash,
-            label: body.label,
-            boundAt: now,
-          })
-          .returning()
-          .catch((error: unknown) => {
-            if (
-              uniqueViolation(error)?.constraint ===
-              "attendance_devices_active_employee_key"
-            )
-              throw conflict(
-                "DEVICE_ALREADY_BOUND",
-                "Sudah ada perangkat terikat; minta HR mereset perangkat lama.",
-              );
-            throw error;
-          });
-    if (!saved) throw new Error("Attendance device save returned no row");
-    await recordAudit(
-      tx,
-      context,
-      hrisAuditEntry(context, access.actorUserId, now, {
-        outletId: own.homeOutletId,
-        action: "hris.attendance.device_bound",
-        objectType: ATTENDANCE_DEVICE_OBJECT_TYPE,
-        objectId: saved.id,
-        after: { status: saved.status },
-      }),
-      DEVICE_AUDIT_SAFE_FIELDS,
-    );
-    return toAttendanceDevice(saved);
+      )
+      .limit(1);
+    if (
+      !target ||
+      !(await isReachedEmployee(
+        tx,
+        tenantId,
+        access,
+        codes,
+        target.homeOutletId,
+        target.id,
+      ))
+    )
+      throw notFound("Karyawan");
+    return bindDeviceInTx(tx, context, access, target, body, now);
   });
 }
 

@@ -41,6 +41,11 @@ import {
 } from "../services/crm-promo-engine";
 import { recomputeAfterPartialRefund } from "../services/crm-promo-refund";
 
+import {
+  seedPromoCustomer,
+  seedPromoFacilityProduct,
+} from "./crm-promo-test-helpers";
+
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const outletA = outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[0].id);
 const outletB = outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[1].id);
@@ -130,11 +135,13 @@ async function seedPromotion(
 }
 
 /** Same-day min-spend facility reward: Rp100.000 on the day, member only. */
-const facilityPromotion = (item: string, minSpend = 100_000) =>
+const facilityPromotion = async (item: string, minSpend = 100_000) =>
   seedPromotion(item, {
     benefit: {
       kind: "facility_entitlement",
-      facilityProductId: randomUUID(),
+      facilityProductId: await asOwner(tenantId, (client) =>
+        seedPromoFacilityProduct(client, tenantId, outletA),
+      ),
       quantity: 1,
     },
     conditions: [{ kind: "min_spend", amountIdr: minSpend }],
@@ -173,11 +180,8 @@ const priced = (item: string, unit: number, quantity = 1): PromoLine => ({
   lineTotalIdr: idr(unit * quantity),
 });
 
-const member = (id = randomUUID()): PromoCustomer => ({
-  customerProfileId: id,
-  tierId: null,
-  isMember: true,
-});
+const member = (id = randomUUID()): Promise<PromoCustomer> =>
+  asOwner(tenantId, (client) => seedPromoCustomer(client, tenantId, id));
 
 /** Noon (outlet zone) `days` ahead: a fixed point inside one business day. */
 function noon(days: number): Date {
@@ -431,7 +435,7 @@ describe("E5IT same-day cumulative minimum-spend facility reward (owner Q40, PRD
   it("[E5IT-4] two bills of one member that cross the threshold together earn exactly one reward; a third bill earns none", async () => {
     const item = randomUUID();
     const promotionId = await facilityPromotion(item);
-    const customer = member();
+    const customer = await member();
     const at = noon(2);
     const first = await redeem(
       redeemInput([priced(item, 60_000)], { customer, at }),
@@ -459,7 +463,7 @@ describe("E5IT same-day cumulative minimum-spend facility reward (owner Q40, PRD
   it("[E5IT-4] day totals are per outlet: 60k at outlet A plus 60k at outlet B reaches no 100k reward at either", async () => {
     const item = randomUUID();
     const promotionId = await facilityPromotion(item);
-    const customer = member();
+    const customer = await member();
     const at = noon(8);
     const atA = await redeem(
       redeemInput([priced(item, 60_000)], { customer, at }),
@@ -478,7 +482,7 @@ describe("E5IT same-day cumulative minimum-spend facility reward (owner Q40, PRD
   it("[E5IT-5] anonymous bills are not cumulated: an anonymous bill does not count toward a member's day total", async () => {
     const item = randomUUID();
     const promotionId = await facilityPromotion(item);
-    const customer = member();
+    const customer = await member();
     const at = noon(3);
     await redeem(redeemInput([priced(item, 60_000)], { customer: null, at }));
     await redeem(redeemInput([priced(item, 60_000)], { customer: null, at }));
@@ -494,7 +498,7 @@ describe("E5IT same-day cumulative minimum-spend facility reward (owner Q40, PRD
   it("[E5IT-6] the next business day starts a new total and a new reward", async () => {
     const item = randomUUID();
     const promotionId = await facilityPromotion(item);
-    const customer = member();
+    const customer = await member();
     const day1 = noon(4);
     const day2 = noon(5);
     await redeem(redeemInput([priced(item, 120_000)], { customer, at: day1 }));
@@ -516,7 +520,7 @@ describe("E5IT same-day cumulative minimum-spend facility reward (owner Q40, PRD
   it("[E5IT-7] concurrent bills of the same member issue the day's reward exactly once", async () => {
     const item = randomUUID();
     const promotionId = await facilityPromotion(item);
-    const customer = member();
+    const customer = await member();
     const at = noon(6);
     const results = await Promise.all(
       Array.from({ length: 4 }, () =>
@@ -542,7 +546,7 @@ describe("E5IT partial refund withdraws a promotion the bill no longer earns (ow
       benefit: { kind: "nominal_off", amountIdr: 20_000 },
       conditions: [{ kind: "min_spend", amountIdr: 100_000 }],
     });
-    const customer = member();
+    const customer = await member();
     const input = redeemInput([priced(item, 80_000), priced(other, 40_000)], {
       customer,
     });
@@ -678,7 +682,7 @@ describe("E5IT partial refund withdraws a promotion the bill no longer earns (ow
     const item = randomUUID();
     const other = randomUUID();
     const promotionId = await facilityPromotion(item);
-    const customer = member();
+    const customer = await member();
     const at = noon(7);
     const input = redeemInput([priced(item, 90_000), priced(other, 30_000)], {
       customer,

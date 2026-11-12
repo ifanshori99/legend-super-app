@@ -14,8 +14,10 @@ export const PRINT_QUEUE_PAGE_SIZE = 20;
 export const edgeKeys = {
   all: ["edge"] as const,
   status: () => [...edgeKeys.all, "status"] as const,
-  devices: (query: DeviceListQuery) =>
+  devices: (query: DeviceListQuery & { outletId?: string }) =>
     [...edgeKeys.all, "devices", query] as const,
+  /** Last order refusal for a stale catalog, kept until the next status read. */
+  catalogSalesBlock: () => [...edgeKeys.all, "catalog-sales-block"] as const,
   printJobs: () => [...edgeKeys.all, "print-jobs"] as const,
   printJobList: (query: PrintJobListQuery) =>
     [...edgeKeys.printJobs(), query] as const,
@@ -33,7 +35,9 @@ export function edgeStatusQuery() {
   });
 }
 
-export function edgeDevicesQuery(query: DeviceListQuery = { limit: 25 }) {
+export function edgeDevicesQuery(
+  query: DeviceListQuery & { outletId?: string } = { limit: 25 },
+) {
   return queryOptions({
     queryKey: edgeKeys.devices(query),
     queryFn: ({ signal }) => fetchEdgeDevices(query, signal),

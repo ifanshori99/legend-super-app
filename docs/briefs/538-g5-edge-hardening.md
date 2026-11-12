@@ -1,0 +1,3 @@
+# 538-G5 Pengerasan edge (S) - baca 538-gelombang-backend-umum.md dulu
+
+Cabang ws/edge-hardening. Kartu: legend-8e0a3 bersihkan staff_pin_proofs, legend-8gws batas ukuran respons, legend-6xzec validasi receiptRuns, legend-c4ejw lewati receiptRefused, legend-bzh1z error drain akses, legend-0cqql purge retensi audit di edge. Area apps/api/src/edge KECUALI catalog*/promo*/trusted-clock (cabang ws/edge-catalog-fresh sedang antre merge). Migrasi 0365-0367.
