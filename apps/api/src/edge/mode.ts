@@ -268,7 +268,31 @@ export function guardEdgeUpgrades(
     return Reflect.apply(emit, this, [event, ...args]) as boolean;
   } as Server["emit"];
   server.emit = guarded;
+  // Install on the existing LAN server, after the common upgrade guard. The
+  // module is loaded only on the edge so the cloud does not open this socket.
+  let disposed = false;
+  let closeEmergency: (() => void) | undefined;
+  if (options.edgeMode) {
+    server.once("close", () => {
+      disposed = true;
+    });
+    void import("./emergency-realtime.ts")
+      .then(({ attachEmergencyRealtime }) => {
+        if (!disposed) closeEmergency = attachEmergencyRealtime(server).close;
+      })
+      .catch((error: unknown) => {
+        // A missing safety listener must not make a node look healthy.
+        server.emit(
+          "error",
+          error instanceof Error
+            ? error
+            : new Error("Emergency realtime unavailable"),
+        );
+      });
+  }
   return () => {
+    disposed = true;
+    closeEmergency?.();
     if (server.emit === guarded) server.emit = emit;
   };
 }

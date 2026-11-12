@@ -21,6 +21,7 @@ import { Router } from "express";
 import { CoreError } from "@starter/shared/core";
 import { HttpError } from "../lib/http-error.ts";
 import { findTenantContext } from "../middleware/tenant.ts";
+import { buildFacilitySnapshot } from "../services/edge-facility-snapshot.ts";
 import {
   deviceSyncQuerySchema,
   listDeviceRecordsSince,
@@ -31,6 +32,26 @@ import {
 } from "../services/staff-pin-sync.ts";
 
 export const deviceRecordSyncRouter = Router();
+
+deviceRecordSyncRouter.get("/facility-snapshot", async (req, res) => {
+  const node = await verifyEdgeCredential(
+    edgeCredentialFromAuthorization(req.get("Authorization")),
+  );
+  if (node === null)
+    throw new CoreError("UNAUTHORIZED", "Kredensial edge node tidak valid.");
+  const resolved = findTenantContext(req);
+  if (
+    resolved !== undefined &&
+    resolved.tenantId.toLowerCase() !== node.tenantId.toLowerCase()
+  )
+    throw new HttpError(
+      403,
+      "TENANT_MISMATCH",
+      "Tenant does not match this domain.",
+    );
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json(await buildFacilitySnapshot(node));
+});
 
 deviceRecordSyncRouter.get("/", async (req, res) => {
   // legend-yd0h8: arrival time, taken before the credential check's pool

@@ -24,6 +24,7 @@ import {
   type RaiseFacilityIncidentInput,
 } from "@starter/shared/facility";
 import { db } from "../db/index.ts";
+import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import {
   accessTickets,
   facilityIncidents,
@@ -31,6 +32,7 @@ import {
 } from "../db/schema/facility.ts";
 import { withTenant } from "../db/tenant.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { queueEmergencyIncident } from "./edge-emergency.service.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
   assertFacilityPermission,
@@ -259,6 +261,7 @@ export async function raiseFacilityIncident(
         offline: false,
       })
       .returning();
+    await queueEmergencyIncident(tx, context, row, "raised");
     if (idempotencyKey)
       await storeFacilityIdempotentResult(tx, context, {
         key: idempotencyKey,
@@ -307,10 +310,10 @@ export async function raiseFacilityIncident(
     });
     // One row per destination: cloud-sync, and notification so the worker
     // runs facilityIncidentRaisedRule. Sequence 1 is unique per destination.
-    for (const destination of [
-      FACILITY_EVENT_DESTINATION,
-      FACILITY_NOTIFICATION_DESTINATION,
-    ]) {
+    const destinations = getEdgeRuntimeState().edgeMode
+      ? [FACILITY_NOTIFICATION_DESTINATION]
+      : [FACILITY_EVENT_DESTINATION, FACILITY_NOTIFICATION_DESTINATION];
+    for (const destination of destinations) {
       await appendOutbox(tx, context, {
         id: createUlid(now.getTime()),
         event,
@@ -383,6 +386,7 @@ export async function respondFacilityIncident(
         ),
       )
       .returning();
+    await queueEmergencyIncident(tx, context, row, "responded");
     await auditFacility(tx, context, actor, now, {
       action: "facility_incident.respond",
       objectType: "facility_incident",

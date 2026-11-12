@@ -62,6 +62,7 @@ import {
 import { findActiveDeviceForToken } from "../services/device-registry-check.ts";
 import { loadSessionRow } from "../services/identity-session.service.ts";
 import { getEdgeStatus } from "../services/edge-status.service.ts";
+import { ingestEmergency } from "../services/edge-emergency.service.ts";
 
 /** Operational staff of the outlet may see its offline status (§4 Alur F). */
 export const STATUS_READ_PERMISSIONS: readonly PermissionCode[] = [
@@ -342,5 +343,33 @@ edgeRouter.post(
     });
     res.setHeader("Cache-Control", "private, no-store");
     res.status(201).json({ data: overrideToDto(override) });
+  },
+);
+
+// Panic buttons authenticate with a current device registry token scoped to this node.
+edgeRouter.post(
+  "/emergencies",
+  requireNodeTenant,
+  jsonBody,
+  async (req, res) => {
+    z.strictObject({}).parse(req.body);
+    const { identity } = edgeIdentity();
+    const raw = req.get(DEVICE_TOKEN_HEADER);
+    const payload = raw ? verifyDeviceToken(raw) : null;
+    const device =
+      payload && payload.tenantId === identity.scope.tenantId
+        ? await findActiveDeviceForToken(payload, {
+            outletId: identity.scope.outletId,
+          })
+        : null;
+    if (!device || device.type !== "panic_button")
+      throw new CoreError("UNAUTHORIZED", "Perangkat darurat tidak valid.");
+    const incident = await ingestEmergency(device.id);
+    res.status(201).json({
+      data: {
+        id: incident.id,
+        triggeredAt: incident.triggeredAt.toISOString(),
+      },
+    });
   },
 );

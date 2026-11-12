@@ -1933,6 +1933,13 @@
       "when": 1794416400000,
       "tag": "0289_edge_voucher_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 290,
+      "version": "7",
+      "when": 1794465272062,
+      "tag": "0400_edge_emergency_deliveries",
+      "breakpoints": true
     }
   ]
 }

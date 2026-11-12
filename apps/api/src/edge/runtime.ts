@@ -76,6 +76,9 @@ import {
 } from "./wifi-quota-queue-worker.ts";
 import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
+import { registerEmergencyEdgeApplier } from "./emergency-applier.ts";
+import { closeEmergencyRealtime } from "./emergency-realtime.ts";
+import { retryEmergencyIncidents } from "../services/edge-emergency.service.ts";
 import { resendMateriallessStaffPinSets } from "./staff-pin-resend.ts";
 import {
   WIFI_RECONCILE_INTERVAL_MS,
@@ -100,6 +103,7 @@ import {
   saveEdgePeppers,
 } from "./staff-pin-pepper-store.ts";
 import { createPeopleSnapshotPuller } from "./people-snapshot-pull.ts";
+import { createFacilitySnapshotPuller } from "./facility-snapshot-pull.ts";
 import { CATALOG_GATE_PERSIST_MS, startCatalogGate } from "./catalog-gate.ts";
 import { openCatalogAlarmQueue } from "./catalog-alarm-queue.ts";
 import { startPromoGate } from "./promo-gate-runtime.ts";
@@ -1035,6 +1039,26 @@ export async function startEdgeRuntime(
       logger.warn(safeError(error), "Edge people snapshot pull failed"),
   });
   peoplePuller.start();
+  const facilityPuller = createFacilitySnapshotPuller({
+    config: { cloudUrl: config.cloudUrl, credential: config.credential },
+    intervalMs: config.peopleSyncIntervalMs,
+    staleAfterMs: Math.max(
+      config.deviceSyncStaleAfterMs,
+      2 * config.peopleSyncIntervalMs,
+    ),
+    maxBackoffMs: Math.max(
+      config.peopleSyncIntervalMs,
+      MIN_MAX_PULL_BACKOFF_MS,
+    ),
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge facility snapshot pull failed"),
+  });
+  facilityPuller.start();
+  const emergencyRetry = setInterval(() => {
+    void retryEmergencyIncidents().catch(() => {});
+  }, 3000);
+  emergencyRetry.unref();
+  void retryEmergencyIncidents().catch(() => {});
   let bootWait: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
     peoplePuller.runOnce(),
@@ -1288,6 +1312,8 @@ export async function startEdgeRuntime(
     async stop() {
       clearInterval(sweep);
       clearInterval(catalogAlarmRetry);
+      clearInterval(emergencyRetry);
+      await closeEmergencyRealtime();
       await wifiQuotaWorker.stop();
       await wifi?.stop();
       stopPrune();
@@ -1296,6 +1322,7 @@ export async function startEdgeRuntime(
       await Promise.all([
         puller.stop(),
         peoplePuller.stop(),
+        facilityPuller.stop(),
         pinPuller.stop(),
         masterSync.stop(),
         selfieUploader.stop(),
@@ -1353,6 +1380,7 @@ export async function registerEdgeLink(
   registerPosDeferredEdgeApplier();
   // legend-kyie: pos_override.* / staff_pin.* applied (and parked ones drained).
   registerAccessEdgeApplier();
+  registerEmergencyEdgeApplier();
   // Last: anything still unregistered is parked as unclassified, not a stall.
   registerEdgeDeferredFallback();
   const version = env.EDGE_NODE_VERSION;

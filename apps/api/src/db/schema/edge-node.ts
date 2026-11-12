@@ -51,6 +51,7 @@ import type { CatalogSyncStream } from "@starter/shared/edge";
 import type { EventEnvelope, SyncDirection } from "@starter/shared/events";
 import { outletIdColumn, tenantIdColumn, ulidInUuid } from "../columns.ts";
 import { outlets, tenants } from "./platform-org.ts";
+import { facilityIncidents } from "./facility.ts";
 
 export type EdgeNodeRole = "primary" | "standby";
 export type EdgeNodeStatus = "active" | "revoked";
@@ -508,5 +509,27 @@ export const edgeStaffPinPeppers = pgTable(
       foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
     }),
     check("edge_staff_pin_peppers_version_check", sql`${table.version} >= 1`),
+  ],
+);
+
+/** Durable delivery state for retrying a local panic incident. */
+export const edgeEmergencyDeliveries = pgTable(
+  "edge_emergency_deliveries",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    incidentId: uuid("incident_id").notNull(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.incidentId] }),
+    foreignKey({
+      name: "edge_emergency_deliveries_incident_fk",
+      columns: [table.tenantId, table.incidentId],
+      foreignColumns: [facilityIncidents.tenantId, facilityIncidents.id],
+    }),
   ],
 );
