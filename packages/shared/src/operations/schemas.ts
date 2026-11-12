@@ -616,7 +616,11 @@ export const shiftHandoverNotesSchema = z
   });
 export type ShiftHandoverNotes = z.infer<typeof shiftHandoverNotesSchema>;
 
-export const shiftHandoverStatusSchema = z.enum(["submitted", "acknowledged"]);
+export const shiftHandoverStatusSchema = z.enum([
+  "submitted",
+  "acknowledged",
+  "closed",
+]);
 export type ShiftHandoverStatus = z.infer<typeof shiftHandoverStatusSchema>;
 
 /** OPS-05: the next shift must read and confirm the handover before it can
@@ -634,10 +638,12 @@ export const shiftHandoverSchema = z
     submittedAt: isoDateTimeSchema,
     acknowledgedBy: userIdSchema.nullable(),
     acknowledgedAt: isoDateTimeSchema.nullable(),
+    closedBy: userIdSchema.nullable().default(null),
+    closedAt: isoDateTimeSchema.nullable().default(null),
     status: shiftHandoverStatusSchema,
   })
   .superRefine((handover, ctx) => {
-    const acknowledged = handover.status === "acknowledged";
+    const acknowledged = handover.status !== "submitted";
     if (
       acknowledged !== (handover.acknowledgedBy !== null) ||
       acknowledged !== (handover.acknowledgedAt !== null)
@@ -646,6 +652,16 @@ export const shiftHandoverSchema = z
         code: "custom",
         path: ["acknowledgedBy"],
         message: "An acknowledged handover carries its confirmer and time",
+      });
+    const closed = handover.status === "closed";
+    if (
+      closed !== (handover.closedBy !== null) ||
+      closed !== (handover.closedAt !== null)
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["closedBy"],
+        message: "A closed handover carries its closer and time",
       });
     if (
       handover.acknowledgedBy !== null &&

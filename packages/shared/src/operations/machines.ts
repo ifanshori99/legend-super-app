@@ -196,7 +196,6 @@ export function assertTemperatureLogAllowed(
 }
 
 // ---- Prep labels (OPS-03) ------------------------------------------------
-
 /** OPS-03: a label past its use-by appears in the expiry alerts. */
 export function isPrepLabelExpired(
   prepLabel: Pick<PrepLabel, "useBy">,
@@ -341,8 +340,24 @@ export function shiftHandoverCanClose(handover: ShiftHandover): boolean {
 }
 
 export function assertShiftHandoverClosable(handover: ShiftHandover): void {
+  if (handover.status === "closed")
+    throw new OperationsError("HANDOVER_ALREADY_CLOSED");
   if (!shiftHandoverCanClose(handover))
     throw new OperationsError("HANDOVER_ACKNOWLEDGEMENT_REQUIRED");
+}
+
+/** The persisted close keeps the receiving shift's acknowledgement intact. */
+export function closeShiftHandover(
+  handover: ShiftHandover,
+  closure: { closedBy: UserId; closedAt: IsoDateTime },
+): ShiftHandover {
+  assertShiftHandoverClosable(handover);
+  return shiftHandoverSchema.parse({
+    ...handover,
+    status: "closed",
+    closedBy: closure.closedBy,
+    closedAt: isoDateTimeSchema.parse(closure.closedAt),
+  });
 }
 
 /**
@@ -353,7 +368,7 @@ export function acknowledgeShiftHandover(
   handover: ShiftHandover,
   confirmation: { acknowledgedBy: UserId; acknowledgedAt: IsoDateTime },
 ): ShiftHandover {
-  if (handover.status === "acknowledged")
+  if (handover.status !== "submitted")
     throw new OperationsError("HANDOVER_ALREADY_ACKNOWLEDGED");
   if (confirmation.acknowledgedBy === handover.submittedBy)
     throw new OperationsError("HANDOVER_SELF_ACKNOWLEDGEMENT");

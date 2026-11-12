@@ -16,6 +16,7 @@ import {
   acknowledgeShiftHandover as acknowledgeHandoverMachine,
   assertMaintenanceTicketHasPhoto,
   cafeLegendOperationsFixtures,
+  closeShiftHandover as closeHandoverMachine,
   createEquipment,
   createMaintenanceSchedule,
   createMaintenanceTicket,
@@ -30,6 +31,7 @@ import {
   postEquipmentTransition,
   postMaintenanceTicketTransition,
   postShiftHandoverAcknowledgement,
+  postShiftHandoverClose,
   OperationsError,
   transitionEquipment,
   transitionMaintenanceTicket,
@@ -64,6 +66,10 @@ const seed = (): OpsState => ({
 const store = createMockStore<OpsState>(seed);
 /** Created document per `scope:idempotencyKey`, so a retried write replays. */
 const idempotency = createMockStore(() => new Map<string, string>());
+const handoverAttempts = createMockStore(
+  () =>
+    new Map<string, { handoverId: string; action: "acknowledge" | "close" }>(),
+);
 
 const nowIso = () => new Date().toISOString();
 
@@ -117,6 +123,37 @@ function idempotent<T extends { id: string }>(
   const row = create();
   idempotency.get().set(`${scope}:${key}`, row.id);
   return row;
+}
+
+function mutateHandover(
+  key: string,
+  handoverId: string,
+  action: "acknowledge" | "close",
+  transition: (current: ShiftHandover) => ShiftHandover,
+): ShiftHandover {
+  const current = handoverById(handoverId);
+  assertOutlet(current.outletId);
+  const attempt = handoverAttempts.get().get(key);
+  if (
+    idempotency.get().has(`handover:${key}`) ||
+    (attempt &&
+      (attempt.handoverId !== handoverId || attempt.action !== action))
+  )
+    throw new ApiError(
+      409,
+      "IDEMPOTENCY_KEY_REUSED",
+      "Kunci idempotensi sudah dipakai permintaan lain.",
+    );
+  if (attempt) return current;
+  const next = contractError(() => transition(current));
+  store.set({
+    ...store.get(),
+    handovers: store
+      .get()
+      .handovers.map((item) => (item.id === next.id ? next : item)),
+  });
+  handoverAttempts.get().set(key, { handoverId, action });
+  return next;
 }
 
 // ---- Equipment ------------------------------------------------------------
@@ -362,6 +399,12 @@ registerMock(getShiftHandover, ({ params, scenario }) => {
 
 registerMock(createShiftHandover, ({ body }) => {
   assertOutlet(body.outletId);
+  if (handoverAttempts.get().has(body.idempotencyKey))
+    throw new ApiError(
+      409,
+      "IDEMPOTENCY_KEY_REUSED",
+      "Kunci idempotensi sudah dipakai permintaan lain.",
+    );
   const row = idempotent(
     "handover",
     body.idempotencyKey,
@@ -377,6 +420,8 @@ registerMock(createShiftHandover, ({ body }) => {
       submittedAt: nowIso(),
       acknowledgedBy: null,
       acknowledgedAt: null,
+      closedBy: null,
+      closedAt: null,
       status: "submitted",
     }),
   );
@@ -385,23 +430,33 @@ registerMock(createShiftHandover, ({ body }) => {
   return { data: row };
 });
 
-registerMock(postShiftHandoverAcknowledgement, ({ params }) => {
-  const current = handoverById(params.handoverId);
+registerMock(postShiftHandoverAcknowledgement, ({ params, body }) => {
   // OPS-05: the receiving shift confirms; the machine rejects a self
   // acknowledgement (403) and a second acknowledgement (409).
-  const next = contractError(() =>
-    acknowledgeHandoverMachine(current, {
-      acknowledgedBy: receiverId as NonNullable<
-        ShiftHandover["acknowledgedBy"]
-      >,
-      acknowledgedAt: nowIso(),
-    }),
+  const next = mutateHandover(
+    body.idempotencyKey,
+    params.handoverId,
+    "acknowledge",
+    (current) =>
+      acknowledgeHandoverMachine(current, {
+        acknowledgedBy: receiverId as NonNullable<
+          ShiftHandover["acknowledgedBy"]
+        >,
+        acknowledgedAt: nowIso(),
+      }),
   );
-  store.set({
-    ...store.get(),
-    handovers: store
-      .get()
-      .handovers.map((item) => (item.id === next.id ? next : item)),
-  });
   return { data: next };
 });
+
+registerMock(postShiftHandoverClose, ({ params, body }) => ({
+  data: mutateHandover(
+    body.idempotencyKey,
+    params.handoverId,
+    "close",
+    (current) =>
+      closeHandoverMachine(current, {
+        closedBy: receiverId as NonNullable<ShiftHandover["closedBy"]>,
+        closedAt: nowIso(),
+      }),
+  ),
+}));

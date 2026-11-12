@@ -1,3 +1,21 @@
+# Paket B #553 — checkpoint close
+
+- Close handover persisten di kontrak, schema, API dan client. Migrasi0386; snapshot prevId0286 dan when1794451493865>1794416100000.
+- Test gagal-dulu:12lama lulus,3baru gagal route404. Sesudah implementasi15/15 equipment lulus, termasukcloseguard, replay, outlet/auth/origin dan actor/timepersisten. Log `/tmp/553-verify-actor-red-close-green.log`.
+- Fileutama di triage nonexhaustive; tambahan domainoperations/schema diperlukan oleh kartudan migrasi0386–0388 yang eksplisit ditugaskan. Ownership B tetap tidak memasuki storageC atau domainterlarang. Sharedschema/meta berurutanclose→actorbinding→prep.
+- Antrean+label awal14/14 dan checklist18/18 lulus sebelumreview. Architect menemukanaccount-switch TOCTOU;2testservicenegatif kini gagal benar karena mutasi/replay masih diterima. Fixatomicexpectedactor sedangmenunggucheckpointclose, kemudianretest.
+- Typecheck, reviewmigrasi, gateakhir danbrowser masih pending; belumhandoffsiapmerge.
+
+# Paket B #553 — 12 November 2026
+
+- Cabang `ws/ops-daily`, worktree `.worktrees/ops-daily`, basis `origin/milestone/m1@ede015c9`. Port checklist-engine `3b4adcd3` dan fix `c715ba3a` sudah ancestor m1 (merge `da6418bf`); ref asli `e3ac2efb` bukan ancestor langsung.
+- Kelima kartu dibaca `bd --readonly show`; belum mengubah status bd. Brief kerja: `docs/briefs/553-ops-daily.md`.
+- Berjalan: test-writer menyiapkan bukti gagal-dulu untuk ga0n dan 8erc; implementer terpisah menunggu RED.
+- Batas scope dari Paket B menahan do1o (`operations-food-safety.service.ts`, caller label, schema/route settings), 7j4e (`db/schema/operations.ts` + migrasi/meta), dan wf37 (izin/source-kind storage milik C + caller facility-staff). Rincian disiapkan per kartu; tidak mengedit file di luar batas. Migrasi 0386–0388 belum dipakai; last basis `0286`, when `1794416100000`.
+- Lingkungan: pnpm offline install, dev:prepare dan doctor lulus; workspace links lokal. Database dev worktree terpisah dan tidak mengubah data checkout lain.
+- Subagent awal: 3 Explore + 1 test-writer + 5 implementer (9 total, puncak 6). Token heavy di root; belum ada test/build dijalankan.
+- Kuota awal terukur: Claude #1 5h100/7d88; #2 31/98; #3 2/96. Codex #2 69/37; #3 100/76; #4 16/49; #5 92/51; #6 7d19 (5h tidak dilaporkan).
+
 ## 526 WS-05 admin payment fixes (Codex G0b06, 11 Nov 2026 22:50 WIB)
 
 - Cabang `ws/ws05-pay-admin`, worktree `.worktrees/ws05-pay-admin`, basis `9806b8cd`, bead `legend-xoxim`; scope brief 523/526 dan founder Q63.

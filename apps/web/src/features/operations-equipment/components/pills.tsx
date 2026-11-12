@@ -99,6 +99,8 @@ export function HandoverStatusPill({
   status: ShiftHandoverStatus;
 }) {
   const t = useT();
+  if (status === "closed")
+    return <Badge tone="neutral">{t(HANDOVER_STATUS_KEYS[status])}</Badge>;
   return (
     <StatusPill
       status={status === "acknowledged" ? "success" : "warning"}

@@ -322,6 +322,10 @@ export const acknowledgeShiftHandoverInputSchema = clientInputSchema({
   idempotencyKey: idempotencyKeySchema,
 });
 
+export const closeShiftHandoverInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+});
+
 // ---- Read endpoints -------------------------------------------------------
 
 export const listChecklistTemplates = defineEndpoint({
@@ -577,6 +581,14 @@ export const postShiftHandoverAcknowledgement = defineEndpoint({
   response: dataResponseSchema(shiftHandoverSchema),
 });
 
+export const postShiftHandoverClose = defineEndpoint({
+  method: "POST",
+  path: "/api/operations/shift-handovers/:handoverId/close",
+  params: z.strictObject({ handoverId: shiftHandoverIdSchema }),
+  body: closeShiftHandoverInputSchema,
+  response: dataResponseSchema(shiftHandoverSchema),
+});
+
 export const operationsEndpoints = [
   listChecklistTemplates,
   getChecklistTemplate,
@@ -612,4 +624,5 @@ export const operationsEndpoints = [
   postMaintenanceTicketTransition,
   createShiftHandover,
   postShiftHandoverAcknowledgement,
+  postShiftHandoverClose,
 ] as const;

@@ -27,6 +27,8 @@ export const operationsErrorHttpStatus = {
   HANDOVER_SELF_ACKNOWLEDGEMENT: 403,
   /** The handover was already acknowledged. */
   HANDOVER_ALREADY_ACKNOWLEDGED: 409,
+  /** A closed handover cannot close again with a different attempt. */
+  HANDOVER_ALREADY_CLOSED: 409,
 } as const satisfies Record<string, number>;
 
 export type OperationsErrorCode = keyof typeof operationsErrorHttpStatus;
@@ -58,6 +60,7 @@ const defaultMessages: Record<OperationsErrorCode, string> = {
   HANDOVER_SELF_ACKNOWLEDGEMENT:
     "Serah terima dikonfirmasi oleh shift penerima, bukan shift yang menyerahkan.",
   HANDOVER_ALREADY_ACKNOWLEDGED: "Serah terima ini sudah dikonfirmasi.",
+  HANDOVER_ALREADY_CLOSED: "Serah terima ini sudah ditutup.",
 };
 
 export class OperationsError extends Error {

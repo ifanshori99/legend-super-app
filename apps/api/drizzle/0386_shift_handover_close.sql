@@ -1,0 +1,8 @@
+ALTER TABLE "shift_handovers" DROP CONSTRAINT "shift_handovers_status_check";--> statement-breakpoint
+ALTER TABLE "shift_handovers" DROP CONSTRAINT "shift_handovers_acknowledged_check";--> statement-breakpoint
+ALTER TABLE "shift_handovers" ADD COLUMN "closed_by" text;--> statement-breakpoint
+ALTER TABLE "shift_handovers" ADD COLUMN "closed_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "shift_handovers" ADD CONSTRAINT "shift_handovers_closed_by_user_id_fk" FOREIGN KEY ("closed_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "shift_handovers" ADD CONSTRAINT "shift_handovers_closed_check" CHECK ((("shift_handovers"."status" = 'closed') = ("shift_handovers"."closed_by" IS NOT NULL AND "shift_handovers"."closed_at" IS NOT NULL)) AND (("shift_handovers"."closed_by" IS NULL) = ("shift_handovers"."closed_at" IS NULL)));--> statement-breakpoint
+ALTER TABLE "shift_handovers" ADD CONSTRAINT "shift_handovers_status_check" CHECK ("shift_handovers"."status" IN ('submitted', 'acknowledged', 'closed'));--> statement-breakpoint
+ALTER TABLE "shift_handovers" ADD CONSTRAINT "shift_handovers_acknowledged_check" CHECK ((("shift_handovers"."status" IN ('acknowledged', 'closed')) = ("shift_handovers"."acknowledged_by" IS NOT NULL AND "shift_handovers"."acknowledged_at" IS NOT NULL)) AND (("shift_handovers"."acknowledged_by" IS NULL) = ("shift_handovers"."acknowledged_at" IS NULL)));

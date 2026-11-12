@@ -54,6 +54,7 @@ import {
 import {
   acknowledgeShiftHandover,
   assertMaintenanceTicketHasPhoto,
+  closeShiftHandover,
   completeMaintenanceScheduleInputSchema,
   createEquipmentInputSchema,
   createMaintenanceScheduleInputSchema,
@@ -273,6 +274,8 @@ function toShiftHandover(row: ShiftHandoverRow): ShiftHandover {
     submittedAt: row.submittedAt.toISOString(),
     acknowledgedBy: row.acknowledgedBy,
     acknowledgedAt: row.acknowledgedAt?.toISOString() ?? null,
+    closedBy: row.closedBy,
+    closedAt: row.closedAt?.toISOString() ?? null,
     status: row.status,
   });
 }
@@ -411,6 +414,7 @@ const EQUIPMENT_AUDIT_SAFE_FIELDS = [
   "fromShiftTemplateId",
   "toShiftTemplateId",
   "acknowledgedBy",
+  "closedBy",
 ] as const;
 
 /** Append-only audit row in the same tenant transaction as the change. */
@@ -1770,6 +1774,89 @@ export async function postShiftHandoverAcknowledgement(
       outletId: row.outletId,
       before: { status: locked.status },
       after: { status: row.status, acknowledgedBy: row.acknowledgedBy },
+    });
+    await storeIdempotentResult(tx, context, {
+      key: input.idempotencyKey,
+      fingerprint,
+      outletId: row.outletId,
+      resultTable: "shift_handover",
+      resultId: row.id,
+    });
+    return toShiftHandover(row);
+  });
+}
+
+/** OPS-05: only an acknowledged handover may be closed; replay stays outlet scoped. */
+export async function postShiftHandoverClose(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  handoverId: string,
+  input: { idempotencyKey: string },
+): Promise<ShiftHandover> {
+  const actor = userIdSchema.parse(actorUserId);
+  // Acknowledge and close have the same body and target, but are separate actions.
+  const fingerprint = operationsFingerprint({
+    action: "shift_handover.close",
+    targetId: handoverId,
+  });
+  return withTenant(db, context, async (tx) => {
+    const now = new Date();
+    const [locked] = await tx
+      .select()
+      .from(shiftHandovers)
+      .where(
+        and(
+          eq(shiftHandovers.tenantId, context.tenant.tenantId),
+          eq(shiftHandovers.id, handoverId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!locked) throw new HttpError(404, "NOT_FOUND", NOT_FOUND_HANDOVER);
+    await assertOutletPermission(
+      tx,
+      context,
+      actor,
+      HANDOVER_PERMISSION,
+      locked.outletId,
+      now,
+    );
+    const replay = await replayShiftHandover(
+      tx,
+      context,
+      input.idempotencyKey,
+      fingerprint,
+    );
+    if (replay) return replay;
+    const closed = contract(() =>
+      closeShiftHandover(toShiftHandover(locked), {
+        closedBy: actor,
+        closedAt: now.toISOString(),
+      }),
+    );
+    const [row] = await tx
+      .update(shiftHandovers)
+      .set({
+        status: closed.status,
+        closedBy: closed.closedBy,
+        closedAt: closed.closedAt === null ? null : new Date(closed.closedAt),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(shiftHandovers.tenantId, context.tenant.tenantId),
+          eq(shiftHandovers.id, handoverId),
+        ),
+      )
+      .returning();
+    if (!row) throw new Error("Serah terima shift gagal ditutup.");
+    await auditOperations(tx, context, actor, now, {
+      action: "shift_handover.closed",
+      objectType: "shift_handover",
+      objectId: row.id,
+      outletId: row.outletId,
+      before: { status: locked.status },
+      after: { status: row.status, closedBy: row.closedBy },
     });
     await storeIdempotentResult(tx, context, {
       key: input.idempotencyKey,

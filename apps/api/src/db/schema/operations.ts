@@ -702,6 +702,10 @@ export const shiftHandovers = pgTable(
       .$type<UserId>()
       .references(() => user.id),
     acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    closedBy: text("closed_by")
+      .$type<UserId>()
+      .references(() => user.id),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
     status: varchar("status", { length: 20 })
       .$type<ShiftHandoverStatus>()
       .notNull()
@@ -730,11 +734,15 @@ export const shiftHandovers = pgTable(
     ),
     check(
       "shift_handovers_status_check",
-      sql`${table.status} IN ('submitted', 'acknowledged')`,
+      sql`${table.status} IN ('submitted', 'acknowledged', 'closed')`,
     ),
     check(
       "shift_handovers_acknowledged_check",
-      sql`(${table.status} = 'acknowledged') = (${table.acknowledgedBy} IS NOT NULL AND ${table.acknowledgedAt} IS NOT NULL)`,
+      sql`((${table.status} IN ('acknowledged', 'closed')) = (${table.acknowledgedBy} IS NOT NULL AND ${table.acknowledgedAt} IS NOT NULL)) AND ((${table.acknowledgedBy} IS NULL) = (${table.acknowledgedAt} IS NULL))`,
+    ),
+    check(
+      "shift_handovers_closed_check",
+      sql`((${table.status} = 'closed') = (${table.closedBy} IS NOT NULL AND ${table.closedAt} IS NOT NULL)) AND ((${table.closedBy} IS NULL) = (${table.closedAt} IS NULL))`,
     ),
     check(
       "shift_handovers_self_acknowledgement_check",
