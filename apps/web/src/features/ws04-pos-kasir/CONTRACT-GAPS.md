@@ -33,3 +33,18 @@ Semua hal di bawah memakai tipe lokal di `types.ts`, fungsi di `api.ts` yang di 
 
 - Kas keluar, kas masuk, dan setoran (`recordPosCashMovement`) tidak boleh ditolak dengan pesan yang memuat saldo laci atau angka sistem. Kasir mengisi hitungan buta, jadi penolakan karena "melebihi uang di laci" membocorkan saldo. Server memakai pesan generik tanpa angka (atau tidak menolak) dan menandai selisih saat tutup shift. Mock tidak punya cek saldo.
 - Kunci idempotensi dibuat sekali per niat di hook (`useConfirmCash`, `usePrintReceipt`, `useOpenShift`, `useRecordCashMovement`, `useCloseDay`) dan dipakai ulang saat percobaan diulang dengan input sama. Server wajib memperlakukan kunci yang sama sebagai satu permintaan.
+
+## Kas keluar ditahan, batas hitungan, tutup paksa (legend-pspy, legend-7mlf)
+
+Tipe di `shift-extra-types.ts`, fungsi di `shift-extra-api.ts`, aturan murni di `shift-extra-logic.ts`.
+
+- Kas keluar atau setoran yang lebih besar dari kas laci diterima seperti biasa (tanpa 409, jadi saldo tidak bocor) lalu ditahan untuk supervisor. Layar kasir tidak menangani 409 kas keluar; mock `recordCashMovement` meniru: dicatat, dikeluarkan dari angka laci, ditandai ditahan.
+- `useHeldCashOuts`: di luar mock memakai `getPosShift` (`needsApproval`) dan `listPosShiftCounts` (selisih hitungan terakhir). Gap: baris kas tidak memuat nama kasir; DTO hitungan tidak memuat `forced`, jadi `cashierCounts` = jumlah semua hitungan.
+- `MAX_CASHIER_COUNTS = 3` hanya konstanta di API service (`SHIFT_CASHIER_COUNT_LIMIT` di web). Perlu diekspor dari `@starter/shared/pos`.
+- `useOwnCountSummary` (nomor dan jumlah hitungan terakhir untuk kasir): CONTRACT_PENDING di luar mock. `submitPosShiftCount` mengembalikan `sequence` dan `countedIdr`, tetapi `submitBlindCount` di `api.ts` (milik payment) belum memakainya.
+- Tutup paksa (`useForceCloseView`, `useSubmitForcedCount`, `useWitnessForcedCount`, `useForceCloseShift`): CONTRACT_PENDING di luar mock. `forceClosePosShiftInputSchema` masih `approvedBy` + `approvalRequestId`; persetujuan orang ketiga lewat PIN (`overrideId`) belum punya jalur. Kode `DEVICE_UNVERIFIED` (perangkat tidak terverifikasi) belum ada di `pos/errors.ts`.
+- Demo mock: `?demo=hitungan-batas|tutup-paksa|tutup-paksa-menunggu|tutup-paksa-siap|hitungan-usang|shift-sendiri|perangkat-gagal`. Shift demo bawaan (supervisor) kini punya kas keluar ditahan Rp200.000.
+
+## Koreksi refund (legend-2fo, dari I1)
+
+- Koreksi refund: order detail tidak memuat jumlah yang sudah direfund; layar menampilkan sisa penuh, server (422) yang membatasi.

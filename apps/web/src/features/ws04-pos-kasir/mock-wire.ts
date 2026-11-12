@@ -325,6 +325,8 @@ export function shiftWire(shift: EngineShift, blind = false) {
 export function movementWire(
   movement: CashMovement & { shiftId?: string },
   shiftId: string,
+  /** Supervisor reads only: held for review. Never set for a blind caller. */
+  needsApproval?: boolean,
 ) {
   return {
     id: movement.id,
@@ -336,6 +338,41 @@ export function movementWire(
     recordedBy: MOCK_CASHIER_ID,
     recordedAt: movement.recordedAt,
     approvedBy: null,
+    ...(needsApproval === undefined ? {} : { needsApproval }),
+  };
+}
+
+/** One stored count as the supervisor sees it (full figures). */
+export function shiftCountWire(
+  count: {
+    id: string;
+    sequence: number;
+    forced: boolean;
+    countedIdr: number;
+    expectedIdr: number;
+    heldCashOutIdr: number;
+    submittedAt: string;
+  },
+  shiftId: string,
+) {
+  return {
+    id: count.id,
+    ...scope,
+    shiftId,
+    sequence: count.sequence,
+    // The mock keeps the total only: one line of 100.000 notes plus no coins.
+    counts: [
+      {
+        denominationIdr: 100_000,
+        quantity: Math.floor(count.countedIdr / 100_000),
+      },
+    ],
+    countedIdr: count.countedIdr,
+    expectedIdr: count.expectedIdr,
+    varianceIdr: count.countedIdr - count.expectedIdr,
+    heldCashOutIdr: count.heldCashOutIdr,
+    submittedBy: count.forced ? MOCK_SUPERVISOR_ID : MOCK_CASHIER_ID,
+    submittedAt: count.submittedAt,
   };
 }
 

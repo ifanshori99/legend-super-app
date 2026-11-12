@@ -26,6 +26,8 @@ import {
   useSupervisorOptions,
 } from "../../hooks";
 import type { ShiftReview } from "../../types";
+import { HeldCashOutGate } from "./held-cash-out-gate";
+import { ShiftForceClose } from "./shift-force-close";
 import {
   Notice,
   PosPageHeading,
@@ -203,7 +205,7 @@ function ResultPanel({ review }: { review: ShiftReview }) {
             sign="+"
           />
           <BreakdownRow
-            label={t("posKasirSupervisor.breakdown.cashOut")}
+            label={t("posKasirSupervisor.breakdown.cashOutCounted")}
             amountIdr={breakdown.cashOutIdr}
             sign={MINUS}
           />
@@ -617,6 +619,15 @@ export function ShiftApprovalScreen({ shiftId }: { shiftId: string }) {
   const query = useShiftReview(shiftId);
   const review = query.data;
   const goBack = () => router.history.back();
+  const [forceClosing, setForceClosing] = useState(false);
+
+  if (forceClosing)
+    return (
+      <ShiftForceClose
+        shiftId={shiftId}
+        onBack={() => setForceClosing(false)}
+      />
+    );
 
   return (
     <div className="grid gap-4">
@@ -658,7 +669,13 @@ export function ShiftApprovalScreen({ shiftId }: { shiftId: string }) {
           {review.status === "closed" ? (
             <ClosedPanel review={review} onBack={goBack} />
           ) : (
-            <ReviewForm review={review} onBack={goBack} />
+            <HeldCashOutGate
+              shiftId={review.shiftId}
+              onBack={goBack}
+              onForceClose={() => setForceClosing(true)}
+            >
+              <ReviewForm review={review} onBack={goBack} />
+            </HeldCashOutGate>
           )}
         </PosTwoPane>
       )}

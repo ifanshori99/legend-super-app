@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -12,7 +13,7 @@ import { useOutletClock } from "@/lib/tenant-context";
 import { Money } from "@/components/ui/money";
 import { useCashMovements, useRecordCashMovement } from "../../hooks";
 import type { CashMovement } from "../../types";
-import { PosPanel, parseDigits } from "../shared";
+import { PosPanel, StateBlock, parseDigits } from "../shared";
 import { formatShiftTime } from "./shift-format";
 import { ActionError } from "./shift-parts";
 
@@ -110,7 +111,11 @@ export function CashMovementPanel({ shiftId }: { shiftId: string }) {
   const [errors, setErrors] = useState<{ amount?: string; reason?: string }>(
     {},
   );
-  const [saved, setSaved] = useState<string | null>(null);
+  // The movement just saved: the screen says it is recorded and not to enter it again.
+  const [recorded, setRecorded] = useState<{
+    type: FormType;
+    amountIdr: number;
+  } | null>(null);
   const out = type === "cash_out";
 
   function submit(event?: React.FormEvent) {
@@ -124,29 +129,63 @@ export function CashMovementPanel({ shiftId }: { shiftId: string }) {
           : t("posKasirShift.movement.reasonError"),
     };
     setErrors(next);
-    setSaved(null);
     if (next.amount || next.reason) return;
     record.reset();
     record.mutate(
       { shiftId, type, amountIdr, reasonNote: reason.trim() },
       {
         onSuccess: () => {
-          setSaved(
-            t("posKasirShift.movement.saved", {
-              type: t(
-                out
-                  ? "posKasirShift.movement.typeCashOut"
-                  : "posKasirShift.movement.typeCashIn",
-              ),
-              amount: formatRupiah(amountIdr),
-            }),
-          );
+          setRecorded({ type, amountIdr });
           setAmountIdr(0);
           setReason("");
         },
       },
     );
   }
+
+  if (recorded)
+    return (
+      <PosPanel
+        title={t("posKasirShift.movement.title")}
+        footer={
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                record.reset();
+                setRecorded(null);
+              }}
+            >
+              {t("posKasirShift.movement.recordAnother")}
+            </Button>
+            <Button asChild>
+              <Link to="/pos">{t("posKasirShift.movement.backToPos")}</Link>
+            </Button>
+          </>
+        }
+      >
+        <div className="grid gap-4">
+          <StateBlock
+            mark="ok"
+            role="status"
+            aria-live="polite"
+            title={t(
+              recorded.type === "cash_out"
+                ? "posKasirShift.movement.recordedTitleOut"
+                : "posKasirShift.movement.recordedTitleIn",
+            )}
+            description={t("posKasirShift.movement.recordedBody")}
+            amountIdr={recorded.amountIdr}
+          >
+            <p className="text-base text-muted-foreground">
+              {t("posKasirShift.movement.recordedNoRepeat")}
+            </p>
+          </StateBlock>
+          <MovementHistory shiftId={shiftId} />
+        </div>
+      </PosPanel>
+    );
 
   return (
     <PosPanel
@@ -167,7 +206,6 @@ export function CashMovementPanel({ shiftId }: { shiftId: string }) {
               setType(next);
               record.reset();
               setErrors({});
-              setSaved(null);
             }}
             options={[
               { value: "cash_in", label: t("posKasirShift.movement.cashIn") },
@@ -220,9 +258,6 @@ export function CashMovementPanel({ shiftId }: { shiftId: string }) {
             />
           )}
           <div className="flex flex-wrap items-center justify-end gap-3">
-            <p role="status" className="text-base font-semibold text-success">
-              {saved}
-            </p>
             <Button type="submit" loading={record.isPending}>
               {record.isPending
                 ? t("posKasirShift.movement.saving")

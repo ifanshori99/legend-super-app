@@ -6,6 +6,7 @@ import {
   addPosTender,
   closePosDay,
   closePosShift,
+  forceClosePosShift,
   completePosOrder,
   getEndOfDayRecap,
   getPosApprovalPolicy,
@@ -13,6 +14,7 @@ import {
   getPosShift,
   issuePosReceipt,
   listPosCashMovements,
+  listPosShiftCounts,
   listPosShifts,
   openPosShift,
   recordPosCashMovement,
@@ -36,6 +38,7 @@ import {
   orderDetailWire,
   overrideViewWire,
   receiptIssueWire,
+  shiftCountWire,
   recapWire,
   shiftWire,
   tenderResultWire,
@@ -131,13 +134,21 @@ registerMock(getPosShift, ({ params }) => {
     return {
       shift: engine.rawShift(),
       movements,
+      held: engine.rawHeldMovementIds(params.shiftId),
       blind: engine.drawerHidden(),
     };
   });
   return wire({
     data: {
       shift: shiftWire(result.shift!, result.blind),
-      movements: result.movements.map((m) => movementWire(m, params.shiftId)),
+      movements: result.movements.map((m) =>
+        movementWire(
+          m,
+          params.shiftId,
+          // `needsApproval` only goes to callers that see live figures.
+          result.blind ? undefined : result.held.includes(m.id),
+        ),
+      ),
       receiptGaps: [],
     },
   });
@@ -185,6 +196,24 @@ registerMock(closePosShift, ({ params, body }) => {
       varianceNote: body.varianceNote,
       approvedBy: body.approvedBy,
     });
+    return { shift: engine.rawShift(), blind: engine.drawerHidden() };
+  });
+  return wire({ data: shiftWire(shift.shift!, shift.blind) });
+});
+
+registerMock(listPosShiftCounts, ({ params }) => {
+  const counts = callPosKasirEngine((engine) =>
+    engine.rawCounts(params.shiftId),
+  );
+  return wire({
+    data: counts.map((count) => shiftCountWire(count, params.shiftId)),
+  });
+});
+
+/** U9: closes with the approved forced count; the engine holds the witness. */
+registerMock(forceClosePosShift, ({ params, body }) => {
+  const shift = callPosKasirEngine((engine) => {
+    engine.forceClose({ shiftId: params.shiftId, note: body.note });
     return { shift: engine.rawShift(), blind: engine.drawerHidden() };
   });
   return wire({ data: shiftWire(shift.shift!, shift.blind) });

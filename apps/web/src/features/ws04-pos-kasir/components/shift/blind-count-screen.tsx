@@ -1,10 +1,12 @@
 import { useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
+import { ApiError } from "@/lib/api/errors";
 import { useActiveShift, useSubmitBlindCount } from "../../hooks";
+import { SHIFT_COUNT_LIMIT_CODE } from "../../shift-extra-types";
 import { CASH_DENOMINATIONS_IDR, type ActiveShift } from "../../types";
 import {
   DenominationCounter,
@@ -16,11 +18,16 @@ import {
   denominationTotal,
 } from "../shared";
 import { ActionError, ShiftScreenSkeleton } from "./shift-parts";
-import { ShiftWaiting } from "./shift-waiting";
+import {
+  requestShiftStatusView,
+  ShiftCountLimit,
+  ShiftWaiting,
+} from "./shift-waiting";
 
 function CountForm({ shift }: { shift: ActiveShift }) {
   const t = useT();
   const submit = useSubmitBlindCount();
+  const router = useRouter();
   const [quantities, setQuantities] = useState<Record<number, number>>({});
   const [otherIdr, setOtherIdr] = useState(0);
   // An empty drawer is valid: a zero count needs one explicit confirmation.
@@ -44,6 +51,22 @@ function CountForm({ shift }: { shift: ActiveShift }) {
       otherAmountIdr: otherIdr,
     });
   }
+
+  // All recounts used (409): only a supervisor can close the shift now.
+  if (
+    submit.error instanceof ApiError &&
+    submit.error.code === SHIFT_COUNT_LIMIT_CODE
+  )
+    return (
+      <ShiftCountLimit
+        shift={shift}
+        countedIdr={null}
+        onStatus={() => {
+          requestShiftStatusView();
+          void router.navigate({ to: "/pos/shift" });
+        }}
+      />
+    );
 
   return (
     <div className="grid gap-4">

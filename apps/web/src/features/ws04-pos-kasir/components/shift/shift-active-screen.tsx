@@ -9,6 +9,7 @@ import { useActiveShift } from "../../hooks";
 import type { ActiveShift } from "../../types";
 import { PosPageHeading, PosPanel, PosTwoPane, StatusPill } from "../shared";
 import { CashMovementPanel } from "./cash-movement-panel";
+import { isDeviceUnverified, ShiftDeviceError } from "./shift-device-error";
 import { ShiftOpenScreen } from "./shift-open-screen";
 import { formatShiftDateTime, shiftDuration } from "./shift-format";
 import { ContextBlock, ShiftScreenSkeleton } from "./shift-parts";
@@ -99,7 +100,9 @@ export function ShiftActiveScreen() {
   const t = useT();
   const shift = useActiveShift();
   if (shift.isPending)
-    return <ShiftScreenSkeleton label={t("posKasirShift.loading")} />;
+    return <ShiftScreenSkeleton label={t("posKasirShift.loadingStatus")} />;
+  if (shift.isError && isDeviceUnverified(shift.error))
+    return <ShiftDeviceError onRetry={() => void shift.refetch()} />;
   if (shift.isError)
     return (
       <ErrorState
