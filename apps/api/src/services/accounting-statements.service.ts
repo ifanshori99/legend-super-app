@@ -141,11 +141,18 @@ function statement<T>(
 ): Promise<T> {
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
-  return withTenant(db, context, async (tx) => {
-    const ledger = await loadLedger(tx, tenantId, legalEntityId, to);
-    if (check) await check(tx, tenantId);
-    return build(ledger);
-  });
+  // A reopen and posting may commit between the period and journal queries.
+  // Fix one snapshot at BEGIN so closed_snapshot always describes its figures.
+  return withTenant(
+    db,
+    context,
+    async (tx) => {
+      const ledger = await loadLedger(tx, tenantId, legalEntityId, to);
+      if (check) await check(tx, tenantId);
+      return build(ledger);
+    },
+    { isolationLevel: "repeatable read", accessMode: "read only" },
+  );
 }
 
 /**

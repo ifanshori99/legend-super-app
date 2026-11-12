@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { PgTransactionConfig } from "drizzle-orm/pg-core";
 import {
   assertTrustedScopedContext,
   type ScopedTenantContext,
@@ -14,6 +15,7 @@ export async function withTenant<T>(
   database: Database,
   context: ScopedTenantContext,
   run: (tx: Transaction) => Promise<T>,
+  config?: PgTransactionConfig,
 ): Promise<T> {
   assertTrustedScopedContext(context);
   return database.transaction(async (tx) => {
@@ -41,5 +43,5 @@ export async function withTenant<T>(
       sql`SELECT set_config('app.tenant_id', ${context.tenant.tenantId}, true), set_config('app.outlet_ids', ${outlets}, true)`,
     );
     return run(tx);
-  });
+  }, config);
 }
