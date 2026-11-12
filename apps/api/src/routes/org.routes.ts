@@ -14,6 +14,7 @@ import {
   decideSupportAccessRequestInputSchema,
   legalEntityIdSchema,
   setOutletStatusInputSchema,
+  supportAccessGrantIdSchema,
   supportAccessRequestIdSchema,
   tenantDomainIdSchema,
   updateBrandInputSchema,
@@ -56,6 +57,7 @@ import {
 import { HttpError } from "../lib/http-error";
 import {
   approveSupportAccessRequest,
+  endTenantSupportAccess,
   listSupportAccess,
   listSupportAccessRequests,
   rejectSupportAccessRequest,
@@ -248,6 +250,24 @@ const requireOwnerDecision: RequestHandler = (req, _res, next) => {
 const supportAccessRequestParams = z.strictObject({
   requestId: supportAccessRequestIdSchema,
 });
+
+orgRouter.post(
+  "/support-access/:grantId/end",
+  approveSupportAccess,
+  requireOwnerDecision,
+  async (req, res) => {
+    const { grantId } = z
+      .strictObject({ grantId: supportAccessGrantIdSchema })
+      .parse(req.params);
+    res.json({
+      data: await endTenantSupportAccess(
+        getScopedTenantContext(req),
+        { userId: getAuth(req).user.id },
+        grantId,
+      ),
+    });
+  },
+);
 
 orgRouter.get(
   "/support-access/requests",

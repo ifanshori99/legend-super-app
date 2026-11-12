@@ -541,6 +541,12 @@ export const orgEndpoints = {
     query: cursorPageQuerySchema,
     response: cursorPageSchema(supportAccessRequestSchema),
   }),
+  endSupportAccess: defineEndpoint({
+    method: "POST",
+    path: "/api/org/support-access/:grantId/end",
+    params: z.strictObject({ grantId: supportAccessGrantIdSchema }),
+    response: dataResponseSchema(supportAccessGrantSchema),
+  }),
   approveSupportAccessRequest: defineEndpoint({
     method: "POST",
     path: "/api/org/support-access/requests/:requestId/approve",
