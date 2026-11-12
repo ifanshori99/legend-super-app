@@ -21,6 +21,10 @@ import type { EventEnvelope } from "@starter/shared/events";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
+  autoJournalFactOf,
+  storedEventOf,
+} from "../services/accounting-auto-journal-amounts.ts";
+import {
   postJournalFromRuleInTransaction,
   reverseJournalInTransaction,
 } from "../services/accounting-journal.service.ts";
@@ -371,6 +375,65 @@ describe("a payout role remapped onto the service charge account after the sale"
 });
 
 describe("payout mapping changes after refund amounts are calculated (legend-48ft7)", () => {
+  it("rejects when another transaction commits a payout remap between fact calculation and journal posting", async () => {
+    const world = await makeWorld();
+    await mapToLiability(world, "service_charge", "2301");
+    const { orderUlid, paid } = await seedSaleWithServiceCharge(world);
+    await post(world, paid);
+    const event = refundEvent(world, orderUlid, {
+      grossSalesIdr: 50_000,
+      serviceChargeIdr: 5_000,
+      taxIdr: 5_000,
+    });
+    const stored = storedEventOf({
+      id: event.id,
+      name: "order.refunded",
+      outletId: event.outletId,
+      occurredAt: event.occurredAt,
+      payload: event.payload,
+      idempotencyKey: event.idempotencyKey,
+    });
+    const context = contextOf(world.tenant);
+    const before = await totalsOf(world, "tax_payable_pbjt");
+
+    await expect(
+      withTenant(db, context, async (tx) => {
+        // Transaction A reads the original payout mapping as part of the
+        // real fact calculation, then remains open while B commits a change.
+        const fact = await autoJournalFactOf(
+          tx,
+          context.tenant.tenantId,
+          stored,
+        );
+        expect(fact).not.toBeNull();
+        await asTenant(world.tenant, async (client) => {
+          await client.query("SET LOCAL lock_timeout = '2s'");
+          await client.query(
+            `UPDATE account_mappings SET account_id = $3
+              WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'cash_on_hand'`,
+            [world.tenant.id, world.entity, world.accounts.tax_payable_pbjt],
+          );
+        });
+        return postJournalFromRuleInTransaction(tx, context, {
+          eventName: fact!.ruleEvent,
+          variant: fact!.variant,
+          amounts: fact!.amounts,
+          accountOverrides: fact!.accountOverrides,
+          legalEntityId: world.entity,
+          outletId: world.outletId,
+          entryDate: BUSINESS_DATE,
+          sourceId: fact!.sourceId,
+          orderId: fact!.orderId,
+          postedBy: null,
+          idempotencyKey: `race-refund:${createUlid()}`,
+        });
+      }),
+    ).rejects.toMatchObject({ code: "POSTING_AMOUNTS_MISMATCH" });
+
+    expect(await journalCount(world)).toBe(1);
+    expect(await totalsOf(world, "tax_payable_pbjt")).toEqual(before);
+  });
+
   for (const protectedRole of ["service_charge", "tax_payable_pbjt"] as const) {
     it(`refuses the actual payout mapping when cash points to the historical ${protectedRole} account`, async () => {
       const world = await makeWorld();
