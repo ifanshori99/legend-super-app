@@ -27,6 +27,7 @@ export type ChecklistAnswerQueueEntry = ChecklistAnswerSubmission & {
   idempotencyKey: string;
   queuedAt: string;
   error?: string;
+  resolution?: "conflict";
 };
 
 type QueueStorage = {
@@ -83,7 +84,8 @@ function isEntry(value: unknown): value is ChecklistAnswerQueueEntry {
     (body.signatureMediaId === undefined ||
       body.signatureMediaId === null ||
       text(body.signatureMediaId)) &&
-    (value.error === undefined || typeof value.error === "string")
+    (value.error === undefined || typeof value.error === "string") &&
+    (value.resolution === undefined || value.resolution === "conflict")
   );
 }
 
@@ -162,8 +164,39 @@ export function createChecklistAnswerQueue({
 
   function list(scope: ChecklistAnswerScope): ChecklistAnswerQueueEntry[] {
     return clone(
-      read().filter((entry) => sameChecklistAnswerScope(entry.scope, scope)),
+      read().filter(
+        (entry) =>
+          sameChecklistAnswerScope(entry.scope, scope) && !entry.resolution,
+      ),
     );
+  }
+
+  function listConflicts(
+    scope: ChecklistAnswerScope,
+  ): ChecklistAnswerQueueEntry[] {
+    return clone(
+      read().filter(
+        (entry) =>
+          sameChecklistAnswerScope(entry.scope, scope) &&
+          entry.resolution === "conflict",
+      ),
+    );
+  }
+
+  async function discardConflict(
+    scope: ChecklistAnswerScope,
+    idempotencyKey: string,
+  ): Promise<void> {
+    await lock(() => {
+      write(
+        read().filter(
+          (entry) =>
+            !sameChecklistAnswerScope(entry.scope, scope) ||
+            entry.idempotencyKey !== idempotencyKey ||
+            entry.resolution !== "conflict",
+        ),
+      );
+    });
   }
 
   async function enqueue(
@@ -187,6 +220,19 @@ export function createChecklistAnswerQueue({
         if (fingerprint(existing) !== fingerprint(entry))
           throw new Error("This checklist attempt already has another answer.");
         return clone(existing);
+      }
+      if (
+        entries.some(
+          (row) =>
+            sameChecklistAnswerScope(row.scope, entry.scope) &&
+            row.runId === entry.runId &&
+            row.itemId === entry.itemId &&
+            row.resolution === "conflict",
+        )
+      ) {
+        throw new Error(
+          "Resolve the local answer conflict before answering again.",
+        );
       }
       if (
         entries.filter((row) =>
@@ -226,18 +272,29 @@ export function createChecklistAnswerQueue({
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "The answer was not sent.";
+        const conflict =
+          object(error) && error.code === "CHECKLIST_ANSWER_CONFLICT";
         // Enqueue can run while send awaits. Always re-read before changing
         // one attempt, otherwise a late response could overwrite newer work.
         await lock(() => {
           write(
             read().map((row) =>
               sameChecklistAnswerScope(row.scope, scope) &&
-              row.idempotencyKey === entry.idempotencyKey
-                ? { ...row, error: message }
+              (conflict
+                ? row.runId === entry.runId && row.itemId === entry.itemId
+                : row.idempotencyKey === entry.idempotencyKey)
+                ? {
+                    ...row,
+                    error: message,
+                    ...(conflict ? { resolution: "conflict" as const } : {}),
+                  }
                 : row,
             ),
           );
         });
+        // A server-final answer cannot be retried. Keep every local attempt
+        // for that item for explicit resolution and let other items drain.
+        if (conflict) continue;
         break;
       }
       await lock(() => {
@@ -251,7 +308,10 @@ export function createChecklistAnswerQueue({
       });
       sent += 1;
     }
-    return { sent, pending: list(scope).length };
+    return {
+      sent,
+      pending: list(scope).length + listConflicts(scope).length,
+    };
   }
 
   function replay(scope: ChecklistAnswerScope): Promise<ReplayResult> {
@@ -269,5 +329,13 @@ export function createChecklistAnswerQueue({
     return replaying;
   }
 
-  return { enqueue, list, replay, subscribe, isReplaying };
+  return {
+    enqueue,
+    list,
+    listConflicts,
+    discardConflict,
+    replay,
+    subscribe,
+    isReplaying,
+  };
 }

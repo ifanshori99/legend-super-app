@@ -19,10 +19,53 @@ const dialogUrl = new URL(
   "features/operations-checklist/components/start-run-dialog.tsx",
   webRoot,
 ).href;
+const itemCardUrl = new URL(
+  "features/operations-checklist/components/checklist-item-card.tsx",
+  webRoot,
+).href;
+const runPageUrl = new URL(
+  "features/operations-checklist/components/run-execution-page.tsx",
+  webRoot,
+).href;
 const stub = (source) => `data:text/javascript,${encodeURIComponent(source)}`;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (context.parentURL === runPageUrl) {
+      const pageStubs = {
+        "@tanstack/react-router":
+          "export const Link = (props) => props.children;",
+        "@/components/ui/toast": "export const useToast = () => () => {};",
+        "@/lib/tenant-context":
+          'export const useOutletClock = () => ({clock:{timeZone:"Asia/Jakarta"}});',
+        "@/lib/use-online": "export const useOnline = () => true;",
+        "../hooks.ts": [
+          "export const useChecklistRun = () => ({data:globalThis.__opsRunPageTestState.run,isPending:false});",
+          "export const useChecklistTemplate = () => ({data:undefined});",
+          "export const useFloorZones = () => ({data:{data:{zones:[]}}});",
+          "export const useChecklistRunTransition = () => ({isPending:false,mutate(){}});",
+        ].join("\n"),
+        "../use-now.ts": "export const useNowMs = () => null;",
+        "../use-answer-queue.ts":
+          "export const useChecklistAnswerQueue = () => globalThis.__opsRunPageTestState.answerQueue;",
+      };
+      if (specifier in pageStubs)
+        return { url: stub(pageStubs[specifier]), shortCircuit: true };
+    }
+    if (context.parentURL === itemCardUrl) {
+      if (specifier === "../hooks.ts")
+        return {
+          url: stub(
+            "export const useRecordChecklistItemResult = () => ({isPending:false,mutate(){}});",
+          ),
+          shortCircuit: true,
+        };
+      if (specifier === "@/lib/use-online")
+        return {
+          url: stub("export const useOnline = () => true;"),
+          shortCircuit: true,
+        };
+    }
     if (context.parentURL === dialogUrl) {
       if (specifier === "@/components/ui/dialog")
         return {
@@ -80,6 +123,8 @@ registerHooks({
 });
 
 const { StartRunDialog } = await import(dialogUrl);
+const { ChecklistItemCard } = await import(itemCardUrl);
+const { ChecklistRunPage } = await import(runPageUrl);
 const { FormField } = await import(
   new URL("components/ui/form-field.tsx", webRoot).href
 );
@@ -175,4 +220,122 @@ test("legend-8erc real FormField Select links its hint and validation error to t
   );
   assert.match(markup, /id="ops-template-error" aria-live="polite"/);
   assert.match(markup, /Template wajib dipilih\./);
+});
+
+test("562 OPS-01 a conflict remains available for resolution beside the final server answer", () => {
+  const run = fixtures.checklistRuns[0];
+  const item = run.items[0];
+  const localNote = "Local answer awaiting explicit resolution";
+  const serverNote = "Server answer already accepted";
+  const markup = renderToStaticMarkup(
+    React.createElement(ChecklistItemCard, {
+      runId: run.id,
+      item,
+      result: {
+        itemId: item.id,
+        status: "done",
+        numberValue: "5",
+        note: serverNote,
+        photoMediaIds: [],
+        signatureMediaId: null,
+        completedAt: null,
+        completedBy: null,
+      },
+      editable: false,
+      timeZone: "Asia/Jakarta",
+      answerQueue: {
+        entries: [],
+        conflicts: [
+          {
+            scope: {
+              tenantId: run.tenantId,
+              userId: run.assignedTo,
+              outletId: run.outletId,
+            },
+            runId: run.id,
+            itemId: item.id,
+            body: { status: "done", note: localNote, numberValue: "4" },
+            idempotencyKey: "local-conflict-resolution-0001",
+            queuedAt: "2030-01-15T03:00:00.000Z",
+            error: "Another answer is already saved on the server",
+          },
+        ],
+        error: null,
+        ready: true,
+        replaying: false,
+        async save() {},
+        async retry() {},
+        async discardConflict() {},
+      },
+    }),
+  );
+  assert.match(markup, /Perlu dicek/);
+  assert.match(markup, /Buang jawaban lokal/);
+  assert.ok(markup.includes(localNote), "local evidence stays visible");
+  assert.ok(
+    markup.includes(serverNote),
+    "the accepted server answer stays visible",
+  );
+});
+
+test("562 OPS-01 the real run page keeps conflict resolution visible after the server item becomes finished", () => {
+  const fixture = fixtures.checklistRuns[0];
+  const item = fixture.items[0];
+  const localNote = "Persisted local note after refreshing the completed run";
+  const serverNote = "Accepted server note after refreshing the completed run";
+  const run = {
+    ...fixture,
+    status: "completed",
+    items: [item],
+    results: [
+      {
+        ...fixture.results.find((result) => result.itemId === item.id),
+        itemId: item.id,
+        status: "done",
+        note: serverNote,
+      },
+    ],
+  };
+  globalThis.__opsRunPageTestState = {
+    run,
+    answerQueue: {
+      entries: [],
+      conflicts: [
+        {
+          scope: {
+            tenantId: run.tenantId,
+            userId: run.assignedTo,
+            outletId: run.outletId,
+          },
+          runId: run.id,
+          itemId: item.id,
+          body: { status: "done", note: localNote, numberValue: "4" },
+          idempotencyKey: "local-completed-page-conflict-0001",
+          queuedAt: "2030-01-15T03:00:00.000Z",
+          error: "Another answer is already saved on the server",
+        },
+      ],
+      error: null,
+      ready: true,
+      replaying: false,
+      async save() {},
+      async retry() {},
+      async discardConflict() {},
+    },
+  };
+  try {
+    const markup = renderToStaticMarkup(
+      React.createElement(ChecklistRunPage, { runId: run.id }),
+    );
+    assert.match(markup, /Perlu dicek/);
+    assert.match(markup, /Buang jawaban lokal/);
+    assert.ok(markup.includes(localNote), "the page retains local evidence");
+    assert.ok(
+      markup.includes(serverNote),
+      "the page retains the server answer",
+    );
+    assert.match(markup, /data-slot="checklist-item-result"/);
+  } finally {
+    delete globalThis.__opsRunPageTestState;
+  }
 });

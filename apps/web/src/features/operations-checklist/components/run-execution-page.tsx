@@ -196,25 +196,35 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
         />
       )}
 
-      {(answerQueue.entries.length > 0 || answerQueue.error) && (
+      {(answerQueue.entries.length > 0 ||
+        answerQueue.conflicts.length > 0 ||
+        answerQueue.error) && (
         <Card data-slot="checklist-answer-queue">
           <p role="status" aria-live="polite" className="text-sm leading-5">
             {answerQueue.entries.length} jawaban menunggu konfirmasi server.
           </p>
+          {answerQueue.conflicts.length > 0 && (
+            <p role="status" aria-live="polite" className="text-sm leading-5">
+              {answerQueue.conflicts.length} jawaban perlu dicek. Periksa
+              jawaban lokal pada item terkait; jawaban server tetap dipakai.
+            </p>
+          )}
           {answerQueue.error && (
             <p role="alert" className="text-sm leading-5 text-danger">
               {answerQueue.error}
             </p>
           )}
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!online || !answerQueue.ready}
-            loading={answerQueue.replaying}
-            onClick={() => void answerQueue.retry()}
-          >
-            Coba kirim antrean
-          </Button>
+          {answerQueue.entries.length > 0 && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!online || !answerQueue.ready}
+              loading={answerQueue.replaying}
+              onClick={() => void answerQueue.retry()}
+            >
+              Coba kirim antrean
+            </Button>
+          )}
         </Card>
       )}
 
@@ -363,6 +373,7 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
                   result={resultOf(run, item.id)}
                   editable={false}
                   timeZone={clock.timeZone}
+                  answerQueue={answerQueue}
                 />
               </li>
             ))}

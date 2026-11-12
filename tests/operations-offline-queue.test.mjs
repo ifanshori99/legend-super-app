@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { test } from "node:test";
+import { ApiError } from "../apps/web/src/lib/api/errors.ts";
 
 const moduleUrl = new URL(
   "../apps/web/src/features/operations-checklist/queue.ts",
@@ -268,6 +269,158 @@ test("legend-ga0n OPS-01 a server validation failure remains visible and is neve
   const [entry] = h.queue.list(scope);
   assert.equal(entry.idempotencyKey, "offline-conflict-answer-0001");
   assert.ok(entry.error);
+});
+
+test("562 OPS-01 a permanent answer conflict retains its local snapshot and lets an independent answer reach the server", async () => {
+  const conflict = submission("offline-permanent-conflict-answer-0001");
+  conflict.body.note = "Local opening temperature was 4 degrees";
+  conflict.body.numberValue = "4";
+  const independent = submission("offline-independent-answer-0002");
+  independent.itemId = "00000000-0000-4000-8000-000000008303";
+  const original = structuredClone(conflict);
+  const h = harness({
+    send: async (entry) => {
+      if (entry.idempotencyKey === conflict.body.idempotencyKey)
+        throw new ApiError(
+          409,
+          "CHECKLIST_ANSWER_CONFLICT",
+          "Another answer is already saved on the server",
+        );
+    },
+  });
+  await h.queue.enqueue(conflict);
+  await h.queue.enqueue(independent);
+
+  assert.deepEqual(await h.queue.replay(scope), { sent: 1, pending: 1 });
+  assert.deepEqual(
+    h.sent.map((entry) => entry.idempotencyKey),
+    [conflict.body.idempotencyKey, independent.body.idempotencyKey],
+  );
+  assert.equal(h.queue.list(scope).length, 0);
+  const [held] = h.queue.listConflicts(scope);
+  assert.deepEqual(held.body, original.body);
+  assert.deepEqual(held.scope, original.scope);
+  assert.equal(held.itemId, original.itemId);
+  assert.equal(held.runId, original.runId);
+  assert.ok(held.error, "the local answer needs visible resolution");
+
+  const reloaded = harness({ storage: h.storage });
+  assert.deepEqual(reloaded.queue.listConflicts(scope)[0].body, original.body);
+  assert.deepEqual(await reloaded.queue.replay(scope), {
+    sent: 0,
+    pending: 1,
+  });
+  assert.equal(reloaded.sent.length, 0, "replay cannot overwrite the server");
+});
+
+test("562 OPS-01 discarding a conflict only removes the chosen local answer in its active scope", async () => {
+  const key = "offline-discard-conflict-answer-0001";
+  const h = harness({
+    send: async () => {
+      throw new ApiError(
+        409,
+        "CHECKLIST_ANSWER_CONFLICT",
+        "Another answer is already saved on the server",
+      );
+    },
+  });
+  await h.queue.enqueue(submission(key));
+  await h.queue.enqueue(submission(key, otherOutlet));
+  await h.queue.replay(scope);
+  h.setActive(otherOutlet);
+  await h.queue.replay(otherOutlet);
+
+  h.setActive(scope);
+  await h.queue.discardConflict(scope, key);
+  assert.equal(h.queue.listConflicts(scope).length, 0);
+  assert.equal(h.queue.listConflicts(otherOutlet).length, 1);
+  assert.deepEqual(await h.queue.replay(scope), { sent: 0, pending: 0 });
+  assert.equal(h.sent.length, 2, "discard must never submit a replacement");
+});
+
+test("562 OPS-01 answers for a conflicted item require resolution while unrelated items continue", async () => {
+  const conflict = submission("offline-same-item-conflict-0001");
+  const sameItem = submission("offline-same-item-conflict-0002");
+  sameItem.body.note = "A later local answer for the same server item";
+  const independent = submission("offline-other-item-after-conflict-0003");
+  independent.itemId = "00000000-0000-4000-8000-000000008303";
+  const h = harness({
+    send: async (entry) => {
+      if (entry.itemId === conflict.itemId)
+        throw new ApiError(409, "CHECKLIST_ANSWER_CONFLICT", "Answer conflict");
+    },
+  });
+  await h.queue.enqueue(conflict);
+  await h.queue.enqueue(sameItem);
+  await h.queue.enqueue(independent);
+
+  assert.deepEqual(await h.queue.replay(scope), { sent: 1, pending: 2 });
+  assert.deepEqual(
+    h.sent.map((entry) => entry.idempotencyKey),
+    [conflict.body.idempotencyKey, independent.body.idempotencyKey],
+  );
+  assert.deepEqual(
+    h.queue.listConflicts(scope).map((entry) => entry.body.note),
+    [conflict.body.note, sameItem.body.note],
+  );
+  await assert.rejects(() =>
+    h.queue.enqueue(submission("offline-new-key-for-conflicted-item-0004")),
+  );
+});
+
+test("562 OPS-01 a conflict message without the permanent API code still waits for retry", async () => {
+  const h = harness({
+    send: async () => {
+      throw new ApiError(
+        503,
+        "SERVICE_UNAVAILABLE",
+        "CHECKLIST_ANSWER_CONFLICT may be unavailable until retry",
+      );
+    },
+  });
+  await h.queue.enqueue(submission("offline-transient-conflict-message-0001"));
+  const independent = submission("offline-after-transient-message-0002");
+  independent.itemId = "00000000-0000-4000-8000-000000008303";
+  await h.queue.enqueue(independent);
+
+  assert.deepEqual(await h.queue.replay(scope), { sent: 0, pending: 2 });
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.queue.list(scope).length, 2);
+  assert.equal(h.queue.listConflicts(scope).length, 0);
+});
+
+test("562 OPS-01 a conflict cannot be lost when saving the resolution list fails", async () => {
+  const backing = memoryStorage();
+  let blocked = false;
+  const storage = {
+    getItem: backing.getItem,
+    setItem: (key, value) => {
+      if (blocked) throw new Error("Device storage full");
+      backing.setItem(key, value);
+    },
+  };
+  const h = harness({
+    storage,
+    send: async () => {
+      throw new ApiError(
+        409,
+        "CHECKLIST_ANSWER_CONFLICT",
+        "Another answer is already saved on the server",
+      );
+    },
+  });
+  const input = submission("offline-undurable-conflict-answer-0001");
+  input.body.note = "Keep this local evidence";
+  await h.queue.enqueue(input);
+  const before = storage.getItem(queueModule.CHECKLIST_ANSWER_QUEUE_KEY);
+  blocked = true;
+
+  await assert.rejects(() => h.queue.replay(scope));
+  assert.equal(storage.getItem(queueModule.CHECKLIST_ANSWER_QUEUE_KEY), before);
+  assert.deepEqual(
+    harness({ storage: backing }).queue.list(scope)[0].body,
+    input.body,
+  );
 });
 
 test(

@@ -9,6 +9,14 @@ import { AlertTriangle, Camera, Check, PenLine, Trash2 } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -77,6 +85,9 @@ export function ChecklistItemCard({
   const [pendingStatus, setPendingStatus] = React.useState<
     "done" | "failed" | null
   >(null);
+  const [discardKey, setDiscardKey] = React.useState<string | null>(null);
+  const [discarding, setDiscarding] = React.useState(false);
+  const [discardError, setDiscardError] = React.useState<string | null>(null);
 
   // Local preview only: a mock media id stands in until upload wiring lands.
   React.useEffect(() => {
@@ -90,6 +101,27 @@ export function ChecklistItemCard({
   const finished = result !== undefined && result.status !== "pending";
   const requiresMedia = requiresPhoto || requiresSignature;
   const queued = answerQueue?.entries.find((entry) => entry.itemId === item.id);
+  const conflicts = (answerQueue?.conflicts ?? []).filter(
+    (entry) => entry.itemId === item.id,
+  );
+
+  async function discardLocalAnswer() {
+    if (!answerQueue || discardKey === null) return;
+    setDiscarding(true);
+    setDiscardError(null);
+    try {
+      await answerQueue.discardConflict(discardKey);
+      setDiscardKey(null);
+    } catch (error) {
+      setDiscardError(
+        error instanceof Error
+          ? error.message
+          : "Jawaban lokal belum dapat dibuang. Coba lagi.",
+      );
+    } finally {
+      setDiscarding(false);
+    }
+  }
 
   function handleFile(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -181,7 +213,13 @@ export function ChecklistItemCard({
       data-item-id={item.id}
       data-item-status={result?.status ?? "pending"}
       data-queue-state={
-        queued ? (queued.error ? "error" : "pending") : undefined
+        conflicts.length > 0
+          ? "conflict"
+          : queued
+            ? queued.error
+              ? "error"
+              : "pending"
+            : undefined
       }
       data-evidence={item.requiredEvidence.join(" ") || undefined}
       aria-labelledby={headingId}
@@ -217,6 +255,67 @@ export function ChecklistItemCard({
               })}
         </p>
       </div>
+
+      {conflicts.map((entry) => (
+        <div
+          key={entry.idempotencyKey}
+          data-slot="checklist-item-conflict"
+          className="grid gap-2 rounded-control border-(length:--border-w) border-border bg-surface-2 p-3"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone="warning">Perlu dicek</Badge>
+            <span className="text-sm leading-5 font-medium">
+              Jawaban lokal:{" "}
+              {t(
+                entry.body.status === "failed"
+                  ? "opsChecklist.run.item.resultFailed"
+                  : "opsChecklist.run.item.resultDone",
+              )}
+            </span>
+          </div>
+          <p className="text-sm leading-5 text-muted-foreground">
+            Server sudah memiliki jawaban lain. Jawaban lokal ini tetap disimpan
+            untuk diperiksa dan tidak akan dikirim ulang. Buang jawaban lokal
+            untuk memakai jawaban server.
+          </p>
+          {entry.body.numberValue !== null &&
+            entry.body.numberValue !== undefined && (
+              <p className="text-sm leading-5 tabular">
+                {t("opsChecklist.run.item.numberValue", {
+                  value: entry.body.numberValue,
+                })}
+              </p>
+            )}
+          {entry.body.note && (
+            <p className="text-sm leading-5 wrap-break-word">
+              {t("opsChecklist.run.item.noteValue", { note: entry.body.note })}
+            </p>
+          )}
+          {!!entry.body.photoMediaIds?.length && (
+            <Badge tone="neutral">
+              {t("opsChecklist.run.item.photoStored", {
+                count: entry.body.photoMediaIds.length,
+              })}
+            </Badge>
+          )}
+          {entry.body.signatureMediaId && (
+            <Badge tone="neutral">
+              {t("opsChecklist.run.item.signatureLabel")}
+            </Badge>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!answerQueue?.ready}
+            onClick={() => {
+              setDiscardError(null);
+              setDiscardKey(entry.idempotencyKey);
+            }}
+          >
+            Buang jawaban lokal
+          </Button>
+        </div>
+      ))}
 
       {finished && result ? (
         <div data-slot="checklist-item-result" className="grid gap-1.5">
@@ -277,7 +376,7 @@ export function ChecklistItemCard({
             </p>
           )}
         </div>
-      ) : editable ? (
+      ) : conflicts.length > 0 ? null : editable ? (
         <div className="grid gap-3" data-slot="checklist-item-evidence">
           {requiresPhoto && (
             <div className="grid gap-1.5">
@@ -455,6 +554,46 @@ export function ChecklistItemCard({
           </div>
         </div>
       ) : null}
+
+      <Dialog
+        open={discardKey !== null}
+        onOpenChange={(open) => {
+          if (!open && !discarding) setDiscardKey(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Buang jawaban lokal?</DialogTitle>
+            <DialogDescription>
+              Jawaban lokal untuk {item.label} akan dihapus dari perangkat ini.
+              Jawaban server tetap dipakai. Tindakan ini tidak dapat dibatalkan.
+            </DialogDescription>
+          </DialogHeader>
+          {discardError && (
+            <p role="alert" className="text-sm leading-5 text-danger">
+              {discardError}
+            </p>
+          )}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={discarding}
+              onClick={() => setDiscardKey(null)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              loading={discarding}
+              onClick={() => void discardLocalAnswer()}
+            >
+              Buang jawaban lokal
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </article>
   );
 }

@@ -9,6 +9,7 @@ import {
 } from "@starter/shared/operations";
 import type { AreaAccess } from "@/lib/areas/access";
 import { API_MOCK } from "@/lib/api/mock-flag";
+import { ApiError } from "@/lib/api/errors";
 import { newIdempotencyKey } from "@/lib/idempotency";
 import { useTenantContext } from "@/lib/tenant-context";
 import { useOnline } from "@/lib/use-online";
@@ -64,11 +65,13 @@ function serverQueueAvailableSnapshot() {
 
 export type ChecklistAnswerQueueView = {
   entries: readonly ChecklistAnswerQueueEntry[];
+  conflicts: readonly ChecklistAnswerQueueEntry[];
   error: string | null;
   replaying: boolean;
   ready: boolean;
   save: (input: RecordResultInput & { itemId: string }) => Promise<void>;
   retry: () => Promise<void>;
+  discardConflict: (idempotencyKey: string) => Promise<void>;
 };
 
 /** One queue owner per run page; every item shares the same replay worker. */
@@ -165,14 +168,30 @@ export function useChecklistAnswerQueue(
             throw new Error("The checklist session or outlet changed.");
           // The body retains expectedActorUserId. The server compares it to
           // the authenticated actor atomically before replay or mutation.
-          const saved = await api.recordChecklistItemResult(
-            {
-              runId: entry.runId as OpsChecklistRunId,
-              itemId: entry.itemId as OpsChecklistItemId,
-            },
-            entry.body,
-            { signal },
-          );
+          let saved;
+          try {
+            saved = await api.recordChecklistItemResult(
+              {
+                runId: entry.runId as OpsChecklistRunId,
+                itemId: entry.itemId as OpsChecklistItemId,
+              },
+              entry.body,
+              { signal },
+            );
+          } catch (error) {
+            if (
+              error instanceof ApiError &&
+              error.code === "CHECKLIST_ANSWER_CONFLICT" &&
+              lifetime.current.active &&
+              !signal?.aborted &&
+              sameChecklistAnswerScope(activeScope.current, entry.scope)
+            ) {
+              void queryClient.invalidateQueries({
+                queryKey: checklistRunQuery(entry.runId).queryKey,
+              });
+            }
+            throw error;
+          }
           if (
             lifetime.current.active &&
             !signal?.aborted &&
@@ -196,13 +215,25 @@ export function useChecklistAnswerQueue(
     queue.isReplaying,
     serverQueueAvailableSnapshot,
   );
-  const { entries, storageError } = React.useMemo(() => {
+  const { entries, conflicts, storageError } = React.useMemo(() => {
     if (stored === STORAGE_UNAVAILABLE)
-      return { entries: [], storageError: STORAGE_ERROR_MESSAGE };
+      return {
+        entries: [],
+        conflicts: [],
+        storageError: STORAGE_ERROR_MESSAGE,
+      };
     try {
-      return { entries: scope ? queue.list(scope) : [], storageError: null };
+      return {
+        entries: scope ? queue.list(scope) : [],
+        conflicts: scope ? queue.listConflicts(scope) : [],
+        storageError: null,
+      };
     } catch {
-      return { entries: [], storageError: STORAGE_ERROR_MESSAGE };
+      return {
+        entries: [],
+        conflicts: [],
+        storageError: STORAGE_ERROR_MESSAGE,
+      };
     }
   }, [queue, scope, stored]);
 
@@ -279,10 +310,43 @@ export function useChecklistAnswerQueue(
     [queue, retry, run],
   );
 
+  const discardConflict = React.useCallback(
+    async (idempotencyKey: string) => {
+      const captured = activeScope.current;
+      if (
+        !captured ||
+        !run ||
+        !queue
+          .listConflicts(captured)
+          .some(
+            (entry) =>
+              entry.runId === run.id && entry.idempotencyKey === idempotencyKey,
+          )
+      )
+        throw new Error(
+          "Sesi atau outlet berubah. Muat ulang sebelum melanjutkan.",
+        );
+      try {
+        await queue.discardConflict(captured, idempotencyKey);
+      } catch {
+        throw new Error(
+          "Jawaban lokal belum dapat dibuang. Periksa penyimpanan perangkat lalu coba lagi.",
+        );
+      }
+      // Discard only changes local storage. Fetch the authoritative answer;
+      // resolving a conflict must never submit another write to the server.
+      void queryClient.invalidateQueries({
+        queryKey: checklistRunQuery(run.id).queryKey,
+      });
+    },
+    [queue, queryClient, run],
+  );
+
   return {
     // A render after an account/outlet switch must never show the previous
     // person's queued notes while the effect is still refreshing its state.
     entries: entries.filter((entry) => entry.runId === run?.id),
+    conflicts: conflicts.filter((entry) => entry.runId === run?.id),
     error:
       storageError ??
       operationError ??
@@ -295,5 +359,6 @@ export function useChecklistAnswerQueue(
     ready: scope !== null && queueAvailable,
     save,
     retry,
+    discardConflict,
   };
 }
