@@ -100,7 +100,7 @@ test("legend-do1o OPS-03 a saved prep shelf life derives use-by across midnight 
   await expect(expired).toContainText("SUSU-1101-B");
 
   const form = page.locator('[data-slot="prep-label-form"]');
-  await form.getByLabel("Bahan").click();
+  await form.getByRole("combobox", { name: "Bahan", exact: true }).click();
   await page.getByRole("option", { name: "Keju Cheddar" }).click();
   await form.getByLabel("Batch inventori").click();
   await page.getByRole("option", { name: "KEJU-1101" }).click();
