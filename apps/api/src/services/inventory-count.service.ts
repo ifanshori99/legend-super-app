@@ -99,6 +99,7 @@ import { stockCountLines, stockCounts } from "../db/schema/inventory-count.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { loadInventoryStaff } from "./inventory-staff-read-model.service.ts";
 import {
   allocateFefo,
   fefoAvailability,
@@ -357,8 +358,20 @@ export async function listStockCounts(
         .limit(query.limit + 1);
       const page = rows.slice(0, query.limit);
       const last = page.at(-1);
+      const staff = await loadInventoryStaff(
+        tx,
+        context.tenant.tenantId,
+        query.outletId,
+        page.flatMap((row) => [row.countedBy, row.approvedBy]),
+      );
       return {
-        data: page.map(toStockCount),
+        data: page.map((row) => ({
+          ...toStockCount(row),
+          countedByStaff: staff.get(row.countedBy) ?? null,
+          approvedByStaff: row.approvedBy
+            ? (staff.get(row.approvedBy) ?? null)
+            : null,
+        })),
         meta: {
           limit: query.limit,
           nextCursor:
@@ -424,8 +437,18 @@ export async function getStockCountDetail(
               ),
             );
       }
+      const staff = await loadInventoryStaff(tx, row.tenantId, row.outletId, [
+        row.countedBy,
+        row.approvedBy,
+      ]);
       return stockCountDetailSchema.parse({
-        count: toStockCount(row),
+        count: {
+          ...toStockCount(row),
+          countedByStaff: staff.get(row.countedBy) ?? null,
+          approvedByStaff: row.approvedBy
+            ? (staff.get(row.approvedBy) ?? null)
+            : null,
+        },
         lines: lines.map(toStockCountLine),
       });
     });
@@ -451,9 +474,25 @@ export async function getStockCountSheet(
         row.outletId,
       );
       const lines = await loadLines(tx, row.id);
+      const staff = await loadInventoryStaff(tx, row.tenantId, row.outletId, [
+        row.countedBy,
+        row.approvedBy,
+        ...lines.map((line) => line.countedBy),
+      ]);
       return stockCountSheetSchema.parse({
-        count: toStockCount(row),
-        lines: lines.map(toSheetLine),
+        count: {
+          ...toStockCount(row),
+          countedByStaff: staff.get(row.countedBy) ?? null,
+          approvedByStaff: row.approvedBy
+            ? (staff.get(row.approvedBy) ?? null)
+            : null,
+        },
+        lines: lines.map((line) => ({
+          ...toSheetLine(line),
+          countedByStaff: line.countedBy
+            ? (staff.get(line.countedBy) ?? null)
+            : null,
+        })),
       });
     });
   } catch (error) {

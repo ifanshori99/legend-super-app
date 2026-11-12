@@ -726,6 +726,15 @@ export type StockCountAction = z.infer<typeof stockCountActionSchema>;
  * and only once submitted). The approver sees the variance. A posted count has
  * written its `adjustment` ledger rows (INV-01, INV-03).
  */
+/** Minimal operational attribution; resolved only for an authorized outlet document. */
+export const inventoryStaffSchema = z.strictObject({
+  userId: userIdSchema,
+  displayName: z.string().min(1),
+  /** Current role label; this is not an immutable historical role snapshot. */
+  role: z.string().min(1),
+});
+export type InventoryStaff = z.infer<typeof inventoryStaffSchema>;
+
 export const stockCountSchema = z
   .strictObject({
     id: stockCountIdSchema,
@@ -738,6 +747,8 @@ export const stockCountSchema = z
     businessDate: businessDateSchema,
     countedBy: userIdSchema,
     approvedBy: userIdSchema.nullable(),
+    countedByStaff: inventoryStaffSchema.nullable().optional(),
+    approvedByStaff: inventoryStaffSchema.nullable().optional(),
     countedAt: isoDateTimeSchema.nullable(),
     approvedAt: isoDateTimeSchema.nullable(),
     note,
@@ -800,6 +811,7 @@ export const stockCountSheetLineSchema = z.strictObject({
   inventoryItemId: inventoryItemIdSchema,
   countedQty: decimal4Schema.nullable(),
   countedBy: userIdSchema.nullable(),
+  countedByStaff: inventoryStaffSchema.nullable().optional(),
   countedAt: isoDateTimeSchema.nullable(),
 });
 export type StockCountSheetLine = z.infer<typeof stockCountSheetLineSchema>;
@@ -909,6 +921,7 @@ export const wasteLogSchema = z.strictObject({
   mediaId: uuidSchema.nullable(),
   valueIdr: nonnegativeIdrSchema,
   loggedBy: userIdSchema,
+  loggedByStaff: inventoryStaffSchema.nullable().optional(),
   occurredAt: isoDateTimeSchema,
   note,
 });

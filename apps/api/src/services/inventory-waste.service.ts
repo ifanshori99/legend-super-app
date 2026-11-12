@@ -58,6 +58,7 @@ import {
   type CursorPage,
   type Tx,
 } from "./inventory-ops.shared.ts";
+import { loadInventoryStaff } from "./inventory-staff-read-model.service.ts";
 import { evaluateParAlertsInTransaction } from "./inventory-par-alerts.service.ts";
 
 export type CreateWasteLogInput = z.infer<typeof createWasteLogInputSchema>;
@@ -201,7 +202,19 @@ export async function createWasteLog(
       );
       const withCost = canViewCost(snapshot, input.outletId);
       const replay = await claimIdempotency(tx, context, claim);
-      if (replay) return masked(wasteLogSchema.parse(replay.replay), withCost);
+      if (replay) {
+        const log = wasteLogSchema.parse(replay.replay);
+        const staff = await loadInventoryStaff(
+          tx,
+          context.tenant.tenantId,
+          log.outletId,
+          [log.loggedBy],
+        );
+        return masked(
+          { ...log, loggedByStaff: staff.get(log.loggedBy) ?? null },
+          withCost,
+        );
+      }
 
       await requireLocation(tx, input.outletId, input.locationId);
       // The photo must be a stored object of this tenant (legend-tk7i).
@@ -276,7 +289,16 @@ export async function createWasteLog(
         })),
       });
       await completeIdempotency(tx, context, claim, log);
-      return masked(log, withCost);
+      const staff = await loadInventoryStaff(
+        tx,
+        context.tenant.tenantId,
+        log.outletId,
+        [log.loggedBy],
+      );
+      return masked(
+        { ...log, loggedByStaff: staff.get(log.loggedBy) ?? null },
+        withCost,
+      );
     });
   } catch (error) {
     throw translateInventoryError(error);
@@ -340,8 +362,22 @@ export async function listWasteLogs(
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
+    const staff = await loadInventoryStaff(
+      tx,
+      context.tenant.tenantId,
+      query.outletId,
+      page.map((row) => row.loggedBy),
+    );
     return {
-      data: page.map((row) => masked(toWasteLog(row), withCost)),
+      data: page.map((row) =>
+        masked(
+          {
+            ...toWasteLog(row),
+            loggedByStaff: staff.get(row.loggedBy) ?? null,
+          },
+          withCost,
+        ),
+      ),
       meta: {
         limit: query.limit,
         nextCursor:
