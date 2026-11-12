@@ -479,32 +479,34 @@ function RecordRow({
   return (
     <div className="grid min-w-0 gap-1">
       <dt className="text-sm font-semibold text-muted-foreground">{label}</dt>
-      <dd className="flex min-w-0 items-start justify-between gap-3">
-        <span className="min-w-0 font-mono text-sm [overflow-wrap:anywhere]">
-          {value}
-        </span>
+      <dd className="grid min-w-0 gap-1">
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <span className="min-w-0 font-mono text-sm [overflow-wrap:anywhere]">
+            {value}
+          </span>
+          {copyLabel && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              onClick={() => void copy()}
+              aria-label={copyLabel}
+            >
+              Salin
+            </Button>
+          )}
+        </div>
         {copyLabel && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="shrink-0"
-            onClick={() => void copy()}
-            aria-label={copyLabel}
+          <p
+            role="status"
+            aria-live="polite"
+            className="text-sm leading-5 text-muted-foreground empty:-mt-1"
           >
-            Salin
-          </Button>
+            {feedback}
+          </p>
         )}
       </dd>
-      {copyLabel && (
-        <p
-          role="status"
-          aria-live="polite"
-          className="text-sm leading-5 text-muted-foreground empty:-mt-1"
-        >
-          {feedback}
-        </p>
-      )}
     </div>
   );
 }

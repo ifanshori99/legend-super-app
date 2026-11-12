@@ -131,7 +131,13 @@ export function UnitsPage() {
         rowCount={units.length}
         loadingRows={3}
       >
-        <Table>
+        {/* The scroll container lives in the shared Table: a focusable table keeps
+            it keyboard-reachable even when every row action is locked. */}
+        <Table
+          tabIndex={0}
+          aria-label={UOM_COPY.listTitle}
+          className="focus-visible:shadow-focus focus-visible:outline-none"
+        >
           <TableHeader>
             <TableRow>
               <TableHead>{t("inventory.units.columns.name")}</TableHead>

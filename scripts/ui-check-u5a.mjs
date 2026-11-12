@@ -60,7 +60,22 @@ const settle = async (page) => {
   await page.waitForLoadState("networkidle").catch(() => {});
 };
 
+// Init script (runs before the app): queues one 422 for `match` the moment the
+// app installs window.__legendMock, so the very first read fails. 4xx is not retried.
+const failFirst = (match) => {
+  let control;
+  Object.defineProperty(window, "__legendMock", {
+    configurable: true,
+    get: () => control,
+    set: (value) => {
+      control = value;
+      value.failNext(match, { status: 422, code: "VALIDATION_ERROR" });
+    },
+  });
+};
+
 // ---- restore (nb4iy) -------------------------------------------------------
+const RESTORE_WINDOW_GET = "GET /api/platform/tenants/:tenantId/restore-window";
 const restoreReady = (page) =>
   visible(page.getByRole("button", { name: "Tinjau pemulihan" }));
 async function restoreConfirm(page) {
@@ -79,12 +94,16 @@ async function ownerOpenAssign(page) {
   await ownerSection(page)
     .getByRole("button", { name: "Tetapkan Owner" })
     .click();
-  await visible(page.getByText("Pilih akun yang akan menjadi Owner tenant ini."));
+  await visible(
+    page.getByText("Pilih akun yang akan menjadi Owner tenant ini."),
+  );
 }
 async function ownerFill(page) {
   const form = ownerSection(page).locator("form");
   await form.locator("input").first().fill(OWNER_USER_ID);
-  await form.locator("textarea").fill("Penetapan Owner pertama untuk uji tampilan.");
+  await form
+    .locator("textarea")
+    .fill("Penetapan Owner pertama untuk uji tampilan.");
   await form.locator('input[inputmode="numeric"]').fill("123456");
 }
 async function ownerAssign(page) {
@@ -212,6 +231,8 @@ const STATES = [
     card: "restore",
     name: "error",
     path: TENANT_PATH,
+    // ?mock=error would fail the tenant page too; fail the window read only.
+    failFirst: RESTORE_WINDOW_GET,
     prepare: (page) => visible(page.getByText("Data belum tersedia")),
   },
   {
@@ -240,7 +261,9 @@ const STATES = [
       await restoreConfirm(page);
       await page
         .locator("textarea")
-        .fill("Diarsipkan karena salah klik, dipulihkan atas permintaan owner.");
+        .fill(
+          "Diarsipkan karena salah klik, dipulihkan atas permintaan owner.",
+        );
       await page.getByRole("button", { name: "Pulihkan tenant" }).click();
       await visible(page.getByText("Tenant berhasil dipulihkan."));
     },
@@ -366,13 +389,21 @@ const STATES = [
     path: "/kelola/pengaturan/domain",
     prepare: async (page) => {
       await domainReady(page);
-      await page.getByRole("button", { name: "Cek verifikasi" }).first().click();
+      await page
+        .getByRole("button", { name: "Cek verifikasi" })
+        .first()
+        .click();
       await visible(page.getByText("Domain terverifikasi."));
     },
   },
 
   // verifikasi -- second factor and backup code sign-in (sw980)
-  { card: "verifikasi", name: "totp", path: "/verifikasi", prepare: verifyReady },
+  {
+    card: "verifikasi",
+    name: "totp",
+    path: "/verifikasi",
+    prepare: verifyReady,
+  },
   {
     card: "verifikasi",
     name: "loading",
@@ -393,7 +424,9 @@ const STATES = [
     prepare: async (page) => {
       await verifyReady(page);
       await page.locator('input[inputmode="numeric"]').fill("000000");
-      await page.getByRole("button", { name: "Verifikasi", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Verifikasi", exact: true })
+        .click();
       await visible(page.getByText(/Kode salah atau sudah kedaluwarsa/));
     },
   },
@@ -427,9 +460,11 @@ const STATES = [
     path: "/verifikasi",
     prepare: async (page) => {
       await submitRecoveryCode(page, "ABCDE-FGHJK");
-      await visible(heading(page, "Verifikasi berhasil").or(
-        page.getByText("Verifikasi berhasil", { exact: true }),
-      ));
+      await visible(
+        heading(page, "Verifikasi berhasil").or(
+          page.getByText("Verifikasi berhasil", { exact: true }),
+        ),
+      );
     },
   },
   {
@@ -535,13 +570,15 @@ const STATES = [
     card: "satuan",
     name: "empty",
     path: "/kelola/inventori/satuan?mock=empty",
-    prepare: (page) => visible(page.getByText("Belum ada satuan untuk ditampilkan")),
+    prepare: (page) =>
+      visible(page.getByText("Belum ada satuan untuk ditampilkan")),
   },
   {
     card: "satuan",
     name: "error",
     path: "/kelola/inventori/satuan?mock=error",
-    prepare: (page) => visible(page.getByText("Daftar satuan belum bisa dimuat")),
+    prepare: (page) =>
+      visible(page.getByText("Daftar satuan belum bisa dimuat")),
   },
   {
     card: "satuan",
@@ -557,7 +594,9 @@ const STATES = [
     dialog: true,
     prepare: async (page) => {
       await unitOpenAdd(page);
-      await dialogOf(page).getByRole("button", { name: "Simpan satuan" }).click();
+      await dialogOf(page)
+        .getByRole("button", { name: "Simpan satuan" })
+        .click();
       await visible(dialogOf(page).getByText("Masukkan nama satuan."));
     },
   },
@@ -595,7 +634,9 @@ const STATES = [
       await addUnitButton(page).click();
       await visible(heading(dialogOf(page), "Tambah satuan"));
       await unitSubmit(page, "Bungkus dua", "bks");
-      await visible(dialogOf(page).getByText("Kode ini sudah digunakan tenant."));
+      await visible(
+        dialogOf(page).getByText("Kode ini sudah digunakan tenant."),
+      );
     },
   },
   {
@@ -612,7 +653,9 @@ const STATES = [
     prepare: async (page) => {
       await unitOpenRename(page);
       await dialogOf(page).getByLabel("Nama satuan").fill("Bungkus Besar");
-      await dialogOf(page).getByRole("button", { name: "Simpan satuan" }).click();
+      await dialogOf(page)
+        .getByRole("button", { name: "Simpan satuan" })
+        .click();
       await visible(page.getByText("Nama satuan berhasil disimpan."));
     },
   },
@@ -687,7 +730,9 @@ const STATES = [
         MAPPING_PUT,
       );
       await page.getByRole("button", { name: "Simpan pemetaan" }).click();
-      await visible(page.getByText("Jenis akun tidak sesuai dengan peran ini."));
+      await visible(
+        page.getByText("Jenis akun tidak sesuai dengan peran ini."),
+      );
     },
   },
   {
@@ -866,6 +911,8 @@ async function main() {
           ]);
         const page = await context.newPage();
         try {
+          if (state.failFirst)
+            await page.addInitScript(failFirst, state.failFirst);
           await page.goto(`${baseUrl}${state.path}`, {
             waitUntil: "domcontentloaded",
           });
