@@ -40,6 +40,8 @@ export const hrisRequestsEmployeeMessages = {
     peerShiftPlaceholder: "Pilih shift",
     peerShiftHint: "Shift rekan yang akan Anda ambil sebagai gantinya.",
     peerShiftEmpty: "Rekan ini belum punya shift yang bisa ditukar.",
+    peerShiftUnavailable:
+      "Daftar shift rekan belum tersedia; tukar shift belum dapat diajukan.",
     complianceNote:
       "Supervisor akan memeriksa aturan jam kerja. Tukar shift yang melanggar aturan hanya dapat disetujui dengan alasan khusus.",
     errors: {
@@ -64,6 +66,8 @@ export const hrisRequestsEmployeeMessages = {
       "Lama cuti melebihi saldo yang tersedia. Supervisor dapat menolak pengajuan ini.",
     attachmentRequired:
       "Jenis ini memerlukan lampiran (misalnya surat dokter), dan unggah lampiran belum tersedia di layar ini. Pengajuan belum bisa dikirim, hubungi supervisor Anda.",
+    attachmentLabel: "Lampiran",
+    attachmentHint: "PDF, JPEG, PNG, atau WebP; maksimum 10 MB.",
     errors: {
       typeRequired: "Pilih jenis cuti atau izin.",
       attachmentBlocked:

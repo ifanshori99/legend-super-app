@@ -181,6 +181,7 @@ export function MyRequestsPage() {
 }
 
 function PeerResponseCard({ swap }: { swap: ShiftSwapRequest }) {
+  const t = useT();
   const response = usePeerResponse();
   const online = useOnline();
   const { outlet } = useTenantContext();
@@ -190,10 +191,11 @@ function PeerResponseCard({ swap }: { swap: ShiftSwapRequest }) {
   const [reason, setReason] = useState("");
   return (
     <Card className="grid gap-3">
-      <h2 className="font-bold">Permintaan dari rekan</h2>
+      <h2 className="font-bold">{t("hrisRequestsMine.peerResponse.title")}</h2>
       <p className="text-sm">
-        Rekan meminta Anda menerima {swap.toAssignmentId ? "tukar" : "ganti"}{" "}
-        shift sebelum diteruskan ke atasan.
+        {t("hrisRequestsMine.peerResponse.descriptionPrefix")}
+        {swap.toAssignmentId ? "tukar" : "ganti"}{" "}
+        {t("hrisRequestsMine.peerResponse.descriptionSuffix")}
       </p>
       {complete ? (
         <div className="grid gap-1 text-sm text-muted-foreground">
@@ -213,13 +215,12 @@ function PeerResponseCard({ swap }: { swap: ShiftSwapRequest }) {
         </div>
       ) : (
         <p role="status" className="text-sm text-muted-foreground">
-          Rincian peminta dan jadwal belum tersedia. Respons ditahan sampai
-          rincian dapat ditampilkan.
+          {t("hrisRequestsMine.peerResponse.contextMissing")}
         </p>
       )}
       {rejecting && (
         <label className="grid gap-2 text-sm">
-          Alasan penolakan
+          {t("hrisRequestsMine.peerResponse.rejectionReasonLabel")}
           <Textarea
             value={reason}
             maxLength={500}
@@ -229,7 +230,7 @@ function PeerResponseCard({ swap }: { swap: ShiftSwapRequest }) {
       )}
       {response.isError && (
         <p role="alert" className="text-sm text-danger">
-          Respons gagal dikirim. Coba lagi.
+          {t("hrisRequestsMine.peerResponse.error")}
         </p>
       )}
       <div className="flex flex-wrap gap-2">
@@ -241,7 +242,7 @@ function PeerResponseCard({ swap }: { swap: ShiftSwapRequest }) {
               response.mutate({ swapId: swap.id, action: "accept" });
           }}
         >
-          Terima
+          {t("hrisRequestsMine.peerResponse.accept")}
         </Button>
         <Button
           type="button"
@@ -258,7 +259,7 @@ function PeerResponseCard({ swap }: { swap: ShiftSwapRequest }) {
               : setRejecting(true))
           }
         >
-          Tolak
+          {t("hrisRequestsQueue.detail.reject")}
         </Button>
       </div>
     </Card>

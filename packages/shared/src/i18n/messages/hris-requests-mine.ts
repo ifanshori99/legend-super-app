@@ -47,6 +47,16 @@ export const hrisRequestsMineMessages = {
     swapWaiting: "Menunggu rekan dan supervisor",
     rejectedHint: "Tanya supervisor Anda untuk alasannya.",
   },
+  peerResponse: {
+    title: "Permintaan dari rekan",
+    descriptionPrefix: "Rekan meminta Anda menerima ",
+    descriptionSuffix: "shift sebelum diteruskan ke atasan.",
+    contextMissing:
+      "Rincian peminta dan jadwal belum tersedia. Respons ditahan sampai rincian dapat ditampilkan.",
+    rejectionReasonLabel: "Alasan penolakan",
+    error: "Respons gagal dikirim. Coba lagi.",
+    accept: "Terima",
+  },
   holiday: {
     title: "Kalender libur",
     subtitle: "Hari libur nasional, cuti bersama, dan libur perusahaan.",

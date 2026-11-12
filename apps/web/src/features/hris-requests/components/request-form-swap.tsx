@@ -202,7 +202,7 @@ export function RequestFormSwap({
         peer !== undefined &&
         peer.assignments.length === 0 && (
           <p role="status" className="text-sm text-muted-foreground">
-            Daftar shift rekan belum tersedia; tukar shift belum dapat diajukan.
+            {t("hrisRequestsEmployee.swap.peerShiftUnavailable")}
           </p>
         )}
       {kind === "swap" && (

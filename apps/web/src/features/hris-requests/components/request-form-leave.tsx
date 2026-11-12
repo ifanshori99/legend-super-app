@@ -231,10 +231,10 @@ export function RequestFormLeave({
         </p>
       )}
       <FormField
-        label="Lampiran"
+        label={t("hrisRequestsEmployee.leave.attachmentLabel")}
         required={selected?.requiresAttachment}
         error={fileError || undefined}
-        hint="PDF, JPEG, PNG, atau WebP; maksimum 10 MB."
+        hint={t("hrisRequestsEmployee.leave.attachmentHint")}
       >
         <Input
           type="file"
