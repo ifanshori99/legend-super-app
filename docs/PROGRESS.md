@@ -2,6 +2,11 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## Catatan CTO 12 Nov sore (G32bf)
+
+- 14:13 retro 3 jam dilewati: semua akun Claude 7 hari >90% (#1 92%, #2 99% reset 13 Nov 06:00, #3 96%).
+- 17:13 retro 3 jam dilewati: akun Claude 7 hari masih >90% (#1 92%, #2 99%, #3 96%).
+
 ## Serah terima CTO 12 Nov siang (sesi G5xeg compact 2x)
 
 Sesi CTO baru: jalankan `ghostex coordinator guide`, baca `~/.agents/team/roles/cto.md`, lalu adopsi thread lama dengan `ghostex coordinator link <ref> --task ...` (thread masih melapor ke G5xeg sampai di-link). Item W13-W31 ada di G5xeg; buat ulang yang perlu di sesi baru.
