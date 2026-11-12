@@ -35,6 +35,10 @@ const WEBSITE_PATHS = new Set([
   "/reservasi",
 ]);
 
+// The public e-receipt (/r/:token) is a bare reading column: no site
+// navigation, nothing that could leak the token to another page (legend-1uk9).
+const RECEIPT_PREFIX = "/r/";
+
 function Layout() {
   const { gate } = Route.useRouteContext();
   const { pathname } = useLocation();
@@ -45,6 +49,13 @@ function Layout() {
     <ThemeScope density="hangat" className="min-h-dvh bg-background">
       {WEBSITE_PATHS.has(pathname) ? (
         <Outlet />
+      ) : pathname.startsWith(RECEIPT_PREFIX) ? (
+        <main
+          id="main-content"
+          className="mx-auto w-full max-w-2xl px-gutter py-6"
+        >
+          <Outlet />
+        </main>
       ) : (
         <div className="mx-auto w-full max-w-2xl px-gutter py-6">
           <div className="mb-6 flex items-center justify-between">
