@@ -26,6 +26,7 @@ import {
   runErrorMessageKey,
 } from "../logic.ts";
 import { useRecordChecklistItemResult } from "../hooks.ts";
+import type { ChecklistAnswerQueueView } from "../use-answer-queue.ts";
 import { SignatureField } from "./signature-field.tsx";
 
 type FieldErrors = {
@@ -41,6 +42,7 @@ export function ChecklistItemCard({
   result,
   editable,
   timeZone,
+  answerQueue,
 }: {
   runId: string;
   item: ChecklistItem;
@@ -48,11 +50,10 @@ export function ChecklistItemCard({
   /** True only while the run is in progress (the machine's write window). */
   editable: boolean;
   timeZone: string;
+  answerQueue?: ChecklistAnswerQueueView;
 }) {
   const t = useT();
   const record = useRecordChecklistItemResult(runId);
-  // The contract has no offline queue: TanStack Query would park the write in
-  // memory with a spinner, so answers are blocked (not "saved") while offline.
   const online = useOnline();
   const headingId = React.useId();
   const fileInput = React.useRef<HTMLInputElement>(null);
@@ -70,6 +71,9 @@ export function ChecklistItemCard({
   const [saveErrorKey, setSaveErrorKey] = React.useState<MessageKey | null>(
     null,
   );
+  const [queueSaveError, setQueueSaveError] = React.useState<string | null>(
+    null,
+  );
   const [pendingStatus, setPendingStatus] = React.useState<
     "done" | "failed" | null
   >(null);
@@ -84,6 +88,8 @@ export function ChecklistItemCard({
   const requiresNumber = item.requiredEvidence.includes("number");
   const requiresSignature = item.requiredEvidence.includes("signature");
   const finished = result !== undefined && result.status !== "pending";
+  const requiresMedia = requiresPhoto || requiresSignature;
+  const queued = answerQueue?.entries.find((entry) => entry.itemId === item.id);
 
   function handleFile(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -115,9 +121,34 @@ export function ChecklistItemCard({
       nextErrors.note = t("opsChecklist.run.item.noteRequired");
     setErrors(nextErrors);
     setSaveErrorKey(null);
-    if (Object.values(nextErrors).some(Boolean) || !online) return;
+    setQueueSaveError(null);
+    if (
+      Object.values(nextErrors).some(Boolean) ||
+      (!online && (requiresMedia || !answerQueue?.ready))
+    )
+      return;
 
     setPendingStatus(status);
+    if (!requiresMedia && answerQueue?.ready) {
+      void answerQueue
+        .save({
+          itemId: item.id,
+          status,
+          numberValue: requiresNumber ? normalizedNumber : null,
+          note: note.trim() === "" ? null : note.trim(),
+          photoMediaIds: [],
+          signatureMediaId: null,
+        })
+        .catch((error: unknown) => {
+          setQueueSaveError(
+            error instanceof Error
+              ? error.message
+              : "Jawaban belum masuk antrean. Periksa penyimpanan perangkat lalu coba lagi.",
+          );
+        })
+        .finally(() => setPendingStatus(null));
+      return;
+    }
     record.mutate(
       {
         itemId: item.id,
@@ -149,6 +180,9 @@ export function ChecklistItemCard({
       data-slot="checklist-item"
       data-item-id={item.id}
       data-item-status={result?.status ?? "pending"}
+      data-queue-state={
+        queued ? (queued.error ? "error" : "pending") : undefined
+      }
       data-evidence={item.requiredEvidence.join(" ") || undefined}
       aria-labelledby={headingId}
       className="grid gap-3 rounded-container border-(length:--border-w) border-border bg-card p-card shadow-hairline"
@@ -219,6 +253,27 @@ export function ChecklistItemCard({
               {t("opsChecklist.run.item.completedAt", {
                 time: formatDateTime(result.completedAt, timeZone),
               })}
+            </p>
+          )}
+        </div>
+      ) : queued ? (
+        <div data-slot="checklist-item-queued" className="grid gap-1.5">
+          <p role="status" className="text-sm leading-5 font-medium">
+            Jawaban menunggu konfirmasi server.
+          </p>
+          <p className="text-sm leading-5 text-muted-foreground">
+            Jawaban ada di antrean perangkat ini. Progres berubah setelah server
+            mengonfirmasi penerimaannya.
+          </p>
+          {queued.body.numberValue !== null &&
+            queued.body.numberValue !== undefined && (
+              <p className="text-sm leading-5 tabular">
+                {queued.body.numberValue}
+              </p>
+            )}
+          {queued.body.note && (
+            <p className="text-sm leading-5 text-muted-foreground">
+              {queued.body.note}
             </p>
           )}
         </div>
@@ -353,12 +408,31 @@ export function ChecklistItemCard({
             </p>
           )}
 
+          {queueSaveError && (
+            <p
+              role="alert"
+              className="text-sm leading-5 font-medium text-danger"
+            >
+              {queueSaveError}
+            </p>
+          )}
+
+          {!online && requiresMedia && (
+            <p className="text-sm leading-5 text-muted-foreground">
+              Bukti foto atau tanda tangan perlu diunggah saat online sebelum
+              jawaban dapat dikirim.
+            </p>
+          )}
+
           <div className="flex flex-col gap-2 sm:flex-row">
             <Button
               type="button"
               variant="secondary"
               loading={pendingStatus === "done"}
-              disabled={pendingStatus !== null || !online}
+              disabled={
+                pendingStatus !== null ||
+                (requiresMedia ? !online : !answerQueue?.ready && !online)
+              }
               onClick={() => save("done")}
             >
               <Check aria-hidden="true" />
@@ -369,7 +443,10 @@ export function ChecklistItemCard({
               variant="outline"
               className="text-danger"
               loading={pendingStatus === "failed"}
-              disabled={pendingStatus !== null || !online}
+              disabled={
+                pendingStatus !== null ||
+                (requiresMedia ? !online : !answerQueue?.ready && !online)
+              }
               onClick={() => save("failed")}
             >
               <AlertTriangle aria-hidden="true" />

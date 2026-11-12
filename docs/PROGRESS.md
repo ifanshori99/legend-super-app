@@ -1,20 +1,17 @@
-# Paket B #553 — checkpoint close
+# Paket B #553 — operasi harian dan replay offline
 
-- Close handover persisten di kontrak, schema, API dan client. Migrasi0386; snapshot prevId0286 dan when1794451493865>1794416100000.
-- Test gagal-dulu:12lama lulus,3baru gagal route404. Sesudah implementasi15/15 equipment lulus, termasukcloseguard, replay, outlet/auth/origin dan actor/timepersisten. Log `/tmp/553-verify-actor-red-close-green.log`.
-- Fileutama di triage nonexhaustive; tambahan domainoperations/schema diperlukan oleh kartudan migrasi0386–0388 yang eksplisit ditugaskan. Ownership B tetap tidak memasuki storageC atau domainterlarang. Sharedschema/meta berurutanclose→actorbinding→prep.
-- Antrean+label awal14/14 dan checklist18/18 lulus sebelumreview. Architect menemukanaccount-switch TOCTOU;2testservicenegatif kini gagal benar karena mutasi/replay masih diterima. Fixatomicexpectedactor sedangmenunggucheckpointclose, kemudianretest.
-- Typecheck, reviewmigrasi, gateakhir danbrowser masih pending; belumhandoffsiapmerge.
-
-# Paket B #553 — 12 November 2026
-
-- Cabang `ws/ops-daily`, worktree `.worktrees/ops-daily`, basis `origin/milestone/m1@ede015c9`. Port checklist-engine `3b4adcd3` dan fix `c715ba3a` sudah ancestor m1 (merge `da6418bf`); ref asli `e3ac2efb` bukan ancestor langsung.
-- Kelima kartu dibaca `bd --readonly show`; belum mengubah status bd. Brief kerja: `docs/briefs/553-ops-daily.md`.
-- Berjalan: test-writer menyiapkan bukti gagal-dulu untuk ga0n dan 8erc; implementer terpisah menunggu RED.
-- Batas scope dari Paket B menahan do1o (`operations-food-safety.service.ts`, caller label, schema/route settings), 7j4e (`db/schema/operations.ts` + migrasi/meta), dan wf37 (izin/source-kind storage milik C + caller facility-staff). Rincian disiapkan per kartu; tidak mengedit file di luar batas. Migrasi 0386–0388 belum dipakai; last basis `0286`, when `1794416100000`.
-- Lingkungan: pnpm offline install, dev:prepare dan doctor lulus; workspace links lokal. Database dev worktree terpisah dan tidak mengubah data checkout lain.
-- Subagent awal: 3 Explore + 1 test-writer + 5 implementer (9 total, puncak 6). Token heavy di root; belum ada test/build dijalankan.
-- Kuota awal terukur: Claude #1 5h100/7d88; #2 31/98; #3 2/96. Codex #2 69/37; #3 100/76; #4 16/49; #5 92/51; #6 7d19 (5h tidak dilaporkan).
+- Cabang `ws/ops-daily`, worktree `.worktrees/ops-daily`, basis `origin/milestone/m1@ede015c9`. Port checklist-engine `3b4adcd3` dan perbaikan `c715ba3a` sudah menjadi ancestor m1 melalui `da6418bf`; ref asli `e3ac2efb` bukan ancestor langsung.
+- Kelima kartu dibaca melalui `bd --readonly show`; tidak mengubah status Beads. Brief kerja dan keputusan scope berada di `docs/briefs/553-ops-daily.md`.
+- Checkpoint lokal: `a6374b68` untuk close handover (legend-7j4e), `20fd36f9` untuk label Select (legend-8erc). Tidak push atau merge.
+- Scope: tabel triage menyebut file utama, bukan daftar lengkap. Migrasi 0386–0388 secara eksplisit ditugaskan; tambahan schema/service/caller domain operasi diperlukan untuk hasil kartu. File bersama ditangani berurutan: close, actor binding, lalu prep. Core storage tetap milik C; domain yang dilarang tetap tidak disentuh.
+- Implementasi ga0n: antrean persisten maksimum 100 jawaban per tenant/user/outlet, kunci tetap, FIFO, kegagalan tetap terlihat. Web Locks menjaga mutasi storage; browser tanpa dukungan menolak antrean offline secara jelas. Identitas actor dibekukan dan diperiksa server sebelum replay/mutasi. Foto/tanda tangan offline tetap diblokir sampai transport media sah tersedia.
+- Implementasi do1o: setting shelf-life per outlet/item, batas pakai dihitung server, UI menggunakan nilai turunan. Migrasi 0386 dan 0387 tersambung; `when` melebihi basis 1794416100000. Snapshot 0386 hanya mengubah shift_handovers; snapshot 0387 hanya menambah prep_item_settings.
+- Gate setelah semua fix review lulus: API 63/63 + root 34/34 = 97 test, tanpa skip. Log `/tmp/553-verify-final-after-review-tests.log`. Eslint 39 file dan Prettier 44 file exit 0. Empat regresi review telah dibuktikan gagal-dulu lalu hijau: fingerprint lama, stale queue, owner migration FORCE RLS, dan predicate form DST.
+- Review architect tunggal: close bersih; race actor awal dan assertion envelope e2e sudah diperbaiki. Semua temuan telah diperbaiki dan diperiksa ulang secara statis; tidak ada temuan terbuka. Antrean tidak boleh menimpa hasil yang lebih baru. Typecheck shared/API/web terurut sedang antre dalam satu job; browser belum dijalankan.
+- wf37 masih tertahan: source-kind/izin upload operations belum tersedia di core storage milik C; caller cleaning dan transport produksinya memerlukan integrasi. Tidak menyamarkan bukti operations sebagai media HRIS/menu/purchasing.
+- Lingkungan: offline install, dev:prepare, doctor, dan pemeriksaan workspace links lulus. Database dev worktree terpisah. Tidak menjalankan dev server tambahan.
+- Subagent: 11 total, puncak 6 bersamaan; token heavy di test_runner. Tiga Explore, satu test-writer, lima implementer, satu test-runner, satu architect.
+- Telemetri: session-usage.py tidak menemukan transkrip Codex sesi 01a1cd8e-a664-7700-a2b4-574fadd71c9c. parallel-report hanya membaca sesi Claude, sehingga biaya/durasi/rata-rata subagent Codex tidak diklaim. Kuota awal: Claude #1 5h100/7d88, #2 31/98, #3 2/96; Codex #2 69/37, #3 100/76, #4 16/49, #5 92/51, #6 7d19 (5h tidak dilaporkan).
 
 ## 526 WS-05 admin payment fixes (Codex G0b06, 11 Nov 2026 22:50 WIB)
 
@@ -3674,6 +3671,7 @@ Biaya sesi (session-usage): total biaya* 12316k, subagent 13, compact 3. paralle
 Langkah berikut: hapus worktree batch48h dan plan-batch48h setelah CTO setuju; second-opinion Codex area ledger/hris/fac07 sebelum gerbang rilis.
 
 ## 2026-11-12: gate cakupan logika bisnis dan dokumen AUTH-02 (legend-dd0g, legend-mrez; cabang `ws/dd0g-coverage-gate`)
+
 - Sudah (mrez): PRD AUTH-02, `docs/plan/criteria-matrix.md`, dan `docs/plan/providers.md` memakai `X-Kirim-Signature` (`t=`,`v1=`, HMAC-SHA256 atas `t.rawbody`, 300 detik, rotasi, dedupe `X-Kirim-Event-Id`). Tes forgery, replay, rotasi tetap gerbang rilis.
 - Sudah (dd0g): `@vitest/coverage-v8` di `apps/api`; blok coverage v8 di `apps/api/vitest.config.ts` (scope `apps/api/src/services` dan `packages/shared/src`); `pnpm test:coverage` atau `LEGEND_COVERAGE=1 pnpm test`; CI memberi `LEGEND_COVERAGE=1` pada langkah `pnpm check` (satu kali run tes); `docs/deployment.md` dan `scripts/ci/pending.mjs` diperbarui.
 - Angka cakupan (run penuh 12 Nov 2026, 733 berkas): statements 87.4%, branches 77.22%, functions 91.51%, lines 89.75%. Ambang awal sedikit di bawahnya: lines 85, statements 84, functions 88, branches 72, supaya gate tidak merah di m1. Terendah: `shared/api`, `shared/text`, `shared/adapters` 63%, `shared/pos` dan `shared/dashboard` 72%.
@@ -3682,6 +3680,7 @@ Langkah berikut: hapus worktree batch48h dan plan-batch48h setelah CTO setuju; s
 - Langkah berikut: naikkan ambang bertahap menuju 80% di branches; kartu untuk tes AIG-01 yang bergantung jam.
 
 ## 2026-11-11: legend-qhqf8 / 512 backfill manager_id karyawan (cabang `ws/hris-manager-backfill`, dari `ws/hris-leave-guard`)
+
 - Skrip `apps/api/src/db/backfill-employee-managers.ts` (`pnpm --filter @starter/api db:backfill-employee-managers`): dry-run default, `--apply` wajib `--ids <berkas>` (id yang sudah ditinjau HR), `--tenant` opsional, satu transaksi per tenant, kunci baris lalu klasifikasi ulang, satu baris audit per perubahan (`hris.employee_manager_backfill`), idempoten. Tanpa migrasi, tanpa nama karyawan di log.
 - Aturan usulan: hanya karyawan aktif dengan atasan kosong atau atasan nonaktif, dan tepat satu outlet manager aktif di outlet asalnya, dan karyawan itu hanya memegang peran junior (cashier, waiter, barista_cook, facility_attendant, kitchen_lead, warehouse, employee), dan tidak membuat siklus. Sisanya masuk daftar manual (`no_outlet_manager`, `ambiguous_outlet_manager`, `would_cycle`, `holds_manager_role`, `cross_outlet_needs_review`); atasan lintas outlet tidak pernah diubah skrip.
 - Temuan architect (blocking) dibetulkan: tanpa aturan peran junior, GM atau supervisor tanpa atasan bisa dijadikan bawahan outlet manager (outlet manager lalu melihat data atasannya).
@@ -3691,6 +3690,7 @@ Langkah berikut: hapus worktree batch48h dan plan-batch48h setelah CTO setuju; s
 - Sisa: belum ada layar/endpoint untuk mengubah atasan (`managerId` hanya diisi saat membuat karyawan, `hris-employee.service.ts:708`), jadi daftar manual dan rollback butuh tugas engineer terpisah; keputusan CTO.
 
 ## 2026-11-11: legend-f4uvg endpoint + field "ubah atasan" (cabang `ws/hris-manager-backfill`)
+
 - `PATCH /api/hris/employees/:employeeId/manager` (`services/hris-employee-manager.service.ts`, route di `hris.routes.ts`, kontrak `changeEmployeeManagerEndpoint` di shared). Body `{managerId|null, reason?, idempotencyKey}`. Hak: HR (`hr.employee.manage` di outlet asal) atau GM brand/tenant (`hr.attendance.manage` lewat assignment scope brand/tenant, Q41); supervisor/outlet manager 403; karyawan harus terlihat (404); tidak ada yang mengubah atasannya sendiri (403).
 - Aturan: atasan harus aktif, satu tenant, dan terlihat oleh pemanggil (`MANAGER_NOT_ELIGIBLE`); tanpa siklus (`409 MANAGER_CYCLE`, kunci advisory per tenant, juga dipakai script backfill); atasan yang hanya memegang peran junior tidak boleh memimpin karyawan berperan non-junior (`422 MANAGER_ROLE_TOO_LOW`); `null` mengosongkan atasan. Satu baris audit `hris.employee_manager_change` dengan before/after dan alasan; replay idempoten tanpa audit kedua. Aturan peran dipindah ke `services/hris-manager-rules.ts` (dipakai script backfill juga).
 - Web: tombol "Ubah atasan" + dialog di profil karyawan (komponen Select yang ada). Runbook diarahkan ke jalur ini untuk daftar manual dan rollback.
@@ -3698,6 +3698,7 @@ Langkah berikut: hapus worktree batch48h dan plan-batch48h setelah CTO setuju; s
 - Bukti: 40 tes `hris-employee-manager-change.test.ts` + 39 tes backfill lulus; mutasi (izin dibuka, cek siklus/peran/jangkauan/diri sendiri dimatikan) membuat 9 dan 4 tes merah; 24 tes HRIS terkait lulus; typecheck shared/api/web, eslint, prettier hijau. Test kontrak root `tests/hris-contract.test.mjs` hanya di gerbang penuh merge train.
 
 ## 2026-11-11: legend-f4uvg lanjutan (keputusan CTO: tombol tersembunyi, mock, review Q58)
+
 - Aturan 403 untuk ubah atasan sendiri disetujui CTO.
 - Tombol "Ubah atasan" disembunyikan bagi yang pasti ditolak server: `GET /api/me/access` kini memuat `canChangeEmployeeManager` (HR di scope mana pun, atau GM dengan assignment scope brand/tenant; false di support session read_only atau bila gagal dihitung). Dihitung oleh `canChangeAnyEmployeeManager` di `hris-employee-manager.service.ts`, selaras dengan `mayChangeManager`. Web membaca flag itu (`guard.ts`); server tetap penentu di PATCH. 3 tes baru.
 - Handler mock PATCH di `apps/web/src/lib/mock/handlers/hris-directory.ts` (store atasan yang bisa diubah, 403/404/422/409 cermin API; junior ditentukan dari nama jabatan).

@@ -40,6 +40,7 @@ import {
   useFloorZones,
 } from "../hooks.ts";
 import { useNowMs } from "../use-now.ts";
+import { useChecklistAnswerQueue } from "../use-answer-queue.ts";
 import { ChecklistItemCard } from "./checklist-item-card.tsx";
 import { EscalationBadge, RunStatusPill } from "./checklist-status.tsx";
 import { OfflineNotice } from "./offline-notice.tsx";
@@ -68,6 +69,7 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
   const nowMs = clientNowMs ?? serverNowMs;
   const runQuery = useChecklistRun(runId);
   const run = runQuery.data;
+  const answerQueue = useChecklistAnswerQueue(run);
   const templateQuery = useChecklistTemplate(run?.templateId);
   const floorsQuery = useFloorZones();
   const transition = useChecklistRunTransition(runId);
@@ -190,8 +192,30 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
       {!online && (
         <OfflineNotice
           title={t("opsChecklist.run.offlineTitle")}
-          hint={t("opsChecklist.run.offlineHint")}
+          hint="Jawaban tanpa unggahan bukti dapat masuk antrean perangkat. Jawaban belum tersimpan di server sampai koneksi kembali dan server mengonfirmasi."
         />
+      )}
+
+      {(answerQueue.entries.length > 0 || answerQueue.error) && (
+        <Card data-slot="checklist-answer-queue">
+          <p role="status" aria-live="polite" className="text-sm leading-5">
+            {answerQueue.entries.length} jawaban menunggu konfirmasi server.
+          </p>
+          {answerQueue.error && (
+            <p role="alert" className="text-sm leading-5 text-danger">
+              {answerQueue.error}
+            </p>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!online || !answerQueue.ready}
+            loading={answerQueue.replaying}
+            onClick={() => void answerQueue.retry()}
+          >
+            Coba kirim antrean
+          </Button>
+        </Card>
       )}
 
       <Card data-slot="checklist-run-progress">
@@ -313,6 +337,7 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
                   result={resultOf(run, item.id)}
                   editable={run.status === "in_progress"}
                   timeZone={clock.timeZone}
+                  answerQueue={answerQueue}
                 />
               </li>
             ))}

@@ -193,6 +193,8 @@ export const recordChecklistItemResultInputSchema = clientInputSchema({
   photoMediaIds: z.array(uuidSchema).max(10).optional(),
   signatureMediaId: uuidSchema.nullable().optional(),
   idempotencyKey: idempotencyKeySchema,
+  /** Queued attempts retain their captured actor across a later sign-in change. */
+  expectedActorUserId: userIdSchema.optional(),
 });
 
 export const transitionChecklistRunInputSchema = clientInputSchema({

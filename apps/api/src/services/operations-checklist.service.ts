@@ -741,10 +741,13 @@ export async function recordChecklistItemResult(
   now = new Date(),
 ): Promise<ChecklistRun> {
   const actor = userIdSchema.parse(actorUserId);
+  const { expectedActorUserId, ...answerInput } = input;
+  if (expectedActorUserId !== undefined && expectedActorUserId !== actor)
+    throw new OperationsError("CHECKLIST_REPLAY_ACTOR_MISMATCH");
   const fingerprint = operationsFingerprint({
     runId,
     itemId,
-    ...input,
+    ...answerInput,
     idempotencyKey: undefined,
   });
   return withTenant(db, context, async (tx) => {
@@ -781,6 +784,14 @@ export async function recordChecklistItemResult(
         "CHECKLIST_ITEM_NOT_IN_RUN",
         "Butir checklist ini tidak ada pada checklist tersebut.",
       );
+    // A queued snapshot must not overwrite an answer confirmed after capture.
+    // Same-key retries have already returned above; legacy online corrections
+    // keep their existing behavior when no queue actor precondition is present.
+    if (
+      expectedActorUserId !== undefined &&
+      run.results.some((entry) => entry.itemId === item.id)
+    )
+      throw new OperationsError("CHECKLIST_ANSWER_CONFLICT");
     const finished = input.status === "done" || input.status === "failed";
     const result: ChecklistItemResult = {
       itemId: item.id,
