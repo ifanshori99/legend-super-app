@@ -10,7 +10,7 @@
 // other sources are ignored). A credit from another source (opening balance,
 // manual), any difference, a missing posting, an unreadable NPWP or an unmapped
 // role refuses the report (TAX_REPORT_SOURCE_UNAVAILABLE): no amount is guessed.
-// The NPWP is shown masked only; an employee without NPWP has taxIdMasked null.
+// NPWP is shown masked only; when absent, use masked NIK. Both missing refuses the report.
 
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -30,7 +30,7 @@ import {
   payrollRuns,
   payslips,
 } from "../db/schema";
-import { maskHrisPii, openHrisPii } from "../lib/hris-pii";
+import { maskHrisPii, normalizeHrisPii, openHrisPii } from "../lib/hris-pii";
 import { openPayrollValue } from "../lib/payroll-sealed";
 import type { TenantTransaction } from "./accounting-shared";
 import type { TaxLineSourceArgs } from "./accounting-tax-line-source";
@@ -127,6 +127,7 @@ type EmployeeTotal = {
   name: string;
   outletId: string;
   npwpEncrypted: Buffer | null;
+  nikEncrypted: Buffer | null;
   piiKeyVersion: number;
   base: number;
   tax: number;
@@ -146,6 +147,7 @@ export async function pph21Lines(
       fullName: employees.fullName,
       homeOutletId: employees.homeOutletId,
       npwpEncrypted: employees.npwpEncrypted,
+      nikEncrypted: employees.nikEncrypted,
       employeeKeyVersion: employees.piiKeyVersion,
     })
     .from(payslips)
@@ -202,6 +204,7 @@ export async function pph21Lines(
       name: row.fullName,
       outletId: row.homeOutletId,
       npwpEncrypted: row.npwpEncrypted,
+      nikEncrypted: row.nikEncrypted,
       piiKeyVersion: row.employeeKeyVersion,
       base: 0,
       tax: 0,
@@ -225,33 +228,43 @@ export async function pph21Lines(
 
   const lines: TaxReportLine[] = [];
   for (const [employeeId, total] of totals) {
-    let npwpMasked: string | null = null;
-    if (total.npwpEncrypted) {
+    let taxIdMasked: string | null = null;
+    for (const field of ["npwp", "nik"] as const) {
+      const encrypted =
+        field === "npwp" ? total.npwpEncrypted : total.nikEncrypted;
+      if (!encrypted) continue;
       try {
-        const npwp = openHrisPii(
-          total.npwpEncrypted,
+        const plaintext = openHrisPii(
+          encrypted,
           {
             tenantId: args.tenantId,
             table: "employees",
             rowId: employeeId,
-            field: "npwp",
+            field,
           },
           total.piiKeyVersion,
         );
-        npwpMasked = maskHrisPii("npwp", npwp, total.piiKeyVersion).masked;
+        if (!plaintext.trim()) continue;
+        const identity = normalizeHrisPii(field, plaintext);
+        taxIdMasked = maskHrisPii(field, identity, total.piiKeyVersion).masked;
+        break;
       } catch {
-        // No raw error text: it may echo the sealed or the plain NPWP.
+        // Decryption/validation errors may contain personal values: never echo them.
         throw unavailable(
-          "NPWP karyawan tidak bisa dibaca, laporan tidak bisa dibuat.",
+          `${field.toUpperCase()} karyawan tidak bisa dibaca, laporan tidak bisa dibuat.`,
         );
       }
     }
+    if (taxIdMasked === null)
+      throw unavailable(
+        "NPWP dan NIK karyawan belum diisi, laporan tidak bisa dibuat.",
+      );
     lines.push(
       taxReportLineSchema.parse({
         subjectType: "employee",
         subjectId: employeeId,
         subjectName: total.name,
-        taxIdMasked: npwpMasked,
+        taxIdMasked,
         outletId: total.outletId,
         baseIdr: idr(total.base),
         taxIdr: idr(total.tax),

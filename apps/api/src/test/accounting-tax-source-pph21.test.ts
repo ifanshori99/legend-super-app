@@ -15,14 +15,13 @@
 //   opening balances never count). Any difference, a missing posting or an
 //   unmapped role fails generation with TAX_REPORT_SOURCE_UNAVAILABLE.
 // - The tax id is masked (only the last four digits are shown), never the
-//   sealed value; an employee without NPWP has taxIdMasked null.
+//   sealed value; employees without NPWP use masked NIK, both missing refuses.
 // - Everything is scoped to the caller's tenant and the requested legal entity.
 //
 // Assumptions (the spec leaves these open):
 // - "Period in report period" = the run's period_end falls in that month; the
 //   payroll journal is dated on the period end (see payroll-gl-consumer).
-// - An employee without NPWP still gets a line with taxIdMasked null (design
-//   note: "null if none"); no 422 for pph21, which is legal at the surcharge rate.
+// - An employee without NPWP uses NIK (legend-0af6c); neither identifier is exported raw.
 // - A run reversed through the payroll flow has status 'reversed' (excluded from
 //   the payslips) and a mirrored 'reversal' journal entry, so both sides net out.
 // - A line's base is the sum of tax.taxableGrossIdr over the employee's payslips.
@@ -179,7 +178,11 @@ type Employee = { id: string; name: string; npwp: string | null };
 
 async function makeEmployee(
   world: World,
-  { name, npwp }: { name: string; npwp: string | null },
+  {
+    name,
+    npwp,
+    nik = null,
+  }: { name: string; npwp: string | null; nik?: string | null },
 ): Promise<Employee> {
   const id = randomUUID();
   const sealed = npwp
@@ -196,8 +199,8 @@ async function makeEmployee(
     : null;
   await owner.query(
     `INSERT INTO employees (id, tenant_id, legal_entity_id, employee_no, full_name, home_outlet_id,
-                            employment_type, join_date, status, npwp_encrypted, npwp_hmac, pii_key_version)
-     VALUES ($1, $2, $3, $4, $5, $6, 'pkwt', '2026-01-01', 'active', $7, $8, $9)`,
+                            employment_type, join_date, status, npwp_encrypted, npwp_hmac, pii_key_version, nik_encrypted, nik_hmac)
+     VALUES ($1, $2, $3, $4, $5, $6, 'pkwt', '2026-01-01', 'active', $7, $8, $9, $10, $11)`,
     [
       id,
       world.tenantId,
@@ -208,6 +211,19 @@ async function makeEmployee(
       sealed,
       npwp ? randomBytes(32).toString("hex") : null,
       HRIS_PII_KEY_VERSION,
+      nik
+        ? sealHrisPii(
+            nik,
+            {
+              tenantId: world.tenantId,
+              table: "employees",
+              rowId: id,
+              field: "nik",
+            },
+            HRIS_PII_KEY_VERSION,
+          )
+        : null,
+      nik ? randomBytes(32).toString("hex") : null,
     ],
   );
   return { id, name, npwp };
@@ -579,15 +595,17 @@ describe("legend-v4v7c PPh 21 tax line source", () => {
     expect(lines.reduce((sum, line) => sum + line.taxIdr, 0)).toBe(460_000);
   });
 
-  it("legend-v4v7c shows the NPWP masked to its last four digits, null when the employee has none", async () => {
+  it("legend-v4v7c legend-0af6c masks NPWP and falls back to masked NIK when NPWP is absent", async () => {
     const world = await makeEntity(await makeTenant());
     const withNpwp = await makeEmployee(world, {
       name: "Dewi Lestari",
       npwp: "012345678901234",
+      nik: "3273010101909999",
     });
     const without = await makeEmployee(world, {
       name: "Eko Prasetyo",
       npwp: null,
+      nik: "3273010101905678",
     });
     await seedRun(world, {
       status: "locked",
@@ -604,9 +622,112 @@ describe("legend-v4v7c PPh 21 tax line source", () => {
     expect(masked).not.toContain("012345678901234");
     expect(masked).not.toContain("0123456789");
     expect(masked.length).toBeLessThanOrEqual(30);
-    expect(lineOf(lines, without)!.taxIdMasked).toBeNull();
+    expect(lineOf(lines, without)!.taxIdMasked).toMatch(/5678$/);
+    expect(JSON.stringify(lines)).not.toContain("3273010101905678");
+    expect(lines.reduce((sum, line) => sum + line.taxIdr, 0)).toBe(270_000);
     // Nothing in the report carries the full number.
     expect(JSON.stringify(lines)).not.toContain("012345678901234");
+  });
+
+  it("legend-0af6c refuses the report when both NPWP and NIK are missing", async () => {
+    const world = await makeEntity(await makeTenant());
+    const employee = await makeEmployee(world, {
+      name: "Tanpa Identitas",
+      npwp: null,
+    });
+    await seedRun(world, {
+      status: "locked",
+      slips: [{ employee, baseIdr: 8_000_000, taxIdr: 150_000 }],
+    });
+
+    await expect(pph21Lines(world)).rejects.toMatchObject({
+      code: "TAX_REPORT_SOURCE_UNAVAILABLE",
+      message: expect.stringMatching(/NPWP.*NIK|NIK.*NPWP/),
+    });
+  });
+
+  it("legend-0af6c uses NIK when a legacy encrypted NPWP is blank", async () => {
+    const world = await makeEntity(await makeTenant());
+    const employee = await makeEmployee(world, {
+      name: "NPWP Kosong",
+      npwp: "012345678901234",
+      nik: "3273010101905678",
+    });
+    await asOwner(
+      world.tenantId,
+      (client) =>
+        client.query(
+          "UPDATE employees SET npwp_encrypted = $3 WHERE tenant_id = $1 AND id = $2",
+          [
+            world.tenantId,
+            employee.id,
+            sealHrisPii(
+              "   ",
+              {
+                tenantId: world.tenantId,
+                table: "employees",
+                rowId: employee.id,
+                field: "npwp",
+              },
+              HRIS_PII_KEY_VERSION,
+            ),
+          ],
+        ),
+      true,
+    );
+    await seedRun(world, {
+      status: "locked",
+      slips: [{ employee, baseIdr: 8_000_000, taxIdr: 150_000 }],
+    });
+    const lines = await pph21Lines(world);
+    expect(lines[0]).toMatchObject({
+      taxIdMasked: expect.stringMatching(/5678$/),
+      taxIdr: 150_000,
+    });
+    expect(JSON.stringify(lines)).not.toContain("3273010101905678");
+  });
+
+  it("legend-0af6c refuses unreadable NIK without revealing ciphertext or plaintext", async () => {
+    const world = await makeEntity(await makeTenant());
+    const employee = await makeEmployee(world, {
+      name: "NIK Rusak",
+      npwp: null,
+      nik: "3273010101905678",
+    });
+    await asOwner(
+      world.tenantId,
+      (client) =>
+        client.query(
+          "UPDATE employees SET nik_encrypted = $3 WHERE tenant_id = $1 AND id = $2",
+          [
+            world.tenantId,
+            employee.id,
+            sealHrisPii(
+              "3273010101905678",
+              {
+                tenantId: world.tenantId,
+                table: "employees",
+                rowId: randomUUID(),
+                field: "nik",
+              },
+              HRIS_PII_KEY_VERSION,
+            ),
+          ],
+        ),
+      true,
+    );
+    await seedRun(world, {
+      status: "locked",
+      slips: [{ employee, baseIdr: 8_000_000, taxIdr: 150_000 }],
+    });
+    const error = await pph21Lines(world).catch((value: unknown) => value);
+    expect(error).toMatchObject({
+      code: "TAX_REPORT_SOURCE_UNAVAILABLE",
+      message: expect.stringContaining("NIK"),
+    });
+    expect((error as Error).message).not.toMatch(
+      /auth|decrypt|tag|3273010101905678/i,
+    );
   });
 
   it("legend-v4v7c ignores draft and approved runs, which are not posted to the ledger", async () => {
