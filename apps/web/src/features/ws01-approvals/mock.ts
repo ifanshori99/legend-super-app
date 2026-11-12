@@ -92,9 +92,53 @@ function seed(): ApprovalRequest[] {
         selfApprovalAllowed: true,
       }),
     );
+  // Shift close (legend-6om3): the cash difference rides in payload.valueIdr
+  // (amountIdr stays null). Raised by the cashier, so the signed-in owner
+  // sees it as approver; the second one is the owner's own, i.e. the
+  // requester view that must not show the figure.
+  if (template) {
+    const shiftClose = {
+      ...template,
+      actionType: "cash_shift_close",
+      objectType: "pos_shift",
+      source: "user",
+      amountIdr: null,
+      level: 1,
+      requiredLevels: 1,
+      selfApprovalAllowed: false,
+      createdAt: iso(-8 * MIN),
+      deadlineAt: iso(50 * MIN),
+    } as const;
+    rebased.push(
+      approvalRequestSchema.parse({
+        ...shiftClose,
+        id: SHIFT_CLOSE_APPROVER_ID,
+        payload: {
+          shiftCode: "S-008",
+          terminal: "Terminal 01",
+          valueIdr: 20_000,
+        },
+        requestedBy: cafeLegendIdentityFixtures.usersByKey.cashier.id,
+        requestReason: "Hitungan kas akhir shift berbeda dari sistem.",
+      }),
+      approvalRequestSchema.parse({
+        ...shiftClose,
+        id: SHIFT_CLOSE_REQUESTER_ID,
+        payload: {
+          shiftCode: "S-009",
+          terminal: "Terminal 02",
+          valueIdr: 15_000,
+        },
+        requestedBy: cafeLegendIdentityFixtures.usersByKey.owner.id,
+        requestReason: "Hitungan kas akhir shift berbeda dari sistem.",
+      }),
+    );
+  }
   return rebased;
 }
 
+export const SHIFT_CLOSE_APPROVER_ID = "a9c00000-0000-4000-8000-0000000000f3";
+export const SHIFT_CLOSE_REQUESTER_ID = "a9c00000-0000-4000-8000-0000000000f4";
 export const SELF_APPROVABLE_ID = "a9c00000-0000-4000-8000-0000000000f2";
 
 const requests = createMockStore<ApprovalRequest[]>(seed);

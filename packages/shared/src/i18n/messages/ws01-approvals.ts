@@ -162,7 +162,15 @@ export const approvalsMessages = {
     becomes: "menjadi",
   },
 
+  shift: {
+    difference: "Selisih kas",
+    requesterHint: "Supervisor akan meninjau hitungan Anda.",
+    viewStatus: "Lihat status",
+  },
+
   field: {
+    shiftCode: "Kode shift",
+    terminal: "Terminal",
     orderNumber: "Nomor pesanan",
     refundMethod: "Metode refund",
     discountIdr: "Nilai diskon",
