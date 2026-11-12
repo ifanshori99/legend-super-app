@@ -96,6 +96,15 @@ Use PostgreSQL `pgTable`/boolean/timestamp-with-time-zone columns and asynchrono
 - `pnpm test` penuh dan `pnpm check` hanya untuk gate akhir: sekali, lewat `heavy`, oleh satu `test-runner`.
 - Jangan menjalankan suite penuh paralel dari worktree yang sama.
 
+## Pra-gate sebelum lapor (founder Q86, 12 Nov 2026)
+
+Sebelum thread lapor selesai, dari root worktree, pada file yang diubah:
+- `pnpm exec prettier --check <file...>` (perbaiki dengan `--write`)
+- `pnpm exec eslint <file...>`
+- Teks UI baru: `node --test tests/text-contract.test.mjs` (daftarkan teks ke katalog, jangan longgarkan detector)
+- Migrasi baru: `pnpm db:generate` kosong, dan registry/referensi test memakai nomor yang sama
+Ringan; bila hook menolak tanpa `heavy`, jalankan lewat `heavy`.
+
 ## Verify and hand off
 
 Run `pnpm check` (lint, typecheck, API + root tests on disposable PostgreSQL) and `pnpm build` for substantive changes. For auth/routing/session/CORS changes also run `pnpm test:e2e` (production builds + Playwright). For setup or Compose changes run `pnpm test:setup`. Add tests for real behavior and data isolation. Review the UI at narrow and wide widths when changing layout. The starter placeholder page and `e2e/starter.spec.ts` are gone (bead legend-fbu); new screens go in a route area, see `docs/frontend.md` "Where to put a new screen".
