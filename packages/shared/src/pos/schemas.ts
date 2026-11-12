@@ -145,6 +145,54 @@ export const SERVICE_TYPES = ["dine_in", "takeaway", "delivery"] as const;
 export const serviceTypeSchema = z.enum(SERVICE_TYPES);
 export type ServiceType = z.infer<typeof serviceTypeSchema>;
 
+/** Server-priced choices for the cashier/captain item picker. */
+export const posCatalogSchema = z.strictObject({
+  categories: z.array(
+    z.strictObject({
+      id: uuidSchema,
+      name,
+      sortOrder: z.number().int().nonnegative(),
+    }),
+  ),
+  items: z.array(
+    z.strictObject({
+      id: uuidSchema,
+      categoryId: uuidSchema,
+      categoryName: name,
+      name,
+      /** Display price only: variant items still require a selected variant. */
+      basePriceIdr: positiveIdr,
+      plainPriceIdr: positiveIdr.nullable(),
+      variants: z.array(
+        z.strictObject({ id: uuidSchema, name, priceIdr: positiveIdr }),
+      ),
+      imageUrl: z.string().max(2048).nullable(),
+      course: z.string().max(20).nullable(),
+      code: z.string().max(100).nullable(),
+      soldOut: z.boolean(),
+      modifierGroups: z.array(
+        z.strictObject({
+          id: uuidSchema,
+          name,
+          required: z.boolean(),
+          min: z.number().int().nonnegative(),
+          max: z.number().int().nonnegative(),
+          options: z.array(
+            z.strictObject({
+              id: uuidSchema,
+              label: name,
+              priceDeltaIdr: nonnegativeIdr,
+            }),
+          ),
+        }),
+      ),
+    }),
+  ),
+  updatedAt: isoDateTimeSchema,
+  source: z.literal("live"),
+});
+export type PosCatalog = z.infer<typeof posCatalogSchema>;
+
 /** §6 `orders.status`, plus the POS actions that move between them. */
 export const POS_ORDER_STATUSES = [
   "draft",

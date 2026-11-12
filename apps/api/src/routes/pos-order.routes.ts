@@ -30,6 +30,7 @@ import {
   createPosOrder,
   firePosOrderItems,
   getPosApprovalPolicy,
+  getPosCatalog,
   getPosOrder,
   getPosOrderActionAvailability,
   listPosOrderEvents,
@@ -56,6 +57,8 @@ import * as corrections from "../services/pos-order-corrections.ts";
 import * as discounts from "../services/pos-order-discounts.ts";
 import { addPosTender as addPosTenderService } from "../services/pos-order-payment.ts";
 import * as pos from "../services/pos-order.service.ts";
+import { getPosCatalog as getPosCatalogService } from "../services/pos-catalog.service.ts";
+import type { MenuMediaUrls } from "../services/menu-internals.ts";
 import type { PosCaller } from "../services/pos-order-support.ts";
 
 export const posOrderRouter = Router({ mergeParams: true });
@@ -167,6 +170,34 @@ async function sendOrder(
 }
 
 // ---- Orders -------------------------------------------------------------------
+
+/** Mounted by createApp with that app's configured photo URL resolver. */
+export function createPosCatalogRouter(
+  resolveMediaUrls: MenuMediaUrls,
+): Router {
+  const router = Router({ mergeParams: true });
+  router.get(
+    "/",
+    requireAuth,
+    requireTrustedOrigin,
+    requireTenantContext,
+    resolveActingStaff,
+    view,
+    async (req, res) => {
+      const { outletId } = getPosCatalog.params.parse(req.params);
+      const query = getPosCatalog.query.parse(req.query);
+      const data = await getPosCatalogService(
+        getScopedTenantContext(req),
+        outletId,
+        query,
+        new Date(),
+        resolveMediaUrls,
+      );
+      res.json({ data });
+    },
+  );
+  return router;
+}
 
 posOrderRouter.get("/orders", view, async (req, res) => {
   const { outletId } = listPosOrders.params.parse(req.params);

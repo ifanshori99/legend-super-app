@@ -32,6 +32,8 @@ import { errorHandler, notFound } from "./middleware/error-handler";
 import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
 import { createStorageApiRouter } from "./routes/storage-api.routes";
+import { createPosCatalogRouter } from "./routes/pos-order.routes.ts";
+import { createMenuMediaUrls } from "./services/menu-media.service.ts";
 import {
   consoleLikeLog,
   createStorageRuntimeFromEnv,
@@ -451,6 +453,12 @@ export function createApp({
       database: db,
       messaging: messagingProvider,
     }),
+  );
+  app.use(
+    "/api/outlets/:outletId/pos/catalog",
+    createPosCatalogRouter(
+      createMenuMediaUrls(storageRuntime?.storage ?? null),
+    ),
   );
   app.use("/api", apiRouter);
 

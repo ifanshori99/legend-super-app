@@ -44,6 +44,7 @@ import {
   pairCustomerDisplayInputSchema,
   posApprovalPolicySchema,
   posCashMovementSchema,
+  posCatalogSchema,
   posDiscountIdSchema,
   posDiscountKindSchema,
   posDiscountSourceSchema,
@@ -125,6 +126,18 @@ const orderLineInputSchema = z.strictObject({
 });
 
 // ---- Orders ---------------------------------------------------------------
+
+/** The effective outlet/channel catalog, including visible unavailable items. */
+export const getPosCatalog = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/catalog",
+  params: outletParams,
+  query: z.strictObject({
+    channel: orderChannelSchema.default("pos"),
+    serviceType: serviceTypeSchema.default("dine_in"),
+  }),
+  response: dataResponseSchema(posCatalogSchema),
+});
 
 export const listPosOrders = defineEndpoint({
   method: "GET",
