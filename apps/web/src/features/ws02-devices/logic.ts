@@ -32,26 +32,13 @@ export function heartbeatState(device: Device, nowMs: number): HeartbeatState {
   return "online";
 }
 
-/**
- * Viewer clock vs edge clock. `lastSeenAt` is stamped by the edge node, so a
- * viewer whose clock runs behind would see every device as "online" (age
- * clamps to 0). The list carries no server time (contract gap), but the edge
- * clock was at least the newest `lastSeenAt` when the response arrived, so
- * that bounds how far behind the viewer is. Returns the milliseconds to ADD
- * to the viewer clock (never negative: a viewer clock that runs ahead only
- * makes devices look late, which is the safe direction).
- */
+/** Difference between the server clock and viewer clock at response receipt. */
 export function serverClockOffsetMs(
-  devices: readonly Device[],
+  serverTime: string,
   receivedAtMs: number,
 ): number {
-  let newest = Number.NEGATIVE_INFINITY;
-  for (const d of devices) {
-    if (d.lastSeenAt === null) continue;
-    const seen = Date.parse(d.lastSeenAt);
-    if (!Number.isNaN(seen) && seen > newest) newest = seen;
-  }
-  return Number.isFinite(newest) ? Math.max(0, newest - receivedAtMs) : 0;
+  const serverMs = Date.parse(serverTime);
+  return Number.isFinite(serverMs) ? serverMs - receivedAtMs : 0;
 }
 
 export type AgeParts =
@@ -168,16 +155,17 @@ export function mergeRevocations(
 }
 
 /**
- * Outlets to offer: only those in the server-scoped device list (the edge
- * node resolves the outlet from its credential, TEN-02). The org outlet list
- * only names them, so the filter never lists outlets outside the reply.
+ * Offer listed outlets even when they contain no devices. The server checks
+ * device.registry.manage on the selected outlet before returning its rows.
  */
 export function outletOptions(
   orgOutlets: readonly { id: string; name: string }[],
   devices: readonly Device[],
 ): { id: string; name: string | null }[] {
   const names = new Map(orgOutlets.map((o) => [o.id, o.name] as const));
-  const seen = new Map<string, string | null>();
+  const seen = new Map<string, string | null>(
+    orgOutlets.map((o) => [o.id, o.name]),
+  );
   for (const d of devices)
     if (!seen.has(d.outletId))
       seen.set(d.outletId, names.get(d.outletId) ?? null);

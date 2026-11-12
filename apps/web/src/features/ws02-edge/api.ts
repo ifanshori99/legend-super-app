@@ -20,7 +20,10 @@ export function fetchEdgeStatus(signal?: AbortSignal) {
   return callEndpoint(getEdgeStatus, undefined, { signal });
 }
 
-export function fetchEdgeDevices(query: DeviceListQuery, signal?: AbortSignal) {
+export function fetchEdgeDevices(
+  query: DeviceListQuery & { outletId?: string },
+  signal?: AbortSignal,
+) {
   return callEndpoint(listEdgeDevices, { query }, { signal });
 }
 

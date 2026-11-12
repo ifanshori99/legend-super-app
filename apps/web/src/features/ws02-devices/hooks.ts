@@ -2,8 +2,6 @@
 // exported hooks (one owner per endpoint); revoke, enroll, token reissue and outlets live here.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Device } from "@starter/shared/edge";
-import { orgEndpoints } from "@starter/shared/platform";
-import { endpointQueryOptions } from "@/lib/api/endpoint";
 import { edgeKeys } from "@/features/ws02-edge/queries";
 import {
   enrollDeviceCall,
@@ -14,16 +12,6 @@ import {
 export { useEdgeDevices, useSetTrainingMode } from "@/features/ws02-edge/hooks";
 
 const revokedKey = ["deviceRegistry", "revoked"] as const;
-
-export function useOutlets() {
-  return useQuery({
-    ...endpointQueryOptions(orgEndpoints.listOutlets, {
-      query: { limit: 50 },
-    }),
-    enabled: typeof window !== "undefined",
-    retry: false,
-  });
-}
 
 /** Devices revoked in this session (overlay until the polled list agrees). */
 export function useRevokedOverlay(): ReadonlyMap<string, Device> {

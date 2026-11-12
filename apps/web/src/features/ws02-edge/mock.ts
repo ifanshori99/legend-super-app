@@ -245,20 +245,25 @@ registerMock(retryPrintJob, ({ params, body }) => {
   return { data: updated };
 });
 
-registerMock(listEdgeDevices, ({ query, scenario }) =>
-  paginateFixture(
+registerMock(listEdgeDevices, ({ query, scenario }) => {
+  const page = paginateFixture(
     devices
       .get()
       .filter(
         (device) =>
+          (!query.outletId || device.outletId === query.outletId) &&
           (!query.type || device.type === query.type) &&
           (!query.status || device.status === query.status),
       ),
     query,
     (device) => device.id,
     scenario,
-  ),
-);
+  );
+  return {
+    ...page,
+    meta: { ...page.meta, serverTime: new Date().toISOString() },
+  };
+});
 
 registerMock(setOutletDeviceTrainingMode, ({ params, body }) => {
   const device = devices.get().find((item) => item.id === params.deviceId);

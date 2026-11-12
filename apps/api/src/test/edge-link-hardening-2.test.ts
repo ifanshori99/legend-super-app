@@ -54,6 +54,7 @@ import type { LinkScope, LinkStore } from "../edge/link-peer.ts";
 import { registerEdgeLink } from "../edge/runtime.ts";
 import { expressClientAddress } from "../lib/client-address.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
+import { enrollDevice } from "../services/device.service.ts";
 import {
   EDGE_NODE_REVOKED_CHANNEL,
   authenticateEdgeCredential,
@@ -237,6 +238,7 @@ afterAll(async () => {
       "edge_outbound_queue",
       "sync_cursors",
       "edge_nodes",
+      "devices",
       "outlets",
       "legal_entities",
       "brands",
@@ -253,6 +255,7 @@ afterAll(async () => {
         "edge_outbound_queue",
         "sync_cursors",
         "edge_nodes",
+        "devices",
       ])
         await client.query(`DELETE FROM ${table} WHERE outlet_id = ANY($1)`, [
           seededOutlets,
@@ -627,6 +630,130 @@ describe("legend-x3lv #1 credential rotation (route)", () => {
     expect(response.status).toBeGreaterThanOrEqual(400);
     expect(response.status).toBeLessThan(500);
     expect(findCredential(response.body)).toBeNull();
+  });
+});
+
+describe("legend-saag device registry contract", () => {
+  const app = createApp();
+
+  it("lets a cloud registry manager list an outlet's devices with server time", async () => {
+    const outletId = await cloneSeededOutlet();
+    const device = await enrollDevice(
+      scopeFor(seeded.tenant.id, outletId),
+      actor,
+      {
+        outletId,
+        type: "pos",
+        label: "Kasir saag",
+        stationId: null,
+        idempotencyKey: randomUUID(),
+      },
+    );
+    const admin = await staffWithRole(app, { template: "owner" });
+    await verifySessionMfa(admin.email);
+    const before = Date.now();
+    const response = await admin.client
+      .get("/api/edge/devices")
+      .query({ outletId });
+    const after = Date.now();
+    expect(response.status).toBe(200);
+    expect(response.body.data.map((row: { id: string }) => row.id)).toContain(
+      device.device.id,
+    );
+    const serverTime = Date.parse(response.body.meta.serverTime);
+    expect(Number.isFinite(serverTime)).toBe(true);
+    expect(serverTime).toBeGreaterThanOrEqual(before - 1000);
+    expect(serverTime).toBeLessThanOrEqual(after + 1000);
+  });
+
+  it("does not list another tenant's devices", async () => {
+    const stranger = await makeNode();
+    const device = await enrollDevice(stranger.context, actor, {
+      outletId: stranger.fixture.outletId,
+      type: "pos",
+      label: "Kasir tenant lain",
+      stationId: null,
+      idempotencyKey: randomUUID(),
+    });
+    const admin = await staffWithRole(app, { template: "owner" });
+    await verifySessionMfa(admin.email);
+    const response = await admin.client
+      .get("/api/edge/devices")
+      .query({ outletId: stranger.fixture.outletId });
+    expect([403, 404]).toContain(response.status);
+    expect(JSON.stringify(response.body)).not.toContain(device.device.id);
+  });
+
+  it("does not let a cashier list registry devices", async () => {
+    const outletId = await cloneSeededOutlet();
+    const device = await enrollDevice(
+      scopeFor(seeded.tenant.id, outletId),
+      actor,
+      {
+        outletId,
+        type: "pos",
+        label: "Kasir privat",
+        stationId: null,
+        idempotencyKey: randomUUID(),
+      },
+    );
+    const cashier = await staffWithRole(app, { template: "cashier" });
+    await verifySessionMfa(cashier.email);
+    const response = await cashier.client
+      .get("/api/edge/devices")
+      .query({ outletId });
+    expect([403, 404]).toContain(response.status);
+    expect(JSON.stringify(response.body)).not.toContain(device.device.id);
+  });
+
+  it("does not let another tenant revoke a device even with a valid reason and idempotency key", async () => {
+    const stranger = await makeNode();
+    const device = await enrollDevice(stranger.context, actor, {
+      outletId: stranger.fixture.outletId,
+      type: "pos",
+      label: "Kasir tenant lain",
+      stationId: null,
+      idempotencyKey: randomUUID(),
+    });
+    const admin = await staffWithRole(app, { template: "owner" });
+    await verifySessionMfa(admin.email);
+    const response = await admin.client
+      .post(`/api/devices/${device.device.id}/revoke`)
+      .set(originHeader)
+      .send({ reason: "Perangkat hilang", idempotencyKey: randomUUID() });
+    expect(response.status).toBe(404);
+    const stored = await owner.query(
+      "SELECT status FROM devices WHERE id = $1",
+      [device.device.id],
+    );
+    expect(stored.rows[0]?.status).toBe("active");
+  });
+
+  it("does not let a cashier revoke a device", async () => {
+    const outletId = await cloneSeededOutlet();
+    const device = await enrollDevice(
+      scopeFor(seeded.tenant.id, outletId),
+      actor,
+      {
+        outletId,
+        type: "pos",
+        label: "Kasir terlindungi",
+        stationId: null,
+        idempotencyKey: randomUUID(),
+      },
+    );
+    const cashier = await staffWithRole(app, { template: "cashier" });
+    await verifySessionMfa(cashier.email);
+    const response = await cashier.client
+      .post(`/api/devices/${device.device.id}/revoke`)
+      .set(originHeader)
+      .send({ reason: "Perangkat hilang", idempotencyKey: randomUUID() });
+    expect([403, 404]).toContain(response.status);
+    const stored = await owner.query(
+      "SELECT status FROM devices WHERE id = $1",
+      [device.device.id],
+    );
+    expect(stored.rows[0]?.status).toBe("active");
   });
 });
 

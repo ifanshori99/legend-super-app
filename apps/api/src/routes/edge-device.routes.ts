@@ -23,8 +23,12 @@ import {
   uuidSchema,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
-import { deviceListQuerySchema } from "@starter/shared/edge";
+import {
+  edgeDeviceListQuerySchema,
+  listOutletDevices as listOutletDevicesEndpoint,
+} from "@starter/shared/edge";
 import { and, desc, eq, sql } from "drizzle-orm";
+import { env } from "../config/env.ts";
 import { db } from "../db/index.ts";
 import { devices } from "../db/schema/device.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -33,12 +37,19 @@ import { HttpError } from "../lib/http-error.ts";
 import { sessionMfaVerifiedAt } from "../lib/mfa.ts";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
+import { requireBackOfficeSurface } from "../middleware/identity-surface.ts";
+import { requireTrustedOrigin } from "../middleware/origin.ts";
+import {
+  getScopedTenantContext,
+  requireOutletPermission,
+} from "../middleware/permissions.ts";
 import {
   findTenantContext,
   requireTenantContext,
 } from "../middleware/tenant.ts";
 import {
   deviceHeartbeatHandler,
+  listOutletDevices,
   toDevice,
 } from "../services/device.service.ts";
 import {
@@ -127,12 +138,39 @@ export const edgeDeviceRouter = Router();
 
 edgeDeviceRouter.get(
   "/",
+  (req, _res, next) => {
+    if (env.EDGE_MODE || getEdgeRuntimeState().edgeMode) return next("route");
+    next();
+  },
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireBackOfficeSurface(),
+  requireOutletPermission(
+    "device.registry.manage",
+    (req) => listOutletDevicesEndpoint.query.parse(req.query).outletId,
+  ),
+  async (req, res) => {
+    const query = listOutletDevicesEndpoint.query.parse(req.query);
+    const page = await listOutletDevices(getScopedTenantContext(req), query);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      ...page,
+      meta: { ...page.meta, serverTime: new Date().toISOString() },
+    });
+  },
+);
+
+edgeDeviceRouter.get(
+  "/",
   requireNodeTenant,
   requireAuth,
   registryManager,
   async (req, res) => {
     const identity = edgeIdentity();
-    const query = deviceListQuerySchema.parse(req.query);
+    const query = edgeDeviceListQuerySchema.parse(req.query);
+    if (query.outletId && query.outletId !== identity.scope.outletId)
+      throw new CoreError("NOT_FOUND", "Outlet tidak ditemukan.");
     const after = parseCursor(query.cursor);
     const outletId = outletIdSchema.parse(identity.scope.outletId);
     const context = outletContext(identity.context.tenant, outletId);
@@ -163,6 +201,7 @@ edgeDeviceRouter.get(
       data: page.map(({ row }) => toDevice(row)),
       meta: {
         limit: query.limit,
+        serverTime: new Date().toISOString(),
         nextCursor:
           rows.length > query.limit && last
             ? encodeCursor([CURSOR_TAG, last.created, last.row.id])
