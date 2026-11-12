@@ -279,6 +279,25 @@ export const platformEndpoints = {
     query: searchTenantAccountsQuerySchema,
     response: z.object({ data: z.array(tenantAccountSummarySchema) }),
   }),
+  listTenantBrands: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/tenants/:tenantId/brands",
+    params: tenantParams,
+    response: z.object({ data: z.array(brandSchema) }),
+  }),
+  listTenantOutlets: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/tenants/:tenantId/outlets",
+    params: tenantParams,
+    query: cursorPageQuerySchema.extend({ brandId: brandIdSchema.optional() }),
+    response: cursorPageSchema(outletSchema),
+  }),
+  listTenantLegalEntities: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/tenants/:tenantId/legal-entities",
+    params: tenantParams,
+    response: z.object({ data: z.array(legalEntitySchema) }),
+  }),
   assignTenantOwner: defineEndpoint({
     method: "POST",
     path: "/api/platform/tenants/:tenantId/owners",
