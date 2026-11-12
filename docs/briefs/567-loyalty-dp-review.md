@@ -1,0 +1,9 @@
+# Architect review: legend-77r0 / legend-fug4
+
+Review one combined money diff against b579a379 on ws/loyalty-dp (working tree, include untracked files). User Q81: returned goods DP share proportional floor, original payer and method only, cumulative refunds never exceed paid DP minus previous refunds. User Q82: leftover reservation DP becomes customer credit only with verified linked tenant profile and paid nonvoid final bill; otherwise manual original-payer refund liability. No double cashout, retry/races/void safe, balanced journals.
+
+Inspect ledger/source caps, WS05 request+provider approval ceilings, source receipt/reversal proof, shared fact clock and intent/advisory lock order, same-outlet/PT credit spend, close/recredit, original DP vs destination credit linkage, economic totals vs tender-only drawer, migration0411 RLS/inline FKs/snapshot. Named source ambiguity and pre-cutover cases fail closed. Manual visible current refund amount derives WS05 cap rather than original snapshot. Existing DP receipt-document/recap contracts remain fail closed; followups legend-vet9d and legend-j772n.
+
+Primary files: pos-deposit-refund.ts, pos-order-corrections.ts, pos-refund-gateway.ts, payment-refund-approval-limits.ts, reservation-deposit-credit.ts, reservation-deposit-remainder.ts, accounting-auto-journal-guards.ts, payment-refund-fact-time.ts, POS/QR completion paths; economic metric/facility/anomaly/invoice consumers, shared event depositLines, reservation routes/contracts, schema and0411. Tests new Q81/Q82, accounting extensions and economic fixtures.
+
+Report only real correctness findings with file:line and concrete scenario, prioritized. Do not edit or run heavy. Root/test_gate own validation. This is the single architect review requested for this branch; follow-up review same agent only for fixes.

@@ -482,6 +482,7 @@ export const defaultLoyaltyAntiFraud: LoyaltyAntiFraud = {
 export const loyaltyProgramSchema = z.strictObject({
   id: uuidSchema,
   tenantId: tenantIdSchema,
+  legalEntityId: uuidSchema.nullable().default(null),
   name,
   earnRate: earnRateSchema,
   /** Points expire N months after they are earned (PRD default 12). */

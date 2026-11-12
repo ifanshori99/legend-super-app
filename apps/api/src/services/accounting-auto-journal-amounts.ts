@@ -72,6 +72,8 @@ import {
   accountMappings,
   cashMovements,
   domainEventOutbox,
+  journalEntries,
+  loyaltyPrograms,
   orderIssueCharges,
   orders,
   outlets,
@@ -83,6 +85,7 @@ import {
   posOrderTenders,
   posShifts,
   reservations,
+  tenants,
 } from "../db/schema/index.ts";
 import {
   assertForfeitWithinIntent,
@@ -550,17 +553,49 @@ function ledgerEntryIdOf(
  * oldest outlet. More than one: legalEntityId null (ambiguous), anchored on
  * the tenant's oldest outlet so the event can still be parked. No outlet: null.
  */
+export async function lockLoyaltyJournalEntity(
+  tx: Tx,
+  tenantId: TenantId,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`loyalty-entity:${tenantId}`}, 0))`,
+  );
+}
+
 export async function loyaltyAnchorOf(
   tx: Tx,
   tenantId: TenantId,
 ): Promise<{ outletId: string; legalEntityId: string | null } | null> {
+  const [program] = await tx
+    .select({ legalEntityId: loyaltyPrograms.legalEntityId })
+    .from(loyaltyPrograms)
+    .where(eq(loyaltyPrograms.tenantId, tenantId))
+    .limit(1);
+  if (!program?.legalEntityId) {
+    // Every new outlet has a tenant FK. Its KEY SHARE check must wait for
+    // this lock, preventing a second entity from appearing during fallback.
+    await tx
+      .select({ id: tenants.id })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .for("update");
+  }
   const rows = await tx
     .select({ id: outlets.id, legalEntityId: outlets.legalEntityId })
     .from(outlets)
     .where(eq(outlets.tenantId, tenantId))
-    .orderBy(asc(outlets.createdAt), asc(outlets.id));
+    .orderBy(asc(outlets.createdAt), asc(outlets.id))
+    .for("share");
   const [oldest] = rows;
   if (!oldest) return null;
+  if (program?.legalEntityId) {
+    const selected = rows.find(
+      (row) => row.legalEntityId === program.legalEntityId,
+    );
+    return selected
+      ? { outletId: selected.id, legalEntityId: selected.legalEntityId }
+      : { outletId: oldest.id, legalEntityId: null };
+  }
   const entities = new Set(rows.map((row) => row.legalEntityId));
   return {
     outletId: oldest.id,
@@ -1894,6 +1929,34 @@ async function loyaltyFactOf(
   if (anchor.legalEntityId === null)
     throw new AutoJournalLoyaltyEntityAmbiguous(
       "Tenant outlets belong to more than one legal entity",
+    );
+  if (journalOutletId !== null) {
+    const [sourceOutlet] = await tx
+      .select({ legalEntityId: outlets.legalEntityId })
+      .from(outlets)
+      .where(
+        and(eq(outlets.tenantId, tenantId), eq(outlets.id, journalOutletId)),
+      )
+      .limit(1);
+    if (!sourceOutlet || sourceOutlet.legalEntityId !== anchor.legalEntityId)
+      throw new AutoJournalLoyaltyEntityAmbiguous(
+        "Loyalty source outlet belongs to a different legal entity",
+      );
+  }
+  const [differentEntity] = await tx
+    .select({ id: journalEntries.id })
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, tenantId),
+        eq(journalEntries.sourceType, "loyalty"),
+        ne(journalEntries.legalEntityId, anchor.legalEntityId),
+      ),
+    )
+    .limit(1);
+  if (differentEntity)
+    throw new AutoJournalLoyaltyEntityAmbiguous(
+      "Loyalty liability is already journaled in a different legal entity",
     );
   const raisesLiability =
     eventName === "points.earned" || eventName === "points.adjusted";

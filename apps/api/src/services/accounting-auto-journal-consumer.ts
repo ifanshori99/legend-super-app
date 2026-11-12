@@ -68,6 +68,7 @@ import {
   isAutoJournalEvent,
   isLoyaltyAutoJournalEvent,
   loyaltyAnchorOf,
+  lockLoyaltyJournalEntity,
   storedEventOf,
   type AutoJournalEventName,
   type StoredAutoJournalEvent,
@@ -323,6 +324,8 @@ export async function deliverAutoJournalEvent(
   if (!isAutoJournalEvent(event.name)) return { status: "ignored" };
   if (event.tenantId !== context.tenant.tenantId) return { status: "ignored" };
   if (!(await accountingEnabled(tx, context))) return { status: "ignored" };
+  if (isLoyaltyAutoJournalEvent(event.name))
+    await lockLoyaltyJournalEntity(tx, context.tenant.tenantId);
   // legend-msqvi: a points event has no outlet; it is stored, dated and
   // parked under the tenant's loyalty anchor outlet (D-msqvi section 7).
   const loyaltyOutletId = isLoyaltyAutoJournalEvent(event.name)
@@ -368,6 +371,8 @@ async function settleAutoJournal(
   now: Date,
 ): Promise<AutoJournalResult> {
   const tenantId = context.tenant.tenantId;
+  if (isLoyaltyAutoJournalEvent(stored.eventName))
+    await lockLoyaltyJournalEntity(tx, tenantId);
   const key = autoJournalKeyOf(stored);
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`aj:${tenantId}:${key}`}, 0))`,

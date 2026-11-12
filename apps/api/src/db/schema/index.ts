@@ -165,6 +165,7 @@ export * from "./bill-splits";
 // WS-08 member profiles, consent policy versions, loyalty program, point
 // ledger, earn records, visits, anomalies (legend-111j).
 export * from "./crm-member";
+export * from "./loyalty-claim-pause";
 export * from "./crm-ledger";
 // WS-08 rewards, redemptions, missions (legend-m4p5).
 export * from "./crm-rewards";
@@ -179,3 +180,6 @@ export * from "./wa-login-reply";
 
 // legend-2qq HPP read model (menu_costs) and its recompute queue.
 export * from "./hpp";
+export * from "./pos-deposit-refund";
+
+export * from "./reservation-deposit-remainder";

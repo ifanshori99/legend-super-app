@@ -54,10 +54,7 @@ import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { HttpError } from "../lib/http-error.ts";
-import {
-  livePromoApplicationOf,
-  orderPromoPartialRefundPort,
-} from "./order-promo-refund.ts";
+import { orderPromoPartialRefundPort } from "./order-promo-refund.ts";
 import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
 import {
   recoveryRefundSplit,
@@ -375,7 +372,13 @@ export async function deliverOrderRecoveryRefundEvent(
     // A live promo: the port re-prices the order without the failed lines
     // (founder Q41/Q19). It records no payout here (`deferPayout`): the
     // refund records what it files below.
-    if (await livePromoApplicationOf(tx, context, order.id)) {
+    if (
+      await orderPromoPartialRefundPort.livePromoApplicationOf(
+        tx,
+        context,
+        order.id,
+      )
+    ) {
       const issues = await tx
         .select({
           id: orderIssues.id,

@@ -299,6 +299,351 @@ afterAll(async () => {
 });
 
 describe("LOY-03 race-safe quota, budget and voucher redemption", () => {
+  it("loyalty reward vouchers cannot discount another legal entity's outlet", async () => {
+    const isolatedTenant = randomUUID();
+    const brand = randomUUID();
+    const entityA = randomUUID();
+    const entityB = randomUUID();
+    const outletEntityA = outletIdSchema.parse(randomUUID());
+    const outletEntityB = outletIdSchema.parse(randomUUID());
+    const voucherId = randomUUID();
+    const voucherCode = code();
+    const rewardId = randomUUID();
+    const missionId = randomUUID();
+    const missionVoucherId = randomUUID();
+    const missionVoucherCode = code();
+    await owner.query(
+      `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+       SELECT $1, $2, 'Loyalty voucher entity test', plan, status, deployment_mode, feature_flags, limits, created_by
+         FROM tenants WHERE id = $3`,
+      [
+        isolatedTenant,
+        `voucher-entity-${isolatedTenant.slice(0, 8)}`,
+        tenantId,
+      ],
+    );
+    const customer = await asOwner(isolatedTenant, async (client) => {
+      await client.query(
+        `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'b', 'Brand')`,
+        [brand, isolatedTenant],
+      );
+      await client.query(
+        `INSERT INTO legal_entities (id, tenant_id, name, is_pkp)
+         VALUES ($1, $3, 'Entity A', false), ($2, $3, 'Entity B', false)`,
+        [entityA, entityB, isolatedTenant],
+      );
+      await client.query(
+        `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+         VALUES ($1, $3, $4, $5, 'EA', 'Outlet A', 'Jl. A', 'Asia/Jakarta', '{}', 'active'),
+                ($2, $3, $4, $6, 'EB', 'Outlet B', 'Jl. B', 'Asia/Jakarta', '{}', 'active')`,
+        [outletEntityA, outletEntityB, isolatedTenant, brand, entityA, entityB],
+      );
+      await client.query(
+        `INSERT INTO loyalty_programs (tenant_id, legal_entity_id, is_active)
+         VALUES ($1, $2, true)`,
+        [isolatedTenant, entityA],
+      );
+      const member = await seedPromoCustomer(client, isolatedTenant);
+      await client.query(
+        `INSERT INTO vouchers (id, tenant_id, customer_profile_id, code_hash, source, value_idr, valid_from)
+         VALUES ($1, $2, $3, $4, 'loyalty_reward', 20000, now() - interval '1 hour')`,
+        [
+          voucherId,
+          isolatedTenant,
+          member.customerProfileId,
+          hash(voucherCode),
+        ],
+      );
+      await client.query(
+        `INSERT INTO rewards (id, tenant_id, name, type, points_cost, valid_from, voucher_value_idr)
+         VALUES ($1, $2, 'Voucher poin', 'voucher', 10, now() - interval '1 hour', 20000)`,
+        [rewardId, isolatedTenant],
+      );
+      await client.query(
+        `INSERT INTO reward_redemptions
+           (tenant_id, reward_id, customer_profile_id, points_spent, redemption_code, idempotency_key, expires_at, voucher_id)
+         VALUES ($1, $2, $3, 10, $4, $5, now() + interval '30 days', $6)`,
+        [
+          isolatedTenant,
+          rewardId,
+          member.customerProfileId,
+          voucherCode,
+          `reward-${voucherId}`,
+          voucherId,
+        ],
+      );
+      // Mission vouchers share the source string but are not point redemptions.
+      await client.query(
+        `INSERT INTO vouchers (id, tenant_id, customer_profile_id, code_hash, source, value_idr, valid_from)
+         VALUES ($1, $2, $3, $4, 'loyalty_reward', 15000, now() - interval '1 hour')`,
+        [
+          missionVoucherId,
+          isolatedTenant,
+          member.customerProfileId,
+          hash(missionVoucherCode),
+        ],
+      );
+      await client.query(
+        `INSERT INTO missions (id, tenant_id, name, type, rule, reward, period)
+         VALUES ($1, $2, 'Misi kunjungan', 'visit_count', $3::jsonb, $4::jsonb, $5::jsonb)`,
+        [
+          missionId,
+          isolatedTenant,
+          JSON.stringify({ kind: "visit_count", targetVisits: 1 }),
+          JSON.stringify({ kind: "voucher", valueIdr: 15000, validDays: 30 }),
+          JSON.stringify({ kind: "monthly" }),
+        ],
+      );
+      await client.query(
+        `INSERT INTO mission_progress
+           (tenant_id, mission_id, customer_profile_id, period_key, progress, target, completed_at, reward_issued_at, voucher_id, voucher_code)
+         VALUES ($1, $2, $3, '2026-10', 1, 1, now(), now(), $4, $5)`,
+        [
+          isolatedTenant,
+          missionId,
+          member.customerProfileId,
+          missionVoucherId,
+          missionVoucherCode,
+        ],
+      );
+      return member;
+    });
+    const context = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: isolatedTenant,
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+    const input = redeemInput([priced(randomUUID(), 50_000)], {
+      customer,
+      voucherCode,
+      outletId: outletEntityB,
+    });
+
+    await expect(
+      withTenant(db, context, (tx) => redeemPromotions(tx, context, input)),
+    ).rejects.toMatchObject({ code: "VOUCHER_INVALID" });
+    const rejected = await asOwner(isolatedTenant, async (client) => ({
+      voucher: (
+        await client.query("SELECT status FROM vouchers WHERE id = $1", [
+          voucherId,
+        ])
+      ).rows[0],
+      redemptions: (
+        await client.query(
+          "SELECT count(*)::int AS count FROM promotion_redemptions WHERE voucher_id = $1",
+          [voucherId],
+        )
+      ).rows[0],
+    }));
+    expect(rejected.voucher.status).toBe("issued");
+    expect(rejected.redemptions.count).toBe(0);
+
+    // Another transaction holds the journal's entity lock. Checkout must
+    // fail promptly, not wait while holding an order's tenant FK lock.
+    const lockHolder = await owner.connect();
+    try {
+      await lockHolder.query("BEGIN");
+      await lockHolder.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [`loyalty-entity:${isolatedTenant}`],
+      );
+      await expect(
+        withTenant(db, context, async (tx) => {
+          await tx.execute(sql`SET LOCAL lock_timeout = '1s'`);
+          return redeemPromotions(tx, context, {
+            ...input,
+            orderId: createUlid(),
+            outletId: outletEntityA,
+          });
+        }),
+      ).rejects.toMatchObject({ code: "LOYALTY_ENTITY_BUSY" });
+    } finally {
+      await lockHolder.query("ROLLBACK");
+      lockHolder.release();
+    }
+    expect(
+      (
+        await asOwner(isolatedTenant, (client) =>
+          client.query("SELECT status FROM vouchers WHERE id = $1", [
+            voucherId,
+          ]),
+        )
+      ).rows[0].status,
+    ).toBe("issued");
+
+    const accepted = await withTenant(db, context, (tx) =>
+      redeemPromotions(tx, context, {
+        ...input,
+        orderId: createUlid(),
+        outletId: outletEntityA,
+      }),
+    );
+    expect(accepted.totalDiscountIdr).toBe(20_000);
+
+    const missionInput = {
+      ...input,
+      orderId: createUlid(),
+      voucherCode: missionVoucherCode,
+    };
+    await expect(
+      withTenant(db, context, (tx) =>
+        redeemPromotions(tx, context, missionInput),
+      ),
+    ).rejects.toMatchObject({ code: "VOUCHER_INVALID" });
+    const missionRejected = await asOwner(isolatedTenant, async (client) => ({
+      voucher: (
+        await client.query("SELECT status FROM vouchers WHERE id = $1", [
+          missionVoucherId,
+        ])
+      ).rows[0],
+      redemptions: (
+        await client.query(
+          "SELECT count(*)::int AS count FROM promotion_redemptions WHERE voucher_id = $1",
+          [missionVoucherId],
+        )
+      ).rows[0],
+    }));
+    expect(missionRejected.voucher.status).toBe("issued");
+    expect(missionRejected.redemptions.count).toBe(0);
+
+    const correctMissionInput = { ...missionInput, outletId: outletEntityA };
+    const missionAccepted = await withTenant(db, context, (tx) =>
+      redeemPromotions(tx, context, correctMissionInput),
+    );
+    expect(missionAccepted.totalDiscountIdr).toBe(15_000);
+    const missionRetry = await withTenant(db, context, (tx) =>
+      redeemPromotions(tx, context, correctMissionInput),
+    );
+    expect(missionRetry.totalDiscountIdr).toBe(15_000);
+    const missionRows = await asOwner(isolatedTenant, (client) =>
+      client.query(
+        "SELECT status, discount_idr FROM promotion_redemptions WHERE tenant_id = $1 AND voucher_id = $2",
+        [isolatedTenant, missionVoucherId],
+      ),
+    );
+    expect(missionRows.rows).toEqual([
+      { status: "applied", discount_idr: "15000" },
+    ]);
+    await expect(
+      withTenant(db, context, (tx) =>
+        redeemPromotions(tx, context, {
+          ...correctMissionInput,
+          orderId: createUlid(),
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "VOUCHER_INVALID" });
+
+    // Legacy programs without an explicit entity can still redeem when all
+    // outlets belong to the same entity, including after lock contention.
+    const legacyVoucherId = randomUUID();
+    const legacyCode = code();
+    await asOwner(isolatedTenant, async (client) => {
+      await client.query(
+        "UPDATE loyalty_programs SET legal_entity_id = NULL WHERE tenant_id = $1",
+        [isolatedTenant],
+      );
+      await client.query(
+        "UPDATE outlets SET legal_entity_id = $1 WHERE id = $2",
+        [entityA, outletEntityB],
+      );
+      await client.query(
+        `INSERT INTO vouchers (id, tenant_id, customer_profile_id, code_hash, source, value_idr, valid_from)
+         VALUES ($1, $2, $3, $4, 'loyalty_reward', 20000, now() - interval '1 hour')`,
+        [
+          legacyVoucherId,
+          isolatedTenant,
+          customer.customerProfileId,
+          hash(legacyCode),
+        ],
+      );
+      await client.query(
+        `INSERT INTO reward_redemptions
+           (tenant_id, reward_id, customer_profile_id, points_spent, redemption_code, idempotency_key, expires_at, voucher_id)
+         VALUES ($1, $2, $3, 10, $4, $5, now() + interval '30 days', $6)`,
+        [
+          isolatedTenant,
+          rewardId,
+          customer.customerProfileId,
+          legacyCode,
+          `reward-${legacyVoucherId}`,
+          legacyVoucherId,
+        ],
+      );
+    });
+    const legacyInput = {
+      ...input,
+      orderId: createUlid(),
+      outletId: outletEntityA,
+      voucherCode: legacyCode,
+    };
+    const holder = await owner.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT id FROM tenants WHERE id = $1 FOR KEY SHARE", [
+        isolatedTenant,
+      ]);
+      await expect(
+        withTenant(db, context, (tx) =>
+          redeemPromotions(tx, context, legacyInput),
+        ),
+      ).rejects.toMatchObject({ code: "LOYALTY_ENTITY_BUSY" });
+    } finally {
+      await holder.query("ROLLBACK");
+      holder.release();
+    }
+    const outletHolder = await owner.connect();
+    try {
+      await outletHolder.query("BEGIN");
+      await outletHolder.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [isolatedTenant],
+      );
+      await outletHolder.query(
+        "SELECT id FROM outlets WHERE id = $1 FOR UPDATE",
+        [outletEntityB],
+      );
+      await expect(
+        withTenant(db, context, (tx) =>
+          redeemPromotions(tx, context, legacyInput),
+        ),
+      ).rejects.toMatchObject({ code: "LOYALTY_ENTITY_BUSY" });
+    } finally {
+      await outletHolder.query("ROLLBACK");
+      outletHolder.release();
+    }
+    expect(
+      (
+        await asOwner(isolatedTenant, (client) =>
+          client.query("SELECT status FROM vouchers WHERE id = $1", [
+            legacyVoucherId,
+          ]),
+        )
+      ).rows[0].status,
+    ).toBe("issued");
+    const legacyResult = await withTenant(db, context, (tx) =>
+      redeemPromotions(tx, context, legacyInput),
+    );
+    expect(legacyResult.totalDiscountIdr).toBe(20_000);
+    const legacyReplay = await withTenant(db, context, (tx) =>
+      redeemPromotions(tx, context, legacyInput),
+    );
+    expect(legacyReplay.totalDiscountIdr).toBe(20_000);
+    expect(
+      Number(
+        (
+          await asOwner(isolatedTenant, (client) =>
+            client.query(
+              "SELECT count(*) AS count FROM promotion_redemptions WHERE voucher_id = $1",
+              [legacyVoucherId],
+            ),
+          )
+        ).rows[0].count,
+      ),
+    ).toBe(1);
+  });
   it("[LOY-03] global quota 1 under 6 concurrent orders: exactly one gets the promotion", async () => {
     const item = randomUUID();
     const promotionId = await seedPromotion(item, { quotaTotal: 1 });

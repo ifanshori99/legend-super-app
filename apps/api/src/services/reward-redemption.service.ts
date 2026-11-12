@@ -9,6 +9,7 @@
 import { randomInt, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, lte, notInArray, sql } from "drizzle-orm";
 import {
+  assertOutletInScope,
   outletIdSchema,
   tenantIdSchema,
   type ScopedTenantContext,
@@ -25,6 +26,8 @@ import {
 import { withProfileLock, type MemberScope } from "../db/member-scope";
 import { vouchers } from "../db/schema/crm-promo";
 import { rewardRedemptions, rewards } from "../db/schema/crm-rewards";
+import { loyaltyPrograms } from "../db/schema/crm-member";
+import { outlets, tenants } from "../db/schema/platform-org";
 import { orders } from "../db/schema/qr-order";
 import { HttpError } from "../lib/http-error";
 import { hashPromoCode } from "./crm-promo-engine";
@@ -550,6 +553,75 @@ export async function cancelRedemption(
   return toRedemptionDto({ ...closed, rewardType: reward.type });
 }
 
+/** Never wait for accounting's entity lock while holding a member lock. */
+async function assertPhysicalRewardEntity(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<void> {
+  assertOutletInScope(context.outletScope, outletId);
+  const tenantId = context.tenant.tenantId;
+  try {
+    await tx.transaction(async (savepoint) => {
+      const lock = await savepoint.execute(
+        sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${`loyalty-entity:${tenantId}`}, 0)) AS locked`,
+      );
+      if (lock.rows[0]?.locked !== true)
+        throw new HttpError(
+          409,
+          "LOYALTY_ENTITY_BUSY",
+          "Entitas poin sedang diperbarui. Coba lagi.",
+        );
+      const [program] = await savepoint
+        .select({ legalEntityId: loyaltyPrograms.legalEntityId })
+        .from(loyaltyPrograms)
+        .where(eq(loyaltyPrograms.tenantId, tenantId));
+      if (!program?.legalEntityId) {
+        // NOWAIT avoids a cycle with a checkout holding a tenant FK lock.
+        await savepoint
+          .select({ id: tenants.id })
+          .from(tenants)
+          .where(eq(tenants.id, tenantId))
+          .for("update", { noWait: true });
+      }
+      const rows = await savepoint
+        .select({ id: outlets.id, legalEntityId: outlets.legalEntityId })
+        .from(outlets)
+        .where(eq(outlets.tenantId, tenantId))
+        .for("share", { noWait: true });
+      const entityId =
+        program?.legalEntityId ??
+        (new Set(rows.map((row) => row.legalEntityId)).size === 1
+          ? rows[0]?.legalEntityId
+          : null);
+      const outlet = rows.find((row) => row.id === outletId);
+      if (!entityId || !outlet || outlet.legalEntityId !== entityId)
+        throw new HttpError(
+          409,
+          "LOYALTY_ENTITY_MISMATCH",
+          "Reward hanya dapat digunakan di outlet entitas program poin.",
+        );
+    });
+  } catch (error) {
+    let candidate: unknown = error;
+    for (
+      let depth = 0;
+      depth < 5 && candidate && typeof candidate === "object";
+      depth += 1
+    ) {
+      const row = candidate as { code?: unknown; cause?: unknown };
+      if (row.code === "55P03")
+        throw new HttpError(
+          409,
+          "LOYALTY_ENTITY_BUSY",
+          "Entitas poin sedang diperbarui. Coba lagi.",
+        );
+      candidate = row.cause;
+    }
+    throw error;
+  }
+}
+
 export async function fulfilRedemption(
   tx: Tx,
   context: ScopedTenantContext,
@@ -604,12 +676,14 @@ export async function fulfilRedemption(
   } else {
     if (redemption.expiresAt.getTime() <= now.getTime())
       throw crmError("REWARD_EXPIRED", 409);
+    await assertPhysicalRewardEntity(tx, context, input.outletId);
     if (orderId !== null) {
       const [order] = await tx
-        .select({ id: orders.id })
+        .select({ id: orders.id, outletId: orders.outletId })
         .from(orders)
         .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
       if (!order) throw notFound();
+      if (order.outletId !== input.outletId) throw notFound();
     }
   }
   // legend-dbrw3: a training sale never settles a real member's reward.

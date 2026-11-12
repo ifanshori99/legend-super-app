@@ -76,6 +76,7 @@ import {
 } from "../services/pos-receipt.service.ts";
 import { runPosReceiptEmailJob } from "../worker/pos-receipt-email.job.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import { seedEconomicDepositRefund } from "./dp-economic-refund-fixture.ts";
 import {
   createIsolatedTenant,
   fixtures,
@@ -1972,6 +1973,29 @@ describe("F8 invoice for an order with a receipt (legend-93a)", () => {
       totalIdr: s.totalIdr,
       taxIdr: 5_000,
     });
+  });
+
+  it("Q81-ECON-INV-01: a DP-only durable return marks the invoice refunded even when native tender payout is zero", async () => {
+    const outletId = await freshOutlet();
+    const { orderId, totalIdr } = await completedSale(outletId);
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      seedEconomicDepositRefund(client, {
+        tenantId: tenant.tenantId,
+        outletId,
+        orderId: ulidToUuid(orderId),
+        tenderIdr: 0,
+        depositIdr: totalIdr,
+        requestedBy: cashier.userId,
+        approvedBy: approver.userId,
+        refundedAt: new Date().toISOString(),
+      }),
+    );
+    const invoice = await api(outletId).post(`/orders/${orderId}/invoices`, {
+      billedTo: { name: "CV Retur DP", address: "Jl. Retur No. 7, Jakarta" },
+      dueDate: "2026-12-31",
+    });
+    expect(invoice.status, JSON.stringify(invoice.body)).toBeLessThan(300);
+    expect(invoice.body.data.paymentStatus).toBe("refunded");
   });
 
   it("POS-07 the same invoice request replayed returns the same invoice and stores one", async () => {

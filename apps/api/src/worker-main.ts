@@ -55,6 +55,7 @@ import { deliverFacilityEntitlementEvent } from "./services/facility-entitlement
 import { deliverLoyaltyEarnEvent } from "./services/loyalty-earn-consumer.ts";
 import { deliverWifiQuotaEvent } from "./services/wifi-quota-consumer.ts";
 import { runLoyaltyBalanceCheckSweep } from "./worker/loyalty-balance-check.job.ts";
+import { runLoyaltyClaimRecoverySweep } from "./worker/loyalty-claim-recovery.job.ts";
 import { runRedemptionExpirySweep } from "./worker/redemption-expiry.job.ts";
 import { runSegmentMaterializeSweep } from "./worker/segment-materialize.job.ts"; // legend-ts50
 // legend-3zd1
@@ -529,6 +530,13 @@ const relay = createRelayRuntime({
     // was blocked (closed period, missing mapping). Retry only, never another
     // period. A sweep error never blocks the relay.
     if (postsInventoryGl) {
+      // A temporary entity lock must not leave a guest claim parked forever.
+      // Failure keeps its remaining lifetime frozen and retries next tick.
+      try {
+        await runLoyaltyClaimRecoverySweep(context, new Date());
+      } catch {
+        console.error("Loyalty claim recovery failed");
+      }
       try {
         await retryBlockedInventoryGl(context, new Date());
       } catch {

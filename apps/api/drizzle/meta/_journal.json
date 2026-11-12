@@ -2066,6 +2066,34 @@
       "when": 1794465896647,
       "tag": "0308_hris_u4",
       "breakpoints": true
+    },
+    {
+      "idx": 403,
+      "version": "7",
+      "when": 1794465453571,
+      "tag": "0403_loyalty_program_legal_entity",
+      "breakpoints": true
+    },
+    {
+      "idx": 404,
+      "version": "7",
+      "when": 1794467214340,
+      "tag": "0404_many_green_goblin",
+      "breakpoints": true
+    },
+    {
+      "idx": 405,
+      "version": "7",
+      "when": 1794468550505,
+      "tag": "0405_public_tarantula",
+      "breakpoints": true
+    },
+    {
+      "idx": 411,
+      "version": "7",
+      "when": 1794480358396,
+      "tag": "0411_deposit_refund_remainders",
+      "breakpoints": true
     }
   ]
 }

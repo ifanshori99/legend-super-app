@@ -48,7 +48,6 @@ import { withTenant } from "../db/tenant.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
-import { livePromoApplicationOf } from "./order-promo-refund.ts";
 import { loadDeferredRefundCommitments } from "./payment-refund-edge-history.ts";
 import {
   monotonicFactTime,
@@ -79,6 +78,11 @@ import {
   type PosCaller,
 } from "./pos-order-support.ts";
 import { requestPosRefundGatewayPart } from "./pos-refund-gateway.ts";
+import {
+  depositRefundedOfOrder,
+  depositRefundFactTime,
+  requestPosRefundDepositPart,
+} from "./pos-deposit-refund.ts";
 import { assertShiftOutflowBound } from "./pos-shift-support.ts";
 
 type VoidCorrectionInput = z.output<typeof voidCorrectionEndpoint.body>;
@@ -688,6 +692,10 @@ export async function refundPosOrder(
         .filter((tender) => tender.status === "captured")
         .reduce((sum, tender) => sum + Number(tender.amountIdr), 0);
       const refunded = refunds.reduce((sum, row) => sum + row.amountIdr, 0);
+      const depositRefunded =
+        Number(order.depositAppliedIdr) > 0
+          ? await depositRefundedOfOrder(tx, context, order.id)
+          : 0;
 
       // Items: quantities already refunded by earlier rows, then this request.
       const requested = (input.items ?? []).map(({ itemId, quantity }) => ({
@@ -732,18 +740,20 @@ export async function refundPosOrder(
       // still records the return as a Rp0 row: items, reason and audit, no
       // payment line, no event, no gateway, no stock reversal.
       let goodsReturnOnly = false;
-      // legend-186 (s7rx B): the DP case of the Rp0 return, and what the
-      // deposit side still owes the guest (not paid back here).
+      // A DP-only return has no drawer payout; its original payment receives
+      // a separate, exact WS-05 refund request in this transaction.
       let depositGoodsReturn = false;
       let depositOwedIdr = 0;
+      let depositRefundIdr = 0;
       // legend-aef1: bill value (before promo) of the items this refund returns,
       // set once the promo is re-priced; the revenue split builds on it.
       let promoRefundedSubtotalIdr: number | null = null;
-      const promoApplication = await livePromoApplicationOf(
-        tx,
-        context,
-        order.id,
-      );
+      const promoApplication =
+        await posPromoRefundPort().livePromoApplicationOf(
+          tx,
+          context,
+          order.id,
+        );
       if (promoApplication) {
         // legend-186 (s7rx A): a promo order refunded without items is a
         // settlement of what the guest is still owed for the goods they kept
@@ -824,8 +834,8 @@ export async function refundPosOrder(
           );
           // Bill level: service charge, tax and rounding follow the goods pro
           // rata (total / net of the sale). What the guest paid in counts the
-          // deposit applied to the bill; the payout itself is capped at what
-          // the tenders still hold (a deposit is not paid back here).
+          // deposit applied to the bill. Q81 returns its proportional DP
+          // share through the original intent; tenders pay only their share.
           const net = order.subtotalIdr - order.discountIdr;
           const keptPayableBill =
             net > 0
@@ -834,7 +844,11 @@ export async function refundPosOrder(
                 )
               : 0;
           const paidIn = paid + Number(order.depositAppliedIdr);
-          const dueBill = Math.max(0, paidIn - refunded - keptPayableBill);
+          const cumulativeDue = Math.max(0, paidIn - keptPayableBill);
+          const dueBill = Math.max(
+            0,
+            cumulativeDue - refunded - depositRefunded,
+          );
           // Rp0 return when the guest is owed nothing, or (s7rx B, below) when
           // what is owed sits only on the deposit; owed with no tender left and
           // no deposit stays refused below. A settlement never writes Rp0.
@@ -844,39 +858,80 @@ export async function refundPosOrder(
           // payout below what is due would lock the rest for good. Asking
           // less is refused before anything is written; asking more is
           // capped to what is due (unchanged).
-          const owedIdr = Math.min(dueBill, Math.max(0, paid - refunded));
+          const depositTarget =
+            paidIn > 0
+              ? Number(
+                  (BigInt(cumulativeDue) * BigInt(order.depositAppliedIdr)) /
+                    BigInt(paidIn),
+                )
+              : 0;
+          depositRefundIdr = Math.min(
+            Math.max(0, Number(order.depositAppliedIdr) - depositRefunded),
+            Math.max(0, depositTarget - depositRefunded),
+            dueBill,
+          );
+          const owedIdr = Math.min(
+            Math.max(0, dueBill - depositRefundIdr),
+            Math.max(0, paid - refunded),
+          );
           // legend-186 (s7rx B): owed, but only from the deposit (the tenders
           // are used up): the item still comes back as a Rp0 return and the
           // rest stays on the deposit side.
           if (
             !settlement &&
             dueBill > 0 &&
-            paid - refunded <= 0 &&
-            Number(order.depositAppliedIdr) > 0
+            owedIdr === 0 &&
+            depositRefundIdr > 0
           ) {
             goodsReturnOnly = true;
             depositGoodsReturn = true;
           }
-          if (!settlement && owedIdr > 0 && input.amountIdr < owedIdr)
+          if (dueBill > 0 && input.amountIdr < dueBill)
             throw new HttpError(
               422,
               "REFUND_AMOUNT_BELOW_DUE",
-              `Refund item ini harus ${rupiah(owedIdr)}; isi jumlah tersebut agar sisa pembayaran tamu tidak tertahan.`,
+              `Refund item ini harus ${rupiah(dueBill)}; isi jumlah tersebut agar sisa pembayaran tamu tidak tertahan.`,
             );
           payout = Math.min(input.amountIdr, owedIdr);
-          // Running balance (the latest audit row holds it; do not sum rows):
-          // what is due beyond what the tenders can still pay.
+          // A residual must never silently become cash or customer credit.
           if (Number(order.depositAppliedIdr) > 0)
-            depositOwedIdr = Math.max(0, dueBill - owedIdr);
+            depositOwedIdr = Math.max(0, dueBill - owedIdr - depositRefundIdr);
         }
         if (goodsReturnOnly) payout = 0;
-        else if (payout <= 0)
+        else if (payout <= 0 && depositRefundIdr <= 0)
           throw new HttpError(
             422,
             "REFUND_NOTHING_DUE",
             "Tidak ada dana yang perlu dikembalikan.",
           );
       }
+      if (!promoApplication && Number(order.depositAppliedIdr) > 0) {
+        const paidIn = paid + Number(order.depositAppliedIdr);
+        if (input.amountIdr > paidIn - refunded - depositRefunded)
+          throw new PosError("REFUND_EXCEEDS_PAID");
+        depositRefundIdr = Math.min(
+          Math.max(0, Number(order.depositAppliedIdr) - depositRefunded),
+          Math.max(
+            0,
+            Number(
+              (BigInt(refunded + depositRefunded + input.amountIdr) *
+                BigInt(order.depositAppliedIdr)) /
+                BigInt(paidIn),
+            ) - depositRefunded,
+          ),
+        );
+        payout = input.amountIdr - depositRefundIdr;
+        if (payout === 0) goodsReturnOnly = true;
+      }
+      const totalReturnIdr = payout + depositRefundIdr;
+      if (depositRefundIdr > 0)
+        now = await depositRefundFactTime(tx, context, order, now);
+      if (depositRefundIdr > 0 && requested.length === 0)
+        throw new HttpError(
+          422,
+          "VALIDATION_ERROR",
+          "Refund DP harus menyebut item yang diretur.",
+        );
       if (!goodsReturnOnly)
         assertRefundWithinPaid(idr(paid), idr(refunded), idr(payout));
       const override = await consumeApproval(tx, context, {
@@ -889,13 +944,13 @@ export async function refundPosOrder(
         requesterId: caller.userId,
         approvedBy: input.approvedBy,
         overrideId: input.overrideId,
-        minValueIdr: payout,
+        minValueIdr: totalReturnIdr,
         deviceId: caller.deviceId,
         now,
       });
       // A Rp0 goods return only records item quantities: it has no refund
       // lines, money event or gateway request, so it consumes no authority.
-      if (!goodsReturnOnly) {
+      if (totalReturnIdr > 0) {
         const candidate = {
           tenantId: context.tenant.tenantId,
           outletId: order.outletId,
@@ -914,7 +969,7 @@ export async function refundPosOrder(
             tx,
             context,
             override.approvedBy!,
-            candidate,
+            { ...candidate, amountIdr: totalReturnIdr },
             now,
           ))
         )
@@ -985,6 +1040,14 @@ export async function refundPosOrder(
         })
         .returning();
       if (!row) throw new Error("Refund insert returned no row");
+      const depositLines = await requestPosRefundDepositPart(tx, context, {
+        order,
+        caller,
+        posRefundId: row.id,
+        lines,
+        amountIdr: depositRefundIdr,
+        now,
+      });
       // legend-ghgei: the gateway part goes back through a WS-05 refund
       // request (nothing pays here). A Rp0 return has no lines.
       if (!goodsReturnOnly)
@@ -995,9 +1058,13 @@ export async function refundPosOrder(
           lines,
           now,
         });
-      const split = refundSplit(order, payout, promoRefundedSubtotalIdr);
+      const split = refundSplit(
+        order,
+        totalReturnIdr,
+        promoRefundedSubtotalIdr,
+      );
       // Goods part of the payout goes onto the promo application's ledger.
-      if (promoApplication && !goodsReturnOnly)
+      if (promoApplication && totalReturnIdr > 0)
         await posPromoRefundPort().recordPartialRefundPayout(tx, context, {
           orderId: order.id,
           payoutIdr: split.grossSalesIdr - split.discountIdr,
@@ -1012,7 +1079,7 @@ export async function refundPosOrder(
         outletId,
         businessDate: order.businessDate,
         refundId: row.id,
-        amountIdr: payout,
+        amountIdr: totalReturnIdr,
         reason: input.reason,
         reasonNote: input.reasonNote,
         approvedBy: override.approvedBy!,
@@ -1020,9 +1087,10 @@ export async function refundPosOrder(
         overrideId: override.id,
         ...split,
         refundCashIdr: bucket("cash"),
-        refundGatewayIdr: bucket("gateway"),
+        refundGatewayIdr: bucket("gateway") + depositRefundIdr,
         refundEdcIdr: bucket("edc"),
         refundPointsIdr: bucket("points"),
+        ...(depositLines.length > 0 ? { depositLines } : {}),
         // One line per method, no tender ids: the event stays as before.
         lines: [
           ...lines.reduce((byMethod, line) => {
@@ -1037,7 +1105,7 @@ export async function refundPosOrder(
       };
       // No money moved on a Rp0 return: order.refunded (journals, loyalty,
       // revenue) is not emitted; the row and its audit are the record.
-      if (!goodsReturnOnly) {
+      if (totalReturnIdr > 0) {
         await appendPosEvent(tx, context, "order.refunded", {
           order,
           payload,
@@ -1066,12 +1134,13 @@ export async function refundPosOrder(
             id: row.id,
             amountIdr: row.amountIdr,
             requestedAmountIdr: input.amountIdr,
+            ...(depositRefundIdr > 0 ? { depositRefundIdr } : {}),
             items: requested,
             ...(goodsReturnOnly
               ? {
                   goodsReturnOnly: true,
                   goodsReturnNote: depositGoodsReturn
-                    ? "Retur barang tanpa dana tunai: sisa hak tamu berada di deposit dan tidak dikembalikan di sini."
+                    ? "Retur barang tanpa dana tunai: refund DP diminta melalui pembayaran asal."
                     : "Retur barang tanpa dana: tidak ada yang perlu dikembalikan (item gratis atau tetap tercakup promo).",
                 }
               : {}),

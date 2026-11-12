@@ -465,6 +465,14 @@ beforeEach(async () => {
     expiryMonths: 12,
     dailyCap: 100_000,
   });
+  // This race concerns an established entity. Avoid the unconfigured-program
+  // tenant lock blocking the refund INSERT's tenant foreign-key check.
+  await asOwnerTenant(tenant.tenantId, (client) =>
+    client.query(
+      "UPDATE loyalty_programs SET legal_entity_id = $2 WHERE tenant_id = $1",
+      [tenant.tenantId, tenant.legalEntityId],
+    ),
+  );
 });
 
 afterAll(async () => {
@@ -502,18 +510,30 @@ async function raceRefundAgainstClaim(
   const claimed = as(guest, member)
     .claim(order.token)
     .then((response) => response);
-  await reached;
+  let delivery: Promise<unknown>;
+  try {
+    await Promise.race([
+      reached,
+      claimed.then((response) => {
+        throw new Error(
+          `Claim finished before the race gate: ${response.status}`,
+        );
+      }),
+    ]);
 
-  await recordRefund(order.intentId, order.totalIdr);
-  const { world, event } = refundEvent(order.orderId, order.eligibleIdr);
-  const delivery = deliver(world, event).then(
-    () => null,
-    (error: unknown) => error,
-  );
-  // With the lock the delivery waits for the claim; without it, it has
-  // already run (and found no claim to reverse).
-  await sleep(400);
-  release();
+    await recordRefund(order.intentId, order.totalIdr);
+    const { world, event } = refundEvent(order.orderId, order.eligibleIdr);
+    delivery = deliver(world, event).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    // With the lock the delivery waits for the claim; without it, it has
+    // already run (and found no claim to reverse).
+    await sleep(400);
+  } finally {
+    gate.armed = false;
+    release();
+  }
   const [claim, deliveryError] = await Promise.all([claimed, delivery]);
   return { claim, deliveryError };
 }

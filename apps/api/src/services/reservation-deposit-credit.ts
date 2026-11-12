@@ -27,12 +27,39 @@
 // promo locks; no refund path takes a promo or session lock, and no credit
 // reader locks a DP intent row, so the two cannot wait on each other in a cycle.
 import type { TenantId } from "@starter/shared/core";
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import type { Tx } from "./permission-resolver.ts";
 
 /** Advisory key of one DP intent's refund-vs-credit lock. */
 function depositIntentLockKey(tenantId: TenantId, intentId: string): string {
   return `deposit-intent:${tenantId}:${intentId.toLowerCase()}`;
+}
+
+/**
+ * Principal no longer usable on a bill: every non-failed WS-05 reservation,
+ * plus each permanent POS DP return not covered by its exact WS-05 request.
+ * Aggregate MAX is unsafe when an earlier manual refund and a failed POS
+ * request are different liabilities. Only the original mirror key, refund id
+ * and intent prove that the same principal has already been counted.
+ * Arguments are SQL identifiers supplied by our callers, never user text.
+ */
+export function depositPrincipalReservedSql(tenant: SQL, intent: SQL): SQL {
+  return sql`(
+    coalesce((SELECT sum(dp_refund.amount_idr) FROM payment_refunds dp_refund
+      WHERE dp_refund.tenant_id=${tenant} AND dp_refund.payment_intent_id=${intent}
+        AND dp_refund.status<>'failed' AND dp_refund.unallocated_fund_id IS NULL),0)
+    + coalesce((SELECT sum(greatest(dp_return.amount_idr-coalesce((
+      SELECT least(dp_return.amount_idr,dp_mirror.amount_idr)
+      FROM payment_admin_idempotency dp_key JOIN payment_refunds dp_mirror
+        ON dp_mirror.tenant_id=dp_key.tenant_id
+        AND dp_mirror.id::text=dp_key.response->>'refundId'
+      WHERE dp_key.tenant_id=dp_return.tenant_id
+        AND dp_key.key='pos-refund-gateway:'||dp_return.pos_refund_id::text||':'||dp_return.payment_intent_id::text
+        AND dp_mirror.payment_intent_id=dp_return.payment_intent_id
+        AND dp_mirror.status<>'failed' AND dp_mirror.unallocated_fund_id IS NULL
+      LIMIT 1),0),0)) FROM pos_deposit_refunds dp_return
+      WHERE dp_return.tenant_id=${tenant} AND dp_return.payment_intent_id=${intent}),0)
+  )`;
 }
 
 type AllocationCredit = {
@@ -64,12 +91,13 @@ async function allocationCredits(
                 THEN least(r.deposit_idr, i.amount_idr)
                 ELSE 0 END::text AS gross,
            CASE WHEN i.status IN ('paid', 'partially_refunded')
-                THEN least(r.deposit_idr, i.amount_idr) - coalesce((
-                  SELECT sum(f.amount_idr) FROM payment_refunds f
-                   WHERE f.tenant_id = a.tenant_id
-                     AND f.payment_intent_id = a.payment_intent_id
-                     AND f.status <> 'failed'
-                     AND f.unallocated_fund_id IS NULL), 0)
+                THEN least(r.deposit_idr, i.amount_idr)
+                  - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`a.payment_intent_id`)} - coalesce((
+                  SELECT sum(c.amount_idr) FROM reservation_deposit_remainders c
+                   WHERE c.tenant_id = a.tenant_id
+                     AND c.payment_intent_id = a.payment_intent_id
+                     AND c.table_session_id = a.table_session_id
+                     AND c.kind = 'customer_credit'), 0)
                 ELSE 0 END::text AS held
       FROM reservation_deposit_allocations a
       JOIN reservations r ON r.tenant_id = a.tenant_id AND r.id = a.reservation_id
@@ -99,12 +127,10 @@ export async function sessionDepositCredit(
   tenantId: TenantId,
   tableSessionId: string,
 ): Promise<number> {
-  const intents = await tx.execute(sql`
-    SELECT DISTINCT payment_intent_id::text AS intent_id
-      FROM reservation_deposit_allocations
-     WHERE tenant_id = ${tenantId} AND table_session_id = ${tableSessionId}::uuid
-     ORDER BY 1
-  `);
+  const sources = await listSessionDepositSources(tx, tenantId, tableSessionId);
+  const intents = {
+    rows: sources.map((source) => ({ intent_id: source.paymentIntentId })),
+  };
   if (intents.rows.length === 0) return 0;
   // Ascending intent id, so two readers never take them in opposite orders.
   for (const row of intents.rows)
@@ -112,8 +138,25 @@ export async function sessionDepositCredit(
       sql`SELECT pg_advisory_xact_lock_shared(hashtextextended(${depositIntentLockKey(tenantId, String(row.intent_id))}, 0))`,
     );
   const credits = await allocationCredits(tx, tenantId, { tableSessionId });
-  const total = credits.reduce((sum, row) => sum + row.creditIdr, 0n);
-  return Number(total);
+  const uses =
+    await tx.execute(sql`SELECT coalesce(sum(u.amount_idr-u.returned_idr),0)::text AS amount
+    FROM reservation_customer_credit_uses u WHERE u.tenant_id=${tenantId}
+      AND u.table_session_id=${tableSessionId}::uuid`);
+  const releases =
+    await tx.execute(sql`SELECT coalesce(sum(p.amount_idr),0)::text AS amount
+    FROM pos_deposit_refunds p JOIN orders o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
+    WHERE p.tenant_id=${tenantId} AND o.table_session_id=${tableSessionId}::uuid`);
+  const total =
+    credits.reduce((sum, row) => sum + row.creditIdr, 0n) +
+    BigInt(String(uses.rows[0]?.amount ?? "0"));
+  const released = BigInt(String(releases.rows[0]?.amount ?? "0"));
+  // Native held already subtracts nonfailed WS05 refunds; a release must not
+  // reopen credit when its provider request later fails. Keep the stricter cap.
+  const gross =
+    credits.reduce((sum, row) => sum + row.grossIdr, 0n) +
+    BigInt(String(uses.rows[0]?.amount ?? "0"));
+  const releasedCap = gross > released ? gross - released : 0n;
+  return Number(total < releasedCap ? total : releasedCap);
 }
 
 /**
@@ -155,7 +198,18 @@ export async function depositInUseOfIntent(
   const credits = await allocationCredits(tx, tenantId, {
     paymentIntentId: intentId,
   });
-  if (credits.length === 0) return 0n;
+  const creditHeld =
+    await tx.execute(sql`SELECT greatest(coalesce(sum(r.amount_idr),0)-coalesce((
+      SELECT sum(p.amount_idr) FROM pos_deposit_refunds p JOIN orders o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
+      WHERE p.tenant_id=${tenantId} AND p.payment_intent_id=${intentId}::uuid AND EXISTS (
+        SELECT 1 FROM reservation_customer_credit_uses u JOIN reservation_deposit_remainders x
+          ON x.tenant_id=u.tenant_id AND x.id=u.remainder_id
+        WHERE u.tenant_id=p.tenant_id AND u.table_session_id=o.table_session_id
+          AND x.payment_intent_id=p.payment_intent_id)),0),0)::text AS amount
+    FROM reservation_deposit_remainders r WHERE r.tenant_id=${tenantId}
+      AND r.payment_intent_id=${intentId}::uuid AND r.kind='customer_credit'`);
+  const heldCredit = BigInt(String(creditHeld.rows[0]?.amount ?? "0"));
+  if (credits.length === 0) return heldCredit;
   const sessionIds = [...new Set(credits.map((row) => row.tableSessionId))];
   // What the DP paid on each session: the larger of what orders applied
   // (pay-first QR, POS) and the bill not covered by verified link payments
@@ -165,9 +219,13 @@ export async function depositInUseOfIntent(
   // bill counts too, the unpaid part of an open table included (earmarked).
   const used = await tx.execute(sql`
     SELECT o.table_session_id::text AS session_id,
-           coalesce(sum(o.deposit_applied_idr), 0)::text AS applied,
+           greatest(coalesce(sum(o.deposit_applied_idr), 0)-coalesce((
+             SELECT sum(p.amount_idr) FROM pos_deposit_refunds p JOIN orders po ON po.tenant_id=p.tenant_id AND po.id=p.order_id
+             WHERE p.tenant_id=${tenantId} AND po.table_session_id=o.table_session_id),0),0)::text AS applied,
            (coalesce(sum(o.total_idr), 0) - coalesce(sum(l.paid_idr), 0)
-             - coalesce(sum(t.captured), 0))::text AS uncovered
+             - coalesce(sum(t.captured), 0) - coalesce((
+             SELECT sum(p.amount_idr) FROM pos_deposit_refunds p JOIN orders po ON po.tenant_id=p.tenant_id AND po.id=p.order_id
+             WHERE p.tenant_id=${tenantId} AND po.table_session_id=o.table_session_id),0))::text AS uncovered
       FROM orders o
       LEFT JOIN payment_links l
         ON l.tenant_id = o.tenant_id AND l.id = o.payment_link_id
@@ -210,5 +268,25 @@ export async function depositInUseOfIntent(
     const fromThis = (usedBy.get(sessionId) ?? 0n) - others;
     inUse += fromThis <= 0n ? 0n : fromThis > own ? own : fromThis;
   }
-  return inUse;
+  return inUse + heldCredit;
+}
+
+/** Immutable native allocations plus explicitly assigned customer credit. */
+export async function listSessionDepositSources(
+  tx: Tx,
+  tenantId: TenantId,
+  tableSessionId: string,
+): Promise<{ paymentIntentId: string; amountIdr: number }[]> {
+  const result =
+    await tx.execute(sql`SELECT payment_intent_id::text,sum(amount)::text AS amount FROM (
+    SELECT payment_intent_id,amount_idr AS amount FROM reservation_deposit_allocations
+      WHERE tenant_id=${tenantId} AND table_session_id=${tableSessionId}::uuid
+    UNION ALL SELECT r.payment_intent_id,u.amount_idr-u.returned_idr FROM reservation_customer_credit_uses u
+      JOIN reservation_deposit_remainders r ON r.tenant_id=u.tenant_id AND r.id=u.remainder_id
+      WHERE u.tenant_id=${tenantId} AND u.table_session_id=${tableSessionId}::uuid
+    ) sources GROUP BY payment_intent_id ORDER BY payment_intent_id`);
+  return result.rows.map((r) => ({
+    paymentIntentId: String(r.payment_intent_id),
+    amountIdr: Number(r.amount),
+  }));
 }

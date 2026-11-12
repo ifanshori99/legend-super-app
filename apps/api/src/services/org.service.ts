@@ -91,9 +91,205 @@ import {
   blindIndexCandidates,
 } from "../lib/blind-index";
 import { sealSecret } from "../lib/secrets";
+import { lockLoyaltyJournalEntity } from "./accounting-auto-journal-amounts";
 
 type Database = NodePgDatabase<typeof schema>;
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+/** Refuse a change of the program's effective legal entity once loyalty
+ * facts or paid work may belong to it. Existing facts lack an entity snapshot. */
+async function protectLoyaltyEntityChange(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  change: { add: string } | { outletId: string; entity: string },
+): Promise<void> {
+  const config = await tx.execute<{ selected: string | null }>(sql`
+    SELECT legal_entity_id::text AS selected FROM loyalty_programs WHERE tenant_id = ${tenantId}
+  `);
+  const rows = await tx.execute<{ id: string; entity: string | null }>(sql`
+    SELECT id::text AS id, legal_entity_id::text AS entity FROM outlets WHERE tenant_id = ${tenantId}
+  `);
+  const configured = config.rows[0]?.selected ?? null;
+  const effective = (values: (string | null)[]): string | null => {
+    if (configured) return values.includes(configured) ? configured : null;
+    const entities = new Set(values);
+    return entities.size === 1 ? (values[0] ?? null) : null;
+  };
+  const previous = rows.rows.map((row) => row.entity);
+  const next =
+    "add" in change
+      ? [...previous, change.add]
+      : rows.rows.map((row) =>
+          row.id === change.outletId ? change.entity : row.entity,
+        );
+  const entityChanged = effective(previous) !== effective(next);
+  const movingOutlet =
+    "outletId" in change &&
+    rows.rows.some(
+      (row) => row.id === change.outletId && row.entity !== change.entity,
+    )
+      ? change.outletId
+      : null;
+  if (!entityChanged && movingOutlet === null) return;
+
+  // Publishers lock their order/intent before writing paid events. NOWAIT
+  // lets the organisation change retry instead of blocking payment.
+  try {
+    await tx.transaction(async (savepoint) => {
+      await savepoint.execute(
+        sql`SELECT id FROM tenants WHERE id = ${tenantId} FOR UPDATE NOWAIT`,
+      );
+      await savepoint.execute(
+        sql`SELECT id FROM orders WHERE tenant_id = ${tenantId} ORDER BY id FOR SHARE NOWAIT`,
+      );
+      await savepoint.execute(
+        sql`SELECT id FROM payment_intents WHERE tenant_id = ${tenantId} ORDER BY id FOR SHARE NOWAIT`,
+      );
+    });
+  } catch (error) {
+    let current: unknown = error;
+    for (
+      let depth = 0;
+      depth < 5 && current && typeof current === "object";
+      depth += 1
+    ) {
+      const item = current as { code?: unknown; cause?: unknown };
+      if (item.code === "55P03")
+        throw new HttpError(
+          409,
+          "LOYALTY_ENTITY_BUSY",
+          "Pembayaran atau poin sedang diproses. Coba ubah outlet lagi.",
+        );
+      current = item.cause;
+    }
+    throw error;
+  }
+  if (!entityChanged && movingOutlet !== null) {
+    const affected = await tx.execute<{ has_history: boolean }>(sql`
+      SELECT
+        EXISTS (SELECT 1 FROM point_ledger WHERE tenant_id = ${tenantId} AND outlet_id = ${movingOutlet}::uuid) OR
+        EXISTS (SELECT 1 FROM point_earn_records WHERE tenant_id = ${tenantId} AND outlet_id = ${movingOutlet}::uuid) OR
+        EXISTS (SELECT 1 FROM loyalty_earn_parked p JOIN orders o ON o.tenant_id = p.tenant_id AND o.id = p.order_id WHERE p.tenant_id = ${tenantId} AND o.outlet_id = ${movingOutlet}::uuid) OR
+        EXISTS (SELECT 1 FROM journal_entries WHERE tenant_id = ${tenantId} AND outlet_id = ${movingOutlet}::uuid AND source_type = 'loyalty') OR
+        EXISTS (SELECT 1 FROM auto_journal_parked WHERE tenant_id = ${tenantId} AND outlet_id = ${movingOutlet}::uuid AND event_name IN ('points.earned', 'points.reversed', 'points.redeemed', 'points.adjusted', 'points.expired')) OR
+        EXISTS (SELECT 1 FROM reward_redemptions WHERE tenant_id = ${tenantId} AND outlet_id = ${movingOutlet}::uuid) OR
+        EXISTS (SELECT 1 FROM loyalty_claim_pauses WHERE tenant_id = ${tenantId} AND outlet_id = ${movingOutlet}::uuid AND (state IN ('busy', 'ambiguous') OR (state = 'active' AND resume_deadline > now()))) OR
+        EXISTS (SELECT 1 FROM domain_event_outbox WHERE tenant_id = ${tenantId} AND outlet_id = ${movingOutlet}::uuid AND destination = 'cloud-sync' AND status <> 'delivered' AND event->>'name' IN ('order.paid', 'payment.paid', 'points.earned', 'points.reversed', 'points.redeemed', 'points.adjusted', 'points.expired')) OR
+        EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = ${tenantId} AND o.outlet_id = ${movingOutlet}::uuid AND o.table_session_id IS NOT NULL AND o.customer_profile_id IS NULL AND o.payment_mode = 'pay_first' AND o.status <> 'voided' AND (
+          (o.claim_token_hash IS NOT NULL AND o.claim_redeemed_at IS NULL AND o.claim_expires_at > now()) OR
+          (o.status IN ('awaiting_payment', 'sent', 'completed') AND o.claim_token_hash IS NULL AND NOT EXISTS (SELECT 1 FROM bill_splits s WHERE s.tenant_id = o.tenant_id AND s.order_id = o.id)) OR
+          EXISTS (SELECT 1 FROM bill_splits s WHERE s.tenant_id = o.tenant_id AND s.order_id = o.id AND (s.status = 'pending' OR (s.status = 'paid' AND s.claim_token_hash IS NULL) OR (s.status = 'paid' AND s.claim_redeemed_at IS NULL AND s.claim_expires_at > now())))
+        )) AS has_history
+    `);
+    if (affected.rows[0]?.has_history !== false)
+      throw new HttpError(
+        409,
+        "LOYALTY_ENTITY_LOCKED",
+        "Outlet memiliki riwayat atau klaim poin yang perlu direkonsiliasi.",
+      );
+    return;
+  }
+  const history = await tx.execute<{ has_history: boolean }>(sql`
+    SELECT
+      EXISTS (SELECT 1 FROM point_ledger WHERE tenant_id = ${tenantId}) OR
+      EXISTS (SELECT 1 FROM point_earn_records WHERE tenant_id = ${tenantId}) OR
+      EXISTS (SELECT 1 FROM mission_progress WHERE tenant_id = ${tenantId}) OR
+      EXISTS (SELECT 1 FROM reward_redemptions WHERE tenant_id = ${tenantId}) OR
+      EXISTS (SELECT 1 FROM vouchers WHERE tenant_id = ${tenantId} AND source = 'loyalty_reward') OR
+      EXISTS (SELECT 1 FROM loyalty_earn_parked WHERE tenant_id = ${tenantId}) OR
+      EXISTS (SELECT 1 FROM journal_entries WHERE tenant_id = ${tenantId} AND source_type = 'loyalty') OR
+      EXISTS (SELECT 1 FROM auto_journal_parked WHERE tenant_id = ${tenantId} AND event_name IN ('points.earned', 'points.reversed', 'points.redeemed', 'points.adjusted', 'points.expired')) OR
+      EXISTS (SELECT 1 FROM loyalty_claim_pauses WHERE tenant_id = ${tenantId} AND (state IN ('busy', 'ambiguous') OR (state = 'active' AND resume_deadline > now()))) OR
+      EXISTS (SELECT 1 FROM domain_event_outbox WHERE tenant_id = ${tenantId} AND destination = 'cloud-sync' AND status <> 'delivered' AND event->>'name' IN ('order.paid', 'payment.paid', 'points.earned', 'points.reversed', 'points.redeemed', 'points.adjusted', 'points.expired')) OR
+      EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = ${tenantId} AND o.table_session_id IS NOT NULL AND o.customer_profile_id IS NULL AND o.payment_mode = 'pay_first' AND o.status <> 'voided' AND (
+        (o.claim_token_hash IS NOT NULL AND o.claim_redeemed_at IS NULL AND o.claim_expires_at > now()) OR
+        (o.status IN ('awaiting_payment', 'sent', 'completed') AND o.claim_token_hash IS NULL AND NOT EXISTS (SELECT 1 FROM bill_splits s WHERE s.tenant_id = o.tenant_id AND s.order_id = o.id)) OR
+        EXISTS (SELECT 1 FROM bill_splits s WHERE s.tenant_id = o.tenant_id AND s.order_id = o.id AND
+          (s.status = 'pending' OR (s.status = 'paid' AND s.claim_token_hash IS NULL) OR (s.status = 'paid' AND s.claim_redeemed_at IS NULL AND s.claim_expires_at > now())))
+      )) AS has_history
+  `);
+  if (history.rows[0]?.has_history !== false)
+    throw new HttpError(
+      409,
+      "LOYALTY_ENTITY_LOCKED",
+      "Entitas poin tidak dapat diubah karena riwayat atau klaim perlu direkonsiliasi.",
+    );
+}
+
+/** Pause live guest claims whose outlet no longer has a known program entity. */
+async function pauseAmbiguousGuestClaims(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+) {
+  const selected = sql`COALESCE(
+    (SELECT legal_entity_id FROM loyalty_programs WHERE tenant_id = ${tenantId}),
+    (SELECT CASE WHEN count(DISTINCT coalesce(legal_entity_id::text, 'NULL')) = 1
+                       AND bool_and(legal_entity_id IS NOT NULL)
+                 THEN min(legal_entity_id::text)::uuid ELSE NULL END
+       FROM outlets WHERE tenant_id = ${tenantId})
+  )`;
+  const affected = sql`(SELECT id FROM outlets WHERE tenant_id = ${tenantId}
+    AND ((${selected}) IS NULL OR legal_entity_id IS DISTINCT FROM (${selected})))`;
+  const orderLive = sql`(claim_expires_at > now() OR EXISTS (SELECT 1 FROM loyalty_claim_pauses p WHERE p.tenant_id = orders.tenant_id AND p.order_id = orders.id AND (p.state = 'busy' OR (p.state = 'active' AND p.resume_deadline > now()))))`;
+  const splitLive = sql`(claim_expires_at > now() OR EXISTS (SELECT 1 FROM loyalty_claim_pauses p WHERE p.tenant_id = bill_splits.tenant_id AND p.split_id = bill_splits.id AND (p.state = 'busy' OR (p.state = 'active' AND p.resume_deadline > now()))))`;
+  try {
+    await tx.execute(sql`
+      SELECT id FROM orders WHERE tenant_id = ${tenantId} AND outlet_id IN ${affected}
+        AND claim_token_hash IS NOT NULL AND claim_redeemed_at IS NULL
+        AND ${orderLive} AND status <> 'voided' AND customer_profile_id IS NULL
+      ORDER BY id FOR UPDATE NOWAIT
+    `);
+    await tx.execute(sql`
+      SELECT id FROM bill_splits WHERE tenant_id = ${tenantId} AND outlet_id IN ${affected}
+        AND claim_token_hash IS NOT NULL AND claim_redeemed_at IS NULL
+        AND ${splitLive} AND status = 'paid'
+      ORDER BY id FOR UPDATE NOWAIT
+    `);
+  } catch (error) {
+    let current: unknown = error;
+    for (
+      let depth = 0;
+      depth < 5 && current && typeof current === "object";
+      depth += 1
+    ) {
+      const item = current as { code?: unknown; cause?: unknown };
+      if (item.code === "55P03")
+        throw new HttpError(
+          409,
+          "LOYALTY_ENTITY_BUSY",
+          "Klaim sedang diproses. Coba ubah outlet lagi.",
+        );
+      current = item.cause;
+    }
+    throw error;
+  }
+  await tx.execute(sql`
+    INSERT INTO loyalty_claim_pauses (tenant_id, outlet_id, order_id, paused_at, remaining_ms, state)
+    SELECT orders.tenant_id, orders.outlet_id, orders.id, now(),
+      CASE WHEN p.state = 'busy' THEN p.remaining_ms ELSE greatest(1, floor(extract(epoch FROM (coalesce(p.resume_deadline, orders.claim_expires_at) - now())) * 1000)::bigint) END, 'ambiguous'
+    FROM orders LEFT JOIN loyalty_claim_pauses p ON p.tenant_id = orders.tenant_id AND p.order_id = orders.id
+    WHERE orders.tenant_id = ${tenantId} AND orders.outlet_id IN ${affected}
+      AND orders.claim_token_hash IS NOT NULL AND orders.claim_redeemed_at IS NULL
+      AND ${orderLive} AND orders.status <> 'voided' AND orders.customer_profile_id IS NULL
+    ON CONFLICT (tenant_id, order_id) DO UPDATE SET state = 'ambiguous',
+      remaining_ms = EXCLUDED.remaining_ms, resume_deadline = NULL,
+      paused_at = CASE WHEN loyalty_claim_pauses.state = 'busy' THEN loyalty_claim_pauses.paused_at ELSE EXCLUDED.paused_at END
+      WHERE loyalty_claim_pauses.state IN ('active', 'busy')
+  `);
+  await tx.execute(sql`
+    INSERT INTO loyalty_claim_pauses (tenant_id, outlet_id, split_id, paused_at, remaining_ms, state)
+    SELECT bill_splits.tenant_id, bill_splits.outlet_id, bill_splits.id, now(),
+      CASE WHEN p.state = 'busy' THEN p.remaining_ms ELSE greatest(1, floor(extract(epoch FROM (coalesce(p.resume_deadline, bill_splits.claim_expires_at) - now())) * 1000)::bigint) END, 'ambiguous'
+    FROM bill_splits LEFT JOIN loyalty_claim_pauses p ON p.tenant_id = bill_splits.tenant_id AND p.split_id = bill_splits.id
+    WHERE bill_splits.tenant_id = ${tenantId} AND bill_splits.outlet_id IN ${affected}
+      AND bill_splits.claim_token_hash IS NOT NULL AND bill_splits.claim_redeemed_at IS NULL
+      AND ${splitLive} AND bill_splits.status = 'paid'
+    ON CONFLICT (tenant_id, split_id) DO UPDATE SET state = 'ambiguous',
+      remaining_ms = EXCLUDED.remaining_ms, resume_deadline = NULL,
+      paused_at = CASE WHEN loyalty_claim_pauses.state = 'busy' THEN loyalty_claim_pauses.paused_at ELSE EXCLUDED.paused_at END
+      WHERE loyalty_claim_pauses.state IN ('active', 'busy')
+  `);
+}
 
 /** PostgreSQL unique violation, directly or wrapped by drizzle's cause chain. */
 function uniqueViolation(error: unknown, depth = 0): boolean {
@@ -536,7 +732,17 @@ export async function createOutlet(
   input: CreateOutletInput,
   actorUserId: string | null = null,
 ): Promise<Outlet> {
+  if (context.outletScope.kind !== "tenant")
+    throw new HttpError(
+      403,
+      "PERMISSION_DENIED",
+      "Pembuatan outlet membutuhkan akses seluruh tenant.",
+    );
   return withTenant(db, context, async (tx) => {
+    await lockLoyaltyJournalEntity(tx, context.tenant.tenantId);
+    await protectLoyaltyEntityChange(tx, context.tenant.tenantId, {
+      add: input.legalEntityId,
+    });
     await requireBrand(tx, input.brandId);
     await requireLegalEntity(tx, input.legalEntityId);
     let inserted: typeof outlets.$inferSelect;
@@ -615,6 +821,7 @@ export async function createOutlet(
     // tenants without UOMs get them here too; both calls are idempotent.
     await provisionStandardUoms(tx, context, null);
     await provisionOutletStockLocations(tx, context, inserted.id, null);
+    await pauseAmbiguousGuestClaims(tx, context.tenant.tenantId);
     // A new outlet has no menu_costs rows yet: the next job tick rebuilds it.
     await markHppStale(tx, {
       tenantId: context.tenant.tenantId,
@@ -639,7 +846,23 @@ export async function updateOutlet(
   actorUserId: string,
 ): Promise<Outlet> {
   assertOutletWritable(context, outletId);
+  if (
+    input.legalEntityId !== undefined &&
+    context.outletScope.kind !== "tenant"
+  )
+    throw new HttpError(
+      403,
+      "PERMISSION_DENIED",
+      "Perubahan entitas outlet membutuhkan akses seluruh tenant.",
+    );
   return withTenant(db, context, async (tx) => {
+    if (input.legalEntityId !== undefined) {
+      await lockLoyaltyJournalEntity(tx, context.tenant.tenantId);
+      await protectLoyaltyEntityChange(tx, context.tenant.tenantId, {
+        outletId,
+        entity: input.legalEntityId,
+      });
+    }
     if (input.legalEntityId !== undefined)
       await requireLegalEntity(tx, input.legalEntityId);
     const changes = {
@@ -679,6 +902,8 @@ export async function updateOutlet(
       .where(eq(outlets.id, outletId))
       .returning();
     if (!row) throw new HttpError(404, "NOT_FOUND", "Outlet not found.");
+    if (input.legalEntityId !== undefined)
+      await pauseAmbiguousGuestClaims(tx, context.tenant.tenantId);
     // Owner Q39: moving the cutoff moves which business date future trade
     // lands on (daily limits, tax and sales reports), so the change is audited.
     if (before.businessDayCutoff !== row.businessDayCutoff)

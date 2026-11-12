@@ -839,6 +839,37 @@ describe("legend-9be7 refund idempotency, last item and refusals", () => {
     expect(await spentOf(sale.promotionId)).toBe(20_000);
   });
 
+  it("legend-77r0 refuses a refund when the injected promo lookup fails", async () => {
+    const sale = await promoSale();
+    let lookupCalls = 0;
+    setPosPromoRefundPort({
+      ...orderPromoPartialRefundPort,
+      livePromoApplicationOf: async () => {
+        lookupCalls += 1;
+        throw new Error("promo lookup unavailable");
+      },
+    });
+    try {
+      const response = await pos().refund(
+        sale.orderId,
+        await refundBody(sale.orderId, {
+          amountIdr: 40_000,
+          items: [{ itemId: sale.itemA, quantity: 1 }],
+        }),
+      );
+      expect(lookupCalls).toBe(1);
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(await refundRows(sale.orderId)).toHaveLength(0);
+      expect(await application(sale.orderId)).toMatchObject({
+        refundedPaid: 0,
+        totalDiscount: 20_000,
+      });
+      expect(await spentOf(sale.promotionId)).toBe(20_000);
+    } finally {
+      setPosPromoRefundPort(null);
+    }
+  });
+
   it("a promo port that cannot run refuses the refund: no refund row, no payout recorded, promo budget untouched", async () => {
     const sale = await promoSale();
     const stockBefore = await dailyStock();
@@ -1561,56 +1592,36 @@ describe("legend-15by Q19b path-independent, stack-ordered, per-line kept discou
   });
 });
 
-// ---- Review fix (brief sub-wkl3-rp0-return "Review fix"): Rp0 only when nothing is owed ----
-describe("legend-wkl3 Rp0 goods return only when nothing is owed on the bill", () => {
-  // CHANGED ON PURPOSE (legend-s7rx D2): this test used to expect the second
-  // item to be refused 422 REFUND_NOTHING_DUE. On an order with a deposit, once
-  // the tenders are used up the remaining item is recorded as a Rp0 goods
-  // return (201, amountIdr 0, lines [], goodsReturnOnly in the audit); the
-  // money still owed stays on the deposit side and is not paid back here.
-  it("deposit order, money still owed but tenders used up: 80k refund pays, the next item is a Rp0 goods return (201, lines [])", async () => {
-    // 2 x 50k, 20k off, paid 80k cash. Artificial deposit of 50k on the order:
-    // dueBill = 90k, the tenders only hold 80k, so the first refund is capped at 80k.
-    const sale = await promoSale();
-    // The order is completed (final), so the final-order immutability trigger
-    // would reject the UPDATE: replica role skips user triggers for this
-    // transaction only (test setup, owner connection).
-    await asOwnerTenant(async (client) => {
-      await client.query("SET LOCAL session_replication_role = replica");
-      await client.query(
-        "UPDATE orders SET deposit_applied_idr = 50000 WHERE tenant_id = $1 AND id = $2::uuid",
-        [tenant.tenantId, ulidToUuid(sale.orderId as never)],
+// Q81 supersedes tender-only DP returns: missing original-payer provenance is refused.
+describe("legend-77r0 Q81 synthetic deposit has no verified payer", () => {
+  for (const tenderIdr of [80_000, 30_000])
+    it(`refuses an unproven DP50k with tender${tenderIdr} before paying or recording any return`, async () => {
+      const sale = await promoSale();
+      await asOwnerTenant(async (client) => {
+        await client.query("SET LOCAL session_replication_role = replica");
+        await client.query(
+          "UPDATE orders SET deposit_applied_idr=50000 WHERE tenant_id=$1 AND id=$2",
+          [tenant.tenantId, ulidToUuid(sale.orderId as never)],
+        );
+        await client.query(
+          "UPDATE pos_order_tenders SET amount_idr=$3,received_idr=$3 WHERE tenant_id=$1 AND order_id=$2",
+          [tenant.tenantId, ulidToUuid(sale.orderId as never), tenderIdr],
+        );
+      });
+      const response = await pos().refund(
+        sale.orderId,
+        await refundBody(sale.orderId, {
+          amountIdr: 40_000,
+          items: [{ itemId: sale.itemA, quantity: 1 }],
+        }),
       );
+      expect(
+        response.status,
+        JSON.stringify(response.body),
+      ).toBeGreaterThanOrEqual(400);
+      expect(await refundRows(sale.orderId)).toHaveLength(0);
+      expect((await application(sale.orderId)).refundedPaid).toBe(0);
     });
-
-    const first = await pos().refund(
-      sale.orderId,
-      await refundBody(sale.orderId, {
-        amountIdr: 80_000,
-        items: [{ itemId: sale.itemA, quantity: 1 }],
-      }),
-    );
-    expect(first.status, JSON.stringify(first.body)).toBe(201);
-    expect(first.body.data.amountIdr).toBe(80_000);
-    expect(await refundRows(sale.orderId)).toHaveLength(1);
-
-    const second = await pos().refund(
-      sale.orderId,
-      await refundBody(sale.orderId, {
-        amountIdr: 1_000,
-        items: [{ itemId: sale.itemB, quantity: 1 }],
-      }),
-    );
-    expect(second.status, JSON.stringify(second.body)).toBe(201);
-    expect(second.body.data.amountIdr).toBe(0);
-    expect(second.body.data.lines).toEqual([]);
-    expect(await refundRows(sale.orderId)).toEqual([
-      { amount: 80_000, items: [{ itemId: sale.itemA, quantity: 1 }] },
-      { amount: 0, items: [{ itemId: sale.itemB, quantity: 1 }] },
-    ]);
-    // No money moved on the Rp0 row: still only the first 80k paid out.
-    expect((await application(sale.orderId)).refundedPaid).toBe(80_000);
-  });
 });
 
 // ---- Brief sub-172 A (legend-a0i7) and B: Codex 127 #1 and #2 -------------------------
@@ -2211,128 +2222,6 @@ describe("legend-186 legend-s7rx A settlement refund without items on a locked p
 });
 
 /** 'pos_order.refunded' audit events of one order, keyed by the payout. */
-async function refundAuditAfters(orderId: string) {
-  const audit = await asOwnerTenant((client) =>
-    client.query<{ event: unknown }>(
-      `SELECT event FROM audit_logs
-        WHERE tenant_id = $1 AND event->>'action' = 'pos_order.refunded'`,
-      [tenant.tenantId],
-    ),
-  );
-  return audit.rows
-    .filter((row) => JSON.stringify(row.event).includes(orderId))
-    .map(
-      (row) =>
-        (
-          row.event as {
-            maskedChanges: { after: Record<string, unknown> };
-          }
-        ).maskedChanges.after,
-    );
-}
-
-describe("legend-186 legend-s7rx B deposit order: second item is not REFUND_NOTHING_DUE", () => {
-  it("tenders used up by item 1 (80k): item 2 answers 201 with a Rp0 goods return, not 422; the audit records what the deposit still owes", async () => {
-    const sale = await promoSale();
-    // Final orders are immutable; the replica role skips the trigger for this
-    // test-setup transaction only (same as the legend-wkl3 test).
-    await asOwnerTenant(async (client) => {
-      await client.query("SET LOCAL session_replication_role = replica");
-      await client.query(
-        "UPDATE orders SET deposit_applied_idr = 50000 WHERE tenant_id = $1 AND id = $2::uuid",
-        [tenant.tenantId, ulidToUuid(sale.orderId as never)],
-      );
-    });
-
-    const first = await pos().refund(
-      sale.orderId,
-      await refundBody(sale.orderId, {
-        amountIdr: 80_000,
-        items: [{ itemId: sale.itemA, quantity: 1 }],
-      }),
-    );
-    expect(first.status, JSON.stringify(first.body)).toBe(201);
-    expect(first.body.data.amountIdr).toBe(80_000);
-
-    const second = await pos().refund(
-      sale.orderId,
-      await refundBody(sale.orderId, {
-        amountIdr: 1_000,
-        items: [{ itemId: sale.itemB, quantity: 1 }],
-      }),
-    );
-    expect(second.status, JSON.stringify(second.body)).toBe(201);
-    expect(second.body.data.amountIdr).toBe(0);
-    expect(await refundRows(sale.orderId)).toEqual([
-      { amount: 80_000, items: [{ itemId: sale.itemA, quantity: 1 }] },
-      { amount: 0, items: [{ itemId: sale.itemB, quantity: 1 }] },
-    ]);
-
-    const afters = await refundAuditAfters(sale.orderId);
-    expect(afters).toHaveLength(2);
-    // Item 1 drained the tenders (depositOwedIdr is asserted on the Rp0 row
-    // only: its exact value on a paying row depends on owedIdr).
-    // Item 2 is a goods return only; the deposit money (Rp50.000) is not paid
-    // back here, so the audit records it as owed on the deposit side.
-    expect(afters.find((after) => after.amountIdr === 0)).toMatchObject({
-      goodsReturnOnly: true,
-      depositOwedIdr: 50_000,
-    });
-  });
-
-  // Realistic deposit order: bill 80k = tender 30k + deposit 50k. Built from a
-  // cash promoSale (80k) by shrinking the tender to 30k and applying a 50k
-  // deposit (test setup as the owner, final-order trigger skipped).
-  it("tender 30k + deposit 50k: item 1 drains the tender, item 2 is a Rp0 goods return and the audit records Rp50.000 owed on the deposit", async () => {
-    const sale = await promoSale();
-    await asOwnerTenant(async (client) => {
-      await client.query("SET LOCAL session_replication_role = replica");
-      await client.query(
-        "UPDATE orders SET deposit_applied_idr = 50000 WHERE tenant_id = $1 AND id = $2::uuid",
-        [tenant.tenantId, ulidToUuid(sale.orderId as never)],
-      );
-      await client.query(
-        `UPDATE pos_order_tenders SET amount_idr = 30000, received_idr = 30000
-          WHERE tenant_id = $1 AND order_id = $2::uuid`,
-        [tenant.tenantId, ulidToUuid(sale.orderId as never)],
-      );
-    });
-
-    // Item 1 is worth Rp40.000 but the tender only holds Rp30.000.
-    const first = await pos().refund(
-      sale.orderId,
-      await refundBody(sale.orderId, {
-        amountIdr: 40_000,
-        items: [{ itemId: sale.itemA, quantity: 1 }],
-      }),
-    );
-    expect(first.status, JSON.stringify(first.body)).toBe(201);
-    expect(first.body.data.amountIdr).toBe(30_000);
-
-    const second = await pos().refund(
-      sale.orderId,
-      await refundBody(sale.orderId, {
-        amountIdr: 40_000,
-        items: [{ itemId: sale.itemB, quantity: 1 }],
-      }),
-    );
-    expect(second.status, JSON.stringify(second.body)).toBe(201);
-    expect(second.body.data.amountIdr).toBe(0);
-    expect(second.body.data.lines).toEqual([]);
-    expect(await refundRows(sale.orderId)).toEqual([
-      { amount: 30_000, items: [{ itemId: sale.itemA, quantity: 1 }] },
-      { amount: 0, items: [{ itemId: sale.itemB, quantity: 1 }] },
-    ]);
-
-    const afters = await refundAuditAfters(sale.orderId);
-    expect(afters, JSON.stringify(afters)).toHaveLength(2);
-    expect(afters.find((after) => after.amountIdr === 0)).toMatchObject({
-      goodsReturnOnly: true,
-      depositOwedIdr: 50_000,
-    });
-  });
-});
-
 describe("legend-186 legend-8v2yl refund lines carry the tender and payment intent they came from", () => {
   type Tender = { id: string; intent: string };
 

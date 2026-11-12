@@ -26,6 +26,8 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createUlid, ulidToUuid } from "@starter/shared/core";
+import { eventEnvelopeSchema } from "@starter/shared/events";
 import type { Express } from "express";
 import { createApp } from "../app";
 import { db } from "../db";
@@ -121,6 +123,231 @@ async function pay(
 }
 
 describe("LOY-02 order.paid books points once", () => {
+  it("retries a temporarily busy earn without parking or crediting twice", async () => {
+    const world = await worldWith();
+    const member = await seedMember(world.tenantId);
+    const orderUlid = await seedOrder(world.tenantId, {
+      outletId: world.outletA,
+      profileId: member.id,
+    });
+    const event = orderPaidEvent(world, { orderUlid, outletId: world.outletA });
+    const blocker = await owner.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [`loyalty-entity:${world.tenantId}`],
+      );
+      await expect(deliver(world, event)).rejects.toThrow(
+        "Loyalty entity busy",
+      );
+      expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+      const parked = await asTenant(world.tenantId, (client) =>
+        client.query(
+          "SELECT event_id FROM loyalty_earn_parked WHERE tenant_id = $1 AND event_id = $2",
+          [world.tenantId, event.id],
+        ),
+      );
+      expect(parked.rows).toHaveLength(0);
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+    }
+    await deliver(world, event);
+    await deliver(world, event);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(10);
+    expect(await ledgerOf(world.tenantId, member.id)).toHaveLength(1);
+  });
+
+  it.each(["refund first", "paid first"])(
+    "durably parks %s and later void once without crediting points",
+    async (order) => {
+      const world = await worldWith();
+      const entityB = randomUUID();
+      await asTenant(world.tenantId, async (client) => {
+        await client.query(
+          "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'Entity B', false)",
+          [entityB, world.tenantId],
+        );
+        await client.query(
+          "UPDATE loyalty_programs SET legal_entity_id = (SELECT legal_entity_id FROM outlets WHERE tenant_id = $1 AND id = $2) WHERE tenant_id = $1",
+          [world.tenantId, world.outletA],
+        );
+        await client.query(
+          "UPDATE outlets SET legal_entity_id = $3 WHERE tenant_id = $1 AND id = $2",
+          [world.tenantId, world.outletB, entityB],
+        );
+      });
+      const member = await seedMember(world.tenantId);
+      const orderUlid = await seedOrder(world.tenantId, {
+        outletId: world.outletB,
+        profileId: member.id,
+      });
+      const paid = orderPaidEvent(world, {
+        orderUlid,
+        outletId: world.outletB,
+      });
+      const refunded = orderRefundedEvent(world, {
+        orderUlid,
+        outletId: world.outletB,
+        grossSalesIdr: 50_000,
+      });
+      const voided = orderVoidedEvent(world, {
+        orderUlid,
+        outletId: world.outletB,
+        voidId: randomUUID(),
+        voidedFinalOrder: true,
+      });
+      const issueId = randomUUID();
+      const rejected = eventEnvelopeSchema.parse({
+        ...paid,
+        id: createUlid(),
+        name: "order_issue.refund_reversal_requested",
+        aggregateType: "order_issue",
+        aggregateId: issueId,
+        payloadSchemaRef: "order_issue.refund_reversal_requested.v1",
+        payload: {
+          orderId: orderUlid,
+          orderIssueId: issueId,
+          refundId: randomUUID(),
+          amountIdr: 50_000,
+          rejectedAt: NEXT_DAY,
+        },
+      });
+      const first = order === "refund first" ? refunded : paid;
+      const second = order === "refund first" ? paid : refunded;
+      for (const event of [
+        first,
+        second,
+        voided,
+        rejected,
+        first,
+        second,
+        voided,
+        rejected,
+      ])
+        await deliver(world, event);
+      expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+      expect(await ledgerOf(world.tenantId, member.id)).toHaveLength(0);
+      const parked = await asTenant(world.tenantId, (client) =>
+        client.query<{
+          event_id: string;
+          event_name: string;
+          payload: Record<string, unknown>;
+        }>(
+          "SELECT event_id, event_name, payload FROM loyalty_earn_parked WHERE tenant_id = $1 AND order_id = $2",
+          [world.tenantId, ulidToUuid(orderUlid)],
+        ),
+      );
+      expect(parked.rows).toHaveLength(4);
+      expect(parked.rows.map((row) => row.event_id).sort()).toEqual(
+        [paid.id, refunded.id, voided.id, rejected.id].sort(),
+      );
+      expect(
+        parked.rows.every((row) => row.payload.orderId === orderUlid),
+      ).toBe(true);
+      expect(parked.rows.every((row) => !("reasonNote" in row.payload))).toBe(
+        true,
+      );
+    },
+  );
+
+  it("does not earn points from another legal entity, but earns once on the program entity", async () => {
+    const world = await worldWith();
+    const entityB = randomUUID();
+    await asTenant(world.tenantId, async (client) => {
+      await client.query(
+        "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'Entity B', false)",
+        [entityB, world.tenantId],
+      );
+      await client.query(
+        "UPDATE loyalty_programs SET legal_entity_id = (SELECT legal_entity_id FROM outlets WHERE tenant_id = $1 AND id = $2) WHERE tenant_id = $1",
+        [world.tenantId, world.outletA],
+      );
+      await client.query(
+        "UPDATE outlets SET legal_entity_id = $3 WHERE tenant_id = $1 AND id = $2",
+        [world.tenantId, world.outletB, entityB],
+      );
+    });
+    const member = await seedMember(world.tenantId);
+    const referrer = await seedMember(world.tenantId);
+    const referralId = randomUUID();
+    const missionId = randomUUID();
+    await asTenant(world.tenantId, async (client) => {
+      await client.query(
+        `UPDATE loyalty_programs SET referral = $2::jsonb WHERE tenant_id = $1`,
+        [
+          world.tenantId,
+          JSON.stringify({
+            enabled: true,
+            referrerPoints: 0,
+            refereePoints: 0,
+            qualifyingEvent: "first_paid_order",
+            minFirstOrderIdr: 0,
+            maxReferralsPerCustomerPerMonth: 10,
+          }),
+        ],
+      );
+      await client.query(
+        `INSERT INTO referrals (id, tenant_id, referrer_profile_id, referee_profile_id, code, referrer_points, referee_points)
+         VALUES ($1, $2, $3, $4, 'TESTCODE', 0, 0)`,
+        [referralId, world.tenantId, referrer.id, member.id],
+      );
+      await client.query(
+        `INSERT INTO missions (id, tenant_id, name, type, rule, reward, period)
+         VALUES ($1, $2, 'Test mission', 'visit_count', $3::jsonb, $4::jsonb, $5::jsonb)`,
+        [
+          missionId,
+          world.tenantId,
+          JSON.stringify({ kind: "visit_count", targetVisits: 1 }),
+          JSON.stringify({ kind: "voucher", valueIdr: 1000, validDays: 30 }),
+          JSON.stringify({ kind: "monthly" }),
+        ],
+      );
+    });
+    const wrong = await pay(world, member, { outletId: world.outletB });
+    await deliver(world, wrong.event);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+    expect(await ledgerOf(world.tenantId, member.id)).toHaveLength(0);
+    expect(await ledgerOf(world.tenantId, referrer.id)).toHaveLength(0);
+    expect(
+      await outboxEvents(world.tenantId, "points.earned", member.id),
+    ).toHaveLength(0);
+    const order = await asTenant(world.tenantId, (client) =>
+      client.query(
+        "SELECT status FROM orders WHERE tenant_id = $1 AND number IS NOT NULL AND outlet_id = $2",
+        [world.tenantId, world.outletB],
+      ),
+    );
+    expect(order.rows).toEqual([{ status: "completed" }]);
+    const effects = await asTenant(world.tenantId, async (client) => ({
+      referral: (
+        await client.query("SELECT status FROM referrals WHERE id = $1", [
+          referralId,
+        ])
+      ).rows[0],
+      missions: (
+        await client.query(
+          "SELECT count(*)::int AS count FROM mission_progress WHERE tenant_id = $1 AND mission_id = $2",
+          [world.tenantId, missionId],
+        )
+      ).rows[0],
+    }));
+    expect(effects.referral.status).toBe("pending");
+    expect(effects.missions.count).toBe(0);
+
+    const correct = await pay(world, member, { outletId: world.outletA });
+    await deliver(world, correct.event);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(10);
+    const rows = await ledgerOf(world.tenantId, member.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      type: "earn",
+      points: "10",
+      source_id: correct.orderUlid,
+    });
+  });
+
   it("LOY-02 a twin order.paid books one earn row, one record, one visit", async () => {
     const world = await worldWith();
     const member = await seedMember(world.tenantId);
@@ -270,6 +497,44 @@ describe("LOY-02 eligible spend (design M6 risk 5)", () => {
 });
 
 describe("LOY-02 refunds and voids", () => {
+  it("reverses already credited points even when the program entity later differs", async () => {
+    const world = await worldWith();
+    const member = await seedMember(world.tenantId);
+    const { orderUlid } = await pay(world, member);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(10);
+    const entityB = randomUUID();
+    await asTenant(world.tenantId, async (client) => {
+      await client.query(
+        "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'Entity B', false)",
+        [entityB, world.tenantId],
+      );
+      await client.query(
+        "UPDATE loyalty_programs SET legal_entity_id = $2 WHERE tenant_id = $1",
+        [world.tenantId, entityB],
+      );
+    });
+    const refund = orderRefundedEvent(world, {
+      orderUlid,
+      outletId: world.outletA,
+      grossSalesIdr: 50_000,
+    });
+    await deliver(world, refund);
+    await deliver(world, refund);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(5);
+    expect(
+      (await ledgerOf(world.tenantId, member.id)).filter(
+        (row) => row.type === "reverse",
+      ),
+    ).toHaveLength(1);
+    const parked = await asTenant(world.tenantId, (client) =>
+      client.query(
+        "SELECT event_id FROM loyalty_earn_parked WHERE tenant_id = $1 AND event_id = $2",
+        [world.tenantId, refund.id],
+      ),
+    );
+    expect(parked.rows).toHaveLength(0);
+  });
+
   it("LOY-02 a partial refund is reduced by refundPointsIdr", async () => {
     const world = await worldWith();
     const member = await seedMember(world.tenantId);

@@ -18,11 +18,23 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { EventEnvelope } from "@starter/shared/events";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import {
+  autoJournalFactOf,
+  storedEventOf,
+} from "../services/accounting-auto-journal-amounts.ts";
+import {
+  postJournalFromRuleInTransaction,
+  reverseJournalInTransaction,
+} from "../services/accounting-journal.service.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import {
   asTenant,
   balanceOf,
+  BUSINESS_DATE,
+  contextOf,
   createUlid,
   deliver,
   journalCount,
@@ -362,6 +374,117 @@ describe("a payout role remapped onto the service charge account after the sale"
     });
 });
 
+describe("payout mapping changes after refund amounts are calculated (legend-48ft7)", () => {
+  it("rejects when another transaction commits a payout remap between fact calculation and journal posting", async () => {
+    const world = await makeWorld();
+    await mapToLiability(world, "service_charge", "2301");
+    const { orderUlid, paid } = await seedSaleWithServiceCharge(world);
+    await post(world, paid);
+    const event = refundEvent(world, orderUlid, {
+      grossSalesIdr: 50_000,
+      serviceChargeIdr: 5_000,
+      taxIdr: 5_000,
+    });
+    const stored = storedEventOf({
+      id: event.id,
+      name: "order.refunded",
+      outletId: event.outletId,
+      occurredAt: event.occurredAt,
+      payload: event.payload,
+      idempotencyKey: event.idempotencyKey,
+    });
+    const context = contextOf(world.tenant);
+    const before = await totalsOf(world, "tax_payable_pbjt");
+
+    await expect(
+      withTenant(db, context, async (tx) => {
+        // Transaction A reads the original payout mapping as part of the
+        // real fact calculation, then remains open while B commits a change.
+        const fact = await autoJournalFactOf(
+          tx,
+          context.tenant.tenantId,
+          stored,
+        );
+        expect(fact).not.toBeNull();
+        await asTenant(world.tenant, async (client) => {
+          await client.query("SET LOCAL lock_timeout = '2s'");
+          await client.query(
+            `UPDATE account_mappings SET account_id = $3
+              WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'cash_on_hand'`,
+            [world.tenant.id, world.entity, world.accounts.tax_payable_pbjt],
+          );
+        });
+        return postJournalFromRuleInTransaction(tx, context, {
+          eventName: fact!.ruleEvent,
+          variant: fact!.variant,
+          amounts: fact!.amounts,
+          accountOverrides: fact!.accountOverrides,
+          legalEntityId: world.entity,
+          outletId: world.outletId,
+          entryDate: BUSINESS_DATE,
+          sourceId: fact!.sourceId,
+          orderId: fact!.orderId,
+          postedBy: null,
+          idempotencyKey: `race-refund:${createUlid()}`,
+        });
+      }),
+    ).rejects.toMatchObject({ code: "POSTING_AMOUNTS_MISMATCH" });
+
+    expect(await journalCount(world)).toBe(1);
+    expect(await totalsOf(world, "tax_payable_pbjt")).toEqual(before);
+  });
+
+  for (const protectedRole of ["service_charge", "tax_payable_pbjt"] as const) {
+    it(`refuses the actual payout mapping when cash points to the historical ${protectedRole} account`, async () => {
+      const world = await makeWorld();
+      await mapToLiability(world, "service_charge", "2301");
+      const { paid } = await seedSaleWithServiceCharge(world);
+      await post(world, paid);
+
+      // Amount calculation has already captured the sale's protected accounts.
+      // Another transaction remaps the payout before journal rule resolution.
+      const accountOverrides = {
+        sales_revenue: world.accounts.sales_revenue,
+        service_charge: world.accounts.service_charge,
+        tax_payable_pbjt: world.accounts.tax_payable_pbjt,
+      };
+      await owner.query(
+        `UPDATE account_mappings SET account_id = $3
+          WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'cash_on_hand'`,
+        [world.tenant.id, world.entity, world.accounts[protectedRole]],
+      );
+      const before = await totalsOf(world, protectedRole);
+      const context = contextOf(world.tenant);
+      await expect(
+        withTenant(db, context, (tx) =>
+          postJournalFromRuleInTransaction(tx, context, {
+            eventName: "order.refunded",
+            amounts: {
+              grossSalesIdr: 50_000,
+              serviceChargeIdr: 5_000,
+              pbjtIdr: 5_000,
+              discountIdr: 0,
+              refundCashIdr: 60_000,
+              refundGatewayIdr: 0,
+              refundEdcIdr: 0,
+              refundPointsIdr: 0,
+            },
+            legalEntityId: world.entity,
+            outletId: world.outletId,
+            entryDate: BUSINESS_DATE,
+            sourceId: createUlid(),
+            postedBy: null,
+            idempotencyKey: `race-refund:${createUlid()}`,
+            accountOverrides,
+          }),
+        ),
+      ).rejects.toThrow();
+      expect(await journalCount(world)).toBe(1);
+      expect(await totalsOf(world, protectedRole)).toEqual(before);
+    });
+  }
+});
+
 describe("legacy refund history that credited the service charge account", () => {
   // A refund journal posted by an older mapping may have CREDITED the service
   // charge (or a tax) account. Counting "already refunded" as debit minus credit
@@ -378,7 +501,7 @@ describe("legacy refund history that credited the service charge account", () =>
     world: World,
     orderUlid: string,
     lines: LegacyLine[],
-  ): Promise<void> {
+  ): Promise<string> {
     const refundId = createUlid();
     const client = await owner.connect();
     try {
@@ -418,6 +541,7 @@ describe("legacy refund history that credited the service charge account", () =>
           ],
         );
       await client.query("COMMIT");
+      return entryId;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -483,6 +607,46 @@ describe("legacy refund history that credited the service charge account", () =>
     expect(parked.rows).toEqual([
       { error_code: "AUTO_JOURNAL_PAYLOAD_INVALID", retryable: false },
     ]);
+  });
+
+  it("a reversed legacy refund journal alone does not prove its payout was recovered, so a new refund remains parked", async () => {
+    const world = await makeWorld();
+    await mapToLiability(world, "service_charge", "2301");
+    const { orderUlid, paid } = await seedSaleWithServiceCharge(world);
+    await post(world, paid);
+    const legacyId = await insertLegacyRefund(world, orderUlid, [
+      { role: "sales_revenue", debit: 40_000, credit: 0 },
+      { role: "tax_payable_pbjt", debit: 4_000, credit: 0 },
+      { role: "service_charge", debit: 0, credit: 4_000 },
+      { role: "cash_on_hand", debit: 0, credit: 40_000 },
+    ]);
+    const context = contextOf(world.tenant);
+    await withTenant(db, context, (tx) =>
+      reverseJournalInTransaction(tx, context, legacyId, {
+        entryDate: BUSINESS_DATE,
+        reason: "Refund lama dibatalkan",
+        idempotencyKey: `reverse-legacy:${legacyId}`,
+        lateAdjustmentFrom: null,
+        postedBy: null,
+      } as never),
+    );
+
+    const full = refundEvent(world, orderUlid, {
+      grossSalesIdr: 100_000,
+      serviceChargeIdr: SERVICE_CHARGE,
+      taxIdr: TAX,
+    });
+    // Reversing a journal does not establish that the earlier 40k payout was
+    // cancelled or returned. Paying the whole 120k again could overpay 40k.
+    const before = await journalCount(world);
+    expect(outcomeOf(await deliver(world, full))).toBe(
+      "parked:AUTO_JOURNAL_PAYLOAD_INVALID",
+    );
+    expect(await journalCount(world)).toBe(before);
+    expect(await totalsOf(world, "service_charge")).toEqual({
+      debit: 4_000,
+      credit: SERVICE_CHARGE + 4_000,
+    });
   });
 });
 

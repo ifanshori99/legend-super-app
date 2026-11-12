@@ -22,7 +22,6 @@ import {
   and,
   asc,
   eq,
-  gt,
   inArray,
   isNotNull,
   isNull,
@@ -33,6 +32,7 @@ import {
 } from "drizzle-orm";
 import {
   CoreError,
+  outletIdSchema,
   toIsoDateTime,
   type ScopedTenantContext,
   type TenantId,
@@ -45,6 +45,7 @@ import {
   billSplits,
   customerProfiles,
   loyaltyPrograms,
+  loyaltyClaimPauses,
   pointLedger,
   tableSessions,
 } from "../db/schema/index.ts";
@@ -52,6 +53,8 @@ import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { sealSecret } from "../lib/secrets.ts";
+import { checkLoyaltyOutletEntity } from "./loyalty-entity-guard.ts";
+import { retryBusyClaimsForSessionInTransaction } from "./loyalty-claim-recovery.ts";
 import type { Tx } from "./menu-internals.ts";
 import { tierMultiplierBp } from "./loyalty-earn-tier-step.ts";
 import type { EarnStepContext } from "./loyalty-earn-step-context.ts";
@@ -158,6 +161,15 @@ export async function issueWholeBillClaimTx(
   paidAt: Date,
 ): Promise<boolean> {
   const tenantId = context.tenant.tenantId;
+  const [order] = await tx
+    .select({ outletId: orders.outletId })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
+  if (!order) return false;
+  const verdict = await checkLoyaltyOutletEntity(tx, tenantId, [
+    order.outletId,
+  ]);
+  const paused = verdict !== "ok";
   const raw = `sc_${randomBytes(32).toString("base64url")}`;
   const issued = await tx
     .update(orders)
@@ -189,6 +201,18 @@ export async function issueWholeBillClaimTx(
       ),
     )
     .returning({ id: orders.id });
+  if (paused && issued.length > 0)
+    await tx
+      .insert(loyaltyClaimPauses)
+      .values({
+        tenantId,
+        outletId: order.outletId,
+        orderId,
+        pausedAt: paidAt,
+        remainingMs: CLAIM_TTL_MS,
+        state: verdict === "busy" ? "busy" : "ambiguous",
+      })
+      .onConflictDoNothing();
   return issued.length > 0;
 }
 
@@ -208,6 +232,7 @@ type ClaimUnit = {
   spendIdr: number;
   paidAt: Date;
   expiresAt: Date;
+  pausedAt: Date | null;
   redeemedAt: Date | null;
   outletId: string;
   businessDate: string;
@@ -226,6 +251,8 @@ type OrderUnitRow = {
   taxIdr: number;
   pricesIncludeTax: boolean;
   expiresAt: Date | null;
+  pausedAt: Date | null;
+  activeDeadline: Date | null;
   redeemedAt: Date | null;
   customerProfileId: string | null;
 };
@@ -264,7 +291,10 @@ function orderUnit(row: OrderUnitRow): ClaimUnit | null {
     paidIdr: row.totalIdr,
     spendIdr: eligibleSpend(row),
     paidAt: new Date(row.expiresAt.getTime() - CLAIM_TTL_MS),
-    expiresAt: row.expiresAt,
+    expiresAt: row.activeDeadline
+      ? new Date(row.activeDeadline)
+      : row.expiresAt,
+    pausedAt: row.pausedAt,
     redeemedAt: row.redeemedAt,
     outletId: row.outletId,
     businessDate: row.businessDate,
@@ -295,6 +325,8 @@ async function loadUnits(
     taxIdr: orders.taxIdr,
     pricesIncludeTax: orders.pricesIncludeTax,
     expiresAt: orders.claimExpiresAt,
+    pausedAt: sql<Date | null>`(SELECT CASE WHEN state = 'active' THEN NULL ELSE paused_at END FROM loyalty_claim_pauses WHERE tenant_id = ${tenantId} AND order_id = orders.id)`,
+    activeDeadline: sql<Date | null>`(SELECT resume_deadline FROM loyalty_claim_pauses WHERE tenant_id = ${tenantId} AND order_id = orders.id AND state = 'active')`,
     redeemedAt: orders.claimRedeemedAt,
     customerProfileId: orders.customerProfileId,
   };
@@ -307,6 +339,8 @@ async function loadUnits(
         amountIdr: billSplits.amountIdr,
         paidAt: billSplits.paidAt,
         expiresAt: billSplits.claimExpiresAt,
+        pausedAt: sql<Date | null>`(SELECT CASE WHEN state = 'active' THEN NULL ELSE paused_at END FROM loyalty_claim_pauses WHERE tenant_id = ${tenantId} AND split_id = bill_splits.id)`,
+        activeDeadline: sql<Date | null>`(SELECT resume_deadline FROM loyalty_claim_pauses WHERE tenant_id = ${tenantId} AND split_id = bill_splits.id AND state = 'active')`,
         redeemedAt: billSplits.claimRedeemedAt,
         outletId: orders.outletId,
         businessDate: orders.businessDate,
@@ -351,7 +385,10 @@ async function loadUnits(
             part.totalIdr,
           ),
           paidAt: part.paidAt,
-          expiresAt: part.expiresAt,
+          expiresAt: part.activeDeadline
+            ? new Date(part.activeDeadline)
+            : part.expiresAt,
+          pausedAt: part.pausedAt,
           redeemedAt: part.redeemedAt,
           outletId: part.outletId,
           businessDate: part.businessDate,
@@ -503,6 +540,7 @@ async function planPoints(
 function isOpen(unit: ClaimUnit, now: Date): boolean {
   return (
     unit.redeemedAt === null &&
+    unit.pausedAt === null &&
     unit.expiresAt.getTime() > now.getTime() &&
     !unit.hasMember
   );
@@ -594,6 +632,7 @@ async function buildClaim(
     (unit) =>
       unit.redeemedAt === null &&
       !unit.hasMember &&
+      unit.pausedAt === null &&
       unit.expiresAt.getTime() <= now.getTime(),
   );
   if (lapsed && program) return claim("expired", 0, 0, null);
@@ -670,6 +709,7 @@ export async function getPointClaim(
       input.claimToken,
       now,
     );
+    await retryBusyClaimsForSessionInTransaction(tx, context, session.id, now);
     const units = await loadUnits(tx, tenantId, session.id, input.claimToken);
     const program = await loadProgram(tx, tenantId);
     const profile = input.userId
@@ -706,7 +746,7 @@ export async function claimSessionPoints(
   if (userId === null)
     throw new CoreError("UNAUTHORIZED", "Masuk dulu untuk mengklaim poin.");
   const tenantId = context.tenant.tenantId;
-  return withTenant(db, context, async (tx) => {
+  const result = await withTenant(db, context, async (tx) => {
     const session = await claimSession(
       tx,
       context,
@@ -715,6 +755,12 @@ export async function claimSessionPoints(
       input.claimToken,
       now,
     );
+    // Serialize claims before recovery and entity checks can take conflicting
+    // order/tenant locks for different members or idempotency keys.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`table-claim-session:${tenantId}:${session.id}`}, 0))`,
+    );
+    await retryBusyClaimsForSessionInTransaction(tx, context, session.id, now);
     const found = await findProfileByUser(tx, tenantId, userId);
     if (!found)
       throw new HttpError(
@@ -764,13 +810,108 @@ export async function claimSessionPoints(
         await lockOrdersForClaim(tx, tenantId, lockedOrders);
         const profile = await checkedProfile();
 
-        const program = await loadProgram(tx, tenantId);
         // A unit that appeared after the order locks (its order is not locked)
         // waits for the guest's next request.
         const units = (
           await loadUnits(tx, tenantId, session.id, input.claimToken)
         ).filter((unit) => lockedOrders.has(unit.orderId));
         const open = units.filter((unit) => isOpen(unit, now));
+        if (open.length > 0) {
+          const verdict = await checkLoyaltyOutletEntity(
+            tx,
+            tenantId,
+            open.map((unit) => unit.outletId),
+          );
+          if (verdict !== "ok") {
+            try {
+              const orderIds = [
+                ...new Set(open.map((unit) => unit.orderId)),
+              ].sort();
+              for (const orderId of orderIds)
+                await tx
+                  .select({ id: orders.id })
+                  .from(orders)
+                  .where(
+                    and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)),
+                  )
+                  .for("update", { noWait: true });
+              const splitIds = open
+                .filter((unit) => unit.kind === "split")
+                .map((unit) => unit.id)
+                .sort();
+              for (const splitId of splitIds)
+                await tx
+                  .select({ id: billSplits.id })
+                  .from(billSplits)
+                  .where(
+                    and(
+                      eq(billSplits.tenantId, tenantId),
+                      eq(billSplits.id, splitId),
+                    ),
+                  )
+                  .for("update", { noWait: true });
+            } catch (error) {
+              let current: unknown = error;
+              for (
+                let depth = 0;
+                depth < 5 && current && typeof current === "object";
+                depth += 1
+              ) {
+                const item = current as { code?: unknown; cause?: unknown };
+                if (item.code === "55P03")
+                  throw new HttpError(
+                    409,
+                    "LOYALTY_ENTITY_BUSY",
+                    "Klaim sedang diproses. Coba lagi.",
+                  );
+                current = item.cause;
+              }
+              throw error;
+            }
+            for (const unit of open) {
+              const remainingMs = Math.max(
+                0,
+                unit.expiresAt.getTime() - now.getTime(),
+              );
+              if (remainingMs > 0)
+                await tx
+                  .insert(loyaltyClaimPauses)
+                  .values({
+                    tenantId,
+                    outletId: outletIdSchema.parse(unit.outletId),
+                    ...(unit.kind === "split"
+                      ? { splitId: unit.id }
+                      : { orderId: unit.id }),
+                    pausedAt: now,
+                    remainingMs,
+                    state: verdict === "busy" ? "busy" : "ambiguous",
+                  })
+                  .onConflictDoUpdate({
+                    target:
+                      unit.kind === "split"
+                        ? [
+                            loyaltyClaimPauses.tenantId,
+                            loyaltyClaimPauses.splitId,
+                          ]
+                        : [
+                            loyaltyClaimPauses.tenantId,
+                            loyaltyClaimPauses.orderId,
+                          ],
+                    set: {
+                      state: verdict === "busy" ? "busy" : "ambiguous",
+                      resumeDeadline: null,
+                      pausedAt: now,
+                      remainingMs,
+                    },
+                    setWhere: eq(loyaltyClaimPauses.state, "active"),
+                  });
+            }
+            return { paused: true as const, verdict };
+          }
+        }
+        // Program updates use the same entity lock; read the rate and expiry only
+        // after obtaining it so a concurrent edit cannot over-credit a claim.
+        const program = await loadProgram(tx, tenantId);
         const plan = await planPoints(tx, tenantId, program, profile, open);
         const toClaim = open.filter((unit) => (plan.get(unit.id) ?? 0) > 0);
 
@@ -848,6 +989,16 @@ export async function claimSessionPoints(
     await checkedProfile();
     return claim;
   });
+  // Persist the pause and its idempotent result before returning the conflict.
+  if ("paused" in result)
+    throw new HttpError(
+      409,
+      result.verdict === "busy"
+        ? "LOYALTY_ENTITY_BUSY"
+        : "LOYALTY_ENTITY_MISMATCH",
+      "Klaim poin diparkir sampai pengaturan entitas diperiksa.",
+    );
+  return result;
 }
 
 /** Marks a split part redeemed; false when it is no longer claimable. */
@@ -866,7 +1017,8 @@ async function redeemSplit(
         eq(billSplits.id, splitId),
         eq(billSplits.status, "paid"),
         isNull(billSplits.claimRedeemedAt),
-        gt(billSplits.claimExpiresAt, now),
+        sql`COALESCE((SELECT resume_deadline FROM loyalty_claim_pauses WHERE tenant_id = ${tenantId} AND split_id = bill_splits.id AND state = 'active'), ${billSplits.claimExpiresAt}) > ${now}`,
+        sql`NOT EXISTS (SELECT 1 FROM loyalty_claim_pauses WHERE tenant_id = ${tenantId} AND split_id = bill_splits.id AND state <> 'active')`,
         notExists(
           tx
             .select({ one: sql`1` })
@@ -906,7 +1058,8 @@ async function redeemOrder(
         eq(orders.id, orderId),
         isNotNull(orders.claimTokenHash),
         isNull(orders.claimRedeemedAt),
-        gt(orders.claimExpiresAt, now),
+        sql`COALESCE((SELECT resume_deadline FROM loyalty_claim_pauses WHERE tenant_id = ${tenantId} AND order_id = orders.id AND state = 'active'), ${orders.claimExpiresAt}) > ${now}`,
+        sql`NOT EXISTS (SELECT 1 FROM loyalty_claim_pauses WHERE tenant_id = ${tenantId} AND order_id = orders.id AND state <> 'active')`,
         ne(orders.status, "voided"),
         isNull(orders.customerProfileId),
         sql`NOT ${orderRefunded(tenantId)}`,

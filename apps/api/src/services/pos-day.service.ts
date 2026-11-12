@@ -64,7 +64,11 @@ import {
   type EndOfDayRecapView,
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
-import { domainEventOutbox, outlets } from "../db/schema/index.ts";
+import {
+  domainEventOutbox,
+  outlets,
+  posDepositRefunds,
+} from "../db/schema/index.ts";
 import {
   posOrderRefunds,
   posOrders,
@@ -311,6 +315,42 @@ async function computeRecap(
     businessDate as never,
     outletBusinessDayClock(outlet),
   );
+  // The recap contract has no DP liability bucket yet. A return of an older
+  // sale can otherwise hide its DP part while today's tender identity still
+  // balances. Refuse to publish or close that incomplete recap.
+  const [depositReturn] = await tx
+    .select({ id: posDepositRefunds.id })
+    .from(posDepositRefunds)
+    .innerJoin(
+      posOrderRefunds,
+      and(
+        eq(posOrderRefunds.tenantId, posDepositRefunds.tenantId),
+        eq(posOrderRefunds.id, posDepositRefunds.posRefundId),
+      ),
+    )
+    .innerJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, posDepositRefunds.tenantId),
+        eq(posOrders.orderId, posDepositRefunds.orderId),
+        eq(posOrders.outletId, posDepositRefunds.outletId),
+      ),
+    )
+    .where(
+      and(
+        eq(posDepositRefunds.tenantId, tenantId),
+        eq(posDepositRefunds.outletId, outletId),
+        gte(posOrderRefunds.refundedAt, range.start),
+        lt(posOrderRefunds.refundedAt, range.end),
+        reportablePosOrders(),
+      ),
+    )
+    .limit(1);
+  if (depositReturn)
+    throw new CoreError(
+      "CONFLICT",
+      "Rekap refund DP belum tersedia; kewajiban refund tetap tercatat dan hari tidak dapat ditutup dengan rekap yang tidak lengkap.",
+    );
 
   const devices = new Map<string, DeviceAcc>();
   const deviceOf = (id: string | null | undefined): DeviceAcc => {

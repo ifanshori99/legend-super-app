@@ -83,6 +83,7 @@ import {
 import { appendOutbox } from "./core-outbox";
 import { expireOpenChargesOfSession } from "./order-recovery-charge";
 import { verifyTableQrToken } from "./qr-token";
+import { finalizeReservationDepositRemainders } from "./reservation-deposit-remainder.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 export type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -1424,6 +1425,12 @@ export async function closeTableSession(
       )
       .returning();
     if (!updated) throw new Error("Session close returned no row");
+    await finalizeReservationDepositRemainders(tx, context, {
+      tableSessionId: row.id,
+      validFinalBill: closedReason === "paid_and_cleaned",
+      actorUserId,
+      now,
+    });
     await cancelOpenServiceRequests(tx, row.tenantId, row.id, now);
     const tablesBefore = await readTableStates(tx, row.tenantId, [
       row.tableId,

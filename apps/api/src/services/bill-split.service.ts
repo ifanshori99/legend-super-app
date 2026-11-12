@@ -51,6 +51,7 @@ import {
 import { db } from "../db/index.ts";
 import {
   billSplits,
+  loyaltyClaimPauses,
   paymentIntents,
   paymentLinks,
   sessionParticipants,
@@ -69,6 +70,8 @@ import {
   type QrOrderRow,
 } from "./qr-order.service.ts";
 import { orderRefunded, orderTraining } from "./table-claim.service.ts";
+import { checkLoyaltyOutletEntity } from "./loyalty-entity-guard.ts";
+import { retryBusyClaimsForSessionInTransaction } from "./loyalty-claim-recovery.ts";
 
 export type BillSplitRow = typeof billSplits.$inferSelect;
 
@@ -656,6 +659,8 @@ export async function markSplitPartPaidTx(
   const allocated = await allocatedIdrOfIntent(tx, context, input.intentId);
   if (allocated < part.amountIdr) return "no_split";
 
+  const verdict = await checkLoyaltyOutletEntity(tx, tenantId, [part.outletId]);
+  const paused = verdict !== "ok";
   const raw = `sc_${randomBytes(32).toString("base64url")}`;
   const marked = await tx
     .update(billSplits)
@@ -682,6 +687,18 @@ export async function markSplitPartPaidTx(
       ),
     )
     .returning({ id: billSplits.id });
+  if (paused && marked.length > 0)
+    await tx
+      .insert(loyaltyClaimPauses)
+      .values({
+        tenantId,
+        outletId: part.outletId,
+        splitId: part.id,
+        pausedAt: input.now,
+        remainingMs: CLAIM_TTL_MS,
+        state: verdict === "busy" ? "busy" : "ambiguous",
+      })
+      .onConflictDoNothing();
   return marked.length > 0 ? "marked" : "already";
 }
 
@@ -744,6 +761,7 @@ export async function getSplitClaim(
       now,
       "none",
     );
+    await retryBusyClaimsForSessionInTransaction(tx, context, session.id, now);
     const [part] = await tx
       .select()
       .from(billSplits)
@@ -775,14 +793,40 @@ export async function getSplitClaim(
     )
       return claim("unavailable", null, null);
     if (part.claimRedeemedAt !== null) return claim("claimed", null, null);
-    if (part.claimExpiresAt.getTime() <= now.getTime())
+    const [paused] = await tx
+      .select({
+        state: loyaltyClaimPauses.state,
+        deadline: loyaltyClaimPauses.resumeDeadline,
+      })
+      .from(loyaltyClaimPauses)
+      .where(
+        and(
+          eq(loyaltyClaimPauses.tenantId, tenantId),
+          eq(loyaltyClaimPauses.splitId, part.id),
+        ),
+      );
+    if (paused && paused.state !== "active") {
+      // The payer must retain the bearer code before the session closes: the
+      // session credential is rotated on close. The existing payer-secret
+      // check above prevents another diner from receiving it. A paused code is
+      // not redeemable and is never revealed after a refund/void/training.
+      if (await orderBlocksClaim(tx, tenantId, part.orderId))
+        return claim("unavailable", null, null);
+      return claim(
+        "unavailable",
+        openSecret(part.claimTokenSealed, claimAad(tenantId, part.id)),
+        null,
+      );
+    }
+    const deadline = paused?.deadline ?? part.claimExpiresAt;
+    if (deadline.getTime() <= now.getTime())
       return claim("expired", null, null);
     if (await orderBlocksClaim(tx, tenantId, part.orderId))
       return claim("unavailable", null, null);
     return claim(
       "available",
       openSecret(part.claimTokenSealed, claimAad(tenantId, part.id)),
-      part.claimExpiresAt,
+      deadline,
     );
   });
 }
@@ -805,11 +849,27 @@ export async function getSplitClaimByToken(
   const notFound = () =>
     new CoreError("NOT_FOUND", "Kode klaim tidak ditemukan atau sudah habis.");
   return withTenant(db, context, async (tx) => {
+    const [unit] = await tx
+      .select({ sessionId: billSplits.tableSessionId })
+      .from(billSplits)
+      .where(
+        and(
+          eq(billSplits.tenantId, tenantId),
+          eq(billSplits.claimTokenHash, sha256(rawToken)),
+        ),
+      );
+    if (unit)
+      await retryBusyClaimsForSessionInTransaction(
+        tx,
+        context,
+        unit.sessionId,
+        now,
+      );
     const [part] = await tx
       .select({
         id: billSplits.id,
         sealed: billSplits.claimTokenSealed,
-        expiresAt: billSplits.claimExpiresAt,
+        expiresAt: sql<Date | null>`COALESCE((SELECT resume_deadline FROM loyalty_claim_pauses WHERE tenant_id = ${tenantId} AND split_id = ${billSplits.id} AND state = 'active'), ${billSplits.claimExpiresAt})`,
         orderId: billSplits.orderId,
         orderStatus: orders.status,
       })
@@ -827,7 +887,8 @@ export async function getSplitClaimByToken(
           eq(billSplits.claimTokenHash, sha256(rawToken)),
           eq(billSplits.status, "paid"),
           isNull(billSplits.claimRedeemedAt),
-          gt(billSplits.claimExpiresAt, now),
+          sql`NOT EXISTS (SELECT 1 FROM loyalty_claim_pauses p WHERE p.tenant_id = ${tenantId} AND p.split_id = ${billSplits.id} AND p.state <> 'active')`,
+          sql`COALESCE((SELECT resume_deadline FROM loyalty_claim_pauses WHERE tenant_id = ${tenantId} AND split_id = ${billSplits.id} AND state = 'active'), ${billSplits.claimExpiresAt}) > ${now}`,
         ),
       );
     if (!part || part.sealed === null || part.expiresAt === null)
@@ -838,7 +899,7 @@ export async function getSplitClaimByToken(
       billSplitId: part.id,
       status: "available",
       claimToken: openSecret(part.sealed, claimAad(tenantId, part.id)),
-      claimableUntil: toIsoDateTime(part.expiresAt),
+      claimableUntil: toIsoDateTime(new Date(part.expiresAt)),
     });
   });
 }

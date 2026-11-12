@@ -36,7 +36,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createUlid, ulidToUuid } from "@starter/shared/core";
+import { createUlid, idr, ulidToUuid } from "@starter/shared/core";
 import {
   eventEnvelopeSchema,
   type EventEnvelope,
@@ -55,15 +55,29 @@ import {
   postLedgerEntry,
   type LedgerPostInput,
 } from "../services/point-ledger.service.ts";
+import { updateLoyaltyProgram } from "../services/loyalty-program.service.ts";
+import { loyaltyAnchorOf } from "../services/accounting-auto-journal-amounts.ts";
+import { deliverLoyaltyEarnEvent } from "../services/loyalty-earn-consumer.ts";
 import {
   asTenant,
+  balanceOf,
   contextOf,
   owner,
+  orderPaidEvent,
   seedMember,
   seedOrder,
   seedProgram,
   short,
 } from "./member-loyalty-helpers.ts";
+import {
+  key,
+  markVoucherRedeemed,
+  redeemAs,
+  redemptionRow,
+  scopeOf,
+  seedReward,
+  vouchersOf,
+} from "./member-rewards-helpers.ts";
 
 const FLAGS_ON = JSON.stringify({
   modules: ["accounting", "loyalty"],
@@ -724,6 +738,758 @@ describe("legend-msqvi points journal: isolation and guards", () => {
         retryable: false,
         event_name: "points.earned",
       },
+    ]);
+  });
+
+  it.each(["unset", "assigned"] as const)(
+    "keeps a pending earn when changing an %s entity and allows an unchanged update",
+    async (initial) => {
+      const world = await makeWorld({ entities: 2 });
+      const input = {
+        name: "Poin Member",
+        earnRate: { spendIdr: idr(10_000), points: 1 },
+        expiryMonths: 12,
+        rollingMonths: 12,
+        pointValueIdr: idr(100),
+        isActive: true,
+        legalEntityId: initial === "assigned" ? world.entities[0]!.id : null,
+      };
+      if (initial === "assigned")
+        await updateLoyaltyProgram(world.context, randomUUID(), input);
+      const member = await seedMember(world.tenantId);
+      const orderUlid = await seedOrder(world.tenantId, {
+        outletId: world.entities[1]!.outlets[0]!,
+        profileId: member.id,
+      });
+      const event = orderPaidEvent(world, {
+        orderUlid,
+        outletId: world.entities[1]!.outlets[0]!,
+      });
+      await withTenant(db, world.context, (tx) =>
+        deliverLoyaltyEarnEvent(world.context, event, tx),
+      );
+      const readParked = () =>
+        asTenant(world.tenantId, (client) =>
+          client.query(
+            "SELECT event_id, event_name, payload, reason FROM loyalty_earn_parked WHERE tenant_id = $1 AND event_id = $2",
+            [world.tenantId, event.id],
+          ),
+        );
+      const before = (await readParked()).rows;
+      expect(before).toHaveLength(1);
+      expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+      const unchanged = await updateLoyaltyProgram(
+        world.context,
+        randomUUID(),
+        { ...input, name: "Updated" },
+      );
+      expect(unchanged.legalEntityId).toBe(input.legalEntityId);
+      await expect(
+        updateLoyaltyProgram(world.context, randomUUID(), {
+          ...input,
+          legalEntityId: world.entities[1]!.id,
+        }),
+      ).rejects.toMatchObject({ status: 409, code: "LOYALTY_ENTITY_LOCKED" });
+      expect((await readParked()).rows).toEqual(before);
+      expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+      expect(await journalsOf(world)).toHaveLength(0);
+    },
+  );
+
+  it.each(["unset", "assigned"] as const)(
+    "keeps a pending points journal when changing an %s entity and allows an unchanged update",
+    async (initial) => {
+      const world = await makeWorld({ entities: 2 });
+      const other = await makeWorld();
+      const input = {
+        name: "Poin Member",
+        earnRate: { spendIdr: idr(10_000), points: 1 },
+        expiryMonths: 12,
+        rollingMonths: 12,
+        pointValueIdr: idr(100),
+        isActive: true,
+        legalEntityId: initial === "assigned" ? world.entities[0]!.id : null,
+      };
+      if (initial === "assigned")
+        await updateLoyaltyProgram(world.context, randomUUID(), input);
+      const foreignMember = await seedMember(other.tenantId);
+      const foreignRow = await earn(other, foreignMember.id, 10);
+      const foreignEvent = await eventOf(other, "points.earned", foreignRow.id);
+      const result = await deliver(world, {
+        ...foreignEvent,
+        tenantId: world.tenantId as typeof foreignEvent.tenantId,
+      });
+      expect(result).toMatchObject({
+        status: "parked",
+        code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      });
+      const before = await parkedOf(world);
+      expect(before).toHaveLength(1);
+      const unchanged = await updateLoyaltyProgram(
+        world.context,
+        randomUUID(),
+        { ...input, name: "Updated" },
+      );
+      expect(unchanged.legalEntityId).toBe(input.legalEntityId);
+      await expect(
+        updateLoyaltyProgram(world.context, randomUUID(), {
+          ...input,
+          legalEntityId: world.entities[1]!.id,
+        }),
+      ).rejects.toMatchObject({ status: 409, code: "LOYALTY_ENTITY_LOCKED" });
+      expect(await parkedOf(world)).toEqual(before);
+      expect(await balanceOf(other.tenantId, foreignMember.id)).toBe(10);
+      expect(await journalsOf(world)).toHaveLength(0);
+    },
+  );
+
+  it("LOY-JNL-21 a parked earn with no historical entity snapshot cannot be assigned solely from the current outlet", async () => {
+    const world = await makeWorld({ entities: 2 });
+    const member = await seedMember(world.tenantId);
+    const row = await earn(world, member.id, 10, world.entities[1]!.outlets[0]);
+    const event = await eventOf(world, "points.earned", row.id);
+    expect(await deliver(world, event)).toMatchObject({
+      status: "parked",
+      code: "LOYALTY_LEGAL_ENTITY_AMBIGUOUS",
+      retryable: false,
+    });
+    expect(await journalsOf(world)).toHaveLength(0);
+
+    const input = {
+      name: "Poin Member",
+      earnRate: { spendIdr: idr(10_000), points: 1 },
+      expiryMonths: 12,
+      rollingMonths: 12,
+      pointValueIdr: idr(100),
+      isActive: true,
+      legalEntityId: world.entities[1]!.id,
+    };
+    await expect(
+      updateLoyaltyProgram(world.context, randomUUID(), input),
+    ).rejects.toMatchObject({ status: 409, code: "LOYALTY_ENTITY_LOCKED" });
+    const later = new Date(Date.now() + 60 * 60 * 1000);
+    expect(await retryParkedAutoJournals(world.context, later)).toMatchObject({
+      posted: 0,
+      failed: 0,
+    });
+    expect(await balanceOf(world.tenantId, member.id)).toBe(10);
+    expect(await journalsOf(world, `aj:loyalty:${row.id}`)).toHaveLength(0);
+    expect(await parkedOf(world)).toHaveLength(1);
+  });
+
+  it("keeps historical liability parked when its outlet was moved to another entity", async () => {
+    const world = await makeWorld({ entities: 2 });
+    const member = await seedMember(world.tenantId);
+    const row = await earn(world, member.id, 10, world.entities[0]!.outlets[0]);
+    const event = await eventOf(world, "points.earned", row.id);
+    expect(await deliver(world, event)).toMatchObject({
+      status: "parked",
+      code: "LOYALTY_LEGAL_ENTITY_AMBIGUOUS",
+      retryable: false,
+    });
+    await asTenant(world.tenantId, (client) =>
+      client.query(
+        "UPDATE outlets SET legal_entity_id = $3 WHERE tenant_id = $1 AND id = $2",
+        [world.tenantId, world.entities[0]!.outlets[0], world.entities[1]!.id],
+      ),
+    );
+    await expect(
+      updateLoyaltyProgram(world.context, randomUUID(), {
+        name: "Poin Member",
+        earnRate: { spendIdr: idr(10_000), points: 1 },
+        expiryMonths: 12,
+        rollingMonths: 12,
+        pointValueIdr: idr(100),
+        isActive: true,
+        legalEntityId: world.entities[1]!.id,
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "LOYALTY_ENTITY_LOCKED" });
+    expect(await balanceOf(world.tenantId, member.id)).toBe(10);
+    expect(await journalsOf(world)).toHaveLength(0);
+    expect(await parkedOf(world)).toHaveLength(1);
+  });
+
+  it("LOY-JNL-22 a foreign tenant entity cannot configure the program or release its parked liability", async () => {
+    const world = await makeWorld({ entities: 2 });
+    const other = await makeWorld();
+    const member = await seedMember(world.tenantId);
+    const row = await earn(world, member.id, 10);
+    expect(
+      await deliver(world, await eventOf(world, "points.earned", row.id)),
+    ).toMatchObject({
+      status: "parked",
+      code: "LOYALTY_LEGAL_ENTITY_AMBIGUOUS",
+    });
+    const input = {
+      name: "Poin Member",
+      earnRate: { spendIdr: idr(10_000), points: 1 },
+      expiryMonths: 12,
+      rollingMonths: 12,
+      pointValueIdr: idr(100),
+      isActive: true,
+      legalEntityId: other.entities[0]!.id,
+    };
+    await expect(
+      updateLoyaltyProgram(world.context, randomUUID(), input),
+    ).rejects.toMatchObject({ code: "LOYALTY_ENTITY_INVALID" });
+    expect(await parkedOf(world)).toEqual([
+      {
+        error_code: "LOYALTY_LEGAL_ENTITY_AMBIGUOUS",
+        retryable: false,
+        event_name: "points.earned",
+      },
+    ]);
+    expect(await journalsOf(world)).toHaveLength(0);
+    expect(await journalsOf(other)).toHaveLength(0);
+  });
+
+  it("LOY-JNL-23 refuses to move an already journaled liability to another entity", async () => {
+    const world = await makeWorld({ entities: 2 });
+    const input = {
+      name: "Poin Member",
+      earnRate: { spendIdr: idr(10_000), points: 1 },
+      expiryMonths: 12,
+      rollingMonths: 12,
+      pointValueIdr: idr(100),
+      isActive: true,
+      legalEntityId: world.entities[0]!.id,
+    };
+    await updateLoyaltyProgram(world.context, randomUUID(), input);
+    const member = await seedMember(world.tenantId);
+    const row = await earn(world, member.id, 10);
+    await post(world, await eventOf(world, "points.earned", row.id));
+    await expect(
+      updateLoyaltyProgram(world.context, randomUUID(), {
+        ...input,
+        legalEntityId: world.entities[1]!.id,
+      }),
+    ).rejects.toMatchObject({ code: "LOYALTY_ENTITY_LOCKED" });
+    const journals = await journalsOf(world);
+    expect(journals).toHaveLength(1);
+    expect(journals[0]!.legal_entity_id).toBe(world.entities[0]!.id);
+    expect(await linesOf(world, journals[0]!.id)).toEqual([
+      { code: "2105", debit: 0, credit: 1_000 },
+      { code: "4105", debit: 1_000, credit: 0 },
+    ]);
+  });
+
+  it("keeps a zero-point mission voucher on its program entity without blocking another tenant", async () => {
+    const world = await makeWorld({ entities: 2 });
+    const other = await makeWorld({ entities: 2 });
+    const input = {
+      name: "Poin Member",
+      earnRate: { spendIdr: idr(10_000), points: 1 },
+      expiryMonths: 12,
+      rollingMonths: 12,
+      pointValueIdr: idr(100),
+      isActive: true,
+      legalEntityId: world.entities[0]!.id,
+    };
+    await updateLoyaltyProgram(world.context, randomUUID(), input);
+    const member = await seedMember(world.tenantId);
+    const missionId = randomUUID();
+    await asTenant(world.tenantId, (client) =>
+      client.query(
+        `INSERT INTO missions (id, tenant_id, name, type, rule, reward, period)
+       VALUES ($1, $2, 'Visit reward', 'visit_count', $3::jsonb, $4::jsonb, $5::jsonb)`,
+        [
+          missionId,
+          world.tenantId,
+          JSON.stringify({ kind: "visit_count", targetVisits: 1 }),
+          JSON.stringify({ kind: "voucher", valueIdr: 1_000, validDays: 30 }),
+          JSON.stringify({ kind: "monthly" }),
+        ],
+      ),
+    );
+    const orderUlid = await seedOrder(world.tenantId, {
+      outletId: world.outletId,
+      profileId: member.id,
+      grossSalesIdr: 1_000,
+    });
+    const event = orderPaidEvent(world, {
+      orderUlid,
+      outletId: world.outletId,
+      grossSalesIdr: 1_000,
+    });
+    await withTenant(db, world.context, (tx) =>
+      deliverLoyaltyEarnEvent(world.context, event, tx),
+    );
+    const facts = await asTenant(world.tenantId, async (client) => ({
+      ledger: (
+        await client.query("SELECT id FROM point_ledger WHERE tenant_id = $1", [
+          world.tenantId,
+        ])
+      ).rows,
+      voucher: (
+        await client.query(
+          "SELECT id, status, value_idr FROM vouchers WHERE tenant_id = $1 AND source = 'loyalty_reward'",
+          [world.tenantId],
+        )
+      ).rows,
+    }));
+    expect(facts.ledger).toHaveLength(0);
+    expect(facts.voucher).toMatchObject([
+      { status: "issued", value_idr: "1000" },
+    ]);
+    for (const legalEntityId of [world.entities[1]!.id, null])
+      await expect(
+        updateLoyaltyProgram(world.context, randomUUID(), {
+          ...input,
+          legalEntityId,
+        }),
+      ).rejects.toMatchObject({ status: 409, code: "LOYALTY_ENTITY_LOCKED" });
+    const unchanged = await updateLoyaltyProgram(world.context, randomUUID(), {
+      ...input,
+      name: "Updated",
+    });
+    expect(unchanged).toMatchObject({
+      name: "Updated",
+      legalEntityId: world.entities[0]!.id,
+    });
+    const assigned = await updateLoyaltyProgram(other.context, randomUUID(), {
+      ...input,
+      legalEntityId: other.entities[1]!.id,
+    });
+    expect(assigned.legalEntityId).toBe(other.entities[1]!.id);
+    const voucher = await asTenant(world.tenantId, (client) =>
+      client.query(
+        "SELECT id, status, value_idr FROM vouchers WHERE tenant_id = $1 AND source = 'loyalty_reward'",
+        [world.tenantId],
+      ),
+    );
+    expect(voucher.rows).toEqual(facts.voucher);
+  });
+
+  it("refuses changing or clearing A when a member's paid event is still waiting for the earn consumer", async () => {
+    const world = await makeWorld({ entities: 2 });
+    const input = {
+      name: "Poin Member",
+      earnRate: { spendIdr: idr(10_000), points: 1 },
+      expiryMonths: 12,
+      rollingMonths: 12,
+      pointValueIdr: idr(100),
+      isActive: true,
+      legalEntityId: world.entities[0]!.id,
+    };
+    await updateLoyaltyProgram(world.context, randomUUID(), input);
+    const member = await seedMember(world.tenantId);
+    const order = await seedOrder(world.tenantId, {
+      outletId: world.outletId,
+      profileId: member.id,
+    });
+    const event = orderPaidEvent(world, {
+      orderUlid: order,
+      outletId: world.outletId,
+    });
+    const outboxId = randomUUID();
+    await asTenant(world.tenantId, (client) =>
+      client.query(
+        `INSERT INTO domain_event_outbox
+       (tenant_id, id, outlet_id, event_id, aggregate_type, aggregate_id, sequence, event, destination, status)
+       VALUES ($1, $2, $3, $4, 'order', $5, 1, $6::jsonb, 'cloud-sync', 'pending')`,
+        [
+          world.tenantId,
+          outboxId,
+          world.outletId,
+          randomUUID(),
+          ulidToUuid(order),
+          JSON.stringify(event),
+        ],
+      ),
+    );
+    expect(await journalsOf(world)).toHaveLength(0);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+    for (const legalEntityId of [world.entities[1]!.id, null])
+      await expect(
+        updateLoyaltyProgram(world.context, randomUUID(), {
+          ...input,
+          legalEntityId,
+        }),
+      ).rejects.toMatchObject({ status: 409, code: "LOYALTY_ENTITY_LOCKED" });
+    const outbox = await asTenant(world.tenantId, (client) =>
+      client.query(
+        "SELECT status FROM domain_event_outbox WHERE tenant_id = $1 AND id = $2",
+        [world.tenantId, outboxId],
+      ),
+    );
+    expect(outbox.rows).toEqual([{ status: "pending" }]);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(0);
+    expect(await journalsOf(world)).toHaveLength(0);
+  });
+
+  it("refuses changing or clearing the entity while an earned liability is not yet journaled; replay remains single and on A", async () => {
+    const world = await makeWorld({ entities: 2 });
+    const input = {
+      name: "Poin Member",
+      earnRate: { spendIdr: idr(10_000), points: 1 },
+      expiryMonths: 12,
+      rollingMonths: 12,
+      pointValueIdr: idr(100),
+      isActive: true,
+      legalEntityId: world.entities[0]!.id,
+    };
+    await updateLoyaltyProgram(world.context, randomUUID(), input);
+    const member = await seedMember(world.tenantId);
+    const earned = await earn(world, member.id, 10);
+    const event = await eventOf(world, "points.earned", earned.id);
+    expect(await journalsOf(world)).toHaveLength(0);
+    for (const legalEntityId of [world.entities[1]!.id, null]) {
+      await expect(
+        updateLoyaltyProgram(world.context, randomUUID(), {
+          ...input,
+          legalEntityId,
+        }),
+      ).rejects.toMatchObject({ status: 409, code: "LOYALTY_ENTITY_LOCKED" });
+    }
+    expect(await balanceOf(world.tenantId, member.id)).toBe(10);
+    expect((await deliver(world, event)).status).toBe("posted");
+    expect((await deliver(world, event)).status).toBe("already_posted");
+    const journals = await journalsOf(world, `aj:loyalty:${earned.id}`);
+    expect(journals).toHaveLength(1);
+    expect(journals[0]!.legal_entity_id).toBe(world.entities[0]!.id);
+    expect(await linesOf(world, journals[0]!.id)).toEqual([
+      { code: "2105", debit: 0, credit: 1_000 },
+      { code: "4105", debit: 1_000, credit: 0 },
+    ]);
+  });
+
+  it("keeps a used reward voucher and remaining points intact while its journals are pending", async () => {
+    const world = await makeWorld({ entities: 2 });
+    const input = {
+      name: "Poin Member",
+      earnRate: { spendIdr: idr(10_000), points: 1 },
+      expiryMonths: 12,
+      rollingMonths: 12,
+      pointValueIdr: idr(100),
+      isActive: true,
+      legalEntityId: world.entities[0]!.id,
+    };
+    await updateLoyaltyProgram(world.context, randomUUID(), input);
+    const member = await seedMember(world.tenantId);
+    await earn(world, member.id, 100);
+    const rewardId = await seedReward(world.tenantId, {
+      type: "voucher",
+      pointsCost: 50,
+      voucherValueIdr: 5_000,
+    });
+    const redemption = await redeemAs(
+      scopeOf(world.tenantId, member),
+      rewardId,
+      key(),
+      new Date(),
+    );
+    const [voucher] = await vouchersOf(world.tenantId, member.id);
+    const order = await seedOrder(world.tenantId, {
+      outletId: world.outletId,
+      profileId: member.id,
+    });
+    await markVoucherRedeemed(
+      world.tenantId,
+      voucher!.id,
+      order,
+      new Date().toISOString(),
+    );
+    expect(await journalsOf(world)).toHaveLength(0);
+    for (const legalEntityId of [world.entities[1]!.id, null]) {
+      await expect(
+        updateLoyaltyProgram(world.context, randomUUID(), {
+          ...input,
+          legalEntityId,
+        }),
+      ).rejects.toMatchObject({ status: 409, code: "LOYALTY_ENTITY_LOCKED" });
+    }
+    expect(await balanceOf(world.tenantId, member.id)).toBe(50);
+    expect((await vouchersOf(world.tenantId, member.id))[0]).toMatchObject({
+      id: voucher!.id,
+      status: "redeemed",
+      redeemed_order_id: ulidToUuid(order),
+    });
+    expect(
+      (await redemptionRow(world.tenantId, redemption.id)).voucher_id,
+    ).toBe(voucher!.id);
+  });
+
+  it("refuses selecting an entity for ambiguous historical benefits from A and B and leaves the parked events unchanged", async () => {
+    const world = await makeWorld({ entities: 2 });
+    const member = await seedMember(world.tenantId);
+    const a = await earn(world, member.id, 10, world.entities[0]!.outlets[0]);
+    const b = await earn(world, member.id, 20, world.entities[1]!.outlets[0]);
+    for (const row of [a, b])
+      expect(
+        await deliver(world, await eventOf(world, "points.earned", row.id)),
+      ).toMatchObject({
+        status: "parked",
+        code: "LOYALTY_LEGAL_ENTITY_AMBIGUOUS",
+        retryable: false,
+      });
+    await expect(
+      updateLoyaltyProgram(world.context, randomUUID(), {
+        name: "Poin Member",
+        earnRate: { spendIdr: idr(10_000), points: 1 },
+        expiryMonths: 12,
+        rollingMonths: 12,
+        pointValueIdr: idr(100),
+        isActive: true,
+        legalEntityId: world.entities[0]!.id,
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "LOYALTY_ENTITY_LOCKED" });
+    expect(await balanceOf(world.tenantId, member.id)).toBe(30);
+    expect(await journalsOf(world)).toHaveLength(0);
+    expect(
+      (await parkedOf(world)).every((row) => row.retryable === false),
+    ).toBe(true);
+    expect(await parkedOf(world)).toHaveLength(2);
+  });
+
+  it("LOY-JNL-24 a concurrent entity change and earn posts exactly once to the effective entity", async () => {
+    const world = await makeWorld({ entities: 2 });
+    const input = {
+      name: "Poin Member",
+      earnRate: { spendIdr: idr(10_000), points: 1 },
+      expiryMonths: 12,
+      rollingMonths: 12,
+      pointValueIdr: idr(100),
+      isActive: true,
+      legalEntityId: world.entities[0]!.id,
+    };
+    await updateLoyaltyProgram(world.context, randomUUID(), input);
+    const member = await seedMember(world.tenantId);
+    const row = await earn(world, member.id, 10);
+    const event = await eventOf(world, "points.earned", row.id);
+    const [posting, change] = await Promise.allSettled([
+      deliver(world, event),
+      updateLoyaltyProgram(world.context, randomUUID(), {
+        ...input,
+        legalEntityId: world.entities[1]!.id,
+      }),
+    ]);
+    expect(posting.status).toBe("fulfilled");
+    if (change.status === "rejected")
+      expect(change.reason).toMatchObject({ code: "LOYALTY_ENTITY_LOCKED" });
+    const journals = await journalsOf(world, `aj:loyalty:${row.id}`);
+    if (change.status === "fulfilled") {
+      if (posting.status === "fulfilled")
+        expect(posting.value).toMatchObject({
+          status: "parked",
+          code: "LOYALTY_LEGAL_ENTITY_AMBIGUOUS",
+        });
+      expect(journals).toHaveLength(0);
+      return;
+    }
+    if (posting.status === "fulfilled")
+      expect(posting.value.status).toBe("posted");
+    expect(journals).toHaveLength(1);
+    expect(journals[0]!.legal_entity_id).toBe(world.entities[0]!.id);
+    expect(await linesOf(world, journals[0]!.id)).toEqual([
+      { code: "2105", debit: 0, credit: 1_000 },
+      { code: "4105", debit: 1_000, credit: 0 },
+    ]);
+    expect((await deliver(world, event)).status).toBe("already_posted");
+    expect(await journalsOf(world)).toHaveLength(1);
+  });
+
+  it("LOY-JNL-25 omitting the entity in an older program update preserves it", async () => {
+    const world = await makeWorld({ entities: 2 });
+    const input = {
+      name: "Poin Member",
+      earnRate: { spendIdr: idr(10_000), points: 1 },
+      expiryMonths: 12,
+      rollingMonths: 12,
+      pointValueIdr: idr(100),
+      isActive: true,
+    };
+    await updateLoyaltyProgram(world.context, randomUUID(), {
+      ...input,
+      legalEntityId: world.entities[1]!.id,
+    });
+    const updated = await updateLoyaltyProgram(
+      world.context,
+      randomUUID(),
+      input,
+    );
+    expect(updated.legalEntityId).toBe(world.entities[1]!.id);
+    const member = await seedMember(world.tenantId);
+    const row = await earn(world, member.id, 10, world.entities[1]!.outlets[0]);
+    await post(world, await eventOf(world, "points.earned", row.id));
+    expect((await journalsOf(world))[0]!.legal_entity_id).toBe(
+      world.entities[1]!.id,
+    );
+  });
+
+  it("LOY-JNL-26 parks an earn and reversal from a different legal entity without a journal", async () => {
+    const world = await makeWorld({ entities: 2 });
+    await updateLoyaltyProgram(world.context, randomUUID(), {
+      name: "Poin Member",
+      earnRate: { spendIdr: idr(10_000), points: 1 },
+      expiryMonths: 12,
+      rollingMonths: 12,
+      pointValueIdr: idr(100),
+      isActive: true,
+      legalEntityId: world.entities[0]!.id,
+    });
+    const member = await seedMember(world.tenantId);
+    const earned = await earn(
+      world,
+      member.id,
+      10,
+      world.entities[1]!.outlets[0],
+    );
+    const reverse = await ledger(world, member.id, {
+      type: "reverse",
+      points: -10,
+      sourceType: "refund",
+      sourceId: randomUUID(),
+      reversesEntryId: earned.id,
+    });
+    for (const [name, entryId] of [
+      ["points.earned", earned.id],
+      ["points.reversed", reverse.id],
+    ] as const) {
+      const event = await eventOf(world, name, entryId);
+      expect(await deliver(world, event)).toMatchObject({
+        status: "parked",
+        code: "LOYALTY_LEGAL_ENTITY_AMBIGUOUS",
+      });
+      expect(await deliver(world, event)).toMatchObject({ status: "parked" });
+    }
+    expect(await journalsOf(world)).toHaveLength(0);
+  });
+
+  it("LOY-JNL-27 locks the selected outlet until its loyalty journal commits", async () => {
+    const world = await makeWorld({ entities: 2 });
+    await updateLoyaltyProgram(world.context, randomUUID(), {
+      name: "Poin Member",
+      earnRate: { spendIdr: idr(10_000), points: 1 },
+      expiryMonths: 12,
+      rollingMonths: 12,
+      pointValueIdr: idr(100),
+      isActive: true,
+      legalEntityId: world.entities[0]!.id,
+    });
+    const member = await seedMember(world.tenantId);
+    const row = await earn(world, member.id, 10);
+    const event = await eventOf(world, "points.earned", row.id);
+    let release!: () => void;
+    let ready!: (outletId: string) => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const selected = new Promise<string>((resolve) => {
+      ready = resolve;
+    });
+    const posting = withTenant(db, world.context, async (tx) => {
+      const anchor = await loyaltyAnchorOf(tx, world.context.tenant.tenantId);
+      if (!anchor) throw new Error("No loyalty anchor");
+      ready(anchor.outletId);
+      await released;
+      return deliverAutoJournalEvent(world.context, event, tx, new Date());
+    });
+    try {
+      const outletId = await Promise.race([
+        selected,
+        posting.then(() => {
+          throw new Error("Posting finished before the race");
+        }),
+      ]);
+      await expect(
+        asTenant(world.tenantId, async (client) => {
+          await client.query("SET LOCAL lock_timeout = '250ms'");
+          await client.query(
+            "UPDATE outlets SET legal_entity_id = $1 WHERE tenant_id = $2 AND id = $3",
+            [world.entities[1]!.id, world.tenantId, outletId],
+          );
+        }),
+      ).rejects.toMatchObject({ code: "55P03" });
+    } finally {
+      release();
+    }
+    expect((await posting).status).toBe("posted");
+    const journals = await journalsOf(world);
+    expect(journals).toHaveLength(1);
+    expect(journals[0]!.legal_entity_id).toBe(world.entities[0]!.id);
+    expect(await linesOf(world, journals[0]!.id)).toEqual([
+      { code: "2105", debit: 0, credit: 1_000 },
+      { code: "4105", debit: 1_000, credit: 0 },
+    ]);
+  });
+
+  it("LOY-JNL-28 a new outlet cannot change the fallback entity before its journal commits", async () => {
+    const world = await makeWorld();
+    const entityB = randomUUID();
+    const outletB = randomUUID();
+    const brands = (
+      await owner.query<{ brand_id: string }>(
+        "SELECT brand_id FROM outlets WHERE tenant_id = $1 AND id = $2",
+        [world.tenantId, world.outletId],
+      )
+    ).rows;
+    const brandId = brands[0]!.brand_id;
+    await owner.query(
+      "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'Entity kedua', false)",
+      [entityB, world.tenantId],
+    );
+    const member = await seedMember(world.tenantId);
+    const row = await earn(world, member.id, 10);
+    const event = await eventOf(world, "points.earned", row.id);
+    let release!: () => void;
+    let ready!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const selected = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const posting = withTenant(db, world.context, async (tx) => {
+      const anchor = await loyaltyAnchorOf(tx, world.context.tenant.tenantId);
+      expect(anchor?.legalEntityId).toBe(world.entities[0]!.id);
+      ready();
+      await released;
+      return deliverAutoJournalEvent(world.context, event, tx, new Date());
+    });
+    const insertOutlet = async (client: import("pg").PoolClient) => {
+      await client.query(
+        `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
+         VALUES ($1, $2, $3, $4, $5, 'Outlet baru', 'Jl. Uji', 'Asia/Jakarta', '04:00', '{}', 'active')`,
+        [
+          outletB,
+          world.tenantId,
+          brandId,
+          entityB,
+          `LJ-${short()}`.toUpperCase(),
+        ],
+      );
+    };
+    try {
+      await Promise.race([
+        selected,
+        posting.then(() => {
+          throw new Error("Posting finished before the race");
+        }),
+      ]);
+      await expect(
+        asTenant(world.tenantId, async (client) => {
+          await client.query("SET LOCAL lock_timeout = '250ms'");
+          await insertOutlet(client);
+        }),
+      ).rejects.toMatchObject({ code: "55P03" });
+    } finally {
+      release();
+    }
+    expect((await posting).status).toBe("posted");
+    await asTenant(world.tenantId, insertOutlet);
+    const next = await earn(world, member.id, 10);
+    expect(
+      await deliver(world, await eventOf(world, "points.earned", next.id)),
+    ).toMatchObject({
+      status: "parked",
+      code: "LOYALTY_LEGAL_ENTITY_AMBIGUOUS",
+    });
+    const journals = await journalsOf(world);
+    expect(journals).toHaveLength(1);
+    expect(journals[0]!.legal_entity_id).toBe(world.entities[0]!.id);
+    expect(await linesOf(world, journals[0]!.id)).toEqual([
+      { code: "2105", debit: 0, credit: 1_000 },
+      { code: "4105", debit: 1_000, credit: 0 },
     ]);
   });
 });

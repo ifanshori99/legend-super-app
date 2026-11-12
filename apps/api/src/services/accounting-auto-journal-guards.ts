@@ -44,12 +44,14 @@ import {
   reservations,
 } from "../db/schema/index.ts";
 import {
+  AutoJournalDepositCutoverMixed,
   AutoJournalPayloadInvalid,
   AutoJournalReceiptPending,
   boundedKey,
   receiptKeyOf,
 } from "./accounting-auto-journal-amounts.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
+import { posDepositRefunds } from "../db/schema/pos-deposit-refund.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
 import {
   netPosTendersOfIntentSql,
@@ -403,6 +405,15 @@ async function postedCreditOf(
   return BigInt(row?.total ?? "0");
 }
 
+/** Net booked credit of the original receipt; missing or reversed is zero. */
+export async function postedIntentReceiptCreditOf(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+): Promise<bigint> {
+  return postedCreditOf(tx, tenantId, receiptKeyOf(intentId));
+}
+
 /**
  * Whether the fund has its own receipt event (payment.funds_unallocated), in
  * any outbox status. A fund the intent's payment.paid already counts
@@ -592,7 +603,8 @@ const mismatch = (message: string) =>
 /**
  * DP of one table session as it stood at `bound`: its allocation intents, what
  * they still held and the DP its sales had applied.
- * - applied: sales (POS or QR pay-first) made by the bound (salesAt);
+ * - applied: sales (POS or QR pay-first) made by the bound (salesAt), less DP
+ *   returned by a POS refund whose restoring journal is posted;
  * - held: every intent that took money (paid / partially_refunded / refunded,
  *   a status that never reverts) minus the completed non-fund refunds and the
  *   forfeits of the reservation that took it by the bound.
@@ -603,24 +615,73 @@ export async function sessionDepositAt(
   tableSessionId: string,
   bound: Bound,
 ): Promise<{ intentIds: string[]; heldIdr: bigint; appliedIdr: bigint }> {
-  const allocations = await tx
-    .select({ paymentIntentId: reservationDepositAllocations.paymentIntentId })
-    .from(reservationDepositAllocations)
+  // Q82: spending a remainder moves the same receipt to another session. A
+  // per-session check would count that receipt twice. Follow the bounded
+  // session/intent component, then count each receipt and sale exactly once.
+  // Keep historical credit-use edges even after an unused credit is returned;
+  // returned_idr is mutable and cannot decide a past journal's capacity.
+  const creditBefore =
+    bound.kind === "refund"
+      ? sql`u.created_at <= ${timeOf(bound)}`
+      : sql`u.created_at < ${timeOf(bound)}`;
+  const component = await tx.execute(sql`
+    WITH RECURSIVE sources AS (
+      SELECT a.table_session_id AS session_id, a.payment_intent_id AS intent_id
+        FROM reservation_deposit_allocations a
+       WHERE a.tenant_id = ${tenantId}::uuid
+      UNION
+      SELECT u.table_session_id, r.payment_intent_id
+        FROM reservation_customer_credit_uses u
+        JOIN reservation_deposit_remainders r
+          ON r.tenant_id = u.tenant_id AND r.id = u.remainder_id
+       WHERE u.tenant_id = ${tenantId}::uuid AND ${creditBefore}
+    ), connected(node) AS (
+      SELECT ${`s:${tableSessionId.toLowerCase()}`}::text
+      UNION
+      SELECT CASE WHEN c.node = 's:' || s.session_id::text
+                  THEN 'i:' || s.intent_id::text
+                  ELSE 's:' || s.session_id::text END
+        FROM connected c
+        JOIN sources s ON c.node = 's:' || s.session_id::text
+                       OR c.node = 'i:' || s.intent_id::text
+    )
+    SELECT substring(c.node from 3) AS id, left(c.node, 1) AS kind,
+           EXISTS (SELECT 1 FROM sources s
+             WHERE s.session_id = ${tableSessionId}::uuid
+               AND 'i:' || s.intent_id::text = c.node) AS direct
+      FROM connected c ORDER BY c.node
+  `);
+  const intentIds = component.rows
+    .filter((row) => row.kind === "i" && row.direct === true)
+    .map((row) => String(row.id));
+  if (intentIds.length === 0) return { intentIds, heldIdr: 0n, appliedIdr: 0n };
+  const componentIntentIds = component.rows
+    .filter((row) => row.kind === "i")
+    .map((row) => String(row.id));
+  const sessionIds = component.rows
+    .filter((row) => row.kind === "s")
+    .map((row) => String(row.id));
+  // Serialize journal consumers of a shared receipt in deterministic order.
+  // A sale's credit use committed before its sale fact; later uses and sales
+  // are excluded by the bound, independently of journal delivery order.
+  await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
     .where(
       and(
-        eq(reservationDepositAllocations.tenantId, tenantId),
-        eq(reservationDepositAllocations.tableSessionId, tableSessionId),
+        eq(paymentIntents.tenantId, tenantId),
+        inArray(paymentIntents.id, componentIntentIds),
       ),
-    );
-  const intentIds = [...new Set(allocations.map((row) => row.paymentIntentId))];
-  if (intentIds.length === 0) return { intentIds, heldIdr: 0n, appliedIdr: 0n };
+    )
+    .orderBy(paymentIntents.id)
+    .for("update");
   const intents = await tx
     .select({ id: paymentIntents.id, amountIdr: paymentIntents.amountIdr })
     .from(paymentIntents)
     .where(
       and(
         eq(paymentIntents.tenantId, tenantId),
-        inArray(paymentIntents.id, intentIds),
+        inArray(paymentIntents.id, componentIntentIds),
         inArray(paymentIntents.status, [...DP_INTENT_STATUSES]),
       ),
     );
@@ -633,7 +694,7 @@ export async function sessionDepositAt(
     .where(
       and(
         eq(paymentRefunds.tenantId, tenantId),
-        inArray(paymentRefunds.paymentIntentId, intentIds),
+        inArray(paymentRefunds.paymentIntentId, componentIntentIds),
         sql`${paymentRefunds.unallocatedFundId} IS NULL`,
         refundsAt(bound),
       ),
@@ -648,7 +709,7 @@ export async function sessionDepositAt(
     .where(
       and(
         eq(reservations.tenantId, tenantId),
-        inArray(reservations.depositPaymentId, intentIds),
+        inArray(reservations.depositPaymentId, componentIntentIds),
         forfeitsAt(bound),
       ),
     )
@@ -659,10 +720,43 @@ export async function sessionDepositAt(
   const forfeitedBy = new Map(
     forfeits.map((row) => [row.intentId, BigInt(row.total)]),
   );
+  const receiptStates = await backingStatesOf(
+    tx,
+    tenantId,
+    intents.map(({ id }) => ({ kind: "intent", intentId: id })),
+  );
+  if (intents.length !== componentIntentIds.length)
+    throw new AutoJournalPayloadInvalid(
+      "Connected DP payment intent not found or never paid",
+    );
+  const componentReceiptStates = [...receiptStates.values()];
+  if (componentReceiptStates.includes("pending"))
+    throw new AutoJournalReceiptPending(
+      "Connected DP receipt is not booked yet",
+    );
+  // A pre-cutover receipt still supports the legacy gateway-clearing path,
+  // but cannot add capacity to another session's booked customer deposit.
+  // The whole connected component must have the same receipt provenance.
+  if (
+    componentReceiptStates.includes("posted") &&
+    componentReceiptStates.includes("none")
+  )
+    throw new AutoJournalDepositCutoverMixed(
+      "Connected DP receipts are partly booked and partly before the cutover",
+    );
   let heldIdr = 0n;
   for (const intent of intents) {
+    // A posted receipt reversed by finance has no remaining credit. Its
+    // payment intent remains paid, so the business amount alone is not
+    // sufficient backing for another customer_deposit debit.
+    let received = BigInt(intent.amountIdr);
+    const receiptKey = receiptKeyOf(intent.id);
+    if (receiptStates.get(receiptKey) === "posted") {
+      const postedCredit = await postedCreditOf(tx, tenantId, receiptKey);
+      if (postedCredit < received) received = postedCredit;
+    }
     const held =
-      BigInt(intent.amountIdr) -
+      received -
       (refundedBy.get(intent.id) ?? 0n) -
       (forfeitedBy.get(intent.id) ?? 0n);
     if (held > 0n) heldIdr += held;
@@ -675,11 +769,81 @@ export async function sessionDepositAt(
     .where(
       and(
         eq(orders.tenantId, tenantId),
-        eq(orders.tableSessionId, tableSessionId),
+        inArray(orders.tableSessionId, sessionIds),
         salesAt(bound),
       ),
     );
-  return { intentIds, heldIdr, appliedIdr: BigInt(applied?.total ?? "0") };
+  const releases = await tx
+    .select({
+      refundId: posDepositRefunds.posRefundId,
+      total: sql<string>`sum(${posDepositRefunds.amountIdr})::text`,
+    })
+    .from(posDepositRefunds)
+    .innerJoin(
+      orders,
+      and(
+        eq(orders.tenantId, posDepositRefunds.tenantId),
+        eq(orders.id, posDepositRefunds.orderId),
+      ),
+    )
+    .where(
+      and(
+        eq(posDepositRefunds.tenantId, tenantId),
+        inArray(posDepositRefunds.paymentIntentId, componentIntentIds),
+        inArray(orders.tableSessionId, sessionIds),
+        salesAt(bound),
+        bound.kind === "refund"
+          ? sql`${posDepositRefunds.releasedAt} <= ${timeOf(bound)}`
+          : sql`${posDepositRefunds.releasedAt} < ${timeOf(bound)}`,
+      ),
+    )
+    .groupBy(posDepositRefunds.posRefundId);
+  // legend-ayz7q: finance locks the same source entry before reversing it.
+  // Take every restoring entry in one stable order and hold it through the
+  // payout posting. Read the reversal state in a separate statement after
+  // the lock: a statement that waited can retain its old subquery snapshot.
+  const releaseKeys = releases.map(({ refundId }) =>
+    backingKeyOf({ kind: "posRefund", refundId }),
+  );
+  const lockedReleases =
+    releaseKeys.length === 0
+      ? []
+      : await tx
+          .select({ key: journalEntries.idempotencyKey })
+          .from(journalEntries)
+          .where(
+            and(
+              eq(journalEntries.tenantId, tenantId),
+              inArray(journalEntries.idempotencyKey, releaseKeys),
+            ),
+          )
+          .orderBy(journalEntries.id)
+          .for("update");
+  const lockedReleaseKeys = new Set(lockedReleases.map(({ key }) => key));
+  const states = await backingStatesOf(
+    tx,
+    tenantId,
+    releases.map(({ refundId }) => ({ kind: "posRefund", refundId })),
+  );
+  let appliedIdr = BigInt(applied?.total ?? "0");
+  let pendingReleaseIdr = 0n;
+  for (const { refundId, total } of releases) {
+    const key = backingKeyOf({ kind: "posRefund", refundId });
+    const state = states.get(key);
+    // A journal committed after the locking statement was absent from its
+    // snapshot. It is visible now but unlocked: only a retry may use it.
+    if (state === "posted" && !lockedReleaseKeys.has(key))
+      throw new AutoJournalReceiptPending(
+        "DP return journal appeared after the backing lock; retry to lock it",
+      );
+    if (state === "posted") appliedIdr -= BigInt(total);
+    else if (state === "pending") pendingReleaseIdr += BigInt(total);
+  }
+  if (appliedIdr < 0n)
+    throw mismatch("DP returns exceed what the component sales applied");
+  if (appliedIdr > heldIdr && appliedIdr - pendingReleaseIdr <= heldIdr)
+    throw new AutoJournalReceiptPending("DP return journal is not posted yet");
+  return { intentIds, heldIdr, appliedIdr };
 }
 
 /**
