@@ -4138,6 +4138,7 @@ Subagent: total8, puncak6 bersamaan, token heavy dipegang test_writer lalu test_
 - Gate: eslint + prettier berkas berubah hijau, tsc shared/api/web hijau, 41 test terarah hijau; `heavy pnpm check` penuh sekali (setelah fix): lint + typecheck hijau, api vitest 950/952 file lulus 1 gagal = `edge-catalog-loop` "a failing catalog call ... keeps ticking" (waitFor 1000 ms, 1060 ms di bawah beban penuh; lulus sendiri 2x; kartu flaky sudah ada, tidak menahan). Karena vitest api berhenti di gagal, test root dijalankan terpisah: `tests/*.test.mjs` 2246/2246 lulus. Run penuh bersih tidak tercapai (flaky yang sama dengan batch48j).
 - Catatan rilis: migrasi 0290-0299 baru; 0295 FK inline, 0292 melepas FORCE RLS `journal_lines` selama backfill. 0292-0299 belum di cloud.
 - Biaya sesi merge train (session-usage): total biaya* 3781k (utama sonnet 1972k, subagent opus 977k, sonnet 740k, haiku 93k); subagent: 9 (puncak 2 bersamaan, rata-rata 0,19 per langkah; `parallel-report` 10:30).
+
 ## 2026-11-12: 538-G2 payroll HRIS (cabang ws/payroll-engine, worktree .worktrees/payroll-engine)
 
 Sudah: 5 kartu K uang dengan test gagal-dulu lalu lulus (commit 2e6e72fd 7ui6v migrasi 0350 + snapshot; 5c726165 8di9d gross engine + 8xf32 guard periode terkunci; a6ffc093 pf9u7 service charge; a0978de6 sko14 BPJS/THR berversi). Gerbang thread hijau: 7 berkas test terarah 112 lulus, tsc apps/api, eslint dan prettier berkas berubah, `db:generate` "No schema changes".
@@ -4295,6 +4296,7 @@ Perintah tipe/generasi aktual dijalankan berurutan di dalam satu wrapper heavy (
 - Batas dibawa keCTO: hanya primitive internal batch gross; tax/BPJS/pinjaman/service-charge/reimbursement nonzero, totals mismatch atau partial plan ditahan409. Lifecycle/statutory/bankfile/transfer produksi belum terintegrasi pada cabang ini. Fullpnpmcheck/build/e2e dan migrasi produksi tidak dijalankan di thread ini. Tidak merge/push.
 - Penutupan gelombang12:21WIB:8subagentunik/puncak6,2butir vendorCodex native. Biaya/token native tetap tidak tersedia dari alatClaude; tidak direka. Heavy1pemegang, tanpa override retry/RAM/jalur; jeda retry normal dilalui. Tidak ada backgroundjob thread tersisa setelah wrapper71052 exit0.
 - Gate statis akhir:ESLint10berkasTS dan Prettier17berkasTS/JSON/Markdown PASS; gitdiff--check bersih. Commit butir2 dilakukan setelah seluruh gate dan reviewfinal selesai.
+
 ## 2026-11-12: 557 backend kasir/captain dan QRIS DP (ws/pos-order-be)
 
 - Basis origin/milestone/m1 e9bbd9ea; worktree .worktrees/pos-order-be. Rencana: docs/briefs/557-pos-order-be-plan.md. Scope legend-dysef dan legend-y5d2r; UI tidak diubah, tidak push/merge/delete. Rentang migrasi 0392–0396.
@@ -4330,6 +4332,7 @@ Perintah tipe/generasi aktual dijalankan berurutan di dalam satu wrapper heavy (
 - Subagent: total12 unik, puncak6 bersamaan, token heavy terakhir dipegang implement_parked_snapshots sebagai test-runner; token dikembalikan, semua job milik thread selesai. Satu architect konteks segar menutup4 temuan uang/akses,1 susunan FK migrasi, dan memeriksa penyesuaian status422; tidak ada temuan terbuka. session-usage.py tetap tidak menemukan transkrip Codex; parallel-report hanya membaca Claude, sehingga biaya/rata-rata Codex tidak tersedia dan tidak diperkirakan.
 - Snapshot kuota akhir12:10WIB (akun bersama, bukan atribusi biaya thread): Claude#1 20%/90%,#2 0%/98%,#3 0%/96%; Codex#2 0%/37%,#3 0%/76%,#4 0%/49%,#5 0%/51%,#6 5h tidak dilaporkan/7d35%. SSD23GiB bebas; hanya menjalankan cleanup-ssd mode laporan, tidak menghapus data/cache/worktree.
 - Checkpoint lokal sebelum commit parkir: a9af0622 hold, e191e0cf QRIS DP, e7005e09 waiter, ad273bd2 staff-session settlement, dbc0c60b captain board, 6726b20c catalog, 844ab0d9 call number, 10e2b77b empat fix review, 285c78e3 status validasi422. Tidak push/merge/PR. Base tetap e9bbd9ea sesuai brief; apps/web dan domain terlarang tanpa diff. UI adapters, producer pairing/display yang memang belum ada di m1, gate integrasi penuh, dan pemulihan historical dual-live payment berada di luar verifikasi slice ini.
+
 ## 2026-11-12: 562 perbaikan second-opinion ws/ops-daily
 
 - Brief CTO: P1 validasi FK closed_by pada FORCE RLS oleh migrator non-superuser; P2 konflik jawaban checklist permanen menghentikan antrean. Cabang ws/ops-daily mulai fc1943f4 bersih. Tidak push, merge, atau hapus.
@@ -4344,6 +4347,7 @@ Perintah tipe/generasi aktual dijalankan berurutan di dalam satu wrapper heavy (
 - Kuota awal Claude #1 22%/91%, #2 0%/99%, #3 0%/96%; Codex #2 0%/37%, #3 0%/76%, #4 0%/49%, #5 0%/51%, #6 5h tidak dilaporkan/7d 36%. Snapshot akhir /tmp/562-accounts-end.log: Claude #1 23%/91%, #2 1%/99%, #3 0%/96%; Codex sama. Tidak menambah layanan berbayar.
 - Belum diuji: browser nyata (dialog discard, keyboard, layout desktop/mobile), e2e, build produksi dan suite penuh/gate milestone. Verifikasi thread dibatasi test terarah, typecheck paket terkait, lint/format dan schema sesuai brief CTO. Tidak ada push/merge/PR atau perubahan uang.
 - Gerbang final 12:24 WIB: `NODE_OPTIONS=--max-old-space-size=8192 heavy pnpm --filter @starter/api typecheck` exit0; `heavy pnpm --filter @starter/web typecheck` exit0 sesudah fix prop terakhir (/tmp/562-web-final-typecheck.log). `pnpm exec eslint <7 berkas JS/TS berubah>` exit0 (/tmp/562-eslint.log); `pnpm exec prettier --check --ignore-unknown <7 JS/TS + SQL + PROGRESS>` exit0 (/tmp/562-prettier.log; SQL tidak mempunyai parser dan dilewati). `git diff --check` exit0. Semua job selesai; siap commit lokal, tidak push/merge.
+
 ## 554 — Paket C kontrak dan transport HRIS (12 November 2026)
 
 - Mulai sekitar09:15 WIB, basis `origin/ws/hris-misc@1bcead9d`, cabang `ws/hris-contract`, worktree `.worktrees/hris-contract`. Brief `docs/briefs/sub-554-hris-contract.md`; tiga kartu dibaca lewat `bd show`. Tanpa push/merge.
@@ -4375,6 +4379,7 @@ Perintah tipe/generasi aktual dijalankan berurutan di dalam satu wrapper heavy (
 - Langkah commit2 / legend-bf20 F25 HR-01/HR-02: QR sudah commit `1028a077`. Selfie PWA memakai multipart existing dengan effective shift outlet dari policy server; scanner422/503 tersanitasi dan menolak sebelum penyimpanan. Test isolasi, spoof owner/bind, scanner, policy shift lintas outlet, dan transport nyata via module test disertakan; tanpa perubahan UI/callsite/bind existing.
 
 - Langkah commit3 / legend-zygi F24 HR-01/HR-03/HR-04: selfie sudah commit `5e767cee`; master memakai enam endpoint POST/service existing, actor-bound idempotency dan pemeriksaan tenant/outlet/reference terkini. Test master13 termasuk penolakan actor lain, pencabutan izin, renewal employee lain, retry enam POST satu hasil, dan regresi P1 cache gaji. Tidak ada temuan review tersisa. Semua219test unik, tscAPI/shared, eslint16kode, prettier18kode/dokumen, dan dbgenerate kosong sudah dibuktikan pada isi kode final. Tiga kartu masing-masing satu commit lokal; tanpa push/merge/deploy, tanpa background job thread.
+
 ## 2026-11-12: 559 Backend platform tenant (legend-co93l, legend-utnll)
 
 - Worktree `.worktrees/platform-tenant-be`, branch `ws/platform-tenant-be`, base `origin/milestone/m1` e9bbd9ea; UI U5a approved. No UI edits, push, merge, or deletion authorized.
@@ -4432,3 +4437,9 @@ Perintah tipe/generasi aktual dijalankan berurutan di dalam satu wrapper heavy (
 - Commit `2a202ec7` memperbarui ekspektasi draft nol dan menambah race QR vs submit POS dengan kredit settlement dan refund parsial melalui service; provider fake, reservasi dan allocation fixture SQL. Dua request terbukti menunggu kunci bersama; alokasi dibatasi kredit bersih dan tiap tagihan. Test terarah `qr-pos-lock-order.test.ts` lulus 4/4, ESLint dan Prettier lulus. Tidak ada perubahan produksi.
 - `heavy pnpm check` pada `2a202ec7`: typecheck lulus, API 973 file lulus/3 gagal/1 skip, 15.756 test lulus/3 gagal/40 skip/3 todo. Gagal `edge-catalog-sync.test.ts:2603` inventory ID hilang dari 100 hasil; `hris-leave-db.test.ts:1657` QUOTA_EXCEEDED; `pos-shift-approval-device-bind.test.ts:277` token perangkat tidak berlaku (401). Log `/tmp/batch49-check-final.log`; root suite belum berjalan. Tidak ada rerun gate.
 - Milestone belum dimajukan/push dan worktree sumber belum dihapus. Subagent giliran ini 2 (ditambah 3 pada giliran sebelum pindah akun), puncak 2 (sebelumnya 3); token heavy dipegang test_run dan sudah dilepas.
+
+### Batch49: ulangan terarah tiga kegagalan gate
+
+- Keputusan CTO: setiap file yang gagal pada gate `2a202ec7` dijalankan sendiri dua kali dengan `LEGEND_TEST_FILES` dan `heavy pnpm test`; `edge-catalog-sync.test.ts` 79/79 dua kali, `hris-leave-db.test.ts` 28/28 dua kali, `pos-shift-approval-device-bind.test.ts` 3/3 dua kali. Log `/tmp/batch49-flaky-{edge,hris,pos}-{1,2}.log`. Gate penuh sebelumnya tetap gagal; CTO menyetujui melanjutkan dengan bukti ulangan ini.
+- Dugaan flaky, belum terbukti: edge inventory yang dicari bisa bergeser dari halaman pertama 100 karena stream tenant bersama; HRIS memakai tenant bersama dan jumlah karyawan dapat memenuhi kuota; token device memakai jam database dan JavaScript terpisah yang bisa berbeda pada batas detik. Minta CTO membuat kartu investigasi untuk masing-masing agar akar dan isolasi fixture dibuktikan.
+- Subagent 2, puncak 2; token heavy dipegang runner, sudah dilepas.
