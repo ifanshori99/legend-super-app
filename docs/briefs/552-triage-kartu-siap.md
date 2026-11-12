@@ -1,0 +1,6 @@
+# 552 Triage kartu siap (read-only)
+Peran: second-opinion read-only (~/.agents/team/roles/second-opinion.md), tugas triage. Jangan edit kode, jangan commit, jangan jalankan `heavy`. Kamu tidak bisa mengubah bd: cukup tulis hasil.
+Masalah: `bd ready` basi; banyak kartu siap ternyata sudah dikerjakan (contoh lt0v4, gi697, 9f1p3 punya commit).
+Input: docs/briefs/552-ready-cards.txt (id, prioritas, label, judul). Pakai `bd show <id>`, `git log --all --oneline --grep=<id>`, dan cek kode di origin/milestone/m1 serta cabang ws/* yang belum digabung.
+Output: tulis docs/briefs/552-triage-result.md (jangan commit) berisi tabel: id | status (SELESAI-di-m1 commit / SELESAI-di-cabang <cabang> / SEBAGIAN apa sisanya / BELUM / BASI-tidak relevan) | catatan 1 baris. Lalu usulkan 3-5 paket kerja dari kartu BELUM/SEBAGIAN: tiap paket 3-6 kartu dengan file terpisah dari paket lain, area, tingkat (K uang/akses/migrasi/data pribadi atau S), dan file utama. Hindari area yang sedang dikerjakan: payroll (ws/payroll-engine), pajak/akuntansi (ws/ws07-tax-reports), UI 539 (pos-cashier-captain, pos-extra, ai-mcp, backoffice-platform, hris-requests).
+Paralel: bagi daftar ke 4-6 subagent read-only. Lapor singkat: jumlah per status, paket usulan, angka subagent.

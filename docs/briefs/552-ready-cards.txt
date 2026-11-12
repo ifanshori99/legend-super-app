@@ -1,0 +1,57 @@
+legend-w8dfz P1  | Adapter Kirim outbound produksi (MessagingProvider WhatsApp) untuk reset PIN slip gaji
+legend-fgg1h P1  | Gerbang rilis: cek tabel migrasi staging/production untuk 0239 lama (ps-405 edit in-place)
+legend-0kxb2 P1  | Migrasi 0276-0278 (cabang 5nt2z/9y6ri) bentrok dengan m1 0247-0249: when 0276 = 0247, snap
+legend-10nex P1  | Edge: status kesegaran katalog + kebijakan jual saat katalog basi
+legend-9f1p3 P1  | FAC-07: kuota fasilitas (entitlement_ledger) pakai subscriptionAccessPeriod; graceDays arg
+legend-0c5yg P1  | HRIS cuti: guard payroll tertutup + fungsi flag cuti 0258 (architect MAJOR-1)
+legend-bxdhv P1  | rat9r-followups: 3 test refund gagal (order-recovery-refund T3/T4, rereport RR-2)
+legend-lt0v4 P1  | Akses dokumen pemegang saham hanya dari versi alokasi terkini
+legend-gi697 P1  | Preflight rilis: cek langganan duplikat customer+plan sebelum migrasi 0301
+legend-f4uvg P1  | HRIS: endpoint + field 'ubah atasan' di profil karyawan (audit, hak HR/GM, cegah siklus) u
+legend-09sxa P1  | Edge: stream sinkron catalog:promotions dan catalog:vouchers (tanpa ini promo/voucher mati
+legend-svqew P1  | Payroll: alur rapel (koreksi sah ke periode terkunci) sebelum rilis — founder Q44
+legend-g5v69 P1  | Payroll gross: gunakan formula lembur yang dipatok pada request approved
+legend-bod P2 be,codex,ws-02 | WS-02 BE: Emergency button relay on outlet LAN (<=5 s to on-duty staff, works offline)
+legend-5f7 P2 be,opus,ws-05 | WS-05 BE: Refunds (full/partial via gateway or manual with approval) + failover to cashier
+legend-m0k P2 be,opus,ws-05 | WS-05 BE: EDC payment orchestration in POS (amount locked, ECR result, status inquiry befo
+legend-ihf7 P2 qa,ws-13 | WS-13 INT: switch CI to pnpm traceability --strict once all 125 criteria have tests
+legend-5rzy P2 be,ws-04 | WS-04 BE: serve the legend-zvz expo/pickup contract additions (runner list, promotions, st
+legend-gq0w P2 contract,ws-09 | WS-09 CT: re-display a ticket credential (QR/PIN) on the guest's device
+legend-83ll P2 be,ws-01 | WS-01 BE: Publish session.revoked through the transactional outbox once an identity event 
+legend-tj8o P2 fe,ws-01 | WS-01 FE: RBAC admin honours grant rule + Owner assignment protection (legend-vbws)
+legend-hcqs P2 contract,ws-05 | WS-05 INT: refund and unallocated-fund approval through WS-01 approval_requests
+legend-d8ez P2 be,ws02,ws03 | WS-02/WS-03: confirm edge sync for brand-level menu events anchored to one outlet stream
+legend-bf20 P2 be,contract,ws-10 | WS-10 BE: selfie upload transport + supervisor device-binding endpoint (attendance)
+legend-5nv1 P2 be,ws-10 | WS-10: selfie upload endpoint + employee self-scoped attendance lists
+legend-jlqi P2 be,ws-05 | Implement settlement import ledger for payment reconciliation
+legend-r1ax P2 contract,ws-04 | WS-04 CT: customer display idle promo feed + pairing-code payload
+legend-13q7 P2 infra,qa | Mock e2e: warm only the routes the current shard/spec run needs
+legend-bpvf P2 infra,ws-00 | Share the public API rate-limit window across API instances
+legend-moe5 P2 be,ws-00 | SSR → API: forward the visitor IP (authenticated) so public per-IP limits apply to SSR rea
+legend-zygi P2 be,contract,ws-10 | WS-10 CT+BE: HRIS write endpoints (employees, org units, positions, contracts, documents) 
+legend-bj5m P2 be,ws-09 | WS-09 INT: schedule facility hold-expiry sweeper (releaseExpiredSlotHolds) in worker + cus
+legend-n039 P2 be,ws-10 | WS-10 BE: dedicated blind-index key + PII key rotation for HRIS
+legend-fy5y P2 be,ws-01 | WS-01 BE: emit tenant.status_changed / tenant.package_changed events + first-admin invitat
+legend-4961 P2 be,contract,fe,ws-07 | WS-07 CT+BE+FE: cash in/out, petty cash per outlet, inter-account transfers (real endpoint
+legend-ds1o P2 be,contract,fe,ws-07 | WS-07 CT+BE: gateway settlement recon endpoint (gross, fee, net, variance)
+legend-bbp6 P2 infra,ws-01 | Renumber platformbe migrations 0040/0041 after main (main already has 0040-0042)
+legend-tg0m P2 be,security,ws-01 | Wire assertSupportAccess + attributed audit into the first platform route that reads tenan
+legend-je1f P2 contract,ws-10 | Attendance: QR token serverTime + selfie review decision endpoint
+legend-2mey P2 fe,ws-01 | Login: /masuk/email|google|tautan use safeReturnPath
+legend-uwsl P2 infra,ws-00 | e2e WARM_ROUTES: add karyawan + payroll routes
+legend-0mn8 P2 contract,ws-01 | CT: platform endpoints to create brand/outlet/legal entity for a tenant (platform admin wi
+legend-bag1 P2 contract,ws-01 | CT: platform cross-tenant audit list + platform health contracts
+legend-at8c P2 contract,ws-01 | CT: org text-overrides, tenant config import, brand media endpoints
+legend-0una P2 contract,ws-06 | WS-06 CT/BE: media upload transport for receiving and petty-cash photos
+legend-8erc P2 fe,ws-00 | WS-00 FE: FormField cannot label a Radix Select trigger
+legend-wf37 P2 fe,ws-00 | FE-INT: wire media upload into facility cleaning, breakdown-ticket and checklist photo/sig
+legend-s6o8 P2 contract,ws-01 | Shared contract: deleteTextOverride + tenant-scoped config import endpoint
+legend-saag P2 contract,ws-02 | Edge contract: device revoke (idempotencyKey, reason) + device list serverTime
+legend-bw2q P2 fe,ws-00 | Offline/edge banner must not show in the platform area
+legend-2gvt P2 contract,ws-01 | Support access: serverNow on session list + Super Admin display name
+legend-vz93 P2 infra,ws-00 | Make public HTML safely cacheable per tenant
+legend-uyk2 P2 be,ws-07 | WS-06/07: purchasing + AR source modules must call AP/AR in-transaction functions; avoid d
+legend-nz13 P2 contract,ws-06 | WS-06 CT: tenant setting for 3-way match tolerance (bp)
+legend-do1o P2 contract,ws-14 | WS-14 CT: shelf life per prep item for use-by labels
+legend-ga0n P2 contract,ws-14 | WS-14: offline queue for checklist answers (contract + idempotent replay)
+legend-7j4e P2 contract,ws-14 | WS-14 CT: shift handover close state/endpoint
