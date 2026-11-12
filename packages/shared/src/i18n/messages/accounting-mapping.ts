@@ -93,6 +93,8 @@ export const accountingMappingMessages = {
     loyalty_liability: "Liabilitas poin loyalty",
     customer_deposit: "Uang muka pelanggan",
     tax_payable_pbjt: "Utang PBJT",
+    tax_payable_ppn: "Utang PPN",
+    tax_payable_other: "Utang pajak lainnya",
     pph21_payable: "Utang PPh 21",
     pph23_payable: "Utang PPh 23",
     dividend_tax_payable: "Utang PPh dividen",

@@ -116,7 +116,7 @@ export function ChecklistItemCard({
       setDiscardError(
         error instanceof Error
           ? error.message
-          : "Jawaban lokal belum dapat dibuang. Coba lagi.",
+          : t("opsChecklist.run.item.discardLocalFailed"),
       );
     } finally {
       setDiscarding(false);
@@ -175,7 +175,7 @@ export function ChecklistItemCard({
           setQueueSaveError(
             error instanceof Error
               ? error.message
-              : "Jawaban belum masuk antrean. Periksa penyimpanan perangkat lalu coba lagi.",
+              : t("opsChecklist.run.item.queueSaveFailed"),
           );
         })
         .finally(() => setPendingStatus(null));
@@ -263,20 +263,21 @@ export function ChecklistItemCard({
           className="grid gap-2 rounded-control border-(length:--border-w) border-border bg-surface-2 p-3"
         >
           <div className="flex flex-wrap items-center gap-2">
-            <Badge tone="warning">Perlu dicek</Badge>
+            <Badge tone="warning">
+              {t("opsChecklist.run.item.conflictBadge")}
+            </Badge>
             <span className="text-sm leading-5 font-medium">
-              Jawaban lokal:{" "}
-              {t(
-                entry.body.status === "failed"
-                  ? "opsChecklist.run.item.resultFailed"
-                  : "opsChecklist.run.item.resultDone",
-              )}
+              {t("opsChecklist.run.item.conflictStatus", {
+                status: t(
+                  entry.body.status === "failed"
+                    ? "opsChecklist.run.item.resultFailed"
+                    : "opsChecklist.run.item.resultDone",
+                ),
+              })}
             </span>
           </div>
           <p className="text-sm leading-5 text-muted-foreground">
-            Server sudah memiliki jawaban lain. Jawaban lokal ini tetap disimpan
-            untuk diperiksa dan tidak akan dikirim ulang. Buang jawaban lokal
-            untuk memakai jawaban server.
+            {t("opsChecklist.run.item.conflictHint")}
           </p>
           {entry.body.numberValue !== null &&
             entry.body.numberValue !== undefined && (
@@ -312,7 +313,7 @@ export function ChecklistItemCard({
               setDiscardKey(entry.idempotencyKey);
             }}
           >
-            Buang jawaban lokal
+            {t("opsChecklist.run.item.discardLocal")}
           </Button>
         </div>
       ))}
@@ -358,11 +359,10 @@ export function ChecklistItemCard({
       ) : queued ? (
         <div data-slot="checklist-item-queued" className="grid gap-1.5">
           <p role="status" className="text-sm leading-5 font-medium">
-            Jawaban menunggu konfirmasi server.
+            {t("opsChecklist.run.item.queuedTitle")}
           </p>
           <p className="text-sm leading-5 text-muted-foreground">
-            Jawaban ada di antrean perangkat ini. Progres berubah setelah server
-            mengonfirmasi penerimaannya.
+            {t("opsChecklist.run.item.queuedHint")}
           </p>
           {queued.body.numberValue !== null &&
             queued.body.numberValue !== undefined && (
@@ -518,8 +518,7 @@ export function ChecklistItemCard({
 
           {!online && requiresMedia && (
             <p className="text-sm leading-5 text-muted-foreground">
-              Bukti foto atau tanda tangan perlu diunggah saat online sebelum
-              jawaban dapat dikirim.
+              {t("opsChecklist.run.item.offlineMediaHint")}
             </p>
           )}
 
@@ -563,10 +562,13 @@ export function ChecklistItemCard({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Buang jawaban lokal?</DialogTitle>
+            <DialogTitle>
+              {t("opsChecklist.run.item.discardLocalTitle")}
+            </DialogTitle>
             <DialogDescription>
-              Jawaban lokal untuk {item.label} akan dihapus dari perangkat ini.
-              Jawaban server tetap dipakai. Tindakan ini tidak dapat dibatalkan.
+              {t("opsChecklist.run.item.discardLocalHint", {
+                label: item.label,
+              })}
             </DialogDescription>
           </DialogHeader>
           {discardError && (
@@ -589,7 +591,7 @@ export function ChecklistItemCard({
               loading={discarding}
               onClick={() => void discardLocalAnswer()}
             >
-              Buang jawaban lokal
+              {t("opsChecklist.run.item.discardLocal")}
             </Button>
           </DialogFooter>
         </DialogContent>

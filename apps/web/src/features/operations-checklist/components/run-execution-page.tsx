@@ -192,7 +192,7 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
       {!online && (
         <OfflineNotice
           title={t("opsChecklist.run.offlineTitle")}
-          hint="Jawaban tanpa unggahan bukti dapat masuk antrean perangkat. Jawaban belum tersimpan di server sampai koneksi kembali dan server mengonfirmasi."
+          hint={t("opsChecklist.run.queueOfflineHint")}
         />
       )}
 
@@ -201,12 +201,15 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
         answerQueue.error) && (
         <Card data-slot="checklist-answer-queue">
           <p role="status" aria-live="polite" className="text-sm leading-5">
-            {answerQueue.entries.length} jawaban menunggu konfirmasi server.
+            {t("opsChecklist.run.queuePending", {
+              count: answerQueue.entries.length,
+            })}
           </p>
           {answerQueue.conflicts.length > 0 && (
             <p role="status" aria-live="polite" className="text-sm leading-5">
-              {answerQueue.conflicts.length} jawaban perlu dicek. Periksa
-              jawaban lokal pada item terkait; jawaban server tetap dipakai.
+              {t("opsChecklist.run.queueConflicts", {
+                count: answerQueue.conflicts.length,
+              })}
             </p>
           )}
           {answerQueue.error && (
@@ -222,7 +225,7 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
               loading={answerQueue.replaying}
               onClick={() => void answerQueue.retry()}
             >
-              Coba kirim antrean
+              {t("opsChecklist.run.queueRetry")}
             </Button>
           )}
         </Card>

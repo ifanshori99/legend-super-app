@@ -148,6 +148,22 @@ export const opsChecklistMessages = {
       noteValue: "Catatan: {note}",
       resultDone: "Selesai",
       resultFailed: "Gagal",
+      conflictBadge: "Perlu dicek",
+      conflictStatus: "Jawaban lokal: {status}",
+      conflictHint:
+        "Server sudah memiliki jawaban lain. Jawaban lokal ini tetap disimpan untuk diperiksa dan tidak akan dikirim ulang. Buang jawaban lokal untuk memakai jawaban server.",
+      discardLocal: "Buang jawaban lokal",
+      discardLocalTitle: "Buang jawaban lokal?",
+      discardLocalHint:
+        "Jawaban lokal untuk {label} akan dihapus dari perangkat ini. Jawaban server tetap dipakai. Tindakan ini tidak dapat dibatalkan.",
+      discardLocalFailed: "Jawaban lokal belum dapat dibuang. Coba lagi.",
+      queueSaveFailed:
+        "Jawaban belum masuk antrean. Periksa penyimpanan perangkat lalu coba lagi.",
+      queuedTitle: "Jawaban menunggu konfirmasi server.",
+      queuedHint:
+        "Jawaban ada di antrean perangkat ini. Progres berubah setelah server mengonfirmasi penerimaannya.",
+      offlineMediaHint:
+        "Bukti foto atau tanda tangan perlu diunggah saat online sebelum jawaban dapat dikirim.",
     },
     complete: "Selesaikan checklist",
     completeFailed: "Tutup sebagai gagal",
@@ -159,6 +175,12 @@ export const opsChecklistMessages = {
     offlineTitle: "Anda sedang offline",
     offlineHint:
       "Hasil tidak bisa disimpan saat offline dan tidak diantrekan. Sambungkan kembali untuk mencatat butir atau menutup checklist.",
+    queueOfflineHint:
+      "Jawaban tanpa unggahan bukti dapat masuk antrean perangkat. Jawaban belum tersimpan di server sampai koneksi kembali dan server mengonfirmasi.",
+    queuePending: "{count} jawaban menunggu konfirmasi server.",
+    queueConflicts:
+      "{count} jawaban perlu dicek. Periksa jawaban lokal pada item terkait; jawaban server tetap dipakai.",
+    queueRetry: "Coba kirim antrean",
   },
   templates: {
     title: "Template checklist",

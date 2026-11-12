@@ -14,6 +14,7 @@ import {
   Globe,
 } from "lucide-react";
 import type { TenantDomain } from "@starter/shared/platform";
+import type { Translate } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,7 +42,6 @@ import {
   DOMAIN_COPY,
   classifyDomainError,
   customDomains,
-  domainNotice,
   domainScreen,
   domainView,
   validateHostname,
@@ -53,6 +53,34 @@ import {
   useOrgBrands,
   useVerifyDomain,
 } from "../hooks";
+
+/** Translate request notices at the UI boundary; classification stays pure. */
+function requestNotice(error: unknown, t: Translate): DomainNotice {
+  const keys = {
+    verification_failed: [
+      "orgDomain.notices.verificationFailedTitle",
+      "orgDomain.notices.verificationFailedMessage",
+    ],
+    reserved: [
+      "orgDomain.notices.unusableTitle",
+      "orgDomain.notices.reservedMessage",
+    ],
+    taken: [
+      "orgDomain.notices.unusableTitle",
+      "orgDomain.notices.takenMessage",
+    ],
+    network: [
+      "orgDomain.notices.networkTitle",
+      "orgDomain.notices.networkMessage",
+    ],
+    unknown: [
+      "orgDomain.notices.unknownTitle",
+      "orgDomain.notices.unknownMessage",
+    ],
+  } as const;
+  const [title, message] = keys[classifyDomainError(error)];
+  return { title: t(title), message: t(message) };
+}
 
 export function DomainSettingsPage() {
   const t = useT();
@@ -67,13 +95,13 @@ export function DomainSettingsPage() {
         className="inline-flex min-h-11 w-fit items-center gap-1 text-sm font-semibold text-muted-foreground hover:text-foreground"
       >
         <ChevronLeft className="size-4" aria-hidden="true" />
-        Pengaturan
+        {t("orgDomain.settings")}
       </Link>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="grid gap-0.5">
-          <h2 className="type-title">Domain kustom</h2>
+          <h2 className="type-title">{t("orgDomain.title")}</h2>
           <p className="max-w-2xl text-sm leading-5 text-muted-foreground">
-            Hubungkan domain milik Anda dengan memverifikasi kepemilikannya.
+            {t("orgDomain.subtitle")}
           </p>
         </div>
         {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
@@ -83,9 +111,9 @@ export function DomainSettingsPage() {
         <CardShell>
           <Card aria-busy="true">
             <CardHeader>
-              <CardTitle>Memuat domain</CardTitle>
+              <CardTitle>{t("orgDomain.loadingTitle")}</CardTitle>
               <CardDescription>
-                Mengambil status dan petunjuk verifikasi…
+                {t("orgDomain.loadingDescription")}
               </CardDescription>
             </CardHeader>
             <span className="sr-only">{t("common.loading")}</span>
@@ -99,8 +127,10 @@ export function DomainSettingsPage() {
       ) : domainsQuery.isError ? (
         <ErrorState
           error={domainsQuery.error}
-          title={online ? undefined : DOMAIN_COPY.networkTitle}
-          description={online ? undefined : DOMAIN_COPY.networkMessage}
+          title={online ? undefined : t("orgDomain.notices.networkTitle")}
+          description={
+            online ? undefined : t("orgDomain.notices.networkMessage")
+          }
           onRetry={() => void domainsQuery.refetch()}
         />
       ) : adding || domainScreen(domainsQuery.data.data) === "empty" ? (
@@ -114,10 +144,12 @@ export function DomainSettingsPage() {
             <Card>
               <EmptyState
                 icon={Globe}
-                title="Belum ada domain kustom"
-                description="Tambahkan domain untuk memulai verifikasi kepemilikan."
+                title={t("orgDomain.emptyTitle")}
+                description={t("orgDomain.emptyDescription")}
                 action={
-                  <Button onClick={() => setAdding(true)}>Tambah domain</Button>
+                  <Button onClick={() => setAdding(true)}>
+                    {t("orgDomain.actions.add")}
+                  </Button>
                 }
               />
             </Card>
@@ -130,7 +162,7 @@ export function DomainSettingsPage() {
           ))}
           <div>
             <Button variant="outline" onClick={() => setAdding(true)}>
-              Tambah domain
+              {t("orgDomain.actions.add")}
             </Button>
           </div>
         </div>
@@ -178,6 +210,7 @@ function AddDomainForm({
   onDone: () => void;
   onCancel: () => void;
 }) {
+  const t = useT();
   const brandsQuery = useOrgBrands();
   const addDomain = useAddDomain();
   const [hostname, setHostname] = React.useState("");
@@ -193,7 +226,13 @@ function AddDomainForm({
     setNotice(undefined);
     const check = validateHostname(hostname);
     if (!check.ok) {
-      setFieldError(check.message);
+      setFieldError(
+        t(
+          check.message === DOMAIN_COPY.hostnameRequired
+            ? "orgDomain.form.required"
+            : "orgDomain.form.invalid",
+        ),
+      );
       return;
     }
     if (!selectedBrand) return;
@@ -202,7 +241,7 @@ function AddDomainForm({
       { brandId: selectedBrand.id, hostname: check.hostname },
       {
         onSuccess: onDone,
-        onError: (error) => setNotice(domainNotice(classifyDomainError(error))),
+        onError: (error) => setNotice(requestNotice(error, t)),
       },
     );
   }
@@ -230,10 +269,8 @@ function AddDomainForm({
       <CardShell>
         <Card>
           <CardHeader>
-            <CardTitle>Tambah domain kustom</CardTitle>
-            <CardDescription>
-              Masukkan domain yang ingin dihubungkan.
-            </CardDescription>
+            <CardTitle>{t("orgDomain.form.title")}</CardTitle>
+            <CardDescription>{t("orgDomain.form.description")}</CardDescription>
           </CardHeader>
           <form
             onSubmit={submit}
@@ -242,7 +279,7 @@ function AddDomainForm({
             aria-busy={addDomain.isPending || undefined}
           >
             {brands.length > 1 && (
-              <FormField label="Brand" id="domain-brand">
+              <FormField label={t("orgDomain.form.brand")} id="domain-brand">
                 <Select
                   value={selectedBrand?.id ?? ""}
                   onValueChange={setBrandId}
@@ -262,11 +299,11 @@ function AddDomainForm({
             )}
             {brands.length === 0 && (
               <p className="text-sm leading-5 text-muted-foreground">
-                {DOMAIN_COPY.noBrand}
+                {t("orgDomain.form.noBrand")}
               </p>
             )}
             <FormField
-              label="Nama domain"
+              label={t("orgDomain.form.hostname")}
               id="domain-hostname"
               error={fieldError}
               required
@@ -275,7 +312,7 @@ function AddDomainForm({
                 id="domain-hostname"
                 value={hostname}
                 onChange={(event) => setHostname(event.target.value)}
-                placeholder="pesan.contoh.id"
+                placeholder={t("orgDomain.form.placeholder")}
                 autoComplete="off"
                 autoCapitalize="none"
                 spellCheck={false}
@@ -288,7 +325,7 @@ function AddDomainForm({
                 className="max-sm:w-full"
                 disabled={addDomain.isPending || !selectedBrand}
               >
-                Lanjutkan
+                {t("orgDomain.actions.continue")}
               </Button>
               <Button
                 type="button"
@@ -296,7 +333,7 @@ function AddDomainForm({
                 className="max-sm:w-full"
                 onClick={onCancel}
               >
-                Batal
+                {t("orgDomain.actions.cancel")}
               </Button>
             </div>
           </form>
@@ -307,6 +344,7 @@ function AddDomainForm({
 }
 
 function DomainCard({ domain }: { domain: TenantDomain }) {
+  const t = useT();
   const verify = useVerifyDomain();
   const [notice, setNotice] = React.useState<DomainNotice | undefined>();
   const [justVerified, setJustVerified] = React.useState(false);
@@ -316,7 +354,7 @@ function DomainCard({ domain }: { domain: TenantDomain }) {
     setNotice(undefined);
     verify.mutate(domain.id, {
       onSuccess: () => setJustVerified(true),
-      onError: (error) => setNotice(domainNotice(classifyDomainError(error))),
+      onError: (error) => setNotice(requestNotice(error, t)),
     });
   }
 
@@ -331,8 +369,8 @@ function DomainCard({ domain }: { domain: TenantDomain }) {
             silent
             tone="success"
             notice={{
-              title: "Domain terverifikasi.",
-              message: "Kepemilikan domain berhasil dikonfirmasi.",
+              title: t("orgDomain.verification.successTitle"),
+              message: t("orgDomain.verification.successMessage"),
             }}
           />
         )}
@@ -343,9 +381,11 @@ function DomainCard({ domain }: { domain: TenantDomain }) {
             <DomainHeader domain={domain} verified />
             <div className="grid gap-1 border-t-(length:--border-w) border-border pt-4">
               <span className="text-sm font-semibold text-muted-foreground">
-                Verifikasi kepemilikan
+                {t("orgDomain.verification.title")}
               </span>
-              <span className="font-semibold">Record TXT ditemukan</span>
+              <span className="font-semibold">
+                {t("orgDomain.verification.found")}
+              </span>
             </div>
           </Card>
         </CardShell>
@@ -357,25 +397,28 @@ function DomainCard({ domain }: { domain: TenantDomain }) {
               <Card>
                 <DomainHeader domain={domain} verified={false} />
                 <p className="text-sm leading-5 text-muted-foreground">
-                  Tambahkan record TXT berikut pada pengelola DNS domain Anda.
+                  {t("orgDomain.verification.instruction")}
                 </p>
                 {!domain.verification && (
                   <p className="text-sm leading-5 text-muted-foreground">
-                    {DOMAIN_COPY.noRecord}
+                    {t("orgDomain.verification.noRecord")}
                   </p>
                 )}
                 {domain.verification && (
                   <dl className="grid min-w-0 gap-4 rounded-control border-(length:--border-w) border-border bg-surface-2 p-4">
-                    <RecordRow label="Jenis" value={domain.verification.type} />
                     <RecordRow
-                      label="Nama / host"
-                      value={domain.verification.name}
-                      copyLabel="Salin nama/host"
+                      label={t("orgDomain.verification.type")}
+                      value={domain.verification.type}
                     />
                     <RecordRow
-                      label="Nilai"
+                      label={t("orgDomain.verification.host")}
+                      value={domain.verification.name}
+                      copyLabel={t("orgDomain.actions.copyHost")}
+                    />
+                    <RecordRow
+                      label={t("orgDomain.verification.value")}
                       value={domain.verification.value}
-                      copyLabel="Salin nilai"
+                      copyLabel={t("orgDomain.actions.copyValue")}
                     />
                   </dl>
                 )}
@@ -386,31 +429,32 @@ function DomainCard({ domain }: { domain: TenantDomain }) {
                     disabled={verify.isPending}
                     aria-busy={verify.isPending || undefined}
                   >
-                    {verify.isPending ? "Memeriksa…" : "Cek verifikasi"}
+                    {t(
+                      verify.isPending
+                        ? "orgDomain.actions.checking"
+                        : "orgDomain.actions.check",
+                    )}
                   </Button>
                   <p className="text-sm leading-5 text-muted-foreground">
-                    Perubahan DNS mungkin memerlukan waktu sebelum dapat
-                    ditemukan.
+                    {t("orgDomain.verification.propagation")}
                   </p>
                 </div>
               </Card>
             </CardShell>
             <CardShell>
               <Card>
-                <CardTitle>Cara memverifikasi</CardTitle>
+                <CardTitle>{t("orgDomain.help.title")}</CardTitle>
                 <ol className="grid list-decimal gap-2 ps-5 text-sm leading-5">
-                  <li>Buka pengaturan DNS pada penyedia domain Anda.</li>
+                  <li>{t("orgDomain.help.openDns")}</li>
+                  <li>{t("orgDomain.help.addRecord")}</li>
                   <li>
-                    Tambahkan record TXT dengan nama dan nilai yang ditampilkan.
-                  </li>
-                  <li>
-                    Simpan perubahan, lalu kembali ke sini dan pilih{" "}
-                    <strong>Cek verifikasi</strong>.
+                    {t("orgDomain.help.saveAndCheck", {
+                      action: t("orgDomain.actions.check"),
+                    })}
                   </li>
                 </ol>
                 <p className="text-sm leading-5 text-muted-foreground">
-                  Jika record belum ditemukan, periksa kembali nama dan nilainya
-                  lalu coba lagi.
+                  {t("orgDomain.help.retry")}
                 </p>
               </Card>
             </CardShell>
@@ -428,21 +472,24 @@ function DomainHeader({
   domain: TenantDomain;
   verified: boolean;
 }) {
+  const t = useT();
   return (
     <div className="flex min-w-0 items-start justify-between gap-3">
       <div className="min-w-0 [overflow-wrap:anywhere]">
         <h3 className="type-heading">{domain.hostname}</h3>
-        <p className="text-sm leading-5 text-muted-foreground">Domain kustom</p>
+        <p className="text-sm leading-5 text-muted-foreground">
+          {t("orgDomain.title")}
+        </p>
       </div>
       {verified ? (
         <Badge tone="success">
           <CircleCheck aria-hidden="true" />
-          Terverifikasi
+          {t("orgDomain.verification.verified")}
         </Badge>
       ) : (
         <Badge tone="warning">
           <Clock aria-hidden="true" />
-          Menunggu verifikasi
+          {t("orgDomain.verification.pending")}
         </Badge>
       )}
     </div>
@@ -459,6 +506,7 @@ function RecordRow({
   /** Accessible name of the copy button; omit for a row without one. */
   copyLabel?: string;
 }) {
+  const t = useT();
   const [feedback, setFeedback] = React.useState<string | undefined>();
   const clearTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
@@ -469,10 +517,10 @@ function RecordRow({
     clearTimeout(clearTimer.current);
     try {
       await navigator.clipboard.writeText(value);
-      setFeedback(DOMAIN_COPY.copied);
+      setFeedback(t("orgDomain.notices.copied"));
       clearTimer.current = setTimeout(() => setFeedback(undefined), 2000);
     } catch {
-      setFeedback(DOMAIN_COPY.copyFailed);
+      setFeedback(t("orgDomain.notices.copyFailed"));
     }
   }
 
@@ -493,7 +541,7 @@ function RecordRow({
               onClick={() => void copy()}
               aria-label={copyLabel}
             >
-              Salin
+              {t("orgDomain.actions.copy")}
             </Button>
           )}
         </div>

@@ -125,11 +125,11 @@ export function createChecklistAnswerQueue({
   let mutation: Promise<unknown> = Promise.resolve();
   const lock =
     withLock ??
-    (<T>(work: () => T | Promise<T>): Promise<T> => {
+    function <T>(work: () => T | Promise<T>): Promise<T> {
       const next = mutation.then(work);
       mutation = next.catch(() => undefined);
       return next;
-    });
+    };
   function read(): ChecklistAnswerQueueEntry[] {
     const raw = storage.getItem(CHECKLIST_ANSWER_QUEUE_KEY);
     if (raw === null) return [];
