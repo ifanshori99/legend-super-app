@@ -265,6 +265,7 @@ export const leaveRequests = pgTable(
       .default(sql`'{}'::date[]`),
     reason: text("reason"),
     attachmentKey: varchar("attachment_key", { length: 500 }),
+    rejectionReason: varchar("rejection_reason", { length: 500 }),
     status: varchar("status", { length: 20 })
       .$type<LeaveRequestStatus>()
       .notNull()
@@ -415,6 +416,7 @@ export const overtimeRequests = pgTable(
       .$type<OvertimeDayType>()
       .notNull(),
     reason: text("reason").notNull(),
+    rejectionReason: varchar("rejection_reason", { length: 500 }),
     status: varchar("status", { length: 20 })
       .$type<OvertimeRequestStatus>()
       .notNull()

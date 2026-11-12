@@ -317,6 +317,8 @@ const templates: readonly RoleTemplate[] = [
     level: "tenant",
     allowedScopeTypes: ["outlet"],
     permissions: [
+      // Supervisors need the management shell to reach the HR request queue.
+      "dashboard.management.view",
       "approval.inbox.view",
       "approval.request.decide",
       "menu.item.view",
