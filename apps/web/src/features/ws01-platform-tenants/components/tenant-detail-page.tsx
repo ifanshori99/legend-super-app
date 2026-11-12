@@ -166,8 +166,11 @@ function TenantDetail({ tenant }: { tenant: Tenant }) {
   const actions = statusActions(tenant.status);
   // Stays mounted after a successful restore, so its success state is shown
   // even though the refetched tenant is no longer archived (legend-nb4iy).
-  const wasArchived = React.useRef(false);
-  if (tenant.status === "archived") wasArchived.current = true;
+  // State set during render (React "store info from previous renders").
+  const [wasArchived, setWasArchived] = React.useState(
+    tenant.status === "archived",
+  );
+  if (tenant.status === "archived" && !wasArchived) setWasArchived(true);
 
   return (
     <Frame
@@ -210,7 +213,7 @@ function TenantDetail({ tenant }: { tenant: Tenant }) {
           )}
         </p>
       )}
-      {wasArchived.current && (
+      {wasArchived && (
         <RestoreSection
           key={tenant.id}
           kind="tenant"
@@ -402,7 +405,9 @@ function OrgSection({
   const entities = useTenantLegalEntities();
   const created = getProvisioned(tenantId);
   // Outlets seen closed keep their restore panel after the restore succeeds.
-  const everClosed = React.useRef(new Set<string>());
+  const [everClosed, setEverClosed] = React.useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   if (brands.isPending || outlets.isPending || entities.isPending)
     return (
@@ -438,8 +443,13 @@ function OrgSection({
     own(entities.data.data),
     created.legalEntity ? [created.legalEntity] : [],
   );
-  for (const outlet of outletRows)
-    if (outlet.status === "closed") everClosed.current.add(outlet.id);
+  const newlyClosed = outletRows.filter(
+    (o) => o.status === "closed" && !everClosed.has(o.id),
+  );
+  if (newlyClosed.length > 0)
+    setEverClosed(new Set([...everClosed, ...newlyClosed.map((o) => o.id)]));
+  const showsRestore = (id: string) =>
+    everClosed.has(id) || newlyClosed.some((o) => o.id === id);
   const entityName = (id: string) =>
     entityRows.find((e) => e.id === id)?.name ?? "-";
 
@@ -487,7 +497,7 @@ function OrgSection({
                             `platformTenants.outletStatus.${outlet.status}` as MessageKey,
                           )}
                         </span>
-                        {everClosed.current.has(outlet.id) && (
+                        {showsRestore(outlet.id) && (
                           <ClosedOutletRestore
                             key={outlet.id}
                             tenantId={tenantId}
