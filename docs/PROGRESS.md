@@ -17,7 +17,7 @@ Selesai sesi ini:
 - ws/pos-order-be (legend-dysef, legend-y5d2r -> review): 10 commit, 316 test, architect lolos. DP diterapkan saat submit (draft DP nol); pesanan staf lama dengan paymentLinkId level order ditolak 409. Setelah merge + SO: UI kasir buka tahan QRIS DP (founder Q68 "tahan" hanya sampai backend siap).
 - Second opinion platform (ws/platform-tenant-be 08f4adb6): nol temuan. Ops-daily: 2 temuan, diperbaiki G3b1n.
 
-Founder (jawaban terakhir): U1 setuju; U2 setuju kecuali e-struk (legend-1uk9, dilewati) dan QRIS DP ditahan, refund tetap jendela dialog; U3 Tanya AI diubah ke gaya ChatGPT (Q52 halaman review menunggu jawaban), 5 layar lain setuju; U5a 6 layar setuju. Q terakhir dipakai: Q71 (U4 mulai Q72).
+Founder (jawaban terakhir): U1 setuju; U2 setuju kecuali e-struk (legend-1uk9, dilewati) dan QRIS DP ditahan, refund tetap jendela dialog; U3 Tanya AI gaya ChatGPT disetujui (Q52), ui/ai-mcp siap merge, 5 layar lain setuju; U5a 6 layar setuju. Q terakhir dipakai: Q71 (U4 mulai Q72).
 
 Langkah berikut:
 1. Tunggu G70y7 push m1; lalu hapus worktree yang sudah digabung; update item W14, W15, W20, W23, W25, W30 jadi selesai.
