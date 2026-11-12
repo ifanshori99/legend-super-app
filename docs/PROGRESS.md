@@ -1,3 +1,13 @@
+## 539-U4 HRIS pengajuan + akses dukungan Owner (Claude, ui/hris-requests, 12 Nov 2026 13:35 WIB)
+
+- Kartu legend-ydf2 (HR-05 UI) dan legend-8r77t. Lanjutan dari commit persiapan c12c7217 dan `docs/briefs/sub-539-u4.md`.
+- Layar: karyawan `/karyawan/pengajuan/baru` (tukar/ganti shift, cuti/izin dengan saldo, lembur; sukses; offline belum terkirim + coba lagi dengan idempotency key per draf), `/karyawan/pengajuan`, `/karyawan/libur`; supervisor `/kelola/pengajuan` + detail `/kelola/pengajuan/$kind/$requestId`; Owner `/kelola/akses-dukungan/permintaan` (menunggu, setujui berkonfirmasi, aktif + cabut berkonfirmasi, ditolak, kedaluwarsa 24 jam, kosong, offline, nonaktif saat impersonate/tanpa 2FA); form Super Admin read_write memakai POST support-access-requests.
+- Bukti: tsc web 0 error; `LEGEND_TEST_FILES="tests/539-u4-{a..f}.test.mjs" heavy pnpm test` 85/85; `scripts/ui-check-539-u4.mjs` axe 0 serious/critical di 29 layar x 390/1280; screenshot `design/screenshots/hris-requests/`. ui-auditor 7 temuan dan reviewer (S, UI saja, server tetap memegang otorisasi) 1 sedang + 3 ringan, semua diperbaiki.
+- Halaman review founder: `docs/review/539-u4-hris-pengajuan.html`, Q72-Q77 layar, Q78 (alasan tolak belum tersimpan), Q79 (Owner belum bisa cabut).
+- Kartu backend dibuat: legend-8iuos (cabut grant oleh Owner), legend-ss1xn (alasan tolak di keputusan), legend-0ldcp (unggah lampiran cuti), legend-mu78t (langkah rekan menerima + daftar rekan untuk karyawan), legend-wvy9r (nama peminta akses), legend-rog1x (peran supervisor tidak bisa membuka /kelola).
+- Catatan: mock tidak lagi menambah shift ke roster bersama (e2e legend-299s menghitung shift CL-1003); shift contoh untuk screenshot disuntik di skrip ui-check. Lighthouse dan impeccable detect tidak dijalankan (kuota).
+- Subagent: total 11 (Sonnet 9, Haiku 1, ui-auditor 1), puncak 6 bersamaan, token heavy dipegang agent lalu subagent ui-check. Biaya sesi* 9.77M (utama Opus 2.37M, Sonnet 7.37M). Waktu 10:47-13:35.
+
 ## 526 WS-05 admin payment fixes (Codex G0b06, 11 Nov 2026 22:50 WIB)
 
 - Cabang `ws/ws05-pay-admin`, worktree `.worktrees/ws05-pay-admin`, basis `9806b8cd`, bead `legend-xoxim`; scope brief 523/526 dan founder Q63.

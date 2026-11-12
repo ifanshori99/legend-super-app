@@ -32,7 +32,7 @@ export const hrisRequestsEmployeeMessages = {
     myShiftEmpty: "Belum ada shift terjadwal yang bisa diajukan.",
     peerLabel: "Rekan yang memenuhi syarat",
     peerPlaceholder: "Pilih rekan",
-    peerHint: "Rekan perlu menerima sebelum supervisor meninjau.",
+    peerHint: "Hanya rekan dengan jadwal yang cocok yang ditampilkan.",
     peerEmpty: "Belum ada rekan yang memenuhi syarat untuk shift ini.",
     peerLoading: "Memuat rekan…",
     peerNeedShift: "Pilih shift Anda dulu untuk melihat rekan.",

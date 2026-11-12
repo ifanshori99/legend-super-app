@@ -9,6 +9,8 @@
 // `listEmployees`, `listHolidays` and `getMyHrisProfile`
 // (lib/mock/handlers/hris-directory.ts).
 //
+// Review sample data: a pending and a rejected overtime of CL-1003, relative to today.
+//
 // Known mock gap: a leave request filed here is stored in this file's state,
 // but `listLeaveRequests` belongs to the 3jem1 mock and serves its own rows, so
 // the new request does not appear in the employee's leave list until the
@@ -50,10 +52,16 @@ import {
   type OvertimeRequest,
   type ShiftSwapRequest,
 } from "@starter/shared/hris";
-import { CoreError, type UserId } from "@starter/shared/core";
+import {
+  addBusinessDays,
+  CoreError,
+  localDateOf,
+  type UserId,
+} from "@starter/shared/core";
 import { ApiError } from "../../lib/api/errors.ts";
 import {
   MOCK_ME,
+  MOCK_OUTLET,
   MOCK_SHIFT_ASSIGNMENTS,
 } from "../../lib/mock/handlers/hris-directory.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
@@ -77,6 +85,48 @@ const uuid = (n: number) =>
 const MOCK_DECIDER_USER_ID = uuid(1002) as UserId;
 const FIRST_NEW_ID = 9000;
 
+// ---- Review sample data (relative to today) -----------------------------------
+//
+// Two overtime requests of CL-1003, dated relative to today in the outlet's
+// time zone: one pending, one rejected, so "Pengajuan saya" shows a rejected
+// status. The shared roster is not touched (the e2e counts CL-1003's shifts).
+const today = localDateOf(new Date(), MOCK_OUTLET.timeZone);
+
+function sampleOvertimes(): OvertimeRequest[] {
+  return [
+    overtimeRequestSchema.parse({
+      id: uuid(8451),
+      tenantId: cafeLegendHrisFixtures.tenant.id,
+      employeeId: MOCK_ME.id,
+      outletId: MOCK_OUTLET.id,
+      date: addBusinessDays(today, 2),
+      minutes: 60,
+      reason: "Menutup outlet setelah acara malam.",
+      dayType: "workday",
+      formulaId: null,
+      status: "pending",
+      requestedAt: new Date().toISOString(),
+      decidedBy: null,
+      decidedAt: null,
+    }),
+    overtimeRequestSchema.parse({
+      id: uuid(8452),
+      tenantId: cafeLegendHrisFixtures.tenant.id,
+      employeeId: MOCK_ME.id,
+      outletId: MOCK_OUTLET.id,
+      date: addBusinessDays(today, -3),
+      minutes: 90,
+      reason: "Membantu stok opname.",
+      dayType: "workday",
+      formulaId: null,
+      status: "rejected",
+      requestedAt: new Date(Date.now() - 4 * 86_400_000).toISOString(),
+      decidedBy: uuid(1002),
+      decidedAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+    }),
+  ];
+}
+
 type State = {
   nextId: number;
   swaps: ShiftSwapRequest[];
@@ -92,7 +142,7 @@ const store = createMockStore<State>(() => ({
   swaps: [...shiftSwapRequests],
   leaves: [...leaveRequests],
   balances: [...leaveBalances],
-  overtimes: [...overtimeRequests],
+  overtimes: [...sampleOvertimes(), ...overtimeRequests],
   replays: {},
 }));
 

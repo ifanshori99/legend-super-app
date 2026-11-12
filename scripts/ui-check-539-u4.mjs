@@ -19,10 +19,11 @@
 // `context.setOffline`. The in-browser mock store resets on every page load,
 // so each screen gets a fresh browser context.
 //
-// Not covered (hard to force in mock mode): the swap success state (the mock
-// roster has no upcoming shift for CL-1003, so "Shift saya" has no option), a
-// rejected row in "Pengajuan saya" (no rejected seed for CL-1003), leave
-// attachment upload (no endpoint), the Super Admin submit path.
+// The swap screens inject sample shifts for CL-1003 (+1/+3/+5 days) and two
+// colleagues into the in-page mock roster (see openSwapFormWithSampleShifts).
+// Not covered: leave attachment upload (no endpoint), the Super Admin submit
+// path. The swap screens use the `all` role (the mock serves peers only to
+// `all`/hr, and hr cannot open /karyawan).
 import { createRequire } from "node:module";
 import { mkdir, readdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
@@ -54,9 +55,16 @@ const SCREENS = [
   // ---- Employee: new request form ----------------------------------------
   {
     name: "form-swap",
-    role: "employee",
-    path: "/karyawan/pengajuan/baru?jenis=swap",
-    prepare: (p) => expectText(p, "Ajukan tukar / ganti shift", { heading: true }),
+    // Swap candidates (peers) are only served to `all`/hr roles in the mock,
+    // and hr has no access to /karyawan (404), so this uses `all`.
+    role: "all",
+    path: "/karyawan/libur",
+    prepare: async (p) => {
+      await openSwapFormWithSampleShifts(p);
+      await pickFirst(p, 1);
+      await pickFirst(p, 2);
+      await pickFirst(p, 3);
+    },
   },
   {
     name: "form-leave",
@@ -69,6 +77,17 @@ const SCREENS = [
     role: "employee",
     path: "/karyawan/pengajuan/baru?jenis=overtime",
     prepare: (p) => expectText(p, "Ajukan lembur", { heading: true }),
+  },
+  {
+    name: "form-swap-sukses",
+    role: "all", // peers only appear for `all`/hr in the mock; hr gets 404 on /karyawan
+    path: "/karyawan/libur",
+    prepare: async (p) => {
+      await openSwapFormWithSampleShifts(p);
+      await fillSwap(p);
+      await clickButton(p, "Kirim pengajuan");
+      await expectText(p, "Pengajuan terkirim");
+    },
   },
   {
     name: "form-leave-sukses",
@@ -326,6 +345,54 @@ async function pickFirst(page, index) {
   );
   await box.click();
   await page.getByRole("option").first().click();
+}
+/**
+ * The mock has no upcoming shift for CL-1003. Mock handlers run inside the page
+ * (no network, so `page.route` cannot see them): push sample rows into the
+ * roster array the handler reads (same module instance as the app), then
+ * client-navigate to the form so the app's first read of shifts sees them.
+ * Starts on /karyawan/libur because that page does not read shifts.
+ */
+async function openSwapFormWithSampleShifts(page) {
+  await expectText(page, "Kalender libur", { heading: true });
+  await page.evaluate(async (days) => {
+    const directory = await import("/src/lib/mock/handlers/hris-directory.ts");
+    const roster = directory.MOCK_SHIFT_ASSIGNMENTS;
+    const me = directory.MOCK_ME;
+    const base =
+      roster.find((row) => row.employeeId === me.id) ?? roster[0];
+    const peers = [
+      ...new Set(
+        roster
+          .filter((row) => row.outletId === base.outletId)
+          .map((row) => row.employeeId)
+          .filter((id) => id !== me.id),
+      ),
+    ].slice(0, 2);
+    let n = 0;
+    for (const offset of days) {
+      const date = new Date(Date.now() + offset * 86_400_000)
+        .toISOString()
+        .slice(0, 10);
+      for (const employeeId of [me.id, ...peers]) {
+        n += 1;
+        roster.push({
+          ...structuredClone(base),
+          id: `00000000-0000-4000-8000-${String(9500 + n).padStart(12, "0")}`,
+          employeeId,
+          businessDate: date,
+          segments: base.segments.map((segment) => ({
+            startsAt: `${date}T${segment.startsAt.slice(11)}`,
+            endsAt: `${date}T${segment.endsAt.slice(11)}`,
+          })),
+          status: "published",
+        });
+      }
+    }
+  }, [1, 3, 5]);
+  await page.getByRole("link", { name: /Pengajuan saya/ }).first().click();
+  await page.getByRole("link", { name: /Buat pengajuan/ }).first().click();
+  await expectText(page, "Ajukan tukar / ganti shift", { heading: true });
 }
 async function fillSwap(page) {
   await expectText(page, "Ajukan tukar / ganti shift", { heading: true });
