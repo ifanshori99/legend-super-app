@@ -145,6 +145,11 @@ export async function salePostingAccountsOf(
       ),
     )
     .groupBy(journalLines.accountId);
+  // service_charge may be mapped to a liability (POSTING_ROLE_ALLOWED_TYPES):
+  // its credit is a known role, not an unidentified tax account. What a refund
+  // may reverse of it stays capped by refundComponentsOf (collected minus
+  // already refunded on that account), so it never exceeds the sale's own.
+  const serviceChargeId = byRole.service_charge;
   for (const credit of credits) {
     const account = chart.find(
       (candidate) => candidate.id === credit.accountId,
@@ -152,7 +157,8 @@ export async function salePostingAccountsOf(
     if (
       Number(credit.net) > 0 &&
       account?.type === "liability" &&
-      !taxIds.has(credit.accountId)
+      !taxIds.has(credit.accountId) &&
+      credit.accountId !== serviceChargeId
     )
       return "Historical sale tax accounts cannot be established from its ledger";
   }
