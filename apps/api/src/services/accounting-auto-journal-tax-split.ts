@@ -199,12 +199,12 @@ function partsOf(
 }
 
 /** Credit minus debit the sale journal of the order booked per payable account. */
-async function collectedOf(
+async function collectedNetOf(
   tx: Tx,
   tenantId: TenantId,
   saleKey: string,
-  accounts: TaxAccounts["byType"],
-): Promise<Record<TaxType, number>> {
+  accounts: readonly string[],
+): Promise<Map<string, number>> {
   const rows = await tx
     .select({
       accountId: journalLines.accountId,
@@ -222,13 +222,22 @@ async function collectedOf(
       and(
         eq(journalEntries.tenantId, tenantId),
         eq(journalEntries.idempotencyKey, saleKey),
-        inArray(journalLines.accountId, Object.values(accounts)),
+        inArray(journalLines.accountId, [...accounts]),
       ),
     )
     .groupBy(journalLines.accountId);
+  return new Map(rows.map((r) => [r.accountId, Number(r.net)]));
+}
+
+async function collectedOf(
+  tx: Tx,
+  tenantId: TenantId,
+  saleKey: string,
+  accounts: TaxAccounts["byType"],
+): Promise<Record<TaxType, number>> {
   return partsOf(
     accounts,
-    new Map(rows.map((r) => [r.accountId, Number(r.net)])),
+    await collectedNetOf(tx, tenantId, saleKey, Object.values(accounts)),
   );
 }
 
@@ -242,13 +251,13 @@ const reversedEntries = alias(journalEntries, "reversed_entries");
  * its source id being a refund row of that order (pos_order_refunds, or the
  * order issue of a recovery refund), so an old refund still reduces the room.
  */
-async function refundedOf(
+async function refundedNetOf(
   tx: Tx,
   tenantId: TenantId,
   orderUuid: string,
   legalEntityId: string,
-  accounts: TaxAccounts["byType"],
-): Promise<Record<TaxType, number>> {
+  accounts: readonly string[],
+): Promise<Map<string, number>> {
   const effectiveOrder = sql`coalesce(${reversedEntries.orderId}, ${journalEntries.orderId})`;
   const effectiveSourceId = sql`coalesce(${reversedEntries.sourceId}, ${journalEntries.sourceId})`;
   const rows = await tx
@@ -275,7 +284,7 @@ async function refundedOf(
       and(
         eq(journalEntries.tenantId, tenantId),
         eq(journalEntries.legalEntityId, legalEntityId),
-        inArray(journalLines.accountId, Object.values(accounts)),
+        inArray(journalLines.accountId, [...accounts]),
         sql`coalesce(${reversedEntries.sourceType}, ${journalEntries.sourceType}) = 'refund'`,
         sql`(${effectiveOrder} = ${orderUuid}::uuid OR (${effectiveOrder} IS NULL AND ${effectiveSourceId} IN (
           SELECT id::text FROM pos_order_refunds WHERE tenant_id = ${tenantId}::uuid AND order_id = ${orderUuid}::uuid
@@ -284,10 +293,166 @@ async function refundedOf(
       ),
     )
     .groupBy(journalLines.accountId);
+  return new Map(rows.map((r) => [r.accountId, Number(r.net)]));
+}
+
+async function refundedOf(
+  tx: Tx,
+  tenantId: TenantId,
+  orderUuid: string,
+  legalEntityId: string,
+  accounts: TaxAccounts["byType"],
+): Promise<Record<TaxType, number>> {
   return partsOf(
     accounts,
-    new Map(rows.map((r) => [r.accountId, Number(r.net)])),
+    await refundedNetOf(
+      tx,
+      tenantId,
+      orderUuid,
+      legalEntityId,
+      Object.values(accounts),
+    ),
   );
+}
+
+type RefundComponents = {
+  grossSalesIdr: number;
+  discountIdr: number;
+  serviceChargeIdr: number;
+  /** Total refund tax, before splitting it into payable types. */
+  pbjtIdr: number;
+};
+
+/**
+ * Independently rounded refunds can exhaust one component before the cash
+ * total. Allocate an overflowing component from the remaining sale balances,
+ * keeping the exact money returned and never overrunning the sale as a whole.
+ * The same lock as the tax cap covers this read through the eventual posting.
+ */
+export async function refundComponentsOf(
+  tx: Tx,
+  tenantId: TenantId,
+  orderId: string,
+  input: RefundComponents,
+  amountIdr: number,
+): Promise<RefundComponents | string> {
+  const orderUuid = orderUuidOf(orderId);
+  if (orderUuid === null) return "Refund order id is not an order id";
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`aj:refund-cap:${tenantId}:${orderUuid}`}, 0))`,
+  );
+  const saleKey = `aj:sale:${orderId}`;
+  const taxAccounts = await taxAccountsOf(tx, tenantId, saleKey);
+  if (!taxAccounts) return "Sale journal of the order is not found";
+  if (sharesAccount(taxAccounts.byType))
+    return "Two tax roles are mapped to one account";
+  const componentRoles = {
+    sales_revenue: "grossSalesIdr",
+    sales_discount: "discountIdr",
+    service_charge: "serviceChargeIdr",
+  } as const;
+  const mappings = await tx
+    .select({
+      role: accountMappings.role,
+      accountId: accountMappings.accountId,
+    })
+    .from(accountMappings)
+    .where(
+      and(
+        eq(accountMappings.tenantId, tenantId),
+        eq(accountMappings.legalEntityId, taxAccounts.legalEntityId),
+        inArray(accountMappings.role, [
+          "sales_revenue",
+          "sales_discount",
+          "service_charge",
+          "rounding",
+        ]),
+      ),
+    );
+  const accounts = [
+    ...new Set([
+      ...Object.values(taxAccounts.byType),
+      ...mappings.map((row) => row.accountId),
+    ]),
+  ];
+  if (
+    accounts.length !==
+    Object.values(taxAccounts.byType).length + mappings.length
+  )
+    return "Refund component accounts cannot be distinguished";
+  const collected = await collectedNetOf(tx, tenantId, saleKey, accounts);
+  const refunded = await refundedNetOf(
+    tx,
+    tenantId,
+    orderUuid,
+    taxAccounts.legalEntityId,
+    accounts,
+  );
+  const remaining = (accountId: string) =>
+    (collected.get(accountId) ?? 0) - (refunded.get(accountId) ?? 0);
+  const room: RefundComponents = {
+    grossSalesIdr: 0,
+    discountIdr: 0,
+    serviceChargeIdr: 0,
+    pbjtIdr: Object.values(taxAccounts.byType).reduce(
+      (sum, id) => sum + remaining(id),
+      0,
+    ),
+  };
+  for (const { role, accountId } of mappings) {
+    if (role === "rounding") continue;
+    const component = componentRoles[role as keyof typeof componentRoles];
+    if (component)
+      room[component] =
+        remaining(accountId) * (component === "discountIdr" ? -1 : 1);
+  }
+  const rounding = mappings.find((row) => row.role === "rounding");
+  if (rounding) room.grossSalesIdr += remaining(rounding.accountId);
+  if (
+    !Object.values(room).every(
+      (value) => Number.isSafeInteger(value) && value >= 0,
+    ) ||
+    !Object.values(input).every(
+      (value) => Number.isSafeInteger(value) && value >= 0,
+    ) ||
+    !Number.isSafeInteger(amountIdr) ||
+    amountIdr <= 0 ||
+    input.grossSalesIdr +
+      input.serviceChargeIdr +
+      input.pbjtIdr -
+      input.discountIdr !==
+      amountIdr
+  )
+    return "Refund components cannot be checked";
+  const roomTotal =
+    room.grossSalesIdr +
+    room.serviceChargeIdr +
+    room.pbjtIdr -
+    room.discountIdr;
+  if (amountIdr > roomTotal)
+    return "Refund exceeds the amount the sale collected";
+  if (amountIdr === roomTotal) return room;
+  if (
+    (Object.keys(input) as (keyof RefundComponents)[]).every(
+      (key) => input[key] <= room[key],
+    )
+  )
+    return input;
+
+  const discountIdr = Math.min(input.discountIdr, room.discountIdr);
+  // These are three nonnegative component budgets, so the same exact integer
+  // largest-remainder allocation used for tax types applies without drift.
+  const allocated = prorateLargestRemainder(amountIdr + discountIdr, {
+    pbjt: room.grossSalesIdr,
+    ppn: room.serviceChargeIdr,
+    other: room.pbjtIdr,
+  });
+  return {
+    grossSalesIdr: allocated.pbjt,
+    serviceChargeIdr: allocated.ppn,
+    pbjtIdr: allocated.other,
+    discountIdr,
+  };
 }
 
 /**

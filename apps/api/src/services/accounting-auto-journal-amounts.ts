@@ -106,6 +106,7 @@ import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
 import {
   isSplit,
   orderUuidOf,
+  refundComponentsOf,
   refundTaxSplitOf,
   saleTaxSplitOf,
   TAX_SPLIT_VARIANT,
@@ -1389,8 +1390,30 @@ export async function autoJournalFactOf(
         throw new AutoJournalSalePending("Sale journal is not posted yet");
       if (saleState === "none")
         throw new AutoJournalSaleMissing("Sale journal will never post");
+      const components = await refundComponentsOf(
+        tx,
+        tenantId,
+        p.orderId,
+        {
+          grossSalesIdr: p.grossSalesIdr,
+          discountIdr: p.discountIdr,
+          serviceChargeIdr: p.serviceChargeIdr,
+          pbjtIdr: p.pbjtIdr,
+        },
+        p.refundCashIdr +
+          p.refundGatewayIdr +
+          p.refundEdcIdr +
+          p.refundPointsIdr,
+      );
+      if (typeof components === "string")
+        throw new AutoJournalPayloadInvalid(components);
       // legend-xa9bc: mirror the per-type split of the sale journal.
-      const split = await refundTaxSplitOf(tx, tenantId, p.orderId, p.pbjtIdr);
+      const split = await refundTaxSplitOf(
+        tx,
+        tenantId,
+        p.orderId,
+        components.pbjtIdr,
+      );
       // legend-knfl6: never refund more tax than the order collected.
       if (typeof split === "string") throw new AutoJournalPayloadInvalid(split);
       const tax = split;
@@ -1399,13 +1422,13 @@ export async function autoJournalFactOf(
         ...orderLinkOf(p.orderId),
         ...(isSplit(tax) ? { variant: TAX_SPLIT_VARIANT } : {}),
         amounts: {
-          grossSalesIdr: p.grossSalesIdr,
-          serviceChargeIdr: p.serviceChargeIdr,
+          grossSalesIdr: components.grossSalesIdr,
+          serviceChargeIdr: components.serviceChargeIdr,
           pbjtIdr: tax.pbjtIdr,
           ...(isSplit(tax)
             ? { ppnIdr: tax.ppnIdr, otherTaxIdr: tax.otherTaxIdr }
             : {}),
-          discountIdr: p.discountIdr,
+          discountIdr: components.discountIdr,
           refundCashIdr: p.refundCashIdr,
           refundGatewayIdr: p.refundGatewayIdr,
           refundEdcIdr: p.refundEdcIdr,
