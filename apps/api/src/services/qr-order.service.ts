@@ -114,6 +114,7 @@ import {
 } from "../db/schema/qr-order.ts";
 import { customerProfiles } from "../db/schema/crm-member.ts"; // legend-111j
 import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues.ts"; // orderIssues: legend-pc51h
+import { posOrderTenders } from "../db/schema/pos-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   forwardQrOrderToEdge,
@@ -885,6 +886,7 @@ async function sessionOrders(
       and(
         eq(orders.tenantId, context.tenant.tenantId),
         eq(orders.tableSessionId, sessionId),
+        ne(orders.status, "draft"),
       ),
     )
     .orderBy(asc(orders.placedAt), asc(orders.id));
@@ -2282,9 +2284,9 @@ const chargeOwed = (row: ChargeRow) =>
   row.status === "open" || row.status === "paid" ? row.amountIdr : 0;
 
 /**
- * The session's bill: live (non-voided) orders, the reservation deposit
- * credit (WS-08, floored at 0), what verified payments allocated to the
- * orders' WS-05 links, and the swap charges (open or paid). Shared by GET
+ * The session's bill: submitted, non-voided orders, the reservation deposit
+ * credit (WS-08, floored at 0), verified payments on the orders' WS-05 links,
+ * captured POS tenders, and the swap charges (open or paid). Shared by GET
  * /bill and the ORD-10 close port, so closing waits for an open charge.
  */
 async function settlementOf(
@@ -2299,7 +2301,7 @@ async function settlementOf(
     .filter((id): id is string => id !== null);
   const links = linkIds.length
     ? await tx
-        .select({ paidIdr: paymentLinks.paidIdr })
+        .select({ id: paymentLinks.id, paidIdr: paymentLinks.paidIdr })
         .from(paymentLinks)
         .where(
           and(
@@ -2309,6 +2311,35 @@ async function settlementOf(
         )
     : [];
   const linkPaid = links.reduce((sum, row) => sum + row.paidIdr, 0);
+  const orderIds = liveOrders.map((row) => row.id);
+  const capturedTenders = orderIds.length
+    ? await tx
+        .select({
+          amountIdr: posOrderTenders.amountIdr,
+          paymentLinkId: posOrderTenders.paymentLinkId,
+        })
+        .from(posOrderTenders)
+        .where(
+          and(
+            eq(posOrderTenders.tenantId, tenantId),
+            inArray(posOrderTenders.orderId, orderIds),
+            eq(posOrderTenders.status, "captured"),
+          ),
+        )
+    : [];
+  const countedLinks = new Set(
+    links.filter((row) => row.paidIdr > 0).map((row) => row.id),
+  );
+  // A POS QRIS tender owns its own WS-05 link. If a link is also present on
+  // an order and contributed paid money above, never count it twice.
+  const posPaid = capturedTenders.reduce(
+    (sum, row) =>
+      sum +
+      (row.paymentLinkId !== null && countedLinks.has(row.paymentLinkId)
+        ? 0
+        : row.amountIdr),
+    0,
+  );
   const deposit = await depositCreditFor(tx, tenantId, sessionId);
   const charges = await sessionCharges(tx, tenantId, sessionId);
   const chargesOwed = charges.reduce((sum, row) => sum + chargeOwed(row), 0);
@@ -2318,7 +2349,7 @@ async function settlementOf(
   );
   return {
     billTotalIdr: idr(billTotal + chargesOwed),
-    paidIdr: idr(deposit + linkPaid + chargesPaid),
+    paidIdr: idr(deposit + linkPaid + posPaid + chargesPaid),
   };
 }
 
@@ -2405,6 +2436,7 @@ export async function qrOrderSettlementLookup(input: {
       and(
         eq(orders.tenantId, input.tenantId),
         eq(orders.tableSessionId, input.sessionId),
+        ne(orders.status, "draft"),
         ne(orders.status, "voided"),
       ),
     );
