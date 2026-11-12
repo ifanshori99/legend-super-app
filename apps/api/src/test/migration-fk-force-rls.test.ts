@@ -312,7 +312,7 @@ describe("legend-m007 foreign keys into FORCE RLS tables, run by a plain table o
     expect(constraint.rows[0]).toEqual({ convalidated: true });
   });
 
-  it("[legend-do1o] migration 0387 applies under a plain owner while referenced tenant tables FORCE RLS", async () => {
+  it("[legend-do1o] migration 0307 applies under a plain owner while referenced tenant tables FORCE RLS", async () => {
     // Use the shipped RLS helpers and the actual migration SQL. The scratch
     // parents expose the real referenced keys and retain the FORCE policies.
     for (const [filename, names] of [
@@ -348,7 +348,7 @@ describe("legend-m007 foreign keys into FORCE RLS tables, run by a plain table o
     );
     expect(role.rows[0]).toEqual({ rolsuper: false, rolbypassrls: false });
     const migration = readFileSync(
-      new URL("../../drizzle/0387_prep_item_shelf_life.sql", import.meta.url),
+      new URL("../../drizzle/0307_prep_item_shelf_life.sql", import.meta.url),
       "utf8",
     );
     const applyMigration = async () => {
