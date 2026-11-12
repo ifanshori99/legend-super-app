@@ -5,7 +5,14 @@
 // returns in `verification`. States: loading, empty, add form, pending (with
 // reserved / taken / not-found notices), success, load error.
 import * as React from "react";
-import { CircleAlert, CircleCheck, Clock, Globe } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import {
+  ChevronLeft,
+  CircleAlert,
+  CircleCheck,
+  Clock,
+  Globe,
+} from "lucide-react";
 import type { TenantDomain } from "@starter/shared/platform";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
@@ -55,6 +62,13 @@ export function DomainSettingsPage() {
 
   return (
     <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5">
+      <Link
+        to="/kelola/pengaturan"
+        className="inline-flex min-h-11 w-fit items-center gap-1 text-sm font-semibold text-muted-foreground hover:text-foreground"
+      >
+        <ChevronLeft className="size-4" aria-hidden="true" />
+        Pengaturan
+      </Link>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="grid gap-0.5">
           <h2 className="type-title">Domain kustom</h2>
@@ -128,14 +142,17 @@ export function DomainSettingsPage() {
 function NoticeBanner({
   tone,
   notice,
+  silent,
 }: {
   tone: "danger" | "success";
   notice: DomainNotice;
+  /** Skip the own live role: the parent wraps it in a persistent live region. */
+  silent?: boolean;
 }) {
   const Icon = tone === "danger" ? CircleAlert : CircleCheck;
   return (
     <div
-      role={tone === "danger" ? "alert" : "status"}
+      role={silent ? undefined : tone === "danger" ? "alert" : "status"}
       className={[
         "flex min-w-0 items-start gap-2 rounded-control border-s-4 px-4 py-3 text-sm leading-5",
         tone === "danger"
@@ -185,8 +202,7 @@ function AddDomainForm({
       { brandId: selectedBrand.id, hostname: check.hostname },
       {
         onSuccess: onDone,
-        onError: (error) =>
-          setNotice(domainNotice(classifyDomainError(error))),
+        onError: (error) => setNotice(domainNotice(classifyDomainError(error))),
       },
     );
   }
@@ -304,11 +320,15 @@ function DomainCard({ domain }: { domain: TenantDomain }) {
     });
   }
 
-  if (view === "verified" || justVerified)
-    return (
-      <div className="grid min-w-0 gap-4">
+  const verified = view === "verified" || justVerified;
+
+  return (
+    <div className="grid min-w-0 gap-4">
+      {/* Live region stays mounted so the success message is announced when it fills. */}
+      <div role="status" aria-live="polite" className="empty:-mt-4">
         {justVerified && (
           <NoticeBanner
+            silent
             tone="success"
             notice={{
               title: "Domain terverifikasi.",
@@ -316,6 +336,8 @@ function DomainCard({ domain }: { domain: TenantDomain }) {
             }}
           />
         )}
+      </div>
+      {verified ? (
         <CardShell>
           <Card>
             <DomainHeader domain={domain} verified />
@@ -327,74 +349,74 @@ function DomainCard({ domain }: { domain: TenantDomain }) {
             </div>
           </Card>
         </CardShell>
-      </div>
-    );
-
-  return (
-    <div className="grid min-w-0 gap-4">
-      {notice && <NoticeBanner tone="danger" notice={notice} />}
-      <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(15rem,0.8fr)] lg:items-start">
-        <CardShell>
-          <Card>
-            <DomainHeader domain={domain} verified={false} />
-            <p className="text-sm leading-5 text-muted-foreground">
-              Tambahkan record TXT berikut pada pengelola DNS domain Anda.
-            </p>
-            {!domain.verification && (
-              <p className="text-sm leading-5 text-muted-foreground">
-                {DOMAIN_COPY.noRecord}
-              </p>
-            )}
-            {domain.verification && (
-              <dl className="grid min-w-0 gap-4 rounded-control border-(length:--border-w) border-border bg-surface-2 p-4">
-                <RecordRow label="Jenis" value={domain.verification.type} />
-                <RecordRow
-                  label="Nama / host"
-                  value={domain.verification.name}
-                  copyable
-                />
-                <RecordRow
-                  label="Nilai"
-                  value={domain.verification.value}
-                  copyable
-                />
-              </dl>
-            )}
-            <div className="grid gap-2">
-              <Button
-                className="max-sm:w-full sm:w-fit"
-                onClick={check}
-                disabled={verify.isPending}
-                aria-busy={verify.isPending || undefined}
-              >
-                {verify.isPending ? "Memeriksa…" : "Cek verifikasi"}
-              </Button>
-              <p className="text-sm leading-5 text-muted-foreground">
-                Perubahan DNS mungkin memerlukan waktu sebelum dapat ditemukan.
-              </p>
-            </div>
-          </Card>
-        </CardShell>
-        <CardShell>
-          <Card>
-            <CardTitle>Cara memverifikasi</CardTitle>
-            <ol className="grid list-decimal gap-2 ps-5 text-sm leading-5">
-              <li>Buka pengaturan DNS pada penyedia domain Anda.</li>
-              <li>
-                Tambahkan record TXT dengan nama dan nilai yang ditampilkan.
-              </li>
-              <li>
-                Simpan perubahan, lalu kembali ke sini dan pilih{" "}
-                <strong>Cek verifikasi</strong>.
-              </li>
-            </ol>
-            <p className="text-sm leading-5 text-muted-foreground">
-              Jika record belum ditemukan, periksa kembali nama dan nilainya
-              lalu coba lagi.
-            </p>
-          </Card>
-        </CardShell>
-      </div>
+      ) : (
+        <>
+          {notice && <NoticeBanner tone="danger" notice={notice} />}
+          <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(15rem,0.8fr)] lg:items-start">
+            <CardShell>
+              <Card>
+                <DomainHeader domain={domain} verified={false} />
+                <p className="text-sm leading-5 text-muted-foreground">
+                  Tambahkan record TXT berikut pada pengelola DNS domain Anda.
+                </p>
+                {!domain.verification && (
+                  <p className="text-sm leading-5 text-muted-foreground">
+                    {DOMAIN_COPY.noRecord}
+                  </p>
+                )}
+                {domain.verification && (
+                  <dl className="grid min-w-0 gap-4 rounded-control border-(length:--border-w) border-border bg-surface-2 p-4">
+                    <RecordRow label="Jenis" value={domain.verification.type} />
+                    <RecordRow
+                      label="Nama / host"
+                      value={domain.verification.name}
+                      copyLabel="Salin nama/host"
+                    />
+                    <RecordRow
+                      label="Nilai"
+                      value={domain.verification.value}
+                      copyLabel="Salin nilai"
+                    />
+                  </dl>
+                )}
+                <div className="grid gap-2">
+                  <Button
+                    className="max-sm:w-full sm:w-fit"
+                    onClick={check}
+                    disabled={verify.isPending}
+                    aria-busy={verify.isPending || undefined}
+                  >
+                    {verify.isPending ? "Memeriksa…" : "Cek verifikasi"}
+                  </Button>
+                  <p className="text-sm leading-5 text-muted-foreground">
+                    Perubahan DNS mungkin memerlukan waktu sebelum dapat
+                    ditemukan.
+                  </p>
+                </div>
+              </Card>
+            </CardShell>
+            <CardShell>
+              <Card>
+                <CardTitle>Cara memverifikasi</CardTitle>
+                <ol className="grid list-decimal gap-2 ps-5 text-sm leading-5">
+                  <li>Buka pengaturan DNS pada penyedia domain Anda.</li>
+                  <li>
+                    Tambahkan record TXT dengan nama dan nilai yang ditampilkan.
+                  </li>
+                  <li>
+                    Simpan perubahan, lalu kembali ke sini dan pilih{" "}
+                    <strong>Cek verifikasi</strong>.
+                  </li>
+                </ol>
+                <p className="text-sm leading-5 text-muted-foreground">
+                  Jika record belum ditemukan, periksa kembali nama dan nilainya
+                  lalu coba lagi.
+                </p>
+              </Card>
+            </CardShell>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -410,9 +432,7 @@ function DomainHeader({
     <div className="flex min-w-0 items-start justify-between gap-3">
       <div className="min-w-0 [overflow-wrap:anywhere]">
         <h3 className="type-heading">{domain.hostname}</h3>
-        <p className="text-sm leading-5 text-muted-foreground">
-          Domain kustom
-        </p>
+        <p className="text-sm leading-5 text-muted-foreground">Domain kustom</p>
       </div>
       {verified ? (
         <Badge tone="success">
@@ -432,18 +452,25 @@ function DomainHeader({
 function RecordRow({
   label,
   value,
-  copyable,
+  copyLabel,
 }: {
   label: string;
   value: string;
-  copyable?: boolean;
+  /** Accessible name of the copy button; omit for a row without one. */
+  copyLabel?: string;
 }) {
   const [feedback, setFeedback] = React.useState<string | undefined>();
+  const clearTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  React.useEffect(() => () => clearTimeout(clearTimer.current), []);
 
   async function copy() {
+    clearTimeout(clearTimer.current);
     try {
       await navigator.clipboard.writeText(value);
       setFeedback(DOMAIN_COPY.copied);
+      clearTimer.current = setTimeout(() => setFeedback(undefined), 2000);
     } catch {
       setFeedback(DOMAIN_COPY.copyFailed);
     }
@@ -456,20 +483,25 @@ function RecordRow({
         <span className="min-w-0 font-mono text-sm [overflow-wrap:anywhere]">
           {value}
         </span>
-        {copyable && (
+        {copyLabel && (
           <Button
             type="button"
             variant="outline"
             size="sm"
             className="shrink-0"
             onClick={() => void copy()}
+            aria-label={copyLabel}
           >
             Salin
           </Button>
         )}
       </dd>
-      {feedback && (
-        <p className="text-sm leading-5 text-muted-foreground" aria-live="polite">
+      {copyLabel && (
+        <p
+          role="status"
+          aria-live="polite"
+          className="text-sm leading-5 text-muted-foreground empty:-mt-1"
+        >
           {feedback}
         </p>
       )}
