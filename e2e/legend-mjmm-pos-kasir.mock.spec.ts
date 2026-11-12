@@ -138,6 +138,11 @@ async function enterPin(page: Page, pin: string): Promise<void> {
   }
 }
 
+/** U2 (legend-pspy): held cash outs must be reviewed before the approval form. */
+async function reviewHeldCashOuts(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Lanjutkan peninjauan" }).click();
+}
+
 // ------------------------------------------------------------ payment core
 
 test("legend-mjmm PAY-01 payment screen shows the bill, DP and the six methods", async ({
@@ -793,8 +798,9 @@ test("legend-mjmm SUP-01 supervisor sees the -20.000 difference and must give re
   await expect(area).toContainText(
     new RegExp(`Kas sistem\\s*${rp("2.250.000")}`),
   );
-  await expect(area).toContainText("Persetujuan mengunci hasil");
   await shot(page, "supervisor-approval");
+  await reviewHeldCashOuts(page);
+  await expect(area).toContainText("Persetujuan mengunci hasil");
 
   const approve = page.getByRole("button", { name: /Setujui & tutup shift/ });
   const enabledApprove = approve.and(page.locator(":enabled"));
@@ -826,6 +832,7 @@ test("legend-mjmm SUP-01 PIN without a reason cannot approve", async ({
   await open(page, `/pos/supervisor/shift/${DEMO_SHIFT_ID}`);
   await expect(heading(page, "Persetujuan tutup shift")).toBeVisible();
   const approve = page.getByRole("button", { name: /Setujui & tutup shift/ });
+  await reviewHeldCashOuts(page);
   await enterPin(page, "123456");
   await clickIfEnabled(approve);
   await expect(heading(page, "Persetujuan tutup shift")).toBeVisible();
@@ -1010,7 +1017,8 @@ const BLIND_DRAWER_FIGURES = [
   "Penerimaan tunai",
   "Refund tunai",
   "Kas masuk",
-  "Kas keluar",
+  // U2: the held cash out is its own block, so the counted row is renamed.
+  "Kas keluar diperhitungkan",
   "Setoran kas",
   "Kas sistem",
 ] as const;
@@ -1098,7 +1106,8 @@ test("legend-mjmm SUP-01 non-blind drawer (no demo) still shows numbers, not bli
   );
   await expect(area).toContainText(/Kas masuk\s*\+?\s*Rp\s*100\.000/);
   await expect(area).toContainText(
-    new RegExp(`Kas keluar\\s*${MINUS}?\\s*Rp\\s*150\\.000`),
+    // U2: "Kas keluar diperhitungkan" excludes the held (expired) cash out.
+    new RegExp(`Kas keluar diperhitungkan\\s*${MINUS}?\\s*Rp\\s*150\\.000`),
   );
   await expect(area).toContainText(
     new RegExp(`Kas sistem\\s*${rp("2.250.000")}`),
@@ -1116,6 +1125,7 @@ test("legend-ekaca blind drawer: closing the shift never claims there is no diff
   await expect(heading(page, "Persetujuan tutup shift")).toBeVisible();
   const approve = page.getByRole("button", { name: /Setujui & tutup shift/ });
   const enabledApprove = approve.and(page.locator(":enabled"));
+  await reviewHeldCashOuts(page);
   await page
     .getByRole("textbox", { name: /Penjelasan selisih|Alasan|Catatan/i })
     .first()

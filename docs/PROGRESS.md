@@ -8,6 +8,8 @@
 - Belum: entri nav untuk layar baru (nav.ts milik U1), konflik kecil `id.ts` dengan U1 saat merge.
 - Page review founder: `docs/review/539-u2-kasir-tambahan.html` (ghostex visual check bersih).
 - Biaya sesi (session-usage): biaya* 18,8M (utama opus 3,6M, subagent sonnet 14,4M, opus 0,6M, haiku 0,3M); 47 spawn, maks 8 bersamaan, rata 0,54 subagent berjalan. Kartu KDS (sonf, v4ht, uqfu, ijv8) tidak dikerjakan di U2.
+- Review founder 12 Nov: 8 kelompok disetujui; e-struk dilewati (legend-1uk9 tetap terbuka); refund tetap dialog; QRIS pesanan ber-DP DITAHAN. Dikerjakan (bd0994f3): layar pelanggan membaca `depositAppliedIdr` pesanan (getPosOrder); DP > 0 atau tidak diketahui = "Silakan bayar di kasir" tanpa QR dan tanpa angka; `displayPayMode` + 9 test gagal-dulu (100/100 lulus); mock kasir kini mengirim DP sebagai `depositAppliedIdr` seperti API. Review architect: 1 cacat (angka sisa saat DP masih dibaca) dibetulkan. Dibuka lagi bila kartu backend QRIS DP selesai.
+- Temuan: 6 e2e `legend-mjmm-pos-kasir` (shift/supervisor) gagal sejak c8894367 di cabang ini. Penyebab: perubahan U2 yang disengaja (gerbang kas keluar tertahan sebelum persetujuan, label "Kas keluar diperhitungkan"). Hanya ekspektasi spec yang diubah, asersi uang dan hitung buta tetap; 37/37 lulus.
 
 ## 526 WS-05 admin payment fixes (Codex G0b06, 11 Nov 2026 22:50 WIB)
 
