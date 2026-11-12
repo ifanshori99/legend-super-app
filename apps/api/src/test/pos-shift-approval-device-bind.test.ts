@@ -45,7 +45,10 @@ let headers: { Host: string };
 type Member = { client: ReturnType<typeof agent>; userId: string };
 let supervisor: Member;
 
-const registeredDevices = new Map<string, string>();
+const registeredDevices = new Map<
+  string,
+  { outletId: string; issuedAt: number }
+>();
 
 async function member(roleId: string, label: string): Promise<Member> {
   const client = agent(app);
@@ -64,7 +67,13 @@ async function member(roleId: string, label: string): Promise<Member> {
 /** A registered POS device of the outlet (the PIN throttle references it). */
 async function newDeviceId(): Promise<string> {
   const deviceId = randomUUID();
-  registeredDevices.set(`${tenant.tenantId}:${deviceId}`, tenant.outletId);
+  // The registry floor and signed token must share the issuing clock. The
+  // database VM can run ahead of the API host, making a fresh token look stale.
+  const issuedAt = Math.floor(Date.now() / 1000);
+  registeredDevices.set(`${tenant.tenantId}:${deviceId}`, {
+    outletId: tenant.outletId,
+    issuedAt,
+  });
   const client = await owner.connect();
   try {
     await client.query("BEGIN");
@@ -74,8 +83,8 @@ async function newDeviceId(): Promise<string> {
     );
     await client.query(
       `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
-       VALUES ($1, $2, $3, 'pos', 'Kasir bind shift', now())`,
-      [deviceId, tenant.tenantId, tenant.outletId],
+       VALUES ($1, $2, $3, 'pos', 'Kasir bind shift', $4)`,
+      [deviceId, tenant.tenantId, tenant.outletId, new Date(issuedAt * 1000)],
     );
     await client.query("COMMIT");
   } catch (error) {
@@ -88,9 +97,11 @@ async function newDeviceId(): Promise<string> {
 }
 
 function deviceHeader(deviceId: string): string {
+  const registered = registeredDevices.get(`${tenant.tenantId}:${deviceId}`);
+  if (!registered) throw new Error("Device fixture was not registered");
   return signDeviceToken({
     version: 1,
-    issuedAt: Math.floor(Date.now() / 1000),
+    issuedAt: registered.issuedAt,
     tenantId: tenant.tenantId,
     brandId: null,
     deviceId,
@@ -178,7 +189,7 @@ beforeAll(async () => {
   headers = { Host: tenant.hostname };
   setDeviceOutletResolver(
     async ({ tenantId, deviceId }) =>
-      registeredDevices.get(`${tenantId}:${deviceId}`) ?? null,
+      registeredDevices.get(`${tenantId}:${deviceId}`)?.outletId ?? null,
   );
   const roles: [string, string, string[]][] = [
     [roleIds.cashier, "Kasir Bind Shift", ["shift.cash.operate"]],

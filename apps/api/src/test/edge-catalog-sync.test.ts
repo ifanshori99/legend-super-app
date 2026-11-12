@@ -37,10 +37,10 @@
 //
 // Two databases: the main test database is the CLOUD; a second database
 // (helpers/edge-database.ts, restricted login, RLS forced) is the EDGE.
-// Cloud rows live under the fixture tenant on two private outlets (O1 = the
+// Cloud rows live under a private tenant on two private outlets (O1 = the
 // outlet of the edge, O2 = a sibling). A second bare tenant B owns rows that
-// must never leave for tenant A. Other test files share the fixture tenant, so
-// every cloud-vs-edge comparison is limited to the rows seeded here ("mine").
+// must never leave for tenant A. A private tenant keeps tenant-wide catalog
+// pages independent of the inventory accumulated by other test files.
 //
 // Assumptions (brief ambiguities), each isolated so a mismatch is a one-line fix:
 //  - listCatalogRecordsSince(db, { tenantId, outletId, query }) uses the app
@@ -85,7 +85,6 @@ import { sql } from "drizzle-orm";
 import { Pool } from "pg";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import {
   decodeCursor,
   encodeCursor,
@@ -138,7 +137,8 @@ type Page = {
   hasMore: boolean;
 };
 
-const tenantId = cafeLegendPlatformFixtures.tenant.id;
+const tenantId = randomUUID();
+const legalEntityId = randomUUID();
 const tenantB = randomUUID();
 const brandB = randomUUID();
 const actor = randomUUID();
@@ -148,10 +148,10 @@ const mainOwner = new Pool({
   max: 3,
 });
 
-let O1 = "";
+const O1: string = randomUUID();
 let O2 = "";
 let O3 = ""; // outlet of the second brand of the same tenant
-let brandId = "";
+const brandId = randomUUID();
 const brand2 = randomUUID();
 let edge: EdgeDatabase;
 let node: { id: string; credential: string };
@@ -781,12 +781,37 @@ beforeAll(async () => {
   setAuditWriter(coreAuditWriter);
   // server.ts installs the edge registry verifier; createApp() does not.
   setEdgeCredentialVerifier(verifyEdgeNodeCredential);
-  const bandung = cafeLegendAccessFixtures.outletIds.bandung;
-  O1 = await cloneMainOutlet(mainOwner, bandung, "Outlet uji katalog 1");
-  O2 = await cloneMainOutlet(mainOwner, bandung, "Outlet uji katalog 2");
-  brandId = (
-    await mainOwner.query("SELECT brand_id FROM outlets WHERE id = $1", [O1])
-  ).rows[0].brand_id;
+  // Inventory is tenant wide: unrelated files may leave more than one page
+  // under the shared fixture tenant, so catalog expectations need their own tenant.
+  const fixtureTenant = cafeLegendPlatformFixtures.tenant;
+  await mainOwner.query(
+    `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+     VALUES ($1,$2,'Tenant uji katalog',$3,$4,$5,$6::jsonb,$7::jsonb,$8)`,
+    [
+      tenantId,
+      `katalog-a-${tenantId}`,
+      fixtureTenant.plan,
+      fixtureTenant.status,
+      fixtureTenant.deploymentMode,
+      JSON.stringify(fixtureTenant.featureFlags),
+      JSON.stringify(fixtureTenant.limits),
+      actor,
+    ],
+  );
+  await mainOwner.query(
+    `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1,$2,'uji','Uji')`,
+    [brandId, tenantId],
+  );
+  await mainOwner.query(
+    `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1,$2,'PT Uji Katalog',false)`,
+    [legalEntityId, tenantId],
+  );
+  await mainOwner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours, status)
+     VALUES ($1,$2,$3,$4,'CAT-01','Outlet uji katalog 1','Jl. Uji','{}','active')`,
+    [O1, tenantId, brandId, legalEntityId],
+  );
+  O2 = await cloneMainOutlet(mainOwner, O1, "Outlet uji katalog 2");
   await seedCloud();
 
   // A second brand in the SAME tenant, with its own outlet and brand-owned rows.
@@ -794,7 +819,7 @@ beforeAll(async () => {
     `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1,$2,$3,'Merek dua')`,
     [brand2, tenantId, `uji-${brand2.slice(0, 8)}`],
   );
-  O3 = await cloneMainOutlet(mainOwner, bandung, "Outlet uji katalog 3");
+  O3 = await cloneMainOutlet(mainOwner, O1, "Outlet uji katalog 3");
   await mainOwner.query(`UPDATE outlets SET brand_id = $1 WHERE id = $2`, [
     brand2,
     O3,
@@ -938,7 +963,13 @@ afterAll(async () => {
     await mainOwner.query("DELETE FROM brands WHERE id = $1", [brandB]);
     await mainOwner.query("DELETE FROM tenants WHERE id = $1", [tenantB]);
     await mainOwner.query("DELETE FROM outlets WHERE id = $1", [O3]);
-    await mainOwner.query("DELETE FROM brands WHERE id = $1", [brand2]);
+    await mainOwner.query("DELETE FROM brands WHERE id = ANY($1::uuid[])", [
+      [brandId, brand2],
+    ]);
+    await mainOwner.query("DELETE FROM legal_entities WHERE id = $1", [
+      legalEntityId,
+    ]);
+    await mainOwner.query("DELETE FROM tenants WHERE id = $1", [tenantId]);
   } catch {
     // Best effort: private ids and a private tenant, no other file reads them.
   }
