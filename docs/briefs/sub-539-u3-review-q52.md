@@ -7,9 +7,10 @@ Template: copy structure and CSS of `docs/review/539-u3-ai-mcp.html` (same folde
 Title: "Review ulang Tanya AI (gaya ChatGPT)". Lede: per your 12 Nov note, Tanya AI now looks like ChatGPT: question box at the bottom center, conversation history on the left (on a phone it opens as a slide panel from "Riwayat"), answers flow in the middle, an empty screen shows example questions. Same page for all five areas. Example data.
 
 Images (absolute paths `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/ai-mcp/output/ui-check-ai-mcp/<name>.png`, each in `<figure class="gx-figure">` + short Indonesian figcaption):
+
 - Desktop: `tanya-ai-1440` (Kelola, with a conversation), `tanya-ai-empty-1440` (new conversation with example questions), `tanya-ai-kuota-1440` (quota reached banner above the box).
 - Phone: `tanya-ai-390`, `tanya-ai-empty-390`, `tanya-ai-karyawan-390` (Karyawan area), `tanya-ai-kds-390` (Dapur area).
-Keep total images under ~3 MB.
+  Keep total images under ~3 MB.
 
 One question only: `<gx-question tag="Q52" title="Tanya AI gaya ChatGPT sudah sesuai?">` with `<gx-choice value="Setujui" recommended>Setujui<small>Lanjut ke tahap berikutnya.</small></gx-choice><gx-choice value="Ubah">Ubah<small>Tulis perubahan di catatan.</small></gx-choice>`.
 

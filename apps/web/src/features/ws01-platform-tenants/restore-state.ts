@@ -81,14 +81,22 @@ export function restoreView(
     const until = window.restorableUntil
       ? new Date(window.restorableUntil)
       : null;
-    if (until && !Number.isNaN(until.getTime()) && until.getTime() >= now.getTime())
+    if (
+      until &&
+      !Number.isNaN(until.getTime()) &&
+      until.getTime() >= now.getTime()
+    )
       return {
         kind: "parent_archived",
         changedAt,
         restorableUntil: window.restorableUntil,
       };
   }
-  return { kind: "expired", changedAt, restorableUntil: window.restorableUntil };
+  return {
+    kind: "expired",
+    changedAt,
+    restorableUntil: window.restorableUntil,
+  };
 }
 
 export type ReasonProblem = "required" | "too_long";
@@ -98,8 +106,10 @@ export function validateRestoreReason(
   reason: string,
 ): { ok: true; value: string } | { ok: false; problem: ReasonProblem } {
   const value = reason.trim();
-  if (value.length < RESTORE_REASON_MIN) return { ok: false, problem: "required" };
-  if (value.length > RESTORE_REASON_MAX) return { ok: false, problem: "too_long" };
+  if (value.length < RESTORE_REASON_MIN)
+    return { ok: false, problem: "required" };
+  if (value.length > RESTORE_REASON_MAX)
+    return { ok: false, problem: "too_long" };
   return { ok: true, value };
 }
 

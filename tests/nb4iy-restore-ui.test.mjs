@@ -49,13 +49,17 @@ describe("restoreView", () => {
 
   test("a record that is not archived or closed has nothing to restore", () => {
     assert.equal(
-      restoreView("tenant", tenantWindow({ status: "active", restorable: false }))
-        .kind,
+      restoreView(
+        "tenant",
+        tenantWindow({ status: "active", restorable: false }),
+      ).kind,
       "none",
     );
     assert.equal(
-      restoreView("outlet", outletWindow({ status: "active", restorable: false }))
-        .kind,
+      restoreView(
+        "outlet",
+        outletWindow({ status: "active", restorable: false }),
+      ).kind,
       "none",
     );
     // A tenant window never opens for an outlet status and the other way round.
@@ -128,7 +132,8 @@ describe("restoreView", () => {
       "restorable",
     );
     assert.equal(
-      restoreView("tenant", tenantWindow({ restorable: false }), "archived").kind,
+      restoreView("tenant", tenantWindow({ restorable: false }), "archived")
+        .kind,
       "expired",
     );
   });
@@ -186,7 +191,10 @@ describe("classifyRestoreError", () => {
       "not_available",
     );
     assert.equal(
-      classifyRestoreError(new ApiError(409, "RESTORE_NOT_AVAILABLE", "x"), "outlet"),
+      classifyRestoreError(
+        new ApiError(409, "RESTORE_NOT_AVAILABLE", "x"),
+        "outlet",
+      ),
       "not_available",
     );
     assert.equal(
@@ -197,7 +205,10 @@ describe("classifyRestoreError", () => {
 
   test("outlet INVALID_TRANSITION means the parent tenant is still archived", () => {
     assert.equal(
-      classifyRestoreError(new ApiError(409, "INVALID_TRANSITION", "x"), "outlet"),
+      classifyRestoreError(
+        new ApiError(409, "INVALID_TRANSITION", "x"),
+        "outlet",
+      ),
       "parent_archived",
     );
   });

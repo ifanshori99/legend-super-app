@@ -11,6 +11,7 @@ Images: absolute paths `/Users/ifanshori99/Projects/legend super app/legend/.wor
 Header chips: `11` kartu, `9` kelompok layar, `91` test logika uang lulus, mode contoh (data contoh, belum tersambung server).
 
 One group = one `<h2>` + 1-2 sentence explanation of what the screen does for the outlet + figures + one `<gx-question>` directly under it with two choices: `<gx-choice value="setuju" recommended>Setuju<small>...</small></gx-choice>` and `<gx-choice value="ubah">Perlu diubah<small>Tulis apa yang perlu diubah di catatan.</small></gx-choice>`. Tag = card ids. Groups (state names for images):
+
 1. Koreksi pesanan: diskon, void, refund, struk (legend-2fo) — `koreksi-void-sebelum`, `koreksi-struk` (390: `koreksi-void-sebelum`). Note: diskon diisi dalam persen (sistem menghitung rupiahnya).
 2. Rincian pesanan + pemberitahuan void dari dapur (legend-0ixe) — `pesanan-kosong` 1280, `pesanan-gagal` 390.
 3. Tagih selisih ke pelanggan (legend-shabi) — `tagih-selisih-normal`, `tagih-selisih-belum-pasti` (390).
@@ -22,6 +23,7 @@ One group = one `<h2>` + 1-2 sentence explanation of what the screen does for th
 9. E-struk untuk pelanggan (legend-1uk9) — `struk-publik-normal` (390 only + 1280).
 
 After the groups, one `<h2>Keputusan yang perlu Anda ambil</h2>` with `<div class="gx-callout" data-tone="warn">` per decision and a question each:
+
 - Q-QRIS (uang): Layar pelanggan saat ini selalu menampilkan QRIS sebesar total tagihan, belum dikurangi DP. Untuk pesanan dengan DP, pelanggan bisa diminta membayar lebih. Pilihan: "Tahan QRIS di layar pelanggan untuk pesanan ber-DP sampai server diperbaiki" (recommended, membatasi pembayaran) / "Perbaiki server dulu sebelum layar ini dipakai" / both are safe; first is recommended.
 - Q-REFUND-FORM: Mockup menampilkan tiap keadaan refund sebagai halaman penuh; yang dibangun adalah jendela di halaman Pembayaran (lebih cepat, sama isinya). Pilihan: "Jendela sudah cukup" (recommended) / "Ikuti mockup: halaman penuh".
 

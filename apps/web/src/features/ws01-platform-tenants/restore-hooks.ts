@@ -1,11 +1,7 @@
 // Restore window reads and the restore writes (bead legend-nb4iy). Components
 // reach the API only through these hooks.
 import type { OutletId, TenantId } from "@starter/shared/core";
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { orgEndpoints, platformEndpoints } from "@starter/shared/platform";
 import type {
   RestoreOutletInput,

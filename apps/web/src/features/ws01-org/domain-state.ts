@@ -8,11 +8,7 @@
 // both), so tests can pass plain objects. The copy is the mockup's, verbatim.
 
 export type DomainErrorKind =
-  | "verification_failed"
-  | "reserved"
-  | "taken"
-  | "network"
-  | "unknown";
+  "verification_failed" | "reserved" | "taken" | "network" | "unknown";
 
 export type DomainNotice = { title: string; message: string };
 
@@ -31,7 +27,8 @@ export const DOMAIN_COPY = {
   hostnameRequired: "Masukkan nama domain.",
   hostnameInvalid:
     "Nama domain tidak valid. Gunakan format seperti pesan.contoh.id.",
-  noBrand: "Belum ada brand. Tambahkan brand lebih dulu untuk menghubungkan domain.",
+  noBrand:
+    "Belum ada brand. Tambahkan brand lebih dulu untuk menghubungkan domain.",
   noRecord:
     "Petunjuk verifikasi belum tersedia. Muat ulang halaman, lalu coba lagi.",
   copied: "Tersalin.",
@@ -102,8 +99,7 @@ export function normalizeDomainInput(input: string): string | null {
 }
 
 export type HostnameCheck =
-  | { ok: true; hostname: string }
-  | { ok: false; message: string };
+  { ok: true; hostname: string } | { ok: false; message: string };
 
 export function validateHostname(input: string): HostnameCheck {
   if (input.trim().length === 0)
@@ -136,6 +132,8 @@ export function customDomains<T extends { kind: string }>(
 
 export type DomainScreen = "empty" | "list";
 
-export function domainScreen(domains: readonly { kind: string }[]): DomainScreen {
+export function domainScreen(
+  domains: readonly { kind: string }[],
+): DomainScreen {
   return customDomains(domains).length === 0 ? "empty" : "list";
 }

@@ -9,6 +9,7 @@ Images: absolute paths to `/Users/ifanshori99/Projects/legend super app/legend/.
 Language: plain Indonesian, no jargon (no "MCP token", say "akses aplikasi luar"; "MCP" may appear only as the screen name "MCP & AI"). Title: "Review UI Tanya AI dan akses aplikasi luar". Header lede: screens follow the mockups approved 12 Nov; data is example data.
 
 Groups, each = heading + 1–2 sentence what it does + screenshots + one `<gx-question>` with choices `Setujui` (recommended) and `Ubah` (detail "Tulis perubahan di catatan"). Tie: wrap each group's screenshots in `<section data-question="Qn" data-choice="Setujui">`? No: questions are approve/change, not variants, so do NOT add data-choice ties; put the question directly under its screenshots.
+
 1. Q1 Tanya AI (chat): `tanya-ai-1440`, `tanya-ai-390`; states row: `tanya-ai-tidak-tersedia-1440` (AI belum tersedia), `tanya-ai-kuota-1440` (kuota habis), `tanya-ai-empty-390` (belum ada percakapan).
 2. Q2 Panduan AI: `panduan-1440`, `panduan-390`.
 3. Q3 Draf aksi AI dan kotak persetujuan: `aksi-menunggu-1440`, `aksi-menunggu-390`, `aksi-ditolak-390`, `persetujuan-ai-1440`. Say: AI only drafts; a different person must approve.
