@@ -55,6 +55,9 @@ export const suppliers = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
     name: varchar("name", { length: 150 }).notNull(),
+    kind: varchar("kind", { length: 20, enum: ["goods", "maintenance"] })
+      .default("goods")
+      .notNull(),
     legalName: varchar("legal_name", { length: 200 }),
     /** NPWP as the supplier states it (digits, dots and dashes); optional. */
     npwp: varchar("npwp", { length: 20 }),
@@ -88,6 +91,10 @@ export const suppliers = pgTable(
       table.id,
     ),
     check("suppliers_payment_terms_check", sql`${table.paymentTermsDays} >= 0`),
+    check(
+      "suppliers_kind_check",
+      sql`${table.kind} IN ('goods', 'maintenance')`,
+    ),
     check(
       "suppliers_rating_check",
       sql`${table.rating} IS NULL OR ${table.rating} BETWEEN 1 AND 5`,

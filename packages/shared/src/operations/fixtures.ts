@@ -102,9 +102,7 @@ const productionOrder = (n: number) => {
   return order.id;
 };
 
-/** Service vendors are purchasing suppliers (owner decision, legend-uy1e).
- * The coffee supplier also services the bar's coffee machines; the purchasing
- * fixtures have no dedicated technician yet, so other equipment has none. */
+/** Service vendors reuse the purchasing supplier master (legend-dnex). */
 const supplierByName = (name: string) => {
   const supplier = cafeLegendPurchasingFixtures.suppliers.find(
     (row) => row.name === name,
@@ -112,7 +110,7 @@ const supplierByName = (name: string) => {
   if (!supplier) throw new Error(`Missing supplier fixture "${name}"`);
   return supplier.id;
 };
-const coffeeMachineVendor = supplierByName("CV Kopi Priangan");
+const coffeeMachineVendor = supplierByName("Teknisi Mesin Kopi Bandung");
 
 /** A clock after the day's deadlines, so overdue fixtures stay overdue. */
 const now = "2026-11-01T12:00:00.000Z";

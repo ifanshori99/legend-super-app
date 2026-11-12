@@ -25,6 +25,7 @@ import {
   z,
 } from "../../core/index.ts";
 import { defineEndpoint } from "../../api/index.ts";
+import { getPurchaseOrderPdfPreview } from "./preview.ts";
 import {
   inventoryItemIdSchema,
   nonnegativeDecimal4Schema,
@@ -65,6 +66,7 @@ import {
   supplierInvoiceLineKindSchema,
   supplierInvoiceMatchStatusSchema,
   supplierInvoiceSchema,
+  supplierKindSchema,
   supplierPaymentActionSchema,
   supplierPaymentIdSchema,
   supplierPaymentMethodSchema,
@@ -80,6 +82,7 @@ import {
 
 export const supplierQuerySchema = cursorPageQuerySchema.extend({
   isActive: z.enum(["true", "false"]).optional(),
+  kind: supplierKindSchema.optional(),
 });
 
 export const supplierPriceHistoryQuerySchema = z.strictObject({
@@ -150,6 +153,7 @@ export const pettyPurchasePolicyQuerySchema = z.strictObject({
 
 export const createSupplierInputSchema = clientInputSchema({
   name: z.string().trim().min(1).max(150),
+  kind: supplierKindSchema.optional(),
   legalName: z.string().trim().min(1).max(200).nullable().optional(),
   npwp: supplierNpwpSchema.nullable().optional(),
   contactName: z.string().trim().min(1).max(150).nullable().optional(),
@@ -164,6 +168,7 @@ export const createSupplierInputSchema = clientInputSchema({
 
 export const updateSupplierInputSchema = clientInputSchema({
   name: z.string().trim().min(1).max(150).optional(),
+  kind: supplierKindSchema.optional(),
   legalName: z.string().trim().min(1).max(200).nullable().optional(),
   npwp: supplierNpwpSchema.nullable().optional(),
   contactName: z.string().trim().min(1).max(150).nullable().optional(),
@@ -701,6 +706,7 @@ export const purchasingEndpoints = [
   getPurchaseRequest,
   listPurchaseOrders,
   getPurchaseOrder,
+  getPurchaseOrderPdfPreview,
   listGoodsReceipts,
   getGoodsReceipt,
   listSupplierInvoices,

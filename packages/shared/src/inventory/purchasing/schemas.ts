@@ -144,6 +144,10 @@ export type SupplierNpwp = z.infer<typeof supplierNpwpSchema>;
 
 // ---- Suppliers (PRD §3.18 Supplier, §6.E suppliers) ----------------------
 
+/** Maintenance vendors share the supplier master with goods vendors. */
+export const supplierKindSchema = z.enum(["goods", "maintenance"]);
+export type SupplierKind = z.infer<typeof supplierKindSchema>;
+
 /** Manual performance rating; computed metrics live in supplierPerformance. */
 export const supplierRatingSchema = z.number().int().min(1).max(5);
 export type SupplierRating = z.infer<typeof supplierRatingSchema>;
@@ -157,6 +161,7 @@ export const supplierSchema = z.strictObject({
   id: supplierIdSchema,
   tenantId: tenantIdSchema,
   name: supplierName,
+  kind: supplierKindSchema.default("goods"),
   legalName: z.string().trim().min(1).max(200).nullable(),
   npwp: supplierNpwpSchema.nullable().default(null),
   contactName: personOrCompanyName.nullable(),

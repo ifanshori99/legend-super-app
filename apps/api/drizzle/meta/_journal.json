@@ -1989,6 +1989,20 @@
       "when": 1794417200000,
       "tag": "0297_promo_composite_fks",
       "breakpoints": true
+    },
+    {
+      "idx": 298,
+      "version": "7",
+      "when": 1794417300000,
+      "tag": "0298_supplier_kind",
+      "breakpoints": true
+    },
+    {
+      "idx": 299,
+      "version": "7",
+      "when": 1794417400000,
+      "tag": "0299_waste_photo_source",
+      "breakpoints": true
     }
   ]
 }
