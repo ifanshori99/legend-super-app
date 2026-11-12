@@ -80,6 +80,15 @@ function maybeSent(v: RefundView): boolean {
   );
 }
 
+/**
+ * Order the refund belongs to, for "Ajukan refund baru" and "Lihat pesanan".
+ * Contract gap: RefundView carries only paymentReference/paymentIntentId, no
+ * POS order id, so this is null until the API adds one; the links stay hidden.
+ */
+export function refundOrderId(): string | null {
+  return null;
+}
+
 export function refundUiState(v: RefundView): RefundUiState {
   if (v.status === "pending") return "pending_approval";
   if (v.status === "completed") return "completed";

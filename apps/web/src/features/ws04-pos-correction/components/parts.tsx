@@ -115,7 +115,9 @@ export function BackButton({ className }: { className?: string }) {
 /**
  * The page of one correction mode: heading with an optional status pill, the
  * order summary on the side and the work panel with its action footer. Below
- * 768 px the two stack, so there is no horizontal scroll at 390 px.
+ * 768 px the two stack, so there is no horizontal scroll at 390 px. The footer
+ * sits inline at the end of the form (not sticky) with the buttons side by
+ * side, so it never covers the first field on a small screen.
  */
 export function CorrectionLayout({
   title,
@@ -150,8 +152,15 @@ export function CorrectionLayout({
           </PosPanel>
         }
       >
-        <PosPanel title={panelTitle} footer={footer}>
-          <div className="grid gap-4">{children}</div>
+        <PosPanel title={panelTitle}>
+          <div className="grid gap-4">
+            {children}
+            {footer && (
+              <div className="flex flex-row flex-wrap justify-end gap-3 border-t-(length:--border-w) border-border pt-4 max-md:[&>*]:flex-1">
+                {footer}
+              </div>
+            )}
+          </div>
         </PosPanel>
       </PosTwoPane>
     </div>

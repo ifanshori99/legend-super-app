@@ -1,3 +1,14 @@
+## 539-U2 Kasir tambahan, 11 kartu UI (ui-engineer, cabang `ui/pos-extra` dari m1 ede015c9, 12 Nov 2026 06:25-09:00 WIB)
+
+- Sudah: 2fo koreksi + pratinjau struk, 0ixe rincian pesanan + void dapur, shabi tagih selisih, 5w6 QRIS layar pelanggan, p7lx DP lunas (bug uang), pspy kas keluar tertahan, 7mlf hitung + tutup paksa shift, kfkt + hn5q tindak lanjut refund, 6om3 selisih tutup shift di kotak persetujuan, 1uk9 e-struk publik. Semua mode mock, kontrak shared dipakai; endpoint yang belum ada diberi mock lokal.
+- Review: ui-auditor (0 blocker, 2 major, 8 minor, semua dibetulkan), architect uang xhigh (3 major + 2 minor dibetulkan: kunci idempotency tetap saat hasil refund/diskon belum pasti, selisih buku = rumus API, DP gagal selesai tanpa Lewati, 409 MAYBE_SENT, saldo layar dijepit), perbandingan mockup (impeccable-finish-reviewer).
+- Test: `tests/ws04-pos-extra-logic.test.mjs` 91 test; gagal-dulu di HEAD sebelum perbaikan: 10 gagal, sesudah: 91 lulus.
+- Keputusan: diskon diisi persen (API pakai persen); refund tetap dialog di halaman Pembayaran (mockup halaman penuh, ditanyakan ke founder); keadaan karantina = filter; selisih 6om3 tanpa tanda (API simpan Math.abs); perubahan perilaku tombol di kotak persetujuan (legend-mxl) tidak diambil.
+- Gap kontrak (kartu backend): QRIS layar pelanggan tanpa DP (risiko bayar lebih), arah selisih shift, total refund di detail pesanan, GET order-issue-charges/:chargeId + collect-at-pos shared, defineEndpoint struk publik, payload order.kitchen_voided tanpa nomor tiket/stasiun, persetujuan ponsel supervisor untuk koreksi, endpoint cek status refund, sourceEvidenceId EVIDENCE_MAPPING_REQUIRED, payoutPendingPolls + orderId di RefundView, heldCorrectionIdr di count shift, endpoint shift pending (CONTRACT-GAPS.md).
+- Belum: entri nav untuk layar baru (nav.ts milik U1), konflik kecil `id.ts` dengan U1 saat merge.
+- Page review founder: `docs/review/539-u2-kasir-tambahan.html` (ghostex visual check bersih).
+- Biaya sesi (session-usage): biaya* 18,8M (utama opus 3,6M, subagent sonnet 14,4M, opus 0,6M, haiku 0,3M); 47 spawn, maks 8 bersamaan, rata 0,54 subagent berjalan. Kartu KDS (sonf, v4ht, uqfu, ijv8) tidak dikerjakan di U2.
+
 ## 526 WS-05 admin payment fixes (Codex G0b06, 11 Nov 2026 22:50 WIB)
 
 - Cabang `ws/ws05-pay-admin`, worktree `.worktrees/ws05-pay-admin`, basis `9806b8cd`, bead `legend-xoxim`; scope brief 523/526 dan founder Q63.

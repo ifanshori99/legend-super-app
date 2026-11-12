@@ -68,3 +68,4 @@ No dead buttons; money buttons keep pending/idempotency guards.
 ## K — owner I1 (`features/ws04-pos-correction/**`, `pos-correction.ts` add keys only)
 1. At 390 the sticky footer (two stacked buttons, ~200px) hides the form fields on first view. Make the footer inline/compact at 390 (buttons side by side or footer not sticky on small screens) so the first field is visible.
 2. Refund notice: mockup headline "Item gagal setelah dibayar" — use the mockup copy as the notice title, keep the server-limit sentence as body (money safety).
+6. buka-ulang: the dialog never shows the `reopen.heading` copy from the mockup ("Kembalikan refund untuk ditinjau"); show it as the heading of the reopen step.
