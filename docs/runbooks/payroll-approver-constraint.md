@@ -1,9 +1,10 @@
-# Upgrade aturan pembuat dan approver payroll (549)
+# Upgrade aturan pembuat dan approver payroll (549 / G688h)
 
 Runbook ini untuk tim rilis. Pembuat run harus berbeda dari approver HR dan
 finance; kedua approver juga harus berbeda satu sama lain. Keputusan CTO:
-constraint `payroll_runs_distinct_approvers_check` ditambahkan sebagai `NOT VALID`.
-Baris historis tidak diubah atau dihapus oleh migrasi.
+trigger `payroll_runs_approvers_guard_trg` memeriksa setiap `INSERT` serta
+`UPDATE` yang benar-benar mengubah pembuat atau approver. Baris historis tidak
+diubah atau dihapus oleh migrasi.
 
 ## Preflight sebelum migrasi
 
@@ -38,46 +39,66 @@ ORDER BY tenant_id, legal_entity_id, status;
 COMMIT;
 ```
 
-Hitungan lebih dari nol tidak membatalkan upgrade: keputusan CTO memang
-mempertahankan baris lama sebagai bukti historis. Laporkan hitungannya ke CTO;
-jangan memperbaiki kolom pembuat/approver, menghitung ulang run beku, atau
-menghapus run agar migrasi lolos.
+Hitungan lebih dari nol tidak membatalkan upgrade: keputusan CTO mempertahankan
+baris lama sebagai bukti historis. Laporkan hitungannya ke CTO; jangan memperbaiki
+kolom pembuat/approver, menghitung ulang run beku, atau menghapus run agar migrasi
+lolos.
 
 ## Urutan dan hasil migrasi
 
-1. Migrasi `0350_payroll_run_approvers_not_creator.sql` sengaja diperbaiki dengan
-   `NOT VALID`. Ini diperlukan untuk database yang belum menerapkan 0350:
-   migrasi koreksi setelahnya tidak dapat menolong jika upgrade sudah gagal
-   pada validasi 0350. Ekspresi pemeriksaan tetap sama.
-2. Migrasi `0381_payroll_run_approvers_not_valid.sql` mengganti constraint dengan
-   ekspresi yang sama dan `NOT VALID` untuk database yang sudah menerapkan
-   versi awal 0350. Migrasi ini tidak menulis baris payroll.
-3. Setiap `INSERT` dan `UPDATE` baru tetap diperiksa oleh PostgreSQL. Penulisan
-   pembuat = approver, atau HR = finance, ditolak dengan SQLSTATE `23514`.
-   `NOT VALID` hanya melewatkan pemindaian data yang sudah ada saat penambahan
-   constraint, bukan pengecualian pemeriksaan pada penulisan berikutnya.
+1. Migrasi `0350_payroll_run_approvers_not_creator.sql` sengaja diperbaiki untuk
+   mengganti CHECK lama dengan trigger. Ini menjaga jalur upgrade yang belum
+   menerapkan 0350; migrasi koreksi setelahnya tidak dapat menolong jika upgrade
+   sudah gagal sebelumnya.
+2. Migrasi `0381_payroll_run_approvers_not_valid.sql` memakai penggantian idempoten
+   yang sama. Nama historis migrasi dipertahankan untuk jurnal; CHECK `NOT VALID`
+   tetap memeriksa setiap UPDATE sehingga tidak lagi dipakai untuk aturan ini.
+3. Migrasi `0384_payroll_run_approver_write_guard.sql` memasang guard yang sama
+   untuk database yang sudah mencatat versi lama 0350 dan 0381. Ketiga migrasi
+   tidak menulis baris payroll atau payslip.
+4. Setiap INSERT, atau UPDATE yang mengubah nilai `created_by`, `approved_by_hr`,
+   atau `approved_by_finance`, tetap menolak pembuat = approver dan HR = finance
+   dengan SQLSTATE `23514`. Diagnostic constraint tetap bernama
+   `payroll_runs_distinct_approvers_check`, tetapi tidak ada CHECK dengan nama
+   tersebut lagi. Kolom approver yang NULL tetap diperbolehkan.
 
-Baris lama yang melanggar tetap bisa dibaca, tetapi `UPDATE` apa pun pada baris
-tersebut juga ditolak selama pelanggarannya masih ada. Run beku harus tetap
-beku. Tindak lanjut untuk run historis yang belum beku memerlukan peninjauan
-terpisah oleh HR/finance; migrasi ini tidak memberi persetujuan ulang atau
-mengubah riwayat secara otomatis.
+Run lama yang identitas pembuat/approvernya tetap sama dapat melanjutkan transisi
+`locked` ke `paid` atau `reversed` sesuai guard lifecycle yang sudah ada. Penulisan
+nilai identitas yang sama juga diperbolehkan. Konfigurasi, total, periode,
+persetujuan, dan slip beku tetap dilindungi guard sebelumnya; trigger baru tidak
+memberi persetujuan ulang, mengubah gaji, atau menambah pembayaran. Run `paid` dan
+`reversed` tetap tidak dapat diubah.
 
 ## Pemeriksaan setelah migrasi
 
-Ulangi preflight dan pastikan jumlah serta rincian agregat tidak berubah.
-Periksa definisi constraint menggunakan akun administrator yang sama:
+Ulangi preflight segera setelah migrasi, sebelum transisi bisnis berikutnya,
+dan pastikan jumlah serta rincian agregat tidak berubah. Gunakan akun
+administrator yang sama untuk memastikan CHECK lama sudah hilang dan trigger
+aktif:
 
 ```sql
-SELECT convalidated,
-       pg_get_constraintdef(oid) AS definition
+SELECT count(*) AS legacy_check_count
 FROM pg_constraint
 WHERE conrelid = 'public.payroll_runs'::regclass
   AND conname = 'payroll_runs_distinct_approvers_check';
+
+SELECT tgname,
+       tgenabled,
+       pg_get_triggerdef(oid) AS definition,
+       pg_get_functiondef(tgfoid) AS guard_definition
+FROM pg_trigger
+WHERE tgrelid = 'public.payroll_runs'::regclass
+  AND tgname = 'payroll_runs_approvers_guard_trg'
+  AND NOT tgisinternal;
 ```
 
-Hasil wajib satu baris dengan `convalidated = false` dan definisi yang berakhir
-`NOT VALID`. Jangan menjalankan `VALIDATE CONSTRAINT` sebagai bagian rilis ini.
-Jangan menghapus constraint untuk rollback aplikasi: pemeriksaan tulis tetap
-berlaku pada versi API lama maupun baru. Perubahan kebijakan berikutnya harus
-melalui migrasi dan keputusan CTO tersendiri.
+Hasil wajib `legacy_check_count = 0` serta satu trigger dengan `tgenabled = 'O'`
+dan definisi `BEFORE INSERT OR UPDATE`. Fungsi guard harus memeriksa perubahan
+tuple identitas dengan `IS NOT DISTINCT FROM` sebelum memeriksa ketiga larangan
+pembuat/approver. Jangan menonaktifkan trigger atau memakai
+`session_replication_role = replica` saat membuktikan penolakan penulisan baru.
+
+Rollback aplikasi tetap mempertahankan trigger database: aturan tulis berlaku
+pada versi API lama maupun baru. Mengembalikan CHECK lama dapat memblokir lagi
+transisi run historis, sehingga perubahan database berikutnya memerlukan migrasi
+dan keputusan CTO tersendiri.

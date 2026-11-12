@@ -3,7 +3,8 @@
 // PAYROLL_APPROVER_NOT_DISTINCT in packages/shared/src/hris/payroll/errors.ts).
 //
 // Rule under test: on payroll_runs, neither approved_by_finance nor
-// approved_by_hr may equal created_by, enforced by a CHECK, so a direct write
+// approved_by_hr may equal created_by on an INSERT or identity-changing UPDATE,
+// enforced by the database guard, so a direct write
 // (any role, any code path) is refused with 23514. The existing rule
 // hr approver <> final approver must keep working.
 //
@@ -311,5 +312,74 @@ describe("payroll_runs: approvers differ from the creator (legend-7ui6v)", () =>
       code: CHECK_VIOLATION,
     });
     expect(result.noApprovers).toEqual({ ok: true });
+  });
+
+  it("[G688h-P2-IDENTITIES] checks actual approver changes without a status transition and preserves a valid control", async () => {
+    const result = await withRollback(async (client, ctx) => {
+      const id = await newSimulatedRun(client, ctx);
+      await client.query(
+        `UPDATE payroll_runs
+            SET approved_by_hr = 'hr-user', approved_by_hr_at = now(),
+                approved_by_finance = 'finance-user', approved_by_finance_at = now()
+          WHERE id = $1`,
+        [id],
+      );
+      return {
+        hrIsCreator: await attempt(
+          client,
+          "UPDATE payroll_runs SET approved_by_hr = created_by WHERE id = $1",
+          [id],
+        ),
+        financeIsCreator: await attempt(
+          client,
+          "UPDATE payroll_runs SET approved_by_finance = created_by WHERE id = $1",
+          [id],
+        ),
+        sameApprovers: await attempt(
+          client,
+          "UPDATE payroll_runs SET approved_by_finance = approved_by_hr WHERE id = $1",
+          [id],
+        ),
+        valid: await attempt(
+          client,
+          "UPDATE payroll_runs SET approved_by_hr = 'another-hr-user' WHERE id = $1",
+          [id],
+        ),
+      };
+    });
+    for (const invalid of [
+      result.hrIsCreator,
+      result.financeIsCreator,
+      result.sameApprovers,
+    ])
+      expect(invalid).toMatchObject({ ok: false, code: CHECK_VIOLATION });
+    expect(result.valid).toEqual({ ok: true });
+  });
+
+  it("[G688h-P2-CREATOR] refuses an actual creator change to either existing approver", async () => {
+    const result = await withRollback(async (client, ctx) => {
+      const id = await newSimulatedRun(client, ctx);
+      await client.query(
+        `UPDATE payroll_runs
+            SET approved_by_hr = 'hr-user', approved_by_hr_at = now(),
+                approved_by_finance = 'finance-user', approved_by_finance_at = now()
+          WHERE id = $1`,
+        [id],
+      );
+      return {
+        hr: await attempt(
+          client,
+          "UPDATE payroll_runs SET created_by = approved_by_hr WHERE id = $1",
+          [id],
+        ),
+        finance: await attempt(
+          client,
+          "UPDATE payroll_runs SET created_by = approved_by_finance WHERE id = $1",
+          [id],
+        ),
+      };
+    });
+    expect(result.hr).toMatchObject({ ok: false, code: CHECK_VIOLATION });
+    expect(result.finance).toMatchObject({ ok: false, code: CHECK_VIOLATION });
   });
 });

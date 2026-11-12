@@ -496,14 +496,9 @@ export const payrollRuns = pgTable(
       "payroll_runs_simulation_count_check",
       sql`${table.simulationCount} >= 0`,
     ),
-    // Two-level approval needs two people, and neither is the creator (PRD §3
-    // Matriks Approval; maker-checker, legend-7ui6v, migration 0350).
-    check(
-      "payroll_runs_distinct_approvers_check",
-      sql`(${table.approvedByFinance} IS NULL OR ${table.approvedByHr} IS NULL OR ${table.approvedByFinance} <> ${table.approvedByHr})
-        AND (${table.approvedByFinance} IS NULL OR ${table.approvedByFinance} <> ${table.createdBy})
-        AND (${table.approvedByHr} IS NULL OR ${table.approvedByHr} <> ${table.createdBy})`,
-    ),
+    // Maker-checker is enforced by payroll_runs_approvers_guard_trg in
+    // payroll.custom.sql (0350/0381/0384): check INSERT and actual identity
+    // changes while permitting legacy locked -> paid/reversed transitions.
     // A frozen run went through both approvals and the lock (PAYR-01).
     check(
       "payroll_runs_frozen_check",

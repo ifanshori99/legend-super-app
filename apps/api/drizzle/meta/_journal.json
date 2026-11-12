@@ -1884,6 +1884,13 @@
       "when": 1794459707827,
       "tag": "0383_payroll_rapel_finalization",
       "breakpoints": true
+    },
+    {
+      "idx": 283,
+      "version": "7",
+      "when": 1794460729011,
+      "tag": "0384_payroll_run_approver_write_guard",
+      "breakpoints": true
     }
   ]
 }
