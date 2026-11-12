@@ -85,6 +85,10 @@ export const storageSourcePermissionMap = {
     upload: ["menu.item.manage"],
     read: ["menu.item.view"],
   },
+  waste_log: {
+    upload: ["inventory.waste.record"],
+    read: ["inventory.stock.view"],
+  },
   petty_purchase: {
     upload: ["purchasing.petty.record"],
     read: ["accounting.reconcile", "purchasing.petty_policy.manage"],

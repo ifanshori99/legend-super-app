@@ -14,7 +14,17 @@
 //   write is audited and re-evaluates the par alerts of the moved pairs.
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, lt, or, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  lt,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import {
   businessDayRange,
   encodeCursor,
@@ -37,6 +47,7 @@ import { inventoryItems, stockLocations } from "../db/schema/inventory.ts";
 import { wasteLogs } from "../db/schema/inventory-ops.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { linkStorageObjectSource } from "./core-storage.ts";
 import { consumeStockFefo } from "./inventory-expiry.service.ts";
 import {
   assertOutlet,
@@ -217,7 +228,10 @@ export async function createWasteLog(
       }
 
       await requireLocation(tx, input.outletId, input.locationId);
-      // The photo must be a stored object of this tenant (legend-tk7i).
+      const id = randomUUID();
+      // Waste evidence is a private receipt image uploaded by this actor at
+      // this outlet. Another feature's media must never become waste evidence.
+      // Linking is atomic with the log and stock movements (legend-d78a).
       if (input.mediaId) {
         const [media] = await tx
           .select({ id: coreStorageObjects.id })
@@ -226,17 +240,34 @@ export async function createWasteLog(
             and(
               eq(coreStorageObjects.tenantId, context.tenant.tenantId),
               eq(coreStorageObjects.id, input.mediaId),
+              eq(coreStorageObjects.outletId, input.outletId),
+              eq(coreStorageObjects.purpose, "receipt"),
+              eq(coreStorageObjects.sourceKind, "waste_log"),
+              eq(coreStorageObjects.ownerUserId, actorUserId),
+              isNull(coreStorageObjects.sourceId),
+              inArray(coreStorageObjects.contentType, [
+                "image/jpeg",
+                "image/png",
+                "image/webp",
+              ]),
             ),
           );
         if (!media)
           throw new HttpError(
             422,
             "WASTE_MEDIA_NOT_FOUND",
-            "The waste photo was not found.",
+            "The waste photo must be your own unattached receipt image of this outlet.",
           );
+        await linkStorageObjectSource(tx, {
+          tenantId: context.tenant.tenantId,
+          objectId: input.mediaId,
+          sourceKind: "waste_log",
+          sourceId: id,
+          actorUserId,
+          outletId: input.outletId,
+        });
       }
       const plan = await wastePlan(tx, context, input);
-      const id = randomUUID();
       await lockLocations(tx, context.tenant.tenantId, [input.locationId]);
       let scaledCost = 0n;
       for (const itemId of [...plan.keys()].sort()) {

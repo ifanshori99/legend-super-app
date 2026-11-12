@@ -656,9 +656,15 @@ describe("F16 waste & spoilage (PRD §16 Waste & Spoilage)", () => {
 
     const mediaId = randomUUID();
     await owner.query(
-      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
-       VALUES ($1, $2, $3, 'document', $4, 'image/jpeg', 1024)`,
-      [tenantA, outletA, mediaId, `private/${tenantA}/${mediaId}.jpg`],
+      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, owner_user_id, source_kind)
+       VALUES ($1, $2, $3, 'receipt', $4, 'image/jpeg', 1024, $5, 'waste_log')`,
+      [
+        tenantA,
+        outletA,
+        mediaId,
+        `private/${tenantA}/${mediaId}.jpg`,
+        ownerUserId,
+      ],
     );
     const log = await createWasteLog(
       tenantContext(),

@@ -917,7 +917,7 @@ export const wasteLogSchema = z.strictObject({
   targetId: uuidSchema,
   quantity: positiveDecimal4Schema,
   reason: wasteReasonSchema,
-  /** Optional photo evidence (media contract belongs to another workstream). */
+  /** Optional private receipt image uploaded with source kind `waste_log` (10 MiB). */
   mediaId: uuidSchema.nullable(),
   valueIdr: nonnegativeIdrSchema,
   loggedBy: userIdSchema,

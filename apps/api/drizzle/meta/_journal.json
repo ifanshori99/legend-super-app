@@ -1919,6 +1919,13 @@
       "when": 1794416101000,
       "tag": "0376_supplier_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 288,
+      "version": "7",
+      "when": 1794416102000,
+      "tag": "0377_waste_photo_source",
+      "breakpoints": true
     }
   ]
 }
