@@ -146,14 +146,12 @@ export function useChecklistAnswerQueue(
           lifetime.current.active && window.navigator.locks
             ? activeScope.current
             : null,
-        withLock: (work) => {
+        withLock: async <T>(work: () => T | Promise<T>): Promise<T> => {
           if (!window.navigator.locks)
-            return Promise.reject(
-              new Error("Device queue locking is unavailable."),
-            );
-          return window.navigator.locks.request(
+            throw new Error("Device queue locking is unavailable.");
+          return await window.navigator.locks.request(
             CHECKLIST_ANSWER_QUEUE_KEY,
-            work,
+            async () => await work(),
           );
         },
         send: async (entry) => {
