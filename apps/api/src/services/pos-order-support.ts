@@ -813,8 +813,8 @@ async function categoriesOf(
 /**
  * The reservation deposit (WS-08 `depositCreditForSession`, through the QR
  * port so one wiring serves both bills) this order may use: the session's
- * credit minus what its other live orders already applied, never above the
- * order total (same rule as the QR checkout).
+ * credit minus what its other payable orders already applied, never above
+ * the order total (same rule as the QR checkout). Draft snapshots reserve none.
  */
 async function depositFor(
   tx: Tx,
@@ -838,6 +838,7 @@ async function depositFor(
       and(
         eq(orders.tenantId, tenantId),
         eq(orders.tableSessionId, order.tableSessionId),
+        ne(orders.status, "draft"),
         ne(orders.status, "voided"),
         ne(orders.id, order.id),
       ),
@@ -926,9 +927,10 @@ export async function repriceOrder(
   });
   if (bill.discountIdr !== discountTotal)
     throw new PosError("DISCOUNT_EXCEEDS_SUBTOTAL");
-  const deposit = input.releaseDeposit
-    ? 0
-    : await depositFor(tx, context, order, bill.totalIdr);
+  const deposit =
+    input.releaseDeposit || order.status === "draft"
+      ? 0
+      : await depositFor(tx, context, order, bill.totalIdr);
   const [updated] = await tx
     .update(orders)
     .set({

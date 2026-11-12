@@ -133,6 +133,11 @@ async function lockSessionOrder(
     )
     .for("update");
   if (!order) throw new CoreError("NOT_FOUND", "Pesanan tidak ditemukan.");
+  if (order.channel !== "qr" || order.paymentMode !== "pay_first")
+    throw new CoreError(
+      "CONFLICT",
+      "Pesanan ini dibayar melalui kasir, bukan pembayaran tamu.",
+    );
   return order;
 }
 

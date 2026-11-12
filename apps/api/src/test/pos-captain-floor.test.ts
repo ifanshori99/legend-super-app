@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ulidToUuid } from "@starter/shared/core";
-import { agent } from "./helpers.ts";
+import { agent, originHeader } from "./helpers.ts";
 import {
   createTable,
   owner,
@@ -169,6 +169,33 @@ describe("legend-dysef captain floor board", () => {
   it("G6 an ordinary waiter cannot broaden beyond assigned zones or read another outlet", async () => {
     const assigned = await fixture.newGuest();
     const unassigned = await fixture.newGuest();
+    const privateOrder = await fixture.create({
+      channel: "captain",
+      serviceType: "dine_in",
+      tableSessionId: unassigned.sessionId,
+    });
+    expect(privateOrder.status, JSON.stringify(privateOrder.body)).toBe(201);
+    const privateSubmitted = await fixture.post(
+      `${fixture.base}/${privateOrder.body.data.id}/submit`,
+      {
+        expectedStatus: privateOrder.body.data.status,
+        idempotencyKey: randomUUID(),
+      },
+    );
+    expect(privateSubmitted.status, JSON.stringify(privateSubmitted.body)).toBe(
+      200,
+    );
+    const privateCall = await agent(fixture.app)
+      .post(`/api/table-sessions/${unassigned.sessionId}/service-requests`)
+      .set(fixture.headers)
+      .set(originHeader)
+      .set("Authorization", `Bearer ${unassigned.token}`)
+      .send({
+        type: "call_waiter",
+        reason: "utensils",
+        idempotencyKey: randomUUID(),
+      });
+    expect(privateCall.status, JSON.stringify(privateCall.body)).toBe(201);
     const roleId = randomUUID();
     await owner.query(
       `INSERT INTO roles
@@ -191,6 +218,28 @@ describe("legend-dysef captain floor board", () => {
     expect(
       scoped.body.data.tables.map((row: FloorRow) => row.table.id),
     ).toEqual([assigned.table.id]);
+    // The legacy route must enforce the same assignment boundary (or deny
+    // editor access), including live bill and call data in other zones.
+    const legacy = await waiter.client.get("/api/floor").set(fixture.headers);
+    expect([200, 403], JSON.stringify(legacy.body)).toContain(legacy.status);
+    if (legacy.status === 200) {
+      expect(
+        legacy.body.data.tables.map((row: FloorRow) => row.table.id),
+      ).toEqual([assigned.table.id]);
+      expect(
+        legacy.body.data.zones.map((zone: { id: string }) => zone.id),
+      ).toEqual([assigned.zone.id]);
+    }
+    const legacyBody = JSON.stringify(legacy.body);
+    for (const hidden of [
+      unassigned.table.id,
+      unassigned.zone.id,
+      unassigned.sessionId,
+      privateOrder.body.data.id,
+      privateCall.body.data.id,
+    ]) {
+      expect(legacyBody).not.toContain(hidden);
+    }
     const unassignedZone = await waiter.client
       .get(`${base()}?zoneId=${unassigned.zone.id}`)
       .set(fixture.headers);

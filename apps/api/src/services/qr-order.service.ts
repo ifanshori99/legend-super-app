@@ -2101,6 +2101,7 @@ async function checkout(
           and(
             eq(orders.tenantId, tenantId),
             eq(orders.tableSessionId, session.id),
+            ne(orders.status, "draft"),
             ne(orders.status, "voided"),
             ne(orders.id, orderId),
           ),

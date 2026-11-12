@@ -51,6 +51,24 @@ function actorUserId(req: Request): string {
   return actorOf(req);
 }
 
+/** Resolve visibility on the server for every route exposing the board. */
+async function floorBoardFilters(
+  req: Request,
+  outletId: string,
+  query: { zoneId?: string; assignedToMe?: boolean },
+) {
+  const snapshot = await loadRequestAccess(req);
+  const managesFloor = snapshot.contextFor("floor.table.manage", {
+    type: "outlet",
+    id: outletId,
+  });
+  return {
+    zoneId: query.zoneId,
+    assignedWaiterId:
+      query.assignedToMe || !managesFloor ? actorUserId(req) : undefined,
+  };
+}
+
 export const floorRouter = Router();
 floorRouter.use(
   requireAuth,
@@ -61,11 +79,18 @@ floorRouter.use(
 
 /** Zones, tables and live sessions of the caller's outlet (editor read model). */
 floorRouter.get("/", async (req, res) => {
+  const query = floorBoardEndpoint.query.parse(req.query);
   const { context, outletId } = await resolveFloorContext(
     req,
     "floor.table.view",
   );
-  res.json({ data: await listFloorBoard(context, outletId) });
+  res.json({
+    data: await listFloorBoard(
+      context,
+      outletId,
+      await floorBoardFilters(req, outletId, query),
+    ),
+  });
 });
 
 floorRouter.post("/zones", jsonBody, async (req, res) => {
@@ -174,18 +199,11 @@ outletFloorRouter.get("/:outletId/floor", async (req, res) => {
   const { outletId } = floorBoardEndpoint.params.parse(req.params);
   const query = floorBoardEndpoint.query.parse(req.query);
   const context = await resolveOutletContext(req, "floor.table.view", outletId);
-  const snapshot = await loadRequestAccess(req);
-  // Floor managers can inspect the outlet; every other captain is limited
-  // to their assigned zones, even when assignedToMe=false is supplied.
-  const managesFloor = snapshot.contextFor("floor.table.manage", {
-    type: "outlet",
-    id: outletId,
-  });
   res.json({
-    data: await listFloorBoard(context, outletId, {
-      zoneId: query.zoneId,
-      assignedWaiterId:
-        query.assignedToMe || !managesFloor ? actorUserId(req) : undefined,
-    }),
+    data: await listFloorBoard(
+      context,
+      outletId,
+      await floorBoardFilters(req, outletId, query),
+    ),
   });
 });

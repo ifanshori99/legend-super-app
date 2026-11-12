@@ -324,7 +324,7 @@ export async function createSessionSplits(
       request,
       async () => {
         // D1: the session's single order waiting for payment.
-        const awaiting = await tx
+        const sessionAwaiting = await tx
           .select()
           .from(orders)
           .where(
@@ -336,6 +336,15 @@ export async function createSessionSplits(
           )
           .orderBy(asc(orders.id))
           .for("update");
+        const awaiting = sessionAwaiting.filter(
+          (order) =>
+            order.channel === "qr" && order.paymentMode === "pay_first",
+        );
+        if (sessionAwaiting.length > 0 && awaiting.length === 0)
+          throw new CoreError(
+            "CONFLICT",
+            "Pesanan ini dibayar melalui kasir, bukan pembagian tagihan tamu.",
+          );
         if (awaiting.length === 0)
           throw unprocessable(
             "NOTHING_TO_SPLIT",

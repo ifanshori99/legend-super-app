@@ -166,6 +166,7 @@ export async function mutatePosOrder<T>(
     key: string;
     operation: string;
     request: unknown;
+    requireActiveSession?: boolean;
   },
   run: (tx: Tx, locked: Locked) => Promise<T>,
 ): Promise<T> {
@@ -185,12 +186,28 @@ export async function mutatePosOrder<T>(
         },
       },
       async () => {
+        const sessionId = input.requireActiveSession
+          ? await lockOrderSessionForSubmit(
+              tx,
+              context,
+              input.outletId,
+              input.orderId,
+            )
+          : undefined;
         const locked = await lockPosOrder(
           tx,
           context,
           input.outletId,
           input.orderId,
         );
+        if (
+          input.requireActiveSession &&
+          locked.order.tableSessionId !== sessionId
+        )
+          throw new CoreError(
+            "CONFLICT",
+            "Sesi pesanan berubah; muat ulang pesanan sebelum mengirim.",
+          );
         await assertBusinessDayOpen(tx, context, {
           outletId: input.outletId,
           businessDates: [locked.order.businessDate],
@@ -200,6 +217,50 @@ export async function mutatePosOrder<T>(
       },
     ),
   );
+}
+
+/** Match table operations' table -> session -> order lock order on submit. */
+async function lockOrderSessionForSubmit(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  orderId: string,
+): Promise<string | null> {
+  const { order } = await readPosOrder(tx, context, outletId, orderId);
+  const sessionId = order.tableSessionId;
+  if (sessionId === null) return null;
+  const tenantId = context.tenant.tenantId;
+  const [found] = await tx
+    .select({ tableId: tableSessions.tableId })
+    .from(tableSessions)
+    .where(
+      and(
+        eq(tableSessions.tenantId, tenantId),
+        eq(tableSessions.outletId, outletId),
+        eq(tableSessions.id, sessionId),
+      ),
+    );
+  if (!found)
+    throw new CoreError("CONFLICT", "Sesi meja ini tidak sedang berjalan.");
+  await lockTableLiveState(tx, tenantId, found.tableId);
+  const [session] = await tx
+    .select()
+    .from(tableSessions)
+    .where(
+      and(
+        eq(tableSessions.tenantId, tenantId),
+        eq(tableSessions.outletId, outletId),
+        eq(tableSessions.id, sessionId),
+      ),
+    )
+    .for("update");
+  if (
+    !session ||
+    session.tableId !== found.tableId ||
+    !ACTIVE_SESSION_STATUSES.has(session.status)
+  )
+    throw new CoreError("CONFLICT", "Sesi meja ini tidak sedang berjalan.");
+  return sessionId;
 }
 
 function orderNumberFor(
@@ -713,12 +774,6 @@ export async function createPosOrder(
           orderDiscountIdr: 0,
           taxConfig: await loadPosTaxConfig(tx, context, outletId),
         });
-        const deposit = await posDepositFor(
-          tx,
-          context,
-          { id: orderId, tableSessionId },
-          bill.totalIdr,
-        );
         const [order] = await tx
           .insert(orders)
           .values({
@@ -739,7 +794,7 @@ export async function createPosOrder(
             taxIdr: bill.taxIdr,
             roundingIdr: bill.roundingIdr,
             totalIdr: bill.totalIdr,
-            depositAppliedIdr: idr(deposit),
+            depositAppliedIdr: idr(0),
             status: "draft",
             businessDate,
             taxResult: bill.tax,
@@ -1026,6 +1081,7 @@ export async function submitPosOrder(
       key: idempotencyKey,
       operation: "order.submit",
       request,
+      requireActiveSession: true,
     },
     async (tx, locked) => {
       const { order, pos } = locked;
@@ -1037,6 +1093,14 @@ export async function submitPosOrder(
         deviceId: caller.deviceId,
         cashierId: caller.userId,
       });
+      // Drafts do not reserve session credit. Allocate once this order
+      // becomes payable, replacing any stale legacy draft allocation.
+      const depositAppliedIdr = await posDepositFor(
+        tx,
+        context,
+        order,
+        order.totalIdr,
+      );
       const bumped = await bumpPos(tx, context, pos, now, {
         submittedAt: now,
         shiftId,
@@ -1045,7 +1109,11 @@ export async function submitPosOrder(
       });
       const [submitted] = await tx
         .update(orders)
-        .set({ status: next, updatedAt: now })
+        .set({
+          status: next,
+          depositAppliedIdr: idr(depositAppliedIdr),
+          updatedAt: now,
+        })
         .where(
           and(
             eq(orders.tenantId, context.tenant.tenantId),

@@ -8,6 +8,8 @@ Global constraints: migrations reserved 0392–0396; all heavy commands are seri
 
 Review focus: cross-outlet and cross-user reads/mutations; DP allocation across concurrent sibling orders; captured versus authorized payment distinction; repeated submit/fire/resume intents; held lines remain fully chargeable. Preserve the pending-QRIS price-edit guard.
 
+Reviewed money/locking rules: POS drafts (including draft reprices) carry zero newly applied DP; allocation occurs at submit under the shared session deposit lock. POS and QR sibling allocation sums ignore draft/voided orders, including stale legacy draft snapshots. Submission prelocks table/session before order and rechecks association to serialize close/move/merge safely. Guest whole/split payment supports QR/pay_first only; any legacy staff order-level paymentLinkId blocks a new POS tender until separate recovery, regardless nominal link status. Both board routes enforce server-resolved waiter visibility. These rules supersede earlier assumptions that draft allocation or legacy editor visibility could remain unchanged.
+
 ## Sequential deliverables
 
 1. Per-line hold: extend shared pos/endpoints.ts line input with optional hold; persist heldByCashier in pos-order.service.ts, preserving holdItems fallback. API mixed hold/fire proves held lines are charged and only selected lines fire. Existing fire endpoint remains authoritative.
