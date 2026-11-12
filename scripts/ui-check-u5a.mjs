@@ -39,6 +39,7 @@ import { chromium } from "@playwright/test";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT_DIR = join(ROOT, "docs/qa/539-u5a");
+const FOCUS_DIR = join(OUT_DIR, "focus");
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"];
 const BLOCKING_IMPACTS = new Set(["serious", "critical"]);
 const VIEWPORTS = [
@@ -56,6 +57,12 @@ const visible = (locator, timeout = COLD) =>
   locator.waitFor({ state: "visible", timeout });
 const heading = (page, name) => page.getByRole("heading", { name });
 const dialogOf = (page) => page.getByRole("dialog");
+// Focus crops (state.focus): the card that holds `content`, or the innermost div
+// that holds all of `contents` (last match in document order is the deepest).
+const shellOf = (page, content) =>
+  page.locator('[data-slot="card-shell"]').filter({ has: content }).last();
+const innermost = (page, ...contents) =>
+  contents.reduce((l, c) => l.filter({ has: c }), page.locator("div")).last();
 const settle = async (page) => {
   await page.waitForLoadState("networkidle").catch(() => {});
 };
@@ -216,7 +223,8 @@ const MAPPING_PUT =
 // `path` may carry ?mock=. `dialog`: the state is a dialog, shoot the viewport
 // only. `role`: legend-mock-role cookie. `loading`: capture before data arrives
 // (?mock=slow, 3 s latency). `prepare` drives the page to the state and ends
-// with something visible that proves it is on screen.
+// with something visible that proves it is on screen. `focus` (optional): (page) =>
+// Locator; after the full screenshot, a crop of it goes to docs/qa/539-u5a/focus/.
 const STATES = [
   // restore -- archived tenant (nb4iy)
   { card: "restore", name: "normal", path: TENANT_PATH, prepare: restoreReady },
@@ -238,6 +246,7 @@ const STATES = [
   {
     card: "restore",
     name: "confirm",
+    focus: (page) => shellOf(page, heading(page, "Pulihkan tenant?")),
     path: TENANT_PATH,
     prepare: restoreConfirm,
   },
@@ -256,6 +265,22 @@ const STATES = [
   {
     card: "restore",
     name: "success",
+    focus: (page) =>
+      // The success text also shows in a toast; anchor on the panel's live region.
+      page
+        .locator("div")
+        .filter({
+          has: page
+            .locator('[role="status"][aria-live="polite"]')
+            .filter({ hasText: "Tenant berhasil dipulihkan." }),
+        })
+        .filter({
+          has: page.getByRole("button", {
+            name: "Kembali ke daftar",
+            exact: true,
+          }),
+        })
+        .last(),
     path: TENANT_PATH,
     prepare: async (page) => {
       await restoreConfirm(page);
@@ -270,10 +295,17 @@ const STATES = [
   },
 
   // owner -- tenant Owner section (be0lx)
-  { card: "owner", name: "empty", path: TENANT_PATH, prepare: ownerEmpty },
+  {
+    card: "owner",
+    name: "empty",
+    path: TENANT_PATH,
+    focus: (page) => ownerSection(page),
+    prepare: ownerEmpty,
+  },
   {
     card: "owner",
     name: "assign",
+    focus: (page) => ownerSection(page),
     path: TENANT_PATH,
     prepare: ownerOpenAssign,
   },
@@ -366,6 +398,7 @@ const STATES = [
   {
     card: "domain",
     name: "added",
+    focus: (page) => shellOf(page, heading(page, "pesan.contoh.id")),
     path: "/kelola/pengaturan/domain",
     prepare: async (page) => {
       await domainSubmit(page, "pesan.contoh.id");
@@ -375,6 +408,12 @@ const STATES = [
   {
     card: "domain",
     name: "failed",
+    focus: (page) =>
+      innermost(
+        page,
+        page.getByText("Verifikasi belum berhasil."),
+        page.getByRole("button", { name: "Cek verifikasi" }),
+      ),
     path: "/kelola/pengaturan/domain",
     prepare: async (page) => {
       await domainReady(page);
@@ -433,6 +472,11 @@ const STATES = [
   {
     card: "verifikasi",
     name: "recovery",
+    focus: (page) =>
+      page
+        .locator('[data-slot="card"]')
+        .filter({ has: heading(page, "Masukkan kode cadangan") })
+        .last(),
     path: "/verifikasi",
     prepare: openRecoveryLogin,
   },
@@ -539,6 +583,7 @@ const STATES = [
   {
     card: "keamanan",
     name: "codes",
+    focus: dialogOf,
     path: "/kelola/keamanan",
     dialog: true,
     prepare: async (page) => {
@@ -556,6 +601,11 @@ const STATES = [
   {
     card: "satuan",
     name: "normal",
+    focus: (page) =>
+      page
+        .locator("section")
+        .filter({ has: heading(page, "Daftar satuan") })
+        .last(),
     path: "/kelola/inventori/satuan",
     prepare: unitsReady,
   },
@@ -583,6 +633,7 @@ const STATES = [
   {
     card: "satuan",
     name: "add",
+    focus: dialogOf,
     path: "/kelola/inventori/satuan",
     dialog: true,
     prepare: unitOpenAdd,
@@ -664,6 +715,7 @@ const STATES = [
   {
     card: "pemetaan",
     name: "normal",
+    focus: (page) => shellOf(page, heading(page, "Peran dan akun")),
     path: "/kelola/akuntansi/pemetaan",
     prepare: mappingReady,
   },
@@ -717,6 +769,7 @@ const STATES = [
     // The API refuses the mapping (422): the row is flagged.
     card: "pemetaan",
     name: "validation",
+    focus: (page) => shellOf(page, heading(page, "Peran dan akun")),
     path: "/kelola/akuntansi/pemetaan",
     prepare: async (page) => {
       await changeOneRole(page);
@@ -889,7 +942,7 @@ async function main() {
   }
 
   const axe = await loadAxe();
-  await mkdir(OUT_DIR, { recursive: true });
+  await mkdir(FOCUS_DIR, { recursive: true });
   const browser = await chromium.launch();
   const report = {
     baseUrl,
@@ -932,6 +985,11 @@ async function main() {
             state.dialog === true,
           );
           await rm(join(OUT_DIR, `${id}.error.png`), { force: true });
+          if (state.focus) {
+            const target = state.focus(page);
+            await target.scrollIntoViewIfNeeded();
+            await target.screenshot({ path: join(FOCUS_DIR, `${id}.png`) });
+          }
           const blocking = violations.filter((v) =>
             BLOCKING_IMPACTS.has(v.impact ?? ""),
           );
