@@ -38,6 +38,7 @@ import {
   statementBasisFields,
   statementBasisShape,
 } from "./statement-basis.ts";
+import { AccountingError } from "./errors.ts";
 
 /** Fiscal-period rows a builder reads the basis from; none = nothing closed = live. */
 type PeriodRows = readonly { period: string; status: string }[];
@@ -518,10 +519,14 @@ function cashFlowActivityOf(
 
 /**
  * Direct-method cash flow for [from, to]. Cash is every account in the
- * `cash_and_equivalents` group. Each entry that moves cash is split by its
- * non-cash lines (credit minus debit is the cash they bring in), so the
- * sections add up to the change in the cash accounts exactly; entries that only
- * move cash between cash accounts have no non-cash lines and add nothing.
+ * `cash_and_equivalents` group. Cash receipts and payments are allocated
+ * separately over opposing non-cash balances, capped at those balances to
+ * exclude internal transfers. Non-cash offsets (such as the unpaid part of an
+ * asset purchase) never become cash flows. Whole-rupiah allocations preserve
+ * the exact cash movement, including entries with both receipts and payments.
+ * Ambiguous compound entries fail closed: without pairing information, mixed
+ * cash directions plus noncash offsets, or multiple possible counterparts for
+ * partial cash payments/receipts, cannot be assigned to activities safely.
  */
 export function buildCashFlow(
   accounts: readonly Account[],
@@ -541,28 +546,106 @@ export function buildCashFlow(
   const isCash = (accountId: string) =>
     scoped.get(accountId)?.reportGroup === "cash_and_equivalents";
   let opening = 0n;
-  const cashEntries = new Set<string>();
+  const entries = new Map<
+    string,
+    {
+      cashDebits: bigint;
+      cashCredits: bigint;
+      counterparts: Map<string, bigint>;
+    }
+  >();
   for (const line of lines) {
-    if (!isCash(line.accountId) || line.entryDate > input.to) continue;
+    if (!scoped.has(line.accountId) || line.entryDate > input.to) continue;
+    const cash = isCash(line.accountId);
     const net = BigInt(line.debitIdr) - BigInt(line.creditIdr);
-    if (line.entryDate < input.from) opening += net;
-    else cashEntries.add(line.entryId);
+    if (line.entryDate < input.from) {
+      if (cash) opening += net;
+      continue;
+    }
+    const entry = entries.get(line.entryId) ?? {
+      cashDebits: 0n,
+      cashCredits: 0n,
+      counterparts: new Map<string, bigint>(),
+    };
+    if (cash) {
+      entry.cashDebits += BigInt(line.debitIdr);
+      entry.cashCredits += BigInt(line.creditIdr);
+    } else
+      entry.counterparts.set(
+        line.accountId,
+        (entry.counterparts.get(line.accountId) ?? 0n) - net,
+      );
+    entries.set(line.entryId, entry);
   }
   const rowsByActivity = new Map<string, Map<string, bigint>>();
-  for (const line of lines) {
-    const account = scoped.get(line.accountId);
-    if (!account || isCash(line.accountId)) continue;
-    if (line.entryDate < input.from || line.entryDate > input.to) continue;
-    if (!cashEntries.has(line.entryId)) continue;
-    const activity = cashFlowActivityOf(account.reportGroup);
-    const rows = rowsByActivity.get(activity) ?? new Map<string, bigint>();
-    rows.set(
-      account.id,
-      (rows.get(account.id) ?? 0n) +
-        BigInt(line.creditIdr) -
-        BigInt(line.debitIdr),
-    );
-    rowsByActivity.set(activity, rows);
+  for (const entry of entries.values()) {
+    if (entry.cashDebits === 0n && entry.cashCredits === 0n) continue;
+    const noncashCredits = [...entry.counterparts.values()].filter(
+      (amount) => amount > 0n,
+    ).length;
+    const noncashDebits = [...entry.counterparts.values()].filter(
+      (amount) => amount < 0n,
+    ).length;
+    const hasNoncashOffsets = noncashCredits > 0 && noncashDebits > 0;
+    const hasBothCashDirections =
+      entry.cashDebits > 0n && entry.cashCredits > 0n;
+    const opposingAccounts =
+      entry.cashDebits > 0n ? noncashCredits : noncashDebits;
+    if (hasNoncashOffsets && (hasBothCashDirections || opposingAccounts > 1))
+      throw new AccountingError(
+        "STATEMENT_VALUE_INVALID",
+        "Arus kas jurnal gabungan tidak dapat ditentukan dengan pasti. Pisahkan transaksi kas dan nonkas.",
+      );
+    for (const direction of [1n, -1n]) {
+      const counterparts = [...entry.counterparts]
+        .filter(([, amount]) => amount * direction > 0n)
+        .sort(([left], [right]) => {
+          const codeOrder = scoped
+            .get(left)!
+            .code.localeCompare(scoped.get(right)!.code);
+          return codeOrder || left.localeCompare(right);
+        });
+      const total = counterparts.reduce(
+        (sum, [, amount]) => sum + amount * direction,
+        0n,
+      );
+      const cashAvailable =
+        direction > 0n ? entry.cashDebits : entry.cashCredits;
+      const cash = cashAvailable < total ? cashAvailable : total;
+      if (cash === 0n) continue;
+      const allocations = counterparts
+        .map(([accountId, amount]) => {
+          const numerator = cash * amount * direction;
+          return {
+            accountId,
+            amount: numerator / total,
+            remainder: numerator % total,
+          };
+        })
+        .sort((left, right) =>
+          left.remainder === right.remainder
+            ? 0
+            : left.remainder > right.remainder
+              ? -1
+              : 1,
+        );
+      let remaining =
+        cash -
+        allocations.reduce((sum, allocation) => sum + allocation.amount, 0n);
+      for (const allocation of allocations) {
+        // Largest remainders receive the spare rupiah in stable account order.
+        // The rows always allocate exactly the entry's actual cash movement.
+        const cashAmount =
+          (allocation.amount + (remaining > 0n ? 1n : 0n)) * direction;
+        if (remaining > 0n) remaining -= 1n;
+        const { accountId } = allocation;
+        const account = scoped.get(accountId)!;
+        const activity = cashFlowActivityOf(account.reportGroup);
+        const rows = rowsByActivity.get(activity) ?? new Map<string, bigint>();
+        rows.set(accountId, (rows.get(accountId) ?? 0n) + cashAmount);
+        rowsByActivity.set(activity, rows);
+      }
+    }
   }
   const sections = CASH_FLOW_ACTIVITIES.map((activity) => {
     const rows = [...(rowsByActivity.get(activity) ?? [])]
