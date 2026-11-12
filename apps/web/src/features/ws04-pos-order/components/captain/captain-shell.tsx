@@ -90,7 +90,7 @@ export function CaptainShell({
           bottomBar && "pb-32",
         )}
       >
-        <div className="grid gap-4">
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
           <div
             data-slot="captain-intro"
             className="flex items-start justify-between gap-3"
@@ -111,11 +111,15 @@ export function CaptainShell({
         </div>
       </main>
       {bottomBar && (
-        <div
-          data-slot="captain-bottom-bar"
-          className="sticky bottom-0 z-10 mx-auto grid w-full max-w-3xl gap-2 border-t-2 border-border bg-card px-card pt-3 pb-[max(1rem,env(safe-area-inset-bottom))]"
-        >
-          {bottomBar}
+        // The area frame pads the page by 16 px, and a sticky bar stops at the
+        // padding edge: pull it down and out so it sits flush on the viewport.
+        <div className="sticky -bottom-4 z-10 -mx-4 border-t-2 border-border bg-card">
+          <div
+            data-slot="captain-bottom-bar"
+            className="mx-auto grid w-full max-w-3xl gap-2 px-card pt-3 pb-[max(2rem,calc(1rem+env(safe-area-inset-bottom)))]"
+          >
+            {bottomBar}
+          </div>
         </div>
       )}
     </div>

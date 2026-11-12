@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Minus, Plus } from "lucide-react";
 import { useT } from "@/components/i18n";
@@ -42,6 +42,25 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
   const draft = useDraftCart(`captain:${tableId}`);
   const submit = useAddToTable({ draftKey: `captain:${tableId}` });
   const [editingId, setEditingId] = useState<string | null>(null);
+  // The line the captain just removed, kept briefly so "Urungkan" can restore it.
+  const [removed, setRemoved] = useState<{
+    line: CartLine;
+    index: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!removed) return;
+    const timer = setTimeout(() => setRemoved(null), 8000);
+    return () => clearTimeout(timer);
+  }, [removed]);
+
+  const undoRemove = () => {
+    if (!removed) return;
+    const next = [...draft.lines];
+    next.splice(Math.min(removed.index, next.length), 0, removed.line);
+    draft.replace(next);
+    setRemoved(null);
+  };
 
   const tableLabel = tableOrder.data?.table.label;
   const heldCount = draft.lines.filter((line) => line.hold).length;
@@ -114,6 +133,18 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
       }
     >
       <div data-slot="captain-review" className="grid content-start gap-4">
+        {removed && (
+          <Notice
+            tone="info"
+            role="status"
+            title={t("posCaptainOrder.review.lineRemoved")}
+          >
+            <Button type="button" variant="outline" onClick={undoRemove}>
+              {t("posCaptainOrder.review.undo")}
+            </Button>
+          </Notice>
+        )}
+
         {submit.isError && (
           <Notice
             tone="danger"
@@ -219,6 +250,10 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
             setEditingId(null);
           }}
           onRemove={() => {
+            const index = draft.lines.findIndex(
+              (line) => line.lineId === editing.lineId,
+            );
+            setRemoved({ line: editing, index });
             draft.remove(editing.lineId);
             setEditingId(null);
           }}
@@ -244,12 +279,12 @@ function ReviewLine({
     <div className="rounded-container border-(length:--border-w) border-border bg-card p-card">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-(length:--density-text) leading-6 font-bold">
+          <h2 className="text-(length:--density-text) leading-6 font-bold">
             {t("posCaptainOrder.review.lineTitle", {
               qty: line.quantity,
               name: line.name,
             })}
-          </h3>
+          </h2>
           <p className="text-base text-muted-foreground">
             <Money amount={lineTotalIdr(line)} size="sm" />
             {details.length > 0 && <> · {details.join(" · ")}</>}
@@ -311,7 +346,7 @@ function EditLineDialog({
   const [note, setNote] = useState(line.note);
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent>
+      <DialogContent data-density="kontras">
         <DialogHeader>
           <DialogTitle>
             {t("posCaptainOrder.review.editDialog.title")}

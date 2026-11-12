@@ -14,7 +14,6 @@ export const posOrderCartMessages = {
     emptyTitle: "Keranjang masih kosong",
     emptyDescription: "Pilih menu untuk menambahkan pesanan.",
     subtotal: "Subtotal · {count} item",
-    review: "Periksa pesanan sebelum melanjutkan.",
     park: "Tahan pesanan",
     fireHeld: "Kirim item ditahan",
     continue: "Lanjutkan pesanan",
@@ -30,9 +29,7 @@ export const posOrderCartMessages = {
     increase: "Tambah {name}",
     quantity: "Jumlah",
     hold: "Tahan",
-    holdLabel: "Tahan {name} sampai nanti",
-    held: "Tahan · {course}",
-    heldLabel: "Lepas tahanan {name}",
+    holdLabel: "Tahan {name}",
     total: "Total {name}",
   },
   channel: {
@@ -102,7 +99,7 @@ export const posOrderCartMessages = {
     description: "Lanjutkan pesanan yang ditahan tadi.",
     loading: "Memuat pesanan ditahan…",
     emptyTitle: "Belum ada pesanan ditahan",
-    emptyDescription: "Pesanan yang kamu tahan akan muncul di sini.",
+    emptyDescription: "Pesanan yang Anda tahan akan muncul di sini.",
     error: "Pesanan ditahan belum bisa dimuat.",
     refreshFailed:
       "Daftar belum bisa diperbarui. Daftar terakhir tetap ditampilkan.",

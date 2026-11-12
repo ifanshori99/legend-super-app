@@ -20,9 +20,11 @@ export function CallBanner({
   moreCount: number;
 }) {
   const t = useT();
+  // The reason is what the guest asked for; fall back to the call type.
+  const reason = call.reason || t(`posCaptainTables.calls.type.${call.type}`);
   const description = zone
-    ? t("posCaptainTables.banner.description", { reason: call.reason, zone })
-    : t("posCaptainTables.banner.descriptionNoZone", { reason: call.reason });
+    ? t("posCaptainTables.banner.description", { reason, zone })
+    : t("posCaptainTables.banner.descriptionNoZone", { reason });
   return (
     <div
       data-slot="captain-call-banner"
@@ -31,7 +33,7 @@ export function CallBanner({
       <div className="min-w-0">
         <p className="flex items-center gap-2 text-base leading-6 font-bold">
           <BellRing className="size-4 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 whitespace-nowrap">
+          <span className="min-w-0">
             {t("posCaptainTables.banner.title", { table: call.tableLabel })}
           </span>
         </p>

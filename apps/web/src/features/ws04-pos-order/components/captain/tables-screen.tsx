@@ -86,7 +86,7 @@ export function TablesScreen() {
         </Button>
       }
     >
-      <div className="grid gap-4">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
         {mode === "edge_only" && (
           <Notice tone="warning" title={t("posCaptainTables.offline.title")}>
             {t("posCaptainTables.offline.body")}
@@ -172,7 +172,7 @@ export function TablesScreen() {
             <div
               role="group"
               aria-label={t("posCaptainTables.tables.filterLabel")}
-              className="flex gap-2"
+              className="grid grid-cols-3 gap-2"
             >
               {FILTERS.map((value) => (
                 <Button
@@ -182,7 +182,7 @@ export function TablesScreen() {
                   aria-pressed={filter === value}
                   onClick={() => setFilter(value)}
                   className={cn(
-                    "min-w-0 px-3 font-bold",
+                    "h-auto min-h-control min-w-0 px-3 py-2 leading-5 font-bold whitespace-normal",
                     filter === value && "border-foreground bg-surface-3",
                   )}
                 >

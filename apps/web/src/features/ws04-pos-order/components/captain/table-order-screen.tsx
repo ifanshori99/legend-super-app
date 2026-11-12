@@ -119,9 +119,9 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
                 const course = group.course.label.toLocaleLowerCase("id-ID");
                 return (
                   <div key={group.course.id} className="grid gap-3">
-                    <h3 className="text-base leading-6 font-semibold text-muted-foreground">
+                    <h2 className="text-base leading-6 font-semibold text-muted-foreground">
                       {group.course.label}
-                    </h3>
+                    </h2>
                     <ul className="grid gap-3">
                       {group.lines.map((line) => (
                         <li key={line.lineId}>

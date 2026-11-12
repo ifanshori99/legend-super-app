@@ -179,21 +179,26 @@ export function ChannelDetail({
             </Button>
           ))}
         </div>
-        <label htmlFor={refId} className="sr-only">
-          {t("posOrderCart.ojol.refLabel")}
-        </label>
-        <Input
-          id={refId}
-          ref={refInputRef}
-          value={ojolRef}
-          onChange={(event) => onOjolRefChange(event.target.value)}
-          placeholder={t("posOrderCart.ojol.refPlaceholder")}
-          autoComplete="off"
-          maxLength={64}
-          aria-invalid={error === "ojolRef" ? true : undefined}
-          aria-describedby={message ? messageId : undefined}
-          className="h-control-lg"
-        />
+        <div className="grid gap-1">
+          <label
+            htmlFor={refId}
+            className="text-sm font-semibold text-muted-foreground"
+          >
+            {t("posOrderCart.ojol.refLabel")}
+          </label>
+          <Input
+            id={refId}
+            ref={refInputRef}
+            value={ojolRef}
+            onChange={(event) => onOjolRefChange(event.target.value)}
+            placeholder={t("posOrderCart.ojol.refPlaceholder")}
+            autoComplete="off"
+            maxLength={64}
+            aria-invalid={error === "ojolRef" ? true : undefined}
+            aria-describedby={message ? messageId : undefined}
+            className="h-control-lg"
+          />
+        </div>
         {message && (
           <p
             id={messageId}

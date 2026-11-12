@@ -46,6 +46,8 @@ export const posCaptainOrderMessages = {
     decrease: "Kurangi {name}",
     increase: "Tambah {name}",
     quantity: "Jumlah {name}: {qty}",
+    lineRemoved: "Item dihapus",
+    undo: "Urungkan",
     inOrder: "{count} baris di pesanan",
     soldOut: "Stok habis",
     hint: "Pilih item untuk menambah catatan dan mengatur kapan dikirim ke dapur.",
@@ -91,6 +93,8 @@ export const posCaptainOrderMessages = {
     submitFailed:
       "Pesanan belum terkirim. Item Anda masih aman di sini, coba kirim lagi.",
     submitFailedReason: "Penyebab: {message}",
+    lineRemoved: "Item dihapus",
+    undo: "Urungkan",
     loading: "Memuat meja…",
     loadFailedTitle: "Meja belum termuat",
     loadFailedHint: "Periksa koneksi lalu coba lagi.",

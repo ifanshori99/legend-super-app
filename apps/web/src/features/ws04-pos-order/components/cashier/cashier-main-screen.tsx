@@ -100,19 +100,35 @@ export function CashierMainScreen() {
   const [parkedOpen, setParkedOpen] = useState(false);
   const [fieldError, setFieldError] = useState<ChannelDetailError>(null);
   const [fieldErrorToken, setFieldErrorToken] = useState(0);
-  // The line the cashier just removed, kept briefly so "Urungkan" can restore it.
-  const [removed, setRemoved] = useState<{
-    line: CartLine;
-    index: number;
-  } | null>(null);
+  // The lines the cashier just removed (newest last), kept briefly so "Urungkan"
+  // can restore them one by one, the last removed first.
+  const [removed, setRemoved] = useState<{ line: CartLine; index: number }[]>(
+    [],
+  );
   const [status, setStatus] = useState<Status | null>(null);
+  const undoRef = useRef<HTMLButtonElement>(null);
+  // Where focus goes after a removal or an undo: a row's first control, or the
+  // "Urungkan" button when there is no row to go to.
+  const focusAfter = useRef<{ lineId: string | null } | null>(null);
 
   const totals = cartTotals(cart.lines);
 
   useEffect(() => {
-    if (!removed) return;
-    const timer = setTimeout(() => setRemoved(null), 8000);
+    if (removed.length === 0) return;
+    const timer = setTimeout(() => setRemoved([]), 8000);
     return () => clearTimeout(timer);
+  }, [removed]);
+
+  useEffect(() => {
+    const target = focusAfter.current;
+    if (!target) return;
+    focusAfter.current = null;
+    const row = target.lineId
+      ? document.querySelector<HTMLElement>(
+          `[data-slot="cart-pane"] [data-line-focus="${CSS.escape(target.lineId)}"]`,
+        )
+      : null;
+    (row ?? undoRef.current)?.focus();
   }, [removed]);
 
   const fail = (field: Exclude<ChannelDetailError, null>) => {
@@ -124,24 +140,30 @@ export function CashierMainScreen() {
     if (quantity <= 0) {
       const index = cart.lines.findIndex((line) => line.lineId === lineId);
       const line = cart.lines[index];
-      if (line) setRemoved({ line, index });
+      if (line) {
+        setRemoved((current) => [...current, { line, index }]);
+        focusAfter.current = {
+          lineId: cart.lines[index + 1]?.lineId ?? null,
+        };
+      }
     }
     cart.setQuantity(lineId, quantity);
   };
 
   const undoRemove = () => {
-    if (!removed) return;
+    const last = removed[removed.length - 1];
+    if (!last) return;
     const next = [...cart.lines];
-    next.splice(Math.min(removed.index, next.length), 0, removed.line);
+    next.splice(Math.min(last.index, next.length), 0, last.line);
     cart.replace(next);
-    setRemoved(null);
+    setRemoved(removed.slice(0, -1));
+    focusAfter.current = { lineId: last.line.lineId };
   };
 
   const changeMeta = (patch: Partial<CartOrderMeta>) => {
     setMeta((current) => ({ ...current, ...patch }));
     setFieldError(null);
     setStatus(null);
-    setRemoved(null);
     submit.reset();
     park.reset();
   };
@@ -149,7 +171,6 @@ export function CashierMainScreen() {
   const pick = (item: MenuItem) => {
     if (item.soldOut) return;
     setStatus(null);
-    setRemoved(null);
     if (item.modifierGroups.length === 0) {
       cart.add(item, { modifiers: [], note: "", quantity: 1 });
       return;
@@ -173,7 +194,7 @@ export function CashierMainScreen() {
     }
     setFieldError(null);
     setStatus(null);
-    setRemoved(null);
+    setRemoved([]);
     submit.mutate(
       {
         channel,
@@ -203,7 +224,7 @@ export function CashierMainScreen() {
 
   const parkOrder = () => {
     setStatus(null);
-    setRemoved(null);
+    setRemoved([]);
     park.mutate(
       { channel: meta.channel, lines: cart.lines },
       {
@@ -218,7 +239,7 @@ export function CashierMainScreen() {
   // The order does not exist on the server yet, so "send held items" releases
   // every held line: they go to the kitchen together with the order.
   const releaseHeld = () => {
-    setRemoved(null);
+    setRemoved([]);
     setStatus({ key: "heldReleased", params: { count: totals.heldCount } });
     cart.replace(cart.lines.map((line) => ({ ...line, hold: false })));
   };
@@ -228,7 +249,7 @@ export function CashierMainScreen() {
     setMeta((current) => ({ ...current, channel: draft.channel }));
     setFieldError(null);
     setParkedOpen(false);
-    setRemoved(null);
+    setRemoved([]);
     setStatus({ key: "resumedOk" });
   };
 
@@ -240,9 +261,14 @@ export function CashierMainScreen() {
           title={t(`posOrderCart.status.${status.key}`, status.params)}
         />
       )}
-      {removed && (
+      {removed.length > 0 && (
         <Notice tone="info" title={t("posOrderCart.status.lineRemoved")}>
-          <Button type="button" variant="outline" onClick={undoRemove}>
+          <Button
+            ref={undoRef}
+            type="button"
+            variant="outline"
+            onClick={undoRemove}
+          >
             {t("posOrderCart.status.undo")}
           </Button>
         </Notice>
@@ -309,9 +335,7 @@ export function CashierMainScreen() {
         submitting={submit.isPending}
         className={cn(
           "min-[701px]:sticky min-[701px]:top-4 min-[701px]:h-[calc(100dvh-10.25rem)] min-[701px]:min-h-128",
-          view === "menu"
-            ? "max-[700px]:hidden"
-            : "max-[700px]:min-h-[calc(100dvh-10rem)]",
+          view === "menu" && "max-[700px]:hidden",
         )}
       />
 

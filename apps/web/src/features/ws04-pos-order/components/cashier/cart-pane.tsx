@@ -135,7 +135,7 @@ export function CartPane({
         focusToken={fieldErrorToken}
       />
 
-      <div className="min-h-32 flex-1 overflow-y-auto">
+      <div className="min-h-40 flex-1 overflow-y-auto max-[700px]:max-h-[50dvh]">
         {isEmpty ? (
           <div className="grid gap-1 px-2 py-6 text-center">
             <p className="text-lg leading-7 font-semibold">
@@ -160,9 +160,8 @@ export function CartPane({
         )}
       </div>
 
-      {/* Stays in view: pinned to the panel bottom on desktop, to the screen
-          bottom on a phone where the page scrolls. */}
-      <div className="sticky bottom-0 grid gap-2 border-t border-border bg-card pt-3">
+      {/* Always below the list: the list scrolls on its own, on a phone too. */}
+      <div className="grid shrink-0 gap-2 border-t border-border bg-card pt-3">
         {feedback}
         {/* The one live region for the total; line rows announce nothing. */}
         <div
@@ -174,9 +173,6 @@ export function CartPane({
           </span>
           <Money amount={totals.subtotalIdr} size="lg" />
         </div>
-        <p className="text-sm text-muted-foreground">
-          {t("posOrderCart.cart.review")}
-        </p>
         <span id={emptyHintId} className="sr-only">
           {t("posOrderCart.cart.hintEmpty")}
         </span>
@@ -192,7 +188,7 @@ export function CartPane({
             aria-disabled={isEmpty || busy ? true : undefined}
             aria-describedby={isEmpty ? emptyHintId : undefined}
             onClick={isEmpty || busy ? undefined : onPark}
-            className="h-auto min-h-control-lg px-3 font-bold whitespace-normal"
+            className="h-auto min-h-control px-3 font-bold whitespace-normal"
           >
             {t("posOrderCart.cart.park")}
           </Button>
@@ -203,7 +199,7 @@ export function CartPane({
             aria-disabled={noHeld || busy ? true : undefined}
             aria-describedby={noHeld ? heldHintId : undefined}
             onClick={noHeld || busy ? undefined : onFireHeld}
-            className="h-auto min-h-control-lg px-3 font-bold whitespace-normal"
+            className="h-auto min-h-control px-3 font-bold whitespace-normal"
           >
             {t("posOrderCart.cart.fireHeld")}
           </Button>
@@ -243,22 +239,26 @@ function CartLineRow({
     ...line.modifiers.map((modifier) => modifier.name),
     ...(line.note ? [t("posOrderCart.line.note", { note: line.note })] : []),
   ].join(" · ");
-  const detailText =
-    details || (line.hold ? "" : t("posOrderCart.line.sendNow"));
+  // No details to show: the "send now" note rides on the controls row instead
+  // of taking a line of its own.
+  const sendNow = !details && !line.hold;
   const removing = line.quantity <= 1;
 
   return (
-    <li className="border-t border-border py-3 first:border-t-0">
+    <li
+      data-line-id={line.lineId}
+      className="border-t border-border py-2 first:border-t-0"
+    >
       <div className="flex items-start justify-between gap-3">
         <p className="min-w-0 font-bold break-words">{line.name}</p>
         <Money amount={lineTotalIdr(line)} className="font-bold" />
       </div>
-      {detailText && (
+      {details && (
         <p className="mt-0.5 text-sm break-words text-muted-foreground">
-          {detailText}
+          {details}
         </p>
       )}
-      <div className="mt-2 flex flex-wrap items-center gap-2">
+      <div className="mt-1.5 flex flex-wrap items-center gap-2">
         <Button
           type="button"
           variant="outline"
@@ -270,10 +270,11 @@ function CartLineRow({
             { name: line.name },
           )}
           aria-disabled={locked ? true : undefined}
+          data-line-focus={line.lineId}
           onClick={() =>
             locked ? undefined : onSetQuantity(line.lineId, line.quantity - 1)
           }
-          className="size-14"
+          className="size-12"
         >
           {removing ? (
             <Trash2 aria-hidden="true" />
@@ -294,7 +295,7 @@ function CartLineRow({
           onClick={() =>
             locked ? undefined : onSetQuantity(line.lineId, line.quantity + 1)
           }
-          className="size-14"
+          className="size-12"
         >
           <Plus aria-hidden="true" />
         </Button>
@@ -303,12 +304,7 @@ function CartLineRow({
           variant="ghost"
           size="sm"
           aria-pressed={line.hold}
-          aria-label={t(
-            line.hold
-              ? "posOrderCart.line.heldLabel"
-              : "posOrderCart.line.holdLabel",
-            { name: line.name },
-          )}
+          aria-label={t("posOrderCart.line.holdLabel", { name: line.name })}
           aria-disabled={locked ? true : undefined}
           onClick={() => (locked ? undefined : onToggleHold(line.lineId))}
           className={cn(
@@ -318,10 +314,18 @@ function CartLineRow({
               : "px-3 text-muted-foreground",
           )}
         >
-          {line.hold
-            ? t("posOrderCart.line.held", { course: line.course.label })
-            : t("posOrderCart.line.hold")}
+          {t("posOrderCart.line.hold")}
         </Button>
+        {line.hold && (
+          <span className="min-w-0 text-sm font-semibold break-words text-muted-foreground">
+            {line.course.label}
+          </span>
+        )}
+        {sendNow && (
+          <span className="min-w-0 text-sm text-muted-foreground">
+            {t("posOrderCart.line.sendNow")}
+          </span>
+        )}
       </div>
     </li>
   );

@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { cn } from "cn";
 import { Minus, Plus } from "lucide-react";
@@ -42,6 +42,34 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState(ALL);
   const [picking, setPicking] = useState<MenuItem | null>(null);
+  // The line the captain just took out, kept briefly so "Urungkan" can restore it.
+  const [removed, setRemoved] = useState<{
+    line: CartLine;
+    index: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!removed) return;
+    const timer = setTimeout(() => setRemoved(null), 8000);
+    return () => clearTimeout(timer);
+  }, [removed]);
+
+  const setQuantity = (lineId: string, quantity: number) => {
+    if (quantity <= 0) {
+      const index = draft.lines.findIndex((line) => line.lineId === lineId);
+      const line = draft.lines[index];
+      if (line) setRemoved({ line, index });
+    }
+    draft.setQuantity(lineId, quantity);
+  };
+
+  const undoRemove = () => {
+    if (!removed) return;
+    const next = [...draft.lines];
+    next.splice(Math.min(removed.index, next.length), 0, removed.line);
+    draft.replace(next);
+    setRemoved(null);
+  };
 
   const offline = connectivity.mode === "edge_only";
   const totals = cartTotals(draft.lines);
@@ -128,6 +156,18 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
       }
     >
       <div data-slot="captain-add-order" className="grid content-start gap-4">
+        {removed && (
+          <Notice
+            tone="info"
+            role="status"
+            title={t("posCaptainOrder.add.lineRemoved")}
+          >
+            <Button type="button" variant="outline" onClick={undoRemove}>
+              {t("posCaptainOrder.add.undo")}
+            </Button>
+          </Notice>
+        )}
+
         {offline && (
           <Notice tone="warning" title={t("posCaptainOrder.add.offlineTitle")}>
             {clock
@@ -244,7 +284,7 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
                         (line) => line.menuItemId === item.id,
                       )}
                       onPick={() => pick(item)}
-                      onQuantity={draft.setQuantity}
+                      onQuantity={setQuantity}
                     />
                   </li>
                 ))}
@@ -292,9 +332,9 @@ function MenuRow({
     <div className="rounded-container border-(length:--border-w) border-border bg-card p-card">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-(length:--density-text) leading-6 font-semibold">
+          <h2 className="text-(length:--density-text) leading-6 font-semibold">
             {item.name}
-          </h3>
+          </h2>
           <Money amount={item.priceIdr} className="text-muted-foreground" />
           {lines.length > 1 && (
             <p className="text-sm text-muted-foreground">
@@ -330,6 +370,13 @@ function MenuRow({
               className="min-w-6 text-center tabular-nums"
             >
               {only.quantity}
+            </span>
+            {/* Announces the new quantity when a stepper button is pressed. */}
+            <span role="status" className="sr-only">
+              {t("posCaptainOrder.add.quantity", {
+                name: item.name,
+                qty: only.quantity,
+              })}
             </span>
             <Button
               variant="outline"
