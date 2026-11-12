@@ -87,6 +87,12 @@ import {
   tenantOwnerAssignmentSchema,
 } from "./tenant-owner.ts";
 import {
+  platformTenantDetailSchema,
+  searchTenantAccountsQuerySchema,
+  tenantAccountSummarySchema,
+  tenantOwnerSummarySchema,
+} from "./tenant-directory.ts";
+import {
   decideSupportAccessRequestInputSchema,
   requestSupportAccessInputSchema,
   requestSupportWriteAccessInputSchema,
@@ -179,7 +185,7 @@ export const platformEndpoints = {
     method: "GET",
     path: "/api/platform/tenants/:tenantId",
     params: tenantParams,
-    response: dataResponseSchema(tenantSchema),
+    response: dataResponseSchema(platformTenantDetailSchema),
   }),
   setTenantStatus: defineEndpoint({
     method: "POST",
@@ -259,6 +265,19 @@ export const platformEndpoints = {
     params: tenantParams,
     body: requestSupportWriteAccessInputSchema,
     response: dataResponseSchema(supportAccessRequestSchema),
+  }),
+  listTenantOwners: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/tenants/:tenantId/owners",
+    params: tenantParams,
+    response: z.object({ data: z.array(tenantOwnerSummarySchema) }),
+  }),
+  searchTenantAccounts: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/tenants/:tenantId/accounts",
+    params: tenantParams,
+    query: searchTenantAccountsQuerySchema,
+    response: z.object({ data: z.array(tenantAccountSummarySchema) }),
   }),
   assignTenantOwner: defineEndpoint({
     method: "POST",

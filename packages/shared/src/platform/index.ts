@@ -15,6 +15,7 @@ export * from "./payment-gateways.ts";
 export * from "./themes.ts";
 export * from "./support-access.ts";
 export * from "./tenant-owner.ts";
+export * from "./tenant-directory.ts";
 export * from "./text-consent.ts";
 export * from "./config.ts";
 export * from "./config-codecs.ts";
