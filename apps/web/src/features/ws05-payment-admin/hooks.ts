@@ -5,6 +5,9 @@ import type {
   ApproveRefundInput,
   CreateEdcTerminalInput,
   CreateRefundInput,
+  QuarantinedRefundActionInput,
+  RejectRefundInput,
+  RetryRefundPayoutInput,
   ResolveReconciliationCaseInput,
   ResolveUnallocatedFundInput,
   RoutedPaymentMethod,
@@ -26,8 +29,12 @@ import {
   addRefund,
   approveRefund,
   patchEdcTerminal,
+  rejectRefund,
+  releaseQuarantinedRefund,
+  reopenQuarantinedRefund,
   resolveReconciliationCase,
   resolveUnallocatedFund,
+  retryRefundPayout,
   saveEdcCashierDefault,
   savePaymentRoute,
 } from "./api";
@@ -161,6 +168,54 @@ export function useApproveRefund() {
   return useMutation({
     mutationFn: (input: { refundId: string; body: ApproveRefundInput }) =>
       approveRefund({ refundId: input.refundId }, input.body),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: [listRefundsEndpoint.id] }),
+  });
+}
+
+// Every refund follow-up carries its idempotency key in the body (set once per
+// dialog by the caller), so a double click or retry replays instead of acting twice.
+export function useRejectRefund() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { refundId: string; body: RejectRefundInput }) =>
+      rejectRefund({ refundId: input.refundId }, input.body),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: [listRefundsEndpoint.id] }),
+  });
+}
+
+/** Retry (never-sent) and "check status" (maybe-sent) share this endpoint. */
+export function useRetryRefundPayout() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { refundId: string; body: RetryRefundPayoutInput }) =>
+      retryRefundPayout({ refundId: input.refundId }, input.body),
+    // A failed lookup still changes counters server-side: refresh either way.
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: [listRefundsEndpoint.id] }),
+  });
+}
+
+export function useReleaseQuarantinedRefund() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      refundId: string;
+      body: QuarantinedRefundActionInput;
+    }) => releaseQuarantinedRefund({ refundId: input.refundId }, input.body),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: [listRefundsEndpoint.id] }),
+  });
+}
+
+export function useReopenQuarantinedRefund() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      refundId: string;
+      body: QuarantinedRefundActionInput;
+    }) => reopenQuarantinedRefund({ refundId: input.refundId }, input.body),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: [listRefundsEndpoint.id] }),
   });

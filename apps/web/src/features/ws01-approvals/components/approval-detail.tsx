@@ -30,10 +30,13 @@ import {
   AgentDraftNotice,
   Deadline,
   RequestStatusBadge,
+  ShiftDifference,
   SourceBadge,
   formatWhen,
+  useApprovalAmount,
   useDiffRows,
   useRequesterName,
+  withoutShiftValue,
 } from "./parts";
 
 function Fact({ label, children }: { label: string; children: ReactNode }) {
@@ -58,7 +61,11 @@ export function ApprovalDetailBody({
   const now = useNow();
   const requester = useRequesterName(request.requestedBy);
   const decider = useRequesterName(request.decidedBy ?? request.requestedBy);
-  const rows = useDiffRows(request.payload);
+  const { amount, isShiftClose } = useApprovalAmount(request);
+  const rows = withoutShiftValue(
+    useDiffRows(request.payload),
+    request.actionType,
+  );
   return (
     <div className="grid gap-4" data-testid="approval-detail">
       <div className="flex flex-wrap items-center gap-2">
@@ -82,13 +89,23 @@ export function ApprovalDetailBody({
         >
           {requester}
         </Fact>
-        <Fact label={t("approvals.detail.value")}>
-          {request.amountIdr !== null ? (
-            <Money amount={request.amountIdr} />
-          ) : (
-            "—"
-          )}
-        </Fact>
+        {!(isShiftClose && amount === null) && (
+          <Fact
+            label={t(
+              isShiftClose
+                ? "approvals.shift.difference"
+                : "approvals.detail.value",
+            )}
+          >
+            {amount !== null && isShiftClose ? (
+              <ShiftDifference amount={amount} size="md" />
+            ) : amount !== null ? (
+              <Money amount={amount} />
+            ) : (
+              "—"
+            )}
+          </Fact>
+        )}
         <Fact label={t("approvals.detail.level")}>
           {t("approvals.level", {
             level: request.level,

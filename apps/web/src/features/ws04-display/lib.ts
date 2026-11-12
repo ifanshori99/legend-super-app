@@ -1,7 +1,11 @@
 // Pure helpers of the customer display (PRD §3 F11 "Customer Display" and
 // §3 F13 "QRIS Dinamis": the code is refreshed when it expires). No runtime
 // imports, so tests load this file with Node type stripping.
-import type { CustomerDisplayQris, PosTenderMethod } from "@starter/shared/pos";
+import type {
+  CustomerDisplayQris,
+  CustomerDisplayState,
+  PosTenderMethod,
+} from "@starter/shared/pos";
 import type { MessageKey } from "@starter/shared/i18n";
 
 /** A paired second screen polls the terminal state this often. */
@@ -69,4 +73,88 @@ export const TENDER_LABEL: Record<PosTenderMethod, MessageKey> = {
 /** Total quantity of the bill, e.g. 4 for 2× coffee + 1× rice + 1× pastry. */
 export function totalQuantity(lines: readonly { quantity: number }[]): number {
   return lines.reduce((sum, line) => sum + line.quantity, 0);
+}
+
+export type DisplayBalance = {
+  /**
+   * Reservation deposit (DP) applied to the bill. Always 0 here: the display
+   * contract has no deposit field, so this helper never infers one. A DP order
+   * is detected from the order itself and never shows a QRIS: see
+   * `displayPayMode` (sub-539-u2).
+   */
+  depositIdr: number;
+  /** Money already taken by tenders (amounts are already net of change). */
+  capturedIdr: number;
+  /**
+   * What the customer still has to pay. `null` while it is not known (no code
+   * yet, or the cashier is still adding items): the screen then shows only the
+   * bill total and never guesses a smaller amount (money rule: no one pays
+   * more or less than the terminal says).
+   */
+  remainingIdr: number | null;
+};
+
+/** Splits the bill into captured tenders and the amount left. */
+export function displayBalance(
+  state: Pick<CustomerDisplayState, "state" | "totalIdr" | "qris" | "tenders">,
+): DisplayBalance {
+  const capturedIdr = state.tenders.reduce(
+    (sum, tender) => sum + Number(tender.amountIdr),
+    0,
+  );
+  if (state.state === "paid")
+    return { depositIdr: 0, capturedIdr, remainingIdr: 0 };
+  if (state.state === "awaiting_payment" && state.qris !== null)
+    return {
+      depositIdr: 0,
+      capturedIdr,
+      // Clamped to 0..total: a bad QRIS amount never shows more than the bill
+      // or a negative balance.
+      remainingIdr: Math.max(
+        0,
+        Math.min(Number(state.totalIdr), Number(state.qris.amountIdr)),
+      ),
+    };
+  return { depositIdr: 0, capturedIdr, remainingIdr: null };
+}
+
+/** Method shared by every tender, or null when mixed or none. */
+export function singleTenderMethod(
+  tenders: readonly { method: PosTenderMethod }[],
+): PosTenderMethod | null {
+  const first = tenders[0]?.method;
+  return first !== undefined && tenders.every((t) => t.method === first)
+    ? first
+    : null;
+}
+
+/** The deposit of the order on screen, read from the order itself. */
+export type DisplayDeposit =
+  | { kind: "known"; depositAppliedIdr: number }
+  | { kind: "loading" }
+  | { kind: "unknown" };
+
+export type DisplayPayMode =
+  "not_paying" | "loading" | "qris" | "pay_at_cashier";
+
+/**
+ * What the payment pane shows. The display QRIS is always the full bill total
+ * (the contract forces `qris.amountIdr === totalIdr`), so an order with a DP
+ * never shows a code: the customer pays at the cashier, who knows the rest.
+ * Money rule: when the deposit is unknown the screen asks for the cashier, it
+ * never holds a code that could charge more than is due.
+ */
+export function displayPayMode(
+  state: Pick<CustomerDisplayState, "state" | "qris">,
+  deposit: DisplayDeposit,
+): DisplayPayMode {
+  if (state.state !== "awaiting_payment") return "not_paying";
+  if (deposit.kind === "unknown") return "pay_at_cashier";
+  if (deposit.kind === "loading") return "loading";
+  if (
+    !Number.isFinite(deposit.depositAppliedIdr) ||
+    deposit.depositAppliedIdr > 0
+  )
+    return "pay_at_cashier";
+  return state.qris !== null ? "qris" : "loading";
 }

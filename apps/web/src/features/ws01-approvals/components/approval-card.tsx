@@ -11,9 +11,12 @@ import { actionLabelKey, isAgentDraft, previewRow } from "../logic.ts";
 import {
   Deadline,
   RequestStatusBadge,
+  ShiftDifference,
   SourceBadge,
+  useApprovalAmount,
   useDiffRows,
   useRequesterName,
+  withoutShiftValue,
 } from "./parts";
 
 export function ApprovalCard({
@@ -27,7 +30,10 @@ export function ApprovalCard({
 }) {
   const t = useT();
   const requester = useRequesterName(request.requestedBy);
-  const preview = previewRow(useDiffRows(request.payload));
+  const { amount, isShiftClose, isRequester } = useApprovalAmount(request);
+  const preview = previewRow(
+    withoutShiftValue(useDiffRows(request.payload), request.actionType),
+  );
   const action = t(actionLabelKey(request.actionType));
   return (
     <Card
@@ -56,8 +62,21 @@ export function ApprovalCard({
             ` · ${t("approvals.level", { level: request.level, total: request.requiredLevels })}`}
         </p>
       </div>
-      {request.amountIdr !== null && (
-        <Money amount={request.amountIdr} size="lg" />
+      {isShiftClose && amount !== null ? (
+        <div className="grid gap-0.5" data-testid="shift-difference">
+          <span className="text-sm text-muted-foreground">
+            {t("approvals.shift.difference")}
+          </span>
+          <ShiftDifference amount={amount} />
+        </div>
+      ) : isShiftClose ? (
+        isRequester && (
+          <p className="text-sm text-muted-foreground">
+            {t("approvals.shift.requesterHint")}
+          </p>
+        )
+      ) : (
+        amount !== null && <Money amount={amount} size="lg" />
       )}
       {preview && (
         <p className="text-sm leading-5">
@@ -78,7 +97,11 @@ export function ApprovalCard({
         onClick={() => onOpen(request)}
         aria-label={t("approvals.reviewAria", { action })}
       >
-        {t("approvals.review")}
+        {t(
+          isShiftClose && isRequester
+            ? "approvals.shift.viewStatus"
+            : "approvals.review",
+        )}
         <ChevronRight aria-hidden="true" />
       </Button>
     </Card>

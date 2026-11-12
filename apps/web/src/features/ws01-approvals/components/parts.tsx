@@ -21,13 +21,17 @@ import type {
 import { isMessageKey, type MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
+import { Money } from "@/components/ui/money";
 import { assignablePeopleQuery } from "@/features/ws01-access/people";
+import { approvalAmountIdr, CASH_SHIFT_CLOSE } from "../approval-amount.ts";
+import { useCurrentAuth } from "../hooks.ts";
 import {
   deadlineInfo,
   deadlineLabelKey,
   diffRows,
   humanizeKey,
   isAgentDraft,
+  isOwnRequest,
   shortId,
   statusLabelKey,
   type DiffRow,
@@ -157,6 +161,60 @@ export function useRequesterName(userId: string): string {
   return (
     person?.name ?? t("approvals.requesterUnknown", { id: shortId(userId) })
   );
+}
+
+/**
+ * The rupiah figure for a request, as the signed-in user may see it (legend-6om3).
+ * A shift close shows its cash difference to the approver only; while the
+ * signed-in user is not known yet it is treated as the requester (fail closed).
+ */
+export function useApprovalAmount(
+  request: Pick<
+    ApprovalRequest,
+    "actionType" | "amountIdr" | "payload" | "requestedBy"
+  >,
+): { amount: number | null; isShiftClose: boolean; isRequester: boolean } {
+  const userId = useCurrentAuth().data?.data.user.id ?? null;
+  const own = isOwnRequest(request, userId);
+  const isShiftClose = request.actionType === CASH_SHIFT_CLOSE;
+  const isRequester = own || (isShiftClose && userId === null);
+  return {
+    amount: approvalAmountIdr(
+      {
+        action: request.actionType,
+        amountIdr: request.amountIdr,
+        payload: request.payload,
+      },
+      isRequester ? "requester" : "approver",
+    ),
+    isShiftClose,
+    isRequester,
+  };
+}
+
+/** The shift-close difference is shown on its own line, never as a payload row. */
+export function withoutShiftValue(
+  rows: DiffRow[],
+  actionType: ApprovalRequest["actionType"],
+): DiffRow[] {
+  return actionType === CASH_SHIFT_CLOSE
+    ? rows.filter((row) => row.key !== "valueIdr")
+    : rows;
+}
+
+/**
+ * The shift-close difference is an absolute amount (the API stores
+ * `Math.abs(variance)`): direction (short or over) is not in the payload, so
+ * it is shown neutral, never signed or red.
+ */
+export function ShiftDifference({
+  amount,
+  size = "lg",
+}: {
+  amount: number;
+  size?: "md" | "lg";
+}) {
+  return <Money amount={amount} size={size} />;
 }
 
 export function useDiffRows(payload: ApprovalRequest["payload"]): DiffRow[] {

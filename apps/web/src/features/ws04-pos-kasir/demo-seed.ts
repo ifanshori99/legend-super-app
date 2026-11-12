@@ -29,6 +29,7 @@ export const PAY_DEMO_SEEDS = [
   "edc-tidak-pasti",
   "edc-berhasil",
   "lunas",
+  "dp-lunas",
 ] as const;
 export type PayDemoSeed = (typeof PAY_DEMO_SEEDS)[number];
 

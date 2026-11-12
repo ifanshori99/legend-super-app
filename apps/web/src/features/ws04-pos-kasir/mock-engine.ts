@@ -36,6 +36,7 @@ import {
   DEMO_EDC_BANK_REF,
   DEMO_QRIS_CONFIRMED_AT,
   MAX_PIN_MISSES,
+  MOCK_SUPERVISOR_ID,
   MOCK_SUPERVISOR_PIN,
   codeOrder,
   dayFixture,
@@ -43,6 +44,7 @@ import {
   demoMovements,
   demoOrder,
   demoShift,
+  dpLunasOrderPatch,
   edcTerminals,
   ewallets,
   paymentMethods,
@@ -50,6 +52,30 @@ import {
   supervisorOptions,
   vaBanks,
 } from "./fixtures.ts";
+import {
+  bookVarianceIdr,
+  countLimitReached,
+  forceCloseStage,
+  heldTotalIdr,
+  isHeldCashOut,
+} from "./shift-extra-logic.ts";
+import {
+  DEVICE_UNVERIFIED_CODE,
+  MOCK_COUNTER_NAME,
+  MOCK_WITNESS_ID,
+  MOCK_WITNESS_NAME,
+  SHIFT_COUNT_LIMIT_CODE,
+  SHIFT_COUNT_STALE_CODE,
+  shiftExtraDemoSeed,
+  type ForceCloseInput,
+  type ForceCloseView,
+  type HeldCashOut,
+  type HeldCashOutReview,
+  type OwnCountSummary,
+  type ShiftExtraState,
+  type SubmitForcedCountInput,
+  type WitnessForcedCountInput,
+} from "./shift-extra-types.ts";
 import type {
   ActiveShift,
   ApproveShiftCloseInput,
@@ -215,6 +241,19 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
   const scenario = options.scenario ?? (() => "normal");
   let state = emptyState();
 
+  // Extra shift state (held cash outs, counts, force close) rides on the engine
+  // state so it is snapshotted and reset with it.
+  const extra = (): ShiftExtraState => {
+    const holder = state as EngineState & { shiftExtra?: ShiftExtraState };
+    holder.shiftExtra ??= {
+      heldMovementIds: [],
+      counts: [],
+      forced: null,
+      appliedSeed: null,
+    };
+    return holder.shiftExtra;
+  };
+
   const nextId = () => {
     state.counters.id += 1;
     return `00000000-0000-4000-8000-${pad(state.counters.id, 12)}`;
@@ -357,6 +396,9 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
         order.receiptNo = receiptNumberFor(order);
         break;
       }
+      case "dp-lunas":
+        Object.assign(order, dpLunasOrderPatch());
+        break;
     }
     return order;
   }
@@ -377,6 +419,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
   }
 
   function seedShifts() {
+    seedShiftExtra();
     const seed = shiftDemoSeed(readSeed());
     if (seed === null || state.applied.shift === seed) return;
     state.applied.shift = seed;
@@ -389,14 +432,183 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
   }
 
   /** The demo shift the supervisor screen opens on: counted, awaiting approval. */
-  function seedAwaitingShift() {
+  function seedAwaitingShift(cashierCounts = 1) {
     state.shift = demoShift("awaiting_approval");
     state.shift.count = {
       ...clone(demoBlindCount),
       submittedAt: "2026-11-08T08:32:00.000Z",
     };
-    state.movements = demoMovements();
+    // A cash out larger than the drawer was recorded at 14.32 (WIB): held for
+    // the supervisor, left out of the drawer figures (legend-pspy).
+    const heldId = "0d0d0001-0000-4000-8000-000000000004";
+    state.movements = [
+      ...demoMovements(),
+      {
+        id: heldId,
+        shiftId: DEMO_SHIFT_ID,
+        type: "cash_out",
+        amountIdr: 200_000,
+        reasonNote: "Pembelian bahan dapur",
+        recordedAt: "2026-11-08T07:32:00.000Z",
+      },
+    ];
+    const ex = extra();
+    ex.heldMovementIds = [heldId];
+    ex.forced = null;
+    ex.counts = [];
+    const sums = [2_100_000, 2_200_000, 2_230_000].slice(3 - cashierCounts, 3);
+    sums.forEach((countedIdr, index) =>
+      ex.counts.push({
+        id: `0e0e0001-0000-4000-8000-${pad(index + 1, 12)}`,
+        shiftId: DEMO_SHIFT_ID,
+        forced: false,
+        countedIdr,
+        expectedIdr: expectedCashIdr(state.shift!),
+        heldCashOutIdr: 200_000,
+        submittedAt:
+          index === sums.length - 1
+            ? "2026-11-08T07:32:00.000Z"
+            : `2026-11-08T0${5 + index}:10:00.000Z`,
+      }),
+    );
   }
+
+  /** `?demo=hitungan-batas|tutup-paksa|...` (legend-7mlf). */
+  function seedShiftExtra() {
+    const seed = shiftExtraDemoSeed(readSeed());
+    const ex = extra();
+    if (seed === null || ex.appliedSeed === seed) return;
+    // shift-sendiri needs the recount limit so "Tutup paksa shift" is offered.
+    seedAwaitingShift(seed === "kas-kosong" || seed === "kas-gagal" ? 1 : 3);
+    const fresh = extra();
+    if (seed === "kas-kosong") {
+      // No cash out held: the list is empty (the shift keeps its other figures).
+      state.movements = state.movements.filter(
+        (m) => !fresh.heldMovementIds.includes(m.id),
+      );
+      fresh.heldMovementIds = [];
+    }
+    fresh.appliedSeed = seed;
+    state.applied.shift = seed;
+    if (seed === "perangkat-gagal") state.shift = null;
+    const forcedSeeds = [
+      "tutup-paksa-menunggu",
+      "tutup-paksa-siap",
+      "hitungan-usang",
+    ];
+    if (!forcedSeeds.includes(seed)) return;
+    const shift = state.shift!;
+    const stale = seed === "hitungan-usang";
+    const forcedCount = {
+      id: "0e0e0001-0000-4000-8000-000000000009",
+      shiftId: shift.id,
+      forced: true,
+      countedIdr: 2_230_000,
+      expectedIdr: stale ? 2_000_000 : expectedCashIdr(shift),
+      heldCashOutIdr: 200_000,
+      submittedAt: "2026-11-08T07:40:00.000Z",
+    };
+    fresh.counts.push(forcedCount);
+    const witnessed = seed !== "tutup-paksa-menunggu";
+    const overrideId = "01JC0VER000000000000000099";
+    if (witnessed)
+      state.overrides[overrideId] = {
+        id: overrideId,
+        action: "cash_shift_close",
+        valueIdr: 20_000,
+        reason: "Menyetujui hitungan supervisor",
+        objectType: "cash_shift",
+        objectId: shift.id,
+        approvedBy: MOCK_WITNESS_ID,
+        createdAt: "2026-11-08T07:45:00.000Z",
+        usedFor: null,
+      };
+    fresh.forced = {
+      shiftId: shift.id,
+      countId: forcedCount.id,
+      witnessName: witnessed ? MOCK_WITNESS_NAME : null,
+      witnessOverrideId: witnessed ? overrideId : null,
+    };
+  }
+
+  /** Held cash outs of a shift, newest first. */
+  function heldItems(shift: EngineShift): HeldCashOut[] {
+    const held = new Set(extra().heldMovementIds);
+    return state.movements
+      .filter((m) => m.shiftId === shift.id && held.has(m.id))
+      .map((m) => ({
+        id: m.id,
+        type: m.type === "drop" ? ("drop" as const) : ("cash_out" as const),
+        amountIdr: m.amountIdr,
+        reasonNote: m.reasonNote,
+        recordedAt: m.recordedAt,
+        cashierName: shift.cashierName,
+      }))
+      .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
+  }
+
+  function recordCount(
+    shift: EngineShift,
+    countedIdr: number,
+    forced: boolean,
+  ) {
+    const entry = {
+      id: nextId(),
+      shiftId: shift.id,
+      forced,
+      countedIdr,
+      expectedIdr: expectedCashIdr(shift),
+      heldCashOutIdr: heldTotalIdr(heldItems(shift)),
+      submittedAt: iso(clock()),
+    };
+    extra().counts.push(entry);
+    return entry;
+  }
+
+  const cashierCountsOf = (shiftId: string) =>
+    extra().counts.filter((c) => c.shiftId === shiftId && !c.forced).length;
+
+  function forceCloseViewOf(shiftId: string): ForceCloseView {
+    const shift = shiftOf(shiftId);
+    const ex = extra();
+    const forced = ex.forced?.shiftId === shift.id ? ex.forced : null;
+    const count = forced
+      ? (ex.counts.find((c) => c.id === forced.countId) ?? null)
+      : null;
+    const stale =
+      count !== null &&
+      shift.status !== "closed" &&
+      (count.expectedIdr !== expectedCashIdr(shift) ||
+        count.heldCashOutIdr !== heldTotalIdr(heldItems(shift)));
+    return {
+      shiftId: shift.id,
+      shiftNo: shift.shiftNo,
+      cashierName: shift.cashierName,
+      terminalLabel: shift.terminalLabel,
+      openedAt: shift.openedAt,
+      ownShift: ownShiftView(),
+      stage: forceCloseStage({
+        hasCount: count !== null,
+        stale,
+        witnessed: forced?.witnessOverrideId != null,
+        closed: shift.status === "closed",
+      }),
+      count: count
+        ? {
+            id: count.id,
+            countedIdr: count.countedIdr,
+            expectedIdr: count.expectedIdr,
+            varianceIdr: cashVarianceIdr(count.countedIdr, count.expectedIdr),
+            countedByName: MOCK_COUNTER_NAME,
+          }
+        : null,
+      witnessName: forced?.witnessName ?? null,
+      stale,
+    };
+  }
+
+  /** `?demo=shift-sendiri`: the viewer is the cashier of this shift. */
+  const ownShiftView = () => readSeed() === "shift-sendiri";
 
   /** `?demo=laci-buta`: the caller is blind to the drawer figures (legend-4wrfd). */
   function drawerHidden(): boolean {
@@ -1037,6 +1249,12 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
 
     activeShift(): ActiveShift | null {
       seedShifts();
+      if (readSeed() === "perangkat-gagal")
+        throw new ApiError(
+          403,
+          DEVICE_UNVERIFIED_CODE,
+          "Terminal tidak dapat diverifikasi.",
+        );
       if (!state.shift || state.shift.status === "closed") return null;
       return activeShiftView(state.shift);
     },
@@ -1096,8 +1314,16 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       // No drawer-balance check on purpose: the cashier must not learn the
       // system balance from a refusal (blind count). The server reconciles at
       // close. See CONTRACT-GAPS.md.
+      // A cash out or drop larger than the expected drawer cash is accepted
+      // like any other (same answer: no refusal that leaks the balance) but
+      // held for the supervisor and left out of the drawer figures.
+      const held =
+        input.type !== "cash_in" &&
+        isHeldCashOut(input.amountIdr, expectedCashIdr(shift));
       if (input.type === "cash_in") shift.cashInIdr += input.amountIdr;
-      else if (input.type === "cash_out") shift.cashOutIdr += input.amountIdr;
+      else if (held) {
+        // Held: stays out of the drawer figures until a supervisor reviews it.
+      } else if (input.type === "cash_out") shift.cashOutIdr += input.amountIdr;
       else shift.cashDropIdr += input.amountIdr;
       state.counters.movement += 1;
       const movement = {
@@ -1108,11 +1334,17 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
         recordedAt: iso(clock()),
       };
       state.movements.push({ ...movement, shiftId: shift.id });
+      if (held) extra().heldMovementIds.push(movement.id);
       return movement;
     },
 
     submitBlindCount(input: SubmitBlindCountInput): BlindCountReceipt {
       const shift = shiftOf(input.shiftId);
+      if (countLimitReached(cashierCountsOf(shift.id)))
+        conflict(
+          SHIFT_COUNT_LIMIT_CODE,
+          "Batas hitung ulang tercapai. Minta supervisor menutup shift.",
+        );
       if (shift.status !== "open")
         conflict("SHIFT_NOT_OPEN", "Hitungan untuk shift ini sudah dikirim.");
       if (input.counts.length === 0)
@@ -1137,6 +1369,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
         submittedAt,
       };
       shift.status = "awaiting_approval";
+      recordCount(shift, shift.count.countedIdr, false);
       return {
         shiftId: shift.id,
         status: "awaiting_supervisor",
@@ -1153,10 +1386,159 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       return reviewOf(shiftOf(shiftId));
     },
 
-    requestOverride(input: RequestOverrideInput): OverrideResult {
-      const supervisor = supervisorOptions.find(
-        (item) => item.userId === input.approverUserId,
+    // Held cash outs and force close (legend-pspy, legend-7mlf)
+    /** The cashier's latest count: the counted figure only, never the system's. */
+    ownCountSummary(shiftId: string): OwnCountSummary | null {
+      const shift = shiftOf(shiftId);
+      const own = extra().counts.filter(
+        (c) => c.shiftId === shift.id && !c.forced,
       );
+      const last = own[own.length - 1];
+      if (!last) return null;
+      return {
+        shiftId: shift.id,
+        sequence: own.length,
+        countedIdr: last.countedIdr,
+        submittedAt: last.submittedAt,
+        limitReached: countLimitReached(own.length),
+      };
+    },
+
+    heldCashOuts(shiftId: string): HeldCashOutReview {
+      const shift = shiftOf(shiftId);
+      // `?demo=kas-gagal`: the list cannot load (the local list ignores ?mock=).
+      if (readSeed() === "kas-gagal")
+        throw new ApiError(
+          503,
+          "UNAVAILABLE",
+          "Pergerakan kas belum dapat dimuat.",
+        );
+      const items = heldItems(shift);
+      const totalHeldIdr = heldTotalIdr(items);
+      const blind = drawerHidden();
+      const physical =
+        shift.count && !blind
+          ? cashVarianceIdr(shift.count.countedIdr, expectedCashIdr(shift))
+          : null;
+      const cashierCounts = cashierCountsOf(shift.id);
+      return {
+        shiftId: shift.id,
+        items,
+        totalHeldIdr,
+        physicalVarianceIdr: physical,
+        heldCorrectionIdr: 0,
+        bookVarianceIdr:
+          physical === null ? null : bookVarianceIdr(physical, 0),
+        cashierCounts,
+        limitReached: countLimitReached(cashierCounts),
+      };
+    },
+
+    witnesses(): SupervisorOption[] {
+      return [{ userId: MOCK_WITNESS_ID, name: MOCK_WITNESS_NAME }];
+    },
+
+    forceCloseView: forceCloseViewOf,
+
+    submitForcedCount(input: SubmitForcedCountInput): ForceCloseView {
+      const shift = shiftOf(input.shiftId);
+      if (ownShiftView())
+        throw new ApiError(
+          403,
+          "FORBIDDEN",
+          "Anda tidak dapat menyetujui shift sendiri.",
+        );
+      if (shift.status === "closed")
+        conflict("SHIFT_ALREADY_CLOSED", "Shift ini sudah ditutup.");
+      if (!countLimitReached(cashierCountsOf(shift.id)))
+        conflict(
+          "SHIFT_COUNT_NOT_LIMITED",
+          "Kasir masih punya kesempatan menghitung ulang.",
+        );
+      if (input.counts.length === 0 && input.otherAmountIdr === 0)
+        validation("Hitung uang di laci sebelum mengirim.");
+      const entry = recordCount(
+        shift,
+        countedTotalIdr(input.counts, input.otherAmountIdr),
+        true,
+      );
+      extra().forced = {
+        shiftId: shift.id,
+        countId: entry.id,
+        witnessName: null,
+        witnessOverrideId: null,
+      };
+      return forceCloseViewOf(shift.id);
+    },
+
+    witnessForcedCount(input: WitnessForcedCountInput): ForceCloseView {
+      const shift = shiftOf(input.shiftId);
+      const forced = extra().forced;
+      if (!forced || forced.shiftId !== shift.id)
+        conflict("COUNT_NOT_SUBMITTED", "Supervisor belum mengirim hitungan.");
+      const override = state.overrides[input.overrideId];
+      if (!override) notFound("Persetujuan tidak ditemukan.");
+      if (
+        override.action !== "cash_shift_close" ||
+        override.objectId !== shift.id
+      )
+        throw new ApiError(
+          403,
+          "OVERRIDE_INVALID",
+          "Persetujuan supervisor ini untuk tindakan lain.",
+        );
+      if (override.usedFor !== null)
+        conflict("OVERRIDE_USED", "Persetujuan supervisor sudah dipakai.");
+      if (override.approvedBy === MOCK_SUPERVISOR_ID)
+        throw new ApiError(
+          403,
+          "FORBIDDEN",
+          "Penyetuju tidak boleh menjadi supervisor yang menghitung.",
+        );
+      forced.witnessOverrideId = override.id;
+      forced.witnessName = MOCK_WITNESS_NAME;
+      return forceCloseViewOf(shift.id);
+    },
+
+    forceClose(input: ForceCloseInput): ForceCloseView {
+      const shift = shiftOf(input.shiftId);
+      if (shift.status === "closed")
+        conflict("SHIFT_ALREADY_CLOSED", "Shift ini sudah ditutup.");
+      const view = forceCloseViewOf(shift.id);
+      const forced = extra().forced;
+      if (view.stale)
+        conflict(
+          SHIFT_COUNT_STALE_CODE,
+          "Kas berubah setelah hitungan dikirim. Hitung ulang.",
+        );
+      if (!forced || !view.count || forced.witnessOverrideId === null)
+        conflict("COUNT_NOT_APPROVED", "Hitungan belum disetujui.");
+      const note = input.note.trim();
+      if (note.length < 10)
+        validation("Alasan penutupan paksa minimal 10 karakter.");
+      consumeOverride(forced.witnessOverrideId, "cash_shift_close", shift.id);
+      shift.count = {
+        countedIdr: view.count.countedIdr,
+        counts: [],
+        otherAmountIdr: view.count.countedIdr,
+        submittedAt: iso(clock()),
+      };
+      shift.status = "closed";
+      shift.closed = {
+        expectedIdr: view.count.expectedIdr,
+        varianceIdr: view.count.varianceIdr,
+        varianceNote: note,
+        approvedByName: forced.witnessName ?? MOCK_WITNESS_NAME,
+        closedAt: iso(clock()),
+      };
+      return forceCloseViewOf(shift.id);
+    },
+
+    requestOverride(input: RequestOverrideInput): OverrideResult {
+      const supervisor = [
+        ...supervisorOptions,
+        { userId: MOCK_WITNESS_ID, name: MOCK_WITNESS_NAME },
+      ].find((item) => item.userId === input.approverUserId);
       if (!supervisor)
         throw new ApiError(
           403,
@@ -1326,6 +1708,18 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     rawShift(): EngineShift | null {
       seedShifts();
       return state.shift ? clone(state.shift) : null;
+    },
+    /** Stored counts of a shift for `listPosShiftCounts` (supervisor view). */
+    rawCounts(shiftId: string) {
+      shiftOf(shiftId);
+      return clone(extra().counts.filter((c) => c.shiftId === shiftId)).map(
+        (c, index) => ({ ...c, sequence: index + 1 }),
+      );
+    },
+    /** Ids of the cash movements held for review (`needsApproval`). */
+    rawHeldMovementIds(shiftId: string): string[] {
+      shiftOf(shiftId);
+      return [...extra().heldMovementIds];
     },
     rawMovements(shiftId: string) {
       shiftOf(shiftId);

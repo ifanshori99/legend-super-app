@@ -41,7 +41,8 @@ test("F11 customer display: a live bill shows its items, total and QRIS", async 
   await expect(
     page.getByRole("heading", { name: /Pesanan BDG-01-POS-0001/ }),
   ).toBeVisible();
-  await expect(page.getByText("Menunggu pembayaran")).toBeVisible();
+  // The bill pill and the QRIS status panel both say it (legend-5w6).
+  await expect(page.getByText("Menunggu pembayaran").first()).toBeVisible();
   for (const name of [
     "Kopi Susu Aren",
     "Nasi Goreng Kampung",
@@ -67,7 +68,7 @@ test("F11 customer display: a live bill shows its items, total and QRIS", async 
   await expect(
     page.getByRole("img", { name: /Kode QRIS pembayaran/ }),
   ).toBeVisible();
-  await expect(page.getByText(/^Berlaku \d+:\d{2}$/)).toBeVisible();
+  await expect(page.getByText(/^Berlaku \d+:\d{2} lagi$/)).toBeVisible();
 });
 
 test("F11 customer display: no bill open shows the idle slide", async ({
@@ -107,12 +108,14 @@ test("F11/F13 customer display: an expired QRIS is refreshed, not left payable",
 
   // The terminal served a code that already expired: the screen says so and
   // reads again; the next read carries a live code with a countdown.
-  await expect(page.getByText("Kode kedaluwarsa, menyegarkan…")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Kode QRIS kedaluwarsa" }),
+  ).toBeVisible();
   // The dead code is removed, not dimmed: a faded QR still scans.
   await expect(
     page.getByRole("img", { name: /Kode QRIS pembayaran/ }),
   ).toHaveCount(0);
-  await expect(page.getByText(/^Berlaku \d+:\d{2}$/)).toBeVisible({
+  await expect(page.getByText(/^Berlaku \d+:\d{2} lagi$/)).toBeVisible({
     timeout: 15_000,
   });
 });
@@ -124,12 +127,15 @@ test("F11 customer display: a paid bill shows the tenders and the change", async
   await setDisplayState(page, "paid");
   await openDisplay(page);
   await expect(
-    page.getByRole("heading", { name: "Pembayaran berhasil" }),
+    page.getByRole("heading", { name: "Pembayaran terkonfirmasi" }),
   ).toBeVisible();
   await expect(page.getByText("Tunai")).toBeVisible();
   await expect(page.getByText("Poin")).toBeVisible();
   await expect(page.getByText("Kembalian", { exact: true })).toBeVisible();
   await expect(page.locator('data[value="4900"]')).toBeVisible();
+  // Tenders are already net of change: no reservation deposit row appears.
+  await expect(page.getByText("DP reservasi terpakai")).toHaveCount(0);
+  await expect(page.getByText(/^DP /)).toHaveCount(0);
 });
 
 test("F11 customer display: a bill still being taken has no QR yet", async ({

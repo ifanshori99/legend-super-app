@@ -29,20 +29,20 @@ import { StatusPill } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import type {
-  RefundStatus,
   RefundView,
   RefundablePayment,
 } from "@starter/shared/payment/admin";
 import { formatRupiah } from "@starter/shared/i18n";
 import { idr } from "@starter/shared/core";
+import { formatMoment, methodLabelKey } from "../format";
 import {
-  canApproveRefund,
-  filterRefunds,
-  formatMoment,
-  methodLabelKey,
-  refundLabelKey,
-  refundTone,
-} from "../format";
+  filterRefundList,
+  refundUiLabelKey,
+  refundUiState,
+  refundUiTone,
+  type RefundListFilter,
+} from "../refund-actions.ts";
+import { RefundFollowupDialog } from "./refund-followup-dialog";
 import {
   useApproveRefund,
   useCreateRefund,
@@ -53,13 +53,21 @@ import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const ALL = "all";
 
+const STATUS_LABELS = {
+  pending: "paymentAdmin.refunds.statusPending",
+  approved: "paymentAdmin.refunds.statusApproved",
+  completed: "paymentAdmin.refunds.statusCompleted",
+  failed: "paymentAdmin.refunds.statusFailed",
+} as const;
+
 export function RefundsPanel() {
   const t = useT();
   const refunds = useRefunds();
-  const [status, setStatus] = React.useState<RefundStatus | "all">(ALL);
+  const [status, setStatus] = React.useState<RefundListFilter>(ALL);
   const [creating, setCreating] = React.useState(false);
   const [approving, setApproving] = React.useState<RefundView | null>(null);
-  const rows = filterRefunds(refunds.data?.data ?? [], status);
+  const [reviewingId, setReviewingId] = React.useState<string | null>(null);
+  const rows = filterRefundList(refunds.data?.data ?? [], status);
   const total = refunds.data?.data.length ?? 0;
   const state = refunds.isPending
     ? "loading"
@@ -82,9 +90,7 @@ export function RefundsPanel() {
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <Select
               value={status}
-              onValueChange={(value) =>
-                setStatus(value as RefundStatus | "all")
-              }
+              onValueChange={(value) => setStatus(value as RefundListFilter)}
             >
               <SelectTrigger
                 className="w-full sm:w-52"
@@ -99,10 +105,13 @@ export function RefundsPanel() {
                 {(["pending", "approved", "completed", "failed"] as const).map(
                   (entry) => (
                     <SelectItem key={entry} value={entry}>
-                      {t(refundLabelKey(entry))}
+                      {t(STATUS_LABELS[entry])}
                     </SelectItem>
                   ),
                 )}
+                <SelectItem value="quarantined">
+                  {t("paymentAdmin.refundFollowup.quarantine.filter")}
+                </SelectItem>
               </SelectContent>
             </Select>
             <Button type="button" size="sm" onClick={() => setCreating(true)}>
@@ -147,29 +156,33 @@ export function RefundsPanel() {
                     / {formatRupiah(refund.paidAmountIdr)}
                   </p>
                 </div>
-                <StatusPill status={refundTone(refund.status)}>
-                  {t(refundLabelKey(refund.status))}
+                <StatusPill status={refundUiTone(refundUiState(refund))}>
+                  {t(refundUiLabelKey(refundUiState(refund)))}
                 </StatusPill>
-                {canApproveRefund(refund) ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setApproving(refund)}
-                  >
-                    {t("paymentAdmin.refunds.approve")}
-                  </Button>
-                ) : (
-                  <span className="text-sm text-muted-foreground">
-                    {refund.approvedByName ?? ""}
-                  </span>
-                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setReviewingId(refund.id)}
+                >
+                  {t("paymentAdmin.refundFollowup.review")}
+                </Button>
               </div>
             </li>
           ))}
         </ul>
       </DataTableShell>
 
+      {reviewingId && (
+        <RefundFollowupDialog
+          refundId={reviewingId}
+          onClose={() => setReviewingId(null)}
+          onApprove={(refund) => {
+            setReviewingId(null);
+            setApproving(refund);
+          }}
+        />
+      )}
       {creating && <CreateRefundDialog onClose={() => setCreating(false)} />}
       {approving && (
         <ApproveRefundDialog

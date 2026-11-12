@@ -20,10 +20,13 @@ import {
 import {
   Deadline,
   RequestStatusBadge,
+  ShiftDifference,
   SourceBadge,
   formatWhen,
+  useApprovalAmount,
   useDiffRows,
   useRequesterName,
+  withoutShiftValue,
 } from "./parts";
 
 function Row({
@@ -37,14 +40,19 @@ function Row({
 }) {
   const t = useT();
   const requester = useRequesterName(request.requestedBy);
-  const preview = previewRow(useDiffRows(request.payload));
+  const { amount, isShiftClose, isRequester } = useApprovalAmount(request);
+  const preview = previewRow(
+    withoutShiftValue(useDiffRows(request.payload), request.actionType),
+  );
   const action = t(actionLabelKey(request.actionType));
   return (
     <TableRow data-testid="approval-row" data-request-id={request.id}>
-      <TableCell className="max-w-xs">
+      <TableCell className="max-w-56">
         <p className="font-semibold">{action}</p>
         <p className="text-sm text-muted-foreground">
           {t(moduleLabelKey(moduleOf(request.actionType)))} · {requester}
+          {request.requiredLevels > 1 &&
+            ` · ${t("approvals.level", { level: request.level, total: request.requiredLevels })}`}
         </p>
         {preview && (
           <p className="truncate text-sm">
@@ -63,14 +71,18 @@ function Row({
         <SourceBadge source={request.source} />
       </TableCell>
       <TableCell className="text-right">
-        {request.amountIdr !== null ? (
-          <Money amount={request.amountIdr} />
+        {amount !== null && isShiftClose ? (
+          <div className="grid justify-items-end">
+            <span className="text-xs text-muted-foreground">
+              {t("approvals.shift.difference")}
+            </span>
+            <ShiftDifference amount={amount} size="md" />
+          </div>
+        ) : amount !== null ? (
+          <Money amount={amount} />
         ) : (
           <span className="text-muted-foreground">—</span>
         )}
-      </TableCell>
-      <TableCell className="tabular">
-        {request.level}/{request.requiredLevels}
       </TableCell>
       <TableCell>
         <div className="grid gap-0.5">
@@ -83,14 +95,18 @@ function Row({
       <TableCell>
         <RequestStatusBadge status={request.status} />
       </TableCell>
-      <TableCell className="text-right">
+      <TableCell className="text-right whitespace-nowrap">
         <Button
           variant="outline"
           size="sm"
           onClick={() => onOpen(request)}
           aria-label={t("approvals.reviewAria", { action })}
         >
-          {t("approvals.review")}
+          {t(
+            isShiftClose && isRequester
+              ? "approvals.shift.viewStatus"
+              : "approvals.review",
+          )}
         </Button>
       </TableCell>
     </TableRow>
@@ -116,7 +132,6 @@ export function ApprovalTable({
           <TableHead className="text-right">
             {t("approvals.col.value")}
           </TableHead>
-          <TableHead>{t("approvals.col.level")}</TableHead>
           <TableHead>{t("approvals.col.deadline")}</TableHead>
           <TableHead>{t("approvals.col.status")}</TableHead>
           <TableHead>

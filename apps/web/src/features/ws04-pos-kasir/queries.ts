@@ -15,6 +15,12 @@ import {
   fetchSupervisors,
   fetchVaBanks,
 } from "./api";
+import {
+  fetchForceCloseView,
+  fetchHeldCashOuts,
+  fetchOwnCountSummary,
+  fetchWitnesses,
+} from "./shift-extra-api";
 
 // Every key carries the outlet: a cashier who switches outlet must never see
 // another outlet's session, shift or recap from the cache.
@@ -37,6 +43,14 @@ export const posKasirKeys = {
     ["pos-kasir", outletId, "supervisors"] as const,
   review: (outletId: string, shiftId: string) =>
     ["pos-kasir", outletId, "review", shiftId] as const,
+  held: (outletId: string, shiftId: string) =>
+    ["pos-kasir", outletId, "held-cash-outs", shiftId] as const,
+  ownCount: (outletId: string, shiftId: string) =>
+    ["pos-kasir", outletId, "own-count", shiftId] as const,
+  forceClose: (outletId: string, shiftId: string) =>
+    ["pos-kasir", outletId, "force-close", shiftId] as const,
+  witnesses: (outletId: string) =>
+    ["pos-kasir", outletId, "witnesses"] as const,
   day: (outletId: string, businessDate: string) =>
     ["pos-kasir", outletId, "day", businessDate] as const,
 };
@@ -119,6 +133,34 @@ export const shiftReviewQuery = (outletId: string, shiftId: string) =>
   queryOptions({
     queryKey: posKasirKeys.review(outletId, shiftId),
     queryFn: () => fetchShiftReview(shiftId),
+    retry: false,
+  });
+
+export const heldCashOutsQuery = (outletId: string, shiftId: string) =>
+  queryOptions({
+    queryKey: posKasirKeys.held(outletId, shiftId),
+    queryFn: ({ signal }) => fetchHeldCashOuts(outletId, shiftId, signal),
+    retry: false,
+  });
+
+export const ownCountSummaryQuery = (outletId: string, shiftId: string) =>
+  queryOptions({
+    queryKey: posKasirKeys.ownCount(outletId, shiftId),
+    queryFn: () => fetchOwnCountSummary(shiftId),
+    retry: false,
+  });
+
+export const forceCloseViewQuery = (outletId: string, shiftId: string) =>
+  queryOptions({
+    queryKey: posKasirKeys.forceClose(outletId, shiftId),
+    queryFn: () => fetchForceCloseView(shiftId),
+    retry: false,
+  });
+
+export const witnessesQuery = (outletId: string) =>
+  queryOptions({
+    queryKey: posKasirKeys.witnesses(outletId),
+    queryFn: () => fetchWitnesses(),
     retry: false,
   });
 

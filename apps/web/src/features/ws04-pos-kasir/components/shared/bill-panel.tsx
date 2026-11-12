@@ -12,7 +12,7 @@ export type BillPanelProps = {
   serviceIdr: number;
   taxIdr: number;
   totalIdr: number;
-  deposit?: { reference: string; amountIdr: number; paid: boolean };
+  deposit?: { reference?: string; amountIdr: number; paid: boolean };
   /** Every payment on the bill; only the confirmed ones reduce the balance. */
   allocations: ReadonlyArray<{
     id: string;
@@ -34,16 +34,20 @@ function Line({
   children: React.ReactNode;
   strong?: boolean;
 }) {
+  // One <dl> per line: the deposit notes between lines are plain paragraphs,
+  // which a <dl> may not contain.
   return (
-    <div
-      className={cn(
-        "flex items-baseline justify-between gap-3 text-(length:--density-text)",
-        strong && "font-bold",
-      )}
-    >
-      <dt>{label}</dt>
-      <dd>{children}</dd>
-    </div>
+    <dl>
+      <div
+        className={cn(
+          "flex items-baseline justify-between gap-3 text-(length:--density-text)",
+          strong && "font-bold",
+        )}
+      >
+        <dt>{label}</dt>
+        <dd>{children}</dd>
+      </div>
+    </dl>
   );
 }
 
@@ -67,6 +71,9 @@ export function BillPanel({
 }: BillPanelProps) {
   const t = useT();
   const confirmed = allocations.filter((a) => a.status === "confirmed");
+  // Settled by the DP alone: the balance is a plain "Sisa yang harus dibayar" Rp 0.
+  const settledByDeposit =
+    paid && confirmed.length === 0 && deposit?.paid === true;
   return (
     <section
       data-slot="bill-panel"
@@ -99,7 +106,7 @@ export function BillPanel({
           })}
         </p>
       </header>
-      <dl className="grid gap-2">
+      <div className="grid gap-2">
         <Line label={t("posKasirCommon.bill.subtotal")}>
           <Money amount={subtotalIdr} />
         </Line>
@@ -118,17 +125,21 @@ export function BillPanel({
               <Money amount={-deposit.amountIdr} className="font-semibold" />
             </Line>
             <p className="tabular text-sm text-muted-foreground">
-              {t("posKasirCommon.bill.depositPaid", {
-                reference: deposit.reference,
-              })}
+              {deposit.reference
+                ? t("posKasirCommon.bill.depositPaid", {
+                    reference: deposit.reference,
+                  })
+                : t("posKasirPayment.bill.depositPaidNoRef")}
             </p>
           </>
         )}
         {deposit && !deposit.paid && (
           <p className="tabular text-sm text-muted-foreground">
-            {t("posKasirCommon.bill.depositUnpaid", {
-              reference: deposit.reference,
-            })}
+            {deposit.reference
+              ? t("posKasirCommon.bill.depositUnpaid", {
+                  reference: deposit.reference,
+                })
+              : t("posKasirPayment.bill.depositUnpaidNoRef")}
           </p>
         )}
         {confirmed.map((allocation) => (
@@ -141,14 +152,14 @@ export function BillPanel({
             <Money amount={-allocation.amountIdr} className="font-semibold" />
           </Line>
         ))}
-      </dl>
+      </div>
       <div
         data-slot="bill-remaining"
         className="mt-auto rounded-control bg-surface-3 p-4"
       >
         <p className="text-base text-muted-foreground">
           {t(
-            paid
+            paid && !settledByDeposit
               ? "posKasirCommon.bill.remainingPaid"
               : "posKasirCommon.bill.remaining",
           )}

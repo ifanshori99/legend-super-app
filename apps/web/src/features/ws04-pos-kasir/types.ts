@@ -54,7 +54,8 @@ export type PaymentBill = {
   totalIdr: number;
   /** DEMO-CONTRACT: reservation deposit applied to this bill. */
   deposit?: {
-    reference: string;
+    /** Reservation code; the order detail does not carry it yet (gap). */
+    reference?: string;
     /** The part of the deposit used on this bill (never above the total). */
     amountIdr: number;
     paid: boolean;

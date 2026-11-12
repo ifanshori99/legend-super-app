@@ -36,11 +36,19 @@ import {
   submitBlindCount,
 } from "./api";
 import {
+  forceCloseShift,
+  submitForcedCount,
+  witnessForcedCount,
+} from "./shift-extra-api";
+import {
   activeShiftQuery,
   cashMovementsQuery,
   dayCloseRecapQuery,
   edcTerminalsQuery,
   ewalletsQuery,
+  forceCloseViewQuery,
+  heldCashOutsQuery,
+  ownCountSummaryQuery,
   paymentMethodsQuery,
   paymentSessionQuery,
   posKasirKeys,
@@ -48,7 +56,13 @@ import {
   shiftReviewQuery,
   supervisorsQuery,
   vaBanksQuery,
+  witnessesQuery,
 } from "./queries";
+import type {
+  ForceCloseInput,
+  SubmitForcedCountInput,
+  WitnessForcedCountInput,
+} from "./shift-extra-types";
 import {
   CONTRACT_PENDING,
   type ApproveShiftCloseInput,
@@ -291,8 +305,24 @@ export function useSubmitBlindCount() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: SubmitBlindCountInput) => submitBlindCount(input),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: posKasirKeys.shift(outletId) }),
+    onSuccess: (_receipt, input) => {
+      void queryClient.invalidateQueries({
+        queryKey: posKasirKeys.ownCount(outletId, input.shiftId),
+      });
+      return queryClient.invalidateQueries({
+        queryKey: posKasirKeys.shift(outletId),
+      });
+    },
+  });
+}
+
+/** The cashier's latest count (number and counted figure; never a system figure). */
+export function useOwnCountSummary(shiftId: string | undefined) {
+  const outletId = useOutletId();
+  const ready = useReady();
+  return useQuery({
+    ...ownCountSummaryQuery(outletId, shiftId ?? ""),
+    enabled: ready && Boolean(shiftId),
   });
 }
 
@@ -312,6 +342,75 @@ export function useShiftReview(shiftId: string) {
     ...shiftReviewQuery(useOutletId(), shiftId),
     enabled: shiftId !== "",
   });
+}
+
+/** Cash outs held for review, with the physical and book variance (legend-pspy). */
+export function useHeldCashOuts(shiftId: string) {
+  return useQuery({
+    ...heldCashOutsQuery(useOutletId(), shiftId),
+    enabled: shiftId !== "",
+  });
+}
+
+/** Other supervisors who may witness a force close. */
+export function useForceCloseWitnesses() {
+  return useQuery(witnessesQuery(useOutletId()));
+}
+
+/** Force close of a shift after the cashier's recount limit (legend-7mlf). */
+export function useForceCloseView(shiftId: string) {
+  return useQuery({
+    ...forceCloseViewQuery(useOutletId(), shiftId),
+    enabled: shiftId !== "",
+  });
+}
+
+function useForceCloseWrite<Input extends { shiftId: string }>(
+  call: (input: Input) => Promise<unknown>,
+) {
+  const outletId = useOutletId();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: call,
+    // A refused write (stale count, spent approval) means the stored state moved.
+    onError: (_error, input) =>
+      queryClient.invalidateQueries({
+        queryKey: posKasirKeys.forceClose(outletId, input.shiftId),
+      }),
+    onSuccess: async (_view, input) => {
+      await queryClient.invalidateQueries({
+        queryKey: posKasirKeys.forceClose(outletId, input.shiftId),
+      });
+      await queryClient.invalidateQueries({
+        queryKey: posKasirKeys.held(outletId, input.shiftId),
+      });
+      await queryClient.invalidateQueries({
+        queryKey: posKasirKeys.review(outletId, input.shiftId),
+      });
+      await queryClient.invalidateQueries({
+        queryKey: posKasirKeys.shift(outletId),
+      });
+    },
+  });
+}
+
+/** The supervisor counts the drawer; the server stores a forced count. */
+export function useSubmitForcedCount() {
+  return useForceCloseWrite((input: SubmitForcedCountInput) =>
+    submitForcedCount(input),
+  );
+}
+
+/** A third person (not cashier, not counter) approves that count by PIN. */
+export function useWitnessForcedCount() {
+  return useForceCloseWrite((input: WitnessForcedCountInput) =>
+    witnessForcedCount(input),
+  );
+}
+
+/** Closes the shift with the approved forced count; once only (button locks while pending). */
+export function useForceCloseShift() {
+  return useForceCloseWrite((input: ForceCloseInput) => forceCloseShift(input));
 }
 
 /** Reason + supervisor PIN in, `overrideId` out (never an approvalRequestId). */
