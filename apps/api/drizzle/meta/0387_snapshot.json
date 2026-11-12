@@ -18311,6 +18311,86 @@
       },
       "isRLSEnabled": false
     },
+    "public.edge_voucher_catalog": {
+      "name": "edge_voucher_catalog",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payload": {
+          "name": "payload",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sync_txid": {
+          "name": "sync_txid",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "(pg_current_xact_id()::text)::bigint"
+        }
+      },
+      "indexes": {
+        "edge_voucher_catalog_sync_txid_idx": {
+          "name": "edge_voucher_catalog_sync_txid_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sync_txid",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "edge_voucher_catalog_tenant_id_tenants_id_fk": {
+          "name": "edge_voucher_catalog_tenant_id_tenants_id_fk",
+          "tableFrom": "edge_voucher_catalog",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.facility_rewards": {
       "name": "facility_rewards",
       "schema": "",
@@ -18636,6 +18716,13 @@
       "name": "promo_settings",
       "schema": "",
       "columns": {
+        "sync_txid": {
+          "name": "sync_txid",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "(pg_current_xact_id()::text)::bigint"
+        },
         "tenant_id": {
           "name": "tenant_id",
           "type": "uuid",
@@ -19591,9 +19678,43 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "sync_txid": {
+          "name": "sync_txid",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "(pg_current_xact_id()::text)::bigint"
         }
       },
       "indexes": {
+        "promotions_sync_txid_idx": {
+          "name": "promotions_sync_txid_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sync_txid",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "promotions_tenant_code_hash_key": {
           "name": "promotions_tenant_code_hash_key",
           "columns": [
@@ -19803,9 +19924,43 @@
           "type": "varchar(300)",
           "primaryKey": false,
           "notNull": false
+        },
+        "sync_txid": {
+          "name": "sync_txid",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "(pg_current_xact_id()::text)::bigint"
         }
       },
       "indexes": {
+        "vouchers_sync_txid_idx": {
+          "name": "vouchers_sync_txid_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sync_txid",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "vouchers_tenant_status_idx": {
           "name": "vouchers_tenant_status_idx",
           "columns": [
@@ -42340,182 +42495,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.prep_item_settings": {
-      "name": "prep_item_settings",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "inventory_item_id": {
-          "name": "inventory_item_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "shelf_life_minutes": {
-          "name": "shelf_life_minutes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_by": {
-          "name": "updated_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "prep_item_settings_tenant_outlet_updated_idx": {
-          "name": "prep_item_settings_tenant_outlet_updated_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "prep_item_settings_tenant_id_tenants_id_fk": {
-          "name": "prep_item_settings_tenant_id_tenants_id_fk",
-          "tableFrom": "prep_item_settings",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "prep_item_settings_outlet_id_outlets_id_fk": {
-          "name": "prep_item_settings_outlet_id_outlets_id_fk",
-          "tableFrom": "prep_item_settings",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "prep_item_settings_updated_by_user_id_fk": {
-          "name": "prep_item_settings_updated_by_user_id_fk",
-          "tableFrom": "prep_item_settings",
-          "tableTo": "user",
-          "columnsFrom": [
-            "updated_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "prep_item_settings_outlet_fk": {
-          "name": "prep_item_settings_outlet_fk",
-          "tableFrom": "prep_item_settings",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "prep_item_settings_item_fk": {
-          "name": "prep_item_settings_item_fk",
-          "tableFrom": "prep_item_settings",
-          "tableTo": "inventory_items",
-          "columnsFrom": [
-            "tenant_id",
-            "inventory_item_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "prep_item_settings_tenant_outlet_item_key": {
-          "name": "prep_item_settings_tenant_outlet_item_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "outlet_id",
-            "inventory_item_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "prep_item_settings_lifetime_check": {
-          "name": "prep_item_settings_lifetime_check",
-          "value": "\"prep_item_settings\".\"shelf_life_minutes\" > 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.prep_labels": {
       "name": "prep_labels",
       "schema": "",
@@ -46662,6 +46641,290 @@
         "edge_printers_not_own_fallback_check": {
           "name": "edge_printers_not_own_fallback_check",
           "value": "\"edge_printers\".\"fallback_printer_id\" IS NULL OR \"edge_printers\".\"fallback_printer_id\" <> \"edge_printers\".\"id\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.edge_catalog_gate_state": {
+      "name": "edge_catalog_gate_state",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "edge_node_id": {
+          "name": "edge_node_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tracking_started_at": {
+          "name": "tracking_started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "clock_high_water_at": {
+          "name": "clock_high_water_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "edge_catalog_gate_state_tenant_id_tenants_id_fk": {
+          "name": "edge_catalog_gate_state_tenant_id_tenants_id_fk",
+          "tableFrom": "edge_catalog_gate_state",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_catalog_gate_state_outlet_id_outlets_id_fk": {
+          "name": "edge_catalog_gate_state_outlet_id_outlets_id_fk",
+          "tableFrom": "edge_catalog_gate_state",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_catalog_gate_state_edge_node_fk": {
+          "name": "edge_catalog_gate_state_edge_node_fk",
+          "tableFrom": "edge_catalog_gate_state",
+          "tableTo": "edge_nodes",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "edge_node_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "edge_catalog_gate_state_tenant_id_edge_node_id_pk": {
+          "name": "edge_catalog_gate_state_tenant_id_edge_node_id_pk",
+          "columns": [
+            "tenant_id",
+            "edge_node_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.edge_catalog_sale_overrides": {
+      "name": "edge_catalog_sale_overrides",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "edge_node_id": {
+          "name": "edge_node_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "granted_by": {
+          "name": "granted_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "granted_at": {
+          "name": "granted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "until_at": {
+          "name": "until_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "superseded_at": {
+          "name": "superseded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "closed_at": {
+          "name": "closed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "closed_reason": {
+          "name": "closed_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "edge_catalog_sale_overrides_edge_until_idx": {
+          "name": "edge_catalog_sale_overrides_edge_until_idx",
+          "columns": [
+            {
+              "expression": "edge_node_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "until_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "edge_catalog_sale_overrides_active_uniq": {
+          "name": "edge_catalog_sale_overrides_active_uniq",
+          "columns": [
+            {
+              "expression": "edge_node_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"edge_catalog_sale_overrides\".\"superseded_at\" IS NULL AND \"edge_catalog_sale_overrides\".\"closed_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "edge_catalog_sale_overrides_tenant_id_tenants_id_fk": {
+          "name": "edge_catalog_sale_overrides_tenant_id_tenants_id_fk",
+          "tableFrom": "edge_catalog_sale_overrides",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_catalog_sale_overrides_outlet_id_outlets_id_fk": {
+          "name": "edge_catalog_sale_overrides_outlet_id_outlets_id_fk",
+          "tableFrom": "edge_catalog_sale_overrides",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_catalog_sale_overrides_edge_node_fk": {
+          "name": "edge_catalog_sale_overrides_edge_node_fk",
+          "tableFrom": "edge_catalog_sale_overrides",
+          "tableTo": "edge_nodes",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "edge_node_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "edge_catalog_sale_overrides_tenant_id_id_pk": {
+          "name": "edge_catalog_sale_overrides_tenant_id_id_pk",
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "edge_catalog_sale_overrides_window_check": {
+          "name": "edge_catalog_sale_overrides_window_check",
+          "value": "\"edge_catalog_sale_overrides\".\"until_at\" > \"edge_catalog_sale_overrides\".\"granted_at\" AND \"edge_catalog_sale_overrides\".\"until_at\" <= \"edge_catalog_sale_overrides\".\"granted_at\" + interval '24 hours'"
+        },
+        "edge_catalog_sale_overrides_reason_check": {
+          "name": "edge_catalog_sale_overrides_reason_check",
+          "value": "char_length(btrim(\"edge_catalog_sale_overrides\".\"reason\")) BETWEEN 3 AND 500"
+        },
+        "edge_catalog_sale_overrides_closed_check": {
+          "name": "edge_catalog_sale_overrides_closed_check",
+          "value": "(\"edge_catalog_sale_overrides\".\"closed_at\" IS NULL) = (\"edge_catalog_sale_overrides\".\"closed_reason\" IS NULL)"
         }
       },
       "isRLSEnabled": false
@@ -80101,6 +80364,182 @@
         "menu_costs_complete_check": {
           "name": "menu_costs_complete_check",
           "value": "(\"menu_costs\".\"recipe_complete\" AND \"menu_costs\".\"recipe_id\" IS NOT NULL AND \"menu_costs\".\"theoretical_cost_idr\" IS NOT NULL AND \"menu_costs\".\"gross_margin_bp\" IS NOT NULL)\n        OR (NOT \"menu_costs\".\"recipe_complete\" AND \"menu_costs\".\"theoretical_cost_idr\" IS NULL AND \"menu_costs\".\"gross_margin_bp\" IS NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.prep_item_settings": {
+      "name": "prep_item_settings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "inventory_item_id": {
+          "name": "inventory_item_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "shelf_life_minutes": {
+          "name": "shelf_life_minutes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "prep_item_settings_tenant_outlet_updated_idx": {
+          "name": "prep_item_settings_tenant_outlet_updated_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "prep_item_settings_tenant_id_tenants_id_fk": {
+          "name": "prep_item_settings_tenant_id_tenants_id_fk",
+          "tableFrom": "prep_item_settings",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "prep_item_settings_outlet_id_outlets_id_fk": {
+          "name": "prep_item_settings_outlet_id_outlets_id_fk",
+          "tableFrom": "prep_item_settings",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "prep_item_settings_updated_by_user_id_fk": {
+          "name": "prep_item_settings_updated_by_user_id_fk",
+          "tableFrom": "prep_item_settings",
+          "tableTo": "user",
+          "columnsFrom": [
+            "updated_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "prep_item_settings_outlet_fk": {
+          "name": "prep_item_settings_outlet_fk",
+          "tableFrom": "prep_item_settings",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "prep_item_settings_item_fk": {
+          "name": "prep_item_settings_item_fk",
+          "tableFrom": "prep_item_settings",
+          "tableTo": "inventory_items",
+          "columnsFrom": [
+            "tenant_id",
+            "inventory_item_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "prep_item_settings_tenant_outlet_item_key": {
+          "name": "prep_item_settings_tenant_outlet_item_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "outlet_id",
+            "inventory_item_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "prep_item_settings_lifetime_check": {
+          "name": "prep_item_settings_lifetime_check",
+          "value": "\"prep_item_settings\".\"shelf_life_minutes\" > 0"
         }
       },
       "isRLSEnabled": false
