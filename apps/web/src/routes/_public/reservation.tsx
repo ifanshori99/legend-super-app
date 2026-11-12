@@ -6,6 +6,7 @@ import {
   WebsitePending,
 } from "@/features/ws08-website/components/states";
 import { usePublicSite } from "@/features/ws08-website/hooks";
+import { loadWebsiteData } from "@/features/ws08-website/lib/loader";
 import { reservationHead } from "@/features/ws08-website/lib/seo";
 import { publicSiteQuery } from "@/features/ws08-website/queries";
 
@@ -17,7 +18,7 @@ const t = createTranslator();
 // DP lives at /reservasi (bead legend-xm4y).
 export const Route = createFileRoute("/_public/reservation")({
   loader: ({ context }) =>
-    context.queryClient.ensureQueryData(publicSiteQuery()),
+    loadWebsiteData(context.queryClient.ensureQueryData(publicSiteQuery())),
   head: ({ loaderData }) => {
     if (!loaderData) return {};
     const brand = loaderData.brand.name;

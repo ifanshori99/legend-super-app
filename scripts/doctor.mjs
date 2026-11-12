@@ -10,6 +10,7 @@ import {
   root,
 } from "./lib.mjs";
 import { databaseUrl, databaseError } from "./postgres.mjs";
+import { verifyDevelopmentPublicSite } from "./dev-public-site.mjs";
 
 let failures = 0;
 async function check(label, fn) {
@@ -97,6 +98,7 @@ await check("PostgreSQL connection and tables", async () => {
     await pool.end();
   }
 });
+await check("Development public website", () => verifyDevelopmentPublicSite());
 await check("Project instructions and skills", () => {
   for (const path of [
     "AGENTS.md",

@@ -15,6 +15,7 @@ import {
   WebsitePending,
 } from "@/features/ws08-website/components/states";
 import { usePublicSite } from "@/features/ws08-website/hooks";
+import { loadWebsiteData } from "@/features/ws08-website/lib/loader";
 import { reservationHead } from "@/features/ws08-website/lib/seo";
 import { publicSiteQuery } from "@/features/ws08-website/queries";
 
@@ -28,7 +29,7 @@ const searchSchema = z.object({
 export const Route = createFileRoute("/_public/reservasi")({
   validateSearch: searchSchema,
   loader: ({ context }) =>
-    context.queryClient.ensureQueryData(publicSiteQuery()),
+    loadWebsiteData(context.queryClient.ensureQueryData(publicSiteQuery())),
   head: ({ loaderData }) => {
     if (!loaderData) return {};
     const brand = loaderData.brand.name;

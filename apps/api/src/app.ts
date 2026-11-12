@@ -14,6 +14,7 @@ import {
   type Logger,
 } from "./lib/logger";
 import { requestContext } from "./lib/request-context";
+import { developmentPublicSiteCredential } from "./lib/development-public-site";
 import { limitAuthBody } from "./middleware/body";
 import { guardImpersonatedAuthRoutes } from "./middleware/support-session";
 import {
@@ -392,7 +393,8 @@ export function createApp({
   // Tenant resolution (TEN-02). In every deployment a registered, verified
   // domain of an active tenant or a signed device token names the tenant; the
   // client never does. Only development with synthetic data keeps a fallback:
-  // the seeded tenant, and only for a signed-in caller (the e2e/login flow).
+  // the seeded tenant for a signed-in caller (the e2e/login flow), or an
+  // explicitly configured domain for loopback public website reads.
   app.use(
     "/api",
     tenantContext({
@@ -403,6 +405,15 @@ export function createApp({
       // brands are read later inside the tenant transaction.
       fallback: developmentSyntheticTenant
         ? async (req) => {
+            const publicSiteTenant = await developmentPublicSiteCredential(
+              req,
+              {
+                enabled: env.NODE_ENV === "development",
+                hostname: env.DEV_PUBLIC_SITE_HOST,
+                resolveDomain,
+              },
+            );
+            if (publicSiteTenant) return publicSiteTenant;
             const session = await auth.api.getSession({
               headers: fromNodeHeaders(req.headers),
               query: { disableCookieCache: true },

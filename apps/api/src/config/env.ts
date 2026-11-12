@@ -5,7 +5,7 @@ import {
   deploymentEnvShape,
   deploymentPolicyCheck,
 } from "@starter/shared/env";
-import { normalizeHostname } from "@starter/shared/platform";
+import { hostnameSchema, normalizeHostname } from "@starter/shared/platform";
 import { parseEdgeRuntimeConfig } from "../edge/config.ts";
 import { unsafeAiUrlReason } from "../lib/ai/url-guard.ts";
 import {
@@ -124,6 +124,9 @@ const schema = z
     WEB_URL: origin(
       "Use the web app's origin, e.g. http://localhost:3000.",
     ).default("http://localhost:3000"),
+    // Filled by managed synthetic setup for the public localhost preview.
+    // Ignored outside a development runtime; never used as an auth source.
+    DEV_PUBLIC_SITE_HOST: hostnameSchema.optional(),
     TRUSTED_ORIGINS: z
       .string()
       .optional()
