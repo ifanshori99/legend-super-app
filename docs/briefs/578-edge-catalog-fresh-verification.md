@@ -58,3 +58,25 @@ Satu subagent architect native Codex effort xhigh, konteks segar, memeriksa
 diff uang dan dependensi sempit: tidak ada temuan nyata. Klarifikasi dokumen:
 gangguan baca checkpoint yang pulih dan membuktikan snapshot lengkap bukan
 snapshot parsial; aturan offline 533 B2 tetap berlaku.
+
+## Kelanjutan verifikasi
+
+Checkpoint lokal `07e868cc` menyimpan patch, test dan bukti di atas.
+Antrean typecheck awal mencapai batas tunggu `heavy` 1.800 detik (exit 75)
+sebelum compiler berjalan. Setelah akun #5 habis kuota, sesi dilanjutkan di
+akun #6 dan runner verifikasi dibuat kembali pada worktree yang sama.
+Timeout antrean bukan kegagalan typecheck dan tidak mengubah hasil test.
+
+Gerbang paket final (20:08 WIB), semuanya exit 0:
+
+- `heavy pnpm --filter @starter/api typecheck` (mencakup `src/edge`), log `/tmp/edge-catalog-fresh-api-typecheck.log`.
+- `heavy pnpm --filter @starter/shared typecheck`, log `/tmp/edge-catalog-fresh-shared-typecheck.log`.
+- `heavy pnpm --filter @starter/api build`, log `/tmp/edge-catalog-fresh-api-build.log`.
+- `heavy pnpm db:generate`: `No schema changes, nothing to migrate`, log `/tmp/edge-catalog-fresh-db-generate.log`.
+- `heavy pnpm exec eslint apps/api/src/edge/catalog-puller.ts apps/api/src/test/edge-promo-stream-offline.test.ts`, log `/tmp/edge-catalog-fresh-eslint.log`.
+
+Pemeriksaan format terakhir mencakup kedua berkas TypeScript di atas, dokumen
+ini dan `docs/PROGRESS.md`; log `/tmp/edge-catalog-fresh-prettier.log`.
+Suite penuh, build web, e2e/browser, migrasi/deploy production tidak dijalankan.
+Kedua kartu tetap terbuka untuk CTO sesuai aturan pencatatan tim Codex;
+tidak ada perubahan milestone/main, push, merge atau deploy.

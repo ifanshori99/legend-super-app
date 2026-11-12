@@ -792,15 +792,12 @@ describe("533c P2 a partial promo sync is never completed by a retry that gets n
       1,
     );
     await partialArrived;
-    const retry = pull(
-      async () => {
-        retryReachedFetch = true;
-        retryFetch();
-        await retryMayFail;
-        throw new Error("Concurrent cloud transport failure");
-      },
-      ["promotions"],
-    );
+    const retry = pull(async () => {
+      retryReachedFetch = true;
+      retryFetch();
+      await retryMayFail;
+      throw new Error("Concurrent cloud transport failure");
+    }, ["promotions"]);
     try {
       // Before serialization, retry reaches fetch with the old complete
       // checkpoint. A serialized retry queues instead; the bounded wait lets
@@ -871,7 +868,9 @@ describe("533c P2 a partial promo sync is never completed by a retry that gets n
     expect(fetches).toBe(0);
     expect(await appliedPromos()).toEqual(before);
     expect(await orderDiscount()).toBe(0);
-    expect(streamError(await pull(serve(cloud.slice(0, 1), 10)))).toBeUndefined();
+    expect(
+      streamError(await pull(serve(cloud.slice(0, 1), 10))),
+    ).toBeUndefined();
     await gate!.refresh();
     expect(await orderDiscount()).toBe(PROMO);
   });
