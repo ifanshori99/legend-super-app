@@ -201,6 +201,8 @@ const POOL_OPENERS_NOT_IMPORTERS: Record<string, string> = {
     "one-off repair of refunds already in the database (UPDATE of payout state, dry-run by default), imports nothing",
   "apps/api/src/db/backfill-employee-managers.ts":
     "one-off repair of employees.manager_id on existing rows from an HR-reviewed manifest (dry-run by default), imports nothing (legend-qhqf8)",
+  "apps/api/src/db/repair-supplier-invoice-npwp.ts":
+    "explicit one-invoice repair of a legacy supplier_invoices.npwp_snapshot (one tenant, entity, invoice, actor and audited reason on the command line; the audit row shares the transaction), imports nothing (547b)",
   "apps/api/src/worker-main.ts":
     "job runner: delivery state of its own tenant's work, no imports",
   "apps/api/src/db/role.ts": "runtime role helper, no data writes",
