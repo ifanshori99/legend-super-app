@@ -232,6 +232,11 @@ const reversedEntries = alias(journalEntries, "reversed_entries");
  * one posted before journal_entries.order_id existed and not backfilled, by
  * its source id being a refund row of that order (pos_order_refunds, or the
  * order issue of a recovery refund), so an old refund still reduces the room.
+ *
+ * A refund only ever DEBITS these accounts. When an earlier refund entry (not a
+ * reversal) CREDITED one of `noCreditAccounts` (a payout role remapped onto a
+ * service charge or tax account), debit minus credit would lower "already
+ * refunded" and open room that was never collected: fail closed with a reason.
  */
 async function refundedNetOf(
   tx: Tx,
@@ -239,13 +244,15 @@ async function refundedNetOf(
   orderUuid: string,
   legalEntityId: string,
   accounts: readonly string[],
-): Promise<Map<string, number>> {
+  noCreditAccounts: readonly string[],
+): Promise<Map<string, number> | string> {
   const effectiveOrder = sql`coalesce(${reversedEntries.orderId}, ${journalEntries.orderId})`;
   const effectiveSourceId = sql`coalesce(${reversedEntries.sourceId}, ${journalEntries.sourceId})`;
   const rows = await tx
     .select({
       accountId: journalLines.accountId,
       net: sql<string>`sum(${journalLines.debitIdr} - ${journalLines.creditIdr})::text`,
+      credited: sql<string>`sum(CASE WHEN ${journalEntries.reversalOf} IS NULL THEN ${journalLines.creditIdr} ELSE 0 END)::text`,
     })
     .from(journalEntries)
     .leftJoin(
@@ -275,6 +282,12 @@ async function refundedNetOf(
       ),
     )
     .groupBy(journalLines.accountId);
+  if (
+    rows.some(
+      (r) => noCreditAccounts.includes(r.accountId) && Number(r.credited) > 0,
+    )
+  )
+    return "An earlier refund credited a service charge or tax account";
   return new Map(rows.map((r) => [r.accountId, Number(r.net)]));
 }
 
@@ -284,17 +297,16 @@ async function refundedOf(
   orderUuid: string,
   legalEntityId: string,
   accounts: TaxAccounts["byType"],
-): Promise<Record<TaxType, number>> {
-  return partsOf(
-    accounts,
-    await refundedNetOf(
-      tx,
-      tenantId,
-      orderUuid,
-      legalEntityId,
-      Object.values(accounts),
-    ),
+): Promise<Record<TaxType, number> | string> {
+  const net = await refundedNetOf(
+    tx,
+    tenantId,
+    orderUuid,
+    legalEntityId,
+    Object.values(accounts),
+    Object.values(accounts),
   );
+  return typeof net === "string" ? net : partsOf(accounts, net);
 }
 
 type RefundComponents = {
@@ -362,7 +374,14 @@ export async function refundComponentsOf(
     orderUuid,
     taxAccounts.legalEntityId,
     accounts,
+    [
+      ...Object.values(taxAccounts.byType),
+      ...mappings
+        .filter((row) => row.role === "service_charge")
+        .map((row) => row.accountId),
+    ],
   );
+  if (typeof refunded === "string") return refunded;
   const remaining = (accountId: string) =>
     (collected.get(accountId) ?? 0) - (refunded.get(accountId) ?? 0);
   const room: RefundComponents = {
@@ -490,6 +509,7 @@ export async function refundTaxSplitOf(
     accounts.legalEntityId,
     accounts.byType,
   );
+  if (typeof refunded === "string") return refunded;
   const room = emptyParts();
   for (const type of TYPES) {
     if (

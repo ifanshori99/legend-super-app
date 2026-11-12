@@ -114,10 +114,18 @@ async function seedSaleWithServiceCharge(
   return { orderUlid, paid };
 }
 
+type Tender = "cash" | "gateway" | "points";
+const BUCKET = {
+  cash: "refundCashIdr",
+  gateway: "refundGatewayIdr",
+  points: "refundPointsIdr",
+} as const;
+
 function refundEvent(
   world: World,
   orderUlid: string,
   refund: Refund,
+  tender: Tender = "cash",
 ): EventEnvelope {
   const event = orderRefunded(world, orderUlid, createUlid(), {
     grossSalesIdr: refund.grossSalesIdr,
@@ -130,8 +138,11 @@ function refundEvent(
       ...(event.payload as Record<string, unknown>),
       amountIdr: amount,
       serviceChargeIdr: refund.serviceChargeIdr,
-      refundCashIdr: amount,
-      lines: [{ method: "cash", amountIdr: amount }],
+      refundCashIdr: 0,
+      refundGatewayIdr: 0,
+      refundPointsIdr: 0,
+      [BUCKET[tender]]: amount,
+      lines: [{ method: tender, amountIdr: amount }],
     },
   } as EventEnvelope;
 }
@@ -292,6 +303,63 @@ describe("a sale crediting another liability account", () => {
       { error_code: "AUTO_JOURNAL_PAYLOAD_INVALID", retryable: false },
     ]);
   });
+});
+
+describe("a payout role remapped onto the service charge account after the sale", () => {
+  // Nothing stops two roles sharing one account. A refund debits the service
+  // charge account of the SALE but credits its payout role to TODAY's mapping;
+  // if both are one account the payout credit must never lower "already
+  // refunded" and open room for a second refund (fail closed: park).
+  const cases: { role: Role; tender: Tender }[] = [
+    { role: "loyalty_liability", tender: "points" },
+    { role: "customer_deposit", tender: "gateway" },
+  ];
+  for (const { role, tender } of cases)
+    it(`${role} remapped onto 2301: no refund passes what the sale collected`, async () => {
+      const world = await makeWorld();
+      const serviceChargeAccount = await mapToLiability(
+        world,
+        "service_charge",
+        "2301",
+      );
+      const { orderUlid, paid } = await seedSaleWithServiceCharge(world);
+      await post(world, paid);
+      const saleTotal = totalOf(sale) + SERVICE_CHARGE;
+
+      // The tenant remaps the payout role onto the service charge account.
+      await owner.query(
+        `UPDATE account_mappings SET account_id = $4
+          WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = $3`,
+        [world.tenant.id, world.entity, role, serviceChargeAccount],
+      );
+
+      // Refund A: half the sale, paid out through the remapped role.
+      const a = await deliver(
+        world,
+        refundEvent(
+          world,
+          orderUlid,
+          { grossSalesIdr: 50_000, serviceChargeIdr: 5_000, taxIdr: 5_000 },
+          tender,
+        ),
+      );
+      // Refund B: the whole sale again, in cash.
+      const b = await deliver(
+        world,
+        refundEvent(world, orderUlid, {
+          grossSalesIdr: 100_000,
+          serviceChargeIdr: SERVICE_CHARGE,
+          taxIdr: TAX,
+        }),
+      );
+
+      expect(outcomeOf(b)).toBe("parked:AUTO_JOURNAL_PAYLOAD_INVALID");
+      const refunded =
+        (posted(a.status) ? 60_000 : 0) + (posted(b.status) ? saleTotal : 0);
+      expect(refunded).toBeLessThanOrEqual(saleTotal);
+      const sc = await totalsOf(world, "service_charge");
+      expect(sc.debit).toBeLessThanOrEqual(SERVICE_CHARGE);
+    });
 });
 
 describe("service_charge mapped to a revenue account (regression guard)", () => {

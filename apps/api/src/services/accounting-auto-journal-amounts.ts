@@ -69,6 +69,7 @@ import {
   settlementReconciledPayloadSchema,
 } from "@starter/shared/payment";
 import {
+  accountMappings,
   cashMovements,
   domainEventOutbox,
   orderIssueCharges,
@@ -1450,6 +1451,43 @@ export async function autoJournalFactOf(
         const accountId = saleAccounts.byRole[role];
         if (accountId) accountOverrides[role] = accountId;
       }
+      // The payout credits follow today's mapping. One that points at an
+      // account the sale's service charge or tax lines use would credit what
+      // the refund debits and hide the refunded amount from the cap: refuse.
+      const protectedAccounts = new Set(
+        (
+          [
+            "service_charge",
+            "tax_payable_pbjt",
+            "tax_payable_ppn",
+            "tax_payable_other",
+          ] as const
+        )
+          .map((role) => accountOverrides[role])
+          .filter((id): id is string => id !== undefined),
+      );
+      const payoutMappings = await tx
+        .select({
+          role: accountMappings.role,
+          accountId: accountMappings.accountId,
+        })
+        .from(accountMappings)
+        .where(
+          and(
+            eq(accountMappings.tenantId, tenantId),
+            eq(accountMappings.legalEntityId, saleAccounts.legalEntityId),
+            inArray(accountMappings.role, [
+              "cash_on_hand",
+              "customer_deposit",
+              "edc_clearing",
+              "loyalty_liability",
+            ]),
+          ),
+        );
+      if (payoutMappings.some((row) => protectedAccounts.has(row.accountId)))
+        throw new AutoJournalPayloadInvalid(
+          "A refund payout account is mapped to a sale service charge or tax account",
+        );
       return {
         ruleEvent: "order.refunded",
         accountOverrides,
