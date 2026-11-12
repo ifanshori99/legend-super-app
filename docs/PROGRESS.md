@@ -62,6 +62,22 @@
   - S4 tanpa faktor ditampilkan sebagai notice satu baris.
 - Tidak dikerjakan: tautan dari settings hub ke Domain diserahkan ke U5b (`ws11-audit/components/settings-hub-page.tsx`).
 - Langkah berikut: gerbang review UI founder lewat CTO (page `docs/qa/539-u5a/review.html`).
+## 539-U3 Tanya AI + MCP UI (ui-engineer, cabang `ui/ai-mcp` dari `origin/milestone/m1`, sesi f81b41f7, 12 Nov 2026)
+
+- Sudah: layar Tanya AI (5 area), Panduan AI, detail draf aksi AI + ringkasan di kotak persetujuan, layar izin aplikasi luar `/mcp/consent`, admin MCP & AI (`/kelola/pengaturan/mcp-ai`), pemakaian + token (`.../mcp-ai/pemakaian`). Semua data lewat mock (`VITE_API_MOCK=true`), skenario lewat `?mock=`/`?state=`/`?month=`.
+- Kartu: legend-mlnu, legend-jk6s, legend-39d.1, legend-hi82 (UI saja; backend WS-12 belum ada, kartu integrasi legend-1ihy).
+- Keputusan founder Q11 tampil di dialog cabut: cabut satu aplikasi = semua sesi aplikasi itu putus, berlaku dalam 1 menit. Kolom alasan wajib karena kontrak `revokeMcpClientSchema.reason`.
+- Keputusan teknis: layar izin tidak mengubah aturan path kembali login (maks 300 karakter); query OAuth disimpan di sessionStorage dan kembali lewat `/mcp/consent?resume=1`. Query OAuth dibaca dari URL navigasi mentah (router TanStack mengubah nilai seperti `state=12345678901234567890`).
+- Pemeriksaan: test logika 68/68, eslint 0, vite build 0, ui-check 75/75 PASS (axe 0 pelanggaran, tanpa scroll samping 320 px) di 1440/390/320. tsc terakhir lulus sebelum putaran 3; ulang setelah putaran 3 tertahan antre `heavy`.
+- Review: architect (consent, revoke) + ui-auditor + pembanding mockup + reviewer; 3 putaran perbaikan selesai.
+- Page review founder: `docs/review/539-u3-ai-mcp.html` (6 pertanyaan Setujui/Ubah), `ghostex visual check` bersih di 1280 dan 390.
+- Biaya sesi: utama Opus 194 req, subagent Sonnet 538 req, total biaya* 13352k; subagent 36 (spawn 38), puncak 7, rata 0,36 berjalan.
+- Review founder 12 Nov: Q47–Q51 disetujui. Q46 Tanya AI "Ubah" ke gaya ChatGPT.
+- Redesign Tanya AI (brief `docs/briefs/sub-539-u3-chatgpt.md`, 2 implementer Sonnet + 1 reviewer): riwayat di panel kiri (16rem, mulai lebar kontainer `@2xl`; di HP panel geser dari tombol "Riwayat"), jawaban di kolom tengah maks 42rem, kolom tanya `sticky bottom-0` dengan banner di atasnya, layar kosong berisi sapaan + 4 contoh pertanyaan per area (`suggestionKeys`: manage/shareholder/staff/kitchen). Satu komponen untuk 5 area. Area Karyawan sempit, jadi memakai tata letak HP di semua lebar.
+- Perbaikan setelah review dan screenshot: klik contoh pertanyaan menjaga draf dan memindah fokus ke kolom tanya; panel riwayat HP ditutup sebelum dialog hapus; chip dua baris tidak terpotong (`h-auto!`); tombol bar HP membungkus di KDS 320; `section` diberi `relative` supaya teks sr-only tidak membuat jendela bisa digulir.
+- Pemeriksaan redesign: tsc web exit 0, test logika 76/76, eslint 0, vite build 0, ui-check 10 layar Tanya AI × 1440/390/320 PASS (axe 0, tanpa scroll samping 320).
+- Page review baru: `docs/review/539-u3-tanya-ai-q52.html` (satu pertanyaan Q52 Setujui/Ubah).
+- Berikut: review founder Q52; setelah disetujui, backend WS-12 menggantikan mock.
 
 ## 526 WS-05 admin payment fixes (Codex G0b06, 11 Nov 2026 22:50 WIB)
 
