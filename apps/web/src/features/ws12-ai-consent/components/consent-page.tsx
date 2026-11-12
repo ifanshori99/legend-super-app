@@ -31,10 +31,18 @@ import {
   isResumeSearch,
   isSafeNavigationUrl,
   parseConsentQuery,
+  pickRawConsentSearch,
   type ConsentQuery,
 } from "../logic";
 
 type RedirectMode = "approve" | "deny";
+
+// The first navigation entry keeps the query exactly as the browser received
+// it; `window.location.search` may already be rewritten by the router.
+function readRawSearch(): string {
+  const entry = performance.getEntriesByType?.("navigation")[0];
+  return pickRawConsentSearch(entry?.name, window.location.search);
+}
 
 export function McpConsentPage() {
   const t = useT();
@@ -53,7 +61,7 @@ export function McpConsentPage() {
   const accountName = session?.user.name;
 
   useEffect(() => {
-    const raw = window.location.search;
+    const raw = readRawSearch();
     // Back from sign-in: the OAuth query waits in sessionStorage. A signed-out
     // visitor keeps it there for the next sign-in.
     if (!session || !isResumeSearch(raw)) {
@@ -69,7 +77,11 @@ export function McpConsentPage() {
       stored = null;
     }
     if (stored !== null && parseConsentQuery(stored) !== null) {
-      window.history.replaceState(null, "", `/mcp/consent${stored}`);
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `/mcp/consent${stored}`,
+      );
       setSearch(stored);
     } else {
       setSearch("");
@@ -90,7 +102,7 @@ export function McpConsentPage() {
   }, [resetApprove]);
 
   function onSignIn() {
-    const raw = window.location.search;
+    const raw = readRawSearch();
     let returnTo = buildResumeReturnPath();
     // Already the resume address: the stored query is kept as it is.
     if (!isResumeSearch(raw)) {

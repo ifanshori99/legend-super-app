@@ -40,6 +40,25 @@ export function parseConsentQuery(search: string): ConsentQuery | null {
   return picked as ConsentQuery;
 }
 
+/**
+ * The address-bar query as the browser first received it. The router rewrites
+ * JSON-like values (a long numeric `state` loses digits) before the page can
+ * read `window.location.search`; the navigation entry URL is untouched. Used
+ * only when that entry is the consent page itself, else `currentSearch`.
+ */
+export function pickRawConsentSearch(
+  navEntryUrl: string | undefined,
+  currentSearch: string,
+): string {
+  if (!navEntryUrl) return currentSearch;
+  try {
+    const url = new URL(navEntryUrl);
+    return url.pathname === "/mcp/consent" ? url.search : currentSearch;
+  } catch {
+    return currentSearch;
+  }
+}
+
 /** sessionStorage key holding the raw consent search while the person signs in. */
 export const CONSENT_RESUME_KEY = "legend.mcpConsent.resume";
 

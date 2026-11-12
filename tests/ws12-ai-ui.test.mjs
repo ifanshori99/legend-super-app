@@ -23,6 +23,7 @@ import {
   buildResumeReturnPath,
   isResumeSearch,
   parseConsentQuery,
+  pickRawConsentSearch,
 } from "../apps/web/src/features/ws12-ai-consent/logic.ts";
 import {
   budgetPercent,
@@ -253,6 +254,55 @@ describe("consent resume helpers (P4)", () => {
       false,
     );
     assert.equal(isResumeSearch("?client_id=a"), false);
+  });
+});
+
+describe("pickRawConsentSearch (P4)", () => {
+  test("uses the navigation entry search on the consent page", () => {
+    assert.equal(
+      pickRawConsentSearch(
+        "https://app.test/mcp/consent?client_id=a&state=12345678901234567890",
+        "?client_id=a&state=12345678901234567000",
+      ),
+      "?client_id=a&state=12345678901234567890",
+    );
+  });
+
+  test("keeps a long numeric state and 1e5 exactly", () => {
+    const raw = "?client_id=a&redirect_uri=https%3A%2F%2Fx.test&state=1e5";
+    assert.equal(
+      pickRawConsentSearch(
+        `https://app.test/mcp/consent${raw}`,
+        "?state=100000",
+      ),
+      raw,
+    );
+    const long = pickRawConsentSearch(
+      "https://app.test/mcp/consent?client_id=a&redirect_uri=https%3A%2F%2Fx.test&state=12345678901234567890",
+      "",
+    );
+    assert.equal(parseConsentQuery(long)?.state, "12345678901234567890");
+  });
+
+  test("falls back to the current search", () => {
+    assert.equal(pickRawConsentSearch(undefined, "?a=1"), "?a=1");
+    assert.equal(pickRawConsentSearch("", "?a=1"), "?a=1");
+    assert.equal(pickRawConsentSearch("not a url", "?a=1"), "?a=1");
+    assert.equal(
+      pickRawConsentSearch("https://app.test/sign-in?x=1", "?a=1"),
+      "?a=1",
+    );
+    assert.equal(
+      pickRawConsentSearch("https://app.test/mcp/consent/extra?x=1", "?a=1"),
+      "?a=1",
+    );
+  });
+
+  test("an entry without a query gives an empty search", () => {
+    assert.equal(
+      pickRawConsentSearch("https://app.test/mcp/consent", "?a=1"),
+      "",
+    );
   });
 });
 
