@@ -89,6 +89,10 @@ import { posKasirCodeMessages } from "./pos-kasir-code.ts";
 import { posKasirShiftMessages } from "./pos-kasir-shift.ts";
 import { posKasirSupervisorMessages } from "./pos-kasir-supervisor.ts";
 import { posKasirDaycloseMessages } from "./pos-kasir-dayclose.ts";
+import { posOrderCatalogMessages } from "./pos-order-catalog.ts";
+import { posOrderCartMessages } from "./pos-order-cart.ts";
+import { posCaptainTablesMessages } from "./pos-captain-tables.ts";
+import { posCaptainOrderMessages } from "./pos-captain-order.ts";
 import { openBillConvertMessages } from "./open-bill-convert.ts";
 import { openBillPolicyMessages } from "./open-bill-policy.ts";
 
@@ -134,6 +138,10 @@ export const id = {
   posKasirShift: posKasirShiftMessages,
   posKasirSupervisor: posKasirSupervisorMessages,
   posKasirDayclose: posKasirDaycloseMessages,
+  posOrderCatalog: posOrderCatalogMessages,
+  posOrderCart: posOrderCartMessages,
+  posCaptainTables: posCaptainTablesMessages,
+  posCaptainOrder: posCaptainOrderMessages,
   // Open bill by supervisor + outlet policy (legend-8cm4, legend-2zb5).
   openBillConvert: openBillConvertMessages,
   openBillPolicy: openBillPolicyMessages,

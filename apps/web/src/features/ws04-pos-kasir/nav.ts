@@ -1,10 +1,18 @@
-import { CalendarCheck, Clock, ReceiptText } from "lucide-react";
+import { CalendarCheck, Clock, ReceiptText, ShoppingCart } from "lucide-react";
 import type { AreaNavEntry } from "@/lib/areas/nav";
 
 // Cashier screens inside the operations area (PRD §5: `/pos/*`, §3 F8 shift
 // and day close, §3 F11 "Bayar di kasir" code). Payment itself opens from an
 // order (`/pos/bayar/$orderId`), so it has no menu item.
 const nav: AreaNavEntry[] = [
+  {
+    area: "ops",
+    labelKey: "posOrderCart.nav.kasir",
+    to: "/pos/kasir",
+    icon: ShoppingCart,
+    order: 29,
+    anyPermission: ["pos.sale.create"],
+  },
   {
     area: "ops",
     labelKey: "posKasirCommon.nav.code",

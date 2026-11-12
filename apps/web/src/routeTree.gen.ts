@@ -77,6 +77,7 @@ import { Route as OpsOperasionalSuhuRouteImport } from './routes/_ops/operasiona
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
 import { Route as OpsPosCustomerDisplayRouteImport } from './routes/_ops/pos.customer-display'
 import { Route as OpsPosGantiPenggunaRouteImport } from './routes/_ops/pos.ganti-pengguna'
+import { Route as OpsPosKasirRouteImport } from './routes/_ops/pos.kasir'
 import { Route as OpsPosKodeRouteImport } from './routes/_ops/pos.kode'
 import { Route as OpsPosReservasiRouteImport } from './routes/_ops/pos.reservasi'
 import { Route as OpsPosTutupHariRouteImport } from './routes/_ops/pos.tutup-hari'
@@ -316,6 +317,8 @@ import { Route as OpsOperasionalChecklistRunIdRouteImport } from './routes/_ops/
 import { Route as OpsOperasionalPeralatanIndexRouteImport } from './routes/_ops/operasional.peralatan.index'
 import { Route as OpsOperasionalPeralatanEquipmentIdRouteImport } from './routes/_ops/operasional.peralatan.$equipmentId'
 import { Route as OpsPosBayarOrderIdRouteImport } from './routes/_ops/pos.bayar.$orderId'
+import { Route as OpsPosCaptainIndexRouteImport } from './routes/_ops/pos.captain.index'
+import { Route as OpsPosCaptainPanggilanRouteImport } from './routes/_ops/pos.captain.panggilan'
 import { Route as OpsPosMejaIndexRouteImport } from './routes/_ops/pos.meja.index'
 import { Route as OpsPosShiftIndexRouteImport } from './routes/_ops/pos.shift.index'
 import { Route as OpsPosShiftTutupRouteImport } from './routes/_ops/pos.shift.tutup'
@@ -353,6 +356,9 @@ import { Route as OpsPosSupervisorShiftShiftIdRouteImport } from './routes/_ops/
 import { Route as KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRouteImport } from './routes/_kelola/kelola.akuntansi.jurnal-manual.$manualJournalId.index'
 import { Route as KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRouteImport } from './routes/_kelola/kelola.akuntansi.jurnal-manual.$manualJournalId.ubah'
 import { Route as KelolaKelolaPengadaanPoIdCetakRouteImport } from './routes/_kelola/kelola.pengadaan_.po.$id.cetak'
+import { Route as OpsPosCaptainMejaTableIdIndexRouteImport } from './routes/_ops/pos.captain.meja.$tableId.index'
+import { Route as OpsPosCaptainMejaTableIdTambahRouteImport } from './routes/_ops/pos.captain.meja.$tableId.tambah'
+import { Route as OpsPosCaptainMejaTableIdTinjauRouteImport } from './routes/_ops/pos.captain.meja.$tableId.tinjau'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/_auth',
@@ -685,6 +691,11 @@ const OpsPosCustomerDisplayRoute = OpsPosCustomerDisplayRouteImport.update({
 const OpsPosGantiPenggunaRoute = OpsPosGantiPenggunaRouteImport.update({
   id: '/pos/ganti-pengguna',
   path: '/pos/ganti-pengguna',
+  getParentRoute: () => OpsRoute,
+} as any)
+const OpsPosKasirRoute = OpsPosKasirRouteImport.update({
+  id: '/pos/kasir',
+  path: '/pos/kasir',
   getParentRoute: () => OpsRoute,
 } as any)
 const OpsPosKodeRoute = OpsPosKodeRouteImport.update({
@@ -2069,6 +2080,16 @@ const OpsPosBayarOrderIdRoute = OpsPosBayarOrderIdRouteImport.update({
   path: '/pos/bayar/$orderId',
   getParentRoute: () => OpsRoute,
 } as any)
+const OpsPosCaptainIndexRoute = OpsPosCaptainIndexRouteImport.update({
+  id: '/pos/captain/',
+  path: '/pos/captain/',
+  getParentRoute: () => OpsRoute,
+} as any)
+const OpsPosCaptainPanggilanRoute = OpsPosCaptainPanggilanRouteImport.update({
+  id: '/pos/captain/panggilan',
+  path: '/pos/captain/panggilan',
+  getParentRoute: () => OpsRoute,
+} as any)
 const OpsPosMejaIndexRoute = OpsPosMejaIndexRouteImport.update({
   id: '/pos/meja/',
   path: '/pos/meja/',
@@ -2288,6 +2309,24 @@ const KelolaKelolaPengadaanPoIdCetakRoute =
     path: '/kelola/pengadaan/po/$id/cetak',
     getParentRoute: () => KelolaRoute,
   } as any)
+const OpsPosCaptainMejaTableIdIndexRoute =
+  OpsPosCaptainMejaTableIdIndexRouteImport.update({
+    id: '/pos/captain/meja/$tableId/',
+    path: '/pos/captain/meja/$tableId/',
+    getParentRoute: () => OpsRoute,
+  } as any)
+const OpsPosCaptainMejaTableIdTambahRoute =
+  OpsPosCaptainMejaTableIdTambahRouteImport.update({
+    id: '/pos/captain/meja/$tableId/tambah',
+    path: '/pos/captain/meja/$tableId/tambah',
+    getParentRoute: () => OpsRoute,
+  } as any)
+const OpsPosCaptainMejaTableIdTinjauRoute =
+  OpsPosCaptainMejaTableIdTinjauRouteImport.update({
+    id: '/pos/captain/meja/$tableId/tinjau',
+    path: '/pos/captain/meja/$tableId/tinjau',
+    getParentRoute: () => OpsRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
@@ -2341,6 +2380,7 @@ export interface FileRoutesByFullPath {
   '/operasional/suhu': typeof OpsOperasionalSuhuRoute
   '/pos/customer-display': typeof OpsPosCustomerDisplayRoute
   '/pos/ganti-pengguna': typeof OpsPosGantiPenggunaRoute
+  '/pos/kasir': typeof OpsPosKasirRoute
   '/pos/kode': typeof OpsPosKodeRoute
   '/pos/reservasi': typeof OpsPosReservasiRoute
   '/pos/tutup-hari': typeof OpsPosTutupHariRoute
@@ -2560,6 +2600,7 @@ export interface FileRoutesByFullPath {
   '/operasional/checklist/$runId': typeof OpsOperasionalChecklistRunIdRoute
   '/operasional/peralatan/$equipmentId': typeof OpsOperasionalPeralatanEquipmentIdRoute
   '/pos/bayar/$orderId': typeof OpsPosBayarOrderIdRoute
+  '/pos/captain/panggilan': typeof OpsPosCaptainPanggilanRoute
   '/pos/shift/tutup': typeof OpsPosShiftTutupRoute
   '/platform/tenant/$tenantId': typeof PlatformPlatformTenantTenantIdRoute
   '/platform/tenant/baru': typeof PlatformPlatformTenantBaruRoute
@@ -2590,6 +2631,7 @@ export interface FileRoutesByFullPath {
   '/kelola/sop/': typeof KelolaKelolaSopIndexRoute
   '/operasional/checklist/': typeof OpsOperasionalChecklistIndexRoute
   '/operasional/peralatan/': typeof OpsOperasionalPeralatanIndexRoute
+  '/pos/captain/': typeof OpsPosCaptainIndexRoute
   '/pos/meja/': typeof OpsPosMejaIndexRoute
   '/pos/shift/': typeof OpsPosShiftIndexRoute
   '/platform/tenant/': typeof PlatformPlatformTenantIndexRoute
@@ -2623,7 +2665,10 @@ export interface FileRoutesByFullPath {
   '/operasional/checklist/template/': typeof OpsOperasionalChecklistTemplateIndexRoute
   '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute
   '/kelola/pengadaan/po/$id/cetak': typeof KelolaKelolaPengadaanPoIdCetakRoute
+  '/pos/captain/meja/$tableId/tambah': typeof OpsPosCaptainMejaTableIdTambahRoute
+  '/pos/captain/meja/$tableId/tinjau': typeof OpsPosCaptainMejaTableIdTinjauRoute
   '/kelola/akuntansi/jurnal-manual/$manualJournalId/': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute
+  '/pos/captain/meja/$tableId/': typeof OpsPosCaptainMejaTableIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
@@ -2675,6 +2720,7 @@ export interface FileRoutesByTo {
   '/operasional/suhu': typeof OpsOperasionalSuhuRoute
   '/pos/customer-display': typeof OpsPosCustomerDisplayRoute
   '/pos/ganti-pengguna': typeof OpsPosGantiPenggunaRoute
+  '/pos/kasir': typeof OpsPosKasirRoute
   '/pos/kode': typeof OpsPosKodeRoute
   '/pos/reservasi': typeof OpsPosReservasiRoute
   '/pos/tutup-hari': typeof OpsPosTutupHariRoute
@@ -2893,6 +2939,7 @@ export interface FileRoutesByTo {
   '/operasional/checklist/$runId': typeof OpsOperasionalChecklistRunIdRoute
   '/operasional/peralatan/$equipmentId': typeof OpsOperasionalPeralatanEquipmentIdRoute
   '/pos/bayar/$orderId': typeof OpsPosBayarOrderIdRoute
+  '/pos/captain/panggilan': typeof OpsPosCaptainPanggilanRoute
   '/pos/shift/tutup': typeof OpsPosShiftTutupRoute
   '/platform/tenant/$tenantId': typeof PlatformPlatformTenantTenantIdRoute
   '/platform/tenant/baru': typeof PlatformPlatformTenantBaruRoute
@@ -2923,6 +2970,7 @@ export interface FileRoutesByTo {
   '/kelola/sop': typeof KelolaKelolaSopIndexRoute
   '/operasional/checklist': typeof OpsOperasionalChecklistIndexRoute
   '/operasional/peralatan': typeof OpsOperasionalPeralatanIndexRoute
+  '/pos/captain': typeof OpsPosCaptainIndexRoute
   '/pos/meja': typeof OpsPosMejaIndexRoute
   '/pos/shift': typeof OpsPosShiftIndexRoute
   '/platform/tenant': typeof PlatformPlatformTenantIndexRoute
@@ -2956,7 +3004,10 @@ export interface FileRoutesByTo {
   '/operasional/checklist/template': typeof OpsOperasionalChecklistTemplateIndexRoute
   '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute
   '/kelola/pengadaan/po/$id/cetak': typeof KelolaKelolaPengadaanPoIdCetakRoute
+  '/pos/captain/meja/$tableId/tambah': typeof OpsPosCaptainMejaTableIdTambahRoute
+  '/pos/captain/meja/$tableId/tinjau': typeof OpsPosCaptainMejaTableIdTinjauRoute
   '/kelola/akuntansi/jurnal-manual/$manualJournalId': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute
+  '/pos/captain/meja/$tableId': typeof OpsPosCaptainMejaTableIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -3021,6 +3072,7 @@ export interface FileRoutesById {
   '/_ops/operasional/suhu': typeof OpsOperasionalSuhuRoute
   '/_ops/pos/customer-display': typeof OpsPosCustomerDisplayRoute
   '/_ops/pos/ganti-pengguna': typeof OpsPosGantiPenggunaRoute
+  '/_ops/pos/kasir': typeof OpsPosKasirRoute
   '/_ops/pos/kode': typeof OpsPosKodeRoute
   '/_ops/pos/reservasi': typeof OpsPosReservasiRoute
   '/_ops/pos/tutup-hari': typeof OpsPosTutupHariRoute
@@ -3240,6 +3292,7 @@ export interface FileRoutesById {
   '/_ops/operasional/checklist/$runId': typeof OpsOperasionalChecklistRunIdRoute
   '/_ops/operasional/peralatan/$equipmentId': typeof OpsOperasionalPeralatanEquipmentIdRoute
   '/_ops/pos/bayar/$orderId': typeof OpsPosBayarOrderIdRoute
+  '/_ops/pos/captain/panggilan': typeof OpsPosCaptainPanggilanRoute
   '/_ops/pos/shift/tutup': typeof OpsPosShiftTutupRoute
   '/_platform/platform/tenant/$tenantId': typeof PlatformPlatformTenantTenantIdRoute
   '/_platform/platform/tenant/baru': typeof PlatformPlatformTenantBaruRoute
@@ -3270,6 +3323,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/sop/': typeof KelolaKelolaSopIndexRoute
   '/_ops/operasional/checklist/': typeof OpsOperasionalChecklistIndexRoute
   '/_ops/operasional/peralatan/': typeof OpsOperasionalPeralatanIndexRoute
+  '/_ops/pos/captain/': typeof OpsPosCaptainIndexRoute
   '/_ops/pos/meja/': typeof OpsPosMejaIndexRoute
   '/_ops/pos/shift/': typeof OpsPosShiftIndexRoute
   '/_platform/platform/tenant/': typeof PlatformPlatformTenantIndexRoute
@@ -3303,7 +3357,10 @@ export interface FileRoutesById {
   '/_ops/operasional/checklist/template/': typeof OpsOperasionalChecklistTemplateIndexRoute
   '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute
   '/_kelola/kelola/pengadaan_/po/$id/cetak': typeof KelolaKelolaPengadaanPoIdCetakRoute
+  '/_ops/pos/captain/meja/$tableId/tambah': typeof OpsPosCaptainMejaTableIdTambahRoute
+  '/_ops/pos/captain/meja/$tableId/tinjau': typeof OpsPosCaptainMejaTableIdTinjauRoute
   '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute
+  '/_ops/pos/captain/meja/$tableId/': typeof OpsPosCaptainMejaTableIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -3359,6 +3416,7 @@ export interface FileRouteTypes {
     | '/operasional/suhu'
     | '/pos/customer-display'
     | '/pos/ganti-pengguna'
+    | '/pos/kasir'
     | '/pos/kode'
     | '/pos/reservasi'
     | '/pos/tutup-hari'
@@ -3578,6 +3636,7 @@ export interface FileRouteTypes {
     | '/operasional/checklist/$runId'
     | '/operasional/peralatan/$equipmentId'
     | '/pos/bayar/$orderId'
+    | '/pos/captain/panggilan'
     | '/pos/shift/tutup'
     | '/platform/tenant/$tenantId'
     | '/platform/tenant/baru'
@@ -3608,6 +3667,7 @@ export interface FileRouteTypes {
     | '/kelola/sop/'
     | '/operasional/checklist/'
     | '/operasional/peralatan/'
+    | '/pos/captain/'
     | '/pos/meja/'
     | '/pos/shift/'
     | '/platform/tenant/'
@@ -3641,7 +3701,10 @@ export interface FileRouteTypes {
     | '/operasional/checklist/template/'
     | '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah'
     | '/kelola/pengadaan/po/$id/cetak'
+    | '/pos/captain/meja/$tableId/tambah'
+    | '/pos/captain/meja/$tableId/tinjau'
     | '/kelola/akuntansi/jurnal-manual/$manualJournalId/'
+    | '/pos/captain/meja/$tableId/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -3693,6 +3756,7 @@ export interface FileRouteTypes {
     | '/operasional/suhu'
     | '/pos/customer-display'
     | '/pos/ganti-pengguna'
+    | '/pos/kasir'
     | '/pos/kode'
     | '/pos/reservasi'
     | '/pos/tutup-hari'
@@ -3911,6 +3975,7 @@ export interface FileRouteTypes {
     | '/operasional/checklist/$runId'
     | '/operasional/peralatan/$equipmentId'
     | '/pos/bayar/$orderId'
+    | '/pos/captain/panggilan'
     | '/pos/shift/tutup'
     | '/platform/tenant/$tenantId'
     | '/platform/tenant/baru'
@@ -3941,6 +4006,7 @@ export interface FileRouteTypes {
     | '/kelola/sop'
     | '/operasional/checklist'
     | '/operasional/peralatan'
+    | '/pos/captain'
     | '/pos/meja'
     | '/pos/shift'
     | '/platform/tenant'
@@ -3974,7 +4040,10 @@ export interface FileRouteTypes {
     | '/operasional/checklist/template'
     | '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah'
     | '/kelola/pengadaan/po/$id/cetak'
+    | '/pos/captain/meja/$tableId/tambah'
+    | '/pos/captain/meja/$tableId/tinjau'
     | '/kelola/akuntansi/jurnal-manual/$manualJournalId'
+    | '/pos/captain/meja/$tableId'
   id:
     | '__root__'
     | '/_auth'
@@ -4038,6 +4107,7 @@ export interface FileRouteTypes {
     | '/_ops/operasional/suhu'
     | '/_ops/pos/customer-display'
     | '/_ops/pos/ganti-pengguna'
+    | '/_ops/pos/kasir'
     | '/_ops/pos/kode'
     | '/_ops/pos/reservasi'
     | '/_ops/pos/tutup-hari'
@@ -4257,6 +4327,7 @@ export interface FileRouteTypes {
     | '/_ops/operasional/checklist/$runId'
     | '/_ops/operasional/peralatan/$equipmentId'
     | '/_ops/pos/bayar/$orderId'
+    | '/_ops/pos/captain/panggilan'
     | '/_ops/pos/shift/tutup'
     | '/_platform/platform/tenant/$tenantId'
     | '/_platform/platform/tenant/baru'
@@ -4287,6 +4358,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/sop/'
     | '/_ops/operasional/checklist/'
     | '/_ops/operasional/peralatan/'
+    | '/_ops/pos/captain/'
     | '/_ops/pos/meja/'
     | '/_ops/pos/shift/'
     | '/_platform/platform/tenant/'
@@ -4320,7 +4392,10 @@ export interface FileRouteTypes {
     | '/_ops/operasional/checklist/template/'
     | '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah'
     | '/_kelola/kelola/pengadaan_/po/$id/cetak'
+    | '/_ops/pos/captain/meja/$tableId/tambah'
+    | '/_ops/pos/captain/meja/$tableId/tinjau'
     | '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/'
+    | '/_ops/pos/captain/meja/$tableId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -4818,6 +4893,13 @@ declare module '@tanstack/react-router' {
       path: '/pos/ganti-pengguna'
       fullPath: '/pos/ganti-pengguna'
       preLoaderRoute: typeof OpsPosGantiPenggunaRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/_ops/pos/kasir': {
+      id: '/_ops/pos/kasir'
+      path: '/pos/kasir'
+      fullPath: '/pos/kasir'
+      preLoaderRoute: typeof OpsPosKasirRouteImport
       parentRoute: typeof OpsRoute
     }
     '/_ops/pos/kode': {
@@ -6493,6 +6575,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OpsPosBayarOrderIdRouteImport
       parentRoute: typeof OpsRoute
     }
+    '/_ops/pos/captain/': {
+      id: '/_ops/pos/captain/'
+      path: '/pos/captain'
+      fullPath: '/pos/captain/'
+      preLoaderRoute: typeof OpsPosCaptainIndexRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/_ops/pos/captain/panggilan': {
+      id: '/_ops/pos/captain/panggilan'
+      path: '/pos/captain/panggilan'
+      fullPath: '/pos/captain/panggilan'
+      preLoaderRoute: typeof OpsPosCaptainPanggilanRouteImport
+      parentRoute: typeof OpsRoute
+    }
     '/_ops/pos/meja/': {
       id: '/_ops/pos/meja/'
       path: '/pos/meja'
@@ -6751,6 +6847,27 @@ declare module '@tanstack/react-router' {
       fullPath: '/kelola/pengadaan/po/$id/cetak'
       preLoaderRoute: typeof KelolaKelolaPengadaanPoIdCetakRouteImport
       parentRoute: typeof KelolaRoute
+    }
+    '/_ops/pos/captain/meja/$tableId/': {
+      id: '/_ops/pos/captain/meja/$tableId/'
+      path: '/pos/captain/meja/$tableId'
+      fullPath: '/pos/captain/meja/$tableId/'
+      preLoaderRoute: typeof OpsPosCaptainMejaTableIdIndexRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/_ops/pos/captain/meja/$tableId/tambah': {
+      id: '/_ops/pos/captain/meja/$tableId/tambah'
+      path: '/pos/captain/meja/$tableId/tambah'
+      fullPath: '/pos/captain/meja/$tableId/tambah'
+      preLoaderRoute: typeof OpsPosCaptainMejaTableIdTambahRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/_ops/pos/captain/meja/$tableId/tinjau': {
+      id: '/_ops/pos/captain/meja/$tableId/tinjau'
+      path: '/pos/captain/meja/$tableId/tinjau'
+      fullPath: '/pos/captain/meja/$tableId/tinjau'
+      preLoaderRoute: typeof OpsPosCaptainMejaTableIdTinjauRouteImport
+      parentRoute: typeof OpsRoute
     }
   }
 }
@@ -7456,6 +7573,7 @@ interface OpsRouteChildren {
   OpsOperasionalSuhuRoute: typeof OpsOperasionalSuhuRoute
   OpsPosCustomerDisplayRoute: typeof OpsPosCustomerDisplayRoute
   OpsPosGantiPenggunaRoute: typeof OpsPosGantiPenggunaRoute
+  OpsPosKasirRoute: typeof OpsPosKasirRoute
   OpsPosKodeRoute: typeof OpsPosKodeRoute
   OpsPosReservasiRoute: typeof OpsPosReservasiRoute
   OpsPosTutupHariRoute: typeof OpsPosTutupHariRoute
@@ -7464,14 +7582,19 @@ interface OpsRouteChildren {
   OpsOperasionalChecklistRunIdRoute: typeof OpsOperasionalChecklistRunIdRoute
   OpsOperasionalPeralatanEquipmentIdRoute: typeof OpsOperasionalPeralatanEquipmentIdRoute
   OpsPosBayarOrderIdRoute: typeof OpsPosBayarOrderIdRoute
+  OpsPosCaptainPanggilanRoute: typeof OpsPosCaptainPanggilanRoute
   OpsPosShiftTutupRoute: typeof OpsPosShiftTutupRoute
   OpsOperasionalChecklistIndexRoute: typeof OpsOperasionalChecklistIndexRoute
   OpsOperasionalPeralatanIndexRoute: typeof OpsOperasionalPeralatanIndexRoute
+  OpsPosCaptainIndexRoute: typeof OpsPosCaptainIndexRoute
   OpsPosMejaIndexRoute: typeof OpsPosMejaIndexRoute
   OpsPosShiftIndexRoute: typeof OpsPosShiftIndexRoute
   OpsOperasionalChecklistTemplateTemplateIdRoute: typeof OpsOperasionalChecklistTemplateTemplateIdRoute
   OpsPosSupervisorShiftShiftIdRoute: typeof OpsPosSupervisorShiftShiftIdRoute
   OpsOperasionalChecklistTemplateIndexRoute: typeof OpsOperasionalChecklistTemplateIndexRoute
+  OpsPosCaptainMejaTableIdTambahRoute: typeof OpsPosCaptainMejaTableIdTambahRoute
+  OpsPosCaptainMejaTableIdTinjauRoute: typeof OpsPosCaptainMejaTableIdTinjauRoute
+  OpsPosCaptainMejaTableIdIndexRoute: typeof OpsPosCaptainMejaTableIdIndexRoute
 }
 
 const OpsRouteChildren: OpsRouteChildren = {
@@ -7485,6 +7608,7 @@ const OpsRouteChildren: OpsRouteChildren = {
   OpsOperasionalSuhuRoute: OpsOperasionalSuhuRoute,
   OpsPosCustomerDisplayRoute: OpsPosCustomerDisplayRoute,
   OpsPosGantiPenggunaRoute: OpsPosGantiPenggunaRoute,
+  OpsPosKasirRoute: OpsPosKasirRoute,
   OpsPosKodeRoute: OpsPosKodeRoute,
   OpsPosReservasiRoute: OpsPosReservasiRoute,
   OpsPosTutupHariRoute: OpsPosTutupHariRoute,
@@ -7494,9 +7618,11 @@ const OpsRouteChildren: OpsRouteChildren = {
   OpsOperasionalPeralatanEquipmentIdRoute:
     OpsOperasionalPeralatanEquipmentIdRoute,
   OpsPosBayarOrderIdRoute: OpsPosBayarOrderIdRoute,
+  OpsPosCaptainPanggilanRoute: OpsPosCaptainPanggilanRoute,
   OpsPosShiftTutupRoute: OpsPosShiftTutupRoute,
   OpsOperasionalChecklistIndexRoute: OpsOperasionalChecklistIndexRoute,
   OpsOperasionalPeralatanIndexRoute: OpsOperasionalPeralatanIndexRoute,
+  OpsPosCaptainIndexRoute: OpsPosCaptainIndexRoute,
   OpsPosMejaIndexRoute: OpsPosMejaIndexRoute,
   OpsPosShiftIndexRoute: OpsPosShiftIndexRoute,
   OpsOperasionalChecklistTemplateTemplateIdRoute:
@@ -7504,6 +7630,9 @@ const OpsRouteChildren: OpsRouteChildren = {
   OpsPosSupervisorShiftShiftIdRoute: OpsPosSupervisorShiftShiftIdRoute,
   OpsOperasionalChecklistTemplateIndexRoute:
     OpsOperasionalChecklistTemplateIndexRoute,
+  OpsPosCaptainMejaTableIdTambahRoute: OpsPosCaptainMejaTableIdTambahRoute,
+  OpsPosCaptainMejaTableIdTinjauRoute: OpsPosCaptainMejaTableIdTinjauRoute,
+  OpsPosCaptainMejaTableIdIndexRoute: OpsPosCaptainMejaTableIdIndexRoute,
 }
 
 const OpsRouteWithChildren = OpsRoute._addFileChildren(OpsRouteChildren)

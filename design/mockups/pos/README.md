@@ -87,3 +87,25 @@ Hasil render final, 8 November 2026:
 - Q7: DP reservasi yang melebihi tagihan menjadi saldo pelanggan untuk kunjungan berikutnya.
 - Q8: Blind count tutup shift wajib per pecahan.
 - Q9: Tutup hari usaha oleh manajer outlet; batas hari usaha pukul 04.00.
+
+## Kasir utama dan captain — WS-04
+
+Mockup statis berikut memakai data contoh dan melanjutkan arah visual POS yang disetujui. Kasir mencari dan menyusun pesanan; captain memilih meja, menambah item ke sesi yang berjalan, serta menangani panggilan. HTML tidak terhubung ke sistem pesanan.
+
+| Sumber dan gambar | Tujuan dan kondisi |
+| --- | --- |
+| [Kasir utama](cashier-main.html) · [Tablet](cashier-main-desktop.png) · [Ponsel](cashier-main-mobile.png) | Katalog, kanal, keranjang, catatan dan penahanan item per course. Stok habis ditandai pada katalog. |
+| [Keranjang kosong](cashier-main-empty-desktop.png) · [Modifier wajib](cashier-main-modifier-desktop.png) · [Modifier ponsel](cashier-main-modifier-mobile.png) | Memulai pesanan dan memperbaiki pilihan yang wajib diisi. |
+| [Kasir offline](cashier-main-offline-desktop.png) · [Offline ponsel](cashier-main-offline-mobile.png) · [Takeaway](cashier-main-takeaway-desktop.png) · [Keranjang ponsel](cashier-main-cart-mobile.png) | Peringatan umur katalog, nomor panggilan, dan ringkasan untuk layar kecil. |
+| [Captain](captain.html) · [Meja](captain-tables.png) · [Tambah item](captain-order.png) · [Tinjau](captain-review.png) | Memilih meja terisi, menambah pesanan dan mengirim ke dapur. |
+| [Item ditahan](captain-held.png) · [Panggilan](captain-calls.png) · [Captain offline](captain-offline.png) | Melepas item ditahan, menerima panggilan waiter dan bekerja saat internet terputus. |
+
+### Keputusan dan asumsi WS-04
+
+1. **Katalog dan keranjang berdampingan di tablet; keranjang menjadi tampilan sendiri di ponsel.** Harga dan kanal tetap dekat dengan pesanan tanpa mempersempit katalog di layar kecil.
+2. **Pilihan wajib dan stok habis dijelaskan di tempat.** Pesan modifier menunjukkan apa yang harus dipilih; menu habis tetap terlihat dengan status teks, sehingga kasir tidak perlu menebak.
+3. **Koneksi dan pekerjaan dapur dibedakan.** Peringatan menyebut waktu katalog terakhir dan bahwa penjualan dapat berlanjut; item yang ditahan ditampilkan terpisah dari item yang dikirim.
+
+Asumsi untuk review founder: nama menu, harga, nomor meja dan waktu hanya contoh; pengelompokan course dan nomor panggilan adalah contoh tampilan. Kondisi offline menggambarkan internet terputus saat edge outlet masih tersedia, bukan putusnya sambungan ke edge. Tata letak dan istilah perlu divalidasi pada alur kerja outlet sesungguhnya.
+
+Render ulang WS-04 dari root repo dengan `heavy node design/mockups/pos/cashier-main-render.mjs` dan `heavy node design/mockups/pos/captain-render.mjs`. Renderer masing-masing memeriksa error JavaScript dan luapan; renderer kasir juga memeriksa pemuatan foto. Keduanya memakai paket Playwright lokal di `.pnpm` karena tautan paket root pada workspace ini rusak. Gambar diperiksa visual pada 1280 × 800 dan 390 × 844; target jumlah diperbesar ke 56 px sesudah audit. Mockup statis belum membuktikan interaksi, aksesibilitas menyeluruh, atau perilaku backend.
