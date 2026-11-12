@@ -265,22 +265,8 @@ const STATES = [
   {
     card: "restore",
     name: "success",
-    focus: (page) =>
-      // The success text also shows in a toast; anchor on the panel's live region.
-      page
-        .locator("div")
-        .filter({
-          has: page
-            .locator('[role="status"][aria-live="polite"]')
-            .filter({ hasText: "Tenant berhasil dipulihkan." }),
-        })
-        .filter({
-          has: page.getByRole("button", {
-            name: "Kembali ke daftar",
-            exact: true,
-          }),
-        })
-        .last(),
+    // No focus crop: the panel re-renders after the refetch, so a locator
+    // detaches mid-scroll. The review crop is cut from the full shot.
     path: TENANT_PATH,
     prepare: async (page) => {
       await restoreConfirm(page);

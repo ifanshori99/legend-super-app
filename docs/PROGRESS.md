@@ -1,3 +1,39 @@
+## 539-U5a UI back-office, platform, keamanan (ui-engineer, cabang `ui/backoffice-platform` dari `origin/milestone/m1`, 2026-11-12)
+
+- Sudah: enam layar dari mockup brief 487 Part B, satu commit per layar plus perbaikan review.
+  - S1 `legend-nb4iy`: pulihkan tenant atau outlet.
+  - S2 `legend-be0lx`: tetapkan atau ganti Owner.
+  - S3 `legend-az8z5`: domain TXT.
+  - S4 `legend-sw980`: kode cadangan MFA.
+  - S5 `legend-7z38l`: editor satuan.
+  - S6 `legend-fzvh`: pemetaan akun-peran.
+  - routeTree diregenerasi.
+  - Mock restore dan Owner ditambahkan untuk cek UI.
+- Review:
+  - architect: S1, S4.
+  - reviewer: S2, S3, S5, S6.
+  - ui-auditor dan impeccable-finish-reviewer: semua temuan nyata dibetulkan (`docs/briefs/sub-539-u5a-fix-audit.md`).
+- Bukti:
+  - Typecheck web dan shared lulus sebelum perbaikan audit.
+  - Eslint fitur U5a bersih setelah perbaikan.
+  - Node test per layar lulus (S2 24, S4 23, S5 17, S6 20).
+  - Setelah semua perbaikan: typecheck web dan shared lulus (exit 0), node test 137 lulus dan 0 gagal.
+  - `scripts/ui-check-u5a.mjs` (Playwright + axe, 1280 dan 390), run penuh: 101 dari 112 lulus. 11 gagal: axe `definition-list` di domain, `scrollable-region-focusable` di satuan-390, dan locator restore-error. Ketiganya dibetulkan di 383b37dd.
+  - Run ulang 15 state yang gagal dan yang dipakai page review: semua axe bersih. Satu-satunya yang gagal adalah crop fokus restore-success, yang lalu dipotong dari screenshot penuh.
+  - Output ada di `docs/qa/539-u5a/`: screenshot penuh, `focus/`, dan `axe.json`.
+  - Page review founder: `docs/qa/539-u5a/review.html`. `ghostex visual check` tanpa temuan di 390 dan 1280.
+- Kartu backend:
+  - `legend-co93l`: daftar Owner tenant dan pencarian akun. Tanpa ini panel Owner meminta UUID akun dan Ganti Owner hanya bisa tepat setelah penetapan.
+  - `legend-utnll`: daftar brand, outlet, dan badan usaha per tenant untuk platform. Tanpa ini pemulihan outlet tenant lain belum terjangkau.
+- Deviasi mockup yang dilaporkan ke founder:
+  - S1 panel inline, bukan tab.
+  - S5 dialog mobile bukan bottom sheet.
+  - S6 `service_charge` mengikuti kontrak (liability atau revenue).
+  - S4 tombol Lewati hanya saat pembuatan kode gagal.
+  - S4 tanpa faktor ditampilkan sebagai notice satu baris.
+- Tidak dikerjakan: tautan dari settings hub ke Domain diserahkan ke U5b (`ws11-audit/components/settings-hub-page.tsx`).
+- Langkah berikut: gerbang review UI founder lewat CTO (page `docs/qa/539-u5a/review.html`).
+
 ## 526 WS-05 admin payment fixes (Codex G0b06, 11 Nov 2026 22:50 WIB)
 
 - Cabang `ws/ws05-pay-admin`, worktree `.worktrees/ws05-pay-admin`, basis `9806b8cd`, bead `legend-xoxim`; scope brief 523/526 dan founder Q63.
