@@ -88,6 +88,7 @@ import {
 } from "./payroll-loans.routes";
 import { payrollPolicyRouter, payrollThrRouter } from "./payroll-policy.routes";
 import { payrollServiceChargeRouter } from "./payroll-service-charge.routes";
+import { payrollRapelRouter } from "./payroll-rapel.routes";
 import {
   payrollMyReimbursementsRouter,
   payrollReimbursementCategoriesRouter,
@@ -361,6 +362,7 @@ apiRouter.use("/hris/payroll/components", payrollComponentsRouter);
 apiRouter.use("/hris/payroll/employees", payrollEmployeeComponentsRouter);
 apiRouter.use("/hris/payroll/loans", payrollLoansRouter);
 apiRouter.use("/hris/payroll/service-charge-pools", payrollServiceChargeRouter);
+apiRouter.use("/hris/payroll/rapel", payrollRapelRouter);
 apiRouter.use(
   "/hris/payroll/reimbursement-categories",
   payrollReimbursementCategoriesRouter,

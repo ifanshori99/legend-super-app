@@ -33,6 +33,7 @@ import {
   sealHrisPii,
   type HrisPiiBinding,
 } from "../lib/hris-pii.ts";
+import { openPayrollValue, sealPayrollValue } from "../lib/payroll-sealed.ts";
 import {
   createEmployee,
   getEmployeePii,
@@ -703,5 +704,336 @@ describe("legend-33mj HRIS PII re-seal job", () => {
       }
       await run([{ data: { targetKeyVersion: HRIS_PII_KEY_VERSION } }]);
     });
+  });
+});
+
+describe("[549-Q44] rapel ledger survives PII key rotation", () => {
+  it("[549-Q44-RESEAL] rotates both ledgers from key1 to key2 without changing any payable rupiah or bypassing immutability", async () => {
+    const employeeId = employeesOf[tenantA]![0]!.id;
+    const componentId = randomUUID();
+    const anchorId = randomUUID();
+    const policyId = randomUUID();
+    const rapelId = randomUUID();
+    const componentCode = `RS_${componentId.slice(0, 8).toUpperCase()}`;
+    const items = [
+      {
+        id: randomUUID(),
+        sourceRunId: randomUUID(),
+        amount: 464_516,
+        start: "2026-05-01",
+        end: "2026-05-31",
+      },
+      {
+        id: randomUUID(),
+        sourceRunId: randomUUID(),
+        amount: 900_000,
+        start: "2026-06-01",
+        end: "2026-06-30",
+      },
+    ];
+    const headerBinding = {
+      tenantId: tenantA,
+      table: "payroll_rapels",
+      rowId: rapelId,
+      field: "amount",
+    } as const;
+    const itemBinding = (id: string) =>
+      ({
+        tenantId: tenantA,
+        table: "payroll_rapel_items",
+        rowId: id,
+        field: "amount",
+      }) as const;
+    const attemptMutation = (sql: string, values: unknown[], flags = false) =>
+      asOwner(tenantA, async (client) => {
+        await client.query("SET LOCAL ROLE legend_app");
+        if (flags)
+          await client.query(
+            "SELECT set_config('app.payroll_reseal', 'on', true), set_config('app.payroll_reseal_target_version', '2', true)",
+          );
+        return client.query(sql, values);
+      });
+    const stored = () =>
+      asOwner(tenantA, async (client) => {
+        const header = await client.query<{
+          sealed: Buffer;
+          version: number;
+          metadata: unknown;
+        }>(
+          `SELECT new_amount_encrypted AS sealed, pii_key_version::int AS version,
+           to_jsonb(r) - 'new_amount_encrypted' - 'pii_key_version' AS metadata
+         FROM payroll_rapels r WHERE tenant_id = $1 AND id = $2`,
+          [tenantA, rapelId],
+        );
+        const detail = await client.query<{
+          id: string;
+          sealed: Buffer;
+          version: number;
+          metadata: unknown;
+        }>(
+          `SELECT id, amount_encrypted AS sealed, pii_key_version::int AS version,
+           to_jsonb(i) - 'amount_encrypted' - 'pii_key_version' AS metadata
+         FROM payroll_rapel_items i WHERE tenant_id = $1 AND rapel_id = $2 ORDER BY id`,
+          [tenantA, rapelId],
+        );
+        return { header: header.rows[0]!, items: detail.rows };
+      });
+    const amounts = (rows: Awaited<ReturnType<typeof stored>>) => {
+      const target = Number(
+        openPayrollValue(
+          rows.header.sealed,
+          headerBinding,
+          rows.header.version,
+        ),
+      );
+      const details = rows.items.map((row) => ({
+        id: row.id,
+        amount: Number(
+          openPayrollValue(row.sealed, itemBinding(row.id), row.version),
+        ),
+      }));
+      return {
+        target,
+        details,
+        total: details.reduce((sum, row) => sum + row.amount, 0),
+      };
+    };
+    try {
+      await asOwner(tenantA, async (client) => {
+        await client.query(
+          `INSERT INTO pay_components (id, tenant_id, code, name, category, kind,
+             recurrence, taxable, tax_scheme, bpjs_base, overtime_base, thr_base)
+           VALUES ($1, $2, $3, 'Rapel reseal salary', 'base_salary', 'earning',
+             'fixed', true, 'gross', true, true, true)`,
+          [componentId, tenantA, componentCode],
+        );
+        await client.query(
+          `INSERT INTO employee_pay_components (id, tenant_id, employee_id, component_id,
+             amount_encrypted, pii_key_version, effective_from, created_by)
+           VALUES ($1, $2, $3, $4, $5, 1, '2026-01-01', $6)`,
+          [
+            anchorId,
+            tenantA,
+            employeeId,
+            componentId,
+            sealPayrollValue(
+              "6000000",
+              {
+                tenantId: tenantA,
+                table: "employee_pay_components",
+                rowId: anchorId,
+                field: "amount",
+              },
+              1,
+            ),
+            hr[tenantA]!,
+          ],
+        );
+        await client.query(
+          `INSERT INTO payroll_policies (id, tenant_id, legal_entity_id, name,
+             employee_group_code, employee_group, cycle, pay_date_adjustment,
+             jkk_risk_class, bpjs_programmes)
+           VALUES ($1, $2, $3, 'Rapel reseal policy', $4, $5,
+             '{"kind":"monthly"}', 'none', 'low', '[]')`,
+          [
+            policyId,
+            tenantA,
+            entity[tenantA],
+            componentCode,
+            JSON.stringify({ code: componentCode }),
+          ],
+        );
+        for (const item of items) {
+          await client.query(
+            `INSERT INTO payroll_runs (id, tenant_id, legal_entity_id, payroll_policy_id,
+               run_type, period_start, period_end, pay_date, created_by)
+             VALUES ($1, $2, $3, $4, 'regular', $5, $6, $6, $7)`,
+            [
+              item.sourceRunId,
+              tenantA,
+              entity[tenantA],
+              policyId,
+              item.start,
+              item.end,
+              hr[tenantA]!,
+            ],
+          );
+          for (const step of [
+            "status = 'simulated'",
+            "status = 'hr_approved', approved_by_hr = 'rapel-reseal-hr', approved_by_hr_at = now()",
+            "status = 'approved', approved_by_finance = 'rapel-reseal-finance', approved_by_finance_at = now()",
+            "status = 'locked', config_snapshot = '{\"v\":1}', totals = '{\"t\":1}', locked_by = 'rapel-reseal-finance', locked_at = now()",
+          ])
+            await client.query(
+              `UPDATE payroll_runs SET ${step} WHERE id = $1`,
+              [item.sourceRunId],
+            );
+        }
+        await client.query(
+          `INSERT INTO payroll_rapels (id, tenant_id, employee_id, component_id,
+             legal_entity_id, anchor_history_row_id, effective_from, prospective_from,
+             new_amount_encrypted, pii_key_version, requested_by,
+             eligibility_join_date, eligibility_end_date)
+           SELECT $1, $2, $3, $4, $5, $6, '2026-05-16', '2026-07-01',
+             $7, 1, $8, join_date, end_date FROM employees WHERE tenant_id = $2 AND id = $3`,
+          [
+            rapelId,
+            tenantA,
+            employeeId,
+            componentId,
+            entity[tenantA],
+            anchorId,
+            sealPayrollValue("6900000", headerBinding, 1),
+            hr[tenantA]!,
+          ],
+        );
+        for (const item of items)
+          await client.query(
+            `INSERT INTO payroll_rapel_items (id, tenant_id, rapel_id, source_run_id,
+               amount_encrypted, pii_key_version) VALUES ($1, $2, $3, $4, $5, 1)`,
+            [
+              item.id,
+              tenantA,
+              rapelId,
+              item.sourceRunId,
+              sealPayrollValue(String(item.amount), itemBinding(item.id), 1),
+            ],
+          );
+      });
+      const before = await stored();
+      const expected = amounts(before);
+      expect(expected.target).toBe(6_900_000);
+      expect(expected.total).toBe(1_364_516);
+      expect(expected.details).toEqual(
+        items
+          .map(({ id, amount }) => ({ id, amount }))
+          .sort((a, b) => a.id.localeCompare(b.id)),
+      );
+      expect(before.header.version).toBe(1);
+      expect(before.items.map((row) => row.version)).toEqual([1, 1]);
+
+      const updatedHeader = sealPayrollValue("6900000", headerBinding, 2);
+      const updatedItem = sealPayrollValue(
+        String(items[0]!.amount),
+        itemBinding(items[0]!.id),
+        2,
+      );
+      await expect(
+        attemptMutation(
+          "UPDATE payroll_rapels SET new_amount_encrypted = $2, pii_key_version = 2 WHERE id = $1",
+          [rapelId, updatedHeader],
+        ),
+      ).rejects.toThrow(/PAYR02|immutable|reseal|rapel/i);
+      await expect(
+        attemptMutation(
+          "UPDATE payroll_rapel_items SET amount_encrypted = $2, pii_key_version = 2 WHERE id = $1",
+          [items[0]!.id, updatedItem],
+        ),
+      ).rejects.toThrow(/PAYR02|immutable|reseal|rapel/i);
+      await expect(
+        attemptMutation(
+          `UPDATE payroll_rapels SET new_amount_encrypted = $2, pii_key_version = 2,
+           effective_from = effective_from + 1 WHERE id = $1`,
+          [rapelId, updatedHeader],
+          true,
+        ),
+      ).rejects.toThrow(/PAYR02|immutable|reseal|rapel/i);
+      await expect(
+        attemptMutation(
+          `UPDATE payroll_rapel_items SET amount_encrypted = $2, pii_key_version = 2,
+           created_at = created_at + interval '1 second' WHERE id = $1`,
+          [items[0]!.id, updatedItem],
+          true,
+        ),
+      ).rejects.toThrow(/PAYR02|immutable|reseal|rapel/i);
+      expect(await stored()).toEqual(before);
+
+      expect(await reseal({}, [tenantA])).toMatchObject({
+        rapels: 1,
+        rapelItems: 2,
+        failedTenants: 0,
+        aborted: false,
+      });
+      const after = await stored();
+      expect(after.header.version).toBe(2);
+      expect(after.items.map((row) => row.version)).toEqual([2, 2]);
+      expect(amounts(after)).toEqual(expected);
+      expect(after.header.metadata).toEqual(before.header.metadata);
+      expect(after.items.map((row) => row.metadata)).toEqual(
+        before.items.map((row) => row.metadata),
+      );
+      expect(after.header.sealed).not.toEqual(before.header.sealed);
+      for (let index = 0; index < after.items.length; index += 1)
+        expect(after.items[index]!.sealed).not.toEqual(
+          before.items[index]!.sealed,
+        );
+      expect(() =>
+        openPayrollValue(
+          after.header.sealed,
+          { ...headerBinding, tenantId: tenantB },
+          2,
+        ),
+      ).toThrow();
+      for (const row of after.items)
+        expect(() =>
+          openPayrollValue(
+            row.sealed,
+            { ...itemBinding(row.id), tenantId: tenantB },
+            2,
+          ),
+        ).toThrow();
+
+      expect(await reseal({}, [tenantA])).toMatchObject({
+        rapels: 0,
+        rapelItems: 0,
+        failedTenants: 0,
+      });
+      expect(await stored()).toEqual(after);
+      await expect(
+        attemptMutation(
+          "UPDATE payroll_rapels SET new_amount_encrypted = $2 WHERE id = $1",
+          [rapelId, sealPayrollValue("7000000", headerBinding, 2)],
+        ),
+      ).rejects.toThrow(/PAYR02|immutable|reseal|rapel/i);
+      await expect(
+        attemptMutation(
+          "UPDATE payroll_rapel_items SET amount_encrypted = $2 WHERE id = $1",
+          [
+            items[0]!.id,
+            sealPayrollValue("9999999", itemBinding(items[0]!.id), 2),
+          ],
+        ),
+      ).rejects.toThrow(/PAYR02|immutable|reseal|rapel/i);
+      expect(await stored()).toEqual(after);
+    } finally {
+      // Bypass immutability only to remove this test's frozen fixtures.
+      await asOwner(tenantA, async (client) => {
+        await client.query("SET LOCAL session_replication_role = replica");
+        await client.query(
+          "DELETE FROM payroll_rapel_items WHERE tenant_id = $1 AND rapel_id = $2",
+          [tenantA, rapelId],
+        );
+        await client.query(
+          "DELETE FROM payroll_rapels WHERE tenant_id = $1 AND id = $2",
+          [tenantA, rapelId],
+        );
+        await client.query(
+          "DELETE FROM payroll_runs WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+          [tenantA, items.map((item) => item.sourceRunId)],
+        );
+        await client.query(
+          "DELETE FROM payroll_policies WHERE tenant_id = $1 AND id = $2",
+          [tenantA, policyId],
+        );
+        await client.query(
+          "DELETE FROM employee_pay_components WHERE tenant_id = $1 AND id = $2",
+          [tenantA, anchorId],
+        );
+        await client.query(
+          "DELETE FROM pay_components WHERE tenant_id = $1 AND id = $2",
+          [tenantA, componentId],
+        );
+      });
+    }
   });
 });

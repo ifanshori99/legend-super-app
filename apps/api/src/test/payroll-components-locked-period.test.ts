@@ -17,8 +17,8 @@
 //    exact code is not pinned, only "not 2xx and nothing changed".
 //  - "Latest locked run" is by period_end across the tenant (the employee's
 //    legal entity is the only one seeded, so per-entity scoping also passes).
-//  - The explicit rapel (back-pay) flow has no contract yet, so it is not
-//    tested here (see it.todo).
+//  - The explicit Q44 rapel (back-pay) flow is covered separately by
+//    payroll-rapel.test.ts; this suite checks ordinary component writes.
 //
 // Fail-first expectation: today the backdated calls succeed, so the
 // "refuses" tests fail on `expect(error.status)`/"Expected a failure".
@@ -371,7 +371,6 @@ describe("setEmployeePayComponent and locked payroll periods (legend-8xf32)", ()
     ]);
   });
 
-  // The explicit rapel (back-pay) flow is named by the card but no contract
-  // defines its endpoint or marker yet; write the test once it does.
-  it.todo("[8xf32] accepts a backdated amount through the explicit rapel flow");
+  // Explicit Q44 rapel approval, allocation, and payment regressions live in
+  // payroll-rapel.test.ts; ordinary component writes remain frozen here.
 });

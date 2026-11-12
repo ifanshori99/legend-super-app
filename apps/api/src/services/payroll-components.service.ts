@@ -53,6 +53,7 @@ import {
   OVERTIME_DAY_TYPES,
   payComponentIdSchema,
   payComponentKindOf,
+  payrollRunIdSchema,
   overtimeParametersSchema,
   PayrollError,
   payComponentSchema,
@@ -98,6 +99,11 @@ import {
 import { idempotentHrisWrite } from "./hris-employee.service.ts";
 import { loadPinnedOvertimeFormulas } from "./hris-overtime.service.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
+import {
+  loadAllocatedRapelLines,
+  loadApprovedSalaryOverlays,
+  resolveRapelMonthlyAmount,
+} from "./payroll-rapel.service.ts";
 
 const READ_CODE: PermissionCode = "payroll.view";
 const WRITE_CODE: PermissionCode = "payroll.run";
@@ -594,7 +600,8 @@ export async function listEmployeePayComponents(
  * a closed row, is a 422. A start on or before the period end of the latest
  * frozen payroll run is a 409 PAYROLL_RUN_FROZEN: closing the previous row
  * backwards would rewrite the amount of a month already locked or paid. The
- * explicit rapel (back-pay) flow has no contract yet, so it is refused too.
+ * separate rapel workflow records approved back-pay without changing this
+ * frozen-period history; this ordinary amount setter still refuses it.
  */
 export async function setEmployeePayComponent(
   context: ScopedTenantContext,
@@ -778,6 +785,8 @@ export type EmployeeGrossInput = {
   periodEnd: BusinessDate;
   /** Payslip row id the sealed calculation binds to. */
   payslipId: string;
+  /** Mutable run whose approved rapel allocations this calculation consumes. */
+  payrollRunId?: string;
   overtimeParameters: OvertimeParameters;
 };
 
@@ -828,11 +837,23 @@ export async function computeEmployeeGross(
     input.overtimeParameters,
   );
   if (!parameters.success) throw invalid("Aturan lembur tidak valid.");
+  const payrollRunId =
+    input.payrollRunId === undefined
+      ? undefined
+      : payrollRunIdSchema.parse(input.payrollRunId);
   const { employeeId, payslipId } = input;
   const periodStart = start.data;
   const periodEnd = end.data;
   return withTenant(db, context, async (tx) => {
     await assertPayrollTenantCan(tx, context, actorUserId, WRITE_CODE);
+    // The overlay loader locks the current employee and outlet first. Read
+    // employment dates only after those locks so proration cannot use stale
+    // eligibility while a concurrent HR update is committing.
+    const salaryOverlays = await loadApprovedSalaryOverlays(
+      tx,
+      context,
+      employeeId,
+    );
     const employee = await assertEmployeeInTenant(tx, context, employeeId);
     const employmentStart =
       employee.joinDate > periodStart ? employee.joinDate : periodStart;
@@ -840,7 +861,6 @@ export async function computeEmployeeGross(
       employee.endDate && employee.endDate < periodEnd
         ? employee.endDate
         : periodEnd;
-
     const rows = await tx
       .select({ amount: employeePayComponents, component: payComponents })
       .from(employeePayComponents)
@@ -873,7 +893,8 @@ export async function computeEmployeeGross(
     // in BigInt; the divisor remains the full payroll period.
     // Employment and a row covering the whole period pay the full amount; rows of one
     // component never overlap (setEmployeePayComponent closes the open row),
-    // so the sum is never above the largest amount. Zero rows add nothing.
+    // so the sum is never above the largest approved amount. Zero rows add
+    // nothing unless an approved prospective salary overlay raises them.
     const dayNumber = (date: string) =>
       Math.floor(Date.parse(date) / 86_400_000);
     const periodDays = BigInt(
@@ -887,6 +908,7 @@ export async function computeEmployeeGross(
       }
     >();
     const overtimeHistory: {
+      historyRowId: string;
       componentId: string;
       effectiveFrom: string;
       effectiveTo: string | null;
@@ -898,27 +920,65 @@ export async function computeEmployeeGross(
       // positive amount to price overtime after its last effective day.
       if (component.kind === "earning" && component.overtimeBase)
         overtimeHistory.push({
+          historyRowId: amount.id,
           componentId: component.id,
           effectiveFrom: amount.effectiveFrom,
           effectiveTo: amount.effectiveTo,
           nominal,
         });
-      if (nominal <= 0) continue;
+      const activeFrom =
+        amount.effectiveFrom > employmentStart
+          ? amount.effectiveFrom
+          : employmentStart;
+      const activeTo =
+        amount.effectiveTo && amount.effectiveTo < employmentEnd
+          ? amount.effectiveTo
+          : employmentEnd;
       const activeDays = BigInt(
-        dayNumber(
-          amount.effectiveTo && amount.effectiveTo < employmentEnd
-            ? amount.effectiveTo
-            : employmentEnd,
-        ) -
-          dayNumber(
-            amount.effectiveFrom > employmentStart
-              ? amount.effectiveFrom
-              : employmentStart,
-          ) +
-          1,
+        dayNumber(activeTo) - dayNumber(activeFrom) + 1,
       );
       if (activeDays <= 0n) continue;
-      const share = Number((BigInt(nominal) * activeDays) / periodDays);
+      // An approved backdated raise changes only prospective salary. Split at
+      // its effective boundaries, then floor once for this history row; this
+      // keeps calendar-day proration and never rounds a fractional rupiah up.
+      const boundaries = [
+        ...new Set(
+          salaryOverlays
+            .filter(
+              (overlay) =>
+                overlay.anchorHistoryRowId === amount.id &&
+                overlay.componentId === component.id &&
+                overlay.prospectiveFrom > activeFrom &&
+                overlay.prospectiveFrom <= activeTo,
+            )
+            .map((overlay) => overlay.prospectiveFrom),
+        ),
+      ].sort();
+      let cursor = activeFrom;
+      let numerator = 0n;
+      for (const boundary of boundaries) {
+        const monthly = resolveRapelMonthlyAmount(
+          salaryOverlays,
+          amount.id,
+          component.id,
+          cursor,
+          nominal,
+        );
+        numerator +=
+          BigInt(monthly) * BigInt(dayNumber(boundary) - dayNumber(cursor));
+        cursor = boundary;
+      }
+      numerator +=
+        BigInt(
+          resolveRapelMonthlyAmount(
+            salaryOverlays,
+            amount.id,
+            component.id,
+            cursor,
+            nominal,
+          ),
+        ) * BigInt(dayNumber(activeTo) - dayNumber(cursor) + 1);
+      const share = Number(numerator / periodDays);
       const entry = byComponent.get(component.id);
       if (entry) {
         entry.amountIdr += share;
@@ -965,9 +1025,16 @@ export async function computeEmployeeGross(
           continue;
         // Histories written by the service do not overlap. If legacy rows
         // do, use the lowest value (including zero) instead of paying twice.
+        const nominal = resolveRapelMonthlyAmount(
+          salaryOverlays,
+          row.historyRowId,
+          row.componentId,
+          date,
+          idr(row.nominal),
+        );
         bases.set(
           row.componentId,
-          Math.min(bases.get(row.componentId) ?? row.nominal, row.nominal),
+          Math.min(bases.get(row.componentId) ?? nominal, nominal),
         );
       }
       // Before a component starts, after it stops, or inside a history gap,
@@ -1126,6 +1193,16 @@ export async function computeEmployeeGross(
           sourceId: null,
         }),
       );
+    if (payrollRunId !== undefined)
+      earningLines.push(
+        ...(await loadAllocatedRapelLines(tx, context, {
+          employeeId,
+          payrollRunId,
+          payslipId,
+          periodStart,
+          periodEnd,
+        })),
+      );
     const grossIdr = idr(
       earningLines.reduce((sum, line) => sum + line.amountIdr, 0),
     );
@@ -1148,7 +1225,14 @@ export async function computeEmployeeGross(
     const lines = [...earningLines, ...deductionLines];
 
     const calculation = sealPayrollValue(
-      JSON.stringify({ grossIdr, deductionsIdr, netIdr, overtimeIdr, lines }),
+      JSON.stringify({
+        grossIdr,
+        deductionsIdr,
+        netIdr,
+        overtimeIdr,
+        lines,
+        ...(payrollRunId !== undefined ? { payrollRunId } : {}),
+      }),
       {
         tenantId: context.tenant.tenantId,
         table: "payslips",

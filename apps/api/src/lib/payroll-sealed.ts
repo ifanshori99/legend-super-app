@@ -23,7 +23,11 @@ export const PAYROLL_SEAL_KEY_VERSION: number = HRIS_PII_KEY_VERSION;
 
 export type PayrollSealBinding = {
   readonly tenantId: string;
-  readonly table: "employee_pay_components" | "payslips";
+  readonly table:
+    | "employee_pay_components"
+    | "payslips"
+    | "payroll_rapels"
+    | "payroll_rapel_items";
   readonly rowId: string;
   readonly field: "amount" | "calculation";
 };

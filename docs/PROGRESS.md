@@ -3667,20 +3667,74 @@ pnpm exec prettier --check apps/api/src/services/payroll-components.service.ts a
 
 ## 2026-11-12: 549 payroll second opinion, formula dan rapel
 
-- Mulai 07:14 WIB, basis d6dce374, cabang ws/payroll-engine. Rencana `docs/briefs/549-payroll-work.md`. Tidak push/merge.
-- Awal: 6 subagent Codex bawaan (3 Explore, 1 test-writer, 2 implementer), puncak6; token heavy parent sampai delegasi eksplisit. Test gagal-dulu per butir; commit berurutan1–5.
-- Pemetaan1–3 mengonfirmasi minimum positif mengabaikan riwayat nol/celah, formula caller menggantikan pin, dan freeze hanya entitas sekarang. Pemetaan4:0350 perlu NOT VALID langsung supaya upgrade baris lama dapat sampai migrasi0381. Rapel belum punya ledger/alur aplikasi persisted; desain minimal sedang dipetakan.
-- Kuota awal07:18: Claude1 100%/88%,2 11%/95%,3 1%/96%; Codex2 69%/37%,3 100%/76%,4 16%/49%,5 92%/51%,6 5h tidak tersedia/7d9%. RAM hijau free70%, swap2569MB.
+Selesai sekitar 10:43 WIB; mulai sekitar 07:14 WIB. Worktree `.worktrees/payroll-engine`, cabang `ws/payroll-engine`, basis `d6dce374`. Lima butir dikerjakan dengan bukti gagal dulu dan satu commit per butir; commit rapel diamend untuk artefak serta gate final. Tidak push, merge, deploy, atau menghapus worktree/data.
 
-- RED sah butir1+4: `/tmp/549-p1-p4-red.log`,5 gagal. Sebelum mulai/stop/celah masing-masing membayar52.023 saat seharusnya0; tanggal basis6m/12m menghasilkan104.046 bukan156.069. Upgrade data lama gagal23514 di0350. Fixture GAP sebelumnya salah menutup dua kali sudah diperbaiki memakai guard normal, lalu RED diulang. Kedua implementer diberi izin sesudah RED.
-- Rapel: architect design dan test-writer tambahan berjalan paralel dengan implementer rapel (menunggu RED). Ledger immutable approved overlay untuk gaji prospektif dan overtime; dua approval mengikuti izin existing, alokasi draft run dan target payslip pasti. Penurunan backdate ditolak409, tidak menjadi potongan otomatis. Rincian pada brief549.
+### Hasil dan commit
 
-- Butir1 GREEN: `/tmp/549-p1-p4-green.log`,4berkas/68test lulus (regresi basis per tanggal + suite gross existing + upgrade/maker-checker). Explicitzero, sebelum mulai dan celah tidak membayar lembur; basis tanggal aktif sesuai nominal. Changed-file eslint dan prettier exit0 (`/tmp/549-p1-{eslint,prettier}.log`). Butir4 juga sudah hijau, commit menunggu urutan1–3.
+| Butir                       | Commit lokal                | Hasil                                                                                                                                      |
+| --------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1. Basis lembur per tanggal | `98177b3b`                  | Riwayat efektif, nol, sebelum mulai, setelah berhenti dan celah menghasilkan basis yang tepat; basis kosong membayar0.                     |
+| 2. Formula request terpatok | `d3233cdd`                  | Gross/feed memakai helper pin tenant-scoped yang sama; caller tidak menentukan tarif. Cap attendance/720menit dan jam penuh dipertahankan. |
+| 3. Freeze historis          | `a57297d1`                  | Run melalui payslip karyawan ikut diperiksa dan baris run yang sama dikunciFORSHARE.                                                       |
+| 4. Upgrade approver         | `3894f7f2`                  | 0350NOTVALID +0381forward, baris lama tetap utuh dan tulis baru tetap diperiksa.                                                           |
+| 5. Rapel Q43/Q44            | Commit ini (`legend-svqew`) | Ledger terenkripsi, prorata harian, HR+finance, alokasi idempoten, audit, overlay prospektif dan guard pembayaran/persistensi.             |
 
-- Butir1 commit lokal98177b3b. Rapel RED valid enam testHTTP404 vs201/409 pada `/tmp/549-rapel-red-valid.log`; kegagalan awal employeeNo fixture sudah dibetulkan dan bukan bukti RED produk. Worker rapel mulai sesudah RED sah. Reversal sumber approved diblokir, reversal target tidak membebaskan alokasi, ledger terenkripsi ikut jalur reseal payroll.
+- Contoh uang butir1: basis6juta berhenti11Juni, lembur20Juni sekarang0, bukan52.023. Tanggal basis6m/12m memakai tarif tanggal masing-masing (52.023+104.046), bukan minimum periode.
+- Contoh pin: caller yang tadinya dapat menaikkan52.023 menjadi9juta kini tetap52.023. Pin kosong ditolak409, tanpa memilih rumus terbaru secara otomatis.
+- Rapel: dua kenaikan bertanggal sama hanya membayar500k+250k=750k; dua tanggal berbeda memberi450k+220k=670k. Sumber sudah dibayar6,3m membatasi tambahan150k;6,5m menolak tambahan. Tiga historyrow membatasi rapel7rupiah, bukan8.
+- Run, payslip dan history sumber tetap beku. Satu ID payslip terreservasi terikat tenant+karyawan+run; ID alternatif maupun ciphertext pada tuple penerima berbeda ditolak. Atribut target yang sudah dialokasikan tidak dapat dipindah periode/tipe/policy/entitas; transisi status sah tetap berjalan.
+- Tiga pelaku berbeda: requester, HR (`payroll.approve`), finance (`payroll.approve`+`payroll.lock`). Preview tidak menulis atau mengonsumsi ledger. Audit tidak menyimpan nominal gaji terbuka.
 
-- Butir2 (`legend-g5v69`) RED sah: caller mahal membayar9.000.000 bukan52.023, formula null tidak ditolak. GREEN `/tmp/549-p2-green.log`:2berkas63test lulus termasuk cap attendance/jam penuh existing. Gross dan feed memakai helper formula pin tenant-scoped yang sama; caller tidak menentukan tarif. Fixture existing hanya diberi pin published, assertion tidak dilemahkan. Eslint+prettier4file exit0 (`/tmp/549-p2-{eslint,prettier}.log`).
+### Pilihan yang membatasi pembayaran
 
-- Butir3 RED sah `/tmp/549-p3-red-final.log`:2gagal, backdate12m diterima dan setter tidak menunggu holder runhistoris. Dua run fixture sebelumnya salah berstatusdraft saat membuat payslip sudah diperbaiki mengikuti lifecyclelocked; bukan bukti RED. GREEN `/tmp/549-p3-green.log`:3berkas15lulus+1TODO rapel existing. Predicate currententity OR EXISTS payslip tenant+karyawan tetap mengunci payroll_runs denganFORSHARE; snapshot lama tetap sama. Eslint+prettier2file exit0.
+- Penurunan backdate ditolak untuk review manual; tidak membuat potongan otomatis. Rapel otomatis mencakup kenaikan komponen tetap, sedangkan koreksi lembur periode beku memerlukan review tersendiri.
+- Perubahan masa kerja atau badan hukum yang membuat approval/alokasi stale menahan rapel. Snapshot diverifikasi pada HR/finance, alokasi, gross RAPEL dan INSERT payslip di bawah SHARE lock karyawan/outlet. Seal lama tidak dapat dibayar setelah kelayakan berubah.
+- Overlay dari entitasA tidak dibayar padaB; contoh B tetap6m, kenaikan900k dariA ditahan sampai setup/reviewB yang sah. Overlay hanya berlaku pada anchor history dan tanggal yang relevan; setter biasa membuat row baru dan mengakhiri overlay lama.
+- Reversal sumber yang telah dipakai rapel approved/allocated diblokir. Reversal target mempertahankan alokasi, tidak membebaskannya agar dapat dibayar lagi. Approved stale/cancel membutuhkan penyelesaian manual.
+- NOTVALID juga memeriksa UPDATE terhadap baris lama. Baris historis yang masih melanggar maker-checker tetap dapat dibaca tetapi tidak dapat ditulis ulang tanpa memenuhi constraint; migrasi tidak mengoreksi data otomatis. Preflight read-only tersedia di `docs/runbooks/payroll-approver-constraint.md`.
 
-- Butir3 commitlokala57297d1. Butir4 GREEN upgrade dan enforcement tercakup4berkas68test pada `/tmp/549-p1-p4-green.log`:data historis pembuat=HR/finance identik, convalidatedfalse, INSERT/UPDATEbaru23514. Amend0350NOTVALID +0381 corrective, journalidx280 when1794420000001 (>1794420000000). Runbook memuat preflightCOUNTtotal/pertenant dan caveatUPDATEhistoris; data lama tidak dimutasi. Eslinttest dan prettiertest/journal/runbook exit0 (`/tmp/549-p4-{eslint,prettier}.log`). Preflightproduksi belum dijalankan.
+### Bukti gagal dulu dan review
+
+- RED sah1+4: `/tmp/549-p1-p4-red.log`; empat perhitungan salah dan upgrade23514. GREEN4berkas/68test: `/tmp/549-p1-p4-green.log`.
+- RED pin2: `/tmp/549-p2-p3-red.log` (bagian pin). GREEN2berkas/63test: `/tmp/549-p2-green.log`.
+- RED historis3: `/tmp/549-p3-red-final.log` (backdate12m diterima dan tidak menunggu lock). GREEN3berkas/15test+TODO lama: `/tmp/549-p3-green.log`; TODO kini diganti rujukan ke29test rapel nyata.
+- RED fitur rapel:6HTTP404 pada `/tmp/549-rapel-red-valid.log`. RED kandidat26:12gagal/14lulus pada `/tmp/549-rapel-candidate-red-valid.log`, sebelum satu fix wave. Tambahan targetfacts RED39lulus/1gagal: `/tmp/549-target-facts-red.log`; reserved tuple RED2gagal/27lulus lalu GREEN29/29: `/tmp/549-reserved-tuple-{red,green}.log`.
+- Kegagalan fixture awal (employeeNo, payslip pada run draft, penutupan history dua kali, kodeRS-) dibetulkan sebelum RED sah; tidak dihitung sebagai bukti bug. Satu run37lulus/2gagal sempat terulang akibat pesan GO bertumpuk; pengulangan dihentikan setelah diketahui.
+- Architect desain awal dan architect final memakai konteks terpisah. Review final PASS: tujuh temuan diterima telah diperbaiki (shifted-date, eligibility stale, entity transfer, envelope legacy, rounding, target facts, reserved tuple). Tidak ada temuan uang/idempotensi/akses/migrasi yang tersisa.
+
+### Migrasi resmi
+
+- 0381:idx280, when1794420000001 > last0350 when1794420000000.0382:idx281, when1794454276910 > seluruh when sebelumnya; rentang tetap0381–0385.
+
+- Snapshot0382 dihasilkan Drizzle resmi dari baseline0350, bukan ditulis tangan. ID `e2993759-88a9-4c0d-9c02-d60e00b4a8f8`, prevId `d1f0c00b-2444-408c-9160-3c1af69e369b`. Tepat406tabel: dua baru dan semua404tabel lama beserta metadata lain identik.
+- DDL0382 dibentuk dari DDL generator resmi: duaCREATE TABLE, sembilanFK yang dipindah inline, empatindex, lalu guard/RLS canonical yang persis. FK inline menghindari validasi ALTERFK terhadap parentFORCERLS. Perbandingan independen architect lulus.
+- Manifest: `/tmp/549-official-generation.json`; SQL resmi: `/tmp/payroll-549-drizzle-l7dmgtkd/out/0281_thick_giant_man.sql`. Reconciler: `/tmp/549-reconcile-official-ddl.py`.
+- Generator pertama tertahan dua kali1800detik tanpa mulai. Scratchout absolut kemudian gagal karena Drizzle0.31.11 menambahkan`./` saat membaca snapshot (`bin.cjs:8159`); validasi menghentikan instalasi kosong. Out relatif diperbaiki sesuai pola config resmi/Context7 dan diuji dapat membaca baseline. APItsc pertama menemukan satu brandID; diperbaiki dengan `payComponentIdSchema.parse`, tanpa cast/any/perubahan nilai.
+- Waktu tunggu retry memakai opsi resmi `HEAVY_TIMEOUT=7200`; batas RAM, lane, dan jumlah typecheck tidak diubah. Mayoritas durasi gelombang adalah antrean resource bersama.
+
+### Gate final yang benar-benar dijalankan
+
+- 15/15berkas,337/337test lulus, tanpaTODO; start10:34:58, durasi18,61detik. Log `/tmp/549-final-after-official-tests.log`. Termasuk29rapel, RLS, keyrotation/reseal, upgrade lama, historical/employee locks, gross/komponen dan overtime feed.
+
+- API/shared `tsc --noEmit` lulus. Log `/tmp/549-final-api-tsc.log`, `/tmp/549-final-shared-tsc.log`; wrapper `/tmp/549-final-typecheck-resume.sh`, exit0 pada `/tmp/549-final-resume-heavy.log`.
+- `db:generate` mengonfirmasi **No schema changes, nothing to migrate** dan daftar artefak sebelum/sesudah identik. Log `/tmp/549-final-db-generate.log`.
+- ESLint untuk18fileTS dan Prettier untuk24berkas yang didukung lulus exit0 setelah perubahan terakhir. `git diff --check` juga lulus. Log `/tmp/549-final-eslint.log`, `/tmp/549-final-prettier.log`.
+
+```sh
+LEGEND_TEST_FILES='src/test/payroll-549-money-regressions.test.ts src/test/payroll-gross-engine.test.ts src/test/payroll-historical-run-549.test.ts src/test/payroll-components-locked-period.test.ts src/test/payroll-components-api.test.ts src/test/payroll-approver-upgrade-549.test.ts src/test/payroll-run-approvers-created-by-db.test.ts src/test/payroll-rapel.test.ts src/test/hris-overtime-db.test.ts src/test/hris-overtime-collective-db.test.ts src/test/payroll-core-db.test.ts src/test/payroll-key-rotation.test.ts src/test/hris-pii-reseal-job.test.ts src/test/migration-force-rls-guard.test.ts src/db/rls.test.ts' heavy pnpm test
+NODE_OPTIONS=--max-old-space-size=8192 heavy pnpm --filter @starter/api typecheck
+heavy pnpm --filter @starter/shared typecheck
+heavy pnpm db:generate
+pnpm exec eslint apps/api/src/db/schema/index.ts apps/api/src/db/schema/payroll-rapel.ts apps/api/src/lib/payroll-sealed.ts apps/api/src/routes/index.ts apps/api/src/routes/payroll-rapel.routes.ts apps/api/src/services/hris-overtime.service.ts apps/api/src/services/payroll-components.service.ts apps/api/src/services/payroll-rapel.service.ts apps/api/src/test/hris-pii-reseal-job.test.ts apps/api/src/test/payroll-549-money-regressions.test.ts apps/api/src/test/payroll-approver-upgrade-549.test.ts apps/api/src/test/payroll-components-locked-period.test.ts apps/api/src/test/payroll-gross-engine.test.ts apps/api/src/test/payroll-historical-run-549.test.ts apps/api/src/test/payroll-rapel.test.ts apps/api/src/worker/hris-pii-reseal.job.ts packages/shared/src/hris/payroll/index.ts packages/shared/src/hris/payroll/rapel.ts
+pnpm exec prettier --check apps/api/drizzle/meta/0382_snapshot.json apps/api/drizzle/meta/_journal.json apps/api/src/db/schema/index.ts apps/api/src/db/schema/payroll-rapel.ts apps/api/src/lib/payroll-sealed.ts apps/api/src/routes/index.ts apps/api/src/routes/payroll-rapel.routes.ts apps/api/src/services/hris-overtime.service.ts apps/api/src/services/payroll-components.service.ts apps/api/src/services/payroll-rapel.service.ts apps/api/src/test/hris-pii-reseal-job.test.ts apps/api/src/test/payroll-549-money-regressions.test.ts apps/api/src/test/payroll-approver-upgrade-549.test.ts apps/api/src/test/payroll-components-locked-period.test.ts apps/api/src/test/payroll-gross-engine.test.ts apps/api/src/test/payroll-historical-run-549.test.ts apps/api/src/test/payroll-rapel.test.ts apps/api/src/worker/hris-pii-reseal.job.ts docs/PROGRESS.md docs/briefs/549-payroll-work.md docs/runbooks/payroll-approver-constraint.md docs/runbooks/payroll-rapel.md packages/shared/src/hris/payroll/index.ts packages/shared/src/hris/payroll/rapel.ts
+```
+
+Perintah tipe/generasi aktual dijalankan berurutan di dalam satu wrapper heavy (heap8192MB hanya API); tidak ada dua job berat thread ini berjalan bersamaan. Log lint/format: `/tmp/549-final-eslint.log`, `/tmp/549-final-prettier.log`.
+
+### Paralel, biaya dan batas verifikasi
+
+- Subagent:total9Codex bawaan, puncak6bersamaan. TigaExplore awal dipakai ulang sebagai test-writer/test-runner/diagnostik; satu worker mengubah file bersama butir1–3 secara berurutan. Tokenheavy bergantian parent, implementer dan test-runner; seluruh job thread selesai.
+- `session-usage.py` tidak menemukan transkrip Codex `01a1cd1c-d97c-7fa1-9292-bc16bdb1082b`, sehingga token/biaya tidak tersedia dan tidak ditebak. `parallel-report` hanya mencakup6sesiClaude (rata0,32), bukan pengukuran nativeCodex ini. Log `/tmp/549-session-usage-final.log`, `/tmp/549-parallel-report-final.log`.
+- Kuota awal07:18: Claude1 100%/88%,2 11%/95%,3 1%/96%; Codex2 69%/37%,3 100%/76%,4 16%/49%,5 92%/51%,6 5h tak tersedia/7d9%. Snapshot akhir10:40: Claude1 100%/88%,2 34%/98%,3 3%/96%; Codex2 0%/37%,3 100%/76%,4 16%/49%,5 92%/51%,6 5h tak tersedia/7d25%. Ini pemakaian global beberapa thread, bukan biaya kartu ini semata.
+- SSD akhir21GiB bebas. `cleanup-ssd` hanya mode laporan; tidak menjalankan apply, menghapus volume, branch atau worktree.
+- Tidak menjalankan full `pnpm check`, build atau e2e pada thread ini; gate penuh milik merge train. Preflight/migrasi produksi belum dijalankan. Runbook rapel: `docs/runbooks/payroll-rapel.md`.
