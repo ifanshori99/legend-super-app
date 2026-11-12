@@ -1,5 +1,7 @@
 # sub-539-u2 final verify (test-runner)
+
 Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/pos-extra`, run from there. Do not edit files. All heavy work through `heavy`. Exit 73 or 75 (lock wait): wait 120s and retry, max 4 per step. Report failures only (shortest decisive line) + counts per step.
+
 1. `heavy pnpm --filter @starter/web typecheck` — list `error TS` lines (≤250 chars). Stop if errors.
 2. `LEGEND_TEST_FILES="tests/ws04-pos-extra-logic.test.mjs tests/ws04-pos-kasir-mock-engine.test.mjs tests/pos-customer-display.test.mjs" heavy pnpm test`
 3. eslint + `npx prettier --check` on `git diff --name-only origin/milestone/m1...HEAD` + `git diff --name-only` files matching `.ts/.tsx/.mjs` (exclude routeTree.gen.ts); use the root lint config.

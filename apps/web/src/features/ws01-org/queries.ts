@@ -12,6 +12,7 @@ export const outletsQuery = (query: Query<typeof orgEndpoints.listOutlets>) =>
 
 // Custom-domain verification (bead legend-az8z5). Brands are read only to pick
 // the brand a new domain attaches to (`addDomainInputSchema.brandId`).
-export const domainsQuery = () => endpointQueryOptions(orgEndpoints.listDomains);
+export const domainsQuery = () =>
+  endpointQueryOptions(orgEndpoints.listDomains);
 
 export const brandsQuery = () => endpointQueryOptions(orgEndpoints.listBrands);

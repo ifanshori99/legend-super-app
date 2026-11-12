@@ -1,12 +1,7 @@
 {
   "baseUrl": "http://localhost:3157",
   "axe": "axe-core bundle",
-  "tags": [
-    "wcag2a",
-    "wcag2aa",
-    "wcag21aa",
-    "wcag22aa"
-  ],
+  "tags": ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"],
   "results": {
     "restore-normal-1280": {
       "status": "pass",

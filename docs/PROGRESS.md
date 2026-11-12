@@ -15,6 +15,7 @@
 - Subagent: 11 total, puncak 6 bersamaan. Tiga Explore, satu test-writer, lima implementer, satu test-runner, satu architect. Token heavy di test_runner.
 - Kuota akhir (akun bersama, bukan biaya khusus thread): Claude #1 5h5/7d88, #2 34/98, #3 3/96; Codex #2 0/37, #3 100/76, #4 16/49, #5 92/51, #6 7d27. Tidak mengatribusikan selisih akun ke kartu ini.
 - Telemetri session-usage.py tidak menemukan transkrip Codex; parallel-report hanya membaca Claude, sehingga biaya/durasi/rata-rata native Codex tidak diklaim. Kuota awal: Claude #1 5h100/7d88, #2 31/98, #3 2/96; Codex #2 69/37, #3 100/76, #4 16/49, #5 92/51, #6 7d19 (5h tidak dilaporkan).
+
 ## 539-U2 Kasir tambahan, 11 kartu UI (ui-engineer, cabang `ui/pos-extra` dari m1 ede015c9, 12 Nov 2026 06:25-09:00 WIB)
 
 - Sudah: 2fo koreksi + pratinjau struk, 0ixe rincian pesanan + void dapur, shabi tagih selisih, 5w6 QRIS layar pelanggan, p7lx DP lunas (bug uang), pspy kas keluar tertahan, 7mlf hitung + tutup paksa shift, kfkt + hn5q tindak lanjut refund, 6om3 selisih tutup shift di kotak persetujuan, 1uk9 e-struk publik. Semua mode mock, kontrak shared dipakai; endpoint yang belum ada diberi mock lokal.
@@ -27,6 +28,7 @@
 - Biaya sesi (session-usage): biaya* 18,8M (utama opus 3,6M, subagent sonnet 14,4M, opus 0,6M, haiku 0,3M); 47 spawn, maks 8 bersamaan, rata 0,54 subagent berjalan. Kartu KDS (sonf, v4ht, uqfu, ijv8) tidak dikerjakan di U2.
 - Review founder 12 Nov: 8 kelompok disetujui; e-struk dilewati (legend-1uk9 tetap terbuka); refund tetap dialog; QRIS pesanan ber-DP DITAHAN. Dikerjakan (bd0994f3): layar pelanggan membaca `depositAppliedIdr` pesanan (getPosOrder); DP > 0 atau tidak diketahui = "Silakan bayar di kasir" tanpa QR dan tanpa angka; `displayPayMode` + 9 test gagal-dulu (100/100 lulus); mock kasir kini mengirim DP sebagai `depositAppliedIdr` seperti API. Review architect: 1 cacat (angka sisa saat DP masih dibaca) dibetulkan. Dibuka lagi bila kartu backend QRIS DP selesai.
 - Temuan: 6 e2e `legend-mjmm-pos-kasir` (shift/supervisor) gagal sejak c8894367 di cabang ini. Penyebab: perubahan U2 yang disengaja (gerbang kas keluar tertahan sebelum persetujuan, label "Kas keluar diperhitungkan"). Hanya ekspektasi spec yang diubah, asersi uang dan hitung buta tetap; 37/37 lulus.
+
 ## 539-U5a UI back-office, platform, keamanan (ui-engineer, cabang `ui/backoffice-platform` dari `origin/milestone/m1`, 2026-11-12)
 
 - Sudah: enam layar dari mockup brief 487 Part B, satu commit per layar plus perbaikan review.
@@ -62,6 +64,7 @@
   - S4 tanpa faktor ditampilkan sebagai notice satu baris.
 - Tidak dikerjakan: tautan dari settings hub ke Domain diserahkan ke U5b (`ws11-audit/components/settings-hub-page.tsx`).
 - Langkah berikut: gerbang review UI founder lewat CTO (page `docs/qa/539-u5a/review.html`).
+
 ## 539-U3 Tanya AI + MCP UI (ui-engineer, cabang `ui/ai-mcp` dari `origin/milestone/m1`, sesi f81b41f7, 12 Nov 2026)
 
 - Sudah: layar Tanya AI (5 area), Panduan AI, detail draf aksi AI + ringkasan di kotak persetujuan, layar izin aplikasi luar `/mcp/consent`, admin MCP & AI (`/kelola/pengaturan/mcp-ai`), pemakaian + token (`.../mcp-ai/pemakaian`). Semua data lewat mock (`VITE_API_MOCK=true`), skenario lewat `?mock=`/`?state=`/`?month=`.
@@ -4515,6 +4518,7 @@ Perintah tipe/generasi aktual dijalankan berurutan di dalam satu wrapper heavy (
 - Gate penuh `heavy pnpm check` dan `heavy pnpm build` belum dijalankan. Milestone belum dimajukan/push; cleanup belum dilakukan. Worktree AI memiliki untracked `.impeccable/`, `output/`; POS extra memiliki untracked `design/screenshots/pos-u2/`, wajib dipertahankan.
 - Langkah berikut: pemilik memperbaiki gate cabang, CTO memberi tip baru dan memutuskan cakupan backend/migrasi HRIS, lalu lanjut urutan merge dan satu gate batch. Kartu integrasi `legend-v4acu` bergantung pada `legend-6eqmn`.
 - Subagent Codex: total 3, puncak 3 bersamaan (Explore prosedur, Explore git, test-runner lint); token heavy tidak dipakai, tidak ada pekerjaan latar tersisa. Waktu 15:47–15:52 WIB. `session-usage.py` tidak menemukan transkrip Codex dan `parallel-report --since 15:46` tidak menemukan sesi, sehingga biaya/token/rata-rata tidak tersedia. Snapshot kuota akhir Claude #1 5h1%/7d92%, #2 1%/99%, #3 0%/96%; Codex #2 100%/52%, #3 100%/92%, #4 100%/65%, #5 100%/67%, #6 7d61% (5h tidak dilaporkan); snapshot awal tidak diambil.
+
 ## 2026-11-12: 539-U1 kasir utama + captain order (ui/pos-cashier-captain; legend-59v, legend-76t)
 
 Sudah: layar kasir utama `/pos/kasir` (cari cepat, modifier, catatan, dine-in/bawa pulang/ojol manual, nomor panggilan, tahan & kirim per baris, tahan pesanan) dan captain order HP `/pos/captain` (pilih meja, tambah ke sesi QR, tinjau tahan/kirim, panggilan waiter, minta tagihan) di data mock lewat `features/ws04-pos-order` (api → queries → hooks, `local()` = `CONTRACT_PENDING` di luar mock). Commit: bfcc7a00 mockup, 0f32a52a fitur, 2fb7b4e5 temuan reviewer (21), 7f82d858 temuan ui-auditor (15) + reviewer ronde 2 (7), c00439e1 bandingan mockup (fix3) + state memuat/gagal/tidak ditemukan di layar tinjau.

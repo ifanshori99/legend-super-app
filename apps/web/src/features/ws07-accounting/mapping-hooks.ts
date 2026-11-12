@@ -1,8 +1,17 @@
 // Query and mutation hooks of the account-role mapping screen (legend-fzvh).
 // Keys sit under accountingKeys.all so one accounting invalidation refreshes
 // them too; the screen reads the chart through the shared `useAccounts`.
-import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchAccountMappings, replaceAccountMappings, type ReplaceMappingsBody } from "./mapping-api";
+import {
+  queryOptions,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import {
+  fetchAccountMappings,
+  replaceAccountMappings,
+  type ReplaceMappingsBody,
+} from "./mapping-api";
 import { accountingKeys } from "./queries";
 
 export const accountMappingKeys = {

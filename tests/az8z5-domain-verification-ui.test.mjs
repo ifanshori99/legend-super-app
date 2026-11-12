@@ -68,8 +68,14 @@ describe("domainNotice", () => {
 
 describe("hostname input", () => {
   test("normalizes case, port and trailing dot", () => {
-    assert.equal(normalizeDomainInput("  Pesan.Contoh.ID. "), "pesan.contoh.id");
-    assert.equal(normalizeDomainInput("pesan.contoh.id:443"), "pesan.contoh.id");
+    assert.equal(
+      normalizeDomainInput("  Pesan.Contoh.ID. "),
+      "pesan.contoh.id",
+    );
+    assert.equal(
+      normalizeDomainInput("pesan.contoh.id:443"),
+      "pesan.contoh.id",
+    );
   });
 
   test("rejects non-public names", () => {
