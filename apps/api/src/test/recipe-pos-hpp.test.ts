@@ -632,7 +632,7 @@ type Journal = {
   lines: { role: string; debit: number; credit: number }[];
 };
 
-/** The journals of one order (ULID source id), oldest first, lines by role. */
+/** Journals by DB creation time (not causal order), with lines sorted by role. */
 async function journalsOf(orderUlid: string): Promise<Journal[]> {
   const { rows } = await owner.query<{ id: string }>(
     `SELECT id FROM journal_entries
@@ -1124,13 +1124,15 @@ describe("HPP reversal on a final void; refunds never reverse (c, d)", () => {
     await deliverToGl(returns);
     const journals = await journalsOf(order.ulid);
     expect(journals).toHaveLength(2);
-    expect(journals[0]).toEqual(hpp);
-    expect(journals[1]!.lines).toEqual(reversalJournal(2 * CUP_COST));
+    const original = journals.find((journal) => journal.id === hpp.id);
+    const returned = journals.find((journal) => journal.id !== hpp.id)!;
+    expect(original).toEqual(hpp);
+    expect(returned.lines).toEqual(reversalJournal(2 * CUP_COST));
     // Line by line: every HPP line mirrored, so the two journals net to zero
     // per account.
-    expect(journals[1]!.lines).toEqual(swapped(hpp.lines));
+    expect(returned.lines).toEqual(swapped(hpp.lines));
     for (const role of ["cogs", "inventory"]) {
-      const net = [hpp, journals[1]!]
+      const net = [hpp, returned]
         .flatMap((journal) => journal.lines)
         .filter((line) => line.role === role)
         .reduce((sum, line) => sum + line.debit - line.credit, 0);
@@ -1458,9 +1460,11 @@ describe("HPP reversal refused and retried at day close (i)", () => {
     await deliverToGl(returns);
     const journals = await journalsOf(order.ulid);
     expect(journals).toHaveLength(2);
-    expect(journals[0]).toEqual(hpp);
-    expect(journals[1]!.lines).toEqual(swapped(hpp.lines));
-    expect(journals[1]!.lines).toEqual(reversalJournal(2 * CUP_COST));
+    const original = journals.find((journal) => journal.id === hpp.id);
+    const returned = journals.find((journal) => journal.id !== hpp.id)!;
+    expect(original).toEqual(hpp);
+    expect(returned.lines).toEqual(swapped(hpp.lines));
+    expect(returned.lines).toEqual(reversalJournal(2 * CUP_COST));
 
     // Another day.closed and a replay of the void change nothing.
     await deliver(dayClosedEvent(businessDate));
