@@ -27,7 +27,7 @@
 
   <h2>1. Koreksi pesanan</h2>
   <p>Kasir bisa memberi diskon, membatalkan item (void), mengembalikan uang (refund), dan mencetak struk dari satu layar. Diskon diisi dalam persen; sistem yang menghitung rupiahnya.</p>
-  <section data-question="legend-2fo" data-choice="setuju">
+  <section data-question="Q59" data-choice="setuju">
     <h3>Tampilan layar</h3>
     <gx-wide>
     <div class="gx-grid shots" style="--gx-grid-min:min(100%, 300px)">
@@ -37,14 +37,14 @@
     </div>
     </gx-wide>
   </section>
-  <gx-question tag="legend-2fo" title="Apakah layar koreksi pesanan sudah sesuai?">
+  <gx-question tag="Q59" title="Apakah layar koreksi pesanan sudah sesuai?">
     <gx-choice value="setuju" recommended>Setuju<small>Layar ini sudah sesuai.</small></gx-choice>
     <gx-choice value="ubah">Perlu diubah<small>Tulis apa yang perlu diubah di catatan.</small></gx-choice>
   </gx-question>
 
   <h2>2. Rincian pesanan dan pemberitahuan void dari dapur</h2>
   <p>Kasir melihat rincian satu pesanan. Bila dapur membatalkan (void) sebuah item, kasir mendapat pemberitahuan di layar ini.</p>
-  <section data-question="legend-0ixe" data-choice="setuju">
+  <section data-question="Q60" data-choice="setuju">
     <h3>Tampilan layar</h3>
     <gx-wide>
     <div class="gx-grid shots" style="--gx-grid-min:min(100%, 300px)">
@@ -53,14 +53,14 @@
     </div>
     </gx-wide>
   </section>
-  <gx-question tag="legend-0ixe" title="Apakah rincian pesanan dan pemberitahuan void sudah sesuai?">
+  <gx-question tag="Q60" title="Apakah rincian pesanan dan pemberitahuan void sudah sesuai?">
     <gx-choice value="setuju" recommended>Setuju<small>Layar ini sudah sesuai.</small></gx-choice>
     <gx-choice value="ubah">Perlu diubah<small>Tulis apa yang perlu diubah di catatan.</small></gx-choice>
   </gx-question>
 
   <h2>3. Tagih selisih ke pelanggan</h2>
   <p>Bila total berubah setelah pelanggan membayar, kasir bisa menagih selisihnya. Layar juga menampilkan keadaan saat hasil pembayaran belum pasti.</p>
-  <section data-question="legend-shabi" data-choice="setuju">
+  <section data-question="Q61" data-choice="setuju">
     <h3>Tampilan layar</h3>
     <gx-wide>
     <div class="gx-grid shots" style="--gx-grid-min:min(100%, 300px)">
@@ -69,14 +69,14 @@
     </div>
     </gx-wide>
   </section>
-  <gx-question tag="legend-shabi" title="Apakah layar tagih selisih sudah sesuai?">
+  <gx-question tag="Q61" title="Apakah layar tagih selisih sudah sesuai?">
     <gx-choice value="setuju" recommended>Setuju<small>Layar ini sudah sesuai.</small></gx-choice>
     <gx-choice value="ubah">Perlu diubah<small>Tulis apa yang perlu diubah di catatan.</small></gx-choice>
   </gx-question>
 
   <h2>4. QRIS di layar pelanggan</h2>
   <p>Layar kedua menampilkan kode QRIS agar pelanggan membayar sendiri, lalu menampilkan tanda berhasil.</p>
-  <section data-question="legend-5w6" data-choice="setuju">
+  <section data-question="Q62" data-choice="setuju">
     <h3>Tampilan layar</h3>
     <gx-wide>
     <div class="gx-grid shots" style="--gx-grid-min:min(100%, 300px)">
@@ -85,14 +85,14 @@
     </div>
     </gx-wide>
   </section>
-  <gx-question tag="legend-5w6" title="Apakah layar QRIS pelanggan sudah sesuai?">
+  <gx-question tag="Q62" title="Apakah layar QRIS pelanggan sudah sesuai?">
     <gx-choice value="setuju" recommended>Setuju<small>Layar ini sudah sesuai.</small></gx-choice>
     <gx-choice value="ubah">Perlu diubah<small>Tulis apa yang perlu diubah di catatan.</small></gx-choice>
   </gx-question>
 
   <h2>5. DP menutup seluruh tagihan</h2>
   <p>Bila uang muka (DP) sudah sama dengan total tagihan, pesanan langsung dianggap lunas dan kasir tidak menagih lagi. Ini perbaikan bug uang: sebelumnya pelanggan bisa diminta membayar lagi.</p>
-  <section data-question="legend-p7lx" data-choice="setuju">
+  <section data-question="Q63" data-choice="setuju">
     <h3>Tampilan layar</h3>
     <gx-wide>
     <div class="gx-grid shots" style="--gx-grid-min:min(100%, 300px)">
@@ -101,14 +101,14 @@
     </div>
     </gx-wide>
   </section>
-  <gx-question tag="legend-p7lx" title="Apakah layar DP lunas sudah sesuai?">
+  <gx-question tag="Q63" title="Apakah layar DP lunas sudah sesuai?">
     <gx-choice value="setuju" recommended>Setuju<small>Layar ini sudah sesuai.</small></gx-choice>
     <gx-choice value="ubah">Perlu diubah<small>Tulis apa yang perlu diubah di catatan.</small></gx-choice>
   </gx-question>
 
   <h2>6. Shift: kas keluar tertahan, hitung kas, tutup paksa</h2>
   <p>Kas keluar yang melebihi uang di laci ditahan dan diperiksa supervisor saat tutup shift; yang ditahan tidak ikut dibukukan. Kasir menghitung kas di laci saat tutup shift. Supervisor bisa menutup paksa shift yang tertinggal, dengan saksi.</p>
-  <section data-question="legend-pspy, legend-7mlf" data-choice="setuju">
+  <section data-question="Q64" data-choice="setuju">
     <h3>Tampilan layar</h3>
     <gx-wide>
     <div class="gx-grid shots" style="--gx-grid-min:min(100%, 300px)">
@@ -118,14 +118,14 @@
     </div>
     </gx-wide>
   </section>
-  <gx-question tag="legend-pspy, legend-7mlf" title="Apakah layar kas keluar, hitung kas, dan tutup paksa sudah sesuai?">
+  <gx-question tag="Q64" title="Apakah layar kas keluar, hitung kas, dan tutup paksa sudah sesuai?">
     <gx-choice value="setuju" recommended>Setuju<small>Layar ini sudah sesuai.</small></gx-choice>
     <gx-choice value="ubah">Perlu diubah<small>Tulis apa yang perlu diubah di catatan.</small></gx-choice>
   </gx-question>
 
   <h2>7. Tindak lanjut refund: tolak, coba lagi, karantina</h2>
   <p>Bila refund macet atau hasilnya tidak jelas, admin pembayaran bisa menolak, memeriksa status, mencoba lagi bila aman, atau melepas dan membuka ulang refund di karantina. Refund yang hasilnya belum pasti tidak bisa dicoba lagi, supaya tidak terbayar dua kali. Dibuat sebagai jendela di halaman Pembayaran, bukan halaman terpisah seperti mockup. Daftar refund punya filter Karantina.</p>
-  <section data-question="legend-kfkt, legend-hn5q" data-choice="setuju">
+  <section data-question="Q65" data-choice="setuju">
     <h3>Tampilan layar</h3>
     <gx-wide>
     <div class="gx-grid shots" style="--gx-grid-min:min(100%, 300px)">
@@ -134,14 +134,14 @@
     </div>
     </gx-wide>
   </section>
-  <gx-question tag="legend-kfkt, legend-hn5q" title="Apakah tindak lanjut refund sudah sesuai?">
+  <gx-question tag="Q65" title="Apakah tindak lanjut refund sudah sesuai?">
     <gx-choice value="setuju" recommended>Setuju<small>Layar ini sudah sesuai.</small></gx-choice>
     <gx-choice value="ubah">Perlu diubah<small>Tulis apa yang perlu diubah di catatan.</small></gx-choice>
   </gx-question>
 
   <h2>8. Selisih tutup shift di kotak persetujuan</h2>
   <p>Selisih uang saat tutup shift muncul di kotak persetujuan. Hanya penyetuju yang melihat angka selisih. Angkanya tanpa tanda plus atau minus karena sistem belum mengirim arahnya.</p>
-  <section data-question="legend-6om3" data-choice="setuju">
+  <section data-question="Q66" data-choice="setuju">
     <h3>Tampilan layar</h3>
     <gx-wide>
     <div class="gx-grid shots" style="--gx-grid-min:min(100%, 300px)">
@@ -150,14 +150,14 @@
     </div>
     </gx-wide>
   </section>
-  <gx-question tag="legend-6om3" title="Apakah tampilan selisih di kotak persetujuan sudah sesuai?">
+  <gx-question tag="Q66" title="Apakah tampilan selisih di kotak persetujuan sudah sesuai?">
     <gx-choice value="setuju" recommended>Setuju<small>Layar ini sudah sesuai.</small></gx-choice>
     <gx-choice value="ubah">Perlu diubah<small>Tulis apa yang perlu diubah di catatan.</small></gx-choice>
   </gx-question>
 
   <h2>9. E-struk untuk pelanggan</h2>
   <p>Pelanggan membuka struk digital lewat tautan, tanpa perlu masuk akun.</p>
-  <section data-question="legend-1uk9" data-choice="setuju">
+  <section data-question="Q67" data-choice="setuju">
     <h3>Tampilan layar</h3>
     <gx-wide>
     <div class="gx-grid shots" style="--gx-grid-min:min(100%, 300px)">
@@ -166,7 +166,7 @@
     </div>
     </gx-wide>
   </section>
-  <gx-question tag="legend-1uk9" title="Apakah e-struk pelanggan sudah sesuai?">
+  <gx-question tag="Q67" title="Apakah e-struk pelanggan sudah sesuai?">
     <gx-choice value="setuju" recommended>Setuju<small>Layar ini sudah sesuai.</small></gx-choice>
     <gx-choice value="ubah">Perlu diubah<small>Tulis apa yang perlu diubah di catatan.</small></gx-choice>
   </gx-question>
@@ -176,7 +176,7 @@
   <div class="gx-callout" data-tone="warn">
     <p>Layar pelanggan saat ini selalu menampilkan QRIS sebesar total tagihan, belum dikurangi DP. Untuk pesanan dengan DP, pelanggan bisa diminta membayar lebih. Dua pilihan di bawah sama-sama aman; yang pertama membatasi pembayaran.</p>
   </div>
-  <gx-question tag="Q-QRIS" title="Bagaimana layar QRIS pelanggan untuk pesanan ber-DP?">
+  <gx-question tag="Q68" title="Bagaimana layar QRIS pelanggan untuk pesanan ber-DP?">
     <gx-choice value="tahan" recommended>Tahan QRIS di layar pelanggan untuk pesanan ber-DP sampai server diperbaiki<small>Membatasi pembayaran: tidak ada pelanggan yang bisa membayar lebih.</small></gx-choice>
     <gx-choice value="perbaiki-dulu">Perbaiki server dulu sebelum layar ini dipakai<small>Layar QRIS baru dipakai setelah server menghitung sisa tagihan.</small></gx-choice>
   </gx-question>
@@ -184,7 +184,7 @@
   <div class="gx-callout" data-tone="warn">
     <p>Mockup menampilkan tiap keadaan refund sebagai halaman penuh. Yang dibangun adalah jendela di halaman Pembayaran: lebih cepat, isinya sama.</p>
   </div>
-  <gx-question tag="Q-REFUND-FORM" title="Bentuk layar tindak lanjut refund?">
+  <gx-question tag="Q69" title="Bentuk layar tindak lanjut refund?">
     <gx-choice value="jendela" recommended>Jendela sudah cukup<small>Tetap di halaman Pembayaran.</small></gx-choice>
     <gx-choice value="halaman-penuh">Ikuti mockup: halaman penuh<small>Tiap keadaan refund jadi halaman sendiri.</small></gx-choice>
   </gx-question>
