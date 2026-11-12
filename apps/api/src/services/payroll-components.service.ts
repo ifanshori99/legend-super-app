@@ -863,19 +863,25 @@ export async function computeEmployeeGross(
       {
         component: (typeof rows)[number]["component"];
         amountIdr: number;
-        /**
-         * Overtime base of this component: the LOWEST positive nominal among
-         * its rows overlapping the period, not prorated. Pay-limiting choice
-         * (when in doubt, cap what is paid): a mid-period raise never lifts
-         * the overtime rate for the whole period. Summed over the employee's
-         * overtimeBase earning components; a component with no positive row
-         * adds nothing.
-         */
-        baseIdr: number;
       }
     >();
+    const overtimeHistory: {
+      componentId: string;
+      effectiveFrom: string;
+      effectiveTo: string | null;
+      nominal: number;
+    }[] = [];
     for (const { amount, component } of rows) {
       const nominal = toEmployeeComponent(amount).amountIdr;
+      // Keep zero rows: a stopped component must never reuse an earlier
+      // positive amount to price overtime after its last effective day.
+      if (component.kind === "earning" && component.overtimeBase)
+        overtimeHistory.push({
+          componentId: component.id,
+          effectiveFrom: amount.effectiveFrom,
+          effectiveTo: amount.effectiveTo,
+          nominal,
+        });
       if (nominal <= 0) continue;
       const activeDays = BigInt(
         dayNumber(
@@ -895,12 +901,10 @@ export async function computeEmployeeGross(
       const entry = byComponent.get(component.id);
       if (entry) {
         entry.amountIdr += share;
-        entry.baseIdr = Math.min(entry.baseIdr, nominal);
       } else {
         byComponent.set(component.id, {
           component,
           amountIdr: share,
-          baseIdr: nominal,
         });
       }
     }
@@ -930,14 +934,25 @@ export async function computeEmployeeGross(
     const earningLines = amounts
       .filter(({ component }) => component.kind === "earning")
       .map((entry) => lineOf(entry, idr(entry.amountIdr)));
-    const overtimeBase = idr(
-      amounts
-        .filter(
-          ({ component }) =>
-            component.kind === "earning" && component.overtimeBase,
+    const overtimeBaseOn = (date: string): Idr => {
+      const bases = new Map<string, number>();
+      for (const row of overtimeHistory) {
+        if (
+          row.effectiveFrom > date ||
+          (row.effectiveTo !== null && row.effectiveTo < date)
         )
-        .reduce((sum, { baseIdr }) => sum + baseIdr, 0),
-    );
+          continue;
+        // Histories written by the service do not overlap. If legacy rows
+        // do, use the lowest value (including zero) instead of paying twice.
+        bases.set(
+          row.componentId,
+          Math.min(bases.get(row.componentId) ?? row.nominal, row.nominal),
+        );
+      }
+      // Before a component starts, after it stops, or inside a history gap,
+      // that component contributes zero to this date's overtime base.
+      return idr([...bases.values()].reduce((sum, value) => sum + value, 0));
+    };
 
     // Attendance limits the approved requests; it never authorizes overtime.
     const logs = await tx
@@ -996,10 +1011,15 @@ export async function computeEmployeeGross(
       );
       requestsByDay.set(request.date, day);
     }
-    const payableOvertime: { minutes: number; dayType: OvertimeDayType }[] = [];
+    const payableOvertime: {
+      minutes: number;
+      dayType: OvertimeDayType;
+      overtimeBase: Idr;
+    }[] = [];
     for (const log of logs) {
       const day = requestsByDay.get(log.businessDate);
       if (!day) continue;
+      const overtimeBase = overtimeBaseOn(log.businessDate);
       let remaining = Math.min(log.minutes, 720);
       // Conflicting day types consume one shared cap, cheaper tariff first.
       const groups = [...day].sort(
@@ -1020,7 +1040,7 @@ export async function computeEmployeeGross(
       for (const [dayType, approvedMinutes] of groups) {
         const minutes = Math.min(approvedMinutes, remaining);
         if (minutes <= 0) continue;
-        payableOvertime.push({ minutes, dayType });
+        payableOvertime.push({ minutes, dayType, overtimeBase });
         remaining -= minutes;
       }
     }
@@ -1034,15 +1054,15 @@ export async function computeEmployeeGross(
     );
     // No overtime base, no overtime pay: the minutes stay reported, unpaid.
     let overtimeIdr = idr(0);
-    if (overtimeBase > 0)
-      for (const entry of payableOvertime)
+    for (const entry of payableOvertime)
+      if (entry.overtimeBase > 0)
         overtimeIdr = idr(
           overtimeIdr +
             computeOvertimePay(
               parameters.data,
               entry.dayType,
               hoursOf(entry.minutes),
-              overtimeBase,
+              entry.overtimeBase,
             ),
         );
     if (overtimeIdr > 0)

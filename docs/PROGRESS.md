@@ -3664,3 +3664,15 @@ pnpm exec prettier --check apps/api/src/services/payroll-components.service.ts a
 - Hasil akhir: seluruh gate exit 0 pada code HEAD `ca7baa4b`. Test 151 lulus + 1 TODO bawaan; API `tsc --noEmit` lulus (antre/run 07:00:30–07:04:35); `db:generate` selesai 07:08:22 dengan **No schema changes, nothing to migrate**, tanpa artefak baru; eslint 4 file bersih dan prettier 6 file bersih. Parent memeriksa log, diff/check, lalu memeriksa ulang format dokumen setelah catatan akhir ini.
 - Waktu gelombang 06:32–07:09 WIB, sekitar 37 menit termasuk antrean global heavy; tidak ada job tersisa. Hanya 4 berkas kode/test dan 2 dokumen dalam diff. Issue `legend-sonza` siap re-review CTO. Tidak push, merge, deploy, atau membuat migrasi.
 - Handoff CTO: re-review architect atas `ws/payroll-engine` (delapan fix `322dbdad..ca7baa4b`, basis `8812c48b`); Rapel Q44 dan formula yang dipatok tetap kartu pra-rilis terpisah di atas.
+
+## 2026-11-12: 549 payroll second opinion, formula dan rapel
+
+- Mulai 07:14 WIB, basis d6dce374, cabang ws/payroll-engine. Rencana `docs/briefs/549-payroll-work.md`. Tidak push/merge.
+- Awal: 6 subagent Codex bawaan (3 Explore, 1 test-writer, 2 implementer), puncak6; token heavy parent sampai delegasi eksplisit. Test gagal-dulu per butir; commit berurutan1–5.
+- Pemetaan1–3 mengonfirmasi minimum positif mengabaikan riwayat nol/celah, formula caller menggantikan pin, dan freeze hanya entitas sekarang. Pemetaan4:0350 perlu NOT VALID langsung supaya upgrade baris lama dapat sampai migrasi0381. Rapel belum punya ledger/alur aplikasi persisted; desain minimal sedang dipetakan.
+- Kuota awal07:18: Claude1 100%/88%,2 11%/95%,3 1%/96%; Codex2 69%/37%,3 100%/76%,4 16%/49%,5 92%/51%,6 5h tidak tersedia/7d9%. RAM hijau free70%, swap2569MB.
+
+- RED sah butir1+4: `/tmp/549-p1-p4-red.log`,5 gagal. Sebelum mulai/stop/celah masing-masing membayar52.023 saat seharusnya0; tanggal basis6m/12m menghasilkan104.046 bukan156.069. Upgrade data lama gagal23514 di0350. Fixture GAP sebelumnya salah menutup dua kali sudah diperbaiki memakai guard normal, lalu RED diulang. Kedua implementer diberi izin sesudah RED.
+- Rapel: architect design dan test-writer tambahan berjalan paralel dengan implementer rapel (menunggu RED). Ledger immutable approved overlay untuk gaji prospektif dan overtime; dua approval mengikuti izin existing, alokasi draft run dan target payslip pasti. Penurunan backdate ditolak409, tidak menjadi potongan otomatis. Rincian pada brief549.
+
+- Butir1 GREEN: `/tmp/549-p1-p4-green.log`,4berkas/68test lulus (regresi basis per tanggal + suite gross existing + upgrade/maker-checker). Explicitzero, sebelum mulai dan celah tidak membayar lembur; basis tanggal aktif sesuai nominal. Changed-file eslint dan prettier exit0 (`/tmp/549-p1-{eslint,prettier}.log`). Butir4 juga sudah hijau, commit menunggu urutan1–3.
