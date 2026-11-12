@@ -191,6 +191,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "backfills accounts 2205 and 2206 and the tax_payable_ppn and tax_payable_other mappings for every already provisioned legal entity that lacks them (legend-xa9bc, 538-G3); idempotent, never updates or deletes, keeps a custom account with the same code, FORCE RLS lifted for those statements and restored",
   "0293_journal_entry_order_id.sql":
     "backfills the new journal_entries.order_id of existing sale and refund journals from their source ids (orders, pos_order_refunds, order_issues; legend-knfl6, 538-G3); only rows with order_id NULL, sets that one link column and no amount, date or account; the append-only trigger is disabled for these statements and enabled again, FORCE RLS lifted and restored",
+  "0308_hris_u4.sql":
+    "appends dashboard.management.view to existing supervisor template role rows; idempotent, never touches a custom role or another template, FORCE RLS on roles lifted for the backfill and restored",
 };
 
 // Entrypoints that open a database pool but import no data.

@@ -44,7 +44,7 @@ it("backfills existing supervisor templates idempotently without changing anothe
     );
     expect(before.rows).toHaveLength(1);
     const migration = readFileSync(
-      resolve(import.meta.dirname, "../../drizzle/0406_hris_u4.sql"),
+      resolve(import.meta.dirname, "../../drizzle/0308_hris_u4.sql"),
       "utf8",
     );
     const backfill = migration
