@@ -38,10 +38,7 @@ type Target = { kind: RestoreKind; tenantId: string; outletId?: string };
 /** Window read for either kind, with the same shape for the screen. */
 function useRestoreWindow(target: Target) {
   const tenant = useTenantRestoreWindow(target.tenantId);
-  const outlet = useOutletRestoreWindow(
-    target.tenantId,
-    target.outletId ?? "",
-  );
+  const outlet = useOutletRestoreWindow(target.tenantId, target.outletId ?? "");
   return target.kind === "tenant" ? tenant : outlet;
 }
 
@@ -63,10 +60,13 @@ function Banner({
   tone,
   title,
   silent,
+  icon,
   children,
 }: {
   tone: "success" | "danger" | "warning";
   title: string;
+  /** Decorative icon before the title; pass it with aria-hidden. */
+  icon?: React.ReactNode;
   /** No own live role: a live region that already exists announces it. */
   silent?: boolean;
   children?: React.ReactNode;
@@ -81,6 +81,8 @@ function Banner({
       role={silent ? undefined : tone === "danger" ? "alert" : "status"}
       className={`rounded-container border-(length:--border-w) p-card text-sm ${style}`}
     >
+      {icon}
+      {icon ? " " : null}
       <strong className="font-semibold">{title}</strong>
       {children ? ` ${children}` : null}
     </p>
@@ -152,7 +154,10 @@ type SectionProps = {
 export function RestoreSection(props: SectionProps) {
   const t = useT();
   const [restoredTo, setRestoredTo] = React.useState<string | null>(null);
+  // An outlet panel has no list to go back to: its "back" action closes it.
+  const [closed, setClosed] = React.useState(false);
   const success = `platformTenants.restore.${props.kind}.success`;
+  if (closed) return null;
   return (
     <div>
       <div
@@ -161,7 +166,17 @@ export function RestoreSection(props: SectionProps) {
         className={restoredTo !== null ? "mb-3" : undefined}
       >
         {restoredTo !== null && (
-          <Banner silent tone="success" title={`✓ ${t(success as MessageKey)}`}>
+          <Banner
+            silent
+            tone="success"
+            title={t(success as MessageKey)}
+            icon={
+              <Check
+                aria-hidden="true"
+                className="inline size-4 align-text-bottom"
+              />
+            }
+          >
             {t(`${success}Body` as MessageKey, {
               status: props.statusLabel(restoredTo).toLowerCase(),
             })}
@@ -172,6 +187,7 @@ export function RestoreSection(props: SectionProps) {
         {...props}
         restoredTo={restoredTo}
         onRestored={setRestoredTo}
+        onClose={() => setClosed(true)}
       />
     </div>
   );
@@ -187,9 +203,11 @@ function RestoreBody({
   statusLabel,
   restoredTo,
   onRestored,
+  onClose,
 }: SectionProps & {
   restoredTo: string | null;
   onRestored: (status: string) => void;
+  onClose: () => void;
 }) {
   const t = useT();
   const target: Target = { kind, tenantId, outletId };
@@ -211,6 +229,18 @@ function RestoreBody({
       ? `${tenantName} · ${t(kt("kind"))}`
       : t(kt("kind"));
 
+  // Tenant: go to the tenant list. Outlet: close the inline panel.
+  const backToList =
+    kind === "tenant" ? (
+      <Button asChild variant="outline">
+        <Link to="/platform/tenant">{t(k("backToList"))}</Link>
+      </Button>
+    ) : (
+      <Button variant="outline" onClick={onClose}>
+        {t(k("backToList"))}
+      </Button>
+    );
+
   // Success outranks everything: the refetch after the write already reports
   // the record as restored, which would otherwise read as "empty".
   if (restoredTo !== null)
@@ -226,13 +256,7 @@ function RestoreBody({
             </Badge>
           }
         />
-        {kind === "tenant" && (
-          <div className="mt-5">
-            <Button asChild variant="outline">
-              <Link to="/platform/tenant">{t(k("backToList"))}</Link>
-            </Button>
-          </div>
-        )}
+        <div className="mt-5">{backToList}</div>
       </Panel>
     );
 
@@ -426,11 +450,7 @@ function RestoreBody({
           <p className="rounded-control bg-surface-2 p-3 text-sm">
             {t(k("blockedNote"))}
           </p>
-          <div className="mt-5">
-            <Button variant="outline" onClick={backToReview}>
-              {t(k("back"))}
-            </Button>
-          </div>
+          <div className="mt-5">{backToList}</div>
         </Panel>
       </div>
     );
