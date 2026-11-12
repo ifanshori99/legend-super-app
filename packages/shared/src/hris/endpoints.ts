@@ -1017,9 +1017,57 @@ export const decideShiftSwapRequest = defineEndpoint({
   body: clientInputSchema({
     action: z.enum(["approve", "approve_with_override", "reject"]),
     overrideReason: z.string().min(1).max(500).nullable(),
+    rejectionReason: z.string().trim().min(1).max(500).nullable().optional(),
     idempotencyKey: idempotencyKeySchema,
+  }).superRefine((body, ctx) => {
+    if (body.action === "reject" && !body.rejectionReason)
+      ctx.addIssue({
+        code: "custom",
+        path: ["rejectionReason"],
+        message: "Rejection reason is required",
+      });
+    if (body.action !== "reject" && body.rejectionReason)
+      ctx.addIssue({
+        code: "custom",
+        path: ["rejectionReason"],
+        message: "Only rejection has a rejection reason",
+      });
   }),
   response: dataResponseSchema(shiftSwapRequestSchema),
+});
+
+export const respondShiftSwapRequest = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/shift-swaps/:swapId/peer-response",
+  params: z.strictObject({ swapId: shiftSwapRequestIdSchema }),
+  body: clientInputSchema({
+    action: z.enum(["accept", "reject"]),
+    rejectionReason: z.string().trim().min(1).max(500).nullable().optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }).superRefine((body, ctx) => {
+    if (body.action === "reject" && !body.rejectionReason)
+      ctx.addIssue({
+        code: "custom",
+        path: ["rejectionReason"],
+        message: "Rejection reason is required",
+      });
+    if (body.action === "accept" && body.rejectionReason)
+      ctx.addIssue({
+        code: "custom",
+        path: ["rejectionReason"],
+        message: "Only rejection has a rejection reason",
+      });
+  }),
+  response: dataResponseSchema(shiftSwapRequestSchema),
+});
+
+export const listShiftSwapCandidates = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/shift-swaps/candidates",
+  query: z.strictObject({ outletId: outletIdSchema }),
+  response: z.strictObject({
+    data: z.array(z.strictObject({ id: employeeIdSchema, name: z.string() })),
+  }),
 });
 
 // ---- Leave, balances, holidays, overtime --------------------------------
@@ -1055,7 +1103,15 @@ export const decideLeaveRequest = defineEndpoint({
   params: z.strictObject({ leaveRequestId: leaveRequestIdSchema }),
   body: clientInputSchema({
     action: z.enum(["approve", "reject", "cancel"]),
+    rejectionReason: z.string().trim().min(3).max(500).optional(),
     idempotencyKey: idempotencyKeySchema,
+  }).superRefine((body, ctx) => {
+    if (body.action === "reject" && !body.rejectionReason)
+      ctx.addIssue({
+        code: "custom",
+        path: ["rejectionReason"],
+        message: "A rejection reason is required",
+      });
   }),
   response: dataResponseSchema(leaveRequestSchema),
 });
@@ -1213,7 +1269,15 @@ export const decideOvertimeRequest = defineEndpoint({
   params: z.strictObject({ overtimeRequestId: overtimeRequestIdSchema }),
   body: clientInputSchema({
     action: z.enum(["approve", "reject", "cancel"]),
+    rejectionReason: z.string().trim().min(3).max(500).optional(),
     idempotencyKey: idempotencyKeySchema,
+  }).superRefine((body, ctx) => {
+    if (body.action === "reject" && !body.rejectionReason)
+      ctx.addIssue({
+        code: "custom",
+        path: ["rejectionReason"],
+        message: "A rejection reason is required",
+      });
   }),
   response: dataResponseSchema(overtimeRequestSchema),
 });
@@ -1444,6 +1508,8 @@ export const hrisEndpoints = [
   cancelShiftSwapRequest,
   createShiftSwapRequest,
   decideShiftSwapRequest,
+  respondShiftSwapRequest,
+  listShiftSwapCandidates,
   listLeaveRequests,
   createLeaveRequest,
   decideLeaveRequest,

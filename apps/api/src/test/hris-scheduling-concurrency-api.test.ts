@@ -349,6 +349,7 @@ async function openCover(assignmentId: string) {
 const decideSwap = (swapId: string, action: "approve" | "reject") =>
   post(hr.client, `/api/hris/shift-swaps/${swapId}/decision`, {
     action,
+    ...(action === "reject" ? { rejectionReason: "Jadwal penuh" } : {}),
     overrideReason: null,
     idempotencyKey: key(),
   });
@@ -552,6 +553,15 @@ describe("concurrency of scheduling writes", () => {
       for (let round = 0; round < 5; round += 1) {
         const [shift] = await publishedWeek(3 + round, [[employeeR, 1]]);
         const swap = await openCover(shift);
+        const accepted = await post(
+          target.client,
+          `/api/hris/shift-swaps/${swap.id}/peer-response`,
+          {
+            action: "accept",
+            idempotencyKey: key(),
+          },
+        );
+        expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
 
         const requests =
           round % 2 === 0

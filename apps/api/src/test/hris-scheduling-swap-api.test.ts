@@ -32,6 +32,8 @@ import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { encodeCursor } from "@starter/shared/core";
+import { FakeObjectStorage } from "@starter/shared/adapters";
+import { NoopMalwareScanner } from "../services/core-image.ts";
 import { addBusinessDays } from "@starter/shared/hris";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
@@ -42,7 +44,14 @@ import {
   type SecondTenant,
 } from "./tenant-isolation-harness.ts";
 
-const app = createApp();
+const app = createApp({
+  storageRuntime: {
+    storage: new FakeObjectStorage(),
+    scanner: new NoopMalwareScanner(),
+    fileSigner: async () => null,
+    hrisDocumentSigner: async () => null,
+  },
+});
 const tenant = cafeLegendPlatformFixtures.tenant;
 const [outlet, secondOutlet] = cafeLegendPlatformFixtures.outlets;
 const owner = new Pool({
@@ -155,6 +164,7 @@ const STAFF_PERMISSIONS = [
   "self.profile.view",
   "self.schedule.view",
   "self.shift_swap.request",
+  "self.leave.request",
 ];
 const MANAGER_PERMISSIONS = [
   "hr.schedule.manage",
@@ -473,18 +483,43 @@ async function publishedShiftElsewhere(
   );
 }
 
-const decide = (
+const decide = async (
   client: Client,
   swapId: string,
   action: "approve" | "approve_with_override" | "reject",
   overrideReason: string | null = null,
   idempotencyKey = key(),
-) =>
-  post(client, `/api/hris/shift-swaps/${swapId}/decision`, {
+) => {
+  // Existing manager-decision scenarios begin after the colleague accepts.
+  // The peer-acceptance cases below exercise the decision endpoint directly.
+  if (client === hr.client) {
+    const { rows } = await asTenant((db) =>
+      db.query<{ to_employee_id: string }>(
+        "SELECT to_employee_id FROM shift_swap_requests WHERE tenant_id = $1 AND id = $2",
+        [tenant.id, swapId],
+      ),
+    );
+    const peer = [
+      [employeeT, target.client],
+      [employeeT2, target2.client],
+      [employeeDualTarget, dualTarget.client],
+      [employeeR, requester.client],
+      [employeeDual, dual.client],
+    ].find(([id]) => id === rows[0]?.to_employee_id)?.[1];
+    if (peer && typeof peer !== "string") {
+      await post(peer, `/api/hris/shift-swaps/${swapId}/peer-response`, {
+        action: "accept",
+        idempotencyKey: key(),
+      });
+    }
+  }
+  return post(client, `/api/hris/shift-swaps/${swapId}/decision`, {
     action,
     overrideReason,
+    ...(action === "reject" ? { rejectionReason: "Jadwal penuh" } : {}),
     idempotencyKey,
   });
+};
 
 const cancelSwap = (client: Client, swapId: string, idempotencyKey = key()) =>
   post(client, `/api/hris/shift-swaps/${swapId}/cancel`, { idempotencyKey });
@@ -979,6 +1014,13 @@ describe("HR-05 tukar shift tidak boleh melanggar jam kerja tanpa approval ekspl
       id: outlet.id,
     });
 
+    const accepted = await post(
+      target.client,
+      `/api/hris/shift-swaps/${swap.id}/peer-response`,
+      { action: "accept", idempotencyKey: key() },
+    );
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+
     const refused = await decide(approverA.client, swap.id, "approve");
     expect(refused.status, JSON.stringify(refused.body)).toBe(409);
     expect(await shiftNow(30, shift)).toMatchObject({ employeeId: employeeR });
@@ -1447,5 +1489,148 @@ describe("isolasi tenant", () => {
       employeeId: employeeR,
       status: "published",
     });
+  });
+});
+
+describe("legend-mu78t colleague acceptance and candidates", () => {
+  it("lists only same-outlet active colleagues and no personal fields", async () => {
+    const response = await requester.client.get(
+      `/api/hris/shift-swaps/candidates?outletId=${outlet.id}`,
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.data).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: employeeT })]),
+    );
+    expect(
+      response.body.data.map((row: { id: string }) => row.id),
+    ).not.toContain(employeeOtherOutlet);
+    for (const row of response.body.data) {
+      expect(Object.keys(row).sort()).toEqual(["id", "name"]);
+      expect(typeof row.name).toBe("string");
+    }
+    expect(
+      (
+        await requester.client.get(
+          `/api/hris/shift-swaps/candidates?outletId=${secondOutlet.id}`,
+        )
+      ).status,
+    ).not.toBe(200);
+    expect(
+      (
+        await actorB.client.get(
+          `/api/hris/shift-swaps/candidates?outletId=${outlet.id}`,
+        )
+      ).status,
+    ).not.toBe(200);
+    expect(
+      (
+        await agent(app).get(
+          `/api/hris/shift-swaps/candidates?outletId=${outlet.id}`,
+        )
+      ).status,
+    ).toBe(401);
+  });
+
+  it("requires the addressed colleague to accept before a manager can approve", async () => {
+    const [shift] = await publishedWeek(80, [
+      { employeeId: employeeR, day: 1, templateId: pagiId },
+    ]);
+    const swap = await openCover(shift, employeeT);
+    const path = `/api/hris/shift-swaps/${swap.id}/peer-response`;
+    expect(
+      (
+        await post(hr.client, `/api/hris/shift-swaps/${swap.id}/decision`, {
+          action: "approve",
+          overrideReason: null,
+          idempotencyKey: key(),
+        })
+      ).status,
+    ).toBe(409);
+    for (const client of [requester.client, target2.client, actorB.client]) {
+      expect(
+        (await post(client, path, { action: "accept", idempotencyKey: key() }))
+          .status,
+      ).not.toBe(200);
+    }
+    const accepted = await post(target.client, path, {
+      action: "accept",
+      idempotencyKey: key(),
+    });
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+    expect(accepted.body.data.peerAcceptedAt).toEqual(expect.any(String));
+    const approved = await decide(hr.client, swap.id, "approve");
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect((await shiftNow(80, shift))?.employeeId).toBe(employeeT);
+  });
+
+  it("rejects a request only with the colleague's reason and leaves the assignment untouched", async () => {
+    const [shift] = await publishedWeek(81, [
+      { employeeId: employeeR, day: 1, templateId: pagiId },
+    ]);
+    const swap = await openCover(shift, employeeT);
+    const path = `/api/hris/shift-swaps/${swap.id}/peer-response`;
+    expect(
+      (
+        await post(target.client, path, {
+          action: "reject",
+          idempotencyKey: key(),
+        })
+      ).status,
+    ).toBe(422);
+    const rejected = await post(target.client, path, {
+      action: "reject",
+      rejectionReason: "Tidak tersedia",
+      idempotencyKey: key(),
+    });
+    expect(rejected.status, JSON.stringify(rejected.body)).toBe(200);
+    expect(rejected.body.data).toMatchObject({
+      status: "rejected",
+      rejectionReason: "Tidak tersedia",
+    });
+    expect((await shiftNow(81, shift))?.employeeId).toBe(employeeR);
+    expect((await decide(hr.client, swap.id, "approve")).status).toBe(409);
+  });
+});
+
+describe("legend-0ldcp private leave attachment uploads", () => {
+  const url = "/api/hris/leave/attachments";
+  const pdf = Buffer.from("%PDF-1.4\n%%EOF\n");
+  const upload = (client: Client, bytes: Buffer, filename: string) =>
+    client.post(url).set(originHeader).attach("file", bytes, filename);
+
+  it("uploads a valid private document for an employee", async () => {
+    const response = await upload(requester.client, pdf, "certificate.pdf");
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(response.body.data.attachmentUploadRef).toEqual(expect.any(String));
+    expect(Object.keys(response.body.data)).toEqual(["attachmentUploadRef"]);
+  });
+
+  it("refuses anonymous users, unrelated accounts, spoofed files and oversized files", async () => {
+    expect((await upload(agent(app), pdf, "certificate.pdf")).status).toBe(401);
+    expect(
+      (await upload(actorB.client, pdf, "certificate.pdf")).status,
+    ).not.toBe(201);
+    expect(
+      (
+        await upload(
+          requester.client,
+          Buffer.from("not a PDF"),
+          "certificate.pdf",
+        )
+      ).status,
+    ).not.toBe(201);
+    expect(
+      (
+        await upload(
+          requester.client,
+          Buffer.alloc(10 * 1024 * 1024 + 1),
+          "oversize.pdf",
+        )
+      ).status,
+    ).not.toBe(201);
+    expect(
+      (await upload(requester.client, Buffer.from("text"), "document.txt"))
+        .status,
+    ).not.toBe(201);
   });
 });
