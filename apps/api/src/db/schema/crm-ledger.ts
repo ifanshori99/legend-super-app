@@ -59,6 +59,27 @@ export const POINT_LEDGER_TYPES = [
 ] as const;
 export type PointLedgerTypeValue = (typeof POINT_LEDGER_TYPES)[number];
 
+/** Loyalty events held for reconciliation; never ack an uncertain earn as lost. */
+export const loyaltyEarnParked = pgTable(
+  "loyalty_earn_parked",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    eventId: varchar("event_id", { length: 80 }).notNull(),
+    orderId: ulidInUuid("order_id").notNull(),
+    eventName: varchar("event_name", { length: 80 }).notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    reason: varchar("reason", { length: 40 }).notNull(),
+    createdAt,
+  },
+  (table) => [
+    unique("loyalty_earn_parked_tenant_event_key").on(
+      table.tenantId,
+      table.eventId,
+    ),
+    index("loyalty_earn_parked_order_idx").on(table.tenantId, table.orderId),
+  ],
+);
+
 /** `point_ledger` (T): append-only, the balance is its sum (LOY-01..02). */
 export const pointLedger = pgTable(
   "point_ledger",

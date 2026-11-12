@@ -51,8 +51,10 @@ function sortedIntentIds(intentIds: Iterable<string>): string[] {
  * there is no intent to lock.
  *
  * A sale counts on an intent when its order's table session holds a DP
- * allocation of the intent, when it captured a tender paid by the intent, or
- * when it is a fired QR pay-first order pinned to the intent.
+ * allocation or a customer-credit use of the intent, when it captured a
+ * tender paid by the intent, or when it is a fired QR pay-first order pinned
+ * to the intent. Credit assignment and permanent DP-return facts also order
+ * later sales and payouts against the same original receipt.
  */
 export async function lockIntentsForFact(
   tx: Tx,
@@ -73,6 +75,15 @@ export async function lockIntentsForFact(
        FOR UPDATE
   `);
   const result = await tx.execute(sql`
+    WITH deposit_sessions AS (
+      SELECT a.table_session_id FROM reservation_deposit_allocations a
+       WHERE a.tenant_id = ${tenantId} AND a.payment_intent_id IN (${list})
+      UNION
+      SELECT u.table_session_id FROM reservation_customer_credit_uses u
+      JOIN reservation_deposit_remainders r
+        ON r.tenant_id = u.tenant_id AND r.id = u.remainder_id
+       WHERE u.tenant_id = ${tenantId} AND r.payment_intent_id IN (${list})
+    )
     SELECT floor(extract(epoch FROM greatest(
       (SELECT max(f.completed_at) FROM payment_refunds f
         WHERE f.tenant_id = ${tenantId}
@@ -87,8 +98,23 @@ export async function lockIntentsForFact(
         WHERE p.tenant_id = ${tenantId}
           AND p.completed_at IS NOT NULL
           AND o.table_session_id IN (
-            SELECT a.table_session_id FROM reservation_deposit_allocations a
-             WHERE a.tenant_id = ${tenantId} AND a.payment_intent_id IN (${list}))),
+            SELECT table_session_id FROM deposit_sessions)),
+      (SELECT max(q.fired_at) FROM orders q
+        WHERE q.tenant_id = ${tenantId}
+          AND q.table_session_id IN (SELECT table_session_id FROM deposit_sessions)
+          AND q.deposit_applied_idr > 0
+          AND q.channel IN ('qr', 'facility') AND q.payment_mode = 'pay_first'
+          AND q.fired_at IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM pos_orders sp
+            WHERE sp.tenant_id = q.tenant_id AND sp.order_id = q.id)),
+      (SELECT max(u.created_at) FROM reservation_customer_credit_uses u
+        JOIN reservation_deposit_remainders r
+          ON r.tenant_id = u.tenant_id AND r.id = u.remainder_id
+       WHERE u.tenant_id = ${tenantId} AND r.payment_intent_id IN (${list})),
+      (SELECT max(r.created_at) FROM reservation_deposit_remainders r
+       WHERE r.tenant_id = ${tenantId} AND r.payment_intent_id IN (${list})),
+      (SELECT max(r.released_at) FROM pos_deposit_refunds r
+       WHERE r.tenant_id = ${tenantId} AND r.payment_intent_id IN (${list})),
       (SELECT max(q.fired_at) FROM orders q
         WHERE q.tenant_id = ${tenantId}
           AND q.payment_intent_id IN (${list})

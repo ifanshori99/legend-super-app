@@ -5,7 +5,7 @@
 // business days / 28 (days without rows count as zero):
 //   void     pos_order_voids.amount_idr      by voided_at
 //   discount pos_order_discounts.amount_idr  by created_at, removed_at IS NULL
-//   refund   pos_order_refunds.amount_idr    by refunded_at
+//   refund   POS tender + released DP amount by refunded_at
 //   waste    waste_logs.value_idr            by occurred_at
 // ratio >= 3 -> high, >= 2 -> warn. Baseline 0: observed < Rp100.000 is
 // skipped, else a high alert with the capped ratio. Day boundaries come from
@@ -110,7 +110,13 @@ export async function kindTotals(
       (SELECT COALESCE(SUM(amount_idr), 0) FROM pos_order_discounts
         WHERE ${scope} AND removed_at IS NULL
           AND created_at >= ${s}::timestamptz AND created_at < ${e}::timestamptz) AS discount,
-      (SELECT COALESCE(SUM(amount_idr), 0) FROM pos_order_refunds
+      (SELECT COALESCE(SUM(amount_idr), 0) FROM (
+         SELECT tenant_id, outlet_id, refunded_at, amount_idr FROM pos_order_refunds
+         UNION ALL
+         SELECT d.tenant_id, d.outlet_id, r.refunded_at, d.amount_idr
+           FROM pos_deposit_refunds d
+           JOIN pos_order_refunds r ON r.tenant_id = d.tenant_id AND r.id = d.pos_refund_id
+       ) economic_refunds
         WHERE ${scope} AND refunded_at >= ${s}::timestamptz AND refunded_at < ${e}::timestamptz) AS refund,
       (SELECT COALESCE(SUM(value_idr), 0) FROM waste_logs
         WHERE ${scope} AND occurred_at >= ${s}::timestamptz AND occurred_at < ${e}::timestamptz) AS waste`);

@@ -39,6 +39,7 @@ import {
   customerVisits,
   domainEventOutbox,
   loyaltyAnomalies,
+  loyaltyEarnParked,
   loyaltyPrograms,
   orders,
   pointEarnRecords,
@@ -60,6 +61,7 @@ import { tierMultiplierBp } from "./loyalty-earn-tier-step.ts";
 import { loyaltyConsentActive } from "./member-profile.service.ts";
 import { postLedgerEntry } from "./point-ledger.service.ts";
 import { lockOrderForClaimReversal } from "./table-claim-lock.ts";
+import { checkLoyaltyOutletEntity } from "./loyalty-entity-guard.ts";
 
 const REFUND_REVERSAL_EVENT = "order_issue.refund_reversal_requested";
 const EARN_EVENTS = new Set([
@@ -129,7 +131,98 @@ export async function deliverLoyaltyEarnEvent(
 ): Promise<void> {
   if (!EARN_EVENTS.has(event.name)) return;
   if (event.tenantId !== context.tenant.tenantId) return;
-  const scope: Scope = { context, tenantId: context.tenant.tenantId, now };
+  const parsed =
+    event.name === "order.paid"
+      ? orderPaidSchema.safeParse(event.payload)
+      : event.name === "order.refunded"
+        ? orderRefundedSchema.safeParse(event.payload)
+        : event.name === "order.voided"
+          ? orderVoidedSchema.safeParse(event.payload)
+          : refundReversalSchema.safeParse(event.payload);
+  if (!parsed.success) return;
+  const tenantId = context.tenant.tenantId;
+  const orderId = parsed.data.orderId;
+  const [order] = await tx
+    .select({
+      outletId: orders.outletId,
+      customerProfileId: orders.customerProfileId,
+    })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
+    .limit(1);
+  if (!order) return;
+  if (!order.customerProfileId && event.name === "order.paid") return;
+  if (!order.customerProfileId) {
+    return handleWithRetry(tx, { context, tenantId, now }, event);
+  }
+  const existingEarn = async () => {
+    const [record] = await tx
+      .select({ id: pointEarnRecords.id })
+      .from(pointEarnRecords)
+      .where(
+        and(
+          eq(pointEarnRecords.tenantId, tenantId),
+          eq(pointEarnRecords.orderId, orderId),
+        ),
+      )
+      .limit(1);
+    return record;
+  };
+  // Never defer a reversal of points already credited. The existing handler
+  // also takes back claims under its established order/profile lock.
+  if (event.name !== "order.paid" && (await existingEarn()))
+    return handleWithRetry(tx, { context, tenantId, now }, event);
+
+  const verdict = await checkLoyaltyOutletEntity(tx, tenantId, [
+    order.outletId,
+  ]);
+  // Lock contention is transient. Retrying the outbox event preserves the
+  // customer's right without permanently parking an otherwise eligible earn.
+  if (verdict === "busy")
+    throw new Error("Loyalty entity busy; retry loyalty event");
+  if (event.name !== "order.paid" && (await existingEarn()))
+    return handleWithRetry(tx, { context, tenantId, now }, event);
+  const [parked] = await tx
+    .select({ eventId: loyaltyEarnParked.eventId })
+    .from(loyaltyEarnParked)
+    .where(
+      and(
+        eq(loyaltyEarnParked.tenantId, tenantId),
+        eq(loyaltyEarnParked.orderId, orderId),
+      ),
+    )
+    .limit(1);
+  if (event.name !== "order.paid") {
+    // Preserve the ordinary claim reversal even when this order's earn has
+    // not arrived, then retain the event for that pending earn as well.
+    await handleWithRetry(tx, { context, tenantId, now }, event);
+  }
+  if (event.name !== "order.paid" || parked || verdict !== "ok") {
+    await tx
+      .insert(loyaltyEarnParked)
+      .values({
+        tenantId,
+        eventId: event.id,
+        orderId,
+        eventName: event.name,
+        payload: parsed.data,
+        reason: parked
+          ? "prior_event_parked"
+          : event.name !== "order.paid"
+            ? "awaiting_paid"
+            : verdict,
+      })
+      .onConflictDoNothing();
+    return;
+  }
+  return handleWithRetry(tx, { context, tenantId, now }, event);
+}
+
+async function handleWithRetry(
+  tx: Tx,
+  scope: Scope,
+  event: EventEnvelope,
+): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
     try {
       await tx.transaction((savepoint) =>

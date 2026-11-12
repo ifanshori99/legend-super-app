@@ -19,6 +19,18 @@ function orderClaimLockKey(tenantId: string, orderId: string): string {
   return `table-claim-order:${tenantId}:${orderId}`;
 }
 
+/** Nonblocking retry workers must never let one refund stall the sweep. */
+export async function tryLockOrderForClaim(
+  tx: Pick<Tx, "execute">,
+  tenantId: string,
+  orderId: string,
+): Promise<boolean> {
+  const result = await tx.execute(
+    sql`SELECT pg_try_advisory_xact_lock_shared(hashtextextended(${orderClaimLockKey(tenantId, orderId)}, 0)) AS locked`,
+  );
+  return result.rows[0]?.locked === true;
+}
+
 /** Shared: a claim of one or more units of these orders. Ascending id order. */
 export async function lockOrdersForClaim(
   tx: Pick<Tx, "execute">,

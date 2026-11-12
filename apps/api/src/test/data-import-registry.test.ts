@@ -62,6 +62,8 @@ const SCRIPT_NOT_A_WRITER: Record<string, string> = {
 // upgrades of existing data, never imports. A new data statement in a
 // migration must be added here with a reason, so it gets looked at.
 const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
+  "0312_public_tarantula.sql":
+    "backfills the selected loyalty legal entity and pauses existing claim tokens whose order or split no longer satisfies entity/refund eligibility; restores FORCE RLS and changes no payment amounts",
   "0013_outbox_dispatch_recovery.sql":
     "sets a lease on already queued outbox rows",
   "0027_accounting_invariants.sql":

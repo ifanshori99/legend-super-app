@@ -255,7 +255,23 @@ export const orderRefundedPayloadSchema = z
     refundGatewayIdr: nonnegativeIdr,
     refundEdcIdr: nonnegativeIdr,
     refundPointsIdr: nonnegativeIdr,
-    lines: z.array(tenderLineSchema).min(1),
+    lines: z.array(tenderLineSchema),
+    /** Original gateway DP methods, separate from POS tenders. */
+    depositLines: z
+      .array(
+        z.strictObject({
+          method: z.enum([
+            "qris",
+            "card",
+            "ewallet",
+            "va",
+            "bank_transfer",
+            "paylater",
+          ]),
+          amountIdr: positiveIdr,
+        }),
+      )
+      .optional(),
     refundedAt: isoDateTimeSchema,
   })
   .superRefine((payload, ctx) => {
@@ -274,9 +290,13 @@ export const orderRefundedPayloadSchema = z
         message:
           "amountIdr must equal gross - discount + service + tax for the refunded lines",
       });
-    const sum = payload.lines.reduce(
+    const depositSum = (payload.depositLines ?? []).reduce(
       (total, line) => total + Number(line.amountIdr),
       0,
+    );
+    const sum = payload.lines.reduce(
+      (total, line) => total + Number(line.amountIdr),
+      depositSum,
     );
     if (sum !== Number(payload.amountIdr))
       ctx.addIssue({
@@ -290,7 +310,11 @@ export const orderRefundedPayloadSchema = z
       ["refundEdcIdr", "edc"],
       ["refundPointsIdr", "points"],
     ] as const)
-      if (Number(payload[key]) !== bucketSum(payload.lines, bucket))
+      if (
+        Number(payload[key]) !==
+        bucketSum(payload.lines, bucket) +
+          (bucket === "gateway" ? depositSum : 0)
+      )
         ctx.addIssue({
           code: "custom",
           path: [key],

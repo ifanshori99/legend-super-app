@@ -392,7 +392,9 @@ export const updateLoyaltyProgramInputSchema = clientInputSchema({
     updatedAt: true,
     referral: true,
     antiFraud: true,
+    legalEntityId: true,
   }).shape,
+  legalEntityId: uuidSchema.nullable().optional(),
   referral: referralRulesSchema.optional(),
   antiFraud: loyaltyAntiFraudSchema.optional(),
 });

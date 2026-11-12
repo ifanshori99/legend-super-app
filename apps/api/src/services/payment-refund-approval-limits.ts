@@ -34,7 +34,11 @@ type RefundApprovalSubject = Refund | NativeRefundApproval;
  * lookup is a point read on an indexed column instead of a scan of all tenant
  * intents. A native POS refund also keeps its own order as a key.
  */
-function scopeIntentKeys(tenantId: string, nativeSeed = false) {
+function scopeIntentKeys(
+  tenantId: string,
+  nativeSeed = false,
+  includeDeposit = true,
+) {
   return sql`intent_keys AS (
     SELECT 'link'::text AS kind, p.payment_link_id AS ref
       FROM payment_intents p
@@ -74,6 +78,14 @@ function scopeIntentKeys(tenantId: string, nativeSeed = false) {
       FROM payment_intents p
      WHERE p.tenant_id = ${tenantId} AND p.id IN (SELECT id FROM scope_intents)
        AND p.reservation_id IS NOT NULL
+    ${
+      includeDeposit
+        ? sql`UNION
+    SELECT 'order'::text, d.order_id FROM pos_deposit_refunds d
+     WHERE d.tenant_id = ${tenantId}
+       AND d.payment_intent_id IN (SELECT id FROM scope_intents)`
+        : sql``
+    }
     ${nativeSeed ? sql`UNION SELECT kind, ref FROM native_seed` : sql``}
   )`;
 }
@@ -93,6 +105,7 @@ function intentKeys(tenantId: string, paymentIntentId: string) {
 function relatedBranches(
   tenantId: string,
   keys: "intent_keys" | "native_seed",
+  includeDeposit = true,
 ) {
   const k = sql.raw(keys);
   return sql`SELECT q.id AS intent_id FROM ${k} k JOIN payment_intents q
@@ -136,7 +149,15 @@ function relatedBranches(
     UNION
     SELECT q.id FROM ${k} k JOIN payment_intents q
         ON q.tenant_id = ${tenantId} AND q.reservation_id = k.ref
-     WHERE k.kind = 'reservation'`;
+     WHERE k.kind = 'reservation'
+    ${
+      includeDeposit
+        ? sql`UNION
+    SELECT d.payment_intent_id FROM ${k} k
+      JOIN pos_deposit_refunds d ON d.tenant_id = ${tenantId} AND d.order_id = k.ref
+     WHERE k.kind = 'order'`
+        : sql``
+    }`;
 }
 
 /** The intent itself plus every intent that shares a key with it. */
@@ -154,14 +175,18 @@ function relatedIntents(tenantId: string, paymentIntentId: string) {
  * Only the intents of the order itself are "related"; the wider keys decide
  * which native refunds, voided cash and edge facts count.
  */
-function nativeRefundScope(tenantId: string, orderUuid: string) {
+function nativeRefundScope(
+  tenantId: string,
+  orderUuid: string,
+  includeDeposit = true,
+) {
   return sql`native_seed AS (
     SELECT 'order'::text AS kind, ${orderUuid}::uuid AS ref
   ), native_related AS (
-    ${relatedBranches(tenantId, "native_seed")}
+    ${relatedBranches(tenantId, "native_seed", includeDeposit)}
   ), scope_intents AS (
     SELECT intent_id AS id FROM native_related
-  ), ${scopeIntentKeys(tenantId, true)}, related AS (
+  ), ${scopeIntentKeys(tenantId, true, includeDeposit)}, related AS (
     SELECT intent_id FROM native_related
   )`;
 }
@@ -317,10 +342,14 @@ function notBillTenderRefund(tenantId: string) {
 }
 
 /** Bill keys and related intents of the persisted intent or native order. */
-function refundScope(refund: RefundApprovalSubject) {
+function refundScope(refund: RefundApprovalSubject, includeDeposit = true) {
   return "paymentIntentId" in refund
     ? relatedIntents(refund.tenantId, refund.paymentIntentId)
-    : nativeRefundScope(refund.tenantId, nativeOrderUuid(refund));
+    : nativeRefundScope(
+        refund.tenantId,
+        nativeOrderUuid(refund),
+        includeDeposit,
+      );
 }
 
 /**
@@ -351,7 +380,7 @@ export async function refundCommittedAmount(
   const { approvedBefore } = options;
   const paymentRefund = "paymentIntentId" in refund ? refund : null;
   const scope = await tx.execute<{ group_key: string }>(sql`
-    WITH ${refundScope(refund)}
+    WITH ${refundScope(refund, !options.paidCapScope)}
     SELECT DISTINCT 'order:' || ref::text AS group_key
       FROM intent_keys WHERE kind = 'order'
   `);
@@ -395,7 +424,7 @@ export async function refundCommittedAmount(
     total: string;
     history_conflict: boolean;
   }>(sql`
-    WITH ${refundScope(refund)}, native_refunds AS (
+    WITH ${refundScope(refund, !options.paidCapScope)}, native_refunds AS (
       SELECT n.* FROM pos_order_refunds n
        WHERE n.tenant_id = ${refund.tenantId}
          AND n.order_id IN (SELECT ref FROM intent_keys WHERE kind = 'order')
@@ -418,12 +447,19 @@ export async function refundCommittedAmount(
         FROM jsonb_to_recordset(${deferredJson}::jsonb)
           AS fact("refundId" text, "orderId" text, "amountIdr" bigint)
     ), pos_refunds AS (
-      SELECT id, max(amount_idr) AS amount_idr
+      SELECT facts.id, max(facts.amount_idr) + ${
+        options.paidCapScope
+          ? sql`0`
+          : sql`coalesce((
+        SELECT sum(d.amount_idr) FROM pos_deposit_refunds d
+         WHERE d.tenant_id = ${refund.tenantId} AND d.pos_refund_id = facts.id
+      ), 0)`
+      } AS amount_idr
         FROM (
           SELECT id, amount_idr FROM native_refunds
           UNION ALL
           SELECT id, amount_idr FROM deferred_refunds
-        ) facts GROUP BY id
+        ) facts GROUP BY facts.id
     ), voided_cash AS (
       -- Cash a cloud void already paid out of the drawer. The void being
       -- decided has no row yet, so it is only counted as the candidate amount.

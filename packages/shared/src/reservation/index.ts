@@ -9,3 +9,4 @@ export * from "./errors.ts";
 export * from "./endpoints.ts";
 export * from "./self-service.ts";
 export * from "./fixtures.ts";
+export * from "./customer-credit.ts";

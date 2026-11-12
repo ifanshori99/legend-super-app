@@ -82,6 +82,7 @@ import { outletBusinessDayClock } from "./outlet-clock";
 import {
   domainEventOutbox,
   facilityRewards,
+  loyaltyPrograms,
   outlets,
   priceListItems,
   priceLists,
@@ -90,6 +91,7 @@ import {
   promotionOrderApplications,
   promotionRedemptions,
   promotions,
+  tenants,
   vouchers,
 } from "../db/schema";
 import { maskAuditChanges } from "@starter/shared/audit";
@@ -308,6 +310,79 @@ export async function requirePromoOutlet(
   if (!row || !isOutletInScope(context.outletScope, row.id))
     throw new HttpError(404, "NOT_FOUND", "Outlet not found.");
   return row;
+}
+
+/** A loyalty reward or mission voucher can only discount its program entity. */
+async function assertRewardVoucherEntity(
+  tx: Tx,
+  context: ScopedTenantContext,
+  voucher: VoucherRow,
+  outletId: string,
+  lock: boolean,
+): Promise<void> {
+  if (voucher.source !== "loyalty_reward") return;
+  const tenantId = context.tenant.tenantId;
+  try {
+    await tx.transaction(async (savepoint) => {
+      if (lock) {
+        const acquired = await savepoint.execute(sql`
+          SELECT pg_try_advisory_xact_lock(
+            hashtextextended(${`loyalty-entity:${tenantId}`}, 0)
+          ) AS acquired
+        `);
+        if (acquired.rows[0]?.acquired !== true)
+          throw new HttpError(
+            409,
+            "LOYALTY_ENTITY_BUSY",
+            "Pengaturan entitas poin sedang diproses. Coba lagi.",
+          );
+      }
+      const [program] = await savepoint
+        .select({ legalEntityId: loyaltyPrograms.legalEntityId })
+        .from(loyaltyPrograms)
+        .where(eq(loyaltyPrograms.tenantId, tenantId))
+        .limit(1);
+      // Prevent concurrent outlet inserts while evaluating a legacy program;
+      // NOWAIT avoids a cycle with another checkout holding a tenant FK lock.
+      if (lock && !program?.legalEntityId)
+        await savepoint
+          .select({ id: tenants.id })
+          .from(tenants)
+          .where(eq(tenants.id, tenantId))
+          .for("update", { noWait: true });
+      const outletQuery = savepoint
+        .select({ id: outlets.id, legalEntityId: outlets.legalEntityId })
+        .from(outlets)
+        .where(eq(outlets.tenantId, tenantId));
+      const rows = lock
+        ? await outletQuery.for("share", { noWait: true })
+        : await outletQuery;
+      const entities = new Set(rows.map((row) => row.legalEntityId));
+      const entityId =
+        program?.legalEntityId ??
+        (entities.size === 1 ? rows[0]?.legalEntityId : null);
+      const outlet = rows.find((row) => row.id === outletId);
+      if (!entityId || outlet?.legalEntityId !== entityId)
+        throw crmHttpError("VOUCHER_INVALID");
+    });
+  } catch (error) {
+    let candidate: unknown = error;
+    for (
+      let depth = 0;
+      depth < 5 && candidate && typeof candidate === "object";
+      depth += 1
+    ) {
+      const row = candidate as { code?: unknown; cause?: unknown };
+      if (row.code === "55P03")
+        throw new HttpError(
+          409,
+          "LOYALTY_ENTITY_BUSY",
+          "Pengaturan entitas poin sedang diproses. Coba lagi.",
+        );
+      candidate = row.cause;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -721,6 +796,13 @@ async function prepare(
     const resolved = await resolveCode(tx, context, checkout.voucherCode, lock);
     if (resolved === null) throw crmHttpError("VOUCHER_INVALID");
     if (resolved.kind === "voucher") {
+      await assertRewardVoucherEntity(
+        tx,
+        context,
+        resolved.voucher,
+        checkout.outletId,
+        lock,
+      );
       const rejection = voucherUsability(toVoucher(resolved.voucher), {
         customerProfileId: checkout.customer?.customerProfileId ?? null,
         at: checkout.at.toISOString(),
