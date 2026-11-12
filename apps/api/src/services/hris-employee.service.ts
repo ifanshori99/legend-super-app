@@ -17,11 +17,24 @@
 //   quota (`tenants.limits.maxActiveEmployees`).
 
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, gt, inArray, ne, or, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lte,
+  ne,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import {
   CoreError,
   encodeCursor,
   idempotencyKeySchema,
+  isOutletInScope,
   outletRefSchema,
   type ScopedTenantContext,
   type TenantId,
@@ -40,8 +53,14 @@ import {
 import { PlatformError, tenantLimitsSchema } from "@starter/shared/platform";
 import type { z } from "@starter/shared/core";
 import { db } from "../db/index.ts";
-import { employees, hrisIdempotency } from "../db/schema/hris.ts";
-import { outlets, tenants } from "../db/schema/platform-org.ts";
+import {
+  employees,
+  hrisIdempotency,
+  orgUnits,
+  positions,
+} from "../db/schema/hris.ts";
+import { legalEntities, outlets, tenants } from "../db/schema/platform-org.ts";
+import { roleAssignments } from "../db/schema/platform-access.ts";
 import { withTenant } from "../db/tenant.ts";
 import { BLIND_INDEX_ACTIVE_VERSION } from "../lib/blind-index.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -743,6 +762,7 @@ export type CreateEmployeeInput = Omit<
 > & {
   readonly status: Extract<EmployeeStatus, "onboarding" | "active">;
   readonly pii?: UpdateEmployeePiiInput;
+  readonly idempotencyKey?: string;
 };
 
 async function seatQuota(
@@ -787,7 +807,7 @@ export async function createEmployee(
   input: CreateEmployeeInput,
   now = new Date(),
 ): Promise<Employee> {
-  const { pii, ...master } = input;
+  const { pii, idempotencyKey, ...master } = input;
   const id = randomUUID();
   const candidate = employeeSchema.parse({
     ...master,
@@ -807,78 +827,139 @@ export async function createEmployee(
       !access.permissionsAt(candidate.homeOutletId).includes(HRIS_MANAGE_CODE)
     )
       throw forbidden();
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`hris:employee-quota:${context.tenant.tenantId}`}, 0))`,
-    );
-    const quota = await seatQuota(tx, context);
-    if (quota.used + 1 > quota.limit) throw new PlatformError("QUOTA_EXCEEDED");
-    const sealed = sealedColumns(
-      { tenantId: context.tenant.tenantId, id },
-      piiInput,
-    );
-    await assertNoBlindIndexDuplicate(
-      tx,
-      context.tenant.tenantId,
-      null,
-      sealed.normalized,
-    );
-    let row: EmployeeRow | undefined;
-    try {
-      [row] = await tx
-        .insert(employees)
-        .values({
-          id,
-          tenantId: context.tenant.tenantId,
-          userId: candidate.userId,
-          legalEntityId: candidate.legalEntityId,
-          employeeNo: candidate.employeeNo,
-          fullName: candidate.fullName,
-          positionId: candidate.positionId,
-          orgUnitId: candidate.orgUnitId,
-          managerId: candidate.managerId,
-          homeOutletId: candidate.homeOutletId,
-          employmentType: candidate.employmentType,
-          joinDate: candidate.joinDate,
-          endDate: candidate.endDate,
-          ptkpStatus: candidate.ptkpStatus,
-          status: candidate.status,
-          ...sealed.values,
-          blindIndexVersion: BLIND_INDEX_ACTIVE_VERSION,
-          piiKeyVersion: HRIS_PII_KEY_VERSION,
-          createdBy: access.actorUserId,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
-    } catch (error) {
-      const duplicate = duplicateError(error);
-      if (duplicate) throw duplicate;
-      if (foreignKeyViolation(error))
-        throw new HttpError(
-          422,
-          "VALIDATION_ERROR",
-          "Jabatan, unit, atasan, outlet atau badan usaha tidak ditemukan.",
-        );
-      throw error;
+    if (!isOutletInScope(context.outletScope, candidate.homeOutletId))
+      throw forbidden();
+    for (const [table, referenceId] of [
+      [outlets, candidate.homeOutletId],
+      [legalEntities, candidate.legalEntityId],
+      [orgUnits, candidate.orgUnitId],
+      [positions, candidate.positionId],
+    ] as const) {
+      if (referenceId === null) continue;
+      const [reference] = await tx
+        .select({ id: table.id })
+        .from(table)
+        .where(
+          and(
+            eq(table.tenantId, context.tenant.tenantId),
+            eq(table.id, referenceId),
+          ),
+        )
+        .limit(1);
+      if (!reference) throw notFound();
     }
-    if (!row) throw new Error("Employee insert returned no row");
-    await recordAudit(
-      tx,
-      context,
-      hrisAuditEntry(context, access.actorUserId, now, {
-        outletId: row.homeOutletId,
-        action: "hris.employee.created",
-        objectType: "employee",
-        objectId: row.id,
-        after: {
-          employeeNo: row.employeeNo,
-          status: row.status,
-          employmentType: row.employmentType,
-          changedFields: sealed.fields,
-        },
-      }),
-      HRIS_AUDIT_SAFE_FIELDS,
-    );
-    return toEmployee(row);
+    if (candidate.managerId !== null) {
+      const manager = await findEmployee(tx, context, candidate.managerId);
+      if (
+        !manager ||
+        !isOutletInScope(context.outletScope, manager.homeOutletId) ||
+        !access.permissionsAt(manager.homeOutletId).includes(HRIS_MANAGE_CODE)
+      )
+        throw notFound();
+    }
+    if (candidate.userId !== null) {
+      const [assignment] = await tx
+        .select({ id: roleAssignments.id })
+        .from(roleAssignments)
+        .where(
+          and(
+            eq(roleAssignments.tenantId, context.tenant.tenantId),
+            eq(roleAssignments.userId, candidate.userId),
+            lte(roleAssignments.validFrom, now),
+            or(
+              isNull(roleAssignments.validUntil),
+              gt(roleAssignments.validUntil, now),
+            ),
+          ),
+        )
+        .limit(1);
+      if (!assignment) throw notFound();
+    }
+    const create = async () => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${`hris:employee-quota:${context.tenant.tenantId}`}, 0))`,
+      );
+      const quota = await seatQuota(tx, context);
+      if (quota.used + 1 > quota.limit)
+        throw new PlatformError("QUOTA_EXCEEDED");
+      const sealed = sealedColumns(
+        { tenantId: context.tenant.tenantId, id },
+        piiInput,
+      );
+      await assertNoBlindIndexDuplicate(
+        tx,
+        context.tenant.tenantId,
+        null,
+        sealed.normalized,
+      );
+      let row: EmployeeRow | undefined;
+      try {
+        [row] = await tx
+          .insert(employees)
+          .values({
+            id,
+            tenantId: context.tenant.tenantId,
+            userId: candidate.userId,
+            legalEntityId: candidate.legalEntityId,
+            employeeNo: candidate.employeeNo,
+            fullName: candidate.fullName,
+            positionId: candidate.positionId,
+            orgUnitId: candidate.orgUnitId,
+            managerId: candidate.managerId,
+            homeOutletId: candidate.homeOutletId,
+            employmentType: candidate.employmentType,
+            joinDate: candidate.joinDate,
+            endDate: candidate.endDate,
+            ptkpStatus: candidate.ptkpStatus,
+            status: candidate.status,
+            ...sealed.values,
+            blindIndexVersion: BLIND_INDEX_ACTIVE_VERSION,
+            piiKeyVersion: HRIS_PII_KEY_VERSION,
+            createdBy: access.actorUserId,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+      } catch (error) {
+        const duplicate = duplicateError(error);
+        if (duplicate) throw duplicate;
+        if (foreignKeyViolation(error))
+          throw new HttpError(
+            422,
+            "VALIDATION_ERROR",
+            "Jabatan, unit, atasan, outlet atau badan usaha tidak ditemukan.",
+          );
+        throw error;
+      }
+      if (!row) throw new Error("Employee insert returned no row");
+      await recordAudit(
+        tx,
+        context,
+        hrisAuditEntry(context, access.actorUserId, now, {
+          outletId: row.homeOutletId,
+          action: "hris.employee.created",
+          objectType: "employee",
+          objectId: row.id,
+          after: {
+            employeeNo: row.employeeNo,
+            status: row.status,
+            employmentType: row.employmentType,
+            changedFields: sealed.fields,
+          },
+        }),
+        HRIS_AUDIT_SAFE_FIELDS,
+      );
+      return toEmployee(row);
+    };
+    return idempotencyKey === undefined
+      ? create()
+      : idempotentHrisWrite(
+          tx,
+          context,
+          idempotencyKey,
+          "employee.create",
+          { actor: access.actorUserId, master, pii: piiInput },
+          create,
+        );
   });
 }
