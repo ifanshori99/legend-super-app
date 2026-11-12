@@ -7,3 +7,4 @@ export * from "./errors.ts";
 export * from "./endpoints.ts";
 export * from "./fixtures.ts";
 export * from "./consent-sources.ts";
+export * from "./config-codec.ts";

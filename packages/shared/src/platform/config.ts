@@ -17,12 +17,15 @@
 // here (modules, textOverrides, theme). The rest carry `items` validated by
 // `configSectionItemSchemas` (strict, one schema per section; multi-kind
 // sections discriminate on `kind`). Items reference each other by `*Key`
-// fields, never by id. `loyalty_policy` and `payroll_settings` have no tables
-// yet and keep the generic JSON item.
+// fields, never by id. `payroll_settings` keeps the generic JSON item until
+// its owning domain registers a codec.
 
 import {
+  basisPointsSchema,
+  businessDateSchema,
   isoDateTimeSchema,
   posDiscountThresholdBpSchema,
+  roundingModeSchema,
   tenantIdSchema,
   userIdSchema,
   z,
@@ -34,19 +37,31 @@ import {
 } from "../accounting/coa.ts";
 import { scopeTypeSchema } from "../access/scope.ts";
 import {
-  checklistItemSchema,
-  facilityItemSchema,
-  itemKey,
-  jsonObject,
-  money,
-  outletKeySchema,
-  serviceChargeItemSchema,
-  shortName,
-  taxItemSchema,
-  wifiPolicyItemSchema,
-  zoneItemSchema,
-} from "./config-items.ts";
+  cancellationPolicySchema,
+  entitlementRuleSchema,
+  entitlementValiditySchema,
+  facilityTypeSchema,
+  facilityUnitStatusSchema,
+  overtimePolicySchema,
+  subscriptionIntervalSchema,
+} from "../facility/schemas.ts";
+import { facilityHoursSchema } from "../facility/slots.ts";
+import { checklistTemplateTypeSchema } from "../operations/schemas.ts";
+import {
+  paymentModeSchema,
+  zoneHoursSchema,
+  zoneStatusSchema,
+} from "../qr-order/schemas.ts";
+import {
+  calculationOrderSchema,
+  itemTaxClassSchema,
+  packageAllocationMethodSchema,
+  taxChannelSchema,
+  taxTypeSchema,
+} from "../tax/schemas.ts";
 import { textOverrideSetSchema } from "../text/index.ts";
+import { itemKey, wifiPolicyItemSchema } from "./config-items.ts";
+import { loyaltyPolicyConfigItemSchema } from "../crm/config-codec.ts";
 import {
   configBundleReferenceIssues,
   configSectionItemIssues,
@@ -85,11 +100,23 @@ export const CONFIG_SECTIONS = [
 export const configSectionSchema = z.enum(CONFIG_SECTIONS);
 export type ConfigSection = z.infer<typeof configSectionSchema>;
 
+const jsonObject = z.record(z.string(), z.json());
+
 // ---- Item schemas (TEN-09) -------------------------------------------------
 // Every item has a `key`. References to other rows are `*Key` fields (the
 // importer resolves them), never ids. Field names must not match the
 // identifier scan below (no `id`, `outletId`, `createdBy`, `email`, …).
 
+/** Lower-cased source outlet code; resolved to a target outlet by code. */
+const outletKeySchema = itemKey;
+const money = z.number().int().min(0);
+const minutes = z.number().int().min(0).max(1440);
+const sortOrder = z.number().int().min(0);
+/** DB checks: sessions 1..100, per-day cap 1..10 (facility_products,
+ * entitlement_rules, facility_subscription_plans). */
+const sessionCount = z.number().int().min(1).max(100);
+const maxPerDay = z.number().int().min(1).max(10).nullable();
+const shortName = z.string().trim().min(1).max(150);
 /** `<module>.<resource>.<action>` text; the importer checks it against the
  * catalog (unknown or platform-tagged codes fail the import, not the parse). */
 const permissionCodeText = z
@@ -149,7 +176,202 @@ const chartOfAccountsItemSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
-/** No tables yet (loyalty, payroll): any plain JSON object with a key. */
+const taxItemSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    key: itemKey,
+    kind: z.literal("rule"),
+    /** null = tenant default rule. */
+    outletKey: outletKeySchema.nullable(),
+    code: z.string().min(1).max(40),
+    name: shortName,
+    taxType: taxTypeSchema,
+    rateBp: basisPointsSchema,
+    regionCode: z.string().min(1).max(20).nullable(),
+    channels: z.array(taxChannelSchema).max(taxChannelSchema.options.length),
+    /** Tax classes only: category and menu-item targets are menu data and do
+     * not travel, so a rule that covers no class cannot be exported. */
+    appliesTo: z.strictObject({
+      itemClasses: z
+        .array(itemTaxClassSchema)
+        .min(1)
+        .max(itemTaxClassSchema.options.length),
+    }),
+    priceIncludesTax: z.boolean(),
+    includeServiceInBase: z.boolean(),
+    /** Older stored exports did not carry the effective business date. */
+    effectiveFrom: businessDateSchema.optional(),
+    isActive: z.boolean(),
+  }),
+  z.strictObject({
+    key: itemKey,
+    kind: z.literal("settings"),
+    outletKey: outletKeySchema.nullable(),
+    calculationOrder: calculationOrderSchema,
+    pricesIncludeTax: z.boolean(),
+    serviceRoundingMode: roundingModeSchema,
+    taxRoundingMode: roundingModeSchema,
+    inclusiveBaseRoundingMode: roundingModeSchema,
+    billRounding: z
+      .strictObject({
+        incrementIdr: z.number().int().positive().max(100_000),
+        mode: roundingModeSchema,
+      })
+      .nullable(),
+    packageAllocation: packageAllocationMethodSchema,
+  }),
+]);
+
+const serviceChargeItemSchema = z.strictObject({
+  key: itemKey,
+  outletKey: outletKeySchema.nullable(),
+  code: z.string().min(1).max(40),
+  name: shortName,
+  rateBp: basisPointsSchema,
+  /** Zone the charge is bound to (a `zones` item key); null = outlet-wide. */
+  zoneKey: itemKey.nullable(),
+  orderTypes: z.array(taxChannelSchema).max(taxChannelSchema.options.length),
+  itemClasses: z
+    .array(itemTaxClassSchema)
+    .min(1)
+    .max(itemTaxClassSchema.options.length),
+  /** Older stored exports did not carry the effective business date. */
+  effectiveFrom: businessDateSchema.optional(),
+  isActive: z.boolean(),
+});
+
+const zoneItemSchema = z.strictObject({
+  key: itemKey,
+  outletKey: outletKeySchema,
+  name: shortName,
+  paymentMode: paymentModeSchema,
+  serviceChargeBp: basisPointsSchema,
+  minimumSpendIdr: money,
+  hours: z.array(zoneHoursSchema).max(50),
+  status: zoneStatusSchema,
+  sortOrder,
+});
+
+const checklistItemEntrySchema = z.strictObject({
+  label: z.string().trim().min(1).max(300),
+  instruction: z.string().trim().min(1).max(1000).nullable(),
+  requiredEvidence: z.array(z.enum(["photo", "number", "signature"])).max(3),
+});
+const checklistItemSchema = z.strictObject({
+  key: itemKey,
+  outletKey: outletKeySchema,
+  name: shortName,
+  type: checklistTemplateTypeSchema,
+  /** Entries without ids; the importer mints fresh ones. */
+  items: z.array(checklistItemEntrySchema).min(1).max(100),
+  /** Shift and station references are dropped; the zone travels as a key. */
+  schedule: z.strictObject({
+    dueTime: z.iso.time({ precision: -1 }),
+    zoneKey: itemKey.nullable(),
+  }),
+  /** Source role as a `roles` item key; null = any role. */
+  roleKey: itemKey.nullable(),
+});
+
+/** Condition shape per entitlement type, from the facility contract. `package`
+ * rules point at a menu item (not portable) and are refused in a bundle. */
+const entitlementConditionSchemas = {
+  min_spend: entitlementRuleSchema.options[0].shape.condition,
+  tier_benefit: entitlementRuleSchema.options[1].shape.condition,
+} as const;
+
+const facilityItemSchema = z.discriminatedUnion("kind", [
+  z
+    .strictObject({
+      key: itemKey,
+      kind: z.literal("facility"),
+      outletKey: outletKeySchema,
+      name: shortName,
+      type: facilityTypeSchema,
+      sessionMinutes: z.number().int().min(1).max(480),
+      cleaningMinutes: z.number().int().min(0).max(240),
+      arrivalGraceMinutes: minutes,
+      operatingHours: facilityHoursSchema,
+      overtimePolicy: overtimePolicySchema,
+      cancellationPolicy: cancellationPolicySchema,
+    })
+    .refine((item) => item.sessionMinutes + item.cleaningMinutes <= 720, {
+      path: ["cleaningMinutes"],
+      message: "sessionMinutes + cleaningMinutes must be at most 720",
+    }),
+  z.strictObject({
+    key: itemKey,
+    kind: z.literal("area"),
+    facilityKey: itemKey,
+    name: shortName,
+    sortOrder,
+  }),
+  z.strictObject({
+    key: itemKey,
+    kind: z.literal("unit"),
+    facilityKey: itemKey,
+    areaKey: itemKey,
+    code: z.string().min(1).max(20),
+    status: facilityUnitStatusSchema,
+    sortOrder,
+  }),
+  z.strictObject({
+    key: itemKey,
+    kind: z.literal("product"),
+    facilityKey: itemKey,
+    name: shortName,
+    type: z.enum(["single", "package_component", "subscription_plan"]),
+    priceIdr: money,
+    sessions: sessionCount,
+    isActive: z.boolean(),
+    /** A `tax_rules` rule key; null = default tax. */
+    taxRuleKey: itemKey.nullable(),
+    maxPerDay,
+  }),
+  z.strictObject({
+    key: itemKey,
+    kind: z.literal("addon"),
+    facilityKey: itemKey,
+    name: shortName,
+    priceIdr: money,
+    isEnabled: z.boolean(),
+    sortOrder,
+  }),
+  z
+    .strictObject({
+      key: itemKey,
+      kind: z.literal("entitlement"),
+      facilityKey: itemKey,
+      type: z.enum(["min_spend", "tier_benefit"]),
+      condition: jsonObject,
+      sessions: sessionCount,
+      validity: entitlementValiditySchema,
+      isEnabled: z.boolean(),
+    })
+    .superRefine((item, ctx) => {
+      const result = entitlementConditionSchemas[item.type].safeParse(
+        item.condition,
+      );
+      if (!result.success)
+        ctx.addIssue({
+          code: "custom",
+          path: ["condition"],
+          message: `Invalid condition for a ${item.type} entitlement`,
+        });
+    }),
+  z.strictObject({
+    key: itemKey,
+    kind: z.literal("subscription_plan"),
+    facilityKey: itemKey,
+    name: shortName,
+    priceIdr: money,
+    quotaPerPeriod: sessionCount,
+    interval: subscriptionIntervalSchema,
+    maxPerDay,
+    isActive: z.boolean(),
+  }),
+]);
+
+/** Sections without a domain codec: any plain JSON object with a key. */
 const unsupportedItemSchema = jsonObject.and(z.object({ key: itemKey }));
 
 /** One strict item schema per generic section. */
@@ -162,7 +384,7 @@ export const configSectionItemSchemas: Record<GenericConfigSection, z.ZodType> =
     service_charge_rules: serviceChargeItemSchema,
     zones: zoneItemSchema,
     checklists: checklistItemSchema,
-    loyalty_policy: unsupportedItemSchema,
+    loyalty_policy: loyaltyPolicyConfigItemSchema,
     facilities: facilityItemSchema,
     wifi_policies: wifiPolicyItemSchema,
     payroll_settings: unsupportedItemSchema,
@@ -333,6 +555,58 @@ export function parseConfigBundle(
   };
 }
 
+/** Pre-codec zone exports carried presentation data, not importable charges. */
+const legacyStoredZoneItemSchema = z.strictObject({
+  key: itemKey,
+  name: shortName,
+  tableCount: z.number().int().nonnegative().optional(),
+});
+
+/**
+ * Read old persisted payloads without manufacturing the financial fields their
+ * exporters never wrote. Import still validates the untouched payload through
+ * strictConfigBundleSchema. Only the former zone shape and kind-less loyalty
+ * JSON get this compatibility path; malformed current items remain errors.
+ */
+const storedConfigBundleSchema = bundleSchemaOf(false).superRefine(
+  (bundle, ctx) => {
+    const sections = { ...bundle.sections };
+    const zones = sections.zones;
+    if (
+      zones?.version === 1 &&
+      zones.items.length > 0 &&
+      zones.items.every(
+        (item) => legacyStoredZoneItemSchema.safeParse(item).success,
+      )
+    )
+      delete sections.zones;
+    const loyalty = sections.loyalty_policy;
+    if (
+      loyalty?.version === 1 &&
+      loyalty.items.length > 0 &&
+      loyalty.items.every(
+        (item) =>
+          item !== null &&
+          typeof item === "object" &&
+          !Object.hasOwn(item, "kind"),
+      )
+    )
+      delete sections.loyalty_policy;
+
+    // The remaining sections keep the current item and reference checks. A
+    // legacy section is unavailable for those checks, like a partial template
+    // whose referenced configuration will be supplied by the target tenant.
+    const current = configBundleSchema.safeParse({ ...bundle, sections });
+    if (!current.success)
+      for (const issue of current.error.issues) ctx.addIssue({ ...issue });
+    for (const issue of findBundleIdentifiers(bundle))
+      ctx.addIssue({
+        code: "custom",
+        message: `${issue.path}: ${issue.reason}`,
+      });
+  },
+);
+
 /** `config_templates` (global). `sourceTenantId` is provenance metadata on
  * the row, never inside the payload. */
 export const configTemplateSchema = z.strictObject({
@@ -340,7 +614,7 @@ export const configTemplateSchema = z.strictObject({
   name: z.string().trim().min(3).max(120),
   sourceTenantId: tenantIdSchema.nullable(),
   version: z.number().int().positive(),
-  payload: configBundleSchema,
+  payload: storedConfigBundleSchema,
   createdBy: userIdSchema,
   createdAt: isoDateTimeSchema,
 });

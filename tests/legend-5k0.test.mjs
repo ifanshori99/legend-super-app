@@ -383,10 +383,10 @@ test("TEN-09 · the preview diff reports added, changed and removed rows per sec
   ];
   incoming.sections.theme.corners = "bulat"; // theme: one setting changed
   delete incoming.sections.modules; // not in the file: not previewed
-  incoming.sections.loyalty_policy = {
+  incoming.sections.payroll_settings = {
     version: 1,
     items: [{ key: "points", earnPerIdr: 10000 }],
-  }; // section the tenant has not got yet (free-form items, no codec)
+  }; // section the tenant has not got yet (free-form items, no codec: payroll has no table yet)
 
   const parsed = configLib.parseBundleText(bundleText(incoming));
   assert.equal(parsed.ok, true, JSON.stringify(parsed));
@@ -403,18 +403,18 @@ test("TEN-09 · the preview diff reports added, changed and removed rows per sec
   assert.equal(bySection.zones.unchanged, 1);
   assert.equal(bySection.theme.status, "changed");
   assert.deepEqual(bySection.theme.changed, ["corners"]);
-  assert.equal(bySection.loyalty_policy.status, "added");
+  assert.equal(bySection.payroll_settings.status, "added");
   assert.equal(bySection.text_overrides.status, "unchanged");
 
   // Unchanged sections are not applied; a section the user switches off is skipped.
   assert.deepEqual(configLib.selectedSections(diffs, new Set()).sort(), [
-    "loyalty_policy",
+    "payroll_settings",
     "theme",
     "zones",
   ]);
   assert.deepEqual(
     configLib.selectedSections(diffs, new Set(["zones"])).sort(),
-    ["loyalty_policy", "theme"],
+    ["payroll_settings", "theme"],
   );
 });
 
@@ -429,7 +429,7 @@ test("TEN-09 · a bundle with source-tenant ids, secrets or bad JSON never reach
   );
 
   const leaky = structuredClone(fx.configBundle);
-  leaky.sections.loyalty_policy = {
+  leaky.sections.payroll_settings = {
     version: 1,
     items: [
       { key: "a", tenantId: fx.tenant.id },
@@ -445,7 +445,7 @@ test("TEN-09 · a bundle with source-tenant ids, secrets or bad JSON never reach
   assert.ok(result.identifierIssues.some((issue) => issue.reason === "uuid"));
 
   const secret = structuredClone(fx.configBundle);
-  secret.sections.loyalty_policy = {
+  secret.sections.payroll_settings = {
     version: 1,
     items: [{ key: "a", credentials: { apiKey: SECRET_A } }],
   };

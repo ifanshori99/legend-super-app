@@ -796,16 +796,16 @@ test("TEN-09 every config section has a strict item schema keyed by reference, n
     false,
   );
   // The browser preview stays loose: it diffs any keyed item in sections
-  // that have no codec.
+  // that have no codec (payroll_settings only).
   assert.equal(
     platform.configBundleSchema.safeParse(
       bundle({
-        loyalty_policy: { version: 1, items: [{ key: "a", name: "x" }] },
+        payroll_settings: { version: 1, items: [{ key: "a", name: "x" }] },
       }),
     ).success,
     true,
   );
-  // zones sekarang punya codec, so the loose schema judges its items too.
+  // Codec-backed sections require the portable domain contract.
   assert.equal(
     platform.configBundleSchema.safeParse(
       bundle({ zones: { version: 1, items: [{ key: "a", name: "x" }] } }),
@@ -820,20 +820,108 @@ test("TEN-09 every config section has a strict item schema keyed by reference, n
     ).success,
     false,
   );
-  // Loyalty and payroll keep the generic JSON item until their tables exist.
+  // Loyalty now has a domain codec and rejects arbitrary JSON items.
   assert.equal(
     platform.configBundleSchema.safeParse(
       bundle({
         loyalty_policy: { version: 1, items: [{ key: "tier", any: 1 }] },
       }),
     ).success,
-    true,
+    false,
   );
   // An item carrying an id is refused by the identifier scan.
   const leaked = bundle({
     wifi_policies: { version: 1, items: [{ key: "w", zoneId: "x", id: "y" }] },
   });
   assert.equal(platform.parseConfigBundle(leaked).ok, false);
+});
+
+test("538-G1b stored legacy zone and loyalty templates remain readable without inventing import values", () => {
+  const payload = {
+    formatVersion: 1,
+    exportedAt: fx.now,
+    sections: {
+      zones: {
+        version: 1,
+        items: [{ key: "indoor", name: "Indoor", tableCount: 12 }],
+      },
+      loyalty_policy: { version: 1, items: [{ key: "tier", any: 1 }] },
+    },
+  };
+  const stored = platform.configTemplateSchema.safeParse({
+    ...fx.configTemplate,
+    payload,
+  });
+  assert.equal(stored.success, true, JSON.stringify(stored.error?.issues));
+  assert.deepEqual(stored.data.payload, payload);
+  assert.equal(
+    "minimumSpendIdr" in stored.data.payload.sections.zones.items[0],
+    false,
+  );
+  assert.equal(
+    "pointValueIdr" in stored.data.payload.sections.loyalty_policy.items[0],
+    false,
+  );
+
+  // Reading an old record never makes its incomplete configuration importable.
+  assert.equal(platform.configBundleSchema.safeParse(payload).success, false);
+  assert.equal(
+    platform.strictConfigBundleSchema.safeParse(payload).success,
+    false,
+  );
+  assert.equal(
+    platform.parseConfigBundle(payload, [], { strictItems: true }).ok,
+    false,
+  );
+});
+
+test("538-G1b stored legacy templates still reject malformed envelopes and identifiers", () => {
+  const payload = {
+    formatVersion: 1,
+    exportedAt: fx.now,
+    sections: {
+      zones: { version: 1, items: [{ key: "indoor", name: "Indoor" }] },
+    },
+  };
+  for (const section of [
+    { version: 2, items: [{ key: "indoor", name: "Indoor" }] },
+    { version: 1, items: [{ name: "Indoor" }] },
+    { version: 1, items: [{ key: "indoor" }, { key: "indoor" }] },
+    { version: 1, items: [{ key: "indoor", outletId: fx.outlets[0].id }] },
+  ])
+    assert.equal(
+      platform.configTemplateSchema.safeParse({
+        ...fx.configTemplate,
+        payload: { ...payload, sections: { zones: section } },
+      }).success,
+      false,
+    );
+
+  // The read compatibility path must not disguise a malformed modern item.
+  for (const sections of [
+    {
+      zones: {
+        version: 1,
+        items: [
+          {
+            ...fx.configTemplate.payload.sections.zones.items[0],
+            serviceChargeBp: -1,
+          },
+        ],
+      },
+    },
+    {
+      ...payload.sections,
+      loyalty_policy: { version: 1, items: [{ key: "tier", kind: "unknown" }] },
+    },
+  ])
+    assert.equal(
+      platform.configTemplateSchema.safeParse({
+        ...fx.configTemplate,
+        payload: { ...payload, sections },
+      }).success,
+      false,
+    );
 });
 
 test("TEN-09 legend-5cwrq a bundle of kind items is judged by the codec checks, not waved through", () => {

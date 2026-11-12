@@ -416,13 +416,12 @@ const configBundle = configBundleSchema.parse({
     zones: {
       version: 1,
       items: [
-        ["indoor", "Indoor"],
-        ["outdoor", "Teras"],
-        ["wfc", "Zona WFC"],
-      ].map(([key, name], sortOrder) => ({
-        key,
+        { key: "indoor", name: "Indoor" },
+        { key: "outdoor", name: "Teras" },
+        { key: "wfc", name: "Zona WFC" },
+      ].map((zone, sortOrder) => ({
+        ...zone,
         outletKey: outlets[0].code.toLowerCase(),
-        name,
         paymentMode: "pay_first",
         serviceChargeBp: 0,
         minimumSpendIdr: 0,

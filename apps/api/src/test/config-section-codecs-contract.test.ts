@@ -58,11 +58,33 @@ const registry = CONFIG_SECTION_CODECS as unknown as Record<string, AnyCodec>;
 const call = <T>(fn: (...args: never[]) => T, ...args: unknown[]): T =>
   fn(...(args as never[]));
 
-// loyalty_policy and payroll_settings carry money and their item schema is
-// still the loose JSON item: they stay unregistered until their domain lands.
-const UNREGISTERED_SECTIONS = ["loyalty_policy", "payroll_settings"] as const;
+// payroll_settings carries money and its item schema is still the loose JSON
+// item: it stays unregistered until its domain lands.
+const UNREGISTERED_SECTIONS = ["payroll_settings"] as const;
 const CODEC_SECTIONS = GENERIC_CONFIG_SECTIONS.filter(
   (section) => !(UNREGISTERED_SECTIONS as readonly string[]).includes(section),
+);
+
+// These sections have domain-owned codecs (`*/config-codec.ts`, each with its
+// own context and per-codec tests in tests/platform-config-codecs-*.test.mjs
+// and tests/config-codec-checklists.test.mjs). The registry, empty-import and
+// id-refusal checks below still cover them; the (rows, ctx) round-trips do not.
+const DOMAIN_CODEC_SECTIONS = [
+  "tax_rules",
+  "service_charge_rules",
+  "zones",
+  "checklists",
+  "loyalty_policy",
+  "facilities",
+] as const;
+const SHARED_SIGNATURE_SECTIONS = CODEC_SECTIONS.filter(
+  (section) => !(DOMAIN_CODEC_SECTIONS as readonly string[]).includes(section),
+);
+
+// loyalty_policy needs a point-value lock decision and a `kind` item; its own
+// tests are tests/platform-config-codecs-loyalty-policy.test.mjs.
+const GENERIC_ITEM_SECTIONS = CODEC_SECTIONS.filter(
+  (section) => section !== "loyalty_policy",
 );
 
 const roleKeyById = roleConfigKeys(acc.roles);
@@ -138,7 +160,7 @@ describe("legend-tct8 toTemplate is tenant-free", () => {
     expect(findBundleIdentifiers(items, SOURCE_IDS)).toEqual([]);
   });
 
-  it.each([...CODEC_SECTIONS])(
+  it.each([...SHARED_SIGNATURE_SECTIONS])(
     "%s exports an empty section as []",
     (section) => {
       const codec = registry[section];
@@ -186,24 +208,7 @@ describe("legend-tct8 fromTemplate round-trips", () => {
         expect(draft).not.toHaveProperty(key);
   });
 
-  it("zones: items from the fixture bundle survive fromTemplate then toTemplate", () => {
-    const codec = registry.zones;
-    expect(codec, "no codec registered for zones").toBeDefined();
-    const items = (
-      cafeLegendPlatformFixtures.configBundle.sections.zones as {
-        items: unknown[];
-      }
-    ).items;
-    expect(items.length).toBeGreaterThan(0);
-    const decoded = call(codec.fromTemplate, items);
-    expect(decoded.ok).toBe(true);
-    expect(decoded.drafts).toHaveLength(items.length);
-    for (const draft of decoded.drafts ?? [])
-      for (const key of ID_KEYS) expect(draft).not.toHaveProperty(key);
-    expect(call(codec.toTemplate, decoded.drafts as never[])).toEqual(items);
-  });
-
-  it.each([...CODEC_SECTIONS])(
+  it.each([...GENERIC_ITEM_SECTIONS])(
     "%s imports an empty section as no drafts",
     (section) => {
       const codec = registry[section];
@@ -240,7 +245,6 @@ describe("legend-tct8 item schemas refuse ids", () => {
             items: Record<string, unknown>[];
           }
         ).items[0];
-      case "loyalty_policy":
       case "payroll_settings":
         return { key: "default" }; // free-form JSON until the domain lands
       default:
@@ -248,7 +252,7 @@ describe("legend-tct8 item schemas refuse ids", () => {
     }
   };
 
-  it.each([...CODEC_SECTIONS])(
+  it.each([...GENERIC_ITEM_SECTIONS])(
     "%s codec item schema rejects an id-bearing item",
     (section) => {
       const codec = registry[section];
@@ -267,7 +271,7 @@ describe("legend-tct8 item schemas refuse ids", () => {
     },
   );
 
-  it.each([...CODEC_SECTIONS])(
+  it.each([...GENERIC_ITEM_SECTIONS])(
     "%s bundle item schema agrees with the codec item schema",
     (section) => {
       const base = baseItem(section);

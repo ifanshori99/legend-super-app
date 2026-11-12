@@ -31,7 +31,7 @@ function customRole(name, overrides = {}) {
   });
 }
 
-test("registry has a codec for every section except loyalty_policy and payroll_settings", () => {
+test("registry has a codec for every section except payroll_settings", () => {
   for (const section of [
     "roles",
     "approval_policies",
@@ -41,6 +41,7 @@ test("registry has a codec for every section except loyalty_policy and payroll_s
     "service_charge_rules",
     "checklists",
     "facilities",
+    "loyalty_policy",
     "wifi_policies",
   ]) {
     const codec = platform.CONFIG_SECTION_CODECS[section];
@@ -49,8 +50,8 @@ test("registry has a codec for every section except loyalty_policy and payroll_s
     assert.equal(codec.version, 1);
     assert.equal(platform.configSectionCodec(section), codec);
   }
-  // No table exists yet for these two, so they intentionally have no codec.
-  assert.equal(platform.configSectionCodec("loyalty_policy"), undefined);
+  // Loyalty has the CRM codec; only payroll has no table yet, so no codec.
+  assert.ok(platform.configSectionCodec("loyalty_policy"));
   assert.equal(platform.configSectionCodec("payroll_settings"), undefined);
 });
 
@@ -336,13 +337,15 @@ test("bundle: parse refuses references that could never be imported", () => {
 
 test("decodeConfigBundle reports sections it has no codec for", () => {
   const raw = structuredClone(platform.cafeLegendPlatformFixtures.configBundle);
-  // loyalty_policy has no codec yet (no table), unlike zones.
-  raw.sections.loyalty_policy = { version: 1, items: [{ key: "tier" }] };
+  // payroll_settings has no codec yet (no table), unlike zones.
+  raw.sections.payroll_settings = { version: 1, items: [{ key: "tier" }] };
   const parsed = platform.parseConfigBundle(raw, SOURCE_IDS);
   assert.equal(parsed.ok, true, JSON.stringify(parsed.issues));
   const decoded = platform.decodeConfigBundle(parsed.bundle);
   assert.equal(decoded.ok, true);
-  assert.ok(decoded.withoutCodec.includes("loyalty_policy"));
+  assert.ok(decoded.withoutCodec.includes("payroll_settings"));
+  assert.ok(decoded.withoutCodec.includes("modules"));
+  assert.ok(!decoded.withoutCodec.includes("wifi_policies"));
   assert.ok(!decoded.withoutCodec.includes("roles"));
   assert.ok(!decoded.withoutCodec.includes("zones"));
 });
