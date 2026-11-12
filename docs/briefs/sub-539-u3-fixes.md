@@ -20,3 +20,26 @@ Report: files changed, what each fix does, anything you could not fix.
 
 ## F-consent (P4 files: `features/ws12-ai-consent/`, `routes/mcp.consent.tsx`, catalog `ws12-ai-consent.ts`)
 1. In mock mode (`VITE_API_MOCK=true`) the consent page always shows the signed-out state because there is no real session, so the approve form is never visible. Treat the mock role as signed in the same way area access does in mock mode (`apps/web/src/lib/areas/access.ts`, `MOCK_ROLE_COOKIE`, default "all"). Real mode must stay unchanged (signed-out state when no session). Keep `pickRawConsentSearch`, resume, bfcache, deny guard as they are.
+
+# Round 2 (ui-auditor findings). Same rules as above.
+
+## R2-chat (P1 files + catalog `ws12-ai-chat.ts`)
+1. `answer-with-source.tsx` ~70: `aria-live="polite"` is on the growing text, so every chunk is announced. Make the text non-live while revealing; add one sr-only `role="status"` line that says the answer is ready (catalog text) when reveal ends.
+2. `nav.ts:20` uses `Sparkles` (DESIGN.md §11 bans sparkle/robot icons). Use `MessageSquare`.
+3. Internal links use `<a href>` (`answer-with-source.tsx` source link ~31 and draft link ~97, `ask-banner.tsx` ~91). Use TanStack `Link` for internal paths; `<a>` only for external URLs.
+4. Add "Tanya ulang" (ghost button, ≥ 44 px) on the last answer when it finished; it re-sends the same question.
+5. `tanya-ai-page.tsx` ~55: user bubble gets sr-only "Pertanyaan Anda:" prefix (catalog). Fix heading order: no `h3` directly after `h1` (use `h2`).
+
+## R2-admin (P5 files, not `usage-*`; catalog `ws12-ai-admin.ts`)
+1. `nav.ts:11` uses `Bot` (banned). Use `Plug`.
+2. `caps-dialog.tsx`: validate each field on blur too (reuse `validateCaps`), add `name` + `autoComplete="off"` to inputs, focus the first invalid field after a failed submit.
+3. `service-controls.tsx` (`disabled={busy}` ~255) and `tools-sheet.tsx` (`disabled={pendingCode !== null}`): keyboard focus is lost when switches disable during save. Keep switches focusable: `aria-busy` + ignore changes while pending instead of `disabled`.
+
+## R2-action (P3 files)
+1. `components/parts.tsx:58` `AiLabel` uses `Sparkles` (banned): drop the icon, keep the "Dibantu AI" text badge.
+2. `action-detail-page.tsx:118` h1 uses `type-display`; use `type-title` like chat/guide. Remove repeated `review.toolTitleId` text where it duplicates the h1 (keep it once as heading, once as the "Jenis permintaan" fact at most).
+
+## R2-consent (P4 files + catalog `ws12-ai-consent.ts`)
+1. Show where approval sends the user: under the client name, "Akan kembali ke <host>" (catalog text) using the host of the server-checked `preview.redirectUri`; `break-words`.
+2. Catalog `connecting`, `denying`: `...` becomes `…`.
+3. `consent-page.tsx` off-scale sizes `text-[15px]` (~291), `text-[13px]` (~359): use the repo type tokens (`type-*` classes used elsewhere in the branch) or `text-sm`/`text-base`.
