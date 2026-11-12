@@ -285,4 +285,32 @@ run_check --state-dir ''
 expect_ok state-dir-from-env
 rm -rf "$tmp/state-from-env"
 
+# 11. Missing maintenance URL disables audit purge but must not disable POS.
+reset
+run_check
+expect_ok audit-retention-missing
+expect_out audit-retention-missing 'WARN audit-retention:'
+expect_out audit-retention-missing 'MAINTENANCE_DATABASE_URL'
+reset
+printf 'MAINTENANCE_DATABASE_URL="   "  # not configured\n' >> "$envfile"
+run_check
+expect_ok audit-retention-blank
+expect_out audit-retention-blank 'WARN audit-retention:'
+reset
+printf 'export MAINTENANCE_DATABASE_URL="postgres://maint:%s@localhost/edge"\n' "$secret" >> "$envfile"
+run_check
+expect_ok audit-retention-configured
+expect_out audit-retention-configured 'PASS audit-retention:'
+no_secret audit-retention-configured
+# The host check only checks presence; runtime validates the URL before boot.
+reset
+printf 'MAINTENANCE_DATABASE_URL=invalid-url-value\n' >> "$envfile"
+run_check
+expect_ok audit-retention-presence-only
+expect_out audit-retention-presence-only 'PASS audit-retention:'
+if printf '%s\n' "$out" | grep -F -- 'invalid-url-value' >/dev/null; then
+  printf 'FAIL test audit-retention-presence-only: an env value was printed\n' >&2
+  exit 1
+fi
+
 echo 'check-edge-host tests passed'

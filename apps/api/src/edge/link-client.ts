@@ -83,6 +83,8 @@ export type EdgeLinkClientOptions = {
    * missing or unparseable header. A throwing callback is reported to onError.
    */
   onServerTime?: (serverTime: Date) => void;
+  /** Only a disabled purge is reported; normal heartbeats omit the field. */
+  auditRetentionDisabled?: () => boolean;
 };
 
 export type EdgeLinkClient = {
@@ -177,12 +179,19 @@ export function createEdgeLinkClient(
         } catch {
           // A broken status source must not stop the heartbeat.
         }
+        let auditRetentionDisabled = false;
+        try {
+          auditRetentionDisabled = options.auditRetentionDisabled?.() === true;
+        } catch {
+          // An unavailable maintenance status must not stop sync traffic.
+        }
         ws.send(
           encodeFrame({
             type: "heartbeat",
             version: options.version,
             occurredAt: new Date().toISOString(),
             ...(catalogStale.length > 0 ? { catalogStale } : {}),
+            ...(auditRetentionDisabled ? { auditRetentionDisabled: true } : {}),
           }),
         );
       };

@@ -72,6 +72,8 @@ export const linkFrameSchema = z.discriminatedUnion("type", [
      * the cloud is outdated).
      */
     catalogStale: catalogStaleSchema.optional(),
+    /** Missing local maintenance configuration; roll out cloud before edge. */
+    auditRetentionDisabled: z.boolean().optional(),
   }),
 ]);
 export type LinkFrame = z.infer<typeof linkFrameSchema>;

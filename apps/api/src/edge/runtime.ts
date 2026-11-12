@@ -23,11 +23,16 @@
 // SQL parameters (event payloads), and the credential must never be logged.
 import type { IncomingMessage, Server } from "node:http";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { parseEdgeHardeningEnv } from "@starter/shared/env";
-import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
+import {
+  outletIdSchema,
+  uuidToUlid,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import type { ReceiptRunRefusalReport } from "@starter/shared/edge";
 import { db, pool } from "../db/index.ts";
@@ -114,7 +119,10 @@ import {
   type CatalogFreshnessTracker,
 } from "./catalog-freshness.ts";
 import { withTenant } from "../db/tenant.ts";
-import { notifyEdgeCatalogStale } from "../services/edge-sync-conflict-alert.ts";
+import {
+  notifyEdgeCatalogStale,
+  notifyOutletSupervisors,
+} from "../services/edge-sync-conflict-alert.ts";
 import { parseEdgeRuntimeConfig } from "./config.ts";
 import { createDbLinkStore } from "./db-link-store.ts";
 import {
@@ -125,6 +133,11 @@ import type { LinkScope } from "./link-peer.ts";
 import { LINK_CLOSE, type CatalogStale } from "./protocol.ts";
 import { recordUploaderRejection } from "./selfie-health.ts";
 import { startEdgeSelfieSweep } from "./selfie-retention.ts";
+import {
+  startEdgeAuditRetention,
+  resolveEdgeAuditRetentionUrl,
+  type EdgeAuditRetentionHandle,
+} from "./audit-retention.ts";
 import { createEdgeSelfieUploader } from "./selfie-uploader.ts";
 import { createEdgeLinkServer, type EdgeLinkIdentity } from "./link-server.ts";
 import { installWifiAgent, wifiEnforcement } from "./wifi/port.ts";
@@ -138,6 +151,50 @@ import {
 
 /** Episodes already alerted by this process; the notification tables dedupe too. */
 const catalogStaleAlerted = new Set<string>();
+
+export async function reportEdgeAuditRetentionStatus(
+  identity: { context: ScopedTenantContext; scope: LinkScope },
+  disabled: boolean,
+  now: Date = new Date(),
+): Promise<void> {
+  if (!disabled) return;
+  // The day comes from the cloud clock. A deterministic source event id lets
+  // notification_outbox dedupe heartbeat retries, concurrent requests and
+  // process restarts, with at most one owner alarm per node per UTC day.
+  const day = now.toISOString().slice(0, 10);
+  const hex = createHash("sha256")
+    .update(
+      `edge_audit_retention.disabled\0${identity.scope.edgeNodeId}\0${day}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  const id = uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+  await withTenant(db, identity.context, (tx) =>
+    notifyOutletSupervisors(
+      tx,
+      identity.context,
+      {
+        tenantId: identity.context.tenant.tenantId,
+        outletId: outletIdSchema.parse(identity.scope.outletId),
+        alsoOwners: true,
+        id,
+        eventName: "edge_audit_retention.disabled",
+        aggregateType: "edge_audit_retention",
+        aggregateId: uuidToUlid(identity.scope.edgeNodeId),
+        payload: {
+          edgeNodeId: identity.scope.edgeNodeId,
+          reason: "maintenance_database_url_missing",
+          day,
+        },
+        title: "Pembersihan audit edge belum aktif",
+        body: "Server lokal belum memiliki koneksi pemeliharaan audit. Penjualan tetap berjalan; minta teknisi mengatur MAINTENANCE_DATABASE_URL untuk database lokal.",
+      },
+      now,
+    ),
+  );
+}
 
 /**
  * legend-10nex: the edge says critical catalog streams are stale for over 30
@@ -708,6 +765,10 @@ export async function startEdgeRuntime(
     throw new EdgeBootError(
       "STAFF_PIN_PEPPER (the root pepper) must not be set on an edge node: remove it from the edge environment; the cloud delivers the outlet pepper over the sync.",
     );
+  // Validate the configured URL before any database work, component or timer
+  // starts. A missing URL skips only the purge; the heartbeat alarms owners.
+  // Connection credentials/role are probed later with runtime cleanup on error.
+  const auditRetentionDisabled = resolveEdgeAuditRetentionUrl(source) === null;
   await assertEdgeSchemaReady();
   // legend-s4r6: cloud -> edge appliers, before the link can deliver.
   registerQrOrderEdgeApplier();
@@ -846,6 +907,7 @@ export async function startEdgeRuntime(
         return catalogAlarmQueue.heartbeat(null);
       return catalogAlarmQueue.heartbeat(catalogStaleForHeartbeat(snapshot));
     },
+    auditRetentionDisabled: () => auditRetentionDisabled,
     // A protocol refusal (1008) carries a fixed reason from the link code, no
     // payload; it tells the operator why the link keeps dropping (legend-a9iby:
     // a restored or cloned database). See docs/deployment.md, item 5.
@@ -1221,7 +1283,8 @@ export async function startEdgeRuntime(
     edgeNodeId: local.scope.edgeNodeId,
     drain: config.role === "primary",
   });
-  return {
+  let auditRetention: EdgeAuditRetentionHandle | null = null;
+  const handle: EdgeRuntimeHandle = {
     async stop() {
       clearInterval(sweep);
       clearInterval(catalogAlarmRetry);
@@ -1237,6 +1300,7 @@ export async function startEdgeRuntime(
         masterSync.stop(),
         selfieUploader.stop(),
         selfieSweep.stop(),
+        auditRetention?.stop(),
         stopWakeups(),
         client.stop(),
       ]);
@@ -1250,6 +1314,19 @@ export async function startEdgeRuntime(
       state = { ...state, link: disconnected };
     },
   };
+  // legend-0cqql: activate audit retention only after runtime initialization.
+  // A refused maintenance login closes every already-started component.
+  try {
+    auditRetention = await startEdgeAuditRetention({ source });
+  } catch (error) {
+    await handle
+      .stop()
+      .catch((stopError: unknown) =>
+        logger.error(safeError(stopError), "Edge runtime cleanup failed"),
+      );
+    throw error;
+  }
+  return handle;
 }
 
 export type EdgeLinkHandle = {
@@ -1311,6 +1388,13 @@ export async function registerEdgeLink(
       await notifyCatalogStale(identity, frame.catalogStale).catch((error) =>
         logger.warn(safeError(error), "Edge catalog stale alert failed"),
       );
+      if (frame.auditRetentionDisabled === true)
+        await reportEdgeAuditRetentionStatus(identity, true).catch((error) =>
+          logger.warn(
+            safeError(error),
+            "Edge audit retention owner alert failed",
+          ),
+        );
     },
     onConnectionChange: (identity, connected) =>
       logger.info(

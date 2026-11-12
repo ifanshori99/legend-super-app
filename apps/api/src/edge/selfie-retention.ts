@@ -31,6 +31,7 @@ import {
   attendanceCorrections,
   attendanceLogs,
 } from "../db/schema/hris-attendance.ts";
+import { staffPinProofs } from "../db/schema/staff-pin-proof.ts";
 import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import {
@@ -77,6 +78,7 @@ export interface EdgeSelfieSweepResult {
   orphanFiles: number;
   logsPurged: number;
   uploadRowsPurged: number;
+  pinProofsPurged: number;
 }
 
 type FileOutcome = "removed" | "missing" | "skipped";
@@ -517,6 +519,45 @@ async function purgeOldAttendance(
   return { logsPurged, uploadRowsPurged };
 }
 
+/** Proofs are single-use and leave the edge after one day, used or unused. */
+async function purgeOldPinProofs(
+  database: Database,
+  context: ScopedTenantContext,
+  now: Date,
+): Promise<number> {
+  const cutoff = new Date(now.getTime() - DAY_MS);
+  let purged = 0;
+  for (;;) {
+    const page = await withTenant(database, context, async (tx) => {
+      const eligible = and(
+        eq(staffPinProofs.tenantId, context.tenant.tenantId),
+        lt(staffPinProofs.createdAt, cutoff),
+      );
+      const rows = await tx
+        .select({ id: staffPinProofs.id })
+        .from(staffPinProofs)
+        .where(eligible)
+        .limit(PAGE);
+      if (rows.length === 0) return { selected: 0, deleted: 0 };
+      const deleted = await tx
+        .delete(staffPinProofs)
+        .where(
+          and(
+            eligible,
+            inArray(
+              staffPinProofs.id,
+              rows.map((row) => row.id),
+            ),
+          ),
+        )
+        .returning({ id: staffPinProofs.id });
+      return { selected: rows.length, deleted: deleted.length };
+    });
+    purged += page.deleted;
+    if (page.selected < PAGE || page.deleted === 0) return purged;
+  }
+}
+
 /**
  * One retention pass. A failing step does not stop the others; the first
  * failure is thrown at the end so the caller can log it.
@@ -536,6 +577,7 @@ export async function sweepEdgeSelfies(
     orphanFiles: 0,
     logsPurged: 0,
     uploadRowsPurged: 0,
+    pinProofsPurged: 0,
   };
   const failures: unknown[] = [];
   const step = async (run: () => Promise<void>) => {
@@ -569,6 +611,9 @@ export async function sweepEdgeSelfies(
   });
   await step(async () => {
     Object.assign(result, await purgeOldAttendance(database, context, now));
+  });
+  await step(async () => {
+    result.pinProofsPurged = await purgeOldPinProofs(database, context, now);
   });
 
   // Counts only: no ids, names or tenant.
