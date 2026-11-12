@@ -55,6 +55,11 @@ import { inventoryReceivingMessages } from "./ws06-receiving.ts";
 import { menuImportMessages } from "./ws03-menu-import.ts";
 import { attendanceQrMessages } from "./ws10-attendance-qr.ts";
 import { leaveClockinReviewMessages } from "./hr-leave-clockin-review.ts";
+import { hrisRequestsCommonMessages } from "./hris-requests-common.ts";
+import { hrisRequestsEmployeeMessages } from "./hris-requests-employee.ts";
+import { hrisRequestsMineMessages } from "./hris-requests-mine.ts";
+import { hrisRequestsQueueMessages } from "./hris-requests-queue.ts";
+import { supportAccessOwnerMessages } from "./support-access-owner.ts";
 import { employeeMasterMessages } from "./ws10-employee-master.ts";
 import { learningMessages } from "./ws10-learning.ts";
 import { lifecycleMessages } from "./ws10-lifecycle.ts";
@@ -199,6 +204,11 @@ export const id = {
   employeeMaster: employeeMasterMessages,
   attendanceQr: attendanceQrMessages,
   leaveClockinReview: leaveClockinReviewMessages,
+  hrisRequestsCommon: hrisRequestsCommonMessages,
+  hrisRequestsEmployee: hrisRequestsEmployeeMessages,
+  hrisRequestsMine: hrisRequestsMineMessages,
+  hrisRequestsQueue: hrisRequestsQueueMessages,
+  supportAccessOwner: supportAccessOwnerMessages,
   roster: rosterMessages,
   lifecycle: lifecycleMessages,
   payrollConfig: payrollConfigMessages,
