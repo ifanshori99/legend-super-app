@@ -1,0 +1,5 @@
+# 561 Second-opinion Codex: backend kasir utama + captain + QRIS DP
+Peran: second-opinion (~/.agents/team/roles/second-opinion.md). Read-only, jangan edit/commit. Test terarah lewat `heavy` bila perlu.
+Cabang ws/pos-order-be (6ed7a3e1, worktree .worktrees/pos-order-be) vs origin/milestone/m1 e9bbd9ea. Kartu legend-dysef (7 gap: katalog+modifier, nomor panggil takeaway, hold per baris, tambah ke sesi QR oleh staf, pesanan diparkir, daftar meja captain, panggilan pelayan), legend-y5d2r (QRIS = sisa setelah DP). Rencana: docs/briefs/557-pos-order-be-plan.md di worktree.
+Keputusan final: DP diterapkan saat submit (draft DP nol); pesanan staf lama dengan paymentLinkId tingkat order ditolak 409 dari tender POS baru.
+Cari: pelanggan ditagih lebih dari sisa, DP terpakai dua kali (dua sesi/pesanan, parkir lalu lanjut, retry), pesanan diparkir mengunci harga/promo lama secara merugikan outlet, hold per baris membuat item dikirim/ditagih dua kali, staf menambah ke sesi QR outlet/tenant lain, nomor panggil dobel, migrasi 0392 aman. Laporan: P0-P3, file:line, skenario, fix. Maks 400 kata.
