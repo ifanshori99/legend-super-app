@@ -1,4 +1,4 @@
-import { BookOpen, Sparkles } from "lucide-react";
+import { BookOpen, MessageSquare } from "lucide-react";
 import type { AreaNavEntry } from "@/lib/areas/nav";
 import { chatPath, guidePath, type ChatArea } from "./logic";
 
@@ -17,7 +17,7 @@ const nav: AreaNavEntry[] = AREAS.flatMap((area) => [
     area,
     labelKey: "aiChat.nav",
     to: chatPath(area),
-    icon: Sparkles,
+    icon: MessageSquare,
     order: 60,
     anyPermission: ["ai.ask"],
   },

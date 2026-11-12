@@ -117,3 +117,12 @@ export function buildAuthorizeBody(
 ): ConsentQuery & { approve: true } {
   return { ...q, approve: true };
 }
+
+/** Host of the redirect address, shown to the user; null when not a valid URL. */
+export function redirectHost(redirectUri: string): string | null {
+  try {
+    return new URL(redirectUri).host || null;
+  } catch {
+    return null;
+  }
+}

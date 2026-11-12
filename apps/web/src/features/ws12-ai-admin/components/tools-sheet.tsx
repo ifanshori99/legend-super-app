@@ -155,10 +155,11 @@ export function ToolsSheet({
                     </span>
                     <Switch
                       checked={tool.isEnabled}
-                      disabled={pendingCode !== null}
                       aria-labelledby={`tool-${tool.code}`}
-                      aria-busy={pendingCode === tool.code || undefined}
-                      onCheckedChange={(on) => toggle(tool.code, on)}
+                      aria-busy={pendingCode !== null || undefined}
+                      onCheckedChange={(on) => {
+                        if (pendingCode === null) toggle(tool.code, on);
+                      }}
                     />
                   </div>
                 </li>

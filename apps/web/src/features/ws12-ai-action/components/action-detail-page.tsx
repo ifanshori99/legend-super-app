@@ -114,10 +114,7 @@ export function ActionDetailBody({
   return (
     <div className="grid gap-5" data-testid="ai-action-detail">
       <div className="grid gap-3 sm:flex sm:items-start sm:justify-between">
-        <div className="grid gap-1">
-          <h1 className="type-display">{t("aiAction.pageTitle")}</h1>
-          <p className="text-muted-foreground">{review.toolTitleId}</p>
-        </div>
+        <h1 className="type-title">{t("aiAction.pageTitle")}</h1>
         <ActionStatusBadge status={request.status} />
       </div>
 

@@ -6,7 +6,6 @@ import {
   CircleCheck,
   CircleSlash,
   Clock,
-  Sparkles,
   TimerOff,
   TriangleAlert,
   type LucideIcon,
@@ -54,8 +53,7 @@ export function ActionStatusBadge({ status }: { status: ActionRequestStatus }) {
 export function AiLabel() {
   const t = useT();
   return (
-    <p className="type-eyebrow flex items-center gap-1.5 text-muted-foreground">
-      <Sparkles className="size-3.5" aria-hidden="true" />
+    <p className="type-eyebrow text-muted-foreground">
       {t("aiAction.aiLabel")}
     </p>
   );

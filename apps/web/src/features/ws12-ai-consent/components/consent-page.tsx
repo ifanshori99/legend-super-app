@@ -33,6 +33,7 @@ import {
   isSafeNavigationUrl,
   parseConsentQuery,
   pickRawConsentSearch,
+  redirectHost,
   type ConsentQuery,
 } from "../logic";
 
@@ -258,6 +259,15 @@ export function McpConsentPage() {
                         <p className="text-sm text-muted-foreground">
                           {t("aiConsent.clientKind")}
                         </p>
+                        {redirectHost(preview.data.data.redirectUri) ? (
+                          <p className="break-words text-sm text-muted-foreground">
+                            {t("aiConsent.returnsTo", {
+                              host:
+                                redirectHost(preview.data.data.redirectUri) ??
+                                "",
+                            })}
+                          </p>
+                        ) : null}
                       </div>
                     </section>
 
@@ -288,9 +298,7 @@ export function McpConsentPage() {
                                 aria-hidden="true"
                               />
                             )}
-                            <span className="text-[15px] font-semibold">
-                              {item.label}
-                            </span>
+                            <span className="type-heading">{item.label}</span>
                           </li>
                         ))}
                       </ul>
@@ -356,7 +364,7 @@ export function McpConsentPage() {
                   </p>
                 ) : null}
 
-                <p className="mt-4 text-left text-[13px] text-muted-foreground sm:text-center">
+                <p className="mt-4 text-left text-sm text-muted-foreground sm:text-center">
                   {t("aiConsent.foot")}
                 </p>
               </>

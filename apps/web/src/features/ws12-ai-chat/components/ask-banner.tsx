@@ -1,6 +1,7 @@
 // What went wrong (or why asking is paused) and how to recover. Every state has
 // an icon and words, never colour alone; denied, unavailable, quota, budget and
 // PII refusals each have their own text (classifyAskError in ../logic).
+import { Link } from "@tanstack/react-router";
 import {
   RotateCw,
   ShieldAlert,
@@ -87,12 +88,12 @@ export function AskBanner({
           </Button>
         )}
         {REPORT_LINK.includes(kind) && (
-          <a
-            href={reportPath(area)}
+          <Link
+            to={reportPath(area) as "/"}
             className="inline-flex min-h-11 items-center font-semibold text-primary underline underline-offset-4"
           >
             {t("aiChat.banner.unavailable.openReport")}
-          </a>
+          </Link>
         )}
       </div>
     </div>

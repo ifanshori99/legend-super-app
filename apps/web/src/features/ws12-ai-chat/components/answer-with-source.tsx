@@ -1,8 +1,9 @@
 // One AI answer: "Dibantu AI" label, the text, and a source card per
 // `aiMessageSourceSchema` (label link, metric period) with the "Periksa
-// sumber" note (PRD §3 Fitur 38 "Jawaban Bersumber"). `aria-live="polite"`
-// sits on the answer text only; it is `aria-busy` while the text types in so a
-// screen reader reads the finished answer once.
+// sumber" note (PRD §3 Fitur 38 "Jawaban Bersumber"). The answer text is not
+// live (it would announce every chunk while it types in); one sr-only
+// `role="status"` line says the answer is ready when the reveal ends.
+import { Link } from "@tanstack/react-router";
 import { Clock, ExternalLink } from "lucide-react";
 import type { AiMessageSource } from "@starter/shared/ai";
 import { useT } from "@/components/i18n";
@@ -27,14 +28,14 @@ export function SourceCard({ source }: { source: AiMessageSource }) {
           kind: t(`aiChat.answer.sourceKind.${sourceKindKey(source)}`),
         })}
       </p>
-      <a
-        href={source.link}
+      <Link
+        to={source.link as "/"}
         className="inline-flex min-h-6 w-fit max-w-full items-center gap-1 font-semibold text-primary underline underline-offset-4 hover:decoration-2"
       >
         <span className="min-w-0 break-words">{source.label}</span>
         <ExternalLink className="size-4 shrink-0" aria-hidden="true" />
         <span className="sr-only">({t("aiChat.answer.sourceOpen")})</span>
-      </a>
+      </Link>
       <p className="text-sm text-muted-foreground">
         {period
           ? t("aiChat.answer.sourceScope", { brand: brandName, period })
@@ -49,6 +50,7 @@ export function AnswerWithSource({
   content,
   sources,
   busy = false,
+  ready = false,
   showSources = true,
   actionRequestIds = [],
 }: {
@@ -58,6 +60,8 @@ export function AnswerWithSource({
   sources: readonly AiMessageSource[];
   /** The text is still typing in. */
   busy?: boolean;
+  /** A typed-in answer just finished: say so once for screen readers. */
+  ready?: boolean;
   showSources?: boolean;
   /** Drafts this answer created: they wait for approval, nothing changed yet. */
   actionRequestIds?: readonly string[];
@@ -72,11 +76,7 @@ export function AnswerWithSource({
           {t("aiChat.answer.badge")}
         </Badge>
       </p>
-      <div
-        aria-live="polite"
-        aria-busy={busy}
-        className="grid gap-2.5 text-base leading-6"
-      >
+      <div aria-busy={busy} className="grid gap-2.5 text-base leading-6">
         {blocks.map((runs, index) => (
           <p key={index} className="break-words whitespace-pre-line">
             {runs.map((run, i) =>
@@ -85,6 +85,9 @@ export function AnswerWithSource({
           </p>
         ))}
       </div>
+      <p role="status" className="sr-only">
+        {ready ? t("aiChat.answer.ready") : ""}
+      </p>
       {showSources && actionRequestIds.length > 0 && (
         <div className="grid gap-1.5 rounded-container border-(length:--border-w) bg-warning-subtle px-3.5 py-3">
           <p className="inline-flex items-center gap-1.5 text-sm font-semibold">
@@ -93,12 +96,14 @@ export function AnswerWithSource({
           </p>
           <p className="text-sm">{t("aiChat.answer.draftBody")}</p>
           {area === "kelola" && (
-            <a
-              href={`${chatPath("kelola")}/aksi/${encodeURIComponent(actionRequestIds[0]!)}`}
+            <Link
+              to={
+                `${chatPath("kelola")}/aksi/${encodeURIComponent(actionRequestIds[0]!)}` as "/"
+              }
               className="w-fit font-semibold text-primary underline underline-offset-4"
             >
               {t("aiChat.answer.draftOpen")}
-            </a>
+            </Link>
           )}
         </div>
       )}

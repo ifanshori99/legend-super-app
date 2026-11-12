@@ -53,6 +53,14 @@ export function CapsDialog({
   );
 }
 
+const CAPS_FIELD_ORDER: CapsField[] = [
+  "monthlyBudgetIdr",
+  "warnPct",
+  "stopPct",
+  "rateLimit",
+  "maxRows",
+];
+
 const SERVER_FIELD: Record<string, CapsField> = {
   monthlyBudgetIdr: "monthlyBudgetIdr",
   budgetWarnPct: "warnPct",
@@ -85,9 +93,40 @@ function CapsForm({
     Partial<Record<CapsField, string>>
   >({});
 
+  const formRef = React.useRef<HTMLFormElement>(null);
+  const limits = {
+    maxRateLimit: AI_MCP_RATE_LIMIT_MAX_PER_MINUTE,
+    maxRows: AI_MAX_ROWS_PER_RESPONSE,
+  };
+
   const set =
     (field: CapsField) => (event: React.ChangeEvent<HTMLInputElement>) =>
       setDraft((current) => ({ ...current, [field]: event.target.value }));
+
+  // Blur: run the same validateCaps and keep only this field's result.
+  const blur =
+    (field: CapsField) => (event: React.FocusEvent<HTMLInputElement>) => {
+      const result = validateCaps(
+        { ...draft, [field]: event.target.value },
+        limits,
+      );
+      const kind = result.ok ? undefined : result.errors[field];
+      setErrors((current) => {
+        const next = { ...current };
+        if (kind === undefined) delete next[field];
+        else next[field] = kind;
+        return next;
+      });
+    };
+
+  const fieldProps = (field: CapsField) => ({
+    name: field,
+    autoComplete: "off",
+    inputMode: "numeric" as const,
+    value: draft[field],
+    onChange: set(field),
+    onBlur: blur(field),
+  });
 
   const message = (field: CapsField): string | undefined => {
     const kind = errors[field];
@@ -111,12 +150,12 @@ function CapsForm({
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     setServerErrors({});
-    const result = validateCaps(draft, {
-      maxRateLimit: AI_MCP_RATE_LIMIT_MAX_PER_MINUTE,
-      maxRows: AI_MAX_ROWS_PER_RESPONSE,
-    });
+    const result = validateCaps(draft, limits);
     if (!result.ok) {
       setErrors(result.errors);
+      const first = CAPS_FIELD_ORDER.find((field) => result.errors[field]);
+      const control = first && formRef.current?.elements.namedItem(first);
+      if (control instanceof HTMLElement) control.focus();
       return;
     }
     setErrors({});
@@ -148,7 +187,7 @@ function CapsForm({
     Object.keys(errors).length > 0 || Object.keys(serverErrors).length > 0;
 
   return (
-    <form onSubmit={submit} noValidate className="grid gap-4">
+    <form ref={formRef} onSubmit={submit} noValidate className="grid gap-4">
       <DialogHeader>
         <DialogTitle>{t("aiAdmin.caps.title")}</DialogTitle>
         <DialogDescription>{t("aiAdmin.caps.description")}</DialogDescription>
@@ -160,11 +199,7 @@ function CapsForm({
         error={message("monthlyBudgetIdr")}
         required
       >
-        <Input
-          inputMode="numeric"
-          value={draft.monthlyBudgetIdr}
-          onChange={set("monthlyBudgetIdr")}
-        />
+        <Input {...fieldProps("monthlyBudgetIdr")} />
       </FormField>
       <div className="grid gap-4 sm:grid-cols-2">
         <FormField
@@ -172,22 +207,14 @@ function CapsForm({
           error={message("warnPct")}
           required
         >
-          <Input
-            inputMode="numeric"
-            value={draft.warnPct}
-            onChange={set("warnPct")}
-          />
+          <Input {...fieldProps("warnPct")} />
         </FormField>
         <FormField
           label={t("aiAdmin.caps.stop")}
           error={message("stopPct")}
           required
         >
-          <Input
-            inputMode="numeric"
-            value={draft.stopPct}
-            onChange={set("stopPct")}
-          />
+          <Input {...fieldProps("stopPct")} />
         </FormField>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
@@ -196,22 +223,14 @@ function CapsForm({
           error={message("rateLimit")}
           required
         >
-          <Input
-            inputMode="numeric"
-            value={draft.rateLimit}
-            onChange={set("rateLimit")}
-          />
+          <Input {...fieldProps("rateLimit")} />
         </FormField>
         <FormField
           label={t("aiAdmin.caps.rows")}
           error={message("maxRows")}
           required
         >
-          <Input
-            inputMode="numeric"
-            value={draft.maxRows}
-            onChange={set("maxRows")}
-          />
+          <Input {...fieldProps("maxRows")} />
         </FormField>
       </div>
 

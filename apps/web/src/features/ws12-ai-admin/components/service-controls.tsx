@@ -260,8 +260,10 @@ function SwitchRow({
         </span>
         <Switch
           checked={checked}
-          disabled={busy}
-          onCheckedChange={onCheckedChange}
+          aria-busy={busy || undefined}
+          onCheckedChange={(on) => {
+            if (!busy) onCheckedChange(on);
+          }}
           aria-labelledby={`${id}-title`}
           aria-describedby={`${id}-hint`}
         />

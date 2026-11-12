@@ -3,7 +3,7 @@
 // person's own history sits on the left (a sheet on phones); answers are
 // sourced, labelled "Dibantu AI", type in progressively, and can be stopped.
 import * as React from "react";
-import { History, Trash2 } from "lucide-react";
+import { History, RotateCw, Trash2 } from "lucide-react";
 import type { AiConversationId, AiMessage } from "@starter/shared/ai";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
@@ -54,8 +54,10 @@ type Failure = {
 };
 
 function QuestionBubble({ children }: { children: React.ReactNode }) {
+  const t = useT();
   return (
     <p className="ms-6 rounded-container bg-surface-3 px-4 py-3.5 font-semibold break-words @3xl:ms-12">
+      <span className="sr-only">{t("aiChat.answer.questionPrefix")} </span>
       {children}
     </p>
   );
@@ -85,6 +87,8 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
   const t = useT();
   const online = useOnline();
   const Heading = AREAS[area].shell === "management" ? "h2" : "h1";
+  // No heading level skipped: the conversation title sits one level below.
+  const TitleHeading = Heading === "h1" ? "h2" : "h3";
 
   const history = useConversations();
   const conversations = React.useMemo(
@@ -182,6 +186,22 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
     );
   }
 
+  // "Tanya ulang": the last answer is in and nothing else is going on.
+  const lastMessage = messages[messages.length - 1];
+  const lastQuestion =
+    lastMessage?.role === "assistant"
+      ? messages
+          .slice(0, -1)
+          .reverse()
+          .find((m) => m.role === "user")?.content
+      : undefined;
+  const canAskAgain =
+    lastQuestion !== undefined &&
+    !busy &&
+    !failure &&
+    !reveal.stopped &&
+    !paused;
+
   function stop() {
     if (asking) controller.current?.abort();
     else reveal.stop();
@@ -247,7 +267,9 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
           </aside>
           <div className="flex min-w-0 flex-col gap-5 p-4 @3xl:p-6">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b-(length:--border-w) pb-4">
-              <h3 className="min-w-0 truncate font-semibold">{title}</h3>
+              <TitleHeading className="min-w-0 truncate font-semibold">
+                {title}
+              </TitleHeading>
               <span className="hidden shrink-0 text-sm text-muted-foreground @3xl:inline">
                 {t("aiChat.chat.personal")}
               </span>
@@ -331,6 +353,7 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
                         content={message.content.slice(0, reveal.shown)}
                         sources={message.sources}
                         busy={reveal.running}
+                        ready={!reveal.running && !reveal.stopped}
                         showSources={!reveal.running && !reveal.stopped}
                         actionRequestIds={drafts[message.id] ?? []}
                       />
@@ -343,6 +366,19 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
                         actionRequestIds={drafts[message.id] ?? []}
                       />
                     ),
+                  )}
+                  {canAskAgain && (
+                    <div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="min-h-11"
+                        onClick={() => submit(lastQuestion, activeId)}
+                      >
+                        <RotateCw aria-hidden="true" />
+                        {t("aiChat.answer.askAgain")}
+                      </Button>
+                    </div>
                   )}
                   {reveal.stopped && (
                     <div className="flex flex-wrap items-center gap-3 text-sm">

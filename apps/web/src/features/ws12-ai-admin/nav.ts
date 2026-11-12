@@ -1,4 +1,4 @@
-import { Bot } from "lucide-react";
+import { Plug } from "lucide-react";
 import type { AreaNavEntry } from "@/lib/areas/nav";
 
 // Management area: AI and MCP admin (service switches, clients, quota). The
@@ -8,7 +8,7 @@ const nav: AreaNavEntry[] = [
     area: "kelola",
     labelKey: "aiAdmin.nav",
     to: "/kelola/pengaturan/mcp-ai",
-    icon: Bot,
+    icon: Plug,
     order: 94,
     anyPermission: ["ai.governance.manage", "mcp.client.manage"],
   },
