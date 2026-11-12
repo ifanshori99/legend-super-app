@@ -23,6 +23,7 @@ import {
   asc,
   desc,
   eq,
+  exists,
   gte,
   inArray,
   isNull,
@@ -77,6 +78,7 @@ import {
   employeePayComponents,
   payComponents,
   payrollRuns,
+  payslips,
 } from "../db/schema/payroll.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -454,8 +456,10 @@ async function assertEmployeeInTenant(
  * The latest period end among the frozen (locked, paid, reversed) payroll runs
  * that cover this employee, or null when none is frozen (legend-8xf32). The
  * employee's legal entity is the one on the employee row, else the one of the
- * home outlet; when neither resolves, every legal entity of the tenant counts
- * (the rule that pays less). Runs of every type count: a frozen run never
+ * home outlet. Runs already containing this employee's payslip also count,
+ * even if the outlet has since moved to another legal entity. When neither
+ * current entity resolves, every legal entity of the tenant counts (the rule
+ * that pays less). Runs of every type count: a frozen run never
  * changes, whatever it paid. Share locks also cover mutable runs that could
  * freeze over the new effective date before this amount transaction commits.
  */
@@ -502,7 +506,23 @@ async function latestFrozenPeriodEnd(
           inArray(payrollRuns.status, [...FROZEN_PAYROLL_RUN_STATUSES]),
         ),
         ...(legalEntityId
-          ? [eq(payrollRuns.legalEntityId, legalEntityId)]
+          ? [
+              or(
+                eq(payrollRuns.legalEntityId, legalEntityId),
+                exists(
+                  tx
+                    .select({ id: payslips.id })
+                    .from(payslips)
+                    .where(
+                      and(
+                        eq(payslips.tenantId, context.tenant.tenantId),
+                        eq(payslips.employeeId, employeeId),
+                        eq(payslips.payrollRunId, payrollRuns.id),
+                      ),
+                    ),
+                ),
+              ),
+            ]
           : []),
       ),
     )
