@@ -80,6 +80,7 @@ import {
   encodeCursor,
   idempotencyKeySchema,
   outletIdsForQuery,
+  uuidSchema,
   type BusinessDate,
   type CursorPage,
   type OutletId,
@@ -991,6 +992,76 @@ async function assertNotDepreciationJournal(
 }
 
 /**
+ * A restoring DP-return entry cannot be removed after its connected DP has
+ * funded a booked payout (legend-ayz7q). The caller already holds this source
+ * journal FOR UPDATE, as does sessionDepositAt while validating and posting
+ * consumers. No intent lock is acquired here: consumers lock intents before
+ * source journals. A payout journal reversal alone does not recover cash, so
+ * it does not release this guard; finance must reconcile the paid refund.
+ */
+async function assertReturnBackingNotPaidOut(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  row: EntryRow,
+): Promise<void> {
+  if (
+    row.sourceType !== "refund" ||
+    row.sourceId === null ||
+    row.idempotencyKey !== `aj:order-refund:${row.sourceId}`
+  )
+    return;
+  // Journal sources also accept ULIDs (for example legacy refund events).
+  // Q81's pos_order_refunds uses UUIDs; other sources have no Q81 release.
+  const sourceId = uuidSchema.safeParse(row.sourceId);
+  if (!sourceId.success) return;
+  // Follow all historical credit-use edges too: Q82 can move the same DP to
+  // another session, where a different intent's payout consumes shared room.
+  // Refuse conservatively once any later payout of that component was booked.
+  const paid = await tx.execute(sql`
+    WITH RECURSIVE releases AS (
+      SELECT payment_intent_id, released_at
+        FROM pos_deposit_refunds
+       WHERE tenant_id = ${tenantId}::uuid
+         AND pos_refund_id = ${sourceId.data}::uuid
+    ), sources AS (
+      SELECT table_session_id AS session_id, payment_intent_id AS intent_id
+        FROM reservation_deposit_allocations
+       WHERE tenant_id = ${tenantId}::uuid
+      UNION
+      SELECT u.table_session_id, r.payment_intent_id
+        FROM reservation_customer_credit_uses u
+        JOIN reservation_deposit_remainders r
+          ON r.tenant_id = u.tenant_id AND r.id = u.remainder_id
+       WHERE u.tenant_id = ${tenantId}::uuid
+    ), connected(node) AS (
+      SELECT 'i:' || payment_intent_id::text FROM releases
+      UNION
+      SELECT CASE WHEN c.node = 's:' || s.session_id::text
+                  THEN 'i:' || s.intent_id::text
+                  ELSE 's:' || s.session_id::text END
+        FROM connected c
+        JOIN sources s ON c.node = 's:' || s.session_id::text
+                       OR c.node = 'i:' || s.intent_id::text
+    )
+    SELECT 1 FROM payment_refunds p
+      JOIN journal_entries j
+        ON j.tenant_id = p.tenant_id
+       AND j.idempotency_key = 'aj:payout:' || p.id::text
+     WHERE p.tenant_id = ${tenantId}::uuid
+       AND p.status = 'completed' AND p.unallocated_fund_id IS NULL
+       AND 'i:' || p.payment_intent_id::text IN (SELECT node FROM connected)
+       AND p.completed_at >= (SELECT min(released_at) FROM releases)
+     LIMIT 1
+  `);
+  if (paid.rows.length > 0)
+    throw new HttpError(
+      409,
+      "JOURNAL_BACKING_IN_USE",
+      "DP return journal backs a completed payout; reconcile that refund before correcting its backing.",
+    );
+}
+
+/**
  * Reversal inside the caller's tenant transaction. Idempotent on
  * `idempotencyKey`; fails closed on a closed period, a double reversal or a
  * reversal of a reversal.
@@ -1051,6 +1122,7 @@ export async function reverseJournalInTransaction(
     .limit(1);
   await assertNotDepreciationJournal(tx, context.tenant.tenantId, entryId);
   assertReversible(row, reversal?.id ?? null);
+  await assertReturnBackingNotPaidOut(tx, context.tenant.tenantId, row);
   const reversalLines = buildReversalLines(
     {
       lines: lines.map(toLine),

@@ -54,8 +54,8 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
-import { Pool, type PoolClient } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Client, Pool, type PoolClient } from "pg";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   createUlid,
   tenantIdSchema,
@@ -6907,7 +6907,7 @@ describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () =
           userIdSchema.parse(await seedUser()),
         );
     }
-    return { world, dp, event, journalId, outboxId };
+    return { world, dp, event, journalId, outboxId, posRefundId };
   }
 
   it("AJ-Q81-01: return40k restores DP25k and cash15k with a balanced journal; original payer payout25k then nets liability to zero", async () => {
@@ -6978,6 +6978,370 @@ describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () =
     });
     expect(await balanceOf(world, "customer_deposit")).toBe(0);
   });
+
+  for (const first of ["payout", "reversal"] as const) {
+    it(`AJ-AYZ7Q-RACE ${first} locks first: concurrent finance reversal and payout never leave an unbacked debit`, async () => {
+      const { world, dp, journalId } = await returnedDeposit();
+      const refundId = await seedRefund(world, dp.intentId, 25_000);
+      const actorId = userIdSchema.parse(await seedUser());
+      const reversalKey = randomUUID();
+      const payoutKey = `aj:payout:${refundId}`;
+      const gateKey = `ayz7q:${randomUUID()}`;
+      const triggerName = `ayz7q_gate_${randomBytes(8).toString("hex")}`;
+      const helper = await owner.connect();
+      let gateReleased = false;
+      const releaseGate = async () => {
+        if (gateReleased) return;
+        gateReleased = true;
+        await helper.query("COMMIT");
+      };
+      const runPayout = () =>
+        deliver(
+          world.tenant,
+          paymentRefunded(world, refundId, dp.intentId, 25_000),
+        );
+      const runReversal = () =>
+        reverseJournal(
+          contextOf(world.tenant),
+          journalId!,
+          {
+            entryDate: "2026-10-15",
+            reason: "Koreksi DP retur saat worker payout berjalan",
+            idempotencyKey: reversalKey,
+          },
+          actorId,
+        );
+      let payout: Promise<PromiseSettledResult<AutoJournalResult>> | undefined;
+      let reversal:
+        | Promise<PromiseSettledResult<Awaited<ReturnType<typeof runReversal>>>>
+        | undefined;
+      // Observe a lock condition instead of assuming a scheduling delay. The
+      // first writer pauses at INSERT, after reading/locking its backing. Old
+      // code lets the second writer commit through this gap; fixed code makes
+      // it wait on the first writer's source-journal row lock.
+      const waitFor = async (condition: () => Promise<boolean>) => {
+        const deadline = Date.now() + 5_000;
+        while (!(await condition())) {
+          if (Date.now() >= deadline)
+            throw new Error(
+              "DP return race did not reach its database barrier",
+            );
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      };
+      const settle = async <T>(operation: () => Promise<T>) =>
+        (await Promise.allSettled([operation()]))[0]!;
+      try {
+        // Test-only trigger, scoped to this tenant and one exact journal key.
+        // It leaves production code and all other tenants' writes untouched.
+        await owner.query(`CREATE FUNCTION public.${triggerName}() RETURNS trigger
+          LANGUAGE plpgsql AS $$
+          BEGIN
+            IF NEW.tenant_id::text = TG_ARGV[0] AND NEW.idempotency_key = TG_ARGV[1] THEN
+              PERFORM pg_advisory_xact_lock(hashtextextended(TG_ARGV[2], 0));
+            END IF;
+            RETURN NEW;
+          END $$`);
+        await owner.query(`CREATE TRIGGER ${triggerName}
+          BEFORE INSERT ON journal_entries FOR EACH ROW
+          EXECUTE FUNCTION public.${triggerName}('${world.tenant.id}',
+            '${first === "payout" ? payoutKey : reversalKey}', '${gateKey}')`);
+        await helper.query("BEGIN");
+        await helper.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [gateKey],
+        );
+        if (first === "payout") payout = settle(runPayout);
+        else reversal = settle(runReversal);
+        let firstPid: number | undefined;
+        await waitFor(async () => {
+          const { rows } = await owner.query<{ pid: number }>(
+            `SELECT pid FROM pg_locks WHERE locktype = 'advisory'
+               AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)
+               AND NOT granted`,
+            [gateKey],
+          );
+          firstPid = rows[0]?.pid;
+          return firstPid !== undefined;
+        });
+        let secondSettled = false;
+        if (first === "payout") {
+          reversal = settle(runReversal).then((result) => {
+            secondSettled = true;
+            return result;
+          });
+        } else {
+          payout = settle(runPayout).then((result) => {
+            secondSettled = true;
+            return result;
+          });
+        }
+        await waitFor(async () => {
+          if (secondSettled) return true;
+          const { rows } = await owner.query<{ blocked: boolean }>(
+            `SELECT EXISTS (
+               SELECT 1 FROM pg_stat_activity
+               WHERE $1::integer = ANY(pg_blocking_pids(pid))
+             ) AS blocked`,
+            [firstPid],
+          );
+          return rows[0]!.blocked;
+        });
+        await releaseGate();
+        const [payoutResult, reversalResult] = await Promise.all([
+          payout!,
+          reversal!,
+        ]);
+        // This is +25k before the fix: receipt + sale + return + reversal +
+        // payout debits customer_deposit without any remaining source credit.
+        expect(await balanceOf(world, "customer_deposit")).toBe(0);
+        expect(payoutResult.status).toBe("fulfilled");
+        if (payoutResult.status !== "fulfilled") throw payoutResult.reason;
+        if (first === "reversal") {
+          expect(reversalResult.status).toBe("fulfilled");
+          expect(payoutResult.value).toEqual({
+            status: "parked",
+            code: "POSTING_AMOUNTS_MISMATCH",
+            retryable: false,
+          });
+          expect(await runPayout()).toEqual(payoutResult.value);
+          if (reversalResult.status !== "fulfilled")
+            throw reversalResult.reason;
+          expect((await runReversal()).id).toBe(reversalResult.value.id);
+        } else {
+          expect(payoutResult.value.status).toBe("posted");
+          expect(reversalResult.status).toBe("rejected");
+          if (reversalResult.status === "rejected")
+            expect(reversalResult.reason).toMatchObject({
+              status: 409,
+              code: "JOURNAL_BACKING_IN_USE",
+            });
+          if (payoutResult.value.status !== "posted")
+            throw new Error("payout not posted");
+          expect(await runPayout()).toEqual({
+            status: "already_posted",
+            journalEntryId: payoutResult.value.journalEntryId,
+          });
+          await expect(runReversal()).rejects.toMatchObject({
+            status: 409,
+            code: "JOURNAL_BACKING_IN_USE",
+          });
+        }
+        const { rows } = await owner.query<{
+          id: string;
+          idempotency_key: string;
+        }>(
+          `SELECT id, idempotency_key FROM journal_entries
+             WHERE tenant_id = $1 AND legal_entity_id = $2`,
+          [world.tenant.id, world.entity],
+        );
+        expect(rows).toHaveLength(4);
+        for (const row of rows) await expectBalanced(world, row.id);
+        expect(
+          rows.filter((row) => row.idempotency_key === payoutKey),
+        ).toHaveLength(first === "payout" ? 1 : 0);
+        expect(await balanceOf(world, "gateway_clearing")).toBe(
+          first === "payout" ? 25_000 : 50_000,
+        );
+        expect(await balanceOf(world, "customer_deposit")).toBe(0);
+      } finally {
+        await releaseGate();
+        await Promise.all([payout, reversal]);
+        helper.release();
+        await owner.query(
+          `DROP TRIGGER IF EXISTS ${triggerName} ON journal_entries`,
+        );
+        await owner.query(`DROP FUNCTION IF EXISTS public.${triggerName}()`);
+      }
+    });
+  }
+
+  it("AJ-AYZ7Q-UNPOSTED: a completed refund without a payout journal does not prevent source reversal; its later delivery cannot debit the deposit", async () => {
+    const { world, dp, journalId } = await returnedDeposit();
+    const refundId = await seedRefund(world, dp.intentId, 25_000);
+    const reversed = await reverseJournal(
+      contextOf(world.tenant),
+      journalId!,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi DP retur sebelum jurnal payout",
+        idempotencyKey: randomUUID(),
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+    await expectBalanced(world, reversed.id);
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, refundId, dp.intentId, 25_000),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(4);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(50_000);
+  });
+
+  it("AJ-AYZ7Q-SOURCE-VISIBILITY: a source committed after the empty lock read cannot fund that payout attempt", async () => {
+    const { world, dp, event, outboxId, posRefundId } =
+      await returnedDeposit("pending");
+    const refundId = await seedRefund(world, dp.intentId, 25_000);
+    const payoutEvent = paymentRefunded(world, refundId, dp.intentId, 25_000);
+    const sourceKey = `aj:order-refund:${posRefundId}`;
+    const originalQuery = Client.prototype.query;
+    let interleaved = false;
+    let sourceJournalId: string | undefined;
+    // Every statement still executes against PostgreSQL. This wrapper only
+    // schedules the independent source writer after SELECT FOR UPDATE found
+    // no source row, before the worker's fresh backing-state read can see it.
+    const querySpy = vi
+      .spyOn(Client.prototype, "query")
+      .mockImplementation(function (this: Client, ...args: unknown[]) {
+        const result: unknown = Reflect.apply(originalQuery, this, args);
+        const config = args[0] as
+          string | { text?: string; values?: unknown[] };
+        const text = typeof config === "string" ? config : config.text;
+        const values = (
+          typeof config === "string" ? args[1] : (config.values ?? args[1])
+        ) as unknown[] | undefined;
+        if (
+          !interleaved &&
+          text?.includes('from "journal_entries"') &&
+          text.includes("for update") &&
+          values?.includes(world.tenant.id) &&
+          values.includes(sourceKey)
+        ) {
+          interleaved = true;
+          return Promise.resolve(result).then(async (rows) => {
+            expect((rows as { rows: unknown[] }).rows).toHaveLength(0);
+            await markDelivered(world, outboxId!);
+            sourceJournalId = (await post(world, event)).journalEntryId;
+            return rows;
+          });
+        }
+        return result;
+      } as typeof originalQuery);
+    let firstAttempt: AutoJournalResult;
+    try {
+      firstAttempt = await deliver(world.tenant, payoutEvent);
+    } finally {
+      querySpy.mockRestore();
+    }
+    expect(
+      interleaved,
+      "the source must commit after the empty lock read",
+    ).toBe(true);
+    expect(firstAttempt).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_PENDING",
+      retryable: true,
+    });
+    expect(sourceJournalId).toBeDefined();
+    await expectBalanced(world, sourceJournalId!);
+    expect(await journalCount(world)).toBe(3);
+    expect(await balanceOf(world, "customer_deposit")).toBe(-25_000);
+    const sourceReversal = await reverseJournal(
+      contextOf(world.tenant),
+      sourceJournalId!,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi jurnal retur yang baru terlihat worker",
+        idempotencyKey: randomUUID(),
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+    await expectBalanced(world, sourceReversal.id);
+    expect(await deliver(world.tenant, payoutEvent)).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(4);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(50_000);
+  });
+
+  it("AJ-AYZ7Q-PAYOUT-REVERSED: reversing the payout journal does not reclaim cash or permit reversing its source", async () => {
+    const { world, dp, journalId } = await returnedDeposit();
+    const refundId = await seedRefund(world, dp.intentId, 25_000);
+    const payout = await post(
+      world,
+      paymentRefunded(world, refundId, dp.intentId, 25_000),
+    );
+    const actorId = userIdSchema.parse(await seedUser());
+    const reversedPayout = await reverseJournal(
+      contextOf(world.tenant),
+      payout.journalEntryId,
+      {
+        entryDate: "2026-10-16",
+        reason: "Koreksi jurnal payout; uang belum dikembalikan pembayar",
+        idempotencyKey: randomUUID(),
+      },
+      actorId,
+    );
+    await expectBalanced(world, reversedPayout.id);
+    await expect(
+      reverseJournal(
+        contextOf(world.tenant),
+        journalId!,
+        {
+          entryDate: "2026-10-15",
+          reason: "Koreksi DP retur setelah jurnal payout dibalik",
+          idempotencyKey: randomUUID(),
+        },
+        actorId,
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "JOURNAL_BACKING_IN_USE",
+    });
+    expect(await journalCount(world)).toBe(5);
+    expect(await balanceOf(world, "customer_deposit")).toBe(-25_000);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(50_000);
+  });
+
+  for (const connected of [true, false]) {
+    it(`AJ-AYZ7Q-COMPONENT connected=${connected}: another intent's booked payout blocks source reversal only in the same DP component`, async () => {
+      const { world, dp, journalId } = await returnedDeposit();
+      const other = await seedSeatedDeposit(
+        world,
+        20_000,
+        connected ? dp.sessionId : undefined,
+      );
+      await post(world, paymentPaid(world, other.intentId, 20_000));
+      const otherRefund = await seedRefund(world, other.intentId, 20_000);
+      await post(
+        world,
+        paymentRefunded(world, otherRefund, other.intentId, 20_000),
+      );
+      const reversal = reverseJournal(
+        contextOf(world.tenant),
+        journalId!,
+        {
+          entryDate: "2026-10-15",
+          reason: "Koreksi DP retur dengan payout intent lain",
+          idempotencyKey: randomUUID(),
+        },
+        userIdSchema.parse(await seedUser()),
+      );
+      if (connected) {
+        await expect(reversal).rejects.toMatchObject({
+          status: 409,
+          code: "JOURNAL_BACKING_IN_USE",
+        });
+      } else {
+        await expectBalanced(world, (await reversal).id);
+      }
+      expect(await journalCount(world)).toBe(connected ? 5 : 6);
+      expect(await balanceOf(world, "customer_deposit")).toBe(
+        connected ? -25_000 : 0,
+      );
+      expect(await balanceOf(world, "gateway_clearing")).toBe(50_000);
+    });
+  }
 });
 
 // Q82 credit retains the original payer's money across table sessions.

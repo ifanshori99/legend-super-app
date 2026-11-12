@@ -798,6 +798,28 @@ export async function sessionDepositAt(
       ),
     )
     .groupBy(posDepositRefunds.posRefundId);
+  // legend-ayz7q: finance locks the same source entry before reversing it.
+  // Take every restoring entry in one stable order and hold it through the
+  // payout posting. Read the reversal state in a separate statement after
+  // the lock: a statement that waited can retain its old subquery snapshot.
+  const releaseKeys = releases.map(({ refundId }) =>
+    backingKeyOf({ kind: "posRefund", refundId }),
+  );
+  const lockedReleases =
+    releaseKeys.length === 0
+      ? []
+      : await tx
+          .select({ key: journalEntries.idempotencyKey })
+          .from(journalEntries)
+          .where(
+            and(
+              eq(journalEntries.tenantId, tenantId),
+              inArray(journalEntries.idempotencyKey, releaseKeys),
+            ),
+          )
+          .orderBy(journalEntries.id)
+          .for("update");
+  const lockedReleaseKeys = new Set(lockedReleases.map(({ key }) => key));
   const states = await backingStatesOf(
     tx,
     tenantId,
@@ -806,7 +828,14 @@ export async function sessionDepositAt(
   let appliedIdr = BigInt(applied?.total ?? "0");
   let pendingReleaseIdr = 0n;
   for (const { refundId, total } of releases) {
-    const state = states.get(backingKeyOf({ kind: "posRefund", refundId }));
+    const key = backingKeyOf({ kind: "posRefund", refundId });
+    const state = states.get(key);
+    // A journal committed after the locking statement was absent from its
+    // snapshot. It is visible now but unlocked: only a retry may use it.
+    if (state === "posted" && !lockedReleaseKeys.has(key))
+      throw new AutoJournalReceiptPending(
+        "DP return journal appeared after the backing lock; retry to lock it",
+      );
     if (state === "posted") appliedIdr -= BigInt(total);
     else if (state === "pending") pendingReleaseIdr += BigInt(total);
   }
