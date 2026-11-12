@@ -94,6 +94,7 @@ import {
   type TaxCalculationInput,
 } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
+import { assertCatalogSalesAllowed } from "../edge/sales-gate.ts";
 import {
   domainEventOutbox,
   floorZones,
@@ -1724,6 +1725,8 @@ export async function placeQrOrder(
   // carries a member session. Guests are not users, so null by default.
   memberUserId: string | null = null,
 ): Promise<PlaceOrderResult> {
+  // legend-10nex: before any validation or write, so a held sale leaves no row.
+  assertCatalogSalesAllowed();
   const parsed = placeOrderInputSchema.parse(input);
   await refreshPacingForSession(context, credential, sessionId, now);
   const outcome = await withTenant(
@@ -2566,6 +2569,9 @@ export async function priceMenuItemForOutlet(
   menuItemIds: readonly string[],
   now: Date,
 ): Promise<Map<string, OutletMenuPrice>> {
+  // legend-10nex: re-pricing lines onto an order (swap, recovery) reads the
+  // catalogue prices, so a held sale cannot use this either.
+  assertCatalogSalesAllowed();
   const outlet = await loadOutlet(tx, context, outletId);
   const catalogue = await loadCatalogue(tx, context, {
     brandId: outlet.brandId,

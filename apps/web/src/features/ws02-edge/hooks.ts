@@ -1,18 +1,26 @@
 // Hooks are the only way components touch edge data. They own polling, cache
 // keys and invalidation.
+import { useRouteContext } from "@tanstack/react-router";
 import {
   useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
 } from "@tanstack/react-query";
 import type { Device } from "@starter/shared/edge";
+import { ANONYMOUS_ACCESS, type AreaAccess } from "@/lib/areas/access";
 import { useOnline } from "@/lib/use-online";
 import {
+  grantCatalogOverrideCall,
   reprintPrintJobCall,
   retryPrintJobCall,
   setDeviceTrainingModeCall,
 } from "./api.ts";
+import {
+  CATALOG_OVERRIDE_PERMISSION,
+  isCatalogSalesBlockedError,
+} from "./catalog-sales.ts";
 import { cloudConnectionOnline } from "./logic.ts";
 import {
   edgeDevicesQuery,
@@ -107,4 +115,61 @@ export function useSetTrainingMode() {
       return queryClient.invalidateQueries({ queryKey: edgeKeys.all });
     },
   });
+}
+
+// ---- Catalog sales gate (legend-10nex) --------------------------------------
+
+/** Presentation only: the API re-checks the owner role on every grant. */
+export function useCanGrantCatalogOverride(): boolean {
+  const context = useRouteContext({ strict: false }) as {
+    readonly access?: AreaAccess;
+  };
+  // Fail closed: no access context means no override action.
+  const access = context.access ?? ANONYMOUS_ACCESS;
+  return (access.permissions as readonly string[]).includes(
+    CATALOG_OVERRIDE_PERMISSION,
+  );
+}
+
+/** Owner allows selling on an old catalog; the status poll shows the result. */
+export function useGrantCatalogOverride() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { minutes: number; reason: string }) =>
+      grantCatalogOverrideCall(input),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: edgeKeys.catalogSalesBlock() });
+      return queryClient.invalidateQueries({ queryKey: edgeKeys.status() });
+    },
+  });
+}
+
+export type CatalogSalesBlockNote = { message: string; at: number };
+
+/**
+ * An order call refused with CATALOG_STALE_BLOCKED: keep its message for the
+ * notice and re-read the status so the gate state shows without waiting for
+ * the next poll. Other errors are ignored.
+ */
+export function noteCatalogSalesBlocked(
+  queryClient: QueryClient,
+  error: unknown,
+) {
+  if (!isCatalogSalesBlockedError(error)) return;
+  queryClient.setQueryData<CatalogSalesBlockNote>(
+    edgeKeys.catalogSalesBlock(),
+    { message: error.message, at: Date.now() },
+  );
+  void queryClient.invalidateQueries({ queryKey: edgeKeys.status() });
+}
+
+export function useCatalogSalesBlockNote(): CatalogSalesBlockNote | null {
+  const { data } = useQuery<CatalogSalesBlockNote | null>({
+    queryKey: edgeKeys.catalogSalesBlock(),
+    // Written only by noteCatalogSalesBlocked; never fetched.
+    queryFn: () => null,
+    enabled: false,
+    staleTime: Infinity,
+  });
+  return data ?? null;
 }

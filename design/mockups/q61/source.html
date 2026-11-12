@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Q61 · Banner kasir saat katalog basi (legend-10nex)</title>
+<style>
+  /* Tokens copied from apps/web/src/styles/tokens.css (light theme, density "kontras" used by the kasir). */
+  :root {
+    --background:#ffffff; --foreground:#1c1b19; --card:#ffffff; --surface-2:#f7f6f4; --muted:#f5f4f2;
+    --muted-foreground:#5f5b55; --border:#e8e5e1; --input:#8a857d; --ring:#0f5e68;
+    --primary:#0f5e68; --primary-foreground:#ffffff;
+    --warning:#8f5800; --warning-subtle:#fcf1dc; --danger:#c02c31; --danger-subtle:#fdebeb;
+    --info:#245bd1; --info-subtle:#e9f0fd;
+    --shadow-faint:rgb(28 27 25 / .04); --shadow-soft:rgb(28 27 25 / .08); --shadow-strong:rgb(28 27 25 / .14);
+    --scrim:rgb(28 27 25 / .48);
+    --unit:4px; --control-h:3.75rem; --control-h-sm:3.5rem; --control-x:1.5rem;
+    --control-radius:8px; --field-radius:8px; --density-text:1.125rem; --border-w:2px;
+    --card-pad:1.25rem; --icon:1.5rem;
+    --ff:"Plus Jakarta Sans Variable","Plus Jakarta Sans",ui-sans-serif,system-ui,sans-serif;
+  }
+  * { box-sizing:border-box; border-color:var(--border); }
+  html, body { margin:0; height:100%; }
+  body { font-family:var(--ff); font-size:var(--density-text); color:var(--foreground); background:var(--background); -webkit-font-smoothing:antialiased; }
+  svg { width:20px; height:20px; flex:none; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+
+  .shell { min-height:100%; display:flex; flex-direction:column; background:var(--surface-2); }
+  .bar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; background:var(--card); border-bottom:1px solid var(--border); }
+  .bar b { font-size:1.3125rem; letter-spacing:-.015em; line-height:1.75rem; }
+  .bar span { font-size:.875rem; color:var(--muted-foreground); }
+  .work { width:100%; max-width:1120px; margin:0 auto; padding:16px; flex:1; }
+
+  /* Notice: mirrors ws04-pos-kasir/components/shared/notice.tsx */
+  .notice { margin-bottom:16px; border:var(--border-w) solid; border-radius:var(--control-radius); padding:12px 16px; }
+  .notice[data-tone=info]    { border-color:var(--info);    background:var(--info-subtle);    color:var(--info); }
+  .notice[data-tone=warning] { border-color:var(--warning); background:var(--warning-subtle); color:var(--warning); }
+  .notice[data-tone=danger]  { border-color:var(--danger);  background:var(--danger-subtle);  color:var(--danger); }
+  .notice p.t { margin:0; display:flex; align-items:center; gap:8px; font-size:var(--density-text); line-height:1.5rem; font-weight:600; }
+  .notice svg { width:var(--icon); height:var(--icon); }
+  .notice .body { margin-top:4px; font-size:1rem; line-height:1.5rem; color:var(--foreground); }
+  .notice .body p { margin:0; }
+
+  /* Button: mirrors components/ui/button.tsx */
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; font:inherit; font-weight:600; white-space:nowrap; border-radius:var(--control-radius); cursor:pointer; }
+  .btn.sm { height:var(--control-h-sm); padding:0 16px; font-size:.875rem; }
+  .btn.md { height:var(--control-h); padding:0 var(--control-x); font-size:var(--density-text); }
+  .btn.outline { border:var(--border-w) solid var(--border); background:var(--background); color:var(--foreground); box-shadow:0 1px 2px var(--shadow-faint); }
+  .btn.primary { border:0; background:var(--primary); color:var(--primary-foreground); box-shadow:0 1px 2px var(--shadow-faint); }
+  .notice .btn { margin-top:12px; }
+
+  /* Cashier skeleton behind the banner (static, no real data) */
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; }
+  .item { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px; min-height:92px; display:flex; flex-direction:column; justify-content:space-between; box-shadow:0 1px 2px var(--shadow-faint); }
+  .item b { font-size:1rem; font-weight:600; }
+  .item span { font-size:1rem; font-variant-numeric:tabular-nums; color:var(--muted-foreground); }
+  .layout { display:grid; gap:16px; grid-template-columns:1fr; }
+  .cart { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; box-shadow:0 1px 2px var(--shadow-faint); }
+  .cart h2 { margin:0 0 8px; font-size:1.3125rem; letter-spacing:-.015em; }
+  .cart .row { display:flex; justify-content:space-between; padding:8px 0; border-top:1px solid var(--border); font-variant-numeric:tabular-nums; }
+  .cart .pay { margin-top:12px; width:100%; }
+  .cart .pay[aria-disabled=true] { opacity:.5; }
+  @media (min-width:900px) { .layout { grid-template-columns:1fr 340px; } .work { padding:24px; } }
+
+  /* Dialog: mirrors components/ui/dialog.tsx (bottom sheet on phone, centered at sm+) */
+  .scrim { position:fixed; inset:0; background:var(--scrim); z-index:5; }
+  .dialog { position:fixed; z-index:6; left:0; right:0; bottom:0; max-height:90dvh; overflow:auto; display:flex; flex-direction:column; gap:16px;
+    background:var(--card); border:1px solid var(--border); border-radius:24px 24px 0 0; padding:var(--card-pad); box-shadow:0 12px 32px var(--shadow-strong), 0 2px 6px var(--shadow-soft); }
+  @media (min-width:640px) { .dialog { left:50%; top:50%; bottom:auto; right:auto; width:calc(100% - 2rem); max-width:32rem; transform:translate(-50%,-50%); border-radius:18px; } }
+  .dialog header { display:flex; flex-direction:column; gap:6px; padding-right:48px; }
+  .dialog h2 { margin:0; font-size:1.3125rem; line-height:1.75rem; font-weight:700; letter-spacing:-.015em; }
+  .dialog header p { margin:0; font-size:1rem; line-height:1.5rem; color:var(--muted-foreground); }
+  .close { position:absolute; top:12px; right:12px; width:var(--control-h-sm); height:var(--control-h-sm); display:grid; place-items:center; border-radius:var(--control-radius); color:var(--foreground); background:transparent; border:0; }
+  .field { display:grid; gap:6px; }
+  .field label { font-weight:600; font-size:1rem; }
+  .field .hint { margin:0; font-size:.875rem; line-height:1.25rem; color:var(--muted-foreground); }
+  .ctl { width:100%; border:var(--border-w) solid var(--input); border-radius:var(--field-radius); background:var(--background); font:inherit; color:var(--foreground); box-shadow:0 1px 2px var(--shadow-faint); }
+  .select { height:var(--control-h); padding:0 12px; display:flex; align-items:center; justify-content:space-between; }
+  .select svg { color:var(--muted-foreground); width:var(--icon); height:var(--icon); }
+  .textarea { min-height:6rem; padding:10px 12px; line-height:1.5rem; color:var(--muted-foreground); }
+  .footer { display:flex; flex-direction:column-reverse; gap:8px; margin-top:8px; }
+  @media (min-width:640px) { .footer { flex-direction:row; justify-content:flex-end; } }
+  .durations { margin:0; padding:0; list-style:none; display:flex; flex-wrap:wrap; gap:6px; font-size:.875rem; color:var(--muted-foreground); }
+  .durations li { border:1px solid var(--border); border-radius:999px; padding:2px 10px; background:var(--surface-2); }
+  .durations li.on { border-color:var(--primary); color:var(--primary); font-weight:600; }
+  .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+</style>
+</head>
+<body>
+<div class="shell" id="app">
+  <div class="bar"><b>Kasir</b><span>Contoh data · Outlet Senopati</span></div>
+  <main class="work">
+    <div id="banner"></div>
+    <div class="layout">
+      <div class="grid" aria-label="Menu (contoh)">
+        <div class="item"><b>Kopi susu</b><span>Rp 25.000</span></div>
+        <div class="item"><b>Nasi goreng</b><span>Rp 38.000</span></div>
+        <div class="item"><b>Teh tarik</b><span>Rp 18.000</span></div>
+        <div class="item"><b>Roti bakar</b><span>Rp 22.000</span></div>
+        <div class="item"><b>Es jeruk</b><span>Rp 15.000</span></div>
+        <div class="item"><b>Mie ayam</b><span>Rp 30.000</span></div>
+      </div>
+      <aside class="cart">
+        <h2>Pesanan</h2>
+        <div class="row"><span>Kopi susu x1</span><span>Rp 25.000</span></div>
+        <div class="row"><span>Roti bakar x1</span><span>Rp 22.000</span></div>
+        <div class="row"><b>Total</b><b id="total">Rp 47.000</b></div>
+        <div class="btn md primary pay" id="pay">Bayar</div>
+      </aside>
+    </div>
+  </main>
+</div>
+<div id="overlay"></div>
+<script>
+  const ICON = {
+    warning:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
+    danger:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>',
+    info:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>'
+  };
+  const notice = (tone, title, body = '', extra = '') =>
+    `<div class="notice" data-tone="${tone}" ${tone==='danger'?'role="alert"':''}><p class="t">${ICON[tone]}${title}</p>${body?`<div class="body">${body}</div>`:''}${extra}</div>`;
+  const ownerBtn = '<button class="btn sm outline" type="button">Izinkan penjualan (owner)</button>';
+  const S = {
+    a: () => notice('warning', 'katalog belum diperbarui sejak 10:05'),
+    e: () => notice('info', 'Promo dan voucher dimatikan: data promo belum diperbarui lebih dari 24 jam. Penjualan memakai harga normal.')
+  };
+  S.b = () => notice('danger', 'Penjualan ditahan: katalog belum tersinkron lebih dari 24 jam',
+    '<p>Harga dan menu di perangkat ini mungkin sudah tidak sesuai. Minta owner untuk mengizinkan penjualan. Terakhir tersinkron sejak 09:40.</p>' + ownerBtn);
+  S.c = () => notice('danger', 'Jam perangkat mundur: penjualan ditahan, minta owner mengizinkan',
+    '<p>Perangkat tidak bisa memastikan katalog masih baru. Minta owner untuk mengizinkan penjualan.</p>' + ownerBtn);
+  const dialog = () => `
+    <div class="scrim"></div>
+    <form class="dialog" role="dialog" aria-modal="true" aria-labelledby="dt" onsubmit="return false">
+      <button class="close" type="button" aria-label="Tutup"><svg viewBox="0 0 24 24" style="width:24px;height:24px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      <header><h2 id="dt">Izinkan penjualan sementara</h2>
+        <p>Penjualan berjalan dengan katalog lama. Izin ini tercatat atas nama Anda dan berakhir otomatis.</p></header>
+      <div class="field"><label>Lama izin</label>
+        <div class="ctl select"><span>1 jam</span><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div>
+        <ul class="durations" aria-label="Pilihan lama izin"><li>30 menit</li><li class="on">1 jam</li><li>4 jam</li><li>8 jam</li><li>24 jam</li></ul></div>
+      <div class="field"><label>Alasan</label>
+        <div class="ctl textarea">Internet toko mati sejak pagi, harga tidak berubah.</div>
+        <p class="hint">Contoh: internet toko mati sejak pagi, harga tidak berubah.</p></div>
+      <div class="footer"><button class="btn md outline" type="button">Batal</button><button class="btn md primary" type="submit">Izinkan penjualan</button></div>
+    </form>`;
+  const s = new URLSearchParams(location.search).get('s') || 'a';
+  if (s === 'd') { document.getElementById('banner').innerHTML = S.b(); document.getElementById('overlay').innerHTML = dialog(); }
+  else document.getElementById('banner').innerHTML = S[s]();
+  if (s === 'b' || s === 'c' || s === 'd') document.getElementById('pay').setAttribute('aria-disabled','true');
+</script>
+</body>
+</html>

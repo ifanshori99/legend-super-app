@@ -612,6 +612,11 @@ export function startEdgeMasterSyncLoop(input: {
      * succeeded or why it failed. Without it the failures are only reported.
      */
     freshness?: CatalogFreshnessTracker;
+    /**
+     * 533b: the cloud's server time from the `Date` header of each successful
+     * catalog page, offered as evidence for the trusted clock.
+     */
+    onServerTime?: (serverTime: Date) => void;
   };
   catalogOnStart?: boolean;
 }): { stop(): Promise<void> } {
@@ -644,6 +649,7 @@ export function startEdgeMasterSyncLoop(input: {
       fetchImpl: input.options?.fetchImpl,
       timeoutMs: input.options?.timeoutMs,
       signal: abort.signal,
+      onServerTime: input.catalog?.onServerTime,
     });
 
   const pullCatalogRounds = async (): Promise<void> => {
@@ -660,6 +666,10 @@ export function startEdgeMasterSyncLoop(input: {
         context,
         edgeNodeId,
         fetchPage: fetchCatalogPage,
+        // The persisted success stamp must use the same clock as the live
+        // freshness tracker; a rolled-back wall clock must not age a fresh
+        // catalog immediately, including after the next restart.
+        now: freshness ? () => freshness.now() : undefined,
       });
       const entries = Object.entries(result.streams);
       // A stream skipped after its parent failed (CATALOG_PARENT_FAILED) is

@@ -11,22 +11,28 @@
 //   cashier warning   "katalog belum diperbarui sejak HH:MM" while stale.
 //   owner alarm       a stale stream whose latest failure came from a
 //                     reachable cloud (sync failing, not offline) and whose
-//                     age (since its last success; since its first failure
-//                     when it never succeeded) is strictly more than
-//                     `staleAlarmAfterMs` (default 30 minutes), and whose
 //                     failures with a reachable cloud have lasted at least
 //                     `failurePersistMs` (default 5 minutes, so one failed
 //                     tick after a restart or a wake from sleep does not
-//                     alarm). A purely offline edge never alarms.
+//                     alarm). `staleAlarmAfterMs` (default 0, no extra age
+//                     condition) can still add one. A purely offline edge
+//                     never alarms (it cannot reach the owner; the heartbeat
+//                     carries the alarm after reconnect).
 //   delivery          `onOwnerAlarm` fires once per stale episode (local log
 //                     only). The owner is told through the link heartbeat:
 //                     the link client sends `alarmStreams` of every snapshot
 //                     while they last (`catalogStaleForHeartbeat`), the cloud
 //                     notifies and dedupes. Release order: cloud first, then
 //                     edge (an older cloud refuses the heartbeat field).
-//   sale policy       none: selling is never blocked while stale (founder
-//                     decision, `salesBlocked` is always false); the cashier
-//                     warning and the owner alarm are the whole reaction.
+//   sale policy       founder Q57: `stale24h` (and so `salesBlocked`) when
+//                     ANY critical stream has had no success for more than
+//                     `blockAfterMs` (24 h; exactly 24 h is not blocked),
+//                     whether or not a failure was recorded (a dead loop or
+//                     a restart that lost the failure state still blocks).
+//                     A stream that never succeeded ages from
+//                     `trackingStartedAt`. The owner override is applied in
+//                     sales-gate.ts, not here; the cashier warning stays.
+//                     Ages use the injected (trusted) clock.
 //
 // State is in memory, but `seedLastSuccess` restores each stream's last
 // success from the pull checkpoint at boot (`edge_pull_checkpoints`), so a
@@ -34,6 +40,12 @@
 // stream starts without a success, and a failure counts from its first one.
 import type { CatalogFreshness } from "@starter/shared/edge";
 import type { CatalogStale } from "./protocol.ts";
+import { promosEnabled } from "./promo-gate.ts";
+import {
+  CATALOG_SALES_BLOCK_AFTER_MS,
+  getSalesGateState,
+  type SalesGateState,
+} from "./sales-gate.ts";
 
 /** Streams whose staleness changes what the cashier sells or charges. */
 export const CRITICAL_CATALOG_STREAMS = [
@@ -44,7 +56,8 @@ export const CRITICAL_CATALOG_STREAMS = [
 ] as const;
 export type CriticalCatalogStream = (typeof CRITICAL_CATALOG_STREAMS)[number];
 
-export const CATALOG_STALE_ALARM_AFTER_MS = 30 * 60_000;
+/** No extra age condition: a persisted reachable-cloud failure alarms. */
+export const CATALOG_STALE_ALARM_AFTER_MS = 0;
 /**
  * A reachable-cloud failure must last this long before it can alarm: one
  * failed tick after a restart or a wake from sleep, with an old last success
@@ -87,13 +100,22 @@ export type CatalogFreshnessSnapshot = {
   stale: boolean;
   ownerAlarm: boolean;
   cashierWarning: string | null;
-  /** Always false: a stale catalog never blocks selling. */
-  salesBlocked: false;
+  /** Same as `salesGate.stale24h`; the owner override is applied later. */
+  salesBlocked: boolean;
+  salesGate: {
+    /** A critical stream is older than `blockAfterMs` (override ignored). */
+    stale24h: boolean;
+    /** Oldest last success (or tracking start) among the offending streams. */
+    staleSince: Date | null;
+    staleStreams: string[];
+  };
   /** Streams behind `ownerAlarm`; sent to the cloud with the heartbeat. */
   alarmStreams: CatalogStaleStream[];
 };
 
 export type CatalogFreshnessTracker = {
+  /** The same trusted time used to age catalog data and stamp pull checkpoints. */
+  now(): Date;
   /** `at`: when the stream's last page was stored (default now). */
   recordSuccess(stream: string, at?: Date): void;
   recordFailure(
@@ -105,11 +127,24 @@ export type CatalogFreshnessTracker = {
    * stream's last success back; a stream that is not critical is ignored.
    */
   seedLastSuccess(stream: string, at: Date): void;
+  /**
+   * Late load of the persisted tracking start (local database was down at
+   * boot). Only moves the start earlier, never later.
+   */
+  adoptTrackingStartedAt(at: Date): void;
+  /**
+   * The trusted clock was proven by the cloud's server time (533 A2): drop
+   * the unproven-time state of every stream. Saved last-success stamps stay,
+   * so ages keep counting from them.
+   */
+  clockProven(): void;
   snapshot(): CatalogFreshnessSnapshot;
 };
 
 type StreamState = {
   lastSuccessAt: Date | null;
+  /** A live successful pull, not a saved checkpoint, is needed to prove freshness. */
+  timeUnproven: boolean;
   /** Failure since the last success. */
   failure: {
     firstAt: Date;
@@ -126,7 +161,13 @@ function isCritical(stream: string): boolean {
 
 export function createCatalogFreshness(
   options: {
+    /** Trusted clock (edge/trusted-clock.ts); wins over `now`. */
+    clock?: { now(): Date; elapsedTimeUnproven?(): boolean };
     now?: () => Date;
+    /** First boot of the freshness tracking (default: now). */
+    trackingStartedAt?: Date;
+    /** Age above which sales are held (default 24 h). */
+    blockAfterMs?: number;
     timeZone?: string;
     staleAlarmAfterMs?: number;
     /** How long reachable-cloud failures must last to alarm (default 5 min). */
@@ -140,7 +181,12 @@ export function createCatalogFreshness(
     }) => void | Promise<void>;
   } = {},
 ): CatalogFreshnessTracker {
-  const now = options.now ?? (() => new Date());
+  const trustedClock = options.clock;
+  const now = trustedClock
+    ? () => trustedClock.now()
+    : (options.now ?? (() => new Date()));
+  const blockAfterMs = options.blockAfterMs ?? CATALOG_SALES_BLOCK_AFTER_MS;
+  let trackingStartedAt = options.trackingStartedAt ?? now();
   const timeZone = options.timeZone ?? "Asia/Jakarta";
   const alarmAfterMs =
     options.staleAlarmAfterMs ?? CATALOG_STALE_ALARM_AFTER_MS;
@@ -148,10 +194,33 @@ export function createCatalogFreshness(
   const states = new Map<string, StreamState>(
     CRITICAL_CATALOG_STREAMS.map((stream) => [
       stream,
-      { lastSuccessAt: null, failure: null },
+      { lastSuccessAt: null, timeUnproven: false, failure: null },
     ]),
   );
   let episodeAlarmed = false;
+  let observedUnprovenTime = false;
+  let unprovenAgeLowerBoundAt: number | null = null;
+  // False until the boot evaluation below ran; a later observation (a wall
+  // clock set back while running, 533c) must raise the owner alarm itself.
+  let started = false;
+
+  // A high water loaded after a database outage can discover uncertainty
+  // after this tracker was created. Adopt it once, then allow each live pull
+  // to recover its own stream without the clock's latched boot flag undoing it.
+  const observeUnprovenTime = () => {
+    if (observedUnprovenTime || !trustedClock?.elapsedTimeUnproven?.()) return;
+    observedUnprovenTime = true;
+    unprovenAgeLowerBoundAt = now().getTime();
+    for (const state of states.values()) state.timeUnproven = true;
+    if (started) evaluate();
+  };
+
+  // A success stamp from a wall clock ahead of the trusted one (the puller
+  // stamps with `new Date()`) must not hide a stale catalog: never in the future.
+  const clampToNow = (at: Date | undefined): Date => {
+    const current = now();
+    return at && at.getTime() < current.getTime() ? at : current;
+  };
 
   const clock = new Intl.DateTimeFormat("en-GB", {
     timeZone,
@@ -161,18 +230,47 @@ export function createCatalogFreshness(
   });
 
   const snapshot = (): CatalogFreshnessSnapshot => {
+    observeUnprovenTime();
     const at = now().getTime();
     const streams: Record<string, CatalogStreamFreshness> = {};
     const staleStates: StreamState[] = [];
     const alarmStreams: CatalogStaleStream[] = [];
+    const blockedStreams: { stream: string; since: Date }[] = [];
     for (const [stream, state] of states) {
+      // Age basis of the sales rule: last success, or tracking start when
+      // the stream never succeeded. Independent of any recorded failure.
+      const basis = state.lastSuccessAt ?? trackingStartedAt;
+      // Q62 does not turn unknown downtime into a 24-hour hold, but the age of
+      // the saved checkpoint keeps growing on the trusted clock (533 A1): a
+      // catalog 20 hours old at an offline restart blocks sales 4 hours later,
+      // so the outlet never sells on prices that are really over 24 hours old.
+      const ageReference = at;
+      if (ageReference - basis.getTime() > blockAfterMs)
+        blockedStreams.push({ stream, since: basis });
       streams[stream] = {
         lastSuccessAt: state.lastSuccessAt,
-        ageMs: state.lastSuccessAt
-          ? Math.max(0, at - state.lastSuccessAt.getTime())
-          : null,
-        failureReason: state.failure?.reason ?? null,
+        ageMs:
+          state.lastSuccessAt && !state.timeUnproven
+            ? Math.max(0, at - state.lastSuccessAt.getTime())
+            : null,
+        failureReason:
+          state.failure?.reason ??
+          (state.timeUnproven ? "CLOCK_ELAPSED_UNPROVEN" : null),
       };
+      if (state.timeUnproven) {
+        staleStates.push(state);
+        // This is a queued alarm even without a reachable cloud. The runtime
+        // persists it locally and the heartbeat delivers it after reconnect.
+        alarmStreams.push({
+          stream,
+          // Seeding checkpoints after the immediate boot alarm must not
+          // create a second notification identity for the same episode.
+          staleSince: new Date(unprovenAgeLowerBoundAt ?? at),
+          lastSuccessAt: state.lastSuccessAt,
+          reason: "CLOCK_ELAPSED_UNPROVEN",
+        });
+        continue;
+      }
       if (!state.failure) continue;
       staleStates.push(state);
       const since = state.lastSuccessAt ?? state.failure.firstAt;
@@ -190,6 +288,12 @@ export function createCatalogFreshness(
         });
     }
     const stale = staleStates.length > 0;
+    const timeUnproven = staleStates.some((state) => state.timeUnproven);
+    const stale24h = blockedStreams.length > 0;
+    const blockedSince =
+      blockedStreams
+        .map((entry) => entry.since)
+        .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
     // Oldest success among the stale streams; none when one never synced.
     const neverSynced = staleStates.some((state) => !state.lastSuccessAt);
     const oldest = staleStates
@@ -202,10 +306,17 @@ export function createCatalogFreshness(
       ownerAlarm: alarmStreams.length > 0,
       cashierWarning: !stale
         ? null
-        : neverSynced || !oldest
-          ? "katalog belum pernah diperbarui sejak edge menyala"
-          : `katalog belum diperbarui sejak ${clock.format(oldest)}`,
-      salesBlocked: false,
+        : timeUnproven
+          ? "waktu sejak pembaruan katalog tidak dapat dipastikan; promo dan voucher dinonaktifkan"
+          : neverSynced || !oldest
+            ? "katalog belum pernah diperbarui sejak edge menyala"
+            : `katalog belum diperbarui sejak ${clock.format(oldest)}`,
+      salesBlocked: stale24h,
+      salesGate: {
+        stale24h,
+        staleSince: blockedSince,
+        staleStreams: blockedStreams.map((entry) => entry.stream),
+      },
       alarmStreams,
     };
   };
@@ -233,11 +344,20 @@ export function createCatalogFreshness(
     }
   };
 
+  // Queue the boot warning/alarm even if no checkpoint or failed tick exists.
+  evaluate();
+  started = true;
+
   return {
+    now,
     recordSuccess(stream, at) {
       const state = isCritical(stream) ? states.get(stream) : undefined;
       if (!state) return;
-      state.lastSuccessAt = at ?? now();
+      observeUnprovenTime();
+      // Explicit dates on older call sites came from the wall clock. Once a
+      // trusted clock is installed, a successful live sync uses that basis.
+      state.lastSuccessAt = trustedClock ? now() : clampToNow(at);
+      state.timeUnproven = false;
       state.failure = null;
       evaluate();
     },
@@ -257,9 +377,26 @@ export function createCatalogFreshness(
     seedLastSuccess(stream, at) {
       const state = isCritical(stream) ? states.get(stream) : undefined;
       if (!state) return;
-      if (state.lastSuccessAt && state.lastSuccessAt.getTime() >= at.getTime())
+      const seeded = clampToNow(at);
+      if (
+        state.lastSuccessAt &&
+        state.lastSuccessAt.getTime() >= seeded.getTime()
+      )
         return;
-      state.lastSuccessAt = at;
+      state.lastSuccessAt = seeded;
+      evaluate();
+    },
+    adoptTrackingStartedAt(at) {
+      if (at.getTime() < trackingStartedAt.getTime()) {
+        trackingStartedAt = at;
+      }
+      evaluate();
+    },
+    clockProven() {
+      // A later late-adopted high water may find new doubt: let it be observed.
+      observedUnprovenTime = false;
+      unprovenAgeLowerBoundAt = null;
+      for (const state of states.values()) state.timeUnproven = false;
       evaluate();
     },
     snapshot,
@@ -292,15 +429,34 @@ export function catalogStaleForHeartbeat(
   }));
 }
 
-/** JSON form for `/api/edge/status` and `/api/edge/health`. */
+/**
+ * JSON form for `/api/edge/status` and `/api/edge/health`. `gate` is the
+ * sales gate state with the owner override applied (default: the installed
+ * provider); the age facts come from the snapshot.
+ */
 export function catalogFreshnessToDto(
   snapshot: CatalogFreshnessSnapshot,
+  gate: SalesGateState = getSalesGateState(),
 ): CatalogFreshness {
   return {
     stale: snapshot.stale,
     ownerAlarm: snapshot.ownerAlarm,
     cashierWarning: snapshot.cashierWarning,
-    salesBlocked: false,
+    salesBlocked: gate.blocked,
+    salesGate: {
+      blocked: gate.blocked,
+      stale24h: snapshot.salesGate.stale24h,
+      reason: gate.reason,
+      staleSince: snapshot.salesGate.staleSince?.toISOString() ?? null,
+      staleStreams: snapshot.salesGate.staleStreams,
+      override: gate.override
+        ? {
+            grantedAt: gate.override.grantedAt.toISOString(),
+            untilAt: gate.override.untilAt.toISOString(),
+          }
+        : null,
+      promoDisabled: !promosEnabled(),
+    },
     streams: Object.fromEntries(
       Object.entries(snapshot.streams).map(([stream, entry]) => [
         stream,

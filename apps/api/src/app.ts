@@ -45,6 +45,7 @@ import { createReportsRouter } from "./routes/reports.routes";
 import { setAuditWriter } from "./services/audit-writer";
 import { coreAuditWriter } from "./services/core-audit-writer";
 import { orderPromoPort } from "./services/order-promo";
+import { withPromoFreshness } from "./edge/promo-gate.ts";
 import { depositCreditForSession } from "./services/reservation-lifecycle";
 import {
   setQrOrderDepositCreditLookup,
@@ -87,7 +88,7 @@ import { installKdsServingEstimate } from "./services/kds-estimate.service.ts";
 // Tests may swap the writer; without one the port fails closed with a 503.
 setAuditWriter(coreAuditWriter);
 // WS-03 QR order wiring (legend-e2x/souz): promo engine port + ORD-10 settlement.
-setQrOrderPromoPort(orderPromoPort);
+setQrOrderPromoPort(withPromoFreshness(orderPromoPort));
 setQrOrderDepositCreditLookup(depositCreditForSession);
 // WS-04 order pacing (legend-gyc, KDS-05): queue-aware serving estimate.
 installKdsServingEstimate();
@@ -97,7 +98,7 @@ setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // numbering (legend-93a) is wired below; cashier shift (legend-6c0) and EDC
 // (legend-dahk) are wired below too. Points tenders keep their fail-closed
 // default (pos-order-ports.ts) until that bead lands.
-setPosOrderPromoPort(orderPromoPort);
+setPosOrderPromoPort(withPromoFreshness(orderPromoPort));
 setPosReceiptPort(createPosReceiptPort());
 // POS-06 (legend-ain0): the real gap lookup, so Tutup Hari refuses with
 // RECEIPT_SEQUENCE_GAP and the shift report lists the missing numbers. Before

@@ -1,5 +1,7 @@
 // legend-10nex, cloud side: a heartbeat that carries `catalogStale` notifies
 // the outlet's supervisors AND owners once per edge, stream and stale episode.
+// Policy (Q57): the alarm needs only a failure that lasts (5 minutes, cloud
+// reachable), not a 30-minute age; the text says sales are held after 24 hours.
 // The edge's own database never reaches the cloud, so the edge only reports
 // the stale streams in the link heartbeat; this file covers what the cloud does
 // with them (notifyEdgeCatalogStale) and the frame itself.
@@ -57,10 +59,13 @@ const send = (stale: EdgeCatalogStale) =>
   withTenant(db, context, (tx) => notifyEdgeCatalogStale(tx, context, stale));
 
 async function notificationRows() {
-  const { rows } = await owner.query<{ user_id: string; title: string }>(
-    "SELECT user_id, title FROM notifications WHERE tenant_id = $1",
-    [tenantId],
-  );
+  const { rows } = await owner.query<{
+    user_id: string;
+    title: string;
+    body: string;
+  }>("SELECT user_id, title, body FROM notifications WHERE tenant_id = $1", [
+    tenantId,
+  ]);
   return rows;
 }
 
@@ -305,6 +310,13 @@ describe("legend-10nex cloud notifies supervisors and owners once per episode", 
       [supervisorUserId, ownerUserId].sort(),
     );
     expect(first[0]!.title).toBe("Katalog edge belum diperbarui");
+    // Founder Q57: no longer "Penjualan tetap jalan"; after 24 hours without a
+    // successful sync sales are held until the owner allows them.
+    for (const row of first) {
+      expect(row.body).not.toContain("Penjualan tetap jalan");
+      expect(row.body).toContain("24 jam");
+      expect(row.body).toContain("owner");
+    }
 
     // The edge repeats the same episode with every heartbeat.
     await send(episode());
@@ -317,5 +329,37 @@ describe("legend-10nex cloud notifies supervisors and owners once per episode", 
     expect(await notificationRows()).toHaveLength(4);
     await send(episode({ staleSince: "2026-11-11T08:00:00.000Z" }));
     expect(await notificationRows()).toHaveLength(6);
+  });
+
+  it("Q62 reports the historical alarm without asserting that sales are currently open", async () => {
+    const unproven = episode({
+      reason: "CLOCK_ELAPSED_UNPROVEN",
+      staleSince: "2026-11-11T09:00:00.000Z",
+    });
+    const before = (await notificationRows()).length;
+    await send(unproven);
+    await send(unproven);
+    const rows = await notificationRows();
+    expect(rows).toHaveLength(before + 2);
+    const unprovenRows = rows.filter(
+      (row) => row.title === "Usia katalog edge sempat belum dapat dibuktikan",
+    );
+    expect(unprovenRows.map((row) => row.user_id).sort()).toEqual(
+      [supervisorUserId, ownerUserId].sort(),
+    );
+    for (const row of unprovenRows) {
+      expect(row.body).toContain(
+        "Jika tidak ada alasan lain yang menahan penjualan",
+      );
+      expect(row.body).toContain(
+        "penjualan boleh berjalan dengan harga normal",
+      );
+      expect(row.body).toContain("promo dan voucher dimatikan");
+      expect(row.body).toContain(
+        "Alarm ini tercatat pada 2026-11-11T09:00:00.000Z",
+      );
+      expect(row.body).toContain("jam mundur atau katalog yang terbukti basi");
+      expect(row.body).not.toContain("Penjualan tetap berjalan");
+    }
   });
 });

@@ -7,11 +7,12 @@ set -eu
 usage() {
   cat >&2 <<'USAGE'
 usage: check-edge-host.sh --env-file FILE [--service-user USER] [--cert FILE]
-                          [--selfie-dir DIR] [--max-bytes N] [--margin-bytes N]
+                          [--selfie-dir DIR] [--state-dir DIR] [--max-bytes N] [--margin-bytes N]
   --env-file      edge API environment file (required); checked for the seal private key
   --service-user  account that runs the edge API (default: legend)
   --cert          HTTPS certificate file served to outlet devices
   --selfie-dir    default: EDGE_SELFIE_DIR in the env file, else /var/lib/legend/edge-selfies
+  --state-dir     default: EDGE_STATE_DIR in the env file, else /var/lib/legend/edge-state
   --max-bytes     default: EDGE_SELFIE_MAX_BYTES in the env file, else 2147483648
   --margin-bytes  extra free space required on top of --max-bytes (default 536870912)
 USAGE
@@ -22,17 +23,19 @@ env_file=
 service_user=legend
 cert=
 selfie_dir=
+state_dir=
 max_bytes=
 margin_bytes=536870912
 while [ $# -gt 0 ]; do
   case $1 in
-    --env-file | --service-user | --cert | --selfie-dir | --max-bytes | --margin-bytes)
+    --env-file | --service-user | --cert | --selfie-dir | --state-dir | --max-bytes | --margin-bytes)
       [ $# -ge 2 ] || usage
       case $1 in
         --env-file) env_file=$2 ;;
         --service-user) service_user=$2 ;;
         --cert) cert=$2 ;;
         --selfie-dir) selfie_dir=$2 ;;
+        --state-dir) state_dir=$2 ;;
         --max-bytes) max_bytes=$2 ;;
         --margin-bytes) margin_bytes=$2 ;;
       esac
@@ -96,9 +99,11 @@ else
     pass "seal-key: edge env file holds no seal private key"
   fi
   [ -n "$selfie_dir" ] || selfie_dir=$(env_value EDGE_SELFIE_DIR)
+  [ -n "$state_dir" ] || state_dir=$(env_value EDGE_STATE_DIR)
   [ -n "$max_bytes" ] || max_bytes=$(env_value EDGE_SELFIE_MAX_BYTES)
 fi
 [ -n "$selfie_dir" ] || selfie_dir=/var/lib/legend/edge-selfies
+[ -n "$state_dir" ] || state_dir=/var/lib/legend/edge-state
 [ -n "$max_bytes" ] || max_bytes=2147483648
 space_inputs=ok
 if ! is_uint "$max_bytes"; then
@@ -180,6 +185,27 @@ else
         pass "disk-space: $free bytes free, need $need"
       fi
     fi
+  fi
+fi
+
+# 3b. State volume (owner alarm queue, brief 533 A5): it must exist and be
+# writable by the service user only. The API creates it when its parent is
+# writable; on a fresh host that is usually not the case, so create it first.
+if [ ! -d "$state_dir" ]; then
+  fail "state-dir: EDGE_STATE_DIR does not exist or is not a directory (create it, owned by $service_user, mode 0700)"
+else
+  state_listing=$(ls -ldL "$state_dir")
+  state_mode=$(printf '%s\n' "$state_listing" | awk '{ print substr($1, 1, 10) }')
+  state_owner=$(printf '%s\n' "$state_listing" | awk '{ print $3 }')
+  if [ "$state_mode" != "drwx------" ]; then
+    fail "state-dir: mode is $state_mode, expected drwx------ (0700)"
+  else
+    pass "state-dir: mode 0700"
+  fi
+  if [ "$state_owner" != "$service_user" ]; then
+    fail "state-dir: owner is $state_owner, expected $service_user (the service user must be able to write it)"
+  else
+    pass "state-dir: owned by $service_user, writable by it"
   fi
 fi
 
