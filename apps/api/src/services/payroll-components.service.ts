@@ -94,6 +94,7 @@ import {
   type Tx,
 } from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-employee.service.ts";
+import { loadPinnedOvertimeFormulas } from "./hris-overtime.service.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 
 const READ_CODE: PermissionCode = "payroll.view";
@@ -987,6 +988,7 @@ export async function computeEmployeeGross(
         date: overtimeRequests.date,
         minutes: overtimeRequests.minutes,
         dayType: overtimeRequests.dayType,
+        formulaId: overtimeRequests.formulaId,
       })
       .from(overtimeRequests)
       .where(
@@ -1001,46 +1003,72 @@ export async function computeEmployeeGross(
           inArray(overtimeRequests.dayType, [...OVERTIME_DAY_TYPES]),
         ),
       );
-    const requestsByDay = new Map<string, Map<OvertimeDayType, number>>();
+    const formulas = await loadPinnedOvertimeFormulas(
+      tx,
+      context.tenant.tenantId,
+      requests,
+    );
+    type OvertimeGroup = {
+      minutes: number;
+      dayType: OvertimeDayType;
+      formulaId: string;
+      parameters: OvertimeParameters;
+    };
+    const requestsByDay = new Map<string, Map<string, OvertimeGroup>>();
     for (const request of requests) {
+      const formula = formulas.get(request.formulaId!)!;
       const day =
-        requestsByDay.get(request.date) ?? new Map<OvertimeDayType, number>();
-      day.set(
-        request.dayType,
-        (day.get(request.dayType) ?? 0) + request.minutes,
-      );
+        requestsByDay.get(request.date) ?? new Map<string, OvertimeGroup>();
+      const key = `${request.dayType}|${formula.id}`;
+      const group = day.get(key) ?? {
+        minutes: 0,
+        dayType: request.dayType,
+        formulaId: formula.id,
+        parameters: formula.parameters,
+      };
+      group.minutes += request.minutes;
+      day.set(key, group);
       requestsByDay.set(request.date, day);
     }
     const payableOvertime: {
       minutes: number;
       dayType: OvertimeDayType;
       overtimeBase: Idr;
+      parameters: OvertimeParameters;
     }[] = [];
     for (const log of logs) {
       const day = requestsByDay.get(log.businessDate);
       if (!day) continue;
       const overtimeBase = overtimeBaseOn(log.businessDate);
       let remaining = Math.min(log.minutes, 720);
-      // Conflicting day types consume one shared cap, cheaper tariff first.
-      const groups = [...day].sort(
-        ([left], [right]) =>
+      // Day types and pinned formulas consume one shared attendance/720 cap,
+      // cheaper tariff first. Caller parameters never reprice a request.
+      const groups = [...day.values()].sort(
+        (left, right) =>
           computeOvertimePay(
-            parameters.data,
-            left,
+            left.parameters,
+            left.dayType,
             hoursOf(remaining),
             overtimeBase,
           ) -
             computeOvertimePay(
-              parameters.data,
-              right,
+              right.parameters,
+              right.dayType,
               hoursOf(remaining),
               overtimeBase,
-            ) || left.localeCompare(right),
+            ) ||
+          left.dayType.localeCompare(right.dayType) ||
+          left.formulaId.localeCompare(right.formulaId),
       );
-      for (const [dayType, approvedMinutes] of groups) {
-        const minutes = Math.min(approvedMinutes, remaining);
+      for (const group of groups) {
+        const minutes = Math.min(group.minutes, remaining);
         if (minutes <= 0) continue;
-        payableOvertime.push({ minutes, dayType, overtimeBase });
+        payableOvertime.push({
+          minutes,
+          dayType: group.dayType,
+          overtimeBase,
+          parameters: group.parameters,
+        });
         remaining -= minutes;
       }
     }
@@ -1059,7 +1087,7 @@ export async function computeEmployeeGross(
         overtimeIdr = idr(
           overtimeIdr +
             computeOvertimePay(
-              parameters.data,
+              entry.parameters,
               entry.dayType,
               hoursOf(entry.minutes),
               entry.overtimeBase,

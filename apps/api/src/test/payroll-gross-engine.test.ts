@@ -135,6 +135,7 @@ async function asTenant<T>(
 let actorId: string;
 let reviewerId: string;
 let grossEntityId: string;
+let pinnedFormulaId: string;
 
 async function createUser(name: string): Promise<string> {
   const client = agent(app);
@@ -301,9 +302,9 @@ async function seedOvertimeRequest(employeeId: string, input: OvertimeInput) {
   await asTenant(tenant.id, (db) =>
     db.query(
       `INSERT INTO overtime_requests
-         (tenant_id, outlet_id, employee_id, date, minutes, day_type, reason,
+         (tenant_id, outlet_id, employee_id, formula_id, date, minutes, day_type, reason,
           status, requested_by, decided_by, decided_at)
-       VALUES ($1, $2, $3, $4::date, $5, $6, 'Gross engine regression', $7::varchar, $8,
+       VALUES ($1, $2, $3, $10, $4::date, $5, $6, 'Gross engine regression', $7::varchar, $8,
                CASE WHEN $7::varchar = 'approved' THEN $9 ELSE NULL END,
                CASE WHEN $7::varchar = 'approved' THEN now() ELSE NULL END)`,
       [
@@ -316,6 +317,7 @@ async function seedOvertimeRequest(employeeId: string, input: OvertimeInput) {
         input.status ?? "approved",
         actorId,
         reviewerId,
+        pinnedFormulaId,
       ],
     ),
   );
@@ -498,6 +500,23 @@ beforeAll(async () => {
   actorId = await createUser("Gross engine actor");
   await grantRole(actorId, ["payroll.view", "payroll.run"]);
   reviewerId = await createUser("Gross engine reviewer");
+  pinnedFormulaId = randomUUID();
+  await asTenant(tenant.id, (db) =>
+    db.query(
+      `INSERT INTO overtime_formulas
+       (id, tenant_id, version, effective_from, status, parameters, rest_day_type,
+        legal_basis, published_at, published_by, created_by)
+       VALUES ($1, $2, $3, '2026-01-01', 'published', $4, 'rest_day_6_day_week',
+               'Gross engine fixture', now(), $5, $5)`,
+      [
+        pinnedFormulaId,
+        tenant.id,
+        1_000_000 + Math.floor(Math.random() * 1_000_000_000),
+        JSON.stringify(overtimeParameters),
+        actorId,
+      ],
+    ),
+  );
 });
 
 afterAll(async () => {
@@ -521,6 +540,10 @@ afterAll(async () => {
     await db.query(
       "DELETE FROM overtime_requests WHERE tenant_id = $1 AND employee_id = ANY($2)",
       [tenant.id, createdEmployees],
+    );
+    await db.query(
+      "DELETE FROM overtime_formulas WHERE tenant_id = $1 AND id = $2",
+      [tenant.id, pinnedFormulaId],
     );
     await db.query(
       "DELETE FROM attendance_logs WHERE tenant_id = $1 AND employee_id = ANY($2)",

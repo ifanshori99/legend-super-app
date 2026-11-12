@@ -233,6 +233,7 @@ async function seedLog(employeeId: string, input: LogInput) {
 }
 
 type OvertimeInput = {
+  formulaId?: string | null;
   date: string;
   minutes: number;
   dayType?: "workday" | "rest_day_6_day_week" | "rest_day_5_day_week";
@@ -258,7 +259,7 @@ async function seedOvertimeRequest(employeeId: string, input: OvertimeInput) {
         input.status ?? "approved",
         actorId,
         reviewerId,
-        formulaId,
+        input.formulaId === undefined ? formulaId : input.formulaId,
       ],
     ),
   );
@@ -410,5 +411,45 @@ describe("[549-P1] overtime basis follows its business date", () => {
     const result = await compute(employeeId);
     expect(result.overtimeIdr).toBe(52_023 + 104_046);
     expect(result.grossIdr).toBe(9_000_000 + 52_023 + 104_046);
+  });
+});
+
+describe("[549-g5v69] gross respects the request formula pin", () => {
+  it("[549-g5v69-PIN] a newer expensive caller formula cannot raise an old request's payout", async () => {
+    const employeeId = await seedEmployee();
+    const component = await earning({ overtimeBase: true });
+    await setAmount(employeeId, component.id, 6_000_000);
+    await approvedHour(employeeId, "2026-06-20");
+    const expensiveParameters = {
+      ...overtimeParameters,
+      monthlyHoursDivisor: 1,
+    };
+    const baseline = await compute(employeeId);
+    const recomputed = await compute(employeeId, {
+      overtimeParameters: expensiveParameters,
+    });
+    expect(baseline.overtimeIdr).toBe(52_023);
+    expect(recomputed.overtimeIdr).toBe(52_023);
+    expect(recomputed.grossIdr).toBe(6_052_023);
+    expect(recomputed.netIdr).toBe(baseline.netIdr);
+  });
+
+  it("[549-g5v69-MISSING] refuses unpinned approved requests instead of paying caller rates", async () => {
+    const employeeId = await seedEmployee();
+    const component = await earning({ overtimeBase: true });
+    await setAmount(employeeId, component.id, 6_000_000);
+    await seedLog(employeeId, {
+      businessDate: "2026-06-20",
+      overtimeMinutes: 60,
+    });
+    await seedOvertimeRequest(employeeId, {
+      date: "2026-06-20",
+      minutes: 60,
+      formulaId: null,
+    });
+    await expect(compute(employeeId)).rejects.toMatchObject({
+      status: 409,
+      code: "OVERTIME_FORMULA_MISSING",
+    });
   });
 });
