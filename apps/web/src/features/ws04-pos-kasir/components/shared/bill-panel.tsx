@@ -12,7 +12,7 @@ export type BillPanelProps = {
   serviceIdr: number;
   taxIdr: number;
   totalIdr: number;
-  deposit?: { reference: string; amountIdr: number; paid: boolean };
+  deposit?: { reference?: string; amountIdr: number; paid: boolean };
   /** Every payment on the bill; only the confirmed ones reduce the balance. */
   allocations: ReadonlyArray<{
     id: string;
@@ -67,6 +67,9 @@ export function BillPanel({
 }: BillPanelProps) {
   const t = useT();
   const confirmed = allocations.filter((a) => a.status === "confirmed");
+  // Settled by the DP alone: the balance is a plain "Sisa yang harus dibayar" Rp 0.
+  const settledByDeposit =
+    paid && confirmed.length === 0 && deposit?.paid === true;
   return (
     <section
       data-slot="bill-panel"
@@ -118,17 +121,21 @@ export function BillPanel({
               <Money amount={-deposit.amountIdr} className="font-semibold" />
             </Line>
             <p className="tabular text-sm text-muted-foreground">
-              {t("posKasirCommon.bill.depositPaid", {
-                reference: deposit.reference,
-              })}
+              {deposit.reference
+                ? t("posKasirCommon.bill.depositPaid", {
+                    reference: deposit.reference,
+                  })
+                : t("posKasirPayment.bill.depositPaidNoRef")}
             </p>
           </>
         )}
         {deposit && !deposit.paid && (
           <p className="tabular text-sm text-muted-foreground">
-            {t("posKasirCommon.bill.depositUnpaid", {
-              reference: deposit.reference,
-            })}
+            {deposit.reference
+              ? t("posKasirCommon.bill.depositUnpaid", {
+                  reference: deposit.reference,
+                })
+              : t("posKasirPayment.bill.depositUnpaidNoRef")}
           </p>
         )}
         {confirmed.map((allocation) => (
@@ -148,7 +155,7 @@ export function BillPanel({
       >
         <p className="text-base text-muted-foreground">
           {t(
-            paid
+            paid && !settledByDeposit
               ? "posKasirCommon.bill.remainingPaid"
               : "posKasirCommon.bill.remaining",
           )}

@@ -29,6 +29,7 @@ import { callEndpoint } from "@/lib/api/endpoint";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { runPosKasirMock, type PosKasirEngine } from "./mock-engine";
+import { remainingToPayIdr } from "./payment-due";
 import {
   CONTRACT_PENDING,
   type ActiveShift,
@@ -165,7 +166,14 @@ export const postCloseShiftRaw = closePosShift;
 function sessionFromOrder(order: PosOrderDetail): PaymentSession {
   const captured = order.tenders.filter((t) => t.status === "captured");
   const paidIdr = captured.reduce((sum, t) => sum + Number(t.amountIdr), 0);
-  const remainingIdr = Math.max(Number(order.totalIdr) - paidIdr, 0);
+  // The reservation DP is not a tender: it is the order's `depositAppliedIdr`
+  // (legend-p7lx). Leaving it out billed a DP-settled order in full again.
+  const depositIdr = Number(order.depositAppliedIdr);
+  const remainingIdr = remainingToPayIdr({
+    totalIdr: Number(order.totalIdr),
+    depositAppliedIdr: depositIdr,
+    capturedIdr: paidIdr,
+  });
   const lastCash = [...captured].reverse().find((t) => t.method === "cash");
   const lastTender = captured.at(-1);
   return {
@@ -181,6 +189,10 @@ function sessionFromOrder(order: PosOrderDetail): PaymentSession {
       serviceIdr: Number(order.serviceChargeIdr),
       taxIdr: Number(order.taxIdr),
       totalIdr: Number(order.totalIdr),
+      // The order detail has no reservation code (gap): the line shows "DP lunas".
+      ...(depositIdr > 0
+        ? { deposit: { amountIdr: depositIdr, paid: true } }
+        : {}),
       depositSurplusIdr: 0,
       allocations: captured.map((tender) => ({
         id: tender.id,
@@ -370,6 +382,21 @@ export async function printReceipt(
 ): Promise<ReceiptResult> {
   if (API_MOCK)
     return runPosKasirMock((engine) => engine.printReceipt(orderId));
+  // A bill the reservation DP settled alone never went through a tender, so
+  // nothing completed the order and the API refuses a receipt for it
+  // (legend-p7lx). Complete it first; the key keeps a retry from doing it twice.
+  const order = await fetchPosOrder(outletId, orderId);
+  if (
+    (order.status === "awaiting_payment" || order.status === "sent") &&
+    sessionFromOrder(order).bill.remainingIdr === 0
+  )
+    await callEndpoint(completePosOrder, {
+      params: { outletId, orderId },
+      body: {
+        expectedStatus: order.status,
+        idempotencyKey: `${idempotencyKey}:complete`,
+      },
+    });
   const { data } = await callEndpoint(issuePosReceipt, {
     params: { outletId, orderId },
     body: {

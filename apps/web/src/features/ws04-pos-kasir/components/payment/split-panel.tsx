@@ -85,7 +85,10 @@ export function SplitPanel({
                 tone: "success",
                 label: t("posKasirPayment.split.depositUsed"),
               }}
-              reference={bill.deposit.reference}
+              reference={
+                bill.deposit.reference ??
+                t("posKasirPayment.bill.depositPaidNoRef")
+              }
               amountIdr={bill.deposit.amountIdr}
             />
           )}

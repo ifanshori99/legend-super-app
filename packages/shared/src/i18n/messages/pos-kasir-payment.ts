@@ -15,6 +15,16 @@ export const posKasirPaymentMessages = {
     surplus: "Sisa DP {amount} jadi saldo pelanggan",
     surplusHint: "DP reservasi lebih besar dari tagihan ini.",
   },
+  bill: {
+    depositPaidNoRef: "DP lunas",
+    depositUnpaidNoRef: "DP belum lunas",
+  },
+  dpLunas: {
+    title: "Tidak ada pembayaran tambahan",
+    body: "DP reservasi {amount} sudah dialokasikan ke seluruh tagihan. Tidak perlu menerima pembayaran lagi.",
+    noticeTitle: "Tagihan sudah lunas",
+    noticeBody: "Rincian DP terpakai tercantum pada tagihan dan struk.",
+  },
   heading: {
     methods: "Pembayaran",
     methodsHint: "Periksa tagihan, lalu pilih cara pelanggan membayar.",
@@ -25,6 +35,7 @@ export const posKasirPaymentMessages = {
     cashHint: "Hitung uang diterima dan kembalian sebelum konfirmasi.",
     paid: "Tagihan lunas",
     paidHint: "Pastikan pelanggan menerima kembalian dan struk.",
+    paidDeposit: "DP reservasi telah menutup seluruh tagihan.",
     qris: "Pembayaran QRIS",
     qrisHint: "Tunggu konfirmasi sebelum menyelesaikan tagihan.",
     qrisExpiredHint: "Status pembayaran diperbarui otomatis.",

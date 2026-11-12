@@ -6,6 +6,7 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { isSettledByDeposit } from "../../payment-due";
 import { BillPanel, Notice, PosPageHeading, PosTwoPane } from "../shared";
 import {
   isContractPending,
@@ -15,6 +16,7 @@ import {
 import type { PaymentAttempt, PaymentMethodCode } from "../../types";
 import { CardOnlinePanel } from "./card-online-panel";
 import { CashPanel } from "./cash-panel";
+import { DpLunasPanel } from "./dp-lunas-panel";
 import { EdcPanel } from "./edc-panel";
 import { EwalletPanel } from "./ewallet-panel";
 import { FailedPanel } from "./failed-panel";
@@ -205,7 +207,22 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
 
   let panel: ReactNode = null;
   let keys = headingKeys(attempt, step);
-  if (bill.paid) {
+  // The DP alone paid the bill (legend-p7lx): nothing was collected here, so
+  // there is no cash, change or method to show.
+  const settledByDeposit =
+    bill.paid &&
+    bill.deposit?.paid === true &&
+    confirmedIdr === 0 &&
+    isSettledByDeposit({
+      totalIdr: bill.totalIdr,
+      depositAppliedIdr: bill.deposit.amountIdr,
+    });
+  if (settledByDeposit && bill.deposit) {
+    keys = ["paid", "paidDeposit"];
+    panel = (
+      <DpLunasPanel orderId={orderId} depositIdr={bill.deposit.amountIdr} />
+    );
+  } else if (bill.paid) {
     keys = ["paid", "paidHint"];
     panel = <SuccessPanel {...attemptProps} amountIdr={bill.totalIdr} />;
   } else if (attempt && attempt.method !== "cash" && attempt.method !== "edc") {

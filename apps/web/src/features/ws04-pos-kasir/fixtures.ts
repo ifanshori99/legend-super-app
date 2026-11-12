@@ -156,6 +156,18 @@ export function demoOrder(): EngineOrder {
   };
 }
 
+/**
+ * `?demo=dp-lunas` (legend-p7lx): the same Meja A12 bill, but the reservation
+ * DP (RSV-0019) is the whole Rp248.000, so nothing is left to collect. The
+ * engine seeds it by merging this over `demoOrder()`.
+ */
+export function dpLunasOrderPatch(): Pick<EngineOrder, "orderNo" | "deposit"> {
+  return {
+    orderNo: "POS-0049",
+    deposit: { reference: "RSV-0019", amountIdr: 248_000 },
+  };
+}
+
 /** Customer code LG-0044: Meja A01, one iced espresso, Rp26.600 with tax. */
 export function codeOrder(): EngineOrder {
   return {
