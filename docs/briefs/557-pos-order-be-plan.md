@@ -1,0 +1,26 @@
+# Backend POS cashier/captain and remaining QRIS implementation plan
+
+Goal: close legend-dysef and legend-y5d2r against approved U1/U2 without changing apps/web. Base e9bbd9ea, branch ws/pos-order-be. Contract authority: origin/ui/pos-cashier-captain:apps/web/src/features/ws04-pos-order/CONTRACT-GAPS.md and types.ts. User brief approves UI and specifies tests before implementation, sequential overlapping edits, local commits per gap, no push/merge/delete.
+
+Architecture: retain the existing POS order lifecycle, pricing, pickup allocator, held-line storage, floor board, service requests, and session DP lock. Add narrow shared/API surfaces where absent; parked snapshots are distinct from orders because the approved UI permits incomplete/sold-out carts and forbids consuming a call number when parking. No payroll/accounting/CRM/inventory/HRIS/edge sync changes.
+
+Global constraints: migrations reserved 0392–0396; all heavy commands are serialized through one thread token and heavy. Test-writer owns regression/contract/API tests. IDs follow the existing ULID schemas. Input prices never set an order's payable amount. UI response adaptation remains with the UI owner.
+
+Review focus: cross-outlet and cross-user reads/mutations; DP allocation across concurrent sibling orders; captured versus authorized payment distinction; repeated submit/fire/resume intents; held lines remain fully chargeable. Preserve the pending-QRIS price-edit guard.
+
+## Sequential deliverables
+
+1. Per-line hold: extend shared pos/endpoints.ts line input with optional hold; persist heldByCashier in pos-order.service.ts, preserving holdItems fallback. API mixed hold/fire proves held lines are charged and only selected lines fire. Existing fire endpoint remains authoritative.
+2. Customer display QRIS: shared pos/schemas.ts retains gross totals but adds compatible depositAppliedIdr coverage. QRIS must equal positive total minus DP minus captured tenders. Paid with full DP may have no tenders. Reject excess coverage and QRIS above remaining. API test imports real shared schema; root contract fixtures must remain compatible. No claim of a live display API: m1 only has endpoint declarations and a mocked display UI.
+3. Cashier catalog: shared pos schemas/endpoints, narrow catalog service and pos-order route. GET /api/outlets/:outletId/pos/catalog with channel/serviceType filters exposes server identifiers, channel prices, categories, variants, modifier min/max/required/options, course, sold-out/code. Do not change catalog write paths or stock internals.
+4. Takeaway number: expose existing assigned pickup call in POS detail, add a non-consuming outlet/day next-call preview reusing the existing sequence. Preview is advisory; transactional create decides the final number. Preserve A-001 format and legacy/concurrency/training behavior.
+5. Staff QR-session append: reuse createPosOrder(channel captain, dine_in, tableSessionId) then submit. In qr-order.service.ts exclude draft POS orders from guest bill and session settlement; count captured POS tender amounts exactly once alongside existing QR payment links and DP. Never count authorized/pending tender as paid. Regression proves session continuity, repeat intents, full settlement, and no DP duplication/overcharge.
+6. Parked carts: add outlet/user-scoped snapshot schema/storage + shared contract and /pos/parked-orders create/list/:id/resume. Park stores strict raw line identifiers, quantities, notes, course/hold, channel/serviceType and optional table session/external ref, with no payable order/stock/DP/call allocation. It permits sold-out/incomplete modifiers; order creation after resume revalidates and reprices. Atomic resume consumes a snapshot once (second attempt 404); never silently creates/submits/pays an order. Migration only within 0392–0396 if needed.
+7. Captain board: enrich existing GET /floor with live service-request counts, bill/outstanding totals and waiter-zone scope/filter using existing assignments. Existing table/session/pax DTO maps to approved captain table fields. Verify vacant/occupied, pending/acknowledged calls, assigned zones, and isolation.
+8. Waiter-call mapping: existing list/acknowledge/resolve contracts retain canonical pending status/reason codes; add safe table labels for UI adaptation and enforce request_bill acknowledgement before resolve (409 CALL_NOT_ACKNOWLEDGED). Preserve ordinary non-bill transitions and cursor behavior.
+
+Each deliverable: test-writer authors behavioral proof, runs red (or records already-passing existing behavior), implementer makes the smallest change, targeted green runs, progress updated, local per-gap commit. Same shared/API files are edited sequentially. One fresh architect reviews final money/auth/migration diff; fixes are verified and reviewed narrowly.
+
+## Final verification
+
+Run all relevant new/existing API and root contract tests through LEGEND_TEST_FILES heavy pnpm test; api/shared typecheck sequentially through heavy; changed-file pnpm exec eslint and pnpm exec prettier --check; heavy pnpm db:generate must report no schema changes after migration is committed. Gate-wide build/e2e/check are reserved for merge train. Record commands, results, pre-existing coverage, subagent count/peak, unverified items, migration usage and conservative money decisions in docs/PROGRESS.md and final handover.

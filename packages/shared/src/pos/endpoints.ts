@@ -120,6 +120,8 @@ const orderLineInputSchema = z.strictObject({
   note: z.string().max(200).nullable().optional(),
   /** F8 hold & fire: the course this line belongs to. */
   course: z.string().min(1).max(20).nullable().optional(),
+  /** Per-line hold overrides the order-wide holdItems fallback. */
+  hold: z.boolean().optional(),
 });
 
 // ---- Orders ---------------------------------------------------------------
@@ -150,7 +152,7 @@ export const getPosOrder = defineEndpoint({
  * Create a POS/captain order. The client sends menu ids, quantities,
  * modifiers and notes only: prices, totals, tax and service charge are computed
  * by the API from the channel price list and the tenant's tax configuration
- * (ORD-03). `holdItems` starts every line held for F8 hold & fire.
+ * (ORD-03). `holdItems` supplies the fallback when a line omits `hold`.
  */
 export const createPosOrder = defineEndpoint({
   method: "POST",

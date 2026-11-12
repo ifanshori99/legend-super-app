@@ -829,7 +829,7 @@ export async function createPosOrder(
             tenantId,
             outletId: outlet.id as OutletId,
             orderId,
-            heldByCashier: input.holdItems ?? false,
+            heldByCashier: entry.line.hold ?? input.holdItems ?? false,
             createdAt: now,
             updatedAt: now,
           })),
