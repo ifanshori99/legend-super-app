@@ -30,6 +30,8 @@ export const coreErrorHttpStatus = {
   FEATURE_DISABLED: 403,
   /** State conflict, e.g. duplicate unique value or invalid status transition. */
   CONFLICT: 409,
+  /** A bill request must be acknowledged before it can be resolved. */
+  CALL_NOT_ACKNOWLEDGED: 409,
   /** Same idempotency key reused with a different payload. */
   IDEMPOTENCY_KEY_REUSED: 409,
   /** Optimistic concurrency: the record changed since the client read it. */

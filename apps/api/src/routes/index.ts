@@ -123,6 +123,7 @@ import { kdsRouter } from "./kds.routes.ts";
 import { orderIssuesRouter } from "./order-issues.routes.ts";
 import { orderRecoveryChargeRouter } from "./order-recovery-charge.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
+import { posParkedOrderRouter } from "./pos-parked-order.routes.ts";
 import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
 import { posReceiptWriteoffRouter } from "./pos-receipt-writeoff.routes.ts";
 import { posShiftRouter } from "./pos-shift.routes.ts";
@@ -235,6 +236,7 @@ apiRouter.use("/floor", floorRouter);
 // /api/outlets/:outletId/pos/*; the router merges params. Before the floor's
 // /outlets router so POS requests do not run its middleware too.
 apiRouter.use("/outlets/:outletId/pos", posOrderRouter);
+apiRouter.use("/outlets/:outletId/pos", posParkedOrderRouter);
 // WS-04 receipts, kuitansi and invoices (legend-93a): same prefix, own routes;
 // the order router passes unmatched paths through.
 apiRouter.use("/outlets/:outletId/pos", posReceiptRouter);

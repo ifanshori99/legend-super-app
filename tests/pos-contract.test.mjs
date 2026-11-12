@@ -1570,6 +1570,8 @@ test("F8 customer display: items, total and dynamic QRIS only while paying", () 
       expiresAt: "2026-11-01T03:50:00.000Z",
     },
     tenders: [],
+    // This fixture changes the paid snapshot into an unpaid invoice.
+    remainingIdr: state.totalIdr,
     changeIdr: null,
   };
   pos.customerDisplayStateSchema.parse(awaiting);

@@ -29,7 +29,9 @@ import {
   completePosOrder,
   createPosOrder,
   firePosOrderItems,
+  getNextPosCallNumber,
   getPosApprovalPolicy,
+  getPosCatalog,
   getPosOrder,
   getPosOrderActionAvailability,
   listPosOrderEvents,
@@ -56,6 +58,9 @@ import * as corrections from "../services/pos-order-corrections.ts";
 import * as discounts from "../services/pos-order-discounts.ts";
 import { addPosTender as addPosTenderService } from "../services/pos-order-payment.ts";
 import * as pos from "../services/pos-order.service.ts";
+import { readNextPickupCall } from "../services/pickup.service.ts";
+import { getPosCatalog as getPosCatalogService } from "../services/pos-catalog.service.ts";
+import type { MenuMediaUrls } from "../services/menu-internals.ts";
 import type { PosCaller } from "../services/pos-order-support.ts";
 
 export const posOrderRouter = Router({ mergeParams: true });
@@ -145,13 +150,20 @@ async function sendOrder(
   // The ETag must match the `version` in the body: a separate read after
   // commit could show a newer version (another write landed, or this is an
   // idempotent replay), and echoing that back as If-Match would skip a change
-  // the client never saw. Only replays stored before legend-63l6 carry no
-  // `version`; for those the stored snapshot is stale and invalid against the
-  // response schema, so re-read the order and send the fresh detail with its
-  // version as the ETag. Nothing is written again (legend-3k8no).
+  // the client never saw. Legacy replays can lack `version` (legend-3k8no) or
+  // the assigned pickup code. Refresh the entire snapshot and its matching
+  // ETag together; reading the existing code never allocates another number.
   let body = data;
   let version = versionIn(data);
-  if (version === null) {
+  const snapshot =
+    typeof data === "object" && data !== null && "order" in data
+      ? data.order
+      : data;
+  const hasCallNumber =
+    typeof snapshot === "object" &&
+    snapshot !== null &&
+    "callNumber" in snapshot;
+  if (version === null || !hasCallNumber) {
     const fresh = await pos.getPosOrder(
       getScopedTenantContext(req),
       outletId,
@@ -167,6 +179,40 @@ async function sendOrder(
 }
 
 // ---- Orders -------------------------------------------------------------------
+
+posOrderRouter.get("/next-call-number", view, async (req, res) => {
+  const { outletId } = getNextPosCallNumber.params.parse(req.params);
+  const data = await readNextPickupCall(getScopedTenantContext(req), outletId);
+  res.json({ data });
+});
+
+/** Mounted by createApp with that app's configured photo URL resolver. */
+export function createPosCatalogRouter(
+  resolveMediaUrls: MenuMediaUrls,
+): Router {
+  const router = Router({ mergeParams: true });
+  router.get(
+    "/",
+    requireAuth,
+    requireTrustedOrigin,
+    requireTenantContext,
+    resolveActingStaff,
+    view,
+    async (req, res) => {
+      const { outletId } = getPosCatalog.params.parse(req.params);
+      const query = getPosCatalog.query.parse(req.query);
+      const data = await getPosCatalogService(
+        getScopedTenantContext(req),
+        outletId,
+        query,
+        new Date(),
+        resolveMediaUrls,
+      );
+      res.json({ data });
+    },
+  );
+  return router;
+}
 
 posOrderRouter.get("/orders", view, async (req, res) => {
   const { outletId } = listPosOrders.params.parse(req.params);

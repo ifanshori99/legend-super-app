@@ -1380,6 +1380,8 @@ export const serviceRequestSchema = z
     ...scope,
     tableSessionId: tableSessionIdSchema,
     tableId: tableIdSchema,
+    /** Printed table code; legacy payloads may omit it. */
+    tableLabel: tableCodeSchema.nullable().default(null),
     zoneId: floorZoneIdSchema,
     type: serviceRequestTypeSchema,
     reason: serviceRequestReasonSchema.nullable(),

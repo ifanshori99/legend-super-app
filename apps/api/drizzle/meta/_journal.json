@@ -2038,6 +2038,13 @@
       "when": 1794417900000,
       "tag": "0304_payroll_run_approver_write_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 305,
+      "version": "7",
+      "when": 1794418000000,
+      "tag": "0305_pos_parked_orders",
+      "breakpoints": true
     }
   ]
 }

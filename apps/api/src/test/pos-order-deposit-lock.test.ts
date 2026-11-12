@@ -437,9 +437,17 @@ async function createDineIn(
   const created = await posRoutes(fx).create(session);
   expect(created.status, JSON.stringify(created.body)).toBe(201);
   expect(created.body.data.totalIdr).toBe(ORDER_TOTAL_IDR);
+  // A saved draft is not payable and cannot reserve session DP. These
+  // conservation cases exercise submitted orders, where credit is applied.
+  expect(created.body.data.depositAppliedIdr).toBe(0);
+  const submitted = await posRoutes(fx).submit(
+    created.body.data.id,
+    created.body.data.status,
+  );
+  expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
   return {
     id: created.body.data.id as string,
-    status: created.body.data.status as string,
+    status: submitted.body.data.status as string,
   };
 }
 
@@ -599,7 +607,7 @@ describe("POS session deposit credit (legend-94qt)", () => {
     );
   });
 
-  it("legend-94qt a POS create racing a QR pay-first checkout never applies the same credit twice", async () => {
+  it("legend-94qt a POS submit racing a QR pay-first checkout never applies the same credit twice", async () => {
     const session = await openSession(a);
     const guest = (path: string) =>
       agent(app)
@@ -618,17 +626,18 @@ describe("POS session deposit credit (legend-94qt)", () => {
     const version = added.body.data.cart.version as number;
 
     setCredit(a, session, 60_000);
-    // Short net: the POS create takes the table lock first, which may keep the
-    // two from meeting at the barrier; the invariant is asserted regardless.
+    // Submit and checkout serialize on the live session before allocation,
+    // so this short barrier is only a safety net. The repricing test above
+    // retains the forced-overlap proof for the deposit lock itself.
     armGate(a, session, 1_500);
     const [pos, qr] = await Promise.all([
-      posRoutes(a).create(session),
+      createDineIn(a, session),
       guest("/orders").send({
         expectedCartVersion: version,
         idempotencyKey: randomUUID(),
       }),
     ]);
-    expect(pos.status, JSON.stringify(pos.body)).toBe(201);
+    expect(["awaiting_payment", "sent"]).toContain(pos.status);
     expect(qr.status, JSON.stringify(qr.body)).toBe(201);
 
     const rows = await ordersOf(a, session);

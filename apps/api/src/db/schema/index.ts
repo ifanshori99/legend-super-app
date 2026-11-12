@@ -80,6 +80,7 @@ export * from "./edge-catalog-gate-state";
 export * from "./edge-catalog-sale-overrides";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+export * from "./pos-parked-order";
 // TEN-09 tenant config templates + import runs (legend-34c).
 export * from "./platform-config";
 export * from "./pos-receipt";

@@ -8,5 +8,6 @@ export * from "./receipts.ts";
 export * from "./receipt-writeoff.ts";
 export * from "./events.ts";
 export * from "./endpoints.ts";
+export * from "./parked.ts";
 export * from "./errors.ts";
 export * from "./fixtures.ts";

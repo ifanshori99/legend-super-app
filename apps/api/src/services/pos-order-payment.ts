@@ -232,6 +232,14 @@ export async function addPosTender(
       assertExpectedStatus(order, input.expectedStatus);
       assertMutable(order);
       assertPosOrderSettleable({ status: order.status });
+      // Native POS payments use tender-level links. A legacy order-level
+      // link can still collect through its public token or a remote code,
+      // even after a nominal expiry, so do not open a second payment source.
+      if (order.paymentLinkId !== null)
+        throw new CoreError(
+          "CONFLICT",
+          "Pesanan ini memiliki tautan pembayaran lama; selesaikan sumber pembayaran itu terlebih dahulu.",
+        );
       let tenders = await tendersOf(tx, context, order.id);
       // legend-b0au: another method while a QRIS waits closes that QRIS first
       // (its link stops taking money) unless the guest already paid it.
