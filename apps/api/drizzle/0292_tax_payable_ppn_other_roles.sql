@@ -26,10 +26,14 @@
 -- The migrator may also be a plain table owner (no BYPASSRLS): FORCE ROW LEVEL
 -- SECURITY would apply the tenant policies to it, and with no app.tenant_id set
 -- they raise 42501. Lift FORCE for this transaction only and restore it before
--- commit, as in 0116 and 0147.
+-- commit, as in 0116 and 0147. journal_lines is only read (the parent has no
+-- posting check), but its policy raises the same way, so it is lifted too
+-- (merge train batch48k).
 ALTER TABLE public.chart_of_accounts NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE public.account_mappings NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.journal_lines NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 INSERT INTO public.chart_of_accounts (tenant_id, legal_entity_id, code, name, type, report_group, parent_id)
 SELECT p.tenant_id, p.legal_entity_id, n.code, n.name, 'liability', 'current_liability', parent.id
@@ -82,6 +86,8 @@ WHERE a.is_active
     WHERE c.tenant_id = a.tenant_id AND c.legal_entity_id = a.legal_entity_id AND c.parent_id = a.id
   )
 ON CONFLICT (tenant_id, legal_entity_id, role) DO NOTHING;
+--> statement-breakpoint
+ALTER TABLE public.journal_lines FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE public.account_mappings FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
