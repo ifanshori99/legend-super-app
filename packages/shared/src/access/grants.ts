@@ -6,6 +6,7 @@ import type { UserId } from "../core/index.ts";
 import { AccessError } from "./errors.ts";
 import type { RoleAssignmentId } from "./ids.ts";
 import {
+  canonicalPermissionCode,
   isPermissionCode,
   permissionHasTag,
   type PermissionCode,
@@ -75,13 +76,15 @@ export function withoutOwnerOnlyPermissions<T extends string>(
  * on the Owner template. Any other row (a custom role stored before the rule,
  * or a future template that picked one up) loses them on read.
  */
-export function rolePermissionsAsGranted<T extends string>(
+export function rolePermissionsAsGranted(
   templateKey: string | null,
-  codes: readonly T[],
-): T[] {
-  return templateKey === OWNER_TEMPLATE_KEY
-    ? [...codes]
-    : withoutOwnerOnlyPermissions(codes);
+  codes: readonly PermissionCode[],
+): PermissionCode[] {
+  const allowed =
+    templateKey === OWNER_TEMPLATE_KEY
+      ? codes
+      : withoutOwnerOnlyPermissions(codes);
+  return [...new Set(allowed.map(canonicalPermissionCode))];
 }
 
 /** A grantor's role as the API loaded it; templateKey null = custom role. */
@@ -306,7 +309,9 @@ export function normalizeCustomRolePermissions(
       throw new AccessError("PERMISSION_NOT_IN_CATALOG");
   if (unique.some((code) => ownerOnly.includes(code)))
     throw new AccessError("PERMISSION_OWNER_ONLY");
-  const codes = unique as PermissionCode[];
+  const codes = [
+    ...new Set((unique as PermissionCode[]).map(canonicalPermissionCode)),
+  ];
   return {
     permissions: codes,
     mfaRequired: Boolean(options.mfaRequested) || permissionsRequireMfa(codes),

@@ -9,7 +9,7 @@
 // tests/access-contract.test.mjs via the permission tags.
 
 import {
-  PERMISSION_CATALOG,
+  PERMISSION_CODES,
   permissionHasTag,
   type PermissionCode,
   type PermissionTag,
@@ -64,7 +64,8 @@ export type RoleTemplate = {
 function catalogWhere(
   predicate: (code: PermissionCode) => boolean,
 ): PermissionCode[] {
-  return PERMISSION_CATALOG.map((entry) => entry.code).filter(predicate);
+  // Generated templates retain accepted wire aliases for existing clients.
+  return PERMISSION_CODES.filter(predicate);
 }
 
 function withoutTags(...tags: PermissionTag[]) {
@@ -560,12 +561,12 @@ const templates: readonly RoleTemplate[] = [
     level: "tenant",
     allowedScopeTypes: ["tenant", "brand"],
     permissions: [
+      // Existing dev/mock screens use this alias; grants normalize it to CRM.
       "loyalty.program.manage",
       "crm.customer.view",
       "crm.consent.record",
       "crm.segment.manage",
       // legend-111j
-      "crm.loyalty.manage",
       "crm.loyalty.review",
       "promo.manage",
       "campaign.manage",

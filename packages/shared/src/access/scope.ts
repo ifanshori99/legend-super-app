@@ -34,7 +34,7 @@ import {
   stationIdSchema,
 } from "./ids.ts";
 import type { RoleAssignmentId, RoleId, StationId } from "./ids.ts";
-import type { PermissionCode } from "./permissions.ts";
+import { canonicalPermissionCode, type PermissionCode } from "./permissions.ts";
 import { SCOPE_TYPES } from "./roles.ts";
 import type { ScopeType } from "./roles.ts";
 
@@ -269,6 +269,17 @@ function rolesById(roles: readonly RoleGrant[]): Map<string, RoleGrant> {
   return new Map(roles.map((role) => [lower(role.id), role]));
 }
 
+/** Aliases share authority only inside the same assigned role and scope. */
+function roleHoldsPermission(
+  role: RoleGrant,
+  permission: PermissionCode,
+): boolean {
+  const canonical = canonicalPermissionCode(permission);
+  return role.permissions.some(
+    (code) => canonicalPermissionCode(code) === canonical,
+  );
+}
+
 /**
  * The one permission check (API services, AI tools, MCP tools). Deny by
  * default. Assignments of another tenant or user, expired or future
@@ -291,7 +302,7 @@ export function authorize(input: AuthorizeInput): AccessDecision {
   let permissionSeen = false;
   for (const row of active) {
     const role = roles.get(lower(row.roleId));
-    if (!role || !role.permissions.includes(input.permission)) continue;
+    if (!role || !roleHoldsPermission(role, input.permission)) continue;
     permissionSeen = true;
     if (scopeCovers(row.scope, input.target, input.org))
       return { allowed: true, assignmentId: row.id };
@@ -362,7 +373,7 @@ export function outletReachOf(input: {
   for (const row of activeAssignmentsOf(input.principal, input.now)) {
     const role = roles.get(lower(row.roleId));
     if (!role) continue;
-    if (input.permission && !role.permissions.includes(input.permission))
+    if (input.permission && !roleHoldsPermission(role, input.permission))
       continue;
     const outlets = outletsOfScope(row.scope, input.org);
     if (outlets === null) return { kind: "tenant" };
