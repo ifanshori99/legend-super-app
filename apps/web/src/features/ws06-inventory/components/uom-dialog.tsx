@@ -45,8 +45,14 @@ export function UomDialog({
   const [code, setCode] = React.useState("");
   const [errors, setErrors] = React.useState<UomFormErrors>({});
   const [formError, setFormError] = React.useState<string | undefined>();
-  // One key per attempt: a retry after a lost response must not add twice.
-  const [idempotencyKey] = React.useState(() => newIdempotencyKey());
+  // One key per request body: a retry of the same body after a lost response
+  // must not add twice, but an edited code or name is a new request.
+  const keyRef = React.useRef<{ body: string; key: string } | null>(null);
+  function keyFor(body: string): string {
+    if (keyRef.current?.body !== body)
+      keyRef.current = { body, key: newIdempotencyKey() };
+    return keyRef.current.key;
+  }
   const pending = createUom.isPending || updateUom.isPending;
 
   function submit(event: React.FormEvent) {
@@ -74,8 +80,13 @@ export function UomDialog({
       );
       return;
     }
+    const body = JSON.stringify([result.code ?? "", result.name]);
     createUom.mutate(
-      { code: result.code ?? "", name: result.name, idempotencyKey },
+      {
+        code: result.code ?? "",
+        name: result.name,
+        idempotencyKey: keyFor(body),
+      },
       { onSuccess: () => onSaved("new"), onError },
     );
   }
@@ -101,12 +112,10 @@ export function UomDialog({
             />
           </FormField>
           {editing ? (
-            <div className="grid gap-1">
-              <span className="text-sm font-semibold">
-                {UOM_COPY.codeLabel}
-              </span>
-              <span>{editing.code}</span>
-            </div>
+            <dl className="grid gap-1">
+              <dt className="text-sm font-semibold">{UOM_COPY.codeLabel}</dt>
+              <dd className="m-0 font-mono text-sm">{editing.code}</dd>
+            </dl>
           ) : (
             <FormField
               label={UOM_COPY.codeLabel}

@@ -4,7 +4,6 @@
 // edited per item.
 import * as React from "react";
 import { useRouteContext } from "@tanstack/react-router";
-import { Plus } from "lucide-react";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
 import { useT } from "@/components/i18n";
@@ -79,28 +78,41 @@ export function UnitsPage() {
     setEditor(next);
   }
 
-  const addButton = (variant: "default" | "outline") =>
+  // The inventory shell has no header-action slot, so the page hint and the
+  // add button sit in this row, as in the mockup heading.
+  const addButton = (variant: "default" | "outline", label: string) =>
     canManage ? (
       <Button
         type="button"
         variant={variant}
         onClick={() => openEditor({ mode: "new" })}
       >
-        <Plus aria-hidden="true" />
-        {UOM_COPY.emptyAction}
+        {label}
       </Button>
     ) : undefined;
 
   return (
     <div className="grid min-w-0 gap-4">
-      {notice && (
-        <p
+      <div>
+        <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+          <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
+            {UOM_COPY.hint}
+          </p>
+          {addButton("default", UOM_COPY.add)}
+        </div>
+        {/* Persistent live region: it exists before the notice fills it. */}
+        <div
           role="status"
-          className="rounded-container border-(length:--border-w) border-success bg-success-subtle p-4 text-sm leading-5 font-semibold text-foreground"
+          aria-live="polite"
+          className={notice ? "mt-4" : undefined}
         >
-          {notice}
-        </p>
-      )}
+          {notice && (
+            <p className="rounded-container border-(length:--border-w) border-success bg-success-subtle p-4 text-sm leading-5 font-semibold text-foreground">
+              {notice}
+            </p>
+          )}
+        </div>
+      </div>
       <DataTableShell
         title={UOM_COPY.listTitle}
         description={UOM_COPY.listHint}
@@ -111,11 +123,10 @@ export function UnitsPage() {
           description: UOM_COPY.errorHint,
         }}
         onRetry={() => void unitsQuery.refetch()}
-        actions={addButton("default")}
         empty={{
           title: UOM_COPY.emptyTitle,
           description: UOM_COPY.emptyHint,
-          action: addButton("outline"),
+          action: addButton("outline", UOM_COPY.emptyAction),
         }}
         rowCount={units.length}
         loadingRows={3}
@@ -134,7 +145,7 @@ export function UnitsPage() {
               <TableRow key={unit.id}>
                 <TableCell className="font-medium">{unit.name}</TableCell>
                 <TableCell>
-                  <Badge tone="neutral">{unit.code}</Badge>
+                  <span className="font-mono text-sm">{unit.code}</span>
                 </TableCell>
                 <TableCell>
                   <Badge tone="neutral">

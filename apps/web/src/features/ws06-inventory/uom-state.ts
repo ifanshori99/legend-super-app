@@ -3,6 +3,7 @@
 // mapping and the row state. No React, no framework imports and no
 // TypeScript-only runtime syntax, so the unit tests load it directly with
 // native Node type stripping. Copy lives here (Indonesian, from the mockup).
+import { STANDARD_UOM_CATALOG } from "@starter/shared/inventory";
 
 /** Same pattern as `createUomInputSchema` in the inventory contract. */
 export const UOM_CODE_PATTERN = /^[a-z0-9]{1,10}$/;
@@ -11,23 +12,12 @@ export const UOM_NAME_MAX = 150;
 
 /**
  * Codes of the standard catalog (`STANDARD_UOM_CATALOG`); the API rejects a
- * tenant unit with one of them. Listed here so the form can say so before the
- * request; the API stays the source of truth.
+ * tenant unit with one of them. Derived from the contract so the form can say
+ * so before the request; the API stays the source of truth.
  */
-export const RESERVED_UOM_CODES: readonly string[] = [
-  "kg",
-  "g",
-  "l",
-  "ml",
-  "pcs",
-  "pack",
-  "ctn",
-  "btl",
-  "can",
-  "sachet",
-  "box",
-  "porsi",
-];
+export const RESERVED_UOM_CODES: readonly string[] = STANDARD_UOM_CATALOG.map(
+  (unit) => unit.code,
+);
 
 export const UOM_COPY = {
   heading: "Satuan",
