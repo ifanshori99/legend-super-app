@@ -16,20 +16,29 @@ import {
   COUNT_QUOTAS,
   brandSchema,
   cafeLegendPlatformFixtures,
+  canRestoreFrom,
   canTransitionTenant,
   checkCountQuota,
   modulesOutsidePackage,
   evaluateCostCap,
   legalEntitySchema,
   orgEndpoints,
+  outletRestoreWindowSchema,
   outletSchema,
   platformEndpoints,
+  restoreDeadline,
+  tenantOwnerAssignmentSchema,
+  tenantRestoreWindowSchema,
   tenantSchema,
   tenantUsageSchema,
   tenantUsageViewSchema,
   npwpLast4,
 } from "@starter/shared/platform";
-import type { Tenant } from "@starter/shared/platform";
+import type {
+  Outlet,
+  Tenant,
+  TenantOwnerAssignment,
+} from "@starter/shared/platform";
 import { ApiError } from "@/lib/api/errors";
 import { registerMock } from "@/lib/mock/registry";
 import { paginateFixture } from "@/lib/mock/paginate";
@@ -56,7 +65,17 @@ const SAMPLES: Array<[string, string, string, Tenant["status"]]> = [
   ["Bakso Rusuk 99", "bakso-rusuk-99", "lengkap", "suspended"],
   ["Pastry Lembang", "pastry-lembang", "lengkap", "active"],
   ["Nasi Goreng Gaul", "nasi-goreng-gaul", "outlet-dasar", "active"],
+  // Archived 45 days ago: past the 30-day restore window (Q40), so final.
+  ["Kedai Lawas", "kedai-lawas", "outlet-dasar", "archived"],
 ];
+
+/** Restore-window mock tenants (fixedId(10 + index) of SAMPLES). */
+export const MOCK_ARCHIVED_TENANT_ID = fixedId(17); // Bubur Pak Haji, 10 days ago
+export const MOCK_EXPIRED_TENANT_ID = fixedId(22); // Kedai Lawas, 45 days ago
+/** The closed sample outlet (Cafe Legend), closed 5 days ago. */
+export const MOCK_CLOSED_OUTLET_ID = fixedId(0xc1);
+const DAY_MS = 24 * 60 * 60 * 1000;
+const daysAgo = (days: number) => new Date(Date.now() - days * DAY_MS);
 
 function seedTenants(): Tenant[] {
   const generated = SAMPLES.map(([name, slug, plan, status], index) => {
@@ -78,6 +97,21 @@ function seedTenants(): Tenant[] {
 }
 
 const tenants = createMockStore<Tenant[]>(seedTenants);
+
+// What the server records at archive / close time (`archived_at` +
+// `status_before_archive`). A row archived without a record is a legacy row:
+// final, RESTORE_NOT_AVAILABLE.
+type Transition = { at: string; restoreTo: "active" | "suspended" };
+const archives = createMockStore<Record<string, Transition>>(() => ({
+  [MOCK_ARCHIVED_TENANT_ID]: {
+    at: daysAgo(10).toISOString(),
+    restoreTo: "active",
+  },
+  [MOCK_EXPIRED_TENANT_ID]: {
+    at: daysAgo(45).toISOString(),
+    restoreTo: "active",
+  },
+}));
 const createdOrgCounts = createMockStore<Record<string, number>>(() => ({}));
 
 function find(tenantId: string): Tenant {
@@ -114,6 +148,17 @@ export function onMockTenantChange(
 }
 
 function commit(change: MockTenantChange): Tenant {
+  if (change.kind === "status") {
+    const rest = { ...archives.get() };
+    delete rest[change.after.id];
+    const before = change.before.status;
+    archives.set(
+      change.after.status === "archived" &&
+        (before === "active" || before === "suspended")
+        ? { ...rest, [change.after.id]: { at: NOW(), restoreTo: before } }
+        : rest,
+    );
+  }
   tenants.set(
     tenants.get().map((t) => (t.id === change.after.id ? change.after : t)),
   );
@@ -325,3 +370,196 @@ registerMock(orgEndpoints.createOutlet, ({ body }) => {
     }),
   };
 });
+
+// -------------------------------------------- restore window (Q40, 30 days)
+// The window is read at call time, so "restorable" flips with the clock. Error
+// codes and statuses follow platform/errors.ts: 409 RESTORE_NOT_AVAILABLE for
+// a record that is not archived/closed or has no recorded time, 409
+// RESTORE_WINDOW_EXPIRED past 30 days.
+
+const restoreError = (
+  code: "RESTORE_NOT_AVAILABLE" | "RESTORE_WINDOW_EXPIRED",
+) =>
+  new ApiError(
+    409,
+    code,
+    code === "RESTORE_NOT_AVAILABLE"
+      ? "Status ini tidak dapat dipulihkan karena waktu arsip atau tutup tidak tercatat."
+      : "Batas 30 hari untuk memulihkan sudah lewat; status ini final.",
+  );
+
+function tenantWindow(tenant: Tenant) {
+  const record = archives.get()[tenant.id];
+  const archived = tenant.status === "archived";
+  const at = archived && record ? new Date(record.at) : null;
+  const check = canRestoreFrom(at, record?.restoreTo ?? null, new Date());
+  return tenantRestoreWindowSchema.parse({
+    tenantId: tenant.id,
+    status: tenant.status,
+    archivedAt: archived && record ? record.at : null,
+    restoreTo: archived && record ? record.restoreTo : null,
+    restorableUntil: archived && at ? restoreDeadline(at).toISOString() : null,
+    restorable: archived && check.ok,
+  });
+}
+
+registerMock(platformEndpoints.getTenantRestoreWindow, ({ params }) => ({
+  data: tenantWindow(find(params.tenantId)),
+}));
+
+registerMock(platformEndpoints.restoreTenant, ({ params, body }) => {
+  const current = find(params.tenantId);
+  const record = archives.get()[current.id];
+  const check = canRestoreFrom(
+    current.status === "archived" && record ? new Date(record.at) : null,
+    record?.restoreTo ?? null,
+    new Date(),
+  );
+  if (!check.ok || !record)
+    throw restoreError(check.ok ? "RESTORE_NOT_AVAILABLE" : check.code);
+  return {
+    data: commit({
+      kind: "status",
+      before: current,
+      after: { ...current, status: record.restoreTo },
+      reason: body.reason,
+    }),
+  };
+});
+
+// One closed outlet (Cafe Legend's first outlet, renamed so it reads as a
+// separate row). `listOutlets` is owned by ws07-accounting and does not return
+// it, so the panel only reaches it once that mock lists a closed outlet.
+const closedOutlet = (): Outlet => ({
+  ...fx.outlets[0],
+  id: MOCK_CLOSED_OUTLET_ID as Outlet["id"],
+  code: "TUTUP1",
+  name: "Cafe Legend Cabang Lama",
+  status: "closed",
+});
+const closedOutlets = createMockStore<{
+  outlet: Outlet;
+  closedAt: string;
+  restoreTo: "preopening" | "active";
+}>(() => ({
+  outlet: closedOutlet(),
+  closedAt: daysAgo(5).toISOString(),
+  restoreTo: "active",
+}));
+
+function findClosedOutlet(tenantId: string, outletId: string) {
+  const row = closedOutlets.get();
+  if (row.outlet.tenantId !== tenantId || row.outlet.id !== outletId)
+    throw new ApiError(404, "NOT_FOUND", "Outlet tidak ditemukan.");
+  return row;
+}
+
+registerMock(platformEndpoints.getOutletRestoreWindow, ({ params }) => {
+  const row = findClosedOutlet(params.tenantId, params.outletId);
+  const closed = row.outlet.status === "closed";
+  const at = new Date(row.closedAt);
+  const check = canRestoreFrom(closed ? at : null, row.restoreTo, new Date());
+  return {
+    data: outletRestoreWindowSchema.parse({
+      tenantId: row.outlet.tenantId,
+      outletId: row.outlet.id,
+      status: row.outlet.status,
+      closedAt: closed ? row.closedAt : null,
+      restoreTo: closed ? row.restoreTo : null,
+      restorableUntil: closed ? restoreDeadline(at).toISOString() : null,
+      restorable: closed && check.ok,
+    }),
+  };
+});
+
+registerMock(platformEndpoints.restoreOutlet, ({ params }) => {
+  const row = findClosedOutlet(params.tenantId, params.outletId);
+  const check = canRestoreFrom(
+    row.outlet.status === "closed" ? new Date(row.closedAt) : null,
+    row.restoreTo,
+    new Date(),
+  );
+  if (!check.ok) throw restoreError(check.code);
+  const outlet = { ...row.outlet, status: row.restoreTo };
+  closedOutlets.set({ ...row, outlet });
+  return { data: outlet };
+});
+
+// ------------------------------------------------- tenant Owner (Q44)
+// No list endpoint exists, so the screen starts "empty" (owner unknown) and
+// learns the assignment from the assign response. The mock keeps one Owner
+// per tenant. Any 6-digit code passes except 000000 (MFA_INVALID); a missing
+// code is 403 MFA_REQUIRED. 409: the account already is the Owner, or the
+// assignment being replaced no longer is the current Owner.
+const OWNER_ROLE_ID = fixedId(0x0b);
+const owners = createMockStore<Record<string, TenantOwnerAssignment>>(
+  () => ({}),
+);
+
+function ownerAccount(
+  account: { userId: string } | { invite: unknown },
+): Pick<TenantOwnerAssignment, "userId" | "account"> {
+  if ("userId" in account)
+    return {
+      userId: account.userId as TenantOwnerAssignment["userId"],
+      account: "member",
+    };
+  return {
+    userId: crypto.randomUUID() as TenantOwnerAssignment["userId"],
+    account: "invited",
+  };
+}
+
+function writeOwner(
+  tenantId: string,
+  body: { account: { userId: string } | { invite: unknown }; mfaCode?: string },
+  replacing: string | null,
+) {
+  find(tenantId);
+  if (body.mfaCode === undefined)
+    throw new ApiError(403, "MFA_REQUIRED", "Kode MFA diperlukan.");
+  if (body.mfaCode === "000000")
+    throw new ApiError(
+      401,
+      "MFA_INVALID",
+      "Kode verifikasi salah atau kedaluwarsa.",
+    );
+  const current = owners.get()[tenantId];
+  if (replacing !== null && current?.assignmentId !== replacing)
+    throw new ApiError(
+      409,
+      "CONFLICT",
+      "Owner ini sudah berganti. Muat ulang halaman.",
+    );
+  const next = ownerAccount(body.account);
+  if (current && current.userId === next.userId)
+    throw new ApiError(
+      409,
+      "CONFLICT",
+      "Akun ini sudah menjadi Owner tenant ini.",
+    );
+  if (replacing === null && current)
+    throw new ApiError(
+      409,
+      "CONFLICT",
+      "Tenant ini sudah punya Owner. Gunakan Ganti Owner.",
+    );
+  const row = tenantOwnerAssignmentSchema.parse({
+    tenantId,
+    assignmentId: crypto.randomUUID(),
+    userId: next.userId,
+    roleId: OWNER_ROLE_ID,
+    account: next.account,
+    replacedAssignmentId: replacing,
+  });
+  owners.set({ ...owners.get(), [tenantId]: row });
+  return { data: row };
+}
+
+registerMock(platformEndpoints.assignTenantOwner, ({ params, body }) =>
+  writeOwner(params.tenantId, body, null),
+);
+
+registerMock(platformEndpoints.replaceTenantOwner, ({ params, body }) =>
+  writeOwner(params.tenantId, body, params.assignmentId),
+);

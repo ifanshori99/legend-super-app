@@ -43,6 +43,12 @@ const SECTIONS = [
     to: "/kelola/akuntansi",
   },
   {
+    key: "mapping",
+    group: "books",
+    labelKey: "accounting.tabs.mapping",
+    to: "/kelola/akuntansi/pemetaan",
+  },
+  {
     key: "journals",
     group: "books",
     labelKey: "accounting.tabs.journals",

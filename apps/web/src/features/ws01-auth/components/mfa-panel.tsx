@@ -29,8 +29,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import type { MfaFactor } from "@starter/shared/identity";
 import { formatDate } from "../format";
-import { useDeleteMfaFactor, useMfaFactors } from "../hooks";
+import {
+  useDeleteMfaFactor,
+  useMfaFactors,
+  useRefreshStaffAuth,
+} from "../hooks";
 import { canRemoveFactor } from "../state";
+import { RecoverySection } from "./recovery-section";
 import { TotpEnrollFlow } from "./totp-enroll";
 
 /**
@@ -43,8 +48,10 @@ export function MfaPanel({ mfaRequired }: { mfaRequired: boolean }) {
   const toast = useToast();
   const factors = useMfaFactors();
   const remove = useDeleteMfaFactor();
+  const refreshAuth = useRefreshStaffAuth();
   const [chooseOpen, setChooseOpen] = React.useState(false);
   const [enrollOpen, setEnrollOpen] = React.useState(false);
+  const [codesShown, setCodesShown] = React.useState(false);
   const [removeTarget, setRemoveTarget] = React.useState<MfaFactor | null>(
     null,
   );
@@ -134,20 +141,10 @@ export function MfaPanel({ mfaRequired }: { mfaRequired: boolean }) {
           </p>
         )}
 
-        <div className="mt-4 flex items-start gap-3 rounded-container border-(length:--border-w) border-dashed p-3">
-          <KeyRound
-            className="mt-0.5 size-4 shrink-0 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <div className="grid gap-0.5">
-            <p className="text-sm leading-5 font-semibold">
-              {t("staffAuth.mfa.backupTitle")}
-            </p>
-            <p className="text-sm leading-5 text-muted-foreground">
-              {t("staffAuth.mfa.backupHint")}
-            </p>
-          </div>
-        </div>
+        <RecoverySection
+          hasFactor={rows.length > 0}
+          onEnroll={() => setChooseOpen(true)}
+        />
       </CardContent>
 
       <CardFooter>
@@ -209,15 +206,27 @@ export function MfaPanel({ mfaRequired }: { mfaRequired: boolean }) {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={enrollOpen} onOpenChange={(open) => setEnrollOpen(open)}>
-        <DialogContent>
-          <DialogHeader>
+      <Dialog
+        open={enrollOpen}
+        onOpenChange={(open) => {
+          // The backup codes are shown once: only "Saya sudah menyimpan kode" closes.
+          if (!open && codesShown) return;
+          setEnrollOpen(open);
+          if (!open) {
+            void factors.refetch();
+            void refreshAuth();
+          }
+        }}
+      >
+        <DialogContent hideClose={codesShown}>
+          <DialogHeader className={codesShown ? "sr-only" : undefined}>
             <DialogTitle>{t("staffAuth.enroll.title")}</DialogTitle>
             <DialogDescription>
               {t("staffAuth.enroll.description")}
             </DialogDescription>
           </DialogHeader>
           <TotpEnrollFlow
+            onCodesVisibleChange={setCodesShown}
             onEnrolled={() => {
               setEnrollOpen(false);
               void factors.refetch();

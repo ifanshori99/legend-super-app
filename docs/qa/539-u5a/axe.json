@@ -1,0 +1,468 @@
+{
+  "baseUrl": "http://localhost:3157",
+  "axe": "axe-core bundle",
+  "tags": [
+    "wcag2a",
+    "wcag2aa",
+    "wcag21aa",
+    "wcag22aa"
+  ],
+  "results": {
+    "restore-normal-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "restore-normal-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "restore-loading-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "restore-loading-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "restore-error-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "restore-error-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "restore-confirm-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "restore-confirm-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "restore-validation-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "restore-validation-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "restore-success-1280": {
+      "status": "error",
+      "error": "locator.scrollIntoViewIfNeeded: Timeout 30000ms exceeded."
+    },
+    "restore-success-390": {
+      "status": "error",
+      "error": "locator.scrollIntoViewIfNeeded: Timeout 30000ms exceeded."
+    },
+    "owner-empty-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "owner-empty-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "owner-assign-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "owner-assign-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "owner-validation-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "owner-validation-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "owner-success-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "owner-success-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "owner-replace-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "owner-replace-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-pending-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-pending-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-loading-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-loading-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-error-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-error-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-add-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-add-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-invalid-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-invalid-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-reserved-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-reserved-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-taken-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-taken-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-added-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-added-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-failed-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-failed-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-success-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "domain-success-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-totp-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-totp-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-loading-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-loading-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-error-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-error-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-invalid-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-invalid-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-recovery-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-recovery-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-recovery-incomplete-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-recovery-incomplete-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-recovery-invalid-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-recovery-invalid-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-recovery-success-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-recovery-success-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-enroll-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-enroll-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-enroll-codes-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "verifikasi-enroll-codes-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "keamanan-normal-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "keamanan-normal-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "keamanan-loading-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "keamanan-loading-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "keamanan-empty-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "keamanan-empty-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "keamanan-error-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "keamanan-error-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "keamanan-regenerate-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "keamanan-regenerate-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "keamanan-regenerate-error-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "keamanan-regenerate-error-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "keamanan-codes-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "keamanan-codes-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-normal-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-normal-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-loading-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-loading-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-empty-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-empty-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-error-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-error-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-add-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-add-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-invalid-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-invalid-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-reserved-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-reserved-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-success-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-success-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-duplicate-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-duplicate-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-edit-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-edit-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-renamed-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "satuan-renamed-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-normal-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-normal-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-loading-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-loading-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-empty-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-empty-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-error-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-error-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-incomplete-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-incomplete-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-success-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-success-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-validation-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-validation-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-failed-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "pemetaan-failed-390": {
+      "status": "pass",
+      "violations": []
+    }
+  }
+}

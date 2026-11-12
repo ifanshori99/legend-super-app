@@ -138,6 +138,85 @@ export const platformTenantsMessages = {
     failed: "Status belum berubah. Coba lagi sebentar lagi.",
   },
 
+  // Restore an archived tenant or a closed outlet within 30 days (legend-nb4iy).
+  restore: {
+    previousStatus: "Status sebelumnya",
+    windowLimit: "Batas pemulihan",
+    windowHint: "Maksimal 30 hari sejak perubahan status.",
+    review: "Tinjau pemulihan",
+    reason: "Alasan pemulihan",
+    reasonPlaceholder: "Jelaskan alasan pemulihan",
+    reasonHint: "Alasan wajib 10–500 karakter dan dicatat dalam log audit.",
+    reasonError: "Isi alasan 10–500 karakter sebelum melanjutkan.",
+    backToList: "Kembali ke daftar",
+    back: "Kembali",
+    loadingHint: "Mohon tunggu sebentar.",
+    errorBanner: "Daftar belum dapat dimuat. Periksa koneksi dan coba lagi.",
+    errorTitle: "Data belum tersedia",
+    errorBody:
+      "Status terbaru belum dapat diperiksa. Pemulihan belum dapat dilakukan.",
+    expiredTitle: "Batas pemulihan terlewati.",
+    expiredBanner:
+      "Status ini final dan tidak dapat dipulihkan setelah 30 hari.",
+    expiredBody:
+      "Status juga dianggap final bila waktu perubahan tidak tersedia untuk membuktikan batas 30 hari. Hubungi tim platform untuk meninjau langkah berikutnya.",
+    blockedTitle: "Pemulihan belum dapat dilakukan.",
+    blockedNote:
+      "Tinjau masalah yang dilaporkan, lalu coba lagi setelah masalah diselesaikan.",
+    notAvailableTitle: "Pemulihan tidak tersedia.",
+    notAvailableNote:
+      "Data terbaru sudah dimuat ulang. Periksa status terkini sebelum mencoba lagi.",
+    parentArchivedTitle: "Pulihkan tenant dulu.",
+    parentArchivedNote:
+      "Outlet dapat dipulihkan setelah tenant induk kembali aktif, selama masih dalam batas 30 hari.",
+    offline: "Tidak ada koneksi. Periksa jaringan lalu coba lagi.",
+    failed: "Pemulihan belum berhasil. Coba lagi sebentar lagi.",
+    tenant: {
+      kind: "Tenant",
+      pill: "Diarsipkan",
+      changedOn: "Diarsipkan pada",
+      note: "Pemulihan mengembalikan tenant ke status sebelumnya. Pemeriksaan keamanan dilakukan sebelum pemulihan.",
+      confirmTitle: "Pulihkan tenant?",
+      confirmLead: "Periksa rincian sebelum mengembalikan status.",
+      confirmNote:
+        "Status kembali menjadi {status}. Pemulihan hanya dapat dilanjutkan bila pemeriksaan keamanan berhasil.",
+      confirm: "Pulihkan tenant",
+      loading: "Memuat tenant…",
+      emptyTitle: "Tidak ada tenant terarsip",
+      emptyBody: "Tenant yang diarsipkan akan muncul di sini untuk ditinjau.",
+      blockedBody:
+        "Pemeriksaan keamanan belum berhasil. Status tenant tidak berubah.",
+      notAvailableBody:
+        "Tenant ini sudah dipulihkan atau tidak lagi dapat dipulihkan. Status tenant tidak berubah oleh permintaan ini.",
+      success: "Tenant berhasil dipulihkan.",
+      successBody:
+        "Status kembali ke {status} dan tindakan tercatat dalam log audit.",
+    },
+    outlet: {
+      kind: "Outlet",
+      pill: "Ditutup",
+      changedOn: "Ditutup pada",
+      note: "Pemulihan mengembalikan outlet ke status sebelumnya. Pemeriksaan keamanan dilakukan sebelum pemulihan.",
+      confirmTitle: "Pulihkan outlet?",
+      confirmLead: "Periksa rincian sebelum mengembalikan status.",
+      confirmNote:
+        "Status kembali menjadi {status}. Pemulihan hanya dapat dilanjutkan bila pemeriksaan keamanan berhasil.",
+      confirm: "Pulihkan outlet",
+      loading: "Memuat outlet…",
+      emptyTitle: "Tidak ada outlet tertutup",
+      emptyBody: "Outlet yang ditutup akan muncul di sini untuk ditinjau.",
+      blockedBody:
+        "Pemeriksaan keamanan belum berhasil. Status outlet tidak berubah.",
+      notAvailableBody:
+        "Outlet ini sudah dipulihkan atau tidak lagi dapat dipulihkan. Status outlet tidak berubah oleh permintaan ini.",
+      parentArchivedBody:
+        "Tenant induk masih diarsipkan, jadi outlet ini belum dapat dipulihkan.",
+      success: "Outlet berhasil dipulihkan.",
+      successBody:
+        "Status kembali ke {status} dan tindakan tercatat dalam log audit.",
+    },
+  },
+
   wizard: {
     title: "Tenant baru",
     backToList: "Kembali ke daftar tenant",

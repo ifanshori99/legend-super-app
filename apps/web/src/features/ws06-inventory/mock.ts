@@ -27,6 +27,7 @@ import {
   createStockCount,
   createStockLocation,
   createStockTransfer,
+  createUom,
   createUomConversion,
   createWasteLog,
   deleteInventoryItemAlternate,
@@ -58,6 +59,8 @@ import {
   stockTransferSchema,
   transitionStockCount,
   uomConversionSchema,
+  uomSchema,
+  updateUom,
   updateInventoryItem,
   updateStockCountLine,
   updateStockLocation,
@@ -71,6 +74,7 @@ import {
   type StockLedgerEntry,
   type StockLocation,
   type StockTransfer,
+  type Uom,
   type UomConversion,
   type WasteLog,
 } from "@starter/shared/inventory";
@@ -80,7 +84,10 @@ import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const fixtures = cafeLegendInventoryFixtures;
 const inventory = cafeLegendInventoryFixtures;
-const uoms = fixtures.uoms;
+const standardUoms = fixtures.uoms;
+/** Units a tenant adds or renames in mock mode; standard units never change. */
+const customUoms = createMockStore<Uom[]>(() => []);
+const allUoms = () => [...standardUoms, ...customUoms.get()];
 const tenantId = fixtures.items[0].tenantId;
 const fixtureOutletId = fixtures.locations[0].outletId;
 const fixtureUserId = fixtures.wasteLogs[0].loggedBy;
@@ -175,7 +182,7 @@ registerMock(getInventoryItem, ({ params, scenario }) => {
 
 registerMock(createInventoryItem, ({ body }) => {
   const item = once(`item:${body.idempotencyKey}`, () => {
-    if (!uoms.some((row) => row.id === body.baseUomId))
+    if (!allUoms().some((row) => row.id === body.baseUomId))
       invalid("baseUomId", "Satuan dasar tidak dikenal.");
     const created = inventoryItemSchema.parse({
       id: newIdempotencyKey(),
@@ -289,8 +296,38 @@ registerMock(deleteInventoryItemAlternate, ({ params }) => {
 // ---- Units and conversions ----------------------------------------------
 
 registerMock(listUoms, ({ query, scenario }) =>
-  paginateFixture(uoms, query, (row) => row.id, scenario),
+  paginateFixture(allUoms(), query, (row) => row.id, scenario),
 );
+
+registerMock(createUom, ({ body }) =>
+  once(`uom:${body.idempotencyKey}`, () => {
+    if (standardUoms.some((row) => row.code === body.code))
+      conflict("That code is reserved for a standard unit.");
+    if (allUoms().some((row) => row.code === body.code))
+      conflict("This tenant already has a unit with that code.");
+    const created = uomSchema.parse({
+      id: newIdempotencyKey(),
+      tenantId,
+      code: body.code,
+      name: body.name,
+      isSystem: false,
+    });
+    customUoms.set([...customUoms.get(), created]);
+    return { data: created };
+  }),
+);
+
+registerMock(updateUom, ({ params, body }) => {
+  const unit = allUoms().find((row) => row.id === params.uomId);
+  if (!unit) notFound("Satuan");
+  if (unit.isSystem)
+    throw new ApiError(403, "FORBIDDEN", "Standard units cannot be edited.");
+  const renamed = { ...unit, name: body.name };
+  customUoms.set(
+    customUoms.get().map((row) => (row.id === unit.id ? renamed : row)),
+  );
+  return { data: renamed };
+});
 
 registerMock(listUomConversions, ({ params, scenario }) => {
   if (scenario === "empty") return { data: [] };
@@ -304,9 +341,9 @@ registerMock(listUomConversions, ({ params, scenario }) => {
 
 registerMock(createUomConversion, ({ params, body }) => {
   const item = requireItem(params.itemId);
-  if (!uoms.some((row) => row.id === body.fromUomId))
+  if (!allUoms().some((row) => row.id === body.fromUomId))
     invalid("fromUomId", "Satuan asal tidak dikenal.");
-  if (!uoms.some((row) => row.id === body.toUomId))
+  if (!allUoms().some((row) => row.id === body.toUomId))
     invalid("toUomId", "Satuan tujuan tidak dikenal.");
   // The conversion graph walks both directions, so a reverse pair would loop.
   const duplicate = state().conversions.some(

@@ -36,6 +36,8 @@ import {
   usageTone,
 } from "../logic";
 import { getProvisioned } from "../session-cache";
+import { OwnerSection } from "./owner-section";
+import { RestoreSection } from "./restore-section";
 import { StatusChangeDialog } from "./status-change-dialog";
 import { TenantStatusBadge } from "./tenant-status";
 
@@ -153,7 +155,7 @@ export function TenantDetailPage({ tenantId }: { tenantId: string }) {
     );
   }
 
-  return <TenantDetail tenant={tenant.data.data} />;
+  return <TenantDetail key={tenant.data.data.id} tenant={tenant.data.data} />;
 }
 
 function TenantDetail({ tenant }: { tenant: Tenant }) {
@@ -162,6 +164,13 @@ function TenantDetail({ tenant }: { tenant: Tenant }) {
     null,
   );
   const actions = statusActions(tenant.status);
+  // Stays mounted after a successful restore, so its success state is shown
+  // even though the refetched tenant is no longer archived (legend-nb4iy).
+  // State set during render (React "store info from previous renders").
+  const [wasArchived, setWasArchived] = React.useState(
+    tenant.status === "archived",
+  );
+  if (tenant.status === "archived" && !wasArchived) setWasArchived(true);
 
   return (
     <Frame
@@ -204,10 +213,26 @@ function TenantDetail({ tenant }: { tenant: Tenant }) {
           )}
         </p>
       )}
+      {wasArchived && (
+        <RestoreSection
+          key={tenant.id}
+          kind="tenant"
+          tenantId={tenant.id}
+          name={tenant.name}
+          statusLabel={(status) =>
+            t(`platformTenants.status.${status}` as MessageKey)
+          }
+        />
+      )}
       <Identity tenant={tenant} />
       <Usage tenantId={tenant.id} />
       <PackageSection tenant={tenant} />
-      <OrgSection tenantId={tenant.id} />
+      <OrgSection
+        tenantId={tenant.id}
+        tenantName={tenant.name}
+        tenantStatus={tenant.status}
+      />
+      <OwnerSection tenantId={tenant.id} tenantName={tenant.name} />
       {target && (
         <StatusChangeDialog
           tenantId={tenant.id}
@@ -365,12 +390,24 @@ function PackageSection({ tenant }: { tenant: Tenant }) {
   );
 }
 
-function OrgSection({ tenantId }: { tenantId: string }) {
+function OrgSection({
+  tenantId,
+  tenantName,
+  tenantStatus,
+}: {
+  tenantId: string;
+  tenantName: string;
+  tenantStatus: string;
+}) {
   const t = useT();
   const brands = useTenantBrands();
   const outlets = useTenantOutlets();
   const entities = useTenantLegalEntities();
   const created = getProvisioned(tenantId);
+  // Outlets seen closed keep their restore panel after the restore succeeds.
+  const [everClosed, setEverClosed] = React.useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   if (brands.isPending || outlets.isPending || entities.isPending)
     return (
@@ -406,6 +443,13 @@ function OrgSection({ tenantId }: { tenantId: string }) {
     own(entities.data.data),
     created.legalEntity ? [created.legalEntity] : [],
   );
+  const newlyClosed = outletRows.filter(
+    (o) => o.status === "closed" && !everClosed.has(o.id),
+  );
+  if (newlyClosed.length > 0)
+    setEverClosed(new Set([...everClosed, ...newlyClosed.map((o) => o.id)]));
+  const showsRestore = (id: string) =>
+    everClosed.has(id) || newlyClosed.some((o) => o.id === id);
   const entityName = (id: string) =>
     entityRows.find((e) => e.id === id)?.name ?? "-";
 
@@ -453,6 +497,16 @@ function OrgSection({ tenantId }: { tenantId: string }) {
                             `platformTenants.outletStatus.${outlet.status}` as MessageKey,
                           )}
                         </span>
+                        {showsRestore(outlet.id) && (
+                          <ClosedOutletRestore
+                            key={outlet.id}
+                            tenantId={tenantId}
+                            tenantName={tenantName}
+                            tenantStatus={tenantStatus}
+                            outletId={outlet.id}
+                            name={outlet.name}
+                          />
+                        )}
                       </li>
                     ))}
                 </ul>
@@ -490,5 +544,37 @@ function OrgSection({ tenantId }: { tenantId: string }) {
         )}
       </Section>
     </>
+  );
+}
+
+/** Restore panel of a closed outlet; kept after success like the tenant one. */
+function ClosedOutletRestore({
+  tenantId,
+  tenantName,
+  tenantStatus,
+  outletId,
+  name,
+}: {
+  tenantId: string;
+  tenantName: string;
+  tenantStatus: string;
+  outletId: string;
+  name: string;
+}) {
+  const t = useT();
+  return (
+    <div className="mt-2">
+      <RestoreSection
+        kind="outlet"
+        tenantId={tenantId}
+        outletId={outletId}
+        tenantName={tenantName}
+        parentStatus={tenantStatus}
+        name={name}
+        statusLabel={(status) =>
+          t(`platformTenants.outletStatus.${status}` as MessageKey)
+        }
+      />
+    </div>
   );
 }

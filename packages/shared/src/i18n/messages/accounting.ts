@@ -1,8 +1,12 @@
+import { accountingMappingMessages } from "./accounting-mapping.ts";
+
 // Accounting back-office texts (bead legend-mzg; PRD v1.7 §3.19 "Chart of
 // Accounts", "Jurnal Otomatis", "Jurnal Manual & Berulang", ACC-01/ACC-03).
 // Own file so parallel WS-07 beads (legend-53q, legend-m4zn, legend-rx0h,
 // legend-5fdy) never edit the same catalog lines. Placeholders use {name}.
 export const accountingMessages = {
+  // Account-role mapping screen (legend-fzvh), own catalog file.
+  mapping: accountingMappingMessages,
   title: "Akuntansi",
   subtitle:
     "Bagan akun per badan usaha, jurnal yang sudah dibukukan, dan jurnal manual yang menunggu persetujuan.",
@@ -18,6 +22,7 @@ export const accountingMessages = {
       share: "Bagi Hasil",
     },
     coa: "Bagan Akun",
+    mapping: "Pemetaan Akun",
     journals: "Jurnal",
     manual: "Jurnal Manual",
     recurring: "Jurnal Berulang",

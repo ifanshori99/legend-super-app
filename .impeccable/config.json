@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "apps/web/src/features/ws01-platform-tenants/components/owner-section.tsx"
+        ],
+        "createdAt": "2026-11-12T00:07:44.218Z",
+        "reason": "ui-engineer: status banner copies founder-approved mockup design/mockups/platform/owner-be0lx.html .status{border-left:4px} (gate mockup 12 Nov)"
+      }
+    ]
+  }
+}

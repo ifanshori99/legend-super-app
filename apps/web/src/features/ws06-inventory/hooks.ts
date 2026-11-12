@@ -15,6 +15,7 @@ import {
   listUoms,
   updateInventoryItem as updateItemEndpoint,
   updateStockLocation as updateLocationEndpoint,
+  updateUom as updateUomEndpoint,
 } from "@starter/shared/inventory";
 import * as api from "./api";
 import {
@@ -189,4 +190,20 @@ export function useCreateStockTransfer() {
     listStockBalances,
     listStockLocations,
   ]);
+}
+
+export function useCreateUom() {
+  return useInventoryMutation(api.createUom, [listUoms]);
+}
+
+export function useUpdateUom() {
+  return useInventoryMutation(
+    (
+      variables: ParamsAndBody<
+        typeof updateUomEndpoint,
+        typeof updateUomEndpoint
+      >,
+    ) => api.updateUom(variables.params, variables.body),
+    [listUoms],
+  );
 }

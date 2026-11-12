@@ -1,13 +1,19 @@
 // Query keys and options for the staff security screens. Keys are hierarchical
 // so a verification or a revoke can refresh exactly what changed.
 import { queryOptions } from "@tanstack/react-query";
-import { fetchCurrentAuth, fetchMfaFactors, fetchSessions } from "./api";
+import {
+  fetchCurrentAuth,
+  fetchMfaFactors,
+  fetchMfaRecoveryStatus,
+  fetchSessions,
+} from "./api";
 
 export const staffAuthKeys = {
   all: ["ws01-auth"] as const,
   current: () => [...staffAuthKeys.all, "current"] as const,
   factors: () => [...staffAuthKeys.all, "factors"] as const,
   sessions: () => [...staffAuthKeys.all, "sessions"] as const,
+  recovery: () => [...staffAuthKeys.all, "recovery"] as const,
 };
 
 /**
@@ -35,5 +41,12 @@ export function securitySessionsQuery() {
   return queryOptions({
     queryKey: staffAuthKeys.sessions(),
     queryFn: ({ signal }) => fetchSessions(signal),
+  });
+}
+
+export function mfaRecoveryStatusQuery() {
+  return queryOptions({
+    queryKey: staffAuthKeys.recovery(),
+    queryFn: ({ signal }) => fetchMfaRecoveryStatus(signal),
   });
 }
