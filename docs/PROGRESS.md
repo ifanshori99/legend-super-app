@@ -3787,3 +3787,5 @@ Perintah bukti runtime: `LEGEND_TEST_FILES="src/test/ws06-supplier-kind.test.ts 
 Checkpoint lokal legend-mgy0: read model nama/peran staf sudah diimplementasikan, termasuk fix prioritas grant aktif, dengan regression tests lulus dan review tertutup. Tsc API/shared masih antre heavy global; checkpoint ini belum klaim siap merge.
 
 Checkpoint lokal legend-dnex: supplier goods/maintenance, fixture teknisi, audit/filter/idempotensi dan migrasi0376 disimpan terpisah. Legacy goods tetap kompatibel; test terarah/review lulus, tsc akhir masih antre.
+
+Checkpoint lokal legend-ca3c: kontrak AI purchasing dan preview PDF/share fixtures, endpoint preview authenticated serta renderer bersama disimpan terpisah. Race header/lines draft sudah ditutup FOR SHARE dengan test concurrency RED→GREEN; preview tidak memutasi PO/share. Tsc akhir masih antre.

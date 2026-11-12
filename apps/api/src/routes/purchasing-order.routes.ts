@@ -52,6 +52,7 @@ import {
   updatePurchaseOrder,
 } from "../services/purchasing-order.service.ts";
 import { PURCHASING_READ_PERMISSIONS } from "../services/purchasing-flow.shared.ts";
+import { getPurchaseOrderPdfPreview } from "../services/purchasing-send.service.ts";
 import {
   createPurchaseRequest,
   getPurchaseRequest,
@@ -282,6 +283,27 @@ export function createPurchasingOrderRouter(): Router {
           id,
         ),
       });
+    },
+  );
+
+  router.get(
+    "/purchase-orders/:purchaseOrderId/preview.pdf",
+    readById,
+    async (req, res) => {
+      const id = purchaseOrderIdSchema.parse(req.params.purchaseOrderId);
+      const file = await getPurchaseOrderPdfPreview(
+        readContext(res),
+        getAuth(req).user.id,
+        id,
+      );
+      res
+        .status(200)
+        .type("application/pdf")
+        .setHeader("Content-Disposition", `inline; filename="${file.filename}"`)
+        .setHeader("Cache-Control", "private, no-store")
+        .setHeader("Referrer-Policy", "no-referrer")
+        .setHeader("X-Content-Type-Options", "nosniff")
+        .send(file.pdf);
     },
   );
 

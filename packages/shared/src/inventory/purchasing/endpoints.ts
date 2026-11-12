@@ -25,6 +25,7 @@ import {
   z,
 } from "../../core/index.ts";
 import { defineEndpoint } from "../../api/index.ts";
+import { getPurchaseOrderPdfPreview } from "./preview.ts";
 import {
   inventoryItemIdSchema,
   nonnegativeDecimal4Schema,
@@ -702,6 +703,7 @@ export const purchasingEndpoints = [
   getPurchaseRequest,
   listPurchaseOrders,
   getPurchaseOrder,
+  getPurchaseOrderPdfPreview,
   listGoodsReceipts,
   getGoodsReceipt,
   listSupplierInvoices,
