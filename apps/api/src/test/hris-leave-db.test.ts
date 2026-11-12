@@ -39,6 +39,7 @@ import {
   type EventEnvelope,
 } from "@starter/shared/events";
 import { approvalResolvedEvent } from "@starter/shared/identity";
+import { roleTemplate } from "@starter/shared/access";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import {
   createLeaveRequest as createLeaveRequestEndpoint,
@@ -79,9 +80,11 @@ import {
 } from "../services/hris-leave-request.service.ts";
 import { handleHrisApprovalResolved } from "../services/hris-approval-consumers.ts";
 
-const tenantId = cafeLegendPlatformFixtures.tenant.id;
-const outletA = outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[0].id);
-const outletB = outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[1].id);
+// Own the tenant quota, leave policies and outlet rows: other files create
+// employees in the shared sample tenant and do not always remove them.
+const tenantId = randomUUID();
+const outletA = outletIdSchema.parse(randomUUID());
+const outletB = outletIdSchema.parse(randomUUID());
 const otherTenant = randomUUID();
 
 const owner = new Pool({
@@ -92,7 +95,6 @@ const appPool = new Pool({ connectionString: process.env.APP_DATABASE_URL });
 const createdUsers: string[] = [];
 const createdRoles: string[] = [];
 const createdTypes: string[] = [];
-let savedLeavePolicies: Record<string, unknown>[] = [];
 
 const base = (tenant: string = tenantId) =>
   establishTenantContext({
@@ -524,22 +526,65 @@ beforeAll(async () => {
     throw new Error("Requires the disposable test database");
   // The API bootstrap installs this; these service calls run without the app.
   setAuditWriter(coreAuditWriter);
-  await owner.query(
-    `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-     SELECT $1, $2, 'Leave RLS tenant', plan, status, deployment_mode, feature_flags, limits, created_by
-       FROM tenants WHERE id = $3`,
-    [otherTenant, `leave-rls-${otherTenant.slice(0, 8)}`, tenantId],
+  const fixture = cafeLegendPlatformFixtures.tenant;
+  for (const id of [tenantId, otherTenant])
+    await owner.query(
+      `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+       VALUES ($1, $2, 'Leave isolated tenant', $3, $4, $5, $6, $7, $8)`,
+      [
+        id,
+        `leave-${id}`,
+        fixture.plan,
+        fixture.status,
+        fixture.deploymentMode,
+        JSON.stringify(fixture.featureFlags),
+        JSON.stringify(fixture.limits),
+        fixture.createdBy,
+      ],
+    );
+  const brandId = randomUUID();
+  const entityId = randomUUID();
+  await sql(
+    `INSERT INTO brands (id, tenant_id, slug, name)
+     VALUES ($1, $2, 'leave', 'Leave test brand')`,
+    [brandId, tenantId],
+  );
+  await sql(
+    `INSERT INTO legal_entities (id, tenant_id, name, is_pkp)
+     VALUES ($1, $2, 'Leave test entity', false)`,
+    [entityId, tenantId],
+  );
+  for (const [index, outletId] of [outletA, outletB].entries())
+    await sql(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       VALUES ($1, $2, $3, $4, $5, 'Leave test outlet', 'Jl. Uji', 'Asia/Jakarta', $6, 'active')`,
+      [
+        outletId,
+        tenantId,
+        brandId,
+        entityId,
+        `LEAVE-${index + 1}`,
+        JSON.stringify(cafeLegendPlatformFixtures.outlets[index].openingHours),
+      ],
+    );
+  const managerRoleId = randomUUID();
+  createdRoles.push(managerRoleId);
+  const managerRole = roleTemplate("outlet_manager");
+  await sql(
+    `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+     VALUES ($1, $2, $3, true, $4, $5, $6, $7)`,
+    [
+      managerRoleId,
+      tenantId,
+      managerRole.defaultName,
+      managerRole.key,
+      JSON.stringify(managerRole.permissions),
+      managerRole.mfaRequired,
+      JSON.stringify(managerRole.allowedScopeTypes),
+    ],
   );
 
   // §3.7 matrix: a leave request goes to the outlet manager, one level.
-  savedLeavePolicies = await sql(
-    `SELECT * FROM approval_policies WHERE tenant_id = $1 AND action_type = 'leave'`,
-    [tenantId],
-  );
-  await sql(
-    `DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'leave'`,
-    [tenantId],
-  );
   await sql(
     `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
      VALUES ($1, 'leave', NULL, $2, 1)`,
@@ -603,20 +648,6 @@ afterAll(async () => {
       `DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'leave'`,
       [tenantId],
     );
-    for (const row of savedLeavePolicies)
-      await client.query(
-        `INSERT INTO approval_policies (id, tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [
-          row.id,
-          row.tenant_id,
-          row.action_type,
-          row.threshold_idr,
-          row.approver_role_id,
-          row.levels,
-          row.requires_distinct_actor,
-        ],
-      );
   });
   for (const tenant of [tenantId, otherTenant])
     await asOwner(tenant, async (client) => {
