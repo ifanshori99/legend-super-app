@@ -15,7 +15,7 @@ import {
 import {
   openSecret,
   openSecretWithKey,
-  sealSecret,
+  sealSecretBaseKey,
   sealSecretWithKey,
 } from "./secrets.ts";
 
@@ -123,7 +123,7 @@ export function sealPayrollValue(
   const aad = metadataAad(binding, keyVersion, metadata);
   const key = hrisPiiRingKey(keyVersion);
   const envelope = Buffer.from(
-    key ? sealSecretWithKey(key, value, aad) : sealSecret(value, aad),
+    key ? sealSecretWithKey(key, value, aad) : sealSecretBaseKey(value, aad),
     "base64",
   );
   return metadata

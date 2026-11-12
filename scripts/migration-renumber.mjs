@@ -27,6 +27,7 @@
 //
 // Uses only node: built-ins and the repo's own `pnpm db:generate`.
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   readdirSync,
@@ -101,6 +102,7 @@ function apply(argv) {
   if (specs.length === 0) fail("no migrations given");
 
   const baseJournal = JSON.parse(show("HEAD", `${rel}/meta/_journal.json`));
+  const branchJournal = JSON.parse(show(rev, `${rel}/meta/_journal.json`));
   const last = baseJournal.entries.at(-1);
   if (Number(specs[0].newNum) !== Number(last.tag.slice(0, 4)) + 1)
     fail(
@@ -110,19 +112,31 @@ function apply(argv) {
     if (i > 0 && Number(s.newNum) !== Number(specs[i - 1].newNum) + 1)
       fail(`${s.newNum} is not consecutive`);
     const floor = i === 0 ? last.when : specs[i - 1].when;
-    if (s.when <= floor) fail(`${s.newTag}: when ${s.when} must exceed ${floor}`);
+    if (s.when <= floor)
+      fail(`${s.newTag}: when ${s.when} must exceed ${floor}`);
   });
 
   // 1-2: read the branch's files, clear what the merge brought in.
   for (const s of specs) {
     s.sql = show(rev, `${rel}/${s.oldTag}.sql`);
     if (s.sql === null) fail(`${rev} has no ${s.oldTag}.sql`);
-    const snap = show(rev, `${rel}/meta/${s.oldNum}_snapshot.json`);
+    const branchEntry = branchJournal.entries.find((e) => e.tag === s.oldTag);
+    if (!branchEntry) fail(`${rev} has no journal entry for ${s.oldTag}`);
+    const indexedNum = String(branchEntry.idx).padStart(4, "0");
+    let oldSnapshotPath = `${rel}/meta/${indexedNum}_snapshot.json`;
+    let snap = show(rev, oldSnapshotPath);
+    // A SQL-only migration may keep an old tag number while its journal idx
+    // advances. Never mistake HEAD's historical snapshot for that migration.
+    if (
+      snap === null &&
+      indexedNum !== s.oldNum &&
+      !inRev("HEAD", `${rel}/meta/${s.oldNum}_snapshot.json`)
+    ) {
+      oldSnapshotPath = `${rel}/meta/${s.oldNum}_snapshot.json`;
+      snap = show(rev, oldSnapshotPath);
+    }
     s.oldSnap = snap === null ? null : JSON.parse(snap);
-    for (const path of [
-      `${rel}/${s.oldTag}.sql`,
-      `${rel}/meta/${s.oldNum}_snapshot.json`,
-    ]) {
+    for (const path of [`${rel}/${s.oldTag}.sql`, oldSnapshotPath]) {
       if (inRev("HEAD", path)) {
         git(["checkout", "HEAD", "--", path], { cwd: root });
       } else {
@@ -144,11 +158,20 @@ function apply(argv) {
   const made = readdirSync(dir).filter(
     (f) => !before.has(f) && f.endsWith("_gen_tmp.sql"),
   );
-  if (made.length !== 1) fail("db:generate wrote no migration (nothing to do?)");
-  const genNum = made[0].slice(0, 4);
-  const merged = JSON.parse(readFileSync(snapPath(genNum), "utf8"));
-  rmSync(join(dir, made[0]));
-  rmSync(snapPath(genNum));
+  let merged;
+  if (
+    made.length === 0 &&
+    `${gen.stdout}${gen.stderr}`.includes("No schema changes")
+  ) {
+    merged = JSON.parse(readFileSync(snapPath(last.tag.slice(0, 4)), "utf8"));
+  } else {
+    if (made.length !== 1)
+      fail("db:generate wrote no migration (nothing to do?)");
+    const genNum = made[0].slice(0, 4);
+    merged = JSON.parse(readFileSync(snapPath(genNum), "utf8"));
+    rmSync(join(dir, made[0]));
+    rmSync(snapPath(genNum));
+  }
   writeJournal(baseJournal);
 
   // 4: one snapshot per migration, chained.
@@ -163,15 +186,10 @@ function apply(argv) {
     }
   }
   let prevId = JSON.parse(
-    readFileSync(
-      snapPath(
-        baseJournal.entries.at(-1).tag.slice(0, 4),
-      ),
-      "utf8",
-    ),
+    readFileSync(snapPath(baseJournal.entries.at(-1).tag.slice(0, 4)), "utf8"),
   ).id;
   specs.forEach((s, i) => {
-    snaps[i].id = s.oldSnap?.id ?? snaps[i].id;
+    snaps[i].id = s.oldSnap?.id ?? randomUUID();
     snaps[i].prevId = prevId;
     prevId = snaps[i].id;
     writeFileSync(snapPath(s.newNum), JSON.stringify(snaps[i], null, 2));
@@ -218,7 +236,8 @@ function apply(argv) {
       ],
       { cwd: root },
     ).stdout.trim();
-    if (refs) console.log(`\nstill mention ${s.oldNum}:\n${refs.slice(0, 2500)}`);
+    if (refs)
+      console.log(`\nstill mention ${s.oldNum}:\n${refs.slice(0, 2500)}`);
   }
 }
 
@@ -251,7 +270,9 @@ function check(argv) {
     if (f.endsWith(".sql") && !tags.has(f.slice(0, -4)))
       problems.push(`${f}: not in the journal`);
   if (problems.length) fail(problems.join("\n"));
-  console.log(`journal ok from idx ${fromIdx} (${journal.entries.length} entries)`);
+  console.log(
+    `journal ok from idx ${fromIdx} (${journal.entries.length} entries)`,
+  );
 }
 
 const [command, ...rest] = process.argv.slice(2);

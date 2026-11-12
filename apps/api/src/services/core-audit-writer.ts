@@ -91,7 +91,7 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
     "startedAt",
     "expiresAt",
   ],
-  "support_access.ended": ["status", "endedAt", "superAdminUserId"],
+  "support_access.ended": ["status", "endedAt", "superAdminUserId", "cause"],
   "support_access.expired": ["status", "expiresAt", "superAdminUserId"],
   "support_access.denied": ["cause", "accessMode", "durationMinutes"],
   "support_access.impersonation_started": [

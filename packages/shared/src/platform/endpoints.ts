@@ -561,6 +561,13 @@ export const orgEndpoints = {
     body: decideSupportAccessRequestInputSchema,
     response: dataResponseSchema(supportAccessRequestSchema),
   }),
+  revokeSupportAccess: defineEndpoint({
+    method: "POST",
+    path: "/api/org/support-access/:grantId/revoke",
+    params: z.strictObject({ grantId: supportAccessGrantIdSchema }),
+    body: decideSupportAccessRequestInputSchema,
+    response: dataResponseSchema(supportAccessGrantSchema),
+  }),
   exportConfig: defineEndpoint({
     method: "POST",
     path: "/api/org/config/export",

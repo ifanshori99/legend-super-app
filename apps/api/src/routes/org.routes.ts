@@ -325,3 +325,27 @@ orgRouter.post(
     });
   },
 );
+
+// legend-8en8 (TEN-04): the tenant owner pulls a Super Admin's access back at
+// once, with the same guards as deciding a request (owner permission, a second
+// factor verified in this session, never from a support session). A grant of
+// another tenant answers 404.
+orgRouter.post(
+  "/support-access/:grantId/revoke",
+  approveSupportAccess,
+  requireOwnerDecision,
+  jsonBody,
+  async (req, res) => {
+    const { grantId } = z
+      .strictObject({ grantId: supportAccessGrantIdSchema })
+      .parse(req.params);
+    decideSupportAccessRequestInputSchema.parse(req.body);
+    res.json({
+      data: await endTenantSupportAccess(
+        getScopedTenantContext(req),
+        { userId: getAuth(req).user.id },
+        grantId,
+      ),
+    });
+  },
+);

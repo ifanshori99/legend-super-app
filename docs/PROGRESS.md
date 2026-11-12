@@ -4728,3 +4728,34 @@ Native Codex subagents: 10 total, peak 6 concurrent; heavy commands assigned to 
 - Kedua worktree sumber bersih dan sudah tergabung beserta cabang lokal `fix/web-root-500` dan `ws/edge-catalog-fresh` sudah dihapus. Worktree detached pembanding m1 milik sesi ini juga dihapus dan worktree prune selesai. Dheu dan loyalty tetap dipertahankan untuk batch53.
 - Subagent: total sesi 5 unik, puncak 4 bersamaan dan 3 pada gelombang terakhir. Token heavy tunggal dipegang test_runner, seluruh pekerjaan selesai tanpa job latar. Alat usage/parallel tidak menyediakan atribusi transkrip Codex; biaya/token/rata-rata konkurensi tidak tersedia.
 - Snapshot kuota 21:25 → 22:27 WIB (akun global, bukan biaya thread): Claude #1 0%/93%, #2 0%/99%, #3 0%/96% tetap; Codex #2 100%/68%, #3 0%/92%, #4 100%/81%, #5 100%/82% tetap; #6 hanya 7d75% → 76% (5h tidak tersedia).
+
+## 2026-11-11: ws/dheu-secrets-support (legend-dheu, legend-ca4l, legend-8en8; basis m1 3c7217b2)
+
+- dheu: key ring DATA_ENCRYPTION_KEYS + DATA_ENCRYPTION_ACTIVE_KEY_VERSION (byte versi amplop = versi kunci, 1..255; versi 1 = DATA_ENCRYPTION_KEY). `sealSecretBaseKey` untuk HRIS/payroll agar versi 1 mereka tidak ikut pindah; blindIndex tetap kunci 1. rotateIntegrationCredentials kini benar-benar menyegel ulang ke kunci aktif.
+- ca4l: migrasi sementara 0287 `app.support_access_grant_tenants` (SECURITY DEFINER, hanya id tenant, EXECUTE hanya legend_app); list/end/impersonasi global hanya membuka tenant yang punya grant (allTenantIds dihapus).
+- 8en8: `POST /api/org/support-access/:grantId/revoke` (guard sama dengan approve/reject, MFA, bukan sesi impersonasi), cause `revoked_by_tenant_admin`, idempoten, sesi impersonasi ikut berakhir; `cause` dibuka di allowlist audit.
+- Bukti: gagal-dulu di basis m1 (14 gagal + secrets-key-ring gagal impor); 161 test terarah lulus setelah; typecheck API 0; eslint + prettier hijau; db:generate kosong.
+- Catatan merge: nomor 0287 sementara (idx = tag), `when` 1794331000000 harus tetap lebih besar dari migrasi yang masuk lebih dulu saat dinomori ulang. Kunci versi 1 tidak bisa dipensiunkan selama ada baris HRIS/payroll versi 1 (docs/deployment.md).
+
+### 2026-11-11: perbaikan temuan Codex atas 463 (brief 466, semua butir nyata)
+
+- Butir 1: rotasi kunci dua rollout (kunci baru dibagikan ke SEMUA proses dulu, versi aktif dinaikkan di rollout kedua); pesan galat versi tak dikenal menyebut key ring, tanpa materi kunci. `docs/deployment.md` ditulis ulang.
+- Butir 2: `endGrantEarly` untuk `revoked_by_tenant_admin` mensyaratkan Owner aktif (`activeOwnerAssignments`), selain itu 403 `OWNER_REQUIRED`; peran kustom dengan izin approve tidak lagi bisa mencabut.
+- Butir 3: `/get-session` dengan sesi impersonasi tanpa grant aktif menjawab null (hook after Better Auth, tanpa baca ganda untuk sesi biasa) dan mencoba membersihkan sesi; kegagalan cleanup hanya di-log, jawaban tetap fail-closed.
+- Butir 4: `pnpm db:rotate-data-key [--tenant <id>] [--force] [--dry-run]` (`src/db/rotate-data-key.ts`): per tenant integrasi + kunci AI, galat satu tenant dicatat dan tenant lain lanjut, laporan JSON tanpa nilai rahasia (galat driver/domain dibersihkan), `remaining` + `remainingComplete`, exit 1 bila ada tenant gagal atau sisa.
+- Butir 5: koreksi dokumen HRIS/payroll: tulis baru versi 1 tetap di kunci 1 (`sealSecretBaseKey`); kunci 1 tidak bisa dipensiunkan selama ada baris versi 1; inventaris pemakai `sealSecret` ditambah. Pemakai tanpa kolom versi (MFA, identitas, NPWP, rekening, token sesi) tidak direseal: kartu lanjutan legend-tetyr.
+- Bukti: gagal-dulu tiap butir (butir 2: 200 vs 403; butir 3: 2 gagal; butir 1/4: 5 gagal; perbaikan architect: 6 gagal); 175 test terarah lulus di 13 berkas; typecheck API 0; eslint + prettier hijau; tanpa perubahan skema. Review architect xhigh: tanpa blocker, 3 temuan kecil dibetulkan (remaining try/catch, teks galat tetap, nama HttpError/PlatformError di galat bungkus drizzle).
+
+## 2026-11-12: penyelarasan Dheu ke m1 (legend-1fc92, ws/dheu-m1)
+
+- Basis m1 terbaru saat fetch: `5cbe2a1e`; menggabungkan `ws/dheu-secrets-support` `46fe0375`. Cabang milestone dan main tidak diubah.
+- Resolusi: `endTenantSupportAccess` m1 menjadi satu inti pencabutan tenant untuk `/end` dan `/revoke`, dengan Owner aktif dalam transaksi dan MFA di kedua route. Audit sebab Dheu masuk satu transaksi yang sama; retry tidak menambah audit/event.
+- Keyring Dheu dipadukan dengan HKDF/blind-index m1. Payroll tetap memakai metadata/revision wrapper m1, dan fallback key versi 1 memakai `sealSecretBaseKey`; CLI `db:rotate-data-key` tetap utuh.
+- Migrasi SQL Dheu tetap `0287_support_access_grant_tenants`; hanya fungsi lookup, tanpa benturan kolom/tabel HRIS U4 0308. Snapshot m1 0287 dan 0308 dipertahankan. Journal sementara idx309/when1794465896648; merge train WAJIB menomori ulang tag 0287 sebelum gate nomor migrasi.
+- Test regresi kedua endpoint, expired Owner dan konkurensi lintas alias ditambah; verifikasi terarah dan architect xhigh sedang berjalan. Tidak menjalankan `pnpm check` penuh. `legend-tetyr` tetap pekerjaan terpisah: pemensiunan kunci lama belum boleh dilakukan.
+
+- Gerbang awal: 15 file API / 207 test hijau, 4 file kontrak root / 72 test hijau; typecheck shared/API/web hijau. `pnpm db:generate`: `No schema changes, nothing to migrate`; tidak menghasilkan file. `heavy pnpm build` 2/2 hijau; ESLint dan Prettier seluruh file berubah hijau.
+- Architect bawaan Codex effort xhigh konteks segar: tanpa temuan penghalang, termasuk jalur Owner/MFA, audit tunggal, pembacaan grant tiap request, keyring dan metadata payroll, serta preservasi snapshot 0287/0308.
+- Subagent: total 6, puncak 4 bersamaan; token heavy hanya `test_runner`. Biaya/token sesi tidak tersedia: `session-usage.py` tidak menemukan transkrip Codex; `parallel-report --since 23:00` tidak menemukan sesi Claude (tidak mengarang biaya/rata-rata).
+- Bukti regresi gagal-dulu: bypass sementara cek Owner aktif pada inti pencabutan membuat 4 test (custom approver dan Owner kedaluwarsa, masing-masing `/end` dan `/revoke`) gagal karena HTTP200, seharusnya403. Service dipulihkan byte-identik (SHA256 `f525c06e0ee67c10ffa042ff3a23f9c399374a704bbc9e95556c6189a5ad8d6f`); 3 file final / 36 test hijau, termasuk label audit dan outlet sesi support.
+- Gate akhir: ESLint 18 file TS berubah dan Prettier 23 file didukung hijau; `git diff --check` bersih. Log verifikasi di `/tmp/dheu-m1-*`. Tidak menjalankan full `pnpm check` atau e2e. `legend-tetyr` tetap terbuka; jangan pensiunkan kunci lama.
