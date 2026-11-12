@@ -5,9 +5,6 @@ export const posOrderCartMessages = {
     kasir: "Kasir",
   },
   title: "Pesanan baru",
-  connectivity: {
-    offline: "Offline",
-  },
   subtitle: "Cari atau pilih menu untuk mulai",
   cart: {
     title: "Keranjang",

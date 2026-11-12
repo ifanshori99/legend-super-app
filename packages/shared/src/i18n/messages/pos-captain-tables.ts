@@ -3,6 +3,7 @@
 export const posCaptainTablesMessages = {
   shell: {
     back: "Kembali",
+    context: "Captain",
     online: "Lokal terhubung",
     offline: "Internet putus",
     connectivityLabel: "Status koneksi",

@@ -12,9 +12,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState } from "@/components/ui/feedback-state";
+import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Label } from "@/components/ui/label";
 import { Money } from "@/components/ui/money";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Notice } from "@/features/ws04-pos-kasir/components/shared";
@@ -27,12 +28,7 @@ import {
 } from "@/features/ws04-pos-order/hooks";
 import type { CartLine } from "@/features/ws04-pos-order/types";
 import { CaptainShell } from "./captain-shell";
-import {
-  CaptainIntro,
-  SampleBadge,
-  lineDetails,
-  tableSessionText,
-} from "./captain-order-parts";
+import { lineDetails, tableSessionText } from "./captain-order-parts";
 
 const MAX_QUANTITY = 99;
 
@@ -52,6 +48,13 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
   const sentCount = draft.lines.length - heldCount;
   const editing = draft.lines.find((line) => line.lineId === editingId) ?? null;
   const tableHref = `/pos/captain/meja/${encodeURIComponent(tableId)}`;
+  const tableMissing =
+    tableOrder.isError &&
+    !tableOrder.data &&
+    tableOrder.error instanceof ApiError &&
+    tableOrder.error.status === 404;
+  const tableFailed = tableOrder.isError && !tableOrder.data;
+  const tableReady = Boolean(tableOrder.data);
 
   const send = () => {
     if (submit.isPending) return;
@@ -70,17 +73,23 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
 
   return (
     <CaptainShell
-      title={
+      context={
         tableLabel
           ? t("posCaptainOrder.table.title", { table: tableLabel })
           : t("posCaptainOrder.table.loadingTitle")
       }
-      subtitle={
+      contextSub={
         tableOrder.data ? tableSessionText(t, tableOrder.data.table) : undefined
+      }
+      title={t("posCaptainOrder.review.title")}
+      subtitle={
+        tableLabel
+          ? t("posCaptainOrder.review.subtitle", { table: tableLabel })
+          : undefined
       }
       backTo={`${tableHref}/tambah`}
       bottomBar={
-        draft.lines.length > 0 ? (
+        tableReady && draft.lines.length > 0 ? (
           <div className="grid gap-1 text-center">
             <Button
               size="lg"
@@ -105,16 +114,6 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
       }
     >
       <div data-slot="captain-review" className="grid content-start gap-4">
-        <CaptainIntro
-          title={t("posCaptainOrder.review.title")}
-          subtitle={
-            tableLabel
-              ? t("posCaptainOrder.review.subtitle", { table: tableLabel })
-              : undefined
-          }
-          action={<SampleBadge />}
-        />
-
         {submit.isError && (
           <Notice
             tone="danger"
@@ -129,7 +128,41 @@ export function ReviewScreen({ tableId }: { tableId: string }) {
           </Notice>
         )}
 
-        {draft.lines.length === 0 ? (
+        {tableMissing ? (
+          <EmptyState
+            title={t("posCaptainOrder.order.notFoundTitle")}
+            description={t("posCaptainOrder.order.notFoundHint")}
+            action={
+              <Button asChild>
+                <Link to="/pos/captain">
+                  {t("posCaptainOrder.order.backToTables")}
+                </Link>
+              </Button>
+            }
+          />
+        ) : tableFailed ? (
+          <ErrorState
+            title={t("posCaptainOrder.order.loadFailedTitle")}
+            description={
+              isContractPending(tableOrder.error)
+                ? t("posCaptainOrder.contractPending")
+                : t("posCaptainOrder.order.loadFailedHint")
+            }
+            error={tableOrder.error}
+            onRetry={() => void tableOrder.refetch()}
+          />
+        ) : !tableReady ? (
+          <div
+            role="status"
+            aria-busy="true"
+            aria-label={t("posCaptainOrder.order.loading")}
+            className="grid gap-3"
+          >
+            <Skeleton className="h-24 rounded-container" />
+            <Skeleton className="h-24 rounded-container" />
+            <Skeleton className="h-16 rounded-control" />
+          </div>
+        ) : draft.lines.length === 0 ? (
           <EmptyState
             title={t("posCaptainOrder.review.emptyTitle")}
             description={t("posCaptainOrder.review.emptyHint")}
@@ -211,7 +244,7 @@ function ReviewLine({
     <div className="rounded-container border-(length:--border-w) border-border bg-card p-card">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-(length:--density-text) leading-6 font-semibold">
+          <h3 className="text-(length:--density-text) leading-6 font-bold">
             {t("posCaptainOrder.review.lineTitle", {
               qty: line.quantity,
               name: line.name,
@@ -238,7 +271,7 @@ function ReviewLine({
         className="mt-3 flex min-h-control cursor-pointer items-center justify-between gap-3 border-t-(length:--border-w) border-border pt-3"
       >
         <span className="grid min-w-0 gap-0.5">
-          <span className="text-(length:--density-text) leading-6 font-semibold">
+          <span className="text-(length:--density-text) leading-6 font-bold">
             {line.hold
               ? t("posCaptainOrder.review.held", { course: line.course.label })
               : t("posCaptainOrder.review.sendNow")}

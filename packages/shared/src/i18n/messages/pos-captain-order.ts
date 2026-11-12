@@ -62,6 +62,7 @@ export const posCaptainOrderMessages = {
     offlineBodyNoTime:
       "Pesanan tetap dapat dikirim ke dapur lewat jaringan outlet.",
     review: "Tinjau pesanan · {count} item",
+    reviewEmpty: "Tinjau pesanan",
     reviewNote: "Item baru belum dikirim ke dapur",
     emptyBar: "Pilih menu untuk memulai pesanan.",
     addOther: "Tambah varian {name}",

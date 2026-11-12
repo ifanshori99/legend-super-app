@@ -32,8 +32,8 @@
 // expectations (empty / error wording) are deliberately loose regexes; tighten
 // them once the message catalogs are merged.
 //
-// The browser runs in Asia/Jakarta so "14.08" (offline catalog time) matches the
-// mockup regardless of the machine zone.
+// The browser runs in Asia/Jakarta so the offline catalog time (about 25 minutes
+// before now, "sejak HH.MM") is shown in the same zone regardless of the machine.
 //
 // axe: uses `@axe-core/playwright` when installed, else injects the `axe-core`
 // bundle from node_modules/.pnpm. Exit code 1 when a state fails to render or
@@ -95,7 +95,7 @@ add({
   state: "offline",
   path: `${KASIR}?demo=offline`,
   prepare: async (p) => {
-    await expectText(p, /Katalog belum diperbarui sejak 14\.08/);
+    await expectText(p, /Katalog belum diperbarui sejak \d{2}\.\d{2}/);
     await expectText(p, /Nasi goreng kampung/);
   },
 });
@@ -192,9 +192,9 @@ const CAPTAIN_SCREENS = [
       await expectText(p, TABLE);
       await expectText(p, /Sesi QR aktif/);
     },
+    // No tables in this seed: the table itself is "not found".
     kosong: async (p) => {
-      await expectText(p, TABLE);
-      await expectText(p, /belum ada|kosong|tidak ada/i);
+      await expectText(p, /Meja tidak ditemukan/);
     },
   },
   {
@@ -378,12 +378,14 @@ async function showModifierError(page) {
 async function addItem(
   page,
   name,
-  { option = "Pedas sedang", note = "" } = {},
+  { option = "Pedas sedang", note = "", required = false } = {},
 ) {
   await clickMenuItem(page, name);
   const dialog = page.getByRole("dialog");
+  // `required`: the item has a required group, so the dialog must open (it can
+  // take longer than the short probe on a cold route).
   const opened = await dialog
-    .waitFor({ state: "visible", timeout: 1500 })
+    .waitFor({ state: "visible", timeout: required ? COLD_TIMEOUT : 1500 })
     .then(() => true)
     .catch(() => false);
   if (!opened) return;
@@ -416,7 +418,10 @@ async function seedCaptainCart(page, baseUrl) {
   });
   await waitForHydration(page);
   await expectHeading(page, "Tambah pesanan");
-  await addItem(page, /Nasi goreng kampung/i, { option: "Tidak pedas" });
+  await addItem(page, /Nasi goreng kampung/i, {
+    option: "Tidak pedas",
+    required: true,
+  });
   await addItem(page, /Es teh manis/i);
   await expectButton(page, /Tinjau pesanan/);
 }

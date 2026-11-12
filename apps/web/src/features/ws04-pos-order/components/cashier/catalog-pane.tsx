@@ -276,7 +276,7 @@ function CategoryButton({
       aria-pressed={selected}
       onClick={onClick}
       className={cn(
-        "shrink-0",
+        "shrink-0 font-bold",
         selected && "border-foreground bg-secondary hover:bg-secondary",
       )}
     >

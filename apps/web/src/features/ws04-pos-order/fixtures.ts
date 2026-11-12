@@ -17,8 +17,8 @@ import type {
 
 /** The demo day, 8 November 2026. WIB is UTC+7, so 07:08Z is 14.08 local. */
 export const DEMO_BUSINESS_DATE = "2026-11-08";
-/** The cached catalog of the offline demo: "sejak 14.08". */
-export const OFFLINE_CATALOG_AT = "2026-11-08T07:08:00.000Z";
+/** The cached catalog of the offline demo is this old, so "sejak ..." stays true next to "Sinkron terakhir". */
+export const OFFLINE_CATALOG_AGE_MS = 25 * 60 * 1000;
 /** Next takeaway call number of the demo: "A-12". */
 export const FIRST_CALL_NUMBER = 12;
 export const CALL_NUMBER_PREFIX = "A-";
@@ -159,8 +159,9 @@ export function liveCatalog(nowIso: string): Catalog {
   };
 }
 
-export function cachedCatalog(): Catalog {
-  return { ...liveCatalog(OFFLINE_CATALOG_AT), source: "cached" };
+export function cachedCatalog(now: Date = new Date()): Catalog {
+  const cachedAt = new Date(now.getTime() - OFFLINE_CATALOG_AGE_MS);
+  return { ...liveCatalog(cachedAt.toISOString()), source: "cached" };
 }
 
 export function emptyCatalog(nowIso: string): Catalog {
@@ -190,7 +191,7 @@ function table(
   };
 }
 
-/** A01 occupied with an active QR session, A02 empty, A03 has an open call. */
+/** A01 occupied with an active QR session, A02 empty, only A03 has an open call. */
 export function demoTables(): CaptainTable[] {
   return [
     table("A01", 4, {
@@ -198,7 +199,6 @@ export function demoTables(): CaptainTable[] {
       guestCount: 4,
       qrSessionActive: true,
       sessionId: "session-a01",
-      hasOpenCall: true,
     }),
     table("A02", 4),
     table("A03", 4, { status: "occupied", guestCount: 2, hasOpenCall: true }),

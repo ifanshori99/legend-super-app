@@ -15,9 +15,7 @@ import {
   useServiceCalls,
 } from "@/features/ws04-pos-order/hooks";
 import type { ServiceCall } from "@/features/ws04-pos-order/types";
-import { API_MOCK } from "@/lib/api/mock-flag";
 import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
-import { CaptainIntro } from "./captain-order-parts";
 import { CaptainShell } from "./captain-shell";
 
 /** "2026-11-12T07:32:00Z" -> "14.32" in the outlet's time zone. */
@@ -170,20 +168,13 @@ export function CallsScreen() {
 
   return (
     <CaptainShell
+      context={t("posCaptainTables.shell.context")}
+      contextSub={outlet?.name}
       title={t("posCaptainTables.calls.title")}
-      subtitle={outlet?.name}
+      subtitle={t("posCaptainTables.calls.subtitle")}
       backTo="/pos/captain"
     >
       <div className="grid gap-4">
-        <CaptainIntro
-          subtitle={t("posCaptainTables.calls.subtitle")}
-          action={
-            API_MOCK ? (
-              <Badge tone="neutral">{t("common.sampleData")}</Badge>
-            ) : undefined
-          }
-        />
-
         {mode === "edge_only" && (
           <Notice tone="warning" title={t("posCaptainTables.offline.title")}>
             {t("posCaptainTables.offline.body")}

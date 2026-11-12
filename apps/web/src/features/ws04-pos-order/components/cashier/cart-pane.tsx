@@ -85,32 +85,35 @@ export function CartPane({
         className,
       )}
     >
-      {onBackToMenu && (
-        <Button
-          type="button"
-          variant="ghost"
-          onClick={onBackToMenu}
-          className="-ml-2 self-start"
-        >
-          <ArrowLeft aria-hidden="true" />
-          {t("posOrderCart.cart.backToMenu")}
-        </Button>
-      )}
       <header className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h2 id={`${id}-title`} className="type-title">
-            {t("posOrderCart.cart.title")}
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            {t("posOrderCart.cart.subtitle")}
-          </p>
+        <div className="flex min-w-0 items-start gap-2">
+          {onBackToMenu && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t("posOrderCart.cart.backToMenu")}
+              onClick={onBackToMenu}
+              className="-ml-2 shrink-0"
+            >
+              <ArrowLeft aria-hidden="true" />
+            </Button>
+          )}
+          <div className="min-w-0">
+            <h2 id={`${id}-title`} className="type-title font-extrabold">
+              {t("posOrderCart.cart.title")}
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              {t("posOrderCart.cart.subtitle")}
+            </p>
+          </div>
         </div>
         <Button
           type="button"
           variant="outline"
           size="sm"
           onClick={onOpenParked}
-          className="shrink-0"
+          className="shrink-0 font-bold"
         >
           {t("posOrderCart.cart.parked")}
         </Button>
@@ -157,7 +160,9 @@ export function CartPane({
         )}
       </div>
 
-      <div className="grid gap-2 border-t border-border pt-3">
+      {/* Stays in view: pinned to the panel bottom on desktop, to the screen
+          bottom on a phone where the page scrolls. */}
+      <div className="sticky bottom-0 grid gap-2 border-t border-border bg-card pt-3">
         {feedback}
         {/* The one live region for the total; line rows announce nothing. */}
         <div
@@ -187,7 +192,7 @@ export function CartPane({
             aria-disabled={isEmpty || busy ? true : undefined}
             aria-describedby={isEmpty ? emptyHintId : undefined}
             onClick={isEmpty || busy ? undefined : onPark}
-            className="h-auto min-h-control-lg px-3 whitespace-normal"
+            className="h-auto min-h-control-lg px-3 font-bold whitespace-normal"
           >
             {t("posOrderCart.cart.park")}
           </Button>
@@ -198,7 +203,7 @@ export function CartPane({
             aria-disabled={noHeld || busy ? true : undefined}
             aria-describedby={noHeld ? heldHintId : undefined}
             onClick={noHeld || busy ? undefined : onFireHeld}
-            className="h-auto min-h-control-lg px-3 whitespace-normal"
+            className="h-auto min-h-control-lg px-3 font-bold whitespace-normal"
           >
             {t("posOrderCart.cart.fireHeld")}
           </Button>
@@ -210,7 +215,7 @@ export function CartPane({
           aria-disabled={isEmpty || busy ? true : undefined}
           aria-describedby={isEmpty ? emptyHintId : undefined}
           onClick={isEmpty || busy ? undefined : onContinue}
-          className="w-full"
+          className="w-full font-bold"
         >
           {submitting
             ? t("posOrderCart.cart.submitting")
@@ -245,8 +250,8 @@ function CartLineRow({
   return (
     <li className="border-t border-border py-3 first:border-t-0">
       <div className="flex items-start justify-between gap-3">
-        <p className="min-w-0 font-semibold break-words">{line.name}</p>
-        <Money amount={lineTotalIdr(line)} className="font-semibold" />
+        <p className="min-w-0 font-bold break-words">{line.name}</p>
+        <Money amount={lineTotalIdr(line)} className="font-bold" />
       </div>
       {detailText && (
         <p className="mt-0.5 text-sm break-words text-muted-foreground">
@@ -268,6 +273,7 @@ function CartLineRow({
           onClick={() =>
             locked ? undefined : onSetQuantity(line.lineId, line.quantity - 1)
           }
+          className="size-14"
         >
           {removing ? (
             <Trash2 aria-hidden="true" />
@@ -288,12 +294,13 @@ function CartLineRow({
           onClick={() =>
             locked ? undefined : onSetQuantity(line.lineId, line.quantity + 1)
           }
+          className="size-14"
         >
           <Plus aria-hidden="true" />
         </Button>
         <Button
           type="button"
-          variant="outline"
+          variant="ghost"
           size="sm"
           aria-pressed={line.hold}
           aria-label={t(
@@ -305,9 +312,10 @@ function CartLineRow({
           aria-disabled={locked ? true : undefined}
           onClick={() => (locked ? undefined : onToggleHold(line.lineId))}
           className={cn(
-            "rounded-full",
-            line.hold &&
-              "border-foreground bg-surface-2 not-aria-disabled:hover:bg-surface-2",
+            "rounded-full font-bold",
+            line.hold
+              ? "bg-secondary px-3 text-foreground not-aria-disabled:hover:bg-secondary"
+              : "px-3 text-muted-foreground",
           )}
         >
           {line.hold

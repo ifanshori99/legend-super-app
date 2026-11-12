@@ -40,7 +40,7 @@ export function MenuItemCard({
     <span className="flex items-start gap-2.5">
       <Thumb src={item.imageUrl} />
       <span className="min-w-0">
-        <span className="block text-base leading-snug font-semibold [overflow-wrap:anywhere] min-[700px]:text-[17px]">
+        <span className="block text-base leading-snug font-bold [overflow-wrap:anywhere] min-[700px]:text-[17px]">
           {item.name}
         </span>
         <span className="block text-sm text-muted-foreground">
@@ -55,7 +55,7 @@ export function MenuItemCard({
       <div className={cn(CARD, "bg-muted text-muted-foreground")}>
         {top}
         <span className="flex flex-wrap items-center justify-between gap-2">
-          <Money amount={item.priceIdr} className="font-semibold" />
+          <Money amount={item.priceIdr} className="font-bold" />
           <Badge tone="neutral">{t("posOrderCatalog.card.soldOut")}</Badge>
         </span>
       </div>
@@ -72,12 +72,13 @@ export function MenuItemCard({
       onClick={() => onPick(item)}
       className={cn(
         CARD,
-        "pressable bg-card shadow-hairline transition-colors hover:bg-surface-2 focus-visible:shadow-focus focus-visible:outline-none",
+        // Hover only darkens the border: a grey fill means "Stok habis" here.
+        "pressable bg-card shadow-hairline transition-colors hover:border-foreground focus-visible:shadow-focus focus-visible:outline-none",
       )}
     >
       {top}
       <span className="flex items-center justify-between gap-2">
-        <Money amount={item.priceIdr} className="font-semibold" />
+        <Money amount={item.priceIdr} className="font-bold" />
         <Plus className="size-6" aria-hidden="true" />
       </span>
     </button>

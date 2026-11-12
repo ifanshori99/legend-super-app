@@ -5,14 +5,12 @@ import {
   useRouteContext,
   useSearch,
 } from "@tanstack/react-router";
-import { TriangleAlert } from "lucide-react";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/errors";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
 import { ModifierDialog } from "@/features/ws04-pos-order/components/modifier-dialog";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Notice,
@@ -22,7 +20,6 @@ import { cartTotals } from "@/features/ws04-pos-order/cart-logic";
 import { useDraftCart } from "@/features/ws04-pos-order/draft-store";
 import {
   isContractPending,
-  useOrderingConnectivity,
   useParkDraft,
   useSubmitOrder,
 } from "@/features/ws04-pos-order/hooks";
@@ -99,7 +96,6 @@ export function CashierMainScreen() {
       replace: next === "menu",
     });
   };
-  const connectivity = useOrderingConnectivity();
   const [pickedItem, setPickedItem] = useState<MenuItem | null>(null);
   const [parkedOpen, setParkedOpen] = useState(false);
   const [fieldError, setFieldError] = useState<ChannelDetailError>(null);
@@ -290,16 +286,7 @@ export function CashierMainScreen() {
         <PosPageHeading
           title={t("posOrderCart.title")}
           subtitle={t("posOrderCart.subtitle")}
-          action={
-            <div role="status" className="empty:hidden">
-              {connectivity.mode === "edge_only" && (
-                <Badge tone="warning" className="px-3 py-1 text-sm">
-                  <TriangleAlert aria-hidden="true" />
-                  {t("posOrderCart.connectivity.offline")}
-                </Badge>
-              )}
-            </div>
-          }
+          className="[&_h1]:font-extrabold"
         />
         <CatalogPane onPick={pick} />
       </div>
@@ -321,7 +308,7 @@ export function CashierMainScreen() {
         parking={park.isPending}
         submitting={submit.isPending}
         className={cn(
-          "min-[701px]:sticky min-[701px]:top-4 min-[701px]:max-h-[calc(100dvh-6rem)]",
+          "min-[701px]:sticky min-[701px]:top-4 min-[701px]:h-[calc(100dvh-10.25rem)] min-[701px]:min-h-128",
           view === "menu"
             ? "max-[700px]:hidden"
             : "max-[700px]:min-h-[calc(100dvh-10rem)]",

@@ -152,8 +152,8 @@ function ModifierForm({
   return (
     <>
       <div className="flex items-start justify-between gap-3">
-        <DialogTitle className="text-xl font-semibold">{item.name}</DialogTitle>
-        <Money amount={unitPriceIdr} className="pt-0.5 font-semibold" />
+        <DialogTitle className="text-xl font-bold">{item.name}</DialogTitle>
+        <Money amount={unitPriceIdr} className="pt-0.5 font-bold" />
       </div>
       <DialogDescription className="text-sm">
         {t("posOrderCatalog.modifier.description")}
@@ -193,7 +193,7 @@ function ModifierForm({
         <Button
           type="button"
           variant="outline"
-          className="flex-1 whitespace-normal"
+          className="flex-1 font-bold whitespace-normal"
           onClick={() => onOpenChange(false)}
         >
           {t("posOrderCatalog.modifier.cancel")}
@@ -202,7 +202,7 @@ function ModifierForm({
             shows the message and moves focus to that group. */}
         <Button
           type="button"
-          className="flex-1 whitespace-normal"
+          className="flex-1 font-bold whitespace-normal"
           onClick={submit}
         >
           {t("posOrderCatalog.modifier.confirm")}
@@ -246,7 +246,7 @@ function ModifierGroupField({
       className="m-0 grid min-w-0 gap-2 border-0 p-0"
       aria-describedby={missing ? errorId : undefined}
     >
-      <legend className="mb-1 p-0 text-base font-semibold">
+      <legend className="mb-1 p-0 text-base font-bold">
         {group.name} · {groupHint(group, t)}
       </legend>
       {group.options.map((option) => {

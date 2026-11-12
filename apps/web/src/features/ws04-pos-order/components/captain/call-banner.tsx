@@ -29,9 +29,9 @@ export function CallBanner({
       className="flex items-center justify-between gap-3 rounded-container border-l-[5px] border-warning bg-warning-subtle p-3 text-foreground"
     >
       <div className="min-w-0">
-        <p className="flex items-center gap-2 text-(length:--density-text) leading-6 font-bold">
-          <BellRing className="size-5 shrink-0" aria-hidden="true" />
-          <span className="min-w-0">
+        <p className="flex items-center gap-2 text-base leading-6 font-bold">
+          <BellRing className="size-4 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 whitespace-nowrap">
             {t("posCaptainTables.banner.title", { table: call.tableLabel })}
           </span>
         </p>
@@ -42,7 +42,7 @@ export function CallBanner({
           </p>
         )}
       </div>
-      <Button asChild variant="outline" className="shrink-0">
+      <Button asChild variant="outline" className="shrink-0 px-4">
         <Link to="/pos/captain/panggilan">
           {t("posCaptainTables.banner.view")}
         </Link>

@@ -3,7 +3,6 @@ import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
 import { BellRing, RotateCw, Search } from "lucide-react";
 import { useT } from "@/components/i18n";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Input } from "@/components/ui/input";
@@ -16,10 +15,8 @@ import {
   useServiceCalls,
 } from "@/features/ws04-pos-order/hooks";
 import type { CaptainTable } from "@/features/ws04-pos-order/types";
-import { API_MOCK } from "@/lib/api/mock-flag";
 import { useTenantContext } from "@/lib/tenant-context";
 import { CallBanner } from "./call-banner";
-import { CaptainIntro } from "./captain-order-parts";
 import { CaptainShell } from "./captain-shell";
 import { TableTile } from "./table-tile";
 
@@ -76,8 +73,10 @@ export function TablesScreen() {
 
   return (
     <CaptainShell
+      context={t("posCaptainTables.shell.context")}
+      contextSub={subtitle || undefined}
       title={t("posCaptainTables.tables.title")}
-      subtitle={subtitle || undefined}
+      subtitle={t("posCaptainTables.tables.subtitle")}
       bottomBar={
         <Button asChild variant="outline" size="lg" className="w-full">
           <Link to="/pos/captain/panggilan">
@@ -88,15 +87,6 @@ export function TablesScreen() {
       }
     >
       <div className="grid gap-4">
-        <CaptainIntro
-          subtitle={t("posCaptainTables.tables.subtitle")}
-          action={
-            API_MOCK ? (
-              <Badge tone="neutral">{t("common.sampleData")}</Badge>
-            ) : undefined
-          }
-        />
-
         {mode === "edge_only" && (
           <Notice tone="warning" title={t("posCaptainTables.offline.title")}>
             {t("posCaptainTables.offline.body")}
@@ -182,7 +172,7 @@ export function TablesScreen() {
             <div
               role="group"
               aria-label={t("posCaptainTables.tables.filterLabel")}
-              className="flex flex-wrap gap-2"
+              className="flex gap-2"
             >
               {FILTERS.map((value) => (
                 <Button
@@ -192,6 +182,7 @@ export function TablesScreen() {
                   aria-pressed={filter === value}
                   onClick={() => setFilter(value)}
                   className={cn(
+                    "min-w-0 px-3 font-bold",
                     filter === value && "border-foreground bg-surface-3",
                   )}
                 >

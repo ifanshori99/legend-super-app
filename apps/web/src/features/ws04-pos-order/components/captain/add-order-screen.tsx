@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { useId, useMemo, useState } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { cn } from "cn";
 import { Minus, Plus } from "lucide-react";
 import { useT } from "@/components/i18n";
@@ -24,12 +24,7 @@ import {
 } from "@/features/ws04-pos-order/hooks";
 import type { CartLine, MenuItem } from "@/features/ws04-pos-order/types";
 import { CaptainShell } from "./captain-shell";
-import {
-  CaptainIntro,
-  SampleBadge,
-  formatClock,
-  tableSessionText,
-} from "./captain-order-parts";
+import { formatClock, tableSessionText } from "./captain-order-parts";
 
 const ALL = "all";
 
@@ -38,6 +33,8 @@ const ALL = "all";
 // kitchen until the review step.
 export function AddOrderScreen({ tableId }: { tableId: string }) {
   const t = useT();
+  const barHintId = useId();
+  const navigate = useNavigate();
   const catalog = usePosCatalog();
   const connectivity = useOrderingConnectivity();
   const tableOrder = useTableOrder(tableId);
@@ -69,49 +66,68 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
     tableOrder.error instanceof ApiError &&
     tableOrder.error.status === 404;
 
+  // An item without choices goes straight into the draft, as on the cashier.
+  const pick = (item: MenuItem) => {
+    if (item.modifierGroups.length === 0) {
+      draft.add(item, { modifiers: [], note: "", quantity: 1 });
+      return;
+    }
+    setPicking(item);
+  };
+
   const reviewHref = "/pos/captain/meja/$tableId/tinjau" as const;
 
   return (
     <CaptainShell
-      title={
+      context={
         tableLabel
           ? t("posCaptainOrder.table.title", { table: tableLabel })
           : t("posCaptainOrder.table.loadingTitle")
       }
-      subtitle={
+      contextSub={
         tableOrder.data ? tableSessionText(t, tableOrder.data.table) : undefined
+      }
+      title={t("posCaptainOrder.add.title")}
+      subtitle={
+        offline && tableLabel
+          ? t("posCaptainOrder.add.subtitleOffline", { table: tableLabel })
+          : t("posCaptainOrder.add.subtitle")
       }
       backTo={`/pos/captain/meja/${encodeURIComponent(tableId)}`}
       bottomBar={
-        tableMissing ? undefined : totals.itemCount > 0 ? (
+        tableMissing ? undefined : (
           <div className="grid gap-1 text-center">
-            <Button asChild size="lg" className="w-full">
-              <Link to={reviewHref} params={{ tableId }}>
+            {totals.itemCount > 0 ? (
+              <Button
+                size="lg"
+                className="w-full"
+                onClick={() =>
+                  void navigate({ to: reviewHref, params: { tableId } })
+                }
+              >
                 {t("posCaptainOrder.add.review", { count: totals.itemCount })}
-              </Link>
-            </Button>
-            <p className="text-sm text-muted-foreground">
-              {t("posCaptainOrder.add.reviewNote")}
+              </Button>
+            ) : (
+              <Button
+                size="lg"
+                aria-disabled="true"
+                aria-describedby={barHintId}
+                onClick={(event) => event.preventDefault()}
+                className="w-full aria-disabled:opacity-60"
+              >
+                {t("posCaptainOrder.add.reviewEmpty")}
+              </Button>
+            )}
+            <p id={barHintId} className="text-sm text-muted-foreground">
+              {totals.itemCount > 0
+                ? t("posCaptainOrder.add.reviewNote")
+                : t("posCaptainOrder.add.emptyBar")}
             </p>
           </div>
-        ) : (
-          <p className="py-4 text-center text-(length:--density-text) text-muted-foreground">
-            {t("posCaptainOrder.add.emptyBar")}
-          </p>
         )
       }
     >
       <div data-slot="captain-add-order" className="grid content-start gap-4">
-        <CaptainIntro
-          title={t("posCaptainOrder.add.title")}
-          subtitle={
-            offline && tableLabel
-              ? t("posCaptainOrder.add.subtitleOffline", { table: tableLabel })
-              : t("posCaptainOrder.add.subtitle")
-          }
-          action={<SampleBadge />}
-        />
-
         {offline && (
           <Notice tone="warning" title={t("posCaptainOrder.add.offlineTitle")}>
             {clock
@@ -227,7 +243,7 @@ export function AddOrderScreen({ tableId }: { tableId: string }) {
                       lines={draft.lines.filter(
                         (line) => line.menuItemId === item.id,
                       )}
-                      onPick={() => setPicking(item)}
+                      onPick={() => pick(item)}
                       onQuantity={draft.setQuantity}
                     />
                   </li>

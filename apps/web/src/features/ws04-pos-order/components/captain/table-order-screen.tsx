@@ -16,12 +16,7 @@ import {
 } from "@/features/ws04-pos-order/hooks";
 import type { OrderLine } from "@/features/ws04-pos-order/types";
 import { CaptainShell } from "./captain-shell";
-import {
-  CaptainIntro,
-  SampleBadge,
-  lineDetails,
-  tableSessionText,
-} from "./captain-order-parts";
+import { lineDetails, tableSessionText } from "./captain-order-parts";
 
 /** Lines grouped by course, courses in kitchen order. */
 function groupByCourse(lines: OrderLine[]) {
@@ -55,21 +50,17 @@ export function TableOrderScreen({ tableId }: { tableId: string }) {
 
   return (
     <CaptainShell
-      title={
+      context={
         view
           ? t("posCaptainOrder.table.title", { table: view.table.label })
           : t("posCaptainOrder.table.loadingTitle")
       }
-      subtitle={view ? tableSessionText(t, view.table) : undefined}
+      contextSub={view ? tableSessionText(t, view.table) : undefined}
+      title={t("posCaptainOrder.order.title")}
+      subtitle={t("posCaptainOrder.order.subtitle")}
       backTo="/pos/captain"
     >
       <div data-slot="captain-table-order" className="grid content-start gap-4">
-        <CaptainIntro
-          title={t("posCaptainOrder.order.title")}
-          subtitle={t("posCaptainOrder.order.subtitle")}
-          action={<SampleBadge />}
-        />
-
         {fire.isError && (
           <Notice tone="danger" title={t("posCaptainOrder.order.fireFailed")}>
             {isContractPending(fire.error) &&
