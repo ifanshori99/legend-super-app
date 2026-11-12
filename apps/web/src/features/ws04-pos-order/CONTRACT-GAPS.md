@@ -25,4 +25,4 @@ Kontrak bersama yang sudah ada belum dipakai karena bentuknya belum cocok dengan
 
 ## Demo `?demo=`
 
-`kosong` (katalog, meja, panggilan kosong), `offline` (edge_only, katalog tersimpan 14.08), `gagal` (query error), `memuat` (query tidak pernah selesai).
+`kosong` (katalog, meja, panggilan kosong), `offline` (edge_only, katalog tersimpan sekitar 25 menit sebelum jam sekarang), `gagal` (query error), `memuat` (query tidak pernah selesai).
