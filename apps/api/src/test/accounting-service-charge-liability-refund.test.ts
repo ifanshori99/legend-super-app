@@ -362,6 +362,130 @@ describe("a payout role remapped onto the service charge account after the sale"
     });
 });
 
+describe("legacy refund history that credited the service charge account", () => {
+  // A refund journal posted by an older mapping may have CREDITED the service
+  // charge (or a tax) account. Counting "already refunded" as debit minus credit
+  // would then shrink and reopen room for a second refund, so a new refund of
+  // that order must park and post nothing (fail closed), even though today's
+  // mapping is clean (no payout role sits on the service charge account).
+  // Assumptions: a refund entry is a `refund` journal keyed
+  // `aj:order-refund:<refundId>` whose order_id is the sale's order, as the real
+  // refund posting produces; the legacy entry is cloned from the sale entry's
+  // header and given lines that balance.
+  type LegacyLine = { role: Role; debit: number; credit: number };
+
+  async function insertLegacyRefund(
+    world: World,
+    orderUlid: string,
+    lines: LegacyLine[],
+  ): Promise<void> {
+    const refundId = createUlid();
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      const { rows } = await client.query<{ id: string }>(
+        `INSERT INTO journal_entries
+           (tenant_id, legal_entity_id, outlet_id, entry_date, fiscal_period_id,
+            source_type, source_id, description, posted_at, idempotency_key,
+            request_fingerprint, order_id, posting_account_snapshot)
+         SELECT tenant_id, legal_entity_id, outlet_id, entry_date, fiscal_period_id,
+                'refund', $3::varchar, 'Refund lama', posted_at, $4::varchar,
+                md5($4::text) || md5($3::text), order_id, posting_account_snapshot
+           FROM journal_entries
+          WHERE tenant_id = $1 AND idempotency_key = $2
+         RETURNING id`,
+        [
+          world.tenant.id,
+          `aj:sale:${orderUlid}`,
+          refundId,
+          `aj:order-refund:${refundId}`,
+        ],
+      );
+      const entryId = rows[0]!.id;
+      for (const [index, line] of lines.entries())
+        await client.query(
+          `INSERT INTO journal_lines
+             (tenant_id, entry_id, account_id, line_no, debit_idr, credit_idr, outlet_id)
+           SELECT $1, $2, $3, $4, $5, $6, outlet_id
+             FROM journal_entries WHERE id = $2`,
+          [
+            world.tenant.id,
+            entryId,
+            world.accounts[line.role],
+            index + 1,
+            line.debit,
+            line.credit,
+          ],
+        );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  const newRefund: Refund = {
+    grossSalesIdr: 10_000,
+    serviceChargeIdr: 1_000,
+    taxIdr: 1_000,
+  };
+
+  it("an earlier refund that credited the service charge account parks a new refund and posts nothing; the same history without that credit posts", async () => {
+    // Control: the earlier refund debits the service charge like a normal one.
+    const control = await makeWorld();
+    await mapToLiability(control, "service_charge", "2301");
+    const controlSale = await seedSaleWithServiceCharge(control);
+    await post(control, controlSale.paid);
+    await insertLegacyRefund(control, controlSale.orderUlid, [
+      { role: "sales_revenue", debit: 36_000, credit: 0 },
+      { role: "service_charge", debit: 4_000, credit: 0 },
+      { role: "tax_payable_pbjt", debit: 4_000, credit: 0 },
+      { role: "cash_on_hand", debit: 0, credit: 44_000 },
+    ]);
+    expect(await journalCount(control)).toBe(2);
+    const posted1 = await deliver(
+      control,
+      refundEvent(control, controlSale.orderUlid, newRefund),
+    );
+    expect(outcomeOf(posted1)).toBe("posted");
+    expect(await journalCount(control)).toBe(3);
+
+    // Legacy history: the earlier refund CREDITED the service charge account.
+    const world = await makeWorld();
+    await mapToLiability(world, "service_charge", "2301");
+    const { orderUlid, paid } = await seedSaleWithServiceCharge(world);
+    await post(world, paid);
+    await insertLegacyRefund(world, orderUlid, [
+      { role: "sales_revenue", debit: 40_000, credit: 0 },
+      { role: "tax_payable_pbjt", debit: 4_000, credit: 0 },
+      { role: "service_charge", debit: 0, credit: 4_000 },
+      { role: "cash_on_hand", debit: 0, credit: 40_000 },
+    ]);
+    expect(await journalCount(world)).toBe(2);
+    const before = await totalsOf(world, "service_charge");
+
+    const result = await deliver(
+      world,
+      refundEvent(world, orderUlid, newRefund),
+    );
+
+    expect(outcomeOf(result)).toBe("parked:AUTO_JOURNAL_PAYLOAD_INVALID");
+    expect(await journalCount(world)).toBe(2);
+    expect(await totalsOf(world, "service_charge")).toEqual(before);
+    const parked = await asTenant(world.tenant, (client) =>
+      client.query<{ error_code: string; retryable: boolean }>(
+        "SELECT error_code, retryable FROM auto_journal_parked WHERE tenant_id = $1",
+        [world.tenant.id],
+      ),
+    );
+    expect(parked.rows).toEqual([
+      { error_code: "AUTO_JOURNAL_PAYLOAD_INVALID", retryable: false },
+    ]);
+  });
+});
+
 describe("service_charge mapped to a revenue account (regression guard)", () => {
   it("sale and a partial refund still post, crediting and debiting the revenue account", async () => {
     const world = await makeWorld(); // default: service_charge -> 4103 revenue
