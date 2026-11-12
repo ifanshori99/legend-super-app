@@ -1410,6 +1410,174 @@ describe("LOY-03 fulfil never lands on a training order (legend-dbrw3)", () => {
   });
 });
 
+describe("LOY-03 physical reward stays within its program legal entity", () => {
+  it("refuses an order from a different outlet and can fulfil against the correct outlet's order", async () => {
+    const { world, member, scope } = await setup(200);
+    const rewardId = await seedReward(world.tenantId, {
+      pointsCost: 50,
+      stock: 5,
+    });
+    const redemption = await redeemAs(scope, rewardId, key());
+    const wrongOrder = await seedOrder(world.tenantId, {
+      outletId: world.outletB,
+      profileId: member.id,
+    });
+    const correctOrder = await seedOrder(world.tenantId, {
+      outletId: world.outletA,
+      profileId: member.id,
+    });
+    const fulfil = (orderId: string) =>
+      withTenant(db, world.context, (tx) =>
+        fulfilRedemption(
+          tx,
+          world.context,
+          randomUUID(),
+          {
+            redemptionCode: redemption.redemptionCode,
+            outletId: world.outletA,
+            orderId,
+          },
+          NOW,
+        ),
+      );
+    await expect(fulfil(wrongOrder)).rejects.toThrow();
+    expect((await redemptionRow(world.tenantId, redemption.id)).status).toBe(
+      "pending",
+    );
+    expect((await rewardOf(world.tenantId, rewardId)).stock).toBe(4);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(150);
+    const fulfilled = await fulfil(correctOrder);
+    expect(fulfilled.status).toBe("fulfilled");
+    expect(fulfilled.orderId).toBe(correctOrder);
+  });
+
+  it("returns a retryable 409 quickly while the entity lock is held, then succeeds on retry", async () => {
+    const { world, member, scope } = await setup(200);
+    const rewardId = await seedReward(world.tenantId, {
+      pointsCost: 50,
+      stock: 5,
+    });
+    const redemption = await redeemAs(scope, rewardId, key());
+    const blocker = await owner.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [`loyalty-entity:${world.tenantId}`],
+      );
+      const started = Date.now();
+      await expect(
+        withTenant(db, world.context, async (tx) => {
+          // Bound a regression that waits for the lock, so it cannot hang the suite.
+          await tx.execute(sql`SET LOCAL lock_timeout = '750ms'`);
+          return fulfilRedemption(
+            tx,
+            world.context,
+            randomUUID(),
+            {
+              redemptionCode: redemption.redemptionCode,
+              outletId: world.outletA,
+            },
+            NOW,
+          );
+        }),
+      ).rejects.toMatchObject({ status: 409, code: "LOYALTY_ENTITY_BUSY" });
+      expect(Date.now() - started).toBeLessThan(1500);
+      expect((await redemptionRow(world.tenantId, redemption.id)).status).toBe(
+        "pending",
+      );
+      expect((await rewardOf(world.tenantId, rewardId)).stock).toBe(4);
+      expect(await balanceOf(world.tenantId, member.id)).toBe(150);
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+    }
+    const retry = await withTenant(db, world.context, (tx) =>
+      fulfilRedemption(
+        tx,
+        world.context,
+        randomUUID(),
+        {
+          redemptionCode: redemption.redemptionCode,
+          outletId: world.outletA,
+        },
+        NOW,
+      ),
+    );
+    expect(retry.status).toBe("fulfilled");
+    expect((await rewardOf(world.tenantId, rewardId)).stock).toBe(4);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(150);
+  });
+
+  it("refuses fulfilment at another entity without spending extra stock or points, then fulfils once at the program entity", async () => {
+    const world = await createWorld();
+    await seedProgram(world.tenantId);
+    const entityB = randomUUID();
+    await asTenant(world.tenantId, async (client) => {
+      await client.query(
+        "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'Entity B', false)",
+        [entityB, world.tenantId],
+      );
+      await client.query(
+        "UPDATE loyalty_programs SET legal_entity_id = (SELECT legal_entity_id FROM outlets WHERE tenant_id = $1 AND id = $2) WHERE tenant_id = $1",
+        [world.tenantId, world.outletA],
+      );
+      await client.query(
+        "UPDATE outlets SET legal_entity_id = $3 WHERE tenant_id = $1 AND id = $2",
+        [world.tenantId, world.outletB, entityB],
+      );
+    });
+    const member = await seedMember(world.tenantId);
+    await grantPoints(world.tenantId, member.id, 200);
+    const rewardId = await seedReward(world.tenantId, {
+      pointsCost: 50,
+      stock: 5,
+    });
+    const redemption = await redeemAs(
+      scopeOf(world.tenantId, member),
+      rewardId,
+      key(),
+    );
+    const pointsAfterRedeem = await balanceOf(world.tenantId, member.id);
+    const ledgerAfterRedeem = await ledgerDetail(world.tenantId, member.id);
+    expect(pointsAfterRedeem).toBe(150);
+    expect((await rewardOf(world.tenantId, rewardId)).stock).toBe(4);
+
+    const fulfil = (outletId: string) =>
+      withTenant(db, world.context, (tx) =>
+        fulfilRedemption(
+          tx,
+          world.context,
+          randomUUID(),
+          { redemptionCode: redemption.redemptionCode, outletId },
+          NOW,
+        ),
+      );
+    await expect(fulfil(world.outletB)).rejects.toThrow();
+    expect((await redemptionRow(world.tenantId, redemption.id)).status).toBe(
+      "pending",
+    );
+    expect((await rewardOf(world.tenantId, rewardId)).stock).toBe(4);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(pointsAfterRedeem);
+    expect(await ledgerDetail(world.tenantId, member.id)).toEqual(
+      ledgerAfterRedeem,
+    );
+
+    const fulfilled = await fulfil(world.outletA);
+    expect(fulfilled.status).toBe("fulfilled");
+    expect(fulfilled.fulfilledOutletId).toBe(world.outletA);
+    await expect(fulfil(world.outletA)).rejects.toThrow();
+    expect((await redemptionRow(world.tenantId, redemption.id)).status).toBe(
+      "fulfilled",
+    );
+    expect((await rewardOf(world.tenantId, rewardId)).stock).toBe(4);
+    expect(await balanceOf(world.tenantId, member.id)).toBe(pointsAfterRedeem);
+    expect(await ledgerDetail(world.tenantId, member.id)).toEqual(
+      ledgerAfterRedeem,
+    );
+  });
+});
+
 describe("LOY-03 settlement follows the redemption, not the current reward type", () => {
   /** Raw edit as the migration owner: the PATCH guard blocks this on purpose. */
   async function retypeReward(

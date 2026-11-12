@@ -28,9 +28,19 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import type { Client } from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import type { Express } from "express";
 import {
+  idr,
   tenantIdSchema,
   ulidToUuid,
   type ScopedTenantContext,
@@ -50,6 +60,9 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
+import { updateLoyaltyProgram } from "../services/loyalty-program.service.ts";
+import { claimSessionPoints } from "../services/table-claim.service.ts";
+import * as loyaltyEntityGuard from "../services/loyalty-entity-guard.ts";
 import { deliverOrderPaymentEvent } from "../services/order-payment-consumers.ts";
 import {
   setPaymentGateway,
@@ -505,6 +518,344 @@ afterAll(async () => {
   await loyaltyOwner.end();
 });
 
+describe("pending guest claim protects its loyalty entity (Q80)", () => {
+  it("refuses moving or clearing A before claim and preserves the guest's claim exactly once", async () => {
+    const entityB = randomUUID();
+    const outletB = randomUUID();
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      // This test runs first in a fresh tenant: no unrelated loyalty history
+      // may cause the expected denial instead of the pending guest claim.
+      const history = await client.query(
+        `SELECT (SELECT count(*) FROM point_ledger WHERE tenant_id = $1)::int AS ledger,
+                (SELECT count(*) FROM point_earn_records WHERE tenant_id = $1)::int AS earn,
+                (SELECT count(*) FROM mission_progress WHERE tenant_id = $1)::int AS mission,
+                (SELECT count(*) FROM reward_redemptions WHERE tenant_id = $1)::int AS reward,
+                (SELECT count(*) FROM vouchers WHERE tenant_id = $1 AND source = 'loyalty_reward')::int AS voucher`,
+        [tenant.tenantId],
+      );
+      expect(history.rows[0]).toEqual({
+        ledger: 0,
+        earn: 0,
+        mission: 0,
+        reward: 0,
+        voucher: 0,
+      });
+      await client.query(
+        "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'Entity B', false)",
+        [entityB, tenant.tenantId],
+      );
+      await client.query(
+        `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+         VALUES ($1, $2, $3, $4, $5, 'Entity B outlet', 'Jl. B', 'Asia/Jakarta', '{}', 'active')`,
+        [
+          outletB,
+          tenant.tenantId,
+          tenant.brandId,
+          entityB,
+          `QB-${outletB.slice(0, 6).toUpperCase()}`,
+        ],
+      );
+      await client.query(
+        "UPDATE loyalty_programs SET legal_entity_id = $2 WHERE tenant_id = $1",
+        [tenant.tenantId, tenant.legalEntityId],
+      );
+    });
+    try {
+      const guest = await seat();
+      const order = await paidOrder(guest);
+      const member = await newMember();
+      const original = await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          "SELECT claim_token_hash, claim_redeemed_at FROM orders WHERE tenant_id = $1 AND id = $2",
+          [tenant.tenantId, ulidToUuid(order.orderId)],
+        ),
+      );
+      expect(original.rows[0].claim_token_hash).toBeTruthy();
+      expect(original.rows[0].claim_redeemed_at).toBeNull();
+      const input = {
+        name: "Poin Member",
+        earnRate: { spendIdr: idr(SPEND_PER_POINT), points: 1 },
+        expiryMonths: 12,
+        rollingMonths: 12,
+        pointValueIdr: idr(100),
+        isActive: true,
+      };
+      for (const legalEntityId of [entityB, null])
+        await expect(
+          updateLoyaltyProgram(contextOf(tenant.tenantId), randomUUID(), {
+            ...input,
+            legalEntityId,
+          }),
+        ).rejects.toMatchObject({ status: 409, code: "LOYALTY_ENTITY_LOCKED" });
+      expect((await as(guest, member).pointClaim()).body.data.status).toBe(
+        "available",
+      );
+      expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(0);
+      expect(await ledgerClaims(member.profileId)).toHaveLength(0);
+      const first = await as(guest, member).claim();
+      expect(first.status, JSON.stringify(first.body)).toBe(200);
+      expect((await as(guest, member).claim()).status).toBe(200);
+      expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(
+        pointsOf(order.eligibleIdr),
+      );
+      expect(await ledgerClaims(member.profileId)).toHaveLength(1);
+    } finally {
+      await asOwnerTenant(tenant.tenantId, async (client) => {
+        await client.query(
+          "UPDATE loyalty_programs SET legal_entity_id = NULL WHERE tenant_id = $1",
+          [tenant.tenantId],
+        );
+        await client.query(
+          "DELETE FROM outlets WHERE tenant_id = $1 AND id = $2",
+          [tenant.tenantId, outletB],
+        );
+        await client.query(
+          "DELETE FROM legal_entities WHERE tenant_id = $1 AND id = $2",
+          [tenant.tenantId, entityB],
+        );
+      });
+    }
+  });
+
+  it.each(["whole", "split"] as const)(
+    "rejects an entity update while the %s payment consumer holds the order, then commits payment and claim token",
+    async (kind) => {
+      const entityB = randomUUID();
+      const outletB = randomUUID();
+      await asOwnerTenant(tenant.tenantId, async (client) => {
+        await client.query(
+          "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'Entity B', false)",
+          [entityB, tenant.tenantId],
+        );
+        await client.query(
+          `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+           VALUES ($1, $2, $3, $4, $5, 'Entity B outlet', 'Jl. B', 'Asia/Jakarta', '{}', 'active')`,
+          [
+            outletB,
+            tenant.tenantId,
+            tenant.brandId,
+            entityB,
+            `QB-${outletB.slice(0, 6).toUpperCase()}`,
+          ],
+        );
+        await client.query(
+          "UPDATE loyalty_programs SET legal_entity_id = $2 WHERE tenant_id = $1",
+          [tenant.tenantId, tenant.legalEntityId],
+        );
+      });
+      try {
+        const guest = await seat();
+        const order = await placeOrder(guest);
+        let intentId: string;
+        let amountIdr: number;
+        let splitId: string | null = null;
+        if (kind === "split") {
+          const created = await as(guest).split({
+            method: "equal",
+            parts: 2,
+            idempotencyKey: randomUUID(),
+          });
+          expect(created.status, JSON.stringify(created.body)).toBe(201);
+          const part = created.body.data.splits[0] as SplitDto;
+          splitId = part.id;
+          const pay = await as(guest).paySplit(part.id);
+          expect(pay.status, JSON.stringify(pay.body)).toBe(201);
+          intentId = pay.body.data.id as string;
+          amountIdr = part.amountIdr;
+        } else {
+          const pay = await as(guest).payOrder(order.orderId);
+          expect(pay.status, JSON.stringify(pay.body)).toBe(201);
+          intentId = pay.body.data.id as string;
+          amountIdr = order.totalIdr;
+        }
+        const context = contextOf(tenant.tenantId);
+        await confirmPayment(context, intentId, {
+          source: "verified_webhook",
+          method: "qris",
+          amountIdr,
+          providerRef: `WEBHOOK-${randomBytes(6).toString("hex")}`,
+          at: new Date().toISOString(),
+        });
+        const event = await paidEvent(intentId);
+        let release!: () => void;
+        let ready!: () => void;
+        const held = new Promise<void>((resolve) => {
+          ready = resolve;
+        });
+        const proceed = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const consuming = withTenant(db, context, async (tx) => {
+          await tx.execute(
+            sql`SELECT id FROM orders WHERE tenant_id = ${tenant.tenantId} AND id = ${ulidToUuid(order.orderId)} FOR UPDATE`,
+          );
+          ready();
+          await proceed;
+          await deliverOrderPaymentEvent(context, event, tx, new Date());
+        });
+        try {
+          await Promise.race([
+            held,
+            consuming.then(() => {
+              throw new Error("Consumer finished before the lock test");
+            }),
+          ]);
+          await expect(
+            updateLoyaltyProgram(context, randomUUID(), {
+              name: "Poin Member",
+              earnRate: { spendIdr: idr(SPEND_PER_POINT), points: 1 },
+              expiryMonths: 12,
+              rollingMonths: 12,
+              pointValueIdr: idr(100),
+              isActive: true,
+              legalEntityId: entityB,
+            }),
+          ).rejects.toMatchObject({ status: 409, code: "LOYALTY_ENTITY_BUSY" });
+        } finally {
+          release();
+        }
+        await consuming;
+        const payment = await asOwnerTenant(tenant.tenantId, (client) =>
+          client.query(
+            "SELECT status FROM payment_intents WHERE tenant_id = $1 AND id = $2",
+            [tenant.tenantId, intentId],
+          ),
+        );
+        expect(payment.rows[0].status).toBe("paid");
+        if (splitId !== null) {
+          const part = await asOwnerTenant(tenant.tenantId, (client) =>
+            client.query(
+              "SELECT status, claim_token_hash FROM bill_splits WHERE tenant_id = $1 AND id = $2",
+              [tenant.tenantId, splitId],
+            ),
+          );
+          expect(part.rows[0]).toMatchObject({ status: "paid" });
+          expect(part.rows[0].claim_token_hash).toBeTruthy();
+          const claim = await as(guest).splitClaim(splitId, secretFor(splitId));
+          expect(claim.status, JSON.stringify(claim.body)).toBe(200);
+          expect(claim.body.data.claimToken).toMatch(/^sc_/);
+        } else {
+          const row = await asOwnerTenant(tenant.tenantId, (client) =>
+            client.query(
+              "SELECT status, claim_token_hash FROM orders WHERE tenant_id = $1 AND id = $2",
+              [tenant.tenantId, ulidToUuid(order.orderId)],
+            ),
+          );
+          expect(row.rows[0]).toMatchObject({ status: "sent" });
+          expect(row.rows[0].claim_token_hash).toBeTruthy();
+          expect((await as(guest).pointClaim()).body.data.status).toBe(
+            "available",
+          );
+        }
+      } finally {
+        await asOwnerTenant(tenant.tenantId, async (client) => {
+          await client.query(
+            "UPDATE loyalty_programs SET legal_entity_id = NULL WHERE tenant_id = $1",
+            [tenant.tenantId],
+          );
+          await client.query(
+            "DELETE FROM outlets WHERE tenant_id = $1 AND id = $2",
+            [tenant.tenantId, outletB],
+          );
+          await client.query(
+            "DELETE FROM legal_entities WHERE tenant_id = $1 AND id = $2",
+            [tenant.tenantId, entityB],
+          );
+        });
+      }
+    },
+  );
+
+  it("freezes an ambiguous guest claim's remaining time until the entity is resolved", async () => {
+    const guest = await seat();
+    const order = await paidOrder(guest);
+    const member = await newMember();
+    const entityB = randomUUID();
+    const outletB = randomUUID();
+    const now = new Date();
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'Ambiguous B', false)",
+        [entityB, tenant.tenantId],
+      );
+      await client.query(
+        `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+         VALUES ($1, $2, $3, $4, $5, 'Ambiguous outlet', 'Jl. B', 'Asia/Jakarta', '{}', 'active')`,
+        [
+          outletB,
+          tenant.tenantId,
+          tenant.brandId,
+          entityB,
+          `QA-${outletB.slice(0, 6).toUpperCase()}`,
+        ],
+      );
+      await client.query(
+        "UPDATE loyalty_programs SET legal_entity_id = NULL WHERE tenant_id = $1",
+        [tenant.tenantId],
+      );
+      await client.query(
+        "UPDATE orders SET claim_expires_at = $3 WHERE tenant_id = $1 AND id = $2",
+        [
+          tenant.tenantId,
+          ulidToUuid(order.orderId),
+          new Date(now.getTime() + 60_000),
+        ],
+      );
+    });
+    try {
+      const claim = (at: Date) =>
+        claimSessionPoints(
+          contextOf(tenant.tenantId),
+          guest.token,
+          guest.sessionId,
+          { userId: member.userId },
+          at,
+        );
+      await expect(claim(now)).rejects.toThrow();
+      expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(0);
+      expect(await ledgerClaims(member.profileId)).toHaveLength(0);
+      const beforePause = await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          "SELECT state, remaining_ms, paused_at FROM loyalty_claim_pauses WHERE tenant_id = $1 AND order_id = $2",
+          [tenant.tenantId, ulidToUuid(order.orderId)],
+        ),
+      );
+      expect(beforePause.rows[0].state).toBe("ambiguous");
+      expect(Number(beforePause.rows[0].remaining_ms)).toBe(60_000);
+      // A configuration change does not itself reconcile historic entity
+      // ownership; the original right remains parked without a ticking TTL.
+      await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          "UPDATE outlets SET legal_entity_id = $3 WHERE tenant_id = $1 AND id = $2",
+          [tenant.tenantId, outletB, tenant.legalEntityId],
+        ),
+      );
+      const resolvedAt = new Date(now.getTime() + 120_000);
+      await expect(claim(resolvedAt)).rejects.toThrow();
+      const afterPause = await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          "SELECT state, remaining_ms, paused_at FROM loyalty_claim_pauses WHERE tenant_id = $1 AND order_id = $2",
+          [tenant.tenantId, ulidToUuid(order.orderId)],
+        ),
+      );
+      expect(afterPause.rows).toEqual(beforePause.rows);
+      expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(0);
+      expect(await ledgerClaims(member.profileId)).toHaveLength(0);
+    } finally {
+      await asOwnerTenant(tenant.tenantId, async (client) => {
+        await client.query(
+          "DELETE FROM outlets WHERE tenant_id = $1 AND id = $2",
+          [tenant.tenantId, outletB],
+        );
+        await client.query(
+          "DELETE FROM legal_entities WHERE tenant_id = $1 AND id = $2",
+          [tenant.tenantId, entityB],
+        );
+      });
+    }
+  });
+});
+
 describe("guest point claim: reading (legend-n1mp)", () => {
   it("answers 401 without a session credential, on GET and POST", async () => {
     const guest = await seat();
@@ -676,6 +1027,130 @@ describe("guest point claim: reading (legend-n1mp)", () => {
 });
 
 describe("guest point claim: claiming (legend-n1mp)", () => {
+  it("uses the program committed before acquiring the entity lock without over-crediting", async () => {
+    const guest = await seat();
+    const order = await paidOrder(guest);
+    const member = await newMember();
+    let release!: () => void;
+    let reached!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const atGuard = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const actualGuard = loyaltyEntityGuard.checkLoyaltyOutletEntity;
+    const guard = vi
+      .spyOn(loyaltyEntityGuard, "checkLoyaltyOutletEntity")
+      .mockImplementationOnce(async (...args) => {
+        reached();
+        await released;
+        return actualGuard(...args);
+      });
+    const claim = as(guest, member)
+      .claim()
+      .then((result) => result);
+    try {
+      await Promise.race([
+        atGuard,
+        claim.then(() => {
+          throw new Error("Claim finished before guard");
+        }),
+      ]);
+      await asOwnerTenant(tenant.tenantId, async (client) => {
+        await client.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`loyalty-entity:${tenant.tenantId}`],
+        );
+        await client.query(
+          "UPDATE loyalty_programs SET earn_spend_idr = $2 WHERE tenant_id = $1",
+          [tenant.tenantId, SPEND_PER_POINT * 2],
+        );
+      });
+    } finally {
+      release();
+    }
+    try {
+      const result = await claim;
+      expect(result.status, JSON.stringify(result.body)).toBe(200);
+      const expected = Math.floor(order.eligibleIdr / (SPEND_PER_POINT * 2));
+      expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(expected);
+      const rows = await ledgerClaims(member.profileId);
+      expect(rows).toHaveLength(1);
+      expect(Number(rows[0]!.points)).toBe(expected);
+      expect((await as(guest, member).claim()).status).toBe(200);
+      expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(expected);
+    } finally {
+      guard.mockRestore();
+    }
+  });
+
+  it("does not consume a table claim for another legal entity and retains it parked after a settings change", async () => {
+    const guest = await seat();
+    const order = await paidOrder(guest);
+    const member = await newMember();
+    const entityA = randomUUID();
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'Entity A', false)",
+        [entityA, tenant.tenantId],
+      );
+      await client.query(
+        "UPDATE loyalty_programs SET legal_entity_id = $2 WHERE tenant_id = $1",
+        [tenant.tenantId, entityA],
+      );
+    });
+    try {
+      // The paid order belongs to the original outlet/entity B, not A.
+      const before = await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          "SELECT status FROM orders WHERE tenant_id = $1 AND id = $2",
+          [tenant.tenantId, ulidToUuid(order.orderId)],
+        ),
+      );
+      const wrong = await as(guest, member).claim();
+      expect(wrong.status).toBeGreaterThanOrEqual(400);
+      expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(0);
+      expect(await ledgerClaims(member.profileId)).toHaveLength(0);
+      const state = await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          "SELECT status, claim_redeemed_at FROM orders WHERE tenant_id = $1 AND id = $2",
+          [tenant.tenantId, ulidToUuid(order.orderId)],
+        ),
+      );
+      expect(state.rows[0].status).toBe(before.rows[0].status);
+      expect(state.rows[0].claim_redeemed_at).toBeNull();
+
+      // A raw setting change is not a reconciliation of historical rights.
+      await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          "UPDATE loyalty_programs SET legal_entity_id = $2 WHERE tenant_id = $1",
+          [tenant.tenantId, tenant.legalEntityId],
+        ),
+      );
+      expect((await as(guest, member).claim()).status).toBeGreaterThanOrEqual(
+        400,
+      );
+      expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(0);
+      expect(await ledgerClaims(member.profileId)).toHaveLength(0);
+      const paused = await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          "SELECT state, remaining_ms FROM loyalty_claim_pauses WHERE tenant_id = $1 AND order_id = $2",
+          [tenant.tenantId, ulidToUuid(order.orderId)],
+        ),
+      );
+      expect(paused.rows[0].state).toBe("ambiguous");
+      expect(Number(paused.rows[0].remaining_ms)).toBeGreaterThan(0);
+    } finally {
+      await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          "UPDATE loyalty_programs SET legal_entity_id = NULL WHERE tenant_id = $1",
+          [tenant.tenantId],
+        ),
+      );
+    }
+  });
+
   it("POST without a login is 401 and posts nothing", async () => {
     const guest = await seat();
     await paidOrder(guest);

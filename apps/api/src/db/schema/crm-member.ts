@@ -21,6 +21,7 @@ import {
   bigint,
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -36,7 +37,7 @@ import {
 import { idr } from "@starter/shared/core";
 import type { ReferralRules } from "@starter/shared/crm";
 import { idrColumn, outletIdColumn, tenantIdColumn } from "../columns";
-import { outlets, tenants } from "./platform-org";
+import { legalEntities, outlets, tenants } from "./platform-org";
 
 const createdAt = timestamp("created_at", { withTimezone: true })
   .defaultNow()
@@ -59,6 +60,7 @@ export const loyaltyPrograms = pgTable(
   {
     id: uuid("id").defaultRandom().primaryKey(),
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    legalEntityId: uuid("legal_entity_id"),
     name: varchar("name", { length: 120 }).notNull().default("Poin Member"),
     earnSpendIdr: idrColumn("earn_spend_idr").notNull().default(idr(10_000)),
     earnPoints: integer("earn_points").notNull().default(1),
@@ -92,6 +94,11 @@ export const loyaltyPrograms = pgTable(
     updatedBy: text("updated_by"),
   },
   (table) => [
+    foreignKey({
+      name: "loyalty_programs_legal_entity_fk",
+      columns: [table.tenantId, table.legalEntityId],
+      foreignColumns: [legalEntities.tenantId, legalEntities.id],
+    }),
     unique("loyalty_programs_tenant_key").on(table.tenantId),
     unique("loyalty_programs_tenant_id_id_key").on(table.tenantId, table.id),
     check(
