@@ -258,6 +258,13 @@ beforeAll(async () => {
   setPosReceiptPort(memoryReceiptPort());
   tenant = await createIsolatedTenant(`gate-${randomUUID().slice(0, 6)}`);
   headers = { Host: tenant.hostname };
+  // POS routes check the device registry on every request (second-opinion 495):
+  // the signed token must name an active, registered device.
+  await owner.query(
+    `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
+     VALUES ($1, $2, $3, 'pos', 'Kasir Gate', now() - interval '1 minute')`,
+    [ids.device, tenant.tenantId, tenant.outletId],
+  );
   setDeviceOutletResolver(async ({ tenantId, deviceId }) =>
     tenantId === tenant.tenantId && deviceId === ids.device
       ? tenant.outletId

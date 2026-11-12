@@ -181,6 +181,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // founder Q63 (ws05-pay-admin)
   "0286_refund_approval_matrix_data.sql":
     "gives each tenant that still has the old default refund matrix (no refund row, or one row: floor 0, level 1, supervisor template) the missing default rows for outlet_manager, general_manager and owner; idempotent, never touches a tenant that configured its own refund matrix, FORCE RLS on roles and approval_policies lifted and restored",
+  "0288_edge_promo_streams.sql":
+    "trigger bodies that stamp sync_txid on promotions, vouchers and promo_settings at runtime and bump the parent promotion when its outlet rows change; no existing rows are rewritten",
   "0276_leave_flag_closed_payroll.sql":
     "redefines app.flag_attendance_for_leave (function body UPDATE of attendance_logs, now skipping logs in closed payroll runs); no rows written by the migration",
 };
