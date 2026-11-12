@@ -200,6 +200,12 @@ export type PartialRefundResult =
  * it must refuse the partial refund rather than pay out the full amount.
  */
 export type PromoPartialRefundPort = {
+  /** A visible application that still carries a promotion; released rows are absent. */
+  livePromoApplicationOf(
+    tx: Tx,
+    context: ScopedTenantContext,
+    orderId: string,
+  ): Promise<{ status: string } | null>;
   recomputeAfterPartialRefund(
     tx: Tx,
     context: ScopedTenantContext,
@@ -882,8 +888,32 @@ export async function recordPartialRefundPayout(
   return { recordedIdr };
 }
 
+/**
+ * The order's promo application unless it is missing or `released` (a void
+ * gives the promotion back, so a released row is no longer a live promo).
+ */
+export async function livePromoApplicationOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<{ status: string } | null> {
+  assertTrustedScopedContext(context);
+  const [application] = await tx
+    .select({ status: promotionOrderApplications.status })
+    .from(promotionOrderApplications)
+    .where(
+      and(
+        eq(promotionOrderApplications.tenantId, context.tenant.tenantId),
+        eq(promotionOrderApplications.orderId, orderId),
+      ),
+    )
+    .limit(1);
+  return application && application.status !== "released" ? application : null;
+}
+
 /** Default port: the real recompute (the refund module injects it). */
 export const promoPartialRefundPort: PromoPartialRefundPort = {
+  livePromoApplicationOf,
   recomputeAfterPartialRefund,
   recordPartialRefundPayout,
 };

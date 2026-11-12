@@ -673,6 +673,34 @@ function withoutPromotionRule(tx: Tx, hiddenId: string): Tx {
   });
 }
 
+describe("legend-77r0 live application lookup through the refund port", () => {
+  it("returns only a live application visible to the tenant and outlet, then hides its release", async () => {
+    const coffee = randomUUID();
+    await seedPromotion(coffee);
+    const orderId = createUlid();
+    const lookup = (scoped = context()) =>
+      withTenant(db, scoped, (tx) =>
+        orderPromoPartialRefundPort.livePromoApplicationOf(tx, scoped, orderId),
+      );
+    expect(await lookup()).toBeNull();
+    await redeem(orderId, [priced(coffee, 100_000)]);
+    expect(await lookup()).toEqual({ status: "applied" });
+    expect(await lookup(scopeFor(randomUUID()))).toBeNull();
+    const otherOutlet = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "session" }),
+      {
+        kind: "outlets",
+        outletIds: [
+          outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[1].id),
+        ],
+      },
+    );
+    expect(await lookup(otherOutlet)).toBeNull();
+    await release(orderId);
+    expect(await lookup()).toBeNull();
+  });
+});
+
 describe("legend-15by Q19b stack-ordered per-line kept discount at the refund port", () => {
   const items = () => ({
     coffee: randomUUID(),
