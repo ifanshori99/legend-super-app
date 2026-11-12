@@ -26,7 +26,13 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
-import { encodeCursor, type ScopedTenantContext } from "@starter/shared/core";
+import {
+  CoreError,
+  encodeCursor,
+  isOutletInScope,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import { storageSourceKindPurpose } from "@starter/shared/storage";
 import {
   HRIS_PII_FIELDS,
   canReadEmployeeDocument,
@@ -49,6 +55,7 @@ import {
   employees,
   employmentContracts,
 } from "../db/schema/hris.ts";
+import { coreStorageObjects } from "../db/schema/core-storage.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
@@ -59,6 +66,7 @@ import {
   sealHrisPii,
 } from "../lib/hris-pii.ts";
 import { recordAudit } from "./core-audit.ts";
+import { idempotentHrisWrite } from "./hris-employee.service.ts";
 import { linkStorageObjectSource } from "./core-storage.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
@@ -466,10 +474,51 @@ async function managedEmployee(
       ),
     )
     .limit(1);
-  if (!employee || access.viewerFor(employee) === null) throw notFound();
+  if (
+    !employee ||
+    !isOutletInScope(context.outletScope, employee.homeOutletId) ||
+    access.viewerFor(employee) === null
+  )
+    throw notFound();
   if (!access.permissionsAt(employee.homeOutletId).includes(HRIS_MANAGE_CODE))
     throw forbidden();
   return employee;
+}
+
+/** Validate the upload before a foreign-key insert, keeping ownership checks
+ * and file attachment inside the same transaction. A replay skips this check:
+ * a successful first write has already transferred and linked the upload. */
+async function assertAttachableFile(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  objectId: string,
+  outletId: string,
+  sourceKind: "employee_document" | "employment_contract",
+): Promise<void> {
+  const [file] = await tx
+    .select()
+    .from(coreStorageObjects)
+    .where(
+      and(
+        eq(coreStorageObjects.tenantId, context.tenant.tenantId),
+        eq(coreStorageObjects.id, objectId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (
+    !file ||
+    file.purpose !== storageSourceKindPurpose[sourceKind] ||
+    file.outletId !== outletId ||
+    file.ownerUserId !== actorUserId ||
+    file.sourceId !== null ||
+    (file.sourceKind !== null && file.sourceKind !== sourceKind)
+  )
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "The file cannot be attached here.",
+    );
 }
 
 export type CreateEmploymentContractInput = {
@@ -485,9 +534,10 @@ export type CreateEmploymentContractInput = {
   readonly fileObjectId: string | null;
   readonly reminderDaysBefore: number;
   readonly status?: EmploymentContractStatus;
+  readonly idempotencyKey?: string;
 };
 
-/** Records a contract (HR, `hr.employee.manage` on the home outlet). No route yet. */
+/** Records a contract (HR, `hr.employee.manage` on the home outlet). */
 export async function createEmploymentContract(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -522,63 +572,114 @@ export async function createEmploymentContract(
       access,
       input.employeeId,
     );
+    if (input.renewedFromId !== null) {
+      const [previous] = await tx
+        .select({ id: employmentContracts.id })
+        .from(employmentContracts)
+        .where(
+          and(
+            eq(employmentContracts.tenantId, context.tenant.tenantId),
+            eq(employmentContracts.id, input.renewedFromId),
+            eq(employmentContracts.employeeId, employee.id),
+          ),
+        )
+        .limit(1);
+      if (!previous) throw notFound();
+    }
+    const { idempotencyKey, ...values } = input;
+    const create = async () => {
+      if (input.fileObjectId !== null)
+        await assertAttachableFile(
+          tx,
+          context,
+          access.actorUserId,
+          input.fileObjectId,
+          employee.homeOutletId,
+          "employment_contract",
+        );
+      const [row] = await tx
+        .insert(employmentContracts)
+        .values({
+          id,
+          tenantId: context.tenant.tenantId,
+          employeeId: employee.id,
+          type: input.type,
+          taxScheme: input.taxScheme,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          renewedFromId: input.renewedFromId,
+          salarySnapshotEncrypted:
+            salary === null
+              ? null
+              : sealHrisPii(
+                  salary,
+                  contractBinding({ tenantId: context.tenant.tenantId, id }),
+                  HRIS_PII_KEY_VERSION,
+                ),
+          piiKeyVersion: HRIS_PII_KEY_VERSION,
+          fileObjectId: input.fileObjectId,
+          reminderDaysBefore: input.reminderDaysBefore,
+          status: input.status ?? "draft",
+          createdBy: access.actorUserId,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+      if (!row) throw new Error("Contract insert returned no row");
+      // The signed file belongs to the contract; the employee may read their own.
+      if (input.fileObjectId !== null)
+        await linkStorageObjectSource(tx, {
+          tenantId: context.tenant.tenantId,
+          objectId: input.fileObjectId,
+          sourceKind: "employment_contract",
+          sourceId: row.id,
+          actorUserId: access.actorUserId,
+          outletId: employee.homeOutletId,
+          ...(employee.userId === null ? {} : { ownerUserId: employee.userId }),
+        });
+      await recordAudit(
+        tx,
+        context,
+        hrisAuditEntry(context, access.actorUserId, now, {
+          outletId: employee.homeOutletId,
+          action: "hris.employment_contract.created",
+          objectType: "employment_contract",
+          objectId: row.id,
+          after: {
+            type: row.type,
+            taxScheme: row.taxScheme,
+            status: row.status,
+            changedFields: salary === null ? [] : ["salarySnapshot"],
+          },
+        }),
+        HRIS_AUDIT_SAFE_FIELDS,
+      );
+      return { id: row.id };
+    };
+    // Cache only the durable result identity. Sensitive fields are projected
+    // using this request's permissions, including when replaying a write.
+    const created = await (idempotencyKey === undefined
+      ? create()
+      : idempotentHrisWrite(
+          tx,
+          context,
+          idempotencyKey,
+          "employment_contract.create",
+          { actor: access.actorUserId, input: values },
+          create,
+        ));
     const [row] = await tx
-      .insert(employmentContracts)
-      .values({
-        id,
-        tenantId: context.tenant.tenantId,
-        employeeId: employee.id,
-        type: input.type,
-        taxScheme: input.taxScheme,
-        startDate: input.startDate,
-        endDate: input.endDate,
-        renewedFromId: input.renewedFromId,
-        salarySnapshotEncrypted:
-          salary === null
-            ? null
-            : sealHrisPii(
-                salary,
-                contractBinding({ tenantId: context.tenant.tenantId, id }),
-                HRIS_PII_KEY_VERSION,
-              ),
-        piiKeyVersion: HRIS_PII_KEY_VERSION,
-        fileObjectId: input.fileObjectId,
-        reminderDaysBefore: input.reminderDaysBefore,
-        status: input.status ?? "draft",
-        createdBy: access.actorUserId,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
-    if (!row) throw new Error("Contract insert returned no row");
-    // The signed file belongs to the contract; the employee may read their own.
-    if (input.fileObjectId !== null)
-      await linkStorageObjectSource(tx, {
-        tenantId: context.tenant.tenantId,
-        objectId: input.fileObjectId,
-        sourceKind: "employment_contract",
-        sourceId: row.id,
-        actorUserId: access.actorUserId,
-        outletId: employee.homeOutletId,
-        ...(employee.userId === null ? {} : { ownerUserId: employee.userId }),
-      });
-    await recordAudit(
-      tx,
-      context,
-      hrisAuditEntry(context, access.actorUserId, now, {
-        outletId: employee.homeOutletId,
-        action: "hris.employment_contract.created",
-        objectType: "employment_contract",
-        objectId: row.id,
-        after: {
-          type: row.type,
-          taxScheme: row.taxScheme,
-          status: row.status,
-          changedFields: salary === null ? [] : ["salarySnapshot"],
-        },
-      }),
-      HRIS_AUDIT_SAFE_FIELDS,
-    );
+      .select()
+      .from(employmentContracts)
+      .where(
+        and(
+          eq(employmentContracts.tenantId, context.tenant.tenantId),
+          eq(employmentContracts.id, created.id),
+          eq(employmentContracts.employeeId, employee.id),
+        ),
+      )
+      .limit(1);
+    if (!row) throw notFound("Kontrak kerja");
     const viewer = access.viewerFor(employee)!;
     return toContract(
       tx,
@@ -599,6 +700,7 @@ export type CreateEmployeeDocumentInput = {
   /** Already uploaded through core-storage (purpose `document`, private). */
   readonly storageObjectId: string;
   readonly expiresOn: string | null;
+  readonly idempotencyKey?: string;
 };
 
 /** Records document metadata (HR). The bytes went through core-storage. */
@@ -616,41 +718,62 @@ export async function createEmployeeDocument(
       access,
       input.employeeId,
     );
-    const [row] = await tx
-      .insert(employeeDocuments)
-      .values({
+    const { idempotencyKey, ...values } = input;
+    const create = async () => {
+      await assertAttachableFile(
+        tx,
+        context,
+        access.actorUserId,
+        input.storageObjectId,
+        employee.homeOutletId,
+        "employee_document",
+      );
+      const [row] = await tx
+        .insert(employeeDocuments)
+        .values({
+          tenantId: context.tenant.tenantId,
+          employeeId: employee.id,
+          type: input.type,
+          storageObjectId: input.storageObjectId,
+          expiresOn: input.expiresOn,
+          uploadedAt: now,
+          uploadedBy: access.actorUserId,
+        })
+        .returning();
+      if (!row) throw new Error("Document insert returned no row");
+      // The file belongs to the document; the employee may read their own.
+      await linkStorageObjectSource(tx, {
         tenantId: context.tenant.tenantId,
-        employeeId: employee.id,
-        type: input.type,
-        storageObjectId: input.storageObjectId,
-        expiresOn: input.expiresOn,
-        uploadedAt: now,
-        uploadedBy: access.actorUserId,
-      })
-      .returning();
-    if (!row) throw new Error("Document insert returned no row");
-    // The file belongs to the document; the employee may read their own.
-    await linkStorageObjectSource(tx, {
-      tenantId: context.tenant.tenantId,
-      objectId: input.storageObjectId,
-      sourceKind: "employee_document",
-      sourceId: row.id,
-      actorUserId: access.actorUserId,
-      outletId: employee.homeOutletId,
-      ...(employee.userId === null ? {} : { ownerUserId: employee.userId }),
-    });
-    await recordAudit(
-      tx,
-      context,
-      hrisAuditEntry(context, access.actorUserId, now, {
+        objectId: input.storageObjectId,
+        sourceKind: "employee_document",
+        sourceId: row.id,
+        actorUserId: access.actorUserId,
         outletId: employee.homeOutletId,
-        action: "hris.employee_document.created",
-        objectType: "employee_document",
-        objectId: row.id,
-        after: { type: row.type },
-      }),
-      HRIS_AUDIT_SAFE_FIELDS,
-    );
-    return toDocument(row, null);
+        ...(employee.userId === null ? {} : { ownerUserId: employee.userId }),
+      });
+      await recordAudit(
+        tx,
+        context,
+        hrisAuditEntry(context, access.actorUserId, now, {
+          outletId: employee.homeOutletId,
+          action: "hris.employee_document.created",
+          objectType: "employee_document",
+          objectId: row.id,
+          after: { type: row.type },
+        }),
+        HRIS_AUDIT_SAFE_FIELDS,
+      );
+      return toDocument(row, null);
+    };
+    return idempotencyKey === undefined
+      ? create()
+      : idempotentHrisWrite(
+          tx,
+          context,
+          idempotencyKey,
+          "employee_document.create",
+          { actor: access.actorUserId, input: values },
+          create,
+        );
   });
 }

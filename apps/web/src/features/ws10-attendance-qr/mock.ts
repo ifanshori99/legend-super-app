@@ -40,6 +40,7 @@ registerMock(getAttendanceQr, ({ query }) => {
       token: qrTokenAt(now),
       issuedAt: new Date(issuedMs).toISOString(),
       expiresAt: new Date(issuedMs + QR_ROTATION_MS).toISOString(),
+      serverTime: new Date(now).toISOString(),
       rotationSeconds,
     },
   };

@@ -29,6 +29,12 @@ import {
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import {
+  createEmployee as createEmployeeEndpoint,
+  createEmployeeDocument as createEmployeeDocumentEndpoint,
+  createEmploymentContract as createEmploymentContractEndpoint,
+  createOrgUnit as createOrgUnitEndpoint,
+  createPositionGrade as createPositionGradeEndpoint,
+  createPosition as createPositionEndpoint,
   getEmployee as getEmployeeEndpoint,
   getEmployeePii as getEmployeePiiEndpoint,
   getEmploymentContract as getEmploymentContractEndpoint,
@@ -59,6 +65,8 @@ import { changeEmployeeManager } from "../services/hris-employee-manager.service
 import * as attendanceService from "../services/hris-attendance.service.ts";
 import * as orgService from "../services/hris-org.service.ts";
 import {
+  createEmployeeDocument,
+  createEmploymentContract,
   getEmploymentContract,
   listEmployeeDocuments,
   listEmploymentContracts,
@@ -196,6 +204,107 @@ export function createHrisRouter(deps: HrisRouterDeps = {}): Router {
           actor(req),
         ),
       });
+    },
+  );
+
+  router.post(
+    "/employees",
+    backOffice,
+    jsonBody,
+    requireHris(MANAGE),
+    async (req, res) => {
+      const body = createEmployeeEndpoint.body.parse(req.body);
+      const data = await employeesService.createEmployee(
+        hrisContext(req),
+        actor(req),
+        body,
+      );
+      res.location(`/api/hris/employees/${data.id}`).status(201).json({ data });
+    },
+  );
+
+  router.post(
+    "/org-units",
+    backOffice,
+    jsonBody,
+    requireHris(MANAGE),
+    async (req, res) => {
+      const body = createOrgUnitEndpoint.body.parse(req.body);
+      const data = await orgService.createOrgUnit(
+        hrisContext(req),
+        actor(req),
+        body,
+      );
+      res.status(201).json({ data });
+    },
+  );
+
+  router.post(
+    "/position-grades",
+    backOffice,
+    jsonBody,
+    requireHris(MANAGE),
+    async (req, res) => {
+      const body = createPositionGradeEndpoint.body.parse(req.body);
+      const data = await orgService.createPositionGrade(
+        hrisContext(req),
+        actor(req),
+        body,
+      );
+      res.status(201).json({ data });
+    },
+  );
+
+  router.post(
+    "/positions",
+    backOffice,
+    jsonBody,
+    requireHris(MANAGE),
+    async (req, res) => {
+      const body = createPositionEndpoint.body.parse(req.body);
+      const data = await orgService.createPosition(
+        hrisContext(req),
+        actor(req),
+        body,
+      );
+      res.status(201).json({ data });
+    },
+  );
+
+  router.post(
+    "/employment-contracts",
+    backOffice,
+    jsonBody,
+    requireHris(MANAGE),
+    async (req, res) => {
+      const body = createEmploymentContractEndpoint.body.parse(req.body);
+      const data = await createEmploymentContract(
+        hrisContext(req),
+        actor(req),
+        body,
+      );
+      res
+        .location(`/api/hris/employment-contracts/${data.id}`)
+        .status(201)
+        .json({ data });
+    },
+  );
+
+  router.post(
+    "/employees/:employeeId/documents",
+    backOffice,
+    jsonBody,
+    requireHris(MANAGE),
+    async (req, res) => {
+      const { employeeId } = createEmployeeDocumentEndpoint.params.parse(
+        req.params,
+      );
+      const body = createEmployeeDocumentEndpoint.body.parse(req.body);
+      const data = await createEmployeeDocument(hrisContext(req), actor(req), {
+        ...body,
+        employeeId,
+      });
+      res.status(201).json({ data });
     },
   );
 

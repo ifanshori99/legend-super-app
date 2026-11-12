@@ -29,6 +29,7 @@ import {
   encodeCursor,
   isOutletInScope,
   localDateOf,
+  outletIdSchema,
   ulidToUuid,
   type ScopedTenantContext,
   type TenantId,
@@ -337,6 +338,7 @@ export async function getMyAttendancePolicy(
       target.outletId,
     );
     return {
+      outletId: outletIdSchema.parse(target.outletId),
       geofenceRadiusM: policy.geofenceRadiusM,
       outsideGeofenceAction: policy.outsideGeofenceAction,
       unboundDeviceAction: policy.unboundDeviceAction,
@@ -1626,6 +1628,7 @@ export async function getAttendanceQr(
       expiresAt: new Date(
         issuedAt + ATTENDANCE_QR_ROTATION_SECONDS * 1_000,
       ).toISOString(),
+      serverTime: now.toISOString(),
       rotationSeconds: ATTENDANCE_QR_ROTATION_SECONDS,
     });
   });
