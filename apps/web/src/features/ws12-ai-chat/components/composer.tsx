@@ -1,7 +1,7 @@
 // The question box. The label is always visible (not a placeholder); Enter
 // sends; while an answer is on its way or typing in, "Kirim" becomes
 // "Hentikan".
-import { useId } from "react";
+import { useId, type Ref } from "react";
 import { AI_QUESTION_MAX } from "@starter/shared/ai";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export function Composer({
+  inputRef,
   value,
   onChange,
   onSubmit,
@@ -17,6 +18,8 @@ export function Composer({
   disabled,
   quota,
 }: {
+  /** Lets the page move focus here (e.g. after "Tanya ulang"). */
+  inputRef?: Ref<HTMLInputElement>;
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
@@ -45,6 +48,7 @@ export function Composer({
       <div className="flex gap-2.5">
         <Input
           id={id}
+          ref={inputRef}
           value={value}
           maxLength={AI_QUESTION_MAX}
           disabled={disabled}

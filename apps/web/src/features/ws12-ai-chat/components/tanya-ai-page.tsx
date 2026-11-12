@@ -112,6 +112,7 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const controller = React.useRef<AbortController | null>(null);
+  const composerRef = React.useRef<HTMLInputElement>(null);
 
   const messages = React.useMemo(
     () => visibleMessages(detail.data?.data.messages ?? []),
@@ -142,12 +143,17 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
     block === "budget" ||
     block === "featureOff";
 
-  function submit(question: string, conversationId: string | null) {
+  function submit(
+    question: string,
+    conversationId: string | null,
+    { keepInput = false }: { keepInput?: boolean } = {},
+  ) {
     const trimmed = question.trim();
     if (!trimmed) return;
     setFailure(null);
     setPending(trimmed);
-    setInput("");
+    // "Tanya ulang" resends an old question: the draft in the composer stays.
+    if (!keepInput) setInput("");
     setRevealKey(null);
     const abort = new AbortController();
     controller.current = abort;
@@ -180,7 +186,9 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
               : classifyAskError(error);
           setFailure({ question: trimmed, kind, conversationId });
           // Let the person edit and resend (e.g. after a personal-data refusal).
-          setInput((current) => (current === "" ? trimmed : current));
+          // Never overwrite a draft they typed meanwhile or kept on "Tanya ulang".
+          if (!keepInput)
+            setInput((current) => (current === "" ? trimmed : current));
         },
       },
     );
@@ -373,7 +381,11 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
                         type="button"
                         variant="ghost"
                         className="min-h-11"
-                        onClick={() => submit(lastQuestion, activeId)}
+                        onClick={() => {
+                          submit(lastQuestion, activeId, { keepInput: true });
+                          // The button unmounts while busy: keep keyboard focus.
+                          composerRef.current?.focus();
+                        }}
                       >
                         <RotateCw aria-hidden="true" />
                         {t("aiChat.answer.askAgain")}
@@ -437,6 +449,7 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
             </div>
 
             <Composer
+              inputRef={composerRef}
               value={input}
               onChange={setInput}
               onSubmit={() => submit(input, activeId)}

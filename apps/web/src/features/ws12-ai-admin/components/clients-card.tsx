@@ -302,20 +302,19 @@ function ScopesText({ client }: { client: McpClient }) {
   const shown = items.slice(0, MAX_SCOPES_SHOWN);
   const hidden = items.slice(MAX_SCOPES_SHOWN);
   const fullList = items.map(capitalizeFirst).join(", ");
+  // Plain comma text like the mockup ("Penjualan, menu"); more than two scopes
+  // collapse into "+N lainnya" so the row stays short.
   return (
-    <span className="flex flex-wrap items-center gap-1.5" title={fullList}>
-      {shown.map((label) => (
-        <Badge key={label} tone="neutral">
-          {capitalizeFirst(label)}
-        </Badge>
-      ))}
+    <span className="text-sm leading-5" title={fullList}>
+      {capitalizeFirst(shown.join(", "))}
       {hidden.length > 0 && (
-        <Badge tone="neutral" className="text-muted-foreground">
+        <span className="whitespace-nowrap text-muted-foreground">
+          {" "}
           {t("aiAdmin.clients.scopeMore", { count: hidden.length })}
           <span className="sr-only">
             : {hidden.map(capitalizeFirst).join(", ")}
           </span>
-        </Badge>
+        </span>
       )}
     </span>
   );
@@ -355,7 +354,7 @@ function ClientAction({
     return (
       <Button
         variant="ghost"
-        className="-ml-2 h-auto min-h-9 justify-start text-left whitespace-normal text-danger md:ml-0"
+        className="-ml-2 h-auto min-h-9 justify-start text-left text-sm whitespace-normal text-danger md:ml-0"
         aria-label={t("aiAdmin.clients.revokeActionFor", {
           client: plain(client.name),
         })}
@@ -368,7 +367,7 @@ function ClientAction({
     return (
       <Button
         variant="outline"
-        className="h-auto min-h-9 whitespace-normal"
+        className="h-auto min-h-9 text-sm whitespace-nowrap"
         aria-label={t("aiAdmin.clients.approveActionFor", {
           client: plain(client.name),
         })}

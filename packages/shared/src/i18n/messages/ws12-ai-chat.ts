@@ -42,6 +42,7 @@ export const aiChatMessages = {
     sourceKind: {
       sales: "Laporan penjualan",
       report: "Laporan",
+      document: "Dokumen",
     },
     sourceOpen: "buka sumber",
     sourceScope: "{brand} · Periode {period}",

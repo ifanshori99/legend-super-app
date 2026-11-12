@@ -135,9 +135,19 @@ export function sourcePeriodText(source: AiMessageSource): string | null {
   return source.period ? formatPeriod(source.period) : null;
 }
 
-/** Catalog key (under `aiChat.answer.sourceKind`) for the report a source opens. */
-export function sourceKindKey(source: AiMessageSource): "sales" | "report" {
-  return source.link.startsWith("/reports/sales") ? "sales" : "report";
+/**
+ * Catalog key (under `aiChat.answer.sourceKind`) for what a source opens: a
+ * sales report, another report (`/reports/…`), or a neutral "Dokumen" for
+ * anything else (e.g. an SOP).
+ */
+export function sourceKindKey(
+  source: AiMessageSource,
+): "sales" | "report" | "document" {
+  const link = source.link;
+  if (link === "/reports/sales" || link.startsWith("/reports/sales/"))
+    return "sales";
+  if (link === "/reports" || link.startsWith("/reports/")) return "report";
+  return "document";
 }
 
 /** Only what a person wrote or the AI answered; tool rows are plumbing. */

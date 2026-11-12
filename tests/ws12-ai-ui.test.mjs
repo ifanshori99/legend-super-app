@@ -14,7 +14,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 import { ApiError } from "../apps/web/src/lib/api/errors.ts";
-import { classifyAskError } from "../apps/web/src/features/ws12-ai-chat/logic.ts";
+import {
+  classifyAskError,
+  sourceKindKey,
+} from "../apps/web/src/features/ws12-ai-chat/logic.ts";
 import { actionStatusView } from "../apps/web/src/features/ws12-ai-action/logic.ts";
 import {
   CONSENT_RESUME_KEY,
@@ -120,6 +123,23 @@ describe("classifyAskError (P1)", () => {
     assert.equal(classifyAskError(err(404, "NOT_FOUND")), "error");
     assert.equal(classifyAskError(err(401, "UNAUTHENTICATED")), "error");
     assert.equal(classifyAskError(err(500, "AI_UNKNOWN")), "error");
+  });
+});
+
+describe("sourceKindKey (P1)", () => {
+  const src = (link) => ({ label: "x", link });
+  test("sales only for /reports/sales", () => {
+    assert.equal(sourceKindKey(src("/reports/sales")), "sales");
+    assert.equal(sourceKindKey(src("/reports/sales/daily")), "sales");
+    assert.equal(sourceKindKey(src("/reports/salesperson")), "report");
+  });
+  test("other /reports links are reports", () => {
+    assert.equal(sourceKindKey(src("/reports")), "report");
+    assert.equal(sourceKindKey(src("/reports/stock")), "report");
+  });
+  test("non-report links are documents", () => {
+    assert.equal(sourceKindKey(src("/sop/kebersihan-bar")), "document");
+    assert.equal(sourceKindKey(src("/owner")), "document");
   });
 });
 

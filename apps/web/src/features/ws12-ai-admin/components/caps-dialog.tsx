@@ -103,18 +103,35 @@ function CapsForm({
     (field: CapsField) => (event: React.ChangeEvent<HTMLInputElement>) =>
       setDraft((current) => ({ ...current, [field]: event.target.value }));
 
-  // Blur: run the same validateCaps and keep only this field's result.
+  // Blur: run the same validateCaps and keep only this field's result. The
+  // warn/stop pair depends on each other (the "order" error sits on warnPct),
+  // so the partner is recomputed too when it currently shows an error.
+  // Focus moving to a footer button skips this: a new error line would push
+  // the button away from the pointer before the click lands. Submit still
+  // validates everything.
   const blur =
     (field: CapsField) => (event: React.FocusEvent<HTMLInputElement>) => {
+      if (event.relatedTarget instanceof HTMLButtonElement) return;
       const result = validateCaps(
         { ...draft, [field]: event.target.value },
         limits,
       );
-      const kind = result.ok ? undefined : result.errors[field];
+      const found = result.ok ? {} : result.errors;
+      const partner: CapsField | undefined =
+        field === "warnPct"
+          ? "stopPct"
+          : field === "stopPct"
+            ? "warnPct"
+            : undefined;
       setErrors((current) => {
         const next = { ...current };
-        if (kind === undefined) delete next[field];
-        else next[field] = kind;
+        const apply = (target: CapsField) => {
+          const kind = found[target];
+          if (kind === undefined) delete next[target];
+          else next[target] = kind;
+        };
+        apply(field);
+        if (partner && current[partner] !== undefined) apply(partner);
         return next;
       });
     };
