@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>legend-uhp28 — bukti web root</title>
+    <style>
+      .evidence {
+        max-width: 1200px;
+        margin: 24px auto;
+        padding: 16px;
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+      }
+      .captures {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+        gap: 24px;
+      }
+      .capture {
+        min-width: 0;
+      }
+      .capture img {
+        display: block;
+        width: 100%;
+        height: auto;
+        border: 1px solid #9ca3af;
+        border-radius: 12px;
+      }
+      .capture h2 {
+        font-size: 20px;
+      }
+      code {
+        overflow-wrap: anywhere;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="evidence">
+      <p class="gx-eyebrow">legend-uhp28 · fix/web-root-500</p>
+      <h1>Root lokal berjalan, situs hilang menjadi 404</h1>
+      <p class="gx-lede">
+        Tangkapan langsung dari localhost:3387, lebar 390 dan 1280 piksel. Basis
+        reproduksi: ab574d58.
+      </p>
+      <div class="captures">
+        <section class="capture">
+          <h2>Sebelum: HTTP 500</h2>
+          <p>
+            Health API 200 dan situs pada domain seed 200. Host localhost belum
+            terpetakan; loader meneruskan error 404 sebagai kegagalan server.
+          </p>
+          <a href="before-1280.png">Lihat tangkapan desktop</a>
+          <img
+            src="before-390.png"
+            alt="Sebelum perbaikan, halaman menampilkan Halaman belum bisa dimuat."
+          />
+        </section>
+        <section class="capture">
+          <h2>Situs tidak tersedia: HTTP 404</h2>
+          <p>
+            Sesudah perbaikan loader, tanpa alias situs lokal. Halaman 404 yang
+            sudah tersedia dirender dengan status yang benar.
+          </p>
+          <a href="missing-site-1280.png">Lihat tangkapan desktop</a>
+          <img
+            src="missing-site-390.png"
+            alt="Sesudah perbaikan loader, muncul halaman 404 Halaman tidak ditemukan."
+          />
+        </section>
+        <section class="capture">
+          <h2>Sesudah setup: HTTP 200</h2>
+          <p>
+            Setup mengisi alias eksplisit dari domain seed terverifikasi. Hanya
+            tiga GET publik dari loopback dalam development synthetic yang
+            menggunakannya.
+          </p>
+          <a href="after-1280.png">Lihat tangkapan desktop</a>
+          <img
+            src="after-390.png"
+            alt="Sesudah setup, beranda publik Cafe Legend ditampilkan pada localhost."
+          />
+        </section>
+      </div>
+      <p>
+        Host langsung dan forwarded host yang tidak dikenal tetap 404. Doctor
+        menolak alias yang tidak valid. Endpoint situs adalah
+        <code>/api/public/site</code>;
+        <code>/api/tenant/context</code> menyediakan tema.
+      </p>
+    </main>
+  </body>
+</html>

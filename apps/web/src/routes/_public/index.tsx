@@ -5,6 +5,7 @@ import {
   WebsitePending,
 } from "@/features/ws08-website/components/states";
 import { usePublicSite } from "@/features/ws08-website/hooks";
+import { loadWebsiteData } from "@/features/ws08-website/lib/loader";
 import { absoluteUrl, homeHead } from "@/features/ws08-website/lib/seo";
 import { publicSiteQuery } from "@/features/ws08-website/queries";
 
@@ -13,7 +14,7 @@ import { publicSiteQuery } from "@/features/ws08-website/queries";
 // the head; the loader fills the query cache so the HTML already has content.
 export const Route = createFileRoute("/_public/")({
   loader: ({ context }) =>
-    context.queryClient.ensureQueryData(publicSiteQuery()),
+    loadWebsiteData(context.queryClient.ensureQueryData(publicSiteQuery())),
   head: ({ loaderData }) =>
     loaderData
       ? homeHead(loaderData, absoluteUrl(loaderData.seo.canonicalUrl, "/menu"))

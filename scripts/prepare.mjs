@@ -1,6 +1,7 @@
 import { assertNode, prepareEnvironment, runPnpm, root } from "./lib.mjs";
 import { managesLocalDatabase } from "./postgres.mjs";
 import { provisionAppRole } from "./provision-app-role.mjs";
+import { prepareDevelopmentPublicSite } from "./dev-public-site.mjs";
 import { randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -27,6 +28,7 @@ try {
         "tsx",
         "src/db/seed-dev-tenant.ts",
       ]);
+      await prepareDevelopmentPublicSite();
     }
     if (!process.env.APP_DATABASE_URL) {
       const app = new URL(process.env.DATABASE_URL);

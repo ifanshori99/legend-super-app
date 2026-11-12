@@ -10,6 +10,7 @@ import {
   usePublicSite,
 } from "@/features/ws08-website/hooks";
 import { menuHead } from "@/features/ws08-website/lib/seo";
+import { loadWebsiteData } from "@/features/ws08-website/lib/loader";
 import {
   publicMenuPageQuery,
   publicSiteQuery,
@@ -22,10 +23,12 @@ const t = createTranslator();
 // The head carries the Menu JSON-LD; the page carries the tax/service note.
 export const Route = createFileRoute("/_public/menu")({
   loader: async ({ context }) => {
-    const [site, page] = await Promise.all([
-      context.queryClient.ensureQueryData(publicSiteQuery()),
-      context.queryClient.ensureQueryData(publicMenuPageQuery()),
-    ]);
+    const [site, page] = await loadWebsiteData(
+      Promise.all([
+        context.queryClient.ensureQueryData(publicSiteQuery()),
+        context.queryClient.ensureQueryData(publicMenuPageQuery()),
+      ]),
+    );
     return { site, page };
   },
   head: ({ loaderData }) => {

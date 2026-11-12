@@ -39,6 +39,20 @@ See the [environment matrix and import policy](deployment.md#environment-and-dat
 provide the edge runtime by itself. Set environment values in your private local
 configuration, and do not commit secrets.
 
+Managed local development also seeds the synthetic tenant's published website
+and records its verified domain in `DEV_PUBLIC_SITE_HOST`. This lets the public
+home page and menu work at your local `WEB_URL` without editing DNS or hosts.
+The alias applies only to three public GET endpoints from loopback in development
+with synthetic data; it grants no sign-in or tenant management access. Real
+tenant domains keep their normal verified-domain resolution.
+
+Run `pnpm dev:prepare` followed by `pnpm run doctor` in a fresh worktree or if the
+local site is missing. Doctor checks the configured domain, active tenant, and
+published website. Existing settings are preserved; external databases are not
+automatically seeded or assigned an alias. An unknown tenant or unpublished site
+returns a normal 404 page. The website endpoint is `/api/public/site`;
+`/api/tenant/context` supplies its theme, and `/api/tenant/site` does not exist.
+
 ## Origins and ports
 
 Three settings in `.env.local` must agree; setup writes consistent defaults and `pnpm run doctor` checks them:
