@@ -783,6 +783,9 @@ describe("F17 mission: voucher reward", () => {
 
 describe("F17 mission: GET /api/member/missions", () => {
   let app: Express;
+  const otherEntityId = randomUUID();
+  const otherOutletId = randomUUID();
+  let previousProgramEntity: string | null;
   const WIDE = {
     kind: "date_range",
     start: "2026-10-01",
@@ -819,6 +822,37 @@ describe("F17 mission: GET /api/member/missions", () => {
     app = createApp();
     await ensureConsentPolicies();
     await seedProgram(seededTenantId);
+    await asTenant(seededTenantId, async (client) => {
+      const program = await client.query<{ legal_entity_id: string | null }>(
+        "SELECT legal_entity_id FROM loyalty_programs WHERE tenant_id = $1",
+        [seededTenantId],
+      );
+      previousProgramEntity = program.rows[0]!.legal_entity_id;
+      // Other suites also add outlets of other PTs to this shared tenant.
+      // Reproduce that shape here, then select this fixture's PT per Q80.
+      await client.query(
+        "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Misi Lain', false)",
+        [otherEntityId, seededTenantId],
+      );
+      await client.query(
+        `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
+         SELECT $1, tenant_id, brand_id, $3, $4, 'Outlet Misi Lain', 'Jl. Uji', 'Asia/Jakarta', '04:00', opening_hours, 'active'
+         FROM outlets WHERE tenant_id = $2 AND id = $5`,
+        [
+          otherOutletId,
+          seededTenantId,
+          otherEntityId,
+          `MI-${short()}`.toUpperCase(),
+          seededOutletA,
+        ],
+      );
+      await client.query(
+        `UPDATE loyalty_programs SET legal_entity_id =
+           (SELECT legal_entity_id FROM outlets WHERE tenant_id = $1 AND id = $2)
+         WHERE tenant_id = $1`,
+        [seededTenantId, seededOutletA],
+      );
+    });
     mission = {
       // Never reached by the member: 2 of 5.
       counting: await seedMission(
@@ -845,12 +879,29 @@ describe("F17 mission: GET /api/member/missions", () => {
     created.push(...Object.values(mission));
   });
 
+  afterAll(async () => {
+    await asTenant(seededTenantId, async (client) => {
+      await client.query(
+        "UPDATE loyalty_programs SET legal_entity_id = $2 WHERE tenant_id = $1",
+        [seededTenantId, previousProgramEntity],
+      );
+      await client.query(
+        "DELETE FROM outlets WHERE tenant_id = $1 AND id = $2",
+        [seededTenantId, otherOutletId],
+      );
+      await client.query(
+        "DELETE FROM legal_entities WHERE tenant_id = $1 AND id = $2",
+        [seededTenantId, otherEntityId],
+      );
+    });
+  });
+
   it("F17 mission: lists active missions with the member's own progress and voucher code", async () => {
     const member = await newMemberUser(app, {
       profile: "active",
       verifiedWhatsapp: true,
     });
-    await payOn(seeded, { id: member.profileId! }, "2026-10-15"); // Thursday
+    const first = await payOn(seeded, { id: member.profileId! }, "2026-10-15"); // Thursday
     await payOn(seeded, { id: member.profileId! }, "2026-10-16"); // Friday
 
     const response = await member.client
@@ -884,6 +935,21 @@ describe("F17 mission: GET /api/member/missions", () => {
       member.profileId!,
     );
     expect(voucher?.voucherCode).toBe(row!.voucher_code);
+    expect(await vouchersOf(seededTenantId, member.profileId!)).toHaveLength(1);
+    expect(await bonusRows(seededTenantId, member.profileId!)).toHaveLength(0);
+    expect(await balanceOf(seededTenantId, member.profileId!)).toBe(20);
+
+    await deliver(seeded, first.event);
+    await deliver(seeded, orderPaidEvent(seeded, first.input));
+    expect(await vouchersOf(seededTenantId, member.profileId!)).toHaveLength(1);
+    expect(await bonusRows(seededTenantId, member.profileId!)).toHaveLength(0);
+    expect(await balanceOf(seededTenantId, member.profileId!)).toBe(20);
+    const [replayed] = await progressRows(
+      seededTenantId,
+      mission.counting,
+      member.profileId!,
+    );
+    expect(replayed!.progress).toBe(2);
 
     // Assumption: members do not see inactive missions.
     expect(find(items, mission.inactive)).toBeUndefined();

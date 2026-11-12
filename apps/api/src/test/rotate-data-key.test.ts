@@ -8,7 +8,7 @@
 //     tenants: [{ tenantId, integrationsRotated, aiKeysRotated, error? }],
 //     totals: { integrationsRotated, aiKeysRotated, failedTenants: string[] },
 //     remaining: { integrations, aiKeys }   // rows of ALL tenants whose key
-//   }                                       // version != active, after the run
+//   }                                       // version NULL or != active, with ciphertext
 //
 // Shape (same pattern as platform-integration-key-rotation.test.ts): phase 1
 // seals integrations under the default ring (version 1) with the static
@@ -135,7 +135,9 @@ async function sealedRow(integrationId: string) {
 
 async function staleIntegrationCount(activeVersion: number): Promise<number> {
   const { rows } = await owner.query<{ n: string }>(
-    "SELECT count(*)::text AS n FROM tenant_integrations WHERE credentials_key_version <> $1",
+    `SELECT count(*)::text AS n FROM tenant_integrations
+     WHERE credentials_encrypted IS NOT NULL
+       AND (credentials_key_version IS NULL OR credentials_key_version <> $1)`,
     [activeVersion],
   );
   return Number(rows[0]!.n);
@@ -318,6 +320,53 @@ describe("PAY-06 runDataKeyRotation rotates every tenant to the active data key"
     expect(report.remaining.integrations).toBe(await staleIntegrationCount(2));
     expect(await sealedRow(rowA)).toEqual(beforeA);
     expect(await sealedRow(rowB)).toEqual(beforeB);
+    audit.setAuditWriter(null);
+  });
+
+  it("PAY-06 NULL version metadata counts encrypted credentials but excludes rows without ciphertext", async () => {
+    const legacyTenant = await createTenant();
+    const emptyTenant = await createTenant();
+    const legacyId = await sealIntegrationV1(legacyTenant);
+    const emptyId = await sealIntegrationV1(emptyTenant);
+    await owner.query(
+      "UPDATE tenant_integrations SET credentials_key_version = NULL WHERE id = $1",
+      [legacyId],
+    );
+    await owner.query(
+      `UPDATE tenant_integrations
+          SET status = 'draft', credentials_encrypted = NULL, credentials_key_version = NULL
+        WHERE id = $1`,
+      [emptyId],
+    );
+    const legacyBefore = await sealedRow(legacyId);
+    const emptyBefore = await sealedRow(emptyId);
+    expect(legacyBefore.credentials_key_version).toBeNull();
+    expect(sealedVersion(legacyBefore.credentials_encrypted)).toBe(1);
+    expect(emptyBefore).toEqual({
+      credentials_encrypted: null,
+      credentials_key_version: null,
+    });
+
+    const { audit, run } = await loadRotation();
+    const preview = await run({ dryRun: true });
+    expect(entry(preview, legacyTenant)?.integrationsRotated).toBe(1);
+    expect(entry(preview, emptyTenant)?.integrationsRotated).toBe(0);
+    expect(preview.remaining.integrations).toBe(await staleIntegrationCount(2));
+    expect(await sealedRow(legacyId)).toEqual(legacyBefore);
+    expect(await sealedRow(emptyId)).toEqual(emptyBefore);
+
+    const report = await run({});
+    expect(entry(report, legacyTenant)).toMatchObject({
+      integrationsRotated: 1,
+    });
+    expect(entry(report, legacyTenant)?.error).toBeUndefined();
+    expect(entry(report, emptyTenant)).toMatchObject({
+      integrationsRotated: 0,
+    });
+    expect(entry(report, emptyTenant)?.error).toBeUndefined();
+    expect((await sealedRow(legacyId)).credentials_key_version).toBe(2);
+    expect(await sealedRow(emptyId)).toEqual(emptyBefore);
+    expect(report.remaining.integrations).toBe(await staleIntegrationCount(2));
     audit.setAuditWriter(null);
   });
 

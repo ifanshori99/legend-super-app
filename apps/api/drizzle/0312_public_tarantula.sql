@@ -1,3 +1,5 @@
+-- Define FKs while this new table is empty. Later ADD CONSTRAINT validation
+-- would scan FORCE-RLS parents as a plain owner without a tenant context.
 CREATE TABLE "loyalty_claim_pauses" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -13,14 +15,13 @@ CREATE TABLE "loyalty_claim_pauses" (
 	CONSTRAINT "loyalty_claim_pauses_unit_check" CHECK (("loyalty_claim_pauses"."order_id" IS NULL) <> ("loyalty_claim_pauses"."split_id" IS NULL)),
 	CONSTRAINT "loyalty_claim_pauses_remaining_check" CHECK ("loyalty_claim_pauses"."remaining_ms" > 0),
 	CONSTRAINT "loyalty_claim_pauses_state_check" CHECK ("loyalty_claim_pauses"."state" IN ('busy', 'ambiguous', 'active', 'invalid')),
-	CONSTRAINT "loyalty_claim_pauses_resume_check" CHECK (("loyalty_claim_pauses"."state" = 'active') = ("loyalty_claim_pauses"."resume_deadline" IS NOT NULL))
+	CONSTRAINT "loyalty_claim_pauses_resume_check" CHECK (("loyalty_claim_pauses"."state" = 'active') = ("loyalty_claim_pauses"."resume_deadline" IS NOT NULL)),
+	CONSTRAINT "loyalty_claim_pauses_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "loyalty_claim_pauses_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "loyalty_claim_pauses_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "loyalty_claim_pauses_order_fk" FOREIGN KEY ("tenant_id","order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "loyalty_claim_pauses_split_fk" FOREIGN KEY ("tenant_id","split_id") REFERENCES "public"."bill_splits"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
---> statement-breakpoint
-ALTER TABLE "loyalty_claim_pauses" ADD CONSTRAINT "loyalty_claim_pauses_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "loyalty_claim_pauses" ADD CONSTRAINT "loyalty_claim_pauses_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "loyalty_claim_pauses" ADD CONSTRAINT "loyalty_claim_pauses_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "loyalty_claim_pauses" ADD CONSTRAINT "loyalty_claim_pauses_order_fk" FOREIGN KEY ("tenant_id","order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "loyalty_claim_pauses" ADD CONSTRAINT "loyalty_claim_pauses_split_fk" FOREIGN KEY ("tenant_id","split_id") REFERENCES "public"."bill_splits"("tenant_id","id") ON DELETE no action ON UPDATE no action;
 --> statement-breakpoint
 -- Backfill only rights that are still live when this migration starts. The
 -- migrator owns these FORCE-RLS tables; temporarily remove FORCE, then restore
