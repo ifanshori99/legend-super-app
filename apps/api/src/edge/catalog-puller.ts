@@ -683,6 +683,8 @@ function describeError(error: unknown): CatalogStreamError {
   };
 }
 
+let catalogPullQueue: Promise<void> = Promise.resolve();
+
 /**
  * One full catalog pull: every stream in turn from its own checkpoint. A stream
  * that fails (connection lost, bad page, missing reference, apply error) stops
@@ -690,6 +692,26 @@ function describeError(error: unknown): CatalogStreamError {
  * result; the other streams still run. Only a bad context throws.
  */
 export async function pullCatalog(
+  options: PullCatalogOptions,
+): Promise<PullCatalogResult> {
+  // The promo gate is process-wide. Serialize whole attempts before assigning
+  // their generations or reading checkpoints: a concurrent offline retry must
+  // not reopen the gate using a checkpoint read before another pull went partial.
+  // Waiting holds no database connection, and a failed pull still releases its slot.
+  const previous = catalogPullQueue;
+  let release!: () => void;
+  catalogPullQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await runCatalogPull(options);
+  } finally {
+    release();
+  }
+}
+
+async function runCatalogPull(
   options: PullCatalogOptions,
 ): Promise<PullCatalogResult> {
   oneOutlet(options.context);

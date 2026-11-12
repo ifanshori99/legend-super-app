@@ -756,6 +756,125 @@ describe("533c P2 a partial promo sync is never completed by a retry that gets n
     expect(await orderDiscount()).toBe(PROMO);
   });
 
+  it("legend-09sxa concurrent retry cannot reopen a partial snapshot from its earlier complete checkpoint", async () => {
+    const cloud = await cloudHistory();
+    expect(
+      streamError(await pull(serve(cloud.slice(0, 1), 10))),
+    ).toBeUndefined();
+    await openGate();
+    expect(await orderDiscount()).toBe(PROMO);
+
+    let releasePartial!: () => void;
+    let firstFetch!: () => void;
+    let retryFetch!: () => void;
+    let failRetry!: () => void;
+    let retryReachedFetch = false;
+    const partialMayReturn = new Promise<void>((resolve) => {
+      releasePartial = resolve;
+    });
+    const partialArrived = new Promise<void>((resolve) => {
+      firstFetch = resolve;
+    });
+    const retryArrived = new Promise<void>((resolve) => {
+      retryFetch = resolve;
+    });
+    const retryMayFail = new Promise<void>((resolve) => {
+      failRetry = resolve;
+    });
+    const source = serve(cloud, 1);
+    const partial = pull(
+      async (stream, since) => {
+        firstFetch();
+        await partialMayReturn;
+        return source(stream, since);
+      },
+      ["promotions"],
+      1,
+    );
+    await partialArrived;
+    const retry = pull(async () => {
+      retryReachedFetch = true;
+      retryFetch();
+      await retryMayFail;
+      throw new Error("Concurrent cloud transport failure");
+    }, ["promotions"]);
+    try {
+      // Before serialization, retry reaches fetch with the old complete
+      // checkpoint. A serialized retry queues instead; the bounded wait lets
+      // that implementation proceed without making fetch overlap a contract.
+      let wait: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        retryArrived,
+        new Promise<void>((resolve) => {
+          wait = setTimeout(resolve, 250);
+        }),
+      ]);
+      if (wait) clearTimeout(wait);
+      const retryReadOldCheckpoint = retryReachedFetch;
+      releasePartial();
+      const unfinished = await partial;
+      expect(unfinished.backlog).toBe(true);
+      expect(await appliedPromos()).toEqual(sortedIds(promoA, promoC));
+      expect(await orderDiscount()).toBe(0);
+      await retryArrived;
+      failRetry();
+      expect(streamError(await retry)).toBeDefined();
+      // Check the cached provider before a refresh can repair it from disk.
+      expect(
+        await orderDiscount(),
+        `Retry fetched before partial commit: ${retryReadOldCheckpoint}`,
+      ).toBe(0);
+      await gate!.refresh();
+      expect(await orderDiscount()).toBe(0);
+      expect(streamError(await pull(serve(cloud, 1)))).toBeUndefined();
+      await gate!.refresh();
+      expect(await orderDiscount()).toBe(PROMO);
+    } finally {
+      releasePartial();
+      failRetry();
+      await Promise.allSettled([partial, retry]);
+    }
+  });
+
+  it("legend-09sxa a checkpoint read failure closes cached discounts without touching the catalog", async () => {
+    const cloud = await cloudHistory();
+    expect(
+      streamError(await pull(serve(cloud.slice(0, 1), 10))),
+    ).toBeUndefined();
+    await openGate();
+    expect(await orderDiscount()).toBe(PROMO);
+    const before = await appliedPromos();
+    let fetches = 0;
+    const unreadable = new Proxy(edge.database, {
+      get(target, property) {
+        if (property === "transaction")
+          return () => {
+            throw new Error("Checkpoint database unavailable");
+          };
+        return Reflect.get(target, property, target);
+      },
+    });
+    const result = await pullCatalog({
+      database: unreadable as typeof db,
+      context: scope("device"),
+      edgeNodeId: nodeId,
+      streams: ["promotions"],
+      fetchPage: async () => {
+        fetches += 1;
+        throw new Error("Must not fetch without a checkpoint");
+      },
+    });
+    expect(streamError(result)).toBeDefined();
+    expect(fetches).toBe(0);
+    expect(await appliedPromos()).toEqual(before);
+    expect(await orderDiscount()).toBe(0);
+    expect(
+      streamError(await pull(serve(cloud.slice(0, 1), 10))),
+    ).toBeUndefined();
+    await gate!.refresh();
+    expect(await orderDiscount()).toBe(PROMO);
+  });
+
   it("control (533 B2): a pure fetch failure with a complete stored checkpoint keeps the promo alive", async () => {
     const cloud = await cloudHistory();
     expect(
