@@ -9,10 +9,11 @@
 //
 // Demo switch (browser only, same idea as the edge mock override): set
 //   localStorage["legend-display-mock"] = "idle" | "ordering" |
-//     "awaiting_payment" | "awaiting_expired" | "paid"
+//     "awaiting_payment" | "awaiting_expired" | "awaiting_loading" | "paid"
 // and reload. The default is a live bill awaiting QRIS payment — the screen's
 // main purpose. "awaiting_expired" serves one expired code so the refresh path
-// can be exercised, then continues with a fresh one.
+// can be exercised, then continues with a fresh one. "awaiting_loading" keeps
+// the code unissued (qris null) so the "preparing the code" panel shows.
 import {
   cafeLegendPosFixtures,
   getCustomerDisplayState,
@@ -43,6 +44,7 @@ const DEMO_STATES = [
   "ordering",
   "awaiting_payment",
   "awaiting_expired",
+  "awaiting_loading",
   "paid",
 ] as const;
 type DemoState = (typeof DEMO_STATES)[number];
@@ -150,7 +152,7 @@ function buildState(entry: DisplayStore, nowMs: number): DisplayStateWire {
     orderId: fixture.orderId,
     orderNumber: fixture.orderNumber,
     ...billTotals,
-    qris: qrisAt(nowMs, expired),
+    qris: entry.demo === "awaiting_loading" ? null : qrisAt(nowMs, expired),
     tenders: [],
     changeIdr: null,
   };
