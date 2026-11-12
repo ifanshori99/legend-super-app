@@ -366,6 +366,98 @@ afterAll(async () => {
 });
 
 describe("legend-tiie storage request resolver", () => {
+  it("treats legacy leave attachments as private to their employee and outlet approver", async () => {
+    const approverA = await signedIn("LegacyLeaveApproverA", [
+      {
+        permissions: ["hr.leave.approve"],
+        scope: { type: "outlet", id: outletA },
+      },
+    ]);
+    const approverB = await signedIn("LegacyLeaveApproverB", [
+      {
+        permissions: ["hr.leave.approve"],
+        scope: { type: "outlet", id: outletB },
+      },
+    ]);
+    const employeeId = randomUUID();
+    const typeId = randomUUID();
+    const requestIds: string[] = [];
+    try {
+      await asOwner(async (client) => {
+        await client.query(
+          `INSERT INTO employees
+          (id, tenant_id, user_id, employee_no, full_name, home_outlet_id, employment_type, join_date)
+          VALUES ($1,$2,$3,$4,'Leave employee',$5,'pkwtt','2024-01-01')`,
+          [
+            employeeId,
+            tenantId,
+            userIds.get(employeeA),
+            `L-${employeeId.slice(0, 8).toUpperCase()}`,
+            outletA,
+          ],
+        );
+        await client.query(
+          `INSERT INTO leave_types
+          (id, tenant_id, code, name, paid, requires_attachment, policy)
+          VALUES ($1,$2,$3,'Leave',true,true,'{}')`,
+          [typeId, tenantId, `L-${typeId.slice(0, 8)}`],
+        );
+      });
+      for (const sourceKind of [
+        null,
+        "employee_document",
+        "employment_contract",
+      ] as const) {
+        const object = await seedObject({
+          purpose: "document",
+          outletId: outletA,
+          owner: otherEmployeeA,
+          sourceKind,
+        });
+        const requestId = randomUUID();
+        requestIds.push(requestId);
+        await asOwner(async (client) => {
+          await client.query(
+            `INSERT INTO leave_requests
+            (id, tenant_id, outlet_id, employee_id, leave_type_id, period_year,
+             start_date, end_date, days, attachment_key, requested_by)
+            VALUES ($1,$2,$3,$4,$5,2031,'2031-03-20','2031-03-20',1,$6,$7)`,
+            [
+              requestId,
+              tenantId,
+              outletA,
+              employeeId,
+              typeId,
+              sourceKind === null ? object.id.toUpperCase() : object.id,
+              userIds.get(employeeA),
+            ],
+          );
+        });
+        expectAllowed(await read(employeeA, object));
+        expectAllowed(await read(approverA, object));
+        expectDenied(await read(approverB, object));
+        expectDenied(await read(otherEmployeeA, object));
+        expectDenied(await read(hrViewerA, object));
+        expectDenied(await read(admin, object));
+      }
+    } finally {
+      await asOwner(async (client) => {
+        await client.query(
+          "DELETE FROM leave_requests WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+          [tenantId, requestIds],
+        );
+        await client.query(
+          "DELETE FROM employees WHERE tenant_id = $1 AND id = $2",
+          [tenantId, employeeId],
+        );
+        await client.query(
+          "DELETE FROM leave_types WHERE tenant_id = $1 AND id = $2",
+          [tenantId, typeId],
+        );
+      });
+    }
+  });
+
   it("lets a tenant-wide menu manager upload a menu photo at any outlet", async () => {
     for (const outlet of [outletA, outletB]) {
       const res = await upload(admin, "menu_photo", outlet);

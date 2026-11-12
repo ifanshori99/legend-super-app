@@ -262,12 +262,13 @@ async function storageObject(
   purpose: "document" | "selfie" | "menu_photo" | "receipt" = "document",
   ageHours = 0,
   ownerUserId: string | null = null,
+  sourceKind: string | null = purpose === "document" ? "leave_request" : null,
 ): Promise<string> {
   const id = randomUUID();
   createdStorage.push(id);
   await sql(
-    `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, created_at, owner_user_id)
-     VALUES ($1, $2, $3, $4, $5, 'application/pdf', 1024, now() - make_interval(hours => $6::int), $7)`,
+    `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, created_at, owner_user_id, source_kind)
+     VALUES ($1, $2, $3, $4, $5, 'application/pdf', 1024, now() - make_interval(hours => $6::int), $7, $8)`,
     [
       tenantId,
       outletId,
@@ -276,6 +277,7 @@ async function storageObject(
       `private/${tenantId}/${id}.pdf`,
       ageHours,
       ownerUserId,
+      sourceKind,
     ],
   );
   return id;
@@ -413,6 +415,28 @@ afterAll(async () => {
 });
 
 describe("legend-arj.4 leave attachment", () => {
+  it("refuses a fresh unclassified document even when the requester owns it", async () => {
+    const type = await makeType({ tracksBalance: false });
+    const staff = await makeStaff();
+    const objectId = await storageObject(
+      outletA,
+      "document",
+      0,
+      staff.userId,
+      null,
+    );
+    const result = await failure(
+      createLeaveRequest(
+        outletScope(outletA),
+        staff.userId,
+        requestBody(type.id, objectId),
+        new Date(),
+        stubSigner,
+      ),
+    );
+    expect([result.status, result.code]).toEqual([422, "VALIDATION_ERROR"]);
+    expect(await requestCount(staff.employee.id)).toBe(0);
+  });
   it("accepts the requester's private object, stores its id and signs a URL only for those who can see the request", async () => {
     const type = await makeType(
       { tracksBalance: false },
@@ -476,6 +500,19 @@ describe("legend-arj.4 leave attachment", () => {
         `https://signed.example.test/${objectId}`,
       );
     }
+    // Employee administrators without leave approval may see the request but
+    // cannot open its private medical attachment.
+    const adminWithoutApproval = await actor(
+      ["hr.employee.manage", "hr.employee.view"],
+      { type: "tenant" },
+    );
+    const adminView = await getLeaveRequest(
+      tenantScope(),
+      adminWithoutApproval,
+      created.id,
+      stubSigner,
+    );
+    expect(adminView.attachmentUrl).toBeNull();
     // A colleague's list never holds it; the other outlet's manager gets 404.
     const colleague = await listLeaveRequests(
       outletScope(outletA),
@@ -686,7 +723,7 @@ describe("legend-arj.4 leave attachment", () => {
     );
     expect(rows[0]).toEqual({
       owner_user_id: other.userId,
-      source_kind: null,
+      source_kind: "leave_request",
       source_id: null,
     });
   });
@@ -711,7 +748,7 @@ describe("legend-arj.4 leave attachment", () => {
       "SELECT source_kind, source_id FROM core_storage_objects WHERE tenant_id = $1 AND id = $2",
       [tenantId, objectId],
     );
-    expect(rows[0]).toEqual({ source_kind: null, source_id: null });
+    expect(rows[0]).toEqual({ source_kind: "leave_request", source_id: null });
   });
 
   it("[storage-object-owner] accepts the requester's own upload and links it: source leave_request, source id = the request, owner = requester", async () => {
@@ -758,7 +795,7 @@ describe("legend-arj.4 leave attachment", () => {
     );
     expect(rows[0]).toEqual({
       owner_user_id: null,
-      source_kind: null,
+      source_kind: "leave_request",
       source_id: null,
     });
   });
@@ -792,7 +829,7 @@ describe("legend-arj.4 leave attachment", () => {
     );
     expect(rows[0]).toEqual({
       owner_user_id: null,
-      source_kind: null,
+      source_kind: "leave_request",
       source_id: null,
     });
   });

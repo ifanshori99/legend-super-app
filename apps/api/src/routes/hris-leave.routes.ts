@@ -24,6 +24,8 @@ import {
   type RequestHandler,
   type Response,
 } from "express";
+import multer from "multer";
+import type { ObjectStorage } from "@starter/shared/adapters";
 import {
   AccessError,
   outletReachOf,
@@ -58,6 +60,7 @@ import {
   updateHoliday as updateHolidayEndpoint,
   updateLeaveSettings as updateLeaveSettingsEndpoint,
   updateLeaveType as updateLeaveTypeEndpoint,
+  uploadLeaveAttachment as uploadLeaveAttachmentEndpoint,
 } from "@starter/shared/hris";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
@@ -80,6 +83,9 @@ import * as holidayService from "../services/hris-holiday.service.ts";
 import * as collectiveService from "../services/hris-leave-collective.service.ts";
 import * as leaveService from "../services/hris-leave.service.ts";
 import * as leaveRequestService from "../services/hris-leave-request.service.ts";
+import { uploadLeaveAttachment } from "../services/hris-leave-attachment.service.ts";
+import type { MalwareScanner } from "../services/core-image.ts";
+import { HttpError } from "../lib/http-error.ts";
 import * as overtimeService from "../services/hris-overtime.service.ts";
 
 const contexts = new WeakMap<Request, ScopedTenantContext>();
@@ -235,6 +241,8 @@ const HOLIDAY_READ: PermissionCode[] = [
 export type HrisLeaveRouterDeps = {
   /** Private-bucket URL signer (core-storage); default mints no URL. */
   readonly fileSigner?: HrisFileSigner;
+  readonly storage?: ObjectStorage | null;
+  readonly scanner?: MalwareScanner | null;
 };
 
 export function createHrisLeaveRouter(deps: HrisLeaveRouterDeps = {}): Router {
@@ -250,6 +258,62 @@ export function createHrisLeaveRouter(deps: HrisLeaveRouterDeps = {}): Router {
   });
 
   // ---- Leave types -------------------------------------------------------
+
+  const multipart = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 0, parts: 1 },
+  }).single("file");
+  const parseAttachment: RequestHandler = (req, res, next) => {
+    if (!req.is("multipart/form-data"))
+      return next(
+        new HttpError(
+          415,
+          "UNSUPPORTED_MEDIA_TYPE",
+          "Send multipart form data.",
+        ),
+      );
+    multipart(req, res, (error: unknown) => {
+      if (error instanceof multer.MulterError)
+        return next(
+          new HttpError(
+            error.code === "LIMIT_FILE_SIZE" ? 413 : 422,
+            error.code === "LIMIT_FILE_SIZE"
+              ? "PAYLOAD_TOO_LARGE"
+              : "VALIDATION_ERROR",
+            "Invalid upload.",
+          ),
+        );
+      if (error)
+        return next(
+          new HttpError(422, "VALIDATION_ERROR", "Invalid multipart upload."),
+        );
+      next();
+    });
+  };
+  router.post(
+    uploadLeaveAttachmentEndpoint.path.replace(/^\/api\/hris/, ""),
+    anySurface,
+    requireHris(["self.leave.request"]),
+    (req, _res, next) => {
+      if (!deps.storage || !deps.scanner)
+        return next(
+          new HttpError(503, "SERVICE_UNAVAILABLE", "Upload unavailable."),
+        );
+      next();
+    },
+    parseAttachment,
+    async (req, res) => {
+      if (!req.file)
+        throw new HttpError(422, "VALIDATION_ERROR", "A file is required.");
+      const data = await uploadLeaveAttachment(
+        hrisContext(req),
+        actor(req),
+        req.file.buffer,
+        { storage: deps.storage!, scanner: deps.scanner! },
+      );
+      res.status(201).json({ data });
+    },
+  );
 
   router.get(
     "/leave/types",
