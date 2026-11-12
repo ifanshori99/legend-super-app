@@ -43,3 +43,13 @@ Report: files changed, what each fix does, anything you could not fix.
 1. Show where approval sends the user: under the client name, "Akan kembali ke <host>" (catalog text) using the host of the server-checked `preview.redirectUri`; `break-words`.
 2. Catalog `connecting`, `denying`: `...` becomes `…`.
 3. `consent-page.tsx` off-scale sizes `text-[15px]` (~291), `text-[13px]` (~359): use the repo type tokens (`type-*` classes used elsewhere in the branch) or `text-sm`/`text-base`.
+
+# Round 3 (reviewer findings). Same rules as above.
+
+## R3-chat (P1 files + catalog)
+1. `logic.ts` `sourceKindKey`: non-sales links (e.g. fixture `/sop/kebersihan-bar`) render "Sumber · Laporan" and a scope line with no period. Add a neutral kind ("Dokumen", catalog), return report kinds only for `/reports/…`; sales only when `link === "/reports/sales" || link.startsWith("/reports/sales/")`. Scope line: drop "· Periode" when the source has no period.
+2. `tanya-ai-page.tsx` "Tanya ulang": `submit()` clears the composer draft. Add an option so this call keeps `input`, and the `onError` restore does not overwrite a draft the user typed.
+3. "Tanya ulang" button unmounts when busy, dropping keyboard focus to body. After clicking, move focus to the composer textarea (or keep the button mounted with `aria-disabled`).
+
+## R3-admin (`components/caps-dialog.tsx`)
+1. Blur validation leaves a stale "order" error on `warnPct` after the user fixes it via `stopPct`. On blur of `stopPct`, also recompute `warnPct` when it currently has the order error (and vice versa). Do not let blur errors shift the Save button under the pointer (reserve space or skip blur validation when `relatedTarget` is a footer button).
