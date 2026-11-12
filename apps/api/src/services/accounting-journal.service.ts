@@ -606,6 +606,38 @@ export async function postJournalFromRuleInTransaction(
     });
     accountMap.set(mapping.role, mapping.accountId);
   }
+  if (input.eventName === "order.refunded") {
+    // Validate the exact map used below: payout mappings may have changed
+    // since the historical sale accounts were checked during fact building.
+    const protectedAccounts = new Set(
+      (
+        [
+          "service_charge",
+          "tax_payable_pbjt",
+          "tax_payable_ppn",
+          "tax_payable_other",
+        ] as const
+      )
+        .map((role) => input.accountOverrides?.[role])
+        .filter((id): id is string => id !== undefined),
+    );
+    const payoutRoles = [
+      "cash_on_hand",
+      "customer_deposit",
+      "edc_clearing",
+      "loyalty_liability",
+    ] as const;
+    if (
+      payoutRoles.some((role) => {
+        const accountId = accountMap.get(role);
+        return accountId !== undefined && protectedAccounts.has(accountId);
+      })
+    )
+      throw new AccountingError(
+        "POSTING_AMOUNTS_MISMATCH",
+        "A refund payout account is mapped to a sale service charge or tax account",
+      );
+  }
   const lines = buildJournalLinesFromRule(rule, input.amounts, accountMap, {
     outletId: input.outletId as OutletId | null,
     costCenter: input.costCenter ?? null,
