@@ -61,6 +61,7 @@ let headers: { Host: string };
 type Member = { client: ReturnType<typeof agent>; userId: string };
 let cashier: Member;
 let supervisor: Member;
+const deviceIssuedAts = new Map<string, number>();
 
 async function asOwnerTenant<T>(
   tenantId: string,
@@ -101,13 +102,17 @@ async function member(roleId: string, label: string): Promise<Member> {
 /** A registered POS device of the outlet. */
 async function newDevice(label: string): Promise<string> {
   const id = randomUUID();
+  // Registry floor and token share the API host clock; the database VM can
+  // run ahead and make a token signed with Date.now() appear stale.
+  const issuedAt = Math.floor(Date.now() / 1000);
   await asOwnerTenant(tenant.tenantId, (client) =>
     client.query(
       `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
-       VALUES ($1, $2, $3, 'pos', $4, now())`,
-      [id, tenant.tenantId, tenant.outletId, label],
+       VALUES ($1, $2, $3, 'pos', $4, $5)`,
+      [id, tenant.tenantId, tenant.outletId, label, new Date(issuedAt * 1000)],
     ),
   );
+  deviceIssuedAts.set(id, issuedAt);
   return id;
 }
 
@@ -411,6 +416,9 @@ describe("legend-fjwxo PIN approval is bound to the verified device", () => {
     const deviceA = await newDevice("Kasir A5");
     const deviceB = await newDevice("Kasir B5");
     const { orderId, status } = await openOrder();
+    const issuedAt = deviceIssuedAts.get(deviceA);
+    if (issuedAt === undefined)
+      throw new Error("Device fixture was not registered");
     const created = await cashier.client
       .post("/api/pos-overrides")
       .set(headers)
@@ -419,7 +427,7 @@ describe("legend-fjwxo PIN approval is bound to the verified device", () => {
         DEVICE_TOKEN_HEADER,
         signDeviceToken({
           version: 1,
-          issuedAt: Math.floor(Date.now() / 1000),
+          issuedAt,
           tenantId: tenant.tenantId,
           brandId: null,
           deviceId: deviceA,
