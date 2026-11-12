@@ -18,8 +18,12 @@ import {
   listRefunds,
   listUnallocatedFunds,
   paymentRoutingViewSchema,
+  rejectRefund,
+  releaseQuarantinedRefund,
+  reopenQuarantinedRefund,
   resolveReconciliationCase,
   resolveUnallocatedFund,
+  retryRefundPayout,
   updateEdcCashierDefault,
   updateEdcTerminal,
   updatePaymentRoute,
@@ -60,6 +64,76 @@ type MockState = {
   summary: ReconciliationSummary;
 };
 
+/**
+ * Follow-up states the screens must show (kfkt/hn5q mockups): rejected, failed
+ * for good, retryable, unknown result and quarantined. Built from the first
+ * fixture so the contract schema still validates every row.
+ */
+function followUpRefunds(): RefundView[] {
+  const base = fixtures.refunds[0];
+  const requester = {
+    requestedBy: "d4e5f6a7-0001-4d01-8e01-000000000001",
+    requestedByName: "Rina Kasir",
+  };
+  const decided = {
+    approvedBy: ACTOR.id,
+    approvedByName: ACTOR.name,
+    decidedAt: "2026-11-11T07:10:00.000Z",
+    viewerCanApprove: false,
+  };
+  const row = (
+    suffix: string,
+    reference: string,
+    patch: Partial<RefundView>,
+  ): RefundView => ({
+    ...base,
+    ...requester,
+    id: `e5f6a7b8-00f${suffix}-4e0${suffix}-8f0${suffix}-0000000000f${suffix}`,
+    paymentIntentId: `8a32e00d-7e43-45b6-9d01-7a92e605c1f${suffix}`,
+    paymentReference: reference,
+    createdAt: "2026-11-11T07:00:00.000Z",
+    ...patch,
+  });
+  return [
+    row("1", "POS-0148", {
+      status: "failed",
+      failureReason: "rejected",
+      reason: "Pesanan tidak sesuai",
+      note: "Bukti transaksi belum sesuai dengan pesanan.",
+      ...decided,
+      approvedBy: null,
+      approvedByName: null,
+    }),
+    row("2", "POS-0149", {
+      status: "failed",
+      failureReason: "provider_declined",
+      payoutAttempts: 1,
+      lastPayoutError: "PROVIDER_DECLINED",
+      ...decided,
+    }),
+    row("3", "POS-0150", {
+      status: "approved",
+      payoutAttempts: 0,
+      lastPayoutError: "PAYOUT_SEND_RIGHT_LOST",
+      ...decided,
+    }),
+    row("4", "POS-0151", {
+      status: "approved",
+      payoutAttempts: 1,
+      lastPayoutError: "ECONNRESET",
+      ...decided,
+    }),
+    row("5", "POS-0152", {
+      status: "approved",
+      payoutAttempts: 0,
+      lastPayoutError: "PAYOUT_QUARANTINED",
+      amountIdr: idr(75_000),
+      reason: "Item tidak tersedia",
+      ...decided,
+    }),
+  ];
+}
+
 const seed = (): MockState => ({
   routes: fixtures.routes.map((route) => ({ ...route })),
   outletRoutes: [{ ...fixtures.outletRoute }],
@@ -68,7 +142,10 @@ const seed = (): MockState => ({
     supportedMethods: [...terminal.supportedMethods],
   })),
   cashiers: fixtures.cashiers.map((cashier) => ({ ...cashier })),
-  refunds: fixtures.refunds.map((refund) => ({ ...refund })),
+  refunds: [
+    ...fixtures.refunds.map((refund) => ({ ...refund })),
+    ...followUpRefunds(),
+  ],
   refundable: fixtures.refundablePayments.map((payment) => ({ ...payment })),
   funds: fixtures.unallocatedFunds.map((fund) => ({ ...fund })),
   fundRefunds: new Map(),
@@ -592,6 +669,141 @@ function approveRefundOnce(refundId: string, note: string | undefined) {
   });
   return { data: updated };
 }
+
+// Follow-up actions. The mock mirrors the API guards in refund-actions.ts, so a
+// maybe-sent payout is only ever looked up here, never "sent again".
+
+function refundOrThrow(refundId: string) {
+  const state = store.get();
+  const refund = state.refunds.find((entry) => entry.id === refundId);
+  if (!refund) throw new ApiError(404, "NOT_FOUND", "Refund tidak ditemukan.");
+  return { state, refund };
+}
+
+function saveRefund(state: MockState, updated: RefundView) {
+  store.set({
+    ...state,
+    refunds: state.refunds.map((entry) =>
+      entry.id === updated.id ? updated : entry,
+    ),
+  });
+  return { data: updated };
+}
+
+registerMock(rejectRefund, ({ params, body }) =>
+  replay(
+    body.idempotencyKey,
+    `reject:${params.refundId}:${body.reason}`,
+    () => {
+      const { state, refund } = refundOrThrow(params.refundId);
+      if (refund.status !== "pending")
+        throw new ApiError(
+          409,
+          "CONFLICT",
+          "Refund ini sudah diputuskan sebelumnya.",
+        );
+      if (!refund.viewerCanApprove)
+        throw new ApiError(
+          403,
+          "PERMISSION_DENIED",
+          "Akun Anda tidak dapat melakukan tindakan ini.",
+        );
+      return saveRefund(state, {
+        ...refund,
+        status: "failed",
+        failureReason: "rejected",
+        note: body.reason,
+        viewerCanApprove: false,
+        decidedAt: now(),
+      });
+    },
+  ),
+);
+
+registerMock(retryRefundPayout, ({ params, body }) =>
+  replay(body.idempotencyKey, `retry:${params.refundId}`, () => {
+    const { state, refund } = refundOrThrow(params.refundId);
+    if (refund.status !== "approved")
+      throw new ApiError(
+        409,
+        "CONFLICT",
+        "Hanya refund yang sudah disetujui yang dapat dicoba lagi.",
+      );
+    if (
+      refund.lastPayoutError === "PAYOUT_QUARANTINED" &&
+      (refund.payoutAttempts ?? 0) === 0 &&
+      refund.providerRef === null
+    )
+      throw new ApiError(
+        409,
+        "PAYOUT_QUARANTINED",
+        "Persetujuan refund gagal diperiksa ulang; refund tidak dapat dikirim.",
+      );
+    // The provider answers: paid. Either a first send or a lookup finds it.
+    return saveRefund(state, {
+      ...refund,
+      status: "completed",
+      providerRef: `RF-${refund.paymentReference}`,
+      lastPayoutError: null,
+      payoutAttempts: (refund.payoutAttempts ?? 0) + 1,
+      completedAt: now(),
+    });
+  }),
+);
+
+function actOnQuarantineOnce(
+  refundId: string,
+  action: "release" | "reopen",
+  note: string,
+) {
+  const { state, refund } = refundOrThrow(refundId);
+  if (
+    refund.status !== "approved" ||
+    refund.lastPayoutError !== "PAYOUT_QUARANTINED"
+  )
+    throw new ApiError(
+      409,
+      "REFUND_NOT_QUARANTINED",
+      "Hanya refund yang ditahan karantina yang dapat dilepas atau dibuka ulang.",
+    );
+  if ((refund.payoutAttempts ?? 0) > 0 || refund.providerRef !== null)
+    throw new ApiError(
+      409,
+      "REFUND_PAYOUT_MAYBE_SENT",
+      "Pengiriman mungkin sudah sampai ke penyedia; periksa statusnya.",
+    );
+  if (action === "release")
+    return saveRefund(state, {
+      ...refund,
+      status: "failed",
+      failureReason: "approver_unauthorized",
+      lastPayoutError: null,
+      note,
+      decidedAt: now(),
+    });
+  return saveRefund(state, {
+    ...refund,
+    status: "pending",
+    approvedBy: null,
+    approvedByName: null,
+    lastPayoutError: null,
+    viewerCanApprove: true,
+    note,
+    decidedAt: null,
+  });
+}
+
+registerMock(releaseQuarantinedRefund, ({ params, body }) =>
+  replay(body.idempotencyKey, `release:${params.refundId}:${body.note}`, () =>
+    actOnQuarantineOnce(params.refundId, "release", body.note),
+  ),
+);
+
+registerMock(reopenQuarantinedRefund, ({ params, body }) =>
+  replay(body.idempotencyKey, `reopen:${params.refundId}:${body.note}`, () =>
+    actOnQuarantineOnce(params.refundId, "reopen", body.note),
+  ),
+);
 
 // ---- Unallocated funds ---------------------------------------------------
 

@@ -15,8 +15,12 @@ import {
   listRefundablePayments as listRefundablePaymentsEndpoint,
   listRefunds as listRefundsEndpoint,
   listUnallocatedFunds as listUnallocatedFundsEndpoint,
+  rejectRefund as rejectRefundEndpoint,
+  releaseQuarantinedRefund as releaseQuarantinedRefundEndpoint,
+  reopenQuarantinedRefund as reopenQuarantinedRefundEndpoint,
   resolveReconciliationCase as resolveReconciliationCaseEndpoint,
   resolveUnallocatedFund as resolveUnallocatedFundEndpoint,
+  retryRefundPayout as retryRefundPayoutEndpoint,
   updateEdcCashierDefault as updateEdcCashierDefaultEndpoint,
   updateEdcTerminal as updateEdcTerminalEndpoint,
   updatePaymentRoute as updatePaymentRouteEndpoint,
@@ -102,6 +106,27 @@ export const approveRefund = (
   params: Params<typeof approveRefundEndpoint>,
   body: Body<typeof approveRefundEndpoint>,
 ) => callEndpoint(approveRefundEndpoint, { params, body });
+
+export const rejectRefund = (
+  params: Params<typeof rejectRefundEndpoint>,
+  body: Body<typeof rejectRefundEndpoint>,
+) => callEndpoint(rejectRefundEndpoint, { params, body });
+
+/** Also the "check status" action: after an attempt the API only looks up. */
+export const retryRefundPayout = (
+  params: Params<typeof retryRefundPayoutEndpoint>,
+  body: Body<typeof retryRefundPayoutEndpoint>,
+) => callEndpoint(retryRefundPayoutEndpoint, { params, body });
+
+export const releaseQuarantinedRefund = (
+  params: Params<typeof releaseQuarantinedRefundEndpoint>,
+  body: Body<typeof releaseQuarantinedRefundEndpoint>,
+) => callEndpoint(releaseQuarantinedRefundEndpoint, { params, body });
+
+export const reopenQuarantinedRefund = (
+  params: Params<typeof reopenQuarantinedRefundEndpoint>,
+  body: Body<typeof reopenQuarantinedRefundEndpoint>,
+) => callEndpoint(reopenQuarantinedRefundEndpoint, { params, body });
 
 // ---- Unallocated funds (PAY-04) ------------------------------------------
 
