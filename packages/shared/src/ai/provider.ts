@@ -14,6 +14,41 @@ export const AI_CONNECTION_TYPES = ["api_key", "chatgpt_oauth"] as const;
 export const aiConnectionTypeSchema = z.enum(AI_CONNECTION_TYPES);
 export type AiConnectionType = z.infer<typeof aiConnectionTypeSchema>;
 
+export const AI_REASONING_EFFORTS = ["low", "medium", "high"] as const;
+export const aiReasoningEffortSchema = z.enum(AI_REASONING_EFFORTS);
+export type AiReasoningEffort = z.infer<typeof aiReasoningEffortSchema>;
+
+export const aiModelCapabilityOverridesSchema = z
+  .strictObject({
+    contextWindow: z.number().int().min(1024).max(2_000_000).optional(),
+    maxOutputTokens: z.number().int().min(1).max(200_000).optional(),
+    supportsTools: z.boolean().optional(),
+    supportsReasoning: z.boolean().optional(),
+    reasoningEfforts: z.array(aiReasoningEffortSchema).max(3).optional(),
+  })
+  .refine(
+    (value) =>
+      value.contextWindow === undefined ||
+      value.maxOutputTokens === undefined ||
+      value.maxOutputTokens < value.contextWindow,
+    {
+      message: "Output limit must leave room for input.",
+    },
+  );
+export type AiModelCapabilityOverrides = z.infer<
+  typeof aiModelCapabilityOverridesSchema
+>;
+
+export const aiModelCapabilitiesSchema = z.strictObject({
+  contextWindow: z.number().int().min(1024).max(2_000_000),
+  maxOutputTokens: z.number().int().min(1).max(200_000),
+  supportsTools: z.boolean(),
+  supportsReasoning: z.boolean(),
+  reasoningEfforts: z.array(aiReasoningEffortSchema).max(3),
+  source: z.enum(["metadata", "known", "default"]),
+});
+export type AiModelCapabilities = z.infer<typeof aiModelCapabilitiesSchema>;
+
 /** Fixed catalog of connection-test failures. Never provider error text. */
 export const AI_PROVIDER_TEST_ERROR_CODES = [
   "URL_BLOCKED",
@@ -65,6 +100,8 @@ export const aiProviderConfigSchema = z.strictObject({
   connectionType: aiConnectionTypeSchema,
   baseUrl: z.string().min(1).max(500),
   defaultModel: z.string().min(1).max(200),
+  capabilities: aiModelCapabilitiesSchema,
+  capabilityOverrides: aiModelCapabilityOverridesSchema.nullable(),
   hasKey: z.boolean(),
   keyLast4: z.string().length(4).nullable(),
   keySetAt: isoDateTimeSchema.nullable(),
@@ -91,6 +128,7 @@ export const upsertAiProviderConfigInputSchema = z.strictObject({
     .regex(/^[\w.:/@+-]+$/),
   /** Omit to keep the stored key (only while `baseUrl` is unchanged). */
   apiKey: z.string().trim().min(16).max(500).regex(/^\S+$/).optional(),
+  capabilityOverrides: aiModelCapabilityOverridesSchema.nullable().optional(),
 });
 export type UpsertAiProviderConfigInput = z.infer<
   typeof upsertAiProviderConfigInputSchema

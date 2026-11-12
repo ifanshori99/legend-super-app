@@ -13,6 +13,7 @@
 import { sql } from "drizzle-orm";
 import {
   check,
+  jsonb,
   pgTable,
   smallint,
   text,
@@ -21,7 +22,11 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
-import type { AiConnectionType } from "@starter/shared/ai";
+import type {
+  AiConnectionType,
+  AiModelCapabilities,
+  AiModelCapabilityOverrides,
+} from "@starter/shared/ai";
 import { tenantIdColumn } from "../columns.ts";
 import { tenants } from "./platform-org.ts";
 
@@ -38,6 +43,12 @@ export const aiProviderConfigs = pgTable(
     /** Normalised, no trailing slash. */
     baseUrl: varchar("base_url", { length: 500 }).notNull(),
     defaultModel: varchar("default_model", { length: 200 }).notNull(),
+    detectedCapabilities: jsonb(
+      "detected_capabilities",
+    ).$type<AiModelCapabilities>(),
+    capabilityOverrides: jsonb(
+      "capability_overrides",
+    ).$type<AiModelCapabilityOverrides>(),
     /** `sealSecret` envelope, base64. */
     apiKeyEncrypted: text("api_key_encrypted"),
     /** Version byte of the envelope, for key rotation. */
