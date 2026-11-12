@@ -34,6 +34,36 @@ export const aiChatMessages = {
     notFoundHint:
       "Percakapan ini mungkin sudah dihapus. Pilih percakapan lain atau mulai yang baru.",
   },
+  empty: {
+    greeting: "Apa yang ingin Anda ketahui hari ini?",
+    hint: "Pilih salah satu contoh pertanyaan, atau tulis pertanyaan Anda sendiri.",
+  },
+  suggestions: {
+    manage: {
+      "1": "Bagaimana penjualan kemarin?",
+      "2": "Menu apa yang paling laris minggu ini?",
+      "3": "Stok apa saja yang hampir habis?",
+      "4": "Ada persetujuan apa yang masih menunggu?",
+    },
+    shareholder: {
+      "1": "Berapa laba bulan ini?",
+      "2": "Bandingkan pendapatan antar outlet.",
+      "3": "Kapan jadwal pembagian dividen berikutnya?",
+      "4": "Tunjukkan laporan bulan lalu.",
+    },
+    staff: {
+      "1": "Bagaimana jadwal shift saya minggu ini?",
+      "2": "Berapa sisa cuti saya?",
+      "3": "Kapan slip gaji terakhir saya terbit?",
+      "4": "Apa SOP untuk menutup outlet?",
+    },
+    kitchen: {
+      "1": "Pesanan apa yang sedang menunggu sekarang?",
+      "2": "Bahan apa saja yang habis?",
+      "3": "Apa daftar persiapan hari ini?",
+      "4": "Berapa rata-rata waktu memasak?",
+    },
+  },
   answer: {
     label: "Tanya AI",
     badge: "Dibantu AI",

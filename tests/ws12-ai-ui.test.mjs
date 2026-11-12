@@ -17,7 +17,9 @@ import { ApiError } from "../apps/web/src/lib/api/errors.ts";
 import {
   classifyAskError,
   sourceKindKey,
+  suggestionKeys,
 } from "../apps/web/src/features/ws12-ai-chat/logic.ts";
+import { aiChatMessages } from "../packages/shared/src/i18n/messages/ws12-ai-chat.ts";
 import { actionStatusView } from "../apps/web/src/features/ws12-ai-action/logic.ts";
 import {
   CONSENT_RESUME_KEY,
@@ -617,5 +619,44 @@ describe("budgetPercent (P5)", () => {
 
   test("never negative", () => {
     assert.equal(budgetPercent(-5000, 100000), 0);
+  });
+});
+
+describe("suggestionKeys (C2)", () => {
+  const areas = ["kelola", "owner", "shareholder", "karyawan", "kitchen"];
+  const lookup = (key) =>
+    key
+      .split(".")
+      .slice(1)
+      .reduce((node, part) => node?.[part], aiChatMessages);
+
+  for (const area of areas) {
+    test(`${area} has 4 distinct keys that exist in the catalog`, () => {
+      const keys = suggestionKeys(area);
+      assert.equal(keys.length, 4);
+      assert.equal(new Set(keys).size, 4);
+      for (const key of keys) {
+        assert.match(key, /^aiChat\.suggestions\.[a-z]+\.[1-4]$/);
+        const text = lookup(key);
+        assert.equal(typeof text, "string", key);
+        assert.ok(text.length > 0, key);
+      }
+    });
+  }
+
+  test("kelola and owner share the manage group", () => {
+    assert.deepEqual(suggestionKeys("kelola"), suggestionKeys("owner"));
+    assert.ok(suggestionKeys("kelola")[0].includes(".manage."));
+  });
+
+  test("other areas use their own group", () => {
+    assert.ok(suggestionKeys("shareholder")[0].includes(".shareholder."));
+    assert.ok(suggestionKeys("karyawan")[0].includes(".staff."));
+    assert.ok(suggestionKeys("kitchen")[0].includes(".kitchen."));
+  });
+
+  test("empty greeting and hint exist", () => {
+    assert.ok(aiChatMessages.empty.greeting.length > 0);
+    assert.ok(aiChatMessages.empty.hint.length > 0);
   });
 });

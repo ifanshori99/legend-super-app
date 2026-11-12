@@ -1,6 +1,9 @@
 [
   { "name": "tanya-ai", "path": "/kelola/tanya-ai" },
   { "name": "tanya-ai-owner", "path": "/owner/tanya-ai" },
+  { "name": "tanya-ai-shareholder", "path": "/shareholder/tanya-ai" },
+  { "name": "tanya-ai-karyawan", "path": "/karyawan/tanya-ai" },
+  { "name": "tanya-ai-kds", "path": "/kds/tanya-ai" },
   { "name": "tanya-ai-loading", "path": "/kelola/tanya-ai?mock=slow", "loading": true },
   { "name": "tanya-ai-empty", "path": "/kelola/tanya-ai?mock=empty" },
   { "name": "tanya-ai-error", "path": "/kelola/tanya-ai?mock=error" },

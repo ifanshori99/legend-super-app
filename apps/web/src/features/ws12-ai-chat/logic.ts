@@ -76,6 +76,22 @@ export const guidePath = (area: ChatArea): string =>
   `${AREA_BASE[area]}/tanya-ai/panduan`;
 export const reportPath = (area: ChatArea): string => AREA_REPORTS[area];
 
+// ---- Suggested questions -----------------------------------------------------
+
+const SUGGESTION_GROUP: Record<ChatArea, string> = {
+  kelola: "manage",
+  owner: "manage",
+  shareholder: "shareholder",
+  karyawan: "staff",
+  kitchen: "kitchen",
+};
+
+/** The four example-question catalog keys for an area's empty chat. */
+export function suggestionKeys(area: ChatArea): readonly string[] {
+  const group = SUGGESTION_GROUP[area];
+  return [1, 2, 3, 4].map((n) => `aiChat.suggestions.${group}.${n}`);
+}
+
 // ---- Answer text -----------------------------------------------------------
 
 export type TextRun = { text: string; bold: boolean };

@@ -1,15 +1,16 @@
 // Tanya AI chat (PRD §3 Fitur 38, legend-mlnu). One page for every area that
 // holds `ai.ask`; the area only changes the links (reports, drafts). The
-// person's own history sits on the left (a sheet on phones); answers are
+// person's own history sits on the left (a sheet on phones), the chat in a
+// centred column with the question box pinned below; answers are
 // sourced, labelled "Dibantu AI", type in progressively, and can be stopped.
 import * as React from "react";
-import { History, RotateCw, Trash2 } from "lucide-react";
+import { History, Plus, RotateCw } from "lucide-react";
 import type { AiConversationId, AiMessage } from "@starter/shared/ai";
+import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { CardShell, CardShellBody } from "@/components/ui/card";
-import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
+import { ErrorState } from "@/components/ui/feedback-state";
 import {
   Sheet,
   SheetContent,
@@ -41,6 +42,7 @@ import {
 import { useProgressiveReveal } from "../use-progressive-reveal";
 import { AnswerWithSource } from "./answer-with-source";
 import { AskBanner, type BannerKind } from "./ask-banner";
+import { ChatSuggestions } from "./chat-suggestions";
 import { Composer } from "./composer";
 import { DeleteHistoryDialog } from "./delete-history-dialog";
 import { HistoryPane } from "./history-pane";
@@ -56,7 +58,7 @@ type Failure = {
 function QuestionBubble({ children }: { children: React.ReactNode }) {
   const t = useT();
   return (
-    <p className="ms-6 rounded-container bg-surface-3 px-4 py-3.5 font-semibold break-words @3xl:ms-12">
+    <p className="ms-10 w-fit max-w-full justify-self-end rounded-container bg-surface-3 px-4 py-3 font-semibold break-words">
       <span className="sr-only">{t("aiChat.answer.questionPrefix")} </span>
       {children}
     </p>
@@ -72,7 +74,7 @@ function ConversationSkeleton() {
       aria-label={t("aiChat.chat.loading")}
       className="grid gap-5"
     >
-      <Skeleton className="ms-12 h-12" />
+      <Skeleton className="ms-12 h-12 justify-self-end" />
       <div className="grid gap-2.5">
         <Skeleton className="h-4 w-32" />
         <Skeleton className="h-4 w-full" />
@@ -233,6 +235,13 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
       onSelect={select}
       onNew={() => select("new")}
       onRetry={() => void history.refetch()}
+      onDeleteAll={() => {
+        // Close the phone history sheet first so the delete dialog never
+        // stacks on top of it (Radix leaves body pointer-events locked).
+        setHistoryOpen(false);
+        setDeleteOpen(true);
+      }}
+      deleteDisabled={history.isPending || conversations.length === 0}
     />
   );
 
@@ -241,213 +250,229 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
   const notFound =
     detail.error instanceof ApiError && detail.error.status === 404;
 
+  const management = AREAS[area].shell === "management";
+  const showGreeting = messages.length === 0 && !asking && !failure;
+
   return (
     <section
       aria-labelledby="tanya-ai-title"
-      className="@container grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4"
+      className={cn(
+        "@container relative flex min-h-(--chat-h) min-w-0 flex-col gap-3",
+        management
+          ? "[--chat-h:calc(100dvh-7rem)]"
+          : "[--chat-h:calc(100dvh-6rem)]",
+      )}
     >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="grid min-w-0 gap-1">
-          <Heading id="tanya-ai-title" className="type-title">
-            {t("aiChat.title")}
-          </Heading>
-          <p className="text-muted-foreground">{t("aiChat.subtitle")}</p>
-        </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <Heading id="tanya-ai-title" className="type-title">
+          {t("aiChat.title")}
+        </Heading>
+        {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
+        <p className="sr-only">{t("aiChat.subtitle")}</p>
+        <div className="flex w-full flex-wrap gap-2 @2xl:hidden">
+          <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
+            <SheetTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-auto! min-h-11 max-w-full whitespace-normal"
+              >
+                <History aria-hidden="true" />
+                {t("aiChat.history.openSheet")}
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="left">
+              <SheetHeader>
+                <SheetTitle className="sr-only">
+                  {t("aiChat.history.title")}
+                </SheetTitle>
+                <SheetDescription className="sr-only">
+                  {t("aiChat.history.privacy")}
+                </SheetDescription>
+              </SheetHeader>
+              {historyPane("flex-1")}
+            </SheetContent>
+          </Sheet>
           <Button
             type="button"
             variant="outline"
-            className="min-h-11"
-            disabled={history.isPending || conversations.length === 0}
-            onClick={() => setDeleteOpen(true)}
+            className="h-auto! min-h-11 max-w-full whitespace-normal"
+            onClick={() => select("new")}
           >
-            <Trash2 aria-hidden="true" />
-            {t("aiChat.deleteAll")}
+            <Plus aria-hidden="true" />
+            {t("aiChat.history.newConversation")}
           </Button>
         </div>
       </div>
 
-      <CardShell>
-        <CardShellBody className="@3xl:grid @3xl:min-h-[36rem] @3xl:grid-cols-[14rem_minmax(0,1fr)]">
-          <aside className="hidden border-e-(length:--border-w) p-5 @3xl:block">
-            {historyPane()}
-          </aside>
-          <div className="flex min-w-0 flex-col gap-5 p-4 @3xl:p-6">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b-(length:--border-w) pb-4">
-              <TitleHeading className="min-w-0 truncate font-semibold">
-                {title}
-              </TitleHeading>
-              <span className="hidden shrink-0 text-sm text-muted-foreground @3xl:inline">
-                {t("aiChat.chat.personal")}
-              </span>
-              <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
-                <SheetTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="min-h-11 shrink-0 @3xl:hidden"
-                  >
-                    <History aria-hidden="true" />
-                    {t("aiChat.history.openSheet")}
-                  </Button>
-                </SheetTrigger>
-                <SheetContent side="left">
-                  <SheetHeader>
-                    <SheetTitle className="sr-only">
-                      {t("aiChat.history.title")}
-                    </SheetTitle>
-                    <SheetDescription className="sr-only">
-                      {t("aiChat.history.privacy")}
-                    </SheetDescription>
-                  </SheetHeader>
-                  {historyPane()}
-                </SheetContent>
-              </Sheet>
-            </div>
-
-            <div className="mx-auto grid w-full max-w-[40.5rem] flex-1 content-start gap-6">
-              {detail.isPending && activeId !== null ? (
-                <ConversationSkeleton />
-              ) : history.isPending && selection === null ? (
-                <ConversationSkeleton />
-              ) : detail.isError ? (
-                <ErrorState
-                  error={detail.error}
-                  title={
-                    notFound
-                      ? t("aiChat.chat.notFoundTitle")
-                      : t("aiChat.chat.errorTitle")
-                  }
-                  description={
-                    notFound
-                      ? t("aiChat.chat.notFoundHint")
-                      : t("aiChat.chat.errorHint")
-                  }
-                  onRetry={notFound ? undefined : () => void detail.refetch()}
-                  action={
-                    notFound ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="min-h-11"
-                        onClick={() => select("new")}
-                      >
-                        {t("aiChat.history.newConversation")}
-                      </Button>
-                    ) : undefined
-                  }
-                />
-              ) : messages.length === 0 &&
-                !asking &&
-                !failure &&
-                !bannerKind ? (
-                <EmptyState
-                  title={t("aiChat.chat.emptyTitle")}
-                  description={t("aiChat.chat.emptyHint")}
-                />
-              ) : (
-                <>
-                  {messages.map((message: AiMessage) =>
-                    message.role === "user" ? (
-                      <QuestionBubble key={message.id}>
-                        {message.content}
-                      </QuestionBubble>
-                    ) : message.id === revealKey ? (
-                      <AnswerWithSource
-                        key={message.id}
-                        area={area}
-                        content={message.content.slice(0, reveal.shown)}
-                        sources={message.sources}
-                        busy={reveal.running}
-                        ready={!reveal.running && !reveal.stopped}
-                        showSources={!reveal.running && !reveal.stopped}
-                        actionRequestIds={drafts[message.id] ?? []}
-                      />
-                    ) : (
-                      <AnswerWithSource
-                        key={message.id}
-                        area={area}
-                        content={message.content}
-                        sources={message.sources}
-                        actionRequestIds={drafts[message.id] ?? []}
-                      />
-                    ),
-                  )}
-                  {canAskAgain && (
-                    <div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        className="min-h-11"
-                        onClick={() => {
-                          submit(lastQuestion, activeId, { keepInput: true });
-                          // The button unmounts while busy: keep keyboard focus.
-                          composerRef.current?.focus();
-                        }}
-                      >
-                        <RotateCw aria-hidden="true" />
-                        {t("aiChat.answer.askAgain")}
-                      </Button>
-                    </div>
-                  )}
-                  {reveal.stopped && (
-                    <div className="flex flex-wrap items-center gap-3 text-sm">
-                      <p className="font-semibold">
-                        {t("aiChat.answer.stopped")}
-                      </p>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="min-h-11"
-                        onClick={reveal.showAll}
-                      >
-                        {t("aiChat.answer.showAll")}
-                      </Button>
-                    </div>
-                  )}
-                  {(asking || failure) && (
-                    <QuestionBubble>
-                      {pending ?? failure?.question}
-                    </QuestionBubble>
-                  )}
-                  {asking && (
-                    <div
-                      role="status"
-                      aria-busy="true"
-                      aria-label={t("aiChat.chat.waiting")}
-                      className="grid gap-2.5"
+      <div className="flex min-h-0 flex-1 gap-6 @2xl:grid @2xl:grid-cols-[16rem_minmax(0,1fr)]">
+        <aside className="hidden @2xl:block">
+          <div className="sticky top-0 h-[calc(var(--chat-h)-3rem)] border-e-(length:--border-w) pe-4">
+            {historyPane("h-full")}
+          </div>
+        </aside>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <TitleHeading className="sr-only">{title}</TitleHeading>
+          <div
+            className={cn(
+              "mx-auto grid w-full max-w-[42rem] flex-1 gap-6 pb-4",
+              showGreeting ? "content-center" : "content-start",
+            )}
+          >
+            {detail.isPending && activeId !== null ? (
+              <ConversationSkeleton />
+            ) : history.isPending && selection === null ? (
+              <ConversationSkeleton />
+            ) : detail.isError ? (
+              <ErrorState
+                error={detail.error}
+                title={
+                  notFound
+                    ? t("aiChat.chat.notFoundTitle")
+                    : t("aiChat.chat.errorTitle")
+                }
+                description={
+                  notFound
+                    ? t("aiChat.chat.notFoundHint")
+                    : t("aiChat.chat.errorHint")
+                }
+                onRetry={notFound ? undefined : () => void detail.refetch()}
+                action={
+                  notFound ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="min-h-11"
+                      onClick={() => select("new")}
                     >
-                      <p className="text-sm font-semibold">
-                        {t("aiChat.answer.label")}
-                      </p>
-                      <Skeleton className="h-4 w-full" />
-                      <Skeleton className="h-4 w-4/5" />
-                      <span className="sr-only">
-                        {t("aiChat.chat.waiting")}
-                      </span>
-                    </div>
-                  )}
-                  {!asking && bannerKind && (
-                    <AskBanner
-                      kind={bannerKind}
+                      {t("aiChat.history.newConversation")}
+                    </Button>
+                  ) : undefined
+                }
+              />
+            ) : showGreeting ? (
+              <div className="grid justify-items-center gap-5 py-8 text-center">
+                <div className="grid gap-1.5">
+                  <p className="type-title">{t("aiChat.empty.greeting")}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {t("aiChat.chat.emptyHint")}
+                  </p>
+                </div>
+                <ChatSuggestions
+                  area={area}
+                  disabled={paused}
+                  onPick={(question) => {
+                    // Keep any typed draft and move focus off the chip that
+                    // unmounts once the question is asked.
+                    submit(question, activeId, { keepInput: true });
+                    composerRef.current?.focus();
+                  }}
+                />
+              </div>
+            ) : (
+              <>
+                {messages.map((message: AiMessage) =>
+                  message.role === "user" ? (
+                    <QuestionBubble key={message.id}>
+                      {message.content}
+                    </QuestionBubble>
+                  ) : message.id === revealKey ? (
+                    <AnswerWithSource
+                      key={message.id}
                       area={area}
-                      urgent={failure !== null}
-                      retrying={usage.isFetching && failure === null}
-                      onRetry={
-                        failure
-                          ? () =>
-                              submit(failure.question, failure.conversationId)
-                          : () => void usage.refetch()
-                      }
+                      content={message.content.slice(0, reveal.shown)}
+                      sources={message.sources}
+                      busy={reveal.running}
+                      ready={!reveal.running && !reveal.stopped}
+                      showSources={!reveal.running && !reveal.stopped}
+                      actionRequestIds={drafts[message.id] ?? []}
                     />
-                  )}
-                </>
-              )}
-            </div>
+                  ) : (
+                    <AnswerWithSource
+                      key={message.id}
+                      area={area}
+                      content={message.content}
+                      sources={message.sources}
+                      actionRequestIds={drafts[message.id] ?? []}
+                    />
+                  ),
+                )}
+                {canAskAgain && (
+                  <div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="min-h-11"
+                      onClick={() => {
+                        submit(lastQuestion, activeId, { keepInput: true });
+                        // The button unmounts while busy: keep keyboard focus.
+                        composerRef.current?.focus();
+                      }}
+                    >
+                      <RotateCw aria-hidden="true" />
+                      {t("aiChat.answer.askAgain")}
+                    </Button>
+                  </div>
+                )}
+                {reveal.stopped && (
+                  <div className="flex flex-wrap items-center gap-3 text-sm">
+                    <p className="font-semibold">
+                      {t("aiChat.answer.stopped")}
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="min-h-11"
+                      onClick={reveal.showAll}
+                    >
+                      {t("aiChat.answer.showAll")}
+                    </Button>
+                  </div>
+                )}
+                {(asking || failure) && (
+                  <QuestionBubble>
+                    {pending ?? failure?.question}
+                  </QuestionBubble>
+                )}
+                {asking && (
+                  <div
+                    role="status"
+                    aria-busy="true"
+                    aria-label={t("aiChat.chat.waiting")}
+                    className="grid gap-2.5"
+                  >
+                    <p className="text-sm font-semibold">
+                      {t("aiChat.answer.label")}
+                    </p>
+                    <Skeleton className="h-4 w-full" />
+                    <Skeleton className="h-4 w-4/5" />
+                    <span className="sr-only">{t("aiChat.chat.waiting")}</span>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
 
+          <div
+            className={cn(
+              "sticky bottom-0 mx-auto grid w-full max-w-[42rem] gap-3 pt-3 pb-1",
+              management ? "bg-surface-2" : "bg-background",
+            )}
+          >
+            {!asking && bannerKind && (
+              <AskBanner
+                kind={bannerKind}
+                area={area}
+                urgent={failure !== null}
+                retrying={usage.isFetching && failure === null}
+                onRetry={
+                  failure
+                    ? () => submit(failure.question, failure.conversationId)
+                    : () => void usage.refetch()
+                }
+              />
+            )}
             <Composer
               inputRef={composerRef}
               value={input}
@@ -459,8 +484,8 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
               quota={quota && quota.isEnabled ? quota : null}
             />
           </div>
-        </CardShellBody>
-      </CardShell>
+        </div>
+      </div>
 
       <DeleteHistoryDialog
         open={deleteOpen}

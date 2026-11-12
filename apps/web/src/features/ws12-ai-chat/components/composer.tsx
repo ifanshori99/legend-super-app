@@ -1,8 +1,10 @@
-// The question box. The label is always visible (not a placeholder); Enter
-// sends; while an answer is on its way or typing in, "Kirim" becomes
+// The question box: a rounded pill with "Kirim" inside, pinned by the page at
+// the bottom of the chat column. The label is always visible (not a
+// placeholder); Enter sends; while an answer is on its way or typing in, "Kirim" becomes
 // "Hentikan".
 import { useId, type Ref } from "react";
 import { AI_QUESTION_MAX } from "@starter/shared/ai";
+import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,7 +38,7 @@ export function Composer({
   const canSend = !disabled && value.trim().length > 0;
   return (
     <form
-      className="grid gap-2 border-t-(length:--border-w) pt-4"
+      className="grid gap-2"
       onSubmit={(event) => {
         event.preventDefault();
         if (canSend && !busy) onSubmit();
@@ -45,7 +47,12 @@ export function Composer({
       <Label htmlFor={id} className="font-semibold">
         {t("aiChat.composer.label")}
       </Label>
-      <div className="flex gap-2.5">
+      <div
+        className={cn(
+          "flex items-center gap-2 rounded-container border-(length:--border-w) border-input bg-background p-1.5 ps-4 shadow-hairline transition-[border-color,box-shadow] duration-(--duration-fast) focus-within:border-primary focus-within:shadow-focus",
+          disabled && "bg-muted opacity-60",
+        )}
+      >
         <Input
           id={id}
           ref={inputRef}
@@ -55,14 +62,14 @@ export function Composer({
           autoComplete="off"
           aria-describedby={noteId}
           placeholder={t("aiChat.composer.placeholder")}
-          className="min-h-11 flex-1"
+          className="h-11 min-h-11 flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:border-0 focus-visible:shadow-none disabled:bg-transparent disabled:opacity-100"
           onChange={(event) => onChange(event.target.value)}
         />
         {busy ? (
           <Button
             type="button"
             variant="outline"
-            className="min-h-11 shrink-0"
+            className="min-h-11 shrink-0 rounded-container"
             onClick={onStop}
           >
             {t("aiChat.answer.stop")}
@@ -70,14 +77,14 @@ export function Composer({
         ) : (
           <Button
             type="submit"
-            className="min-h-11 shrink-0 disabled:border-(length:--border-w) disabled:border-border disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100 disabled:shadow-none"
+            className="min-h-11 shrink-0 rounded-container disabled:border-(length:--border-w) disabled:border-border disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100 disabled:shadow-none"
             disabled={!canSend}
           >
             {t("aiChat.composer.send")}
           </Button>
         )}
       </div>
-      <p id={noteId} className="text-sm text-muted-foreground">
+      <p id={noteId} className="text-center text-sm text-muted-foreground">
         {t("aiChat.composer.note")}
         {quota &&
           ` ${t("aiChat.composer.remaining", { left: quota.left, limit: quota.limit })}`}
