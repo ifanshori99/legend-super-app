@@ -41,6 +41,7 @@ import {
   printPrepLabel,
   sweepExpiredPrepLabels,
   transitionPrepList,
+  upsertPrepItemSetting,
 } from "../services/operations-food-safety.service.ts";
 import {
   setPrepProductionOrderCreator,
@@ -246,6 +247,20 @@ let keySequence = 0;
 const nextKey = (label: string) =>
   `sdet-${label}-${(keySequence += 1)}-${randomUUID().slice(0, 8)}`;
 
+async function seedPrepShelfLife(
+  outletId: typeof outletA,
+  inventoryItemId: InventoryItemId,
+  shelfLifeMinutes: number,
+) {
+  return upsertPrepItemSetting(
+    outletScope(outletId),
+    operator,
+    inventoryItemId,
+    { outletId, shelfLifeMinutes, idempotencyKey: nextKey("shelf-life") },
+    NOW,
+  );
+}
+
 /** Decimal4 readings and quantities are branded at the contract boundary. */
 const reading = (value: string) => decimal4Schema.parse(value);
 const qty = (value: string) => positiveDecimal4Schema.parse(value);
@@ -323,6 +338,16 @@ afterAll(async () => {
     );
   await byIds("prep_lists", createdPrepListIds);
   await byIds("prep_labels", createdLabelIds);
+  await asOwner(tenantId, async (client) => {
+    await client.query(
+      "DELETE FROM prep_item_settings WHERE tenant_id = $1 AND inventory_item_id = ANY($2::uuid[])",
+      [tenantId, createdItemIds],
+    );
+    await client.query(
+      "DELETE FROM operations_idempotency WHERE tenant_id = $1 AND key LIKE 'sdet-shelf-life-%'",
+      [tenantId],
+    );
+  });
   await byIds("temperature_logs", createdTemperatureLogIds);
   const resultIds = [
     ...createdTemperatureLogIds,
@@ -591,6 +616,8 @@ describe("legend-sdet OPS-03 prep labels", () => {
   it("[legend-sdet][OPS-03] a prep label needs a batch from the same outlet and inventory item", async () => {
     const itemA = await seedInventoryItem(`Susu ${randomUUID().slice(0, 6)}`);
     const itemB = await seedInventoryItem(`Krim ${randomUUID().slice(0, 6)}`);
+    await seedPrepShelfLife(outletA, itemA, 300);
+    await seedPrepShelfLife(outletA, itemB, 300);
     const batchA = await seedStockBatch(outletA, itemA);
     const batchB = await seedStockBatch(outletB, itemA);
     const context = outletScope(outletA);
@@ -657,6 +684,7 @@ describe("legend-sdet OPS-03 prep labels", () => {
 
   it("[legend-sdet][OPS-03] the label links to its batch, lists by use-by and prints once", async () => {
     const item = await seedInventoryItem(`Saus ${randomUUID().slice(0, 6)}`);
+    await seedPrepShelfLife(outletA, item, 300);
     const batch = await seedStockBatch(outletA, item);
     const context = outletScope(outletA);
     const label = await createPrepLabel(
@@ -675,6 +703,7 @@ describe("legend-sdet OPS-03 prep labels", () => {
     createdLabelIds.push(label.id);
     expect(label.inventoryItemId).toBe(item);
     expect(label.batchId).toBe(batch);
+    expect(label.useBy).toBe(at(240));
     expect(label.printedAt).toBeNull();
 
     const expiring = await listPrepLabels(
@@ -721,6 +750,7 @@ describe("legend-sdet OPS-03 prep labels", () => {
 
   it("[legend-sdet][OPS-03] the expiry sweep alerts each expired label exactly once", async () => {
     const item = await seedInventoryItem(`Bumbu ${randomUUID().slice(0, 6)}`);
+    await seedPrepShelfLife(outletB, item, 180);
     const batch = await seedStockBatch(outletB, item);
     const contextB = outletScope(outletB);
     const label = await createPrepLabel(
@@ -768,6 +798,7 @@ describe("legend-sdet OPS-03 prep labels", () => {
 
   it("[legend-sdet][OPS-03] a sweep for another outlet never alerts this outlet's labels", async () => {
     const item = await seedInventoryItem(`Gula ${randomUUID().slice(0, 6)}`);
+    await seedPrepShelfLife(outletA, item, 180);
     const batch = await seedStockBatch(outletA, item);
     const contextA = outletScope(outletA);
     const label = await createPrepLabel(

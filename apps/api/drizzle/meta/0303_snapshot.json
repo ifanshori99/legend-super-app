@@ -59552,10 +59552,6 @@
         "payroll_runs_reversed_check": {
           "name": "payroll_runs_reversed_check",
           "value": "\"payroll_runs\".\"status\" <> 'reversed' OR COALESCE(\"payroll_runs\".\"reversal\" ->> 'status' = 'approved', false)"
-        },
-        "payroll_runs_distinct_approvers_check": {
-          "name": "payroll_runs_distinct_approvers_check",
-          "value": "(\"payroll_runs\".\"approved_by_finance\" IS NULL OR \"payroll_runs\".\"approved_by_hr\" IS NULL OR \"payroll_runs\".\"approved_by_finance\" <> \"payroll_runs\".\"approved_by_hr\")\n        AND (\"payroll_runs\".\"approved_by_finance\" IS NULL OR \"payroll_runs\".\"approved_by_finance\" <> \"payroll_runs\".\"created_by\")\n        AND (\"payroll_runs\".\"approved_by_hr\" IS NULL OR \"payroll_runs\".\"approved_by_hr\" <> \"payroll_runs\".\"created_by\")"
         }
       },
       "isRLSEnabled": false

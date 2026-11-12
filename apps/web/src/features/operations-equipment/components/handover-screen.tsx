@@ -1,14 +1,12 @@
 // /operasional/serah-terima — shift handover (PRD v1.7 §3 F41 "Serah Terima
 // Shift"; OPS-05). A handover stays "menunggu konfirmasi" until the receiving
-// shift confirms; "Tutup serah terima" is disabled before that. The contract has
-// no close endpoint/state yet, so closing is a session-level archive action
-// here (reported follow-up); acknowledgement itself goes through the contract
-// machine, which also refuses a self-acknowledgement.
+// shift confirms; "Tutup serah terima" is disabled before that. Both confirmation
+// and closure are persisted through the operations contract.
 import * as React from "react";
 import { ClipboardCheck, WifiOff } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/errors";
-import { Badge, StatusPill } from "@/components/ui/badge";
+import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -29,7 +27,12 @@ import { useOnline } from "@/lib/use-online";
 import { ActionRow, ActionStrip } from "./action-strip.tsx";
 import { HandoverFormDialog } from "./handover-form-dialog.tsx";
 import { HandoverStatusPill } from "./pills.tsx";
-import { useAcknowledgeHandover, useHandovers } from "../hooks.ts";
+import {
+  useAcknowledgeHandover,
+  useAttemptKey,
+  useCloseHandover,
+  useHandovers,
+} from "../hooks.ts";
 import {
   HANDOVER_NOTE_KEYS,
   HANDOVER_NOTE_LABEL_KEYS,
@@ -43,14 +46,12 @@ function HandoverCard({
   fromName,
   toName,
   timeZone,
-  closed,
   onCloseRequest,
 }: {
   handover: ShiftHandover;
   fromName: string;
   toName: string;
   timeZone: string;
-  closed: boolean;
   onCloseRequest: (handover: ShiftHandover) => void;
 }) {
   const t = useT();
@@ -58,6 +59,7 @@ function HandoverCard({
   const acknowledge = useAcknowledgeHandover();
   const [error, setError] = React.useState<string | null>(null);
   const hintId = `handover-close-hint-${handover.id}`;
+  const closed = handover.status === "closed";
 
   async function confirm() {
     setError(null);
@@ -106,9 +108,6 @@ function HandoverCard({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <HandoverStatusPill status={handover.status} />
-          {closed && (
-            <Badge tone="neutral">{t("opsEquipment.handover.closed")}</Badge>
-          )}
         </div>
       </div>
 
@@ -186,8 +185,7 @@ function HandoverCard({
 }
 
 /**
- * Keyed by outlet: switching outlet in the shell starts a fresh handover
- * list, so a handover marked closed for the previous outlet cannot carry over.
+ * Keyed by outlet so an open close dialog cannot carry over to another outlet.
  */
 export function HandoverScreen() {
   const { outlet } = useTenantContext();
@@ -201,9 +199,9 @@ function HandoverContent() {
   // The outlet the shell selected from the session's assigned outlets.
   const { outlet } = useTenantContext();
   const handovers = useHandovers(outlet?.id);
-  const [closedIds, setClosedIds] = React.useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
+  const close = useCloseHandover();
+  const closeAttempt = useAttemptKey();
+  const [closeError, setCloseError] = React.useState<string | null>(null);
   const [closeTarget, setCloseTarget] = React.useState<ShiftHandover | null>(
     null,
   );
@@ -286,11 +284,20 @@ function HandoverContent() {
       </div>
     );
 
-  function confirmClose() {
-    if (!closeTarget) return;
-    setClosedIds((current) => new Set(current).add(closeTarget.id));
-    setCloseTarget(null);
-    toast({ title: t("opsEquipment.handover.closeToast"), tone: "success" });
+  async function confirmClose() {
+    if (!closeTarget || !online || close.isPending) return;
+    setCloseError(null);
+    try {
+      await close.mutateAsync({
+        handoverId: closeTarget.id,
+        idempotencyKey: closeAttempt.keyFor({ handoverId: closeTarget.id }),
+      });
+      closeAttempt.settle();
+      setCloseTarget(null);
+      toast({ title: t("opsEquipment.handover.closeToast"), tone: "success" });
+    } catch {
+      setCloseError(t("opsEquipment.handover.actionError"));
+    }
   }
 
   return (
@@ -398,8 +405,10 @@ function HandoverContent() {
                 fromName={shiftName(handover.fromShiftTemplateId)}
                 toName={shiftName(handover.toShiftTemplateId)}
                 timeZone={timeZone}
-                closed={closedIds.has(handover.id)}
-                onCloseRequest={setCloseTarget}
+                onCloseRequest={(handover) => {
+                  setCloseError(null);
+                  setCloseTarget(handover);
+                }}
               />
             ))}
           </div>
@@ -409,7 +418,7 @@ function HandoverContent() {
       <Dialog
         open={closeTarget !== null}
         onOpenChange={(open) => {
-          if (!open) setCloseTarget(null);
+          if (!open && !close.isPending) setCloseTarget(null);
         }}
       >
         <DialogContent>
@@ -419,13 +428,24 @@ function HandoverContent() {
               {t("opsEquipment.handover.closeHint")}
             </DialogDescription>
           </DialogHeader>
+          {closeError && (
+            <p role="alert" className="text-sm font-medium text-danger">
+              {closeError}
+            </p>
+          )}
           <DialogFooter>
-            <Button type="button" onClick={confirmClose}>
+            <Button
+              type="button"
+              disabled={!online}
+              loading={close.isPending}
+              onClick={() => void confirmClose()}
+            >
               {t("opsEquipment.handover.closeConfirm")}
             </Button>
             <Button
               type="button"
               variant="outline"
+              disabled={close.isPending}
               onClick={() => setCloseTarget(null)}
             >
               {t("common.cancel")}

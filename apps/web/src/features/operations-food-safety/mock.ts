@@ -25,24 +25,29 @@ import {
   OperationsError,
   assertTemperatureLogAllowed,
   cafeLegendOperationsFixtures,
+  calculatePrepUseBy,
   createPrepLabel as createPrepLabelEndpoint,
   createPrepList as createPrepListEndpoint,
   createTemperatureLog as createTemperatureLogEndpoint,
   getPrepList as getPrepListEndpoint,
   isTemperatureInRange,
+  listPrepItemSettings as listPrepItemSettingsEndpoint,
   listPrepLabels as listPrepLabelsEndpoint,
   listPrepLists as listPrepListsEndpoint,
   listTemperatureLogs as listTemperatureLogsEndpoint,
   postPrepListTransition as postPrepListTransitionEndpoint,
+  prepItemSettingSchema,
   prepLabelIdSchema,
   prepLabelSchema,
   prepListIdSchema,
   prepListItemIdSchema,
   prepListSchema,
   printPrepLabel as printPrepLabelEndpoint,
+  putPrepItemSetting as putPrepItemSettingEndpoint,
   temperatureLogIdSchema,
   temperatureLogSchema,
   transitionPrepList,
+  type PrepItemSetting,
   type PrepLabel,
   type PrepList,
   type TemperatureLog,
@@ -177,6 +182,31 @@ function seedPrepLists(): PrepList[] {
 
 const temperatureLogs = createMockStore<TemperatureLog[]>(seedTemperatureLogs);
 const prepLabels = createMockStore<PrepLabel[]>(seedPrepLabels);
+// Demo settings reproduce the durations of the existing sample labels; this
+// never supplies a production default for an unconfigured prep item.
+const prepItemSettings = createMockStore<PrepItemSetting[]>(() => {
+  const items = new Map<string, PrepItemSetting>();
+  for (const label of fixtures.prepLabels) {
+    const key = `${label.outletId}:${label.inventoryItemId}`;
+    if (items.has(key)) continue;
+    items.set(
+      key,
+      prepItemSettingSchema.parse({
+        tenantId: label.tenantId,
+        outletId: label.outletId,
+        inventoryItemId: label.inventoryItemId,
+        shelfLifeMinutes:
+          (Date.parse(label.useBy) - Date.parse(label.producedAt)) / 60_000,
+        updatedAt: shiftInstant(label.producedAt),
+        updatedBy: actorId,
+      }),
+    );
+  }
+  return [...items.values()];
+});
+const prepSettingSaves = createMockStore(
+  () => new Map<string, { fingerprint: string; value: PrepItemSetting }>(),
+);
 const prepLists = createMockStore<PrepList[]>(seedPrepLists);
 
 const temperatureCreates = createMockStore(
@@ -270,6 +300,62 @@ registerMock(createTemperatureLogEndpoint, ({ body }) => {
 
 // ---- Prep labels (OPS-03) ------------------------------------------------
 
+registerMock(listPrepItemSettingsEndpoint, ({ query, scenario }) => {
+  assertOutlet(query.outletId);
+  const filtered = prepItemSettings
+    .get()
+    .filter(
+      (setting) =>
+        setting.outletId === query.outletId &&
+        (query.inventoryItemId === undefined ||
+          setting.inventoryItemId === query.inventoryItemId),
+    );
+  return paginateFixture(
+    filtered,
+    query,
+    (setting) => setting.inventoryItemId,
+    scenario,
+  );
+});
+
+registerMock(putPrepItemSettingEndpoint, ({ params, body }) => {
+  assertOutlet(body.outletId);
+  const fingerprint = JSON.stringify({
+    inventoryItemId: params.inventoryItemId,
+    ...body,
+  });
+  const replay = idempotentReplay(
+    prepSettingSaves.get(),
+    body.idempotencyKey,
+    fingerprint,
+  );
+  if (replay) return { data: replay };
+  if (!inventory.items.some((item) => item.id === params.inventoryItemId))
+    notFound("Bahan prep");
+  const setting = prepItemSettingSchema.parse({
+    tenantId: outlet.tenantId,
+    outletId: body.outletId,
+    inventoryItemId: params.inventoryItemId,
+    shelfLifeMinutes: body.shelfLifeMinutes,
+    updatedAt: nowIso(),
+    updatedBy: actorId,
+  });
+  prepItemSettings.set([
+    ...prepItemSettings
+      .get()
+      .filter(
+        (row) =>
+          row.outletId !== setting.outletId ||
+          row.inventoryItemId !== setting.inventoryItemId,
+      ),
+    setting,
+  ]);
+  prepSettingSaves
+    .get()
+    .set(body.idempotencyKey, { fingerprint, value: setting });
+  return { data: setting };
+});
+
 registerMock(listPrepLabelsEndpoint, ({ query, scenario }) => {
   const expiringBefore =
     query.expiringBefore === undefined
@@ -309,8 +395,35 @@ registerMock(createPrepLabelEndpoint, ({ body }) => {
     invalid("batchId", "Batch tidak sesuai dengan bahan yang dipilih.");
   if (batch.outletId !== body.outletId)
     invalid("batchId", "Batch bukan milik outlet ini.");
-  if (Date.parse(body.useBy) <= Date.parse(body.producedAt))
-    invalid("useBy", "Batas pakai harus setelah waktu produksi (OPS-03).");
+  const setting = prepItemSettings
+    .get()
+    .find(
+      (row) =>
+        row.outletId === body.outletId &&
+        row.inventoryItemId === body.inventoryItemId,
+    );
+  if (!setting)
+    throw new ApiError(
+      422,
+      "PREP_SHELF_LIFE_REQUIRED",
+      "Atur masa simpan bahan prep di outlet ini sebelum membuat label.",
+    );
+  const useBy = calculatePrepUseBy(body.producedAt, setting.shelfLifeMinutes);
+  if (
+    useBy === null ||
+    (body.useBy !== undefined && Date.parse(body.useBy) !== Date.parse(useBy))
+  )
+    throw new ApiError(
+      422,
+      "VALIDATION_ERROR",
+      "Batas pakai harus sesuai waktu produksi dan masa simpan bahan prep.",
+      [
+        {
+          field: "useBy",
+          message: "Periksa waktu produksi dan masa simpan bahan prep.",
+        },
+      ],
+    );
 
   const label = prepLabelSchema.parse({
     id: prepLabelIdSchema.parse(newId()),
@@ -319,7 +432,7 @@ registerMock(createPrepLabelEndpoint, ({ body }) => {
     inventoryItemId: body.inventoryItemId,
     batchId: body.batchId,
     producedAt: body.producedAt,
-    useBy: body.useBy,
+    useBy,
     producedBy: actorId,
     printedAt: null,
   });

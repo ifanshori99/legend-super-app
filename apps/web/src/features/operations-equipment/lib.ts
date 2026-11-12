@@ -70,6 +70,7 @@ export const TICKET_ACTION_KEYS: Record<MaintenanceTicketAction, MessageKey> = {
 export const HANDOVER_STATUS_KEYS: Record<ShiftHandoverStatus, MessageKey> = {
   submitted: "opsEquipment.handover.status.submitted",
   acknowledged: "opsEquipment.handover.status.acknowledged",
+  closed: "opsEquipment.handover.closed",
 };
 
 /** The five structured handover sections, in PRD §3 F41 order. */

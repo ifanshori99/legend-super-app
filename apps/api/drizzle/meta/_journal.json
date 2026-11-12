@@ -2045,6 +2045,20 @@
       "when": 1794418000000,
       "tag": "0305_pos_parked_orders",
       "breakpoints": true
+    },
+    {
+      "idx": 306,
+      "version": "7",
+      "when": 1794418100000,
+      "tag": "0306_shift_handover_close",
+      "breakpoints": true
+    },
+    {
+      "idx": 307,
+      "version": "7",
+      "when": 1794418200000,
+      "tag": "0307_prep_item_shelf_life",
+      "breakpoints": true
     }
   ]
 }

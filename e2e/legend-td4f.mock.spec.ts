@@ -1,4 +1,5 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+import { CHECKLIST_ANSWER_QUEUE_KEY } from "../apps/web/src/features/operations-checklist/queue.ts";
 import { captureScreenshot } from "./screenshots.ts";
 
 // WS-14 operational checklists against the mock runtime: the board's OPS-01
@@ -20,6 +21,24 @@ const CLEANING_RUN_ID = "00000000-0000-4000-8000-000000008203";
 const OPENING_TEMPLATE_ID = "00000000-0000-4000-8000-000000008101";
 
 const BOARD_HEADING = "Checklist operasional";
+
+async function queuedAnswerCount(page: Page) {
+  return page.evaluate((key) => {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return 0;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("version" in parsed) ||
+      parsed.version !== 1 ||
+      !("entries" in parsed) ||
+      !Array.isArray(parsed.entries)
+    )
+      throw new Error("Stored checklist answer queue has an invalid format.");
+    return parsed.entries.length;
+  }, CHECKLIST_ANSWER_QUEUE_KEY);
+}
 
 test("OPS-01 board shows an overdue checklist with the supervisor escalation badge", async ({
   page,
@@ -147,7 +166,7 @@ test("OPS-01 template builder creates a template with evidence requirements", as
   ).toBeChecked();
 });
 
-test("OPS-01 offline blocks checklist writes instead of claiming they saved", async ({
+test("legend-ga0n OPS-01 queues an answer offline and changes progress only after replay confirmation", async ({
   page,
   context,
 }) => {
@@ -158,22 +177,49 @@ test("OPS-01 offline blocks checklist writes instead of claiming they saved", as
       level: 1,
     }),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
-  const done = page.getByRole("button", { name: "Tandai selesai" }).first();
+  const item = page
+    .locator('[data-slot="checklist-item"]')
+    .filter({ hasText: "Isi ulang sabun dan tisu" });
+  const done = item.getByRole("button", { name: "Tandai selesai" });
+  await expect(item).toHaveAttribute("data-item-status", "pending");
   await expect(done).toBeEnabled();
 
   await context.setOffline(true);
-  // No offline queue in the contract: the notice says so and writes are off.
-  await expect(page.locator('[data-slot="offline-notice"]')).toContainText(
-    "tidak diantrekan",
-  );
-  await expect(done).toBeDisabled();
-  await expect(
-    page.getByRole("button", { name: "Tandai gagal" }).first(),
-  ).toBeDisabled();
+  try {
+    await expect(page.locator('[data-slot="offline-notice"]')).toBeVisible();
+    await expect(done).toBeEnabled();
+    await done.click();
+    await expect(item).toHaveAttribute("data-queue-state", "pending");
+    await expect(
+      item.locator('[data-slot="checklist-item-queued"]'),
+    ).toContainText("Jawaban menunggu konfirmasi server.");
+    await expect(item).toHaveAttribute("data-item-status", "pending");
+    await expect(
+      item.locator('[data-slot="checklist-item-result"]'),
+    ).toHaveCount(0);
+    await expect(
+      page.locator('[data-slot="checklist-answer-queue"]'),
+    ).toContainText("1 jawaban menunggu konfirmasi server.");
 
-  await context.setOffline(false);
+    // The device has a durable attempt, while the screen still shows the
+    // last confirmed server progress. Queue recreation is covered by the
+    // unit test: a dev-server app shell is not available for offline reload.
+    await expect.poll(() => queuedAnswerCount(page)).toBe(1);
+  } finally {
+    await context.setOffline(false);
+  }
+
+  await expect(item).toHaveAttribute("data-item-status", "done");
+  await expect(
+    item.locator('[data-slot="checklist-item-result"]'),
+  ).toBeVisible();
+  await expect(item.getByText("Selesai", { exact: true })).toBeVisible();
+  await expect(item).not.toHaveAttribute("data-queue-state", "pending");
+  await expect(
+    page.locator('[data-slot="checklist-answer-queue"]'),
+  ).toHaveCount(0);
   await expect(page.locator('[data-slot="offline-notice"]')).toHaveCount(0);
-  await expect(done).toBeEnabled();
+  await expect.poll(() => queuedAnswerCount(page)).toBe(0);
 });
 
 test("OPS-01 template builder reorders items with buttons and keeps focus", async ({

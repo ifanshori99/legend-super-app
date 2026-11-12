@@ -147,7 +147,7 @@ export function StartRunDialog({
                   setErrors((current) => ({ ...current, template: undefined }));
                 }}
               >
-                <SelectTrigger aria-label={t("opsChecklist.start.template")}>
+                <SelectTrigger>
                   <SelectValue
                     placeholder={t("opsChecklist.start.templatePlaceholder")}
                   />
@@ -214,7 +214,7 @@ export function StartRunDialog({
                   setErrors((current) => ({ ...current, assignee: undefined }));
                 }}
               >
-                <SelectTrigger aria-label={t("opsChecklist.start.assignee")}>
+                <SelectTrigger>
                   <SelectValue
                     placeholder={t("opsChecklist.start.assigneePlaceholder")}
                   />

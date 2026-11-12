@@ -10,6 +10,7 @@ import {
 import {
   getPrepList,
   listEquipment,
+  listPrepItemSettings,
   listPrepLabels,
   listPrepLists,
   listTemperatureLogs,
@@ -25,6 +26,10 @@ export const temperatureLogsQuery = (
 
 export const equipmentQuery = (query: Query<typeof listEquipment>) =>
   endpointQueryOptions(listEquipment, { query });
+
+export const prepItemSettingsQuery = (
+  query: Query<typeof listPrepItemSettings>,
+) => endpointQueryOptions(listPrepItemSettings, { query });
 
 export const prepLabelsQuery = (query: Query<typeof listPrepLabels>) =>
   endpointQueryOptions(listPrepLabels, { query });

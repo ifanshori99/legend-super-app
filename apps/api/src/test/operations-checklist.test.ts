@@ -7,6 +7,15 @@ import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  decimal4Schema,
+  outletIdSchema,
+  userIdSchema,
+} from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import {
   createChecklistRun,
   createChecklistTemplate,
   createPrepLabel,
@@ -18,6 +27,8 @@ import {
 } from "@starter/shared/operations";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
+import { recordChecklistItemResult as recordChecklistItemResultService } from "../services/operations-checklist.service.ts";
+import { operationsFingerprint } from "../services/operations-idempotency.ts";
 import { agent, originHeader, signUp } from "./helpers";
 
 const app = createApp();
@@ -182,6 +193,10 @@ afterAll(async () => {
       await client.query("DELETE FROM prep_labels WHERE id = ANY($1)", [
         createdPrepLabelIds,
       ]);
+    await client.query(
+      "DELETE FROM prep_item_settings WHERE tenant_id = $1 AND inventory_item_id = $2",
+      [tenant.id, inventoryItemId],
+    );
     await client.query("DELETE FROM temperature_logs WHERE equipment_id = $1", [
       equipmentId,
     ]);
@@ -532,6 +547,272 @@ describe("Operations checklist runs (legend-btha)", () => {
     expect(reread.body.data.results).toEqual([]);
   });
 
+  it("[legend-ga0n][OPS-01][D-CORE-5] replaying an offline answer preserves its result and rejects changed content", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    await startRun(staff, run.id);
+    const itemId = itemIdOf(run, "Suhu chiller");
+    const path = `/api/operations/checklist-runs/${run.id}/items/${itemId}/result`;
+    const body = {
+      status: "done",
+      numberValue: "4.5000",
+      note: "Suhu dibaca sebelum koneksi terputus.",
+      photoMediaIds: [],
+      signatureMediaId: null,
+      idempotencyKey: key(),
+    };
+    const first = await staff.client.post(path).set(originHeader).send(body);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    getChecklistRun.response.parse(first.body);
+    const replay = await staff.client.post(path).set(originHeader).send(body);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(replay.body.data).toEqual(first.body.data);
+    expect(replay.body.data.results).toHaveLength(1);
+
+    const changed = await staff.client
+      .post(path)
+      .set(originHeader)
+      .send({ ...body, numberValue: "9.0000" });
+    expect(changed.status, JSON.stringify(changed.body)).toBe(409);
+    expect(changed.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    const reread = await staff.client.get(
+      `/api/operations/checklist-runs/${run.id}`,
+    );
+    expect(reread.status, JSON.stringify(reread.body)).toBe(200);
+    expect(reread.body.data.results).toEqual(first.body.data.results);
+  });
+
+  it("[legend-ga0n][TEN-03] a successful answer key cannot reveal or mutate the run from another outlet", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    await startRun(staff, run.id);
+    const itemId = itemIdOf(run, "Suhu chiller");
+    const path = `/api/operations/checklist-runs/${run.id}/items/${itemId}/result`;
+    const body = {
+      status: "done",
+      numberValue: "4.5000",
+      photoMediaIds: [],
+      signatureMediaId: null,
+      idempotencyKey: key(),
+    };
+    const first = await staff.client.post(path).set(originHeader).send(body);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const outsider = await outletClient(outletB.id);
+    const replay = await outsider.client
+      .post(path)
+      .set(originHeader)
+      .send(body);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(404);
+    expect(replay.body.error.code).toBe("NOT_FOUND");
+    const reread = await staff.client.get(
+      `/api/operations/checklist-runs/${run.id}`,
+    );
+    expect(reread.status, JSON.stringify(reread.body)).toBe(200);
+    expect(reread.body.data.results).toEqual(first.body.data.results);
+  });
+
+  it("[legend-ga0n][D-CORE-5] actor-bound retries still acknowledge answers accepted with the legacy fingerprint", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    await startRun(staff, run.id);
+    const itemId = itemIdOf(run, "Suhu chiller");
+    const path = `/api/operations/checklist-runs/${run.id}/items/${itemId}/result`;
+    const body = {
+      status: "done",
+      numberValue: "4.5000",
+      note: null,
+      photoMediaIds: [],
+      signatureMediaId: null,
+      idempotencyKey: key(),
+    };
+    const first = await staff.client.post(path).set(originHeader).send(body);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    // Seed the exact pre-binding canonical shape. An undefined actor key is
+    // deliberately absent: stableStringify distinguishes it from omission.
+    const legacyFingerprint = operationsFingerprint({
+      runId: run.id,
+      itemId,
+      ...body,
+      idempotencyKey: undefined,
+    });
+    const seeded = await asTenant((client) =>
+      client.query(
+        "UPDATE operations_idempotency SET fingerprint = $1 WHERE tenant_id = $2 AND key = $3",
+        [legacyFingerprint, tenant.id, body.idempotencyKey],
+      ),
+    );
+    expect(seeded.rowCount).toBe(1);
+    const replay = await staff.client
+      .post(path)
+      .set(originHeader)
+      .send({ ...body, expectedActorUserId: staff.userId });
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(replay.body.data).toEqual(first.body.data);
+    const persisted = await staff.client.get(
+      `/api/operations/checklist-runs/${run.id}`,
+    );
+    expect(persisted.status, JSON.stringify(persisted.body)).toBe(200);
+    expect(persisted.body.data.results).toEqual(first.body.data.results);
+  });
+
+  it("[legend-ga0n][OPS-01] a stale queued answer cannot replace a newer confirmed answer while accepted-key replay stays safe", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    await startRun(staff, run.id);
+    const itemId = itemIdOf(run, "Suhu chiller");
+    const path = `/api/operations/checklist-runs/${run.id}/items/${itemId}/result`;
+    const answer = {
+      status: "done",
+      numberValue: "4.5000",
+      note: "Pembacaan awal sebelum perangkat kehilangan koneksi.",
+      photoMediaIds: [],
+      signatureMediaId: null,
+    };
+    const acceptedKey = key();
+    const original = await staff.client
+      .post(path)
+      .set(originHeader)
+      .send({
+        ...answer,
+        idempotencyKey: acceptedKey,
+        expectedActorUserId: staff.userId,
+      });
+    expect(original.status, JSON.stringify(original.body)).toBe(200);
+
+    // Preserve the existing direct-correction contract. Another authorized
+    // person records a newer measurement while the original device is away.
+    const correctingActor = await ownerClient();
+    const newer = await correctingActor.client
+      .post(path)
+      .set(originHeader)
+      .send({
+        ...answer,
+        numberValue: "7.2500",
+        note: "Pembacaan terbaru sudah dikonfirmasi.",
+        idempotencyKey: key(),
+      });
+    expect(newer.status, JSON.stringify(newer.body)).toBe(200);
+    expect(newer.body.data.results[0].numberValue).toBe("7.2500");
+    expect(newer.body.data.results[0].completedBy).toBe(correctingActor.userId);
+
+    const staleKey = key();
+    const stale = await staff.client
+      .post(path)
+      .set(originHeader)
+      .send({
+        ...answer,
+        idempotencyKey: staleKey,
+        expectedActorUserId: staff.userId,
+      });
+    expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+    expect(stale.body.error.code).toBe("CHECKLIST_ANSWER_CONFLICT");
+    const afterConflict = await staff.client.get(
+      `/api/operations/checklist-runs/${run.id}`,
+    );
+    expect(afterConflict.status, JSON.stringify(afterConflict.body)).toBe(200);
+    expect(afterConflict.body.data.results).toEqual(newer.body.data.results);
+
+    const replay = await staff.client
+      .post(path)
+      .set(originHeader)
+      .send({
+        ...answer,
+        idempotencyKey: acceptedKey,
+        expectedActorUserId: staff.userId,
+      });
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(replay.body.data.results).toEqual(newer.body.data.results);
+    const read = await staff.client.get(
+      `/api/operations/checklist-runs/${run.id}`,
+    );
+    expect(read.status, JSON.stringify(read.body)).toBe(200);
+    expect(read.body.data.results).toEqual(newer.body.data.results);
+  });
+
+  it("[legend-ga0n][TEN-03] a fresh queued answer cannot be recorded under another authorized session actor", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    await startRun(staff, run.id);
+    const changedSession = await ownerClient();
+    const context = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenant.id,
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "outlets", outletIds: [outletIdSchema.parse(outletA.id)] },
+    );
+    const input = {
+      status: "done" as const,
+      numberValue: decimal4Schema.parse("4.5000"),
+      note: null,
+      photoMediaIds: [],
+      signatureMediaId: null,
+      idempotencyKey: key(),
+      expectedActorUserId: userIdSchema.parse(staff.userId),
+    };
+    await expect(
+      recordChecklistItemResultService(
+        context,
+        changedSession.userId,
+        run.id,
+        itemIdOf(run, "Suhu chiller"),
+        input,
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "CHECKLIST_REPLAY_ACTOR_MISMATCH",
+    });
+    const read = await staff.client.get(
+      `/api/operations/checklist-runs/${run.id}`,
+    );
+    expect(read.status, JSON.stringify(read.body)).toBe(200);
+    expect(read.body.data.results).toEqual([]);
+  });
+
+  it("[legend-ga0n][D-CORE-5] queued actor binding is checked before returning a successful-key replay", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    await startRun(staff, run.id);
+    const changedSession = await ownerClient();
+    const context = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenant.id,
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "outlets", outletIds: [outletIdSchema.parse(outletA.id)] },
+    );
+    const input = {
+      status: "done" as const,
+      numberValue: decimal4Schema.parse("4.5000"),
+      note: null,
+      photoMediaIds: [],
+      signatureMediaId: null,
+      idempotencyKey: key(),
+      expectedActorUserId: userIdSchema.parse(staff.userId),
+    };
+    const itemId = itemIdOf(run, "Suhu chiller");
+    const first = await recordChecklistItemResultService(
+      context,
+      staff.userId,
+      run.id,
+      itemId,
+      input,
+    );
+    await expect(
+      recordChecklistItemResultService(
+        context,
+        changedSession.userId,
+        run.id,
+        itemId,
+        input,
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "CHECKLIST_REPLAY_ACTOR_MISMATCH",
+    });
+    const read = await staff.client.get(
+      `/api/operations/checklist-runs/${run.id}`,
+    );
+    expect(read.status, JSON.stringify(read.body)).toBe(200);
+    expect(read.body.data.results).toEqual(first.results);
+  });
+
   it("[legend-btha][OPS-01] completes a run once every item carries its evidence", async () => {
     const run = await postRun(staff, baseTemplateId);
     await startRun(staff, run.id);
@@ -732,6 +1013,16 @@ describe("Operations food-safety and prep (legend-btha)", () => {
   });
 
   it("[legend-btha][OPS-03] creates a prep label for a batch and lists it by outlet", async () => {
+    const configured = await staff.client
+      .put(`/api/operations/prep-item-settings/${inventoryItemId}`)
+      .set(originHeader)
+      .send({
+        outletId: outletA.id,
+        shelfLifeMinutes: 90,
+        idempotencyKey: key(),
+      });
+    expect(configured.status, JSON.stringify(configured.body)).toBe(200);
+    const producedAt = new Date(Date.now() - 60_000).toISOString();
     const created = await staff.client
       .post("/api/operations/prep-labels")
       .set(originHeader)
@@ -739,8 +1030,7 @@ describe("Operations food-safety and prep (legend-btha)", () => {
         outletId: outletA.id,
         inventoryItemId,
         batchId,
-        producedAt: new Date(Date.now() - 60_000).toISOString(),
-        useBy: new Date(Date.now() + 3 * 86_400_000).toISOString(),
+        producedAt,
         idempotencyKey: key(),
       });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
@@ -748,6 +1038,9 @@ describe("Operations food-safety and prep (legend-btha)", () => {
     createdPrepLabelIds.push(created.body.data.id as string);
     expect(created.body.data.producedBy).toBe(staff.userId);
     expect(created.body.data.printedAt).toBeNull();
+    expect(created.body.data.useBy).toBe(
+      new Date(Date.parse(producedAt) + 90 * 60_000).toISOString(),
+    );
 
     const listed = await staff.client.get(
       `/api/operations/prep-labels?outletId=${outletA.id}&limit=50`,

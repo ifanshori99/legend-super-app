@@ -21,6 +21,7 @@ import {
   postEquipmentTransition as postEquipmentTransitionEndpoint,
   postMaintenanceTicketTransition as postMaintenanceTicketTransitionEndpoint,
   postShiftHandoverAcknowledgement as postShiftHandoverAcknowledgementEndpoint,
+  postShiftHandoverClose as postShiftHandoverCloseEndpoint,
   updateEquipment as updateEquipmentEndpoint,
 } from "@starter/shared/operations";
 import { callEndpoint } from "@/lib/api/endpoint";
@@ -47,6 +48,7 @@ export const operationsEndpoints = {
   getShiftHandover: getShiftHandoverEndpoint,
   createShiftHandover: createShiftHandoverEndpoint,
   postShiftHandoverAcknowledgement: postShiftHandoverAcknowledgementEndpoint,
+  postShiftHandoverClose: postShiftHandoverCloseEndpoint,
 } as const;
 
 export const listEquipment = async (
@@ -149,6 +151,19 @@ export const acknowledgeShiftHandover = async (
   (
     await callEndpoint(
       postShiftHandoverAcknowledgementEndpoint,
+      { params, body },
+      options,
+    )
+  ).data;
+
+export const closeShiftHandover = async (
+  params: Params<typeof postShiftHandoverCloseEndpoint>,
+  body: Body<typeof postShiftHandoverCloseEndpoint>,
+  options?: CallOptions,
+) =>
+  (
+    await callEndpoint(
+      postShiftHandoverCloseEndpoint,
       { params, body },
       options,
     )

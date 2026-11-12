@@ -18,6 +18,7 @@
 // The scratch database lives on the disposable test server and is dropped in
 // afterAll.
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -309,5 +310,74 @@ describe("legend-m007 foreign keys into FORCE RLS tables, run by a plain table o
       `SELECT convalidated FROM pg_constraint WHERE conname = 'child_forced_parent_fk'`,
     );
     expect(constraint.rows[0]).toEqual({ convalidated: true });
+  });
+
+  it("[legend-do1o] migration 0387 applies under a plain owner while referenced tenant tables FORCE RLS", async () => {
+    // Use the shipped RLS helpers and the actual migration SQL. The scratch
+    // parents expose the real referenced keys and retain the FORCE policies.
+    for (const [filename, names] of [
+      ["0001_tenant_rls.sql", ["enforce_tenant_rls"]],
+      [
+        "0032_outlet_rls.sql",
+        ["outlet_scope_is_tenant", "scoped_outlet_ids", "enforce_outlet_rls"],
+      ],
+    ] as const) {
+      const statements = readFileSync(
+        new URL(`../../drizzle/${filename}`, import.meta.url),
+        "utf8",
+      ).split("--> statement-breakpoint");
+      for (const name of names) {
+        const definition = statements.find((statement) =>
+          statement.includes(`CREATE FUNCTION app.${name}(`),
+        );
+        expect(definition, `shipped RLS helper ${name}`).toBeDefined();
+        await owner.query(definition!);
+      }
+    }
+    await owner.query(`
+      CREATE TABLE tenants (id uuid PRIMARY KEY);
+      CREATE TABLE "user" (id text PRIMARY KEY);
+      CREATE TABLE outlets (tenant_id uuid NOT NULL, id uuid PRIMARY KEY, UNIQUE (tenant_id, id));
+      CREATE TABLE inventory_items (tenant_id uuid NOT NULL, id uuid PRIMARY KEY, UNIQUE (tenant_id, id));
+      SELECT app.enforce_tenant_rls('public.outlets'::regclass);
+      SELECT app.enforce_tenant_rls('public.inventory_items'::regclass);
+      SELECT set_config('app.tenant_id', '', false), set_config('app.outlet_ids', '', false);
+    `);
+    const role = await owner.query(
+      "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+    );
+    expect(role.rows[0]).toEqual({ rolsuper: false, rolbypassrls: false });
+    const migration = readFileSync(
+      new URL("../../drizzle/0387_prep_item_shelf_life.sql", import.meta.url),
+      "utf8",
+    );
+    const applyMigration = async () => {
+      const client = await owner.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(migration);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    };
+    await expect(applyMigration()).resolves.toBeUndefined();
+    const foreignKeys = await owner.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM pg_constraint WHERE conrelid = 'public.prep_item_settings'::regclass AND contype = 'f' AND convalidated",
+    );
+    expect(foreignKeys.rows[0]!.n).toBe(5);
+    const policies = await owner.query(
+      `SELECT relname, relforcerowsecurity FROM pg_class WHERE oid IN (
+        'public.outlets'::regclass, 'public.inventory_items'::regclass, 'public.prep_item_settings'::regclass
+      ) ORDER BY relname`,
+    );
+    expect(policies.rows).toEqual([
+      { relname: "inventory_items", relforcerowsecurity: true },
+      { relname: "outlets", relforcerowsecurity: true },
+      { relname: "prep_item_settings", relforcerowsecurity: true },
+    ]);
   });
 });
