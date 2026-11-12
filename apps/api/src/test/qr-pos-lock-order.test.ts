@@ -1,22 +1,10 @@
-// QR checkout vs POS promo lock order (bead legend-94qt, P2 #3).
-//
-// Both bills share two lock families: the promo engine's shared rows (candidate
-// promotions FOR UPDATE, usage rows; crm-promo-engine `redeemPromotions` lock
-// order steps 5-7) and the session deposit lock (`lockSessionDeposit`). POS
-// takes promo then deposit (discount apply -> redeem -> repriceOrder ->
-// depositFor). The QR pay-first checkout used to take the deposit lock first
-// and redeem the promotion after, so a QR checkout with a promo racing a POS
-// promo discount in the same session deadlocked (40P01). The global order is
-// now promo THEN deposit; these tests prove it through the real HTTP routes
-// with real concurrent transactions.
-//
-// The promo port is a double that models the engine's shared-row lock with one
-// transaction advisory lock per tenant, taken inside `redeem`, and parks the
-// first arrival after it holds that lock until the second caller has arrived
-// at `redeem`. Before the fix the QR side then already holds the deposit lock,
-// so POS (holding the promo lock) and QR (holding the deposit lock) wait on
-// each other. Fixtures are copied from pos-order-deposit-lock.test.ts; no other
-// test file is imported except the shared helpers.
+// QR checkout vs POS promo and deposit allocation (bead legend-94qt).
+// The promo test uses a shared lock and a barrier to overlap redemption. POS
+// repricing leaves a draft unallocated; checkout may allocate to the QR order.
+// Separate submit races use persisted paid payment evidence and, for the
+// second case, a completed partial refund. A held table-live advisory lock
+// proves both concurrent HTTP operations are waiting before release; each
+// then allocates through the production reservation deposit lookup.
 
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
@@ -25,6 +13,8 @@ import type { PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { idr, ulidToUuid } from "@starter/shared/core";
 import { createApp } from "../app.ts";
+import { depositCreditForSession } from "../services/reservation-lifecycle.ts";
+import { seedSettledDeposit } from "./batch49-settled-deposit-helper.ts";
 import type { OrderPromoPort } from "../services/order-promo-port.ts";
 import {
   setPosOrderPromoPort,
@@ -266,18 +256,23 @@ const promoDouble: OrderPromoPort = {
   },
 };
 
+function useCreditDouble() {
+  setQrOrderDepositCreditLookup(async (_tx, tenantId, sessionId) => {
+    return credits.get(`${tenantId}:${sessionId.toLowerCase()}`) ?? 0;
+  });
+}
+
 beforeAll(async () => {
   app = createApp();
   setPosReceiptPort(receiptPort);
   setQrOrderPromoPort(promoDouble);
   setPosOrderPromoPort(promoDouble);
-  setQrOrderDepositCreditLookup(async (_tx, tenantId, sessionId) => {
-    return credits.get(`${tenantId}:${sessionId.toLowerCase()}`) ?? 0;
-  });
+  useCreditDouble();
   a = await seedFixture("lck-a");
 });
 
 afterEach(() => {
+  useCreditDouble();
   credits.clear();
   gate = null;
 });
@@ -426,8 +421,7 @@ describe("QR checkout and POS promo lock order (legend-94qt)", () => {
 
   it("legend-94qt a QR pay-first checkout with a promo racing a POS promo discount in one session: no 40P01, deposit applied once", async () => {
     const session = await openSession(a);
-    // The POS order exists without deposit (no credit yet); its promo discount
-    // then reprices and reads the session deposit while the QR checkout runs.
+    // POS remains a draft and cannot reserve deposit while QR checkout runs.
     const posOrderId = await posCreate(a, session);
     const version = await fillCart(a, session);
 
@@ -452,15 +446,105 @@ describe("QR checkout and POS promo lock order (legend-94qt)", () => {
     const live = rows.filter((row) => row.status !== "voided");
     const deposit = live.reduce((sum, row) => sum + row.deposit, 0);
     expect(deposit).toBeLessThanOrEqual(60_000);
-    // The credit is fully used, never double-applied and never left behind.
-    expect(deposit).toBe(
-      Math.min(
-        60_000,
-        live.reduce((sum, row) => sum + row.total, 0),
-      ),
-    );
+    expect(rows.find((row) => row.channel === "pos")?.deposit).toBe(0);
+    expect(rows.find((row) => row.channel === "qr")?.deposit).toBe(53_900);
+    expect(deposit).toBe(53_900);
     expect(ulidToUuid(posOrderId)).toBe(
       rows.find((row) => row.channel === "pos")?.id,
     );
   });
+
+  it.each([0, 10_000])(
+    "QR and POS submit share only settled deposit after refund Rp%s",
+    async (refundedIdr) => {
+      const session = await openSession(a);
+      const paidIdr = 60_000;
+      await seedSettledDeposit({
+        tenantId: a.tenant.tenantId,
+        outletId: a.tenant.outletId,
+        sessionId: session.id,
+        requestedBy: a.cashier.userId,
+        approverId: a.floor.userId,
+        paidIdr,
+        refundedIdr,
+      });
+      setQrOrderDepositCreditLookup(depositCreditForSession);
+      const posOrderId = await posCreate(a, session);
+      const before = await ordersOf(a, session);
+      expect(before.find((row) => row.channel === "pos")?.deposit).toBe(0);
+      const version = await fillCart(a, session);
+
+      // Both requests must reach the same table-live lock before we release it:
+      // checkout and submit serialize there before either allocates the credit.
+      const holder = await owner.connect();
+      let requests: Promise<unknown>[] = [];
+      try {
+        await holder.query("BEGIN");
+        const table = await holder.query<{ table_id: string }>(
+          "SELECT table_id FROM table_sessions WHERE tenant_id = $1 AND id = $2",
+          [a.tenant.tenantId, session.id],
+        );
+        expect(table.rows).toHaveLength(1);
+        await holder.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`table-live:${a.tenant.tenantId}:${table.rows[0]!.table_id}`],
+        );
+        const pid = await holder.query<{ pid: number }>(
+          "SELECT pg_backend_pid() AS pid",
+        );
+        const pos = posSend(a, `/${posOrderId}/submit`, {
+          expectedStatus: "draft",
+        });
+        const qr = guestRequest(a, session, "/orders").send({
+          expectedCartVersion: version,
+          idempotencyKey: randomUUID(),
+        });
+        // Starting via then() dispatches both supertest requests immediately.
+        const posResult = pos.then((response) => response);
+        const qrResult = qr.then((response) => response);
+        requests = [posResult, qrResult];
+        const deadline = Date.now() + 8_000;
+        let blocked = 0;
+        while (Date.now() < deadline) {
+          const waiters = await owner.query<{ n: string }>(
+            "SELECT count(*)::text AS n FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+            [pid.rows[0]!.pid],
+          );
+          blocked = Number(waiters.rows[0]!.n);
+          if (blocked >= 2) break;
+          await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+        expect(blocked).toBeGreaterThanOrEqual(2);
+        await holder.query("COMMIT");
+        const [posResponse, qrResponse] = await Promise.all([
+          posResult,
+          qrResult,
+        ]);
+        expect(posResponse.status, JSON.stringify(posResponse.body)).toBe(200);
+        expect(qrResponse.status, JSON.stringify(qrResponse.body)).toBe(201);
+      } finally {
+        await holder.query("ROLLBACK").catch(() => {});
+        holder.release();
+        await Promise.allSettled(requests);
+      }
+
+      const rows = await ordersOf(a, session);
+      const live = rows.filter(
+        (row) => row.status !== "draft" && row.status !== "voided",
+      );
+      expect(live.map((row) => row.channel).sort()).toEqual(["pos", "qr"]);
+      for (const row of live) {
+        expect(row.deposit).toBeGreaterThanOrEqual(0);
+        expect(row.deposit).toBeLessThanOrEqual(row.total);
+      }
+      const credited = paidIdr - refundedIdr;
+      const used = live.reduce((sum, row) => sum + row.deposit, 0);
+      expect(used).toBeLessThanOrEqual(credited);
+      expect(used).toBeLessThanOrEqual(
+        live.reduce((sum, row) => sum + row.total, 0),
+      );
+      expect(used).toBe(credited);
+    },
+    30_000,
+  );
 });
