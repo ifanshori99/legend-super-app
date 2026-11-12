@@ -251,9 +251,16 @@ function buildRequest(seed: {
       Date.parse(requestedAt) + SUPPORT_ACCESS_APPROVAL_WINDOW_HOURS * HOUR,
     ).toISOString(),
     status: seed.status,
+    // The contract sets decidedAt on every non-pending row; an expired one
+    // closes when the 24 hour window ends.
     decidedAt: decided
       ? new Date(Date.parse(requestedAt) + 10 * MINUTE).toISOString()
-      : null,
+      : seed.status === "expired"
+        ? new Date(
+            Date.parse(requestedAt) +
+              SUPPORT_ACCESS_APPROVAL_WINDOW_HOURS * HOUR,
+          ).toISOString()
+        : null,
     decidedBy: decided ? OWNER_ID : null,
     grantId: seed.grant?.id ?? null,
     ownerNotifiedAt: new Date(Date.parse(requestedAt) + 1000).toISOString(),
