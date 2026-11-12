@@ -209,6 +209,25 @@ beforeAll(async () => {
     `INSERT INTO "user" (id, name, email) VALUES ($1, 'Leave Jobs Staff', $2)`,
     [userId, `${userId}@example.test`],
   );
+  const staffRoleId = randomUUID();
+  createdRoles.push(staffRoleId);
+  await sql(
+    `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+     VALUES ($1, $2, $3, false, $4, $5)`,
+    [
+      staffRoleId,
+      tenantId,
+      `Leave jobs staff ${staffRoleId.slice(0, 8)}`,
+      "[]",
+      '["tenant"]',
+    ],
+  );
+  await sql(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $4)`,
+    [tenantId, userId, staffRoleId, hr],
+  );
   employee = await createEmployee(sessionContext(), hr, {
     userId: userIdSchema.parse(userId),
     legalEntityId: null,
