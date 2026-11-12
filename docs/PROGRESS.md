@@ -3626,3 +3626,41 @@ Langkah berikut: review architect (K) dan merge train; push ke origin/ws/payroll
 - P2 nonaktif selesai: RED1 gagal47lulus (potongan0 alih-alih250.000), GREEN48/48 (`/tmp/538-g2b-p2-inactive-{red,green}.log`). Earning nonaktif dilewati, deduction tetap dihitung; net fixture750.000 tidak naik ke1.000.000. Gross fixture diberi entity sendiri untuk isolasi gate.
 - P3 jam penuh selesai: RED5 gagal49lulus, GREEN54/54 (`/tmp/538-g2b-p3-{red,green}.log`). Floor menit/60 per hari dan dayType, jumlah request sejenis dulu; quantity slip dijumlah dari jam yang benar-benar dibayar.59menit0,90/119menit150.000,90+90hari berbeda300.000 dan quantity2jam. Komentar selaras kode; review internal bersih.
 - Low akses selesai: RED2 gagal55lulus (404 sebelum izin), GREEN57/57 (`/tmp/538-g2b-auth-{red,green}.log`). Compute memeriksa izin dulu seperti list/set; unauthorized existing/missing/foreign403, authorized missing404. Review internal semua area bersih setelah fix maksimum frozen.
+
+### 538-G2b: commit per temuan
+
+| Temuan                                        | Commit lokal |
+| --------------------------------------------- | ------------ |
+| P0 approval/dayType/cap absensi lembur        | `322dbdad`   |
+| P1 prorata joinDate..endDate (Q43)            | `05a25bfb`   |
+| P1 service-charge hanya draft/simulated (Q42) | `ebc39fda`   |
+| P2 SHARE kandidat run overlapping             | `a4675116`   |
+| Low8xf32 SHARE run frozen terakhir            | `5f02be93`   |
+| P2 deduction nonaktif dipertahankan           | `965efd34`   |
+| P3 floor jam penuh + quantity                 | `00ec8f5c`   |
+| Low izin sebelum employee                     | `ca7baa4b`   |
+
+- Final code dibekukan di `ca7baa4b`; delapan commit lokal di atas basis `8812c48b`, tanpa push/merge. Test-runner memegang token heavy sesudah parent menuntaskan RED/GREEN; architect internal memeriksa diff keseluruhan bersamaan.
+- Subagent: total 6 Codex bawaan (2 Explore, 1 test-writer, 2 implementer, 1 architect); puncak 5 bersamaan. Explore locks dipakai ulang sebagai test-runner final, tanpa membuat subagent tambahan. Token heavy satu pihak sekali jalan: parent lalu test-runner.
+- Pengukuran 07:00: session-usage.py tidak menemukan transkrip Codex 01a1ccf3-6df2-7762-b3e1-3d0e845bc6e6, jadi token/biaya tidak tersedia. parallel-report hanya mencakup 9 sesi Claude (rata global 0,76), bukan thread ini; rata berjalan Codex tidak diestimasi.
+- Kuota akhir snapshot global 07:08 (bukan penggunaan yang dapat diatribusikan ke kartu): Claude akun1 5h100%/7d88%, akun2 0%/93%, akun3 0%/96%; Codex akun2 69%/37%, akun3 100%/76%, akun4 16%/49%, akun5 92%/51%, akun6 5h tidak dilaporkan/7d8%. RAM hijau: free 71%, swap 2601 MB. Routing re-review harus tetap mengikuti aturan kuota tim, bukan memulai thread Claude baru pada akun yang melewati batas.
+
+### 538-G2b: perintah gate akhir
+
+```sh
+LEGEND_TEST_FILES='src/test/payroll-gross-engine.test.ts src/test/payroll-service-charge-distribution.test.ts src/test/payroll-components-locked-period.test.ts src/test/payroll-components-api.test.ts src/test/payroll-service-charge-api.test.ts src/test/payroll-statutory-calc.test.ts src/test/payroll-run-approvers-created-by-db.test.ts' heavy pnpm test
+NODE_OPTIONS='--max-old-space-size=8192' heavy pnpm --filter @starter/api typecheck
+heavy pnpm db:generate
+pnpm exec eslint apps/api/src/services/payroll-components.service.ts apps/api/src/services/payroll-service-charge.service.ts apps/api/src/test/payroll-gross-engine.test.ts apps/api/src/test/payroll-service-charge-distribution.test.ts
+pnpm exec prettier --check apps/api/src/services/payroll-components.service.ts apps/api/src/services/payroll-service-charge.service.ts apps/api/src/test/payroll-gross-engine.test.ts apps/api/src/test/payroll-service-charge-distribution.test.ts docs/briefs/538-g2b-work.md docs/PROGRESS.md
+```
+
+- Log gate: `/tmp/538-g2b-final-{tests,tsc,db-generate,eslint,prettier}.log`. Seluruh gate exit0; hasil aktual tercatat di bawah.
+- Suite penuh `pnpm check`, build, dan e2e tidak dijalankan pada thread ini; gate penuh milik merge train sesuai brief tim. Tidak ada UI atau schema yang diubah.
+- Pra-rilis tetap terpisah: `legend-g5v69` (formula overtime approved yang dipatok vs parameter pemanggil; risiko overpay existing), `legend-svqew` (rapel sebelum rilis, founder Q44). CTO menjalankan re-review architect setelah handoff ini.
+- Gate final test exit0:7/7 berkas,151 lulus+1TODO (total152),22,12detik Vitest; log `/tmp/538-g2b-final-tests.log`. TODO existing `payroll-components-locked-period.test.ts:376` `[8xf32] accepts a backdated amount through the explicit rapel flow` sudah identik pada8812c48b dan ditangani kartuQ44 `legend-svqew`, tidak diubah/dilemahkan.
+- Review final internal `8812c48b..ca7baa4b` bersih, seluruh8temuan tercakup; temuan tambahan SQLorder sesudah lock sudah diperbaiki dan diuji gagal-dulu. API tsc sudah exit0 sesudah antre `heavy`; parent tidak menambah proses berat.
+
+- Hasil akhir: seluruh gate exit 0 pada code HEAD `ca7baa4b`. Test 151 lulus + 1 TODO bawaan; API `tsc --noEmit` lulus (antre/run 07:00:30–07:04:35); `db:generate` selesai 07:08:22 dengan **No schema changes, nothing to migrate**, tanpa artefak baru; eslint 4 file bersih dan prettier 6 file bersih. Parent memeriksa log, diff/check, lalu memeriksa ulang format dokumen setelah catatan akhir ini.
+- Waktu gelombang 06:32–07:09 WIB, sekitar 37 menit termasuk antrean global heavy; tidak ada job tersisa. Hanya 4 berkas kode/test dan 2 dokumen dalam diff. Issue `legend-sonza` siap re-review CTO. Tidak push, merge, deploy, atau membuat migrasi.
+- Handoff CTO: re-review architect atas `ws/payroll-engine` (delapan fix `322dbdad..ca7baa4b`, basis `8812c48b`); Rapel Q44 dan formula yang dipatok tetap kartu pra-rilis terpisah di atas.
