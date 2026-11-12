@@ -48,7 +48,7 @@ export function RevokeClientDialog({
         if (!open && !revoke.isPending) close();
       }}
     >
-      <DialogContent>
+      <DialogContent className="sm:max-w-[30rem]">
         {client !== null && (
           <RevokeBody
             client={client}
@@ -128,7 +128,7 @@ function RevokeBody({
       <DialogHeader>
         <DialogTitle>{t("aiAdmin.revoke.title")}</DialogTitle>
         <DialogDescription asChild>
-          <div className="grid gap-2">
+          <div className="grid max-w-[27rem] gap-2 text-pretty">
             <p>
               <RichText
                 text={

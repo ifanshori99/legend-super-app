@@ -22,6 +22,7 @@ import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { siteConfig } from "@/config/site";
 import { ApiError } from "@/lib/api/errors";
+import { API_MOCK } from "@/lib/api/mock-flag";
 import { signInPath } from "@/features/ws01-login/flow";
 import { useApproveMcpAccess, useMcpPreview } from "../hooks";
 import {
@@ -47,6 +48,10 @@ function readRawSearch(): string {
 export function McpConsentPage() {
   const t = useT();
   const session = useRouteContext({ strict: false, select: (c) => c.session });
+  const access = useRouteContext({ strict: false, select: (c) => c.access });
+  // Mock mode has no real session: the mock role cookie decides, the same way
+  // area access does (an unset cookie counts as signed in). Real mode: session.
+  const signedIn = API_MOCK ? access?.authenticated === true : !!session;
   // The OAuth values come from the raw address bar, never from the router's
   // search: the router re-serialises JSON-like values (a long `state` number
   // or `1e5` would change). `null` until the browser has read it.
@@ -64,7 +69,7 @@ export function McpConsentPage() {
     const raw = readRawSearch();
     // Back from sign-in: the OAuth query waits in sessionStorage. A signed-out
     // visitor keeps it there for the next sign-in.
-    if (!session || !isResumeSearch(raw)) {
+    if (!signedIn || !isResumeSearch(raw)) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- the address bar cannot be read during SSR; reading it after mount keeps hydration identical.
       setSearch(raw);
       return;
@@ -86,7 +91,7 @@ export function McpConsentPage() {
     } else {
       setSearch("");
     }
-  }, [session]);
+  }, [signedIn]);
 
   // Back button after leaving for the client app: the page may come back from
   // the bfcache still showing "Menyambungkan...".
@@ -149,7 +154,7 @@ export function McpConsentPage() {
 
   const previewError = preview.error;
   const signedOut =
-    !session ||
+    !signedIn ||
     (previewError instanceof ApiError && previewError.status === 401) ||
     (approve.error instanceof ApiError && approve.error.status === 401);
 

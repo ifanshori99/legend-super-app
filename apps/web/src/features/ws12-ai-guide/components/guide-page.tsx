@@ -34,7 +34,7 @@ function Paragraphs({ section }: { section: Section }) {
   return (
     <>
       {section.paragraphsId.map((paragraph, index) => (
-        <p key={index} className="text-sm leading-6 text-muted-foreground">
+        <p key={index} className="text-base leading-6 text-foreground">
           {paragraph}
         </p>
       ))}
@@ -82,7 +82,7 @@ export function AiGuidePage({ backHref }: { backHref: string }) {
 
   return (
     <div
-      className="mx-auto grid w-full max-w-5xl min-w-0 grid-cols-[minmax(0,1fr)] gap-5"
+      className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)] gap-5"
       aria-busy={guidelines.isPending}
     >
       <header className="grid gap-2">

@@ -34,7 +34,7 @@ import { ApproveClientDialog } from "./approve-client-dialog";
 import { RevokeClientDialog } from "./revoke-client-dialog";
 import { AdminCard, isOfflineError, plain } from "./shared";
 
-const MAX_SCOPES_SHOWN = 4;
+const MAX_SCOPES_SHOWN = 2;
 
 export function ClientsCard() {
   const t = useT();
@@ -195,7 +195,7 @@ function ClientList(props: RowProps) {
   const t = useT();
   return (
     <>
-      <div className="hidden md:block">
+      <div className="hidden min-w-0 overflow-x-auto md:block">
         <Table>
           <TableHeader>
             <TableRow>
@@ -300,15 +300,22 @@ function ScopesText({ client }: { client: McpClient }) {
       : label;
   });
   const shown = items.slice(0, MAX_SCOPES_SHOWN);
-  const more = items.length - shown.length;
+  const hidden = items.slice(MAX_SCOPES_SHOWN);
+  const fullList = items.map(capitalizeFirst).join(", ");
   return (
-    <span className="text-base leading-6">
-      {capitalizeFirst(shown.join(", "))}
-      {more > 0 && (
-        <span className="text-muted-foreground">
-          {" "}
-          {t("aiAdmin.clients.scopeMore", { count: more })}
-        </span>
+    <span className="flex flex-wrap items-center gap-1.5" title={fullList}>
+      {shown.map((label) => (
+        <Badge key={label} tone="neutral">
+          {capitalizeFirst(label)}
+        </Badge>
+      ))}
+      {hidden.length > 0 && (
+        <Badge tone="neutral" className="text-muted-foreground">
+          {t("aiAdmin.clients.scopeMore", { count: hidden.length })}
+          <span className="sr-only">
+            : {hidden.map(capitalizeFirst).join(", ")}
+          </span>
+        </Badge>
       )}
     </span>
   );
@@ -348,7 +355,7 @@ function ClientAction({
     return (
       <Button
         variant="ghost"
-        className="-ml-2 justify-start text-danger md:ml-0"
+        className="-ml-2 h-auto min-h-9 justify-start text-left whitespace-normal text-danger md:ml-0"
         aria-label={t("aiAdmin.clients.revokeActionFor", {
           client: plain(client.name),
         })}
@@ -361,6 +368,7 @@ function ClientAction({
     return (
       <Button
         variant="outline"
+        className="h-auto min-h-9 whitespace-normal"
         aria-label={t("aiAdmin.clients.approveActionFor", {
           client: plain(client.name),
         })}

@@ -135,6 +135,11 @@ export function sourcePeriodText(source: AiMessageSource): string | null {
   return source.period ? formatPeriod(source.period) : null;
 }
 
+/** Catalog key (under `aiChat.answer.sourceKind`) for the report a source opens. */
+export function sourceKindKey(source: AiMessageSource): "sales" | "report" {
+  return source.link.startsWith("/reports/sales") ? "sales" : "report";
+}
+
 /** Only what a person wrote or the AI answered; tool rows are plumbing. */
 export function visibleMessages(messages: readonly AiMessage[]): AiMessage[] {
   return messages.filter((m) => m.role === "user" || m.role === "assistant");

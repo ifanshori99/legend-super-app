@@ -62,7 +62,7 @@ export function AiAdminPage({ access }: { access: AreaAccess }) {
 
       {canGovern && <ServiceControls />}
 
-      <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:items-start">
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] xl:items-start">
         {canClients && <ClientsCard />}
         {canGovern && <QuotaCard />}
       </div>

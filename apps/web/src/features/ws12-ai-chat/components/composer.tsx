@@ -66,7 +66,7 @@ export function Composer({
         ) : (
           <Button
             type="submit"
-            className="min-h-11 shrink-0"
+            className="min-h-11 shrink-0 disabled:border-(length:--border-w) disabled:border-border disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100 disabled:shadow-none"
             disabled={!canSend}
           >
             {t("aiChat.composer.send")}

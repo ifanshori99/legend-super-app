@@ -7,20 +7,25 @@ import { Clock, ExternalLink } from "lucide-react";
 import type { AiMessageSource } from "@starter/shared/ai";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
+import { useTenantContext } from "@/lib/tenant-context";
 import {
   chatPath,
   parseAnswerBlocks,
+  sourceKindKey,
   sourcePeriodText,
   type ChatArea,
 } from "../logic";
 
 export function SourceCard({ source }: { source: AiMessageSource }) {
   const t = useT();
+  const { brandName } = useTenantContext();
   const period = sourcePeriodText(source);
   return (
     <div className="grid gap-0.5 border-s-[3px] border-primary bg-surface-2 px-3.5 py-2.5">
       <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {t("aiChat.answer.sourceHeading")}
+        {t("aiChat.answer.sourceHeading", {
+          kind: t(`aiChat.answer.sourceKind.${sourceKindKey(source)}`),
+        })}
       </p>
       <a
         href={source.link}
@@ -30,11 +35,11 @@ export function SourceCard({ source }: { source: AiMessageSource }) {
         <ExternalLink className="size-4 shrink-0" aria-hidden="true" />
         <span className="sr-only">({t("aiChat.answer.sourceOpen")})</span>
       </a>
-      {period && (
-        <p className="text-sm text-muted-foreground">
-          {t("aiChat.answer.period", { period })}
-        </p>
-      )}
+      <p className="text-sm text-muted-foreground">
+        {period
+          ? t("aiChat.answer.sourceScope", { brand: brandName, period })
+          : t("aiChat.answer.sourceScopeNoPeriod", { brand: brandName })}
+      </p>
     </div>
   );
 }

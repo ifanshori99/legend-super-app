@@ -218,14 +218,14 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
       aria-labelledby="tanya-ai-title"
       className="@container grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4"
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="grid min-w-0 gap-1">
           <Heading id="tanya-ai-title" className="type-title">
             {t("aiChat.title")}
           </Heading>
           <p className="text-muted-foreground">{t("aiChat.subtitle")}</p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
           <Button
             type="button"
@@ -246,7 +246,7 @@ export function TanyaAiPage({ area }: { area: ChatArea }) {
             {historyPane()}
           </aside>
           <div className="flex min-w-0 flex-col gap-5 p-4 @3xl:p-6">
-            <div className="flex items-center justify-between gap-3 border-b-(length:--border-w) pb-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b-(length:--border-w) pb-4">
               <h3 className="min-w-0 truncate font-semibold">{title}</h3>
               <span className="hidden shrink-0 text-sm text-muted-foreground @3xl:inline">
                 {t("aiChat.chat.personal")}

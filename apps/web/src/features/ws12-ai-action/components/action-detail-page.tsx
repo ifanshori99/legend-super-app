@@ -289,7 +289,7 @@ export function ActionDetailPage({
   else if (!review.data) content = <DetailSkeleton />;
   else content = <ActionDetailBody review={review.data.data} access={access} />;
   return (
-    <div className="mx-auto grid w-full max-w-5xl gap-3">
+    <div className="grid w-full min-w-0 gap-3">
       <div>
         <BackLink />
       </div>
