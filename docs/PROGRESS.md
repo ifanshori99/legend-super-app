@@ -7,6 +7,7 @@ Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke 
 - 14:13 retro 3 jam dilewati: semua akun Claude 7 hari >90% (#1 92%, #2 99% reset 13 Nov 06:00, #3 96%).
 - 17:13 retro 3 jam dilewati: akun Claude 7 hari masih >90% (#1 92%, #2 99%, #3 96%).
 - 20:13 retro 3 jam dilewati: akun Claude 7 hari masih >90% (#1 92%, #2 99%, #3 96%).
+- 22:25 gelombang sore: m1 maju 3x (batch49 facdf39d, batch50 ab574d58, batch51 1f8c345e); batch52 (web 500 + edge promo) gate ulang; loyalty-dp-race + dheu bentrok dengan m1, diselaraskan ulang (brief 582/583, cron 22:46). Thread Codex 13 (0 Claude: semua akun Claude 7d >90%). CTO: 321 req, output 132k, biaya* 7,19M token-setara (cache baca 83%, output 9%), compact 1, subagent 2. rtk global: 27,9M token dihemat (89%), didominasi beberapa output raksasa; rtk read rata 8%.
 
 ## Serah terima CTO 12 Nov siang (sesi G5xeg compact 2x)
 
