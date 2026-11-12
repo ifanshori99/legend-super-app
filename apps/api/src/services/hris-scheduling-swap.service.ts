@@ -20,14 +20,17 @@
 //   can; decision recorded 2026-11, default until product says otherwise).
 // - Repeating the same decision returns the stored request; a different action
 //   on a decided request answers 409.
-// - Responses carry employee ids only: no names, NIK or pay (personal data).
+// - Authorized reads add only participant names and the linked shift details;
+//   candidates never expose the general employee directory or roster.
 
 import {
   and,
   asc,
   desc,
   eq,
+  gte,
   inArray,
+  lte,
   lt,
   or,
   sql,
@@ -48,11 +51,13 @@ import {
   evaluateShiftSwapCompliance,
   listShiftSwapRequests as listShiftSwapRequestsEndpoint,
   respondShiftSwapRequest as respondShiftSwapRequestEndpoint,
+  shiftSwapAssignmentSchema,
   transitionShiftAssignment,
   transitionShiftSwap,
   type ShiftAssignment,
   type ShiftComplianceIssue,
   type ShiftSwapRequest,
+  type ShiftSwapAssignment,
 } from "@starter/shared/hris";
 import type { z } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
@@ -444,8 +449,85 @@ export async function listShiftSwapRequests(
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
+    // Resolve display context only for the authorized page, never a directory.
+    const participantIds = [
+      ...new Set(page.flatMap((row) => [row.requestedBy, row.toEmployeeId])),
+    ];
+    const outletIds = [...new Set(page.map((row) => row.outletId))];
+    const assignmentIds = [
+      ...new Set(
+        page.flatMap((row) => [row.fromAssignmentId, row.toAssignmentId]),
+      ),
+    ].filter((id): id is string => id !== null);
+    const names =
+      page.length === 0
+        ? []
+        : await tx
+            .select({
+              id: employees.id,
+              outletId: employees.homeOutletId,
+              name: employees.fullName,
+            })
+            .from(employees)
+            .where(
+              and(
+                eq(employees.tenantId, context.tenant.tenantId),
+                inArray(employees.homeOutletId, outletIds),
+                inArray(employees.id, participantIds),
+              ),
+            );
+    const assignments =
+      page.length === 0
+        ? []
+        : await tx
+            .select({
+              id: shiftAssignments.id,
+              outletId: shiftAssignments.outletId,
+              businessDate: shiftAssignments.businessDate,
+              segments: shiftAssignments.segments,
+              breakMinutes: shiftAssignments.breakMinutes,
+            })
+            .from(shiftAssignments)
+            .where(
+              and(
+                eq(shiftAssignments.tenantId, context.tenant.tenantId),
+                inArray(shiftAssignments.outletId, outletIds),
+                inArray(shiftAssignments.id, assignmentIds),
+                inArray(shiftAssignments.status, [
+                  "published",
+                  "swapped",
+                  "cancelled",
+                ]),
+              ),
+            );
+    const data = page.map((row): ShiftSwapRequest => {
+      const nameOf = (id: string) =>
+        names.find(
+          (item) => same(item.id, id) && same(item.outletId, row.outletId),
+        )?.name ?? null;
+      const detailOf = (id: string | null) => {
+        const assignment = assignments.find(
+          (item) => item.id === id && same(item.outletId, row.outletId),
+        );
+        return assignment
+          ? shiftSwapAssignmentSchema.parse({
+              id: assignment.id,
+              businessDate: assignment.businessDate,
+              segments: assignment.segments,
+              breakMinutes: assignment.breakMinutes,
+            })
+          : null;
+      };
+      return {
+        ...toShiftSwapRequest(row),
+        requestedByName: nameOf(row.requestedBy),
+        toEmployeeName: nameOf(row.toEmployeeId),
+        fromAssignment: detailOf(row.fromAssignmentId),
+        toAssignment: detailOf(row.toAssignmentId),
+      };
+    });
     return {
-      data: page.map(toShiftSwapRequest),
+      data,
       meta: {
         limit: query.limit,
         nextCursor:
@@ -855,8 +937,11 @@ export async function listShiftSwapCandidates(
   context: ScopedTenantContext,
   actorUserId: string,
   outletId: string,
+  fromAssignmentId: string,
   now = new Date(),
-): Promise<{ data: Array<{ id: string; name: string }> }> {
+): Promise<{
+  data: Array<{ id: string; name: string; assignments: ShiftSwapAssignment[] }>;
+}> {
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     const own = access.own;
@@ -872,6 +957,20 @@ export async function listShiftSwapCandidates(
       throw notFound("Outlet");
     if (!(await activeEmployee(tx, context.tenant.tenantId, own.id)))
       throw forbidden();
+    const [source] = await tx
+      .select()
+      .from(shiftAssignments)
+      .where(
+        and(
+          eq(shiftAssignments.tenantId, context.tenant.tenantId),
+          eq(shiftAssignments.outletId, outletId),
+          eq(shiftAssignments.employeeId, own.id),
+          eq(shiftAssignments.id, fromAssignmentId),
+          eq(shiftAssignments.status, "published"),
+        ),
+      )
+      .limit(1);
+    if (!source || hasStarted(source, now)) throw notFound("Jadwal shift");
     const rows = await tx
       .select({ id: employees.id, name: employees.fullName })
       .from(employees)
@@ -884,7 +983,62 @@ export async function listShiftSwapCandidates(
         ),
       )
       .orderBy(asc(employees.fullName), asc(employees.id));
-    return { data: rows };
+    // This is a privacy window around the caller's source shift, not a rule
+    // restricting which published shifts can be exchanged by the write API.
+    const assignments =
+      rows.length === 0
+        ? []
+        : await tx
+            .select({
+              id: shiftAssignments.id,
+              employeeId: shiftAssignments.employeeId,
+              businessDate: shiftAssignments.businessDate,
+              segments: shiftAssignments.segments,
+              breakMinutes: shiftAssignments.breakMinutes,
+            })
+            .from(shiftAssignments)
+            .where(
+              and(
+                eq(shiftAssignments.tenantId, context.tenant.tenantId),
+                eq(shiftAssignments.outletId, outletId),
+                inArray(
+                  shiftAssignments.employeeId,
+                  rows.map((row) => row.id),
+                ),
+                eq(shiftAssignments.status, "published"),
+                gte(
+                  shiftAssignments.businessDate,
+                  addBusinessDays(source.businessDate, -7),
+                ),
+                lte(
+                  shiftAssignments.businessDate,
+                  addBusinessDays(source.businessDate, 7),
+                ),
+              ),
+            )
+            .orderBy(
+              asc(shiftAssignments.businessDate),
+              asc(shiftAssignments.id),
+            );
+    return {
+      data: rows.map((row) => ({
+        ...row,
+        assignments: assignments
+          .filter(
+            (assignment) =>
+              same(assignment.employeeId, row.id) &&
+              !hasStarted(assignment, now),
+          )
+          .map((assignment) =>
+            shiftSwapAssignmentSchema.parse({
+              id: assignment.id,
+              businessDate: assignment.businessDate,
+              segments: assignment.segments,
+              breakMinutes: assignment.breakMinutes,
+            }),
+          ),
+      })),
+    };
   });
 }
 

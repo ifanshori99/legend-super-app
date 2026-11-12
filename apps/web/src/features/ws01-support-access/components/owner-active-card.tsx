@@ -85,7 +85,9 @@ export function OwnerActiveCard({
             variant="outline"
             className="text-danger"
             disabled={blockedText !== null}
-            aria-describedby={blockedText ? `owner-revoke-${grant.id}` : undefined}
+            aria-describedby={
+              blockedText ? `owner-revoke-${grant.id}` : undefined
+            }
             onClick={() => setConfirming(true)}
           >
             {t("supportAccessOwner.active.revoke")}

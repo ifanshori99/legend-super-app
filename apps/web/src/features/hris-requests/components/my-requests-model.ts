@@ -49,7 +49,10 @@ export function formatDays(days: string): string {
 export function buildMyRequests(sources: MyRequestSources): MyRequestItem[] {
   const items: MyRequestItem[] = [];
   for (const swap of sources.swaps ?? []) {
-    const date = sources.assignmentDates?.get(swap.fromAssignmentId) ?? null;
+    const date =
+      swap.fromAssignment?.businessDate ??
+      sources.assignmentDates?.get(swap.fromAssignmentId) ??
+      null;
     items.push({
       key: `swap:${swap.id}`,
       kind: swap.toAssignmentId === null ? "cover" : "swap",

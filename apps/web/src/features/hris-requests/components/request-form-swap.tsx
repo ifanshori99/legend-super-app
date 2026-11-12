@@ -198,11 +198,13 @@ export function RequestFormSwap({
         </Select>
       </FormField>
 
-      {kind === "swap" && (
-        <p role="status" className="text-sm text-muted-foreground">
-          Daftar shift rekan belum tersedia; tukar shift belum dapat diajukan.
-        </p>
-      )}
+      {kind === "swap" &&
+        peer !== undefined &&
+        peer.assignments.length === 0 && (
+          <p role="status" className="text-sm text-muted-foreground">
+            Daftar shift rekan belum tersedia; tukar shift belum dapat diajukan.
+          </p>
+        )}
       {kind === "swap" && (
         <FormField
           label={t("hrisRequestsEmployee.swap.peerShiftLabel")}

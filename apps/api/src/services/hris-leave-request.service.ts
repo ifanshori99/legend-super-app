@@ -680,9 +680,38 @@ export async function listLeaveRequests(
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
+    const names =
+      page.length === 0
+        ? []
+        : await tx
+            .select({
+              id: employees.id,
+              outletId: employees.homeOutletId,
+              name: employees.fullName,
+            })
+            .from(employees)
+            .where(
+              and(
+                eq(employees.tenantId, context.tenant.tenantId),
+                inArray(employees.id, [
+                  ...new Set(page.map((row) => row.employeeId)),
+                ]),
+                inArray(employees.homeOutletId, [
+                  ...new Set(page.map((row) => row.outletId)),
+                ]),
+              ),
+            );
     const data: LeaveRequest[] = [];
     for (const row of page)
-      data.push(await presentRequest(tx, context, access, row, signer, now));
+      data.push({
+        ...(await presentRequest(tx, context, access, row, signer, now)),
+        employeeName:
+          names.find(
+            (item) =>
+              lower(item.id) === lower(row.employeeId) &&
+              lower(item.outletId) === lower(row.outletId),
+          )?.name ?? null,
+      });
     return {
       data,
       meta: {

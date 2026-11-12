@@ -110,6 +110,7 @@ import {
   shiftAssignmentSchema,
   shiftCompliancePolicyBaseSchema,
   shiftCompliancePolicyViewSchema,
+  shiftSwapAssignmentSchema,
   shiftSwapRequestSchema,
   shiftSwapStatusSchema,
   shiftTemplateSchema,
@@ -1064,9 +1065,18 @@ export const respondShiftSwapRequest = defineEndpoint({
 export const listShiftSwapCandidates = defineEndpoint({
   method: "GET",
   path: "/api/hris/shift-swaps/candidates",
-  query: z.strictObject({ outletId: outletIdSchema }),
+  query: z.strictObject({
+    outletId: outletIdSchema,
+    fromAssignmentId: shiftAssignmentIdSchema,
+  }),
   response: z.strictObject({
-    data: z.array(z.strictObject({ id: employeeIdSchema, name: z.string() })),
+    data: z.array(
+      z.strictObject({
+        id: employeeIdSchema,
+        name: z.string(),
+        assignments: z.array(shiftSwapAssignmentSchema),
+      }),
+    ),
   }),
 });
 

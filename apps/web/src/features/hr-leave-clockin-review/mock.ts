@@ -376,7 +376,18 @@ registerMock(listLeaveRequests, ({ query, scenario }) => {
     (row) =>
       query.employeeId === undefined || row.employeeId === query.employeeId,
   ).filter((row) => query.status === undefined || row.status === query.status);
-  return paginateFixture(rows, query, (row) => row.id, scenario);
+  return paginateFixture(
+    rows.map((row) => ({
+      ...row,
+      employeeName:
+        cafeLegendHrisFixtures.employees.find(
+          (employee) => employee.id === row.employeeId,
+        )?.fullName ?? null,
+    })),
+    query,
+    (row) => row.id,
+    scenario,
+  );
 });
 
 registerMock(listLeaveTypes, ({ query, scenario }) =>

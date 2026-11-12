@@ -120,8 +120,10 @@ export function RequestFormPage({
           fromAssignmentId: request.payload
             .fromAssignmentId as ShiftAssignmentId,
           toEmployeeId: request.payload.toEmployeeId as EmployeeId,
-          toAssignmentId: request.payload.toAssignmentId as ShiftAssignmentId | null,
-          outletId: (request.payload.outletId || undefined) as OutletId | undefined,
+          toAssignmentId: request.payload
+            .toAssignmentId as ShiftAssignmentId | null,
+          outletId: (request.payload.outletId || undefined) as
+            OutletId | undefined,
           idempotencyKey,
         },
         options,
@@ -139,7 +141,8 @@ export function RequestFormPage({
       overtime.mutate(
         {
           ...request.payload,
-          outletId: (request.payload.outletId || undefined) as OutletId | undefined,
+          outletId: (request.payload.outletId || undefined) as
+            OutletId | undefined,
           idempotencyKey,
         },
         options,
@@ -238,9 +241,7 @@ export function RequestFormPage({
                 <RequestFormOvertime
                   busy={busy}
                   failed={failed}
-                  onSubmit={(request) =>
-                    send({ type: "overtime", ...request })
-                  }
+                  onSubmit={(request) => send({ type: "overtime", ...request })}
                 />
               </TabsContent>
             )}

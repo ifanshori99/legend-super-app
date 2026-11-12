@@ -31,7 +31,8 @@ export const hrisRequestsCommonMessages = {
   },
   error: {
     load: "Pengajuan belum bisa dimuat. Coba lagi.",
-    offline: "Tidak ada koneksi. Pengajuan belum terkirim, coba lagi saat tersambung.",
+    offline:
+      "Tidak ada koneksi. Pengajuan belum terkirim, coba lagi saat tersambung.",
     conflict: "Pengajuan ini sudah berubah. Muat ulang lalu coba lagi.",
     forbidden: "Anda tidak punya akses ke pengajuan ini.",
     notFound: "Pengajuan tidak ditemukan.",

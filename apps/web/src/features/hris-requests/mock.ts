@@ -42,6 +42,8 @@ import {
   listLeaveBalances,
   listOvertimeRequests,
   listShiftSwapRequests,
+  listShiftSwapCandidates,
+  respondShiftSwapRequest,
   overtimeRequestSchema,
   shiftSwapRequestSchema,
   transitionLeaveRequest,
@@ -51,6 +53,7 @@ import {
   type LeaveRequest,
   type OvertimeRequest,
   type ShiftSwapRequest,
+  type ShiftAssignment,
 } from "@starter/shared/hris";
 import {
   addBusinessDays,
@@ -139,7 +142,15 @@ type State = {
 
 const store = createMockStore<State>(() => ({
   nextId: FIRST_NEW_ID,
-  swaps: [...shiftSwapRequests],
+  swaps: shiftSwapRequests.map((row) => ({
+    ...row,
+    peerAcceptedAt:
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("peer") === "pending"
+        ? null
+        : (row.peerAcceptedAt ??
+          (row.status === "pending" ? row.requestedAt : null)),
+  })),
   leaves: [...leaveRequests],
   balances: [...leaveBalances],
   overtimes: [...sampleOvertimes(), ...overtimeRequests],
@@ -153,11 +164,7 @@ function newId(): string {
 }
 
 /** Same key + same body = the earlier answer; same key + other body = 409. */
-function replay<T>(
-  key: string,
-  body: unknown,
-  create: () => T,
-): T {
+function replay<T>(key: string, body: unknown, create: () => T): T {
   const state = store.get();
   const fingerprint = JSON.stringify(body);
   const known = state.replays[key];
@@ -200,6 +207,102 @@ function newestFirst<T extends { requestedAt: string; id: string }>(
 
 // ---- Shift swaps and covers -----------------------------------------------
 
+function requestAssignment(row: ShiftAssignment | undefined) {
+  return row === undefined
+    ? null
+    : {
+        id: row.id,
+        businessDate: row.businessDate,
+        segments: row.segments,
+        breakMinutes: row.breakMinutes,
+      };
+}
+
+function withSwapContext(row: ShiftSwapRequest): ShiftSwapRequest {
+  return {
+    ...row,
+    requestedByName:
+      employees.find((employee) => employee.id === row.requestedBy)?.fullName ??
+      null,
+    toEmployeeName:
+      employees.find((employee) => employee.id === row.toEmployeeId)
+        ?.fullName ?? null,
+    fromAssignment: requestAssignment(
+      MOCK_SHIFT_ASSIGNMENTS.find(
+        (assignment) => assignment.id === row.fromAssignmentId,
+      ),
+    ),
+    toAssignment:
+      row.toAssignmentId === null
+        ? null
+        : requestAssignment(
+            MOCK_SHIFT_ASSIGNMENTS.find(
+              (assignment) => assignment.id === row.toAssignmentId,
+            ),
+          ),
+  };
+}
+
+registerMock(listShiftSwapCandidates, ({ query, scenario }) => {
+  const from = MOCK_SHIFT_ASSIGNMENTS.find(
+    (row) =>
+      row.id === query.fromAssignmentId &&
+      row.employeeId === MOCK_ME.id &&
+      row.outletId === query.outletId,
+  );
+  if (!from) throw notFound("Shift tidak ditemukan.");
+  return {
+    data:
+      scenario === "empty"
+        ? []
+        : employees
+            .filter(
+              (row) =>
+                row.id !== MOCK_ME.id &&
+                row.homeOutletId === query.outletId &&
+                row.status === "active",
+            )
+            .map((row) => ({
+              id: row.id,
+              name: row.fullName,
+              assignments: MOCK_SHIFT_ASSIGNMENTS.filter(
+                (assignment) =>
+                  assignment.employeeId === row.id &&
+                  assignment.outletId === query.outletId &&
+                  assignment.status === "published" &&
+                  assignment.businessDate >= today &&
+                  assignment.businessDate <= addBusinessDays(today, 60),
+              ).map((assignment) => ({
+                id: assignment.id,
+                businessDate: assignment.businessDate,
+                segments: assignment.segments,
+                breakMinutes: assignment.breakMinutes,
+              })),
+            })),
+  };
+});
+
+registerMock(respondShiftSwapRequest, ({ params, body }) => ({
+  data: replay(body.idempotencyKey, { swapId: params.swapId, ...body }, () => {
+    const swap = findSwap(params.swapId);
+    if (swap.toEmployeeId !== MOCK_ME.id)
+      throw new ApiError(403, "FORBIDDEN", "Bukan permintaan untuk Anda.");
+    if (swap.status !== "pending" || swap.peerAcceptedAt !== null)
+      throw new ApiError(409, "CONFLICT", "Permintaan sudah diproses.");
+    return saveSwap(
+      body.action === "accept"
+        ? { ...swap, peerAcceptedAt: new Date().toISOString() }
+        : {
+            ...swap,
+            status: "rejected",
+            rejectionReason: body.rejectionReason ?? null,
+            approvedBy: MOCK_DECIDER_USER_ID,
+            decidedAt: new Date().toISOString(),
+          },
+    );
+  }),
+}));
+
 registerMock(listShiftSwapRequests, ({ query, scenario }) => {
   const rows = newestFirst(
     store
@@ -213,7 +316,12 @@ registerMock(listShiftSwapRequests, ({ query, scenario }) => {
             row.toEmployeeId === MOCK_ME.id),
       ),
   );
-  return paginateFixture(rows, query, (row) => row.id, scenario);
+  return paginateFixture(
+    rows.map(withSwapContext),
+    query,
+    (row) => row.id,
+    scenario,
+  );
 });
 
 registerMock(createShiftSwapRequest, ({ body }) => {
@@ -271,6 +379,8 @@ registerMock(createShiftSwapRequest, ({ body }) => {
           policy: shiftCompliancePolicy,
         }),
         overrideReason: null,
+        rejectionReason: null,
+        peerAcceptedAt: null,
         approvedBy: null,
         requestedAt: new Date().toISOString(),
         decidedAt: null,
@@ -314,6 +424,8 @@ registerMock(decideShiftSwapRequest, ({ params, body }) => ({
     { id: params.swapId, action: body.action, reason: body.overrideReason },
     () => {
       const swap = findSwap(params.swapId);
+      if (swap.peerAcceptedAt === null)
+        throw new ApiError(409, "CONFLICT", "Menunggu respons rekan.");
       if (
         body.action === "approve_with_override" &&
         (body.overrideReason === null || body.overrideReason.trim() === "")
@@ -324,7 +436,10 @@ registerMock(decideShiftSwapRequest, ({ params, body }) => ({
           "Persetujuan dengan pengecualian wajib beralasan.",
           [{ field: "overrideReason", message: "Alasan wajib diisi." }],
         );
-      if (body.action === "approve_with_override" && swap.complianceIssues.length === 0)
+      if (
+        body.action === "approve_with_override" &&
+        swap.complianceIssues.length === 0
+      )
         throw new ApiError(
           409,
           "CONFLICT",
@@ -345,6 +460,7 @@ registerMock(decideShiftSwapRequest, ({ params, body }) => ({
         status: approved ? "approved" : "rejected",
         overrideReason:
           body.action === "approve_with_override" ? body.overrideReason : null,
+        rejectionReason: approved ? null : (body.rejectionReason ?? null),
         approvedBy: MOCK_DECIDER_USER_ID,
         decidedAt: new Date().toISOString(),
       });
@@ -359,7 +475,8 @@ registerMock(listLeaveBalances, ({ query, scenario }) => {
     .get()
     .balances.filter(
       (row) =>
-        (query.employeeId === undefined || row.employeeId === query.employeeId) &&
+        (query.employeeId === undefined ||
+          row.employeeId === query.employeeId) &&
         (query.year === undefined || row.periodYear === query.year),
     );
   return paginateFixture(rows, query, (row) => row.id, scenario);
@@ -446,7 +563,8 @@ registerMock(decideLeaveRequest, ({ params, body }) => ({
       const request = state.leaves.find(
         (row) => row.id === params.leaveRequestId,
       );
-      if (request === undefined) throw notFound("Pengajuan cuti tidak ditemukan.");
+      if (request === undefined)
+        throw notFound("Pengajuan cuti tidak ditemukan.");
       let status: LeaveRequest["status"];
       try {
         status = transitionLeaveRequest(request.status, body.action);
@@ -482,7 +600,17 @@ registerMock(listOvertimeRequests, ({ query, scenario }) => {
           (query.to === undefined || row.date <= query.to),
       ),
   );
-  return paginateFixture(rows, query, (row) => row.id, scenario);
+  return paginateFixture(
+    rows.map((row) => ({
+      ...row,
+      employeeName:
+        employees.find((employee) => employee.id === row.employeeId)
+          ?.fullName ?? null,
+    })),
+    query,
+    (row) => row.id,
+    scenario,
+  );
 });
 
 registerMock(createOvertimeRequest, ({ body }) => {

@@ -57,9 +57,7 @@ const SCREENS = [
     path: "/karyawan/libur",
     prepare: async (p) => {
       await openSwapFormWithSampleShifts(p);
-      await pickFirst(p, 1);
-      await pickFirst(p, 2);
-      await pickFirst(p, 3);
+      await fillSwap(p);
     },
   },
   {
@@ -152,7 +150,16 @@ const SCREENS = [
     name: "antrean",
     role: "supervisor",
     path: "/kelola/pengajuan",
-    prepare: (p) => expectText(p, "Perlu ditinjau"),
+    prepare: async (p) => {
+      await expectText(p, "Perlu ditinjau");
+      await p
+        .getByRole("link", { name: /Budi Santoso/ })
+        .first()
+        .waitFor({
+          state: "visible",
+          timeout: COLD_TIMEOUT,
+        });
+    },
   },
   {
     name: "antrean-kosong",
@@ -174,7 +181,31 @@ const SCREENS = [
     name: "detail",
     role: "supervisor",
     path: `/kelola/pengajuan/swap/${SWAP_7401}`,
-    prepare: (p) => expectText(p, "Periksa aturan jam kerja"),
+    prepare: async (p) => {
+      await expectText(p, "Periksa aturan jam kerja");
+      await expectText(p, "Budi Santoso");
+      if (await p.getByRole("button", { name: /^Tolak$/ }).isDisabled()) {
+        throw new Error(
+          "Keputusan ditahan meskipun nama, shift, dan penerimaan rekan lengkap.",
+        );
+      }
+    },
+  },
+  {
+    name: "detail-peer-pending",
+    role: "supervisor",
+    path: `/kelola/pengajuan/swap/${SWAP_7401}?peer=pending`,
+    prepare: async (p) => {
+      await expectText(
+        p,
+        "Menunggu rekan menerima pengajuan sebelum dapat diproses.",
+      );
+      if (await p.getByRole("button", { name: /^Tolak$|^Setujui/ }).count()) {
+        throw new Error(
+          "Keputusan supervisor tersedia sebelum rekan menerima.",
+        );
+      }
+    },
   },
   {
     name: "detail-tolak",
@@ -192,6 +223,9 @@ const SCREENS = [
     prepare: async (p) => {
       await clickButton(p, /^Tolak$/);
       await expectText(p, "Tolak pengajuan");
+      await p
+        .getByLabel("Alasan penolakan")
+        .fill("Jadwal pengganti belum sesuai.");
       await clickButton(p, "Kirim penolakan");
       await expectText(p, "Keputusan tersimpan");
     },
@@ -205,6 +239,9 @@ const SCREENS = [
       await context.setOffline(true);
       // A decision attempted offline is not sent: the panel offers a retry.
       await clickButton(p, /^Tolak$/);
+      await p
+        .getByLabel("Alasan penolakan")
+        .fill("Jadwal pengganti belum sesuai.");
       await clickButton(p, "Kirim penolakan");
       await expectText(p, "Pengajuan belum diproses");
     },
@@ -335,19 +372,22 @@ async function clickButton(page, name) {
   await button.click();
 }
 /** Opens the nth combobox and takes its first option. */
-async function pickFirst(page, index) {
+async function pickFirst(page, index, optionName) {
   const box = page.getByRole("combobox").nth(index);
   await box.waitFor({ state: "visible", timeout: COLD_TIMEOUT });
   await page.waitForFunction(
-    (i) =>
-      !document
-        .querySelectorAll('[role="combobox"]')
-        [i]?.hasAttribute("disabled"),
+    (i) => {
+      const boxes = document.querySelectorAll('[role="combobox"]');
+      return !boxes[i]?.hasAttribute("disabled");
+    },
     index,
     { timeout: COLD_TIMEOUT },
   );
   await box.click();
-  await page.getByRole("option").first().click();
+  const option = optionName
+    ? page.getByRole("option", { name: optionName, exact: true })
+    : page.getByRole("option").first();
+  await option.click();
 }
 /**
  * The mock has no upcoming shift for CL-1003. Mock handlers run inside the page
@@ -409,8 +449,17 @@ async function openSwapFormWithSampleShifts(page) {
 async function fillSwap(page) {
   await expectText(page, "Ajukan tukar / ganti shift", { heading: true });
   await pickFirst(page, 1); // my shift (0 is the kind)
-  await pickFirst(page, 2); // peer
+  await pickFirst(page, 2, "Dewi Lestari"); // injected peer with an upcoming shift
   await pickFirst(page, 3); // peer shift
+  const boxes = page.getByRole("combobox");
+  for (const index of [1, 3]) {
+    const label = await boxes.nth(index).textContent();
+    if (!/\d{2}[:.]\d{2}/.test(label ?? "")) {
+      throw new Error(
+        `Shift ${index === 1 ? "pemohon" : "rekan"} tidak memuat rincian jam.`,
+      );
+    }
+  }
 }
 async function fillLeave(page) {
   await expectText(page, "Ajukan cuti atau izin", { heading: true });

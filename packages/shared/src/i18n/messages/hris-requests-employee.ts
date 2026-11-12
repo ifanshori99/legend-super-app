@@ -106,7 +106,8 @@ export const hrisRequestsEmployeeMessages = {
   },
   offline: {
     bannerTitle: "Tidak ada koneksi",
-    bannerBody: "Pengajuan belum dapat dikirim. Periksa koneksi lalu coba lagi.",
+    bannerBody:
+      "Pengajuan belum dapat dikirim. Periksa koneksi lalu coba lagi.",
     cardTitle: "Pengajuan tersimpan di layar ini",
     cardBody: "Jangan tutup halaman sebelum pengajuan berhasil dikirim.",
     retry: "Coba lagi",

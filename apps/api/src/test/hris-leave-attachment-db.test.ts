@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { outletIdSchema, userIdSchema } from "@starter/shared/core";
+import { outletIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -16,14 +16,9 @@ import {
   createLeaveRequest as createLeaveRequestEndpoint,
   decideLeaveRequest as decideLeaveRequestEndpoint,
   leaveTypeInputSchema,
-  type Employee,
 } from "@starter/shared/hris";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
-import {
-  createEmployee,
-  type CreateEmployeeInput,
-} from "../services/hris-employee.service.ts";
 import { createLeaveType } from "../services/hris-leave.service.ts";
 import {
   createLeaveRequest,
@@ -192,7 +187,7 @@ let hr: string; // tenant-wide: hr.employee.manage + view + hr.leave.approve
 let managerA: string; // outlet_manager template at outlet A (the matrix approver)
 let managerB: string; // outlet_manager template at outlet B
 
-type Staff = { userId: string; employee: Employee };
+type Staff = { userId: string; employee: { id: string } };
 
 async function makeStaff(
   outletId: string = outletA,
@@ -202,21 +197,16 @@ async function makeStaff(
     type: "outlet",
     id: outletId,
   });
-  const employee = await createEmployee(tenantScope(), hr, {
-    userId: userIdSchema.parse(userId),
-    legalEntityId: null,
-    employeeNo: freshNo(),
-    fullName: "Karyawan Cuti",
-    positionId: null,
-    orgUnitId: null,
-    managerId: null,
-    homeOutletId: outletIdSchema.parse(outletId),
-    employmentType: "pkwt",
-    joinDate,
-    endDate: null,
-    ptkpStatus: "TK/0",
-    status: "active",
-  } as CreateEmployeeInput);
+  // Attachment tests need active employees, not a tenant-plan provisioning
+  // test. Seed these private fixtures without consuming a shared quota race.
+  const [employee] = await sql<{ id: string }>(
+    `INSERT INTO employees
+       (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
+        employment_type, join_date, status, created_by)
+     VALUES ($1, $2, $3, $4, 'Karyawan Cuti', $5, 'pkwt', $6, 'active', $7)
+     RETURNING id`,
+    [randomUUID(), tenantId, userId, freshNo(), outletId, joinDate, hr],
+  );
   return { userId, employee };
 }
 
@@ -357,6 +347,10 @@ afterAll(async () => {
     );
     await client.query(
       `DELETE FROM leave_balances WHERE tenant_id = $1 AND (${mine} OR leave_type_id = ANY($3::uuid[]))`,
+      [tenantId, createdUsers, createdTypes],
+    );
+    await client.query(
+      `DELETE FROM leave_accruals WHERE tenant_id = $1 AND (${mine} OR leave_type_id = ANY($3::uuid[]))`,
       [tenantId, createdUsers, createdTypes],
     );
     await client.query(

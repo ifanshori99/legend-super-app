@@ -171,9 +171,17 @@ function HistoryItem({
 }) {
   const t = useT();
   const tone =
-    status === "rejected" ? "danger" : status === "approved" ? "success" : "warning";
+    status === "rejected"
+      ? "danger"
+      : status === "approved"
+        ? "success"
+        : "warning";
   const Icon =
-    status === "rejected" ? CircleSlash : status === "approved" ? CircleCheck : Clock;
+    status === "rejected"
+      ? CircleSlash
+      : status === "approved"
+        ? CircleCheck
+        : Clock;
   const note = {
     rejected: "supportAccessOwner.history.rejectedNote",
     expired: "supportAccessOwner.history.expiredNote",
@@ -238,18 +246,19 @@ export function OwnerRequestsPage() {
   const block = decisionBlock(guard, online);
   const blockedText = block ? t(BLOCK_TEXT[block]) : null;
 
-  const state = requests.isPending || grants.isPending
-    ? "loading"
-    : requests.isError || grants.isError
-      ? "error"
-      : "ready";
+  const state =
+    nowMs === null || requests.isPending || grants.isPending
+      ? "loading"
+      : requests.isError || grants.isError
+        ? "error"
+        : "ready";
 
   const sections = React.useMemo(
     () =>
       sectionRequests(
         requestsFromResult(requests.data),
         grants.data?.data ?? [],
-        nowMs ?? Date.now(),
+        nowMs ?? 0,
       ),
     [requests.data, grants.data, nowMs],
   );
@@ -262,7 +271,8 @@ export function OwnerRequestsPage() {
     mutation.mutate(
       { requestId },
       {
-        onSuccess: () => setNotice(kind === "approve" ? "approved" : "rejected"),
+        onSuccess: () =>
+          setNotice(kind === "approve" ? "approved" : "rejected"),
         onError: (error) => {
           const kindOfError = decisionErrorKind(error);
           setFailure(kindOfError);
@@ -304,7 +314,11 @@ export function OwnerRequestsPage() {
       </div>
 
       {!online && (
-        <Banner tone="warning" icon={WifiOff} title={t("supportAccessOwner.offline.title")}>
+        <Banner
+          tone="warning"
+          icon={WifiOff}
+          title={t("supportAccessOwner.offline.title")}
+        >
           {t("supportAccessOwner.offline.body")}
         </Banner>
       )}
@@ -344,7 +358,10 @@ export function OwnerRequestsPage() {
         <CardShell>
           <Card>
             {online ? (
-              <ErrorState error={requests.error ?? grants.error} onRetry={retry} />
+              <ErrorState
+                error={requests.error ?? grants.error}
+                onRetry={retry}
+              />
             ) : (
               <ErrorState
                 icon={WifiOff}

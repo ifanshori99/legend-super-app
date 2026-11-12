@@ -321,7 +321,11 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-async function expectText(page, text, { heading = false, anyRole = false } = {}) {
+async function expectText(
+  page,
+  text,
+  { heading = false, anyRole = false } = {},
+) {
   const target = heading
     ? page.getByRole("heading", { name: textMatcher(text) })
     : anyRole
@@ -339,7 +343,10 @@ async function pickFirst(page, index) {
   const box = page.getByRole("combobox").nth(index);
   await box.waitFor({ state: "visible", timeout: COLD_TIMEOUT });
   await page.waitForFunction(
-    (i) => !document.querySelectorAll('[role="combobox"]')[i]?.hasAttribute("disabled"),
+    (i) => {
+      const boxes = document.querySelectorAll('[role="combobox"]');
+      return !boxes[i]?.hasAttribute("disabled");
+    },
     index,
     { timeout: COLD_TIMEOUT },
   );
@@ -355,43 +362,52 @@ async function pickFirst(page, index) {
  */
 async function openSwapFormWithSampleShifts(page) {
   await expectText(page, "Kalender libur", { heading: true });
-  await page.evaluate(async (days) => {
-    const directory = await import("/src/lib/mock/handlers/hris-directory.ts");
-    const roster = directory.MOCK_SHIFT_ASSIGNMENTS;
-    const me = directory.MOCK_ME;
-    const base =
-      roster.find((row) => row.employeeId === me.id) ?? roster[0];
-    const peers = [
-      ...new Set(
-        roster
-          .filter((row) => row.outletId === base.outletId)
-          .map((row) => row.employeeId)
-          .filter((id) => id !== me.id),
-      ),
-    ].slice(0, 2);
-    let n = 0;
-    for (const offset of days) {
-      const date = new Date(Date.now() + offset * 86_400_000)
-        .toISOString()
-        .slice(0, 10);
-      for (const employeeId of [me.id, ...peers]) {
-        n += 1;
-        roster.push({
-          ...structuredClone(base),
-          id: `00000000-0000-4000-8000-${String(9500 + n).padStart(12, "0")}`,
-          employeeId,
-          businessDate: date,
-          segments: base.segments.map((segment) => ({
-            startsAt: `${date}T${segment.startsAt.slice(11)}`,
-            endsAt: `${date}T${segment.endsAt.slice(11)}`,
-          })),
-          status: "published",
-        });
+  await page.evaluate(
+    async (days) => {
+      const directory =
+        await import("/src/lib/mock/handlers/hris-directory.ts");
+      const roster = directory.MOCK_SHIFT_ASSIGNMENTS;
+      const me = directory.MOCK_ME;
+      const base = roster.find((row) => row.employeeId === me.id) ?? roster[0];
+      const peers = [
+        ...new Set(
+          roster
+            .filter((row) => row.outletId === base.outletId)
+            .map((row) => row.employeeId)
+            .filter((id) => id !== me.id),
+        ),
+      ].slice(0, 2);
+      let n = 0;
+      for (const offset of days) {
+        const date = new Date(Date.now() + offset * 86_400_000)
+          .toISOString()
+          .slice(0, 10);
+        for (const employeeId of [me.id, ...peers]) {
+          n += 1;
+          roster.push({
+            ...structuredClone(base),
+            id: `00000000-0000-4000-8000-${String(9500 + n).padStart(12, "0")}`,
+            employeeId,
+            businessDate: date,
+            segments: base.segments.map((segment) => ({
+              startsAt: `${date}T${segment.startsAt.slice(11)}`,
+              endsAt: `${date}T${segment.endsAt.slice(11)}`,
+            })),
+            status: "published",
+          });
+        }
       }
-    }
-  }, [1, 3, 5]);
-  await page.getByRole("link", { name: /Pengajuan saya/ }).first().click();
-  await page.getByRole("link", { name: /Buat pengajuan/ }).first().click();
+    },
+    [1, 3, 5],
+  );
+  await page
+    .getByRole("link", { name: /Pengajuan saya/ })
+    .first()
+    .click();
+  await page
+    .getByRole("link", { name: /Buat pengajuan/ })
+    .first()
+    .click();
   await expectText(page, "Ajukan tukar / ganti shift", { heading: true });
 }
 async function fillSwap(page) {

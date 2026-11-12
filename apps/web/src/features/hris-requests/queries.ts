@@ -3,7 +3,7 @@
 // refreshes every list. Not prefetched during SSR: the data is the caller's
 // own or behind the supervisor right, so hooks fetch after hydration.
 import { queryOptions } from "@tanstack/react-query";
-import type { EmployeeId } from "@starter/shared/hris";
+import type { EmployeeId, ShiftAssignmentId } from "@starter/shared/hris";
 import type { OutletId } from "@starter/shared/core";
 import {
   fetchSwapCandidates,
@@ -32,8 +32,8 @@ export const hrisRequestKeys = {
   leaveTypes: () => [...hrisRequestKeys.all, "leave-types"] as const,
   myShifts: (employeeId: string, from: string, to: string) =>
     [...hrisRequestKeys.all, "my-shifts", employeeId, from, to] as const,
-  candidates: (outletId: string, from: string, to: string) =>
-    [...hrisRequestKeys.all, "candidates", outletId, from, to] as const,
+  candidates: (outletId: string, fromAssignmentId: string) =>
+    [...hrisRequestKeys.all, "candidates", outletId, fromAssignmentId] as const,
   holidays: (from: string, to: string) =>
     [...hrisRequestKeys.all, "holidays", from, to] as const,
   queueAll: () => [...hrisRequestKeys.all, "queue"] as const,
@@ -118,10 +118,14 @@ export function myShiftsQuery(
 }
 
 /** Colleagues permitted for the selected outlet. */
-export function candidatesQuery(outletId: OutletId) {
+export function candidatesQuery(
+  outletId: OutletId,
+  fromAssignmentId: ShiftAssignmentId,
+) {
   return queryOptions({
-    queryKey: hrisRequestKeys.candidates(outletId, "", ""),
-    queryFn: ({ signal }) => fetchSwapCandidates(outletId, signal),
+    queryKey: hrisRequestKeys.candidates(outletId, fromAssignmentId),
+    queryFn: ({ signal }) =>
+      fetchSwapCandidates(outletId, fromAssignmentId, signal),
     staleTime: STALE,
   });
 }

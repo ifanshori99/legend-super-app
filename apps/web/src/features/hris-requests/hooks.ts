@@ -72,12 +72,10 @@ import {
   type SwapCandidate,
 } from "./queue.ts";
 
-/** How far ahead "my shifts" and the colleagues' shifts are read. */
+/** How far ahead the employee's own shifts are read. */
 const SHIFTS_AHEAD_DAYS = 60;
 /** The queue dates swaps from shifts this far back. */
 const QUEUE_SHIFTS_BACK_DAYS = 30;
-/** Colleagues' shifts are read this far after the shift to give away. */
-
 // ---- Shared pieces --------------------------------------------------------
 
 /** The signed-in employee and outlet (HR-01), once the profile answered. */
@@ -220,13 +218,16 @@ export function useSwapCandidates(
   const mine = useMyShiftAssignments().data;
   const from = mine?.find((row) => row.id === fromAssignmentId);
   return useQuery({
-    ...candidatesQuery(from?.outletId as ShiftAssignment["outletId"]),
+    ...candidatesQuery(
+      from?.outletId as ShiftAssignment["outletId"],
+      fromAssignmentId as ShiftAssignmentId,
+    ),
     enabled: from !== undefined,
     select: (data): SwapCandidate[] =>
       data.map((row) => ({
         employeeId: row.id,
         employeeName: row.name,
-        assignments: [],
+        assignments: row.assignments,
       })),
   });
 }
@@ -400,6 +401,7 @@ function useQueueScope() {
     permissions: context.access?.permissions ?? [],
     enabled: today !== null && context.access !== undefined,
     outletId: outlet?.id,
+    timeZone: outlet?.timeZone ?? "Asia/Jakarta",
     shiftsFrom:
       today === null ? "" : addBusinessDays(today, -QUEUE_SHIFTS_BACK_DAYS),
     shiftsTo: today === null ? "" : addBusinessDays(today, SHIFTS_AHEAD_DAYS),
@@ -415,8 +417,8 @@ export function useRequestQueue(
   const status = filter.status;
   const select = useCallback(
     (source: RequestQueueSource) =>
-      normalizeRequestQueue(source, t, { status }),
-    [t, status],
+      normalizeRequestQueue(source, t, { status, timeZone: scope.timeZone }),
+    [t, status, scope.timeZone],
   );
   return useQuery({
     ...queueSourceQuery({
@@ -445,10 +447,10 @@ export function useRequestDetail(
   const scope = useQueueScope();
   const select = useCallback(
     (source: RequestQueueSource) =>
-      normalizeRequestQueue(source, t).find(
+      normalizeRequestQueue(source, t, { timeZone: scope.timeZone }).find(
         (item) => item.id === id && sameFamily(item.kind, kind),
       ),
-    [t, id, kind],
+    [t, id, kind, scope.timeZone],
   );
   return useQuery({
     ...queueSourceQuery({
@@ -485,7 +487,7 @@ async function findRequest(
   const match = (source: RequestQueueSource | undefined) =>
     source === undefined
       ? undefined
-      : normalizeRequestQueue(source, t).find(
+      : normalizeRequestQueue(source, t, { timeZone: scope.timeZone }).find(
           (item) => item.id === input.id && sameFamily(item.kind, input.kind),
         );
   for (const [, source] of queryClient.getQueriesData<RequestQueueSource>({

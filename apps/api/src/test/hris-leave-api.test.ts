@@ -251,12 +251,12 @@ afterAll(async () => {
       [tenant.id],
     );
     await db.query(
-      `DELETE FROM leave_balances WHERE tenant_id = $1 AND leave_type_id IN (${types})`,
-      [tenant.id],
+      `DELETE FROM leave_balances WHERE tenant_id = $1 AND (${mine} OR leave_type_id IN (${types}))`,
+      [tenant.id, createdEmployees],
     );
     await db.query(
-      `DELETE FROM leave_accruals WHERE tenant_id = $1 AND leave_type_id IN (${types})`,
-      [tenant.id],
+      `DELETE FROM leave_accruals WHERE tenant_id = $1 AND (${mine} OR leave_type_id IN (${types}))`,
+      [tenant.id, createdEmployees],
     );
     await db.query(
       `DELETE FROM leave_types WHERE tenant_id = $1 AND code LIKE 'APITEST%'`,
@@ -933,6 +933,13 @@ describe("§29 Pengajuan & Approval cuti", () => {
         (row: { status: string }) => row.status === "rejected",
       ),
     ).toBe(true);
+    expect(
+      managerA.body.data.every(
+        (row: { employeeName?: string }) =>
+          row.employeeName === "Karyawan Cuti API",
+      ),
+      "legend-hvh9x: the authorized leave queue names its requester",
+    ).toBe(true);
     const managerB = await managerBClient.get(
       `/api/hris/leave/requests?employeeId=${ownEmployee}`,
     );
@@ -1182,6 +1189,9 @@ describe("§29 Lembur", () => {
     expect(approved.body.data.map((row: { id: string }) => row.id)).toEqual([
       approvedId,
     ]);
+    expect(approved.body.data[0]).toMatchObject({
+      employeeName: "Karyawan Cuti API",
+    });
 
     const pending = await hrClient.get(
       `/api/hris/overtime-requests?employeeId=${ownEmployee}&status=pending&limit=100`,

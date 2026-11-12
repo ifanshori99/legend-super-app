@@ -10,10 +10,12 @@ import type {
   LeaveType,
   OvertimeRequest,
   ShiftAssignment,
+  ShiftSwapAssignment,
   ShiftComplianceIssue,
   ShiftSwapRequest,
   ShiftSwapStatus,
 } from "@starter/shared/hris";
+import { hasShiftContext, requestShiftLabel } from "./request-context.ts";
 import type { MessageKey } from "@starter/shared/i18n";
 
 export type RequestKind = "swap" | "cover" | "leave" | "overtime";
@@ -66,7 +68,7 @@ function rangeText(t: QueueTranslate, from: string, to: string): string {
 export function normalizeRequestQueue(
   source: RequestQueueSource,
   t: QueueTranslate,
-  filter: { status?: RequestQueueStatus } = {},
+  filter: { status?: RequestQueueStatus; timeZone?: string } = {},
 ): RequestQueueItem[] {
   const names = new Map<string, string>(
     source.employees.map((row) => [row.id, row.fullName]),
@@ -84,8 +86,10 @@ export function normalizeRequestQueue(
   for (const raw of source.swaps) {
     const kind = raw.toAssignmentId === null ? "cover" : "swap";
     const days = [
-      dates.get(raw.fromAssignmentId),
-      raw.toAssignmentId === null ? undefined : dates.get(raw.toAssignmentId),
+      raw.fromAssignment?.businessDate ?? dates.get(raw.fromAssignmentId),
+      raw.toAssignmentId === null
+        ? undefined
+        : (raw.toAssignment?.businessDate ?? dates.get(raw.toAssignmentId)),
     ]
       .filter((day): day is string => day !== undefined)
       .sort();
@@ -93,13 +97,24 @@ export function normalizeRequestQueue(
       kind,
       id: raw.id,
       employeeId: raw.requestedBy,
-      employeeName: nameOf(raw.requestedBy),
-      employeeNameKnown: Boolean(names.get(raw.requestedBy)?.trim()),
+      employeeName: raw.requestedByName?.trim() || nameOf(raw.requestedBy),
+      employeeNameKnown: Boolean(
+        raw.requestedByName?.trim() || names.get(raw.requestedBy)?.trim(),
+      ),
       title: t(`hrisRequestsCommon.kind.${kind}`),
       period:
-        days.length === 0
-          ? t("hrisRequestsCommon.period.unknown")
-          : rangeText(t, days[0], days[days.length - 1]),
+        hasShiftContext(raw.fromAssignment) &&
+        (raw.toAssignmentId === null || hasShiftContext(raw.toAssignment))
+          ? [
+              raw.fromAssignment,
+              raw.toAssignmentId === null ? null : raw.toAssignment,
+            ]
+              .filter(hasShiftContext)
+              .map((shift) => requestShiftLabel(shift, filter.timeZone))
+              .join(" → ")
+          : days.length === 0
+            ? t("hrisRequestsCommon.period.unknown")
+            : rangeText(t, days[0], days[days.length - 1]),
       submittedAt: raw.requestedAt,
       status: raw.status,
       complianceIssues: raw.complianceIssues,
@@ -111,8 +126,10 @@ export function normalizeRequestQueue(
       kind: "leave",
       id: raw.id,
       employeeId: raw.employeeId,
-      employeeName: nameOf(raw.employeeId),
-      employeeNameKnown: Boolean(names.get(raw.employeeId)?.trim()),
+      employeeName: raw.employeeName?.trim() || nameOf(raw.employeeId),
+      employeeNameKnown: Boolean(
+        raw.employeeName?.trim() || names.get(raw.employeeId)?.trim(),
+      ),
       title: types.get(raw.leaveTypeId) ?? t("hrisRequestsCommon.kind.leave"),
       period: rangeText(t, raw.startDate, raw.endDate),
       submittedAt: raw.requestedAt,
@@ -124,8 +141,10 @@ export function normalizeRequestQueue(
       kind: "overtime",
       id: raw.id,
       employeeId: raw.employeeId,
-      employeeName: nameOf(raw.employeeId),
-      employeeNameKnown: Boolean(names.get(raw.employeeId)?.trim()),
+      employeeName: raw.employeeName?.trim() || nameOf(raw.employeeId),
+      employeeNameKnown: Boolean(
+        raw.employeeName?.trim() || names.get(raw.employeeId)?.trim(),
+      ),
       title: t("hrisRequestsCommon.kind.overtime"),
       period: t("hrisRequestsCommon.period.overtime", {
         date: raw.date,
@@ -218,7 +237,7 @@ export type SwapCandidate = {
   employeeId: Employee["id"];
   employeeName: string;
   /** Their shifts in the read window, earliest first (a swap picks one). */
-  assignments: ShiftAssignment[];
+  assignments: ShiftSwapAssignment[];
 };
 
 /**

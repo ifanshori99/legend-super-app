@@ -23,6 +23,12 @@ import {
   useMyHris,
   usePeerResponse,
 } from "../hooks.ts";
+import {
+  hasSwapContext,
+  hasShiftContext,
+  requestShiftLabel,
+} from "../request-context.ts";
+import { useTenantContext } from "@/lib/tenant-context";
 import { MyRequestCard } from "./my-requests-card.tsx";
 import { buildMyRequests, countRejected } from "./my-requests-model.ts";
 
@@ -176,6 +182,10 @@ export function MyRequestsPage() {
 
 function PeerResponseCard({ swap }: { swap: ShiftSwapRequest }) {
   const response = usePeerResponse();
+  const online = useOnline();
+  const { outlet } = useTenantContext();
+  const complete = hasSwapContext(swap);
+  const blocked = !complete || !online || response.isPending;
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   return (
@@ -185,10 +195,28 @@ function PeerResponseCard({ swap }: { swap: ShiftSwapRequest }) {
         Rekan meminta Anda menerima {swap.toAssignmentId ? "tukar" : "ganti"}{" "}
         shift sebelum diteruskan ke atasan.
       </p>
-      <p role="status" className="text-sm text-muted-foreground">
-        Rincian peminta dan jadwal belum tersedia. Respons ditahan sampai
-        rincian dapat ditampilkan.
-      </p>
+      {complete ? (
+        <div className="grid gap-1 text-sm text-muted-foreground">
+          <p>
+            {swap.requestedByName} → {swap.toEmployeeName}
+          </p>
+          {[
+            swap.fromAssignment,
+            swap.toAssignmentId === null ? null : swap.toAssignment,
+          ]
+            .filter(hasShiftContext)
+            .map((shift) => (
+              <p key={shift.id}>
+                {requestShiftLabel(shift, outlet?.timeZone ?? "Asia/Jakarta")}
+              </p>
+            ))}
+        </div>
+      ) : (
+        <p role="status" className="text-sm text-muted-foreground">
+          Rincian peminta dan jadwal belum tersedia. Respons ditahan sampai
+          rincian dapat ditampilkan.
+        </p>
+      )}
       {rejecting && (
         <label className="grid gap-2 text-sm">
           Alasan penolakan
@@ -207,23 +235,27 @@ function PeerResponseCard({ swap }: { swap: ShiftSwapRequest }) {
       <div className="flex flex-wrap gap-2">
         <Button
           type="button"
-          disabled
-          onClick={() => response.mutate({ swapId: swap.id, action: "accept" })}
+          disabled={blocked}
+          onClick={() => {
+            if (!blocked)
+              response.mutate({ swapId: swap.id, action: "accept" });
+          }}
         >
           Terima
         </Button>
         <Button
           type="button"
           variant="outline"
-          disabled
+          disabled={blocked || (rejecting && reason.trim().length < 3)}
           onClick={() =>
-            rejecting
+            !blocked &&
+            (rejecting
               ? response.mutate({
                   swapId: swap.id,
                   action: "reject",
                   rejectionReason: reason.trim(),
                 })
-              : setRejecting(true)
+              : setRejecting(true))
           }
         >
           Tolak

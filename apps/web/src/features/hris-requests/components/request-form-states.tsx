@@ -33,7 +33,9 @@ export function RequestSuccess({
       >
         <CircleCheck className="mt-0.5 size-5 shrink-0" aria-hidden="true" />
         <div className="grid gap-0.5">
-          <p className="font-semibold">{t("hrisRequestsEmployee.success.title")}</p>
+          <p className="font-semibold">
+            {t("hrisRequestsEmployee.success.title")}
+          </p>
           <p className="text-sm leading-5">{t(summary.bodyKey)}</p>
         </div>
       </div>

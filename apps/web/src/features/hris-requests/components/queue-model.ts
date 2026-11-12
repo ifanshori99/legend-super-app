@@ -2,6 +2,7 @@
 // filtering, which decision needs a reason, who may decide which kind, and the
 // message key of a failed decision. Kept free of React so node:test covers it.
 import type { MessageKey } from "@starter/shared/i18n";
+import { hasSwapContext } from "../request-context.ts";
 import type { RequestQueueItem } from "../queue.ts";
 
 export const QUEUE_KINDS = ["swap", "cover", "leave", "overtime"] as const;
@@ -97,6 +98,18 @@ export function hasKnownRequester(
   item: Pick<RequestQueueItem, "employeeNameKnown">,
 ): boolean {
   return item.employeeNameKnown;
+}
+
+/** Missing request details keep every decision unavailable. */
+export function hasDecisionContext(item: RequestQueueItem): boolean {
+  if (!hasKnownRequester(item)) return false;
+  if (item.kind === "swap" || item.kind === "cover")
+    return hasSwapContext(item.raw);
+  if (item.kind === "leave")
+    return Boolean(item.raw.startDate && item.raw.endDate);
+  if (item.kind === "overtime")
+    return Boolean(item.raw.date && item.raw.minutes > 0);
+  return false;
 }
 
 /** Permission that lets a supervisor decide each kind (API re-checks it). */

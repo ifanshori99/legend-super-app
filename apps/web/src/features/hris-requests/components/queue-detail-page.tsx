@@ -35,6 +35,7 @@ import {
   complianceIssueKey,
   formatSubmittedAt,
   hasKnownRequester,
+  hasDecisionContext,
   isNetworkFailure,
   isQueueKind,
   isWaitingForPeer,
@@ -130,7 +131,15 @@ function QueueDetailContent({
   const item = query.data;
 
   const send = async (attempt: Attempt) => {
-    if (item === undefined || inFlight.current) return;
+    if (
+      item === undefined ||
+      item.status !== "pending" ||
+      !hasDecisionContext(item) ||
+      isWaitingForPeer(item) ||
+      !canDecideKind(kind, context.access?.permissions ?? []) ||
+      inFlight.current
+    )
+      return;
     if (!online) {
       setUnsent(attempt);
       return;
@@ -225,7 +234,7 @@ function QueueDetailContent({
             canDecide={
               item.status === "pending" &&
               !isWaitingForPeer(item) &&
-              hasKnownRequester(item) &&
+              hasDecisionContext(item) &&
               canDecideKind(kind, context.access?.permissions ?? [])
             }
             pending={decide.isPending}
@@ -402,9 +411,11 @@ function RequestSummary({
             ? "Menunggu rekan menerima pengajuan sebelum dapat diproses."
             : item.status === "pending" && !hasKnownRequester(item)
               ? "Pengajuan belum dapat diproses karena identitas peminta belum tersedia."
-              : item.status === "pending"
-                ? t("hrisRequestsQueue.detail.noRight")
-                : t("hrisRequestsQueue.detail.decidedNote")}
+              : item.status === "pending" && !hasDecisionContext(item)
+                ? "Pengajuan belum dapat diproses karena rincian jadwal belum tersedia."
+                : item.status === "pending"
+                  ? t("hrisRequestsQueue.detail.noRight")
+                  : t("hrisRequestsQueue.detail.decidedNote")}
         </p>
       )}
     </section>

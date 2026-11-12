@@ -233,12 +233,13 @@ export function fetchEmployees(
 
 export async function fetchSwapCandidates(
   outletId: OutletId,
+  fromAssignmentId: ShiftAssignmentId,
   signal?: AbortSignal,
 ) {
   return (
     await callEndpoint(
       listShiftSwapCandidates,
-      { query: { outletId } },
+      { query: { outletId, fromAssignmentId } },
       { signal },
     )
   ).data;

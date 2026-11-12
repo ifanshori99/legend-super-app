@@ -139,15 +139,26 @@ async function grantCustomRole(
   });
 }
 
-async function seedEmployee(userId: string | null, outletId: string) {
+async function seedEmployee(
+  userId: string | null,
+  outletId: string,
+  name = "Karyawan Tukar API",
+) {
   const id = randomUUID();
   createdEmployees.push(id);
   await asTenant((db) =>
     db.query(
       `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
                               employment_type, join_date, status)
-       VALUES ($1, $2, $3, $4, 'Karyawan Tukar API', $5, 'pkwtt', '2025-03-01', 'active')`,
-      [id, tenant.id, userId, `SW-${id.slice(0, 8).toUpperCase()}`, outletId],
+       VALUES ($1, $2, $3, $4, $6, $5, 'pkwtt', '2025-03-01', 'active')`,
+      [
+        id,
+        tenant.id,
+        userId,
+        `SW-${id.slice(0, 8).toUpperCase()}`,
+        outletId,
+        name,
+      ],
     ),
   );
   return id;
@@ -175,6 +186,7 @@ const MANAGER_PERMISSIONS = [
 let hr: { client: Client; userId: string };
 let hrNoApprove: { client: Client; userId: string };
 let managerB: { client: Client; userId: string };
+let supervisor: { client: Client; userId: string };
 let requester: { client: Client; userId: string };
 let target: { client: Client; userId: string };
 let target2: { client: Client; userId: string };
@@ -209,6 +221,13 @@ beforeAll(async () => {
     type: "outlet",
     id: secondOutlet.id,
   });
+  supervisor = await signedInClient("Supervisor rincian tukar", { mfa: true });
+  await grantCustomRole(
+    tenant.id,
+    supervisor.userId,
+    ["hr.shift_swap.approve"],
+    { type: "outlet", id: outlet.id },
+  );
 
   const staffScope = { type: "outlet", id: outlet.id } as const;
   requester = await signedInClient("Peminta Tukar API");
@@ -232,8 +251,8 @@ beforeAll(async () => {
       staffScope,
     );
 
-  employeeR = await seedEmployee(requester.userId, outlet.id);
-  employeeT = await seedEmployee(target.userId, outlet.id);
+  employeeR = await seedEmployee(requester.userId, outlet.id, "Pemohon U4");
+  employeeT = await seedEmployee(target.userId, outlet.id, "Rekan U4");
   employeeT2 = await seedEmployee(target2.userId, outlet.id);
   await seedEmployee(bystander.userId, outlet.id);
   employeeDual = await seedEmployee(dual.userId, outlet.id);
@@ -1494,8 +1513,12 @@ describe("isolasi tenant", () => {
 
 describe("legend-mu78t colleague acceptance and candidates", () => {
   it("lists only same-outlet active colleagues and no personal fields", async () => {
+    const [fromAssignmentId] = await publishedWeek(82, [
+      { employeeId: employeeR, day: 1, templateId: pagiId },
+    ]);
+    const sourceQuery = `&fromAssignmentId=${fromAssignmentId}`;
     const response = await requester.client.get(
-      `/api/hris/shift-swaps/candidates?outletId=${outlet.id}`,
+      `/api/hris/shift-swaps/candidates?outletId=${outlet.id}${sourceQuery}`,
     );
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(response.body.data).toEqual(
@@ -1505,27 +1528,27 @@ describe("legend-mu78t colleague acceptance and candidates", () => {
       response.body.data.map((row: { id: string }) => row.id),
     ).not.toContain(employeeOtherOutlet);
     for (const row of response.body.data) {
-      expect(Object.keys(row).sort()).toEqual(["id", "name"]);
+      expect(Object.keys(row).sort()).toEqual(["assignments", "id", "name"]);
       expect(typeof row.name).toBe("string");
     }
     expect(
       (
         await requester.client.get(
-          `/api/hris/shift-swaps/candidates?outletId=${secondOutlet.id}`,
+          `/api/hris/shift-swaps/candidates?outletId=${secondOutlet.id}${sourceQuery}`,
         )
       ).status,
     ).not.toBe(200);
     expect(
       (
         await actorB.client.get(
-          `/api/hris/shift-swaps/candidates?outletId=${outlet.id}`,
+          `/api/hris/shift-swaps/candidates?outletId=${outlet.id}${sourceQuery}`,
         )
       ).status,
     ).not.toBe(200);
     expect(
       (
         await agent(app).get(
-          `/api/hris/shift-swaps/candidates?outletId=${outlet.id}`,
+          `/api/hris/shift-swaps/candidates?outletId=${outlet.id}${sourceQuery}`,
         )
       ).status,
     ).toBe(401);
@@ -1589,6 +1612,231 @@ describe("legend-mu78t colleague acceptance and candidates", () => {
     });
     expect((await shiftNow(81, shift))?.employeeId).toBe(employeeR);
     expect((await decide(hr.client, swap.id, "approve")).status).toBe(409);
+  });
+});
+
+describe("legend-hvh9x scoped shift context without roster access", () => {
+  it("returns only minimal published peer assignments within seven days of the caller's own source", async () => {
+    const [beforeWindow, previousBoundary] = await publishedWeek(82, [
+      { employeeId: employeeT, day: 0, templateId: pagiId },
+      { employeeId: employeeT, day: 1, templateId: pagiId },
+    ]);
+    const [source, peer, edge] = await publishedWeek(83, [
+      { employeeId: employeeR, day: 1, templateId: pagiId },
+      { employeeId: employeeT, day: 2, templateId: pagiId },
+      { employeeId: employeeT, day: 0, templateId: pagiId },
+    ]);
+    const [boundary, outside] = await publishedWeek(84, [
+      { employeeId: employeeT, day: 1, templateId: pagiId },
+      { employeeId: employeeT, day: 2, templateId: pagiId },
+    ]);
+    const draft = await createShift(employeeT, dayOf(83, 3), pagiId);
+    await publishedShiftElsewhere(employeeT, secondOutlet.id, source);
+
+    const response = await requester.client.get(
+      `/api/hris/shift-swaps/candidates?outletId=${outlet.id}&fromAssignmentId=${source}`,
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const colleague = response.body.data.find(
+      (row: { id: string }) => row.id === employeeT,
+    );
+    expect(colleague).toMatchObject({ id: employeeT, name: "Rekan U4" });
+    expect(colleague.assignments).toEqual([
+      {
+        id: previousBoundary,
+        businessDate: dayOf(82, 1),
+        segments: [
+          {
+            startsAt: `${dayOf(82, 1)}T00:00:00.000Z`,
+            endsAt: `${dayOf(82, 1)}T08:00:00.000Z`,
+          },
+        ],
+        breakMinutes: 60,
+      },
+      {
+        id: edge,
+        businessDate: dayOf(83, 0),
+        segments: [
+          {
+            startsAt: `${dayOf(83, 0)}T00:00:00.000Z`,
+            endsAt: `${dayOf(83, 0)}T08:00:00.000Z`,
+          },
+        ],
+        breakMinutes: 60,
+      },
+      {
+        id: peer,
+        businessDate: dayOf(83, 2),
+        segments: [
+          {
+            startsAt: `${dayOf(83, 2)}T00:00:00.000Z`,
+            endsAt: `${dayOf(83, 2)}T08:00:00.000Z`,
+          },
+        ],
+        breakMinutes: 60,
+      },
+      {
+        id: boundary,
+        businessDate: dayOf(84, 1),
+        segments: [
+          {
+            startsAt: `${dayOf(84, 1)}T00:00:00.000Z`,
+            endsAt: `${dayOf(84, 1)}T08:00:00.000Z`,
+          },
+        ],
+        breakMinutes: 60,
+      },
+    ]);
+    expect(JSON.stringify(response.body)).not.toContain(draft);
+    expect(JSON.stringify(response.body)).not.toContain(beforeWindow);
+    expect(JSON.stringify(response.body)).not.toContain(outside);
+    expect(JSON.stringify(response.body)).not.toContain(employeeOtherOutlet);
+    expect(
+      response.body.data.map((row: { id: string }) => row.id),
+    ).not.toContain(employeeR);
+    for (const row of response.body.data) {
+      expect(Object.keys(row).sort()).toEqual(["assignments", "id", "name"]);
+      for (const assignment of row.assignments)
+        expect(Object.keys(assignment).sort()).toEqual([
+          "breakMinutes",
+          "businessDate",
+          "id",
+          "segments",
+        ]);
+    }
+
+    // The returned assignment id is sufficient for a real swap request.
+    const created = await requestSwap(requester.client, {
+      fromAssignmentId: source,
+      toEmployeeId: colleague.id,
+      toAssignmentId: colleague.assignments[2].id,
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.data.toAssignmentId).toBe(peer);
+
+    // A valid minimal candidate read does not grant directory or roster reads.
+    expect((await requester.client.get("/api/hris/employees")).status).toBe(
+      403,
+    );
+    const roster = await requester.client.get(
+      `/api/hris/shifts?outletId=${outlet.id}&from=${weekOf(83)}&to=${dayOf(84, 6)}&limit=100`,
+    );
+    expect(roster.status, JSON.stringify(roster.body)).toBe(200);
+    expect(JSON.stringify(roster.body)).not.toContain(peer);
+  });
+
+  it("requires a source owned by the caller and refuses foreign outlet and tenant reads", async () => {
+    const [source, peer] = await publishedWeek(85, [
+      { employeeId: employeeR, day: 1, templateId: pagiId },
+      { employeeId: employeeT, day: 2, templateId: pagiId },
+    ]);
+    expect(
+      (
+        await requester.client.get(
+          `/api/hris/shift-swaps/candidates?outletId=${outlet.id}`,
+        )
+      ).status,
+    ).toBe(422);
+    for (const [client, outletId, fromAssignmentId] of [
+      [target.client, outlet.id, source],
+      [requester.client, outlet.id, peer],
+      [requester.client, secondOutlet.id, source],
+      [managerB.client, outlet.id, source],
+      [actorB.client, outlet.id, source],
+    ] as const) {
+      const response = await client.get(
+        `/api/hris/shift-swaps/candidates?outletId=${outletId}&fromAssignmentId=${fromAssignmentId}`,
+      );
+      expect([403, 404], JSON.stringify(response.body)).toContain(
+        response.status,
+      );
+      expect(JSON.stringify(response.body)).not.toContain("Pemohon U4");
+      expect(JSON.stringify(response.body)).not.toContain("Rekan U4");
+    }
+    const draft = await createShift(employeeR, dayOf(85, 3), pagiId);
+    const invalidSource = await requester.client.get(
+      `/api/hris/shift-swaps/candidates?outletId=${outlet.id}&fromAssignmentId=${draft}`,
+    );
+    expect([404, 409, 422], JSON.stringify(invalidSource.body)).toContain(
+      invalidSource.status,
+    );
+  });
+
+  it("gives only the recipient and in-scope approver the requester's name and both shift details", async () => {
+    const [source, peer] = await publishedWeek(86, [
+      { employeeId: employeeR, day: 1, templateId: pagiId },
+      { employeeId: employeeT, day: 2, templateId: pagiId },
+    ]);
+    const created = await requestSwap(requester.client, {
+      fromAssignmentId: source,
+      toEmployeeId: employeeT,
+      toAssignmentId: peer,
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const requestId = created.body.data.id as string;
+    for (const [client, query] of [
+      [target.client, "mine=true"],
+      [supervisor.client, `outletId=${outlet.id}`],
+    ] as const) {
+      const response = await client.get(
+        `/api/hris/shift-swaps?${query}&limit=100`,
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      const row = response.body.data.find(
+        (candidate: { id: string }) => candidate.id === requestId,
+      );
+      expect(row).toMatchObject({
+        requestedByName: "Pemohon U4",
+        toEmployeeName: "Rekan U4",
+        fromAssignment: {
+          id: source,
+          businessDate: dayOf(86, 1),
+          segments: [
+            {
+              startsAt: `${dayOf(86, 1)}T00:00:00.000Z`,
+              endsAt: `${dayOf(86, 1)}T08:00:00.000Z`,
+            },
+          ],
+          breakMinutes: 60,
+        },
+        toAssignment: {
+          id: peer,
+          businessDate: dayOf(86, 2),
+          segments: [
+            {
+              startsAt: `${dayOf(86, 2)}T00:00:00.000Z`,
+              endsAt: `${dayOf(86, 2)}T08:00:00.000Z`,
+            },
+          ],
+          breakMinutes: 60,
+        },
+      });
+      expect(Object.keys(row.fromAssignment).sort()).toEqual([
+        "breakMinutes",
+        "businessDate",
+        "id",
+        "segments",
+      ]);
+      expect(Object.keys(row.toAssignment).sort()).toEqual([
+        "breakMinutes",
+        "businessDate",
+        "id",
+        "segments",
+      ]);
+    }
+    for (const client of [bystander.client, managerB.client, actorB.client]) {
+      const response = await client.get("/api/hris/shift-swaps?limit=100");
+      expect([200, 403, 404], JSON.stringify(response.body)).toContain(
+        response.status,
+      );
+      expect(JSON.stringify(response.body)).not.toContain(requestId);
+      expect(JSON.stringify(response.body)).not.toContain(source);
+      expect(JSON.stringify(response.body)).not.toContain(peer);
+    }
+    expect((await supervisor.client.get("/api/hris/employees")).status).toBe(
+      403,
+    );
+    expect((await supervisor.client.get("/api/hris/shifts")).status).toBe(403);
   });
 });
 

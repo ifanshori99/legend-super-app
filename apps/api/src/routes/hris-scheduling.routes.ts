@@ -466,6 +466,7 @@ export function createHrisSchedulingRouter(): Router {
           hrisContext(req),
           actor(req),
           query.outletId,
+          query.fromAssignmentId,
         ),
       );
     },
