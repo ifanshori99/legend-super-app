@@ -35,6 +35,11 @@ import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
 import { promoMessages } from "./promo.ts";
 import { posDisplayMessages } from "./pos-display.ts";
+import { posCorrectionMessages } from "./pos-correction.ts";
+import { posOrderDetailMessages } from "./pos-order-detail.ts";
+import { posIssueChargeMessages } from "./pos-issue-charge.ts";
+import { posReceiptPublicMessages } from "./pos-receipt-public.ts";
+import { paymentRefundFollowupMessages } from "./ws05-refund-followup.ts";
 import { reservationMessages } from "./reservation.ts";
 import { websiteMessages } from "./website.ts";
 import { ws01AuthMessages } from "./ws01-auth.ts";
@@ -122,6 +127,13 @@ export const id = {
   },
   // POS customer display (PRD §3 F11 "Customer Display"), bead legend-azt.
   posDisplay: posDisplayMessages,
+  // POS extra screens (sub-539-u2): corrections + receipt preview (legend-2fo),
+  // order detail with kitchen void notice (legend-0ixe), charge the difference
+  // (legend-shabi), public e-receipt (legend-1uk9).
+  posCorrection: posCorrectionMessages,
+  posOrderDetail: posOrderDetailMessages,
+  posIssueCharge: posIssueChargeMessages,
+  posReceiptPublic: posReceiptPublicMessages,
   // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).
   reservation: reservationMessages,
   // POS cashier screens (bead legend-mjmm): one catalog file per screen group.
@@ -1572,6 +1584,8 @@ export const id = {
   // EDC routing kasir, refund, rekonsiliasi settlement). PAY-04 and EDC-06
   // are the screens' acceptance IDs.
   paymentAdmin: {
+    // Refund follow-up: reject/retry/quarantine (legend-kfkt, legend-hn5q).
+    refundFollowup: paymentRefundFollowupMessages,
     title: "Pembayaran",
     subtitle:
       "Atur gateway dan terminal EDC, putuskan refund, selesaikan dana belum teralokasi, dan cocokkan settlement dengan mutasi rekening.",
