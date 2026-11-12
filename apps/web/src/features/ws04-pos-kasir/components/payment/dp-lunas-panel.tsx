@@ -4,6 +4,7 @@ import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Notice, PosPanel, StateBlock, StatusPill } from "../shared";
+import { ORDER_COMPLETE_FAILED } from "../../api";
 import { usePaymentSession, usePrintReceipt } from "../../hooks";
 
 // The reservation DP covered the whole bill (legend-p7lx): no method, no cash,
@@ -89,23 +90,31 @@ export function DpLunasPanel({
               )}
             </p>
           )}
-          {print.isError && (
-            <div className="grid justify-items-start gap-3">
+          {print.isError &&
+            (print.error.code === ORDER_COMPLETE_FAILED ? (
               <Notice
                 tone="danger"
-                title={t("posKasirPayment.success.printFailedTitle")}
+                title={t("posKasirPayment.success.completeFailedTitle")}
               >
-                {t("posKasirPayment.success.printFailedHint")}
+                {t("posKasirPayment.success.completeFailedHint")}
               </Notice>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={toNewTransaction}
-              >
-                {t("posKasirGateway.receipt.skipPrint")}
-              </Button>
-            </div>
-          )}
+            ) : (
+              <div className="grid justify-items-start gap-3">
+                <Notice
+                  tone="danger"
+                  title={t("posKasirPayment.success.printFailedTitle")}
+                >
+                  {t("posKasirPayment.success.printFailedHint")}
+                </Notice>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={toNewTransaction}
+                >
+                  {t("posKasirGateway.receipt.skipPrint")}
+                </Button>
+              </div>
+            ))}
         </div>
       </div>
     </PosPanel>

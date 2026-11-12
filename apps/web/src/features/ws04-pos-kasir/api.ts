@@ -62,6 +62,9 @@ import {
 // ---- Helpers ---------------------------------------------------------------
 
 /** The error a call without a contract gives outside mock mode. */
+/** `printReceipt` could not complete the order (e.g. CONFLICT, items held). */
+export const ORDER_COMPLETE_FAILED = "ORDER_COMPLETE_FAILED";
+
 export function contractPending(feature: string): ApiError {
   return new ApiError(
     501,
@@ -390,13 +393,26 @@ export async function printReceipt(
     (order.status === "awaiting_payment" || order.status === "sent") &&
     sessionFromOrder(order).bill.remainingIdr === 0
   )
-    await callEndpoint(completePosOrder, {
-      params: { outletId, orderId },
-      body: {
-        expectedStatus: order.status,
-        idempotencyKey: `${idempotencyKey}:complete`,
-      },
-    });
+    try {
+      await callEndpoint(completePosOrder, {
+        params: { outletId, orderId },
+        body: {
+          expectedStatus: order.status,
+          idempotencyKey: `${idempotencyKey}:complete`,
+        },
+      });
+    } catch (error) {
+      // Distinct from a print failure: the order is still open, so the screen
+      // must not offer to skip the receipt and move on.
+      if (error instanceof ApiError)
+        throw new ApiError(
+          error.status,
+          ORDER_COMPLETE_FAILED,
+          error.message,
+          error.details,
+        );
+      throw error;
+    }
   const { data } = await callEndpoint(issuePosReceipt, {
     params: { outletId, orderId },
     body: {

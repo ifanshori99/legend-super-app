@@ -1426,8 +1426,9 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
         items,
         totalHeldIdr,
         physicalVarianceIdr: physical,
+        heldCorrectionIdr: 0,
         bookVarianceIdr:
-          physical === null ? null : bookVarianceIdr(physical, totalHeldIdr),
+          physical === null ? null : bookVarianceIdr(physical, 0),
         cashierCounts,
         limitReached: countLimitReached(cashierCounts),
       };

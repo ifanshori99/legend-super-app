@@ -124,3 +124,40 @@ export function parseRupiahDigits(text: string): number | null {
   const value = Number(digits);
   return value <= MAX_IDR ? value : null;
 }
+
+export type CorrectionFailureKind = "uncertain" | "rejected";
+
+/**
+ * How a failed correction call reads. The server may already have recorded it
+ * when the answer never arrived (network drop 0, timeout 408, server error
+ * 5xx) or the same request is running right now (409): the result is
+ * UNCERTAIN. Any other 4xx is a definite refusal that recorded nothing.
+ */
+export function correctionFailureKind(status: number): CorrectionFailureKind {
+  if (status === 0 || status === 408 || status === 409 || status >= 500)
+    return "uncertain";
+  return "rejected";
+}
+
+export type IntentKey = { fingerprint: string; key: string };
+
+/**
+ * The idempotency key for the next send. The same input keeps its key. After
+ * an UNCERTAIN failure the key stays even when the input changed, so the server
+ * sees one intent and records it once. Only a first send, or a send after a
+ * definite rejection (`lastFailure` "rejected" or null) with a changed input,
+ * gets a new key.
+ */
+export function nextIdempotencyKey(
+  prev: IntentKey | null,
+  fingerprint: string,
+  lastFailure: CorrectionFailureKind | null,
+  makeKey: () => string,
+): IntentKey {
+  if (
+    prev !== null &&
+    (prev.fingerprint === fingerprint || lastFailure === "uncertain")
+  )
+    return prev;
+  return { fingerprint, key: makeKey() };
+}

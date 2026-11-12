@@ -48,3 +48,7 @@ Tipe di `shift-extra-types.ts`, fungsi di `shift-extra-api.ts`, aturan murni di 
 ## Koreksi refund (legend-2fo, dari I1)
 
 - Koreksi refund: order detail tidak memuat jumlah yang sudah direfund; layar menampilkan sisa penuh, server (422) yang membatasi.
+
+## Selisih buku dan koreksi tertahan (legend-y9bf, audit F)
+
+- API membukukan `varianceIdr + heldCorrectionIdr` saat tutup shift (`pos-shift.service.ts`, `closeShiftWithCount`); kas keluar dan setoran ditahan kedaluwarsa dan tidak dibukukan. DTO hitungan di `@starter/shared/pos` belum memuat `heldCorrectionIdr` (kas refund dan void ditahan). Sampai ada, `HeldCashOutReview.heldCorrectionIdr` = 0 di `shift-extra-api.ts` dan mock, jadi selisih buku = selisih fisik.

@@ -34,16 +34,20 @@ function Line({
   children: React.ReactNode;
   strong?: boolean;
 }) {
+  // One <dl> per line: the deposit notes between lines are plain paragraphs,
+  // which a <dl> may not contain.
   return (
-    <div
-      className={cn(
-        "flex items-baseline justify-between gap-3 text-(length:--density-text)",
-        strong && "font-bold",
-      )}
-    >
-      <dt>{label}</dt>
-      <dd>{children}</dd>
-    </div>
+    <dl>
+      <div
+        className={cn(
+          "flex items-baseline justify-between gap-3 text-(length:--density-text)",
+          strong && "font-bold",
+        )}
+      >
+        <dt>{label}</dt>
+        <dd>{children}</dd>
+      </div>
+    </dl>
   );
 }
 
@@ -102,7 +106,7 @@ export function BillPanel({
           })}
         </p>
       </header>
-      <dl className="grid gap-2">
+      <div className="grid gap-2">
         <Line label={t("posKasirCommon.bill.subtotal")}>
           <Money amount={subtotalIdr} />
         </Line>
@@ -148,7 +152,7 @@ export function BillPanel({
             <Money amount={-allocation.amountIdr} className="font-semibold" />
           </Line>
         ))}
-      </dl>
+      </div>
       <div
         data-slot="bill-remaining"
         className="mt-auto rounded-control bg-surface-3 p-4"

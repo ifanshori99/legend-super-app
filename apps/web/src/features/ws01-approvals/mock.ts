@@ -113,6 +113,10 @@ function seed(): ApprovalRequest[] {
       approvalRequestSchema.parse({
         ...shiftClose,
         id: SHIFT_CLOSE_APPROVER_ID,
+        // Soonest live deadline: first row after the overdue one, so the
+        // inbox opens on it (mockup legend-6om3).
+        createdAt: iso(-2 * MIN),
+        deadlineAt: iso(5 * MIN),
         payload: {
           shiftCode: "S-008",
           terminal: "Terminal 01",

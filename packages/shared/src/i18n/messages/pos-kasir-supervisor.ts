@@ -64,6 +64,9 @@ export const posKasirSupervisorMessages = {
     book: "Selisih buku",
     formula:
       "Selisih buku = selisih fisik + kas keluar ditahan ({physical} + {held}).",
+    expired: "Kedaluwarsa, tidak dibukukan",
+    formulaBooked:
+      "Selisih buku = selisih fisik + koreksi tertahan ({physical} + {correction}). Kas keluar ditahan kedaluwarsa saat tutup shift dan tidak dibukukan.",
     noticeTitle: "Periksa sebelum menyetujui tutup shift",
     noticeBody:
       "Kas keluar ditahan dan selisih buku ditampilkan dalam jejak hitungan.",

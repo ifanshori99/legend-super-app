@@ -47,10 +47,12 @@ function Row({
   const action = t(actionLabelKey(request.actionType));
   return (
     <TableRow data-testid="approval-row" data-request-id={request.id}>
-      <TableCell className="max-w-xs">
+      <TableCell className="max-w-56">
         <p className="font-semibold">{action}</p>
         <p className="text-sm text-muted-foreground">
           {t(moduleLabelKey(moduleOf(request.actionType)))} · {requester}
+          {request.requiredLevels > 1 &&
+            ` · ${t("approvals.level", { level: request.level, total: request.requiredLevels })}`}
         </p>
         {preview && (
           <p className="truncate text-sm">
@@ -82,9 +84,6 @@ function Row({
           <span className="text-muted-foreground">—</span>
         )}
       </TableCell>
-      <TableCell className="tabular">
-        {request.level}/{request.requiredLevels}
-      </TableCell>
       <TableCell>
         <div className="grid gap-0.5">
           <Deadline request={request} now={now} />
@@ -96,7 +95,7 @@ function Row({
       <TableCell>
         <RequestStatusBadge status={request.status} />
       </TableCell>
-      <TableCell className="text-right">
+      <TableCell className="text-right whitespace-nowrap">
         <Button
           variant="outline"
           size="sm"
@@ -133,7 +132,6 @@ export function ApprovalTable({
           <TableHead className="text-right">
             {t("approvals.col.value")}
           </TableHead>
-          <TableHead>{t("approvals.col.level")}</TableHead>
           <TableHead>{t("approvals.col.deadline")}</TableHead>
           <TableHead>{t("approvals.col.status")}</TableHead>
           <TableHead>

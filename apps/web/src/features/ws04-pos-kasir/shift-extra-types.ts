@@ -53,7 +53,12 @@ export type HeldCashOutReview = {
   totalHeldIdr: number;
   /** counted - expected; negative is short. */
   physicalVarianceIdr: number | null;
-  /** physical variance + held cash out (see `bookVarianceIdr`). */
+  /**
+   * Held refund and void cash the API books at close. The contract does not
+   * carry it yet (CONTRACT-GAPS.md), so it is 0.
+   */
+  heldCorrectionIdr: number;
+  /** What the API books: physical variance + held correction (`bookVarianceIdr`). */
   bookVarianceIdr: number | null;
   /** Counts the cashier submitted; the supervisor forces the close at the limit. */
   cashierCounts: number;

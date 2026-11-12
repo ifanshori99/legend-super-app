@@ -98,9 +98,11 @@ add({
   path: `${KOREKSI}?mode=diskon`,
   prepare: async (p) => {
     await expectHeading(p, "Diskon pesanan");
-    await fillField(p, /Persen diskon/, "10");
+    await fillField(p, /Persen diskon/, "15");
     await expectText(p, /Diskon usulan/);
+    // Above the 10% mock threshold: pill, notice, and the primary action.
     await expectText(p, /Perlu persetujuan/);
+    await expectButton(p, /Minta persetujuan/);
   },
 });
 add({
@@ -140,13 +142,18 @@ add({
   // "Minta persetujuan" opens the supervisor approval dialog (PIN).
   prepare: async (p) => {
     await expectHeading(p, "Diskon pesanan");
-    await fillField(p, /Persen diskon/, "10");
+    await fillField(p, /Persen diskon/, "15");
     await clickControl(p, /Minta persetujuan/);
     await p
       .getByRole("dialog")
       .waitFor({ state: "visible", timeout: COLD_TIMEOUT });
     await expectText(p, "Persetujuan diskon");
     await expectText(p, /Supervisor penyetuju/);
+    await p
+      .getByLabel(/PIN/)
+      .filter({ visible: true })
+      .first()
+      .waitFor({ state: "visible", timeout: COLD_TIMEOUT });
   },
 });
 add({
@@ -193,7 +200,7 @@ add({
     await expectHeading(p, /^Pesanan #/);
     await expectText(p, "Item dibatalkan di dapur");
     await expectText(p, /Pembatalan dapur belum mengubah tagihan/);
-    await expectButton(p, /Ajukan void item/);
+    await expectLink(p, /Ajukan void item/);
   },
 });
 add({
@@ -502,6 +509,9 @@ add({
     await openForceClose(p);
     await expectHeading(p, "Penutupan paksa shift");
     await expectText(p, "Hitung ulang uang di laci");
+    // The mockup shows the supervisor's own count (Rp2.230.000).
+    await fillField(p, /Pecahan lain/, "2230000");
+    await expectText(p, /2\.230\.000/);
   },
 });
 add({
@@ -724,7 +734,8 @@ add({
   prepare: async (p) => {
     await reviewRefund(p, "POS-0152");
     await clickControl(p, /Tinjau buka ulang/);
-    await expectText(p, "Kembalikan refund untuk ditinjau");
+    // The mockup's panel heading "Kembalikan refund untuk ditinjau" is not
+    // rendered by the dialog (reopen.heading is unused): reported, not waited on.
     await expectText(p, "Periksa juga status penyedia");
   },
 });
@@ -762,7 +773,17 @@ add({
   path: INBOX,
   prepare: async (p) => {
     await expectText(p, /Tutup shift kasir/);
-    await clickControl(p, /Lihat status/);
+    // Own request (S-009), not the cashier's S-008 that the owner approves.
+    const own = p
+      .getByText(/S-009/)
+      .filter({ visible: true })
+      .first()
+      .locator("xpath=ancestor::*[.//*[contains(., 'Lihat status')]][1]")
+      .locator('button, a')
+      .filter({ hasText: /Lihat status/ })
+      .first();
+    await own.waitFor({ state: "visible", timeout: COLD_TIMEOUT });
+    await own.click();
     await p
       .getByRole("dialog")
       .waitFor({ state: "visible", timeout: COLD_TIMEOUT });
@@ -860,6 +881,28 @@ async function expectHeading(page, text) {
 async function expectButton(page, name) {
   await page
     .getByRole("button", { name })
+    .filter({ visible: true })
+    .first()
+    .waitFor({ state: "visible", timeout: COLD_TIMEOUT });
+}
+/**
+ * Waits for finite animations (dialog fade/zoom) to end: axe must not sample
+ * the contrast of a half-transparent dialog. Looping skeleton pulses are left.
+ */
+async function settle(page) {
+  await page.evaluate(async () => {
+    await Promise.all(
+      document
+        .getAnimations()
+        .filter((a) => a.effect?.getComputedTiming().iterations !== Infinity)
+        .map((a) => a.finished.catch(() => undefined)),
+    );
+  });
+  await page.waitForTimeout(100);
+}
+async function expectLink(page, name) {
+  await page
+    .getByRole("link", { name })
     .filter({ visible: true })
     .first()
     .waitFor({ state: "visible", timeout: COLD_TIMEOUT });
@@ -1065,6 +1108,7 @@ async function main() {
             // Loading states are skeleton screenshots: hydration is not awaited.
             if (!screen.noHydration) await waitForHydration(page);
             await screen.prepare(page);
+            await settle(page);
             const violations = await axe.run(page);
             const blocking = violations.filter((v) =>
               BLOCKING_IMPACTS.has(v.impact ?? ""),
@@ -1075,6 +1119,7 @@ async function main() {
                 document.documentElement.scrollWidth >
                 document.documentElement.clientWidth + 1,
             );
+            await page.evaluate(() => window.scrollTo(0, 0));
             await page.screenshot({
               path: join(OUT_DIR, `${id}.png`),
               fullPage: true,

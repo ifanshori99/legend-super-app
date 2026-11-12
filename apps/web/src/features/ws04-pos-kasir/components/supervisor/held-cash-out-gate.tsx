@@ -91,7 +91,12 @@ function HeldPanel({
   onForceClose?: () => void;
 }) {
   const t = useT();
-  const { physicalVarianceIdr, bookVarianceIdr, totalHeldIdr } = review;
+  const {
+    physicalVarianceIdr,
+    bookVarianceIdr,
+    heldCorrectionIdr,
+    totalHeldIdr,
+  } = review;
   return (
     <PosPanel
       title={t("posKasirSupervisor.held.title")}
@@ -129,6 +134,9 @@ function HeldPanel({
           <Line label={t("posKasirSupervisor.held.total")} strong>
             <Money amount={totalHeldIdr} className="font-bold" />
           </Line>
+          <p className="pb-2 text-right text-base text-muted-foreground">
+            {t("posKasirSupervisor.held.expired")}
+          </p>
           {physicalVarianceIdr !== null && bookVarianceIdr !== null && (
             <>
               <Line label={t("posKasirSupervisor.held.physical")}>
@@ -142,9 +150,9 @@ function HeldPanel({
         </div>
         {physicalVarianceIdr !== null && (
           <p className="text-base text-muted-foreground">
-            {t("posKasirSupervisor.held.formula", {
+            {t("posKasirSupervisor.held.formulaBooked", {
               physical: signed(physicalVarianceIdr),
-              held: signed(totalHeldIdr),
+              correction: signed(heldCorrectionIdr),
             })}
           </p>
         )}

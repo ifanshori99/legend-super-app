@@ -40,7 +40,7 @@ export const paymentRefundFollowupMessages = {
     pending_approval: "Tinjau permintaan",
     approved_processing: "Pengiriman sedang diproses",
     unknown_result: "Periksa status sebelum mencoba lagi",
-    retryable: "Pengiriman tertunda",
+    retryable: "Pengiriman dapat dicoba lagi",
     failed_final: "Periksa kegagalan pembayaran",
     rejected: "Pengajuan tidak disetujui",
     quarantined: "Pengiriman refund ditahan",
@@ -147,6 +147,10 @@ export const paymentRefundFollowupMessages = {
     done: "Refund dibuka ulang dan menunggu persetujuan.",
   },
   noteRequired: "Tulis alasan, 3 sampai 500 karakter.",
+  maybeSent: {
+    title: "Pembayaran mungkin sudah terkirim",
+    body: "Server menolak pelepasan atau buka ulang karena pengiriman mungkin sudah sampai ke penyedia. Periksa status untuk memastikan hasilnya; refund tidak dikirim ulang.",
+  },
   quarantine: {
     filter: "Karantina",
     title: "Refund dalam karantina",

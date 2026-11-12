@@ -110,6 +110,7 @@ function CustomerDisplayContent() {
     paying &&
     (display.isError ||
       (state.qris !== null && isQrisExpired(state.qris, now)));
+  const paid = state.state === "paid";
   const remaining = displayBalance(state).remainingIdr;
   return (
     <div className="flex h-full flex-col gap-4">
@@ -147,11 +148,21 @@ function CustomerDisplayContent() {
             </div>
             <BillLines lines={state.lines} />
           </section>
-          {paying && <BillTotals state={state} unverified={unverified} />}
+          {(paying || paid) && (
+            <BillTotals state={state} unverified={unverified} />
+          )}
         </div>
-        <aside className="grid min-w-0 gap-4">
-          {!paying && <BillTotals state={state} />}
-          {state.state === "paid" ? (
+        {/* Paid: the confirmation leads the page (first on narrow screens too),
+            the bill details stay under the lines. */}
+        <aside
+          className={
+            paid
+              ? "order-first grid min-w-0 gap-4 lg:order-none"
+              : "grid min-w-0 gap-4"
+          }
+        >
+          {!paying && !paid && <BillTotals state={state} />}
+          {paid ? (
             <PaidPanel state={state} />
           ) : paying && display.isError ? (
             <QrisStatusPanel kind="error" amountIdr={remaining} />

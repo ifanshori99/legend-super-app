@@ -18,17 +18,22 @@ export function heldTotalIdr(items: readonly { amountIdr: number }[]): number {
 }
 
 /**
- * Book variance = physical variance + held cash out (-20.000 + 200.000 =
- * +180.000). Held cash out was paid from the drawer but is not in the system
- * figure yet, so the supervisor sees both numbers.
+ * Booked difference at close, mirroring `pos-shift.service.ts` (legend-y9bf):
+ * `(closed.varianceIdr ?? 0) + heldCorrectionIdr`. Held cash outs and drops
+ * are NOT added: they expire at close and are never booked. Only the held
+ * refund and void cash (`heldCorrectionIdr`) is.
  */
 export function bookVarianceIdr(
   physicalVarianceIdr: number,
-  heldIdr: number,
+  heldCorrectionIdr: number,
 ): number {
-  if (!isWhole(physicalVarianceIdr) || !isWhole(heldIdr) || heldIdr < 0)
-    throw new RangeError("Selisih dan kas keluar harus rupiah utuh.");
-  return physicalVarianceIdr + heldIdr;
+  if (
+    !isWhole(physicalVarianceIdr) ||
+    !isWhole(heldCorrectionIdr) ||
+    heldCorrectionIdr < 0
+  )
+    throw new RangeError("Selisih dan koreksi tertahan harus rupiah utuh.");
+  return physicalVarianceIdr + heldCorrectionIdr;
 }
 
 /** The cashier has no recount left after `SHIFT_CASHIER_COUNT_LIMIT` counts. */

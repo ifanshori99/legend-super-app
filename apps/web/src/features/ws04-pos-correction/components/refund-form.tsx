@@ -211,6 +211,7 @@ export function RefundForm({ order, switcher }: Props) {
             autoComplete="off"
             value={amountText}
             placeholder="0"
+            disabled={refund.uncertain}
             onChange={(event) => {
               const digits = parseDigits(event.target.value);
               setAmountText(digits === 0 ? "" : String(digits));
@@ -224,6 +225,7 @@ export function RefundForm({ order, switcher }: Props) {
           value={reason}
           onChange={setReason}
           options={REFUND_REASON_OPTIONS}
+          disabled={refund.uncertain}
         />
         <FormField
           label={t("posCorrection.refund.noteLabel")}
@@ -234,6 +236,7 @@ export function RefundForm({ order, switcher }: Props) {
             rows={2}
             value={note}
             maxLength={500}
+            disabled={refund.uncertain}
             onChange={(event) => setNote(event.target.value)}
             onBlur={() => setTouched(true)}
           />
@@ -241,7 +244,15 @@ export function RefundForm({ order, switcher }: Props) {
         <p className="text-sm text-muted-foreground">
           {t("posCorrection.refund.hint")}
         </p>
-        {refund.isError && !dialogOpen && (
+        {refund.uncertain && (
+          <Notice
+            tone="danger"
+            title={t("posCorrection.refund.uncertainTitle")}
+          >
+            {t("posCorrection.refund.uncertainBody")}
+          </Notice>
+        )}
+        {refund.isError && !refund.uncertain && !dialogOpen && (
           <Notice
             tone="danger"
             title={t("posCorrection.state.submitErrorTitle")}
@@ -274,12 +285,14 @@ export function RefundForm({ order, switcher }: Props) {
         onSubmit={submit}
         pending={refund.isPending}
         error={
-          refund.isError
-            ? correctionErrorText(
-                refund.error,
-                t("posCorrection.approval.failed"),
-              )
-            : null
+          refund.uncertain
+            ? t("posCorrection.refund.uncertainBody")
+            : refund.isError
+              ? correctionErrorText(
+                  refund.error,
+                  t("posCorrection.approval.failed"),
+                )
+              : null
         }
       />
     </>

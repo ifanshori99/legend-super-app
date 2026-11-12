@@ -107,9 +107,11 @@ export function displayBalance(
     return {
       depositIdr: 0,
       capturedIdr,
-      remainingIdr: Math.min(
-        Number(state.totalIdr),
-        Number(state.qris.amountIdr),
+      // Clamped to 0..total: a bad QRIS amount never shows more than the bill
+      // or a negative balance.
+      remainingIdr: Math.max(
+        0,
+        Math.min(Number(state.totalIdr), Number(state.qris.amountIdr)),
       ),
     };
   return { depositIdr: 0, capturedIdr, remainingIdr: null };

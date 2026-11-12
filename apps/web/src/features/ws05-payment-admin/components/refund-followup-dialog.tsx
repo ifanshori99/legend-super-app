@@ -41,6 +41,7 @@ import {
   type RefundUiState,
 } from "../refund-actions.ts";
 import { useAttemptKey } from "../use-attempt-key.ts";
+import { ApiError } from "../../../lib/api/errors.ts";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const P = "paymentAdmin.refundFollowup";
@@ -87,10 +88,22 @@ export function RefundFollowupDialog({
   const [quarantine, setQuarantine] = React.useState<
     "release" | "reopen" | null
   >(null);
+  // The API answered 409 REFUND_PAYOUT_MAYBE_SENT: it knows of a payout try the
+  // view cannot show (payoutPendingPolls is not in RefundView). Release and
+  // re-open stay hidden; only the provider lookup is safe.
+  const [serverMaybeSent, setServerMaybeSent] = React.useState(false);
 
   if (!refund) return null;
   const state = refundUiState(refund);
-  const actions = refundActions(refund);
+  const baseActions = refundActions(refund);
+  const actions = serverMaybeSent
+    ? {
+        ...baseActions,
+        release: false,
+        reopen: false,
+        checkStatus: baseActions.checkStatus || state === "quarantined",
+      }
+    : baseActions;
   const tone = refundUiTone(state);
   const failure = refundFailureKey(refund);
   const lastError = refund.lastPayoutError ?? null;
@@ -175,6 +188,19 @@ export function RefundFollowupDialog({
             {noticeBody && <p className="text-sm leading-5">{noticeBody}</p>}
           </div>
 
+          {serverMaybeSent && (
+            <div
+              role="alert"
+              className={cn(
+                "grid gap-1 rounded-control border-(length:--border-w) p-card",
+                NOTICE_TONE.warning,
+              )}
+            >
+              <p className="font-semibold">{t(key("maybeSent.title"))}</p>
+              <p className="text-sm leading-5">{t(key("maybeSent.body"))}</p>
+            </div>
+          )}
+
           <DialogFooter className="flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <Button type="button" variant="outline" onClick={onClose}>
               {t(key("action.close"))}
@@ -236,6 +262,10 @@ export function RefundFollowupDialog({
           refund={refund}
           action={quarantine}
           onClose={() => setQuarantine(null)}
+          onMaybeSent={() => {
+            setServerMaybeSent(true);
+            setQuarantine(null);
+          }}
         />
       )}
     </>
@@ -398,10 +428,13 @@ function QuarantineActionDialog({
   refund,
   action,
   onClose,
+  onMaybeSent,
 }: {
   refund: RefundView;
   action: "release" | "reopen";
   onClose: () => void;
+  /** The API says the payout may have been sent: the parent hides this action. */
+  onMaybeSent: () => void;
 }) {
   const t = useT();
   const toast = useToast();
@@ -429,7 +462,17 @@ function QuarantineActionDialog({
           toast({ title: t(key(`${action}.done`)) });
           onClose();
         },
-        onError: (cause) => setError(cause.message),
+        onError: (cause) => {
+          if (
+            cause instanceof ApiError &&
+            cause.status === 409 &&
+            cause.code === "REFUND_PAYOUT_MAYBE_SENT"
+          ) {
+            onMaybeSent();
+            return;
+          }
+          setError(cause.message);
+        },
       },
     );
   };

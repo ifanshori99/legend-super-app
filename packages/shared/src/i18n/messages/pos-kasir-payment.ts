@@ -109,5 +109,8 @@ export const posKasirPaymentMessages = {
     printFailedTitle: "Struk belum tercetak",
     printFailedHint:
       "Pembayaran tetap lunas. Periksa printer lalu cetak ulang.",
+    completeFailedTitle: "Pesanan belum bisa diselesaikan",
+    completeFailedHint:
+      "Struk belum dicetak dan pesanan masih terbuka. Periksa pesanan (misalnya item yang masih ditahan), lalu coba lagi.",
   },
 };

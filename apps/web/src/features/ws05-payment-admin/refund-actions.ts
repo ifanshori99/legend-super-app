@@ -65,7 +65,13 @@ export function needsEvidenceMapping(v: RefundView): boolean {
   );
 }
 
-/** An earlier attempt may have reached the provider (API `maybeSentOf`). */
+/**
+ * An earlier attempt may have reached the provider (API `maybeSentOf`).
+ * Contract gap: the API also counts `payoutPendingPolls > 0`, but RefundView
+ * does not carry it, so a pending-poll-only refund reads as never sent here.
+ * The server still answers 409 REFUND_PAYOUT_MAYBE_SENT and the dialog then
+ * hides release/reopen.
+ */
 function maybeSent(v: RefundView): boolean {
   return (
     (v.payoutAttempts ?? 0) > 0 ||

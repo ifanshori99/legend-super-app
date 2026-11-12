@@ -976,3 +976,491 @@ describe("I1 correction-logic: discountPreview", () => {
     }
   });
 });
+
+// ====================================================================
+// Audit fix (brief sub-539-u2-audit-fix, T2). Money rule: no party is paid
+// more than was paid in, and an uncertain result is never retried as a new
+// request. Tests for E/F target helpers or signatures
+// that the E/F fixes add; they were written from the brief, then aligned to
+// the signatures the coordinator reported.
+// ====================================================================
+
+// ---------------------------------------------------------------- I1 refundableIdr / refundAmountIssue
+describe("I1 correction-logic: refundableIdr", () => {
+  test("paid minus already refunded", async () => {
+    const { refundableIdr } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    assert.equal(refundableIdr({ paidIdr: 100000, refundedIdr: 30000 }), 70000);
+    assert.equal(refundableIdr({ paidIdr: 100000, refundedIdr: 0 }), 100000);
+  });
+
+  test("fully refunded leaves nothing", async () => {
+    const { refundableIdr } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    assert.equal(refundableIdr({ paidIdr: 100000, refundedIdr: 100000 }), 0);
+  });
+
+  test("never negative and never above what was paid", async () => {
+    const { refundableIdr } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    assert.equal(refundableIdr({ paidIdr: 50000, refundedIdr: 80000 }), 0);
+    for (const paidIdr of [0, 1, 50000, 999999]) {
+      for (const refundedIdr of [0, 1, 25000, 999999, 2000000]) {
+        const r = refundableIdr({ paidIdr, refundedIdr });
+        assert.ok(Number.isInteger(r) && r >= 0 && r <= paidIdr);
+      }
+    }
+  });
+
+  test("fractional or negative input throws RangeError", async () => {
+    const { refundableIdr } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    assert.throws(
+      () => refundableIdr({ paidIdr: 100.5, refundedIdr: 0 }),
+      RangeError,
+    );
+    assert.throws(
+      () => refundableIdr({ paidIdr: 100, refundedIdr: -1 }),
+      RangeError,
+    );
+  });
+});
+
+describe("I1 correction-logic: refundAmountIssue", () => {
+  test("an amount within what is available is allowed (up to the exact limit)", async () => {
+    const { refundAmountIssue } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    assert.equal(
+      refundAmountIssue({ amountIdr: 50000, availableIdr: 100000 }),
+      null,
+    );
+    assert.equal(
+      refundAmountIssue({ amountIdr: 100000, availableIdr: 100000 }),
+      null,
+    );
+  });
+
+  test("one rupiah above what is available is over (never more than total paid)", async () => {
+    const { refundAmountIssue } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    assert.equal(
+      refundAmountIssue({ amountIdr: 100001, availableIdr: 100000 }),
+      "over",
+    );
+    assert.equal(refundAmountIssue({ amountIdr: 1, availableIdr: 0 }), "over");
+  });
+
+  test("empty, zero, negative or fractional amounts are 'empty'", async () => {
+    const { refundAmountIssue } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    for (const amountIdr of [null, 0, -5000, 1000.5, Number.NaN]) {
+      assert.equal(
+        refundAmountIssue({ amountIdr, availableIdr: 100000 }),
+        "empty",
+        String(amountIdr),
+      );
+    }
+  });
+
+  test("combined with refundableIdr: an amount above the cap is never allowed", async () => {
+    const { refundAmountIssue, refundableIdr } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    const availableIdr = refundableIdr({ paidIdr: 100000, refundedIdr: 40000 });
+    assert.equal(refundAmountIssue({ amountIdr: 60000, availableIdr }), null);
+    assert.equal(refundAmountIssue({ amountIdr: 60001, availableIdr }), "over");
+  });
+});
+
+// ---------------------------------------------------------------- I1 percent discount / approval
+describe("I1 correction-logic: percentDiscountIdr (floor)", () => {
+  test("a whole result is exact", async () => {
+    const { percentDiscountIdr } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    assert.equal(
+      percentDiscountIdr({ subtotalIdr: 200000, percentBp: 1000 }),
+      20000,
+    );
+  });
+
+  test("fractions round DOWN, never up (outlet never gives more than the percent)", async () => {
+    const { percentDiscountIdr } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    // 100001 * 10% = 10000.1 -> 10000
+    assert.equal(
+      percentDiscountIdr({ subtotalIdr: 100001, percentBp: 1000 }),
+      10000,
+    );
+    // 999 * 12.5% = 124.875 -> 124 (not 125)
+    assert.equal(
+      percentDiscountIdr({ subtotalIdr: 999, percentBp: 1250 }),
+      124,
+    );
+    // 1 * 99.99% = 0.9999 -> 0
+    assert.equal(percentDiscountIdr({ subtotalIdr: 1, percentBp: 9999 }), 0);
+  });
+
+  test("0 percent gives 0 and 100 percent gives the whole subtotal; above 100 is capped", async () => {
+    const { percentDiscountIdr } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    assert.equal(percentDiscountIdr({ subtotalIdr: 50000, percentBp: 0 }), 0);
+    assert.equal(
+      percentDiscountIdr({ subtotalIdr: 50000, percentBp: 10000 }),
+      50000,
+    );
+    assert.equal(
+      percentDiscountIdr({ subtotalIdr: 50000, percentBp: 15000 }),
+      50000,
+    );
+  });
+
+  test("result is an integer between 0 and the subtotal over a grid", async () => {
+    const { percentDiscountIdr } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    for (const subtotalIdr of [0, 1, 333, 99999, 123457]) {
+      for (const percentBp of [0, 1, 750, 3333, 9999, 10000]) {
+        const r = percentDiscountIdr({ subtotalIdr, percentBp });
+        assert.ok(Number.isInteger(r) && r >= 0 && r <= subtotalIdr);
+        assert.ok(r * 10000 <= subtotalIdr * percentBp, "never rounds up");
+      }
+    }
+  });
+});
+
+describe("I1 correction-logic: discountNeedsApproval (cumulative manual discount)", () => {
+  // The caller passes existing manual discounts + the new one as discountIdr
+  // (the server sums them, per the audit brief E2). Threshold 1000bp of
+  // 200000 = 20000.
+  test("exactly at the threshold needs no approval; one rupiah above does", async () => {
+    const { discountNeedsApproval } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    const base = { subtotalIdr: 200000, thresholdBp: 1000 };
+    assert.equal(discountNeedsApproval({ ...base, discountIdr: 20000 }), false);
+    assert.equal(discountNeedsApproval({ ...base, discountIdr: 20001 }), true);
+  });
+
+  test("two small discounts that add up above the threshold need approval", async () => {
+    const { discountNeedsApproval } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    const base = { subtotalIdr: 200000, thresholdBp: 1000 };
+    const existingManualIdr = 15000;
+    const proposedIdr = 10000;
+    assert.equal(
+      discountNeedsApproval({ ...base, discountIdr: proposedIdr }),
+      false,
+      "the new discount alone is under the threshold",
+    );
+    assert.equal(
+      discountNeedsApproval({
+        ...base,
+        discountIdr: existingManualIdr + proposedIdr,
+      }),
+      true,
+      "cumulative 25000 is above 20000",
+    );
+  });
+
+  test("zero discount never needs approval; zero threshold needs it for any discount", async () => {
+    const { discountNeedsApproval } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    assert.equal(
+      discountNeedsApproval({
+        subtotalIdr: 200000,
+        discountIdr: 0,
+        thresholdBp: 1000,
+      }),
+      false,
+    );
+    assert.equal(
+      discountNeedsApproval({
+        subtotalIdr: 200000,
+        discountIdr: 1,
+        thresholdBp: 0,
+      }),
+      true,
+    );
+  });
+});
+
+// ---------------------------------------------------------------- I2 chargeFailureKind
+describe("I2 charge-logic: chargeFailureKind", () => {
+  test("network drop (0), timeout (408), conflict (409) and every 5xx are uncertain", async () => {
+    const { chargeFailureKind } = await load(
+      "ws04-pos-order-detail/charge-logic.ts",
+    );
+    for (const status of [0, 408, 409, 500, 502, 503, 504, 599]) {
+      assert.equal(chargeFailureKind(status), "unknown", String(status));
+    }
+  });
+
+  test("a definite refusal (4xx other than 408/409) is a plain failure", async () => {
+    const { chargeFailureKind } = await load(
+      "ws04-pos-order-detail/charge-logic.ts",
+    );
+    for (const status of [400, 401, 403, 404, 410, 422, 429]) {
+      assert.equal(chargeFailureKind(status), "failed", String(status));
+    }
+  });
+});
+
+// ---------------------------------------------------------------- I1 correction idempotency after an uncertain failure
+// Signatures (from the E fix): correctionFailureKind(status) is "uncertain" for
+// 0, 408, 409 and >= 500, else "rejected";
+// nextIdempotencyKey(prev {fingerprint,key} | null, fingerprint, lastFailure,
+// makeKey) keeps prev when the fingerprint is the same or the last failure was
+// uncertain, otherwise returns { fingerprint, key: makeKey() }.
+describe("I1 correction-logic: correctionFailureKind", () => {
+  test("network drop (0), timeout (408), conflict (409) and every 5xx are uncertain", async () => {
+    const { correctionFailureKind } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    for (const status of [0, 408, 409, 500, 502, 503, 504, 599]) {
+      assert.equal(correctionFailureKind(status), "uncertain", String(status));
+    }
+  });
+
+  test("a definite 4xx refusal is rejected", async () => {
+    const { correctionFailureKind } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    for (const status of [400, 401, 403, 404, 410, 422, 429]) {
+      assert.equal(correctionFailureKind(status), "rejected", String(status));
+    }
+  });
+});
+
+describe("I1 correction-logic: nextIdempotencyKey", () => {
+  const counter = () => {
+    let n = 0;
+    return () => `key-${++n}`;
+  };
+
+  test("first send makes a new key for the form", async () => {
+    const { nextIdempotencyKey } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    assert.deepEqual(nextIdempotencyKey(null, "a", null, counter()), {
+      fingerprint: "a",
+      key: "key-1",
+    });
+  });
+
+  test("same form resent keeps its key and does not mint a new one", async () => {
+    const { nextIdempotencyKey } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    const prev = { fingerprint: "a", key: "key-0" };
+    let minted = 0;
+    const makeKey = () => `key-${++minted}`;
+    for (const lastFailure of [null, "uncertain", "rejected"]) {
+      assert.equal(nextIdempotencyKey(prev, "a", lastFailure, makeKey), prev);
+    }
+    assert.equal(minted, 0);
+  });
+
+  test("after an UNCERTAIN failure an edited form keeps the SAME key (no second refund)", async () => {
+    const { nextIdempotencyKey } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    const prev = { fingerprint: "amount=50000;note=a", key: "key-0" };
+    const next = nextIdempotencyKey(
+      prev,
+      "amount=50000;note=edited",
+      "uncertain",
+      counter(),
+    );
+    assert.equal(next.key, "key-0");
+  });
+
+  test("after a definite rejection an edited form gets a new key", async () => {
+    const { nextIdempotencyKey } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    const prev = { fingerprint: "a", key: "key-0" };
+    assert.deepEqual(nextIdempotencyKey(prev, "b", "rejected", counter()), {
+      fingerprint: "b",
+      key: "key-1",
+    });
+  });
+
+  test("a changed form with no failure yet gets a new key", async () => {
+    const { nextIdempotencyKey } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    const prev = { fingerprint: "a", key: "key-0" };
+    assert.equal(nextIdempotencyKey(prev, "b", null, counter()).key, "key-1");
+  });
+
+  test("end to end: statuses map to the key outcome for an edited resend", async () => {
+    const { correctionFailureKind, nextIdempotencyKey } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    const prev = { fingerprint: "a", key: "key-0" };
+    for (const status of [0, 408, 409, 500, 503]) {
+      const next = nextIdempotencyKey(
+        prev,
+        "b",
+        correctionFailureKind(status),
+        counter(),
+      );
+      assert.equal(next.key, "key-0", `status ${status}`);
+    }
+    for (const status of [400, 403, 404, 422]) {
+      const next = nextIdempotencyKey(
+        prev,
+        "b",
+        correctionFailureKind(status),
+        counter(),
+      );
+      assert.notEqual(next.key, "key-0", `status ${status}`);
+    }
+  });
+
+  test("the key stays across repeated uncertain failures", async () => {
+    const { nextIdempotencyKey } = await load(
+      "ws04-pos-correction/correction-logic.ts",
+    );
+    let intent = nextIdempotencyKey(null, "a", null, counter());
+    const first = intent.key;
+    for (const fingerprint of ["b", "c", "a", "d"]) {
+      intent = nextIdempotencyKey(intent, fingerprint, "uncertain", counter());
+    }
+    assert.equal(intent.key, first);
+  });
+});
+
+// ---------------------------------------------------------------- I4 displayBalance
+describe("I4 display lib: displayBalance", () => {
+  const display = (overrides = {}) => ({
+    state: "awaiting_payment",
+    totalIdr: "100000",
+    qris: null,
+    tenders: [],
+    ...overrides,
+  });
+
+  test("paid: nothing remaining", async () => {
+    const { displayBalance } = await load("ws04-display/lib.ts");
+    const b = displayBalance(
+      display({
+        state: "paid",
+        tenders: [{ method: "cash", amountIdr: "100000" }],
+      }),
+    );
+    assert.equal(b.remainingIdr, 0);
+    assert.equal(b.capturedIdr, 100000);
+  });
+
+  test("QRIS amount below the total shows that amount as remaining", async () => {
+    const { displayBalance } = await load("ws04-display/lib.ts");
+    const b = displayBalance(
+      display({ qris: { amountIdr: "40000" }, tenders: [] }),
+    );
+    assert.equal(b.remainingIdr, 40000);
+  });
+
+  test("remaining is never above the total, even if the QRIS amount is", async () => {
+    const { displayBalance } = await load("ws04-display/lib.ts");
+    const b = displayBalance(display({ qris: { amountIdr: "250000" } }));
+    assert.equal(b.remainingIdr, 100000);
+  });
+
+  test("remaining is never negative, even for a bad QRIS amount", async () => {
+    const { displayBalance } = await load("ws04-display/lib.ts");
+    const b = displayBalance(display({ qris: { amountIdr: "-5000" } }));
+    assert.ok(b.remainingIdr === null || b.remainingIdr >= 0);
+  });
+
+  test("amount not known yet: null, never a guessed smaller number", async () => {
+    const { displayBalance } = await load("ws04-display/lib.ts");
+    assert.equal(displayBalance(display()).remainingIdr, null);
+    assert.equal(
+      displayBalance(display({ state: "building" })).remainingIdr,
+      null,
+    );
+  });
+
+  test("captured tenders are summed; deposit is 0 (display has no deposit field)", async () => {
+    const { displayBalance } = await load("ws04-display/lib.ts");
+    const b = displayBalance(
+      display({
+        tenders: [
+          { method: "cash", amountIdr: "30000" },
+          { method: "qris", amountIdr: "20000" },
+        ],
+      }),
+    );
+    assert.equal(b.capturedIdr, 50000);
+    assert.equal(b.depositIdr, 0);
+  });
+});
+
+// ---------------------------------------------------------------- I5 bookVarianceIdr
+// Booked variance mirrors the API: physical variance + held correction
+// (held refund/void cash). Held CASH-OUT expires at close and is never added
+// (coordinator note: bookVarianceIdr(physicalVarianceIdr, heldCorrectionIdr)).
+describe("I5 shift-extra-logic: bookVarianceIdr", () => {
+  test("no held correction: booked variance is the physical variance", async () => {
+    const { bookVarianceIdr } = await load(
+      "ws04-pos-kasir/shift-extra-logic.ts",
+    );
+    assert.equal(bookVarianceIdr(-20000, 0), -20000);
+    assert.equal(bookVarianceIdr(15000, 0), 15000);
+    assert.equal(bookVarianceIdr(0, 0), 0);
+  });
+
+  test("held correction is added to the physical variance", async () => {
+    const { bookVarianceIdr } = await load(
+      "ws04-pos-kasir/shift-extra-logic.ts",
+    );
+    assert.equal(bookVarianceIdr(-20000, 5000), -15000);
+  });
+
+  test("held cash-out is not an input: -20000 with 200000 held cash-out books -20000, not +180000", async () => {
+    const { bookVarianceIdr, heldTotalIdr } = await load(
+      "ws04-pos-kasir/shift-extra-logic.ts",
+    );
+    const heldCashOutIdr = heldTotalIdr([{ amountIdr: 200000 }]);
+    assert.equal(heldCashOutIdr, 200000);
+    // Contract has no held correction yet: it is taken as 0, not the cash-out.
+    assert.equal(bookVarianceIdr(-20000, 0), -20000);
+    assert.notEqual(bookVarianceIdr(-20000, 0), -20000 + heldCashOutIdr);
+  });
+
+  test("a shortage with no held correction stays a shortage", async () => {
+    const { bookVarianceIdr } = await load(
+      "ws04-pos-kasir/shift-extra-logic.ts",
+    );
+    assert.ok(bookVarianceIdr(-50000, 0) < 0);
+  });
+
+  test("fractional or negative held correction throws RangeError", async () => {
+    const { bookVarianceIdr } = await load(
+      "ws04-pos-kasir/shift-extra-logic.ts",
+    );
+    assert.throws(() => bookVarianceIdr(100.5, 0), RangeError);
+    assert.throws(() => bookVarianceIdr(100, -1), RangeError);
+  });
+});
+
+// ---------------------------------------------------------------- I4 sessionFromOrder / printReceipt
+// SKIPPED on purpose: `sessionFromOrder` is not exported and `printReceipt`
+// lives in ws04-pos-kasir/api.ts, which imports `@/lib/api/*` (path alias) and
+// the typed client, so plain Node cannot load it without a bundler/DOM stub.
+// The DP arithmetic they use is covered above by remainingToPayIdr and
+// isSettledByDeposit ("DP lunas"). "Complete the order only when remaining is
+// 0" needs a browser/e2e or vitest-with-alias test, not this suite.

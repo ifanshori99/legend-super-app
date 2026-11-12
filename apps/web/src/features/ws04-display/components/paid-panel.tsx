@@ -26,6 +26,7 @@ export function PaidPanel({ state }: { state: CustomerDisplayState }) {
           ? t("posDisplay.paid.receivedMethod", { method: methodLabel })
           : t("posDisplay.paid.received")}
       </p>
+      {capturedIdr > 0 && <Money amount={capturedIdr} size="stat" />}
       {depositIdr > 0 && (
         // The deposit plus what was captured is the whole bill: the customer
         // sees that nothing was charged twice.

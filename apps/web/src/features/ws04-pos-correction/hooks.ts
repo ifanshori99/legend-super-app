@@ -6,13 +6,18 @@
 // one mutation, so the PIN never outlives the call. One idempotency key per
 // intent: the same input keeps its key until it succeeds, so a retry after a
 // timeout or a double tap is recorded once (a changed input is a new intent).
-import { useRef } from "react";
+// A discount or refund whose answer never arrived (status 0, 408, 409, 5xx) is
+// UNCERTAIN: the key then stays even when the input changes, the order is
+// re-read and the screen locks its form, so one intent is never recorded twice.
+// Only a definite 4xx refusal frees the key.
+import { useRef, useState } from "react";
 import {
   useMutation,
   useQuery,
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
+import { ApiError } from "@/lib/api/client";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useTenantContext } from "@/lib/tenant-context";
 import { requestOverride } from "../ws04-pos-kasir/api";
@@ -28,6 +33,12 @@ import {
   type RefundInput,
   type VoidItemInput,
 } from "./api";
+import {
+  correctionFailureKind,
+  nextIdempotencyKey,
+  type CorrectionFailureKind,
+  type IntentKey,
+} from "./correction-logic";
 import {
   correctionOrderQuery,
   correctionPolicyQuery,
@@ -47,19 +58,47 @@ function useReady(): boolean {
 }
 
 function useIntentKey(prefix: string) {
-  const current = useRef<{ fingerprint: string; key: string } | null>(null);
+  const current = useRef<IntentKey | null>(null);
+  const lastFailure = useRef<CorrectionFailureKind | null>(null);
+  // True between a send and its answer: an override that fails before the
+  // correction is sent recorded nothing and must not lock the form.
+  const sent = useRef(false);
+  const [uncertain, setUncertain] = useState(false);
   return {
+    /** The last send ended with an unknown result; the form stays locked. */
+    uncertain,
     keyFor(input: unknown): string {
-      const fingerprint = JSON.stringify(input);
-      if (current.current?.fingerprint !== fingerprint)
-        current.current = {
-          fingerprint,
-          key: `${prefix}:${globalThis.crypto.randomUUID()}`,
-        };
+      sent.current = true;
+      current.current = nextIdempotencyKey(
+        current.current,
+        JSON.stringify(input),
+        lastFailure.current,
+        () => `${prefix}:${globalThis.crypto.randomUUID()}`,
+      );
       return current.current.key;
+    },
+    /**
+     * A failed send. UNCERTAIN keeps the key and locks the form; a definite
+     * rejection drops the key so the next try is a new intent. Returns true
+     * when the result is uncertain.
+     */
+    fail(error: unknown): boolean {
+      if (!sent.current) return false;
+      sent.current = false;
+      const kind =
+        error instanceof ApiError
+          ? correctionFailureKind(error.status)
+          : "uncertain";
+      lastFailure.current = kind === "uncertain" ? kind : null;
+      if (kind === "rejected") current.current = null;
+      setUncertain(kind === "uncertain");
+      return kind === "uncertain";
     },
     clear() {
       current.current = null;
+      lastFailure.current = null;
+      sent.current = false;
+      setUncertain(false);
     },
   };
 }
@@ -138,7 +177,7 @@ export function useApplyDiscount() {
   const outletId = useOutletId();
   const queryClient = useQueryClient();
   const intent = useIntentKey("pos-discount");
-  return useMutation({
+  const mutation = useMutation({
     mutationFn: async (variables: {
       input: Omit<ApplyDiscountInput, "approval">;
       approval?: ApprovalRequest;
@@ -156,7 +195,12 @@ export function useApplyDiscount() {
       intent.clear();
       refreshOrder(queryClient, outletId, variables.input.orderId);
     },
+    onError: (error, variables) => {
+      if (intent.fail(error))
+        refreshOrder(queryClient, outletId, variables.input.orderId);
+    },
   });
+  return { ...mutation, uncertain: intent.uncertain };
 }
 
 export function useVoidItem() {
@@ -186,7 +230,7 @@ export function useRefund() {
   const outletId = useOutletId();
   const queryClient = useQueryClient();
   const intent = useIntentKey("pos-refund");
-  return useMutation({
+  const mutation = useMutation({
     mutationFn: async (variables: {
       input: Omit<RefundInput, "approval">;
       approval: ApprovalRequest;
@@ -202,7 +246,12 @@ export function useRefund() {
       intent.clear();
       refreshOrder(queryClient, outletId, variables.input.orderId);
     },
+    onError: (error, variables) => {
+      if (intent.fail(error))
+        refreshOrder(queryClient, outletId, variables.input.orderId);
+    },
   });
+  return { ...mutation, uncertain: intent.uncertain };
 }
 
 // ---- Receipt ---------------------------------------------------------------

@@ -68,6 +68,9 @@ export const posCorrectionMessages = {
     hint: "Diskon di atas ambang memerlukan persetujuan supervisor.",
     percentLabel: "Persen diskon",
     percentPlaceholder: "10",
+    uncertainTitle: "Hasil diskon belum pasti",
+    uncertainBody:
+      "Hasil diskon belum pasti. Cek diskon pada pesanan sebelum mengajukan lagi. Isian dikunci; mengirim ulang memakai kunci yang sama sehingga diskon tidak tercatat dua kali.",
     percentHint:
       "Server menghitung nominalnya dari subtotal, dibulatkan ke bawah.",
     percentInvalid:
@@ -137,6 +140,9 @@ export const posCorrectionMessages = {
       "Refund {amount} untuk pesanan #{orderNo} dikembalikan lewat metode bayar asal.",
     approvalSummary: "Refund {amount} · Pesanan #{orderNo}",
     approvalTitle: "Persetujuan refund",
+    uncertainTitle: "Hasil refund belum pasti",
+    uncertainBody:
+      "Hasil refund belum pasti. Cek riwayat refund sebelum mengajukan lagi. Isian dikunci; mengirim ulang memakai kunci yang sama sehingga refund tidak tercatat dua kali.",
   },
   approval: {
     supervisorLabel: "Supervisor penyetuju",

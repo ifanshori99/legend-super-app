@@ -248,6 +248,7 @@ export function DiscountForm({
             autoComplete="off"
             value={percentText}
             placeholder={t("posCorrection.discount.percentPlaceholder")}
+            disabled={apply.uncertain}
             onChange={(event) => setPercentText(event.target.value)}
             onBlur={() => setTouched(true)}
           />
@@ -264,6 +265,7 @@ export function DiscountForm({
           value={reason}
           onChange={setReason}
           options={DISCOUNT_REASON_OPTIONS}
+          disabled={apply.uncertain}
         />
         {needsApproval ? (
           <Notice
@@ -277,7 +279,15 @@ export function DiscountForm({
             {t("posCorrection.discount.belowBody")}
           </Notice>
         )}
-        {apply.isError && !dialogOpen && (
+        {apply.uncertain && (
+          <Notice
+            tone="danger"
+            title={t("posCorrection.discount.uncertainTitle")}
+          >
+            {t("posCorrection.discount.uncertainBody")}
+          </Notice>
+        )}
+        {apply.isError && !apply.uncertain && !dialogOpen && (
           <Notice
             tone="danger"
             title={t("posCorrection.state.submitErrorTitle")}
@@ -314,12 +324,14 @@ export function DiscountForm({
         onSubmit={submit}
         pending={apply.isPending}
         error={
-          apply.isError
-            ? correctionErrorText(
-                apply.error,
-                t("posCorrection.approval.failed"),
-              )
-            : null
+          apply.uncertain
+            ? t("posCorrection.discount.uncertainBody")
+            : apply.isError
+              ? correctionErrorText(
+                  apply.error,
+                  t("posCorrection.approval.failed"),
+                )
+              : null
         }
       />
     </>

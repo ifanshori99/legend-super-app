@@ -60,15 +60,18 @@ export async function fetchHeldCashOuts(
   const totalHeldIdr = items.reduce((sum, item) => sum + item.amountIdr, 0);
   const latest = [...counts.data].sort((a, b) => b.sequence - a.sequence)[0];
   const physicalVarianceIdr = latest ? Number(latest.varianceIdr) : null;
+  // Gap: the held refund and void cash is not in the contract, so 0.
+  const heldCorrectionIdr = 0;
   return {
     shiftId,
     items,
     totalHeldIdr,
     physicalVarianceIdr,
+    heldCorrectionIdr,
     bookVarianceIdr:
       physicalVarianceIdr === null
         ? null
-        : bookVarianceIdr(physicalVarianceIdr, totalHeldIdr),
+        : bookVarianceIdr(physicalVarianceIdr, heldCorrectionIdr),
     // The count DTO has no `forced` flag (gap): every stored count is counted.
     cashierCounts: counts.data.length,
     limitReached: countLimitReached(counts.data.length),
