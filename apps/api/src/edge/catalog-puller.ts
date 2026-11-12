@@ -35,6 +35,12 @@
 //   the cursor error): one more pull of that stream from the start.
 // - Read only: nothing here writes to the cloud. Errors carry codes, never
 //   record data.
+// - Promotions/vouchers fail closed while a pull is incomplete. Their cursor
+//   still advances page by page, but freshness is invalidated durably with
+//   the first page that has more to come and only restored after a complete
+//   stream (including empty), and also when a fetched page is rejected. A
+//   transport failure before any page arrives (offline) leaves the last success
+//   time alone: uncapped promos live to the 24 h limit.
 import {
   CATALOG_PROTOCOL_MIN_VERSION,
   CATALOG_PROTOCOL_VERSION,
@@ -63,6 +69,10 @@ import {
   type DeferredCategoryParent,
 } from "../services/edge-catalog-apply.ts";
 import { EdgeCloudHttpError } from "./cloud-http.ts";
+import {
+  completePromoCatalogStream,
+  markPromoCatalogStreamPending,
+} from "./promo-gate.ts";
 
 type Database = typeof db;
 
@@ -80,7 +90,12 @@ const PARENT_STREAMS: Readonly<
   menu_items: ["stations"],
   modifiers: ["stations"],
   recipes: ["inventory_items"],
+  vouchers: ["promotions"],
 };
+
+const PROMO_INVALIDATED_AT = new Date(0);
+const isPromoStream = (stream: CatalogSyncStream): boolean =>
+  stream === "promotions" || stream === "vouchers";
 
 /** Key of a stream's row in `edge_pull_checkpoints` (varchar(40)). */
 export function catalogCheckpointStream(
@@ -131,7 +146,8 @@ export type CatalogStreamPullResult = Omit<
   readonly backlog: boolean;
   /**
    * When the last page of this pull was stored (the checkpoint's
-   * `last_success_at`); null when no page was stored.
+   * `last_success_at`); null when no page was stored, or when a discount
+   * stream has only stored partial pages.
    */
   readonly lastSuccessAt: Date | null;
   /** Set when the stream stopped early; its checkpoint is the last applied page. */
@@ -172,16 +188,23 @@ function isCurrentCursor(cursor: string): boolean {
   }
 }
 
-/** No row yet (first boot) or a cursor of another tag is null: pull from the start. */
+/**
+ * No row yet (first boot) or a cursor of another tag gives a null cursor: pull
+ * from the start. `unfinished` is true when the row was closed by an earlier
+ * promo sync that did not reach its end (epoch success time).
+ */
 async function loadCatalogCheckpoint(
   database: Database,
   context: ScopedTenantContext,
   edgeNodeId: string,
   stream: CatalogSyncStream,
-): Promise<string | null> {
+): Promise<{ cursor: string | null; unfinished: boolean }> {
   const [row] = await withTenant(database, context, (tx) =>
     tx
-      .select({ watermark: edgePullCheckpoints.watermark })
+      .select({
+        watermark: edgePullCheckpoints.watermark,
+        lastSuccessAt: edgePullCheckpoints.lastSuccessAt,
+      })
       .from(edgePullCheckpoints)
       .where(
         and(
@@ -192,7 +215,13 @@ async function loadCatalogCheckpoint(
       .limit(1),
   );
   const watermark = row?.watermark ?? null;
-  return watermark !== null && isCurrentCursor(watermark) ? watermark : null;
+  return {
+    cursor: watermark !== null && isCurrentCursor(watermark) ? watermark : null,
+    unfinished:
+      isPromoStream(stream) &&
+      row !== undefined &&
+      row.lastSuccessAt.getTime() === PROMO_INVALIDATED_AT.getTime(),
+  };
 }
 
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -495,7 +524,10 @@ async function pullStream(
 
     if (page.records.length > 0 && page.nextCursor !== null)
       watermark = page.nextCursor;
-    const succeededAt = now();
+    // Revocations may be on a later page. Until the whole discount stream is
+    // applied its cursor may advance, but its freshness must remain closed.
+    const succeededAt =
+      isPromoStream(stream) && page.hasMore ? PROMO_INVALIDATED_AT : now();
     const checkpoint = watermark;
     // Apply and checkpoint together: both land, or neither does.
     const result = await withTenant(database, options.context, async (tx) => {
@@ -562,7 +594,8 @@ async function pullStream(
     // The page is committed: only now does the stream's progress move.
     rejectedCursor = null;
     progress.watermark = checkpoint;
-    progress.lastSuccessAt = succeededAt;
+    progress.lastSuccessAt =
+      isPromoStream(stream) && page.hasMore ? null : succeededAt;
     progress.applied += result.applied;
     progress.skipped += result.skipped;
     progress.deleted += result.deleted;
@@ -675,6 +708,11 @@ export async function pullCatalog(
   };
   const failed = new Set<CatalogSyncStream>();
   for (const stream of streams) {
+    // Runtime freshness caches checkpoint reads. Close it synchronously before
+    // a pull can expose a partial discount snapshot; failure keeps it closed.
+    const promoGeneration = markPromoCatalogStreamPending(
+      catalogCheckpointStream(stream),
+    );
     const progress: StreamProgress = {
       applied: 0,
       skipped: 0,
@@ -687,23 +725,100 @@ export async function pullCatalog(
       lastSuccessAt: null,
     };
     let error: CatalogStreamError | undefined;
+    // True once the cloud answered with a page (before it is validated).
+    let pageReceived = false;
+    // Proven complete only once the stored checkpoint was read and does not
+    // mark an unfinished promo sync; unknown counts as unfinished (fail closed).
+    let storedComplete = !isPromoStream(stream);
     const blockedBy = (PARENT_STREAMS[stream] ?? []).find((parent) =>
       failed.has(parent),
     );
     try {
-      if (blockedBy !== undefined)
-        throw new CatalogParentFailedError(blockedBy);
+      // No durable invalidation up front (brief 533 B2): a transport failure
+      // before any page arrives (offline, HTTP error) changes nothing, so the
+      // last successful sync time stays and an uncapped promotion lives until
+      // the 24 h limit. A page that arrives and is then rejected closes the
+      // checkpoint (catch below); a page with more to come closes it in the
+      // same commit as the page (see pullStream).
       const stored = await loadCatalogCheckpoint(
         database,
         options.context,
         options.edgeNodeId,
         stream,
       );
-      await pullStream(options, stream, stored, progress);
+      storedComplete = !stored.unfinished;
+      if (blockedBy !== undefined)
+        throw new CatalogParentFailedError(blockedBy);
+      await pullStream(
+        {
+          ...options,
+          fetchPage: async (fetchStream, since) => {
+            const raw = await options.fetchPage(fetchStream, since);
+            pageReceived = true;
+            return raw;
+          },
+        },
+        stream,
+        stored.cursor,
+        progress,
+      );
+      if (!progress.backlog)
+        completePromoCatalogStream(
+          catalogCheckpointStream(stream),
+          promoGeneration,
+        );
     } catch (caught) {
       error = describeError(caught);
+      if (!pageReceived) {
+        // Transport failure with no page: the stream is as it was, so the
+        // in-memory pending mark must not close it (capped promos are refused
+        // by the promo engine at an edge regardless). Only when the stored
+        // checkpoint is proven complete: an earlier unfinished promo sync (or
+        // an unreadable checkpoint) keeps the mark until a sync reaches its end.
+        if (storedComplete)
+          completePromoCatalogStream(
+            catalogCheckpointStream(stream),
+            promoGeneration,
+          );
+      } else if (isPromoStream(stream)) {
+        // A page arrived and was rejected or failed to apply: close the
+        // checkpoint durably (kept cursor, epoch success time) and keep the
+        // in-memory pending mark. A failed write stays closed in memory.
+        try {
+          await withTenant(database, options.context, async (tx) => {
+            await lockCatalogStream(
+              tx,
+              options.context.tenant.tenantId,
+              stream,
+            );
+            const [row] = await tx
+              .select({ watermark: edgePullCheckpoints.watermark })
+              .from(edgePullCheckpoints)
+              .where(
+                and(
+                  eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
+                  eq(
+                    edgePullCheckpoints.stream,
+                    catalogCheckpointStream(stream),
+                  ),
+                ),
+              )
+              .limit(1);
+            await saveCatalogCheckpoint(
+              tx,
+              options.edgeNodeId,
+              stream,
+              row?.watermark ?? null,
+              PROMO_INVALIDATED_AT,
+            );
+          });
+        } catch {
+          // Reported through the stream error below; memory stays closed.
+        }
+      }
     }
-    if (error) failed.add(stream);
+    if (error || (isPromoStream(stream) && progress.backlog))
+      failed.add(stream);
     results[stream] = error ? { ...progress, error } : { ...progress };
     total.applied += progress.applied;
     total.skipped += progress.skipped;

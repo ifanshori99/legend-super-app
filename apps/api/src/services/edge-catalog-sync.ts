@@ -52,6 +52,7 @@ import {
   type TenantId,
 } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
+import { createHash } from "node:crypto";
 import { and, asc, eq, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import type { db as appDb } from "../db/index.ts";
@@ -67,6 +68,7 @@ import {
 } from "../db/schema/menu.ts";
 import { inventoryItems } from "../db/schema/inventory.ts";
 import { recipes } from "../db/schema/recipe.ts";
+import { promotions, vouchers } from "../db/schema/crm-promo.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
@@ -183,6 +185,27 @@ function outletStationId(
 }
 
 const iso = (value: Date) => value.toISOString();
+
+/** The stream never carries a code hash (brief 533 B1). */
+function withoutCodeHash<T extends { codeHash: unknown }>(
+  row: T,
+): Omit<T, "codeHash"> {
+  const copy: Partial<T> = { ...row };
+  delete copy.codeHash;
+  return copy as Omit<T, "codeHash">;
+}
+
+/**
+ * Irreversible stand-in for `promotions.code_hash` on the promotions stream
+ * (SHA-256 of the promotion id under a fixed prefix). Deterministic, so a
+ * re-export never churns; it is not derived from the code, and no code can
+ * hash to it by accident, so it can never match a presented code.
+ */
+function promoCodeRef(promotionId: string): string {
+  return createHash("sha256")
+    .update(`edge-promo-code-ref:v1:${promotionId}`, "utf8")
+    .digest("hex");
+}
 const stamps = (row: {
   createdAt: Date;
   updatedAt: Date;
@@ -532,6 +555,97 @@ const scanners: Record<
         effectiveFrom: row.effectiveFrom,
         items,
         ...stamps(row),
+      },
+    }));
+  },
+  async promotions({ tx, tenantId, outletId, since, take }) {
+    const t = promotions;
+    // Never filter inactive/outlet-ineligible headers: revocations must arrive.
+    // Child state is read in the same statement so one parent version is whole.
+    const rows = await tx
+      .select({
+        row: t,
+        txid: txidOf(t.syncTxid),
+        outletOverrides: sql<unknown[]>`coalesce((
+          select jsonb_agg(jsonb_build_object(
+            'outletId', po.outlet_id,
+            'enabled', po.enabled,
+            'updatedBy', po.updated_by,
+            'updatedAt', po.updated_at
+          ) order by po.outlet_id)
+          from promotion_outlets po
+          where po.tenant_id = "promotions"."tenant_id"
+            and po.promotion_id = "promotions"."id"
+            and po.outlet_id = ${outletId}::uuid
+        ), '[]'::jsonb)`,
+        stackingSettings: sql<unknown>`(
+          select jsonb_build_object(
+            'stackingPolicy', ps.stacking_policy,
+            'updatedBy', ps.updated_by,
+            'updatedAt', ps.updated_at,
+            'syncTxid', ps.sync_txid::text
+          ) from promo_settings ps
+          where ps.tenant_id = "promotions"."tenant_id"
+        )`,
+      })
+      .from(t)
+      .where(
+        and(
+          eq(t.tenantId, tenantId),
+          committed(t.syncTxid),
+          after(t.syncTxid, [t.id], since),
+        ),
+      )
+      .orderBy(asc(t.syncTxid), asc(t.id))
+      .limit(take);
+    return rows.map(
+      ({
+        row: { codeHash, ...row },
+        txid,
+        outletOverrides,
+        stackingSettings,
+      }) => ({
+        txid,
+        keys: [row.id],
+        record: {
+          ...row,
+          codeRef: codeHash === null ? null : promoCodeRef(row.id),
+          outletId,
+          syncTxid: txid,
+          startsAt: iso(row.startsAt),
+          endsAt: row.endsAt === null ? null : iso(row.endsAt),
+          createdAt: iso(row.createdAt),
+          updatedAt: iso(row.updatedAt),
+          outletOverrides,
+          stackingSettings,
+        },
+      }),
+    );
+  },
+  async vouchers({ tx, tenantId, since, take }) {
+    const t = vouchers;
+    const rows = await tx
+      .select({ row: t, txid: txidOf(t.syncTxid) })
+      .from(t)
+      .where(
+        and(
+          eq(t.tenantId, tenantId),
+          committed(t.syncTxid),
+          after(t.syncTxid, [t.id], since),
+        ),
+      )
+      .orderBy(asc(t.syncTxid), asc(t.id))
+      .limit(take);
+    return rows.map(({ row, txid }) => ({
+      txid,
+      keys: [row.id],
+      record: {
+        ...withoutCodeHash(row),
+        syncTxid: txid,
+        validFrom: iso(row.validFrom),
+        validUntil: row.validUntil === null ? null : iso(row.validUntil),
+        issuedAt: iso(row.issuedAt),
+        redeemedAt: row.redeemedAt === null ? null : iso(row.redeemedAt),
       },
     }));
   },

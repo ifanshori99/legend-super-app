@@ -62,7 +62,14 @@ import {
   type CatalogSyncStream,
   type MenuCategorySyncRecord,
 } from "@starter/shared/edge";
-import { CoreError, type TenantId } from "@starter/shared/core";
+import {
+  CoreError,
+  idr,
+  outletIdSchema,
+  userIdSchema,
+  type TenantId,
+} from "@starter/shared/core";
+import { defaultPromoStackingPolicy } from "@starter/shared/crm";
 import {
   and,
   eq,
@@ -87,6 +94,12 @@ import {
   stations,
 } from "../db/schema/menu.ts";
 import { recipeLines, recipes } from "../db/schema/recipe.ts";
+import {
+  edgeVoucherCatalog,
+  promotionOutlets,
+  promotions,
+  promoSettings,
+} from "../db/schema/crm-promo.ts";
 import type { Tx } from "./menu-internals.ts";
 
 export type CatalogApplyResult = {
@@ -134,6 +147,8 @@ function refuse(message: string): never {
 const date = (iso: string): Date => new Date(iso);
 const dateOrNull = (iso: string | null): Date | null =>
   iso === null ? null : new Date(iso);
+const userIdOrNull = (id: string | null) =>
+  id === null ? null : userIdSchema.parse(id);
 
 /**
  * ON CONFLICT guard: the write lands only over a row with a strictly lower
@@ -326,6 +341,26 @@ function tally(
   };
 }
 
+/** Promotion documents must name this edge's single outlet, including removals. */
+async function requirePromotionOutlet(tx: Tx, outletId: string): Promise<void> {
+  const result = await tx.execute(
+    sql`SELECT current_setting('app.outlet_ids', true) AS outlet_ids`,
+  );
+  let ids: unknown;
+  try {
+    ids = JSON.parse(String(result.rows[0]?.outlet_ids ?? "null"));
+  } catch {
+    refuse("Catalog promotion has no outlet scope.");
+  }
+  if (
+    !Array.isArray(ids) ||
+    ids.length !== 1 ||
+    typeof ids[0] !== "string" ||
+    ids[0].toLowerCase() !== outletId.toLowerCase()
+  )
+    refuse("Catalog promotion belongs to another outlet.");
+}
+
 const STREAM_TABLES: Readonly<Record<CatalogSyncStream, PgTable>> = {
   stations,
   inventory_items: inventoryItems,
@@ -337,6 +372,8 @@ const STREAM_TABLES: Readonly<Record<CatalogSyncStream, PgTable>> = {
   menu_item_modifier_groups: menuItemModifierGroups,
   price_lists: priceLists,
   recipes,
+  promotions,
+  vouchers: edgeVoucherCatalog,
 };
 
 /**
@@ -354,6 +391,10 @@ export async function resetCatalogSyncTxid(
   await tx.execute(
     sql`UPDATE ${STREAM_TABLES[stream]} SET sync_txid = 0 WHERE tenant_id = ${tenantId}::uuid AND sync_txid <> 0`,
   );
+  if (stream === "promotions")
+    await tx.execute(
+      sql`UPDATE ${promoSettings} SET sync_txid = 0 WHERE tenant_id = ${tenantId}::uuid AND sync_txid <> 0`,
+    );
 }
 
 /** A station a record names must be local (its own stream): transient otherwise. */
@@ -489,6 +530,171 @@ export async function applyCatalogRecords(
   const { tenantId } = input;
   await lockCatalogStream(tx, tenantId, input.stream);
   switch (input.stream) {
+    case "promotions": {
+      const t = promotions;
+      const parsed = parseRecords(
+        "promotions",
+        tenantId,
+        input.records,
+        (r) => r.id,
+      );
+      for (const record of parsed) {
+        await requirePromotionOutlet(tx, record.outletId);
+        if (
+          record.outletOverrides.some(
+            (override) =>
+              override.outletId.toLowerCase() !== record.outletId.toLowerCase(),
+          )
+        )
+          refuse("Catalog promotion switch belongs to another outlet.");
+      }
+      let deleted = 0;
+      const applied = await applyOrdered(
+        tx,
+        t,
+        tenantId,
+        inApplyOrder(parsed, (r) => r.id),
+        {
+          write: async (r) => {
+            const values = {
+              tenantId,
+              name: r.name,
+              description: r.description,
+              status: r.status,
+              // Never the real hash: the stream carries only the irreversible ref.
+              codeHash: r.codeRef,
+              voucherRequired: r.voucherRequired,
+              startsAt: date(r.startsAt),
+              endsAt: dateOrNull(r.endsAt),
+              conditions: r.conditions,
+              benefit: r.benefit,
+              stackGroup: r.stackGroup,
+              stackable: r.stackable,
+              priority: r.priority,
+              quotaTotal: r.quotaTotal,
+              quotaPerCustomer: r.quotaPerCustomer,
+              budgetIdr: r.budgetIdr,
+              outletScope: r.outletScope,
+              createdBy: userIdOrNull(r.createdBy),
+              updatedBy: userIdOrNull(r.updatedBy),
+              createdAt: date(r.createdAt),
+              updatedAt: date(r.updatedAt),
+              syncTxid: r.syncTxid,
+            };
+            const written = await tx
+              .insert(t)
+              .values({ id: r.id, ...values, usesTotal: 0, spentIdr: idr(0) })
+              .onConflictDoUpdate({
+                target: t.id,
+                // Counters belong to this edge's financial applications. A
+                // catalog import must never reset or replay consumption. The
+                // cloud may lower a quota or budget below what this edge
+                // already used offline: store max(cloud, local) so the
+                // `uses_total <= quota_total` / `spent_idr <= budget_idr`
+                // constraints never block the sync, and the exhausted promo
+                // stays unusable (an unlimited cloud value stays unlimited).
+                set: {
+                  ...values,
+                  quotaTotal: sql`CASE WHEN excluded.quota_total IS NULL THEN NULL ELSE GREATEST(excluded.quota_total, ${t.usesTotal}) END`,
+                  budgetIdr: sql`CASE WHEN excluded.budget_idr IS NULL THEN NULL ELSE GREATEST(excluded.budget_idr, ${t.spentIdr}) END`,
+                },
+                setWhere: and(eq(t.tenantId, tenantId), olderThanExcluded(t)),
+              })
+              .returning({ id: t.id });
+            if (written.length === 0) return false;
+
+            const removed = await tx
+              .delete(promotionOutlets)
+              .where(
+                and(
+                  eq(promotionOutlets.tenantId, tenantId),
+                  eq(promotionOutlets.promotionId, r.id),
+                  eq(
+                    promotionOutlets.outletId,
+                    outletIdSchema.parse(r.outletId),
+                  ),
+                ),
+              )
+              .returning({ outletId: promotionOutlets.outletId });
+            deleted += removed.length;
+            for (const override of r.outletOverrides)
+              await tx.insert(promotionOutlets).values({
+                tenantId,
+                promotionId: r.id,
+                outletId: outletIdSchema.parse(override.outletId),
+                enabled: override.enabled,
+                updatedBy: userIdOrNull(override.updatedBy),
+                updatedAt: date(override.updatedAt),
+              });
+
+            // The tenant policy has its own version: a late page for another
+            // promotion must not restore an older, more permissive policy.
+            // No settings means the restrictive default, persisted as a
+            // versioned tombstone so an older policy cannot be resurrected.
+            const settings =
+              r.stackingSettings === null
+                ? {
+                    stackingPolicy: defaultPromoStackingPolicy,
+                    updatedBy: null,
+                    updatedAt: date(r.updatedAt),
+                    syncTxid: r.syncTxid,
+                  }
+                : {
+                    stackingPolicy: r.stackingSettings.stackingPolicy,
+                    updatedBy: userIdOrNull(r.stackingSettings.updatedBy),
+                    updatedAt: date(r.stackingSettings.updatedAt),
+                    syncTxid: r.stackingSettings.syncTxid,
+                  };
+            await tx
+              .insert(promoSettings)
+              .values({ tenantId, ...settings })
+              .onConflictDoUpdate({
+                target: promoSettings.tenantId,
+                set: settings,
+                setWhere: olderThanExcluded(promoSettings),
+              });
+            return true;
+          },
+        },
+      );
+      return tally(applied, parsed.length, { deleted });
+    }
+
+    case "vouchers": {
+      const t = edgeVoucherCatalog;
+      const parsed = parseRecords(
+        "vouchers",
+        tenantId,
+        input.records,
+        (r) => r.id,
+      );
+      const applied = await applyOrdered(
+        tx,
+        t,
+        tenantId,
+        inApplyOrder(parsed, (r) => r.id),
+        {
+          write: async (r) => {
+            // This is read-only catalog metadata, never an independently
+            // redeemable voucher. Preserve the holder and every cloud field
+            // without manufacturing customer records or unbinding the code.
+            const values = { tenantId, payload: r, syncTxid: r.syncTxid };
+            const written = await tx
+              .insert(t)
+              .values({ id: r.id, ...values })
+              .onConflictDoUpdate({
+                target: t.id,
+                set: values,
+                setWhere: and(eq(t.tenantId, tenantId), olderThanExcluded(t)),
+              })
+              .returning({ id: t.id });
+            return written.length > 0;
+          },
+        },
+      );
+      return tally(applied, parsed.length);
+    }
+
     case "stations": {
       const t = stations;
       const parsed = parseRecords(
