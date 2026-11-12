@@ -982,6 +982,43 @@ export type ApprovedOvertimeItem = {
   readonly payIdr: Idr;
 };
 
+/** Load only the immutable formula versions pinned by approved requests. */
+export async function loadPinnedOvertimeFormulas(
+  tx: Tx,
+  tenantId: TenantId,
+  requests: readonly Pick<RequestRow, "formulaId">[],
+): Promise<Map<string, FormulaRow>> {
+  const formulaIds = [
+    ...new Set(
+      requests.map((row) => {
+        if (row.formulaId === null)
+          throw new HttpError(
+            409,
+            "OVERTIME_FORMULA_MISSING",
+            "Lembur disetujui tanpa rumus yang tercatat.",
+          );
+        return row.formulaId;
+      }),
+    ),
+  ];
+  const formulas =
+    formulaIds.length === 0
+      ? []
+      : await tx
+          .select()
+          .from(overtimeFormulas)
+          .where(
+            and(
+              eq(overtimeFormulas.tenantId, tenantId),
+              inArray(overtimeFormulas.id, formulaIds),
+            ),
+          );
+  const byId = new Map(formulas.map((formula) => [formula.id, formula]));
+  for (const formulaId of formulaIds)
+    if (!byId.has(formulaId)) throw notFound("Rumus lembur");
+  return byId;
+}
+
 /**
  * Overtime pay of one employee's approved requests dated [from, to], priced
  * with the formula version each request pinned (a newer formula never changes
@@ -1021,32 +1058,11 @@ export async function computeApprovedOvertimePay(
         asc(overtimeRequests.requestedAt),
         asc(overtimeRequests.id),
       );
-    const formulaIds = [
-      ...new Set(
-        rows.map((row) => {
-          if (row.formulaId === null)
-            throw new HttpError(
-              409,
-              "OVERTIME_FORMULA_MISSING",
-              "Lembur disetujui tanpa rumus yang tercatat.",
-            );
-          return row.formulaId;
-        }),
-      ),
-    ];
-    const formulas =
-      formulaIds.length === 0
-        ? []
-        : await tx
-            .select()
-            .from(overtimeFormulas)
-            .where(
-              and(
-                eq(overtimeFormulas.tenantId, context.tenant.tenantId),
-                inArray(overtimeFormulas.id, formulaIds),
-              ),
-            );
-    const byId = new Map(formulas.map((formula) => [formula.id, formula]));
+    const byId = await loadPinnedOvertimeFormulas(
+      tx,
+      context.tenant.tenantId,
+      rows,
+    );
 
     // Minutes are summed per (day, day type, formula) first and converted to
     // hours once; the group's pay is then split across its requests by minutes

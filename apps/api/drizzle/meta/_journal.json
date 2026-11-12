@@ -2003,6 +2003,41 @@
       "when": 1794417400000,
       "tag": "0299_waste_photo_source",
       "breakpoints": true
+    },
+    {
+      "idx": 300,
+      "version": "7",
+      "when": 1794417500000,
+      "tag": "0300_payroll_run_approvers_not_creator",
+      "breakpoints": true
+    },
+    {
+      "idx": 301,
+      "version": "7",
+      "when": 1794417600000,
+      "tag": "0301_payroll_run_approvers_not_valid",
+      "breakpoints": true
+    },
+    {
+      "idx": 302,
+      "version": "7",
+      "when": 1794417700000,
+      "tag": "0302_payroll_rapel_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 303,
+      "version": "7",
+      "when": 1794417800000,
+      "tag": "0303_payroll_rapel_finalization",
+      "breakpoints": true
+    },
+    {
+      "idx": 304,
+      "version": "7",
+      "when": 1794417900000,
+      "tag": "0304_payroll_run_approver_write_guard",
+      "breakpoints": true
     }
   ]
 }

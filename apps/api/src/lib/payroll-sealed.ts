@@ -6,6 +6,7 @@
 // `pii_key_version` says which key sealed it; worker/hris-pii-reseal.job.ts
 // moves old rows to the active version after a rotation.
 import { idr, type Idr } from "@starter/shared/core";
+import { payrollGrossEnvelopeSchema } from "./payroll-gross-envelope.ts";
 import {
   HRIS_PII_KEY_VERSION,
   hrisPiiRingKey,
@@ -23,7 +24,11 @@ export const PAYROLL_SEAL_KEY_VERSION: number = HRIS_PII_KEY_VERSION;
 
 export type PayrollSealBinding = {
   readonly tenantId: string;
-  readonly table: "employee_pay_components" | "payslips";
+  readonly table:
+    | "employee_pay_components"
+    | "payslips"
+    | "payroll_rapels"
+    | "payroll_rapel_items";
   readonly rowId: string;
   readonly field: "amount" | "calculation";
 };
@@ -43,32 +48,125 @@ function aadOf(binding: PayrollSealBinding, keyVersion: number): string {
   ].join(":");
 }
 
-/** Seals a string for its row; the result goes in a BYTEA column. */
+// Legacy envelopes start with the secret envelope version byte 1. A revisioned
+// gross calculation starts with 2, UInt32BE revision, 16 raw run UUID bytes,
+// then the unchanged AES-GCM envelope. Both clear metadata fields are AAD.
+const REVISION_ENVELOPE = 2;
+const REVISION_HEADER_BYTES = 21;
+const MIN_SECRET_BYTES = 29;
+type GrossMetadata = { payrollRunId: string; rapelAllocationRevision: number };
+
+function grossMetadata(value: string): GrossMetadata | undefined {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+  if (
+    typeof decoded !== "object" ||
+    decoded === null ||
+    !("rapelAllocationRevision" in decoded)
+  )
+    return undefined;
+  const parsed = payrollGrossEnvelopeSchema.safeParse(decoded);
+  if (
+    !parsed.success ||
+    parsed.data.payrollRunId === undefined ||
+    parsed.data.rapelAllocationRevision === undefined
+  )
+    throw new Error("Malformed revisioned payroll calculation");
+  return {
+    payrollRunId: parsed.data.payrollRunId.toLowerCase(),
+    rapelAllocationRevision: parsed.data.rapelAllocationRevision,
+  };
+}
+function calculationBinding(binding: PayrollSealBinding) {
+  return binding.table === "payslips" && binding.field === "calculation";
+}
+function metadataAad(
+  binding: PayrollSealBinding,
+  keyVersion: number,
+  metadata?: GrossMetadata,
+) {
+  const aad = aadOf(binding, keyVersion);
+  return metadata
+    ? `${aad}:run:${metadata.payrollRunId}:rapel:${metadata.rapelAllocationRevision}`
+    : aad;
+}
+function revisionHeader(metadata: GrossMetadata): Buffer {
+  const header = Buffer.alloc(REVISION_HEADER_BYTES);
+  header[0] = REVISION_ENVELOPE;
+  header.writeUInt32BE(metadata.rapelAllocationRevision, 1);
+  Buffer.from(metadata.payrollRunId.replaceAll("-", ""), "hex").copy(header, 5);
+  return header;
+}
+function readRevisionHeader(envelope: Buffer): GrossMetadata {
+  if (envelope.length < REVISION_HEADER_BYTES + MIN_SECRET_BYTES)
+    throw new Error("Revisioned payroll calculation is truncated");
+  const hex = envelope.subarray(5, 21).toString("hex");
+  return {
+    payrollRunId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+    rapelAllocationRevision: envelope.readUInt32BE(1),
+  };
+}
+
+/** Seals a string for its row; key rotation preserves revision metadata. */
 export function sealPayrollValue(
   value: string,
   binding: PayrollSealBinding,
   keyVersion: number = PAYROLL_SEAL_KEY_VERSION,
 ): Buffer {
-  const aad = aadOf(binding, keyVersion);
+  const metadata = calculationBinding(binding)
+    ? grossMetadata(value)
+    : undefined;
+  const aad = metadataAad(binding, keyVersion, metadata);
   const key = hrisPiiRingKey(keyVersion);
-  return Buffer.from(
+  const envelope = Buffer.from(
     key ? sealSecretWithKey(key, value, aad) : sealSecret(value, aad),
     "base64",
   );
+  return metadata
+    ? Buffer.concat([revisionHeader(metadata), envelope])
+    : envelope;
 }
 
-/** Opens a sealed column; throws (fail closed) on any mismatch. */
+/** Opens a sealed column; authenticates revision/run before returning money. */
 export function openPayrollValue(
   sealed: Buffer | Uint8Array,
   binding: PayrollSealBinding,
   keyVersion: number,
 ): string {
-  const aad = aadOf(binding, keyVersion);
-  const envelope = Buffer.from(sealed).toString("base64");
+  const envelope = Buffer.from(sealed);
+  const version = envelope[0];
+  let metadata: GrossMetadata | undefined;
+  let secret = envelope;
+  if (version === REVISION_ENVELOPE) {
+    if (!calculationBinding(binding))
+      throw new Error("Revisioned payroll seal needs a calculation binding");
+    metadata = readRevisionHeader(envelope);
+    secret = envelope.subarray(REVISION_HEADER_BYTES);
+  } else if (version !== 1) {
+    throw new Error("Unknown payroll seal version");
+  }
+  const aad = metadataAad(binding, keyVersion, metadata);
   const key = hrisPiiRingKey(keyVersion);
-  return key
-    ? openSecretWithKey(key, envelope, aad)
-    : openSecret(envelope, aad);
+  const encoded = secret.toString("base64");
+  const value = key
+    ? openSecretWithKey(key, encoded, aad)
+    : openSecret(encoded, aad);
+  if (metadata) {
+    const actual = grossMetadata(value);
+    if (
+      !actual ||
+      actual.payrollRunId !== metadata.payrollRunId ||
+      actual.rapelAllocationRevision !== metadata.rapelAllocationRevision
+    )
+      throw new Error(
+        "Payroll calculation metadata does not match its authenticated header",
+      );
+  }
+  return value;
 }
 
 /** Whole-rupiah amount, sealed as its decimal string. */

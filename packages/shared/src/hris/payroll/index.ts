@@ -11,6 +11,7 @@ export * from "./pph21.ts";
 export * from "./payslip-tax.ts";
 export * from "./pph21-receivable.ts";
 export * from "./components.ts";
+export * from "./rapel.ts";
 export * from "./policies.ts";
 export * from "./loans.ts";
 export * from "./reimbursements.ts";
