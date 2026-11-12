@@ -331,6 +331,34 @@ Rotation: add a new kid to `ATTENDANCE_SELFIE_SEAL_KEYS`, switch `ATTENDANCE_SEL
 
 Release order: cloud first (this endpoint and the `attendance.logged` v2 applier), then the edges. Cloud orphan sweep: a received selfie that no attendance log references after 14 days is deleted from storage (the receipt stays).
 
+## Rotasi kunci data (DATA_ENCRYPTION_KEY)
+
+Rahasia tersegel lewat `sealSecret` dan `openSecret` (`apps/api/src/lib/secrets.ts`) memakai byte pertama amplop sebagai versi kunci. Versi 1 adalah `DATA_ENCRYPTION_KEY`; versi 2 sampai 255 diambil dari `DATA_ENCRYPTION_KEYS` (`2:<base64>,3:<base64>`, format sama dengan `HRIS_PII_KEYS`). `DATA_ENCRYPTION_ACTIVE_KEY_VERSION` (default 1, harus 1 atau terdaftar) memilih kunci untuk segel baru. Nilai lama tetap terbuka karena versinya terbaca dari amplop. Indeks buta (`blindIndex`) selalu memakai versi 1, jadi `DATA_ENCRYPTION_KEY` tetap harus diisi.
+
+Rotasi dua rollout. Alasannya: proses yang ring-nya belum mengenal versi N tidak bisa membuka amplop berbayte N dan gagal dengan galat `Unknown sealed value version N (not in this process's key ring; ...)`. Kode tidak bisa mendeteksi ini antar-proses, jadi urutannya dijaga operator.
+
+1. Buat kunci dengan `openssl rand -base64 32`. Jangan cetak atau tempel nilainya di chat, log, atau berkas repo.
+2. Rollout 1: tambahkan `N:<base64>` ke `DATA_ENCRYPTION_KEYS` di SEMUA proses (api, worker, dan job), lalu tunggu semuanya berjalan dengan env baru. `DATA_ENCRYPTION_ACTIVE_KEY_VERSION` tetap versi lama. Jangan lanjut sebelum tidak ada proses lama yang hidup.
+3. Rollout 2: set `DATA_ENCRYPTION_ACTIVE_KEY_VERSION=N` di semua proses, restart, lalu segel ulang kredensial yang sudah tersimpan dengan skrip rotasi:
+   `pnpm db:rotate-data-key [--tenant <id>] [--force] [--dry-run]`.
+   Skrip berjalan atas semua tenant (termasuk yang suspended atau archived), memanggil `rotateIntegrationCredentials` (integrasi platform) dan `rotateAiProviderKeys` (kunci penyedia AI) dengan aktor `system`, dan mencetak laporan JSON (jumlah per tenant, `totals`, `remaining`, `remainingComplete`; tanpa nilai rahasia, galat non-database memakai pesan tetap). Tenant yang galat dicatat di `totals.failedTenants` dan tenant lain tetap jalan. `--dry-run` hanya menghitung baris yang masih di versi lama dan tidak menulis apa pun. Baris yang sudah di versi aktif dilewati, jadi aman diulang. Kode keluar 1 bila ada tenant gagal, `remainingComplete` false (hitungan sisa satu tenant gagal; tenant itu masuk `failedTenants` dan `remaining` hanya batas bawah), atau `remaining` > 0 setelah jalan sungguhan. Kunci AI yang tidak bisa dibuka dilewati dan dilaporkan di `error` tenantnya. `remaining` menghitung baris semua tenant, juga saat `--tenant` dipakai.
+4. Jangan membuang kunci lama dari ring selama masih ada nilai tersegel di bawahnya, termasuk backup yang mungkin dipulihkan. Jangan menurunkan versi aktif.
+
+Cakupan skrip: hanya `tenant_integrations.credentials_encrypted` dan `ai_provider_configs.api_key_encrypted`, yaitu tabel yang punya kolom versi kunci. Pemakai `sealSecret` lain tidak punya kolom versi dan tidak di-reseal; nilainya tetap terbuka karena amplop membawa versinya selama kunci lama masih ada di ring (jadi kunci lama belum boleh dipensiunkan):
+
+| Pemakai                                                                         | Tempat                                               |
+| ------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Rahasia MFA                                                                     | `identity-mfa.service.ts`                            |
+| Identitas (`valueEncrypted`, `emailEncrypted`)                                  | tabel identitas                                      |
+| NPWP                                                                            | `org.service.ts`, `profit-share-registry.service.ts` |
+| Rekening bank                                                                   | kolom rekening tersegel                              |
+| Token sesi meja, klaim, split, QR, recovery, reservasi, promo, voucher, receipt | token tersegel per fitur                             |
+| Kredensial integrasi dan kunci AI                                               | dirotasi oleh skrip di atas                          |
+
+Reseal pemakai lain dicatat sebagai kartu lanjutan di bd.
+
+Catatan: penulisan baru HRIS dan payroll versi 1 (`pii_key_version = 1`) tetap di bawah kunci 1 lewat `sealSecretBaseKey`, BUKAN kunci data aktif; pembacaan lewat `openSecret` membaca byte versi amplop. Kunci 1 (`DATA_ENCRYPTION_KEY`) tidak bisa dipensiunkan selama masih ada baris versi 1. Memindahkannya ke kunci HRIS bernomor 2 ke atas dilakukan lewat rotasi HRIS di bawah.
+
 ## Rotasi kunci HRIS dan payroll
 
 Versi kunci 1 adalah `DATA_ENCRYPTION_KEY`. Versi 2 dan seterusnya diambil dari `HRIS_PII_KEYS`. Data HRIS yang disegel (karyawan dan kontrak) serta dua kolom payroll (`employee_pay_components.amount_encrypted` dan `payslips.calculation_encrypted`) memakai ring kunci yang sama. Kolom `pii_key_version` mencatat versi yang dipakai tiap baris. Job reseal ikut memindahkan kedua tabel payroll.

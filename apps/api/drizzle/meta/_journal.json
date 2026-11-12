@@ -2066,6 +2066,13 @@
       "when": 1794465896647,
       "tag": "0308_hris_u4",
       "breakpoints": true
+    },
+    {
+      "idx": 309,
+      "version": "7",
+      "when": 1794465896648,
+      "tag": "0287_support_access_grant_tenants",
+      "breakpoints": true
     }
   ]
 }
