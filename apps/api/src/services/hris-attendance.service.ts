@@ -1626,6 +1626,7 @@ export async function getAttendanceQr(
       expiresAt: new Date(
         issuedAt + ATTENDANCE_QR_ROTATION_SECONDS * 1_000,
       ).toISOString(),
+      serverTime: now.toISOString(),
       rotationSeconds: ATTENDANCE_QR_ROTATION_SECONDS,
     });
   });

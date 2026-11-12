@@ -107,6 +107,8 @@ export const attendanceQrTokenSchema = z
     token: z.string().min(16).max(128),
     issuedAt: isoDateTimeSchema,
     expiresAt: isoDateTimeSchema,
+    /** Trusted server clock at issuance, independent of the rotation boundary. */
+    serverTime: isoDateTimeSchema,
     rotationSeconds: z.literal(ATTENDANCE_QR_ROTATION_SECONDS),
   })
   .superRefine((qr, ctx) => {

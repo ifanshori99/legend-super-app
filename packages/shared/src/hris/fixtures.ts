@@ -990,6 +990,7 @@ const attendanceQr = attendanceQrTokenSchema.parse({
   token: "QR-BDG01-20261101T0930",
   issuedAt: "2026-11-01T02:30:00.000Z",
   expiresAt: fixtureTimeAfter({ minutes: 30, seconds: 30 }, now),
+  serverTime: "2026-11-01T02:30:12.000Z",
   rotationSeconds: 30,
 });
 
