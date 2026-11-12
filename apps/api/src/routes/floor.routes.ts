@@ -15,11 +15,13 @@ import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
 import { requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
+import { loadRequestAccess } from "../middleware/permissions";
 import { requireTenantContext } from "../middleware/tenant";
 import {
   createFloorZoneInputSchema,
   createTableInputSchema,
   floorZoneIdSchema,
+  getFloorBoard as floorBoardEndpoint,
   saveFloorLayoutInputSchema,
   tableIdSchema,
   updateFloorZoneInputSchema,
@@ -169,10 +171,21 @@ export const outletFloorRouter = Router();
 outletFloorRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
 
 outletFloorRouter.get("/:outletId/floor", async (req, res) => {
-  const context = await resolveOutletContext(
-    req,
-    "floor.table.view",
-    req.params.outletId,
-  );
-  res.json({ data: await listFloorBoard(context, req.params.outletId) });
+  const { outletId } = floorBoardEndpoint.params.parse(req.params);
+  const query = floorBoardEndpoint.query.parse(req.query);
+  const context = await resolveOutletContext(req, "floor.table.view", outletId);
+  const snapshot = await loadRequestAccess(req);
+  // Floor managers can inspect the outlet; every other captain is limited
+  // to their assigned zones, even when assignedToMe=false is supplied.
+  const managesFloor = snapshot.contextFor("floor.table.manage", {
+    type: "outlet",
+    id: outletId,
+  });
+  res.json({
+    data: await listFloorBoard(context, outletId, {
+      zoneId: query.zoneId,
+      assignedWaiterId:
+        query.assignedToMe || !managesFloor ? actorUserId(req) : undefined,
+    }),
+  });
 });
