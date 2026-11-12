@@ -3,13 +3,18 @@
 // purchase→storage factors. The catalog is seeded per tenant; factors are
 // edited per item.
 import * as React from "react";
+import { useRouteContext } from "@tanstack/react-router";
+import { Plus } from "lucide-react";
+import type { AreaAccess } from "@/lib/areas/access";
+import { holdsAny } from "@/lib/areas/guard";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   DataTableShell,
   type DataState,
 } from "@/components/ui/data-table-shell";
-import { EmptyState } from "@/components/ui/feedback-state";
+import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import {
   Select,
   SelectContent,
@@ -27,7 +32,19 @@ import {
 } from "@/components/ui/table";
 import { useInventoryItems, useUnits } from "../hooks";
 import { LIST_LIMIT } from "../lib";
+import { UOM_COPY, canRenameUom, uomListState } from "../uom-state";
 import { ConversionsEditor } from "./conversions-editor";
+import { UomDialog, type UomEditor } from "./uom-dialog";
+
+/** Writing a unit needs the same permission as the API route. */
+function useCanManageUnits(): boolean {
+  const context = useRouteContext({ strict: false }) as {
+    access?: AreaAccess;
+  };
+  return context.access
+    ? holdsAny(context.access, ["inventory.item.manage"])
+    : false;
+}
 
 export function UnitsPage() {
   const t = useT();
@@ -46,51 +63,104 @@ export function UnitsPage() {
   const selectedItem =
     items.find((item) => item.id === selectedItemId) ?? items[0];
 
-  const state: DataState =
-    unitsQuery.isPending || itemsQuery.isPending
-      ? "loading"
-      : unitsQuery.isError || itemsQuery.isError
-        ? "error"
-        : units.length === 0
-          ? "empty"
-          : "ready";
+  const canManage = useCanManageUnits();
+  const [editor, setEditor] = React.useState<UomEditor | null>(null);
+  const [notice, setNotice] = React.useState<string | null>(null);
 
-  const usedBy = (unitId: string) =>
-    items.filter((item) => item.baseUomId === unitId).length;
+  const state: DataState = uomListState({
+    isPending: unitsQuery.isPending,
+    isError: unitsQuery.isError,
+    count: units.length,
+  });
+  const itemsReady = itemsQuery.isSuccess;
+
+  function openEditor(next: UomEditor) {
+    setNotice(null);
+    setEditor(next);
+  }
+
+  const addButton = (variant: "default" | "outline") =>
+    canManage ? (
+      <Button
+        type="button"
+        variant={variant}
+        onClick={() => openEditor({ mode: "new" })}
+      >
+        <Plus aria-hidden="true" />
+        {UOM_COPY.emptyAction}
+      </Button>
+    ) : undefined;
 
   return (
     <div className="grid min-w-0 gap-4">
+      {notice && (
+        <p
+          role="status"
+          className="rounded-container border-(length:--border-w) border-success bg-success-subtle p-4 text-sm leading-5 font-semibold text-foreground"
+        >
+          {notice}
+        </p>
+      )}
       <DataTableShell
-        title={t("inventory.units.catalogTitle")}
-        description={t("inventory.units.catalogHint")}
+        title={UOM_COPY.listTitle}
+        description={UOM_COPY.listHint}
         state={state}
-        error={unitsQuery.error ?? itemsQuery.error}
-        onRetry={() => {
-          void unitsQuery.refetch();
-          void itemsQuery.refetch();
+        error={unitsQuery.error}
+        errorCopy={{
+          title: UOM_COPY.errorTitle,
+          description: UOM_COPY.errorHint,
+        }}
+        onRetry={() => void unitsQuery.refetch()}
+        actions={addButton("default")}
+        empty={{
+          title: UOM_COPY.emptyTitle,
+          description: UOM_COPY.emptyHint,
+          action: addButton("outline"),
         }}
         rowCount={units.length}
-        loadingRows={6}
+        loadingRows={3}
       >
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>{t("inventory.units.columns.code")}</TableHead>
               <TableHead>{t("inventory.units.columns.name")}</TableHead>
-              <TableHead numeric>
-                {t("inventory.units.columns.baseFor")}
-              </TableHead>
+              <TableHead>{t("inventory.units.columns.code")}</TableHead>
+              <TableHead>{UOM_COPY.columns.kind}</TableHead>
+              <TableHead>{UOM_COPY.columns.actions}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {units.map((unit) => (
               <TableRow key={unit.id}>
+                <TableCell className="font-medium">{unit.name}</TableCell>
                 <TableCell>
                   <Badge tone="neutral">{unit.code}</Badge>
                 </TableCell>
-                <TableCell className="font-medium">{unit.name}</TableCell>
-                <TableCell numeric>
-                  {t("inventory.units.baseFor", { count: usedBy(unit.id) })}
+                <TableCell>
+                  <Badge tone="neutral">
+                    {unit.isSystem ? UOM_COPY.kindSystem : UOM_COPY.kindTenant}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  {!canRenameUom(unit) ? (
+                    <span className="text-sm text-muted-foreground">
+                      {UOM_COPY.locked}
+                    </span>
+                  ) : canManage ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-label={UOM_COPY.renameLabel(unit.name)}
+                      onClick={() => openEditor({ mode: "edit", unit })}
+                    >
+                      {UOM_COPY.rename}
+                    </Button>
+                  ) : (
+                    <span className="text-sm text-muted-foreground">
+                      {UOM_COPY.readOnlyNote}
+                    </span>
+                  )}
                 </TableCell>
               </TableRow>
             ))}
@@ -98,7 +168,16 @@ export function UnitsPage() {
         </Table>
       </DataTableShell>
 
-      {state === "ready" && items.length === 0 && (
+      {state === "ready" && itemsQuery.isError && (
+        <div className="rounded-container border bg-card">
+          <ErrorState
+            error={itemsQuery.error}
+            onRetry={() => void itemsQuery.refetch()}
+          />
+        </div>
+      )}
+
+      {state === "ready" && itemsReady && items.length === 0 && (
         <div className="rounded-container border bg-card">
           <EmptyState
             title={t("inventory.units.noItems")}
@@ -107,7 +186,7 @@ export function UnitsPage() {
         </div>
       )}
 
-      {state === "ready" && selectedItem && (
+      {state === "ready" && itemsReady && selectedItem && (
         <section className="grid gap-4 rounded-container border bg-card p-card shadow-hairline">
           <div className="grid gap-2 sm:max-w-sm">
             <label
@@ -139,6 +218,21 @@ export function UnitsPage() {
             units={units}
           />
         </section>
+      )}
+
+      {editor && (
+        <UomDialog
+          key={editor.mode === "edit" ? editor.unit.id : "new"}
+          editor={editor}
+          existing={units}
+          onClose={() => setEditor(null)}
+          onSaved={(mode) => {
+            setEditor(null);
+            setNotice(
+              mode === "edit" ? UOM_COPY.renamedNotice : UOM_COPY.createdNotice,
+            );
+          }}
+        />
       )}
     </div>
   );

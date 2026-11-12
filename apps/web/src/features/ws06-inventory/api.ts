@@ -7,6 +7,7 @@ import {
   createInventoryItemAlternate as createAlternateEndpoint,
   createStockLocation as createStockLocationEndpoint,
   createStockTransfer as createStockTransferEndpoint,
+  createUom as createUomEndpoint,
   createUomConversion as createUomConversionEndpoint,
   deleteInventoryItemAlternate as deleteAlternateEndpoint,
   deleteUomConversion as deleteUomConversionEndpoint,
@@ -20,6 +21,7 @@ import {
   listUoms,
   updateInventoryItem as updateInventoryItemEndpoint,
   updateStockLocation as updateStockLocationEndpoint,
+  updateUom as updateUomEndpoint,
 } from "@starter/shared/inventory";
 import { callEndpoint } from "@/lib/api/endpoint";
 
@@ -96,3 +98,11 @@ export const deleteConversion = (
 export const createTransfer = (
   body: Body<typeof createStockTransferEndpoint>,
 ) => callEndpoint(createStockTransferEndpoint, { body });
+
+export const createUom = (body: Body<typeof createUomEndpoint>) =>
+  callEndpoint(createUomEndpoint, { body });
+
+export const updateUom = (
+  params: Params<typeof updateUomEndpoint>,
+  body: Body<typeof updateUomEndpoint>,
+) => callEndpoint(updateUomEndpoint, { params, body });
