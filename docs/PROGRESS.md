@@ -4406,3 +4406,10 @@ Perintah tipe/generasi aktual dijalankan berurutan di dalam satu wrapper heavy (
 - Upgrade terisolasi: `heavy /tmp/batch49-upgrade-proof.sh` lulus, baseline m1 286 migrasi lalu 294 migrasi; owner upgrade `rolsuper=false`, `rolbypassrls=false`. Baseline historis dibangun dengan BYPASSRLS yang dicabut sebelum upgrade; database kosong tanpa fixture tenant.
 - ESLint tujuh cabang lulus; Prettier enam cabang lulus, payroll gagal pada `docs/briefs/538-g2-work.md` (log `/tmp/batch49-payroll-engine-prettier.log`). Sesuai TEAM gate cabang dikembalikan ke thread asal. Gate penuh belum dijalankan; jangan fast-forward/push sampai format diperbaiki dan gate lulus.
 - Subagent Codex: total 3, puncak 3; token heavy dipegang subagent migrations untuk bukti upgrade, lalu dilepas. Tidak ada pekerjaan latar tersisa.
+
+### Batch49: gate penuh 12 November
+
+- Keputusan CTO: format `docs/briefs/538-g2-work.md` diperbaiki dengan Prettier, commit `d5025ecb`; pemeriksaan Prettier lulus.
+- Satu `heavy pnpm check` gagal exit 2 pada typecheck web: enam pemanggilan endpoint floor di ws03-floor, ws05-tax, dan ws08-reservation memerlukan `query`, dan mock `ws03/engine.ts` memerlukan `tableLabel`. Log `/tmp/batch49-check.log`; suite test belum berjalan. Ini kegagalan tsc pertama, bukan flake edge-catalog-loop.
+- Milestone belum dimajukan atau dipush; worktree dan cabang sumber dipertahankan. Perbaikan dan keputusan gate lanjutan dikembalikan ke CTO.
+- Subagent giliran ini: total 1, puncak 1, token heavy dipegang gate lalu dilepas.
