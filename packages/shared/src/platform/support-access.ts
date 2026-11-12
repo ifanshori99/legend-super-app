@@ -128,6 +128,7 @@ export const supportAccessRequestSchema = z
     id: supportAccessRequestIdSchema,
     tenantId: tenantIdSchema,
     superAdminUserId: userIdSchema,
+    requesterName: z.string().nullable().optional(),
     reason: reasonSchema,
     accessMode: z.literal("read_write"),
     durationMinutes: writeDurationSchema,

@@ -22,7 +22,19 @@
 // MFA: the route passes the instant the six-digit code in this request was
 // verified (lib/mfa.ts). No verified factor → null → the request is refused.
 
-import { and, asc, desc, eq, gt, isNull, lt, lte, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   assertCanOpenSupportAccess,
   assertSupportAccess as assertSupportAccessPolicy,
@@ -59,6 +71,7 @@ import {
   supportAccessGrants,
   supportAccessRequests,
   tenants,
+  user,
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -78,7 +91,7 @@ type Page = {
   data: SupportAccessGrant[];
   meta: { limit: number; nextCursor: string | null };
 };
-type EndCause = "expired" | "ended_by_super_admin";
+type EndCause = "expired" | "ended_by_super_admin" | "revoked_by_tenant_admin";
 
 /** A write session is an explicit choice (accessMode defaults to read_only)
  * and is capped shorter than a read session. PRD §3 F4 is silent on the cap;
@@ -553,12 +566,17 @@ function requestStatus(row: RequestRow, now: Date): SupportAccessRequestStatus {
   return row.status as SupportAccessRequestStatus;
 }
 
-function toRequest(row: RequestRow, now: Date): SupportAccessRequest {
+function toRequest(
+  row: RequestRow,
+  now: Date,
+  requesterName: string | null,
+): SupportAccessRequest {
   const status = requestStatus(row, now);
   return supportAccessRequestSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
     superAdminUserId: row.superAdminUserId,
+    requesterName,
     reason: row.reason,
     accessMode: row.accessMode,
     durationMinutes: row.durationMinutes,
@@ -575,6 +593,23 @@ function toRequest(row: RequestRow, now: Date): SupportAccessRequest {
     grantId: row.grantId,
     ownerNotifiedAt: row.ownerNotifiedAt?.toISOString() ?? null,
   });
+}
+
+async function requestDtos(
+  rows: RequestRow[],
+  now: Date,
+): Promise<SupportAccessRequest[]> {
+  if (rows.length === 0) return [];
+  const people = await db
+    .select({ id: user.id, name: user.name })
+    .from(user)
+    .where(
+      inArray(user.id, [...new Set(rows.map((row) => row.superAdminUserId))]),
+    );
+  const names = new Map(people.map((person) => [person.id, person.name]));
+  return rows.map((row) =>
+    toRequest(row, now, names.get(row.superAdminUserId) ?? null),
+  );
 }
 
 /** Records a lapsed pending request once (status expired + audit row). */
@@ -729,7 +764,7 @@ export async function requestSupportWriteAccess(input: {
       "SUPPORT_ACCESS_REQUEST_PENDING",
       "Masih ada permintaan akses yang menunggu jawaban Owner.",
     );
-  return toRequest(outcome.row, now);
+  return (await requestDtos([outcome.row], now))[0]!;
 }
 
 /** Tenant owner view of the read_write requests for their tenant. */
@@ -793,7 +828,7 @@ export async function listSupportAccessRequests(
   const page = rows.slice(0, query.limit);
   const last = page.at(-1);
   return {
-    data: page.map((row) => toRequest(row, now)),
+    data: await requestDtos(page, now),
     meta: {
       limit: query.limit,
       nextCursor:
@@ -1026,7 +1061,7 @@ async function decideSupportAccessRequest(
 
   switch (outcome.kind) {
     case "decided":
-      return toRequest(outcome.row, now);
+      return (await requestDtos([outcome.row], now))[0]!;
     case "owner_required":
       throw new HttpError(
         403,
@@ -1224,12 +1259,45 @@ export async function endSupportAccess(input: {
   actorUserId: string;
   now?: Date;
 }): Promise<SupportAccessGrant> {
+  return endSupportAccessInternal(input);
+}
+
+export async function endTenantSupportAccess(
+  context: ScopedTenantContext,
+  actor: { userId: string },
+  grantId: string,
+): Promise<SupportAccessGrant> {
+  return endSupportAccessInternal({
+    tenantId: context.tenant.tenantId,
+    grantId,
+    actorUserId: actor.userId,
+    ownerContext: context,
+  });
+}
+
+async function endSupportAccessInternal(input: {
+  tenantId?: string;
+  grantId: string;
+  actorUserId: string;
+  now?: Date;
+  ownerContext?: ScopedTenantContext;
+}): Promise<SupportAccessGrant> {
   const now = input.now ?? new Date();
   const tenantId = input.tenantId ?? (await findGrantTenant(input.grantId));
   if (tenantId === null)
     throw new HttpError(404, "NOT_FOUND", "Support session not found.");
-  const context = platformTenantContext(tenantId);
+  const context = input.ownerContext ?? platformTenantContext(tenantId);
   const grant = await withTenant(db, context, async (tx) => {
+    if (
+      input.ownerContext &&
+      (await activeOwnerAssignments(tx, tenantId, input.actorUserId, now))
+        .length === 0
+    )
+      throw new HttpError(
+        403,
+        "OWNER_REQUIRED",
+        "Hanya Owner tenant yang dapat mencabut akses dukungan.",
+      );
     const [current] = await tx
       .select()
       .from(supportAccessGrants)
@@ -1281,7 +1349,9 @@ export async function endSupportAccess(input: {
       payload: {
         grantId: row.id,
         endedAt: now.toISOString(),
-        cause: "ended_by_super_admin" satisfies EndCause,
+        cause: (input.ownerContext
+          ? "revoked_by_tenant_admin"
+          : "ended_by_super_admin") satisfies EndCause,
       },
     });
     return toGrant(row);
