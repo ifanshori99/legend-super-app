@@ -4655,3 +4655,4 @@ Langkah berikut: review founder (Setujui/Ubah per kelompok layar), second-opinio
 ## 2026-11-12: Perbaikan penghalang batch51 atas keputusan CTO
 
 - `legend-5f158`: registry mencatat backfill `0308_hris_u4.sql` dan test supervisor membaca nama 0308. Tidak mengubah SQL/schema. Keempat file penghalang telah diverifikasi bersama: 55 test lulus, 14 skip; eslint dan prettier lulus (`/tmp/batch51-repair-targeted.log`, `/tmp/batch51-repair-prelint.log`). Review konteks segar terhadap diff perbaikan: nol temuan. Gate penuh ulang menunggu seluruh commit per kartu selesai.
+- `legend-6r8ag`: audit seluruh pemanggil produk HRIS U4 tidak menemukan penolakan tanpa alasan; queue memvalidasi dan mengirim `rejectionReason`, jalur peer melakukan hal yang sama, route API memvalidasi sebelum service. Alasan tetap wajib di API. Hanya dua payload reject test Alur K lama ditambah alasan; assertion status dan saldo tetap. Test terarah di atas lulus.

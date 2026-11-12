@@ -485,7 +485,11 @@ describe("Alur K cuti: karyawan mengajukan, HR memutuskan, saldo mengikuti [HR-0
     const rejected = await post(
       hrClient,
       `/api/hris/leave/requests/${created.body.data.id}/decision`,
-      { action: "reject", idempotencyKey: key() },
+      {
+        action: "reject",
+        rejectionReason: "Jadwal penuh",
+        idempotencyKey: key(),
+      },
     );
     expect(rejected.status, JSON.stringify(rejected.body)).toBe(200);
     expect(rejected.body.data).toMatchObject({
@@ -502,7 +506,11 @@ describe("Alur K cuti: karyawan mengajukan, HR memutuskan, saldo mengikuti [HR-0
     const again = await post(
       hrClient,
       `/api/hris/leave/requests/${approvedRequestId}/decision`,
-      { action: "reject", idempotencyKey: key() },
+      {
+        action: "reject",
+        rejectionReason: "Jadwal penuh",
+        idempotencyKey: key(),
+      },
     );
     expect(again.status).toBe(409);
   });
