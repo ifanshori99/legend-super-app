@@ -1,19 +1,35 @@
 // legend-svqew / founder Q43-Q44: explicit back-pay, frozen history and no overpayment.
 // The HTTP contract is agreed with the rapel implementer before implementation.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { idr } from "@starter/shared/core";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+// The worker needs the next test key available while normal writes stay on key1.
+const priorKeyConfiguration = vi.hoisted(() => {
+  const previous = process.env.HRIS_PII_KEYS;
+  process.env.HRIS_PII_KEYS = `2:${Buffer.alloc(32, 9).toString("base64")}`;
+  return previous;
+});
+
+import { idr, outletIdSchema, tenantIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { employeeIdSchema } from "@starter/shared/hris";
 import {
   cafeLegendPayrollFixtures,
+  payComponentIdSchema,
+  payrollConfigSnapshotSchema,
+  payrollRunIdSchema,
+  payrollRunTotalsSchema,
   payslipCalculationSchema,
+  statutoryVersionRef,
 } from "@starter/shared/hris/payroll";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
 import {
   PAYROLL_SEAL_KEY_VERSION,
   openPayrollValue,
@@ -21,6 +37,14 @@ import {
   sealPayrollValue,
 } from "../lib/payroll-sealed.ts";
 import { computeEmployeeGross } from "../services/payroll-components.service.ts";
+import { finalizePayrollRapelRunInTransaction } from "../services/payroll-rapel-finalize.service.ts";
+import {
+  allocatePayrollRapel,
+  approvePayrollRapel,
+  createPayrollRapel,
+  getPayrollRapel,
+} from "../services/payroll-rapel.service.ts";
+import { runHrisPiiReseal } from "../worker/hris-pii-reseal.job.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 
 const app = createApp();
@@ -67,16 +91,18 @@ const transferEntities: string[] = [];
 let requester: Actor;
 let hr: Actor;
 let finance: Actor;
+let finalizer: Actor;
 
 async function asTenant<T>(
   run: (client: PoolClient) => Promise<T>,
+  scopedTenantId = tenantId,
 ): Promise<T> {
   const client = await owner.connect();
   try {
     await client.query("BEGIN");
     await client.query(
       "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
-      [tenantId],
+      [scopedTenantId],
     );
     const result = await run(client);
     await client.query("COMMIT");
@@ -123,7 +149,9 @@ async function seed(
     | "mismatched_pinned_gross"
     | "malformed_full" = "full",
   partitionedHistory = false,
+  scope = { tenantId, outletId },
 ): Promise<Seed> {
+  const { tenantId, outletId } = scope;
   const s: Seed = {
     employeeId: randomUUID(),
     componentId: randomUUID(),
@@ -215,7 +243,7 @@ async function seed(
          employee_group_code, employee_group, cycle, pay_date_adjustment,
          jkk_risk_class, bpjs_programmes)
        VALUES ($1, $2, $3, 'Kebijakan Rapel', 'RP', '{"code":"RP"}',
-         '{"kind":"monthly"}', 'none', 'low', '[]')`,
+          '{"frequency":"monthly","cutoffDay":null,"payDay":null,"payMonthOffset":0}', 'none', 'low', '[]')`,
       [s.policyId, tenantId, s.entityId],
     );
     for (const [runId, start, end] of [
@@ -323,7 +351,7 @@ async function seed(
         PAYROLL_SEAL_KEY_VERSION,
       ],
     );
-  });
+  }, tenantId);
   return s;
 }
 
@@ -381,13 +409,82 @@ async function frozenSnapshot(s: Seed) {
   });
 }
 
-async function lockTarget(s: Seed) {
+function supportedTotals(grossIdr: number, employeeCount = 1) {
+  return payrollRunTotalsSchema.parse({
+    employeeCount,
+    grossIdr,
+    deductionsIdr: 0,
+    netIdr: grossIdr,
+    bpjsEmployeeIdr: 0,
+    bpjsCompanyIdr: 0,
+    pph21Idr: 0,
+    pph21WithheldIdr: 0,
+    pph21EmployerBorneIdr: 0,
+    pph21RefundIdr: 0,
+    pph21EmployerRefundIdr: 0,
+    pph21EmployerAllowanceRefundIdr: 0,
+    loanRepaymentIdr: 0,
+    pph21ReceivableIdr: 0,
+    pph21ReceivableCollectedIdr: 0,
+    otherDeductionsIdr: 0,
+    customDeductionsIdr: 0,
+    serviceChargeIdr: 0,
+    reimbursementIdr: 0,
+    bankTransferIdr: grossIdr,
+    cashIdr: 0,
+  });
+}
+
+async function lockTarget(
+  s: Seed,
+  grossIdr = 7_350_000,
+  employees = [s],
+  totalOverrides: Record<string, number> = {},
+  scopedTenantId = tenantId,
+) {
+  const totals = payrollRunTotalsSchema.parse({
+    ...supportedTotals(grossIdr, employees.length),
+    ...totalOverrides,
+  });
+  const snapshot = payrollConfigSnapshotSchema.parse({
+    statutoryVersions: [
+      statutoryVersionRef(
+        cafeLegendPayrollFixtures.statutoryTables.find(
+          (r) => r.type === "overtime",
+        )!,
+      ),
+    ],
+    policy: {
+      id: s.policyId,
+      cycle: {
+        frequency: "monthly",
+        cutoffDay: null,
+        payDay: null,
+        payMonthOffset: 0,
+      },
+      payDateAdjustment: "none",
+      jkkRiskClass: "low",
+      bpjsProgrammes: [],
+    },
+    components: employees.map((employee) => ({
+      id: employee.componentId,
+      code: employee.componentCode,
+      category: "base_salary",
+      taxable: true,
+      taxScheme: "gross",
+      bpjsBase: true,
+      overtimeBase: true,
+      thrBase: true,
+    })),
+    loanMaxDeductionOfNetPayBp: 0,
+    pph21Policy: null,
+    capturedAt: "2026-07-31T00:00:00.000Z",
+  });
   await asTenant(async (db) => {
     for (const update of [
       "status = 'simulated'",
       "status = 'hr_approved', approved_by_hr = $2, approved_by_hr_at = now()",
       "status = 'approved', approved_by_finance = $2, approved_by_finance_at = now()",
-      "status = 'locked', config_snapshot = '{\"v\":1}', totals = '{\"t\":1}', locked_by = $2, locked_at = now()",
     ]) {
       await db.query(
         `UPDATE payroll_runs SET ${update} WHERE id = $1`,
@@ -396,7 +493,12 @@ async function lockTarget(s: Seed) {
           : [s.targetRunId],
       );
     }
-  });
+    await db.query(
+      `UPDATE payroll_runs SET status = 'locked', config_snapshot = $3, totals = $4,
+       locked_by = $2, locked_at = now() WHERE id = $1`,
+      [s.targetRunId, hr.id, JSON.stringify(snapshot), JSON.stringify(totals)],
+    );
+  }, scopedTenantId);
 }
 
 const preview = (s: Seed, payslipId: string, runId = s.targetRunId) =>
@@ -410,6 +512,81 @@ const preview = (s: Seed, payslipId: string, runId = s.targetRunId) =>
       (r) => r.type === "overtime",
     )!.parameters,
   } as never);
+
+type EmployeePlan = {
+  employeeId: string;
+  payslipId: string;
+  paymentMethod: "bank_transfer";
+};
+const finalize = (
+  s: Seed,
+  payslipId: string,
+  expectedRevision?: number,
+  additionalPlan: EmployeePlan[] = [],
+) =>
+  withTenant(db, context, (tx) =>
+    finalizePayrollRapelRunInTransaction(tx, context, finalizer.id, {
+      payrollRunId: s.targetRunId,
+      employeePlan: [
+        { employeeId: s.employeeId, payslipId, paymentMethod: "bank_transfer" },
+        ...additionalPlan,
+      ],
+      ...(expectedRevision === undefined
+        ? {}
+        : {
+            expectedAllocationRevisions: {
+              [s.employeeId]: expectedRevision,
+              ...Object.fromEntries(
+                additionalPlan.map((employee) => [employee.employeeId, 0]),
+              ),
+            },
+          }),
+    }),
+  );
+
+async function storedPayslip(
+  s: Seed,
+  payslipId: string,
+  scopedTenantId = tenantId,
+) {
+  const tenantId = scopedTenantId;
+  return asTenant(async (db) => {
+    const result = await db.query<{
+      id: string;
+      payroll_run_id: string;
+      employee_id: string;
+      calculation_encrypted: Buffer;
+      pii_key_version: number;
+    }>(
+      `SELECT id, payroll_run_id, employee_id, calculation_encrypted, pii_key_version
+       FROM payslips WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, payslipId],
+    );
+    expect(result.rows).toHaveLength(1);
+    const row = result.rows[0]!;
+    const calculation = JSON.parse(
+      openPayrollValue(
+        row.calculation_encrypted,
+        { tenantId, table: "payslips", rowId: payslipId, field: "calculation" },
+        row.pii_key_version,
+      ),
+    ) as {
+      grossIdr: number;
+      deductionsIdr: number;
+      netIdr: number;
+      lines: {
+        sourceId?: string;
+        componentCode: string;
+        amountIdr: number;
+      }[];
+    };
+    const count = await db.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM payslips WHERE tenant_id = $1 AND payroll_run_id = $2 AND employee_id = $3",
+      [tenantId, s.targetRunId, s.employeeId],
+    );
+    return { row, calculation, count: count.rows[0]!.count };
+  }, scopedTenantId);
+}
 
 async function attachPrivateOutlet(s: Seed) {
   const id = randomUUID();
@@ -501,6 +678,11 @@ beforeAll(async () => {
     "payroll.approve",
     "payroll.lock",
   ]);
+  finalizer = await actor("Rapel finalizer G688h", [
+    "payroll.view",
+    "payroll.run",
+    "payroll.lock",
+  ]);
 });
 
 afterAll(async () => {
@@ -515,6 +697,15 @@ afterAll(async () => {
     );
     if (table.rows[0]?.name) {
       const employeeIds = seeds.map((s) => s.employeeId);
+      const receipts = await db.query<{ name: string | null }>(
+        "SELECT to_regclass('public.payroll_rapel_finalizations')::text AS name",
+      );
+      if (receipts.rows[0]?.name) {
+        await db.query(
+          "DELETE FROM payroll_rapel_finalizations WHERE tenant_id = $1 AND employee_id = ANY($2)",
+          [tenantId, employeeIds],
+        );
+      }
       await db.query(
         `DELETE FROM payroll_rapel_items WHERE tenant_id = $1 AND rapel_id IN
          (SELECT id FROM payroll_rapels WHERE tenant_id = $1 AND employee_id = ANY($2))`,
@@ -585,6 +776,8 @@ afterAll(async () => {
     db.release();
     await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [users]);
     await owner.end();
+    if (priorKeyConfiguration === undefined) delete process.env.HRIS_PII_KEYS;
+    else process.env.HRIS_PII_KEYS = priorKeyConfiguration;
   }
 });
 
@@ -735,20 +928,18 @@ describe("legend-svqew rapel Q43/Q44", () => {
     expect(
       reopened.lines.filter((line) => line.sourceId === first.body.data.id),
     ).toEqual([expect.objectContaining({ amountIdr: 450_000 })]);
+    await lockTarget(s);
+    const finalized = await finalize(s, allocated.reservedPayslipId!, 1);
+    expect(finalized.payslips).toEqual([
+      expect.objectContaining({ grossIdr: 7_350_000 }),
+    ]);
+    const persisted = await storedPayslip(s, allocated.reservedPayslipId!);
+    expect(
+      persisted.calculation.lines.filter(
+        (line) => line.sourceId === first.body.data.id,
+      ),
+    ).toEqual([expect.objectContaining({ amountIdr: 450_000 })]);
     await asTenant(async (db) => {
-      for (const update of [
-        "status = 'simulated'",
-        "status = 'hr_approved', approved_by_hr = $2, approved_by_hr_at = now()",
-        "status = 'approved', approved_by_finance = $2, approved_by_finance_at = now()",
-        "status = 'locked', config_snapshot = '{\"v\":1}', totals = '{\"t\":1}', locked_by = $2, locked_at = now()",
-      ]) {
-        await db.query(
-          `UPDATE payroll_runs SET ${update} WHERE id = $1`,
-          update.includes("$2")
-            ? [s.targetRunId, update.includes("finance") ? finance.id : hr.id]
-            : [s.targetRunId],
-        );
-      }
       const insert = `INSERT INTO payslips (id, tenant_id, payroll_run_id, employee_id,
         payment_method, calculation_encrypted, pii_key_version)
         VALUES ($1, $2, $3, $4, 'bank_transfer', $5, $6)`;
@@ -760,7 +951,6 @@ describe("legend-svqew rapel Q43/Q44", () => {
         sealed!.calculation,
         sealed!.keyVersion,
       ];
-      await db.query(insert, values);
       await db.query("SAVEPOINT duplicate_payment");
       await expect(
         db.query(insert, [randomUUID(), ...values.slice(1)]),
@@ -773,7 +963,7 @@ describe("legend-svqew rapel Q43/Q44", () => {
         [allocated.reservedPayslipId],
       );
       expect(stored.rows[0]!.calculation_encrypted).toEqual(
-        sealed!.calculation,
+        persisted.row.calculation_encrypted,
       );
       const count = await db.query(
         "SELECT count(*)::int AS count FROM payslips WHERE tenant_id = $1 AND payroll_run_id = $2 AND employee_id = $3",
@@ -804,6 +994,577 @@ describe("legend-svqew rapel Q43/Q44", () => {
       750_000,
     );
     expect(gross.grossIdr).toBe(8_250_000);
+  });
+
+  it("[G688h P1 stale allocation seal] rejects an earlier preview after a second raise is allocated to the same payslip", async () => {
+    const s = await seed();
+    const before = await frozenSnapshot(s);
+    const first = await create(s);
+    await approve(first.id);
+    const firstAllocation = await allocate(s, first.id);
+    const oldPreview = await preview(s, firstAllocation.reservedPayslipId!);
+    expect(oldPreview.grossIdr).toBe(7_350_000);
+    expect(
+      oldPreview.lines.filter((line) => line.componentCode === "RAPEL"),
+    ).toEqual([
+      expect.objectContaining({ sourceId: first.id, amountIdr: 450_000 }),
+    ]);
+
+    const second = await create(s, 7_500_000);
+    expect(second.totalIdr).toBe(300_000);
+    await approve(second.id);
+    const secondAllocation = await allocate(s, second.id);
+    expect(secondAllocation.reservedPayslipId).toBe(
+      firstAllocation.reservedPayslipId,
+    );
+    await lockTarget(s);
+
+    await asTenant(async (db) => {
+      await db.query("SAVEPOINT stale_allocation_seal");
+      await expect(
+        db.query(
+          `INSERT INTO payslips (id, tenant_id, payroll_run_id, employee_id,
+           payment_method, calculation_encrypted, pii_key_version)
+           VALUES ($1, $2, $3, $4, 'bank_transfer', $5, $6)`,
+          [
+            firstAllocation.reservedPayslipId,
+            tenantId,
+            s.targetRunId,
+            s.employeeId,
+            oldPreview.sealed.calculation,
+            oldPreview.sealed.keyVersion,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await db.query("ROLLBACK TO SAVEPOINT stale_allocation_seal");
+      const stored = await db.query(
+        "SELECT count(*)::int AS count FROM payslips WHERE tenant_id = $1 AND payroll_run_id = $2 AND employee_id = $3",
+        [tenantId, s.targetRunId, s.employeeId],
+      );
+      expect(stored.rows[0]!.count).toBe(0);
+    });
+    expect(await frozenSnapshot(s)).toEqual(before);
+  });
+
+  it("[G688h P1 forged current receipt] rejects the intact old preview even when a same-transaction receipt claims the current allocation revision", async () => {
+    const s = await seed();
+    const before = await frozenSnapshot(s);
+    const first = await create(s);
+    await approve(first.id);
+    const firstAllocation = await allocate(s, first.id);
+    const oldPreview = await preview(s, firstAllocation.reservedPayslipId!);
+    const second = await create(s, 7_500_000);
+    expect(second.totalIdr).toBe(300_000);
+    await approve(second.id);
+    const secondAllocation = await allocate(s, second.id);
+    expect(secondAllocation.reservedPayslipId).toBe(
+      firstAllocation.reservedPayslipId,
+    );
+    await lockTarget(s, 8_250_000);
+
+    await asTenant(async (db) => {
+      await db.query("SAVEPOINT relabeled_old_preview");
+      await db.query(
+        `INSERT INTO payroll_rapel_finalizations
+         (payslip_id, tenant_id, employee_id, payroll_run_id, allocation_revision,
+          calculation_sha256, pii_key_version, created_by)
+         VALUES ($1, $2, $3, $4, 2, $5, $6, $7)`,
+        [
+          firstAllocation.reservedPayslipId,
+          tenantId,
+          s.employeeId,
+          s.targetRunId,
+          createHash("sha256")
+            .update(oldPreview.sealed.calculation)
+            .digest("hex"),
+          oldPreview.sealed.keyVersion,
+          finalizer.id,
+        ],
+      );
+      // All receipt facts match the current allocation and this transaction.
+      // The unchanged ciphertext itself still contains only the first raise.
+      await expect(
+        db.query(
+          `INSERT INTO payslips (id, tenant_id, payroll_run_id, employee_id,
+           payment_method, calculation_encrypted, pii_key_version)
+           VALUES ($1, $2, $3, $4, 'bank_transfer', $5, $6)`,
+          [
+            firstAllocation.reservedPayslipId,
+            tenantId,
+            s.targetRunId,
+            s.employeeId,
+            oldPreview.sealed.calculation,
+            oldPreview.sealed.keyVersion,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await db.query("ROLLBACK TO SAVEPOINT relabeled_old_preview");
+      const count = await db.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM payslips WHERE tenant_id = $1 AND payroll_run_id = $2",
+        [tenantId, s.targetRunId],
+      );
+      expect(count.rows[0]!.count).toBe(0);
+    });
+    expect(await frozenSnapshot(s)).toEqual(before);
+  });
+
+  it.each(["revision", "run"] as const)(
+    "[G688h P1 authenticated header %s] refuses modified clear metadata before a calculation can authorize pay",
+    async (changed) => {
+      const s = await seed();
+      const first = await create(s);
+      await approve(first.id);
+      const allocated = await allocate(s, first.id);
+      const gross = await preview(s, allocated.reservedPayslipId!);
+      const binding = {
+        tenantId,
+        table: "payslips",
+        rowId: allocated.reservedPayslipId!,
+        field: "calculation",
+      } as const;
+      expect(gross.sealed.calculation[0]).toBe(2);
+      expect(gross.sealed.calculation.readUInt32BE(1)).toBe(1);
+      const opened = openPayrollValue(
+        gross.sealed.calculation,
+        binding,
+        gross.sealed.keyVersion,
+      );
+      expect(JSON.parse(opened)).toMatchObject({
+        payrollRunId: s.targetRunId,
+        rapelAllocationRevision: 1,
+        grossIdr: 7_350_000,
+      });
+      const tampered = Buffer.from(gross.sealed.calculation);
+      if (changed === "revision") tampered.writeUInt32BE(2, 1);
+      else tampered[5] = tampered[5]! ^ 1;
+      expect(() =>
+        openPayrollValue(tampered, binding, gross.sealed.keyVersion),
+      ).toThrow();
+      const count = await asTenant((db) =>
+        db.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM payslips WHERE tenant_id = $1 AND payroll_run_id = $2",
+          [tenantId, s.targetRunId],
+        ),
+      );
+      expect(count.rows[0]!.count).toBe(0);
+    },
+  );
+
+  it.each(["revision", "hash", "transaction"] as const)(
+    "[G688h P1 receipt %s binding] refuses a mismatched receipt before any payroll is paid",
+    async (mismatch) => {
+      const s = await seed();
+      const before = await frozenSnapshot(s);
+      const rapel = await create(s);
+      await approve(rapel.id);
+      const allocated = await allocate(s, rapel.id);
+      const gross = await preview(s, allocated.reservedPayslipId!);
+      await lockTarget(s);
+      await asTenant(async (db) => {
+        await db.query("SAVEPOINT mismatched_receipt");
+        const transactionId =
+          mismatch === "transaction"
+            ? "(txid_current() + 1)::text"
+            : "txid_current()::text";
+        const receipt = db.query(
+          `INSERT INTO payroll_rapel_finalizations
+           (payslip_id, tenant_id, employee_id, payroll_run_id, allocation_revision,
+            calculation_sha256, pii_key_version, transaction_id, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, ${transactionId}, $8)`,
+          [
+            allocated.reservedPayslipId,
+            tenantId,
+            s.employeeId,
+            s.targetRunId,
+            mismatch === "revision" ? 0 : 1,
+            mismatch === "hash"
+              ? "0".repeat(64)
+              : createHash("sha256")
+                  .update(gross.sealed.calculation)
+                  .digest("hex"),
+            gross.sealed.keyVersion,
+            finalizer.id,
+          ],
+        );
+        if (mismatch === "hash") {
+          await receipt;
+          await expect(
+            db.query(
+              `INSERT INTO payslips (id, tenant_id, payroll_run_id, employee_id,
+               payment_method, calculation_encrypted, pii_key_version)
+               VALUES ($1, $2, $3, $4, 'bank_transfer', $5, $6)`,
+              [
+                allocated.reservedPayslipId,
+                tenantId,
+                s.targetRunId,
+                s.employeeId,
+                gross.sealed.calculation,
+                gross.sealed.keyVersion,
+              ],
+            ),
+          ).rejects.toMatchObject({ code: "23514" });
+        } else {
+          await expect(receipt).rejects.toMatchObject({ code: "23514" });
+        }
+        await db.query("ROLLBACK TO SAVEPOINT mismatched_receipt");
+        const count = await db.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM payslips WHERE tenant_id = $1 AND payroll_run_id = $2",
+          [tenantId, s.targetRunId],
+        );
+        expect(count.rows[0]!.count).toBe(0);
+      });
+      expect(await frozenSnapshot(s)).toEqual(before);
+    },
+  );
+
+  it("[G688h P1 receipt replay] refuses a matching cipher receipt committed in an earlier transaction", async () => {
+    const s = await seed();
+    const before = await frozenSnapshot(s);
+    const rapel = await create(s);
+    await approve(rapel.id);
+    const allocated = await allocate(s, rapel.id);
+    const gross = await preview(s, allocated.reservedPayslipId!);
+    const previewReceipts = await asTenant((db) =>
+      db.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM payroll_rapel_finalizations WHERE tenant_id = $1 AND employee_id = $2",
+        [tenantId, s.employeeId],
+      ),
+    );
+    expect(previewReceipts.rows[0]!.count).toBe(0);
+    await lockTarget(s);
+    await asTenant((db) =>
+      db.query(
+        `INSERT INTO payroll_rapel_finalizations
+         (payslip_id, tenant_id, employee_id, payroll_run_id, allocation_revision,
+          calculation_sha256, pii_key_version, created_by)
+         VALUES ($1, $2, $3, $4, 1, $5, $6, $7)`,
+        [
+          allocated.reservedPayslipId,
+          tenantId,
+          s.employeeId,
+          s.targetRunId,
+          createHash("sha256").update(gross.sealed.calculation).digest("hex"),
+          gross.sealed.keyVersion,
+          finalizer.id,
+        ],
+      ),
+    );
+    await asTenant(async (db) => {
+      await db.query("SAVEPOINT previous_receipt");
+      await expect(
+        db.query(
+          `INSERT INTO payslips (id, tenant_id, payroll_run_id, employee_id,
+           payment_method, calculation_encrypted, pii_key_version)
+           VALUES ($1, $2, $3, $4, 'bank_transfer', $5, $6)`,
+          [
+            allocated.reservedPayslipId,
+            tenantId,
+            s.targetRunId,
+            s.employeeId,
+            gross.sealed.calculation,
+            gross.sealed.keyVersion,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await db.query("ROLLBACK TO SAVEPOINT previous_receipt");
+      const count = await db.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM payslips WHERE tenant_id = $1 AND payroll_run_id = $2",
+        [tenantId, s.targetRunId],
+      );
+      expect(count.rows[0]!.count).toBe(0);
+    });
+    expect(await frozenSnapshot(s)).toEqual(before);
+  });
+
+  it("[G688h P1 finalization] pays both raises and the complete ordinary employee plan exactly once", async () => {
+    const s = await seed();
+    const ordinary = await seed();
+    await asTenant((db) =>
+      db.query("UPDATE employees SET legal_entity_id = $1 WHERE id = $2", [
+        s.entityId,
+        ordinary.employeeId,
+      ]),
+    );
+    const ordinaryPlan: EmployeePlan = {
+      employeeId: ordinary.employeeId,
+      payslipId: randomUUID(),
+      paymentMethod: "bank_transfer",
+    };
+    const before = await frozenSnapshot(s);
+    const first = await create(s);
+    await approve(first.id);
+    const firstAllocation = await allocate(s, first.id);
+    const oldPreview = await preview(s, firstAllocation.reservedPayslipId!);
+    expect(oldPreview.grossIdr).toBe(7_350_000);
+    const second = await create(s, 7_500_000);
+    expect(second.totalIdr).toBe(300_000);
+    await approve(second.id);
+    const secondAllocation = await allocate(s, second.id);
+    expect(secondAllocation.reservedPayslipId).toBe(
+      firstAllocation.reservedPayslipId,
+    );
+    await lockTarget(s, 14_250_000, [s, ordinary]);
+    const frozenTarget = await asTenant((db) =>
+      db.query(
+        "SELECT to_jsonb(r) AS value FROM payroll_runs r WHERE id = $1",
+        [s.targetRunId],
+      ),
+    );
+
+    await expect(
+      finalize(s, firstAllocation.reservedPayslipId!, 1, [ordinaryPlan]),
+    ).rejects.toMatchObject({ status: 409 });
+    await expect(
+      finalize(s, firstAllocation.reservedPayslipId!, 2),
+    ).rejects.toMatchObject({ status: 409 });
+    const empty = await asTenant((db) =>
+      db.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM payslips WHERE tenant_id = $1 AND payroll_run_id = $2",
+        [tenantId, s.targetRunId],
+      ),
+    );
+    expect(empty.rows[0]!.count).toBe(0);
+
+    const finalized = await finalize(s, firstAllocation.reservedPayslipId!, 2, [
+      ordinaryPlan,
+    ]);
+    expect(finalized.payrollRunId).toBe(s.targetRunId);
+    expect(finalized.payslips).toHaveLength(2);
+    expect(finalized.payslips).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          payslipId: firstAllocation.reservedPayslipId,
+          employeeId: s.employeeId,
+          allocationRevision: 2,
+          grossIdr: 8_250_000,
+          deductionsIdr: 0,
+          netIdr: 8_250_000,
+        }),
+        expect.objectContaining({
+          payslipId: ordinaryPlan.payslipId,
+          employeeId: ordinary.employeeId,
+          allocationRevision: 0,
+          grossIdr: 6_000_000,
+          deductionsIdr: 0,
+          netIdr: 6_000_000,
+        }),
+      ]),
+    );
+    expect(
+      finalized.payslips.reduce((sum, slip) => sum + slip.grossIdr, 0),
+    ).toBe(14_250_000);
+    const paid = await storedPayslip(s, firstAllocation.reservedPayslipId!);
+    expect(paid.count).toBe(1);
+    expect(paid.calculation.grossIdr).toBe(8_250_000);
+    expect(
+      paid.calculation.lines.filter(
+        (line) => line.componentCode === s.componentCode,
+      ),
+    ).toEqual([expect.objectContaining({ amountIdr: 7_500_000 })]);
+    const rapelLines = paid.calculation.lines.filter(
+      (line) => line.componentCode === "RAPEL",
+    );
+    expect(rapelLines).toHaveLength(2);
+    expect(rapelLines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceId: first.id, amountIdr: 450_000 }),
+        expect.objectContaining({ sourceId: second.id, amountIdr: 300_000 }),
+      ]),
+    );
+    expect(rapelLines.reduce((sum, line) => sum + line.amountIdr, 0)).toBe(
+      750_000,
+    );
+    const ordinaryPaid = await storedPayslip(
+      { ...s, employeeId: ordinary.employeeId },
+      ordinaryPlan.payslipId,
+    );
+    expect(ordinaryPaid.count).toBe(1);
+    expect(ordinaryPaid.calculation.grossIdr).toBe(6_000_000);
+    expect(
+      ordinaryPaid.calculation.lines.filter(
+        (line) => line.componentCode === "RAPEL",
+      ),
+    ).toEqual([]);
+
+    const repeated = await finalize(s, firstAllocation.reservedPayslipId!, 2, [
+      ordinaryPlan,
+    ]);
+    expect(repeated).toEqual(finalized);
+    const afterRepeat = await storedPayslip(
+      s,
+      firstAllocation.reservedPayslipId!,
+    );
+    expect(afterRepeat.count).toBe(1);
+    expect(afterRepeat.row.calculation_encrypted).toEqual(
+      paid.row.calculation_encrypted,
+    );
+    expect(afterRepeat.calculation).toEqual(paid.calculation);
+    const ordinaryAfterRepeat = await storedPayslip(
+      { ...s, employeeId: ordinary.employeeId },
+      ordinaryPlan.payslipId,
+    );
+    expect(ordinaryAfterRepeat.row.calculation_encrypted).toEqual(
+      ordinaryPaid.row.calculation_encrypted,
+    );
+    const persistedTarget = await asTenant((db) =>
+      db.query(
+        "SELECT to_jsonb(r) AS value FROM payroll_runs r WHERE id = $1",
+        [s.targetRunId],
+      ),
+    );
+    expect(persistedTarget.rows).toEqual(frozenTarget.rows);
+    for (const correction of [first, second]) {
+      const read = await requester.client.get(`${root}/${correction.id}`);
+      expect(read.status).toBe(200);
+      expect(read.body.data).toMatchObject({
+        status: "allocated",
+        payrollRunId: s.targetRunId,
+        reservedPayslipId: firstAllocation.reservedPayslipId,
+      });
+    }
+    expect(await frozenSnapshot(s)).toEqual(before);
+  });
+
+  it("[G688h P1 overlay recomputation] refreshes the salary overlay with the same allocation revision", async () => {
+    const s = await seed();
+    const before = await frozenSnapshot(s);
+    const first = await create(s);
+    await approve(first.id);
+    const allocated = await allocate(s, first.id);
+    const oldPreview = await preview(s, allocated.reservedPayslipId!);
+    expect(oldPreview.grossIdr).toBe(7_350_000);
+    const second = await create(s, 7_500_000);
+    expect(second.totalIdr).toBe(300_000);
+    await approve(second.id);
+    // Approval changes the salary overlay without allocating the second rapel.
+    await lockTarget(s, 7_950_000);
+    const finalized = await finalize(s, allocated.reservedPayslipId!, 1);
+    expect(finalized.payslips).toEqual([
+      expect.objectContaining({
+        allocationRevision: 1,
+        grossIdr: 7_950_000,
+        deductionsIdr: 0,
+        netIdr: 7_950_000,
+      }),
+    ]);
+    const paid = await storedPayslip(s, allocated.reservedPayslipId!);
+    expect(paid.count).toBe(1);
+    expect(paid.calculation.grossIdr).toBe(7_950_000);
+    expect(
+      paid.calculation.lines.filter(
+        (line) => line.componentCode === s.componentCode,
+      ),
+    ).toEqual([expect.objectContaining({ amountIdr: 7_500_000 })]);
+    expect(
+      paid.calculation.lines.filter((line) => line.componentCode === "RAPEL"),
+    ).toEqual([
+      expect.objectContaining({ sourceId: first.id, amountIdr: 450_000 }),
+    ]);
+    const unallocated = await requester.client.get(`${root}/${second.id}`);
+    expect(unallocated.status).toBe(200);
+    expect(unallocated.body.data).toMatchObject({
+      status: "approved",
+      totalIdr: 300_000,
+      payrollRunId: null,
+      reservedPayslipId: null,
+    });
+    expect(await frozenSnapshot(s)).toEqual(before);
+  });
+
+  it.each(["mismatch", "unsupported"] as const)(
+    "[G688h P1 frozen totals %s] rejects unsupported or mismatched approval totals without any payslip write",
+    async (failure) => {
+      const s = await seed();
+      const before = await frozenSnapshot(s);
+      const rapel = await create(s);
+      await approve(rapel.id);
+      const allocated = await allocate(s, rapel.id);
+      if (failure === "mismatch") await lockTarget(s, 7_350_001);
+      else
+        await lockTarget(s, 7_350_000, [s], {
+          deductionsIdr: 1,
+          netIdr: 7_349_999,
+          bankTransferIdr: 7_349_999,
+          bpjsEmployeeIdr: 1,
+        });
+      await expect(
+        finalize(s, allocated.reservedPayslipId!, 1),
+      ).rejects.toMatchObject({ status: 409 });
+      const count = await asTenant((db) =>
+        db.query<{ count: number }>(
+          "SELECT count(*)::int AS count FROM payslips WHERE tenant_id = $1 AND payroll_run_id = $2",
+          [tenantId, s.targetRunId],
+        ),
+      );
+      expect(count.rows[0]!.count).toBe(0);
+      expect(await frozenSnapshot(s)).toEqual(before);
+    },
+  );
+
+  it("[G688h P1 finalization row lock] waits for the target run lock before writing exactly one payslip", async () => {
+    const s = await seed();
+    const before = await frozenSnapshot(s);
+    const rapel = await create(s);
+    await approve(rapel.id);
+    const allocated = await allocate(s, rapel.id);
+    await lockTarget(s);
+    const holder = await owner.connect();
+    let pending: ReturnType<typeof finalize> | undefined;
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT set_config('app.tenant_id', $1, true)", [
+        tenantId,
+      ]);
+      const pid = await holder.query<{ pid: number }>(
+        "SELECT pg_backend_pid() AS pid",
+      );
+      await holder.query(
+        "SELECT id FROM payroll_runs WHERE id = $1 FOR UPDATE",
+        [s.targetRunId],
+      );
+      let settled = false;
+      pending = finalize(s, allocated.reservedPayslipId!, 1).then((result) => {
+        settled = true;
+        return result;
+      });
+      let blocked = false;
+      const deadline = Date.now() + 2_000;
+      while (!settled && Date.now() < deadline) {
+        const observed = await owner.query<{ blocked: boolean }>(
+          `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+           WHERE $1::int = ANY(pg_blocking_pids(pid))
+           AND state = 'active' AND query ILIKE '%payroll_runs%') AS blocked`,
+          [pid.rows[0]!.pid],
+        );
+        blocked = observed.rows[0]!.blocked;
+        if (blocked) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(blocked).toBe(true);
+      expect(settled).toBe(false);
+      const empty = await owner.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM payslips WHERE tenant_id = $1 AND payroll_run_id = $2",
+        [tenantId, s.targetRunId],
+      );
+      expect(empty.rows[0]!.count).toBe(0);
+      await holder.query("COMMIT");
+      const finalized = await pending;
+      expect(finalized.payslips).toEqual([
+        expect.objectContaining({ grossIdr: 7_350_000 }),
+      ]);
+    } finally {
+      await holder.query("ROLLBACK");
+      holder.release();
+      await pending?.catch(() => undefined);
+    }
+    const paid = await storedPayslip(s, allocated.reservedPayslipId!);
+    expect(paid.count).toBe(1);
+    expect(
+      paid.calculation.lines.filter((line) => line.componentCode === "RAPEL"),
+    ).toEqual([
+      expect.objectContaining({ sourceId: rapel.id, amountIdr: 450_000 }),
+    ]);
+    expect(await frozenSnapshot(s)).toEqual(before);
   });
 
   it("[Q44 shifted-date] preserves the first raise before a later raise and pays only 220000 additional rupiah", async () => {
@@ -1291,28 +2052,19 @@ describe("legend-svqew rapel Q43/Q44", () => {
     });
 
     await lockTarget(s);
-    await asTenant(async (db) => {
-      await db.query(
-        `INSERT INTO payslips (id, tenant_id, payroll_run_id, employee_id,
-          payment_method, calculation_encrypted, pii_key_version)
-         VALUES ($1, $2, $3, $4, 'bank_transfer', $5, $6)`,
-        [
-          allocated.reservedPayslipId,
-          tenantId,
-          s.targetRunId,
-          s.employeeId,
-          gross.sealed.calculation,
-          gross.sealed.keyVersion,
-        ],
-      );
-      const stored = await db.query(
-        "SELECT calculation_encrypted FROM payslips WHERE id = $1",
-        [allocated.reservedPayslipId],
-      );
-      expect(stored.rows[0]!.calculation_encrypted).toEqual(
-        gross.sealed.calculation,
-      );
-    });
+    const finalized = await finalize(s, allocated.reservedPayslipId!, 1);
+    expect(finalized.payslips).toEqual([
+      expect.objectContaining({
+        payslipId: allocated.reservedPayslipId,
+        grossIdr: 7_350_000,
+      }),
+    ]);
+    const stored = await storedPayslip(s, allocated.reservedPayslipId!);
+    expect(stored.count).toBe(1);
+    expect(stored.calculation.grossIdr).toBe(gross.grossIdr);
+    expect(
+      stored.calculation.lines.filter((line) => line.sourceId === rapel.id),
+    ).toEqual([expect.objectContaining({ amountIdr: 450_000 })]);
   });
 
   it("[Q44 stale employment persistence] rejects an old valid gross seal if eligibility changes before the payslip is inserted", async () => {
@@ -1329,6 +2081,9 @@ describe("legend-svqew rapel Q43/Q44", () => {
       ]),
     );
     await lockTarget(s);
+    await expect(
+      finalize(s, allocated.reservedPayslipId!, 1),
+    ).rejects.toMatchObject({ status: 409 });
 
     await asTenant(async (db) => {
       await db.query("SAVEPOINT stale_payslip");
@@ -1386,6 +2141,249 @@ describe("legend-svqew rapel Q43/Q44", () => {
       );
       const repeated = await post(requester.client, root, body(s));
       expect(repeated.status).toBe(409);
+    }
+  });
+
+  it("[G688h P1 rekey replay] preserves the authenticated allocation header through the isolated tenant reseal worker and repeats without another payment", async () => {
+    const sharedControl = await seed();
+    const isolatedTenant = tenantIdSchema.parse(randomUUID());
+    const isolatedBrand = randomUUID();
+    const isolatedEntity = randomUUID();
+    const isolatedOutlet = outletIdSchema.parse(randomUUID());
+    const isolatedContext = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: isolatedTenant,
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+    await owner.query(
+      `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode,
+       feature_flags, limits, created_by)
+       SELECT $1, $2, 'Rapel rekey isolated', plan, status, deployment_mode,
+       feature_flags, limits, created_by FROM tenants WHERE id = $3`,
+      [isolatedTenant, `rapel-rekey-${isolatedTenant.slice(0, 8)}`, tenantId],
+    );
+    let s: Seed | undefined;
+    try {
+      await asTenant(async (client) => {
+        await client.query(
+          "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'rapel-rekey', 'Rapel rekey')",
+          [isolatedBrand, isolatedTenant],
+        );
+        await client.query(
+          "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Rapel Rekey', false)",
+          [isolatedEntity, isolatedTenant],
+        );
+        await client.query(
+          `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code,
+           name, address, timezone, opening_hours, status)
+           VALUES ($1, $2, $3, $4, 'RR-01', 'Rapel rekey', 'Jl. Rekey',
+           'Asia/Jakarta', '{"mon":{"opens":"08:00","closes":"22:00"}}', 'active')`,
+          [isolatedOutlet, isolatedTenant, isolatedBrand, isolatedEntity],
+        );
+        for (const [actor, permissions] of [
+          [requester, ["payroll.view", "payroll.run"]],
+          [hr, ["payroll.view", "payroll.approve"]],
+          [finance, ["payroll.view", "payroll.approve", "payroll.lock"]],
+          [finalizer, ["payroll.view", "payroll.run", "payroll.lock"]],
+        ] as const) {
+          const roleId = randomUUID();
+          await client.query(
+            `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+             VALUES ($1, $2, $3, false, $4, '["tenant"]')`,
+            [
+              roleId,
+              isolatedTenant,
+              `Rapel rekey ${roleId}`,
+              JSON.stringify(permissions),
+            ],
+          );
+          await client.query(
+            `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type,
+             scope_id, valid_from, assigned_by)
+             VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+            [isolatedTenant, actor.id, roleId],
+          );
+        }
+      }, isolatedTenant);
+      s = await seed("2025-01-01", 6_000_000, "full", false, {
+        tenantId: isolatedTenant,
+        outletId: isolatedOutlet,
+      });
+      const seeded = s;
+      const scopedCreate = (amount: number) =>
+        createPayrollRapel(isolatedContext, requester.id, {
+          employeeId: employeeIdSchema.parse(seeded.employeeId),
+          componentId: payComponentIdSchema.parse(seeded.componentId),
+          effectiveFrom: "2026-06-16",
+          newAmountIdr: idr(amount),
+          idempotencyKey: key(),
+        });
+      const scopedApprove = async (id: string) => {
+        await approvePayrollRapel(isolatedContext, hr.id, id, "hr", {
+          idempotencyKey: key(),
+        });
+        await approvePayrollRapel(isolatedContext, finance.id, id, "finance", {
+          idempotencyKey: key(),
+        });
+      };
+      const scopedAllocate = (id: string) =>
+        allocatePayrollRapel(isolatedContext, requester.id, id, {
+          payrollRunId: payrollRunIdSchema.parse(seeded.targetRunId),
+          idempotencyKey: key(),
+        });
+      const first = await scopedCreate(6_900_000);
+      await scopedApprove(first.id);
+      const allocated = await scopedAllocate(first.id);
+      const second = await scopedCreate(7_500_000);
+      await scopedApprove(second.id);
+      await scopedAllocate(second.id);
+      await lockTarget(seeded, 8_250_000, [seeded], {}, isolatedTenant);
+      const scopedFinalize = () =>
+        withTenant(db, isolatedContext, (tx) =>
+          finalizePayrollRapelRunInTransaction(
+            tx,
+            isolatedContext,
+            finalizer.id,
+            {
+              payrollRunId: seeded.targetRunId,
+              employeePlan: [
+                {
+                  employeeId: seeded.employeeId,
+                  payslipId: allocated.reservedPayslipId!,
+                  paymentMethod: "bank_transfer",
+                },
+              ],
+              expectedAllocationRevisions: { [seeded.employeeId]: 2 },
+            },
+          ),
+        );
+      const finalized = await scopedFinalize();
+      const before = await storedPayslip(
+        seeded,
+        allocated.reservedPayslipId!,
+        isolatedTenant,
+      );
+      expect(before.row.pii_key_version).toBe(1);
+      expect(before.row.calculation_encrypted[0]).toBe(2);
+      expect(before.row.calculation_encrypted.readUInt32BE(1)).toBe(2);
+      const frozenRuns = await asTenant(
+        (client) =>
+          client.query(
+            "SELECT to_jsonb(r) AS value FROM payroll_runs r WHERE id = ANY($1) ORDER BY id",
+            [[seeded.sourceRunId, seeded.targetRunId]],
+          ),
+        isolatedTenant,
+      );
+      const sharedTenantBefore = await asTenant((client) =>
+        client.query(
+          `SELECT id, pii_key_version, encode(calculation_encrypted, 'hex') AS calculation
+         FROM payslips WHERE tenant_id = $1 AND id = $2`,
+          [tenantId, sharedControl.sourcePayslipId],
+        ),
+      );
+      expect(sharedTenantBefore.rows).toHaveLength(1);
+
+      const rotated = await runHrisPiiReseal({
+        activeKeyVersion: 2,
+        batchSize: 20,
+        listTenantIds: async () => [isolatedTenant],
+        log: { error: () => {} },
+      });
+      expect(rotated).toMatchObject({ failedTenants: 0, aborted: false });
+      const after = await storedPayslip(
+        seeded,
+        allocated.reservedPayslipId!,
+        isolatedTenant,
+      );
+      expect(after.row.pii_key_version).toBe(2);
+      expect(after.row.calculation_encrypted).not.toEqual(
+        before.row.calculation_encrypted,
+      );
+      expect(after.row.calculation_encrypted[0]).toBe(2);
+      expect(after.row.calculation_encrypted.subarray(1, 21)).toEqual(
+        before.row.calculation_encrypted.subarray(1, 21),
+      );
+      expect(after.calculation).toEqual(before.calculation);
+      expect(after.calculation.grossIdr).toBe(8_250_000);
+      const rapelLines = after.calculation.lines.filter(
+        (line) => line.componentCode === "RAPEL",
+      );
+      expect(rapelLines).toHaveLength(2);
+      expect(rapelLines.reduce((sum, line) => sum + line.amountIdr, 0)).toBe(
+        750_000,
+      );
+      const repeated = await scopedFinalize();
+      expect(repeated).toEqual(finalized);
+      const afterReplay = await storedPayslip(
+        seeded,
+        allocated.reservedPayslipId!,
+        isolatedTenant,
+      );
+      expect(afterReplay.count).toBe(1);
+      expect(afterReplay.row.pii_key_version).toBe(2);
+      expect(afterReplay.row.calculation_encrypted).toEqual(
+        after.row.calculation_encrypted,
+      );
+      expect(afterReplay.calculation).toEqual(after.calculation);
+      const runsAfter = await asTenant(
+        (client) =>
+          client.query(
+            "SELECT to_jsonb(r) AS value FROM payroll_runs r WHERE id = ANY($1) ORDER BY id",
+            [[seeded.sourceRunId, seeded.targetRunId]],
+          ),
+        isolatedTenant,
+      );
+      expect(runsAfter.rows).toEqual(frozenRuns.rows);
+      const sharedTenantAfter = await asTenant((client) =>
+        client.query(
+          `SELECT id, pii_key_version, encode(calculation_encrypted, 'hex') AS calculation
+         FROM payslips WHERE tenant_id = $1 AND id = $2`,
+          [tenantId, sharedControl.sourcePayslipId],
+        ),
+      );
+      expect(sharedTenantAfter.rows).toEqual(sharedTenantBefore.rows);
+      for (const correction of [first, second]) {
+        const read = await getPayrollRapel(
+          isolatedContext,
+          requester.id,
+          correction.id,
+        );
+        expect(read).toMatchObject({
+          status: "allocated",
+          payrollRunId: seeded.targetRunId,
+          reservedPayslipId: allocated.reservedPayslipId,
+        });
+      }
+    } finally {
+      if (s) seeds.splice(seeds.indexOf(s), 1);
+      await asTenant(async (client) => {
+        await client.query("SET LOCAL session_replication_role = replica");
+        for (const table of [
+          "payroll_rapel_finalizations",
+          "payroll_rapel_items",
+          "payroll_rapels",
+          "payslips",
+          "employee_pay_components",
+          "pay_components",
+          "employees",
+          "payroll_runs",
+          "payroll_policies",
+          "hris_idempotency",
+          "role_assignments",
+          "roles",
+          "audit_logs",
+          "outlets",
+          "legal_entities",
+          "brands",
+        ])
+          await client.query(`DELETE FROM ${table} WHERE tenant_id = $1`, [
+            isolatedTenant,
+          ]);
+      }, isolatedTenant);
+      await owner.query("DELETE FROM tenants WHERE id = $1", [isolatedTenant]);
     }
   });
 });

@@ -7,6 +7,7 @@ import {
   customType,
   foreignKey,
   index,
+  integer,
   pgTable,
   smallint,
   text,
@@ -162,6 +163,60 @@ export const payrollRapelItems = pgTable(
     check(
       "payroll_rapel_items_key_version_check",
       sql`${table.piiKeyVersion} >= 1`,
+    ),
+  ],
+);
+
+/** Insert proof only: ciphertext may later be rekeyed by the existing worker. */
+export const payrollRapelFinalizations = pgTable(
+  "payroll_rapel_finalizations",
+  {
+    payslipId: uuid("payslip_id").primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    employeeId: uuid("employee_id").notNull(),
+    payrollRunId: uuid("payroll_run_id").notNull(),
+    allocationRevision: integer("allocation_revision").notNull(),
+    calculationSha256: varchar("calculation_sha256", { length: 64 }).notNull(),
+    piiKeyVersion: smallint("pii_key_version").notNull(),
+    transactionId: text("transaction_id")
+      .notNull()
+      .default(sql`txid_current()::text`),
+    createdBy: text("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("payroll_rapel_finalizations_tenant_id_key").on(
+      table.tenantId,
+      table.payslipId,
+    ),
+    unique("payroll_rapel_finalizations_run_employee_key").on(
+      table.tenantId,
+      table.payrollRunId,
+      table.employeeId,
+    ),
+    foreignKey({
+      name: "payroll_rapel_finalizations_employee_fk",
+      columns: [table.tenantId, table.employeeId],
+      foreignColumns: [employees.tenantId, employees.id],
+    }),
+    foreignKey({
+      name: "payroll_rapel_finalizations_run_fk",
+      columns: [table.tenantId, table.payrollRunId],
+      foreignColumns: [payrollRuns.tenantId, payrollRuns.id],
+    }),
+    check(
+      "payroll_rapel_finalizations_revision_check",
+      sql`${table.allocationRevision} >= 0`,
+    ),
+    check(
+      "payroll_rapel_finalizations_key_version_check",
+      sql`${table.piiKeyVersion} >= 1`,
+    ),
+    check(
+      "payroll_rapel_finalizations_hash_check",
+      sql`${table.calculationSha256} ~ '^[0-9a-f]{64}$'`,
     ),
   ],
 );

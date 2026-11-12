@@ -7,8 +7,6 @@ import {
   businessDateSchema,
   createUlid,
   idr,
-  idrSchema,
-  z,
   type BusinessDate,
   type Idr,
   type ScopedTenantContext,
@@ -20,9 +18,7 @@ import {
   FROZEN_PAYROLL_RUN_STATUSES,
   payrollRapelIdSchema,
   payrollRapelSchema,
-  payrollRunIdSchema,
   payComponentIdSchema,
-  payComponentKindOf,
   payslipCalculationSchema,
   payslipLineSchema,
   type AllocatePayrollRapelInput,
@@ -46,6 +42,7 @@ import {
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { payrollGrossEnvelopeSchema } from "../lib/payroll-gross-envelope.ts";
 import {
   openPayrollAmount,
   openPayrollValue,
@@ -108,45 +105,6 @@ const itemAmount = (row: typeof payrollRapelItems.$inferSelect) =>
     row.piiKeyVersion,
   );
 
-// Older gross-engine callers stored this exact sealed envelope directly on
-// the payslip. Its row AAD and the tenant-scoped payslip/run foreign keys bind
-// the missing metadata. Unknown/full metadata never gets stripped to fit it.
-const grossEnvelopeSchema = z
-  .strictObject({
-    grossIdr: idrSchema.refine((v) => v >= 0),
-    deductionsIdr: idrSchema.refine((v) => v >= 0),
-    netIdr: idrSchema.refine((v) => v >= 0),
-    overtimeIdr: idrSchema.refine((v) => v >= 0),
-    lines: z.array(payslipLineSchema),
-    payrollRunId: payrollRunIdSchema.optional(),
-  })
-  .superRefine((value, ctx) => {
-    const earning = value.lines
-      .filter((line) => line.kind === "earning")
-      .reduce((sum, line) => sum + BigInt(line.amountIdr), 0n);
-    const deduction = value.lines
-      .filter((line) => line.kind === "deduction")
-      .reduce((sum, line) => sum + BigInt(line.amountIdr), 0n);
-    const overtime = value.lines
-      .filter((line) => line.category === "overtime" && line.kind === "earning")
-      .reduce((sum, line) => sum + BigInt(line.amountIdr), 0n);
-    if (
-      earning !== BigInt(value.grossIdr) ||
-      deduction !== BigInt(value.deductionsIdr) ||
-      earning - deduction !== BigInt(value.netIdr) ||
-      overtime !== BigInt(value.overtimeIdr) ||
-      value.lines.some(
-        (line) =>
-          line.kind !== payComponentKindOf(line.category) ||
-          (line.kind === "deduction" && line.taxable),
-      )
-    )
-      ctx.addIssue({
-        code: "custom",
-        message: "Gross envelope arithmetic does not balance",
-      });
-  });
-
 function sourceLines(
   context: ScopedTenantContext,
   employeeId: string,
@@ -180,7 +138,7 @@ function sourceLines(
       throw conflict("Slip sumber tidak cocok dengan karyawan dan periode.");
     return full.data.lines;
   }
-  const legacy = grossEnvelopeSchema.safeParse(value);
+  const legacy = payrollGrossEnvelopeSchema.safeParse(value);
   if (
     !legacy.success ||
     (legacy.data.payrollRunId !== undefined &&
@@ -1127,6 +1085,7 @@ export async function loadAllocatedRapelLines(
     payslipId: string;
     periodStart: BusinessDate;
     periodEnd: BusinessDate;
+    finalizing?: boolean;
   },
 ): Promise<PayslipLine[]> {
   const employee = await loadPayrollEmployeeForShare(
@@ -1148,7 +1107,9 @@ export async function loadAllocatedRapelLines(
   if (!run) throw notFound("Run payroll");
   if (
     run.runType !== "regular" ||
-    !["draft", "simulated"].includes(run.status) ||
+    !(input.finalizing ? ["locked"] : ["draft", "simulated"]).includes(
+      run.status,
+    ) ||
     run.periodStart !== input.periodStart ||
     run.periodEnd !== input.periodEnd
   )

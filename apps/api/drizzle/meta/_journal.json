@@ -1877,6 +1877,13 @@
       "when": 1794454276910,
       "tag": "0382_payroll_rapel_ledger",
       "breakpoints": true
+    },
+    {
+      "idx": 282,
+      "version": "7",
+      "when": 1794459707827,
+      "tag": "0383_payroll_rapel_finalization",
+      "breakpoints": true
     }
   ]
 }
