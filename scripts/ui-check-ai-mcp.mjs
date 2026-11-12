@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /* global window, document -- used only inside page.evaluate callbacks */
 // UI check for the AI/MCP screens. The pages come from
-// scripts/ui-check-ai-mcp.urls.json: [{ "name": "...", "path": "/..." }].
+// scripts/ui-check-ai-mcp.urls.json: [{ "name": "...", "path": "/...", "loading": true? }].
+// "loading": true marks a deliberate loading state: skip the skeleton wait.
 //
 // For every page: at 1440 and 390 px run axe (wcag2a, wcag2aa, wcag21aa,
 // wcag22aa) and take a full-page screenshot; at 320 px check that the page
@@ -32,6 +33,7 @@ const AXE_WIDTHS = [
 ];
 const OVERFLOW_WIDTH = { width: 320, height: 640 };
 const COLD = 60_000; // Vite compiles a route on its first request.
+const SETTLE_MAX = 10_000; // skeletons gone + network idle, per page.
 
 async function loadAxe() {
   const require = createRequire(import.meta.url);
@@ -77,15 +79,37 @@ async function loadAxe() {
   };
 }
 
-/** Wait for the app to hydrate; fall back to network idle if no marker is set. */
-async function settle(page) {
+/**
+ * Wait for the app to hydrate, then (unless the entry is a deliberate loading
+ * state) until no skeleton remains and the network is idle, max SETTLE_MAX.
+ */
+async function settle(page, entry) {
   await page
     .waitForFunction(
       () => document.documentElement.dataset.hydrated === "true",
       undefined,
       { timeout: COLD },
     )
-    .catch(() => page.waitForLoadState("networkidle").catch(() => {}));
+    .catch(() => {});
+  if (entry.loading !== true) {
+    const deadline = Date.now() + SETTLE_MAX;
+    await page
+      .waitForFunction(
+        () => document.querySelector('[data-slot="skeleton"]') === null,
+        undefined,
+        { timeout: SETTLE_MAX },
+      )
+      .catch(() => {});
+    await page
+      .waitForLoadState("networkidle", {
+        timeout: Math.max(deadline - Date.now(), 1),
+      })
+      .catch(() => {});
+    if (entry.name === "admin-cabut")
+      await page
+        .waitForSelector('[role="dialog"]', { timeout: 5_000 })
+        .catch(() => {});
+  }
   await page.waitForTimeout(300); // toast/dialog motion
 }
 
@@ -167,7 +191,7 @@ async function main() {
           await page.goto(`${baseUrl}${entry.path}`, {
             waitUntil: "domcontentloaded",
           });
-          await settle(page);
+          await settle(page, entry);
           const problems = [];
           if (run.axe) {
             const violations = await axe.run(page);
