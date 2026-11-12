@@ -127,6 +127,10 @@ const PHONE_LIKE_VALUE = /\d{6,}/;
 const ISO_DATE_VALUE = /^\d{4}-\d{2}-\d{2}(?:[T ][\d:.+Z-]*)?$/;
 const PUBLIC_PO_TOKEN_PATH = /^(\/api\/public\/purchase-orders\/)[^/]+/i;
 const ABSOLUTE_FORM_URL = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i;
+// A platform account search term can be a person's name or email, including
+// requests refused before authorization. Keep its paging metadata, never q.
+const PLATFORM_ACCOUNT_SEARCH_PATH =
+  /^\/api\/platform\/tenants\/[^/]+\/accounts\/?$/i;
 
 // The e-receipt token in the path is a bearer credential too (bead legend-93a).
 const PUBLIC_RECEIPT_PATH = /^(\/api\/public\/receipts\/)[^/?]+(\/pdf)?/i;
@@ -152,6 +156,9 @@ function safeUrl(url: string) {
   // A malformed percent-encoding makes the router reject the request (400);
   // the path may carry a credential in a param, so never log any of it.
   if (isMalformedPath(rawPath)) return "[malformed-url]";
+  const accountSearch = PLATFORM_ACCOUNT_SEARCH_PATH.test(
+    decodeURIComponent(rawPath),
+  );
   // The purchase order share token is a path segment: bearer credential.
   const path = rawPath
     .replace(PUBLIC_PO_TOKEN_PATH, "$1[redacted]")
@@ -161,6 +168,7 @@ function safeUrl(url: string) {
   for (const [key, value] of [...params.entries()])
     if (
       SENSITIVE_QUERY.test(key) ||
+      (accountSearch && key.toLowerCase() === "q") ||
       (!ISO_DATE_VALUE.test(value) &&
         PHONE_LIKE_VALUE.test(value.replace(/[\s+-]/g, "")))
     )

@@ -47,7 +47,6 @@ import {
 import {
   createTenant,
   getOutletRestoreWindow,
-  getTenantOrThrow,
   getTenantRestoreWindow,
   listPackages,
   listTenants,
@@ -67,6 +66,7 @@ import {
   assignTenantOwner,
   replaceTenantOwner,
 } from "../services/platform-tenant-owner.service.ts";
+import { getPlatformTenantDetailAny } from "../services/platform-tenant-directory.service.ts";
 
 export const platformRouter = Router();
 
@@ -115,7 +115,14 @@ platformRouter.post("/tenants", jsonBody, async (req, res) => {
 
 platformRouter.get("/tenants/:tenantId", async (req, res) => {
   const { tenantId } = tenantParams.parse(req.params);
-  res.json({ data: await getTenantOrThrow(tenantId) });
+  const auth = getAuth(req);
+  res.json({
+    data: await getPlatformTenantDetailAny({
+      tenantId,
+      actorUserId: auth.user.id,
+      impersonatedBy: auth.session.impersonatedBy ?? null,
+    }),
+  });
 });
 
 platformRouter.post("/tenants/:tenantId/status", jsonBody, async (req, res) => {
