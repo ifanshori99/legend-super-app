@@ -1884,6 +1884,13 @@
       "when": 1794364000000,
       "tag": "0358_supplier_invoices",
       "breakpoints": true
+    },
+    {
+      "idx": 359,
+      "version": "7",
+      "when": 1794442861933,
+      "tag": "0359_journal_posting_account_snapshot",
+      "breakpoints": true
     }
   ]
 }

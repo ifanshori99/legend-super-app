@@ -20,13 +20,16 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { ulidToUuid, type ScopedTenantContext } from "@starter/shared/core";
 import {
-  accountMappings,
   journalEntries,
   journalLines,
   taxSnapshots,
 } from "../db/schema/index.ts";
 import { logger } from "../lib/logger.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
+import {
+  salePostingAccountsOf,
+  type SalePostingAccounts,
+} from "./accounting-sale-account-history.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
 
@@ -136,6 +139,7 @@ type TaxAccounts = {
   legalEntityId: string;
   /** Payable account per tax type; a type without mapping has none. */
   byType: Partial<Record<TaxType, string>>;
+  byRole: SalePostingAccounts["byRole"];
 };
 
 /**
@@ -146,37 +150,15 @@ async function taxAccountsOf(
   tx: Tx,
   tenantId: TenantId,
   saleKey: string,
-): Promise<TaxAccounts | null> {
-  const [entry] = await tx
-    .select({ legalEntityId: journalEntries.legalEntityId })
-    .from(journalEntries)
-    .where(
-      and(
-        eq(journalEntries.tenantId, tenantId),
-        eq(journalEntries.idempotencyKey, saleKey),
-      ),
-    )
-    .limit(1);
-  if (!entry) return null;
-  const rows = await tx
-    .select({
-      role: accountMappings.role,
-      accountId: accountMappings.accountId,
-    })
-    .from(accountMappings)
-    .where(
-      and(
-        eq(accountMappings.tenantId, tenantId),
-        eq(accountMappings.legalEntityId, entry.legalEntityId),
-        inArray(accountMappings.role, [...TAX_ROLES]),
-      ),
-    );
+): Promise<TaxAccounts | string | null> {
+  const entry = await salePostingAccountsOf(tx, tenantId, saleKey);
+  if (entry === null || typeof entry === "string") return entry;
   const byType: Partial<Record<TaxType, string>> = {};
-  for (const row of rows) {
-    const type = ROLE_TYPE[row.role as TaxRole];
-    if (type) byType[type] = row.accountId;
+  for (const role of TAX_ROLES) {
+    const accountId = entry.byRole[role];
+    if (accountId) byType[ROLE_TYPE[role]] = accountId;
   }
-  return { legalEntityId: entry.legalEntityId, byType };
+  return { legalEntityId: entry.legalEntityId, byType, byRole: entry.byRole };
 }
 
 /** Two tax roles on one account: its balance cannot be told apart per type. */
@@ -344,6 +326,7 @@ export async function refundComponentsOf(
   const saleKey = `aj:sale:${orderId}`;
   const taxAccounts = await taxAccountsOf(tx, tenantId, saleKey);
   if (!taxAccounts) return "Sale journal of the order is not found";
+  if (typeof taxAccounts === "string") return taxAccounts;
   if (sharesAccount(taxAccounts.byType))
     return "Two tax roles are mapped to one account";
   const componentRoles = {
@@ -351,24 +334,16 @@ export async function refundComponentsOf(
     sales_discount: "discountIdr",
     service_charge: "serviceChargeIdr",
   } as const;
-  const mappings = await tx
-    .select({
-      role: accountMappings.role,
-      accountId: accountMappings.accountId,
-    })
-    .from(accountMappings)
-    .where(
-      and(
-        eq(accountMappings.tenantId, tenantId),
-        eq(accountMappings.legalEntityId, taxAccounts.legalEntityId),
-        inArray(accountMappings.role, [
-          "sales_revenue",
-          "sales_discount",
-          "service_charge",
-          "rounding",
-        ]),
-      ),
-    );
+  const mappings = Object.entries(taxAccounts.byRole)
+    .filter(([role]) =>
+      [
+        "sales_revenue",
+        "sales_discount",
+        "service_charge",
+        "rounding",
+      ].includes(role),
+    )
+    .map(([role, accountId]) => ({ role, accountId }));
   const accounts = [
     ...new Set([
       ...Object.values(taxAccounts.byType),
@@ -502,6 +477,7 @@ export async function refundTaxSplitOf(
   const saleKey = `aj:sale:${orderId}`;
   const accounts = await taxAccountsOf(tx, tenantId, saleKey);
   if (!accounts) return "Sale journal of the order is not found";
+  if (typeof accounts === "string") return accounts;
   // No PBJT account mapped: the posting itself fails ACCOUNT_MAPPING_MISSING.
   if (!accounts.byType.pbjt) return pbjtOnly(taxIdr);
   if (sharesAccount(accounts.byType))

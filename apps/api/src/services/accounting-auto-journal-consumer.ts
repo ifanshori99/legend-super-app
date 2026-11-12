@@ -653,6 +653,7 @@ async function postAutoJournal(
         eventName: fact.ruleEvent,
         ...(fact.variant ? { variant: fact.variant } : {}),
         amounts: fact.amounts,
+        accountOverrides: fact.accountOverrides,
         legalEntityId,
         // legend-msqvi: a loyalty journal names its own outlet (or none).
         outletId:

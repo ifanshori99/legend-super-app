@@ -30,6 +30,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -270,6 +271,10 @@ export const journalEntries = pgTable(
      * journals of other sources and on those posted before this column.
      */
     orderId: uuid("order_id"),
+    /** Exact role identities used by a rule posting; append-only with its journal. */
+    postingAccountSnapshot: jsonb("posting_account_snapshot").$type<
+      Partial<Record<PostingAccountRole, string>>
+    >(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

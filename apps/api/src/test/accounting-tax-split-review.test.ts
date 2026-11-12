@@ -272,12 +272,14 @@ describe("review: per-type clamp", () => {
 describe("review: two tax roles on one account", () => {
   it("a refund is not posted when PPN and PBJT payables are the same account", async () => {
     const world = await makeWorld();
-    const orderUlid = await sellMixed(world);
     await owner.query(
       `UPDATE account_mappings SET account_id = $3
         WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'tax_payable_ppn'`,
       [world.tenant.id, world.entity, world.accounts.tax_payable_pbjt],
     );
+    // Ambiguous at the sale itself. Later remapping must instead preserve the
+    // original, distinct account identities when refunding that sale.
+    const orderUlid = await sellMixed(world);
 
     const result = await deliver(
       world,
