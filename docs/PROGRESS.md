@@ -2,6 +2,33 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## Serah terima CTO 12 Nov siang (sesi G5xeg compact 2x)
+
+Sesi CTO baru: jalankan `ghostex coordinator guide`, baca `~/.agents/team/roles/cto.md`, lalu adopsi thread lama dengan `ghostex coordinator link <ref> --task ...` (thread masih melapor ke G5xeg sampai di-link). Item W13-W31 ada di G5xeg; buat ulang yang perlu di sesi baru.
+
+Thread berjalan (adopsi):
+- S30:P9mkl:G70y7 Merge train batch48k (Claude Sonnet, int/batch48k 748cfff0). Keputusan CTO BRK-TAX-05: akun service charge (2301, kewajiban) boleh di sale/refund, dengan batas SC yang dibalik <= SC yang dipungut; batas PB1 tetap. Merge train tambah test regresi, subagent architect xhigh, satu `pnpm check` penuh, lalu ff + push milestone/m1 (sekarang e9bbd9ea). Isi: ws07 pajak, hris-misc, ykk88/c79uy, ws08-crm, ws06-purchasing; migrasi dinomori ulang 0290-0299.
+- S30:P9mkl:G7n0c Finalisasi rapel dan approver (Codex #6, ws/payroll-engine). Keputusan: hitung ulang di transaksi finalize yang terkunci + tolak seal revision basi; trigger bukan CHECK, transisi status lama diizinkan. Brief 549, 558.
+- S30:P9mkl:G1iq8 U4 HRIS pengajuan dan akses (Claude Opus akun #1, .worktrees/hris-requests). Tag review mulai Q72.
+- S30:P9mkl:G7n9z Second opinion kasir dan DP (Codex #6, brief 561, ws/pos-order-be 6ed7a3e1).
+- S30:P9mkl:G3b1n Perbaiki temuan operasi harian (Codex #6, brief 562): P1 FK 0386 di bawah FORCE RLS, P2 antrean checklist macet saat konflik.
+
+Selesai sesi ini:
+- ws/pos-order-be (legend-dysef, legend-y5d2r -> review): 10 commit, 316 test, architect lolos. DP diterapkan saat submit (draft DP nol); pesanan staf lama dengan paymentLinkId level order ditolak 409. Setelah merge + SO: UI kasir buka tahan QRIS DP (founder Q68 "tahan" hanya sampai backend siap).
+- Second opinion platform (ws/platform-tenant-be 08f4adb6): nol temuan. Ops-daily: 2 temuan, diperbaiki G3b1n.
+
+Founder (jawaban terakhir): U1 setuju; U2 setuju kecuali e-struk (legend-1uk9, dilewati) dan QRIS DP ditahan, refund tetap jendela dialog; U3 Tanya AI diubah ke gaya ChatGPT (Q52 halaman review menunggu jawaban), 5 layar lain setuju; U5a 6 layar setuju. Q terakhir dipakai: Q71 (U4 mulai Q72).
+
+Langkah berikut:
+1. Tunggu G70y7 push m1; lalu hapus worktree yang sudah digabung; update item W14, W15, W20, W23, W25, W30 jadi selesai.
+2. Merge train batch berikut: ws/payroll-engine (setelah G7n0c + check), ws/hris-contract, ws/ops-daily (setelah G3b1n), ws/platform-tenant-be, ws/pos-order-be (setelah SO 561), cabang UI (ui/pos-cashier-captain, ui/pos-extra, ui/backoffice-platform, ui/ai-mcp setelah Q52; nav.ts/id.ts digabung antara U1 dan U2).
+3. Setelah ws07 di m1: legend-6m1w1 + legend-fug4 (fug4 alur uang baru, architect xhigh). legend-77r0 setelah fix-ykk88 + ws08 di m1. legend-wf37 setelah hris-contract di m1.
+4. U5b (12 layar config) butuh brief 539-u5b + slot Opus. Paket A infra test (13q7, uwsl, ihf7) belum ada pemilik.
+5. Akhir gelombang: session-usage.py + parallel-report ke PROGRESS.
+
+Kuota: Claude #1 7 hari ~88%, #2 98% (reset 13 Nov 06:00), #3 96%. Utamakan Codex #6 (tanpa batas 5 jam). Thread Claude baru seminimal mungkin.
+Pitfall: backup push tiap jam bentrok dengan thread yang amend commit -> setelah thread selesai pakai `git push --force-with-lease=<branch>:<sha-remote-lama>`. Hook RAM menolak seluruh perintah Bash -> tulis brief terpisah dari start-thread.
+
 ## Merge train batch33 + batch34 (engineer, sesi c81d48a4, 2026-11-09 malam)
 
 - `milestone/m1` = `d8ea5e0b` (batch34, fast-forward dari 4c818489; batch33 73af1bd0 ikut di dalamnya). Isi batch34: gn17x 04d2836a (+imdzn 814bc779, atwse 6b2fedbf), a9iby 4e100246, drzaf f3e4108d (migrasi 0166), ghgei 3b90a9bd, usw3 4fe23687, 76azz dac509f3, EDC fixtures 0c959539.
