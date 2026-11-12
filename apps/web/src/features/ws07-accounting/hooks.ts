@@ -209,6 +209,26 @@ export function useUpdateManualJournal(manualJournalId: string | undefined) {
   });
 }
 
+/** Save the form as a draft, then submit it for approval in one go. */
+export function useSaveAndSubmitManualJournal() {
+  const invalidate = useInvalidate();
+  const refresh = (journalId: string | undefined) =>
+    Promise.all([
+      invalidate(accountingKeys.manualJournal(journalId ?? "none")),
+      invalidate(accountingKeys.manualJournals()),
+      invalidate(accountingKeys.journals()),
+    ]);
+  return useMutation({
+    mutationFn: api.saveAndSubmitManualJournal,
+    onSuccess: (_journal, input) => refresh(input.journalId),
+    // A saved draft exists even when the submit step failed.
+    onError: (error, input) => {
+      if (error instanceof api.SubmitAfterSaveError)
+        return refresh(input.journalId);
+    },
+  });
+}
+
 /** Approve posts the entry in the same transaction (ACC-01 / AUTH-06). */
 export function useManualJournalCommand(manualJournalId: string | undefined) {
   const invalidate = useInvalidate();

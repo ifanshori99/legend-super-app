@@ -1,7 +1,8 @@
 // Manual journal form: create a draft or edit one that is draft/rejected.
 // The line editor enforces ACC-01 while typing (balanced, one side per row,
 // whole rupiah) and the date field says whether the fiscal period is open
-// (ACC-02). Approval happens on the detail screen, by a different person.
+// (ACC-02). "Ajukan untuk persetujuan" saves and submits in one step; approval
+// still happens on the detail screen, by a different person.
 import * as React from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft } from "lucide-react";
@@ -23,6 +24,7 @@ import { useToast } from "@/components/ui/toast";
 import {
   useCreateManualJournal,
   useFiscalPeriods,
+  useSaveAndSubmitManualJournal,
   useUpdateManualJournal,
 } from "../hooks";
 import {
@@ -37,6 +39,7 @@ import {
   type EditorLine,
 } from "./lines-editor";
 import { JournalLinesSection } from "./journal-lines-section";
+import { SubmitAfterSaveError } from "../api";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 type Kind = ManualJournal["kind"];
@@ -69,6 +72,7 @@ export function ManualJournalFormPage({
   const periodsQuery = useFiscalPeriods(legalEntityId);
   const create = useCreateManualJournal();
   const update = useUpdateManualJournal(journal?.id);
+  const saveAndSubmit = useSaveAndSubmitManualJournal();
 
   const [entryDate, setEntryDate] = React.useState(
     journal?.entryDate ?? businessDateToday(),
@@ -90,14 +94,15 @@ export function ManualJournalFormPage({
     (row) => row.period === entryDate.slice(0, 7),
   );
   const periodClosed = period?.status === "closed";
-  const pending = create.isPending || update.isPending;
+  const pending =
+    create.isPending || update.isPending || saveAndSubmit.isPending;
   const formRef = React.useRef<HTMLFormElement>(null);
   const [submitted, setSubmitted] = React.useState(false);
   // Simpan draf stays enabled so a click explains what is missing; the
   // validation in submit() keeps an invalid or unbalanced journal from the API.
   const canSubmit = !pending && !periodClosed;
 
-  const submit = async () => {
+  const submit = async (mode: "draft" | "approval" = "draft") => {
     setServerError(null);
     setSubmitted(true);
     const missingDescription = description.trim() === "";
@@ -112,6 +117,37 @@ export function ManualJournalFormPage({
       return;
     }
     try {
+      if (mode === "approval") {
+        const lines = evaluation.lines;
+        const next = await saveAndSubmit.mutateAsync(
+          journal
+            ? {
+                journalId: journal.id,
+                body: {
+                  entryDate,
+                  kind,
+                  description: description.trim(),
+                  lines,
+                },
+              }
+            : {
+                body: {
+                  legalEntityId,
+                  outletId: null,
+                  entryDate,
+                  kind,
+                  description: description.trim(),
+                  lines,
+                },
+              },
+        );
+        toast({ title: t("accounting.manual.form.submittedForApproval") });
+        void navigate({
+          to: "/kelola/akuntansi/jurnal-manual/$manualJournalId",
+          params: { manualJournalId: next.id },
+        });
+        return;
+      }
       if (journal) {
         const next = await update.mutateAsync({
           entryDate,
@@ -140,6 +176,15 @@ export function ManualJournalFormPage({
         params: { manualJournalId: created.id },
       });
     } catch (error) {
+      if (error instanceof SubmitAfterSaveError) {
+        // The draft is saved: open it, where "Kirim untuk persetujuan" retries.
+        toast({ title: t("accounting.manual.form.savedNotSubmitted") });
+        void navigate({
+          to: "/kelola/akuntansi/jurnal-manual/$manualJournalId",
+          params: { manualJournalId: error.journal.id },
+        });
+        return;
+      }
       setServerError(
         error instanceof ApiError ? error.message : t("errorPage.errorTitle"),
       );
@@ -273,6 +318,9 @@ export function ManualJournalFormPage({
             {t("accounting.manual.form.periodClosedSave")}
           </p>
         )}
+        <p className="text-sm leading-5 text-muted-foreground">
+          {t("accounting.manual.form.approvalNote")}
+        </p>
         <div className="flex flex-col-reverse gap-2 border-t border-border pt-4 sm:flex-row sm:justify-end">
           <Button
             asChild
@@ -286,13 +334,25 @@ export function ManualJournalFormPage({
           </Button>
           <Button
             type="submit"
-            loading={pending}
+            variant="outline"
+            loading={create.isPending || update.isPending}
             disabled={!canSubmit}
             className="w-full sm:w-auto"
           >
             {journal
               ? t("accounting.manual.form.saveChanges")
               : t("accounting.manual.form.saveDraft")}
+          </Button>
+          <Button
+            type="button"
+            loading={saveAndSubmit.isPending}
+            disabled={!canSubmit}
+            onClick={() => {
+              void submit("approval");
+            }}
+            className="w-full sm:w-auto"
+          >
+            {t("accounting.manual.form.submitForApproval")}
           </Button>
         </div>
       </form>

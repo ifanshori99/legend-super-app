@@ -63,6 +63,7 @@ import { Route as KelolaKelolaPembayaranRouteImport } from './routes/_kelola/kel
 import { Route as KelolaKelolaPengadaanRouteImport } from './routes/_kelola/kelola.pengadaan'
 import { Route as KelolaKelolaPengaturanRouteImport } from './routes/_kelola/kelola.pengaturan'
 import { Route as KelolaKelolaPerangkatRouteImport } from './routes/_kelola/kelola.perangkat'
+import { Route as KelolaKelolaStatusEdgeRouteImport } from './routes/_kelola/kelola.status-edge'
 import { Route as KelolaKelolaUlasanRouteImport } from './routes/_kelola/kelola.ulasan'
 import { Route as KelolaReportsIndexRouteImport } from './routes/_kelola/reports.index'
 import { Route as KelolaReportsBuilderRouteImport } from './routes/_kelola/reports.builder'
@@ -646,6 +647,11 @@ const KelolaKelolaPengaturanRoute = KelolaKelolaPengaturanRouteImport.update({
 const KelolaKelolaPerangkatRoute = KelolaKelolaPerangkatRouteImport.update({
   id: '/kelola/perangkat',
   path: '/kelola/perangkat',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaKelolaStatusEdgeRoute = KelolaKelolaStatusEdgeRouteImport.update({
+  id: '/kelola/status-edge',
+  path: '/kelola/status-edge',
   getParentRoute: () => KelolaRoute,
 } as any)
 const KelolaKelolaUlasanRoute = KelolaKelolaUlasanRouteImport.update({
@@ -2546,6 +2552,7 @@ export interface FileRoutesByFullPath {
   '/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/kelola/pengaturan': typeof KelolaKelolaPengaturanRoute
   '/kelola/perangkat': typeof KelolaKelolaPerangkatRoute
+  '/kelola/status-edge': typeof KelolaKelolaStatusEdgeRoute
   '/kelola/ulasan': typeof KelolaKelolaUlasanRoute
   '/reports/builder': typeof KelolaReportsBuilderRoute
   '/kds/ganti-pengguna': typeof KitchenKdsGantiPenggunaRoute
@@ -2912,6 +2919,7 @@ export interface FileRoutesByTo {
   '/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/kelola/pengaturan': typeof KelolaKelolaPengaturanRoute
   '/kelola/perangkat': typeof KelolaKelolaPerangkatRoute
+  '/kelola/status-edge': typeof KelolaKelolaStatusEdgeRoute
   '/kelola/ulasan': typeof KelolaKelolaUlasanRoute
   '/reports/builder': typeof KelolaReportsBuilderRoute
   '/kds/ganti-pengguna': typeof KitchenKdsGantiPenggunaRoute
@@ -3290,6 +3298,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/_kelola/kelola/pengaturan': typeof KelolaKelolaPengaturanRoute
   '/_kelola/kelola/perangkat': typeof KelolaKelolaPerangkatRoute
+  '/_kelola/kelola/status-edge': typeof KelolaKelolaStatusEdgeRoute
   '/_kelola/kelola/ulasan': typeof KelolaKelolaUlasanRoute
   '/_kelola/reports/builder': typeof KelolaReportsBuilderRoute
   '/_kitchen/kds/ganti-pengguna': typeof KitchenKdsGantiPenggunaRoute
@@ -3660,6 +3669,7 @@ export interface FileRouteTypes {
     | '/kelola/pengadaan'
     | '/kelola/pengaturan'
     | '/kelola/perangkat'
+    | '/kelola/status-edge'
     | '/kelola/ulasan'
     | '/reports/builder'
     | '/kds/ganti-pengguna'
@@ -4026,6 +4036,7 @@ export interface FileRouteTypes {
     | '/kelola/pengadaan'
     | '/kelola/pengaturan'
     | '/kelola/perangkat'
+    | '/kelola/status-edge'
     | '/kelola/ulasan'
     | '/reports/builder'
     | '/kds/ganti-pengguna'
@@ -4403,6 +4414,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pengadaan'
     | '/_kelola/kelola/pengaturan'
     | '/_kelola/kelola/perangkat'
+    | '/_kelola/kelola/status-edge'
     | '/_kelola/kelola/ulasan'
     | '/_kelola/reports/builder'
     | '/_kitchen/kds/ganti-pengguna'
@@ -5128,6 +5140,13 @@ declare module '@tanstack/react-router' {
       path: '/kelola/perangkat'
       fullPath: '/kelola/perangkat'
       preLoaderRoute: typeof KelolaKelolaPerangkatRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/status-edge': {
+      id: '/_kelola/kelola/status-edge'
+      path: '/kelola/status-edge'
+      fullPath: '/kelola/status-edge'
+      preLoaderRoute: typeof KelolaKelolaStatusEdgeRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kelola/kelola/ulasan': {
@@ -7549,6 +7568,7 @@ interface KelolaRouteChildren {
   KelolaKelolaPengadaanRoute: typeof KelolaKelolaPengadaanRoute
   KelolaKelolaPengaturanRoute: typeof KelolaKelolaPengaturanRoute
   KelolaKelolaPerangkatRoute: typeof KelolaKelolaPerangkatRoute
+  KelolaKelolaStatusEdgeRoute: typeof KelolaKelolaStatusEdgeRoute
   KelolaKelolaUlasanRoute: typeof KelolaKelolaUlasanRoute
   KelolaReportsBuilderRoute: typeof KelolaReportsBuilderRoute
   KelolaKelolaIndexRoute: typeof KelolaKelolaIndexRoute
@@ -7799,6 +7819,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaPengadaanRoute: KelolaKelolaPengadaanRoute,
   KelolaKelolaPengaturanRoute: KelolaKelolaPengaturanRoute,
   KelolaKelolaPerangkatRoute: KelolaKelolaPerangkatRoute,
+  KelolaKelolaStatusEdgeRoute: KelolaKelolaStatusEdgeRoute,
   KelolaKelolaUlasanRoute: KelolaKelolaUlasanRoute,
   KelolaReportsBuilderRoute: KelolaReportsBuilderRoute,
   KelolaKelolaIndexRoute: KelolaKelolaIndexRoute,

@@ -1,0 +1,108 @@
+{
+  "baseUrl": "http://localhost:3261",
+  "axe": "axe-core bundle",
+  "tags": [
+    "wcag2a",
+    "wcag2aa",
+    "wcag21aa",
+    "wcag22aa"
+  ],
+  "results": {
+    "s35-alert-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s35-alert-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "s35-normal-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s35-normal-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "s35-loading-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s35-loading-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "s35-empty-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s35-empty-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "s35-error-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s35-error-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "s35-refreshed-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s35-refreshed-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-empty-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-empty-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-balanced-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-balanced-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-unbalanced-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-unbalanced-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-submit-blocked-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-submit-blocked-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-submit-loading-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-submit-loading-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-submit-success-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-submit-success-390": {
+      "status": "pass",
+      "violations": []
+    }
+  }
+}

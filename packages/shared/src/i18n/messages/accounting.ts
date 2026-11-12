@@ -252,8 +252,15 @@ export const accountingMessages = {
         "Periode {period} sudah ditutup. Pilih tanggal di periode yang masih terbuka.",
       periodClosedSave:
         "Jurnal belum bisa disimpan: periode tanggal ini sudah ditutup. Ubah tanggal ke periode yang masih terbuka.",
-      balance: "Debit {debit} · Kredit {credit}",
-      difference: "Selisih {amount}",
+      totalDebit: "Total debit",
+      totalCredit: "Total kredit",
+      differenceLabel: "Selisih",
+      approvalNote:
+        "Jurnal harus seimbang dan memerlukan persetujuan sebelum dibukukan.",
+      submitForApproval: "Ajukan untuk persetujuan",
+      submittedForApproval: "Jurnal berhasil diajukan untuk persetujuan.",
+      savedNotSubmitted:
+        "Draf tersimpan, tetapi belum terkirim untuk persetujuan. Kirim dari halaman ini.",
       unbalancedTitle: "Jurnal belum seimbang",
       amountIssueHint:
         "Ada baris dengan jumlah tidak valid. Perbaiki dulu sebelum menyeimbangkan.",

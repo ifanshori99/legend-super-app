@@ -1,4 +1,4 @@
-import { Network } from "lucide-react";
+import { Network, Server } from "lucide-react";
 import type { AreaNavEntry } from "@/lib/areas/nav";
 
 // Supervisor entry: connectivity, sync backlog, print queue, device alerts
@@ -11,6 +11,16 @@ const nav: AreaNavEntry[] = [
     to: "/operasional/koneksi",
     icon: Network,
     order: 80,
+    anyPermission: ["report.operational.view"],
+  },
+  // Back-office edge nodes and receipt-run alert (legend-ph62j).
+  {
+    area: "kelola",
+    labelKey: "edgeNodes.nav",
+    to: "/kelola/status-edge",
+    icon: Server,
+    order: 97,
+    group: "operations",
     anyPermission: ["report.operational.view"],
   },
 ];
