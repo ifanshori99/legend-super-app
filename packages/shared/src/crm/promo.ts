@@ -210,8 +210,8 @@ export type Promotion = z.infer<typeof promotionSchema>;
 
 /**
  * The rules a bill redeemed, as they were at redeem time, keyed by promotion
- * id: conditions and benefit only (status, validity, quotas and budgets were
- * already consumed). The partial-refund recheck (owner Q41) reads this
+ * id: conditions, benefit and checkout priority (status, validity, quotas and
+ * budgets were already consumed). The partial-refund recheck (owner Q41) reads this
  * snapshot, so editing a promotion later never changes what an already-paid
  * bill earned.
  */
@@ -220,6 +220,8 @@ export const promotionRuleSnapshotSchema = z.record(
   z.strictObject({
     conditions: z.array(promotionConditionSchema),
     benefit: promotionBenefitSchema,
+    // Absent only on applications redeemed before legend-a4yd.
+    priority: z.number().int().refine(safeInt).optional(),
   }),
 );
 export type PromotionRuleSnapshot = z.infer<typeof promotionRuleSnapshotSchema>;
