@@ -3948,3 +3948,11 @@ Task 532b (architect ronde 2 atas a5938048) selesai: P1 void edge diparkir (`ord
 - Catatan rilis: rilis cloud DULU, lalu edge (edge-hardening butuh `MAINTENANCE_DATABASE_URL` di edge; edge-promo-streams dan edge-catalog-fresh memakai endpoint/kolom cloud baru: 0287-0289 harus sudah diterapkan di cloud sebelum edge berubah). Migrasi 0285 (batch48i) tanpa CONCURRENTLY: tetap dicatat.
 - Cabang payroll, hris-misc, ws07-tax masih diperbaiki: batch berikutnya.
 - Biaya sesi merge train (session-usage): total biaya* 3600k; subagent: 4 (puncak 2 bersamaan, rata-rata 0,08 per langkah; `parallel-report` 07:00).
+
+## 2026-11-12: fix SO Codex legend-ykk88 (uang) + legend-c79uy (akses), cabang `ws/fix-ykk88-c79uy`
+
+- Sudah ykk88: waktu fakta refund/void POS ditetapkan setelah lock `pos_orders` (`monotonicFactTime`, lebih lambat dari semua fakta tagihan, tanpa jam database supaya tetap sebanding dengan jam aplikasi); waktu keputusan chain approval refund juga setelah lock (`refundChainDecisionTime`) dan dipakai untuk persistence dan event. Test dua transaksi skenario Codex (owner 100rb vs supervisor 150rb overpayment, plafon 200rb) dan kontrol: refund tak sah tetap ditolak, total tak pernah melebihi yang dibayar.
+- Sudah c79uy: P1 hris-employee-manager.service.ts otorisasi ulang setelah lock (urutan lock sama dengan offboarding: employee, manajer baru, role assignment pelaku dan manajer; akses dimuat ulang dengan `lockedNow`); P2 backfill-employee-managers.ts pakai `lockedNow` setelah lock.
+- Tambahan: test backfill 0283 pada tenant ber-template owner/tenant_admin (baris nyata) hijau; tidak ada bug migrasi.
+- Bukti: gagal-dulu 8 test (ykk88 5, c79uy 3) + 3 HRIS lock-order + 1 chain approval, semuanya sebab benar; 23 file test terarah hijau (494 lulus, 8 skip).
+- Catatan sisa risiko (gagal-aman, tidak membayar lebih): `platform-approval.service.ts` cek peran/tenggat chain masih memakai `now` pra-lock; `createdAt` level berikut memakai `now`; role target employee dan baris `roles` kustom tidak di-lock di PATCH manajer.

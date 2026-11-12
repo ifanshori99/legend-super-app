@@ -51,6 +51,7 @@ import type { Tx } from "./menu-internals.ts";
 import { livePromoApplicationOf } from "./order-promo-refund.ts";
 import { loadDeferredRefundCommitments } from "./payment-refund-edge-history.ts";
 import {
+  monotonicFactTime,
   refundApprovalLimitRefused,
   refundApprovalWithinLimit,
   refundCommittedAmount,
@@ -137,7 +138,8 @@ async function correct<T>(
     operation: string;
     request: unknown;
   },
-  run: (tx: Tx, locked: Locked) => Promise<T>,
+  run: (tx: Tx, locked: Locked, factAt: Date) => Promise<T>,
+  requestedAt: Date,
 ): Promise<T> {
   return withTenant(db, context, (tx) =>
     posIdempotent(
@@ -159,7 +161,19 @@ async function correct<T>(
           input.orderId,
         );
         assertCorrectionTargetsFinalOrder({ status: locked.order.status });
-        return run(tx, locked);
+        // legend-ykk88: the fact time is taken after the lock, later than every
+        // money fact already committed on the bill, whatever clock the request
+        // read before it waited. Persistence and events use this one time.
+        const factAt = await monotonicFactTime(
+          tx,
+          {
+            tenantId: context.tenant.tenantId,
+            outletId: locked.order.outletId,
+            orderId: locked.order.id,
+          },
+          requestedAt,
+        );
+        return run(tx, locked, factAt);
       },
     ),
   );
@@ -203,7 +217,7 @@ export async function voidPosOrderCorrection(
   outletId: OutletId,
   orderId: string,
   input: VoidCorrectionInput,
-  now = new Date(),
+  requestedAt = new Date(),
 ): Promise<PosVoid> {
   // A cash void is a refund (Q63): same authoritative-cloud requirement as
   // refundPosOrder, since an edge snapshot cannot prove admin/POS refund history.
@@ -224,7 +238,7 @@ export async function voidPosOrderCorrection(
       operation: "order.correction_void",
       request,
     },
-    async (tx, { order }) => {
+    async (tx, { order }, now) => {
       const { voids, refunds } = await correctionsOf(tx, context, order.id);
       if (voids.length > 0)
         throw new CoreError("CONFLICT", "Transaksi ini sudah di-void.");
@@ -455,6 +469,7 @@ export async function voidPosOrderCorrection(
         );
       return voidDto(row);
     },
+    requestedAt,
   );
 }
 
@@ -642,7 +657,7 @@ export async function refundPosOrder(
   outletId: OutletId,
   orderId: string,
   input: RefundInput,
-  now = new Date(),
+  requestedAt = new Date(),
 ): Promise<PosRefund> {
   // An edge snapshot cannot prove the bill's admin/POS refund history, even
   // while its cloud link is connected. Require the authoritative cloud path;
@@ -664,7 +679,7 @@ export async function refundPosOrder(
       operation: "order.refund",
       request,
     },
-    async (tx, { order }) => {
+    async (tx, { order }, now) => {
       const { voids, refunds } = await correctionsOf(tx, context, order.id);
       if (voids.length > 0)
         throw new CoreError("CONFLICT", "Transaksi ini sudah di-void.");
@@ -1093,5 +1108,6 @@ export async function refundPosOrder(
         );
       return refundDto(row);
     },
+    requestedAt,
   );
 }

@@ -178,11 +178,48 @@ export async function changeEmployeeManager(
         );
         const row = await selectEmployee(tx, context, employeeId, "update");
         if (!row) throw notFound();
-        // The pre-lock check used an unlocked read: the home outlet may have
-        // moved since, so authorise again on the locked row.
-        if (access.viewerFor(row) === null) throw notFound();
-        if (!mayChangeEmployeeManager(access, row)) throw forbidden();
         const newManagerId = input.managerId;
+        // Lock order (same as offboarding: employee row, then role
+        // assignments): the target row is held FOR UPDATE, the new manager's row
+        // FOR SHARE (a resignation of the new manager cannot commit between the
+        // check and the write), and only then the role assignments below.
+        const manager =
+          newManagerId === null
+            ? null
+            : await selectEmployee(tx, context, newManagerId, "share");
+        // Lock the actor's role assignments (FOR SHARE, as the backfill does
+        // for managers): a revoke or shortening is an UPDATE/DELETE of these
+        // rows, so it cannot commit between the fresh access load below and our
+        // writes, and a revoke that committed while we waited is seen.
+        await tx.execute(
+          sql`SELECT id FROM role_assignments
+              WHERE tenant_id = ${tenantId}::uuid AND user_id = ${access.actorUserId}
+              ORDER BY id FOR SHARE`,
+        );
+        // Also the proposed manager's role assignments (the role rule below
+        // reads them), as the backfill does.
+        if (manager) {
+          await tx.execute(
+            sql`SELECT ra.id FROM role_assignments ra
+                JOIN employees e ON e.tenant_id = ra.tenant_id AND e.user_id = ra.user_id
+                WHERE ra.tenant_id = ${tenantId}::uuid AND e.id = ${manager.id}::uuid
+                ORDER BY ra.id FOR SHARE OF ra`,
+          );
+        }
+        // Time is taken after the last lock: a wait may have let an assignment
+        // expire. Used for access, the role rule, updated_at and the audit time.
+        const lockedNow = new Date();
+        // The pre-lock access was read before waiting on the locks: the role
+        // may have been revoked or expired, and the home outlet may have moved.
+        // Authorise again with the latest access, at the lock time.
+        const locked = await loadHrisAccess(
+          tx,
+          context,
+          actorUserId,
+          lockedNow,
+        );
+        if (locked.viewerFor(row) === null) throw notFound();
+        if (!mayChangeEmployeeManager(locked, row)) throw forbidden();
         if (newManagerId === row.id)
           throw new HttpError(
             422,
@@ -192,21 +229,13 @@ export async function changeEmployeeManager(
         if ((row.managerId ?? null) === newManagerId)
           throw new HttpError(422, "VALIDATION_ERROR", "Atasan tidak berubah.");
         if (newManagerId !== null) {
-          // FOR SHARE: a resignation of the new manager (offboarding) cannot
-          // commit between this check and the write.
-          const manager = await selectEmployee(
-            tx,
-            context,
-            newManagerId,
-            "share",
-          );
           // The new manager must be someone the caller may see: otherwise the
           // answers (422/409/200) would reveal people outside the caller's
           // reach, and a brand-A GM could attach a brand-B employee.
           if (
             !manager ||
             manager.status !== "active" ||
-            access.viewerFor(manager) === null
+            locked.viewerFor(manager) === null
           )
             throw new HttpError(
               422,
@@ -223,7 +252,7 @@ export async function changeEmployeeManager(
             tx,
             tenantId,
             [row.id, manager.id],
-            now,
+            lockedNow,
           );
           if (
             !isJuniorOnly(roleKeys.get(row.id) ?? []) &&
@@ -237,7 +266,7 @@ export async function changeEmployeeManager(
         }
         const [updated] = await tx
           .update(employees)
-          .set({ managerId: newManagerId, updatedAt: now })
+          .set({ managerId: newManagerId, updatedAt: lockedNow })
           .where(
             and(eq(employees.tenantId, tenantId), eq(employees.id, row.id)),
           )
@@ -246,7 +275,7 @@ export async function changeEmployeeManager(
         await recordAudit(
           tx,
           context,
-          hrisAuditEntry(context, access.actorUserId, now, {
+          hrisAuditEntry(context, access.actorUserId, lockedNow, {
             outletId: row.homeOutletId,
             action: MANAGER_CHANGE_ACTION,
             objectType: "employee",
