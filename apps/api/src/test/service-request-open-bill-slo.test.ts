@@ -256,6 +256,11 @@ describe("bill-request SLO from the outlet policy (legend-2zb5)", () => {
     await setSlo(seededOutletA, 60, managerA);
     const base = new Date();
     const bill = await ask(await newGuest(managerA), "request_bill");
+    const acknowledged = await managerA.client
+      .post(`/api/service-requests/${bill}/acknowledge`)
+      .set("Host", seededHostname)
+      .set(originHeader);
+    expect(acknowledged.status).toBe(200);
     const resolved = await managerA.client
       .post(`/api/service-requests/${bill}/resolve`)
       .set("Host", seededHostname)
