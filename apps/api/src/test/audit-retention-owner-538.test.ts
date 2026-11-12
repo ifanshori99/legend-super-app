@@ -201,6 +201,8 @@ describe("G5b missing edge maintenance login reaches the cloud owner", () => {
       const restoredAfter = frames.length;
       disabled = false;
       await vi.waitFor(() => {
+        // A heartbeat sent before the flip can reach the server after it, so
+        // look for any later heartbeat without the field, not only the first.
         const restored = frames
           .slice(restoredAfter)
           .find(
@@ -208,10 +210,10 @@ describe("G5b missing edge maintenance login reaches the cloud owner", () => {
               typeof frame === "object" &&
               frame !== null &&
               "type" in frame &&
-              frame.type === "heartbeat",
+              frame.type === "heartbeat" &&
+              !("auditRetentionDisabled" in frame),
           );
         expect(restored).toBeDefined();
-        expect(restored).not.toHaveProperty("auditRetentionDisabled");
       });
     } finally {
       await client.stop();
