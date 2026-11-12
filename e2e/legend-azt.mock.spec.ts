@@ -41,7 +41,8 @@ test("F11 customer display: a live bill shows its items, total and QRIS", async 
   await expect(
     page.getByRole("heading", { name: /Pesanan BDG-01-POS-0001/ }),
   ).toBeVisible();
-  await expect(page.getByText("Menunggu pembayaran")).toBeVisible();
+  // The bill pill and the QRIS status panel both say it (legend-5w6).
+  await expect(page.getByText("Menunggu pembayaran").first()).toBeVisible();
   for (const name of [
     "Kopi Susu Aren",
     "Nasi Goreng Kampung",
