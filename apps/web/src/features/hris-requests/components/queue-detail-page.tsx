@@ -34,8 +34,10 @@ import {
   canDecideKind,
   complianceIssueKey,
   formatSubmittedAt,
+  hasKnownRequester,
   isNetworkFailure,
   isQueueKind,
+  isWaitingForPeer,
   needsOverride,
   planDecision,
   queueErrorKey,
@@ -158,7 +160,11 @@ function QueueDetailContent({
     if (item === undefined) return;
     const plan = planDecision(item, decision, reasonInput);
     if (!plan.ok) {
-      setReasonError(t("hrisRequestsQueue.overrideForm.reasonRequired"));
+      setReasonError(
+        plan.error === "rejectionRequired"
+          ? "Isi alasan penolakan minimal 3 karakter."
+          : t("hrisRequestsQueue.overrideForm.reasonRequired"),
+      );
       return;
     }
     setReasonError(undefined);
@@ -218,6 +224,8 @@ function QueueDetailContent({
             item={item}
             canDecide={
               item.status === "pending" &&
+              !isWaitingForPeer(item) &&
+              hasKnownRequester(item) &&
               canDecideKind(kind, context.access?.permissions ?? [])
             }
             pending={decide.isPending}
@@ -390,9 +398,13 @@ function RequestSummary({
         </div>
       ) : (
         <p className="leading-6 text-muted-foreground">
-          {item.status === "pending"
-            ? t("hrisRequestsQueue.detail.noRight")
-            : t("hrisRequestsQueue.detail.decidedNote")}
+          {isWaitingForPeer(item)
+            ? "Menunggu rekan menerima pengajuan sebelum dapat diproses."
+            : item.status === "pending" && !hasKnownRequester(item)
+              ? "Pengajuan belum dapat diproses karena identitas peminta belum tersedia."
+              : item.status === "pending"
+                ? t("hrisRequestsQueue.detail.noRight")
+                : t("hrisRequestsQueue.detail.decidedNote")}
         </p>
       )}
     </section>

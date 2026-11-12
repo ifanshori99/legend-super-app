@@ -6,7 +6,7 @@ import { queryOptions } from "@tanstack/react-query";
 import type { EmployeeId } from "@starter/shared/hris";
 import type { OutletId } from "@starter/shared/core";
 import {
-  fetchEmployees,
+  fetchSwapCandidates,
   fetchHolidays,
   fetchLeaveBalances,
   fetchLeaveRequests,
@@ -42,6 +42,7 @@ export const hrisRequestKeys = {
     outletId: string | undefined,
     from: string,
     to: string,
+    permissions: readonly string[],
   ) =>
     [
       ...hrisRequestKeys.queueAll(),
@@ -49,6 +50,7 @@ export const hrisRequestKeys = {
       outletId ?? "none",
       from,
       to,
+      [...permissions].sort().join(","),
     ] as const,
 };
 
@@ -115,17 +117,11 @@ export function myShiftsQuery(
   });
 }
 
-/** Colleagues and the outlet's shifts in the window (raw; hooks shape them). */
-export function candidatesQuery(outletId: OutletId, from: string, to: string) {
+/** Colleagues permitted for the selected outlet. */
+export function candidatesQuery(outletId: OutletId) {
   return queryOptions({
-    queryKey: hrisRequestKeys.candidates(outletId, from, to),
-    queryFn: async ({ signal }) => {
-      const [employees, assignments] = await Promise.all([
-        fetchEmployees({ outletId, active: true }, signal),
-        fetchShifts({ outletId, from, to }, signal),
-      ]);
-      return { employees, assignments };
-    },
+    queryKey: hrisRequestKeys.candidates(outletId, "", ""),
+    queryFn: ({ signal }) => fetchSwapCandidates(outletId, signal),
     staleTime: STALE,
   });
 }
@@ -144,6 +140,7 @@ export function queueSourceQuery(input: {
   outletId?: OutletId;
   shiftsFrom: string;
   shiftsTo: string;
+  permissions: readonly string[];
 }) {
   return queryOptions({
     queryKey: hrisRequestKeys.queue(
@@ -151,6 +148,7 @@ export function queueSourceQuery(input: {
       input.outletId,
       input.shiftsFrom,
       input.shiftsTo,
+      input.permissions,
     ),
     queryFn: ({ signal }) => fetchQueueSource(input, signal),
     staleTime: STALE,

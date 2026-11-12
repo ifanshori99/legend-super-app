@@ -197,3 +197,11 @@ describe("539-U4 B: endpoint calls", () => {
     assert.equal(calls[0].input.query.limit, 100);
   });
 });
+
+test("Owner revoke uses the organization endpoint", async () => {
+  const ownerApi =
+    await import("../apps/web/src/features/hris-owner-support/api.ts");
+  await ownerApi.endOwnerSupportAccessCall("grant-1");
+  assert.equal(calls[0].endpoint.path, "/api/org/support-access/:grantId/end");
+  assert.deepEqual(calls[0].input, { params: { grantId: "grant-1" } });
+});

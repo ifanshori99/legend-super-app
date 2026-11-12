@@ -9,8 +9,10 @@ const {
   canDecideKind,
   complianceIssueKey,
   filterQueue,
+  hasKnownRequester,
   isNetworkFailure,
   isQueueKind,
+  isWaitingForPeer,
   needsOverride,
   planDecision,
   queueErrorKey,
@@ -41,15 +43,58 @@ describe("filterQueue", () => {
   });
 });
 
+describe("requester identity", () => {
+  test("requires a known requester before deciding", () => {
+    assert.equal(hasKnownRequester({ employeeNameKnown: false }), false);
+    assert.equal(hasKnownRequester({ employeeNameKnown: true }), true);
+    assert.equal(canDecideKind("swap", ["hr.schedule.manage"]), false);
+  });
+});
+
+describe("peer acceptance", () => {
+  test("pending swap and cover wait for their colleague before review", () => {
+    for (const kind of ["swap", "cover"]) {
+      assert.equal(
+        isWaitingForPeer({
+          kind,
+          status: "pending",
+          raw: { peerAcceptedAt: null },
+        }),
+        true,
+      );
+      assert.equal(
+        isWaitingForPeer({
+          kind,
+          status: "pending",
+          raw: { peerAcceptedAt: "2026-11-12T00:00:00Z" },
+        }),
+        false,
+      );
+      assert.equal(
+        isWaitingForPeer({
+          kind,
+          status: "rejected",
+          raw: { peerAcceptedAt: null },
+        }),
+        false,
+      );
+    }
+    assert.equal(
+      isWaitingForPeer({ kind: "leave", status: "pending", raw: {} }),
+      false,
+    );
+  });
+});
+
 describe("planDecision", () => {
-  test("reject asks no reason and sends none (the API stores none)", () => {
+  test("reject requires and trims a reason", () => {
     assert.deepEqual(planDecision(leave, "reject", "   "), {
-      ok: true,
-      reason: undefined,
+      ok: false,
+      error: "rejectionRequired",
     });
-    assert.deepEqual(planDecision(swapWithIssue, "reject", "Jadwal penuh"), {
+    assert.deepEqual(planDecision(swapWithIssue, "reject", " Jadwal penuh "), {
       ok: true,
-      reason: undefined,
+      reason: "Jadwal penuh",
     });
   });
   test("plain approval needs no reason and sends none", () => {
@@ -92,8 +137,8 @@ describe("needsOverride", () => {
 
 describe("permissions and kinds", () => {
   test("each kind needs its own right", () => {
-    assert.equal(canDecideKind("swap", ["hr.schedule.manage"]), true);
-    assert.equal(canDecideKind("cover", ["hr.schedule.manage"]), true);
+    assert.equal(canDecideKind("swap", ["hr.shift_swap.approve"]), true);
+    assert.equal(canDecideKind("cover", ["hr.shift_swap.approve"]), true);
     assert.equal(canDecideKind("leave", ["hr.schedule.manage"]), false);
     assert.equal(canDecideKind("leave", ["hr.leave.approve"]), true);
     assert.equal(canDecideKind("overtime", ["hr.leave.approve"]), false);

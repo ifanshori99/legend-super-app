@@ -33,6 +33,8 @@ import {
   listOvertimeRequests,
   listShiftAssignments,
   listShiftSwapRequests,
+  listShiftSwapCandidates,
+  respondShiftSwapRequest,
 } from "@starter/shared/hris";
 import type { CursorPage, OutletId } from "@starter/shared/core";
 import { callEndpoint } from "@/lib/api/endpoint";
@@ -79,7 +81,7 @@ export async function fetchMyHris(signal?: AbortSignal) {
 // ---- Reads -------------------------------------------------------------
 
 export function fetchSwaps(
-  filter: { mine?: boolean; status?: RequestQueueStatus },
+  filter: { mine?: boolean; status?: RequestQueueStatus; outletId?: OutletId },
   signal?: AbortSignal,
 ): Promise<ShiftSwapRequest[]> {
   return readAll((cursor) =>
@@ -88,6 +90,9 @@ export function fetchSwaps(
       {
         query: {
           limit: PAGE_LIMIT,
+          ...(filter.outletId === undefined
+            ? {}
+            : { outletId: filter.outletId }),
           ...(filter.mine === undefined
             ? {}
             : { mine: filter.mine ? ("true" as const) : ("false" as const) }),
@@ -226,6 +231,37 @@ export function fetchEmployees(
   );
 }
 
+export async function fetchSwapCandidates(
+  outletId: OutletId,
+  signal?: AbortSignal,
+) {
+  return (
+    await callEndpoint(
+      listShiftSwapCandidates,
+      { query: { outletId } },
+      { signal },
+    )
+  ).data;
+}
+
+export async function postPeerResponse(
+  swapId: ShiftSwapRequestId,
+  action: "accept" | "reject",
+  rejectionReason: string | undefined,
+  idempotencyKey: string,
+) {
+  return (
+    await callEndpoint(respondShiftSwapRequest, {
+      params: { swapId },
+      body: {
+        action,
+        ...(rejectionReason ? { rejectionReason } : {}),
+        idempotencyKey,
+      },
+    })
+  ).data;
+}
+
 /** Holidays of every calendar year the range touches, cut to the range. */
 export async function fetchHolidays(
   range: { from: string; to: string },
@@ -259,27 +295,41 @@ export async function fetchQueueSource(
     outletId?: OutletId;
     shiftsFrom: string;
     shiftsTo: string;
+    permissions: readonly string[];
   },
   signal?: AbortSignal,
 ): Promise<RequestQueueSource> {
-  const [swaps, leaves, overtimes, employees, leaveTypes, assignments] =
-    await Promise.all([
-      fetchSwaps({ status: filter.status }, signal),
-      fetchLeaveRequests({ status: filter.status }, signal),
-      fetchOvertimeRequests({ status: filter.status }, signal),
-      fetchEmployees({}, signal),
-      fetchLeaveTypes(signal),
-      // Dating a swap is a nicety: a denied or failed read leaves it undated.
-      fetchShifts(
-        {
-          outletId: filter.outletId,
-          from: filter.shiftsFrom,
-          to: filter.shiftsTo,
-        },
-        signal,
-      ).catch(() => [] as ShiftAssignment[]),
-    ]);
-  return { swaps, leaves, overtimes, employees, leaveTypes, assignments };
+  const can = (...codes: string[]) =>
+    codes.some((code) => filter.permissions.includes(code));
+  const canSwap = can("hr.shift_swap.approve", "hr.schedule.manage");
+  const canLeave = can(
+    "hr.leave.approve",
+    "hr.employee.view",
+    "hr.employee.manage",
+    "payroll.view",
+  );
+  const canOvertime = can(
+    "hr.overtime.approve",
+    "hr.employee.view",
+    "hr.employee.manage",
+    "payroll.view",
+  );
+  const [swaps, leaves, overtimes, leaveTypes] = await Promise.all([
+    canSwap
+      ? fetchSwaps({ status: filter.status, outletId: filter.outletId }, signal)
+      : [],
+    canLeave ? fetchLeaveRequests({ status: filter.status }, signal) : [],
+    canOvertime ? fetchOvertimeRequests({ status: filter.status }, signal) : [],
+    canLeave ? fetchLeaveTypes(signal) : [],
+  ]);
+  return {
+    swaps,
+    leaves,
+    overtimes,
+    employees: [],
+    leaveTypes,
+    assignments: [],
+  };
 }
 
 // ---- Writes ------------------------------------------------------------

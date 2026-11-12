@@ -21,7 +21,11 @@ export const TAB_PERMISSIONS: Record<FormTab, readonly string[]> = {
   swap: ["self.shift_swap.request"],
   leave: ["self.leave.request"],
   // POST /api/hris/overtime-requests accepts these three.
-  overtime: ["self.attendance.clock", "self.profile.view", "hr.employee.manage"],
+  overtime: [
+    "self.attendance.clock",
+    "self.profile.view",
+    "hr.employee.manage",
+  ],
 };
 
 /** Tabs the account may use, in display order. */
@@ -135,6 +139,7 @@ export type LeavePayload = {
   startDate: string;
   endDate: string;
   reason: string;
+  attachmentUploadRef?: string | null;
 };
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -162,12 +167,11 @@ export function leaveDayCount(start: string, end: string): number | null {
 }
 
 /**
- * `requiresAttachment`: the type needs a file and no upload endpoint exists
- * yet, so the request is held back instead of sent without it.
+ * Required attachments must be selected before the request is submitted.
  */
 export function validateLeave(
   values: LeaveValues,
-  options: { requiresAttachment?: boolean } = {},
+  options: { requiresAttachment?: boolean; hasAttachment?: boolean } = {},
 ): {
   errors: LeaveErrors;
   payload: LeavePayload | null;
@@ -175,8 +179,9 @@ export function validateLeave(
   const errors: LeaveErrors = {};
   if (values.leaveTypeId === "")
     errors.leaveTypeId = "hrisRequestsEmployee.leave.errors.typeRequired";
-  else if (options.requiresAttachment)
+  else if (options.requiresAttachment && !options.hasAttachment)
     errors.leaveTypeId = "hrisRequestsEmployee.leave.errors.attachmentBlocked";
+
   if (dayNumber(values.startDate) === null)
     errors.startDate = "hrisRequestsEmployee.leave.errors.startRequired";
   if (dayNumber(values.endDate) === null)

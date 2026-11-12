@@ -4,6 +4,8 @@
 // made here: one per attempt, reused when the same payload is sent again after
 // a failure (offline "coba lagi"), so a replay never files two requests.
 import { useCallback, useMemo, useRef } from "react";
+import { useRouteContext } from "@tanstack/react-router";
+import type { AreaAccess } from "@/lib/areas/access";
 import {
   useMutation,
   useQuery,
@@ -39,6 +41,7 @@ import {
   postCancelShiftSwap,
   postDecision,
   postLeaveRequest,
+  postPeerResponse,
   postOvertimeRequest,
   postShiftSwap,
 } from "./api.ts";
@@ -56,7 +59,6 @@ import {
   queueSourceQuery,
 } from "./queries.ts";
 import {
-  buildSwapCandidates,
   isFinalClientError,
   normalizeRequestQueue,
   pickOutletId,
@@ -75,12 +77,11 @@ const SHIFTS_AHEAD_DAYS = 60;
 /** The queue dates swaps from shifts this far back. */
 const QUEUE_SHIFTS_BACK_DAYS = 30;
 /** Colleagues' shifts are read this far after the shift to give away. */
-const CANDIDATE_WINDOW_DAYS = 14;
 
 // ---- Shared pieces --------------------------------------------------------
 
 /** The signed-in employee and outlet (HR-01), once the profile answered. */
-function useMyHris() {
+export function useMyHris() {
   const hydrated = useHydrated();
   return useQuery({ ...myHrisQuery(), enabled: hydrated });
 }
@@ -152,6 +153,29 @@ export function useMyOvertimeRequests(): UseQueryResult<OvertimeRequest[]> {
   });
 }
 
+export function usePeerResponse() {
+  const queryClient = useQueryClient();
+  const attempt = useAttemptKey();
+  return useMutation({
+    mutationFn: (input: {
+      swapId: ShiftSwapRequestId;
+      action: "accept" | "reject";
+      rejectionReason?: string;
+    }) =>
+      postPeerResponse(
+        input.swapId,
+        input.action,
+        input.rejectionReason,
+        attempt.keyFor(input),
+      ),
+    onSuccess: () => {
+      attempt.reset();
+      void queryClient.invalidateQueries({ queryKey: hrisRequestKeys.all });
+    },
+    onError: (error: ApiError) => dropKeyOnClientError(error, attempt),
+  });
+}
+
 /** Balances of the current year, one row per leave type. */
 export function useLeaveBalances(): UseQueryResult<LeaveBalance[]> {
   const me = useMyHris().data?.employee.id;
@@ -189,39 +213,21 @@ export function useMyShiftAssignments(): UseQueryResult<ShiftAssignment[]> {
   });
 }
 
-/**
- * Colleagues of my outlet who could take `fromAssignmentId`, each with the
- * shifts they work from that day on (two weeks). Built from the employee
- * directory and the outlet roster: the contract has no "eligible colleagues"
- * endpoint (gap).
- */
+/** Colleagues from the employee-safe candidate endpoint. */
 export function useSwapCandidates(
   fromAssignmentId: string | undefined,
 ): UseQueryResult<SwapCandidate[]> {
-  const me = useMyHris().data;
   const mine = useMyShiftAssignments().data;
   const from = mine?.find((row) => row.id === fromAssignmentId);
-  const window =
-    from === undefined
-      ? null
-      : {
-          from: from.businessDate,
-          to: addBusinessDays(from.businessDate, CANDIDATE_WINDOW_DAYS),
-        };
-  const meId = me?.employee.id;
   return useQuery({
-    ...candidatesQuery(
-      from?.outletId as ShiftAssignment["outletId"],
-      window?.from ?? "",
-      window?.to ?? "",
-    ),
-    enabled: from !== undefined && window !== null && meId !== undefined,
+    ...candidatesQuery(from?.outletId as ShiftAssignment["outletId"]),
+    enabled: from !== undefined,
     select: (data): SwapCandidate[] =>
-      buildSwapCandidates({
-        meId: meId ?? "",
-        employees: data.employees,
-        assignments: data.assignments,
-      }),
+      data.map((row) => ({
+        employeeId: row.id,
+        employeeName: row.name,
+        assignments: [],
+      })),
   });
 }
 
@@ -388,9 +394,11 @@ export function useCancelShiftSwap(): UseMutationResult<
 /** Source window and outlet shared by the queue and the detail. */
 function useQueueScope() {
   const { outlet } = useTenantContext();
+  const context = useRouteContext({ strict: false }) as { access?: AreaAccess };
   const today = useToday();
   return {
-    enabled: today !== null,
+    permissions: context.access?.permissions ?? [],
+    enabled: today !== null && context.access !== undefined,
     outletId: outlet?.id,
     shiftsFrom:
       today === null ? "" : addBusinessDays(today, -QUEUE_SHIFTS_BACK_DAYS),
@@ -416,6 +424,7 @@ export function useRequestQueue(
       outletId: scope.outletId,
       shiftsFrom: scope.shiftsFrom,
       shiftsTo: scope.shiftsTo,
+      permissions: scope.permissions,
     }),
     enabled: scope.enabled,
     select,
@@ -446,6 +455,7 @@ export function useRequestDetail(
       outletId: scope.outletId,
       shiftsFrom: scope.shiftsFrom,
       shiftsTo: scope.shiftsTo,
+      permissions: scope.permissions,
     }),
     enabled: scope.enabled,
     select,
@@ -489,6 +499,7 @@ async function findRequest(
       outletId: scope.outletId,
       shiftsFrom: scope.shiftsFrom,
       shiftsTo: scope.shiftsTo,
+      permissions: scope.permissions,
     }),
   );
   const found = match(fresh);
@@ -515,7 +526,11 @@ export function useDecideRequest(): UseMutationResult<
       const item = await findRequest(queryClient, t, input, scope);
       const plan = planDecision(item, input.decision, input.reason);
       const { idempotencyKey, ...payload } = input;
-      return postDecision(item, plan, idempotencyKey ?? attempt.keyFor(payload));
+      return postDecision(
+        item,
+        plan,
+        idempotencyKey ?? attempt.keyFor(payload),
+      );
     },
     onSuccess: () => {
       attempt.reset();

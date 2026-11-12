@@ -1,7 +1,6 @@
 // "Tukar / ganti shift" tab (mockups tukar-mobile, ganti-mobile). Swap = the
 // peer's shift comes back; cover ("ganti shift") = `toAssignmentId: null`.
-// The contract has no "rekan menerima" step and no reason field for swaps, so
-// the form only offers what the endpoint accepts.
+// A colleague must accept before a supervisor can decide.
 import { useState, type FormEvent } from "react";
 import { Info } from "lucide-react";
 import { useT } from "@/components/i18n";
@@ -109,7 +108,8 @@ export function RequestFormSwap({
   }
 
   if (mine.isPending) return <FormLoading />;
-  if (mine.isError) return <FormLoading error onRetry={() => void mine.refetch()} />;
+  if (mine.isError)
+    return <FormLoading error onRetry={() => void mine.refetch()} />;
 
   return (
     <form className="grid gap-4" noValidate onSubmit={handleSubmit}>
@@ -187,7 +187,10 @@ export function RequestFormSwap({
           </SelectTrigger>
           <SelectContent>
             {candidates.map((candidate) => (
-              <SelectItem key={candidate.employeeId} value={candidate.employeeId}>
+              <SelectItem
+                key={candidate.employeeId}
+                value={candidate.employeeId}
+              >
                 {candidate.employeeName}
               </SelectItem>
             ))}
@@ -195,6 +198,11 @@ export function RequestFormSwap({
         </Select>
       </FormField>
 
+      {kind === "swap" && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Daftar shift rekan belum tersedia; tukar shift belum dapat diajukan.
+        </p>
+      )}
       {kind === "swap" && (
         <FormField
           label={t("hrisRequestsEmployee.swap.peerShiftLabel")}
@@ -213,7 +221,9 @@ export function RequestFormSwap({
           >
             <SelectTrigger>
               <SelectValue
-                placeholder={t("hrisRequestsEmployee.swap.peerShiftPlaceholder")}
+                placeholder={t(
+                  "hrisRequestsEmployee.swap.peerShiftPlaceholder",
+                )}
               />
             </SelectTrigger>
             <SelectContent>

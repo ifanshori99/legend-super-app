@@ -1,8 +1,4 @@
-// Confirmation form of a supervisor decision (bead legend-ydf2, mockup
-// queue-reject-*.png). "Tolak pengajuan" asks no reason: the API stores none for
-// any kind, so the form says so instead of promising it. "Setujui dengan
-// pengecualian" asks the override reason HR-05 requires for a swap that breaks
-// the working-hour rules.
+// Confirmation form for rejection and rule override.
 import * as React from "react";
 import { LoaderCircle } from "lucide-react";
 import { useT } from "@/components/i18n";
@@ -35,8 +31,8 @@ export function QueueDecisionForm({
     mode === "reject"
       ? {
           title: t("hrisRequestsQueue.rejectForm.title"),
-          label: "",
-          hint: t("hrisRequestsQueue.rejectForm.note"),
+          label: "Alasan penolakan",
+          hint: "Jelaskan alasan penolakan (minimal 3 karakter).",
           cancel: t("hrisRequestsQueue.rejectForm.cancel"),
           submit: t("hrisRequestsQueue.rejectForm.submit"),
           submitting: t("hrisRequestsQueue.rejectForm.submitting"),
@@ -62,20 +58,14 @@ export function QueueDecisionForm({
         <h3 className="type-heading">{copy.title}</h3>
         <p className="text-muted-foreground">{summary}</p>
       </div>
-      {mode === "reject" ? (
-        <p role="note" className="leading-6 text-muted-foreground">
-          {copy.hint}
-        </p>
-      ) : (
-        <FormField label={copy.label} hint={copy.hint} error={error} required>
-          <Textarea
-            value={reason}
-            maxLength={500}
-            autoFocus
-            onChange={(event) => setReason(event.target.value)}
-          />
-        </FormField>
-      )}
+      <FormField label={copy.label} hint={copy.hint} error={error} required>
+        <Textarea
+          value={reason}
+          maxLength={500}
+          autoFocus
+          onChange={(event) => setReason(event.target.value)}
+        />
+      </FormField>
       <div className="grid gap-3 sm:grid-cols-2">
         <Button
           type="button"

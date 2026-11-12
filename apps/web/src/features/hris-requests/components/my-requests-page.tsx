@@ -5,7 +5,10 @@
 // and the list, and a notice when a supervisor rejected something.
 import { Link } from "@tanstack/react-router";
 import { CalendarDays, ChevronLeft, Plus } from "lucide-react";
-import { useMemo } from "react";
+import { useState } from "react";
+import type { ShiftSwapRequest } from "@starter/shared/hris";
+import { Card } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
@@ -17,6 +20,8 @@ import {
   useMyOvertimeRequests,
   useMyShiftAssignments,
   useMyShiftSwaps,
+  useMyHris,
+  usePeerResponse,
 } from "../hooks.ts";
 import { MyRequestCard } from "./my-requests-card.tsx";
 import { buildMyRequests, countRejected } from "./my-requests-model.ts";
@@ -25,37 +30,36 @@ export function MyRequestsPage() {
   const t = useT();
   const online = useOnline();
   const swaps = useMyShiftSwaps();
+  const me = useMyHris();
+  const incoming = (swaps.data ?? []).filter(
+    (swap) =>
+      swap.toEmployeeId === me.data?.employee.id &&
+      swap.status === "pending" &&
+      swap.peerAcceptedAt === null,
+  );
   const leaves = useMyLeaveRequests();
   const overtimes = useMyOvertimeRequests();
   // Names and shift dates only decorate cards; a failure there never blocks the list.
   const leaveTypes = useLeaveTypes();
   const assignments = useMyShiftAssignments();
 
-  const items = useMemo(
-    () =>
-      buildMyRequests({
-        swaps: swaps.data,
-        leaves: leaves.data,
-        overtimes: overtimes.data,
-        leaveTypeNames: new Map(
-          (leaveTypes.data ?? []).map((type) => [type.id, type.name]),
-        ),
-        assignmentDates: new Map(
-          (assignments.data ?? []).map((a) => [a.id, a.businessDate]),
-        ),
-      }),
-    [
-      swaps.data,
-      leaves.data,
-      overtimes.data,
-      leaveTypes.data,
-      assignments.data,
-    ],
-  );
+  const items = buildMyRequests({
+    swaps: swaps.data?.filter(
+      (swap) => swap.requestedBy === me.data?.employee.id,
+    ),
+    leaves: leaves.data,
+    overtimes: overtimes.data,
+    leaveTypeNames: new Map(
+      (leaveTypes.data ?? []).map((type) => [type.id, type.name]),
+    ),
+    assignmentDates: new Map(
+      (assignments.data ?? []).map((a) => [a.id, a.businessDate]),
+    ),
+  });
 
   const lists = [swaps, leaves, overtimes];
-  const isPending = lists.some((query) => query.isPending);
-  const failed = lists.find((query) => query.isError);
+  const isPending = me.isPending || lists.some((query) => query.isPending);
+  const failed = me.isError ? me : lists.find((query) => query.isError);
   const refetching = lists.some((query) => query.isRefetching);
   const rejected = countRejected(items);
 
@@ -77,6 +81,10 @@ export function MyRequestsPage() {
           </p>
         </header>
       </div>
+
+      {incoming.map((swap) => (
+        <PeerResponseCard key={swap.id} swap={swap} />
+      ))}
 
       {isPending ? (
         <div aria-busy="true" className="grid gap-3">
@@ -163,5 +171,64 @@ export function MyRequestsPage() {
         </Link>
       </Button>
     </div>
+  );
+}
+
+function PeerResponseCard({ swap }: { swap: ShiftSwapRequest }) {
+  const response = usePeerResponse();
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+  return (
+    <Card className="grid gap-3">
+      <h2 className="font-bold">Permintaan dari rekan</h2>
+      <p className="text-sm">
+        Rekan meminta Anda menerima {swap.toAssignmentId ? "tukar" : "ganti"}{" "}
+        shift sebelum diteruskan ke atasan.
+      </p>
+      <p role="status" className="text-sm text-muted-foreground">
+        Rincian peminta dan jadwal belum tersedia. Respons ditahan sampai
+        rincian dapat ditampilkan.
+      </p>
+      {rejecting && (
+        <label className="grid gap-2 text-sm">
+          Alasan penolakan
+          <Textarea
+            value={reason}
+            maxLength={500}
+            onChange={(event) => setReason(event.target.value)}
+          />
+        </label>
+      )}
+      {response.isError && (
+        <p role="alert" className="text-sm text-danger">
+          Respons gagal dikirim. Coba lagi.
+        </p>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          disabled
+          onClick={() => response.mutate({ swapId: swap.id, action: "accept" })}
+        >
+          Terima
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          disabled
+          onClick={() =>
+            rejecting
+              ? response.mutate({
+                  swapId: swap.id,
+                  action: "reject",
+                  rejectionReason: reason.trim(),
+                })
+              : setRejecting(true)
+          }
+        >
+          Tolak
+        </Button>
+      </div>
+    </Card>
   );
 }

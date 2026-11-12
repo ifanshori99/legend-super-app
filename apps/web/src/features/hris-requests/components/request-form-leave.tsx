@@ -1,7 +1,5 @@
 // "Cuti / izin" tab (mockup cuti-mobile): balance, type, dates, reason. The
-// attachment (`attachmentUploadRef`) needs a pre-signed upload that no endpoint
-// offers yet, so a type that requires one holds the submit button (disabled,
-// with the reason shown) instead of sending the request without the file.
+// Attachment uploads complete before submitting the leave request.
 import { useState, type FormEvent } from "react";
 import { Info } from "lucide-react";
 import { useT } from "@/components/i18n";
@@ -20,6 +18,7 @@ import {
   useLeaveBalances,
   useLeaveTypes,
 } from "@/features/hris-requests/hooks";
+import { uploadLeaveFile } from "../leave-upload.ts";
 import { formatBusinessDate } from "@/features/ws10-payslip/format";
 import {
   formatDays,
@@ -56,6 +55,9 @@ export function RequestFormLeave({
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [reason, setReason] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [fileError, setFileError] = useState("");
   const [errors, setErrors] = useState<LeaveErrors>({});
 
   const types = rowsOf<LeaveType>(typesQuery.data).filter(
@@ -69,14 +71,37 @@ export function RequestFormLeave({
   const days = leaveDayCount(startDate, endDate);
   const overBalance = remaining !== null && days !== null && days > remaining;
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const { errors: next, payload } = validateLeave(
       { leaveTypeId, startDate, endDate, reason },
-      { requiresAttachment: selected?.requiresAttachment },
+      {
+        requiresAttachment: selected?.requiresAttachment,
+        hasAttachment: file !== null,
+      },
     );
+    if (selected?.requiresAttachment && !file) {
+      setFileError("Pilih lampiran terlebih dahulu.");
+      if (
+        next.leaveTypeId ===
+        "hrisRequestsEmployee.leave.errors.attachmentBlocked"
+      )
+        delete next.leaveTypeId;
+    }
     setErrors(next);
     if (!payload) return;
+    setFileError("");
+    if (file) {
+      setUploading(true);
+      try {
+        payload.attachmentUploadRef = await uploadLeaveFile(file);
+      } catch {
+        setFileError("Lampiran gagal diunggah. Coba lagi.");
+        return;
+      } finally {
+        setUploading(false);
+      }
+    }
     onSubmit({
       payload,
       summary: {
@@ -197,20 +222,29 @@ export function RequestFormLeave({
       </FormField>
 
       {overBalance && (
-        <p role="status" className="flex items-start gap-2 text-sm leading-5 text-warning">
+        <p
+          role="status"
+          className="flex items-start gap-2 text-sm leading-5 text-warning"
+        >
           <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
           {t("hrisRequestsEmployee.leave.overBalance")}
         </p>
       )}
-      {selected?.requiresAttachment && (
-        <p
-          role="status"
-          className="flex items-start gap-2 text-sm leading-5 text-muted-foreground"
-        >
-          <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          {t("hrisRequestsEmployee.leave.attachmentRequired")}
-        </p>
-      )}
+      <FormField
+        label="Lampiran"
+        required={selected?.requiresAttachment}
+        error={fileError || undefined}
+        hint="PDF, JPEG, PNG, atau WebP; maksimum 10 MB."
+      >
+        <Input
+          type="file"
+          accept="application/pdf,image/jpeg,image/png,image/webp"
+          onChange={(event) => {
+            setFile(event.target.files?.[0] ?? null);
+            setFileError("");
+          }}
+        />
+      </FormField>
 
       {failed && <SubmitFailure />}
 
@@ -218,8 +252,8 @@ export function RequestFormLeave({
         type="submit"
         size="lg"
         className="w-full"
-        loading={busy}
-        disabled={selected?.requiresAttachment === true}
+        loading={busy || uploading}
+        disabled={busy || uploading}
       >
         {busy
           ? t("hrisRequestsEmployee.form.submitting")

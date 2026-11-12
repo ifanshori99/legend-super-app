@@ -52,7 +52,7 @@ const {
   OverrideReasonRequiredError,
   planDecision,
 } = await import("../apps/web/src/features/hris-requests/queue.ts");
-const { postDecision } =
+const { postDecision, fetchQueueSource } =
   await import("../apps/web/src/features/hris-requests/api.ts");
 
 // Catalog stand-in: the key plus its variables, so a test sees what was asked.
@@ -105,10 +105,13 @@ const overtime = {
   requestedAt: "2026-10-24T01:00:00.000Z",
 };
 const source = {
-  swaps: [swap(1, { complianceIssues: [issue] }), swap(2, {
-    toAssignmentId: ids(7302),
-    requestedAt: "2026-10-27T01:00:00.000Z",
-  })],
+  swaps: [
+    swap(1, { complianceIssues: [issue] }),
+    swap(2, {
+      toAssignmentId: ids(7302),
+      requestedAt: "2026-10-27T01:00:00.000Z",
+    }),
+  ],
   leaves: [leave],
   overtimes: [overtime],
   employees: [
@@ -157,7 +160,14 @@ describe("normalizeRequestQueue", () => {
 
   test("unknown employee and undated swap fall back to catalog text", () => {
     const [item] = normalizeRequestQueue(
-      { ...source, swaps: [swap(3)], leaves: [], overtimes: [], employees: [], assignments: [] },
+      {
+        ...source,
+        swaps: [swap(3)],
+        leaves: [],
+        overtimes: [],
+        employees: [],
+        assignments: [],
+      },
       t,
     );
     assert.equal(item.employeeName, "hrisRequestsCommon.unknownEmployee");
@@ -200,21 +210,25 @@ describe("planDecision", () => {
     });
   });
 
-  test("swap: plain approve and reject carry no reason", () => {
+  test("swap: rejection carries its reason", () => {
     assert.deepEqual(planDecision(clean, "approve", "tidak dipakai"), {
       kind: "swap",
       body: { action: "approve", overrideReason: null },
     });
     assert.deepEqual(planDecision(withIssues, "reject", "alasan"), {
       kind: "swap",
-      body: { action: "reject", overrideReason: null },
+      body: {
+        action: "reject",
+        overrideReason: null,
+        rejectionReason: "alasan",
+      },
     });
   });
 
-  test("leave and overtime body is the action only, never a reason", () => {
+  test("leave rejection carries reason and approval does not", () => {
     assert.deepEqual(planDecision(byId(leave.id), "reject", "alasan"), {
       kind: "leave",
-      body: { action: "reject" },
+      body: { action: "reject", rejectionReason: "alasan" },
     });
     assert.deepEqual(planDecision(byId(overtime.id), "approve", "alasan"), {
       kind: "overtime",
@@ -229,22 +243,37 @@ describe("postDecision", () => {
   });
   const items = normalizeRequestQueue(source, t);
 
-  test("leave decision hits the leave endpoint without a reason field", async () => {
+  test("leave decision sends the rejection reason", async () => {
     const item = items.find((row) => row.kind === "leave");
-    await postDecision(item, planDecision(item, "reject", "alasan"), "key-12345678");
+    await postDecision(
+      item,
+      planDecision(item, "reject", "alasan"),
+      "key-12345678",
+    );
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].endpoint.path, "/api/hris/leave/requests/:leaveRequestId/decision");
+    assert.equal(
+      calls[0].endpoint.path,
+      "/api/hris/leave/requests/:leaveRequestId/decision",
+    );
     assert.deepEqual(calls[0].input.params, { leaveRequestId: leave.id });
     assert.deepEqual(calls[0].input.body, {
       action: "reject",
+      rejectionReason: "alasan",
       idempotencyKey: "key-12345678",
     });
   });
 
   test("swap override sends approve_with_override and the reason", async () => {
     const item = items.find((row) => row.id === source.swaps[0].id);
-    await postDecision(item, planDecision(item, "approve", "Stok kurang"), "key-12345678");
-    assert.equal(calls[0].endpoint.path, "/api/hris/shift-swaps/:swapId/decision");
+    await postDecision(
+      item,
+      planDecision(item, "approve", "Stok kurang"),
+      "key-12345678",
+    );
+    assert.equal(
+      calls[0].endpoint.path,
+      "/api/hris/shift-swaps/:swapId/decision",
+    );
     assert.deepEqual(calls[0].input.body, {
       action: "approve_with_override",
       overrideReason: "Stok kurang",
@@ -255,7 +284,11 @@ describe("postDecision", () => {
   test("a plan of the wrong kind is refused before any call", async () => {
     const item = items.find((row) => row.kind === "leave");
     await assert.rejects(() =>
-      postDecision(item, { kind: "overtime", body: { action: "approve" } }, "key-12345678"),
+      postDecision(
+        item,
+        { kind: "overtime", body: { action: "approve" } },
+        "key-12345678",
+      ),
     );
     assert.equal(calls.length, 0);
   });
@@ -315,4 +348,28 @@ describe("request attempt rules", () => {
     assert.equal(isFinalClientError(500), false);
     assert.equal(isFinalClientError(503), false);
   });
+});
+
+test("Supervisor queue calls only the permitted swap endpoint", async () => {
+  const previous = globalThis.__hrisRequestsFake;
+  const seen = [];
+  globalThis.__hrisRequestsFake = async (endpoint, input) => {
+    seen.push({ endpoint, input });
+    return { data: [], meta: { nextCursor: null } };
+  };
+  try {
+    const result = await fetchQueueSource({
+      outletId: ids(1),
+      shiftsFrom: "2026-01-01",
+      shiftsTo: "2026-02-01",
+      permissions: ["hr.shift_swap.approve"],
+    });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].endpoint.path, "/api/hris/shift-swaps");
+    assert.equal(seen[0].input.query.outletId, ids(1));
+    assert.deepEqual(result.leaves, []);
+    assert.deepEqual(result.overtimes, []);
+  } finally {
+    globalThis.__hrisRequestsFake = previous;
+  }
 });

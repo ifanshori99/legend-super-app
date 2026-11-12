@@ -63,21 +63,19 @@ export function needsOverride(
 
 export type DecisionPlan =
   | { ok: true; reason: string | undefined }
-  | { ok: false; error: "overrideRequired" };
+  | { ok: false; error: "overrideRequired" | "rejectionRequired" };
 
-/**
- * Validates a decision before it is sent. The API stores no rejection reason for
- * any kind, so a rejection asks none; an approval needs a reason only as the
- * override reason of a rule-breaking swap. The reason is trimmed, so blank text
- * never counts.
- */
+/** Validate and trim the reason before sending a decision. */
 export function planDecision(
   item: Pick<RequestQueueItem, "kind" | "complianceIssues">,
   decision: "approve" | "reject",
   reasonInput: string,
 ): DecisionPlan {
   const reason = reasonInput.trim();
-  if (decision === "reject") return { ok: true, reason: undefined };
+  if (decision === "reject")
+    return reason.length < 3
+      ? { ok: false, error: "rejectionRequired" }
+      : { ok: true, reason };
   if (needsOverride(item))
     return reason === ""
       ? { ok: false, error: "overrideRequired" }
@@ -85,16 +83,32 @@ export function planDecision(
   return { ok: true, reason: undefined };
 }
 
+/** A swap or cover must be accepted by its colleague before review. */
+export function isWaitingForPeer(item: RequestQueueItem): boolean {
+  return (
+    item.status === "pending" &&
+    (item.kind === "swap" || item.kind === "cover") &&
+    item.raw.peerAcceptedAt === null
+  );
+}
+
+/** A decision requires an identified requester. */
+export function hasKnownRequester(
+  item: Pick<RequestQueueItem, "employeeNameKnown">,
+): boolean {
+  return item.employeeNameKnown;
+}
+
 /** Permission that lets a supervisor decide each kind (API re-checks it). */
 export const DECIDE_PERMISSIONS = {
-  swap: "hr.schedule.manage",
-  cover: "hr.schedule.manage",
+  swap: "hr.shift_swap.approve",
+  cover: "hr.shift_swap.approve",
   leave: "hr.leave.approve",
   overtime: "hr.overtime.approve",
 } as const satisfies Record<QueueKind, string>;
 
 export const QUEUE_ANY_PERMISSION = [
-  "hr.schedule.manage",
+  "hr.shift_swap.approve",
   "hr.leave.approve",
   "hr.overtime.approve",
 ] as const;

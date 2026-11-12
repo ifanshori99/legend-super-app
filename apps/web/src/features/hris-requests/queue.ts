@@ -25,6 +25,7 @@ type QueueBase = {
   id: string;
   employeeId: string;
   employeeName: string;
+  employeeNameKnown: boolean;
   /** Kind label, or the leave type name for a leave request. */
   title: string;
   /** Date text of what is requested (a day, a range, or the overtime day). */
@@ -93,6 +94,7 @@ export function normalizeRequestQueue(
       id: raw.id,
       employeeId: raw.requestedBy,
       employeeName: nameOf(raw.requestedBy),
+      employeeNameKnown: Boolean(names.get(raw.requestedBy)?.trim()),
       title: t(`hrisRequestsCommon.kind.${kind}`),
       period:
         days.length === 0
@@ -110,6 +112,7 @@ export function normalizeRequestQueue(
       id: raw.id,
       employeeId: raw.employeeId,
       employeeName: nameOf(raw.employeeId),
+      employeeNameKnown: Boolean(names.get(raw.employeeId)?.trim()),
       title: types.get(raw.leaveTypeId) ?? t("hrisRequestsCommon.kind.leave"),
       period: rangeText(t, raw.startDate, raw.endDate),
       submittedAt: raw.requestedAt,
@@ -122,6 +125,7 @@ export function normalizeRequestQueue(
       id: raw.id,
       employeeId: raw.employeeId,
       employeeName: nameOf(raw.employeeId),
+      employeeNameKnown: Boolean(names.get(raw.employeeId)?.trim()),
       title: t("hrisRequestsCommon.kind.overtime"),
       period: t("hrisRequestsCommon.period.overtime", {
         date: raw.date,
@@ -166,24 +170,39 @@ export type DecisionPlan =
       body: {
         action: "approve" | "approve_with_override" | "reject";
         overrideReason: string | null;
+        rejectionReason?: string;
       };
     }
-  | { kind: "leave" | "overtime"; body: { action: "approve" | "reject" } };
+  | {
+      kind: "leave" | "overtime";
+      body: { action: "approve" | "reject"; rejectionReason?: string };
+    };
 
-/**
- * The contract body of a decision. A swap with compliance issues is approved
- * as `approve_with_override` with the reason; every other decision sends no
- * reason, because the contract has no reject-reason field (gap, see report).
- */
+/** Build the contract body, including a rejection or override reason. */
 export function planDecision(
   item: RequestQueueItem,
   decision: RequestDecision,
   reason?: string,
 ): DecisionPlan {
+  if (decision === "reject") {
+    const trimmed = reason?.trim() ?? "";
+    if (trimmed.length < 3) throw new Error("A rejection reason is required.");
+    return item.kind === "leave" || item.kind === "overtime"
+      ? {
+          kind: item.kind,
+          body: { action: "reject", rejectionReason: trimmed },
+        }
+      : {
+          kind: "swap",
+          body: {
+            action: "reject",
+            overrideReason: null,
+            rejectionReason: trimmed,
+          },
+        };
+  }
   if (item.kind === "leave" || item.kind === "overtime")
-    return { kind: item.kind, body: { action: decision } };
-  if (decision === "reject")
-    return { kind: "swap", body: { action: "reject", overrideReason: null } };
+    return { kind: item.kind, body: { action: "approve" } };
   if (!needsOverrideReason(item))
     return { kind: "swap", body: { action: "approve", overrideReason: null } };
   const trimmed = reason?.trim() ?? "";
@@ -240,7 +259,9 @@ export function pickOutletId<T extends string>(
   fromPayload: T | undefined,
   fallback: T,
 ): T {
-  return fromPayload === undefined || fromPayload === "" ? fallback : fromPayload;
+  return fromPayload === undefined || fromPayload === ""
+    ? fallback
+    : fromPayload;
 }
 
 /**

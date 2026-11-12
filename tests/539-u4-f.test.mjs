@@ -216,7 +216,29 @@ describe("539-U4-F owner support access requests", () => {
       const source = read(
         `../apps/web/src/features/ws01-support-access/components/${file}`,
       );
-      assert.doesNotMatch(source, /#[0-9a-fA-F]{3,8}\b|\b(?:red|green|amber|gray|slate)-\d{2,3}\b/);
+      assert.doesNotMatch(
+        source,
+        /#[0-9a-fA-F]{3,8}\b|\b(?:red|green|amber|gray|slate)-\d{2,3}\b/,
+      );
     }
   });
+});
+
+test("Owner revoke errors describe the actual session or grant problem", async () => {
+  const { revokeErrorMessage } =
+    await import("../apps/web/src/features/hris-owner-support/revoke-error.ts");
+  assert.match(
+    revokeErrorMessage({ status: 403, code: "MFA_REQUIRED" }),
+    /Verifikasi dua langkah/,
+  );
+  assert.match(
+    revokeErrorMessage({ status: 403, code: "IMPERSONATION_NOT_ALLOWED" }),
+    /penyamaran/,
+  );
+  assert.match(revokeErrorMessage({ status: 401 }), /Masuk kembali/);
+  assert.match(revokeErrorMessage({ status: 403, code: "FORBIDDEN" }), /izin/);
+  assert.match(
+    revokeErrorMessage({ status: 404, code: "NOT_FOUND" }),
+    /tidak ditemukan/,
+  );
 });
