@@ -132,6 +132,9 @@ export const ws01AuthMessages = {
       copyFailed: "Kode belum dapat disalin. Salin secara manual.",
       saved: "Saya sudah menyimpan kode",
       savedToast: "Kode cadangan disimpan.",
+      savedTitle: "Kode cadangan disimpan",
+      savedBody:
+        "Kode tidak ditampilkan kembali. Simpan di tempat yang aman untuk digunakan saat diperlukan.",
       tipsTitle: "Cara menjaga kode",
       tipPrivateTitle: "Simpan secara pribadi",
       tipPrivateBody: "Jangan bagikan kode kepada orang lain.",
@@ -151,7 +154,8 @@ export const ws01AuthMessages = {
       generate: "Buat kode cadangan",
       errorBanner: "Kode cadangan belum dapat dimuat.",
       errorTitle: "Ada masalah saat memuat",
-      errorHint: "Periksa koneksi, lalu coba lagi.",
+      errorBannerHint: "Periksa koneksi dan coba lagi.",
+      errorHint: "Kembali ke pengaturan keamanan atau coba lagi.",
       remaining: "{count} dari {total} kode cadangan tersisa",
       generatedAt: "Dibuat {time}",
       depletedHint:
@@ -182,7 +186,6 @@ export const ws01AuthMessages = {
       description:
         "Gunakan salah satu kode yang disimpan saat menyiapkan verifikasi dua langkah.",
       label: "Kode cadangan",
-      hint: "10 huruf dan angka, contoh ABCDE-12345.",
       submit: "Verifikasi kode",
       back: "Kembali ke verifikasi dua langkah",
       incomplete: "Masukkan kode cadangan 10 karakter, contoh ABCDE-12345.",
@@ -196,7 +199,6 @@ export const ws01AuthMessages = {
       unknown: "Kode belum dapat diverifikasi. Coba lagi beberapa saat lagi.",
       successTitle: "Verifikasi berhasil",
       successHint: "Kode cadangan diterima. Anda dapat melanjutkan masuk.",
-      successRemaining: "Sisa {count} kode cadangan.",
       successLow:
         "Kode cadangan hampir habis. Buat ulang di Keamanan akun setelah masuk.",
       continue: "Lanjutkan",

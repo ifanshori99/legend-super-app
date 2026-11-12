@@ -87,13 +87,18 @@ export function RecoveryCodesCard({
           {t("staffAuth.recovery.saved")}
         </Button>
       </div>
-      {copyState !== "idle" && (
-        <p role="status" className="text-xs leading-4 text-muted-foreground">
-          {copyState === "copied"
-            ? t("staffAuth.recovery.copied")
-            : t("staffAuth.recovery.copyFailed")}
-        </p>
-      )}
+      {/* The live region exists before the message appears, so it is announced. */}
+      <p
+        role="status"
+        aria-live="polite"
+        className="text-xs leading-4 text-muted-foreground empty:hidden"
+      >
+        {copyState === "copied"
+          ? t("staffAuth.recovery.copied")
+          : copyState === "failed"
+            ? t("staffAuth.recovery.copyFailed")
+            : null}
+      </p>
 
       {showTips && (
         <div className="grid gap-3 border-t-(length:--border-w) pt-4">

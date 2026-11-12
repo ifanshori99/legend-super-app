@@ -224,6 +224,42 @@ describe("copy catalog", () => {
       "Kode tidak valid atau sudah digunakan. Periksa kode atau gunakan kode lain.",
     );
     assert.equal(m.recoveryLogin.submit, "Verifikasi kode");
+    assert.equal(
+      m.recoveryLogin.successHint,
+      "Kode cadangan diterima. Anda dapat melanjutkan masuk.",
+    );
+    assert.equal(m.recovery.savedTitle, "Kode cadangan disimpan");
+    assert.equal(
+      m.recovery.savedBody,
+      "Kode tidak ditampilkan kembali. Simpan di tempat yang aman untuk digunakan saat diperlukan.",
+    );
+    assert.equal(m.recovery.errorBanner, "Kode cadangan belum dapat dimuat.");
+    assert.equal(m.recovery.errorBannerHint, "Periksa koneksi dan coba lagi.");
+    assert.equal(m.recovery.errorTitle, "Ada masalah saat memuat");
+    assert.equal(
+      m.recovery.errorHint,
+      "Kembali ke pengaturan keamanan atau coba lagi.",
+    );
+    assert.equal(m.recovery.loading, "Memuat kode cadangan…");
+  });
+
+  test("login success has no remaining count and no example hint", () => {
+    const m = ws01AuthMessages.staffAuth.recoveryLogin;
+    assert.equal(m.successRemaining, undefined);
+    assert.equal(m.hint, undefined);
+    const source = read("components/recovery-login.tsx");
+    assert.doesNotMatch(source, /autoFocus/);
+    assert.match(source, /\(pointer: fine\)/);
+  });
+
+  test("enroll dialog locks from verify success; skip only after a failure", () => {
+    const source = read("components/totp-enroll.tsx");
+    assert.match(source, /verify\.isSuccess \|\| recoveryCodes !== null/);
+    assert.equal(source.match(/staffAuth\.recovery\.skip/g).length, 1);
+    assert.ok(
+      source.indexOf("if (recoveryError)") <
+        source.indexOf("staffAuth.recovery.skip"),
+    );
   });
 });
 

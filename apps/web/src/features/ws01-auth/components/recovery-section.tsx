@@ -13,7 +13,6 @@ import {
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
-import { ApiError } from "@/lib/api/errors";
 import { recoveryGenerateErrorKey } from "../errors";
 import { formatDateTime } from "../format";
 import { useGenerateRecoveryCodes, useMfaRecoveryStatus } from "../hooks";
@@ -45,9 +44,11 @@ export function RecoverySection({
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [codes, setCodes] = React.useState<readonly string[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [saved, setSaved] = React.useState(false);
 
   function createCodes() {
     setError(null);
+    setSaved(false);
     generate.mutate(undefined, {
       onSuccess: (result) => {
         setConfirmOpen(false);
@@ -59,6 +60,7 @@ export function RecoverySection({
 
   function codesSaved() {
     setCodes(null);
+    setSaved(true);
     generate.reset();
     toast({ title: t("staffAuth.recovery.savedToast"), tone: "success" });
   }
@@ -85,11 +87,10 @@ export function RecoverySection({
     );
   } else if (status.isPending) {
     body = (
-      <div
-        className="grid flex-1 gap-2"
-        role="status"
-        aria-label={t("staffAuth.recovery.loading")}
-      >
+      <div className="grid flex-1 gap-2" role="status" aria-busy="true">
+        <p className="text-sm leading-5 font-semibold">
+          {t("staffAuth.recovery.loading")}
+        </p>
         <Skeleton className="h-4 w-1/2" />
         <Skeleton className="h-4 w-2/3" />
       </div>
@@ -97,15 +98,12 @@ export function RecoverySection({
   } else if (status.isError) {
     body = (
       <>
-        <div className="grid gap-0.5" role="alert">
+        <div className="grid gap-0.5">
           <p className="text-sm leading-5 font-semibold">
-            {t("staffAuth.recovery.errorBanner")}
+            {t("staffAuth.recovery.errorTitle")}
           </p>
           <p className="text-sm leading-5 text-muted-foreground">
-            {status.error instanceof ApiError &&
-            status.error.code === "NETWORK_ERROR"
-              ? t("staffAuth.recovery.offline")
-              : t("staffAuth.recovery.errorHint")}
+            {t("staffAuth.recovery.errorHint")}
           </p>
         </div>
         <Button
@@ -168,6 +166,17 @@ export function RecoverySection({
 
   return (
     <>
+      {status.isError && hasFactor && (
+        <p
+          role="alert"
+          className="mt-4 rounded-container border-(length:--border-w) bg-danger-subtle p-3 text-sm leading-5 text-danger"
+        >
+          <strong className="font-semibold">
+            {t("staffAuth.recovery.errorBanner")}
+          </strong>{" "}
+          {t("staffAuth.recovery.errorBannerHint")}
+        </p>
+      )}
       <div className="mt-4 flex flex-wrap items-start gap-3 rounded-container border-(length:--border-w) border-dashed p-3">
         <KeyRound
           className="mt-0.5 size-4 shrink-0 text-muted-foreground"
@@ -190,6 +199,19 @@ export function RecoverySection({
               {error}
             </p>
           )}
+          {/* The live region exists before the card appears, so it is announced. */}
+          <div role="status" aria-live="polite">
+            {saved && (
+              <div className="grid gap-0.5 rounded-container border-(length:--border-w) bg-surface-2 p-3">
+                <p className="text-sm leading-5 font-semibold">
+                  {t("staffAuth.recovery.savedTitle")}
+                </p>
+                <p className="text-sm leading-5 text-muted-foreground">
+                  {t("staffAuth.recovery.savedBody")}
+                </p>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

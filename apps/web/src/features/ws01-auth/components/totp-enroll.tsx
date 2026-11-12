@@ -55,10 +55,13 @@ export function TotpEnrollFlow({
   >(null);
   const [recoveryError, setRecoveryError] = React.useState<string | null>(null);
   const { mutate: startEnrollment, isPending: starting } = enroll;
-  const codesVisible = recoveryCodes !== null;
+  // Locked from the moment the code is accepted (the codes are being made),
+  // so Esc or an outside click cannot drop codes that show only once.
+  const codesVisible = verify.isSuccess || recoveryCodes !== null;
 
   React.useEffect(() => {
     onCodesVisibleChange?.(codesVisible);
+    return () => onCodesVisibleChange?.(false);
   }, [codesVisible, onCodesVisibleChange]);
 
   // One request when the flow appears; a failed request shows the retry

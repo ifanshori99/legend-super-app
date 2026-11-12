@@ -37,6 +37,14 @@ export function RecoveryLoginCard({
   const verify = useVerifyRecoveryCode();
   const [code, setCode] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+
+  // Focus on open only with a fine pointer (desktop): on a touch screen it
+  // would raise the keyboard before the person has read the page.
+  React.useEffect(() => {
+    if (window.matchMedia?.("(pointer: fine)").matches)
+      inputRef.current?.focus();
+  }, []);
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -61,7 +69,6 @@ export function RecoveryLoginCard({
           title={t("staffAuth.recoveryLogin.successTitle")}
           description={[
             t("staffAuth.recoveryLogin.successHint"),
-            t("staffAuth.recoveryLogin.successRemaining", { count: remaining }),
             remaining <= RECOVERY_LOW_THRESHOLD
               ? t("staffAuth.recoveryLogin.successLow")
               : "",
@@ -90,11 +97,11 @@ export function RecoveryLoginCard({
         <form className="grid gap-4" onSubmit={submit} noValidate>
           <FormField
             label={t("staffAuth.recoveryLogin.label")}
-            hint={t("staffAuth.recoveryLogin.hint")}
             error={error ?? undefined}
             required
           >
             <Input
+              ref={inputRef}
               value={code}
               onChange={(event) => {
                 setCode(formatRecoveryCodeInput(event.target.value));
@@ -104,7 +111,6 @@ export function RecoveryLoginCard({
               autoCapitalize="characters"
               autoCorrect="off"
               spellCheck={false}
-              autoFocus
               maxLength={11}
               className="font-mono text-lg tracking-widest uppercase"
             />
