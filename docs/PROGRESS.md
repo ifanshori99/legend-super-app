@@ -4413,3 +4413,9 @@ Perintah tipe/generasi aktual dijalankan berurutan di dalam satu wrapper heavy (
 - Satu `heavy pnpm check` gagal exit 2 pada typecheck web: enam pemanggilan endpoint floor di ws03-floor, ws05-tax, dan ws08-reservation memerlukan `query`, dan mock `ws03/engine.ts` memerlukan `tableLabel`. Log `/tmp/batch49-check.log`; suite test belum berjalan. Ini kegagalan tsc pertama, bukan flake edge-catalog-loop.
 - Milestone belum dimajukan atau dipush; worktree dan cabang sumber dipertahankan. Perbaikan dan keputusan gate lanjutan dikembalikan ke CTO.
 - Subagent giliran ini: total 1, puncak 1, token heavy dipegang gate lalu dilepas.
+
+### Batch49: perbaikan typecheck dan gate ulang
+
+- Keputusan CTO: enam pemanggil floor memakai query kosong dan mock service request memakai kode meja untuk `tableLabel`; tanpa mengubah kontrak API. Commit `cd466b93`. Test terarah empat file 79/79 lulus; ESLint dan Prettier file berubah lulus.
+- Satu ulang `heavy pnpm check` pada `cd466b93`: typecheck lulus, suite API gagal (973 file lulus, 3 gagal, 1 skip; 15.746 test lulus, 2 gagal, 49 skip). `hris-leave-jobs.test.ts` setup 404 data karyawan; `migration-fk-force-rls.test.ts` masih membaca nama 0387 setelah renumber ke 0307; `qr-pos-lock-order.test.ts` menerima deposit 53.900 sementara test mengharapkan 60.000. Log `/tmp/batch49-check-retry.log`. Root tests belum berjalan.
+- Milestone belum dimajukan/push dan worktree sumber belum dihapus; kasus deposit memerlukan pemeriksaan sebelum mengubah perilaku. Subagent giliran ini 3, puncak 3; token heavy dipegang test_mapping dan sudah dilepas.
