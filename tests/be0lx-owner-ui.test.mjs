@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  accountFieldCopy,
   accountLabel,
   buildOwnerBody,
   classifyOwnerError,
@@ -44,11 +45,7 @@ describe("account lookup", () => {
     });
   });
   test("matches the mockup label, the email or the id of a listed account", () => {
-    for (const text of [
-      accountLabel(ANDI),
-      "ANDI@example.com",
-      ANDI.userId,
-    ]) {
+    for (const text of [accountLabel(ANDI), "ANDI@example.com", ANDI.userId]) {
       const found = resolveAccount(text, accounts);
       assert.equal(found.ok && found.userId, ANDI.userId);
       assert.equal(found.ok && found.option, ANDI);
@@ -99,28 +96,65 @@ describe("form validation", () => {
       { ...valid, reason: "x".repeat(501) },
       { mode: "assign", accounts },
     );
-    assert.equal(check.ok ? null : check.errors.reason, OWNER_COPY.reasonTooLong);
+    assert.equal(
+      check.ok ? null : check.errors.reason,
+      OWNER_COPY.reasonTooLong,
+    );
   });
   test("replace refuses the current Owner as the new Owner", () => {
     const check = validateOwnerForm(
       { ...valid, account: DEWI.userId },
       { mode: "replace", current: DEWI, accounts },
     );
-    assert.equal(check.ok ? null : check.errors.account, OWNER_COPY.accountSame);
+    assert.equal(
+      check.ok ? null : check.errors.account,
+      OWNER_COPY.accountSame,
+    );
   });
   test("unknown account text is refused with its own message", () => {
     const check = validateOwnerForm(
       { ...valid, account: "siapa" },
       { mode: "assign", accounts },
     );
-    assert.equal(check.ok ? null : check.errors.account, OWNER_COPY.accountUnknown);
+    assert.equal(
+      check.ok ? null : check.errors.account,
+      OWNER_COPY.accountUnknown,
+    );
+  });
+  test("without an account list the error asks for an account id", () => {
+    const check = validateOwnerForm(
+      { ...valid, account: "siapa" },
+      { mode: "assign", accounts: [] },
+    );
+    assert.equal(
+      check.ok ? null : check.errors.account,
+      OWNER_COPY.accountInvalidId,
+    );
+  });
+  test("account field copy is honest: id only when no accounts are listed", () => {
+    const byId = accountFieldCopy("assign", false);
+    assert.match(byId.label, /ID akun/);
+    assert.match(byId.label, /UUID/);
+    assert.match(byId.hint, /Pencarian nama atau email menyusul/);
+    assert.doesNotMatch(byId.placeholder, /nama atau email/);
+    assert.equal(
+      accountFieldCopy("replace", false).label,
+      OWNER_COPY.accountLabelReplaceById,
+    );
+    const listed = accountFieldCopy("assign", true);
+    assert.equal(listed.label, OWNER_COPY.accountLabelAssign);
+    assert.equal(listed.placeholder, OWNER_COPY.accountPlaceholder);
+    assert.equal(listed.hint, OWNER_COPY.accountHint);
   });
 });
 
 describe("request body", () => {
   test("matches the API contract: account.userId, trimmed reason, 6-digit code", () => {
     assert.deepEqual(
-      buildOwnerBody({ ...valid, reason: "  alasan  ", code: " 123456 " }, ANDI.userId),
+      buildOwnerBody(
+        { ...valid, reason: "  alasan  ", code: " 123456 " },
+        ANDI.userId,
+      ),
       { account: { userId: ANDI.userId }, reason: "alasan", mfaCode: "123456" },
     );
   });
@@ -134,7 +168,11 @@ describe("API error mapping", () => {
     new ApiError(status, code, message, details);
   test("TEN-04: a refused or missing MFA code lands on the code field", () => {
     for (const failure of [
-      err(403, "FORBIDDEN", "Verifikasi MFA wajib sebelum menunjuk Owner tenant."),
+      err(
+        403,
+        "FORBIDDEN",
+        "Verifikasi MFA wajib sebelum menunjuk Owner tenant.",
+      ),
       err(401, "MFA_INVALID", "x"),
       err(403, "REAUTH_REQUIRED", "x"),
     ]) {
@@ -147,10 +185,19 @@ describe("API error mapping", () => {
   });
   test("each 403 cause gets its own banner text", () => {
     const cases = [
-      ["Sesi impersonasi tidak dapat menunjuk Owner tenant.", OWNER_COPY.forbiddenImpersonation],
+      [
+        "Sesi impersonasi tidak dapat menunjuk Owner tenant.",
+        OWNER_COPY.forbiddenImpersonation,
+      ],
       ["Akun ini bukan Super Admin.", OWNER_COPY.forbiddenNotSuperAdmin],
-      ["Super Admin tidak dapat menunjuk dirinya sendiri sebagai Owner.", OWNER_COPY.forbiddenSelf],
-      ["Akun Super Admin tidak dapat ditunjuk sebagai Owner lewat Panel Platform.", OWNER_COPY.forbiddenSuperAdminTarget],
+      [
+        "Super Admin tidak dapat menunjuk dirinya sendiri sebagai Owner.",
+        OWNER_COPY.forbiddenSelf,
+      ],
+      [
+        "Akun Super Admin tidak dapat ditunjuk sebagai Owner lewat Panel Platform.",
+        OWNER_COPY.forbiddenSuperAdminTarget,
+      ],
       ["Forbidden", OWNER_COPY.forbidden],
     ];
     const seen = new Set();
@@ -163,31 +210,48 @@ describe("API error mapping", () => {
     }
     assert.equal(seen.size, cases.length);
   });
-  test("409: already an Owner is an account error; last Owner is a banner", () => {
-    assert.deepEqual(
-      classifyOwnerError(err(409, "CONFLICT", "Akun ini sudah menjadi Owner aktif tenant.")),
-      { kind: "field", field: "account", message: OWNER_COPY.accountAlreadyOwner },
+  test("409: an existing Owner is an honest banner; last Owner is another banner", () => {
+    const existing = classifyOwnerError(
+      err(409, "CONFLICT", "Akun ini sudah menjadi Owner aktif tenant."),
     );
+    assert.deepEqual(existing, {
+      kind: "banner",
+      message: OWNER_COPY.tenantHasOwner,
+    });
+    assert.doesNotMatch(existing.message, /Akun ini sudah menjadi Owner aktif/);
+    assert.match(existing.message, /Tenant ini sudah punya Owner/);
     assert.deepEqual(
-      classifyOwnerError(err(409, "CONFLICT", "Tenant harus memiliki minimal satu Owner aktif.")),
+      classifyOwnerError(
+        err(409, "CONFLICT", "Tenant harus memiliki minimal satu Owner aktif."),
+      ),
       { kind: "banner", message: OWNER_COPY.lastOwner },
     );
   });
   test("422: not a tenant member, other account refusal, stale assignment, field details", () => {
     assert.equal(
-      classifyOwnerError(err(422, "VALIDATION_ERROR", "Akun ini bukan anggota aktif tenant.")).message,
+      classifyOwnerError(
+        err(422, "VALIDATION_ERROR", "Akun ini bukan anggota aktif tenant."),
+      ).message,
       OWNER_COPY.accountNotMember,
     );
     assert.equal(
-      classifyOwnerError(err(422, "VALIDATION_ERROR", "This account cannot be given a role.")).message,
+      classifyOwnerError(
+        err(422, "VALIDATION_ERROR", "This account cannot be given a role."),
+      ).message,
       OWNER_COPY.accountRefused,
     );
     assert.deepEqual(
-      classifyOwnerError(err(422, "VALIDATION_ERROR", "Penugasan Owner ini sudah tidak aktif.")),
+      classifyOwnerError(
+        err(422, "VALIDATION_ERROR", "Penugasan Owner ini sudah tidak aktif."),
+      ),
       { kind: "banner", message: OWNER_COPY.stale },
     );
     assert.equal(
-      classifyOwnerError(err(422, "VALIDATION_ERROR", "bad", [{ field: "mfaCode", message: "x" }])).kind,
+      classifyOwnerError(
+        err(422, "VALIDATION_ERROR", "bad", [
+          { field: "mfaCode", message: "x" },
+        ]),
+      ).kind,
       "field",
     );
   });
@@ -196,7 +260,12 @@ describe("API error mapping", () => {
       kind: "banner",
       message: OWNER_COPY.stale,
     });
-    for (const failure of [err(0, "NETWORK_ERROR", "offline"), err(500, "INTERNAL", "x"), null, "boom"]) {
+    for (const failure of [
+      err(0, "NETWORK_ERROR", "offline"),
+      err(500, "INTERNAL", "x"),
+      null,
+      "boom",
+    ]) {
       assert.deepEqual(classifyOwnerError(failure), {
         kind: "banner",
         message: OWNER_COPY.failedBody,
@@ -217,7 +286,10 @@ describe("screen state", () => {
   });
   test("an Owner shows the normal state; replace opens the form", () => {
     assert.equal(ownerView({ ...base, owner: DEWI }), "owner");
-    assert.equal(ownerView({ ...base, owner: DEWI, form: "replace" }), "replace");
+    assert.equal(
+      ownerView({ ...base, owner: DEWI, form: "replace" }),
+      "replace",
+    );
   });
   test("replace without a known assignment cannot open (no assignment id to send)", () => {
     assert.equal(ownerView({ ...base, form: "replace" }), "empty");
@@ -226,7 +298,10 @@ describe("screen state", () => {
 
 describe("display and result", () => {
   test("shows name and email, falling back to the id", () => {
-    assert.deepEqual(ownerDisplay(DEWI), { name: "Dewi Pratama", account: "dewi@example.com" });
+    assert.deepEqual(ownerDisplay(DEWI), {
+      name: "Dewi Pratama",
+      account: "dewi@example.com",
+    });
     assert.equal(ownerLine(DEWI), "Dewi Pratama · dewi@example.com");
     const bare = { ...DEWI, name: null, email: null };
     assert.equal(ownerDisplay(bare).account, DEWI.userId);
@@ -234,8 +309,16 @@ describe("display and result", () => {
   });
   test("remembers the assignment id from the response with the picked account", () => {
     assert.deepEqual(
-      ownerFromResult({ assignmentId: DEWI.assignmentId, userId: ANDI.userId }, ANDI),
-      { assignmentId: DEWI.assignmentId, userId: ANDI.userId, name: "Andi Saputra", email: "andi@example.com" },
+      ownerFromResult(
+        { assignmentId: DEWI.assignmentId, userId: ANDI.userId },
+        ANDI,
+      ),
+      {
+        assignmentId: DEWI.assignmentId,
+        userId: ANDI.userId,
+        name: "Andi Saputra",
+        email: "andi@example.com",
+      },
     );
   });
 });

@@ -11,8 +11,7 @@
 export const OWNER_REASON_MAX = 500;
 export const OWNER_TOTP_LENGTH = 6;
 
-const UUID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Indonesian copy, verbatim from the mockup. Kept here (not in the shared i18n
 // catalog) so this screen edits no shared file; move it to the catalog when it
@@ -37,6 +36,7 @@ export const OWNER_COPY = {
     `Panel belum bisa membaca Owner tenant ${tenant}. Tetapkan Owner hanya bila tenant ini memang belum punya Owner.`,
   loadingTitle: "Memuat Owner tenant",
   loadingBody: "Mohon tunggu sebentar.",
+  loadingSr: "Memuat Owner tenant…",
   loadErrorTitle: "Owner tenant belum dapat dimuat.",
   loadErrorBody: "Periksa koneksi dan coba lagi.",
   retry: "Coba lagi",
@@ -48,12 +48,20 @@ export const OWNER_COPY = {
   accountLabelReplace: "Akun Owner baru",
   accountPlaceholder: "Cari akun berdasarkan nama atau email",
   accountHint: "Pilih akun tenant yang sesuai.",
+  // No account list or search endpoint yet (backend card legend-co93l): only a
+  // pasted account id (UUID) resolves, so the field says so.
+  accountLabelAssignById: "ID akun Owner (UUID)",
+  accountLabelReplaceById: "ID akun Owner baru (UUID)",
+  accountPlaceholderById: "Tempel ID akun (UUID)",
+  accountHintById:
+    "Tempel ID akun dari daftar pengguna. Pencarian nama atau email menyusul.",
+  accountInvalidId: "Masukkan ID akun yang valid (UUID).",
   reasonLabel: "Alasan perubahan",
   totpLabel: "Kode autentikator (TOTP)",
   totpPlaceholder: "Masukkan kode terbaru",
   totpHint: "Gunakan kode terbaru dari aplikasi autentikator Anda.",
   note: "Periksa akun dan alasan sebelum melanjutkan.",
-  submitting: "Menyimpan...",
+  submitting: "Menyimpan…",
   successAssigned: "Owner berhasil ditetapkan.",
   successReplaced: "Owner berhasil diganti.",
   successBody: "Penetapan telah tersimpan.",
@@ -66,7 +74,12 @@ export const OWNER_COPY = {
   accountRefused:
     "Akun ini tidak dapat ditetapkan sebagai Owner. Pilih akun tenant yang lain.",
   accountNotMember: "Akun ini bukan anggota aktif tenant.",
-  accountAlreadyOwner: "Akun ini sudah menjadi Owner aktif tenant.",
+  // 409 CONFLICT on assign: the API sends the same code for every conflict
+  // and has no message for "tenant already has an Owner", so any 409 that is
+  // not the last-Owner rule means an Owner exists. No Owner list yet, so the
+  // panel cannot replace it (backend card legend-co93l).
+  tenantHasOwner:
+    "Tenant ini sudah punya Owner. Ganti Owner belum bisa dari panel ini sampai daftar Owner tersedia.",
   reasonRequired: "Masukkan alasan perubahan.",
   reasonTooLong: `Alasan paling banyak ${OWNER_REASON_MAX} karakter.`,
   totpRequired: "Masukkan kode terbaru dari aplikasi autentikator.",
@@ -115,6 +128,36 @@ export type OwnerFormValues = {
 export type OwnerField = "account" | "reason" | "code";
 export type OwnerFieldErrors = Partial<Record<OwnerField, string>>;
 
+export type OwnerAccountFieldCopy = {
+  label: string;
+  placeholder: string;
+  hint: string;
+};
+
+/** Label, placeholder and hint of the account field. With no account list the
+ * field accepts an account id only, so the text must say so. */
+export function accountFieldCopy(
+  mode: OwnerFormMode,
+  hasAccounts: boolean,
+): OwnerAccountFieldCopy {
+  const replace = mode === "replace";
+  if (hasAccounts)
+    return {
+      label: replace
+        ? OWNER_COPY.accountLabelReplace
+        : OWNER_COPY.accountLabelAssign,
+      placeholder: OWNER_COPY.accountPlaceholder,
+      hint: OWNER_COPY.accountHint,
+    };
+  return {
+    label: replace
+      ? OWNER_COPY.accountLabelReplaceById
+      : OWNER_COPY.accountLabelAssignById,
+    placeholder: OWNER_COPY.accountPlaceholderById,
+    hint: OWNER_COPY.accountHintById,
+  };
+}
+
 /** "Andi Saputra · andi@example.com" as the mockup writes it. */
 export function accountLabel(
   option: Pick<OwnerAccountOption, "name" | "email">,
@@ -150,7 +193,7 @@ export function sanitizeTotp(raw: string): string {
 }
 
 export type ResolvedAccount =
-  { ok: true; userId: string; option: OwnerAccountOption | null }
+  | { ok: true; userId: string; option: OwnerAccountOption | null }
   | { ok: false; reason: "required" | "unknown" };
 
 /** Turns what the Super Admin typed or picked into an account id. Matches the
@@ -195,8 +238,13 @@ export function validateOwnerForm(
     errors.account =
       account.reason === "required"
         ? OWNER_COPY.accountRequired
-        : OWNER_COPY.accountUnknown;
-  } else if (options.mode === "replace" && options.current?.userId === account.userId) {
+        : (options.accounts?.length ?? 0) > 0
+          ? OWNER_COPY.accountUnknown
+          : OWNER_COPY.accountInvalidId;
+  } else if (
+    options.mode === "replace" &&
+    options.current?.userId === account.userId
+  ) {
     errors.account = OWNER_COPY.accountSame;
   } else {
     userId = account.userId;
@@ -272,17 +320,15 @@ export function classifyOwnerError(err: unknown): OwnerFailure {
     code === "MFA_REQUIRED" ||
     code === "REAUTH_REQUIRED" ||
     (status === 403 && /\bMFA\b/i.test(message));
-  if (mfa) return { kind: "field", field: "code", message: OWNER_COPY.totpRejected };
-  if (status === 403) return { kind: "banner", message: forbiddenCopy(message) };
+  if (mfa)
+    return { kind: "field", field: "code", message: OWNER_COPY.totpRejected };
+  if (status === 403)
+    return { kind: "banner", message: forbiddenCopy(message) };
   if (status === 404) return { kind: "banner", message: OWNER_COPY.stale };
   if (status === 409) {
     if (/minimal satu Owner/i.test(message))
       return { kind: "banner", message: OWNER_COPY.lastOwner };
-    return {
-      kind: "field",
-      field: "account",
-      message: OWNER_COPY.accountAlreadyOwner,
-    };
+    return { kind: "banner", message: OWNER_COPY.tenantHasOwner };
   }
   if (status === 422 || code === "VALIDATION_ERROR") {
     const field = firstDetailField(e.details);

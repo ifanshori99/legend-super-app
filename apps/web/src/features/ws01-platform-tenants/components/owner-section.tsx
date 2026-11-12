@@ -16,6 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useSaveTenantOwner, useTenantOwner } from "../owner-hooks";
 import {
+  accountFieldCopy,
   accountLabel,
   classifyOwnerError,
   OWNER_COPY as C,
@@ -45,15 +46,18 @@ function Shell({ children }: { children: React.ReactNode }) {
 
 function Banner({
   tone,
+  silent = false,
   children,
 }: {
   tone: "danger" | "success";
+  /** The parent is already a live region: no role of its own. */
+  silent?: boolean;
   children: React.ReactNode;
 }) {
   const Icon = tone === "danger" ? CircleAlert : CircleCheck;
   return (
     <div
-      role={tone === "danger" ? "alert" : "status"}
+      role={silent ? undefined : tone === "danger" ? "alert" : "status"}
       className={
         tone === "danger"
           ? "flex items-start gap-2 rounded-field border-l-4 border-danger bg-danger-subtle px-4 py-3 text-sm text-danger"
@@ -147,6 +151,7 @@ function OwnerForm({
   const [errors, setErrors] = React.useState<OwnerFieldErrors>({});
   const [banner, setBanner] = React.useState<string | null>(null);
   const listId = React.useId();
+  const accountCopy = accountFieldCopy(mode, accounts.length > 0);
 
   const set = (field: keyof OwnerFormValues, value: string) => {
     setValues((previous) => ({ ...previous, [field]: value }));
@@ -204,15 +209,15 @@ function OwnerForm({
               </p>
             </div>
             <FormField
-              label={replace ? C.accountLabelReplace : C.accountLabelAssign}
-              hint={C.accountHint}
+              label={accountCopy.label}
+              hint={accountCopy.hint}
               error={errors.account}
               required
             >
               <Input
                 value={values.account}
                 onChange={(event) => set("account", event.target.value)}
-                placeholder={C.accountPlaceholder}
+                placeholder={accountCopy.placeholder}
                 autoComplete="off"
                 list={accounts.length > 0 ? listId : undefined}
               />
@@ -224,11 +229,7 @@ function OwnerForm({
                 ))}
               </datalist>
             )}
-            <FormField
-              label={C.reasonLabel}
-              error={errors.reason}
-              required
-            >
+            <FormField label={C.reasonLabel} error={errors.reason} required>
               <Textarea
                 rows={3}
                 maxLength={OWNER_REASON_MAX}
@@ -247,7 +248,9 @@ function OwnerForm({
                 autoComplete="one-time-code"
                 maxLength={OWNER_TOTP_LENGTH}
                 value={values.code}
-                onChange={(event) => set("code", sanitizeTotp(event.target.value))}
+                onChange={(event) =>
+                  set("code", sanitizeTotp(event.target.value))
+                }
                 placeholder={C.totpPlaceholder}
                 className="tabular"
               />
@@ -316,6 +319,7 @@ export function OwnerSection({
     body = (
       <Shell>
         <div aria-busy="true">
+          <span className="sr-only">{C.loadingSr}</span>
           <h4 className="type-title">{C.loadingTitle}</h4>
           <p className="mt-0.5 text-sm text-muted-foreground">
             {C.loadingBody}
@@ -415,14 +419,17 @@ export function OwnerSection({
           {C.subtitle(tenantName)}
         </p>
       </div>
-      {saved && (
-        <Banner tone="success">
-          <strong>
-            {saved === "assign" ? C.successAssigned : C.successReplaced}
-          </strong>{" "}
-          {C.successBody}
-        </Banner>
-      )}
+      {/* The live region stays mounted so the message is announced when it fills. */}
+      <div role="status" aria-live="polite">
+        {saved && (
+          <Banner tone="success" silent>
+            <strong>
+              {saved === "assign" ? C.successAssigned : C.successReplaced}
+            </strong>{" "}
+            {C.successBody}
+          </Banner>
+        )}
+      </div>
       {body}
     </section>
   );
