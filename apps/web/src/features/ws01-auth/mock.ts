@@ -16,11 +16,16 @@
 //   localStorage.removeItem("legend-mock-session")
 //
 // Verification accepts any six digits except 000000 (wrong-code state).
+// Recovery codes: the seeded set is the mockup's (ABCDE-FGHJK, ...), the first
+// code is used once; a wrong code is 401 MFA_RECOVERY_CODE_INVALID, and five
+// wrong codes lock with 429 like the API.
 import {
   cafeLegendIdentityFixtures,
   deleteMfaFactor,
   enrollMfaFactor,
   extendCurrentSession,
+  generateMfaRecoveryCodes,
+  getMfaRecoveryStatus,
   listMfaFactors,
   listSessions,
   MANAGEMENT_IDLE_MINUTES,
@@ -32,6 +37,8 @@ import {
   sessionSchema,
   sessionViewSchema,
   verifyMfaFactor,
+  verifyMfaRecoveryCode,
+  MFA_RECOVERY_CODE_COUNT,
   type MfaEnrollment,
   type MfaFactor,
   type Session,
@@ -53,7 +60,15 @@ type IdleDemo = {
   lastSeenAt: string;
 };
 
+type RecoveryDemo = {
+  /** Unused codes; empty before the first generate. */
+  codes: string[];
+  generatedAt: string | null;
+  failed: number;
+};
+
 type AuthMockState = {
+  recovery: RecoveryDemo;
   factors: MfaFactor[];
   sessions: SessionView[];
   pending: Map<string, PendingFactor>;
@@ -101,7 +116,40 @@ function seedSessions(): SessionView[] {
   ];
 }
 
+/** The mockup's sample set; the owner's seeded factor already has one. */
+const SEED_RECOVERY_CODES = [
+  "ABCDE-FGHJK",
+  "MNPQR-STVWX",
+  "YZ234-56789",
+  "BCDFG-HJKMN",
+  "PQRST-VWXYZ",
+  "23456-789AB",
+  "CDFGH-JKMNP",
+  "QRSTV-WXYZ2",
+  "34567-89ABC",
+  "DFGHJ-KMNPQ",
+];
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const RECOVERY_LOCK_AFTER = 5;
+
+function randomRecoveryCodes(): string[] {
+  const codes = new Set<string>();
+  while (codes.size < MFA_RECOVERY_CODE_COUNT) {
+    const chars = Array.from(
+      { length: 10 },
+      () => CROCKFORD[Math.floor(Math.random() * CROCKFORD.length)],
+    );
+    codes.add(`${chars.slice(0, 5).join("")}-${chars.slice(5).join("")}`);
+  }
+  return [...codes];
+}
+
 const seed = (): AuthMockState => ({
+  recovery: {
+    codes: [...SEED_RECOVERY_CODES],
+    generatedAt: at(-3 * 24 * 60 * MINUTE_MS),
+    failed: 0,
+  },
   factors: cafeLegendIdentityFixtures.mfaFactors.filter(
     (row) => row.userId === cafeLegendIdentityFixtures.usersByKey.owner.id,
   ),
@@ -351,4 +399,70 @@ registerMock(extendCurrentSession, () => {
       view.current ? { ...view, session: result.session } : view,
     );
   }
+});
+
+registerMock(getMfaRecoveryStatus, ({ scenario }) => {
+  const { recovery } = state.get();
+  if (scenario === "empty")
+    return { data: { remaining: 0, generatedAt: null } };
+  return {
+    data: {
+      remaining: recovery.codes.length,
+      generatedAt: recovery.generatedAt,
+    },
+  };
+});
+
+registerMock(generateMfaRecoveryCodes, () => {
+  const auth = state.get();
+  if (auth.factors.length === 0)
+    throw new ApiError(
+      409,
+      "CONFLICT",
+      "Siapkan verifikasi dua langkah dulu sebelum membuat kode cadangan.",
+    );
+  const generatedAt = at(0);
+  auth.recovery = { codes: randomRecoveryCodes(), generatedAt, failed: 0 };
+  return { data: { codes: [...auth.recovery.codes], generatedAt } };
+});
+
+registerMock(verifyMfaRecoveryCode, ({ body }) => {
+  const { recovery } = state.get();
+  if (recovery.failed >= RECOVERY_LOCK_AFTER)
+    throw new ApiError(
+      429,
+      "RATE_LIMITED",
+      "Terlalu banyak kode salah. Coba lagi dalam 15 menit.",
+    );
+  const typed = body.code.replace(/-/g, "").toUpperCase();
+  const index = recovery.codes.findIndex(
+    (code) => code.replace(/-/g, "") === typed,
+  );
+  if (index === -1) {
+    recovery.failed += 1;
+    if (recovery.failed >= RECOVERY_LOCK_AFTER)
+      throw new ApiError(
+        429,
+        "RATE_LIMITED",
+        "Terlalu banyak kode salah. Coba lagi dalam 15 menit.",
+      );
+    throw new ApiError(
+      401,
+      "MFA_RECOVERY_CODE_INVALID",
+      "Kode tidak valid atau sudah digunakan.",
+    );
+  }
+  recovery.codes.splice(index, 1);
+  recovery.failed = 0;
+  const verifiedAt = at(0);
+  const auth = state.get();
+  auth.sessions = auth.sessions.map((view) =>
+    view.current
+      ? sessionViewSchema.parse({
+          session: { ...view.session, mfaVerifiedAt: verifiedAt },
+          current: true,
+        })
+      : view,
+  );
+  return { data: { verifiedAt, remaining: recovery.codes.length } };
 });

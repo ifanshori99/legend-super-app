@@ -55,8 +55,7 @@ export const ws01AuthMessages = {
       removed: "Faktor kedua dihapus.",
       removeFailed: "Faktor kedua belum bisa dihapus. Coba lagi.",
       backupTitle: "Kode cadangan",
-      backupHint:
-        "Kode pemulihan sekali pakai belum tersedia di build ini; akan aktif bersama backend MFA.",
+      backupHint: "Simpan kode untuk masuk saat faktor kedua tidak tersedia.",
     },
 
     enroll: {
@@ -113,6 +112,94 @@ export const ws01AuthMessages = {
       helpTitle: "Tidak bisa memakai aplikasi autentikator?",
       helpHint:
         "Minta Admin Tenant mengatur ulang faktor kedua Anda. Jangan berikan kode ini kepada siapa pun, termasuk yang mengaku dari Legend.",
+    },
+
+    // Kode cadangan MFA (bead legend-sw980): tampil sekali setelah enrol,
+    // status + buat ulang di Keamanan akun, dan "pakai kode cadangan" di login.
+    recovery: {
+      title: "Kode cadangan",
+      description: "Simpan kode untuk masuk saat faktor kedua tidak tersedia.",
+      saveTitle: "Simpan kode cadangan Anda",
+      saveDescription:
+        "Verifikasi dua langkah sudah disiapkan. Gunakan kode ini jika Anda tidak dapat mengakses faktor kedua.",
+      onceTitle: "Ditampilkan sekali.",
+      onceBody:
+        "Simpan kode ini di tempat yang aman sebelum meninggalkan halaman.",
+      singleUse: "Setiap kode hanya dapat digunakan sekali.",
+      codesLabel: "Daftar kode cadangan",
+      copy: "Salin kode",
+      copied: "Kode disalin. Simpan di tempat yang aman.",
+      copyFailed: "Kode belum dapat disalin. Salin secara manual.",
+      saved: "Saya sudah menyimpan kode",
+      savedToast: "Kode cadangan disimpan.",
+      tipsTitle: "Cara menjaga kode",
+      tipPrivateTitle: "Simpan secara pribadi",
+      tipPrivateBody: "Jangan bagikan kode kepada orang lain.",
+      tipUseTitle: "Gunakan saat diperlukan",
+      tipUseBody:
+        "Pilih “Pakai kode cadangan” pada layar verifikasi dua langkah.",
+      loading: "Memuat kode cadangan…",
+      generating: "Membuat kode cadangan…",
+      skip: "Lewati, buat nanti di Keamanan",
+      emptyTitle: "Kode cadangan belum tersedia",
+      emptyHint:
+        "Siapkan verifikasi dua langkah untuk mendapatkan kode cadangan.",
+      emptyAction: "Siapkan verifikasi dua langkah",
+      notGeneratedTitle: "Kode cadangan belum dibuat",
+      notGeneratedHint:
+        "Buat 10 kode sekali pakai untuk masuk saat faktor kedua tidak tersedia.",
+      generate: "Buat kode cadangan",
+      errorBanner: "Kode cadangan belum dapat dimuat.",
+      errorTitle: "Ada masalah saat memuat",
+      errorHint: "Periksa koneksi, lalu coba lagi.",
+      remaining: "{count} dari {total} kode cadangan tersisa",
+      generatedAt: "Dibuat {time}",
+      depletedHint:
+        "Semua kode cadangan sudah terpakai. Buat ulang kode agar Anda tetap bisa masuk.",
+      lowHint:
+        "Kode cadangan hampir habis. Buat ulang untuk mendapatkan 10 kode baru.",
+      regenerate: "Buat ulang kode",
+      regenerateTitle: "Buat ulang kode cadangan?",
+      regenerateDescription:
+        "Kode lama langsung tidak berlaku. Kode baru ditampilkan sekali, jadi siapkan tempat menyimpannya.",
+      regenerateConfirm: "Buat kode baru",
+      mfaRequired:
+        "Verifikasi dua langkah sesi ini dulu, lalu buat kode cadangan.",
+      noFactor:
+        "Siapkan verifikasi dua langkah dulu sebelum membuat kode cadangan.",
+      sessionEnded: "Sesi berakhir. Masuk kembali, lalu coba lagi.",
+      offline:
+        "Tidak ada koneksi internet. Sambungkan internet, lalu coba lagi.",
+      unknown:
+        "Kode cadangan belum dapat dibuat. Coba lagi beberapa saat lagi.",
+      closeLocked: "Simpan kode dulu, lalu tekan “Saya sudah menyimpan kode”.",
+    },
+
+    // "Pakai kode cadangan" di layar verifikasi dua langkah.
+    recoveryLogin: {
+      use: "Pakai kode cadangan",
+      title: "Masukkan kode cadangan",
+      description:
+        "Gunakan salah satu kode yang disimpan saat menyiapkan verifikasi dua langkah.",
+      label: "Kode cadangan",
+      hint: "10 huruf dan angka, contoh ABCDE-12345.",
+      submit: "Verifikasi kode",
+      back: "Kembali ke verifikasi dua langkah",
+      incomplete: "Masukkan kode cadangan 10 karakter, contoh ABCDE-12345.",
+      invalid:
+        "Kode tidak valid atau sudah digunakan. Periksa kode atau gunakan kode lain.",
+      rateLimited:
+        "Terlalu banyak kode salah. Tunggu 15 menit, lalu coba lagi.",
+      sessionEnded: "Sesi berakhir. Masuk kembali, lalu coba lagi.",
+      offline:
+        "Tidak ada koneksi internet. Sambungkan internet, lalu coba lagi.",
+      unknown: "Kode belum dapat diverifikasi. Coba lagi beberapa saat lagi.",
+      successTitle: "Verifikasi berhasil",
+      successHint: "Kode cadangan diterima. Anda dapat melanjutkan masuk.",
+      successRemaining: "Sisa {count} kode cadangan.",
+      successLow:
+        "Kode cadangan hampir habis. Buat ulang di Keamanan akun setelah masuk.",
+      continue: "Lanjutkan",
     },
 
     sessions: {

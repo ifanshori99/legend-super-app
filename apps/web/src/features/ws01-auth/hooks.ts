@@ -1,15 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { MfaEnrollInput, MfaVerifyInput } from "@starter/shared/identity";
+import type {
+  MfaEnrollInput,
+  MfaRecoveryVerifyInput,
+  MfaVerifyInput,
+} from "@starter/shared/identity";
 import {
+  createMfaRecoveryCodes,
   extendStaffSession,
   removeMfaFactor,
   revokeDeviceSession,
   startMfaEnrollment,
+  submitMfaRecoveryCode,
   verifySecondFactor,
 } from "./api";
 import {
   currentAuthQuery,
   mfaFactorsQuery,
+  mfaRecoveryStatusQuery,
   securitySessionsQuery,
   staffAuthKeys,
 } from "./queries";
@@ -57,6 +64,18 @@ export function useVerifyMfa() {
   });
 }
 
+/**
+ * Finishes enrollment without refreshing the session queries: the refresh
+ * would make a guarded page treat the session as verified and unmount the
+ * enrollment before the recovery codes are shown. The caller refreshes with
+ * `useRefreshStaffAuth` once the codes are saved.
+ */
+export function useVerifyEnrollment() {
+  return useMutation({
+    mutationFn: (input: MfaVerifyInput) => verifySecondFactor(input),
+  });
+}
+
 export function useDeleteMfaFactor() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -78,4 +97,39 @@ export function useRevokeSession() {
 /** AUTH-05: only an explicit action extends the current staff session. */
 export function useExtendStaffSession() {
   return useMutation({ mutationFn: extendStaffSession });
+}
+
+export function useMfaRecoveryStatus() {
+  return useQuery(mfaRecoveryStatusQuery());
+}
+
+/**
+ * Generates a new set (the old one stops working). `gcTime: 0` keeps the
+ * plaintext codes out of the mutation cache once the component is gone; they
+ * are shown once and never stored.
+ */
+export function useGenerateRecoveryCodes() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createMfaRecoveryCodes,
+    gcTime: 0,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: staffAuthKeys.recovery() }),
+  });
+}
+
+/**
+ * Signs in with a recovery code. It does not refresh the session queries here:
+ * that would swap the page to "already verified" before the success state is
+ * shown. The caller refreshes with `useRefreshStaffAuth` on "Lanjutkan".
+ */
+export function useVerifyRecoveryCode() {
+  return useMutation({
+    mutationFn: (input: MfaRecoveryVerifyInput) => submitMfaRecoveryCode(input),
+  });
+}
+
+export function useRefreshStaffAuth() {
+  const queryClient = useQueryClient();
+  return () => queryClient.invalidateQueries({ queryKey: staffAuthKeys.all });
 }

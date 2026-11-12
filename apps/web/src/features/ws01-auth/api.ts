@@ -6,12 +6,16 @@ import {
   deleteMfaFactor,
   enrollMfaFactor,
   extendCurrentSession,
+  generateMfaRecoveryCodes,
   getCurrentAuth,
+  getMfaRecoveryStatus,
   listMfaFactors,
   listSessions,
   revokeSession,
   verifyMfaFactor,
+  verifyMfaRecoveryCode,
   type MfaEnrollInput,
+  type MfaRecoveryVerifyInput,
   type MfaVerifyInput,
 } from "@starter/shared/identity";
 import { callEndpoint } from "@/lib/api/endpoint";
@@ -56,4 +60,24 @@ export async function revokeDeviceSession(sessionId: string) {
 /** Records explicit staff activity before refreshing the idle deadline. */
 export async function extendStaffSession() {
   await callEndpoint(extendCurrentSession, undefined);
+}
+
+/** Unused recovery codes left; never the codes themselves. */
+export async function fetchMfaRecoveryStatus(signal?: AbortSignal) {
+  const { data } = await callEndpoint(getMfaRecoveryStatus, undefined, {
+    signal,
+  });
+  return data;
+}
+
+/** Replaces the whole set. The plaintext codes are in this response only. */
+export async function createMfaRecoveryCodes() {
+  const { data } = await callEndpoint(generateMfaRecoveryCodes, undefined);
+  return data;
+}
+
+/** Signs this session in with one single-use code (the second factor). */
+export async function submitMfaRecoveryCode(input: MfaRecoveryVerifyInput) {
+  const { data } = await callEndpoint(verifyMfaRecoveryCode, { body: input });
+  return data;
 }

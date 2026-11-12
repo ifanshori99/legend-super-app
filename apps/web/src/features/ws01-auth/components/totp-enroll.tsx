@@ -8,28 +8,58 @@ import { Input } from "@/components/ui/input";
 import { QrCode } from "@/components/ui/qr-code";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
-import { enrollmentErrorKey, secondFactorErrorKey } from "../errors";
+import {
+  enrollmentErrorKey,
+  recoveryGenerateErrorKey,
+  secondFactorErrorKey,
+} from "../errors";
 import { formatTime } from "../format";
-import { useEnrollMfa, useVerifyMfa } from "../hooks";
+import {
+  useEnrollMfa,
+  useGenerateRecoveryCodes,
+  useRefreshStaffAuth,
+  useVerifyEnrollment,
+} from "../hooks";
 import { isTotpCodeComplete, normalizeTotpCode } from "../state";
+import { RecoveryCodesCard } from "./recovery-codes-card";
 
 /**
  * TOTP enrollment (PRD §3 F6 "Staf — Login Web": MFA via TOTP). The secret is
  * shown once by the contract; the factor becomes active only after a correct
- * six-digit code, which is the same call that finishes enrollment.
+ * six-digit code, which is the same call that finishes enrollment. Right after
+ * that the ten backup codes are made and shown once (bead legend-sw980);
+ * `onEnrolled` runs when the person confirms they saved them.
  */
-export function TotpEnrollFlow({ onEnrolled }: { onEnrolled: () => void }) {
+export function TotpEnrollFlow({
+  onEnrolled,
+  onCodesVisibleChange,
+}: {
+  onEnrolled: () => void;
+  /** True while the one-time codes are on screen, so a dialog can stay open. */
+  onCodesVisibleChange?: (visible: boolean) => void;
+}) {
   const t = useT();
   const toast = useToast();
   const enroll = useEnrollMfa();
-  const verify = useVerifyMfa();
+  const verify = useVerifyEnrollment();
+  const generate = useGenerateRecoveryCodes();
+  const refreshAuth = useRefreshStaffAuth();
   const [enrollment, setEnrollment] = React.useState<TotpEnrollment | null>(
     null,
   );
   const [code, setCode] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
+  const [recoveryCodes, setRecoveryCodes] = React.useState<
+    readonly string[] | null
+  >(null);
+  const [recoveryError, setRecoveryError] = React.useState<string | null>(null);
   const { mutate: startEnrollment, isPending: starting } = enroll;
+  const codesVisible = recoveryCodes !== null;
+
+  React.useEffect(() => {
+    onCodesVisibleChange?.(codesVisible);
+  }, [codesVisible, onCodesVisibleChange]);
 
   // One request when the flow appears; a failed request shows the retry
   // button and does not loop. The mutation itself is idempotent on the server.
@@ -70,10 +100,66 @@ export function TotpEnrollFlow({ onEnrolled }: { onEnrolled: () => void }) {
       {
         onSuccess: () => {
           toast({ title: t("staffAuth.enroll.success"), tone: "success" });
-          onEnrolled();
+          createRecoveryCodes();
         },
         onError: (cause) => setError(t(secondFactorErrorKey(cause))),
       },
+    );
+  }
+
+  function createRecoveryCodes() {
+    setRecoveryError(null);
+    generate.mutate(undefined, {
+      onSuccess: (result) => setRecoveryCodes(result.codes),
+      onError: (cause) => setRecoveryError(t(recoveryGenerateErrorKey(cause))),
+    });
+  }
+
+  function codesSaved() {
+    setRecoveryCodes(null);
+    generate.reset();
+    void refreshAuth();
+    onEnrolled();
+  }
+
+  // The server session is already verified once enrollment succeeds, so the
+  // person can leave and make the codes later in Keamanan.
+  function skipCodes() {
+    void refreshAuth();
+    onEnrolled();
+  }
+
+  if (recoveryCodes) {
+    return <RecoveryCodesCard codes={recoveryCodes} onSaved={codesSaved} />;
+  }
+
+  if (verify.isSuccess) {
+    // The factor is active; only the backup codes are still missing.
+    if (recoveryError) {
+      return (
+        <div className="grid gap-3" role="alert">
+          <p className="text-sm leading-5 text-danger">{recoveryError}</p>
+          <Button variant="outline" onClick={createRecoveryCodes}>
+            <RotateCw aria-hidden="true" />
+            {t("common.retry")}
+          </Button>
+          <Button
+            variant="link"
+            className="justify-self-start"
+            onClick={skipCodes}
+          >
+            {t("staffAuth.recovery.skip")}
+          </Button>
+        </div>
+      );
+    }
+    return (
+      <div className="grid gap-3" aria-busy="true" role="status">
+        <span className="sr-only">{t("staffAuth.recovery.generating")}</span>
+        <Skeleton className="h-6 w-2/3" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-11 w-full" />
+      </div>
     );
   }
 

@@ -26,7 +26,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { secondFactorErrorKey } from "../errors";
-import { useCurrentAuth, useVerifyMfa } from "../hooks";
+import { useCurrentAuth, useRefreshStaffAuth, useVerifyMfa } from "../hooks";
 import {
   asAppPath,
   isTotpCodeComplete,
@@ -34,6 +34,8 @@ import {
   primaryIdentity,
   secondFactorState,
 } from "../state";
+import { canShowRecoveryLogin } from "../recovery-state";
+import { RecoveryLoginCard } from "./recovery-login";
 import { TotpEnrollFlow } from "./totp-enroll";
 
 /**
@@ -45,10 +47,12 @@ function CodeChallenge({
   factor,
   hasPasskey,
   onVerified,
+  onUseRecovery,
 }: {
   factor: MfaFactor;
   hasPasskey: boolean;
   onVerified: () => void;
+  onUseRecovery: () => void;
 }) {
   const t = useT();
   const verify = useVerifyMfa();
@@ -115,6 +119,14 @@ function CodeChallenge({
         <ShieldCheck aria-hidden="true" />
         {t("staffAuth.verify.submit")}
       </Button>
+      <Button
+        type="button"
+        variant="link"
+        className="justify-self-start"
+        onClick={onUseRecovery}
+      >
+        {t("staffAuth.recoveryLogin.use")}
+      </Button>
     </form>
   );
 }
@@ -129,6 +141,8 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
   const toast = useToast();
   const navigate = useNavigate();
   const auth = useCurrentAuth();
+  const refreshAuth = useRefreshStaffAuth();
+  const [recoveryMode, setRecoveryMode] = React.useState(false);
   const state = auth.data ? secondFactorState(auth.data, new Date()) : null;
 
   function continueToDashboard() {
@@ -145,6 +159,10 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
   const identity = primaryIdentity(auth.data?.identities ?? []);
   const noSession =
     auth.isError && auth.error instanceof ApiError && auth.error.status === 401;
+
+  // The recovery card owns its success state: the session only refreshes on
+  // "Lanjutkan", so the page does not jump to "already verified" first.
+  const showRecovery = canShowRecoveryLogin({ recoveryMode, state });
 
   return (
     <ThemeScope
@@ -200,6 +218,14 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
               />
             )}
           </Card>
+        ) : showRecovery ? (
+          <RecoveryLoginCard
+            onBack={() => setRecoveryMode(false)}
+            onContinue={() => {
+              void refreshAuth();
+              continueToDashboard();
+            }}
+          />
         ) : state === null ? null : state.ended ? (
           <Card>
             <EmptyState
@@ -262,19 +288,30 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
                 state.enrollmentRequired ? (
                   <TotpEnrollFlow onEnrolled={continueToDashboard} />
                 ) : (
-                  <p className="flex items-start gap-2 text-sm leading-5 text-muted-foreground">
-                    <KeyRound
-                      className="mt-0.5 size-4 shrink-0"
-                      aria-hidden="true"
-                    />
-                    {t("staffAuth.verify.passkeyHint")}
-                  </p>
+                  <div className="grid gap-2">
+                    <p className="flex items-start gap-2 text-sm leading-5 text-muted-foreground">
+                      <KeyRound
+                        className="mt-0.5 size-4 shrink-0"
+                        aria-hidden="true"
+                      />
+                      {t("staffAuth.verify.passkeyHint")}
+                    </p>
+                    <Button
+                      type="button"
+                      variant="link"
+                      className="justify-self-start"
+                      onClick={() => setRecoveryMode(true)}
+                    >
+                      {t("staffAuth.recoveryLogin.use")}
+                    </Button>
+                  </div>
                 )
               ) : (
                 <CodeChallenge
                   factor={totpFactor}
                   hasPasskey={passkey !== undefined}
                   onVerified={continueToDashboard}
+                  onUseRecovery={() => setRecoveryMode(true)}
                 />
               )}
 
