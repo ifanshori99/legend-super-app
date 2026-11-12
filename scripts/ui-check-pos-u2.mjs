@@ -779,7 +779,7 @@ add({
       .filter({ visible: true })
       .first()
       .locator("xpath=ancestor::*[.//*[contains(., 'Lihat status')]][1]")
-      .locator('button, a')
+      .locator("button, a")
       .filter({ hasText: /Lihat status/ })
       .first();
     await own.waitFor({ state: "visible", timeout: COLD_TIMEOUT });
