@@ -65,6 +65,7 @@ import {
   supplierInvoiceLineKindSchema,
   supplierInvoiceMatchStatusSchema,
   supplierInvoiceSchema,
+  supplierKindSchema,
   supplierPaymentActionSchema,
   supplierPaymentIdSchema,
   supplierPaymentMethodSchema,
@@ -79,6 +80,7 @@ import {
 
 export const supplierQuerySchema = cursorPageQuerySchema.extend({
   isActive: z.enum(["true", "false"]).optional(),
+  kind: supplierKindSchema.optional(),
 });
 
 export const supplierPriceHistoryQuerySchema = z.strictObject({
@@ -149,6 +151,7 @@ export const pettyPurchasePolicyQuerySchema = z.strictObject({
 
 export const createSupplierInputSchema = clientInputSchema({
   name: z.string().trim().min(1).max(150),
+  kind: supplierKindSchema.optional(),
   legalName: z.string().trim().min(1).max(200).nullable().optional(),
   contactName: z.string().trim().min(1).max(150).nullable().optional(),
   phone: supplierPhoneSchema.nullable().optional(),
@@ -162,6 +165,7 @@ export const createSupplierInputSchema = clientInputSchema({
 
 export const updateSupplierInputSchema = clientInputSchema({
   name: z.string().trim().min(1).max(150).optional(),
+  kind: supplierKindSchema.optional(),
   legalName: z.string().trim().min(1).max(200).nullable().optional(),
   contactName: z.string().trim().min(1).max(150).nullable().optional(),
   phone: supplierPhoneSchema.nullable().optional(),

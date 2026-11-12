@@ -93,6 +93,7 @@ export const SUPPLIER_READ_PERMISSIONS: readonly PermissionCode[] = [
 ];
 
 const SUPPLIER_AUDIT_FIELDS = [
+  "kind",
   "isActive",
   "paymentTermsDays",
   "rating",
@@ -170,6 +171,7 @@ function toSupplier(row: SupplierRow): Supplier {
     id: row.id,
     tenantId: row.tenantId,
     name: row.name,
+    kind: row.kind,
     legalName: row.legalName,
     contactName: row.contactName,
     phone: row.phone,
@@ -414,11 +416,14 @@ export async function createSupplier(
 ): Promise<Supplier> {
   const operation = "supplier.create";
   const { idempotencyKey, ...fields } = input;
+  const kind = fields.kind ?? "goods";
   const claim = {
     operation,
     key: idempotencyKey,
     fingerprint: requestFingerprint(operation, actorUserId, {
       name: fields.name,
+      // Preserve fingerprints for pre-kind requests and explicit goods alike.
+      ...(kind === "goods" ? {} : { kind }),
       legalName: fields.legalName ?? null,
       contactName: fields.contactName ?? null,
       phone: fields.phone ?? null,
@@ -442,6 +447,7 @@ export async function createSupplier(
             id: randomUUID(),
             tenantId: context.tenant.tenantId,
             name: fields.name,
+            kind,
             legalName: fields.legalName ?? null,
             contactName: fields.contactName ?? null,
             phone: fields.phone ?? null,
@@ -481,6 +487,7 @@ export async function listSuppliers(
     const filters: SQL[] = [];
     if (query.isActive !== undefined)
       filters.push(eq(suppliers.isActive, query.isActive === "true"));
+    if (query.kind !== undefined) filters.push(eq(suppliers.kind, query.kind));
     const [lowerName, id] = cursorKeys(query.cursor, 2);
     if (lowerName !== undefined && id !== undefined)
       filters.push(

@@ -101,6 +101,7 @@ const supplierIds = {
   susu: id(8102),
   sayur: id(8103),
   kemasan: id(8104),
+  teknisi: id(8105),
 } as const;
 
 // ---- Suppliers, contacts and catalog (PRD §3.18 Supplier) ----------------
@@ -148,6 +149,18 @@ const suppliers = [
     email: "ar@kemasannusantara.example",
     address: "Kawasan Industri Cikarang Blok B-7, Bekasi",
     paymentTermsDays: 30,
+    rating: 4,
+  },
+  {
+    id: supplierIds.teknisi,
+    name: "Teknisi Mesin Kopi Bandung",
+    kind: "maintenance",
+    legalName: null,
+    contactName: "Dedi Suhendar",
+    phone: "628156789012",
+    email: "servis@teknisikopi.example",
+    address: "Jl. Cihampelas No. 56, Bandung",
+    paymentTermsDays: 7,
     rating: 4,
   },
 ].map((supplier) =>
@@ -204,6 +217,15 @@ const supplierContacts = [
     role: "AR",
     phone: "628134556677",
     email: "ar@kemasannusantara.example",
+    isPrimary: true,
+  },
+  {
+    id: id(8206),
+    supplierId: supplierIds.teknisi,
+    name: "Dedi Suhendar",
+    role: "Teknisi",
+    phone: "628156789012",
+    email: "servis@teknisikopi.example",
     isPrimary: true,
   },
 ].map((contact) =>

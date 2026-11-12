@@ -1912,6 +1912,13 @@
       "when": 1794416100000,
       "tag": "0286_refund_approval_matrix_data",
       "breakpoints": true
+    },
+    {
+      "idx": 287,
+      "version": "7",
+      "when": 1794416101000,
+      "tag": "0376_supplier_kind",
+      "breakpoints": true
     }
   ]
 }
