@@ -2071,7 +2071,12 @@ export const customerDisplayStateSchema = z
     /** Cash rounding carried from the order, so the screen shows the final total. */
     roundingIdr: idrSchema,
     totalIdr: nonnegativeIdr,
+    /** Reservation credit already applied; absent in legacy display pushes. */
+    depositAppliedIdr: nonnegativeIdr.default(idr(0)),
+    /** Derived from the gross total less the deposit and captured tenders. */
+    remainingIdr: nonnegativeIdr.optional(),
     qris: customerDisplayQrisSchema.nullable(),
+    /** Captured amounts applied to the bill, excluding cash handed over. */
     tenders: z.array(posDocumentTenderSchema),
     changeIdr: nonnegativeIdr.nullable(),
     /** Monotonic per terminal so the display drops stale pushes. */
@@ -2104,6 +2109,34 @@ export const customerDisplayStateSchema = z
         message:
           "totalIdr must equal subtotal - discount + service + tax + rounding",
       });
+    const deposit = Number(state.depositAppliedIdr);
+    const captured = state.tenders.reduce(
+      (sum, tender) => sum + Number(tender.amountIdr),
+      0,
+    );
+    const remaining = Number(state.totalIdr) - deposit - captured;
+    if (deposit > Number(state.totalIdr))
+      ctx.addIssue({
+        code: "custom",
+        path: ["depositAppliedIdr"],
+        message: "depositAppliedIdr must not exceed totalIdr",
+      });
+    if (remaining < 0)
+      ctx.addIssue({
+        code: "custom",
+        path: ["tenders"],
+        message: "Captured tenders and deposit must not exceed the bill total",
+      });
+    if (
+      state.remainingIdr !== undefined &&
+      Number(state.remainingIdr) !== remaining
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["remainingIdr"],
+        message:
+          "remainingIdr must equal total less deposit and captured tenders",
+      });
     if (state.qris !== null) {
       if (state.state !== "awaiting_payment")
         ctx.addIssue({
@@ -2111,20 +2144,32 @@ export const customerDisplayStateSchema = z
           path: ["qris"],
           message: "QRIS is shown while the bill is awaiting payment",
         });
-      if (Number(state.qris?.amountIdr) !== Number(state.totalIdr))
+      if (remaining <= 0 || Number(state.qris.amountIdr) !== remaining)
         ctx.addIssue({
           code: "custom",
           path: ["qris", "amountIdr"],
-          message: "The QRIS amount is the bill total",
+          message: "The QRIS amount is the positive remaining bill balance",
         });
     }
-    if (state.state === "paid" && state.tenders.length === 0)
+    if (state.state === "paid" && remaining !== 0)
       ctx.addIssue({
         code: "custom",
         path: ["tenders"],
-        message: "A paid screen shows how it was paid",
+        message:
+          "A paid screen is fully covered by the deposit and captured tenders",
       });
-  });
+  })
+  .transform((state) => ({
+    ...state,
+    remainingIdr: idr(
+      Number(state.totalIdr) -
+        Number(state.depositAppliedIdr) -
+        state.tenders.reduce(
+          (sum, tender) => sum + Number(tender.amountIdr),
+          0,
+        ),
+    ),
+  }));
 export type CustomerDisplayState = z.infer<typeof customerDisplayStateSchema>;
 
 // ---- Fixture set ----------------------------------------------------------
