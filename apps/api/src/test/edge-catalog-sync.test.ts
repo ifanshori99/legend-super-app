@@ -2114,7 +2114,9 @@ describe("97p money: prices are copied exactly", () => {
     await edge.owner.query("DELETE FROM price_lists");
     await Promise.all([
       pull(scriptedCloud({ ...parents, price_lists: [old] }, 100)),
-      pull(scriptedCloud({ ...parents, price_lists: [fresh] }, 100)),
+      // Preserve the scripted cursor's old prefix: resuming at index 1 must
+      // deliver the fresh version instead of skipping a replaced array slot.
+      pull(scriptedCloud({ ...parents, price_lists: [old, fresh] }, 100)),
     ]);
     expect(await edgePrice(ids.pliChg)).toBe("25000");
     expect(await edgeListHeaders()).toBe(1);

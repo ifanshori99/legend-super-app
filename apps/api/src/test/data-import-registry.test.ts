@@ -209,6 +209,8 @@ const POOL_OPENERS_NOT_IMPORTERS: Record<string, string> = {
     "job runner: delivery state of its own tenant's work, no imports",
   "apps/api/src/db/role.ts": "runtime role helper, no data writes",
   "scripts/doctor.mjs": "read-only health query",
+  "scripts/dev-public-site.mjs":
+    "read-only lookup of the synthetic development public site; writes local environment configuration only, imports no database rows",
   "scripts/test-setup.mjs":
     "writes a marker table into a disposable test database only",
   "apps/api/src/worker/audit-retention.job.ts":

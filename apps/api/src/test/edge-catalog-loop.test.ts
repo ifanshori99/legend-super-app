@@ -43,7 +43,10 @@ import {
 } from "@starter/shared/edge";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { parseEdgeRuntimeConfig } from "../edge/config.ts";
-import { startEdgeMasterSyncLoop } from "../edge/master-sync.ts";
+import {
+  EdgeCatalogSyncError,
+  startEdgeMasterSyncLoop,
+} from "../edge/master-sync.ts";
 import {
   CRITICAL_CATALOG_STREAMS,
   createCatalogFreshness,
@@ -312,6 +315,17 @@ describe("24318 the master-sync loop pulls the catalog", () => {
       expect(callsTo(spy, CATALOG_PATH).length).toBeGreaterThanOrEqual(1);
       expect(onError).toHaveBeenCalled();
     });
+    // HTTP calls start before the pull finishes. Wait for its complete error
+    // round so the next interval is not skipped while this run is in flight.
+    await vi.waitFor(
+      () =>
+        expect(
+          onError.mock.calls.flatMap(([error]) =>
+            error instanceof EdgeCatalogSyncError ? [error.stream] : [],
+          ),
+        ).toEqual([...CATALOG_SYNC_STREAMS]),
+      { timeout: 5_000 },
+    );
     const mastersBefore = callsTo(spy, MASTERS_PATH).length;
     const catalogBefore = callsTo(spy, CATALOG_PATH).length;
     await tick();
