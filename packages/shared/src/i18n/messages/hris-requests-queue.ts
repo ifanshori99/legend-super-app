@@ -1,0 +1,117 @@
+// 539-U4 (legend-ydf2 / legend-8r77t). Own file so parallel screens never edit the same catalog lines.
+// Supervisor queue and decision screens. Copy follows design/mockups/hris
+// (queue-*.png and detail-*.png).
+export const hrisRequestsQueueMessages = {
+  nav: {
+    label: "Persetujuan tim",
+  },
+  page: {
+    title: "Persetujuan tim",
+    description: "Tinjau pengajuan shift, cuti, dan lembur karyawan.",
+  },
+  queue: {
+    sectionTitle: "Perlu ditinjau",
+    searchLabel: "Cari nama karyawan",
+    searchPlaceholder: "Cari nama karyawan…",
+    tableLabel: "Antrean pengajuan tim",
+    columnKind: "Jenis",
+    columnEmployee: "Karyawan",
+    columnDetail: "Rincian",
+    columnStatus: "Status",
+    columnAction: "Aksi",
+    review: "Tinjau",
+    reviewFor: "Tinjau pengajuan {kind} dari {employee}",
+    count: "{count} pengajuan",
+  },
+  kind: {
+    swap: "Tukar shift",
+    cover: "Ganti shift",
+    leave: "Cuti",
+    overtime: "Lembur",
+  },
+  status: {
+    pending: "Menunggu tinjauan",
+    approved: "Disetujui",
+    rejected: "Ditolak",
+    cancelled: "Dibatalkan",
+    expired: "Kedaluwarsa",
+  },
+  loading: {
+    label: "Memuat pengajuan tim",
+  },
+  empty: {
+    title: "Tidak ada pengajuan untuk ditinjau",
+    description: "Pengajuan baru dari tim akan muncul di sini.",
+  },
+  error: {
+    title: "Antrean tidak dapat dimuat",
+    description: "Periksa koneksi lalu coba lagi.",
+  },
+  offline: {
+    title: "Tidak ada koneksi",
+    description: "Keputusan belum tersimpan. Periksa koneksi lalu coba lagi.",
+    panelTitle: "Pengajuan belum diproses",
+    panelDescription: "Tidak ada keputusan yang dikirim saat offline.",
+    retry: "Coba lagi",
+  },
+  detail: {
+    back: "Kembali ke antrean",
+    requesting: "Mengajukan {kind}",
+    unknownEmployee: "Karyawan tidak dikenal",
+    detailLabel: "Rincian",
+    submittedLabel: "Diajukan",
+    reasonLabel: "Alasan",
+    noReason: "Tidak ada alasan dicantumkan",
+    approve: "Setujui",
+    approveWithOverride: "Setujui dengan pengecualian",
+    reject: "Tolak",
+    rejectHint: "Penolakan dikonfirmasi dulu sebelum dikirim.",
+    overrideHint: "Persetujuan dengan pengecualian meminta alasan.",
+    noRight: "Anda tidak punya hak untuk memutuskan pengajuan jenis ini.",
+    decidedNote: "Pengajuan ini sudah diputuskan.",
+  },
+  compliance: {
+    title: "Periksa aturan jam kerja",
+    description:
+      "Persetujuan eksplisit diperlukan jika perubahan melanggar aturan.",
+    issuesLabel: "Pelanggaran aturan",
+    shift_too_long: "Satu shift melewati batas jam kerja",
+    daily_limit_exceeded: "Jam kerja harian melewati batas",
+    weekly_limit_exceeded: "Jam kerja mingguan melewati batas",
+    insufficient_rest: "Waktu istirahat antar shift kurang",
+    overlapping_shift: "Shift saling bertumpuk",
+    too_many_consecutive_days: "Hari kerja berturut-turut melewati batas",
+  },
+  rejectForm: {
+    title: "Tolak pengajuan",
+    note: "Alasan penolakan belum disimpan. Karyawan hanya melihat status Ditolak.",
+    cancel: "Batal",
+    submit: "Kirim penolakan",
+    submitting: "Mengirim…",
+  },
+  overrideForm: {
+    title: "Setujui dengan pengecualian",
+    reasonLabel: "Alasan pengecualian",
+    reasonHint: "Alasan dicatat bersama persetujuan.",
+    reasonRequired: "Isi alasan pengecualian sebelum menyetujui.",
+    cancel: "Batal",
+    submit: "Kirim persetujuan",
+    submitting: "Mengirim…",
+  },
+  result: {
+    banner: "Keputusan tersimpan",
+    approved: "Pengajuan telah disetujui.",
+    rejected: "Pengajuan telah ditolak.",
+    back: "Kembali ke antrean",
+  },
+  notFound: {
+    title: "Pengajuan tidak ditemukan",
+    description: "Pengajuan ini mungkin sudah diproses atau tidak tersedia.",
+  },
+  errors: {
+    forbidden: "Anda tidak punya hak untuk memutuskan pengajuan ini.",
+    notFound: "Pengajuan tidak ditemukan atau sudah diputuskan.",
+    conflict: "Pengajuan sudah diputuskan atau berubah. Muat ulang antrean.",
+    unknown: "Keputusan belum tersimpan. Coba lagi.",
+  },
+} as const;

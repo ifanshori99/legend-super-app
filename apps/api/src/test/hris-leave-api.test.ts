@@ -251,12 +251,12 @@ afterAll(async () => {
       [tenant.id],
     );
     await db.query(
-      `DELETE FROM leave_balances WHERE tenant_id = $1 AND leave_type_id IN (${types})`,
-      [tenant.id],
+      `DELETE FROM leave_balances WHERE tenant_id = $1 AND (${mine} OR leave_type_id IN (${types}))`,
+      [tenant.id, createdEmployees],
     );
     await db.query(
-      `DELETE FROM leave_accruals WHERE tenant_id = $1 AND leave_type_id IN (${types})`,
-      [tenant.id],
+      `DELETE FROM leave_accruals WHERE tenant_id = $1 AND (${mine} OR leave_type_id IN (${types}))`,
+      [tenant.id, createdEmployees],
     );
     await db.query(
       `DELETE FROM leave_types WHERE tenant_id = $1 AND code LIKE 'APITEST%'`,
@@ -792,7 +792,11 @@ describe("§29 Pengajuan & Approval cuti", () => {
     const rejected = await post(
       managerAClient,
       `/api/hris/leave/requests/${created.body.data.id}/decision`,
-      { action: "reject", idempotencyKey: key() },
+      {
+        action: "reject",
+        rejectionReason: "Jadwal penuh",
+        idempotencyKey: key(),
+      },
     );
     expect(rejected.status, JSON.stringify(rejected.body)).toBe(200);
     expect(rejected.body.data).toMatchObject({
@@ -862,7 +866,11 @@ describe("§29 Pengajuan & Approval cuti", () => {
     const reject = await post(
       managerAClient,
       `/api/hris/leave/requests/${approvedId}/decision`,
-      { action: "reject", idempotencyKey: key() },
+      {
+        action: "reject",
+        rejectionReason: "Jadwal penuh",
+        idempotencyKey: key(),
+      },
     );
     expect(reject.status).toBe(409);
   });
@@ -924,6 +932,13 @@ describe("§29 Pengajuan & Approval cuti", () => {
       managerA.body.data.every(
         (row: { status: string }) => row.status === "rejected",
       ),
+    ).toBe(true);
+    expect(
+      managerA.body.data.every(
+        (row: { employeeName?: string }) =>
+          row.employeeName === "Karyawan Cuti API",
+      ),
+      "legend-hvh9x: the authorized leave queue names its requester",
     ).toBe(true);
     const managerB = await managerBClient.get(
       `/api/hris/leave/requests?employeeId=${ownEmployee}`,
@@ -1140,6 +1155,7 @@ describe("§29 Lembur", () => {
       (
         await post(managerAClient, path, {
           action: "reject",
+          rejectionReason: "Jadwal penuh",
           idempotencyKey: key(),
         })
       ).status,
@@ -1155,7 +1171,11 @@ describe("§29 Lembur", () => {
     const rejected = await post(
       managerAClient,
       `/api/hris/overtime-requests/${created.body.data.id}/decision`,
-      { action: "reject", idempotencyKey: key() },
+      {
+        action: "reject",
+        rejectionReason: "Jadwal penuh",
+        idempotencyKey: key(),
+      },
     );
     expect(rejected.status, JSON.stringify(rejected.body)).toBe(200);
     expect(rejected.body.data.status).toBe("rejected");
@@ -1169,6 +1189,9 @@ describe("§29 Lembur", () => {
     expect(approved.body.data.map((row: { id: string }) => row.id)).toEqual([
       approvedId,
     ]);
+    expect(approved.body.data[0]).toMatchObject({
+      employeeName: "Karyawan Cuti API",
+    });
 
     const pending = await hrClient.get(
       `/api/hris/overtime-requests?employeeId=${ownEmployee}&status=pending&limit=100`,

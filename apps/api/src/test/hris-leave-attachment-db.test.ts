@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { outletIdSchema, userIdSchema } from "@starter/shared/core";
+import { outletIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -16,14 +16,9 @@ import {
   createLeaveRequest as createLeaveRequestEndpoint,
   decideLeaveRequest as decideLeaveRequestEndpoint,
   leaveTypeInputSchema,
-  type Employee,
 } from "@starter/shared/hris";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
-import {
-  createEmployee,
-  type CreateEmployeeInput,
-} from "../services/hris-employee.service.ts";
 import { createLeaveType } from "../services/hris-leave.service.ts";
 import {
   createLeaveRequest,
@@ -192,7 +187,7 @@ let hr: string; // tenant-wide: hr.employee.manage + view + hr.leave.approve
 let managerA: string; // outlet_manager template at outlet A (the matrix approver)
 let managerB: string; // outlet_manager template at outlet B
 
-type Staff = { userId: string; employee: Employee };
+type Staff = { userId: string; employee: { id: string } };
 
 async function makeStaff(
   outletId: string = outletA,
@@ -202,21 +197,16 @@ async function makeStaff(
     type: "outlet",
     id: outletId,
   });
-  const employee = await createEmployee(tenantScope(), hr, {
-    userId: userIdSchema.parse(userId),
-    legalEntityId: null,
-    employeeNo: freshNo(),
-    fullName: "Karyawan Cuti",
-    positionId: null,
-    orgUnitId: null,
-    managerId: null,
-    homeOutletId: outletIdSchema.parse(outletId),
-    employmentType: "pkwt",
-    joinDate,
-    endDate: null,
-    ptkpStatus: "TK/0",
-    status: "active",
-  } as CreateEmployeeInput);
+  // Attachment tests need active employees, not a tenant-plan provisioning
+  // test. Seed these private fixtures without consuming a shared quota race.
+  const [employee] = await sql<{ id: string }>(
+    `INSERT INTO employees
+       (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
+        employment_type, join_date, status, created_by)
+     VALUES ($1, $2, $3, $4, 'Karyawan Cuti', $5, 'pkwt', $6, 'active', $7)
+     RETURNING id`,
+    [randomUUID(), tenantId, userId, freshNo(), outletId, joinDate, hr],
+  );
   return { userId, employee };
 }
 
@@ -262,12 +252,13 @@ async function storageObject(
   purpose: "document" | "selfie" | "menu_photo" | "receipt" = "document",
   ageHours = 0,
   ownerUserId: string | null = null,
+  sourceKind: string | null = purpose === "document" ? "leave_request" : null,
 ): Promise<string> {
   const id = randomUUID();
   createdStorage.push(id);
   await sql(
-    `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, created_at, owner_user_id)
-     VALUES ($1, $2, $3, $4, $5, 'application/pdf', 1024, now() - make_interval(hours => $6::int), $7)`,
+    `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, created_at, owner_user_id, source_kind)
+     VALUES ($1, $2, $3, $4, $5, 'application/pdf', 1024, now() - make_interval(hours => $6::int), $7, $8)`,
     [
       tenantId,
       outletId,
@@ -276,6 +267,7 @@ async function storageObject(
       `private/${tenantId}/${id}.pdf`,
       ageHours,
       ownerUserId,
+      sourceKind,
     ],
   );
   return id;
@@ -358,6 +350,10 @@ afterAll(async () => {
       [tenantId, createdUsers, createdTypes],
     );
     await client.query(
+      `DELETE FROM leave_accruals WHERE tenant_id = $1 AND (${mine} OR leave_type_id = ANY($3::uuid[]))`,
+      [tenantId, createdUsers, createdTypes],
+    );
+    await client.query(
       `DELETE FROM leave_types WHERE tenant_id = $1 AND id = ANY($2::uuid[])`,
       [tenantId, createdTypes],
     );
@@ -413,6 +409,28 @@ afterAll(async () => {
 });
 
 describe("legend-arj.4 leave attachment", () => {
+  it("refuses a fresh unclassified document even when the requester owns it", async () => {
+    const type = await makeType({ tracksBalance: false });
+    const staff = await makeStaff();
+    const objectId = await storageObject(
+      outletA,
+      "document",
+      0,
+      staff.userId,
+      null,
+    );
+    const result = await failure(
+      createLeaveRequest(
+        outletScope(outletA),
+        staff.userId,
+        requestBody(type.id, objectId),
+        new Date(),
+        stubSigner,
+      ),
+    );
+    expect([result.status, result.code]).toEqual([422, "VALIDATION_ERROR"]);
+    expect(await requestCount(staff.employee.id)).toBe(0);
+  });
   it("accepts the requester's private object, stores its id and signs a URL only for those who can see the request", async () => {
     const type = await makeType(
       { tracksBalance: false },
@@ -476,6 +494,19 @@ describe("legend-arj.4 leave attachment", () => {
         `https://signed.example.test/${objectId}`,
       );
     }
+    // Employee administrators without leave approval may see the request but
+    // cannot open its private medical attachment.
+    const adminWithoutApproval = await actor(
+      ["hr.employee.manage", "hr.employee.view"],
+      { type: "tenant" },
+    );
+    const adminView = await getLeaveRequest(
+      tenantScope(),
+      adminWithoutApproval,
+      created.id,
+      stubSigner,
+    );
+    expect(adminView.attachmentUrl).toBeNull();
     // A colleague's list never holds it; the other outlet's manager gets 404.
     const colleague = await listLeaveRequests(
       outletScope(outletA),
@@ -686,7 +717,7 @@ describe("legend-arj.4 leave attachment", () => {
     );
     expect(rows[0]).toEqual({
       owner_user_id: other.userId,
-      source_kind: null,
+      source_kind: "leave_request",
       source_id: null,
     });
   });
@@ -711,7 +742,7 @@ describe("legend-arj.4 leave attachment", () => {
       "SELECT source_kind, source_id FROM core_storage_objects WHERE tenant_id = $1 AND id = $2",
       [tenantId, objectId],
     );
-    expect(rows[0]).toEqual({ source_kind: null, source_id: null });
+    expect(rows[0]).toEqual({ source_kind: "leave_request", source_id: null });
   });
 
   it("[storage-object-owner] accepts the requester's own upload and links it: source leave_request, source id = the request, owner = requester", async () => {
@@ -758,7 +789,7 @@ describe("legend-arj.4 leave attachment", () => {
     );
     expect(rows[0]).toEqual({
       owner_user_id: null,
-      source_kind: null,
+      source_kind: "leave_request",
       source_id: null,
     });
   });
@@ -792,7 +823,7 @@ describe("legend-arj.4 leave attachment", () => {
     );
     expect(rows[0]).toEqual({
       owner_user_id: null,
-      source_kind: null,
+      source_kind: "leave_request",
       source_id: null,
     });
   });

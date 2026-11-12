@@ -13,7 +13,7 @@
 // of the feature that owns the file. Adding codes needs a migration backfill
 // and is out of scope here.
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Request } from "express";
 import { AccessError, type PermissionCode } from "@starter/shared/access";
 import { outletIdSchema, type OutletId } from "@starter/shared/core";
@@ -28,6 +28,8 @@ import {
 } from "@starter/shared/storage";
 import { db } from "../db";
 import { coreStorageObjects } from "../db/schema/core-storage";
+import { leaveRequests } from "../db/schema/hris-leave";
+import { employees } from "../db/schema/hris";
 import { withTenant } from "../db/tenant";
 import { getAuth } from "../middleware/auth";
 import { loadRequestAccess } from "../middleware/permissions";
@@ -215,11 +217,11 @@ export function createStorageRequestResolver(): ResolveRequest {
     if (requested === "read") {
       const objectId = storageObjectIdSchema.safeParse(req.params.objectId);
       if (!objectId.success) throw denied();
-      const row = await withTenant(
+      const { row, leave } = await withTenant(
         db,
         establishScopedTenantContext(tenant, { kind: "tenant" }),
-        async (tx) =>
-          (
+        async (tx) => {
+          const row = (
             await tx
               .select({
                 tenantId: coreStorageObjects.tenantId,
@@ -237,7 +239,31 @@ export function createStorageRequestResolver(): ResolveRequest {
                 ),
               )
               .limit(1)
-          )[0],
+          )[0];
+          const leave = (
+            await tx
+              .select({
+                outletId: leaveRequests.outletId,
+                userId: employees.userId,
+              })
+              .from(leaveRequests)
+              .innerJoin(
+                employees,
+                and(
+                  eq(employees.tenantId, leaveRequests.tenantId),
+                  eq(employees.id, leaveRequests.employeeId),
+                ),
+              )
+              .where(
+                and(
+                  eq(leaveRequests.tenantId, tenant.tenantId),
+                  sql`lower(${leaveRequests.attachmentKey}) = ${objectId.data.toLowerCase()}`,
+                ),
+              )
+              .limit(1)
+          )[0];
+          return { row, leave };
+        },
       );
       // Missing, other-tenant and not-allowed all answer the same (no
       // existence oracle).
@@ -263,7 +289,18 @@ export function createStorageRequestResolver(): ResolveRequest {
         ownerUserId: row.ownerUserId,
         sourceKind: kind.data,
       };
-      if (!canRead(object, outlet.data)) throw denied();
+      // Historical objects may be unclassified or wrongly classified. The
+      // leave reference takes precedence over the stored object's metadata.
+      const canReadLeave = () =>
+        leave === undefined ||
+        (leave.outletId.toLowerCase() === object.outletId.toLowerCase() &&
+          (leave.userId === actorUserId ||
+            allowsAny(["hr.leave.approve"], outlet.data)));
+      if (
+        !canReadLeave() ||
+        (leave === undefined && !canRead(object, outlet.data))
+      )
+        throw denied();
 
       return {
         actorUserId,
@@ -287,7 +324,10 @@ export function createStorageRequestResolver(): ResolveRequest {
             storageSourceKindPurpose[target.sourceKind] !== object.purpose
           )
             return false;
-          return canRead(object, outletKey.data);
+          return (
+            canReadLeave() &&
+            (leave !== undefined || canRead(object, outletKey.data))
+          );
         },
       };
     }

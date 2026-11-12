@@ -327,7 +327,11 @@ function decide(
     outletScope(outletId),
     manager,
     requestId as never,
-    { action, idempotencyKey },
+    {
+      action,
+      idempotencyKey,
+      ...(action === "reject" ? { rejectionReason: "Jadwal penuh" } : {}),
+    },
     { mfaVerified: true },
   );
 }

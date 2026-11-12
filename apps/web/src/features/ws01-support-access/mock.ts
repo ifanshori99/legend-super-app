@@ -11,11 +11,20 @@ import {
   platformEndpoints,
   supportAccessExpiry,
   supportAccessGrantSchema,
+  supportAccessRequestSchema,
+  SUPPORT_ACCESS_APPROVAL_WINDOW_HOURS,
   supportAccessStatus,
   tenantSchema,
   type SupportAccessGrant,
+  type SupportAccessRequest,
 } from "@starter/shared/platform";
+import {
+  accessForMockRole,
+  MOCK_ROLE_COOKIE,
+  parseMockRole,
+} from "@/lib/areas/access";
 import { ApiError } from "@/lib/api/errors";
+import { canEndSupportGrant } from "./decision-guard.ts";
 import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
@@ -128,6 +137,12 @@ registerMock(orgEndpoints.listSupportAccess, ({ query, scenario }) =>
 registerMock(platformEndpoints.requestSupportAccess, ({ params, body }) => {
   const tenant = tenants.find((row) => row.id === params.tenantId);
   if (!tenant) throw new ApiError(404, "NOT_FOUND", "Tenant tidak ditemukan.");
+  if (body.accessMode === "read_write")
+    throw new ApiError(
+      409,
+      "SUPPORT_ACCESS_OWNER_APPROVAL_REQUIRED",
+      "Akses baca dan tulis harus disetujui owner tenant.",
+    );
   if (body.mfaCode === "000000")
     throw new ApiError(
       401,
@@ -167,7 +182,28 @@ registerMock(platformEndpoints.requestSupportAccess, ({ params, body }) => {
   return { data: created };
 });
 
+/** The mock caller's reach from the `legend-mock-role` cookie (browser only). */
+function mockCallerPermissions(): readonly string[] {
+  const row =
+    typeof document === "undefined"
+      ? undefined
+      : document.cookie
+          .split("; ")
+          .find((cookie) => cookie.startsWith(`${MOCK_ROLE_COOKIE}=`));
+  return accessForMockRole(
+    parseMockRole(row?.slice(MOCK_ROLE_COOKIE.length + 1)),
+  ).permissions;
+}
+
+// Only Super Admin can end a grant: the tenant Owner has no revoke endpoint,
+// so a non-platform role gets 403 and the Owner screen says "not revocable yet".
 registerMock(platformEndpoints.endSupportAccess, ({ params }) => {
+  if (!canEndSupportGrant(mockCallerPermissions()))
+    throw new ApiError(
+      403,
+      "FORBIDDEN",
+      "Hanya Super Admin yang dapat mengakhiri sesi ini.",
+    );
   const current = grants.get().find((row) => row.id === params.grantId);
   if (!current) throw new ApiError(404, "NOT_FOUND", "Sesi tidak ditemukan.");
   const now = new Date();
@@ -181,3 +217,173 @@ registerMock(platformEndpoints.endSupportAccess, ({ params }) => {
   grants.set(grants.get().map((row) => (row.id === ended.id ? ended : row)));
   return { data: ended };
 });
+
+// read_write needs the tenant owner (legend-8r77t, founder Q37). The request
+// waits up to 24 hours; approving opens a read_write grant, rejecting opens
+// none. A decision on a decided or expired request answers 409.
+const HOUR = 60 * MINUTE;
+const OWNER_ID = "0c0c0000-0000-4000-8000-000000000001";
+
+function requestId(n: number): string {
+  return `5ac0000c-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
+}
+
+function buildRequest(seed: {
+  n: number;
+  reason: string;
+  requestedOffset: number;
+  durationMinutes: 15 | 30;
+  status: SupportAccessRequest["status"];
+  grant?: SupportAccessGrant;
+}): SupportAccessRequest {
+  const requestedAt = iso(seed.requestedOffset);
+  const decided = seed.status === "approved" || seed.status === "rejected";
+  return supportAccessRequestSchema.parse({
+    id: requestId(seed.n),
+    tenantId: fixtures.tenant.id,
+    superAdminUserId: fixtures.superAdmin.id,
+    reason: seed.reason,
+    accessMode: "read_write",
+    durationMinutes: seed.durationMinutes,
+    mfaVerifiedAt: new Date(Date.parse(requestedAt) - 20_000).toISOString(),
+    requestedAt,
+    approvalExpiresAt: new Date(
+      Date.parse(requestedAt) + SUPPORT_ACCESS_APPROVAL_WINDOW_HOURS * HOUR,
+    ).toISOString(),
+    status: seed.status,
+    // The contract sets decidedAt on every non-pending row; an expired one
+    // closes when the 24 hour window ends.
+    decidedAt: decided
+      ? new Date(Date.parse(requestedAt) + 10 * MINUTE).toISOString()
+      : seed.status === "expired"
+        ? new Date(
+            Date.parse(requestedAt) +
+              SUPPORT_ACCESS_APPROVAL_WINDOW_HOURS * HOUR,
+          ).toISOString()
+        : null,
+    decidedBy: decided ? OWNER_ID : null,
+    grantId: seed.grant?.id ?? null,
+    ownerNotifiedAt: new Date(Date.parse(requestedAt) + 1000).toISOString(),
+  });
+}
+
+const requests = createMockStore<SupportAccessRequest[]>(() => [
+  buildRequest({
+    n: 1,
+    reason:
+      "Memperbaiki selisih stok bahan baku outlet BDG-01 yang tidak bisa dikoreksi dari aplikasi.",
+    requestedOffset: -2 * HOUR,
+    durationMinutes: 30,
+    status: "pending",
+  }),
+  buildRequest({
+    n: 2,
+    reason:
+      "Mengoreksi nomor struk ganda pada transaksi kemarin atas permintaan owner.",
+    requestedOffset: -2 * DAY,
+    durationMinutes: 15,
+    status: "rejected",
+  }),
+  buildRequest({
+    n: 3,
+    reason: "Membetulkan pengaturan pajak outlet setelah migrasi data awal.",
+    requestedOffset: -3 * DAY,
+    durationMinutes: 30,
+    status: "expired",
+  }),
+]);
+
+registerMock(orgEndpoints.listSupportAccessRequests, ({ query, scenario }) =>
+  paginateFixture(
+    [...requests.get()].sort(
+      (a, b) => Date.parse(b.requestedAt) - Date.parse(a.requestedAt),
+    ),
+    query,
+    (row) => row.id,
+    scenario,
+  ),
+);
+
+registerMock(
+  platformEndpoints.requestSupportWriteAccess,
+  ({ params, body }) => {
+    const tenant = tenants.find((row) => row.id === params.tenantId);
+    if (!tenant)
+      throw new ApiError(404, "NOT_FOUND", "Tenant tidak ditemukan.");
+    if (body.mfaCode === "000000")
+      throw new ApiError(
+        401,
+        "MFA_INVALID",
+        "Kode verifikasi salah atau kedaluwarsa.",
+      );
+    const created = supportAccessRequestSchema.parse({
+      id: requestId(0x100 + requests.get().length),
+      tenantId: tenant.id,
+      superAdminUserId: fixtures.superAdmin.id,
+      reason: body.reason,
+      accessMode: "read_write",
+      durationMinutes: body.durationMinutes,
+      mfaVerifiedAt: iso(-1000),
+      requestedAt: iso(),
+      approvalExpiresAt: iso(SUPPORT_ACCESS_APPROVAL_WINDOW_HOURS * HOUR),
+      status: "pending",
+      decidedAt: null,
+      decidedBy: null,
+      grantId: null,
+      ownerNotifiedAt: iso(),
+    });
+    requests.set([created, ...requests.get()]);
+    return { data: created };
+  },
+);
+
+function decide(id: string, decision: "approve" | "reject") {
+  const current = requests.get().find((row) => row.id === id);
+  if (!current)
+    throw new ApiError(404, "NOT_FOUND", "Permintaan tidak ditemukan.");
+  const now = Date.now();
+  if (
+    current.status !== "pending" ||
+    Date.parse(current.approvalExpiresAt) <= now
+  )
+    throw new ApiError(
+      409,
+      "CONFLICT",
+      "Permintaan ini sudah diputuskan atau kedaluwarsa.",
+    );
+  let grant: SupportAccessGrant | undefined;
+  if (decision === "approve") {
+    const startedAt = new Date(now).toISOString();
+    grant = supportAccessGrantSchema.parse({
+      id: grantId(0x200 + grants.get().length),
+      tenantId: current.tenantId,
+      superAdminUserId: current.superAdminUserId,
+      reason: current.reason,
+      accessMode: "read_write",
+      durationMinutes: current.durationMinutes,
+      startedAt,
+      expiresAt: supportAccessExpiry(startedAt, current.durationMinutes),
+      mfaVerifiedAt: current.mfaVerifiedAt,
+      tenantAdminNotifiedAt: startedAt,
+      endedAt: null,
+      endedBy: null,
+    });
+    grants.set([grant, ...grants.get()]);
+  }
+  const decided = supportAccessRequestSchema.parse({
+    ...current,
+    status: decision === "approve" ? "approved" : "rejected",
+    decidedAt: new Date(now).toISOString(),
+    decidedBy: OWNER_ID,
+    grantId: grant?.id ?? null,
+  });
+  requests.set(requests.get().map((row) => (row.id === id ? decided : row)));
+  return { data: decided };
+}
+
+registerMock(orgEndpoints.approveSupportAccessRequest, ({ params }) =>
+  decide(params.requestId, "approve"),
+);
+registerMock(orgEndpoints.rejectSupportAccessRequest, ({ params }) =>
+  decide(params.requestId, "reject"),
+);

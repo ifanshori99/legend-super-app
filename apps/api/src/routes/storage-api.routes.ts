@@ -192,7 +192,11 @@ export function createStorageApiRouter(options: {
   const hris = Router();
   hris.use(
     createHrisRouter({ fileSigner: runtime?.hrisDocumentSigner }),
-    createHrisLeaveRouter({ fileSigner: runtime?.hrisDocumentSigner }),
+    createHrisLeaveRouter({
+      fileSigner: runtime?.hrisDocumentSigner,
+      storage: runtime?.storage,
+      scanner: runtime?.scanner,
+    }),
   );
   router.use("/hris", (req, res, next) => {
     // Express routes case-insensitively, so the gate must too.

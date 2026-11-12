@@ -45,6 +45,8 @@ import {
   getShiftCompliancePolicy as getShiftCompliancePolicyEndpoint,
   listShiftAssignments as listShiftAssignmentsEndpoint,
   listShiftSwapRequests as listShiftSwapRequestsEndpoint,
+  listShiftSwapCandidates as listShiftSwapCandidatesEndpoint,
+  respondShiftSwapRequest as respondShiftSwapRequestEndpoint,
   listShiftTemplates as listShiftTemplatesEndpoint,
   publishRoster as publishRosterEndpoint,
   updateShiftAssignment as updateShiftAssignmentEndpoint,
@@ -447,6 +449,44 @@ export function createHrisSchedulingRouter(): Router {
         data: await swapService.createShiftSwapRequest(
           hrisContext(req),
           actor(req),
+          body,
+        ),
+      });
+    },
+  );
+
+  router.get(
+    "/shift-swaps/candidates",
+    anySurface,
+    requireHris(SWAP_REQUEST),
+    async (req, res) => {
+      const query = listShiftSwapCandidatesEndpoint.query.parse(req.query);
+      res.json(
+        await swapService.listShiftSwapCandidates(
+          hrisContext(req),
+          actor(req),
+          query.outletId,
+          query.fromAssignmentId,
+        ),
+      );
+    },
+  );
+
+  router.post(
+    "/shift-swaps/:swapId/peer-response",
+    anySurface,
+    jsonBody,
+    requireHris(SWAP_REQUEST),
+    async (req, res) => {
+      const { swapId } = respondShiftSwapRequestEndpoint.params.parse(
+        req.params,
+      );
+      const body = respondShiftSwapRequestEndpoint.body.parse(req.body);
+      res.json({
+        data: await swapService.respondShiftSwapRequest(
+          hrisContext(req),
+          actor(req),
+          swapId,
           body,
         ),
       });

@@ -424,7 +424,11 @@ const submit = (
   );
 
 const decisionBody = (action: "approve" | "reject" | "cancel") =>
-  decideLeaveRequestEndpoint.body.parse({ action, idempotencyKey: key() });
+  decideLeaveRequestEndpoint.body.parse({
+    action,
+    idempotencyKey: key(),
+    ...(action === "reject" ? { rejectionReason: "Jadwal penuh" } : {}),
+  });
 
 const decideAs = (
   userId: string,

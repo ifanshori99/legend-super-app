@@ -150,6 +150,7 @@ export function toOvertimeRequest(row: RequestRow): OvertimeRequest {
     date: row.date,
     minutes: row.minutes,
     reason: row.reason,
+    rejectionReason: row.rejectionReason,
     dayType: row.dayType,
     formulaId: row.formulaId,
     status: row.status,
@@ -688,8 +689,37 @@ export async function listOvertimeRequests(
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
+    const names =
+      page.length === 0
+        ? []
+        : await tx
+            .select({
+              id: employees.id,
+              outletId: employees.homeOutletId,
+              name: employees.fullName,
+            })
+            .from(employees)
+            .where(
+              and(
+                eq(employees.tenantId, context.tenant.tenantId),
+                inArray(employees.id, [
+                  ...new Set(page.map((row) => row.employeeId)),
+                ]),
+                inArray(employees.homeOutletId, [
+                  ...new Set(page.map((row) => row.outletId)),
+                ]),
+              ),
+            );
     return {
-      data: page.map(toOvertimeRequest),
+      data: page.map((row) => ({
+        ...toOvertimeRequest(row),
+        employeeName:
+          names.find(
+            (item) =>
+              lower(item.id) === lower(row.employeeId) &&
+              lower(item.outletId) === lower(row.outletId),
+          )?.name ?? null,
+      })),
       meta: {
         limit: query.limit,
         nextCursor:
@@ -838,7 +868,7 @@ export async function decideOvertimeRequest(
         reason:
           input.action === "approve"
             ? "Lembur disetujui melalui HRIS"
-            : "Lembur ditolak melalui HRIS",
+            : input.rejectionReason!,
       },
       {
         mfaVerified: options.mfaVerified,
@@ -891,6 +921,7 @@ export async function settleOvertimeRequest(
       .select({
         decidedBy: approvalRequests.decidedBy,
         decidedAt: approvalRequests.decidedAt,
+        reason: approvalRequests.reason,
       })
       .from(approvalRequests)
       .where(
@@ -937,6 +968,10 @@ export async function settleOvertimeRequest(
       .update(overtimeRequests)
       .set({
         status,
+        rejectionReason:
+          status === "rejected" && !systemEnded
+            ? (decider?.reason ?? null)
+            : null,
         dayType,
         decidedBy: (decider?.decidedBy ?? null) as RequestRow["decidedBy"],
         decidedAt: systemEnded ? now : (decider?.decidedAt ?? now),

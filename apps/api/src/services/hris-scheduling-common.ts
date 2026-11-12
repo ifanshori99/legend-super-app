@@ -115,6 +115,8 @@ export function toShiftSwapRequest(row: ShiftSwapRequestRow): ShiftSwapRequest {
     status: row.status,
     complianceIssues: row.complianceIssues,
     overrideReason: row.overrideReason,
+    rejectionReason: row.rejectionReason,
+    peerAcceptedAt: row.peerAcceptedAt?.toISOString() ?? null,
     approvedBy: row.approvedBy,
     requestedAt: row.requestedAt.toISOString(),
     // A cancelled/expired request carries a time but no approver (DB check);

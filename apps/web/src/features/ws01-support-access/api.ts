@@ -3,6 +3,7 @@ import {
   orgEndpoints,
   platformEndpoints,
   type RequestSupportAccessInput,
+  type RequestSupportWriteAccessInput,
 } from "@starter/shared/platform";
 import { callEndpoint } from "@/lib/api/endpoint";
 
@@ -11,6 +12,17 @@ export function requestSupportAccessCall(
   body: RequestSupportAccessInput,
 ) {
   return callEndpoint(platformEndpoints.requestSupportAccess, {
+    params: { tenantId },
+    body,
+  });
+}
+
+/** read_write: files a request the tenant owner must approve (no grant yet). */
+export function requestSupportWriteAccessCall(
+  tenantId: string,
+  body: RequestSupportWriteAccessInput,
+) {
+  return callEndpoint(platformEndpoints.requestSupportWriteAccess, {
     params: { tenantId },
     body,
   });
@@ -44,4 +56,26 @@ export function fetchTenants(signal?: AbortSignal) {
     { query: { limit: 100 } },
     { signal },
   );
+}
+
+export function fetchSupportAccessRequests(signal?: AbortSignal) {
+  return callEndpoint(
+    orgEndpoints.listSupportAccessRequests,
+    { query: { limit: 100 } },
+    { signal },
+  );
+}
+
+export function approveSupportAccessRequestCall(requestId: string) {
+  return callEndpoint(orgEndpoints.approveSupportAccessRequest, {
+    params: { requestId },
+    body: {},
+  });
+}
+
+export function rejectSupportAccessRequestCall(requestId: string) {
+  return callEndpoint(orgEndpoints.rejectSupportAccessRequest, {
+    params: { requestId },
+    body: {},
+  });
 }

@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="ghostex-page" content="v2" />
+    <title>Review pengajuan karyawan</title>
+    <style>
+      .shots > * {
+        min-width: 0;
+      }
+      .shots img {
+        max-width: 100%;
+        height: auto;
+      }
+      .shots img[src$="-390.png"] {
+        max-width: 300px;
+        display: block;
+        margin: 0 auto;
+      }
+    </style>
+  </head>
+  <body>
+    <gx-questions submit="Kirim ke tim">
+      <header>
+        <span class="gx-eyebrow">HRIS dan akses dukungan · tahap U4</span>
+        <h1>Review pengajuan karyawan dan akses dukungan</h1>
+        <p class="gx-lede">
+          Enam kelompok layar: karyawan mengajukan tukar shift, cuti, dan
+          lembur; supervisor menyetujui atau menolak; Owner memutuskan
+          permintaan akses tim dukungan. Lihat gambarnya, lalu jawab setuju atau
+          minta ubah. Dua keputusan ada di bagian akhir.
+        </p>
+        <div class="gx-chips">
+          <span class="gx-chip"><b>2</b> kartu</span>
+          <span class="gx-chip"><b>6</b> kelompok layar</span>
+          <span class="gx-chip"><b>85</b> test logika lulus</span>
+          <span class="gx-chip"
+            >Mode contoh: data contoh, belum tersambung server</span
+          >
+        </div>
+      </header>
+
+      <h2>1. Karyawan mengajukan tukar shift, cuti, atau lembur</h2>
+      <p>
+        Satu layar dengan tiga tab. Tukar shift memperingatkan bila jadwal baru
+        melanggar aturan jam kerja. Cuti menampilkan sisa saldo. Bila sinyal
+        hilang, pengajuan disimpan sebagai "belum terkirim" dan bisa dicoba lagi
+        tanpa terkirim dua kali.
+      </p>
+      <section data-question="Q72" data-choice="setuju">
+        <h3>Tampilan layar</h3>
+        <gx-wide>
+          <div class="gx-grid shots" style="--gx-grid-min: min(100%, 260px)">
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/form-swap-390.png"
+                alt="Tukar shift, tampilan HP (390)"
+              />
+              <figcaption>Tukar shift, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/form-leave-390.png"
+                alt="Cuti dan izin dengan saldo, tampilan HP (390)"
+              />
+              <figcaption>Cuti dan izin, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/form-overtime-390.png"
+                alt="Lembur, tampilan HP (390)"
+              />
+              <figcaption>Lembur, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/form-swap-sukses-390.png"
+                alt="Pengajuan tukar shift terkirim, tampilan HP (390)"
+              />
+              <figcaption>Tukar shift terkirim, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/form-leave-sukses-390.png"
+                alt="Pengajuan cuti terkirim, tampilan HP (390)"
+              />
+              <figcaption>Berhasil terkirim, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/form-offline-390.png"
+                alt="Belum terkirim karena offline, tampilan HP (390)"
+              />
+              <figcaption>Offline, belum terkirim, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/form-swap-1280.png"
+                alt="Tukar shift, tampilan lebar (1280)"
+              />
+              <figcaption>Tukar shift, layar lebar</figcaption>
+            </figure>
+          </div>
+        </gx-wide>
+        <p class="gx-note">
+          Server belum punya langkah "rekan menerima dulu" seperti di mockup;
+          pengajuan tukar shift langsung ke supervisor. Teks di bawah pilihan
+          rekan sudah diganti menjadi "Hanya rekan dengan jadwal yang cocok yang
+          ditampilkan" setelah gambar ini diambil. Lampiran cuti belum bisa
+          diunggah; jenis cuti yang wajib lampiran ditahan dengan penjelasan.
+        </p>
+      </section>
+      <gx-question
+        tag="Q72"
+        title="Apakah layar pengajuan karyawan sudah sesuai?"
+      >
+        <gx-choice value="setuju" recommended
+          >Setuju<small>Layar ini sudah sesuai.</small></gx-choice
+        >
+        <gx-choice value="ubah"
+          >Perlu diubah<small
+            >Tulis apa yang perlu diubah di catatan.</small
+          ></gx-choice
+        >
+      </gx-question>
+
+      <h2>2. Pengajuan saya dan kalender libur</h2>
+      <p>
+        Karyawan melihat status semua pengajuannya: menunggu, disetujui, atau
+        ditolak. Kalender libur menampilkan hari libur per bulan.
+      </p>
+      <section data-question="Q73" data-choice="setuju">
+        <h3>Tampilan layar</h3>
+        <gx-wide>
+          <div class="gx-grid shots" style="--gx-grid-min: min(100%, 260px)">
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/saya-status-390.png"
+                alt="Daftar pengajuan saya dengan status menunggu dan ditolak, tampilan HP (390)"
+              />
+              <figcaption>Menunggu dan ditolak, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/saya-kosong-390.png"
+                alt="Belum ada pengajuan, tampilan HP (390)"
+              />
+              <figcaption>Belum ada pengajuan, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/libur-390.png"
+                alt="Kalender libur, tampilan HP (390)"
+              />
+              <figcaption>Kalender libur, HP</figcaption>
+            </figure>
+          </div>
+        </gx-wide>
+        <p class="gx-note">
+          Mockup menampilkan alasan penolakan dari supervisor. Server belum
+          menyimpan alasan itu, jadi kartu "Ditolak" sementara berbunyi "Tanya
+          supervisor Anda untuk alasannya". Lihat keputusan Q78.
+        </p>
+      </section>
+      <gx-question
+        tag="Q73"
+        title="Apakah daftar pengajuan dan kalender libur sudah sesuai?"
+      >
+        <gx-choice value="setuju" recommended
+          >Setuju<small>Layar ini sudah sesuai.</small></gx-choice
+        >
+        <gx-choice value="ubah"
+          >Perlu diubah<small
+            >Tulis apa yang perlu diubah di catatan.</small
+          ></gx-choice
+        >
+      </gx-question>
+
+      <h2>3. Antrean supervisor</h2>
+      <p>
+        Supervisor melihat semua pengajuan yang menunggu dalam satu antrean:
+        tabel di layar lebar, kartu di HP. Saat offline, tombol keputusan
+        dimatikan.
+      </p>
+      <section data-question="Q74" data-choice="setuju">
+        <h3>Tampilan layar</h3>
+        <gx-wide>
+          <div class="gx-grid shots" style="--gx-grid-min: min(100%, 300px)">
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/antrean-1280.png"
+                alt="Antrean pengajuan, tampilan lebar (1280)"
+              />
+              <figcaption>Antrean, layar lebar</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/antrean-390.png"
+                alt="Antrean pengajuan, tampilan HP (390)"
+              />
+              <figcaption>Antrean, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/antrean-kosong-1280.png"
+                alt="Antrean kosong, tampilan lebar (1280)"
+              />
+              <figcaption>Antrean kosong</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/antrean-offline-390.png"
+                alt="Antrean saat offline, tampilan HP (390)"
+              />
+              <figcaption>Offline, HP</figcaption>
+            </figure>
+          </div>
+        </gx-wide>
+      </section>
+      <gx-question tag="Q74" title="Apakah antrean supervisor sudah sesuai?">
+        <gx-choice value="setuju" recommended
+          >Setuju<small>Layar ini sudah sesuai.</small></gx-choice
+        >
+        <gx-choice value="ubah"
+          >Perlu diubah<small
+            >Tulis apa yang perlu diubah di catatan.</small
+          ></gx-choice
+        >
+      </gx-question>
+
+      <h2>4. Detail pengajuan: setujui atau tolak</h2>
+      <p>
+        Supervisor membuka satu pengajuan, melihat periode dan peringatan aturan
+        jam kerja, lalu menyetujui atau menolak. Tukar shift yang melanggar
+        aturan hanya bisa disetujui dengan menulis alasan pengecualian.
+      </p>
+      <section data-question="Q75" data-choice="setuju">
+        <h3>Tampilan layar</h3>
+        <gx-wide>
+          <div class="gx-grid shots" style="--gx-grid-min: min(100%, 300px)">
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/detail-1280.png"
+                alt="Detail pengajuan, tampilan lebar (1280)"
+              />
+              <figcaption>Detail, layar lebar</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/detail-390.png"
+                alt="Detail pengajuan, tampilan HP (390)"
+              />
+              <figcaption>Detail, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/detail-tolak-390.png"
+                alt="Konfirmasi tolak, tampilan HP (390)"
+              />
+              <figcaption>Tolak, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/detail-tolak-sukses-390.png"
+                alt="Pengajuan berhasil ditolak, tampilan HP (390)"
+              />
+              <figcaption>Berhasil ditolak, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/detail-offline-390.png"
+                alt="Keputusan dimatikan saat offline, tampilan HP (390)"
+              />
+              <figcaption>Offline, HP</figcaption>
+            </figure>
+          </div>
+        </gx-wide>
+      </section>
+      <gx-question
+        tag="Q75"
+        title="Apakah layar detail dan keputusan supervisor sudah sesuai?"
+      >
+        <gx-choice value="setuju" recommended
+          >Setuju<small>Layar ini sudah sesuai.</small></gx-choice
+        >
+        <gx-choice value="ubah"
+          >Perlu diubah<small
+            >Tulis apa yang perlu diubah di catatan.</small
+          ></gx-choice
+        >
+      </gx-question>
+
+      <h2>5. Owner memutuskan permintaan akses tim dukungan</h2>
+      <p>
+        Bila tim dukungan meminta izin mengubah data outlet, Owner yang
+        memutuskan. Permintaan kedaluwarsa sendiri setelah 24 jam. Persetujuan
+        dan pencabutan selalu meminta konfirmasi. Tombol keputusan mati bila
+        Owner belum memakai verifikasi dua langkah, sedang offline, atau bila
+        yang membuka adalah sesi tim dukungan sendiri.
+      </p>
+      <section data-question="Q76" data-choice="setuju">
+        <h3>Tampilan layar</h3>
+        <gx-wide>
+          <div class="gx-grid shots" style="--gx-grid-min: min(100%, 300px)">
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/owner-menunggu-1280.png"
+                alt="Permintaan menunggu keputusan, tampilan lebar (1280)"
+              />
+              <figcaption>Menunggu keputusan</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/owner-offline-390.png"
+                alt="Keputusan dimatikan saat offline, tampilan HP (390)"
+              />
+              <figcaption>Offline, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/owner-setujui-dialog-1280.png"
+                alt="Konfirmasi setujui akses, tampilan lebar (1280)"
+              />
+              <figcaption>Konfirmasi setujui</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/owner-aktif-390.png"
+                alt="Akses aktif dengan waktu berakhir, tampilan HP (390)"
+              />
+              <figcaption>Akses aktif, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/owner-cabut-dialog-390.png"
+                alt="Konfirmasi cabut akses, tampilan HP (390)"
+              />
+              <figcaption>Konfirmasi cabut, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/owner-ditolak-390.png"
+                alt="Permintaan ditolak, tampilan HP (390)"
+              />
+              <figcaption>Ditolak, HP</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/owner-kedaluwarsa-1280.png"
+                alt="Permintaan kedaluwarsa, tampilan lebar (1280)"
+              />
+              <figcaption>Kedaluwarsa</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/owner-impersonate-1280.png"
+                alt="Tombol keputusan mati saat sesi tim dukungan, tampilan lebar (1280)"
+              />
+              <figcaption>Keputusan dimatikan</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/owner-kosong-390.png"
+                alt="Belum ada permintaan, tampilan HP (390)"
+              />
+              <figcaption>Kosong, HP</figcaption>
+            </figure>
+          </div>
+        </gx-wide>
+        <p class="gx-note">
+          Nama peminta belum dikirim server, jadi kartu menampilkan "Tim
+          dukungan" dengan kode singkat. Tombol cabut belum bisa dipakai Owner;
+          lihat keputusan Q79.
+        </p>
+      </section>
+      <gx-question
+        tag="Q76"
+        title="Apakah layar keputusan akses dukungan untuk Owner sudah sesuai?"
+      >
+        <gx-choice value="setuju" recommended
+          >Setuju<small>Layar ini sudah sesuai.</small></gx-choice
+        >
+        <gx-choice value="ubah"
+          >Perlu diubah<small
+            >Tulis apa yang perlu diubah di catatan.</small
+          ></gx-choice
+        >
+      </gx-question>
+
+      <h2>6. Tim dukungan meminta akses ubah data</h2>
+      <p>
+        Super Admin mengisi alasan dan durasi (15 atau 30 menit). Permintaan
+        baca-tulis kini selalu menunggu persetujuan Owner; akses baca saja tetap
+        langsung.
+      </p>
+      <section data-question="Q77" data-choice="setuju">
+        <h3>Tampilan layar</h3>
+        <gx-wide>
+          <div class="gx-grid shots" style="--gx-grid-min: min(100%, 300px)">
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/superadmin-readwrite-1280.png"
+                alt="Form permintaan akses baca-tulis, tampilan lebar (1280)"
+              />
+              <figcaption>Form permintaan, layar lebar</figcaption>
+            </figure>
+            <figure class="gx-figure">
+              <img
+                src="/Users/ifanshori99/Projects/legend super app/legend/.worktrees/hris-requests/design/screenshots/hris-requests/superadmin-readwrite-390.png"
+                alt="Form permintaan akses baca-tulis, tampilan HP (390)"
+              />
+              <figcaption>Form permintaan, HP</figcaption>
+            </figure>
+          </div>
+        </gx-wide>
+      </section>
+      <gx-question
+        tag="Q77"
+        title="Apakah form permintaan akses tim dukungan sudah sesuai?"
+      >
+        <gx-choice value="setuju" recommended
+          >Setuju<small>Layar ini sudah sesuai.</small></gx-choice
+        >
+        <gx-choice value="ubah"
+          >Perlu diubah<small
+            >Tulis apa yang perlu diubah di catatan.</small
+          ></gx-choice
+        >
+      </gx-question>
+
+      <h2>Keputusan</h2>
+      <gx-question
+        tag="Q78"
+        title="Alasan penolakan belum tersimpan di server. Bagaimana sementara ini?"
+      >
+        <gx-choice value="lanjut" recommended
+          >Lanjut, tim menambah penyimpanan alasan<small
+            >Supervisor menolak tanpa alasan dulu; karyawan diminta bertanya ke
+            supervisor. Alasan muncul setelah server diperbarui.</small
+          ></gx-choice
+        >
+        <gx-choice value="tahan"
+          >Tahan rilis sampai alasan tersimpan<small
+            >Layar ini baru dipakai setelah alasan penolakan bisa dilihat
+            karyawan.</small
+          ></gx-choice
+        >
+      </gx-question>
+      <gx-question
+        tag="Q79"
+        title="Owner belum bisa mencabut akses tim dukungan sebelum waktunya habis. Bagaimana tombol cabut?"
+      >
+        <gx-choice value="tambah" recommended
+          >Tampilkan, tim menambah fitur cabut untuk Owner<small
+            >Tombol tetap ada seperti mockup; sampai server siap, menekan tombol
+            menampilkan pesan "belum dapat dicabut". Akses tetap berakhir
+            sendiri maksimal 30 menit.</small
+          ></gx-choice
+        >
+        <gx-choice value="sembunyi"
+          >Sembunyikan dulu sampai siap<small
+            >Owner hanya melihat waktu berakhir akses; tombol cabut muncul
+            setelah server siap.</small
+          ></gx-choice
+        >
+      </gx-question>
+    </gx-questions>
+  </body>
+</html>

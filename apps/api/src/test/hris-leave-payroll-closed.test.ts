@@ -311,8 +311,12 @@ afterAll(async () => {
       [tenant.id, createdEmployees],
     );
     await db.query(
-      "DELETE FROM leave_balances WHERE tenant_id = $1 AND employee_id = ANY($2::uuid[])",
-      [tenant.id, createdEmployees],
+      "DELETE FROM leave_balances WHERE tenant_id = $1 AND (employee_id = ANY($2::uuid[]) OR leave_type_id = $3)",
+      [tenant.id, createdEmployees, leaveTypeId],
+    );
+    await db.query(
+      "DELETE FROM leave_accruals WHERE tenant_id = $1 AND (employee_id = ANY($2::uuid[]) OR leave_type_id = $3)",
+      [tenant.id, createdEmployees, leaveTypeId],
     );
     await db.query("DELETE FROM leave_types WHERE tenant_id = $1 AND id = $2", [
       tenant.id,
@@ -605,6 +609,7 @@ const decideAs = (
 ) =>
   post(client, `/api/hris/leave/requests/${leaveId}/decision`, {
     action,
+    ...(action === "reject" ? { rejectionReason: "Jadwal penuh" } : {}),
     idempotencyKey: key(),
   });
 

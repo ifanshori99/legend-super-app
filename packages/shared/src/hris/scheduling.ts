@@ -576,6 +576,15 @@ export const shiftSwapStatusSchema = z.enum([
 ]);
 export type ShiftSwapStatus = z.infer<typeof shiftSwapStatusSchema>;
 
+/** Minimal shift detail exposed only with an authorized request or swap candidate. */
+export const shiftSwapAssignmentSchema = z.strictObject({
+  id: shiftAssignmentIdSchema,
+  businessDate: businessDateSchema,
+  segments: z.array(shiftAssignmentSegmentSchema).min(1).max(2),
+  breakMinutes: z.number().int().min(0).max(240),
+});
+export type ShiftSwapAssignment = z.infer<typeof shiftSwapAssignmentSchema>;
+
 /**
  * A swap exchanges two assignments; a cover (`toAssignmentId: null`) hands one
  * assignment to another employee. `complianceIssues` is the diff computed by
@@ -592,9 +601,16 @@ export const shiftSwapRequestSchema = z
     toAssignmentId: shiftAssignmentIdSchema.nullable(),
     requestedBy: employeeIdSchema,
     toEmployeeId: employeeIdSchema,
+    /** Display context is supplied only by authorized request reads. */
+    requestedByName: z.string().min(1).max(200).nullable().optional(),
+    toEmployeeName: z.string().min(1).max(200).nullable().optional(),
+    fromAssignment: shiftSwapAssignmentSchema.nullable().optional(),
+    toAssignment: shiftSwapAssignmentSchema.nullable().optional(),
     status: shiftSwapStatusSchema,
     complianceIssues: z.array(shiftComplianceIssueSchema),
     overrideReason: z.string().min(1).max(500).nullable(),
+    rejectionReason: z.string().min(1).max(500).nullable(),
+    peerAcceptedAt: isoDateTimeSchema.nullable(),
     approvedBy: userIdSchema.nullable(),
     requestedAt: isoDateTimeSchema,
     decidedAt: isoDateTimeSchema.nullable(),

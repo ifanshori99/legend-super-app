@@ -20,14 +20,17 @@
 //   can; decision recorded 2026-11, default until product says otherwise).
 // - Repeating the same decision returns the stored request; a different action
 //   on a decided request answers 409.
-// - Responses carry employee ids only: no names, NIK or pay (personal data).
+// - Authorized reads add only participant names and the linked shift details;
+//   candidates never expose the general employee directory or roster.
 
 import {
   and,
   asc,
   desc,
   eq,
+  gte,
   inArray,
+  lte,
   lt,
   or,
   sql,
@@ -47,11 +50,14 @@ import {
   decideShiftSwapRequest as decideShiftSwapRequestEndpoint,
   evaluateShiftSwapCompliance,
   listShiftSwapRequests as listShiftSwapRequestsEndpoint,
+  respondShiftSwapRequest as respondShiftSwapRequestEndpoint,
+  shiftSwapAssignmentSchema,
   transitionShiftAssignment,
   transitionShiftSwap,
   type ShiftAssignment,
   type ShiftComplianceIssue,
   type ShiftSwapRequest,
+  type ShiftSwapAssignment,
 } from "@starter/shared/hris";
 import type { z } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
@@ -92,6 +98,7 @@ type SwapRow = typeof shiftSwapRequests.$inferSelect;
 type AssignmentRow = typeof shiftAssignments.$inferSelect;
 type CreateBody = z.output<typeof createShiftSwapRequestEndpoint.body>;
 type DecideBody = z.output<typeof decideShiftSwapRequestEndpoint.body>;
+type PeerBody = z.output<typeof respondShiftSwapRequestEndpoint.body>;
 type CancelBody = z.output<typeof cancelShiftSwapRequestEndpoint.body>;
 type ListQuery = z.output<typeof listShiftSwapRequestsEndpoint.query>;
 type Page<T> = {
@@ -442,8 +449,85 @@ export async function listShiftSwapRequests(
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
+    // Resolve display context only for the authorized page, never a directory.
+    const participantIds = [
+      ...new Set(page.flatMap((row) => [row.requestedBy, row.toEmployeeId])),
+    ];
+    const outletIds = [...new Set(page.map((row) => row.outletId))];
+    const assignmentIds = [
+      ...new Set(
+        page.flatMap((row) => [row.fromAssignmentId, row.toAssignmentId]),
+      ),
+    ].filter((id): id is string => id !== null);
+    const names =
+      page.length === 0
+        ? []
+        : await tx
+            .select({
+              id: employees.id,
+              outletId: employees.homeOutletId,
+              name: employees.fullName,
+            })
+            .from(employees)
+            .where(
+              and(
+                eq(employees.tenantId, context.tenant.tenantId),
+                inArray(employees.homeOutletId, outletIds),
+                inArray(employees.id, participantIds),
+              ),
+            );
+    const assignments =
+      page.length === 0
+        ? []
+        : await tx
+            .select({
+              id: shiftAssignments.id,
+              outletId: shiftAssignments.outletId,
+              businessDate: shiftAssignments.businessDate,
+              segments: shiftAssignments.segments,
+              breakMinutes: shiftAssignments.breakMinutes,
+            })
+            .from(shiftAssignments)
+            .where(
+              and(
+                eq(shiftAssignments.tenantId, context.tenant.tenantId),
+                inArray(shiftAssignments.outletId, outletIds),
+                inArray(shiftAssignments.id, assignmentIds),
+                inArray(shiftAssignments.status, [
+                  "published",
+                  "swapped",
+                  "cancelled",
+                ]),
+              ),
+            );
+    const data = page.map((row): ShiftSwapRequest => {
+      const nameOf = (id: string) =>
+        names.find(
+          (item) => same(item.id, id) && same(item.outletId, row.outletId),
+        )?.name ?? null;
+      const detailOf = (id: string | null) => {
+        const assignment = assignments.find(
+          (item) => item.id === id && same(item.outletId, row.outletId),
+        );
+        return assignment
+          ? shiftSwapAssignmentSchema.parse({
+              id: assignment.id,
+              businessDate: assignment.businessDate,
+              segments: assignment.segments,
+              breakMinutes: assignment.breakMinutes,
+            })
+          : null;
+      };
+      return {
+        ...toShiftSwapRequest(row),
+        requestedByName: nameOf(row.requestedBy),
+        toEmployeeName: nameOf(row.toEmployeeId),
+        fromAssignment: detailOf(row.fromAssignmentId),
+        toAssignment: detailOf(row.toAssignmentId),
+      };
+    });
     return {
-      data: page.map(toShiftSwapRequest),
+      data,
       meta: {
         limit: query.limit,
         nextCursor:
@@ -678,6 +762,12 @@ export async function decideShiftSwapRequest(
     if (row.status !== "pending")
       throw conflict("CONFLICT", `Permintaan tukar shift sudah ${row.status}.`);
 
+    if (!row.peerAcceptedAt)
+      throw conflict(
+        "CONFLICT",
+        "Rekan harus menerima permintaan terlebih dahulu.",
+      );
+
     const actor = access.actorUserId;
     if (input.action === "reject") {
       transitionShiftSwap(row.status, "reject");
@@ -685,6 +775,7 @@ export async function decideShiftSwapRequest(
         .update(shiftSwapRequests)
         .set({
           status: "rejected",
+          rejectionReason: input.rejectionReason ?? null,
           approvedBy: actor,
           decidedAt: now,
           updatedAt: now,
@@ -735,7 +826,8 @@ export async function decideShiftSwapRequest(
       )
         throw stale;
     }
-    if (!(await activeEmployee(tx, tenantId, row.toEmployeeId))) throw stale;
+    const target = await activeEmployee(tx, tenantId, row.toEmployeeId);
+    if (!target || !same(target.homeOutletId, row.outletId)) throw stale;
 
     // Recomputed against the roster as it is now; the copy on the row may be stale.
     const complianceIssues = await tenantWideSwapCompliance(
@@ -837,6 +929,188 @@ export async function decideShiftSwapRequest(
         : "hris.shift_swap.approved_with_override",
     );
     return toShiftSwapRequest(approved);
+  });
+}
+
+/** Active colleagues in the caller's own outlet; no other employee fields leave the API. */
+export async function listShiftSwapCandidates(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  outletId: string,
+  fromAssignmentId: string,
+  now = new Date(),
+): Promise<{
+  data: Array<{ id: string; name: string; assignments: ShiftSwapAssignment[] }>;
+}> {
+  return withTenant(db, context, async (tx) => {
+    const access = await loadHrisAccess(tx, context, actorUserId, now);
+    const own = access.own;
+    if (
+      !own ||
+      !access.snapshot.permissions.includes("self.shift_swap.request")
+    )
+      throw forbidden();
+    if (
+      !same(own.homeOutletId, outletId) ||
+      !isOutletInScope(context.outletScope, outletId)
+    )
+      throw notFound("Outlet");
+    if (!(await activeEmployee(tx, context.tenant.tenantId, own.id)))
+      throw forbidden();
+    const [source] = await tx
+      .select()
+      .from(shiftAssignments)
+      .where(
+        and(
+          eq(shiftAssignments.tenantId, context.tenant.tenantId),
+          eq(shiftAssignments.outletId, outletId),
+          eq(shiftAssignments.employeeId, own.id),
+          eq(shiftAssignments.id, fromAssignmentId),
+          eq(shiftAssignments.status, "published"),
+        ),
+      )
+      .limit(1);
+    if (!source || hasStarted(source, now)) throw notFound("Jadwal shift");
+    const rows = await tx
+      .select({ id: employees.id, name: employees.fullName })
+      .from(employees)
+      .where(
+        and(
+          eq(employees.tenantId, context.tenant.tenantId),
+          eq(employees.homeOutletId, outletId),
+          eq(employees.status, "active"),
+          sql`${employees.id} <> ${own.id}`,
+        ),
+      )
+      .orderBy(asc(employees.fullName), asc(employees.id));
+    // This is a privacy window around the caller's source shift, not a rule
+    // restricting which published shifts can be exchanged by the write API.
+    const assignments =
+      rows.length === 0
+        ? []
+        : await tx
+            .select({
+              id: shiftAssignments.id,
+              employeeId: shiftAssignments.employeeId,
+              businessDate: shiftAssignments.businessDate,
+              segments: shiftAssignments.segments,
+              breakMinutes: shiftAssignments.breakMinutes,
+            })
+            .from(shiftAssignments)
+            .where(
+              and(
+                eq(shiftAssignments.tenantId, context.tenant.tenantId),
+                eq(shiftAssignments.outletId, outletId),
+                inArray(
+                  shiftAssignments.employeeId,
+                  rows.map((row) => row.id),
+                ),
+                eq(shiftAssignments.status, "published"),
+                gte(
+                  shiftAssignments.businessDate,
+                  addBusinessDays(source.businessDate, -7),
+                ),
+                lte(
+                  shiftAssignments.businessDate,
+                  addBusinessDays(source.businessDate, 7),
+                ),
+              ),
+            )
+            .orderBy(
+              asc(shiftAssignments.businessDate),
+              asc(shiftAssignments.id),
+            );
+    return {
+      data: rows.map((row) => ({
+        ...row,
+        assignments: assignments
+          .filter(
+            (assignment) =>
+              same(assignment.employeeId, row.id) &&
+              !hasStarted(assignment, now),
+          )
+          .map((assignment) =>
+            shiftSwapAssignmentSchema.parse({
+              id: assignment.id,
+              businessDate: assignment.businessDate,
+              segments: assignment.segments,
+              breakMinutes: assignment.breakMinutes,
+            }),
+          ),
+      })),
+    };
+  });
+}
+
+/** Only the named colleague can respond; the row lock serializes manager decisions. */
+export async function respondShiftSwapRequest(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  swapId: string,
+  input: PeerBody,
+  now = new Date(),
+): Promise<ShiftSwapRequest> {
+  return withTenant(db, context, async (tx) => {
+    const access = await loadHrisAccess(tx, context, actorUserId, now);
+    const row = await findSwap(tx, context.tenant.tenantId, swapId, true);
+    if (!row || !canSee(access, row)) throw notFound("Permintaan tukar shift");
+    if (
+      !access.own ||
+      !same(access.own.id, row.toEmployeeId) ||
+      !access.snapshot.permissions.includes("self.shift_swap.request")
+    )
+      throw forbidden();
+    const target = await activeEmployee(
+      tx,
+      context.tenant.tenantId,
+      access.own.id,
+    );
+    if (!target || !same(target.homeOutletId, row.outletId)) throw forbidden();
+    if (
+      input.action === "reject" &&
+      row.status === "rejected" &&
+      row.approvedBy === access.actorUserId &&
+      row.rejectionReason === input.rejectionReason
+    )
+      return toShiftSwapRequest(row);
+    if (
+      input.action === "accept" &&
+      row.status === "pending" &&
+      row.peerAcceptedAt
+    )
+      return toShiftSwapRequest(row);
+    if (row.status !== "pending" || row.peerAcceptedAt)
+      throw conflict("CONFLICT", "Permintaan sudah diproses.");
+    const [updated] = await tx
+      .update(shiftSwapRequests)
+      .set(
+        input.action === "accept"
+          ? {
+              peerAcceptedAt: now,
+              updatedAt: now,
+            }
+          : {
+              status: "rejected",
+              rejectionReason: input.rejectionReason ?? null,
+              approvedBy: access.actorUserId,
+              decidedAt: now,
+              updatedAt: now,
+            },
+      )
+      .where(eq(shiftSwapRequests.id, row.id))
+      .returning();
+    if (!updated) throw new Error("Shift swap update returned no row");
+    await auditSwap(
+      tx,
+      context,
+      access.actorUserId,
+      now,
+      updated,
+      input.action === "accept"
+        ? "hris.shift_swap.peer_accepted"
+        : "hris.shift_swap.peer_rejected",
+    );
+    return toShiftSwapRequest(updated);
   });
 }
 
