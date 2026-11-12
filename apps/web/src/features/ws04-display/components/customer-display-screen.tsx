@@ -12,8 +12,13 @@ import { ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api/errors.ts";
 import { useTenantContext } from "@/lib/tenant-context";
-import { useCustomerDisplay } from "../hooks.ts";
-import { displayBalance, isQrisExpired, totalQuantity } from "../lib.ts";
+import { useCustomerDisplay, useDisplayDeposit } from "../hooks.ts";
+import {
+  displayBalance,
+  displayPayMode,
+  isQrisExpired,
+  totalQuantity,
+} from "../lib.ts";
 import { useNowMs } from "../use-now.ts";
 import { BillLines } from "./bill-lines.tsx";
 import { BillTotals } from "./bill-totals.tsx";
@@ -48,6 +53,13 @@ function CustomerDisplayContent() {
   const display = useCustomerDisplay(outlet?.id);
   const state = display.data ?? null;
   const now = useNowMs();
+  // The display QRIS is always the full total, so an order with a DP is read
+  // from the order itself and never shows a code (sub-539-u2).
+  const deposit = useDisplayDeposit(
+    outlet?.id,
+    state?.orderId ?? null,
+    state?.state === "awaiting_payment",
+  );
   const header = (
     <DisplayHeader
       updatedAt={state?.updatedAt ?? null}
@@ -104,10 +116,13 @@ function CustomerDisplayContent() {
   // under the lines: a 1366×768 second screen (common for customer displays)
   // then shows the whole code without scrolling (Opus review legend-azt).
   const paying = state.state === "awaiting_payment";
+  const payMode = displayPayMode(state, deposit);
+  const atCashier = payMode === "pay_at_cashier";
   // A failed read or an expired code leaves the payment status unknown: the
   // old code is never shown and the amount is labelled as unchecked.
   const unverified =
     paying &&
+    !atCashier &&
     (display.isError ||
       (state.qris !== null && isQrisExpired(state.qris, now)));
   const paid = state.state === "paid";
@@ -149,7 +164,11 @@ function CustomerDisplayContent() {
             <BillLines lines={state.lines} />
           </section>
           {(paying || paid) && (
-            <BillTotals state={state} unverified={unverified} />
+            <BillTotals
+              state={state}
+              unverified={unverified}
+              hideRemaining={payMode !== "qris"}
+            />
           )}
         </div>
         {/* Paid: the confirmation leads the page (first on narrow screens too),
@@ -165,10 +184,17 @@ function CustomerDisplayContent() {
           {paid ? (
             <PaidPanel state={state} />
           ) : paying && display.isError ? (
-            <QrisStatusPanel kind="error" amountIdr={remaining} />
-          ) : paying && state.qris === null ? (
+            // Terminal unreachable: no QR and, unless the DP is known to be 0,
+            // no amount either.
+            <QrisStatusPanel
+              kind="error"
+              amountIdr={payMode === "qris" ? remaining : null}
+            />
+          ) : atCashier ? (
+            <QrisStatusPanel kind="cashier" amountIdr={null} />
+          ) : paying && (payMode === "loading" || state.qris === null) ? (
             <QrisStatusPanel kind="loading" amountIdr={null} />
-          ) : paying && state.qris ? (
+          ) : paying && payMode === "qris" && state.qris ? (
             <QrisPanel qris={state.qris} />
           ) : (
             <OrderingHint />

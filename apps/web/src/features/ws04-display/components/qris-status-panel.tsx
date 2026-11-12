@@ -3,14 +3,16 @@
 // of these the old code is removed from the screen, never dimmed, and the
 // customer is told to wait for the cashier, who checks the payment status
 // before a new code is prepared. The amount shown is the one the terminal sent.
-import { CircleX, Clock, Loader2, TriangleAlert } from "lucide-react";
+import { CircleX, Clock, Loader2, Store, TriangleAlert } from "lucide-react";
 import type { MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Money } from "@/components/ui/money";
 
-export type QrisStatusKind = "loading" | "error" | "expired";
+// "cashier": the order has a DP (or its deposit is unknown), so the screen
+// never shows a code and no amount: the cashier works out what is left.
+export type QrisStatusKind = "loading" | "error" | "expired" | "cashier";
 
 const KIND: Record<
   QrisStatusKind,
@@ -43,6 +45,13 @@ const KIND: Record<
     hint: "posDisplay.qris.expiredHint",
     notice: "posDisplay.qris.expiredNotice",
   },
+  cashier: {
+    tone: "neutral",
+    badge: "posDisplay.qris.cashierBadge",
+    title: "posDisplay.qris.cashierTitle",
+    hint: "posDisplay.qris.cashierHint",
+    notice: null,
+  },
 };
 
 export function QrisStatusPanel({
@@ -56,7 +65,13 @@ export function QrisStatusPanel({
   const t = useT();
   const { tone, badge, title, hint, notice } = KIND[kind];
   const Icon =
-    kind === "loading" ? Clock : kind === "error" ? CircleX : TriangleAlert;
+    kind === "loading"
+      ? Clock
+      : kind === "error"
+        ? CircleX
+        : kind === "cashier"
+          ? Store
+          : TriangleAlert;
   return (
     <Card
       // Announce the change of state once, politely.
@@ -94,7 +109,7 @@ export function QrisStatusPanel({
             <p className="text-sm leading-5 text-foreground">{t(notice)}</p>
           </div>
         )}
-        {amountIdr !== null && (
+        {kind !== "cashier" && amountIdr !== null && (
           <Money amount={amountIdr} size="lg" className="font-semibold" />
         )}
       </div>

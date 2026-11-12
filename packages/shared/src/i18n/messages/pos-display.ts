@@ -77,6 +77,9 @@ export const posDisplayMessages = {
     expiredHint:
       "Jangan gunakan kode sebelumnya. Mohon tunggu kasir memeriksa status sebelum menyiapkan kode baru.",
     expiredNotice: "Status pembayaran sebelumnya sedang diperiksa.",
+    cashierBadge: "Bayar di kasir",
+    cashierTitle: "Silakan bayar di kasir",
+    cashierHint: "Kasir akan menghitung sisa pembayaran Anda.",
   },
   orderingHint:
     "Kasir masih mencatat pesanan. Total diperbarui saat item ditambahkan.",

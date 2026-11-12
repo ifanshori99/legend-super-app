@@ -21,16 +21,22 @@ function TotalRow({ label, amount }: { label: string; amount: number }) {
 /**
  * `unverified`: the payment status is unknown (code failed or expired), so the
  * remaining amount is labelled as "before the cashier's check".
+ * `hideRemaining`: pay-at-cashier mode (DP order); no remaining-to-pay figure
+ * is derived from the QRIS amount, only the bill total shows.
  */
 export function BillTotals({
   state,
   unverified = false,
+  hideRemaining = false,
 }: {
   state: CustomerDisplayState;
   unverified?: boolean;
+  hideRemaining?: boolean;
 }) {
   const t = useT();
-  const balance = displayBalance(state);
+  const balance = displayBalance(
+    hideRemaining ? { ...state, qris: null } : state,
+  );
   const method = singleTenderMethod(state.tenders);
   const showBalance = balance.remainingIdr !== null;
   return (

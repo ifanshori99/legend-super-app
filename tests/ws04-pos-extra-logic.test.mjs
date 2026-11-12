@@ -1409,6 +1409,127 @@ describe("I4 display lib: displayBalance", () => {
   });
 });
 
+// ---------------------------------------------------------------- sub-539-u2 displayPayMode
+// Money rule (founder, 12 Nov): the display QRIS is always the full total, so
+// an order with a DP must never show a QR; the customer pays at the cashier.
+describe("sub-539-u2 display lib: displayPayMode", () => {
+  const TOTAL = 100000;
+  const display = (overrides = {}) => ({
+    state: "awaiting_payment",
+    totalIdr: String(TOTAL),
+    qris: null,
+    tenders: [],
+    ...overrides,
+  });
+  const qrisPresent = () => ({ amountIdr: String(TOTAL) });
+  const known = (depositAppliedIdr) => ({ kind: "known", depositAppliedIdr });
+
+  test("any state other than awaiting_payment is not_paying", async () => {
+    const { displayPayMode } = await load("ws04-display/lib.ts");
+    for (const state of ["idle", "ordering", "paid"]) {
+      for (const deposit of [
+        known(0),
+        known(50000),
+        { kind: "loading" },
+        { kind: "unknown" },
+      ]) {
+        assert.equal(
+          displayPayMode(display({ state, qris: qrisPresent() }), deposit),
+          "not_paying",
+          `${state} / ${deposit.kind}`,
+        );
+      }
+    }
+  });
+
+  test("known deposit 0 with a QRIS present shows qris", async () => {
+    const { displayPayMode } = await load("ws04-display/lib.ts");
+    assert.equal(
+      displayPayMode(display({ qris: qrisPresent() }), known(0)),
+      "qris",
+    );
+  });
+
+  test("known deposit 0 without a QRIS yet is loading", async () => {
+    const { displayPayMode } = await load("ws04-display/lib.ts");
+    assert.equal(displayPayMode(display({ qris: null }), known(0)), "loading");
+  });
+
+  test("known deposit above 0 is pay_at_cashier even when a QRIS is present", async () => {
+    const { displayPayMode } = await load("ws04-display/lib.ts");
+    assert.equal(
+      displayPayMode(display({ qris: qrisPresent() }), known(50000)),
+      "pay_at_cashier",
+    );
+    assert.equal(
+      displayPayMode(display({ qris: null }), known(50000)),
+      "pay_at_cashier",
+    );
+  });
+
+  test("unknown deposit (order read failed) is pay_at_cashier", async () => {
+    const { displayPayMode } = await load("ws04-display/lib.ts");
+    assert.equal(
+      displayPayMode(display({ qris: qrisPresent() }), { kind: "unknown" }),
+      "pay_at_cashier",
+    );
+    assert.equal(
+      displayPayMode(display({ qris: null }), { kind: "unknown" }),
+      "pay_at_cashier",
+    );
+  });
+
+  test("loading deposit is loading, never qris, even with a QRIS present", async () => {
+    const { displayPayMode } = await load("ws04-display/lib.ts");
+    assert.equal(
+      displayPayMode(display({ qris: qrisPresent() }), { kind: "loading" }),
+      "loading",
+    );
+    assert.equal(
+      displayPayMode(display({ qris: null }), { kind: "loading" }),
+      "loading",
+    );
+  });
+
+  test("property: every deposit above 0 (or not a number) never yields qris", async () => {
+    const { displayPayMode } = await load("ws04-display/lib.ts");
+    const deposits = [1, 50000, TOTAL, TOTAL + 1, Number.NaN];
+    for (const depositAppliedIdr of deposits) {
+      for (const qris of [null, qrisPresent()]) {
+        const mode = displayPayMode(
+          display({ qris }),
+          known(depositAppliedIdr),
+        );
+        assert.notEqual(mode, "qris", `deposit ${depositAppliedIdr}`);
+        assert.equal(mode, "pay_at_cashier", `deposit ${depositAppliedIdr}`);
+      }
+    }
+  });
+
+  test("property: unknown and loading deposits never yield qris", async () => {
+    const { displayPayMode } = await load("ws04-display/lib.ts");
+    for (const deposit of [{ kind: "unknown" }, { kind: "loading" }]) {
+      for (const qris of [null, qrisPresent()]) {
+        assert.notEqual(
+          displayPayMode(display({ qris }), deposit),
+          "qris",
+          deposit.kind,
+        );
+      }
+    }
+  });
+
+  test("property: deposit 0 with a QRIS is always qris", async () => {
+    const { displayPayMode } = await load("ws04-display/lib.ts");
+    for (const amountIdr of ["1", "40000", String(TOTAL)]) {
+      assert.equal(
+        displayPayMode(display({ qris: { amountIdr } }), known(0)),
+        "qris",
+      );
+    }
+  });
+});
+
 // ---------------------------------------------------------------- I5 bookVarianceIdr
 // Booked variance mirrors the API: physical variance + held correction
 // (held refund/void cash). Held CASH-OUT expires at close and is never added

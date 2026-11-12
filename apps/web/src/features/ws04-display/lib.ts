@@ -77,9 +77,10 @@ export function totalQuantity(lines: readonly { quantity: number }[]): number {
 
 export type DisplayBalance = {
   /**
-   * Reservation deposit (DP) applied to the bill. Always 0 for now: the
-   * display contract has no deposit field, so the screen never infers one
-   * (contract gap, see the report of bead legend-5w6).
+   * Reservation deposit (DP) applied to the bill. Always 0 here: the display
+   * contract has no deposit field, so this helper never infers one. A DP order
+   * is detected from the order itself and never shows a QRIS: see
+   * `displayPayMode` (sub-539-u2).
    */
   depositIdr: number;
   /** Money already taken by tenders (amounts are already net of change). */
@@ -125,4 +126,35 @@ export function singleTenderMethod(
   return first !== undefined && tenders.every((t) => t.method === first)
     ? first
     : null;
+}
+
+/** The deposit of the order on screen, read from the order itself. */
+export type DisplayDeposit =
+  | { kind: "known"; depositAppliedIdr: number }
+  | { kind: "loading" }
+  | { kind: "unknown" };
+
+export type DisplayPayMode =
+  "not_paying" | "loading" | "qris" | "pay_at_cashier";
+
+/**
+ * What the payment pane shows. The display QRIS is always the full bill total
+ * (the contract forces `qris.amountIdr === totalIdr`), so an order with a DP
+ * never shows a code: the customer pays at the cashier, who knows the rest.
+ * Money rule: when the deposit is unknown the screen asks for the cashier, it
+ * never holds a code that could charge more than is due.
+ */
+export function displayPayMode(
+  state: Pick<CustomerDisplayState, "state" | "qris">,
+  deposit: DisplayDeposit,
+): DisplayPayMode {
+  if (state.state !== "awaiting_payment") return "not_paying";
+  if (deposit.kind === "unknown") return "pay_at_cashier";
+  if (deposit.kind === "loading") return "loading";
+  if (
+    !Number.isFinite(deposit.depositAppliedIdr) ||
+    deposit.depositAppliedIdr > 0
+  )
+    return "pay_at_cashier";
+  return state.qris !== null ? "qris" : "loading";
 }

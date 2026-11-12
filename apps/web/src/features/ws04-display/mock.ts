@@ -9,11 +9,16 @@
 //
 // Demo switch (browser only, same idea as the edge mock override): set
 //   localStorage["legend-display-mock"] = "idle" | "ordering" |
-//     "awaiting_payment" | "awaiting_expired" | "awaiting_loading" | "paid"
+//     "awaiting_payment" | "awaiting_expired" | "awaiting_loading" |
+//     "awaiting_deposit" | "paid"
 // and reload. The default is a live bill awaiting QRIS payment — the screen's
 // main purpose. "awaiting_expired" serves one expired code so the refresh path
 // can be exercised, then continues with a fresh one. "awaiting_loading" keeps
 // the code unissued (qris null) so the "preparing the code" panel shows.
+// "awaiting_deposit" is an order with a DP: its orderId resolves, in the POS
+// kasir mock, to the order with a Rp100.000 deposit, so the screen shows "pay
+// at the cashier" and no QR. Every other demo's orderId resolves to an order
+// without a deposit (the display reads the order's deposit; sub-539-u2).
 import {
   cafeLegendPosFixtures,
   getCustomerDisplayState,
@@ -25,6 +30,10 @@ import type {
 import type { z } from "zod";
 import { qrisPendingIntentFixture } from "@starter/shared/payment";
 import { registerMock } from "../../lib/mock/registry.ts";
+import {
+  DEMO_CODE_ORDER_ULID,
+  DEMO_ORDER_ULID,
+} from "../ws04-pos-kasir/demo-seed.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 
 /** Wire shapes: the handler returns the input side of the response schema. */
@@ -45,6 +54,7 @@ const DEMO_STATES = [
   "awaiting_payment",
   "awaiting_expired",
   "awaiting_loading",
+  "awaiting_deposit",
   "paid",
 ] as const;
 type DemoState = (typeof DEMO_STATES)[number];
@@ -74,6 +84,10 @@ const store = createMockStore<DisplayStore>(() => ({
   expiredServed: false,
   version: fixture.version,
 }));
+
+/** Order without a deposit (POS kasir mock "LG-0044") and the DP order (POS-0048). */
+const ORDER_NO_DEPOSIT = DEMO_CODE_ORDER_ULID;
+const ORDER_WITH_DEPOSIT = DEMO_ORDER_ULID;
 
 const billTotals = {
   lines: fixture.lines,
@@ -127,7 +141,7 @@ function buildState(entry: DisplayStore, nowMs: number): DisplayStateWire {
     return {
       ...base,
       state: "paid",
-      orderId: fixture.orderId,
+      orderId: ORDER_NO_DEPOSIT,
       orderNumber: fixture.orderNumber,
       ...billTotals,
       qris: null,
@@ -138,7 +152,7 @@ function buildState(entry: DisplayStore, nowMs: number): DisplayStateWire {
     return {
       ...base,
       state: "ordering",
-      orderId: fixture.orderId,
+      orderId: ORDER_NO_DEPOSIT,
       orderNumber: fixture.orderNumber,
       ...billTotals,
       qris: null,
@@ -149,7 +163,8 @@ function buildState(entry: DisplayStore, nowMs: number): DisplayStateWire {
   return {
     ...base,
     state: "awaiting_payment",
-    orderId: fixture.orderId,
+    orderId:
+      entry.demo === "awaiting_deposit" ? ORDER_WITH_DEPOSIT : ORDER_NO_DEPOSIT,
     orderNumber: fixture.orderNumber,
     ...billTotals,
     qris: entry.demo === "awaiting_loading" ? null : qrisAt(nowMs, expired),

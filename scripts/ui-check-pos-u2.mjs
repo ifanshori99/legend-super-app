@@ -361,6 +361,20 @@ add({
 });
 add({
   ...D,
+  state: "dp",
+  // sub-539-u2: an order with a DP never shows the full-total QRIS.
+  path: DISPLAY,
+  localStorage: demoDisplay("awaiting_deposit"),
+  prepare: async (p) => {
+    await expectText(p, "Silakan bayar di kasir");
+    // Let the order read settle, then prove no QR image is on screen.
+    await p.waitForTimeout(1_000);
+    const qr = await p.locator('[aria-label^="Kode QRIS pembayaran"]').count();
+    if (qr > 0) throw new Error("QR code shown for an order with a DP");
+  },
+});
+add({
+  ...D,
   state: "error",
   // A bill is on screen, then the terminal stops answering: the stale QRIS is
   // replaced by "QRIS belum dapat ditampilkan" on the next poll (every 5 s).

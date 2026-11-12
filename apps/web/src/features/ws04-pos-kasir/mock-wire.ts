@@ -153,6 +153,12 @@ export function orderDetailWire(order: EngineOrder, remainingIdr: number) {
     taxIdr: order.taxIdr,
     roundingIdr: 0,
     totalIdr: order.totalIdr,
+    // The reservation DP is the order's `depositAppliedIdr`, never a tender
+    // (contract, legend-p7lx): the customer display reads it to hold QRIS.
+    depositAppliedIdr: depositUsedIdr(
+      order.totalIdr,
+      order.deposit?.amountIdr ?? 0,
+    ),
     status: paid ? "completed" : "awaiting_payment",
     createdBy: MOCK_CASHIER_ID,
     createdAt: AT,
@@ -192,7 +198,7 @@ export function orderDetailWire(order: EngineOrder, remainingIdr: number) {
       costSnapshotIdr: 0,
       createdAt: AT,
     })),
-    tenders: allTenders(order),
+    tenders: order.tenders.map((t) => tenderWire(order, t)),
     discounts: [],
     receipt: paid && order.receiptNo ? receiptWire(order) : null,
   };
