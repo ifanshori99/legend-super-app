@@ -1,0 +1,103 @@
+{
+  "tool": "ghostex visual check",
+  "results": [
+    {
+      "state": "empty",
+      "device": "desktop",
+      "width": 1280,
+      "command": "ghostex visual check /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/.ai-settings-render.html --width 1280 --out /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-empty-desktop.png",
+      "result": "Computer, 1280px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-empty-desktop.png\n  Fits: nothing reaches past the screen and the kit had nothing to fit.\nLook at each screenshot before sending the page."
+    },
+    {
+      "state": "empty",
+      "device": "mobile",
+      "width": 390,
+      "command": "ghostex visual check /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/.ai-settings-render.html --width 390 --out /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-empty-mobile.png",
+      "result": "Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-empty-mobile.png\n  Fits: nothing reaches past the screen and the kit had nothing to fit.\nLook at each screenshot before sending the page."
+    },
+    {
+      "state": "device",
+      "device": "desktop",
+      "width": 1280,
+      "command": "ghostex visual check /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/.ai-settings-render.html --width 1280 --out /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-device-desktop.png",
+      "result": "Computer, 1280px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-device-desktop.png\n  Fits: nothing reaches past the screen and the kit had nothing to fit.\nLook at each screenshot before sending the page."
+    },
+    {
+      "state": "device",
+      "device": "mobile",
+      "width": 390,
+      "command": "ghostex visual check /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/.ai-settings-render.html --width 390 --out /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-device-mobile.png",
+      "result": "Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-device-mobile.png\n  Fits: nothing reaches past the screen and the kit had nothing to fit.\nLook at each screenshot before sending the page."
+    },
+    {
+      "state": "connected",
+      "device": "desktop",
+      "width": 1280,
+      "command": "ghostex visual check /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/.ai-settings-render.html --width 1280 --out /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-connected-desktop.png",
+      "result": "Computer, 1280px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-connected-desktop.png\n  Fits: nothing reaches past the screen and the kit had nothing to fit.\nLook at each screenshot before sending the page."
+    },
+    {
+      "state": "connected",
+      "device": "mobile",
+      "width": 390,
+      "command": "ghostex visual check /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/.ai-settings-render.html --width 390 --out /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-connected-mobile.png",
+      "result": "Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-connected-mobile.png\n  Fits: nothing reaches past the screen and the kit had nothing to fit.\nLook at each screenshot before sending the page."
+    },
+    {
+      "state": "failed",
+      "device": "desktop",
+      "width": 1280,
+      "command": "ghostex visual check /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/.ai-settings-render.html --width 1280 --out /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-failed-desktop.png",
+      "result": "Computer, 1280px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-failed-desktop.png\n  Fits: nothing reaches past the screen and the kit had nothing to fit.\nLook at each screenshot before sending the page."
+    },
+    {
+      "state": "failed",
+      "device": "mobile",
+      "width": 390,
+      "command": "ghostex visual check /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/.ai-settings-render.html --width 390 --out /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-failed-mobile.png",
+      "result": "Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-failed-mobile.png\n  Fits: nothing reaches past the screen and the kit had nothing to fit.\nLook at each screenshot before sending the page."
+    },
+    {
+      "state": "expired",
+      "device": "desktop",
+      "width": 1280,
+      "command": "ghostex visual check /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/.ai-settings-render.html --width 1280 --out /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-expired-desktop.png",
+      "result": "Computer, 1280px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-expired-desktop.png\n  Fits: nothing reaches past the screen and the kit had nothing to fit.\nLook at each screenshot before sending the page."
+    },
+    {
+      "state": "expired",
+      "device": "mobile",
+      "width": 390,
+      "command": "ghostex visual check /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/.ai-settings-render.html --width 390 --out /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-expired-mobile.png",
+      "result": "Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-expired-mobile.png\n  Fits: nothing reaches past the screen and the kit had nothing to fit.\nLook at each screenshot before sending the page."
+    },
+    {
+      "state": "detected",
+      "device": "desktop",
+      "width": 1280,
+      "command": "ghostex visual check /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/.ai-settings-render.html --width 1280 --out /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-detected-desktop.png",
+      "result": "Computer, 1280px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-detected-desktop.png\n  Fits: nothing reaches past the screen and the kit had nothing to fit.\nLook at each screenshot before sending the page."
+    },
+    {
+      "state": "detected",
+      "device": "mobile",
+      "width": 390,
+      "command": "ghostex visual check /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/.ai-settings-render.html --width 390 --out /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-detected-mobile.png",
+      "result": "Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-detected-mobile.png\n  Fits: nothing reaches past the screen and the kit had nothing to fit.\nLook at each screenshot before sending the page."
+    },
+    {
+      "state": "disabled",
+      "device": "desktop",
+      "width": 1280,
+      "command": "ghostex visual check /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/.ai-settings-render.html --width 1280 --out /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-disabled-desktop.png",
+      "result": "Computer, 1280px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-disabled-desktop.png\n  Fits: nothing reaches past the screen and the kit had nothing to fit.\nLook at each screenshot before sending the page."
+    },
+    {
+      "state": "disabled",
+      "device": "mobile",
+      "width": 390,
+      "command": "ghostex visual check /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/.ai-settings-render.html --width 390 --out /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-disabled-mobile.png",
+      "result": "Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend-a911d91f/design/mockups/ai/ai-settings-disabled-mobile.png\n  Fits: nothing reaches past the screen and the kit had nothing to fit.\nLook at each screenshot before sending the page."
+    }
+  ]
+}

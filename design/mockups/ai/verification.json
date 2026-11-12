@@ -1,0 +1,215 @@
+{
+  "scope": "Static design only; no real OAuth, API, budget charge, or production behavior tested",
+  "browser": "Chromium via Playwright 1.63.0",
+  "runtimeErrors": [],
+  "externalRequests": [],
+  "results": [
+    {
+      "state": "empty",
+      "width": 1280,
+      "viewport": 1280,
+      "content": 1280,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "device",
+      "width": 1280,
+      "viewport": 1280,
+      "content": 1280,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "connected",
+      "width": 1280,
+      "viewport": 1280,
+      "content": 1280,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "failed",
+      "width": 1280,
+      "viewport": 1280,
+      "content": 1280,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "expired",
+      "width": 1280,
+      "viewport": 1280,
+      "content": 1280,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "detected",
+      "width": 1280,
+      "viewport": 1280,
+      "content": 1280,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "disabled",
+      "width": 1280,
+      "viewport": 1280,
+      "content": 1280,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "empty",
+      "width": 390,
+      "viewport": 390,
+      "content": 390,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "device",
+      "width": 390,
+      "viewport": 390,
+      "content": 390,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "connected",
+      "width": 390,
+      "viewport": 390,
+      "content": 390,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "failed",
+      "width": 390,
+      "viewport": 390,
+      "content": 390,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "expired",
+      "width": 390,
+      "viewport": 390,
+      "content": 390,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "detected",
+      "width": 390,
+      "viewport": 390,
+      "content": 390,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "disabled",
+      "width": 390,
+      "viewport": 390,
+      "content": 390,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "empty",
+      "width": 320,
+      "viewport": 320,
+      "content": 320,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "device",
+      "width": 320,
+      "viewport": 320,
+      "content": 320,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "connected",
+      "width": 320,
+      "viewport": 320,
+      "content": 320,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "failed",
+      "width": 320,
+      "viewport": 320,
+      "content": 320,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "expired",
+      "width": 320,
+      "viewport": 320,
+      "content": 320,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "detected",
+      "width": 320,
+      "viewport": 320,
+      "content": 320,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "disabled",
+      "width": 320,
+      "viewport": 320,
+      "content": 320,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "check": "Owner risk consent gates device login",
+      "pass": true
+    },
+    {
+      "check": "Admin cannot start or revoke owner login",
+      "pass": true
+    },
+    {
+      "check": "Revocation opens a cancellable native dialog",
+      "pass": true
+    },
+    {
+      "check": "Keyboard focus is visible",
+      "tag": "SELECT",
+      "outline": "solid",
+      "pass": true
+    }
+  ]
+}

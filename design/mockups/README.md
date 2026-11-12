@@ -1,5 +1,9 @@
 # Mockup QR order pelanggan Legend
 
+## Pengaturan AI tenant — legend-nnufz
+
+[Sumber HTML dan daftar state Pengaturan AI](ai/README.md): pemilik menghubungkan ChatGPT, admin menyiapkan model kustom cadangan, dan tenant membatasi anggaran. Tujuh state: kosong, menunggu kode perangkat, terhubung, gagal, kode kedaluwarsa, model terdeteksi, dan dimatikan platform; masing-masing PNG desktop 1280 dan mobile 390. Artefak ini untuk review desain, dengan data contoh dan tanpa koneksi layanan nyata.
+
 Cabang `ux/customer-order-benchmark`, 8 November 2026. Artefak ini untuk review desain; semua menu, harga, kode dan status adalah contoh. Tidak ada perubahan aplikasi atau transaksi nyata. Arah aktif adalah **A + liquid glass** berdasarkan keputusan founder Q4 dan Q5. Studi A/B di bawah disimpan sebagai arsip proses, bukan pilihan yang masih menunggu keputusan.
 
 ## Final arah A + liquid glass
