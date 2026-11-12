@@ -77,7 +77,10 @@ export const waitlistQuery = (outletId: string, query: WaitlistQuery) =>
 /** Zones and tables of the assignment floor plan (WS-03 read model). */
 export const floorBoardQuery = (outletId: string) =>
   queryOptions({
-    queryKey: endpointQueryKey(getFloorBoard, { params: { outletId } }),
+    queryKey: endpointQueryKey(getFloorBoard, {
+      params: { outletId },
+      query: {},
+    }),
     queryFn: ({ signal }) => api.fetchFloorBoard({ outletId }, { signal }),
     staleTime: DESK_REFETCH_MS,
     retry: 1,

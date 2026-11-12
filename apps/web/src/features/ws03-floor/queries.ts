@@ -14,7 +14,10 @@ export const BOARD_REFETCH_MS = 15_000;
 
 export const floorBoardQuery = (outletId: string) =>
   queryOptions({
-    queryKey: endpointQueryKey(getFloorBoard, { params: { outletId } }),
+    queryKey: endpointQueryKey(getFloorBoard, {
+      params: { outletId },
+      query: {},
+    }),
     queryFn: ({ signal }) => api.getFloorBoard({ outletId }, { signal }),
     refetchInterval: BOARD_REFETCH_MS,
     // A stale board is better than a spinner while the next poll runs.

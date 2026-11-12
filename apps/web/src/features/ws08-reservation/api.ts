@@ -140,4 +140,6 @@ export const resolveWaitlistEntry = async (
 export const fetchFloorBoard = async (
   params: Params<typeof getFloorBoardEndpoint>,
   options?: CallOptions,
-) => (await callEndpoint(getFloorBoardEndpoint, { params }, options)).data;
+) =>
+  (await callEndpoint(getFloorBoardEndpoint, { params, query: {} }, options))
+    .data;

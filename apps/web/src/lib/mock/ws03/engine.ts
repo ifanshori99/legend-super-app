@@ -633,6 +633,7 @@ export function createWs03Engine(clock: () => number = Date.now) {
       outletId: session.outletId,
       tableSessionId: session.id,
       tableId: table.id,
+      tableLabel: table.code,
       zoneId: table.zoneId,
       type: body.type,
       reason: body.type === "call_waiter" ? (body.reason ?? "other") : null,

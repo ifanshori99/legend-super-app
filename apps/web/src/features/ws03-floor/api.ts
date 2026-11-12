@@ -25,7 +25,9 @@ type Params<E extends AnyEndpoint> = EndpointInput<E>["params"];
 export const getFloorBoard = async (
   params: Params<typeof getFloorBoardEndpoint>,
   options?: CallOptions,
-) => (await callEndpoint(getFloorBoardEndpoint, { params }, options)).data;
+) =>
+  (await callEndpoint(getFloorBoardEndpoint, { params, query: {} }, options))
+    .data;
 
 export const getSessionBill = async (
   params: Params<typeof getSessionBillEndpoint>,

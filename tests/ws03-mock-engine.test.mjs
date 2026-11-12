@@ -47,6 +47,17 @@ test("legend-jzud a QR scan is one session for the guest engine and the floor bo
   assert.equal(engine.view(openBill.id).session.status, "open");
 });
 
+test("a mock service request includes the table code as its label", () => {
+  const { floor, engine } = fresh();
+  const sessionId = sessionIdOf(engine, sample.qrTokenFixtures.freeTable);
+  const request = floor.createServiceRequest(sessionId, {
+    type: "call_waiter",
+  });
+
+  assert.equal(request.tableLabel, floor.tableByCode("A01").code);
+  assert.equal(qr.serviceRequestSchema.parse(request).tableLabel, "A01");
+});
+
 test("legend-jzud the guest bill and the board bill are the same bill", () => {
   const { floor, engine } = fresh();
   const p1 = qr.qrOrderFixtures.sessions[1].id;
