@@ -5,7 +5,7 @@
 import { useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { ChevronLeft } from "lucide-react";
-import { businessDateOf } from "@starter/shared/core";
+import { businessDateOf, type OutletId } from "@starter/shared/core";
 import type {
   EmployeeId,
   LeaveTypeId,
@@ -121,6 +121,7 @@ export function RequestFormPage({
             .fromAssignmentId as ShiftAssignmentId,
           toEmployeeId: request.payload.toEmployeeId as EmployeeId,
           toAssignmentId: request.payload.toAssignmentId as ShiftAssignmentId | null,
+          outletId: (request.payload.outletId || undefined) as OutletId | undefined,
           idempotencyKey,
         },
         options,
@@ -134,7 +135,15 @@ export function RequestFormPage({
         },
         options,
       );
-    else overtime.mutate({ ...request.payload, idempotencyKey }, options);
+    else
+      overtime.mutate(
+        {
+          ...request.payload,
+          outletId: (request.payload.outletId || undefined) as OutletId | undefined,
+          idempotencyKey,
+        },
+        options,
+      );
   }
 
   function reset() {

@@ -25,7 +25,11 @@ import type {
   ShiftSwapRequest,
   ShiftSwapRequestId,
 } from "@starter/shared/hris";
-import { addBusinessDays, businessDateOf } from "@starter/shared/core";
+import {
+  addBusinessDays,
+  businessDateOf,
+  type OutletId,
+} from "@starter/shared/core";
 import { useT } from "@/components/i18n";
 import type { ApiError } from "@/lib/api/errors";
 import { newIdempotencyKey } from "@/lib/idempotency";
@@ -53,7 +57,9 @@ import {
 } from "./queries.ts";
 import {
   buildSwapCandidates,
+  isFinalClientError,
   normalizeRequestQueue,
+  pickOutletId,
   planDecision,
   type QueueTranslate,
   type RequestDecision,
@@ -110,6 +116,17 @@ function useAttemptKey() {
     }),
     [],
   );
+}
+
+/**
+ * A 4xx answer (409 and the like) is final for that payload: the next attempt
+ * gets a new key. Only a network failure or 5xx may reuse the stored key.
+ */
+function dropKeyOnClientError(
+  error: ApiError,
+  attempt: { reset(): void },
+): void {
+  if (isFinalClientError(error.status)) attempt.reset();
 }
 
 // ---- Employee: lists ------------------------------------------------------
@@ -227,6 +244,8 @@ export type CreateShiftSwapInput = {
   toEmployeeId: EmployeeId;
   /** A shift of the colleague for a true swap; null hands the shift over. */
   toAssignmentId: ShiftAssignmentId | null;
+  /** The shift's outlet; defaults to the employee's own outlet when empty. */
+  outletId?: OutletId;
   /** Optional: a caller that retries sends the same key to prevent a double send. */
   idempotencyKey?: string;
 };
@@ -246,6 +265,8 @@ export type CreateOvertimeRequestInput = {
   minutes: number;
   reason: string;
   dayType?: OvertimeRequest["dayType"];
+  /** Defaults to the employee's own outlet when empty. */
+  outletId?: OutletId;
   idempotencyKey?: string;
 };
 
@@ -270,7 +291,7 @@ export function useCreateShiftSwap(): UseMutationResult<
     mutationFn: async ({ idempotencyKey, ...input }) => {
       const me = await queryClient.ensureQueryData(myHrisQuery());
       return postShiftSwap(
-        { ...input, outletId: me.outlet.id },
+        { ...input, outletId: pickOutletId(input.outletId, me.outlet.id) },
         idempotencyKey ?? attempt.keyFor(input),
       );
     },
@@ -279,6 +300,7 @@ export function useCreateShiftSwap(): UseMutationResult<
       refresh.all();
     },
     onError: (error) => {
+      dropKeyOnClientError(error, attempt);
       if (error.status === 409) refresh.all();
     },
   });
@@ -302,6 +324,7 @@ export function useCreateLeaveRequest(): UseMutationResult<
       refresh.all();
     },
     onError: (error) => {
+      dropKeyOnClientError(error, attempt);
       if (error.status === 409) refresh.all();
     },
   });
@@ -319,7 +342,7 @@ export function useCreateOvertimeRequest(): UseMutationResult<
     mutationFn: async ({ idempotencyKey, ...input }) => {
       const me = await queryClient.ensureQueryData(myHrisQuery());
       return postOvertimeRequest(
-        { ...input, outletId: me.outlet.id },
+        { ...input, outletId: pickOutletId(input.outletId, me.outlet.id) },
         idempotencyKey ?? attempt.keyFor(input),
       );
     },
@@ -328,6 +351,7 @@ export function useCreateOvertimeRequest(): UseMutationResult<
       refresh.all();
     },
     onError: (error) => {
+      dropKeyOnClientError(error, attempt);
       if (error.status === 409) refresh.all();
     },
   });
@@ -353,6 +377,7 @@ export function useCancelShiftSwap(): UseMutationResult<
       refresh.all();
     },
     onError: (error) => {
+      dropKeyOnClientError(error, attempt);
       if (error.status === 409) refresh.all();
     },
   });
@@ -497,6 +522,7 @@ export function useDecideRequest(): UseMutationResult<
       void queryClient.invalidateQueries({ queryKey: hrisRequestKeys.all });
     },
     onError: (error) => {
+      dropKeyOnClientError(error, attempt);
       // 409: the request moved on (decided elsewhere, cancelled): show it as is.
       if (error.status === 409)
         void queryClient.invalidateQueries({ queryKey: hrisRequestKeys.all });

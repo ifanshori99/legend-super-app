@@ -234,3 +234,19 @@ export function buildSwapCandidates(input: {
     }))
     .sort((left, right) => left.employeeName.localeCompare(right.employeeName));
 }
+
+/** Outlet of a new request: the shift's own outlet, else the employee's. */
+export function pickOutletId<T extends string>(
+  fromPayload: T | undefined,
+  fallback: T,
+): T {
+  return fromPayload === undefined || fromPayload === "" ? fallback : fromPayload;
+}
+
+/**
+ * A 4xx answer (409 and the like) is final for that payload, so the stored
+ * idempotency key is dropped; network failures (status 0) and 5xx keep it.
+ */
+export function isFinalClientError(status: number): boolean {
+  return status >= 400 && status < 500;
+}

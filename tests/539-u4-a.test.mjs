@@ -45,7 +45,9 @@ registerHooks({
 
 const {
   buildSwapCandidates,
+  isFinalClientError,
   needsOverrideReason,
+  pickOutletId,
   normalizeRequestQueue,
   OverrideReasonRequiredError,
   planDecision,
@@ -296,5 +298,21 @@ describe("buildSwapCandidates", () => {
       result[1].assignments.map((row) => row.businessDate),
       ["2026-11-03", "2026-11-05"],
     );
+  });
+});
+
+describe("request attempt rules", () => {
+  test("outlet comes from the payload, the employee's outlet only as fallback", () => {
+    assert.equal(pickOutletId("outlet-shift", "outlet-home"), "outlet-shift");
+    assert.equal(pickOutletId(undefined, "outlet-home"), "outlet-home");
+    assert.equal(pickOutletId("", "outlet-home"), "outlet-home");
+  });
+
+  test("only 4xx drops the stored key; network failure and 5xx keep it", () => {
+    assert.equal(isFinalClientError(409), true);
+    assert.equal(isFinalClientError(400), true);
+    assert.equal(isFinalClientError(0), false);
+    assert.equal(isFinalClientError(500), false);
+    assert.equal(isFinalClientError(503), false);
   });
 });

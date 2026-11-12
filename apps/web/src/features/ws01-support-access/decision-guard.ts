@@ -35,3 +35,11 @@ export function evaluateSupportDecisionGuard(
   if (!access.mfaVerified) return { canDecide: false, reason: "mfa_required" };
   return { canDecide: true, reason: null };
 }
+
+export const SUPPORT_END_PERMISSION = "platform.support_access.request";
+
+/** Ending a grant is a platform endpoint: the tenant Owner has no endpoint to
+ * revoke yet, so only a Super Admin (platform permission) may end one. */
+export function canEndSupportGrant(permissions: readonly string[]): boolean {
+  return permissions.includes(SUPPORT_END_PERMISSION);
+}

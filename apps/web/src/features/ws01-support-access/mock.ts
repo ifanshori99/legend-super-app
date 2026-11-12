@@ -18,7 +18,13 @@ import {
   type SupportAccessGrant,
   type SupportAccessRequest,
 } from "@starter/shared/platform";
+import {
+  accessForMockRole,
+  MOCK_ROLE_COOKIE,
+  parseMockRole,
+} from "@/lib/areas/access";
 import { ApiError } from "@/lib/api/errors";
+import { canEndSupportGrant } from "./decision-guard.ts";
 import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
@@ -176,7 +182,28 @@ registerMock(platformEndpoints.requestSupportAccess, ({ params, body }) => {
   return { data: created };
 });
 
+/** The mock caller's reach from the `legend-mock-role` cookie (browser only). */
+function mockCallerPermissions(): readonly string[] {
+  const row =
+    typeof document === "undefined"
+      ? undefined
+      : document.cookie
+          .split("; ")
+          .find((cookie) => cookie.startsWith(`${MOCK_ROLE_COOKIE}=`));
+  return accessForMockRole(
+    parseMockRole(row?.slice(MOCK_ROLE_COOKIE.length + 1)),
+  ).permissions;
+}
+
+// Only Super Admin can end a grant: the tenant Owner has no revoke endpoint,
+// so a non-platform role gets 403 and the Owner screen says "not revocable yet".
 registerMock(platformEndpoints.endSupportAccess, ({ params }) => {
+  if (!canEndSupportGrant(mockCallerPermissions()))
+    throw new ApiError(
+      403,
+      "FORBIDDEN",
+      "Hanya Super Admin yang dapat mengakhiri sesi ini.",
+    );
   const current = grants.get().find((row) => row.id === params.grantId);
   if (!current) throw new ApiError(404, "NOT_FOUND", "Sesi tidak ditemukan.");
   const now = new Date();

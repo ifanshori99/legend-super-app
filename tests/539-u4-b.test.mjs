@@ -46,8 +46,11 @@ registerHooks({
 });
 
 const dir = "../apps/web/src/features/ws01-support-access";
-const { evaluateSupportDecisionGuard, SUPPORT_DECISION_PERMISSION } =
-  await import(`${dir}/decision-guard.ts`);
+const {
+  canEndSupportGrant,
+  evaluateSupportDecisionGuard,
+  SUPPORT_DECISION_PERMISSION,
+} = await import(`${dir}/decision-guard.ts`);
 const { supportErrorMessage } = await import(`${dir}/errors.ts`);
 const api = await import(`${dir}/api.ts`);
 const { ApiError } = await import("../apps/web/src/lib/api/errors.ts");
@@ -106,6 +109,21 @@ describe("539-U4 B: useSupportDecisionGuard rules", () => {
       evaluateSupportDecisionGuard({ ...owner, authenticated: false })
         .canDecide,
       false,
+    );
+  });
+});
+
+describe("539-U4 B: ending a grant (mock role)", () => {
+  test("only a platform permission may end a grant; the Owner gets 403", async () => {
+    const { accessForMockRole } =
+      await import("../apps/web/src/lib/areas/access.ts");
+    assert.equal(
+      canEndSupportGrant(accessForMockRole("owner").permissions),
+      false,
+    );
+    assert.equal(
+      canEndSupportGrant(accessForMockRole("all").permissions),
+      true,
     );
   });
 });
