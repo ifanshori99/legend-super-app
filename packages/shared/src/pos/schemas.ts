@@ -42,6 +42,7 @@ import type { Idr } from "../core/index.ts";
 import { posDiscountThresholdBpSchema } from "../core/money.ts";
 import { posOverrideIdSchema } from "../access/override.ts";
 import { orderIdSchema } from "../kitchen/schemas.ts";
+import { PICKUP_CODE_PATTERN } from "../kitchen/pickup-code.ts";
 import {
   discountLineSchema,
   fireStatusSchema,
@@ -144,6 +145,14 @@ export type OrderChannel = z.infer<typeof orderChannelSchema>;
 export const SERVICE_TYPES = ["dine_in", "takeaway", "delivery"] as const;
 export const serviceTypeSchema = z.enum(SERVICE_TYPES);
 export type ServiceType = z.infer<typeof serviceTypeSchema>;
+
+/** Advisory sequence preview; creating the order assigns its final number. */
+export const posNextCallNumberSchema = z.strictObject({
+  number: z.number().int().positive(),
+  code: z.string().regex(PICKUP_CODE_PATTERN),
+  businessDate: businessDateSchema,
+});
+export type PosNextCallNumber = z.infer<typeof posNextCallNumberSchema>;
 
 /** Server-priced choices for the cashier/captain item picker. */
 export const posCatalogSchema = z.strictObject({
@@ -1684,6 +1693,8 @@ export type PosReceipt = z.infer<typeof posReceiptSchema>;
  */
 export const posOrderDetailSchema = posOrderBaseSchema
   .extend({
+    /** The immutable code already assigned to this order, or no pickup call. */
+    callNumber: z.string().regex(PICKUP_CODE_PATTERN).nullable().default(null),
     items: z.array(posOrderItemSchema),
     tenders: z.array(posTenderSchema),
     discounts: z.array(posDiscountSchema),

@@ -48,6 +48,7 @@ import {
   posDiscountIdSchema,
   posDiscountKindSchema,
   posDiscountSourceSchema,
+  posNextCallNumberSchema,
   posOrderActionSchema,
   posOrderDetailSchema,
   posOrderEventSchema,
@@ -137,6 +138,14 @@ export const getPosCatalog = defineEndpoint({
     serviceType: serviceTypeSchema.default("dine_in"),
   }),
   response: dataResponseSchema(posCatalogSchema),
+});
+
+/** Read-only hint: concurrent creates can assign a different final number. */
+export const getNextPosCallNumber = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/next-call-number",
+  params: outletParams,
+  response: dataResponseSchema(posNextCallNumberSchema),
 });
 
 export const listPosOrders = defineEndpoint({
