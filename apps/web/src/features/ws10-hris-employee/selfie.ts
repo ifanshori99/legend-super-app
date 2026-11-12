@@ -3,14 +3,16 @@
 // (a pre-signed upload reference), never photo bytes: the bytes go to the
 // private bucket through the storage adapter and the API keeps the key.
 //
-// Storage upload is the WS-00 storage bead's surface and has no client
-// endpoint yet, so `uploadAttendanceSelfie` is a port: mock mode returns a
-// synthetic reference (the whole screen stays clickable), a real build fails
-// closed with a readable error instead of sending an empty ref. Follow-up bead
-// in the report.
+// The existing storage endpoint scans and re-encodes the private photo. The
+// effective attendance policy supplies the shift outlet, so a covering employee
+// uploads to the same outlet where the server will record their clock.
 
-import { ApiError } from "@/lib/api/errors";
+import { apiErrorBodySchema } from "@starter/shared/core";
+import { getMyAttendancePolicy } from "@starter/shared/hris";
+import { uploadStorageObject } from "@starter/shared/storage";
+import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
+import { API_URL } from "@/lib/env";
 
 /** PRD "foto": phone photos are large; 5 MB is generous for one face. */
 export const SELFIE_MAX_BYTES = 5_000_000;
@@ -94,16 +96,46 @@ async function mockRef(blob: Blob): Promise<string> {
   }
 }
 
-/**
- * Uploads the selfie and answers the reference the clock contract accepts.
- * Mock mode: a deterministic synthetic ref. Real mode: fails closed until the
- * storage upload endpoint lands (the API would otherwise store an empty ref).
- */
+async function selfieRequest(
+  path: string,
+  init: RequestInit = {},
+): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch(new URL(path, API_URL), {
+      credentials: "include",
+      headers: { accept: "application/json" },
+      ...init,
+    });
+  } catch {
+    throw new ApiError(0, "NETWORK_ERROR", NETWORK_ERROR_MESSAGE);
+  }
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const parsed = apiErrorBodySchema.safeParse(payload);
+    const error = parsed.success ? parsed.data.error : undefined;
+    throw new ApiError(
+      response.status,
+      error?.code ?? "HTTP_ERROR",
+      error?.message ?? `Request failed with status ${response.status}.`,
+      error?.details,
+    );
+  }
+  return payload;
+}
+
+/** Uploads the selfie and returns the private object id the clock accepts. */
 export async function uploadAttendanceSelfie(blob: Blob): Promise<string> {
   if (API_MOCK) return mockRef(blob);
-  throw new ApiError(
-    503,
-    "SELFIE_UPLOAD_UNAVAILABLE",
-    "Unggah selfie belum tersedia di lingkungan ini. Hubungi admin.",
+  const { data: policy } = getMyAttendancePolicy.response.parse(
+    await selfieRequest(getMyAttendancePolicy.path),
   );
+  const body = new FormData();
+  body.set("purpose", "selfie");
+  body.set("outletId", policy.outletId);
+  body.set("file", blob, "selfie.jpg");
+  const { data } = uploadStorageObject.response.parse(
+    await selfieRequest(uploadStorageObject.path, { method: "POST", body }),
+  );
+  return data.id;
 }

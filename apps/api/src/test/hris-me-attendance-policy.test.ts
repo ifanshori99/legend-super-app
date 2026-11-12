@@ -10,10 +10,11 @@
 // fail first (the route answers 404 until it is added).
 //
 // Assumptions:
-//  - Response is `{ data: { ...six fields } }` like the other HRIS endpoints.
+//  - Response is `{ data: { outletId, ...six policy fields } }` like the other HRIS endpoints.
 //  - The only fields exposed are geofenceRadiusM, outsideGeofenceAction,
 //    unboundDeviceAction, requireSelfie, requireDeviceBinding, allowRotatingQr.
-//    selfieRetentionDays, sampling, outlet and tenant ids are NOT exposed.
+//    selfieRetentionDays, sampling and tenant ids are NOT exposed.
+//    Paket C legend-bf20 adds the effective outletId for the selfie upload.
 //  - The built-in default (no stored policy) is DEFAULT_ATTENDANCE_POLICY
 //    (accept-and-flag with a mandatory selfie, founder decision Q81, see
 //    hris-attendance-default-policy.test.ts).
@@ -204,6 +205,7 @@ const SAMPLING = { rate: 0, flaggedAlways: true, minPerSupervisorPerWeek: 0 };
 const POLICY_FIELDS = [
   "allowRotatingQr",
   "geofenceRadiusM",
+  "outletId",
   "outsideGeofenceAction",
   "requireDeviceBinding",
   "requireSelfie",
@@ -255,7 +257,9 @@ function expectPolicyOnly(
   >,
 ) {
   expect(Object.keys(body.data).sort()).toEqual(POLICY_FIELDS);
-  expect(body.data).toEqual(expected);
+  const { outletId, ...policy } = body.data;
+  expect(outletId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
+  expect(policy).toEqual(expected);
 }
 
 // Every case starts with no stored policy of this tenant (the built-in default
@@ -454,10 +458,12 @@ describe("legend-j06v GET /api/hris/me/attendance-policy effective policy", () =
     const home = await staff.client.get(PATH);
     expect(home.status, JSON.stringify(home.body)).toBe(200);
     expect(home.body.data.geofenceRadiusM).toBe(250);
+    expect(home.body.data.outletId).toBe(outletA);
 
     await seedCoverShift(staff, outletB);
     const covering = await staff.client.get(PATH);
     expect(covering.status, JSON.stringify(covering.body)).toBe(200);
+    expect(covering.body.data.outletId).toBe(outletB);
     expectPolicyOnly(covering.body, {
       geofenceRadiusM: 60,
       outsideGeofenceAction: "flag",
@@ -480,6 +486,7 @@ describe("legend-j06v GET /api/hris/me/attendance-policy effective policy", () =
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(response.body.data.geofenceRadiusM).toBe(250);
     expect(response.body.data.requireSelfie).not.toBe(false);
+    expect(response.body.data.outletId).toBe(outletA);
   });
 
   it("legend-j06v refuses an employee who is not active or onboarding", async () => {
@@ -494,7 +501,7 @@ describe("legend-j06v GET /api/hris/me/attendance-policy effective policy", () =
     expect(response.status, JSON.stringify(response.body)).toBe(422);
   });
 
-  it("legend-j06v exposes no retention days, sampling or ids", async () => {
+  it("[legend-bf20 HR-01] exposes only effective outletId and policy, no private configuration", async () => {
     await storePolicy(outletB, OUTLET_OVERRIDE);
     const staff = await newStaff(outletB);
     const response = await staff.client.get(PATH);
@@ -503,7 +510,7 @@ describe("legend-j06v GET /api/hris/me/attendance-policy effective policy", () =
     expect(response.text).not.toContain("selfieRetentionDays");
     expect(response.text).not.toContain("sampling");
     expect(response.text).not.toContain(tenant.id);
-    expect(response.text).not.toContain(outletB);
+    expect(response.body.data.outletId).toBe(outletB);
   });
 
   it("legend-j06v [TEN-03] another tenant's policy never leaks", async () => {

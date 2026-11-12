@@ -376,11 +376,12 @@ export type AttendancePolicyView = z.infer<typeof attendancePolicyViewSchema>;
 
 /**
  * The part of the effective policy a staff member sees on the clock-in screen
- * (GET /api/hris/me/attendance-policy). No retention days, sampling or ids.
+ * (GET /api/hris/me/attendance-policy). The effective outlet binds the selfie
+ * upload to the same shift outlet as the clock. No retention days or sampling.
  */
-export const myAttendancePolicySchema = attendancePolicySchema.omit({
-  selfieRetentionDays: true,
-});
+export const myAttendancePolicySchema = attendancePolicySchema
+  .omit({ selfieRetentionDays: true })
+  .extend({ outletId: outletIdSchema });
 export type MyAttendancePolicy = z.infer<typeof myAttendancePolicySchema>;
 
 /**

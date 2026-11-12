@@ -39,6 +39,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FakeObjectStorage } from "@starter/shared/adapters";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
@@ -368,11 +369,21 @@ const rejectingRuntime: StorageRuntime = {
   ...withStorage,
   scanner: {
     scan: async () => {
-      throw new Error("malware detected");
+      throw new HttpError(422, "MALWARE_FOUND", "internal signature secret");
     },
   } as unknown as StorageRuntime["scanner"],
 };
 const appRejectingScanner = createApp({ storageRuntime: rejectingRuntime });
+const appUnavailableScanner = createApp({
+  storageRuntime: {
+    ...withStorage,
+    scanner: {
+      scan: async () => {
+        throw new Error("internal scanner socket failure");
+      },
+    },
+  },
+});
 
 const uploadSelfie = (
   client: Client,
@@ -459,6 +470,43 @@ const expectClientError = (status: number, body: unknown) => {
 };
 
 describe("[bf20] selfie upload through POST /api/storage/uploads", () => {
+  it("[legend-bf20 HR-01] an employee cannot select another selfie owner in multipart metadata", async () => {
+    const staff = await newStaff(appWithStorage, "owner-spoof");
+    const victim = await newStaff(appWithStorage, "owner-victim");
+    const response = await staff.client
+      .post("/api/storage/uploads")
+      .set(originHeader)
+      .field("purpose", "selfie")
+      .field("outletId", outletId)
+      .field("ownerUserId", victim.userId)
+      .field("employeeId", victim.employeeId)
+      .attach("file", jpeg, {
+        filename: "selfie.jpg",
+        contentType: "image/jpeg",
+      });
+    expectClientError(response.status, response.body);
+    expect(await objectsOwnedBy(victim.userId)).toBe(0);
+    expect(await objectsOwnedBy(staff.userId)).toBe(0);
+    const control = await uploadSelfie(staff.client);
+    expect(control.status, JSON.stringify(control.body)).toBe(201);
+    expect((await storedObject(control.body.data.id))?.owner_user_id).toBe(
+      staff.userId,
+    );
+  });
+
+  it("[legend-bf20 TEN-01] a selfie cannot be uploaded to a foreign tenant outlet", async () => {
+    const staff = await newStaff(appWithStorage, "tenant-upload");
+    const control = await uploadSelfie(staff.client);
+    expect(control.status, JSON.stringify(control.body)).toBe(201);
+    const response = await uploadSelfie(staff.client, {
+      outlet: tenantB.outletId,
+    });
+    expect([403, 404], JSON.stringify(response.body)).toContain(
+      response.status,
+    );
+    expect(await objectsOwnedBy(staff.userId)).toBe(1);
+  });
+
   it("[bf20] an employee who may clock uploads a selfie, then clocks with the returned id as photoUploadRef (201)", async () => {
     const staff = await newBoundStaff(appWithStorage, "u1");
     const upload = await uploadSelfie(staff.client);
@@ -610,13 +658,53 @@ describe("[bf20] selfie upload through POST /api/storage/uploads", () => {
     expect(await objectsOwnedBy(staff.userId)).toBe(0);
   });
 
-  // Parked (legend-bf20 follow-up): MalwareScanner.scan rejects with a bare Error, so the upload
-  // answers 500. A typed rejection (4xx) vs scanner failure (5xx) needs a shared-storage design decision.
-  it.skip("[bf20] a file the malware scanner rejects is refused 4xx and leaves no storage row", async () => {
+  it("[bf20] a file the malware scanner rejects is refused 4xx and leaves no storage row", async () => {
     const staff = await newStaff(appRejectingScanner, "e2");
     const response = await uploadSelfie(staff.client);
-    expectClientError(response.status, response.body);
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error.code).toBe("UPLOAD_REJECTED");
+    expect(JSON.stringify(response.body)).not.toContain("internal signature");
     expect(await objectsOwnedBy(staff.userId)).toBe(0);
+  });
+
+  it("[legend-bf20 HR-02] scanner outage fails closed with 503 and no stored selfie", async () => {
+    const staff = await newStaff(appUnavailableScanner, "scanner-outage");
+    const response = await uploadSelfie(staff.client);
+    expect(response.status, JSON.stringify(response.body)).toBe(503);
+    expect(response.body.error.code).toBe("SCANNER_UNAVAILABLE");
+    expect(JSON.stringify(response.body)).not.toContain("internal scanner");
+    expect(await objectsOwnedBy(staff.userId)).toBe(0);
+  });
+});
+
+describe("[legend-bf20 HR-01] self binding actor ownership", () => {
+  it("[legend-bf20 HR-01] employeeId cannot redirect a self bind to another employee", async () => {
+    const staff = await newStaff(appWithStorage, "self-bind-spoof");
+    const victim = await newStaff(appWithStorage, "self-bind-victim");
+    const response = await post(
+      staff.client,
+      "/api/hris/attendance/devices/bind",
+      {
+        employeeId: victim.employeeId,
+        deviceIdHash: deviceHash(),
+        label: "Spoof",
+        idempotencyKey: key(),
+      },
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(await devicesOf(hr, victim.employeeId)).toEqual([]);
+    expect(await devicesOf(hr, staff.employeeId)).toEqual([]);
+    const control = await post(
+      staff.client,
+      "/api/hris/attendance/devices/bind",
+      {
+        deviceIdHash: deviceHash(),
+        label: "Own",
+        idempotencyKey: key(),
+      },
+    );
+    expect(control.status, JSON.stringify(control.body)).toBe(201);
+    expect(control.body.data.employeeId).toBe(staff.employeeId);
   });
 });
 

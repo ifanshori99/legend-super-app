@@ -29,6 +29,7 @@ import {
   encodeCursor,
   isOutletInScope,
   localDateOf,
+  outletIdSchema,
   ulidToUuid,
   type ScopedTenantContext,
   type TenantId,
@@ -337,6 +338,7 @@ export async function getMyAttendancePolicy(
       target.outletId,
     );
     return {
+      outletId: outletIdSchema.parse(target.outletId),
       geofenceRadiusM: policy.geofenceRadiusM,
       outsideGeofenceAction: policy.outsideGeofenceAction,
       unboundDeviceAction: policy.unboundDeviceAction,
