@@ -2,6 +2,7 @@
 // the screen's copy does not collide with the broader settings hub strings.
 export const orgOutletMessages = {
   title: "Outlet",
+  navDomain: "Domain",
   subtitle:
     "Nama, alamat, dan jam tutup buku yang dipakai menghitung hari bisnis outlet.",
   listTitle: "Daftar outlet",

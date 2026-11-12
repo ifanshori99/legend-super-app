@@ -18,6 +18,7 @@ import {
   cafeLegendPlatformFixtures,
   orgEndpoints,
   type Outlet,
+  type TenantDomain,
 } from "@starter/shared/platform";
 import { ApiError } from "../../lib/api/errors.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
@@ -92,4 +93,109 @@ registerMock(orgEndpoints.updateOutlet, ({ params, body }) => {
     });
   }
   return { data: updated };
+});
+
+// ------------------------------------------------- custom domains (legend-az8z5)
+// Mock for the domain verification screen (mockup
+// design/mockups/platform/domain-verification.html). Seeded states: a verified
+// platform subdomain and custom domain (fixtures), a pending custom domain
+// with its TXT record, and a pending one whose check always fails
+// (`gagal.` prefix). Add rejects reserved and taken names with the contract
+// codes (DOMAIN_RESERVED 422, DOMAIN_TAKEN 409).
+const VERIFICATION_NAME_PREFIX = "_legend-verify";
+const FAILING_PREFIX = "gagal.";
+const RESERVED_SUFFIXES = [".platform.example", ".legend.example"];
+const TAKEN_HOSTNAMES = new Set<string>([
+  cafeLegendPlatformFixtures.suspendedDomain.hostname,
+  "toko.contoh.example",
+]);
+
+function verificationFor(hostname: string): TenantDomain["verification"] {
+  return {
+    type: "TXT",
+    name: `${VERIFICATION_NAME_PREFIX}.${hostname}`,
+    value: `legend-verify=${hostname.replace(/\./g, "-")}-mock-token`,
+  };
+}
+
+function seedDomains(): TenantDomain[] {
+  const rows = cafeLegendPlatformFixtures.domains.map((domain) =>
+    domain.verifiedAt === null
+      ? { ...domain, verification: verificationFor(domain.hostname) }
+      : { ...domain },
+  );
+  const [first] = cafeLegendPlatformFixtures.domains;
+  const failing: TenantDomain = {
+    ...first,
+    id: crypto.randomUUID() as TenantDomain["id"],
+    hostname: `${FAILING_PREFIX}cafelegend.example`,
+    kind: "custom",
+    tlsStatus: "pending",
+    verifiedAt: null,
+    verification: verificationFor(`${FAILING_PREFIX}cafelegend.example`),
+  };
+  return [...rows, failing];
+}
+
+const domainStore = createMockStore<TenantDomain[]>(seedDomains);
+
+registerMock(orgEndpoints.listDomains, () => ({ data: domainStore.get() }));
+
+registerMock(orgEndpoints.addDomain, ({ body }) => {
+  const rows = domainStore.get();
+  const hostname = body.hostname;
+  if (RESERVED_SUFFIXES.some((suffix) => hostname.endsWith(suffix)))
+    throw new ApiError(
+      422,
+      "DOMAIN_RESERVED",
+      "Domain ini dicadangkan dan tidak dapat digunakan.",
+    );
+  if (
+    TAKEN_HOSTNAMES.has(hostname) ||
+    rows.some((domain) => domain.hostname === hostname)
+  )
+    throw new ApiError(409, "DOMAIN_TAKEN", "Domain ini sudah digunakan.");
+  const created: TenantDomain = {
+    ...rows[0],
+    id: crypto.randomUUID() as TenantDomain["id"],
+    brandId: body.brandId,
+    hostname,
+    kind: "custom",
+    tlsStatus: "pending",
+    verifiedAt: null,
+    verification: verificationFor(hostname),
+    createdAt: new Date().toISOString(),
+  };
+  domainStore.set([...rows, created]);
+  return { data: created };
+});
+
+registerMock(orgEndpoints.verifyDomain, ({ params }) => {
+  const rows = domainStore.get();
+  const current = rows.find((domain) => domain.id === params.domainId);
+  if (!current) throw new ApiError(404, "NOT_FOUND", "Domain tidak ditemukan.");
+  if (current.verifiedAt !== null) return { data: current };
+  if (current.hostname.startsWith(FAILING_PREFIX))
+    throw new ApiError(
+      422,
+      "DOMAIN_VERIFICATION_FAILED",
+      "Record TXT belum ditemukan.",
+    );
+  const verified: TenantDomain = {
+    ...current,
+    tlsStatus: "active",
+    verifiedAt: new Date().toISOString(),
+    verification: null,
+  };
+  domainStore.set(
+    rows.map((domain) => (domain.id === verified.id ? verified : domain)),
+  );
+  return { data: verified };
+});
+
+registerMock(orgEndpoints.removeDomain, ({ params }) => {
+  const rows = domainStore.get();
+  if (!rows.some((domain) => domain.id === params.domainId))
+    throw new ApiError(404, "NOT_FOUND", "Domain tidak ditemukan.");
+  domainStore.set(rows.filter((domain) => domain.id !== params.domainId));
 });

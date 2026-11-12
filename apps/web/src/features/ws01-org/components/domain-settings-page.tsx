@@ -1,0 +1,478 @@
+// Custom-domain verification (bead legend-az8z5; mockup
+// design/mockups/platform/domain-verification.html). Lists the tenant's custom
+// domains (GET /api/org/domains), adds one (POST, brand from /api/org/brands)
+// and checks ownership (POST /:domainId/verify) against the TXT record the API
+// returns in `verification`. States: loading, empty, add form, pending (with
+// reserved / taken / not-found notices), success, load error.
+import * as React from "react";
+import { CircleAlert, CircleCheck, Clock, Globe } from "lucide-react";
+import type { TenantDomain } from "@starter/shared/platform";
+import { useT } from "@/components/i18n";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardDescription,
+  CardHeader,
+  CardShell,
+  CardTitle,
+} from "@/components/ui/card";
+import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
+import { FormField } from "@/components/ui/form-field";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { API_MOCK } from "@/lib/api/mock-flag";
+import { useOnline } from "@/lib/use-online";
+import {
+  DOMAIN_COPY,
+  classifyDomainError,
+  customDomains,
+  domainNotice,
+  domainScreen,
+  domainView,
+  validateHostname,
+  type DomainNotice,
+} from "../domain-state";
+import {
+  useAddDomain,
+  useDomains,
+  useOrgBrands,
+  useVerifyDomain,
+} from "../hooks";
+
+export function DomainSettingsPage() {
+  const t = useT();
+  const online = useOnline();
+  const domainsQuery = useDomains();
+  const [adding, setAdding] = React.useState(false);
+
+  return (
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="grid gap-0.5">
+          <h2 className="type-title">Domain kustom</h2>
+          <p className="max-w-2xl text-sm leading-5 text-muted-foreground">
+            Hubungkan domain milik Anda dengan memverifikasi kepemilikannya.
+          </p>
+        </div>
+        {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
+      </div>
+
+      {domainsQuery.isPending ? (
+        <CardShell>
+          <Card aria-busy="true">
+            <CardHeader>
+              <CardTitle>Memuat domain</CardTitle>
+              <CardDescription>
+                Mengambil status dan petunjuk verifikasi…
+              </CardDescription>
+            </CardHeader>
+            <span className="sr-only">{t("common.loading")}</span>
+            <div className="grid gap-3">
+              <Skeleton className="h-4 w-2/5" />
+              <Skeleton className="h-4 w-5/6" />
+              <Skeleton className="h-4 w-5/6" />
+            </div>
+          </Card>
+        </CardShell>
+      ) : domainsQuery.isError ? (
+        <ErrorState
+          error={domainsQuery.error}
+          title={online ? undefined : DOMAIN_COPY.networkTitle}
+          description={online ? undefined : DOMAIN_COPY.networkMessage}
+          onRetry={() => void domainsQuery.refetch()}
+        />
+      ) : adding || domainScreen(domainsQuery.data.data) === "empty" ? (
+        adding ? (
+          <AddDomainForm
+            onDone={() => setAdding(false)}
+            onCancel={() => setAdding(false)}
+          />
+        ) : (
+          <CardShell>
+            <Card>
+              <EmptyState
+                icon={Globe}
+                title="Belum ada domain kustom"
+                description="Tambahkan domain untuk memulai verifikasi kepemilikan."
+                action={
+                  <Button onClick={() => setAdding(true)}>Tambah domain</Button>
+                }
+              />
+            </Card>
+          </CardShell>
+        )
+      ) : (
+        <div className="grid min-w-0 gap-4">
+          {customDomains(domainsQuery.data.data).map((domain) => (
+            <DomainCard key={domain.id} domain={domain} />
+          ))}
+          <div>
+            <Button variant="outline" onClick={() => setAdding(true)}>
+              Tambah domain
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NoticeBanner({
+  tone,
+  notice,
+}: {
+  tone: "danger" | "success";
+  notice: DomainNotice;
+}) {
+  const Icon = tone === "danger" ? CircleAlert : CircleCheck;
+  return (
+    <div
+      role={tone === "danger" ? "alert" : "status"}
+      className={[
+        "flex min-w-0 items-start gap-2 rounded-control border-s-4 px-4 py-3 text-sm leading-5",
+        tone === "danger"
+          ? "border-danger bg-danger-subtle text-foreground"
+          : "border-success bg-success-subtle text-foreground",
+      ].join(" ")}
+    >
+      <Icon
+        className={`mt-0.5 size-4 shrink-0 ${tone === "danger" ? "text-danger" : "text-success"}`}
+        aria-hidden="true"
+      />
+      <p className="min-w-0 [overflow-wrap:anywhere]">
+        <strong>{notice.title}</strong> {notice.message}
+      </p>
+    </div>
+  );
+}
+
+function AddDomainForm({
+  onDone,
+  onCancel,
+}: {
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const brandsQuery = useOrgBrands();
+  const addDomain = useAddDomain();
+  const [hostname, setHostname] = React.useState("");
+  const [brandId, setBrandId] = React.useState("");
+  const [fieldError, setFieldError] = React.useState<string | undefined>();
+  const [notice, setNotice] = React.useState<DomainNotice | undefined>();
+
+  const brands = brandsQuery.data?.data ?? [];
+  const selectedBrand = brands.find((b) => b.id === brandId) ?? brands[0];
+
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setNotice(undefined);
+    const check = validateHostname(hostname);
+    if (!check.ok) {
+      setFieldError(check.message);
+      return;
+    }
+    if (!selectedBrand) return;
+    setFieldError(undefined);
+    addDomain.mutate(
+      { brandId: selectedBrand.id, hostname: check.hostname },
+      {
+        onSuccess: onDone,
+        onError: (error) =>
+          setNotice(domainNotice(classifyDomainError(error))),
+      },
+    );
+  }
+
+  if (brandsQuery.isPending)
+    return (
+      <CardShell>
+        <Card aria-busy="true">
+          <Skeleton className="h-6 w-48" />
+          <Skeleton className="h-11" />
+        </Card>
+      </CardShell>
+    );
+  if (brandsQuery.isError)
+    return (
+      <ErrorState
+        error={brandsQuery.error}
+        onRetry={() => void brandsQuery.refetch()}
+      />
+    );
+
+  return (
+    <div className="grid min-w-0 gap-4">
+      {notice && <NoticeBanner tone="danger" notice={notice} />}
+      <CardShell>
+        <Card>
+          <CardHeader>
+            <CardTitle>Tambah domain kustom</CardTitle>
+            <CardDescription>
+              Masukkan domain yang ingin dihubungkan.
+            </CardDescription>
+          </CardHeader>
+          <form
+            onSubmit={submit}
+            noValidate
+            className="grid gap-4"
+            aria-busy={addDomain.isPending || undefined}
+          >
+            {brands.length > 1 && (
+              <FormField label="Brand" id="domain-brand">
+                <Select
+                  value={selectedBrand?.id ?? ""}
+                  onValueChange={setBrandId}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {brands.map((brand) => (
+                      <SelectItem key={brand.id} value={brand.id}>
+                        {brand.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </FormField>
+            )}
+            {brands.length === 0 && (
+              <p className="text-sm leading-5 text-muted-foreground">
+                {DOMAIN_COPY.noBrand}
+              </p>
+            )}
+            <FormField
+              label="Nama domain"
+              id="domain-hostname"
+              error={fieldError}
+              required
+            >
+              <Input
+                id="domain-hostname"
+                value={hostname}
+                onChange={(event) => setHostname(event.target.value)}
+                placeholder="pesan.contoh.id"
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                inputMode="url"
+              />
+            </FormField>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="submit"
+                className="max-sm:w-full"
+                disabled={addDomain.isPending || !selectedBrand}
+              >
+                Lanjutkan
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="max-sm:w-full"
+                onClick={onCancel}
+              >
+                Batal
+              </Button>
+            </div>
+          </form>
+        </Card>
+      </CardShell>
+    </div>
+  );
+}
+
+function DomainCard({ domain }: { domain: TenantDomain }) {
+  const verify = useVerifyDomain();
+  const [notice, setNotice] = React.useState<DomainNotice | undefined>();
+  const [justVerified, setJustVerified] = React.useState(false);
+  const view = domainView(domain);
+
+  function check() {
+    setNotice(undefined);
+    verify.mutate(domain.id, {
+      onSuccess: () => setJustVerified(true),
+      onError: (error) => setNotice(domainNotice(classifyDomainError(error))),
+    });
+  }
+
+  if (view === "verified" || justVerified)
+    return (
+      <div className="grid min-w-0 gap-4">
+        {justVerified && (
+          <NoticeBanner
+            tone="success"
+            notice={{
+              title: "Domain terverifikasi.",
+              message: "Kepemilikan domain berhasil dikonfirmasi.",
+            }}
+          />
+        )}
+        <CardShell>
+          <Card>
+            <DomainHeader domain={domain} verified />
+            <div className="grid gap-1 border-t-(length:--border-w) border-border pt-4">
+              <span className="text-sm font-semibold text-muted-foreground">
+                Verifikasi kepemilikan
+              </span>
+              <span className="font-semibold">Record TXT ditemukan</span>
+            </div>
+          </Card>
+        </CardShell>
+      </div>
+    );
+
+  return (
+    <div className="grid min-w-0 gap-4">
+      {notice && <NoticeBanner tone="danger" notice={notice} />}
+      <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(15rem,0.8fr)] lg:items-start">
+        <CardShell>
+          <Card>
+            <DomainHeader domain={domain} verified={false} />
+            <p className="text-sm leading-5 text-muted-foreground">
+              Tambahkan record TXT berikut pada pengelola DNS domain Anda.
+            </p>
+            {!domain.verification && (
+              <p className="text-sm leading-5 text-muted-foreground">
+                {DOMAIN_COPY.noRecord}
+              </p>
+            )}
+            {domain.verification && (
+              <dl className="grid min-w-0 gap-4 rounded-control border-(length:--border-w) border-border bg-surface-2 p-4">
+                <RecordRow label="Jenis" value={domain.verification.type} />
+                <RecordRow
+                  label="Nama / host"
+                  value={domain.verification.name}
+                  copyable
+                />
+                <RecordRow
+                  label="Nilai"
+                  value={domain.verification.value}
+                  copyable
+                />
+              </dl>
+            )}
+            <div className="grid gap-2">
+              <Button
+                className="max-sm:w-full sm:w-fit"
+                onClick={check}
+                disabled={verify.isPending}
+                aria-busy={verify.isPending || undefined}
+              >
+                {verify.isPending ? "Memeriksa…" : "Cek verifikasi"}
+              </Button>
+              <p className="text-sm leading-5 text-muted-foreground">
+                Perubahan DNS mungkin memerlukan waktu sebelum dapat ditemukan.
+              </p>
+            </div>
+          </Card>
+        </CardShell>
+        <CardShell>
+          <Card>
+            <CardTitle>Cara memverifikasi</CardTitle>
+            <ol className="grid list-decimal gap-2 ps-5 text-sm leading-5">
+              <li>Buka pengaturan DNS pada penyedia domain Anda.</li>
+              <li>
+                Tambahkan record TXT dengan nama dan nilai yang ditampilkan.
+              </li>
+              <li>
+                Simpan perubahan, lalu kembali ke sini dan pilih{" "}
+                <strong>Cek verifikasi</strong>.
+              </li>
+            </ol>
+            <p className="text-sm leading-5 text-muted-foreground">
+              Jika record belum ditemukan, periksa kembali nama dan nilainya
+              lalu coba lagi.
+            </p>
+          </Card>
+        </CardShell>
+      </div>
+    </div>
+  );
+}
+
+function DomainHeader({
+  domain,
+  verified,
+}: {
+  domain: TenantDomain;
+  verified: boolean;
+}) {
+  return (
+    <div className="flex min-w-0 items-start justify-between gap-3">
+      <div className="min-w-0 [overflow-wrap:anywhere]">
+        <h3 className="type-heading">{domain.hostname}</h3>
+        <p className="text-sm leading-5 text-muted-foreground">
+          Domain kustom
+        </p>
+      </div>
+      {verified ? (
+        <Badge tone="success">
+          <CircleCheck aria-hidden="true" />
+          Terverifikasi
+        </Badge>
+      ) : (
+        <Badge tone="warning">
+          <Clock aria-hidden="true" />
+          Menunggu verifikasi
+        </Badge>
+      )}
+    </div>
+  );
+}
+
+function RecordRow({
+  label,
+  value,
+  copyable,
+}: {
+  label: string;
+  value: string;
+  copyable?: boolean;
+}) {
+  const [feedback, setFeedback] = React.useState<string | undefined>();
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setFeedback(DOMAIN_COPY.copied);
+    } catch {
+      setFeedback(DOMAIN_COPY.copyFailed);
+    }
+  }
+
+  return (
+    <div className="grid min-w-0 gap-1">
+      <dt className="text-sm font-semibold text-muted-foreground">{label}</dt>
+      <dd className="flex min-w-0 items-start justify-between gap-3">
+        <span className="min-w-0 font-mono text-sm [overflow-wrap:anywhere]">
+          {value}
+        </span>
+        {copyable && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            onClick={() => void copy()}
+          >
+            Salin
+          </Button>
+        )}
+      </dd>
+      {feedback && (
+        <p className="text-sm leading-5 text-muted-foreground" aria-live="polite">
+          {feedback}
+        </p>
+      )}
+    </div>
+  );
+}
