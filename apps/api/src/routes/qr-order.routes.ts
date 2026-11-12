@@ -15,6 +15,8 @@
 // router, so neither router's middleware can reach the other's routes.
 
 import { Router, type Request } from "express";
+import { env } from "../config/env.ts";
+import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.ts";
 import {
@@ -435,6 +437,14 @@ qrOrderRouter.post(
   ...write,
   jsonBody,
   async (req, res) => {
+    const edge = getEdgeRuntimeState();
+    if (env.EDGE_MODE || edge.edgeMode)
+      throw new CoreError(
+        "SERVICE_UNAVAILABLE",
+        edge.link.cloudLink === "disconnected"
+          ? "Klaim poin butuh koneksi internet."
+          : "Klaim poin melalui cloud belum tersedia pada perangkat ini.",
+      );
     const { sessionId } = claimSessionPoints.params.parse(req.params);
     const body = claimSessionPoints.body.parse(req.body);
     const credential = sessionCredential(req);
@@ -446,6 +456,7 @@ qrOrderRouter.post(
         {
           claimToken: body.claimToken,
           userId: await optionalMemberUserId(req),
+          idempotencyKey: body.idempotencyKey,
         },
       ),
     });

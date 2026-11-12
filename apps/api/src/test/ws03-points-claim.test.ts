@@ -48,6 +48,10 @@ import { getPointClaim } from "@starter/shared/qr-order";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import {
+  getEdgeRuntimeState,
+  setEdgeRuntimeStateForTests,
+} from "../edge/runtime.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { deliverOrderPaymentEvent } from "../services/order-payment-consumers.ts";
@@ -79,6 +83,7 @@ import {
   ledgerOf,
   newMemberUser,
   owner as loyaltyOwner,
+  seedConsent,
   seedMember,
   seedProfile,
   seedProgram,
@@ -201,6 +206,7 @@ function as(guest: Guest, member?: MemberUser, host = tenant.hostname) {
       .set(originHeader);
   const base = `/api/table-sessions/${guest.sessionId}`;
   return {
+    view: () => auth(client.get(base)),
     add: (menuItemId: string, expectedCartVersion: number) =>
       auth(client.post(`${base}/cart/lines`)).send({
         idempotencyKey: randomUUID(),
@@ -239,9 +245,9 @@ function as(guest: Guest, member?: MemberUser, host = tenant.hostname) {
           `${base}/points-claim${claimToken ? `?claimToken=${encodeURIComponent(claimToken)}` : ""}`,
         ),
       ),
-    claim: (claimToken?: string) =>
+    claim: (claimToken?: string, idempotencyKey = randomUUID()) =>
       auth(client.post(`${base}/points-claim`)).send({
-        idempotencyKey: randomUUID(),
+        idempotencyKey,
         ...(claimToken ? { claimToken } : {}),
       }),
   };
@@ -322,7 +328,9 @@ async function skewOrder(orderId: string, skew: Skew) {
 
 /** Places one pay-first order of one kopi (not paid). */
 async function placeOrder(guest: Guest, skew?: Skew) {
-  const added = await as(guest).add(ids.kopi, 0);
+  const view = await as(guest).view();
+  expect(view.status, JSON.stringify(view.body)).toBe(200);
+  const added = await as(guest).add(ids.kopi, view.body.data.cart.version);
   expect(added.status, JSON.stringify(added.body)).toBe(201);
   const placed = await as(guest).checkout(added.body.data.cart.version);
   expect(placed.status, JSON.stringify(placed.body)).toBe(201);
@@ -676,6 +684,63 @@ describe("guest point claim: reading (legend-n1mp)", () => {
 });
 
 describe("guest point claim: claiming (legend-n1mp)", () => {
+  it("legend-7h5s refuses an offline edge claim without changing balance or emitting a tenant-wide sync event", async () => {
+    const guest = await seat();
+    await paidOrder(guest);
+    const member = await newMember();
+    const balance = await balanceOf(tenant.tenantId, member.profileId);
+    const tenantSyncEvents = async () =>
+      Number(
+        (
+          await owner.query(
+            `SELECT count(*) AS total FROM domain_event_outbox
+             WHERE tenant_id = $1 AND outlet_id IS NULL AND destination = 'cloud-sync'`,
+            [tenant.tenantId],
+          )
+        ).rows[0].total,
+      );
+    const before = await tenantSyncEvents();
+    const previous = getEdgeRuntimeState();
+    setEdgeRuntimeStateForTests({
+      ...previous,
+      edgeMode: true,
+      link: { ...previous.link, cloudLink: "disconnected" },
+    });
+    try {
+      const response = await as(guest, member).claim();
+      expect(response.status).toBe(503);
+      expect(JSON.stringify(response.body)).toContain(
+        "Klaim poin butuh koneksi internet",
+      );
+      expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(balance);
+      expect(await ledgerClaims(member.profileId)).toHaveLength(0);
+      expect(await tenantSyncEvents()).toBe(before);
+    } finally {
+      setEdgeRuntimeStateForTests(previous);
+    }
+  });
+
+  it("legend-7h5s fails closed on edge even when its cloud link reports connected", async () => {
+    const guest = await seat();
+    await paidOrder(guest);
+    const member = await newMember();
+    const balance = await balanceOf(tenant.tenantId, member.profileId);
+    const previous = getEdgeRuntimeState();
+    setEdgeRuntimeStateForTests({
+      ...previous,
+      edgeMode: true,
+      link: { ...previous.link, cloudLink: "connected" },
+    });
+    try {
+      const response = await as(guest, member).claim();
+      expect(response.status).toBe(503);
+      expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(balance);
+      expect(await ledgerClaims(member.profileId)).toHaveLength(0);
+    } finally {
+      setEdgeRuntimeStateForTests(previous);
+    }
+  });
+
   it("POST without a login is 401 and posts nothing", async () => {
     const guest = await seat();
     await paidOrder(guest);
@@ -722,9 +787,10 @@ describe("guest point claim: claiming (legend-n1mp)", () => {
     const guest = await seat();
     const order = await paidOrder(guest);
     const member = await newMember();
-    const first = await as(guest, member).claim();
+    const idempotencyKey = randomUUID();
+    const first = await as(guest, member).claim(undefined, idempotencyKey);
     expect(first.status).toBe(200);
-    const again = await as(guest, member).claim();
+    const again = await as(guest, member).claim(undefined, idempotencyKey);
     expect(again.status, JSON.stringify(again.body)).toBe(200);
     expect(again.body.data.status).toBe("claimed");
     expect(again.body.data.points).toBe(pointsOf(order.eligibleIdr));
@@ -732,6 +798,79 @@ describe("guest point claim: claiming (legend-n1mp)", () => {
     expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(
       pointsOf(order.eligibleIdr),
     );
+  });
+
+  it("legend-7h5s refuses a replay after loyalty consent is withdrawn", async () => {
+    const guest = await seat();
+    await paidOrder(guest);
+    const member = await newMember();
+    const key = randomUUID();
+    expect((await as(guest, member).claim(undefined, key)).status).toBe(200);
+    const balance = await balanceOf(tenant.tenantId, member.profileId);
+    await seedConsent(tenant.tenantId, member.profileId, {
+      decision: "withdrawn",
+      recordedAt: new Date().toISOString(),
+    });
+    const replay = await as(guest, member).claim(undefined, key);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(403);
+    expect(replay.body.error.code).toBe("LOYALTY_CONSENT_REQUIRED");
+    expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(balance);
+    expect(await ledgerClaims(member.profileId)).toHaveLength(1);
+  });
+
+  it("legend-7h5s refuses a replay after membership is suspended", async () => {
+    const guest = await seat();
+    await paidOrder(guest);
+    const member = await newMember();
+    const key = randomUUID();
+    expect((await as(guest, member).claim(undefined, key)).status).toBe(200);
+    const balance = await balanceOf(tenant.tenantId, member.profileId);
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        "UPDATE customer_profiles SET membership_status = 'suspended' WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, member.profileId],
+      ),
+    );
+    const replay = await as(guest, member).claim(undefined, key);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(403);
+    expect(replay.body.error.code).toBe("MEMBER_NOT_ACTIVE");
+    expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(balance);
+    expect(await ledgerClaims(member.profileId)).toHaveLength(1);
+  });
+
+  it("legend-7h5s replays the original result when new units become available", async () => {
+    const guest = await seat();
+    await paidOrder(guest);
+    const member = await newMember();
+    const key = randomUUID();
+    const first = await as(guest, member).claim(undefined, key);
+    expect(first.status).toBe(200);
+    const before = await balanceOf(tenant.tenantId, member.profileId);
+    const rowsBefore = await ledgerClaims(member.profileId);
+    await paidOrder(guest);
+    const replay = await as(guest, member).claim(undefined, key);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(replay.body.data).toEqual(first.body.data);
+    expect(await balanceOf(tenant.tenantId, member.profileId)).toBe(before);
+    expect(await ledgerClaims(member.profileId)).toHaveLength(
+      rowsBefore.length,
+    );
+  });
+
+  it("legend-7h5s rejects reuse of a claim key by another member", async () => {
+    const guest = await seat();
+    await paidOrder(guest);
+    const member = await newMember();
+    const other = await newMember();
+    const key = randomUUID();
+    expect((await as(guest, member).claim(undefined, key)).status).toBe(200);
+    const anotherMember = await as(guest, other).claim(undefined, key);
+    expect(anotherMember.status).toBe(409);
+    expect(anotherMember.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    expect(await balanceOf(tenant.tenantId, other.profileId)).toBe(0);
+    expect(await ledgerClaims(other.profileId)).toHaveLength(0);
+
+    expect(await ledgerClaims(member.profileId)).toHaveLength(1);
   });
 
   it("another member cannot claim a unit that is already claimed", async () => {
