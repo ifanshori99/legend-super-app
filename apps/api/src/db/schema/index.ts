@@ -178,3 +178,6 @@ export * from "./wa-login-reply";
 
 // legend-2qq HPP read model (menu_costs) and its recompute queue.
 export * from "./hpp";
+export * from "./pos-deposit-refund";
+
+export * from "./reservation-deposit-remainder";

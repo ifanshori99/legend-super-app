@@ -82,10 +82,13 @@ async function windowStat(
     case "refund":
       return one(
         tx,
-        sql`select count(*)::int c, coalesce(sum(amount_idr), 0)::float8 v, max(refunded_at) m
-          from pos_order_refunds
-          where tenant_id = ${tenantId}::uuid and outlet_id = ${outletId}::uuid
-            and refunded_at >= ${from}::timestamptz and refunded_at < ${to}::timestamptz`,
+        sql`select count(*)::int c, coalesce(sum(r.amount_idr + coalesce((
+            select sum(d.amount_idr) from pos_deposit_refunds d
+             where d.tenant_id = r.tenant_id and d.pos_refund_id = r.id
+          ), 0)), 0)::float8 v, max(r.refunded_at) m
+          from pos_order_refunds r
+          where r.tenant_id = ${tenantId}::uuid and r.outlet_id = ${outletId}::uuid
+            and r.refunded_at >= ${from}::timestamptz and r.refunded_at < ${to}::timestamptz`,
       );
     case "discount":
       return one(

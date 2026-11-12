@@ -72,7 +72,6 @@ import {
   posOrderTenders,
 } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
-import { reservationDepositAllocations } from "../db/schema/reservation.ts";
 import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import {
@@ -139,6 +138,7 @@ import {
 } from "./kds-pacing.service.ts";
 import { orderRevenueSplit } from "./order-revenue.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
+import { listSessionDepositSources } from "./reservation-deposit-credit.ts";
 
 type CreateInput = z.output<typeof createPosOrderEndpoint.body>;
 type SubmitInput = z.output<typeof submitEndpoint.body>;
@@ -1205,21 +1205,12 @@ export async function completePosOrder(
       // forfeits on the same intents (payment-refund-fact-time.ts).
       const intentIds = new Set<string>();
       if (order.tableSessionId !== null) {
-        const allocations = await tx
-          .select({
-            paymentIntentId: reservationDepositAllocations.paymentIntentId,
-          })
-          .from(reservationDepositAllocations)
-          .where(
-            and(
-              eq(reservationDepositAllocations.tenantId, tenantId),
-              eq(
-                reservationDepositAllocations.tableSessionId,
-                order.tableSessionId,
-              ),
-            ),
-          );
-        for (const row of allocations) intentIds.add(row.paymentIntentId);
+        const sources = await listSessionDepositSources(
+          tx,
+          tenantId,
+          order.tableSessionId,
+        );
+        for (const row of sources) intentIds.add(row.paymentIntentId);
       }
       for (const tender of captured)
         if (tender.paymentIntentId !== null)

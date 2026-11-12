@@ -23,6 +23,9 @@ import { Router, type Request } from "express";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { idempotencyKeySchema } from "@starter/shared/core";
 import {
+  applyReservationCustomerCreditInputSchema,
+  reservationCreditParamsSchema,
+  reservationDepositRemainderSchema,
   assignReservationTables as assignEndpoint,
   cancelReservation as cancelEndpoint,
   createReservation as createEndpoint,
@@ -59,6 +62,11 @@ import {
   markReservationNoShow,
   seatReservation,
 } from "../services/reservation-lifecycle.ts";
+
+import {
+  applyReservationCustomerCredit,
+  getReservationDepositRemainders,
+} from "../services/reservation-deposit-remainder.ts";
 
 export const reservationRouter = Router();
 
@@ -260,6 +268,48 @@ reservationRouter.post(
         noShowEndpoint.body.parse(body),
         key,
       ),
+    });
+  },
+);
+
+reservationRouter.post(
+  "/outlets/:outletId/reservation-customer-credit/apply",
+  ...staff,
+  manage,
+  jsonBody,
+  async (req, res) => {
+    const { outletId } = reservationCreditParamsSchema.parse(req.params);
+    const { key, body } = takeIdempotencyKey(req);
+    const input = applyReservationCustomerCreditInputSchema.parse(body);
+    res.json({
+      data: await applyReservationCustomerCredit(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        outletId,
+        input,
+        key,
+      ),
+    });
+  },
+);
+
+reservationRouter.get(
+  "/outlets/:outletId/reservations/:reservationId/deposit-remainder",
+  ...staff,
+  view,
+  async (req, res) => {
+    const { outletId, reservationId } = getEndpoint.params.parse(req.params);
+    res.json({
+      data: reservationDepositRemainderSchema
+        .array()
+        .parse(
+          await getReservationDepositRemainders(
+            getScopedTenantContext(req),
+            getAuth(req).user.id,
+            outletId,
+            reservationId,
+          ),
+        ),
     });
   },
 );

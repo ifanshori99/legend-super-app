@@ -8,7 +8,7 @@
 // does not change an issued receipt); a snapshot without a usable address
 // refuses to print (POS-07).
 
-import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, or, sql } from "drizzle-orm";
 import { CoreError, idr, type ScopedTenantContext } from "@starter/shared/core";
 import {
   invoiceDocumentSchema,
@@ -239,8 +239,15 @@ export async function buildInvoiceDocument(
       and(
         eq(posOrderRefunds.tenantId, context.tenant.tenantId),
         eq(posOrderRefunds.orderId, invoice.orderId),
-        // A Rp0 goods return (legend-wkl3) does not make the invoice refunded.
-        gt(posOrderRefunds.amountIdr, idr(0)),
+        // A zero-tender return may refund DP to its original payer. Only a
+        // goods-only return with no durable DP obligation leaves it paid.
+        or(
+          gt(posOrderRefunds.amountIdr, idr(0)),
+          sql`EXISTS (SELECT 1 FROM pos_deposit_refunds d
+            WHERE d.tenant_id = ${posOrderRefunds.tenantId}
+              AND d.pos_refund_id = ${posOrderRefunds.id}
+              AND d.amount_idr > 0)`,
+        ),
       ),
     );
   const refunded = receipt.status === "voided" || (refunds?.count ?? 0) > 0;

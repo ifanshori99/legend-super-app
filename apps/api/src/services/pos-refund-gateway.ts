@@ -58,6 +58,8 @@ export async function requestPosRefundGatewayPart(
       amountIdr: number;
       paymentIntentId?: string | null;
     }[];
+    /** Verified Q81 releases; their original method stays on the intent. */
+    depositParts?: readonly { paymentIntentId: string; amountIdr: number }[];
     now: Date;
   },
 ): Promise<void> {
@@ -72,6 +74,12 @@ export async function requestPosRefundGatewayPart(
       byIntent.set(
         line.paymentIntentId,
         (byIntent.get(line.paymentIntentId) ?? 0) + line.amountIdr,
+      );
+  for (const part of input.depositParts ?? [])
+    if (part.amountIdr > 0)
+      byIntent.set(
+        part.paymentIntentId,
+        (byIntent.get(part.paymentIntentId) ?? 0) + part.amountIdr,
       );
   if (byIntent.size === 0) return;
   // Locks the intent rows (ascending); the order row is already held.

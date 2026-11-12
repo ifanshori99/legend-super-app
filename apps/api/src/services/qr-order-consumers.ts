@@ -67,6 +67,7 @@ import {
 import type { Tx } from "./menu-internals.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
+import { listSessionDepositSources } from "./reservation-deposit-credit.ts";
 import { pendingRefundIdr } from "./pos-order-late-payment.ts";
 import {
   requestQrDoublePaymentRefund,
@@ -698,10 +699,22 @@ export async function handleQrOrderPaymentPaid(
   const contributors = [...allocated]
     .filter(([id, amount]) => amount > 0 || id === payerIntentId)
     .map(([id]) => id);
+  const depositSources =
+    order.depositAppliedIdr > 0 && order.tableSessionId !== null
+      ? await listSessionDepositSources(
+          tx,
+          context.tenant.tenantId,
+          order.tableSessionId,
+        )
+      : [];
   const at = await lockIntentsForFact(
     tx,
     context.tenant.tenantId,
-    [payerIntentId, ...contributors],
+    [
+      payerIntentId,
+      ...contributors,
+      ...depositSources.map(({ paymentIntentId }) => paymentIntentId),
+    ],
     now,
   );
   let committedRefund = false;

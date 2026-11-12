@@ -79,6 +79,7 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
+import { lockIntentsForFact } from "../services/payment-refund-fact-time.ts";
 import { reverseJournal } from "../services/accounting-journal.service.ts";
 import {
   deliverAutoJournalEvent,
@@ -6830,5 +6831,339 @@ describe("legend-41li5 payouts with equal completedAt", () => {
       expect(result.journals).toBe(4);
       expect(result.deposit).toBe(-20_000);
     }
+  });
+});
+
+// Q81 DP goods returns restore customer_deposit before the original intent pays out.
+describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () => {
+  const T_RETURN = "2026-10-15T08:00:00.000Z";
+
+  async function returnedDeposit(
+    state: "posted" | "pending" | "reversed" = "posted",
+  ) {
+    const world = await makeWorld();
+    const dp = await seedSeatedDeposit(world, 50_000);
+    await post(world, paymentPaid(world, dp.intentId, 50_000));
+    const orderUlid = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 80_000,
+      depositIdr: 50_000,
+      tableSessionId: dp.sessionId,
+      completedAt: DAY,
+      tenders: [{ method: "cash", amountIdr: 30_000 }],
+    };
+    await seedPosOrder(world, orderUlid, sale);
+    await post(world, orderPaid(world, orderUlid, sale));
+    const posRefundId = await seedPosRefund(
+      world,
+      orderUlid,
+      [{ method: "cash", amountIdr: 15_000 }],
+      T_RETURN,
+    );
+    await asTenant(world.tenant, (client) =>
+      client.query(
+        `INSERT INTO pos_deposit_refunds
+      (tenant_id,outlet_id,order_id,pos_refund_id,payment_intent_id,amount_idr,released_at)
+      VALUES ($1,$2,$3,$4,$5,25000,$6)`,
+        [
+          world.tenant.id,
+          world.outletId,
+          ulidToUuid(orderUlid),
+          posRefundId,
+          dp.intentId,
+          T_RETURN,
+        ],
+      ),
+    );
+    const event = orderRefunded(
+      world,
+      orderUlid,
+      posRefundId,
+      {
+        grossSalesIdr: 40_000,
+        pbjtIdr: 0,
+        lines: [
+          { method: "cash", amountIdr: 15_000 },
+          { method: "qris", amountIdr: 25_000 },
+        ],
+      },
+      T_RETURN,
+    );
+    let journalId: string | null = null;
+    let outboxId: string | null = null;
+    if (state === "pending")
+      outboxId = await seedOutboxEvent(world, event, ulidToUuid(orderUlid));
+    else {
+      journalId = (await post(world, event)).journalEntryId;
+      if (state === "reversed")
+        await reverseJournal(
+          contextOf(world.tenant),
+          journalId,
+          {
+            entryDate: "2026-10-15",
+            reason: "Koreksi DP retur",
+            idempotencyKey: randomUUID(),
+          },
+          userIdSchema.parse(await seedUser()),
+        );
+    }
+    return { world, dp, event, journalId, outboxId };
+  }
+
+  it("AJ-Q81-01: return40k restores DP25k and cash15k with a balanced journal; original payer payout25k then nets liability to zero", async () => {
+    const { world, dp, journalId } = await returnedDeposit();
+    expect(await linesOf(world, journalId!)).toEqual([
+      { role: "cash_on_hand", debit: 0, credit: 15_000 },
+      { role: "customer_deposit", debit: 0, credit: 25_000 },
+      { role: "sales_revenue", debit: 40_000, credit: 0 },
+    ]);
+    await expectBalanced(world, journalId!);
+    const refundId = await seedRefund(world, dp.intentId, 25_000);
+    const payout = await post(
+      world,
+      paymentRefunded(world, refundId, dp.intentId, 25_000),
+    );
+    await expectBalanced(world, payout.journalEntryId);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-Q81-02: original payer payout25001 cannot exceed the returned DP25000", async () => {
+    const { world, dp } = await returnedDeposit();
+    const refundId = await seedRefund(world, dp.intentId, 25_001);
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, refundId, dp.intentId, 25_001),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    expect(await balanceOf(world, "customer_deposit")).toBe(-25_000);
+  });
+
+  it("AJ-Q81-03: original payer payout waits for the return journal and then posts once after that journal", async () => {
+    const { world, dp, event, outboxId } = await returnedDeposit("pending");
+    const refundId = await seedRefund(world, dp.intentId, 25_000);
+    const payoutEvent = paymentRefunded(world, refundId, dp.intentId, 25_000);
+    expect(await deliver(world.tenant, payoutEvent)).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_RECEIPT_PENDING",
+      retryable: true,
+    });
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    await markDelivered(world, outboxId!);
+    await post(world, event);
+    const result = await post(world, payoutEvent);
+    expect(await deliver(world.tenant, payoutEvent)).toEqual({
+      status: "already_posted",
+      journalEntryId: result.journalEntryId,
+    });
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-Q81-04: finance reversing the return removes its DP backing, so original payer payout cannot post", async () => {
+    const { world, dp } = await returnedDeposit("reversed");
+    const refundId = await seedRefund(world, dp.intentId, 25_000);
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, refundId, dp.intentId, 25_000),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+});
+
+// Q82 credit retains the original payer's money across table sessions.
+describe("legend-fug4 Q82 credit-backed sales share one original DP receipt cap", () => {
+  const T_OLD_SALE = "2026-10-15T06:00:00.000Z";
+  const T_USE = "2026-10-15T08:00:00.000Z";
+  const T_NEW_SALE = "2026-10-15T09:00:00.000Z";
+  async function creditMovedToAnotherSession() {
+    const world = await makeWorld();
+    const dp = await seedSeatedDeposit(world, 100_000);
+    const receipt = await post(world, paymentPaid(world, dp.intentId, 100_000));
+    const oldOrder = createUlid();
+    const oldSale: SaleAmounts = {
+      grossSalesIdr: 60_000,
+      depositIdr: 60_000,
+      tableSessionId: dp.sessionId,
+      completedAt: T_OLD_SALE,
+      tenders: [],
+    };
+    await seedPosOrder(world, oldOrder, oldSale);
+    await post(world, orderPaid(world, oldOrder, oldSale, T_OLD_SALE));
+    const destination = await seedSession(world);
+    const remainderId = randomUUID();
+    const profileId = randomUUID();
+    await asTenant(world.tenant, async (client) => {
+      await client.query(
+        `INSERT INTO customer_profiles(id,tenant_id,name,membership_status,whatsapp_verified_at)
+        VALUES($1,$2,'Pemilik saldo Q82','active',now())`,
+        [profileId, world.tenant.id],
+      );
+      await client.query(
+        `INSERT INTO reservation_deposit_remainders
+        (id,tenant_id,outlet_id,reservation_id,table_session_id,payment_intent_id,customer_profile_id,amount_idr,remaining_idr,kind,created_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,40000,0,'customer_credit',$8)`,
+        [
+          remainderId,
+          world.tenant.id,
+          world.outletId,
+          dp.reservationId,
+          dp.sessionId,
+          dp.intentId,
+          profileId,
+          T_USE,
+        ],
+      );
+      await client.query(
+        `INSERT INTO reservation_customer_credit_uses
+        (tenant_id,outlet_id,remainder_id,table_session_id,amount_idr,idempotency_key,created_at)
+        VALUES($1,$2,$3,$4,40000,$5,$6)`,
+        [
+          world.tenant.id,
+          world.outletId,
+          remainderId,
+          destination,
+          randomUUID(),
+          T_USE,
+        ],
+      );
+    });
+    return { world, dp, destination, receipt };
+  }
+
+  it("AJ-Q82-01: old sale60k and next visit credit40k consume exactly receipt100k; no additional payer payout is backed", async () => {
+    const { world, dp, destination } = await creditMovedToAnotherSession();
+    const order = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 40_000,
+      depositIdr: 40_000,
+      tableSessionId: destination,
+      completedAt: T_NEW_SALE,
+      tenders: [],
+    };
+    await seedPosOrder(world, order, sale);
+    const result = await post(world, orderPaid(world, order, sale, T_NEW_SALE));
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 40_000, credit: 0 },
+      { role: "sales_revenue", debit: 0, credit: 40_000 },
+    ]);
+    await expectBalanced(world, result.journalEntryId);
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    const refundId = await seedRefund(world, dp.intentId, 1);
+    expect(
+      await deliver(
+        world.tenant,
+        paymentRefunded(world, refundId, dp.intentId, 1),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    expect(await balanceOf(world, "customer_deposit")).toBe(0);
+  });
+
+  it("AJ-Q82-02: destination sale40001 cannot use more than credit40000 or total original DP100000", async () => {
+    const { world, destination } = await creditMovedToAnotherSession();
+    const order = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 40_001,
+      depositIdr: 40_001,
+      tableSessionId: destination,
+      completedAt: T_NEW_SALE,
+      tenders: [],
+    };
+    await seedPosOrder(world, order, sale);
+    expect(
+      await deliver(world.tenant, orderPaid(world, order, sale, T_NEW_SALE)),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    expect(await balanceOf(world, "customer_deposit")).toBe(-40_000);
+  });
+
+  it("AJ-Q82-03: reversed original receipt cannot fund a credit sale at a later visit", async () => {
+    const { world, destination, receipt } = await creditMovedToAnotherSession();
+    await reverseJournal(
+      contextOf(world.tenant),
+      receipt.journalEntryId,
+      {
+        entryDate: "2026-10-15",
+        reason: "Koreksi penerimaan DP",
+        idempotencyKey: randomUUID(),
+      },
+      userIdSchema.parse(await seedUser()),
+    );
+    const before = await balanceOf(world, "customer_deposit");
+    const order = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 40_000,
+      depositIdr: 40_000,
+      tableSessionId: destination,
+      completedAt: T_NEW_SALE,
+      tenders: [],
+    };
+    await seedPosOrder(world, order, sale);
+    expect(
+      await deliver(world.tenant, orderPaid(world, order, sale, T_NEW_SALE)),
+    ).toEqual({
+      status: "parked",
+      code: "POSTING_AMOUNTS_MISMATCH",
+      retryable: false,
+    });
+    expect(await balanceOf(world, "customer_deposit")).toBe(before);
+  });
+  it("AJ-Q82-04: a connected DP source without a posted receipt cannot inflate another source's booked credit", async () => {
+    const { world, dp, destination } = await creditMovedToAnotherSession();
+    await seedSeatedDeposit(world, 100_000, dp.sessionId);
+    const order = createUlid();
+    const sale: SaleAmounts = {
+      grossSalesIdr: 40_000,
+      depositIdr: 40_000,
+      tableSessionId: destination,
+      completedAt: T_NEW_SALE,
+      tenders: [],
+    };
+    await seedPosOrder(world, order, sale);
+    expect(
+      await deliver(world.tenant, orderPaid(world, order, sale, T_NEW_SALE)),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_DEPOSIT_CUTOVER_MIXED",
+      retryable: false,
+    });
+    expect(await balanceOf(world, "customer_deposit")).toBe(-40_000);
+  });
+  it("AJ-Q82-CLOCK-01: original DP fact clock follows a completed credit-backed destination sale", async () => {
+    const { world, dp, destination } = await creditMovedToAnotherSession();
+    const future = new Date(Date.now() + 60000).toISOString();
+    const order = createUlid();
+    await seedPosOrder(world, order, {
+      grossSalesIdr: 40000,
+      depositIdr: 40000,
+      tableSessionId: destination,
+      completedAt: future,
+      tenders: [],
+    });
+    const next = await withTenant(db, contextOf(world.tenant), (tx) =>
+      lockIntentsForFact(
+        tx,
+        tenantIdSchema.parse(world.tenant.id),
+        [dp.intentId],
+        new Date(0),
+      ),
+    );
+    expect(next.getTime()).toBeGreaterThan(new Date(future).getTime());
   });
 });

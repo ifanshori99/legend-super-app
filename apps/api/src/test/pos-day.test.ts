@@ -64,6 +64,7 @@ import { recordCashMovement } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
 import { registerTestDevice } from "./device-seed.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import { seedEconomicDepositRefund } from "./dp-economic-refund-fixture.ts";
 import {
   createIsolatedTenant,
   owner,
@@ -1621,5 +1622,48 @@ describe("POS-05 migration 0090 grants pos.day.close to existing template roles 
     await runMigrationAsOwner();
     expect(await permissionsOf(templateRoleId)).toEqual(afterFirst);
     expect(await permissionsOf(customRoleId)).toEqual(customPermissions);
+  });
+});
+
+describe("legend-77r0 Q81 DP corrections cannot disappear from a later recap", () => {
+  it("Q81-ECON-DAY-01: a DP return today for an earlier sale fails closed while recap has no deposit bucket", async () => {
+    const orderId = randomUUID();
+    const businessDate = "2037-01-15";
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO orders
+          (id,tenant_id,outlet_id,number,channel,service_type,payment_mode,
+           subtotal_idr,discount_idr,service_charge_idr,tax_idr,rounding_idr,total_idr,
+           prices_include_tax,status,business_date,placed_at,deposit_applied_idr)
+         VALUES ($1,$2,$3,$4,'pos','takeaway','pay_first',25000,0,0,0,0,25000,
+           false,'completed','2037-01-14','2037-01-14T12:00:00Z',25000)`,
+        [
+          orderId,
+          tenant.tenantId,
+          tenant.outletId,
+          `DP-DAY-${orderId.slice(0, 20)}`,
+        ],
+      );
+      await client.query(
+        `INSERT INTO pos_orders
+          (order_id,tenant_id,outlet_id,channel,cashier_id,submitted_at,completed_at)
+         VALUES ($1,$2,$3,'pos',$4,'2037-01-14T12:00:00Z','2037-01-14T12:00:01Z')`,
+        [orderId, tenant.tenantId, tenant.outletId, cashier.userId],
+      );
+      await seedEconomicDepositRefund(client, {
+        tenantId: tenant.tenantId,
+        outletId: tenant.outletId,
+        orderId,
+        tenderIdr: 0,
+        depositIdr: 25_000,
+        requestedBy: cashier.userId,
+        approvedBy: supervisor.userId,
+        refundedAt: "2037-01-15T12:00:00Z",
+      });
+    });
+    const recap = await day(manager).get(businessDate);
+    expect(recap.status, JSON.stringify(recap.body)).toBe(409);
+    expect(recap.body.error.code).toBe("CONFLICT");
+    expect(await dailyCloseRows(businessDate)).toHaveLength(0);
   });
 });

@@ -2024,6 +2024,13 @@
       "when": 1794468550505,
       "tag": "0405_public_tarantula",
       "breakpoints": true
+    },
+    {
+      "idx": 411,
+      "version": "7",
+      "when": 1794480358396,
+      "tag": "0411_deposit_refund_remainders",
+      "breakpoints": true
     }
   ]
 }

@@ -151,6 +151,8 @@ import {
 } from "./qr-order-ports.ts";
 import { listSessionSplitDtosTx } from "./bill-split.service.ts";
 import { appendQrOrderPaid } from "./qr-order-paid.ts";
+import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
+import { listSessionDepositSources } from "./reservation-deposit-credit.ts";
 import {
   buildQuote,
   loadCatalogue,
@@ -2083,7 +2085,18 @@ async function checkout(
       );
   }
 
+  let depositFactAt = now;
   if (payFirst) {
+    // Lock original receipts before depositCreditFor takes its shared
+    // refund-vs-credit advisory lock. Taking receipt rows after that lock
+    // would invert the refund writer's lock order.
+    const sources = await listSessionDepositSources(tx, tenantId, session.id);
+    depositFactAt = await lockIntentsForFact(
+      tx,
+      tenantId,
+      sources.map(({ paymentIntentId }) => paymentIntentId),
+      now,
+    );
     const credit = await depositCreditFor(tx, tenantId, session.id);
     if (credit > 0) {
       // legend-94qt: global lock order promo -> deposit (see
@@ -2194,7 +2207,7 @@ async function checkout(
     // Nothing left to pay (deposit or promotion covered it): the money is
     // already verified, so the pay-first gate is satisfied (ORD-02).
     finalOrder = await fireQrOrder(tx, context, order, {
-      now,
+      now: depositFactAt,
       reason: "deposit",
       paidIntentId: null,
     });

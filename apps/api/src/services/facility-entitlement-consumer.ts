@@ -19,7 +19,7 @@
 //
 // Net spend of a business day = sum of (subtotal - discount) of the completed,
 // non-training orders of the customer at the outlet that day, minus their
-// `pos_order_refunds` rows (read from the table, not from the event). The
+// POS tender refunds and released DP (read from the tables, not the event). The
 // closing time of an `operating_day` grant comes from the facility's operating
 // hours (end of the business date when the weekday has none).
 //
@@ -162,7 +162,7 @@ async function ordersOfDay(
   }));
 }
 
-/** Net spend of the counted orders: subtotal - discount - POS refunds. */
+/** Net spend: subtotal - discount - tender refunds - released DP. */
 async function netSpend(
   tx: Tx,
   tenantId: TenantId,
@@ -171,9 +171,15 @@ async function netSpend(
   const counted = dayOrders.filter((entry) => entry.counted);
   if (counted.length === 0) return 0;
   const gross = counted.reduce((sum, entry) => sum + entry.netIdr, 0);
+  // Keep the correlated outer identifiers explicit: Drizzle removes column
+  // qualifiers from a single-table SELECT expression, including its subquery.
   const [refunds] = await tx
     .select({
-      total: sql<string>`COALESCE(SUM(${posOrderRefunds.amountIdr}), 0)`,
+      total: sql<string>`COALESCE(SUM(${posOrderRefunds.amountIdr} + COALESCE((
+        SELECT SUM(d.amount_idr) FROM pos_deposit_refunds d
+         WHERE d.tenant_id = "pos_order_refunds"."tenant_id"
+           AND d.pos_refund_id = "pos_order_refunds"."id"
+      ), 0)), 0)`,
     })
     .from(posOrderRefunds)
     .where(

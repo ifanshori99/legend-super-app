@@ -85,10 +85,12 @@ export const RECOVERY_REFUNDS_SQL = sql`SELECT pr.tenant_id, oi.order_id,
       AND pr.requested_by = 'system:recovery'
       AND pr.status = 'completed'`;
 
-/** Refund total per order (`pos_order_refunds` plus recovery refunds), aliased `r`. */
+/** Economic returns per order: POS tenders + released DP + recovery, aliased `r`. */
 export const REFUNDS_JOIN = sql`LEFT JOIN (
     SELECT tenant_id, order_id, SUM(amount) AS amount FROM (
       SELECT tenant_id, order_id, amount_idr AS amount FROM pos_order_refunds
+      UNION ALL
+      SELECT tenant_id, order_id, amount_idr AS amount FROM pos_deposit_refunds
       UNION ALL
       SELECT tenant_id, order_id, amount FROM (${RECOVERY_REFUNDS_SQL}) rec
     ) all_refunds GROUP BY tenant_id, order_id
@@ -128,7 +130,7 @@ export type SalesDayFacts = {
   /** Active promo discount lines: order id, promo key, amount. */
   promos: { orderId: string; promo: string; amount: number }[];
   voids: { employee: string | null; amount: number }[];
-  /** Refund tender lines: order id, method, amount. */
+  /** Refund tender and original DP methods: order id, method, amount. */
   refundLines: { orderId: string; method: string | null; amount: number }[];
   target: number;
 };
@@ -194,6 +196,12 @@ async function loadFacts(
     FROM pos_order_refunds rf
     JOIN orders o ON o.tenant_id = rf.tenant_id AND o.id = rf.order_id
     CROSS JOIN LATERAL jsonb_array_elements(rf.lines) AS l(line)
+    WHERE ${scope} AND o.status = 'completed'
+    UNION ALL
+    SELECT d.order_id::text AS order_id, pi.method AS method, d.amount_idr AS amount
+    FROM pos_deposit_refunds d
+    JOIN orders o ON o.tenant_id = d.tenant_id AND o.id = d.order_id
+    JOIN payment_intents pi ON pi.tenant_id = d.tenant_id AND pi.id = d.payment_intent_id
     WHERE ${scope} AND o.status = 'completed'
     UNION ALL
     SELECT rec.order_id::text AS order_id, rec.method AS method,
