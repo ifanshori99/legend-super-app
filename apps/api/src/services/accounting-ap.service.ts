@@ -16,23 +16,29 @@
 //   (debit accounts_payable / credit bank) in the same transaction.
 
 import {
+  assertTrustedScopedContext,
   businessDateSchema,
   idempotencyKeySchema,
   idrSchema,
   outletIdSchema,
   uuidSchema,
+  userIdSchema,
   z,
   type BusinessDate,
   type ScopedTenantContext,
   type UserId,
 } from "@starter/shared/core";
 import { legalEntityIdSchema, type OpenItem } from "@starter/shared/accounting";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { journalEntries } from "../db/schema/accounting.ts";
+import { user } from "../db/schema/user.ts";
 import { suppliers, supplierInvoices } from "../db/schema/purchasing.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
-import type { TenantTransaction } from "./accounting-ap-fa-shared.ts";
+import {
+  auditApFa,
+  type TenantTransaction,
+} from "./accounting-ap-fa-shared.ts";
 import {
   recordOpenItemInTransaction,
   settleOpenItemInTransaction,
@@ -91,6 +97,7 @@ export async function recordSupplierInvoicePayableInTransaction(
         "The payable must equal DPP plus PPN minus PPh 23.",
       );
   }
+  let npwpSnapshot: string | null = null;
   if (dppIdr !== undefined) {
     // The tax record points at the invoice journal the tax reports reconcile
     // against: it must exist for this tenant and legal entity and be a
@@ -118,6 +125,38 @@ export async function recordSupplierInvoicePayableInTransaction(
         "VALIDATION_ERROR",
         "The journal entry must be a supplier invoice journal of this legal entity.",
       );
+    const [supplier] = await tx
+      .select({ npwp: suppliers.npwp })
+      .from(suppliers)
+      .where(
+        and(
+          eq(suppliers.tenantId, context.tenant.tenantId),
+          eq(suppliers.id, input.supplierId),
+        ),
+      );
+    if (!supplier)
+      throw new HttpError(422, "VALIDATION_ERROR", "Supplier not found.");
+    npwpSnapshot = supplier.npwp;
+    if (pph23Idr !== undefined && pph23Idr > 0) {
+      // A replay keeps the original identity even if the supplier master was
+      // subsequently cleared. Legacy missing snapshots require the audited repair.
+      const [stored] = await tx
+        .select({ npwpSnapshot: supplierInvoices.npwpSnapshot })
+        .from(supplierInvoices)
+        .where(
+          and(
+            eq(supplierInvoices.tenantId, context.tenant.tenantId),
+            eq(supplierInvoices.id, input.supplierInvoiceId),
+          ),
+        );
+      npwpSnapshot = stored ? stored.npwpSnapshot : supplier.npwp;
+      if ((npwpSnapshot ?? "").replace(/\D/g, "").length < 4)
+        throw new HttpError(
+          422,
+          "VALIDATION_ERROR",
+          "NPWP supplier wajib diisi sebelum faktur dengan PPh 23 diposting.",
+        );
+    }
   }
   const item = await recordOpenItemInTransaction(
     tx,
@@ -140,17 +179,6 @@ export async function recordSupplierInvoicePayableInTransaction(
     actorId,
   );
   if (dppIdr !== undefined && ppnIdr !== undefined && pph23Idr !== undefined) {
-    const [supplier] = await tx
-      .select({ npwp: suppliers.npwp })
-      .from(suppliers)
-      .where(
-        and(
-          eq(suppliers.tenantId, context.tenant.tenantId),
-          eq(suppliers.id, input.supplierId),
-        ),
-      );
-    if (!supplier)
-      throw new HttpError(422, "VALIDATION_ERROR", "Supplier not found.");
     // A replay of the same command finds its row by id and keeps it, but only
     // when every amount is the same; a second invoice with the same supplier
     // and number hits the unique key and fails.
@@ -166,7 +194,7 @@ export async function recordSupplierInvoicePayableInTransaction(
       pph23Idr,
       payableIdr: input.payableIdr,
       journalEntryId: input.journalEntryId,
-      npwpSnapshot: supplier.npwp,
+      npwpSnapshot,
     };
     const [written] = await tx
       .insert(supplierInvoices)
@@ -262,4 +290,113 @@ export async function paySupplierInvoiceInTransaction(
       return entry.id;
     },
   );
+}
+
+const repairSupplierInvoiceNpwpInputSchema = z.strictObject({
+  supplierInvoiceId: uuidSchema,
+  legalEntityId: legalEntityIdSchema,
+  reason: z.string().trim().min(10).max(1000),
+});
+
+/**
+ * Owner-only legacy repair, called by db/repair-supplier-invoice-npwp.ts.
+ * It fills an unreadable/missing tax identity only, never an amount or journal.
+ * The app role keeps its UPDATE revocation; no route exposes this port.
+ * Caller commits the repair and audit together in one owner transaction.
+ */
+export async function repairSupplierInvoiceNpwpInTransaction(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  rawInput: z.input<typeof repairSupplierInvoiceNpwpInputSchema>,
+  actorId: UserId,
+): Promise<"corrected" | "unchanged"> {
+  assertTrustedScopedContext(context);
+  if (context.outletScope.kind !== "tenant")
+    throw new HttpError(
+      403,
+      "FORBIDDEN",
+      "Legacy invoice repair requires tenant scope.",
+    );
+  const input = repairSupplierInvoiceNpwpInputSchema.parse(rawInput);
+  const actor = userIdSchema.parse(actorId);
+  const privilege = await tx.execute(sql`
+    SELECT pg_has_role(current_user, c.relowner, 'USAGE') AS allowed
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relname = 'supplier_invoices'
+  `);
+  if (privilege.rows[0]?.allowed !== true)
+    throw new HttpError(
+      403,
+      "FORBIDDEN",
+      "Legacy invoice repair requires the migration owner.",
+    );
+  const [operator] = await tx
+    .select({ id: user.id })
+    .from(user)
+    .where(eq(user.id, actor));
+  if (!operator)
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "The correction actor must be an existing user.",
+    );
+  await tx.execute(
+    sql`SELECT set_config('app.tenant_id', ${context.tenant.tenantId}, true), set_config('app.outlet_ids', '*', true)`,
+  );
+  const [invoice] = await tx
+    .select()
+    .from(supplierInvoices)
+    .where(
+      and(
+        eq(supplierInvoices.tenantId, context.tenant.tenantId),
+        eq(supplierInvoices.legalEntityId, input.legalEntityId),
+        eq(supplierInvoices.id, input.supplierInvoiceId),
+      ),
+    )
+    .for("update");
+  if (!invoice)
+    throw new HttpError(404, "NOT_FOUND", "Supplier invoice not found.");
+  if ((invoice.npwpSnapshot ?? "").replace(/\D/g, "").length >= 4)
+    return "unchanged";
+  if (invoice.pph23Idr <= 0)
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Only an invoice withholding PPh 23 needs a legacy NPWP correction.",
+    );
+  const [supplier] = await tx
+    .select({ npwp: suppliers.npwp })
+    .from(suppliers)
+    .where(
+      and(
+        eq(suppliers.tenantId, context.tenant.tenantId),
+        eq(suppliers.id, invoice.supplierId),
+      ),
+    )
+    .for("share");
+  if ((supplier?.npwp ?? "").replace(/\D/g, "").length < 4)
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Lengkapi NPWP supplier sebelum memperbaiki snapshot faktur lama.",
+    );
+  await tx
+    .update(supplierInvoices)
+    .set({ npwpSnapshot: supplier!.npwp })
+    .where(
+      and(
+        eq(supplierInvoices.tenantId, context.tenant.tenantId),
+        eq(supplierInvoices.id, invoice.id),
+      ),
+    );
+  await auditApFa(tx, context, {
+    actorId: actor,
+    action: "accounting.supplier_invoice.npwp_corrected",
+    objectType: "supplier_invoice",
+    objectId: invoice.id,
+    reason: input.reason,
+    before: { status: "missing" },
+    after: { status: "corrected" },
+  });
+  return "corrected";
 }

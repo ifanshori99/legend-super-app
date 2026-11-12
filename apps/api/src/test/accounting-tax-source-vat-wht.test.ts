@@ -354,7 +354,7 @@ async function postSupplierInvoice(world: World, seed: InvoiceSeed) {
       actor,
     ),
   );
-  return { invoiceNumber, journalEntryId };
+  return { invoiceNumber, journalEntryId, supplierInvoiceId };
 }
 
 async function ppnRule(world: World): Promise<string> {
@@ -538,14 +538,22 @@ describe("legend-v4v7c PPh 23 source", () => {
     expect(report.amountIdr).toBe(0);
   });
 
-  it("refuses the report (422 TAX_REPORT_SOURCE_UNAVAILABLE) when a withheld supplier has no NPWP", async () => {
+  it("refuses the report (422 TAX_REPORT_SOURCE_UNAVAILABLE) when a legacy withheld invoice has no NPWP snapshot", async () => {
     const world = await makeWorld();
-    const noNpwp = await makeSupplier("CV Tanpa NPWP", null);
-    await postSupplierInvoice(world, {
+    const noNpwp = await makeSupplier("CV Tanpa NPWP", "01.234.567.8-901.000");
+    const invoice = await postSupplierInvoice(world, {
       supplierId: noNpwp,
       dpp: 1_000_000,
       pph23: 20_000,
     });
+    // Only the migration owner can seed a pre-validation legacy snapshot.
+    await owner.query(
+      "UPDATE supplier_invoices SET npwp_snapshot = NULL WHERE tenant_id = $1 AND id = $2",
+      [world.tenant, invoice.supplierInvoiceId],
+    );
+    await owner.query("UPDATE suppliers SET npwp = NULL WHERE id = $1", [
+      noNpwp,
+    ]);
 
     await expectUnavailable(generate(world, "pph23"));
   });
