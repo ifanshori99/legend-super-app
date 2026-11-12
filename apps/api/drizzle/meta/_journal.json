@@ -1982,6 +1982,13 @@
       "when": 1794417100000,
       "tag": "0296_journal_posting_account_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 297,
+      "version": "7",
+      "when": 1794417200000,
+      "tag": "0297_promo_composite_fks",
+      "breakpoints": true
     }
   ]
 }

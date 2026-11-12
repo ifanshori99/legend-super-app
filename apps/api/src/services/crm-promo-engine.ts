@@ -1251,6 +1251,7 @@ export async function redeemPromotions(
     rulesSnapshot[evaluation.promotionId] = {
       conditions: raw.conditions,
       benefit: raw.benefit,
+      priority: raw.priority,
     };
   }
 

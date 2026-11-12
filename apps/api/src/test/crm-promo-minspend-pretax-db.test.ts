@@ -40,6 +40,11 @@ import {
 } from "../services/crm-promo-minspend";
 import { recomputeAfterPartialRefund } from "../services/crm-promo-refund";
 
+import {
+  seedPromoCustomer,
+  seedPromoFacilityProduct,
+} from "./crm-promo-test-helpers";
+
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const outletA = outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[0].id);
 
@@ -113,12 +118,14 @@ const minSpendPromotion = (item: string, minSpend = 100_000) =>
     { kind: "min_spend", amountIdr: minSpend },
   ]);
 
-const facilityPromotion = (item: string, minSpend = 100_000) =>
+const facilityPromotion = async (item: string, minSpend = 100_000) =>
   seedPromotion(
     item,
     {
       kind: "facility_entitlement",
-      facilityProductId: randomUUID(),
+      facilityProductId: await asOwner((client) =>
+        seedPromoFacilityProduct(client, tenantId, outletA),
+      ),
       quantity: 1,
     },
     [{ kind: "min_spend", amountIdr: minSpend }],
@@ -131,11 +138,8 @@ const priced = (item: string, unit: number): PromoLine => ({
   lineTotalIdr: idr(unit),
 });
 
-const member = (id = randomUUID()): PromoCustomer => ({
-  customerProfileId: id,
-  tierId: null,
-  isMember: true,
-});
+const member = (id = randomUUID()): Promise<PromoCustomer> =>
+  asOwner((client) => seedPromoCustomer(client, tenantId, id));
 
 /** Noon (outlet zone) `days` ahead: a fixed point inside one business day. */
 function noon(days: number): Date {
@@ -317,7 +321,7 @@ describe("U5TKD min_spend before tax and service (owner Q53)", () => {
   it("[U5TKD-4] same-day total uses the pre-tax basis, proportionally after a refund; a row without the field keeps subtotal - refunded", async () => {
     const item = randomUUID();
     const other = randomUUID();
-    const customer = member();
+    const customer = await member();
     const at = noon(3);
 
     const withBasis = redeemInput(
@@ -346,7 +350,7 @@ describe("U5TKD min_spend before tax and service (owner Q53)", () => {
   it("[U5TKD-5] same-day facility reward: a gross 120k bill with a pre-tax 90k basis does not earn the reward alone; the next 20k bill does", async () => {
     const item = randomUUID();
     const promotionId = await facilityPromotion(item, 100_000);
-    const customer = member();
+    const customer = await member();
     const at = noon(4);
     const first = await redeem(
       redeemInput([priced(item, 120_000)], {

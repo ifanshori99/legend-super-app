@@ -24,6 +24,7 @@
 import { requestMayUseStaffRoles } from "../lib/request-context";
 import {
   PERMISSION_CODES,
+  canonicalPermissionCode,
   roleAssignmentSchema,
   roleIdSchema,
   stationIdSchema,
@@ -321,17 +322,23 @@ export function resolveAccessSnapshot(
       continue;
     const role = roleById.get(assignment.roleId.toLowerCase());
     if (!role) continue;
-    for (const permission of role.permissions) permissions.add(permission);
+    for (const permission of role.permissions)
+      permissions.add(canonicalPermissionCode(permission));
     if (role.templateKey !== null) {
       templateKeys.add(role.templateKey);
       const byTemplate =
         permissionsByTemplate.get(role.templateKey) ??
         new Set<PermissionCode>();
-      for (const permission of role.permissions) byTemplate.add(permission);
+      for (const permission of role.permissions)
+        byTemplate.add(canonicalPermissionCode(permission));
       permissionsByTemplate.set(role.templateKey, byTemplate);
     }
   }
-  const effective = PERMISSION_CODES.filter((code) => permissions.has(code));
+  // Keep the accepted legacy spelling in snapshots for existing web guards;
+  // authorization still checks the originating assignment's scope and MFA.
+  const effective = PERMISSION_CODES.filter((code) =>
+    permissions.has(canonicalPermissionCode(code)),
+  );
 
   // The contract's one decision. `pos` is a device surface, so this asks the
   // permission/scope/time question without the back-office second-factor rule;
@@ -373,7 +380,11 @@ export function resolveAccessSnapshot(
   };
   const permissionsVia = (templateKey: string): PermissionCode[] => {
     const held = permissionsByTemplate.get(templateKey);
-    return held ? PERMISSION_CODES.filter((code) => held.has(code)) : [];
+    return held
+      ? PERMISSION_CODES.filter((code) =>
+          held.has(canonicalPermissionCode(code)),
+        )
+      : [];
   };
 
   const contextFor = (

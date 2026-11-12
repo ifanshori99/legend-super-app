@@ -843,6 +843,8 @@ describe("legend-9be7 refund idempotency, last item and refusals", () => {
     const sale = await promoSale();
     const stockBefore = await dailyStock();
     const failing: PromoPartialRefundPort = {
+      livePromoApplicationOf:
+        orderPromoPartialRefundPort.livePromoApplicationOf,
       recomputeAfterPartialRefund: async () => {
         throw new Error("promo port down");
       },

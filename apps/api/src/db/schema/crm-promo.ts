@@ -17,10 +17,9 @@
 // - `facility_rewards` are minimum-spend facility access rewards (WS-09 issues
 //   the entitlement from the `promo_application.redeemed` event).
 //
-// Customer profiles (legend-111j), orders (WS-04) and facility products (WS-09)
-// are not in this database yet, so those ids carry no foreign key; follow-up
-// beads add the composite keys when the tables land. Tenant RLS and outlet RLS
-// are installed in migration 0034_promo_rls.
+// Customer quota, voucher and facility reward references use composite keys
+// after customer profiles and facility products landed (legend-ba8p). Tenant
+// RLS and outlet RLS are installed in migration 0034_promo_rls.
 import { sql } from "drizzle-orm";
 import {
   boolean,
@@ -61,6 +60,8 @@ import {
   ulidInUuid,
 } from "../columns";
 import { outlets, tenants } from "./platform-org";
+import { customerProfiles } from "./crm-member";
+import { facilityProducts } from "./facility";
 import { syncTxidColumn } from "./sync-txid";
 
 const createdAt = timestamp("created_at", { withTimezone: true })
@@ -181,6 +182,11 @@ export const promotionCustomerUsage = pgTable(
       columns: [table.tenantId, table.promotionId],
       foreignColumns: [promotions.tenantId, promotions.id],
     }),
+    foreignKey({
+      name: "promotion_customer_usage_profile_fk",
+      columns: [table.tenantId, table.customerProfileId],
+      foreignColumns: [customerProfiles.tenantId, customerProfiles.id],
+    }),
     check("promotion_customer_usage_uses_check", sql`${table.uses} >= 0`),
   ],
 );
@@ -224,6 +230,12 @@ export const vouchers = pgTable(
       name: "vouchers_promotion_fk",
       columns: [table.tenantId, table.promotionId],
       foreignColumns: [promotions.tenantId, promotions.id],
+    }),
+    // Already installed by migration 0207; keep the schema snapshot aligned.
+    foreignKey({
+      name: "vouchers_profile_fk",
+      columns: [table.tenantId, table.customerProfileId],
+      foreignColumns: [customerProfiles.tenantId, customerProfiles.id],
     }),
     index("vouchers_tenant_status_idx").on(
       table.tenantId,
@@ -508,6 +520,20 @@ export const facilityRewards = pgTable(
       name: "facility_rewards_promotion_fk",
       columns: [table.tenantId, table.promotionId],
       foreignColumns: [promotions.tenantId, promotions.id],
+    }),
+    foreignKey({
+      name: "facility_rewards_profile_fk",
+      columns: [table.tenantId, table.customerProfileId],
+      foreignColumns: [customerProfiles.tenantId, customerProfiles.id],
+    }),
+    foreignKey({
+      name: "facility_rewards_product_fk",
+      columns: [table.tenantId, table.outletId, table.facilityProductId],
+      foreignColumns: [
+        facilityProducts.tenantId,
+        facilityProducts.outletId,
+        facilityProducts.id,
+      ],
     }),
     uniqueIndex("facility_rewards_order_promotion_key").on(
       table.tenantId,

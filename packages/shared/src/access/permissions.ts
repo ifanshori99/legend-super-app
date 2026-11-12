@@ -182,7 +182,6 @@ const entries = [
   ["profit_share.distribution.approve", ["finance", "approve"]],
 
   // Loyalty, CRM, promo, reservations, delivery, website (§3 Kelompok C, F17–F21)
-  ["loyalty.program.manage", []],
   ["crm.customer.view", ["customer_pii"]],
   ["crm.consent.record", []],
   ["crm.segment.manage", ["customer_pii"]],
@@ -271,7 +270,15 @@ const entries = [
   ["ops.handover.record", []],
 ] as const satisfies readonly Entry[];
 
-export type PermissionCode = (typeof entries)[number][0];
+type CanonicalPermissionCode = (typeof entries)[number][0];
+/** The old loyalty spelling remains a wire alias, never a separate grant. */
+export type PermissionCode = CanonicalPermissionCode | "loyalty.program.manage";
+
+export function canonicalPermissionCode(
+  code: PermissionCode,
+): CanonicalPermissionCode {
+  return code === "loyalty.program.manage" ? "crm.loyalty.manage" : code;
+}
 
 export type PermissionDefinition = {
   readonly code: PermissionCode;
@@ -293,22 +300,29 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] =
     ),
   );
 
-export const PERMISSION_CODES: readonly PermissionCode[] = Object.freeze(
-  PERMISSION_CATALOG.map((entry) => entry.code),
-);
+/** Known wire codes, including the legacy alias used by existing clients. */
+export const PERMISSION_CODES: readonly PermissionCode[] = Object.freeze([
+  ...PERMISSION_CATALOG.map((entry) => entry.code),
+  "loyalty.program.manage",
+]);
 
 const byCode = new Map<string, PermissionDefinition>(
   PERMISSION_CATALOG.map((entry) => [entry.code, entry]),
 );
 
 export function isPermissionCode(value: unknown): value is PermissionCode {
-  return typeof value === "string" && byCode.has(value);
+  return (
+    typeof value === "string" &&
+    byCode.has(
+      value === "loyalty.program.manage" ? "crm.loyalty.manage" : value,
+    )
+  );
 }
 
 export function permissionDefinition(
   code: PermissionCode,
 ): PermissionDefinition {
-  const definition = byCode.get(code);
+  const definition = byCode.get(canonicalPermissionCode(code));
   if (!definition) throw new RangeError(`Unknown permission code: ${code}`);
   return definition;
 }

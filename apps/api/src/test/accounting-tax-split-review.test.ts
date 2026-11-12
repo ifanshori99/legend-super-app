@@ -321,7 +321,7 @@ describe("review: 0292 backfill", () => {
   const statements = readFileSync(
     path.resolve(
       import.meta.dirname,
-      "../../drizzle/0355_tax_payable_ppn_other_roles.sql",
+      "../../drizzle/0292_tax_payable_ppn_other_roles.sql",
     ),
     "utf8",
   )

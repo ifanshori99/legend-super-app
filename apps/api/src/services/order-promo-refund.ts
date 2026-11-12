@@ -50,6 +50,7 @@ import {
 import { recordAudit } from "./core-audit";
 import { PROMO_AUDIT_SAFE_FIELDS } from "./crm-promo-engine";
 import {
+  livePromoApplicationOf,
   recomputeAfterPartialRefund,
   recordPartialRefundPayout,
   type PartialRefundInput,
@@ -310,31 +311,12 @@ export async function recomputeOrderPromoAfterPartialRefund(
   return result;
 }
 
-/**
- * The order's promo application unless it is missing or `released` (a void
- * gives the promotion back, so a released row is no longer a live promo).
- */
-export async function livePromoApplicationOf(
-  tx: Tx,
-  context: ScopedTenantContext,
-  orderId: string,
-): Promise<{ status: string } | null> {
-  assertTrustedScopedContext(context);
-  const [application] = await tx
-    .select({ status: promotionOrderApplications.status })
-    .from(promotionOrderApplications)
-    .where(
-      and(
-        eq(promotionOrderApplications.tenantId, context.tenant.tenantId),
-        eq(promotionOrderApplications.orderId, orderId),
-      ),
-    )
-    .limit(1);
-  return application && application.status !== "released" ? application : null;
-}
+// Keep the existing import path while every caller moves to the port.
+export { livePromoApplicationOf } from "./crm-promo-refund";
 
 /** Partial-refund port for the refund module (WS-04/WS-05 wiring bead). */
 export const orderPromoPartialRefundPort: PromoPartialRefundPort = {
+  livePromoApplicationOf,
   recomputeAfterPartialRefund: recomputeOrderPromoAfterPartialRefund,
   recordPartialRefundPayout,
 };
