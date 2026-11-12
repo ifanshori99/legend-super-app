@@ -1863,6 +1863,13 @@
       "when": 1794420000000,
       "tag": "0350_payroll_run_approvers_not_creator",
       "breakpoints": true
+    },
+    {
+      "idx": 280,
+      "version": "7",
+      "when": 1794420000001,
+      "tag": "0381_payroll_run_approvers_not_valid",
+      "breakpoints": true
     }
   ]
 }
