@@ -1,3 +1,4 @@
+import { useTenantContext } from "@/lib/tenant-context";
 // Printer/KDS offline alerts for the supervisor (PRD v1.7 EDG-05: a printer
 // or KDS failure is detected within 30 seconds and notifies the supervisor).
 // The hook is reusable by any ops screen; this bead wires it into the
@@ -56,7 +57,10 @@ function DeviceIcon({ type }: { type: Device["type"] }) {
 export function DeviceAlerts() {
   const t = useT();
   const now = useNowMs();
-  const { data, isPending, isError, error, refetch } = useEdgeDevices();
+  const { outlet } = useTenantContext();
+  const { data, isPending, isError, error, refetch } = useEdgeDevices({
+    outletId: outlet?.id,
+  });
   const devices = data?.data;
   useDeviceOfflineToasts(now === null ? undefined : devices);
 

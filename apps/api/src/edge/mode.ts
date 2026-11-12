@@ -132,6 +132,8 @@ function matchesPrefix(path: string, prefix: string): boolean {
  */
 export function classifyApiPath(path: string, method?: string): ApiRouteClass {
   const normalized = path.toLowerCase().replace(/\/{2,}/g, "/");
+  if (normalized === "/api/edge/devices" && method?.toUpperCase() === "GET")
+    return "edge_and_cloud";
   if (
     EDGE_ONLY_API_PREFIXES.some((prefix) => matchesPrefix(normalized, prefix))
   )

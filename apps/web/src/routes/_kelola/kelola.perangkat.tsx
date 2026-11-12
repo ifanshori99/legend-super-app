@@ -29,6 +29,7 @@ function DevicesScreen() {
   const { access } = Route.useRouteContext();
   return (
     <DeviceRegistryPage
+      outlets={access.outlets}
       canManage={holdsAny(access, ["device.registry.manage"])}
       canRevoke={holdsAny(access, ["device.registry.revoke"])}
     />

@@ -30,7 +30,7 @@ import {
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useOnline } from "@/lib/use-online";
 import { useNowMs } from "@/features/ws02-edge/use-now";
-import { useEdgeDevices, useOutlets, useRevokedOverlay } from "../hooks.ts";
+import { useEdgeDevices, useRevokedOverlay } from "../hooks.ts";
 import {
   ALL,
   DEVICE_TYPES,
@@ -55,17 +55,19 @@ import { TrainingSwitch } from "./training-control.tsx";
 export function DeviceRegistryPage({
   canManage,
   canRevoke,
+  outlets,
 }: {
+  outlets: readonly { id: string; name: string }[];
   canManage: boolean;
   canRevoke: boolean;
 }) {
   const t = useT();
   const online = useOnline();
   const viewerNowMs = useNowMs();
-  const query = useEdgeDevices();
-  const outlets = useOutlets();
   const revoked = useRevokedOverlay();
   const [filters, setFilters] = React.useState<RegistryFilters>(EMPTY_FILTERS);
+  const outletId = filters.outletId === ALL ? outlets[0]?.id : filters.outletId;
+  const query = useEdgeDevices({ outletId, enabled: Boolean(outletId) });
   const [openId, setOpenId] = React.useState<string | null>(null);
   const [revokeId, setRevokeId] = React.useState<string | null>(null);
   const [enrollOpen, setEnrollOpen] = React.useState(false);
@@ -78,8 +80,8 @@ export function DeviceRegistryPage({
     [query.data, revoked],
   );
   const options = React.useMemo(
-    () => outletOptions(outlets.data?.data ?? [], devices),
-    [outlets.data, devices],
+    () => outletOptions(outlets, devices),
+    [outlets, devices],
   );
   const outletName = React.useCallback(
     (id: string) => {
@@ -93,7 +95,10 @@ export function DeviceRegistryPage({
   );
   // Heartbeat age is measured on the edge clock, not only the viewer's.
   const offsetMs = React.useMemo(
-    () => serverClockOffsetMs(query.data?.data ?? [], query.dataUpdatedAt),
+    () =>
+      query.data
+        ? serverClockOffsetMs(query.data.meta.serverTime, query.dataUpdatedAt)
+        : 0,
     [query.data, query.dataUpdatedAt],
   );
   const nowMs = viewerNowMs === null ? null : viewerNowMs + offsetMs;
@@ -106,20 +111,21 @@ export function DeviceRegistryPage({
   const revokeTarget = devices.find((d) => d.id === revokeId) ?? null;
   const reissueTarget = devices.find((d) => d.id === reissueId) ?? null;
 
-  const state: DataState = query.isPending
-    ? "loading"
-    : query.isError
-      ? "error"
-      : devices.length === 0
-        ? "empty"
-        : "ready";
+  const state: DataState =
+    Boolean(outletId) && query.isPending
+      ? "loading"
+      : query.isError
+        ? "error"
+        : devices.length === 0
+          ? "empty"
+          : "ready";
   const set = (patch: Partial<RegistryFilters>) =>
     setFilters((current) => ({ ...current, ...patch }));
 
   const filterControls = (
     <div className="flex flex-col gap-2 sm:flex-row">
       <Select
-        value={filters.outletId}
+        value={outletId ?? ""}
         onValueChange={(v) => set({ outletId: v })}
       >
         <SelectTrigger
@@ -129,9 +135,6 @@ export function DeviceRegistryPage({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value={ALL}>
-            {t("deviceRegistry.filters.allOutlets")}
-          </SelectItem>
           {options.map((o) => (
             <SelectItem key={o.id} value={o.id}>
               {outletName(o.id)}
@@ -254,6 +257,7 @@ export function DeviceRegistryPage({
         }}
         actions={filterControls}
         onRetry={() => void query.refetch()}
+        error={query.error}
         empty={{
           title: t("deviceRegistry.empty.title"),
           description: t("deviceRegistry.empty.hint"),
@@ -388,10 +392,8 @@ export function DeviceRegistryPage({
       />
       <EnrollDialog
         open={enrollOpen}
-        outlets={outlets.data?.data ?? []}
-        defaultOutletId={
-          filters.outletId === ALL ? undefined : filters.outletId
-        }
+        outlets={outlets}
+        defaultOutletId={outletId}
         onOpenChange={setEnrollOpen}
         onEnrolled={setIssued}
       />

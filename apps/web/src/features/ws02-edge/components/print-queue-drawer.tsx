@@ -1,3 +1,4 @@
+import { useTenantContext } from "@/lib/tenant-context";
 // Print queue drawer with reprint (PRD v1.7 §3 F5 "Print Agent": antrean
 // cetak, cetak ulang, peringatan printer offline). Shared by POS/KDS screens
 // as-is: the trigger owns the drawer state, so a shell only renders
@@ -79,7 +80,11 @@ export function PrintQueueDrawer({
   const t = useT();
   const toast = useToast();
   const queue = usePrintQueue(open);
-  const devices = useEdgeDevices();
+  const { outlet } = useTenantContext();
+  const devices = useEdgeDevices({
+    outletId: outlet?.id,
+    enabled: open,
+  });
   const reprint = useReprintPrintJob();
   const retry = useRetryPrintJob();
 

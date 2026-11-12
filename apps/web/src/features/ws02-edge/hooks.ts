@@ -56,10 +56,13 @@ export function useCloudConnection(options?: { enabled?: boolean }): boolean {
   });
 }
 
-export function useEdgeDevices() {
+export function useEdgeDevices(options?: {
+  outletId?: string;
+  enabled?: boolean;
+}) {
   return useQuery({
-    ...edgeDevicesQuery(),
-    enabled: typeof window !== "undefined",
+    ...edgeDevicesQuery({ limit: 25, outletId: options?.outletId }),
+    enabled: typeof window !== "undefined" && (options?.enabled ?? true),
   });
 }
 

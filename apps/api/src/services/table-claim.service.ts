@@ -61,7 +61,10 @@ import {
 } from "./member-profile.service.ts";
 import { postLedgerEntry } from "./point-ledger.service.ts";
 import { lockOrdersForClaim } from "./table-claim-lock.ts";
-import { lockGuestSessionForPayment } from "./qr-order.service.ts";
+import {
+  lockGuestSessionForPayment,
+  qrOrderIdempotent,
+} from "./qr-order.service.ts";
 
 type SessionRow = typeof tableSessions.$inferSelect;
 
@@ -696,7 +699,7 @@ export async function claimSessionPoints(
   context: ScopedTenantContext,
   credential: string,
   sessionId: string,
-  input: { claimToken?: string; userId: string | null },
+  input: { claimToken?: string; userId: string | null; idempotencyKey: string },
   now = new Date(),
 ): Promise<PointClaim> {
   const { userId } = input;
@@ -719,119 +722,131 @@ export async function claimSessionPoints(
         "MEMBER_PROFILE_REQUIRED",
         "Daftar jadi member dulu untuk mengklaim poin.",
       );
-    // legend-ec6fa: lock the orders of the units first (shared, ascending id),
-    // then the profile, the same order the earn consumer's reversal takes
-    // them. The units are not known before the profile is locked, so read
-    // them once to learn the orders; they are read again under the lock.
-    const lockedOrders = new Set(
-      (await loadUnits(tx, tenantId, session.id, input.claimToken)).map(
-        (unit) => unit.orderId,
-      ),
-    );
-    await lockOrdersForClaim(tx, tenantId, lockedOrders);
-    await withProfileLock(tx, tenantId, found.id);
-    // Typed re-read under the lock, as the earn consumer does.
-    const [profile] = await tx
-      .select()
-      .from(customerProfiles)
-      .where(
-        and(
-          eq(customerProfiles.tenantId, tenantId),
-          eq(customerProfiles.id, found.id),
-        ),
-      );
-    if (!profile || profile.membershipStatus !== "active")
-      throw new HttpError(
-        403,
-        "MEMBER_NOT_ACTIVE",
-        "Keanggotaanmu belum aktif, jadi poin belum bisa diklaim.",
-      );
-    if (profile.whatsappVerifiedAt === null)
-      throw new HttpError(
-        403,
-        "MEMBER_WHATSAPP_UNVERIFIED",
-        "Verifikasi nomor WhatsApp dulu untuk mengklaim poin.",
-      );
-    if (!(await loyaltyConsentActive(tx, tenantId, profile.id, now)))
-      throw new HttpError(
-        403,
-        "LOYALTY_CONSENT_REQUIRED",
-        "Setujui program poin dulu untuk mengklaim poin.",
-      );
-
-    const program = await loadProgram(tx, tenantId);
-    // A unit that appeared after the order locks (its order is not locked)
-    // waits for the guest's next request.
-    const units = (
-      await loadUnits(tx, tenantId, session.id, input.claimToken)
-    ).filter((unit) => lockedOrders.has(unit.orderId));
-    const open = units.filter((unit) => isOpen(unit, now));
-    const plan = await planPoints(tx, tenantId, program, profile, open);
-    const toClaim = open.filter((unit) => (plan.get(unit.id) ?? 0) > 0);
-
-    if (toClaim.length === 0) {
-      // Nothing left to take: ok only if this member already took something
-      // of this request (a repeat); never another member's claim.
-      const redeemedIds = units
-        .filter((unit) => unit.redeemedAt !== null)
-        .map((unit) => unit.id);
-      const mine = await ownClaims(tx, tenantId, profile.id, redeemedIds);
-      if (mine.size === 0) throw notAvailable();
-    }
-
-    const expiryMonths = program?.expiryMonths ?? 0;
-    let lost = false;
-    for (const unit of toClaim) {
-      const points = plan.get(unit.id) ?? 0;
-      const redeemed =
-        unit.kind === "split"
-          ? await redeemSplit(tx, tenantId, unit.id, now)
-          : await redeemOrder(tx, tenantId, unit.id, now);
-      if (!redeemed) {
-        lost = true;
-        continue;
-      }
-      // The ledger event is tenant-wide (the member earns at many outlets),
-      // and the guest context is outlet-scoped: post under a tenant-wide one.
-      await postLedgerEntry(
-        tx,
-        memberTenantContext(tenantId),
-        {
-          tenantId,
-          customerProfileId: profile.id,
-          outletId: unit.outletId,
-          type: "earn",
-          points,
-          sourceType: LEDGER_SOURCE,
-          sourceId: unit.id,
-          expiresAt: addMonthsUtc(unit.paidAt, expiryMonths),
-          businessDate: unit.businessDate,
-        },
-        now,
-      );
-    }
-
-    // A unit taken by a concurrent claim is a conflict: roll the request back
-    // so this member never reports (or keeps) a part of someone else's claim.
-    if (lost) throw notAvailable();
-
-    const after = await loadUnits(tx, tenantId, session.id, input.claimToken);
-    const result = await buildClaim(
+    const checkedProfile = async () => {
+      const profile = await withProfileLock(tx, tenantId, found.id);
+      if (profile.membershipStatus !== "active")
+        throw new HttpError(
+          403,
+          "MEMBER_NOT_ACTIVE",
+          "Keanggotaanmu belum aktif, jadi poin belum bisa diklaim.",
+        );
+      if (profile.whatsappVerifiedAt === null)
+        throw new HttpError(
+          403,
+          "MEMBER_WHATSAPP_UNVERIFIED",
+          "Verifikasi nomor WhatsApp dulu untuk mengklaim poin.",
+        );
+      if (!(await loyaltyConsentActive(tx, tenantId, profile.id, now)))
+        throw new HttpError(
+          403,
+          "LOYALTY_CONSENT_REQUIRED",
+          "Setujui program poin dulu untuk mengklaim poin.",
+        );
+      return profile;
+    };
+    const claim = await qrOrderIdempotent(
       tx,
-      tenantId,
-      session.id,
-      after,
-      program,
-      profile,
-      userId,
-      now,
+      context,
+      { sessionId: session.id, outletId: session.outletId },
+      input.idempotencyKey,
+      "points.claim",
+      { userId, claimToken: input.claimToken ?? null },
+      async () => {
+        // legend-ec6fa: lock the orders of the units first (shared, ascending id),
+        // then the profile, the same order the earn consumer's reversal takes
+        // them. The units are not known before the profile is locked, so read
+        // them once to learn the orders; they are read again under the lock.
+        const lockedOrders = new Set(
+          (await loadUnits(tx, tenantId, session.id, input.claimToken)).map(
+            (unit) => unit.orderId,
+          ),
+        );
+        await lockOrdersForClaim(tx, tenantId, lockedOrders);
+        const profile = await checkedProfile();
+
+        const program = await loadProgram(tx, tenantId);
+        // A unit that appeared after the order locks (its order is not locked)
+        // waits for the guest's next request.
+        const units = (
+          await loadUnits(tx, tenantId, session.id, input.claimToken)
+        ).filter((unit) => lockedOrders.has(unit.orderId));
+        const open = units.filter((unit) => isOpen(unit, now));
+        const plan = await planPoints(tx, tenantId, program, profile, open);
+        const toClaim = open.filter((unit) => (plan.get(unit.id) ?? 0) > 0);
+
+        if (toClaim.length === 0) {
+          // Nothing left to take: ok only if this member already took something
+          // of this request (a repeat); never another member's claim.
+          const redeemedIds = units
+            .filter((unit) => unit.redeemedAt !== null)
+            .map((unit) => unit.id);
+          const mine = await ownClaims(tx, tenantId, profile.id, redeemedIds);
+          if (mine.size === 0) throw notAvailable();
+        }
+
+        const expiryMonths = program?.expiryMonths ?? 0;
+        let lost = false;
+        for (const unit of toClaim) {
+          const points = plan.get(unit.id) ?? 0;
+          const redeemed =
+            unit.kind === "split"
+              ? await redeemSplit(tx, tenantId, unit.id, now)
+              : await redeemOrder(tx, tenantId, unit.id, now);
+          if (!redeemed) {
+            lost = true;
+            continue;
+          }
+          // The ledger event is tenant-wide (the member earns at many outlets),
+          // and the guest context is outlet-scoped: post under a tenant-wide one.
+          await postLedgerEntry(
+            tx,
+            memberTenantContext(tenantId),
+            {
+              tenantId,
+              customerProfileId: profile.id,
+              outletId: unit.outletId,
+              type: "earn",
+              points,
+              sourceType: LEDGER_SOURCE,
+              sourceId: unit.id,
+              expiresAt: addMonthsUtc(unit.paidAt, expiryMonths),
+              businessDate: unit.businessDate,
+            },
+            now,
+          );
+        }
+
+        // A unit taken by a concurrent claim is a conflict: roll the request back
+        // so this member never reports (or keeps) a part of someone else's claim.
+        if (lost) throw notAvailable();
+
+        const after = await loadUnits(
+          tx,
+          tenantId,
+          session.id,
+          input.claimToken,
+        );
+        const result = await buildClaim(
+          tx,
+          tenantId,
+          session.id,
+          after,
+          program,
+          profile,
+          userId,
+          now,
+        );
+        // Every unit that could be taken was taken in this transaction (or by a
+        // concurrent claim that won the row): a request that took nothing is a
+        // conflict, not a result.
+        if (toClaim.length > 0 && result.status === "unavailable")
+          throw notAvailable();
+        return result;
+      },
     );
-    // Every unit that could be taken was taken in this transaction (or by a
-    // concurrent claim that won the row): a request that took nothing is a
-    // conflict, not a result.
-    if (toClaim.length > 0 && result.status === "unavailable")
-      throw notAvailable();
-    return result;
+    // A replay must still satisfy the current member and consent checks.
+    await checkedProfile();
+    return claim;
   });
 }
 

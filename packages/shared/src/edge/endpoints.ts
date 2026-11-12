@@ -12,6 +12,7 @@ import {
   z,
   clientInputSchema,
   cursorPageQuerySchema,
+  cursorPageMetaSchema,
   cursorPageSchema,
   dataResponseSchema,
   idempotencyKeySchema,
@@ -197,11 +198,18 @@ export type DeviceListQuery = z.infer<typeof deviceListQuerySchema>;
  * Perangkat). The connectivity kit reads heartbeats to alert supervisors when
  * a printer or KDS stops reporting (EDG-05).
  */
+export const edgeDeviceListQuerySchema = deviceListQuerySchema.extend({
+  outletId: outletIdSchema.optional(),
+});
+
 export const listEdgeDevices = defineEndpoint({
   method: "GET",
   path: "/api/edge/devices",
-  query: deviceListQuerySchema,
-  response: cursorPageSchema(deviceSchema),
+  query: edgeDeviceListQuerySchema,
+  response: z.object({
+    data: z.array(deviceSchema),
+    meta: cursorPageMetaSchema.extend({ serverTime: isoDateTimeSchema }),
+  }),
 });
 
 export const deviceParams = z.strictObject({ deviceId: uuidSchema });
@@ -266,6 +274,9 @@ export const revokeDevice = defineEndpoint({
   }),
   response: dataResponseSchema(deviceSchema),
 });
+
+/** Shared name used by the edge device registry panel. */
+export const revokeEdgeDevice = revokeDevice;
 
 /**
  * Training mode is per device and sandboxed from reports (F5 Mode Latihan).
