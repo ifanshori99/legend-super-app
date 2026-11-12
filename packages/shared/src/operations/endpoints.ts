@@ -58,6 +58,8 @@ import {
   opsChecklistItemIdSchema,
   opsChecklistRunIdSchema,
   opsChecklistTemplateIdSchema,
+  prepItemSettingSchema,
+  shelfLifeMinutesSchema,
   prepLabelIdSchema,
   prepLabelSchema,
   prepListSchema,
@@ -98,6 +100,11 @@ export const temperatureLogListQuerySchema = cursorPageQuerySchema.extend({
   /** Recorded on or after this instant. */
   from: isoDateTimeSchema.optional(),
   to: isoDateTimeSchema.optional(),
+});
+
+export const prepItemSettingListQuerySchema = cursorPageQuerySchema.extend({
+  outletId: outletIdSchema,
+  inventoryItemId: inventoryItemIdSchema.optional(),
 });
 
 export const prepLabelListQuerySchema = cursorPageQuerySchema.extend({
@@ -212,12 +219,19 @@ export const createTemperatureLogInputSchema = clientInputSchema({
   idempotencyKey: idempotencyKeySchema,
 });
 
+export const putPrepItemSettingInputSchema = clientInputSchema({
+  outletId: outletIdSchema,
+  shelfLifeMinutes: shelfLifeMinutesSchema,
+  idempotencyKey: idempotencyKeySchema,
+});
+
 export const createPrepLabelInputSchema = clientInputSchema({
   outletId: outletIdSchema,
   inventoryItemId: inventoryItemIdSchema,
   batchId: stockBatchIdSchema,
   producedAt: isoDateTimeSchema,
-  useBy: isoDateTimeSchema,
+  /** Optional compatibility assertion; the server calculates the expiry. */
+  useBy: isoDateTimeSchema.optional(),
   idempotencyKey: idempotencyKeySchema,
 });
 
@@ -363,6 +377,21 @@ export const listTemperatureLogs = defineEndpoint({
   path: "/api/operations/temperature-logs",
   query: temperatureLogListQuerySchema,
   response: cursorPageSchema(temperatureLogSchema),
+});
+
+export const listPrepItemSettings = defineEndpoint({
+  method: "GET",
+  path: "/api/operations/prep-item-settings",
+  query: prepItemSettingListQuerySchema,
+  response: cursorPageSchema(prepItemSettingSchema),
+});
+
+export const putPrepItemSetting = defineEndpoint({
+  method: "PUT",
+  path: "/api/operations/prep-item-settings/:inventoryItemId",
+  params: z.strictObject({ inventoryItemId: inventoryItemIdSchema }),
+  body: putPrepItemSettingInputSchema,
+  response: dataResponseSchema(prepItemSettingSchema),
 });
 
 export const listPrepLabels = defineEndpoint({
@@ -597,6 +626,7 @@ export const operationsEndpoints = [
   listChecklistRuns,
   getChecklistRun,
   listTemperatureLogs,
+  listPrepItemSettings,
   listPrepLabels,
   listPrepLists,
   getPrepList,
@@ -613,6 +643,7 @@ export const operationsEndpoints = [
   recordChecklistItemResult,
   postChecklistRunTransition,
   createTemperatureLog,
+  putPrepItemSetting,
   createPrepLabel,
   printPrepLabel,
   createPrepList,

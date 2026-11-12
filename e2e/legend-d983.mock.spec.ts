@@ -85,7 +85,7 @@ test("OPS-02 an out-of-range reading cannot be saved without a corrective action
   await expect(rows).toHaveCount(before + 1);
 });
 
-test("OPS-03 a prep label shows use-by and batch, prints, and expired labels alert", async ({
+test("legend-do1o OPS-03 a saved prep shelf life derives use-by across midnight and the label prints with its batch", async ({
   page,
 }) => {
   await stubPrint(page);
@@ -105,9 +105,23 @@ test("OPS-03 a prep label shows use-by and batch, prints, and expired labels ale
   await form.getByLabel("Batch inventori").click();
   await page.getByRole("option", { name: "KEJU-1101" }).click();
 
+  const shelfLife = form.getByLabel("Masa simpan bahan prep (menit)");
+  await expect(shelfLife).toBeEnabled();
+  await shelfLife.fill("90");
+  await form.getByRole("button", { name: "Simpan masa simpan" }).click();
+  await expect(
+    page.getByText("Masa simpan bahan prep disimpan."),
+  ).toBeVisible();
+  const production = form.getByLabel("Waktu produksi");
+  const day = (await production.inputValue()).slice(0, 10);
+  const nextDay = new Date(Date.parse(`${day}T00:00:00.000Z`) + 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  await production.fill(`${day}T23:30`);
   const useBy = form.getByLabel("Batas pakai");
-  await expect(useBy).not.toHaveValue("");
-  await expect(form).toContainText("Disarankan dari kedaluwarsa batch");
+  await expect(useBy).toHaveJSProperty("readOnly", true);
+  await expect(useBy).toHaveValue(`${nextDay}T01:00`);
+  await expect(form).toContainText("Dihitung 90 menit setelah waktu produksi");
 
   await page.getByRole("button", { name: "Buat label" }).click();
   const preview = page.locator('[data-slot="prep-label-preview"]');

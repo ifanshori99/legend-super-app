@@ -193,6 +193,10 @@ afterAll(async () => {
       await client.query("DELETE FROM prep_labels WHERE id = ANY($1)", [
         createdPrepLabelIds,
       ]);
+    await client.query(
+      "DELETE FROM prep_item_settings WHERE tenant_id = $1 AND inventory_item_id = $2",
+      [tenant.id, inventoryItemId],
+    );
     await client.query("DELETE FROM temperature_logs WHERE equipment_id = $1", [
       equipmentId,
     ]);
@@ -1009,6 +1013,16 @@ describe("Operations food-safety and prep (legend-btha)", () => {
   });
 
   it("[legend-btha][OPS-03] creates a prep label for a batch and lists it by outlet", async () => {
+    const configured = await staff.client
+      .put(`/api/operations/prep-item-settings/${inventoryItemId}`)
+      .set(originHeader)
+      .send({
+        outletId: outletA.id,
+        shelfLifeMinutes: 90,
+        idempotencyKey: key(),
+      });
+    expect(configured.status, JSON.stringify(configured.body)).toBe(200);
+    const producedAt = new Date(Date.now() - 60_000).toISOString();
     const created = await staff.client
       .post("/api/operations/prep-labels")
       .set(originHeader)
@@ -1016,8 +1030,7 @@ describe("Operations food-safety and prep (legend-btha)", () => {
         outletId: outletA.id,
         inventoryItemId,
         batchId,
-        producedAt: new Date(Date.now() - 60_000).toISOString(),
-        useBy: new Date(Date.now() + 3 * 86_400_000).toISOString(),
+        producedAt,
         idempotencyKey: key(),
       });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
@@ -1025,6 +1038,9 @@ describe("Operations food-safety and prep (legend-btha)", () => {
     createdPrepLabelIds.push(created.body.data.id as string);
     expect(created.body.data.producedBy).toBe(staff.userId);
     expect(created.body.data.printedAt).toBeNull();
+    expect(created.body.data.useBy).toBe(
+      new Date(Date.parse(producedAt) + 90 * 60_000).toISOString(),
+    );
 
     const listed = await staff.client.get(
       `/api/operations/prep-labels?outletId=${outletA.id}&limit=50`,

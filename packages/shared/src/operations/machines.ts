@@ -20,6 +20,7 @@ import { OperationsError } from "./errors.ts";
 import {
   checklistItemResultIssues,
   isTemperatureInRange,
+  shelfLifeMinutesSchema,
   shiftHandoverSchema,
   temperatureThresholdSchema,
 } from "./schemas.ts";
@@ -196,6 +197,23 @@ export function assertTemperatureLogAllowed(
 }
 
 // ---- Prep labels (OPS-03) ------------------------------------------------
+
+/** Add the configured elapsed duration to an ISO production instant. The UI
+ * converts from/to the outlet wall clock at its boundary; UTC arithmetic
+ * preserves the configured lifetime across midnight and DST transitions. */
+export function calculatePrepUseBy(
+  producedAtIso: string,
+  shelfLifeMinutes: number | null,
+): IsoDateTime | null {
+  const produced = isoDateTimeSchema.safeParse(producedAtIso);
+  const lifetime = shelfLifeMinutesSchema.safeParse(shelfLifeMinutes);
+  if (!produced.success || !lifetime.success) return null;
+  const at = new Date(Date.parse(produced.data) + lifetime.data * MINUTE);
+  if (!Number.isFinite(at.getTime())) return null;
+  const parsed = isoDateTimeSchema.safeParse(at.toISOString());
+  return parsed.success ? parsed.data : null;
+}
+
 /** OPS-03: a label past its use-by appears in the expiry alerts. */
 export function isPrepLabelExpired(
   prepLabel: Pick<PrepLabel, "useBy">,

@@ -377,6 +377,50 @@ export const temperatureLogs = pgTable(
 
 // -------------------------------------------------------------- prep
 
+/** Per-outlet prep lifetime, owned by operations rather than inventory. */
+export const prepItemSettings = pgTable(
+  "prep_item_settings",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    inventoryItemId: uuid("inventory_item_id").notNull(),
+    shelfLifeMinutes: integer("shelf_life_minutes").notNull(),
+    updatedAt,
+    updatedBy: text("updated_by")
+      .$type<UserId>()
+      .notNull()
+      .references(() => user.id),
+  },
+  (table) => [
+    unique("prep_item_settings_tenant_outlet_item_key").on(
+      table.tenantId,
+      table.outletId,
+      table.inventoryItemId,
+    ),
+    foreignKey({
+      name: "prep_item_settings_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    foreignKey({
+      name: "prep_item_settings_item_fk",
+      columns: [table.tenantId, table.inventoryItemId],
+      foreignColumns: [inventoryItems.tenantId, inventoryItems.id],
+    }),
+    index("prep_item_settings_tenant_outlet_updated_idx").on(
+      table.tenantId,
+      table.outletId,
+      table.updatedAt,
+      table.id,
+    ),
+    check(
+      "prep_item_settings_lifetime_check",
+      sql`${table.shelfLifeMinutes} > 0`,
+    ),
+  ],
+);
+
 /** §6 L `prep_labels`: production label linked to its inventory batch. */
 export const prepLabels = pgTable(
   "prep_labels",

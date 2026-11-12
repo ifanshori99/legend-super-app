@@ -1940,6 +1940,13 @@
       "when": 1794451493865,
       "tag": "0386_shift_handover_close",
       "breakpoints": true
+    },
+    {
+      "idx": 387,
+      "version": "7",
+      "when": 1794451816536,
+      "tag": "0387_prep_item_shelf_life",
+      "breakpoints": true
     }
   ]
 }

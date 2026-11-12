@@ -10,16 +10,19 @@ import {
 } from "@starter/shared/inventory";
 import {
   listEquipment,
+  listPrepItemSettings,
   listPrepLabels,
   listPrepLists,
   listTemperatureLogs,
   postPrepListTransition,
   printPrepLabel,
+  putPrepItemSetting,
 } from "@starter/shared/operations";
 import * as api from "./api.ts";
 import {
   equipmentQuery,
   inventoryItemsQuery,
+  prepItemSettingsQuery,
   prepLabelsQuery,
   prepListQuery,
   prepListsQuery,
@@ -61,6 +64,20 @@ export function useTemperatureEquipment(
   return useQuery({
     ...equipmentQuery({ ...query, outletId: outletId ?? "" }),
     enabled: Boolean(outletId),
+  });
+}
+
+export function usePrepItemSetting(
+  outletId: string | undefined,
+  inventoryItemId: string | undefined,
+) {
+  return useQuery({
+    ...prepItemSettingsQuery({
+      outletId: outletId ?? "",
+      inventoryItemId,
+      limit: 1,
+    }),
+    enabled: Boolean(outletId && inventoryItemId),
   });
 }
 
@@ -121,6 +138,17 @@ export function useCreateTemperatureLog() {
 }
 
 // ---- Prep labels (OPS-03) ------------------------------------------------
+
+export function usePutPrepItemSetting() {
+  const refresh = useInvalidate([listPrepItemSettings]);
+  return useMutation({
+    mutationFn: (variables: {
+      params: Params<typeof putPrepItemSetting>;
+      body: Body<typeof putPrepItemSetting>;
+    }) => api.putPrepItemSetting(variables.params, variables.body),
+    onSuccess: () => refresh(),
+  });
+}
 
 export function useCreatePrepLabel() {
   const refresh = useInvalidate([listPrepLabels]);

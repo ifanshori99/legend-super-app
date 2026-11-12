@@ -17,11 +17,13 @@ import {
   createTemperatureLog as createTemperatureLogEndpoint,
   getPrepList as getPrepListEndpoint,
   listEquipment as listEquipmentEndpoint,
+  listPrepItemSettings as listPrepItemSettingsEndpoint,
   listPrepLabels as listPrepLabelsEndpoint,
   listPrepLists as listPrepListsEndpoint,
   listTemperatureLogs as listTemperatureLogsEndpoint,
   postPrepListTransition as postPrepListTransitionEndpoint,
   printPrepLabel as printPrepLabelEndpoint,
+  putPrepItemSetting as putPrepItemSettingEndpoint,
 } from "@starter/shared/operations";
 import { callEndpoint } from "@/lib/api/endpoint";
 
@@ -44,6 +46,15 @@ export const listTemperatureLogs = (
 export const createTemperatureLog = (
   body: Body<typeof createTemperatureLogEndpoint>,
 ) => callEndpoint(createTemperatureLogEndpoint, { body });
+
+export const listPrepItemSettings = (
+  query: Query<typeof listPrepItemSettingsEndpoint>,
+) => callEndpoint(listPrepItemSettingsEndpoint, { query });
+
+export const putPrepItemSetting = (
+  params: Params<typeof putPrepItemSettingEndpoint>,
+  body: Body<typeof putPrepItemSettingEndpoint>,
+) => callEndpoint(putPrepItemSettingEndpoint, { params, body });
 
 export const listPrepLabels = (query: Query<typeof listPrepLabelsEndpoint>) =>
   callEndpoint(listPrepLabelsEndpoint, { query });

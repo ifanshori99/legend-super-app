@@ -47,3 +47,8 @@ SELECT app.enforce_outlet_rls('public.shift_handovers'::regclass);
 SELECT app.enforce_tenant_rls('public.operations_idempotency'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.operations_idempotency'::regclass);
+
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.prep_item_settings'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.prep_item_settings'::regclass);

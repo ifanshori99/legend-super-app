@@ -51,23 +51,28 @@ import {
   type TenantId,
 } from "@starter/shared/core";
 import {
+  calculatePrepUseBy,
   createPrepLabel as createPrepLabelEndpoint,
   createPrepList as createPrepListEndpoint,
   createTemperatureLog as createTemperatureLogEndpoint,
   isTemperatureInRange,
+  listPrepItemSettings as listPrepItemSettingsEndpoint,
   listPrepLabels as listPrepLabelsEndpoint,
   listPrepLists as listPrepListsEndpoint,
   listTemperatureLogs as listTemperatureLogsEndpoint,
   OperationsError,
   operationsEvents,
+  prepItemSettingSchema,
   prepLabelSchema,
   prepListLineSchema,
   prepListSchema,
   printPrepLabel as printPrepLabelEndpoint,
   postPrepListTransition as postPrepListTransitionEndpoint,
+  putPrepItemSetting as putPrepItemSettingEndpoint,
   temperatureLogSchema,
   temperatureThresholdSchema,
   transitionPrepList as transitionPrepListMachine,
+  type PrepItemSetting,
   type PrepLabel,
   type PrepList,
   type PrepListLine,
@@ -77,6 +82,7 @@ import { db } from "../db/index.ts";
 import { inventoryItems, stockBatches } from "../db/schema/inventory.ts";
 import {
   equipment,
+  prepItemSettings,
   prepLabels,
   prepListItems,
   prepLists,
@@ -106,6 +112,8 @@ type TemperatureLogQuery = z.output<typeof listTemperatureLogsEndpoint.query>;
 type CreateTemperatureLogInput = z.output<
   typeof createTemperatureLogEndpoint.body
 >;
+type PrepItemSettingQuery = z.output<typeof listPrepItemSettingsEndpoint.query>;
+type PutPrepItemSettingInput = z.output<typeof putPrepItemSettingEndpoint.body>;
 type PrepLabelQuery = z.output<typeof listPrepLabelsEndpoint.query>;
 type CreatePrepLabelInput = z.output<typeof createPrepLabelEndpoint.body>;
 type PrintPrepLabelInput = z.output<typeof printPrepLabelEndpoint.body>;
@@ -118,6 +126,7 @@ type TransitionPrepListInput = z.output<
 type PrepListRow = typeof prepLists.$inferSelect;
 
 const TEMPERATURE_RESULT_TABLE = "temperature_log";
+const PREP_ITEM_SETTING_RESULT_TABLE = "prep_item_setting";
 const PREP_LABEL_RESULT_TABLE = "prep_label";
 const PREP_LIST_RESULT_TABLE = "prep_list";
 const PREP_LIST_TRANSITION_RESULT_TABLE = "prep_list_transition";
@@ -189,6 +198,18 @@ const toTemperatureLog = (
     recordedBy: row.recordedBy,
     inRange: row.inRange,
     correctiveAction: row.correctiveAction,
+  });
+
+const toPrepItemSetting = (
+  row: typeof prepItemSettings.$inferSelect,
+): PrepItemSetting =>
+  prepItemSettingSchema.parse({
+    tenantId: row.tenantId,
+    outletId: row.outletId,
+    inventoryItemId: row.inventoryItemId,
+    shelfLifeMinutes: row.shelfLifeMinutes,
+    updatedAt: row.updatedAt.toISOString(),
+    updatedBy: row.updatedBy,
   });
 
 const toPrepLabel = (row: typeof prepLabels.$inferSelect): PrepLabel =>
@@ -397,6 +418,143 @@ export async function createTemperatureLog(
   });
 }
 
+// -------------------------------------------------- prep shelf-life settings
+
+export async function listPrepItemSettings(
+  context: ScopedTenantContext,
+  query: PrepItemSettingQuery,
+): Promise<CursorPage<PrepItemSetting>> {
+  assertOutletInScope(context.outletScope, query.outletId);
+  return withTenant(db, context, async (tx) => {
+    const filters: SQL[] = [
+      eq(prepItemSettings.tenantId, context.tenant.tenantId),
+      eq(prepItemSettings.outletId, query.outletId),
+    ];
+    if (query.inventoryItemId)
+      filters.push(eq(prepItemSettings.inventoryItemId, query.inventoryItemId));
+    const [updatedAt, id] = cursorKeys(query.cursor, 2);
+    if (updatedAt !== undefined && id !== undefined) {
+      const cursorAt = asInstant(updatedAt);
+      filters.push(
+        or(
+          gt(prepItemSettings.updatedAt, cursorAt),
+          and(
+            eq(prepItemSettings.updatedAt, cursorAt),
+            sql`${prepItemSettings.id} > ${id}::uuid`,
+          ),
+        )!,
+      );
+    }
+    const rows = await tx
+      .select()
+      .from(prepItemSettings)
+      .where(and(...filters))
+      .orderBy(asc(prepItemSettings.updatedAt), asc(prepItemSettings.id))
+      .limit(query.limit + 1);
+    return toPage(rows, query.limit, toPrepItemSetting, (row) => [
+      row.updatedAt.toISOString(),
+      row.id,
+    ]);
+  });
+}
+
+export async function upsertPrepItemSetting(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  inventoryItemId: string,
+  input: PutPrepItemSettingInput,
+  now: Date = new Date(),
+): Promise<PrepItemSetting> {
+  assertOutletInScope(context.outletScope, input.outletId);
+  const actor = userIdSchema.parse(actorUserId);
+  return withTenant(db, context, async (tx) => {
+    await assertOutletPermission(
+      tx,
+      context,
+      actor,
+      PREP_PERMISSION,
+      input.outletId,
+      now,
+    );
+    const { idempotencyKey, ...body } = input;
+    const fingerprint = operationsFingerprint({ inventoryItemId, ...body });
+    const replayed = await readIdempotentResult(
+      tx,
+      context,
+      idempotencyKey,
+      fingerprint,
+      PREP_ITEM_SETTING_RESULT_TABLE,
+    );
+    if (replayed) {
+      const [row] = await tx
+        .select()
+        .from(prepItemSettings)
+        .where(
+          and(
+            eq(prepItemSettings.tenantId, context.tenant.tenantId),
+            eq(prepItemSettings.outletId, input.outletId),
+            eq(prepItemSettings.id, replayed),
+          ),
+        )
+        .limit(1);
+      if (!row)
+        throw new CoreError(
+          "NOT_FOUND",
+          "Masa simpan bahan prep tidak ditemukan.",
+        );
+      return toPrepItemSetting(row);
+    }
+    const [item] = await tx
+      .select({ id: inventoryItems.id })
+      .from(inventoryItems)
+      .where(
+        and(
+          eq(inventoryItems.tenantId, context.tenant.tenantId),
+          eq(inventoryItems.id, inventoryItemId),
+        ),
+      )
+      .limit(1);
+    if (!item) throw new CoreError("NOT_FOUND", "Bahan prep tidak ditemukan.");
+    const [row] = await tx
+      .insert(prepItemSettings)
+      .values({
+        tenantId: context.tenant.tenantId,
+        outletId: input.outletId,
+        inventoryItemId,
+        shelfLifeMinutes: input.shelfLifeMinutes,
+        updatedAt: now,
+        updatedBy: actor,
+      })
+      .onConflictDoUpdate({
+        target: [
+          prepItemSettings.tenantId,
+          prepItemSettings.outletId,
+          prepItemSettings.inventoryItemId,
+        ],
+        set: {
+          shelfLifeMinutes: input.shelfLifeMinutes,
+          updatedAt: now,
+          updatedBy: actor,
+        },
+      })
+      .returning();
+    if (!row)
+      throw new HttpError(
+        500,
+        "INTERNAL_ERROR",
+        "Masa simpan bahan prep gagal disimpan.",
+      );
+    await storeIdempotentResult(tx, context, {
+      key: idempotencyKey,
+      fingerprint,
+      outletId: input.outletId,
+      resultTable: PREP_ITEM_SETTING_RESULT_TABLE,
+      resultId: row.id,
+    });
+    return toPrepItemSetting(row);
+  });
+}
+
 // --------------------------------------------------------- prep labels
 
 /** Filters by outlet, inventory item and use_by (expiry window, OPS-03). */
@@ -517,16 +675,39 @@ export async function createPrepLabel(
         "Batch stok tidak sesuai outlet atau item inventori.",
       );
 
-    const producedAt = new Date(input.producedAt);
-    const useBy = new Date(input.useBy);
-    // The contract refines prepLabel.useBy > producedAt (OPS-03); refuse the
-    // same pair here so the CHECK never surfaces as a 500.
-    if (!(useBy.getTime() > producedAt.getTime()))
+    const [setting] = await tx
+      .select({ shelfLifeMinutes: prepItemSettings.shelfLifeMinutes })
+      .from(prepItemSettings)
+      .where(
+        and(
+          eq(prepItemSettings.tenantId, context.tenant.tenantId),
+          eq(prepItemSettings.outletId, input.outletId),
+          eq(prepItemSettings.inventoryItemId, input.inventoryItemId),
+        ),
+      )
+      .limit(1);
+    if (!setting)
+      throw new HttpError(
+        422,
+        "PREP_SHELF_LIFE_REQUIRED",
+        "Atur masa simpan bahan prep di outlet ini sebelum membuat label.",
+      );
+    const calculatedUseBy = calculatePrepUseBy(
+      input.producedAt,
+      setting.shelfLifeMinutes,
+    );
+    if (
+      calculatedUseBy === null ||
+      (input.useBy !== undefined &&
+        Date.parse(input.useBy) !== Date.parse(calculatedUseBy))
+    )
       throw new HttpError(
         422,
         "VALIDATION_ERROR",
-        "Waktu pakai harus setelah waktu produksi (OPS-03).",
+        "Batas pakai harus sesuai waktu produksi dan masa simpan bahan prep.",
       );
+    const producedAt = new Date(input.producedAt);
+    const useBy = new Date(calculatedUseBy);
 
     const [row] = await tx
       .insert(prepLabels)

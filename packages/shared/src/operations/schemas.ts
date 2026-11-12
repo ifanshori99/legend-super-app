@@ -420,6 +420,25 @@ export type TemperatureLog = z.infer<typeof temperatureLogSchema>;
 
 // ---- Prep labels and prep lists (PRD §6 L) -------------------------------
 
+/** Duration in elapsed minutes; bounded by the PostgreSQL integer column. */
+export const shelfLifeMinutesSchema = z
+  .number()
+  .int()
+  .positive()
+  .max(2_147_483_647);
+
+/** Operations-owned setting: the same prep item may have different durations
+ * in different outlets, without changing the inventory catalog. */
+export const prepItemSettingSchema = z.strictObject({
+  tenantId: tenantIdSchema,
+  outletId: outletIdSchema,
+  inventoryItemId: inventoryItemIdSchema,
+  shelfLifeMinutes: shelfLifeMinutesSchema,
+  updatedAt: isoDateTimeSchema,
+  updatedBy: userIdSchema,
+});
+export type PrepItemSetting = z.infer<typeof prepItemSettingSchema>;
+
 /** PRD §3 F45: name, production date/time, use-by and the person in charge,
  * linked to the inventory batch. */
 export const prepLabelSchema = z
