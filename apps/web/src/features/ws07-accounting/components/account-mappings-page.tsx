@@ -13,12 +13,23 @@ import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardShell } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/feedback-state";
 import { fieldClass } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCanPostJournals } from "../guard";
 import { useAccounts, useEntityPicker } from "../hooks";
-import { useAccountMappings, useReplaceAccountMappings } from "../mapping-hooks";
+import {
+  useAccountMappings,
+  useReplaceAccountMappings,
+} from "../mapping-hooks";
 import {
   MAPPING_ROLES,
   SAVE_ERROR_KEYS,
@@ -26,6 +37,7 @@ import {
   draftFromMappings,
   draftIssues,
   eligibleAccounts,
+  firstIssueRole,
   isDraftDirty,
   mappingCounts,
   mappingSaveError,
@@ -39,6 +51,10 @@ import {
   type MappingSaveError,
 } from "../mapping-state";
 import { EntityPicker } from "./entity-picker";
+
+// What the editor reports up so the scope card (completeness) and the entity
+// switch (discard confirm) can follow the draft.
+type EditorStatus = { dirty: boolean; mapped: number; total: number };
 
 type Banner =
   | { kind: "success" }
@@ -114,6 +130,7 @@ function LoadingCard() {
   return (
     <CardShell>
       <Card aria-busy="true">
+        <span className="sr-only">{t("common.loading")}</span>
         <h3 className="text-lg font-semibold">
           {t("accounting.mapping.loadingTitle")}
         </h3>
@@ -156,16 +173,20 @@ function ErrorCard({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-function Completeness({ draft }: { draft: MappingDraft }) {
+function Completeness({ status }: { status: EditorStatus | null }) {
   const t = useT();
-  const { mapped, total } = mappingCounts(draft);
   return (
     <div className="grid gap-1">
       <p className="text-sm font-semibold">
         {t("accounting.mapping.completenessLabel")}
       </p>
       <p className="font-semibold" aria-live="polite">
-        {t("accounting.mapping.completeness", { mapped, total })}
+        {status
+          ? t("accounting.mapping.completeness", {
+              mapped: status.mapped,
+              total: status.total,
+            })
+          : t("accounting.mapping.completenessUnknown")}
       </p>
     </div>
   );
@@ -175,10 +196,12 @@ function MappingEditor({
   legalEntityId,
   accounts,
   mappings,
+  onStatusChange,
 }: {
   legalEntityId: string;
   accounts: readonly Account[];
   mappings: readonly AccountMapping[];
+  onStatusChange: (status: EditorStatus | null) => void;
 }) {
   const t = useT();
   const canWrite = useCanPostJournals();
@@ -206,6 +229,23 @@ function MappingEditor({
   );
   const counts = mappingCounts(draft);
   const dirty = isDraftDirty(saved, draft);
+
+  React.useEffect(() => {
+    onStatusChange({ dirty, mapped: counts.mapped, total: counts.total });
+  }, [onStatusChange, dirty, counts.mapped, counts.total]);
+  React.useEffect(() => () => onStatusChange(null), [onStatusChange]);
+
+  // After a failed save the first flagged select takes focus. Wait until the
+  // selects are enabled again (the save is no longer pending).
+  const selectRefs = React.useRef<
+    Partial<Record<(typeof MAPPING_ROLES)[number], HTMLSelectElement | null>>
+  >({});
+  const focusRole = React.useRef<(typeof MAPPING_ROLES)[number] | null>(null);
+  React.useEffect(() => {
+    if (focusRole.current === null || replace.isPending) return;
+    selectRefs.current[focusRole.current]?.focus();
+    focusRole.current = null;
+  }, [serverIssues, replace.isPending]);
 
   const choose = (role: (typeof MAPPING_ROLES)[number], accountId: string) => {
     setDraft((current) => ({ ...current, [role]: accountId }));
@@ -238,24 +278,23 @@ function MappingEditor({
     } catch (error) {
       const kind = mappingSaveError(error);
       if (kind === "invalid") {
-        if ((error as { status?: unknown }).status === 422)
-          setServerIssues(
-            parseContractIssues((error as { message?: string }).message),
+        if ((error as { status?: unknown }).status === 422) {
+          const parsed = parseContractIssues(
+            (error as { message?: string }).message,
           );
+          setServerIssues(parsed);
+          focusRole.current = firstIssueRole(parsed);
+        }
         setBanner({ kind: "invalid" });
       } else setBanner({ kind: "failed", error: kind });
     }
   };
 
-  const failed = banner?.kind === "failed" ? SAVE_ERROR_KEYS[banner.error] : null;
+  const failed =
+    banner?.kind === "failed" ? SAVE_ERROR_KEYS[banner.error] : null;
 
   return (
     <>
-      <CardShell>
-        <Card>
-          <Completeness draft={draft} />
-        </Card>
-      </CardShell>
       {banner?.kind === "invalid" && (
         <BannerBox
           tone="danger"
@@ -272,14 +311,20 @@ function MappingEditor({
           hint={t(key(failed.hint))}
         />
       )}
-      {banner?.kind === "success" && (
-        <BannerBox
-          tone="success"
-          role="status"
-          title={t("accounting.mapping.successTitle")}
-          hint={t("accounting.mapping.successHint")}
-        />
-      )}
+      {/* The live region exists before the message so it is announced. */}
+      <div
+        role="status"
+        aria-live="polite"
+        className={banner?.kind === "success" ? undefined : "-mb-4"}
+      >
+        {banner?.kind === "success" && (
+          <BannerBox
+            tone="success"
+            title={t("accounting.mapping.successTitle")}
+            hint={t("accounting.mapping.successHint")}
+          />
+        )}
+      </div>
       {banner === null && counts.missing > 0 && (
         <BannerBox
           tone="warning"
@@ -321,9 +366,10 @@ function MappingEditor({
               const options = eligibleAccounts(role, accounts);
               // A saved account that is no longer eligible stays visible so the
               // row can be flagged instead of silently showing "Pilih akun".
-              const kept = current !== "" && !options.some((a) => a.id === current)
-                ? accounts.find((a) => a.id === current)
-                : undefined;
+              const kept =
+                current !== "" && !options.some((a) => a.id === current)
+                  ? accounts.find((a) => a.id === current)
+                  : undefined;
               const label = t(key(roleLabelKey(role)));
               const issueId = `mapping-issue-${role}`;
               return (
@@ -337,10 +383,15 @@ function MappingEditor({
                   </span>
                   <div className="grid gap-1">
                     <select
+                      ref={(node) => {
+                        selectRefs.current[role] = node;
+                      }}
                       className={cn(fieldClass, "h-control px-3")}
                       value={current}
                       disabled={!canWrite || replace.isPending}
-                      aria-label={t("accounting.mapping.selectLabel", { role: label })}
+                      aria-label={t("accounting.mapping.selectLabel", {
+                        role: label,
+                      })}
                       aria-invalid={issue ? true : undefined}
                       aria-describedby={issue ? issueId : undefined}
                       onChange={(event) => choose(role, event.target.value)}
@@ -360,7 +411,10 @@ function MappingEditor({
                       ))}
                     </select>
                     {issue && (
-                      <p id={issueId} className="text-sm font-semibold text-danger">
+                      <p
+                        id={issueId}
+                        className="text-sm font-semibold text-danger"
+                      >
                         <TriangleAlert
                           className="mr-1 inline size-3.5"
                           aria-hidden="true"
@@ -411,6 +465,23 @@ export function AccountMappingsPage() {
   const entityId = picker.entity?.id;
   const accountsQuery = useAccounts(entityId);
   const mappingsQuery = useAccountMappings(entityId);
+  const [status, setStatus] = React.useState<EditorStatus | null>(null);
+  const [pendingEntity, setPendingEntity] = React.useState<string | null>(null);
+  const dirty = status?.dirty === true;
+
+  // Closing the tab or reloading with an unsaved draft asks first.
+  React.useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  const changeEntity = (next: string) => {
+    if (next === entityId) return;
+    if (dirty) setPendingEntity(next);
+    else picker.selectEntity(next);
+  };
 
   if (picker.entitiesQuery.isPending)
     return (
@@ -464,16 +535,52 @@ export function AccountMappingsPage() {
       <PageHead />
       <CardShell>
         <Card>
-          <EntityPicker
-            entities={picker.entities}
-            value={picker.entity.id}
-            onChange={picker.selectEntity}
-          />
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("accounting.mapping.entityHint")}
-          </p>
+          <div className="grid gap-4 sm:grid-cols-2 sm:items-start">
+            <div className="grid gap-2">
+              <EntityPicker
+                entities={picker.entities}
+                value={picker.entity.id}
+                onChange={changeEntity}
+              />
+              <p className="text-sm leading-5 text-muted-foreground">
+                {t("accounting.mapping.entityHint")}
+              </p>
+            </div>
+            <Completeness status={state === "ready" ? status : null} />
+          </div>
         </Card>
       </CardShell>
+      <Dialog
+        open={pendingEntity !== null}
+        onOpenChange={(open) => !open && setPendingEntity(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("accounting.mapping.discardTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("accounting.mapping.discardBody")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setPendingEntity(null)}
+            >
+              {t("accounting.mapping.discardKeep")}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                if (pendingEntity !== null) picker.selectEntity(pendingEntity);
+                setPendingEntity(null);
+              }}
+            >
+              {t("accounting.mapping.discardConfirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {state === "loading" && <LoadingCard />}
       {state === "error" && (
         <ErrorCard
@@ -489,6 +596,7 @@ export function AccountMappingsPage() {
           legalEntityId={picker.entity.id}
           accounts={accountsQuery.data}
           mappings={mappingsQuery.data}
+          onStatusChange={setStatus}
         />
       )}
     </div>

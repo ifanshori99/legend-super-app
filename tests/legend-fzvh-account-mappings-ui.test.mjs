@@ -16,6 +16,7 @@ import {
   draftFromMappings,
   draftIssues,
   eligibleAccounts,
+  firstIssueRole,
   isDraftDirty,
   mappingCounts,
   mergeDraftOnto,
@@ -38,7 +39,10 @@ afterEach(() => resetMocks());
 
 describe("roles and catalog", () => {
   test("every posting role has a label, a type label and the screen copy exists", () => {
-    assert.equal(MAPPING_ROLES.length, Object.keys(POSTING_ACCOUNT_ROLES).length);
+    assert.equal(
+      MAPPING_ROLES.length,
+      Object.keys(POSTING_ACCOUNT_ROLES).length,
+    );
     for (const role of MAPPING_ROLES) {
       assert.equal(typeof message(roleLabelKey(role)), "string", role);
       assert.equal(typeof message(roleTypeLabelKey(role)), "string", role);
@@ -47,12 +51,24 @@ describe("roles and catalog", () => {
       assert.equal(typeof message(group.title), "string");
       assert.equal(typeof message(group.hint), "string");
     }
-    for (const issue of ["header", "inactive", "wrongType", "notFound", "duplicate"])
-      assert.equal(typeof message(`accounting.mapping.issues.${issue}`), "string");
+    for (const issue of [
+      "header",
+      "inactive",
+      "wrongType",
+      "notFound",
+      "duplicate",
+    ])
+      assert.equal(
+        typeof message(`accounting.mapping.issues.${issue}`),
+        "string",
+      );
   });
 
   test("type label: fixed type, a list for flexible roles", () => {
-    assert.equal(roleTypeLabelKey("cash_on_hand"), "accounting.mapping.types.asset");
+    assert.equal(
+      roleTypeLabelKey("cash_on_hand"),
+      "accounting.mapping.types.asset",
+    );
     assert.equal(
       roleTypeLabelKey("service_charge"),
       "accounting.mapping.types.liabilityOrRevenue",
@@ -99,7 +115,9 @@ describe("draft", () => {
 describe("stale draft merge (S6 review: no overwrite of another admin's change)", () => {
   const cash = byCode("1101").id;
   const bankA = accounts.find((a) => a.type === "asset" && a.id !== cash).id;
-  const bankB = accounts.find((a) => a.type === "asset" && a.id !== cash && a.id !== bankA).id;
+  const bankB = accounts.find(
+    (a) => a.type === "asset" && a.id !== cash && a.id !== bankA,
+  ).id;
 
   test("user edits role A, server changed role B: body has new B and user's A", () => {
     const baseline = { cash_on_hand: cash, petty_cash: cash };
@@ -107,25 +125,36 @@ describe("stale draft merge (S6 review: no overwrite of another admin's change)"
     const latest = { ...baseline, petty_cash: bankB };
     const merged = mergeDraftOnto(baseline, draft, latest);
     assert.deepEqual(merged, { cash_on_hand: bankA, petty_cash: bankB });
-    assert.deepEqual(buildReplaceBody(merged).mappings.sort((a, b) => a.role.localeCompare(b.role)), [
-      { role: "cash_on_hand", accountId: bankA },
-      { role: "petty_cash", accountId: bankB },
-    ]);
+    assert.deepEqual(
+      buildReplaceBody(merged).mappings.sort((a, b) =>
+        a.role.localeCompare(b.role),
+      ),
+      [
+        { role: "cash_on_hand", accountId: bankA },
+        { role: "petty_cash", accountId: bankB },
+      ],
+    );
   });
 
   test("user's change wins on the same role; a cleared role stays cleared", () => {
     const baseline = { cash_on_hand: cash, petty_cash: cash };
     const draft = { cash_on_hand: bankA, petty_cash: "" };
     const latest = { cash_on_hand: bankB, petty_cash: bankB };
-    assert.deepEqual(mergeDraftOnto(baseline, draft, latest), { cash_on_hand: bankA, petty_cash: "" });
+    assert.deepEqual(mergeDraftOnto(baseline, draft, latest), {
+      cash_on_hand: bankA,
+      petty_cash: "",
+    });
   });
 
   test("untouched draft takes the latest as is, including roles added or removed", () => {
     const baseline = { cash_on_hand: cash };
     const latest = { petty_cash: bankB };
-    assert.deepEqual(buildReplaceBody(mergeDraftOnto(baseline, { ...baseline }, latest)), {
-      mappings: [{ role: "petty_cash", accountId: bankB }],
-    });
+    assert.deepEqual(
+      buildReplaceBody(mergeDraftOnto(baseline, { ...baseline }, latest)),
+      {
+        mappings: [{ role: "petty_cash", accountId: bankB }],
+      },
+    );
   });
 });
 
@@ -133,74 +162,176 @@ describe("eligible accounts and issues", () => {
   test("picker lists only active leaf accounts of the role's type, by code", () => {
     const list = eligibleAccounts("cash_on_hand", accounts);
     assert.ok(list.length > 0);
-    const parentIds = new Set(accounts.flatMap((a) => (a.parentId ? [a.parentId] : [])));
+    const parentIds = new Set(
+      accounts.flatMap((a) => (a.parentId ? [a.parentId] : [])),
+    );
     for (const account of list) {
       assert.equal(account.type, "asset");
       assert.equal(account.isActive, true);
       assert.equal(parentIds.has(account.id), false);
     }
     const codes = list.map((a) => a.code);
-    assert.deepEqual(codes, [...codes].sort((a, b) => a.localeCompare(b, "en", { numeric: true })));
+    assert.deepEqual(
+      codes,
+      [...codes].sort((a, b) => a.localeCompare(b, "en", { numeric: true })),
+    );
   });
 
   test("flexible role accepts either allowed type", () => {
-    const types = new Set(eligibleAccounts("service_charge", accounts).map((a) => a.type));
+    const types = new Set(
+      eligibleAccounts("service_charge", accounts).map((a) => a.type),
+    );
     assert.ok(types.has("liability"));
-    for (const type of types) assert.ok(["liability", "revenue"].includes(type));
+    for (const type of types)
+      assert.ok(["liability", "revenue"].includes(type));
   });
 
   test("fixture mapping has no issues", () => {
-    assert.deepEqual(draftIssues(draftFromMappings(fixtures.accountMappings), accounts, entity), {});
+    assert.deepEqual(
+      draftIssues(
+        draftFromMappings(fixtures.accountMappings),
+        accounts,
+        entity,
+      ),
+      {},
+    );
   });
 
   test("wrong type, header, inactive, foreign and unknown accounts are flagged", () => {
-    const header = accounts.find((a) => accounts.some((b) => b.parentId === a.id));
+    const header = accounts.find((a) =>
+      accounts.some((b) => b.parentId === a.id),
+    );
     assert.ok(header, "fixture chart has a header account");
     const expense = accounts.find((a) => a.type === "expense" && a.isActive);
-    assert.equal(roleIssue("cash_on_hand", expense.id, accounts, entity), "wrongType");
-    assert.equal(roleIssue(header.type === "asset" ? "cash_on_hand" : "sales_revenue", header.id, accounts, entity), "header");
-    const inactive = { ...byCode("1101"), id: "01JBQ9A2B3C4D5E6F7G8H9AAAA", isActive: false, parentId: null };
-    assert.equal(roleIssue("cash_on_hand", inactive.id, [...accounts, inactive], entity), "inactive");
-    assert.equal(roleIssue("cash_on_hand", byCode("1101").id, accounts, "other-entity"), "notFound");
-    assert.equal(roleIssue("cash_on_hand", "missing", accounts, entity), "notFound");
+    assert.equal(
+      roleIssue("cash_on_hand", expense.id, accounts, entity),
+      "wrongType",
+    );
+    assert.equal(
+      roleIssue(
+        header.type === "asset" ? "cash_on_hand" : "sales_revenue",
+        header.id,
+        accounts,
+        entity,
+      ),
+      "header",
+    );
+    const inactive = {
+      ...byCode("1101"),
+      id: "01JBQ9A2B3C4D5E6F7G8H9AAAA",
+      isActive: false,
+      parentId: null,
+    };
+    assert.equal(
+      roleIssue("cash_on_hand", inactive.id, [...accounts, inactive], entity),
+      "inactive",
+    );
+    assert.equal(
+      roleIssue("cash_on_hand", byCode("1101").id, accounts, "other-entity"),
+      "notFound",
+    );
+    assert.equal(
+      roleIssue("cash_on_hand", "missing", accounts, entity),
+      "notFound",
+    );
     assert.equal(roleIssue("cash_on_hand", "", accounts, entity), null);
   });
 });
 
 describe("contract issue text and API errors", () => {
   test("English accountMappingIssues strings map to a role and an issue", () => {
-    assert.deepEqual(parseContractIssue("Role cash_on_hand mapped twice"), { role: "cash_on_hand", issue: "duplicate" });
-    assert.deepEqual(parseContractIssue("Role bank: account not in this legal entity"), { role: "bank", issue: "notFound" });
-    assert.deepEqual(parseContractIssue("Role bank: needs a asset account"), { role: "bank", issue: "wrongType" });
-    assert.deepEqual(parseContractIssue("Role bank: header account is not postable"), { role: "bank", issue: "header" });
-    assert.equal(parseContractIssue("Role nope: header account is not postable"), null);
+    assert.deepEqual(parseContractIssue("Role cash_on_hand mapped twice"), {
+      role: "cash_on_hand",
+      issue: "duplicate",
+    });
+    assert.deepEqual(
+      parseContractIssue("Role bank: account not in this legal entity"),
+      { role: "bank", issue: "notFound" },
+    );
+    assert.deepEqual(parseContractIssue("Role bank: needs a asset account"), {
+      role: "bank",
+      issue: "wrongType",
+    });
+    assert.deepEqual(
+      parseContractIssue("Role bank: header account is not postable"),
+      { role: "bank", issue: "header" },
+    );
+    assert.equal(
+      parseContractIssue("Role nope: header account is not postable"),
+      null,
+    );
     assert.equal(parseContractIssue("something else"), null);
   });
 
   test("a 422 message splits on ';' into one issue per row; unknown parts are skipped", () => {
     assert.deepEqual(
-      parseContractIssues("Role bank: needs a asset account; Role cash_on_hand mapped twice; something else"),
+      parseContractIssues(
+        "Role bank: needs a asset account; Role cash_on_hand mapped twice; something else",
+      ),
       { bank: "wrongType", cash_on_hand: "duplicate" },
     );
     assert.deepEqual(parseContractIssues(""), {});
     assert.deepEqual(parseContractIssues(undefined), {});
   });
 
+  test("first issue role follows screen order, not the order of the message", () => {
+    const issues = parseContractIssues(
+      "Role service_charge: needs a asset account; Role bank: needs a asset account",
+    );
+    assert.equal(
+      firstIssueRole(issues),
+      MAPPING_ROLES.find((r) => r === "bank" || r === "service_charge"),
+    );
+    assert.equal(firstIssueRole({}), null);
+  });
+
+  test("discard-confirm copy and the unknown completeness mark exist", () => {
+    for (const key of [
+      "discardTitle",
+      "discardBody",
+      "discardKeep",
+      "discardConfirm",
+      "completenessUnknown",
+    ])
+      assert.equal(typeof message(`accounting.mapping.${key}`), "string", key);
+  });
+
   test("save errors map to the banner kind", () => {
-    assert.equal(mappingSaveError({ status: 422, code: "VALIDATION_ERROR" }), "invalid");
+    assert.equal(
+      mappingSaveError({ status: 422, code: "VALIDATION_ERROR" }),
+      "invalid",
+    );
     assert.equal(mappingSaveError({ status: 409 }), "invalid");
     assert.equal(mappingSaveError({ status: 403 }), "forbidden");
-    assert.equal(mappingSaveError({ status: 0, code: "NETWORK_ERROR" }), "network");
+    assert.equal(
+      mappingSaveError({ status: 0, code: "NETWORK_ERROR" }),
+      "network",
+    );
     assert.equal(mappingSaveError({ status: 500 }), "unknown");
     assert.equal(mappingSaveError(new Error("x")), "unknown");
     assert.equal(mappingSaveError(undefined), "unknown");
   });
 
   test("screen state: error beats loading beats ready", () => {
-    const base = { mappingsPending: false, accountsPending: false, mappingsError: false, accountsError: false };
+    const base = {
+      mappingsPending: false,
+      accountsPending: false,
+      mappingsError: false,
+      accountsError: false,
+    };
     assert.equal(mappingScreenState(base), "ready");
-    assert.equal(mappingScreenState({ ...base, accountsPending: true }), "loading");
-    assert.equal(mappingScreenState({ ...base, mappingsPending: true, accountsError: true }), "error");
+    assert.equal(
+      mappingScreenState({ ...base, accountsPending: true }),
+      "loading",
+    );
+    assert.equal(
+      mappingScreenState({
+        ...base,
+        mappingsPending: true,
+        accountsError: true,
+      }),
+      "error",
+    );
   });
 });
 
@@ -216,7 +347,9 @@ describe("mock endpoints (what the screen runs on in mock mode)", () => {
     const ok = await dispatchMock({
       method: "PUT",
       path,
-      body: { mappings: [{ role: "cash_on_hand", accountId: byCode("1101").id }] },
+      body: {
+        mappings: [{ role: "cash_on_hand", accountId: byCode("1101").id }],
+      },
     });
     assert.equal(ok.data.length, 1);
     const back = await dispatchMock({ method: "GET", path });
@@ -224,8 +357,18 @@ describe("mock endpoints (what the screen runs on in mock mode)", () => {
     const error = await dispatchMock({
       method: "PUT",
       path,
-      body: { mappings: [{ role: "cash_on_hand", accountId: accounts.find((a) => a.type === "expense").id }] },
-    }).then(() => assert.fail("expected 422"), (e) => e);
+      body: {
+        mappings: [
+          {
+            role: "cash_on_hand",
+            accountId: accounts.find((a) => a.type === "expense").id,
+          },
+        ],
+      },
+    }).then(
+      () => assert.fail("expected 422"),
+      (e) => e,
+    );
     assert.equal(error.status, 422);
     assert.equal(mappingSaveError(error), "invalid");
   });

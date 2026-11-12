@@ -21,11 +21,7 @@ import {
 export type MappingDraft = Partial<Record<PostingAccountRole, string>>;
 
 export type MappingIssue =
-  | "header"
-  | "inactive"
-  | "wrongType"
-  | "notFound"
-  | "duplicate";
+  "header" | "inactive" | "wrongType" | "notFound" | "duplicate";
 
 /** Every posting role, in the contract's order (assets first, then liabilities…). */
 export const MAPPING_ROLES = Object.keys(
@@ -71,14 +67,20 @@ function chosen(draft: MappingDraft, role: PostingAccountRole): string {
 /** How many roles have an account; `missing` drives the tag and the warning. */
 export function mappingCounts(draft: MappingDraft) {
   const total = MAPPING_ROLES.length;
-  const mapped = MAPPING_ROLES.filter((role) => chosen(draft, role) !== "")
-    .length;
+  const mapped = MAPPING_ROLES.filter(
+    (role) => chosen(draft, role) !== "",
+  ).length;
   return { mapped, total, missing: total - mapped };
 }
 
 /** True when the draft differs from the saved mapping (enables save/cancel). */
-export function isDraftDirty(saved: MappingDraft, draft: MappingDraft): boolean {
-  return MAPPING_ROLES.some((role) => chosen(saved, role) !== chosen(draft, role));
+export function isDraftDirty(
+  saved: MappingDraft,
+  draft: MappingDraft,
+): boolean {
+  return MAPPING_ROLES.some(
+    (role) => chosen(saved, role) !== chosen(draft, role),
+  );
 }
 
 /**
@@ -200,11 +202,14 @@ export function parseContractIssues(
   return issues;
 }
 
-export type MappingSaveError =
-  | "invalid"
-  | "forbidden"
-  | "network"
-  | "unknown";
+/** The first row (in screen order) that has an issue: where focus goes after a failed save. */
+export function firstIssueRole(
+  issues: Partial<Record<PostingAccountRole, MappingIssue>>,
+): PostingAccountRole | null {
+  return MAPPING_ROLES.find((role) => issues[role]) ?? null;
+}
+
+export type MappingSaveError = "invalid" | "forbidden" | "network" | "unknown";
 
 /** API failure of the save → which banner to show. */
 export function mappingSaveError(error: unknown): MappingSaveError {

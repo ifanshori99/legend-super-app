@@ -9,6 +9,12 @@ export const accountingMappingMessages = {
   entityHint: "Pemetaan berlaku untuk badan usaha yang dipilih.",
   completenessLabel: "Kelengkapan pemetaan",
   completeness: "{mapped} dari {total} peran dipetakan",
+  completenessUnknown: "–",
+  discardTitle: "Buang perubahan yang belum disimpan?",
+  discardBody:
+    "Pemetaan di badan usaha ini belum disimpan. Jika Anda berpindah badan usaha, perubahan itu hilang.",
+  discardKeep: "Lanjut mengedit",
+  discardConfirm: "Buang perubahan",
   loadingTitle: "Memuat pemetaan akun",
   loadingHint: "Mohon tunggu sebentar.",
   emptyTitle: "Belum ada badan usaha",
@@ -26,7 +32,8 @@ export const accountingMappingMessages = {
   invalidTitle: "Pemetaan belum disimpan.",
   invalidHint: "Periksa akun yang ditandai, lalu simpan kembali.",
   failedTitle: "Pemetaan belum disimpan.",
-  failedHint: "Periksa koneksi dan coba lagi. Perubahan Anda masih ada di layar.",
+  failedHint:
+    "Periksa koneksi dan coba lagi. Perubahan Anda masih ada di layar.",
   forbiddenTitle: "Pemetaan belum disimpan.",
   forbiddenHint:
     "Akun Anda tidak boleh mengubah pemetaan. Hubungi admin keuangan.",
