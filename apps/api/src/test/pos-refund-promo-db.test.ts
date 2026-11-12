@@ -839,6 +839,37 @@ describe("legend-9be7 refund idempotency, last item and refusals", () => {
     expect(await spentOf(sale.promotionId)).toBe(20_000);
   });
 
+  it("legend-77r0 refuses a refund when the injected promo lookup fails", async () => {
+    const sale = await promoSale();
+    let lookupCalls = 0;
+    setPosPromoRefundPort({
+      ...orderPromoPartialRefundPort,
+      livePromoApplicationOf: async () => {
+        lookupCalls += 1;
+        throw new Error("promo lookup unavailable");
+      },
+    });
+    try {
+      const response = await pos().refund(
+        sale.orderId,
+        await refundBody(sale.orderId, {
+          amountIdr: 40_000,
+          items: [{ itemId: sale.itemA, quantity: 1 }],
+        }),
+      );
+      expect(lookupCalls).toBe(1);
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(await refundRows(sale.orderId)).toHaveLength(0);
+      expect(await application(sale.orderId)).toMatchObject({
+        refundedPaid: 0,
+        totalDiscount: 20_000,
+      });
+      expect(await spentOf(sale.promotionId)).toBe(20_000);
+    } finally {
+      setPosPromoRefundPort(null);
+    }
+  });
+
   it("a promo port that cannot run refuses the refund: no refund row, no payout recorded, promo budget untouched", async () => {
     const sale = await promoSale();
     const stockBefore = await dailyStock();
@@ -2299,15 +2330,18 @@ describe("legend-186 legend-s7rx B deposit order: second item is not REFUND_NOTH
     });
 
     // Item 1 is worth Rp40.000 but the tender only holds Rp30.000.
-    const first = await pos().refund(
-      sale.orderId,
-      await refundBody(sale.orderId, {
-        amountIdr: 40_000,
-        items: [{ itemId: sale.itemA, quantity: 1 }],
-      }),
-    );
+    const body = await refundBody(sale.orderId, {
+      amountIdr: 40_000,
+      items: [{ itemId: sale.itemA, quantity: 1 }],
+      idempotencyKey: randomUUID(),
+    });
+    const first = await pos().refund(sale.orderId, body);
     expect(first.status, JSON.stringify(first.body)).toBe(201);
     expect(first.body.data.amountIdr).toBe(30_000);
+    const retried = await pos().refund(sale.orderId, body);
+    expect(retried.status, JSON.stringify(retried.body)).toBe(201);
+    expect(retried.body.data.id).toBe(first.body.data.id);
+    expect(retried.body.data.amountIdr).toBe(30_000);
 
     const second = await pos().refund(
       sale.orderId,

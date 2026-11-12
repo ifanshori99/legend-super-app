@@ -48,7 +48,6 @@ import { withTenant } from "../db/tenant.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
-import { livePromoApplicationOf } from "./order-promo-refund.ts";
 import { loadDeferredRefundCommitments } from "./payment-refund-edge-history.ts";
 import {
   monotonicFactTime,
@@ -739,11 +738,12 @@ export async function refundPosOrder(
       // legend-aef1: bill value (before promo) of the items this refund returns,
       // set once the promo is re-priced; the revenue split builds on it.
       let promoRefundedSubtotalIdr: number | null = null;
-      const promoApplication = await livePromoApplicationOf(
-        tx,
-        context,
-        order.id,
-      );
+      const promoApplication =
+        await posPromoRefundPort().livePromoApplicationOf(
+          tx,
+          context,
+          order.id,
+        );
       if (promoApplication) {
         // legend-186 (s7rx A): a promo order refunded without items is a
         // settlement of what the guest is still owed for the goods they kept
