@@ -215,6 +215,10 @@ export const aiUsageMonthly = pgTable(
     costIdr: idrColumn("cost_idr")
       .notNull()
       .default(sql`0`),
+    /** Worst-case cost authorized before I/O; ambiguous failures stay held. */
+    reservedCostIdr: idrColumn("reserved_cost_idr")
+      .notNull()
+      .default(sql`0`),
     costMicroUsd: bigint("cost_micro_usd", { mode: "number" })
       .notNull()
       .default(0),
@@ -237,6 +241,10 @@ export const aiUsageMonthly = pgTable(
     check(
       "ai_usage_monthly_month_check",
       sql`${table.usageMonth} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`,
+    ),
+    check(
+      "ai_usage_monthly_reserved_cost_check",
+      sql`${table.reservedCostIdr} >= 0`,
     ),
     check(
       "ai_usage_monthly_amounts_check",

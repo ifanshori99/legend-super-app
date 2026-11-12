@@ -1331,6 +1331,15 @@ test("legend-dwrr provider read schema has no key field and stays strict", () =>
     connectionType: "api_key",
     baseUrl: "https://api.example.com/v1",
     defaultModel: "gpt-4o-mini",
+    capabilities: {
+      contextWindow: 128_000,
+      maxOutputTokens: 16_384,
+      supportsTools: true,
+      supportsReasoning: false,
+      reasoningEfforts: [],
+      source: "known",
+    },
+    capabilityOverrides: null,
     hasKey: true,
     keyLast4: "abcd",
     keySetAt: "2026-11-10T01:00:00.000Z",
@@ -1354,6 +1363,8 @@ test("legend-dwrr provider read schema has no key field and stays strict", () =>
   });
   assert.deepEqual(Object.keys(ai.aiProviderConfigSchema.shape).sort(), [
     "baseUrl",
+    "capabilities",
+    "capabilityOverrides",
     "connectionType",
     "defaultModel",
     "hasKey",
@@ -1457,4 +1468,23 @@ test("legend-dwrr provider endpoints and error codes", () => {
     assert.equal(err.status, status);
     assert.ok(err.message.length > 0);
   }
+});
+
+test("legend-39d.8 A2 capability overrides reject unbounded, inverted and injected values", () => {
+  accepts(ai.aiModelCapabilityOverridesSchema, {
+    contextWindow: 16_384,
+    maxOutputTokens: 2048,
+    supportsReasoning: false,
+  });
+  accepts(ai.aiModelCapabilityOverridesSchema, { supportsTools: true });
+  for (const value of [
+    { contextWindow: 0 },
+    { contextWindow: 2_000_001 },
+    { maxOutputTokens: 0 },
+    { contextWindow: 4096, maxOutputTokens: 4096 },
+    { contextWindow: 4096, maxOutputTokens: 8192 },
+    { tenantId: "injected" },
+    { reasoningEfforts: ["unlimited"] },
+  ])
+    rejects(ai.aiModelCapabilityOverridesSchema, value);
 });

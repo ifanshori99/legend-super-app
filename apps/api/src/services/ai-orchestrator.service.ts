@@ -11,11 +11,16 @@ import {
   getAiTool,
   toolSourceSchema,
   type AiMessageSource,
+  type AiModelCapabilities,
   type AiToolCode,
   type AskAi,
   type AskAiResponse,
 } from "@starter/shared/ai";
 import type { ScopedTenantContext } from "@starter/shared/core";
+import { env } from "../config/env.ts";
+import { getModelCapabilities } from "../lib/ai/model-capabilities.ts";
+import { prepareAiRequest } from "../lib/ai/request-policy.ts";
+import { resolveTenantAiCapabilities } from "./ai-provider-config.service.ts";
 import type {
   AiChatMessage,
   AiCompletionRequest,
@@ -29,6 +34,7 @@ import {
   aiCachePut,
   aiComplete,
   aiPreflight,
+  gatewayContext,
   type AiCacheKeyInput,
 } from "./ai-gateway.service.ts";
 import {
@@ -57,7 +63,6 @@ export const AI_DEADLINE_MS = 25_000;
 export const AI_MAX_OUTPUT_TOKENS = 2048;
 /** Answers without self-only tools may be shared inside a tenant for 15 min. */
 export const AI_CACHE_TTL_SECONDS = 900;
-const HISTORY_MESSAGES = 10;
 const ANSWER_MAX_CHARS = 8000;
 const SOURCES_MAX = 20;
 const CHANNEL: AiChannel = "tanya_ai";
@@ -77,6 +82,9 @@ type CachedAnswer = {
 /** Everything the orchestrator touches outside itself; tests replace it. */
 export type OrchestratorDeps = {
   preflight: typeof aiPreflight;
+  resolveCapabilities?: (
+    access: AccessSnapshot,
+  ) => Promise<AiModelCapabilities>;
   complete: (
     access: AccessSnapshot,
     request: AiCompletionRequest,
@@ -126,7 +134,7 @@ export function toHistory(
   items: readonly { role: "user" | "assistant"; text: string }[],
 ): AiChatMessage[] {
   const out: AiChatMessage[] = [];
-  for (const item of items.slice(-HISTORY_MESSAGES)) {
+  for (const item of items) {
     const last = out.at(-1);
     if (last && last.role === item.role)
       last.content.push({ type: "text", text: item.text });
@@ -143,6 +151,8 @@ export function toHistory(
 export const defaultDeps: OrchestratorDeps = {
   preflight: aiPreflight,
   complete: aiComplete,
+  resolveCapabilities: (access) =>
+    resolveTenantAiCapabilities(gatewayContext(access)),
   listTools: listCallableTools,
   toSpecs: toToolSpecs,
   invoke: invokeAiTool,
@@ -257,6 +267,9 @@ async function runLoop(
     mcpClientId: null,
     now: deps.now(),
   };
+  const capabilities = deps.resolveCapabilities
+    ? await deps.resolveCapabilities(access)
+    : getModelCapabilities(env.AI_MODEL);
   const tools = deps.toSpecs(await deps.listTools(ctx));
   const questionText = input.outletId
     ? `${input.question}\n\n[Outlet terpilih: ${input.outletId}]`
@@ -288,12 +301,15 @@ async function runLoop(
     const result = await withDeadline(
       deps.complete(
         access,
-        {
-          system: AI_SYSTEM_PROMPT,
-          messages,
-          tools,
-          maxTokens: AI_MAX_OUTPUT_TOKENS,
-        },
+        prepareAiRequest(
+          {
+            system: AI_SYSTEM_PROMPT,
+            messages,
+            tools,
+            maxTokens: AI_MAX_OUTPUT_TOKENS,
+          },
+          capabilities,
+        ),
         {
           feature: input.feature,
           channel: CHANNEL,

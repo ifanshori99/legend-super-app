@@ -174,3 +174,54 @@ describe("model capability source precedence", () => {
     expect(detected.source).toBe("default");
   });
 });
+
+describe("legend-39d.8 metadata ceilings", () => {
+  it("legend-39d.8 A1 honors the smaller endpoint output ceiling and advertised reasoning efforts", async () => {
+    const detected = await detectModelCapabilities({
+      ...options,
+      fetch: (async () =>
+        Response.json({
+          data: [
+            {
+              id: options.model,
+              context_length: 65_536,
+              max_output_tokens: 8192,
+              top_provider: {
+                context_length: 32_768,
+                max_completion_tokens: 4096,
+              },
+              supported_parameters: ["tools", "reasoning_effort"],
+              reasoning_efforts: ["low", "medium"],
+            },
+          ],
+        })) as typeof fetch,
+    });
+    expect(detected).toMatchObject({
+      contextWindow: 32_768,
+      maxOutputTokens: 4096,
+      supportsReasoning: true,
+      reasoningEfforts: ["low", "medium"],
+    });
+  });
+});
+
+describe("legend-39d.8 unknown model identity", () => {
+  it.each(["constructor", "toString", "__proto__"])(
+    "legend-39d.8 A1 treats prototype name %s as an unknown model",
+    async (model) => {
+      const detected = await detectModelCapabilities({
+        ...options,
+        model,
+        fetch: (async () => Response.json({ data: [] })) as typeof fetch,
+      });
+      expect(detected).toEqual({
+        contextWindow: 4096,
+        maxOutputTokens: 1024,
+        supportsTools: false,
+        supportsReasoning: false,
+        reasoningEfforts: [],
+        source: "default",
+      });
+    },
+  );
+});

@@ -7,9 +7,21 @@
 // error message, or `ai_usage_events`. Reads expose `hasKey` and `keyLast4`.
 // Tenant URLs are always checked strictly (even in development and tests).
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  getTableColumns,
+  isNull,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   AiError,
+  aiModelCapabilitiesSchema,
+  aiModelCapabilityOverridesSchema,
+  type AiModelCapabilities,
   type AiProviderConfig,
   type AiProviderTestErrorCode,
   type AiProviderTestResult,
@@ -31,6 +43,11 @@ import {
   getAiProvider,
   isAiProviderOverridden,
 } from "../lib/ai/provider-factory.ts";
+import {
+  applyCapabilityOverrides,
+  detectModelCapabilities,
+  getModelCapabilities,
+} from "../lib/ai/model-capabilities.ts";
 import { probeOpenAiCompatible } from "../lib/ai/provider-probe.ts";
 import { checkAiUrl } from "../lib/ai/url-guard.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -84,11 +101,26 @@ function assertTenantScope(context: ScopedTenantContext): void {
     throw new HttpError(403, "FORBIDDEN", "AI provider needs tenant scope.");
 }
 
+function capabilitiesOf(row: ConfigRow): AiModelCapabilities {
+  const detected = aiModelCapabilitiesSchema.safeParse(
+    row.detectedCapabilities,
+  );
+  const overrides = aiModelCapabilityOverridesSchema.safeParse(
+    row.capabilityOverrides,
+  );
+  return applyCapabilityOverrides(
+    detected.success ? detected.data : getModelCapabilities(row.defaultModel),
+    overrides.success ? overrides.data : null,
+  );
+}
+
 function toConfig(row: ConfigRow): AiProviderConfig {
   return {
     connectionType: row.connectionType,
     baseUrl: row.baseUrl,
     defaultModel: row.defaultModel,
+    capabilities: capabilitiesOf(row),
+    capabilityOverrides: row.capabilityOverrides,
     hasKey: row.apiKeyEncrypted !== null,
     keyLast4: row.apiKeyLast4,
     keySetAt: row.apiKeySetAt?.toISOString() ?? null,
@@ -116,6 +148,8 @@ function auditSnapshot(row: ConfigRow): Record<string, unknown> {
     connectionType: row.connectionType,
     baseUrl: row.baseUrl,
     defaultModel: row.defaultModel,
+    capabilities: capabilitiesOf(row),
+    capabilityOverrides: row.capabilityOverrides,
     hasKey: row.apiKeyEncrypted !== null,
     keyLast4: row.apiKeyLast4,
   };
@@ -155,9 +189,12 @@ async function readRow(
   tx: AuditTransaction,
   tenantId: TenantId,
   lock = false,
-): Promise<ConfigRow | undefined> {
+): Promise<(ConfigRow & { rowVersion: string }) | undefined> {
   const query = tx
-    .select()
+    .select({
+      ...getTableColumns(aiProviderConfigs),
+      rowVersion: sql<string>`${aiProviderConfigs.updatedAt}::text`,
+    })
     .from(aiProviderConfigs)
     .where(eq(aiProviderConfigs.tenantId, tenantId))
     .limit(1);
@@ -195,11 +232,39 @@ export async function saveAiProviderConfig(
     throw new AiError("AI_PROVIDER_URL_BLOCKED", URL_BLOCKED_MESSAGE);
 
   const tenantId = context.tenant.tenantId;
+  const before = await withTenant(db, context, (tx) => readRow(tx, tenantId));
+  // Never send a stored key to a changed host, including during discovery.
+  if (!input.apiKey && (!before || before.baseUrl !== baseUrl))
+    throw new AiError("AI_PROVIDER_KEY_REQUIRED");
+  const discoveryKey = input.apiKey ?? (before ? openKey(before) : null);
+  if (!discoveryKey) throw new AiError("AI_PROVIDER_KEY_REQUIRED");
+  // Do network I/O outside the DB transaction; the snapshot guard below makes
+  // sure this discovery cannot overwrite a concurrent key/config change.
+  const detectedCapabilities = await detectModelCapabilities({
+    baseUrl,
+    apiKey: discoveryKey,
+    model: input.defaultModel,
+  });
+  const sameModel =
+    before?.baseUrl === baseUrl && before.defaultModel === input.defaultModel;
+  const capabilityOverrides =
+    input.capabilityOverrides !== undefined
+      ? input.capabilityOverrides
+      : sameModel
+        ? before.capabilityOverrides
+        : null;
   const row = await withTenant(db, context, async (tx) => {
     const current = await readRow(tx, tenantId, true);
-    // A stored key never moves to another host: a new URL needs a new key.
-    if (!input.apiKey && (!current || current.baseUrl !== baseUrl))
-      throw new AiError("AI_PROVIDER_KEY_REQUIRED");
+    if (
+      current?.id !== before?.id ||
+      current?.rowVersion !== before?.rowVersion ||
+      current?.apiKeyEncrypted !== before?.apiKeyEncrypted
+    )
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "AI provider changed during discovery. Try again.",
+      );
 
     const id = current?.id ?? randomUUID();
     const now = new Date();
@@ -232,6 +297,10 @@ export async function saveAiProviderConfig(
           connectionType: "api_key",
           baseUrl,
           defaultModel: input.defaultModel,
+          detectedCapabilities,
+          capabilityOverrides,
+          // Microsecond monotonic version: app-clock milliseconds can collide.
+          updatedAt: sql`greatest(clock_timestamp(), ${aiProviderConfigs.updatedAt} + interval '1 microsecond')`,
           ...keyFields,
           ...testReset,
         })
@@ -251,6 +320,8 @@ export async function saveAiProviderConfig(
           connectionType: "api_key",
           baseUrl,
           defaultModel: input.defaultModel,
+          detectedCapabilities,
+          capabilityOverrides,
           ...keyFields,
         } as typeof aiProviderConfigs.$inferInsert)
         .onConflictDoNothing()
@@ -344,6 +415,17 @@ export async function testAiProviderConnection(
       });
     }
 
+    const detectedCapabilities =
+      apiKey !== null && hasTenantPort(row.baseUrl)
+        ? await detectModelCapabilities({
+            baseUrl: row.baseUrl,
+            apiKey,
+            model: row.defaultModel,
+          })
+        : row.detectedCapabilities;
+    const capabilitiesChanged =
+      JSON.stringify(detectedCapabilities) !==
+      JSON.stringify(row.detectedCapabilities);
     const testedAt = new Date();
     await withTenant(db, context, async (tx) => {
       await tx
@@ -352,8 +434,11 @@ export async function testAiProviderConnection(
           lastTestStatus: outcome.status,
           lastTestedAt: testedAt,
           lastTestErrorCode: outcome.errorCode,
-          // A test is not a config change: keep updated_at (it versions caches).
-          updatedAt: sql`${aiProviderConfigs.updatedAt}`,
+          detectedCapabilities,
+          // A changed capability changes the request and invalidates cached answers.
+          updatedAt: capabilitiesChanged
+            ? sql`greatest(clock_timestamp(), ${aiProviderConfigs.updatedAt} + interval '1 microsecond')`
+            : sql`${aiProviderConfigs.updatedAt}`,
         })
         .where(
           and(
@@ -361,6 +446,7 @@ export async function testAiProviderConnection(
             eq(aiProviderConfigs.id, row.id),
             eq(aiProviderConfigs.baseUrl, row.baseUrl),
             eq(aiProviderConfigs.defaultModel, row.defaultModel),
+            sql`${aiProviderConfigs.updatedAt}::text = ${row.rowVersion}`,
             row.apiKeyEncrypted === null
               ? isNull(aiProviderConfigs.apiKeyEncrypted)
               : eq(aiProviderConfigs.apiKeyEncrypted, row.apiKeyEncrypted),
@@ -391,6 +477,7 @@ export type ResolvedAiProvider = {
   provider: AiProvider;
   model: string;
   source: "tenant" | "platform";
+  capabilities: AiModelCapabilities;
 };
 
 /**
@@ -406,7 +493,12 @@ export async function resolveTenantAiProvider(
   if (isAiProviderOverridden()) {
     const provider = getAiProvider();
     return provider
-      ? { provider, model: env.AI_MODEL, source: "platform" }
+      ? {
+          provider,
+          model: env.AI_MODEL,
+          source: "platform",
+          capabilities: getModelCapabilities(env.AI_MODEL),
+        }
       : null;
   }
   const row = await withTenant(db, context, (tx) =>
@@ -423,12 +515,28 @@ export async function resolveTenantAiProvider(
       }),
       model: row.defaultModel,
       source: "tenant",
+      capabilities: capabilitiesOf(row),
     };
   }
   const provider = getAiProvider();
   return provider
-    ? { provider, model: env.AI_MODEL, source: "platform" }
+    ? {
+        provider,
+        model: env.AI_MODEL,
+        source: "platform",
+        capabilities: getModelCapabilities(env.AI_MODEL),
+      }
     : null;
+}
+
+/** Effective tenant capabilities without any metadata network call. */
+export async function resolveTenantAiCapabilities(
+  context: ScopedTenantContext,
+): Promise<AiModelCapabilities> {
+  return (
+    (await resolveTenantAiProvider(context))?.capabilities ??
+    getModelCapabilities("unknown")
+  );
 }
 
 /**

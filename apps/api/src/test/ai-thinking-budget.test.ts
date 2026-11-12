@@ -46,6 +46,38 @@ const request: AiCompletionRequest = {
 // Dynamic imports let the DB regression cases run against the existing gateway
 // while the new pure policy is introduced independently.
 describe("thinking and context policy", () => {
+  it("legend-39d.8 A3 uses high reasoning for three tools within a single assistant batch", async () => {
+    const { prepareAiRequest } = await import("../lib/ai/request-policy.ts");
+    const ids = ["sales-1", "sales-2", "sales-3"];
+    const prepared = prepareAiRequest(
+      {
+        ...request,
+        messages: [
+          message("Penjualan?"),
+          {
+            role: "assistant",
+            content: ids.map((id) => ({
+              type: "tool_use" as const,
+              id,
+              name: "sales",
+              input: {},
+            })),
+          },
+          {
+            role: "user",
+            content: ids.map((toolUseId) => ({
+              type: "tool_result" as const,
+              toolUseId,
+              content: "100",
+            })),
+          },
+        ],
+      },
+      capabilities,
+    );
+    expect(prepared.reasoningEffort).toBe("high");
+  });
+
   it("uses low effort for a short question and high for forecast or multiple tool rounds", async () => {
     const { selectReasoningEffort } =
       await import("../lib/ai/request-policy.ts");
@@ -242,6 +274,57 @@ afterAll(async () => {
 });
 
 describe("per-call budget reservation", () => {
+  it("legend-39d.8 A4 reserves for the expensive platform fallback instead of trusting a cheap requested model", async () => {
+    await budget(100);
+    const previousModel = env.AI_MODEL;
+    Object.assign(env, { AI_MODEL: "claude-haiku-5-5" });
+    const complete = vi.fn(async () => ({
+      ...answer(),
+      model: "claude-opus-5-5",
+    }));
+    setAiProviderForTests({ name: "fixture", complete });
+    try {
+      expect(await errorCode(aiComplete(access, request, meta))).toBe(
+        "AI_BUDGET_EXCEEDED",
+      );
+      expect(complete).not.toHaveBeenCalled();
+    } finally {
+      Object.assign(env, { AI_MODEL: previousModel });
+    }
+  });
+
+  it("legend-39d.8 A4 settles a successful call in the month where its budget was reserved", async () => {
+    await budget(10_000);
+    const firstMonth = new Date("2026-11-15T12:00:00.000Z");
+    const nextMonth = new Date("2026-12-15T12:00:00.000Z");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(firstMonth);
+    setAiProviderForTests({
+      name: "fixture",
+      complete: async () => {
+        vi.setSystemTime(nextMonth);
+        return answer();
+      },
+    });
+    try {
+      expect(await errorCode(aiComplete(access, request, meta))).toBe("OK");
+      const monthly = await owner.query<{
+        usage_month: string;
+        cost_idr: string;
+        reserved_cost_idr: string;
+      }>(
+        "SELECT usage_month,cost_idr,reserved_cost_idr FROM ai_usage_monthly WHERE tenant_id=$1 ORDER BY usage_month",
+        [tenantId],
+      );
+      expect(monthly.rows).toHaveLength(1);
+      expect(monthly.rows[0]!.usage_month).toBe(usageMonthOf(firstMonth));
+      expect(Number(monthly.rows[0]!.cost_idr)).toBeGreaterThan(0);
+      expect(Number(monthly.rows[0]!.reserved_cost_idr)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps the default zero budget closed even when aiComplete is called directly", async () => {
     const complete = vi.fn(async () => answer());
     setAiProviderForTests({ name: "fixture", complete });

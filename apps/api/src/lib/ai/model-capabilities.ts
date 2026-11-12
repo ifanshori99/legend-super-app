@@ -42,7 +42,12 @@ const KNOWN: Record<string, [number, number, boolean]> = {
 /** Exact names or dated snapshots only; lookalike names remain unknown. */
 export function getModelCapabilities(model: string): AiModelCapabilities {
   const name = model.replace(/^openai\//, "");
-  const entry = KNOWN[name] ?? KNOWN[name.replace(/-\d{4}-\d{2}-\d{2}$/, "")];
+  const snapshotBase = name.replace(/-\d{4}-\d{2}-\d{2}$/, "");
+  const entry = Object.hasOwn(KNOWN, name)
+    ? KNOWN[name]
+    : Object.hasOwn(KNOWN, snapshotBase)
+      ? KNOWN[snapshotBase]
+      : undefined;
   return entry
     ? {
         contextWindow: entry[0],
@@ -108,13 +113,14 @@ function metadataCapabilities(
   ]
     .map((value) => limit(value, 2_000_000, 1024))
     .filter((value): value is number => value !== undefined);
-  const output = [
+  const outputs = [
     item.max_output_tokens,
     item.max_completion_tokens,
     top?.max_completion_tokens,
   ]
     .map((value) => limit(value, 200_000))
-    .find((value) => value !== undefined);
+    .filter((value): value is number => value !== undefined);
+  const output = outputs.length ? Math.min(...outputs) : undefined;
   const parameters = Array.isArray(item.supported_parameters)
     ? item.supported_parameters.filter(
         (value): value is string => typeof value === "string",

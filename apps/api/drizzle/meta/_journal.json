@@ -2066,6 +2066,13 @@
       "when": 1794465896647,
       "tag": "0308_hris_u4",
       "breakpoints": true
+    },
+    {
+      "idx": 417,
+      "version": "7",
+      "when": 1794526651926,
+      "tag": "0417_ai_model_capabilities_budget",
+      "breakpoints": true
     }
   ]
 }
