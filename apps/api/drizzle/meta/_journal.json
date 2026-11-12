@@ -1947,6 +1947,41 @@
       "when": 1794416600000,
       "tag": "0291_leave_flag_reset_review_case",
       "breakpoints": true
+    },
+    {
+      "idx": 292,
+      "version": "7",
+      "when": 1794416700000,
+      "tag": "0292_tax_payable_ppn_other_roles",
+      "breakpoints": true
+    },
+    {
+      "idx": 293,
+      "version": "7",
+      "when": 1794416800000,
+      "tag": "0293_journal_entry_order_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 294,
+      "version": "7",
+      "when": 1794416900000,
+      "tag": "0294_supplier_npwp",
+      "breakpoints": true
+    },
+    {
+      "idx": 295,
+      "version": "7",
+      "when": 1794417000000,
+      "tag": "0295_supplier_invoices",
+      "breakpoints": true
+    },
+    {
+      "idx": 296,
+      "version": "7",
+      "when": 1794417100000,
+      "tag": "0296_journal_posting_account_snapshot",
+      "breakpoints": true
     }
   ]
 }

@@ -30,6 +30,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -263,6 +264,17 @@ export const journalEntries = pgTable(
      * (`entry_date`). Null for every on-time entry.
      */
     lateAdjustmentFrom: businessDate("late_adjustment_from"),
+    /**
+     * Order a sale or refund journal belongs to (legend-knfl6; the uuid form of
+     * the order ULID). A refund's source id is the refund id, so this is how the
+     * tax report and the refund cap find the refunds of an order. Null on
+     * journals of other sources and on those posted before this column.
+     */
+    orderId: uuid("order_id"),
+    /** Exact role identities used by a rule posting; append-only with its journal. */
+    postingAccountSnapshot: jsonb("posting_account_snapshot").$type<
+      Partial<Record<PostingAccountRole, string>>
+    >(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -335,6 +347,9 @@ export const journalEntries = pgTable(
       table.outletId,
       table.entryDate.desc(),
     ),
+    index("journal_entries_order_idx")
+      .on(table.tenantId, table.orderId)
+      .where(sql`${table.orderId} IS NOT NULL`),
   ],
 );
 

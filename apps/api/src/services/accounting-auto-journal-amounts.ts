@@ -58,7 +58,10 @@
 import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
-import { AccountingError } from "@starter/shared/accounting";
+import {
+  AccountingError,
+  type PostingAccountRole,
+} from "@starter/shared/accounting";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { tenderBucket } from "@starter/shared/pos";
 import {
@@ -103,6 +106,15 @@ import { isTrainingOrder } from "./device-training.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
 import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
+import {
+  isSplit,
+  orderUuidOf,
+  refundComponentsOf,
+  refundTaxSplitOf,
+  saleTaxSplitOf,
+  TAX_SPLIT_VARIANT,
+} from "./accounting-auto-journal-tax-split.ts";
+import { salePostingAccountsOf } from "./accounting-sale-account-history.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
 
@@ -367,8 +379,20 @@ export type StoredAutoJournalEvent = {
   readonly payload: Record<string, unknown>;
 };
 
+/** legend-knfl6: the order link of a sale / refund journal (uuid form). */
+function orderLinkOf(orderId: string): { orderId?: string } {
+  const uuid = orderUuidOf(orderId);
+  return uuid === null ? {} : { orderId: uuid };
+}
+
 export type AutoJournalFact = {
   readonly ruleEvent: AutoJournalEventName;
+  /** Rule variant (legend-xa9bc: `tax_split` books tax per type). */
+  readonly variant?: string;
+  /** Refunds use the original sale's immutable role identities. */
+  readonly accountOverrides?: Partial<Record<PostingAccountRole, string>>;
+  /** legend-knfl6: uuid of the order a sale / refund journal is linked to. */
+  readonly orderId?: string;
   readonly amounts: Record<string, number>;
   readonly sourceId: string;
   readonly outletId: string;
@@ -1333,8 +1357,13 @@ export async function autoJournalFactOf(
         if (source === "deposit") paidDepositIdr = p.paidDepositIdr;
         else depositGatewayIdr = p.paidDepositIdr;
       }
+      // legend-xa9bc: tax per type from the order's snapshots; PBJT-only and
+      // pre-cutover orders keep the base rule (all tax in tax_payable_pbjt).
+      const tax = await saleTaxSplitOf(tx, tenantId, p.orderId, p.pbjtIdr);
       return {
         ruleEvent: "order.paid",
+        ...orderLinkOf(p.orderId),
+        ...(isSplit(tax) ? { variant: TAX_SPLIT_VARIANT } : {}),
         amounts: {
           paidCashIdr: p.paidCashIdr,
           paidGatewayIntentIdr: withReceipt,
@@ -1345,7 +1374,10 @@ export async function autoJournalFactOf(
           discountIdr: p.discountIdr,
           grossSalesIdr: p.grossSalesIdr,
           serviceChargeIdr: p.serviceChargeIdr,
-          pbjtIdr: p.pbjtIdr,
+          pbjtIdr: tax.pbjtIdr,
+          ...(isSplit(tax)
+            ? { ppnIdr: tax.ppnIdr, otherTaxIdr: tax.otherTaxIdr }
+            : {}),
           roundingIdr: p.roundingIdr,
         },
         sourceId: p.orderId,
@@ -1366,13 +1398,71 @@ export async function autoJournalFactOf(
         throw new AutoJournalSalePending("Sale journal is not posted yet");
       if (saleState === "none")
         throw new AutoJournalSaleMissing("Sale journal will never post");
-      return {
-        ruleEvent: "order.refunded",
-        amounts: {
+      const components = await refundComponentsOf(
+        tx,
+        tenantId,
+        p.orderId,
+        {
           grossSalesIdr: p.grossSalesIdr,
+          discountIdr: p.discountIdr,
           serviceChargeIdr: p.serviceChargeIdr,
           pbjtIdr: p.pbjtIdr,
-          discountIdr: p.discountIdr,
+        },
+        p.refundCashIdr +
+          p.refundGatewayIdr +
+          p.refundEdcIdr +
+          p.refundPointsIdr,
+      );
+      if (typeof components === "string")
+        throw new AutoJournalPayloadInvalid(components);
+      // legend-xa9bc: mirror the per-type split of the sale journal.
+      const split = await refundTaxSplitOf(
+        tx,
+        tenantId,
+        p.orderId,
+        components.pbjtIdr,
+      );
+      // legend-knfl6: never refund more tax than the order collected.
+      if (typeof split === "string") throw new AutoJournalPayloadInvalid(split);
+      const tax = split;
+      const saleAccounts = await salePostingAccountsOf(
+        tx,
+        tenantId,
+        `aj:sale:${p.orderId}`,
+      );
+      if (!saleAccounts || typeof saleAccounts === "string")
+        throw new AutoJournalPayloadInvalid(
+          typeof saleAccounts === "string"
+            ? saleAccounts
+            : "Sale posting accounts are missing",
+        );
+      // Reverse historical income/tax identities, while the payout follows
+      // today's funded cash/clearing/liability accounts selected by its tender.
+      const accountOverrides: Partial<Record<PostingAccountRole, string>> = {};
+      for (const role of [
+        "sales_revenue",
+        "sales_discount",
+        "service_charge",
+        "tax_payable_pbjt",
+        "tax_payable_ppn",
+        "tax_payable_other",
+      ] as const) {
+        const accountId = saleAccounts.byRole[role];
+        if (accountId) accountOverrides[role] = accountId;
+      }
+      return {
+        ruleEvent: "order.refunded",
+        accountOverrides,
+        ...orderLinkOf(p.orderId),
+        ...(isSplit(tax) ? { variant: TAX_SPLIT_VARIANT } : {}),
+        amounts: {
+          grossSalesIdr: components.grossSalesIdr,
+          serviceChargeIdr: components.serviceChargeIdr,
+          pbjtIdr: tax.pbjtIdr,
+          ...(isSplit(tax)
+            ? { ppnIdr: tax.ppnIdr, otherTaxIdr: tax.otherTaxIdr }
+            : {}),
+          discountIdr: components.discountIdr,
           refundCashIdr: p.refundCashIdr,
           refundGatewayIdr: p.refundGatewayIdr,
           refundEdcIdr: p.refundEdcIdr,

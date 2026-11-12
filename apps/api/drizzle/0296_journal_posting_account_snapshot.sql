@@ -1,0 +1,1 @@
+ALTER TABLE "journal_entries" ADD COLUMN "posting_account_snapshot" jsonb;

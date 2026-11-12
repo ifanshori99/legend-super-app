@@ -24,6 +24,7 @@ import {
   coretaxExportFileName,
   generateTaxReportInputSchema,
   taxReportDownloadSchema,
+  taxReportAmountIdr,
   taxReportExportSchema,
   taxReportSchema,
   transitionTaxReport,
@@ -239,9 +240,7 @@ export async function generateTaxReport(
       type,
       period,
     });
-    const amountIdr = idr(
-      lines.reduce((total, line) => total + line.taxIdr, 0),
-    );
+    const amountIdr = idr(taxReportAmountIdr(type, lines));
     const now = new Date();
     const [row] = await tx
       .insert(taxReports)
@@ -380,7 +379,10 @@ export async function finalizeTaxReport(
     if (revisionNo >= 1 && reason === "")
       throw new AccountingError("TAX_REPORT_CORRECTION_REASON_REQUIRED");
 
-    const lineTax = draft.lines.reduce((total, line) => total + line.taxIdr, 0);
+    const lineTax = taxReportAmountIdr(
+      draft.type as TaxReportType,
+      draft.lines,
+    );
     if (lineTax !== draft.amountIdr)
       throw new AccountingError("TAX_REPORT_AMOUNT_MISMATCH");
 

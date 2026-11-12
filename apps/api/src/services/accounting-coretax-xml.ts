@@ -55,6 +55,9 @@ export function buildCoretaxXml(report: CoretaxXmlReport): string {
       element("OutletId", line.outletId ?? "", "      "),
       element("BaseIdr", line.baseIdr, "      "),
       element("TaxIdr", line.taxIdr, "      "),
+      ...(line.direction === undefined
+        ? []
+        : [element("Direction", line.direction, "      ")]),
       "      <References>",
       ...line.references
         .filter((ref) => !ref.startsWith(TAX_LINE_WARNING_PREFIX))

@@ -38,6 +38,7 @@ import {
   statementBasisFields,
   statementBasisShape,
 } from "./statement-basis.ts";
+import { AccountingError } from "./errors.ts";
 
 /** Fiscal-period rows a builder reads the basis from; none = nothing closed = live. */
 type PeriodRows = readonly { period: string; status: string }[];
@@ -72,13 +73,21 @@ export function naturalBalance(
   );
 }
 
-type Filter = { from?: string; to: string; outletId?: OutletId | null };
+type Filter = {
+  from?: string;
+  /** Exclusive upper bound, for opening balances (entries before `from`). */
+  before?: string;
+  to: string;
+  outletId?: OutletId | null;
+};
 
 function totalsByAccount(lines: readonly LedgerLine[], filter: Filter) {
   const totals = new Map<string, { debit: bigint; credit: bigint }>();
   for (const line of lines) {
     if (line.entryDate > filter.to) continue;
     if (filter.from !== undefined && line.entryDate < filter.from) continue;
+    if (filter.before !== undefined && line.entryDate >= filter.before)
+      continue;
     if (filter.outletId !== undefined && line.outletId !== filter.outletId)
       continue;
     const row = totals.get(line.accountId) ?? { debit: 0n, credit: 0n };
@@ -489,6 +498,299 @@ export const equityChangesSchema = z
         });
   });
 export type EquityChanges = z.infer<typeof equityChangesSchema>;
+
+/** A ledger line that also says which entry and source document it belongs to. */
+export type EntryLedgerLine = LedgerLine & {
+  entryId: string;
+  sourceType: string;
+};
+
+const CASH_FLOW_ACTIVITIES = ["operating", "investing", "financing"] as const;
+
+/** Where the other side of a cash movement lands: its report group decides. */
+function cashFlowActivityOf(
+  group: ReportGroup,
+): z.infer<typeof cashFlowActivitySchema> {
+  if (group === "non_current_asset") return "investing";
+  if (group === "equity" || group === "non_current_liability")
+    return "financing";
+  return "operating";
+}
+
+/**
+ * Direct-method cash flow for [from, to]. Cash is every account in the
+ * `cash_and_equivalents` group. Cash receipts and payments are allocated
+ * separately over opposing non-cash balances, capped at those balances to
+ * exclude internal transfers. Non-cash offsets (such as the unpaid part of an
+ * asset purchase) never become cash flows. Whole-rupiah allocations preserve
+ * the exact cash movement, including entries with both receipts and payments.
+ * Ambiguous compound entries fail closed: without pairing information, mixed
+ * cash directions plus noncash offsets, or multiple possible counterparts for
+ * partial cash payments/receipts, cannot be assigned to activities safely.
+ */
+export function buildCashFlow(
+  accounts: readonly Account[],
+  lines: readonly EntryLedgerLine[],
+  input: {
+    legalEntityId: string;
+    from: string;
+    to: string;
+    periods?: PeriodRows;
+  },
+): CashFlowStatement {
+  const scoped = new Map<string, (typeof accounts)[number]>(
+    accounts
+      .filter((account) => account.legalEntityId === input.legalEntityId)
+      .map((account) => [account.id as string, account]),
+  );
+  const isCash = (accountId: string) =>
+    scoped.get(accountId)?.reportGroup === "cash_and_equivalents";
+  let opening = 0n;
+  const entries = new Map<
+    string,
+    {
+      cashDebits: bigint;
+      cashCredits: bigint;
+      counterparts: Map<string, bigint>;
+    }
+  >();
+  for (const line of lines) {
+    if (!scoped.has(line.accountId) || line.entryDate > input.to) continue;
+    const cash = isCash(line.accountId);
+    const net = BigInt(line.debitIdr) - BigInt(line.creditIdr);
+    if (line.entryDate < input.from) {
+      if (cash) opening += net;
+      continue;
+    }
+    const entry = entries.get(line.entryId) ?? {
+      cashDebits: 0n,
+      cashCredits: 0n,
+      counterparts: new Map<string, bigint>(),
+    };
+    if (cash) {
+      entry.cashDebits += BigInt(line.debitIdr);
+      entry.cashCredits += BigInt(line.creditIdr);
+    } else
+      entry.counterparts.set(
+        line.accountId,
+        (entry.counterparts.get(line.accountId) ?? 0n) - net,
+      );
+    entries.set(line.entryId, entry);
+  }
+  const rowsByActivity = new Map<string, Map<string, bigint>>();
+  for (const entry of entries.values()) {
+    if (entry.cashDebits === 0n && entry.cashCredits === 0n) continue;
+    const noncashCredits = [...entry.counterparts.values()].filter(
+      (amount) => amount > 0n,
+    ).length;
+    const noncashDebits = [...entry.counterparts.values()].filter(
+      (amount) => amount < 0n,
+    ).length;
+    const hasNoncashOffsets = noncashCredits > 0 && noncashDebits > 0;
+    const hasBothCashDirections =
+      entry.cashDebits > 0n && entry.cashCredits > 0n;
+    const opposingAccounts =
+      entry.cashDebits > 0n ? noncashCredits : noncashDebits;
+    if (hasNoncashOffsets && (hasBothCashDirections || opposingAccounts > 1))
+      throw new AccountingError(
+        "STATEMENT_VALUE_INVALID",
+        "Arus kas jurnal gabungan tidak dapat ditentukan dengan pasti. Pisahkan transaksi kas dan nonkas.",
+      );
+    for (const direction of [1n, -1n]) {
+      const counterparts = [...entry.counterparts]
+        .filter(([, amount]) => amount * direction > 0n)
+        .sort(([left], [right]) => {
+          const codeOrder = scoped
+            .get(left)!
+            .code.localeCompare(scoped.get(right)!.code);
+          return codeOrder || left.localeCompare(right);
+        });
+      const total = counterparts.reduce(
+        (sum, [, amount]) => sum + amount * direction,
+        0n,
+      );
+      const cashAvailable =
+        direction > 0n ? entry.cashDebits : entry.cashCredits;
+      const cash = cashAvailable < total ? cashAvailable : total;
+      if (cash === 0n) continue;
+      const allocations = counterparts
+        .map(([accountId, amount]) => {
+          const numerator = cash * amount * direction;
+          return {
+            accountId,
+            amount: numerator / total,
+            remainder: numerator % total,
+          };
+        })
+        .sort((left, right) =>
+          left.remainder === right.remainder
+            ? 0
+            : left.remainder > right.remainder
+              ? -1
+              : 1,
+        );
+      let remaining =
+        cash -
+        allocations.reduce((sum, allocation) => sum + allocation.amount, 0n);
+      for (const allocation of allocations) {
+        // Largest remainders receive the spare rupiah in stable account order.
+        // The rows always allocate exactly the entry's actual cash movement.
+        const cashAmount =
+          (allocation.amount + (remaining > 0n ? 1n : 0n)) * direction;
+        if (remaining > 0n) remaining -= 1n;
+        const { accountId } = allocation;
+        const account = scoped.get(accountId)!;
+        const activity = cashFlowActivityOf(account.reportGroup);
+        const rows = rowsByActivity.get(activity) ?? new Map<string, bigint>();
+        rows.set(accountId, (rows.get(accountId) ?? 0n) + cashAmount);
+        rowsByActivity.set(activity, rows);
+      }
+    }
+  }
+  const sections = CASH_FLOW_ACTIVITIES.map((activity) => {
+    const rows = [...(rowsByActivity.get(activity) ?? [])]
+      .filter(([, amount]) => amount !== 0n)
+      .map(([accountId, amount]) => ({
+        code: scoped.get(accountId)!.code,
+        label: scoped.get(accountId)!.name,
+        amountIdr: toIdr(amount),
+      }))
+      .sort((a, b) => a.code.localeCompare(b.code))
+      .map(({ label, amountIdr }) => ({ label, amountIdr }));
+    return {
+      activity,
+      rows,
+      totalIdr: toIdr(sumBig(rows.map((row) => row.amountIdr))),
+    };
+  });
+  const netChange = sumBig(sections.map((section) => section.totalIdr));
+  return cashFlowStatementSchema.parse({
+    legalEntityId: input.legalEntityId,
+    from: input.from,
+    to: input.to,
+    method: "direct",
+    ...statementBasisFields(input.periods ?? [], {
+      from: input.from,
+      to: input.to,
+      cumulative: true,
+    }),
+    sections,
+    openingCashIdr: toIdr(opening),
+    netChangeIdr: toIdr(netChange),
+    closingCashIdr: toIdr(opening + netChange),
+  });
+}
+
+/**
+ * Equity changes for [from, to]: one row per equity account that has a balance
+ * or a movement, plus "Laba periode berjalan" (accountId null) for the profit
+ * not yet closed to retained earnings. Distributions are debits to an equity
+ * account from a dividend entry; every other movement is `otherMovementsIdr`.
+ * The closing balances of all rows add up to the balance sheet's total equity.
+ */
+export function buildEquityChanges(
+  accounts: readonly Account[],
+  lines: readonly EntryLedgerLine[],
+  input: {
+    legalEntityId: string;
+    from: string;
+    to: string;
+    periods?: PeriodRows;
+  },
+): EquityChanges {
+  const scoped = accounts.filter(
+    (account) => account.legalEntityId === input.legalEntityId,
+  );
+  const opening = totalsByAccount(lines, {
+    to: input.to,
+    before: input.from,
+  });
+  const closing = totalsByAccount(lines, { to: input.to });
+  const during = totalsByAccount(lines, { from: input.from, to: input.to });
+  const dividends = totalsByAccount(
+    lines.filter((line) => line.sourceType === "dividend"),
+    { from: input.from, to: input.to },
+  );
+  const profitOf = (totals: ReturnType<typeof totalsByAccount>) => {
+    const pl = sectionsFor(PL_GROUPS, scoped, totals);
+    const total = (group: ReportGroup) => sectionTotal(pl, group);
+    return (
+      total("revenue") +
+      total("other_income") -
+      total("cogs") -
+      total("operating_expense") -
+      total("other_expense")
+    );
+  };
+  const balanceOf = (
+    account: Account,
+    totals: ReturnType<typeof totalsByAccount>,
+  ) => {
+    const row = totals.get(account.id);
+    return naturalBalance(
+      account,
+      toIdr(row?.debit ?? 0n),
+      toIdr(row?.credit ?? 0n),
+    );
+  };
+  const rows = [...scoped]
+    .sort((a, b) => a.code.localeCompare(b.code))
+    .filter((account) => account.reportGroup === "equity")
+    .flatMap((account) => {
+      const openingIdr = balanceOf(account, opening);
+      const closingIdr = balanceOf(account, closing);
+      const paid = dividends.get(account.id);
+      const distributionsIdr = toIdr(
+        (paid?.debit ?? 0n) - (paid?.credit ?? 0n),
+      );
+      const moved = during.get(account.id);
+      if (
+        openingIdr === 0 &&
+        closingIdr === 0 &&
+        distributionsIdr === 0 &&
+        !moved
+      )
+        return [];
+      return [
+        {
+          accountId: account.id,
+          label: account.name,
+          openingIdr,
+          profitIdr: 0,
+          distributionsIdr,
+          otherMovementsIdr: toIdr(
+            BigInt(closingIdr) - BigInt(openingIdr) + BigInt(distributionsIdr),
+          ),
+          closingIdr,
+        },
+      ];
+    });
+  const openingEarnings = profitOf(opening);
+  const profit = profitOf(during);
+  const closingEarnings = profitOf(closing);
+  return equityChangesSchema.parse({
+    legalEntityId: input.legalEntityId,
+    from: input.from,
+    to: input.to,
+    ...statementBasisFields(input.periods ?? [], {
+      from: input.from,
+      to: input.to,
+      cumulative: true,
+    }),
+    rows: [
+      ...rows,
+      {
+        accountId: null,
+        label: "Laba periode berjalan",
+        openingIdr: openingEarnings,
+        profitIdr: profit,
+        distributionsIdr: 0,
+        otherMovementsIdr: closingEarnings - openingEarnings - profit,
+        closingIdr: closingEarnings,
+      },
+    ],
+  });
+}
 
 /** Multi-entity view: one P&L per legal entity plus a plain sum (no intercompany elimination in v1). */
 export const multiEntityProfitAndLossSchema = z
