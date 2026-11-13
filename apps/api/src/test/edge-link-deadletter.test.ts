@@ -46,6 +46,7 @@ import { withTenant } from "../db/tenant.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
 import { applyEdgeLinkDeadLettered } from "../edge/link-dead-letter-applier.ts";
 import type { EdgeEventApplier } from "../edge/ports.ts";
+import type { EdgeTx } from "../services/edge-queue.service.ts";
 import {
   createLinkPeer,
   type LinkStore,
@@ -268,7 +269,9 @@ describe("legend-btx4d oversized event is dead-lettered by the link peer", () =>
 
 const { tenant, outlets } = cafeLegendFixtures;
 const tenantId = tenant.id;
-const outletB = outlets[1].id;
+// A private outlet of the seeded tenant: edge-db.test.ts expects the seeded
+// outlets to hold no edge nodes, and an outlet has one active node per role.
+let outletB = "";
 const actor = randomUUID();
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
@@ -287,6 +290,13 @@ beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   setAuditWriter(coreAuditWriter);
+  outletB = randomUUID();
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+     SELECT $1, tenant_id, brand_id, legal_entity_id, $2, 'Outlet uji dead letter', address, timezone, opening_hours, status
+       FROM outlets WHERE id = $3`,
+    [outletB, `DL${outletB.slice(0, 8)}`.toUpperCase(), outlets[0].id],
+  );
   const registered = await registerEdgeNode(outletScope(), actor, {
     outletId: outletB,
     role: "standby",
@@ -352,15 +362,14 @@ describe("legend-btx4d Postgres link store dead-letters an oversized event", () 
     expect(letters[0]!.event.id).toBe(big.id);
     expect(letters[0]!.event.payload).toEqual(entry.event.payload);
 
-    // The queue behind it is readable and renumbered down by one, so it stays
-    // contiguous from the cursor (the dead letter keeps its original seq).
-    // The small notice for the cloud (legend-btx4d review 1) is queued last.
+    // The notice for the cloud (legend-btx4d review) takes the dead event's
+    // slot, so nothing behind it moves: still contiguous from the cursor.
     const readable = await store.readOutbound(0, 10);
     expect(readable.map((q) => q.linkSeq)).toEqual([bigSeq, bigSeq + 1]);
     expect(smallSeq).toBe(bigSeq + 1);
-    expect(readable[0]!.event.id).toBe(small.id);
+    expect(readable[1]!.event.id).toBe(small.id);
     expect(await store.outboundHead()).toBe(bigSeq + 1);
-    const notice = readable[1]!.event;
+    const notice = readable[0]!.event;
     expect(notice.name).toBe(EDGE_LINK_DEAD_LETTERED_EVENT);
     expect(
       edgeLinkDeadLetteredEvent.envelopeSchema.safeParse(notice).success,
@@ -453,77 +462,131 @@ function enqueueEdgeEventFor(
   });
 }
 
-describe("legend-btx4d review: the cloud keeps a trace of a dead-lettered sale", () => {
-  it("the cloud applier records one conflict for the dead letter, and the next sequence of its aggregate is not a gap", async () => {
-    const { nodeId: cloudNodeId, node } = await primaryNode("Cloud jejak");
-    const scope = { tenantId, outletId: outletB };
-    const aggregateId = randomUUID();
-    const first = { ...makeEvent(scope, 1, 100), aggregateId };
-    const dead = {
-      ...makeEvent(scope, 2, OVERSIZE),
-      aggregateId,
-    };
-    const third = { ...makeEvent(scope, 3, 100), aggregateId };
-    clock += 1;
-    const notice = edgeLinkDeadLetteredEvent.envelopeSchema.parse({
-      id: createUlid(clock),
-      tenantId,
-      outletId: outletB,
-      name: EDGE_LINK_DEAD_LETTERED_EVENT,
-      version: 1,
-      aggregateType: "edge_link",
-      aggregateId: dead.id,
-      sequence: 1,
-      occurredAt: new Date(clock).toISOString(),
-      actor: { type: "system" },
-      deviceId: null,
-      idempotencyKey: `${EDGE_LINK_DEAD_LETTERED_EVENT}:${dead.id}`,
-      payloadSchemaRef: `${EDGE_LINK_DEAD_LETTERED_EVENT}.v1`,
-      payload: {
-        eventId: dead.id,
-        eventName: dead.name,
-        aggregateType: dead.aggregateType,
-        aggregateId,
-        aggregateSequence: 2,
-        linkSeq: 2,
-        bytes: OVERSIZE,
-        reason: "frame_too_large",
-      },
+/**
+ * The cloud's side of the primary node of outlet B, with only the dead-letter
+ * applier. One node serves every test (an outlet has one active primary), so
+ * each test delivers from the node's current inbound cursor.
+ */
+let cloudSideOnce: ReturnType<typeof buildCloudSide> | null = null;
+function cloudSide() {
+  cloudSideOnce ??= buildCloudSide();
+  return cloudSideOnce;
+}
+async function buildCloudSide() {
+  const { nodeId: cloudNodeId, node } = await primaryNode("Cloud jejak");
+  const applier: EdgeEventApplier<EdgeTx> = {
+    async apply(tx, event, meta) {
+      if (event.name === EDGE_LINK_DEAD_LETTERED_EVENT)
+        await applyEdgeLinkDeadLettered(tx, event, meta);
+    },
+  };
+  const store = createDbLinkStore({
+    database: db,
+    context: node.context,
+    node: node.scope,
+    outboundDirection: "cloud_to_edge",
+    applier,
+    classify: () => "transaction_event" as const,
+  });
+  const deliver = async (events: EventEnvelope[]) => {
+    const fromSeq = await store.lastReceivedInbound();
+    await store.applyInbound({
+      fromSeq,
+      toSeq: fromSeq + events.length,
+      events: events.map((event, i) => ({ linkSeq: fromSeq + i + 1, event })),
     });
-    const applier: EdgeEventApplier = {
-      async apply(tx, event, meta) {
-        if (event.name === EDGE_LINK_DEAD_LETTERED_EVENT)
-          await applyEdgeLinkDeadLettered(tx, event, meta);
-      },
-    };
-    const cloud = createDbLinkStore({
-      database: db,
-      context: node.context,
-      node: node.scope,
-      outboundDirection: "cloud_to_edge",
-      applier,
-      classify: () => "transaction_event" as const,
-    });
-    // On the edge the dead letter's slot was renumbered away: the cloud sees
-    // the first event, the notice, then the third event.
-    await cloud.applyInbound({
-      fromSeq: 0,
-      toSeq: 3,
-      events: [
-        { linkSeq: 1, event: first },
-        { linkSeq: 2, event: notice },
-        { linkSeq: 3, event: third },
-      ],
-    });
-    const rows = await withTenant(db, outletScope(), async (tx) => {
+  };
+  const rowsOf = (aggregateIds: string[]) =>
+    withTenant(db, outletScope(), async (tx) => {
       const conflicts = await tx.execute(
         sql`SELECT reason, aggregate_id, aggregate_sequence, event_id FROM edge_sync_conflicts WHERE edge_node_id = ${cloudNodeId}::uuid`,
       );
       const receipts = await tx.execute(
-        sql`SELECT event_id, outcome FROM edge_inbound_events WHERE edge_node_id = ${cloudNodeId}::uuid AND aggregate_id = ${aggregateId}`,
+        sql`SELECT event_id, aggregate_id, outcome FROM edge_inbound_events WHERE edge_node_id = ${cloudNodeId}::uuid ORDER BY link_seq`,
       );
-      return { conflicts: conflicts.rows, receipts: receipts.rows };
+      const inScope = (row: { aggregate_id: unknown }) =>
+        aggregateIds.includes(String(row.aggregate_id));
+      return {
+        conflicts: conflicts.rows.filter(inScope),
+        receipts: receipts.rows.filter(inScope),
+      };
     });
+  return { store, nodeId: cloudNodeId, deliver, rowsOf };
+}
+
+function deadLetterNotice(
+  dead: EventEnvelope,
+  overrides: { aggregateId?: string } = {},
+): EventEnvelope {
+  clock += 1;
+  return edgeLinkDeadLetteredEvent.envelopeSchema.parse({
+    id: createUlid(clock),
+    tenantId,
+    outletId: outletB,
+    name: EDGE_LINK_DEAD_LETTERED_EVENT,
+    version: 1,
+    aggregateType: "edge_link",
+    aggregateId: overrides.aggregateId ?? dead.id,
+    sequence: 1,
+    occurredAt: new Date(clock).toISOString(),
+    actor: { type: "system" },
+    deviceId: null,
+    idempotencyKey: `${EDGE_LINK_DEAD_LETTERED_EVENT}:${dead.id}`,
+    payloadSchemaRef: `${EDGE_LINK_DEAD_LETTERED_EVENT}.v1`,
+    payload: {
+      eventId: dead.id,
+      eventName: dead.name,
+      aggregateType: dead.aggregateType,
+      aggregateId: dead.aggregateId,
+      aggregateSequence: dead.sequence,
+      linkSeq: 2,
+      bytes: OVERSIZE,
+      reason: "frame_too_large",
+    },
+  }) as EventEnvelope;
+}
+
+describe("legend-btx4d review: the cloud keeps a trace of a dead-lettered sale", () => {
+  // Round 2: the next event of the same aggregate is ALREADY pending behind
+  // the dead one when it is dead-lettered. The notice must take the dead
+  // event's own slot, so the cloud meets it before that next event.
+  it("the notice takes the dead event's slot; the cloud records one conflict and the pending next sequence of the aggregate is applied, not a gap", async () => {
+    const { node } = await sharedNode();
+    const store = edgeStore(node);
+    const context = outletScope();
+    const scope = { tenantId, outletId: outletB };
+    const aggregateId = randomUUID();
+    const first = { ...makeEvent(scope, 1, 100), aggregateId };
+    const dead = { ...makeEvent(scope, 2, OVERSIZE), aggregateId };
+    const third = { ...makeEvent(scope, 3, 100), aggregateId };
+    const queue = (event: EventEnvelope) =>
+      withTenant(db, context, (tx) => enqueueEdgeEventFor(tx, nodeId, event));
+    const firstQueued = await queue(first);
+    await store.ackOutbound(firstQueued.linkSeq);
+    const deadQueued = await queue(dead);
+    const thirdQueued = await queue(third);
+    await store.deadLetterOutbound({
+      linkSeq: deadQueued.linkSeq,
+      event: dead,
+      bytes: JSON.stringify(dead).length,
+      reason: "frame_too_large",
+    });
+    // Edge queue: the notice sits where the dead event was, the next event of
+    // the aggregate behind it, nothing renumbered, the head did not move.
+    const behind = await store.readOutbound(firstQueued.linkSeq, 10);
+    expect(behind.map((q) => q.linkSeq)).toEqual([
+      deadQueued.linkSeq,
+      thirdQueued.linkSeq,
+    ]);
+    expect(behind.map((q) => q.event.name)).toEqual([
+      EDGE_LINK_DEAD_LETTERED_EVENT,
+      third.name,
+    ]);
+    expect(await store.outboundHead()).toBe(thirdQueued.linkSeq);
+
+    const cloud = await cloudSide();
+    await cloud.deliver([first, ...behind.map((q) => q.event)]);
+    const rows = await cloud.rowsOf([aggregateId]);
     // Exactly one conflict, for the dead event, and none for a sequence gap.
     expect(rows.conflicts).toHaveLength(1);
     expect(rows.conflicts[0]).toMatchObject({
@@ -532,10 +595,38 @@ describe("legend-btx4d review: the cloud keeps a trace of a dead-lettered sale",
       aggregate_sequence: "2",
       event_id: ulidToUuid(dead.id),
     });
-    const thirdReceipt = rows.receipts.find(
-      (row) => row.event_id === ulidToUuid(third.id),
-    );
-    expect(thirdReceipt?.outcome).toBe("applied");
+    expect(
+      rows.receipts.find((row) => row.event_id === ulidToUuid(third.id))
+        ?.outcome,
+    ).toBe("applied");
+  });
+
+  it("a notice whose aggregate id is not the dead event id is refused as a conflict and the dead sequence is not counted as used", async () => {
+    const scope = { tenantId, outletId: outletB };
+    const aggregateId = randomUUID();
+    const first = { ...makeEvent(scope, 1, 100), aggregateId };
+    const dead = { ...makeEvent(scope, 2, OVERSIZE), aggregateId };
+    const third = { ...makeEvent(scope, 3, 100), aggregateId };
+    const forged = deadLetterNotice(dead, { aggregateId: createUlid() });
+    const cloud = await cloudSide();
+    await cloud.deliver([first, forged, third]);
+    const rows = await cloud.rowsOf([aggregateId, forged.aggregateId]);
+    // The forged notice is a refused-applier conflict, nothing marks the dead
+    // event applied, so the third event is still a real gap.
+    expect(rows.conflicts.map((c) => c.reason).sort()).toEqual([
+      "applier_refused",
+      "sequence_gap",
+    ]);
+    expect(
+      rows.conflicts.find((c) => c.reason === "applier_refused")?.event_id,
+    ).toBe(ulidToUuid(forged.id));
+    expect(
+      rows.receipts.some((row) => row.event_id === ulidToUuid(dead.id)),
+    ).toBe(false);
+    expect(
+      rows.receipts.find((row) => row.event_id === ulidToUuid(third.id))
+        ?.outcome,
+    ).toBe("conflict");
   });
 });
 
@@ -568,6 +659,44 @@ describe("legend-btx4d review: events behind a dead letter of the same aggregate
       reason: "frame_too_large",
     });
     await expect(queue(next)).resolves.toMatchObject({ duplicate: false });
+  });
+});
+
+describe("legend-btx4d review: cloud to edge keeps the renumbering", () => {
+  it("a dead-lettered cloud event is renumbered away: no notice, the rows behind move down by one and the head steps back", async () => {
+    const cloud = await cloudSide();
+    const context = outletScope();
+    const scope = { tenantId, outletId: outletB };
+    const events = [1, 2, 3].map((n) => makeEvent(scope, n, 100));
+    const seqs: number[] = [];
+    for (const event of events) {
+      const queued = await withTenant(db, context, (tx) =>
+        enqueueEdgeEvent(tx, context, {
+          edgeNodeId: cloud.nodeId,
+          direction: "cloud_to_edge",
+          kind: "transaction_event",
+          event: { ...event, aggregateId: randomUUID() },
+        }),
+      );
+      seqs.push(queued.linkSeq);
+    }
+    const [first, second, third] = seqs as [number, number, number];
+    const head = await cloud.store.outboundHead();
+    await cloud.store.deadLetterOutbound({
+      linkSeq: first,
+      event: events[0]!,
+      bytes: OVERSIZE,
+      reason: "frame_too_large",
+    });
+    const behind = await cloud.store.readOutbound(first - 1, 10);
+    expect(behind.map((q) => q.linkSeq)).toEqual([first, second]);
+    expect(behind.map((q) => q.event.id)).toEqual([
+      events[1]!.id,
+      events[2]!.id,
+    ]);
+    expect(third).toBe(second + 1);
+    expect(await cloud.store.outboundHead()).toBe(head - 1);
+    expect(await cloud.store.listDeadLetters()).toHaveLength(1);
   });
 });
 

@@ -44,7 +44,13 @@ export async function applyEdgeLinkDeadLettered(
 ): Promise<void> {
   const outletId = await assertEdgeEventScope(tx, event, meta);
   const parsed = edgeLinkDeadLetteredPayloadSchema.safeParse(event.payload);
-  if (!parsed.success || event.aggregateType !== EDGE_LINK_AGGREGATE)
+  // The notice is its own aggregate, keyed by the dead event id: any other id
+  // is a forged or garbled notice and must not mark a sequence as used.
+  if (
+    !parsed.success ||
+    event.aggregateType !== EDGE_LINK_AGGREGATE ||
+    event.aggregateId !== parsed.data.eventId
+  )
     throw new CoreError(
       "VALIDATION_ERROR",
       `Invalid ${EDGE_LINK_DEAD_LETTERED_EVENT} payload`,

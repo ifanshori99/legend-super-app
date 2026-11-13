@@ -30,8 +30,10 @@ CREATE TRIGGER edge_link_dead_letters_append_only BEFORE UPDATE OR DELETE ON pub
 FOR EACH ROW EXECUTE FUNCTION app.reject_edge_sync_log_mutation();
 --> statement-breakpoint
 -- legend-btx4d: moving an oversized head event to the dead-letter store removes
--- a pending queue row and renumbers the rows behind it (none of them was ever
--- sent), so the receiver's contiguous cursor never sees a gap. Both guards
+-- a pending queue row. On edge_to_cloud a notice row takes its slot (insert,
+-- nothing renumbered); on cloud_to_edge the rows behind it (none of them was
+-- ever sent) are renumbered down, so the receiver's contiguous cursor never
+-- sees a gap. Both guards
 -- stay strict except inside that one transaction, marked with the local
 -- setting app.edge_dead_letter = 'on'. The delete additionally needs the
 -- dead-letter copy of the same event, so a pending event can never vanish.

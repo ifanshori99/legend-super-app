@@ -43,11 +43,7 @@ import {
   notifyEdgeSyncConflictRecorded,
   type NewEdgeSyncConflict,
 } from "../services/edge-sync-conflict-alert.ts";
-import {
-  enqueueEdgeEvent,
-  lockSyncCursor,
-  type EdgeTx,
-} from "../services/edge-queue.service.ts";
+import { lockSyncCursor, type EdgeTx } from "../services/edge-queue.service.ts";
 import { decideInbound, type EdgeConflictReason } from "./conflict.ts";
 import { redactEdgeEnvelopeSecrets } from "./envelope-secrets.ts";
 import {
@@ -376,11 +372,18 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
 
     // legend-btx4d: ONE transaction under the cursor lock (the relay that
     // enqueues takes the same lock). The head event is copied whole into the
-    // dead-letter table, removed from the queue, and the pending rows behind
-    // it (never sent: pump only meets an oversized event at the head) move
-    // down by one together with next_out_seq, so the receiver's contiguous
-    // cursor never sees a hole. The queue key is not deferrable, so the rows
-    // are parked far above any sequence first and then brought down.
+    // dead-letter table and removed from the queue.
+    // - edge_to_cloud: a small `edge_link.dead_lettered` notice (id, aggregate,
+    //   sequence, size) takes the SAME link slot. Nothing is renumbered and the
+    //   cursor does not move; the cloud meets the notice before any later
+    //   event of the same aggregate that is already pending behind it, records
+    //   a conflict and counts the dead event's aggregate sequence as used, so
+    //   a sale never vanishes without a trace and no sequence_gap follows.
+    // - cloud_to_edge: no notice exists for the edge, so the pending rows
+    //   behind it (never sent: pump only meets an oversized event at the
+    //   head) move down by one together with next_out_seq and the receiver's
+    //   contiguous cursor never sees a hole. The queue key is not deferrable,
+    //   so the rows are parked far above any sequence first, then brought down.
     async deadLetterOutbound(entry) {
       await run(async (tx) => {
         const cursor = await lockSyncCursor(tx, node, outbound);
@@ -408,53 +411,49 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
         await tx.execute(
           sql`DELETE FROM edge_outbound_queue WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq = ${storedSeq}`,
         );
-        await tx.execute(
-          sql`UPDATE edge_outbound_queue SET link_seq = link_seq + ${RENUMBER_PARK} WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${storedSeq}`,
-        );
-        await tx.execute(
-          sql`UPDATE edge_outbound_queue SET link_seq = link_seq - ${RENUMBER_PARK + 1} WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${RENUMBER_PARK}`,
-        );
-        await tx.execute(
-          sql`UPDATE sync_cursors SET next_out_seq = next_out_seq - 1, updated_at = now() WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound}`,
-        );
+        if (outbound === "edge_to_cloud") {
+          const notice = edgeLinkDeadLetteredEvent.envelopeSchema.parse({
+            id: createUlid(),
+            tenantId: node.tenantId,
+            outletId: node.outletId,
+            name: EDGE_LINK_DEAD_LETTERED_EVENT,
+            version: 1,
+            aggregateType: EDGE_LINK_AGGREGATE,
+            aggregateId: entry.event.id,
+            sequence: 1,
+            occurredAt: new Date().toISOString(),
+            actor: { type: "system" },
+            deviceId: null,
+            idempotencyKey: `${EDGE_LINK_DEAD_LETTERED_EVENT}:${entry.event.id}`,
+            payloadSchemaRef: `${EDGE_LINK_DEAD_LETTERED_EVENT}.v1`,
+            payload: {
+              eventId: entry.event.id,
+              eventName: entry.event.name,
+              aggregateType: String(row.aggregate_type),
+              aggregateId: String(row.aggregate_id),
+              aggregateSequence: Number(row.aggregate_sequence),
+              linkSeq: entry.linkSeq,
+              bytes: entry.bytes,
+              reason: entry.reason,
+            },
+          });
+          await tx.execute(
+            sql`INSERT INTO edge_outbound_queue (tenant_id, outlet_id, edge_node_id, direction, link_seq, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, event) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${outbound}, ${storedSeq}, ${ulidToUuid(notice.id)}::uuid, ${notice.aggregateType}, ${notice.aggregateId}, ${notice.sequence}, 'transaction_event', ${JSON.stringify(notice)}::jsonb)`,
+          );
+        } else {
+          await tx.execute(
+            sql`UPDATE edge_outbound_queue SET link_seq = link_seq + ${RENUMBER_PARK} WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${storedSeq}`,
+          );
+          await tx.execute(
+            sql`UPDATE edge_outbound_queue SET link_seq = link_seq - ${RENUMBER_PARK + 1} WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${RENUMBER_PARK}`,
+          );
+          await tx.execute(
+            sql`UPDATE sync_cursors SET next_out_seq = next_out_seq - 1, updated_at = now() WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound}`,
+          );
+        }
         await tx.execute(
           sql`SELECT set_config('app.edge_dead_letter', '', true)`,
         );
-        // The dead letter must not leave the cloud without a trace: a small
-        // notice (id, aggregate, sequence, size) goes to the cloud in the same
-        // transaction, queued behind the rest. The cloud records a conflict
-        // and counts the dead event's aggregate sequence as used.
-        if (outbound === "edge_to_cloud")
-          await enqueueEdgeEvent(tx, context, {
-            edgeNodeId: nodeId,
-            direction: outbound,
-            kind: "transaction_event",
-            event: edgeLinkDeadLetteredEvent.envelopeSchema.parse({
-              id: createUlid(),
-              tenantId: node.tenantId,
-              outletId: node.outletId,
-              name: EDGE_LINK_DEAD_LETTERED_EVENT,
-              version: 1,
-              aggregateType: EDGE_LINK_AGGREGATE,
-              aggregateId: entry.event.id,
-              sequence: 1,
-              occurredAt: new Date().toISOString(),
-              actor: { type: "system" },
-              deviceId: null,
-              idempotencyKey: `${EDGE_LINK_DEAD_LETTERED_EVENT}:${entry.event.id}`,
-              payloadSchemaRef: `${EDGE_LINK_DEAD_LETTERED_EVENT}.v1`,
-              payload: {
-                eventId: entry.event.id,
-                eventName: entry.event.name,
-                aggregateType: String(row.aggregate_type),
-                aggregateId: String(row.aggregate_id),
-                aggregateSequence: Number(row.aggregate_sequence),
-                linkSeq: entry.linkSeq,
-                bytes: entry.bytes,
-                reason: entry.reason,
-              },
-            }),
-          });
       });
     },
 
