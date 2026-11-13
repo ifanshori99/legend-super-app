@@ -1442,7 +1442,7 @@ describe("EM-19 a socket that never sends received triggers the fallback at 15 s
   );
 
   it(
-    "EM-19 (QE1 yes) a receipt before the deadline keeps the fallback away",
+    "EM-19 (Q94) an automatic receipt of a phone before the deadline does not stop the fallback: only a human ack does",
     async () => {
       const outlet = await world("EM-19 received");
       const button = await registerPanicButton(outlet);
@@ -1459,7 +1459,9 @@ describe("EM-19 a socket that never sends received triggers the fallback at 15 s
       await new Promise<void>((resolve) =>
         setTimeout(resolve, PANIC_FALLBACK_AFTER_MS + 2_000),
       );
-      expect((await alertById(alert.id)).fallback_shown_at).toBeNull();
+      // Q94: the phone's automatic receipt is not a human ack; no ack in 15 s
+      // means the alarm shows on the POS screens anyway.
+      expect((await alertById(alert.id)).fallback_shown_at).not.toBeNull();
     },
     SLOW_MS,
   );

@@ -183,6 +183,7 @@ export async function resolveEmergencyAlert(
     await queuePanicAlertResolvedToEdge(tx, context, {
       outletId,
       alertId,
+      originEdgeNodeId: row.originEdgeNodeId,
       now,
       payload: {
         alertId,

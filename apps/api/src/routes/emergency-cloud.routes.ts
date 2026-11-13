@@ -27,6 +27,7 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import * as alerts from "../services/panic-alert-cloud.service.ts";
+import { refuseWhenEdgeServesOutlet } from "../services/panic-edge-ownership.ts";
 
 export const emergencyCloudRouter = Router({ mergeParams: true });
 
@@ -76,6 +77,12 @@ emergencyCloudRouter.post(
   async (req, res) => {
     const { outletId, alertId } = alertParams.parse(req.params);
     panicAckBodySchema.parse(req.body);
+    // An outlet with an active edge node is acknowledged on the edge; the
+    // cloud ack would not reach its sockets. Resolve stays allowed (D-11).
+    await refuseWhenEdgeServesOutlet(
+      getScopedTenantContext(req).tenant,
+      outletId,
+    );
     res.json({
       data: await alerts.acknowledgeEmergencyAlert(
         getScopedTenantContext(req),

@@ -174,12 +174,44 @@ export async function queuePanicAlertEvent(
 }
 
 /**
+ * Nodes that get the cloud resolve: the node that OWNS the alert (origin, when
+ * it is still an active node of the outlet) plus the oldest active node when
+ * that is a different node (failover copy). Origin null or not active: the old
+ * behaviour, the oldest active node alone.
+ */
+async function panicResolveTargetNodeIds(
+  tx: EdgeTx,
+  tenantId: string,
+  outletId: string,
+  originEdgeNodeId: string | null | undefined,
+): Promise<string[]> {
+  const oldest = await activePanicEdgeNodeId(tx, tenantId, outletId);
+  if (!oldest) return [];
+  if (!originEdgeNodeId || originEdgeNodeId === oldest) return [oldest];
+  const [origin] = await tx
+    .select({ id: edgeNodes.id })
+    .from(edgeNodes)
+    .where(
+      and(
+        eq(edgeNodes.tenantId, tenantId as TenantId),
+        eq(edgeNodes.outletId, outletId as OutletId),
+        eq(edgeNodes.id, originEdgeNodeId),
+        eq(edgeNodes.status, "active"),
+      ),
+    )
+    .limit(1);
+  return origin ? [origin.id, oldest] : [oldest];
+}
+
+/**
  * Queues `panic_alert.resolved` cloud -> edge on the caller's transaction (the
  * cloud resolve, G1). Call it only when the resolve really changed the alert.
  * Aggregate `panic_alert`, id = alert id; the cloud -> edge stream has its own
  * sequence per (edge node, direction, aggregate), so it never meets the edge
- * writer. Returns the queued sequence, or null when the outlet has no active
- * edge node (a cloud-only outlet queues nothing).
+ * writer. Targets the origin node of the alert plus the oldest active node when
+ * different (failover); see `panicResolveTargetNodeIds`. Returns the sequence
+ * queued for the first target, or null when the outlet has no active edge node
+ * (a cloud-only outlet queues nothing).
  */
 export async function queuePanicAlertResolvedToEdge(
   tx: EdgeTx,
@@ -188,41 +220,52 @@ export async function queuePanicAlertResolvedToEdge(
     outletId: string;
     alertId: string;
     payload: PayloadOf<"resolved">;
+    /** `panic_alerts.origin_edge_node_id`; null/absent keeps the oldest-node target. */
+    originEdgeNodeId?: string | null;
     now?: Date;
   },
 ): Promise<number | null> {
   const tenantId = context.tenant.tenantId;
-  const edgeNodeId = await activePanicEdgeNodeId(tx, tenantId, input.outletId);
-  if (!edgeNodeId) return null;
+  const edgeNodeIds = await panicResolveTargetNodeIds(
+    tx,
+    tenantId,
+    input.outletId,
+    input.originEdgeNodeId,
+  );
+  if (edgeNodeIds.length === 0) return null;
   if (input.payload.alertId !== input.alertId)
     throw new CoreError("VALIDATION_ERROR", "Event alert does not match");
-  const last = await tx.execute(
-    sql`SELECT MAX(aggregate_sequence) AS last FROM edge_outbound_queue WHERE edge_node_id = ${edgeNodeId}::uuid AND direction = 'cloud_to_edge' AND aggregate_type = ${PANIC_ALERT_AGGREGATE_TYPE} AND aggregate_id = ${input.alertId}`,
-  );
-  const sequence = Number(last.rows[0]?.last ?? 0) + 1;
   const definition = panicAlertEvents.resolved;
   const now = input.now ?? new Date();
-  const event = definition.envelopeSchema.parse({
-    id: createUlid(now.getTime()),
-    tenantId,
-    outletId: input.outletId,
-    name: definition.name,
-    version: definition.version,
-    aggregateType: PANIC_ALERT_AGGREGATE_TYPE,
-    aggregateId: input.alertId,
-    sequence,
-    occurredAt: now.toISOString(),
-    actor: { type: "user" as const, id: input.payload.resolvedBy },
-    deviceId: null,
-    idempotencyKey: `${PANIC_ALERT_AGGREGATE_TYPE}:${input.alertId}:resolved:${sequence}`,
-    payloadSchemaRef: definition.payloadSchemaRef,
-    payload: input.payload,
-  });
-  await enqueueEdgeEvent(tx, context, {
-    edgeNodeId,
-    direction: "cloud_to_edge",
-    kind: "transaction_event",
-    event,
-  });
-  return sequence;
+  let firstSequence: number | null = null;
+  for (const edgeNodeId of edgeNodeIds) {
+    const last = await tx.execute(
+      sql`SELECT MAX(aggregate_sequence) AS last FROM edge_outbound_queue WHERE edge_node_id = ${edgeNodeId}::uuid AND direction = 'cloud_to_edge' AND aggregate_type = ${PANIC_ALERT_AGGREGATE_TYPE} AND aggregate_id = ${input.alertId}`,
+    );
+    const sequence = Number(last.rows[0]?.last ?? 0) + 1;
+    const event = definition.envelopeSchema.parse({
+      id: createUlid(now.getTime()),
+      tenantId,
+      outletId: input.outletId,
+      name: definition.name,
+      version: definition.version,
+      aggregateType: PANIC_ALERT_AGGREGATE_TYPE,
+      aggregateId: input.alertId,
+      sequence,
+      occurredAt: now.toISOString(),
+      actor: { type: "user" as const, id: input.payload.resolvedBy },
+      deviceId: null,
+      idempotencyKey: `${PANIC_ALERT_AGGREGATE_TYPE}:${input.alertId}:resolved:${sequence}`,
+      payloadSchemaRef: definition.payloadSchemaRef,
+      payload: input.payload,
+    });
+    await enqueueEdgeEvent(tx, context, {
+      edgeNodeId,
+      direction: "cloud_to_edge",
+      kind: "transaction_event",
+      event,
+    });
+    firstSequence ??= sequence;
+  }
+  return firstSequence;
 }
