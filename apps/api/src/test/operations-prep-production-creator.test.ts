@@ -379,7 +379,12 @@ function installCreator() {
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
-  operator = await seedActor(["ops.prep.manage"]);
+  // CTO decision: the creator checks `inventory.production.record` of the actor
+  // at the outlet, so the main operator holds it next to ops.prep.manage.
+  operator = await seedActor([
+    "ops.prep.manage",
+    "inventory.production.record",
+  ]);
   const { rows } = await owner.query<{ brand_id: string }>(
     "SELECT brand_id FROM outlets WHERE id = $1",
     [outletA],
@@ -411,7 +416,10 @@ beforeAll(async () => {
   });
   kitchenLocationOther = await seedKitchenLocation(otherTenant, otherOutletRaw);
   // A user of the other tenant: it needs its own role assignment there.
-  otherOperator = await seedActor(["ops.prep.manage"], otherTenant);
+  otherOperator = await seedActor(
+    ["ops.prep.manage", "inventory.production.record"],
+    otherTenant,
+  );
 });
 
 afterEach(() => {
@@ -831,5 +839,65 @@ describe("legend-qq4k prep list completion creates WS-06 production orders", () 
     expect((await lineRows(mine.id))[0]!.production_order_id).toBe(
       mineOrders[0]!.id,
     );
+  });
+
+  it("[legend-qq4k] actor tanpa inventory.production.record tidak membuat production order", async () => {
+    installCreator();
+    // Assumption (CTO decision): without the production permission the creator
+    // creates nothing, leaves production_order_id null and does not fail the
+    // prep list completion.
+    const prepOnly = await seedActor(["ops.prep.manage"]);
+    const flour = await seedItem(
+      `Tepung ${randomUUID().slice(0, 6)}`,
+      "raw_material",
+    );
+    const dough = await seedItem(
+      `Adonan ${randomUUID().slice(0, 6)}`,
+      "semi_finished",
+    );
+    await seedRecipe({ output: dough, component: flour, isActive: true });
+
+    const context = outletScope(outletA);
+    const list = await createPrepList(
+      context,
+      prepOnly,
+      {
+        outletId: outletIdSchema.parse(outletA),
+        prepDate: "2030-03-26",
+        lines: [{ inventoryItemId: dough.id, plannedQuantity: qty("3.0000") }],
+        idempotencyKey: nextKey("list"),
+      },
+      NOW,
+    );
+    createdPrepListIds.push(list.id);
+    await transitionPrepList(
+      context,
+      prepOnly,
+      list.id,
+      { action: "start", idempotencyKey: nextKey("start") },
+      NOW,
+    );
+    const completed = await complete(context, list.id, undefined, prepOnly);
+    expect(completed.status).toBe("completed");
+
+    expect(await ordersForItems([dough.id])).toHaveLength(0);
+    const lines = await lineRows(list.id);
+    expect(lines.map((line) => line.production_order_id)).toEqual([null]);
+    const { rows } = await asOwner(tenantId, (client) =>
+      client.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM stock_ledger
+          WHERE tenant_id = $1 AND inventory_item_id = ANY($2::uuid[])`,
+        [tenantId, [dough.id, flour.id]],
+      ),
+    );
+    expect(rows[0]!.n).toBe(0);
+    const { rows: journals } = await asOwner(tenantId, (client) =>
+      client.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM journal_entries
+          WHERE tenant_id = $1 AND source_id = $2`,
+        [tenantId, list.id],
+      ),
+    );
+    expect(journals[0]!.n).toBe(0);
   });
 });

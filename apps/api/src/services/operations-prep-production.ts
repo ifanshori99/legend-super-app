@@ -28,8 +28,10 @@ import { stockLocations } from "../db/schema/inventory.ts";
 import { productionOrders } from "../db/schema/inventory-ops.ts";
 import { prepListItems, prepLists } from "../db/schema/operations.ts";
 import { recipes } from "../db/schema/recipe.ts";
-import { recordOpsAudit } from "./inventory-ops.shared.ts";
+import { PRODUCTION_WRITE_PERMISSION } from "./inventory-production.service.ts";
+import { outletTarget, recordOpsAudit } from "./inventory-ops.shared.ts";
 import type { OperationsTx } from "./operations-idempotency.ts";
+import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 
 /** What the WS-06 creator needs to materialize the production orders. */
 export type PrepProductionOrderInput = {
@@ -149,7 +151,10 @@ const PREP_PRODUCTION_AUDIT_FIELDS = [
  * line that has none yet. Draft only: no cost, stock movement or GL entry
  * (those happen when the batch itself is completed). A line is skipped, never
  * guessed, when its item has zero or several active recipes, or when the
- * outlet has no single active kitchen location. Replays are safe: the line
+ * outlet has no single active kitchen location. The actor must hold
+ * `inventory.production.record` on the outlet (same permission as
+ * `createProductionOrder`); without it nothing is created and no error is
+ * thrown, so completing the prep list still succeeds. Replays are safe: the line
  * rows are locked and only lines with a null `production_order_id` are filled.
  */
 export const productionOrderPrepCreator: PrepProductionOrderCreator = async (
@@ -160,6 +165,19 @@ export const productionOrderPrepCreator: PrepProductionOrderCreator = async (
 ) => {
   if (input.actorUserId === undefined) return;
   const tenantId = context.tenant.tenantId;
+
+  // Non-throwing check (requireOpsPermission throws): a denied actor skips
+  // every line instead of aborting the completion transaction.
+  const snapshot = await accessSnapshotInTransaction(
+    tx,
+    context,
+    input.actorUserId,
+    now,
+  );
+  if (
+    !snapshot.allows(PRODUCTION_WRITE_PERMISSION, outletTarget(input.outletId))
+  )
+    return;
 
   const pending = await tx
     .select({
