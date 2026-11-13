@@ -5262,3 +5262,12 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - legend-zy43 TIDAK selesai: tidak ada producer `receipt_run.reported` di edge pada cabang dasar; `receipt_run` tetap di `posDeferredAggregates`.
 - Gerbang: tsc api+shared hijau, 118 berkas test terarah (1922 test) hijau, edge-order-ingest + guard 46/46, `db:generate` kosong, tes root database/db-role/text-contract 52/52, prettier+eslint hijau. Architect K: ronde 1 (4 Medium + 1 risiko uang, dibetulkan), ronde 2 APPROVE.
 - Rilis: deploy cloud dulu, baru edge (skema cloud strict menolak key baru).
+
+## 2026-11-14: Merge train batch60 (cabang int/batch60)
+
+- Isi (urutan, dari m1 ecab3cff8): `fix/flaky-654` (cf6f01195; legend-1jxh8, rr0x1, 30dhj), `ws/edge-order-ingest` (c72bddf73; legend-771dl). Satu-satunya konflik: `docs/PROGRESS.md` (kedua bagian dipertahankan).
+- Peta migrasi (`when` 1794582500000): 0522 edge_order_ingests -> 0347. 0510/0508 bawaan edge-sync-appliers tidak dipasang lagi (sudah 0342/0339 di m1). FK ke `tenants` dan `outlets` dipindah inline ke `CREATE TABLE` (ADD CONSTRAINT FK ke `outlets` gagal "tenant context is required" untuk pemilik biasa karena FORCE RLS). `migration-renumber check` ok, `db:generate` kosong, referensi di `docs/design/edge-order-ingest.md` diganti.
+- Bukti upgrade: baseline m1 (333 migrasi) dipasang superuser, kepemilikan dipindah ke pemilik biasa (rolsuper, rolbypassrls, rolcreaterole, rolcreatedb semua false), 0347 diterapkan: 334 baris, `edge_order_ingests` ENABLE+FORCE RLS, 3 policy, 4 constraint; replay tidak mengubah apa pun.
+- Gerbang: lint hijau (0 error, 2 warning lama); typecheck 49 dtk hijau; tes root `node --test tests/*.test.mjs` terarah 2851/2855 (4 gagal hanya "isolated database", lingkungan); `heavy pnpm run test` penuh 02:33-03:45 (72 mnt) exit 0: vitest 1082 berkas/17477 lulus/41 skip/16 todo, root 2884/2884; build hijau; e2e `legend-zueb.mock.spec.ts` 18/18 hijau.
+- Flake 654: `rotate-data-key`, `hris-leave-changed-event`, `platform-org-api` TEN-03/06 tidak muncul di run penuh (0 gagal). Bukti fix 654.
+- Belum: `legend-zy43` (tidak ada producer `receipt_run.reported` di edge). Rilis edge order ingest: deploy cloud dulu, baru edge.
