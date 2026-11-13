@@ -67,6 +67,8 @@ export const posErrorHttpStatus = {
   BUSINESS_DAY_ALREADY_CLOSED: 409,
   /** legend-yhia9: a QRIS can still be paid; the bill's money is frozen. */
   QRIS_HOLD_ACTIVE: 409,
+  /** legend-yhia9 D-09: an edge without gateway credentials cannot issue QRIS. */
+  QRIS_NEEDS_CLOUD: 409,
 } as const satisfies Record<string, number>;
 
 export type PosErrorCode = keyof typeof posErrorHttpStatus;
@@ -119,6 +121,8 @@ const defaultMessages: Record<PosErrorCode, string> = {
   BUSINESS_DAY_ALREADY_CLOSED: "Hari kerja ini sudah ditutup.",
   QRIS_HOLD_ACTIVE:
     "QR masih bisa dibayar. Batalkan QR dan tunggu konfirmasi penyedia dulu.",
+  QRIS_NEEDS_CLOUD:
+    "QRIS belum bisa dibuat dari server lokal outlet. Pakai kasir online atau metode lain.",
 };
 
 export class PosError extends Error {

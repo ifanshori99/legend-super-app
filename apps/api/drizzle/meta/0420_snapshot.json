@@ -49603,7 +49603,7 @@
           "name": "tender_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "payment_intent_id": {
           "name": "payment_intent_id",
@@ -49664,7 +49664,7 @@
           "name": "opened_by",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "cancel_requested_at": {
           "name": "cancel_requested_at",
@@ -49909,13 +49909,17 @@
           "name": "pos_qris_holds_amount_check",
           "value": "\"pos_qris_holds\".\"amount_idr\" > 0"
         },
+        "pos_qris_holds_target_check": {
+          "name": "pos_qris_holds_target_check",
+          "value": "\"pos_qris_holds\".\"tender_id\" IS NOT NULL OR \"pos_qris_holds\".\"bill_split_id\" IS NOT NULL"
+        },
         "pos_qris_holds_state_check": {
           "name": "pos_qris_holds_state_check",
           "value": "\"pos_qris_holds\".\"state\" IN ('open', 'cancelling', 'paid', 'closed')"
         },
         "pos_qris_holds_basis_check": {
           "name": "pos_qris_holds_basis_check",
-          "value": "\"pos_qris_holds\".\"backfilled\" OR (\"pos_qris_holds\".\"basis_total_idr\" IS NOT NULL AND \"pos_qris_holds\".\"basis_deposit_idr\" IS NOT NULL AND \"pos_qris_holds\".\"basis_captured_idr\" IS NOT NULL AND \"pos_qris_holds\".\"amount_idr\" = \"pos_qris_holds\".\"basis_total_idr\" - \"pos_qris_holds\".\"basis_deposit_idr\" - \"pos_qris_holds\".\"basis_captured_idr\")"
+          "value": "\"pos_qris_holds\".\"backfilled\" OR \"pos_qris_holds\".\"bill_split_id\" IS NOT NULL OR (\"pos_qris_holds\".\"basis_total_idr\" IS NOT NULL AND \"pos_qris_holds\".\"basis_deposit_idr\" IS NOT NULL AND \"pos_qris_holds\".\"basis_captured_idr\" IS NOT NULL AND \"pos_qris_holds\".\"amount_idr\" = \"pos_qris_holds\".\"basis_total_idr\" - \"pos_qris_holds\".\"basis_deposit_idr\" - \"pos_qris_holds\".\"basis_captured_idr\")"
         },
         "pos_qris_holds_cancel_pair_check": {
           "name": "pos_qris_holds_cancel_pair_check",

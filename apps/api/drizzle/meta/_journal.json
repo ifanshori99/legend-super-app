@@ -2080,6 +2080,13 @@
       "when": 1794531030979,
       "tag": "0420_pos_qris_hold_freeze",
       "breakpoints": true
+    },
+    {
+      "idx": 421,
+      "version": "7",
+      "when": 1794533716304,
+      "tag": "0421_pos_customer_display",
+      "breakpoints": true
     }
   ]
 }

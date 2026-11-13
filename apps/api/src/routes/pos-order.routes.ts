@@ -55,7 +55,11 @@ import {
   getScopedTenantContext,
   requireOutletPermission,
 } from "../middleware/permissions.ts";
-import { requireTenantContext } from "../middleware/tenant.ts";
+import {
+  getTenantContext,
+  requireTenantContext,
+} from "../middleware/tenant.ts";
+import { selectBillAfterQrisIssued } from "../services/customer-display.service.ts";
 import { currentDeviceIdOf } from "./device-id.ts";
 import * as corrections from "../services/pos-order-corrections.ts";
 import * as discounts from "../services/pos-order-discounts.ts";
@@ -379,13 +383,23 @@ posOrderRouter.post(
   async (req, res) => {
     const { outletId, orderId } = addPosTender.params.parse(req.params);
     const body = addPosTender.body.parse(req.body);
+    const tenderCaller = await caller(req, body);
     const data = await addPosTenderService(
       getScopedTenantContext(req),
-      await caller(req, body),
+      tenderCaller,
       outletId,
       orderId,
       body,
     );
+    // legend-yhia9 D-08 (C3): a QR issued from a terminal puts that bill on
+    // its paired display. Best effort; never fails the tender.
+    if (body.method === "qris" && tenderCaller.deviceId !== null)
+      await selectBillAfterQrisIssued(
+        getTenantContext(req),
+        outletId,
+        tenderCaller.deviceId,
+        orderId,
+      );
     await sendOrder(req, res, outletId, orderId, data, 201);
   },
 );

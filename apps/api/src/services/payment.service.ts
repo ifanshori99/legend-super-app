@@ -23,6 +23,7 @@ import {
   isoDateTimeSchema,
   outletIdSchema,
   uuidSchema,
+  type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
@@ -68,6 +69,8 @@ import {
   paymentUnallocatedFunds,
 } from "../db/schema";
 import { auditLogs } from "../db/schema/core-audit";
+import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
+import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
@@ -1685,6 +1688,83 @@ export async function refreshIntent(
 // ---------------------------------------------------------- confirmation
 
 /**
+ * legend-yhia9 D-05/D-07: money for a POS QRIS that has a hold is applied only
+ * when the hold is still active and the amount is exactly the hold's. A closed
+ * hold (provider proof or manager release) or a different amount never settles
+ * the bill: the money is parked as unallocated funds (the manager returns it),
+ * the outlet manager is alerted, and the usual 409 follows. Intents without a
+ * hold (cards, QR-table, legacy tenders) are untouched. Replays are no-ops (the
+ * evidence key makes parking once-only; an already applied hold is `paid`).
+ */
+async function parkWhenQrisHoldRefuses(
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  paid: { providerRef: string; amountIdr: number; source: string },
+  now: Date,
+): Promise<void> {
+  const [hold] = await withTenant(db, context, (tx) =>
+    tx
+      .select({
+        id: posQrisHolds.id,
+        state: posQrisHolds.state,
+        amountIdr: posQrisHolds.amountIdr,
+        openedBy: posQrisHolds.openedBy,
+      })
+      .from(posQrisHolds)
+      .where(
+        and(
+          eq(posQrisHolds.tenantId, context.tenant.tenantId),
+          eq(posQrisHolds.paymentIntentId, intent.id),
+        ),
+      ),
+  );
+  if (!hold || hold.state === "paid") return;
+  const mismatch = paid.amountIdr !== Number(hold.amountIdr);
+  if (hold.state !== "closed" && !mismatch) return;
+  await withTenant(db, context, async (tx) => {
+    await recordUnsettledGatewayFundsInTx(
+      tx,
+      context,
+      intent,
+      {
+        provider: intent.provider,
+        providerRef: paid.providerRef,
+        source:
+          paid.source === "verified_webhook"
+            ? "verified_webhook"
+            : "gateway_status",
+        paidAmountIdr: paid.amountIdr,
+        receivedAt: now,
+      },
+      now,
+    );
+    await notifyOutletSupervisors(
+      tx,
+      context,
+      {
+        tenantId: context.tenant.tenantId,
+        outletId: intent.outletId as OutletId,
+        alsoOwners: true,
+        // The cashier who issued the QR hears it too; guests have no opener.
+        alsoUserIds: hold.openedBy ? [hold.openedBy] : [],
+        id: createUlid(now.getTime()),
+        eventName: "payment_qris_funds.parked",
+        aggregateType: "payment_qris_funds",
+        aggregateId: intent.id,
+        payload: { intentId: intent.id, holdId: hold.id },
+        title: "Uang QRIS perlu dikembalikan",
+        body: `Pembayaran QRIS Rp${paid.amountIdr} masuk untuk QR yang sudah ditutup atau nominalnya berbeda. Uang ditahan di dana belum teralokasi; kembalikan ke pembayar.`,
+      },
+      now,
+    );
+  });
+  throw new PaymentConfirmationRejected(
+    mismatch ? "AMOUNT_MISMATCH" : "BILL_CLOSED",
+    "This QRIS payment cannot settle its bill; the money is parked.",
+  );
+}
+
+/**
  * PAY-02/PAY-04: applies one verified confirmation. The caller must already
  * have verified the evidence (webhook signature, EDC ECR result, authorized
  * cash officer); this function decides what that evidence may change.
@@ -1720,6 +1800,7 @@ export async function confirmPayment(
   });
   if (!intent) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
   assertOutletInScope(context.outletScope, intent.outletId);
+  await parkWhenQrisHoldRefuses(context, intent, parsed, now);
   const updated = await applyConfirmation(
     context,
     intent,
@@ -2469,6 +2550,46 @@ async function releasePollLease(
 }
 
 /**
+ * Asks the provider about one intent now and settles it through the same path
+ * as the poll (legend-yhia9: the QRIS hold check job, which must not wait for
+ * the poll's grace window). A `paid` answer ends in `confirmPayment`; any other
+ * answer changes nothing the hold depends on. Returns whether it settled.
+ */
+export async function settleGatewayIntentNow(
+  context: ScopedTenantContext,
+  intentId: string,
+  now = new Date(),
+): Promise<boolean> {
+  const [row] = await withTenant(db, context, async (tx) =>
+    tx
+      .select()
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intentId),
+        ),
+      ),
+  );
+  if (!row || row.providerRef === null) return false;
+  const outletContext =
+    context.outletScope.kind === "tenant"
+      ? establishScopedTenantContext(context.tenant, {
+          kind: "outlets",
+          outletIds: [row.outletId],
+        })
+      : context;
+  const result =
+    row.status === "expired"
+      ? await syncExpiredIntentPayment(outletContext, row, now)
+      : await syncPendingIntentDetailed(outletContext, row, now);
+  return (
+    row.status !== result.intent.status &&
+    (SETTLED_STATUSES as readonly string[]).includes(result.intent.status)
+  );
+}
+
+/**
  * Polling fallback for a lost webhook (PAY-02/03): asks the gateway about
  * pending intents that have a provider reference and are older than the grace
  * period, through the same path as the customer's status check. Recently
@@ -2536,7 +2657,16 @@ export async function pollPendingGatewayIntents(
             backoffDue,
             eq(paymentIntents.provider, provider),
             isNotNull(paymentIntents.providerRef),
-            lt(paymentIntents.createdAt, cutoff),
+            or(
+              lt(paymentIntents.createdAt, cutoff),
+              // legend-yhia9 D-09: a QRIS under an active hold is polled from
+              // the start (an edge never gets the webhook; the grace only
+              // exists to let a webhook win the race).
+              sql`exists (select 1 from pos_qris_holds h
+                   where h.tenant_id = ${paymentIntents.tenantId}
+                     and h.payment_intent_id = ${paymentIntents.id}
+                     and h.state in ('open', 'cancelling'))`,
+            ),
           ),
         )
         .orderBy(

@@ -139,6 +139,8 @@ export type SupervisorAlert = {
   category?: NotificationCategory;
   /** Owners get it even when the outlet has supervisors. */
   alsoOwners?: boolean;
+  /** Extra recipients (for example the cashier who opened the bill). */
+  alsoUserIds?: readonly string[];
   outletId: OutletId;
   /** ULID; the notification consumer dedupes on it. */
   id: string;
@@ -161,12 +163,17 @@ export async function notifyOutletSupervisors(
   alert: SupervisorAlert,
   now: Date,
 ): Promise<void> {
-  const userIds = await supervisorIds(
-    tx,
-    alert.tenantId,
-    alert.outletId,
-    alert.alsoOwners === true,
-  );
+  const userIds = [
+    ...new Set([
+      ...(await supervisorIds(
+        tx,
+        alert.tenantId,
+        alert.outletId,
+        alert.alsoOwners === true,
+      )),
+      ...(alert.alsoUserIds ?? []),
+    ]),
+  ];
   if (userIds.length === 0) return;
   const [policyRow] = await tx
     .select()

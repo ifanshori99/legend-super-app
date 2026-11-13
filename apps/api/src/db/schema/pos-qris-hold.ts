@@ -56,20 +56,24 @@ export const posQrisHolds = pgTable(
     id: ulidInUuid("id").notNull(),
     outletId: outletIdColumn(() => outlets.id).notNull(),
     orderId: ulidInUuid("order_id").notNull(),
-    tenderId: uuid("tender_id").notNull(),
+    /** NULL only for a guest split-bill QR (`billSplitId` set): no POS tender. */
+    tenderId: uuid("tender_id"),
     paymentIntentId: uuid("payment_intent_id").notNull(),
     billSplitId: uuid("bill_split_id"),
     amountIdr: idrColumn("amount_idr").notNull(),
-    /** Bill at issue: total, DP and captured. NULL only for a backfilled hold. */
+    /**
+     * Bill at issue: total, DP and captured. NULL only for a backfilled hold.
+     * A split-part hold stores them too, but its amount is one part, so the
+     * equation below is not asked of it.
+     */
     basisTotalIdr: idrColumn("basis_total_idr"),
     basisDepositIdr: idrColumn("basis_deposit_idr"),
     basisCapturedIdr: idrColumn("basis_captured_idr"),
     backfilled: boolean("backfilled").notNull().default(false),
     state: text("state").$type<PosQrisHoldState>().notNull(),
     openedAt: timestamp("opened_at", { withTimezone: true }).notNull(),
-    openedBy: text("opened_by")
-      .notNull()
-      .references(() => user.id),
+    /** Staff who issued the QR. NULL only for a guest split-bill QR. */
+    openedBy: text("opened_by").references(() => user.id),
     cancelRequestedAt: timestamp("cancel_requested_at", {
       withTimezone: true,
     }),
@@ -119,12 +123,16 @@ export const posQrisHolds = pgTable(
       .where(sql`${table.state} IN ('open', 'cancelling')`),
     check("pos_qris_holds_amount_check", sql`${table.amountIdr} > 0`),
     check(
+      "pos_qris_holds_target_check",
+      sql`${table.tenderId} IS NOT NULL OR ${table.billSplitId} IS NOT NULL`,
+    ),
+    check(
       "pos_qris_holds_state_check",
       sql`${table.state} IN ('open', 'cancelling', 'paid', 'closed')`,
     ),
     check(
       "pos_qris_holds_basis_check",
-      sql`${table.backfilled} OR (${table.basisTotalIdr} IS NOT NULL AND ${table.basisDepositIdr} IS NOT NULL AND ${table.basisCapturedIdr} IS NOT NULL AND ${table.amountIdr} = ${table.basisTotalIdr} - ${table.basisDepositIdr} - ${table.basisCapturedIdr})`,
+      sql`${table.backfilled} OR ${table.billSplitId} IS NOT NULL OR (${table.basisTotalIdr} IS NOT NULL AND ${table.basisDepositIdr} IS NOT NULL AND ${table.basisCapturedIdr} IS NOT NULL AND ${table.amountIdr} = ${table.basisTotalIdr} - ${table.basisDepositIdr} - ${table.basisCapturedIdr})`,
     ),
     check(
       "pos_qris_holds_cancel_pair_check",

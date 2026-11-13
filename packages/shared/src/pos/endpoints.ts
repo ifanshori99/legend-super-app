@@ -31,7 +31,10 @@ import {
   closeBusinessDayInputSchema,
   closePosShiftInputSchema,
   forceClosePosShiftInputSchema,
+  customerDisplayPairingCodeSchema,
+  customerDisplayPairingIdSchema,
   customerDisplayPairingSchema,
+  customerDisplaySelectionSchema,
   customerDisplayStateSchema,
   discountReasonSchema,
   endOfDayRecapSchema,
@@ -42,6 +45,7 @@ import {
   orderItemIdSchema,
   orderIdSchema,
   pairCustomerDisplayInputSchema,
+  selectCustomerDisplayBillInputSchema,
   posApprovalPolicySchema,
   posCashMovementSchema,
   posCatalogSchema,
@@ -718,5 +722,32 @@ export const pairCustomerDisplay = defineEndpoint({
   path: "/api/outlets/:outletId/pos/customer-display/pair",
   params: outletParams,
   body: pairCustomerDisplayInputSchema,
+  response: dataResponseSchema(customerDisplayPairingSchema),
+});
+
+/** legend-yhia9 D-08: a display device asks for its pairing code. */
+export const createCustomerDisplayPairingCode = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/customer-display/pairing-codes",
+  params: outletParams,
+  response: dataResponseSchema(customerDisplayPairingCodeSchema),
+});
+
+/** The cashier picks the bill the paired display shows (null: idle). */
+export const selectCustomerDisplayBill = defineEndpoint({
+  method: "PUT",
+  path: "/api/outlets/:outletId/pos/customer-display/selection",
+  params: outletParams,
+  body: selectCustomerDisplayBillInputSchema,
+  response: dataResponseSchema(customerDisplaySelectionSchema),
+});
+
+export const revokeCustomerDisplayPairing = defineEndpoint({
+  method: "DELETE",
+  path: "/api/outlets/:outletId/pos/customer-display/pairings/:pairingId",
+  params: z.strictObject({
+    outletId: outletIdSchema,
+    pairingId: customerDisplayPairingIdSchema,
+  }),
   response: dataResponseSchema(customerDisplayPairingSchema),
 });

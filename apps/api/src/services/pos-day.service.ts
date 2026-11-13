@@ -65,6 +65,7 @@ import {
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { domainEventOutbox, outlets } from "../db/schema/index.ts";
+import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import {
   posOrderRefunds,
   posOrders,
@@ -828,6 +829,27 @@ export async function closePosDay(
       .limit(1);
     if (pending)
       throw new CoreError("CONFLICT", "Masih ada pesanan yang belum selesai.");
+    // legend-yhia9 D-01: a QR (also a guest split QR) can still be paid.
+    const [waitingQr] = await tx
+      .select({ id: posQrisHolds.id })
+      .from(posQrisHolds)
+      .innerJoin(
+        orders,
+        and(
+          eq(orders.tenantId, posQrisHolds.tenantId),
+          eq(orders.id, posQrisHolds.orderId),
+        ),
+      )
+      .where(
+        and(
+          eq(posQrisHolds.tenantId, tenantId),
+          eq(posQrisHolds.outletId, outletId),
+          eq(orders.businessDate, body.businessDate),
+          inArray(posQrisHolds.state, ["open", "cancelling"]),
+        ),
+      )
+      .limit(1);
+    if (waitingQr) throw new PosError("QRIS_HOLD_ACTIVE");
 
     const open = await computeRecap(
       tx,

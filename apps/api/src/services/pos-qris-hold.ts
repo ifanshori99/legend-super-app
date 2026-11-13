@@ -12,16 +12,18 @@
 // pos_orders -> pos_qris_holds -> pos_order_tenders -> payment_links ->
 // payment_intents -> funds/refunds. Every writer below follows it.
 
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import {
   CoreError,
   createUlid,
+  idr,
   type OutletId,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import { PosError, type PosQrisHold } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
-import { paymentIntents } from "../db/schema/index.ts";
+import { orders, paymentIntents } from "../db/schema/index.ts";
 import { posOrders, posOrderTenders } from "../db/schema/pos-order.ts";
 import {
   posQrisHolds,
@@ -29,8 +31,12 @@ import {
 } from "../db/schema/pos-qris-hold.ts";
 import { withTenant } from "../db/tenant.ts";
 import type { Tx } from "./menu-internals.ts";
-import { cancelPaymentLinkInTx } from "./payment.service.ts";
+import {
+  cancelPaymentLinkInTx,
+  settleGatewayIntentNow,
+} from "./payment.service.ts";
 import { paymentGatewayFor } from "./payment-gateway.ts";
+import { appendPaymentEvent } from "./payment-support.ts";
 import { mutatePosOrder } from "./pos-order.service.ts";
 import {
   appendOrderEvent,
@@ -62,7 +68,7 @@ const isActive = (hold: Pick<HoldRow, "state">) =>
 /** The hold of the bill that still gates its money, if any. */
 export async function activeHoldOf(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   orderId: string,
 ): Promise<HoldRow | null> {
   const [hold] = await tx
@@ -95,7 +101,7 @@ export async function assertNoActiveQrisHold(
 /** Locks every hold of the bill (lock order: after pos_orders, before tenders). */
 export async function lockHoldsOfOrder(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   orderId: string,
 ): Promise<HoldRow[]> {
   return tx
@@ -143,7 +149,7 @@ export async function openQrisHold(
       amountIdr: tender.amountIdr,
       basisTotalIdr: order.totalIdr,
       basisDepositIdr: order.depositAppliedIdr,
-      basisCapturedIdr: input.capturedIdr,
+      basisCapturedIdr: idr(input.capturedIdr),
       backfilled: false,
       state: "open",
       openedAt: now,
@@ -152,6 +158,87 @@ export async function openQrisHold(
     .returning();
   if (!row) throw new Error("QRIS hold insert returned no row");
   return row;
+}
+
+/**
+ * A guest split-bill QR (`POST /table-sessions/:id/payments`, target split)
+ * has no POS tender, so its hold has `tenderId` null and `billSplitId` set.
+ * Same transaction as the split intent; the caller holds the order lock. The
+ * basis is stored for the record, but its amount is one part of the bill, so
+ * the 0419 equation check is not asked of it. `openedBy` stays null: a guest
+ * is not a staff user.
+ */
+export async function openSplitQrisHold(
+  tx: Tx,
+  input: {
+    order: Pick<
+      OrderRow,
+      "tenantId" | "id" | "outletId" | "totalIdr" | "depositAppliedIdr"
+    >;
+    billSplitId: string;
+    intentId: string;
+    amount: number;
+    now?: Date;
+  },
+): Promise<HoldRow> {
+  const { order } = input;
+  const now = input.now ?? new Date();
+  const [row] = await tx
+    .insert(posQrisHolds)
+    .values({
+      tenantId: order.tenantId,
+      id: createUlid(now.getTime()),
+      outletId: order.outletId,
+      orderId: order.id,
+      tenderId: null,
+      paymentIntentId: input.intentId,
+      billSplitId: input.billSplitId,
+      amountIdr: idr(input.amount),
+      basisTotalIdr: order.totalIdr,
+      basisDepositIdr: order.depositAppliedIdr,
+      basisCapturedIdr: idr(0),
+      backfilled: false,
+      state: "open",
+      openedAt: now,
+      openedBy: null,
+    })
+    .returning();
+  if (!row) throw new Error("QRIS hold insert returned no row");
+  return row;
+}
+
+/**
+ * The provider reported this guest split intent paid: its hold, if any, ends
+ * `paid` (never moves money by itself; the payment path books it). Call before
+ * anything that the 0420 triggers refuse while the hold is active. Only split
+ * holds: a POS hold ends in the POS paid handler together with its tender.
+ * Returns true when a hold was moved.
+ */
+export async function markSplitQrisHoldPaidByIntentTx(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+  now: Date,
+): Promise<boolean> {
+  const rows = await tx
+    .update(posQrisHolds)
+    .set({
+      state: "paid",
+      closedAt: now,
+      closeReason: "provider_paid",
+      closeEvidence: { intentId },
+      nextCheckAt: null,
+    })
+    .where(
+      and(
+        eq(posQrisHolds.tenantId, tenantId),
+        eq(posQrisHolds.paymentIntentId, intentId),
+        isNotNull(posQrisHolds.billSplitId),
+        inArray(posQrisHolds.state, [...ACTIVE_STATES]),
+      ),
+    )
+    .returning({ id: posQrisHolds.id });
+  return rows.length > 0;
 }
 
 // ---- Close ------------------------------------------------------------------
@@ -168,7 +255,8 @@ export async function closeQrisHoldTx(
   context: ScopedTenantContext,
   input: {
     order: OrderRow;
-    pos: PosRow;
+    /** null for a guest split-bill hold: its order has no POS row. */
+    pos: PosRow | null;
     hold: HoldRow;
     reason: PosQrisHoldCloseReason;
     evidence: Record<string, unknown>;
@@ -197,16 +285,20 @@ export async function closeQrisHoldTx(
     )
     .returning({ id: posQrisHolds.id });
   if (closed.length === 0) return false;
-  const [tender] = await tx
-    .select()
-    .from(posOrderTenders)
-    .where(
-      and(
-        eq(posOrderTenders.tenantId, tenantId),
-        eq(posOrderTenders.id, hold.tenderId),
-      ),
-    )
-    .for("update");
+  // A guest split-bill hold has no POS tender (tenderId null).
+  const [tender] =
+    hold.tenderId === null
+      ? []
+      : await tx
+          .select()
+          .from(posOrderTenders)
+          .where(
+            and(
+              eq(posOrderTenders.tenantId, tenantId),
+              eq(posOrderTenders.id, hold.tenderId),
+            ),
+          )
+          .for("update");
   if (tender && tender.status === "authorized") {
     await tx
       .update(posOrderTenders)
@@ -225,20 +317,52 @@ export async function closeQrisHoldTx(
         reason: "cancelled",
       });
   }
-  await bumpPos(tx, context, pos, now);
-  await appendOrderEvent(tx, context, {
-    order,
-    type: "order.tender_voided",
-    payload: {
-      tenderId: hold.tenderId,
-      method: "qris",
-      amountIdr: hold.amountIdr,
-      reason: input.reason,
-      holdId: hold.id,
-    },
-    caller: input.caller,
-    now,
-  });
+  // Provider proof says the QR is dead: the intent is closed too (a lapsed
+  // gateway code stays `pending` in the link cancel above, awaiting exactly
+  // this proof). A manager release keeps it as is. Payment that still arrives
+  // is parked (D-07).
+  if (
+    input.reason === "provider_expired" ||
+    input.reason === "provider_failed"
+  ) {
+    const failed = input.reason === "provider_failed";
+    const lapsed = await tx
+      .update(paymentIntents)
+      .set({ status: failed ? "failed" : "expired", updatedAt: now })
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantId),
+          eq(paymentIntents.id, hold.paymentIntentId),
+          eq(paymentIntents.status, "pending"),
+        ),
+      )
+      .returning({ id: paymentIntents.id, outletId: paymentIntents.outletId });
+    for (const intent of lapsed)
+      await appendPaymentEvent(tx, context, {
+        name: failed ? "payment.failed" : "payment.expired",
+        aggregateId: intent.id,
+        outletId: intent.outletId,
+        actor: { type: "system" },
+        payload: { intentId: intent.id, reason: input.reason },
+        now,
+      });
+  }
+  if (pos) {
+    await bumpPos(tx, context, pos, now);
+    await appendOrderEvent(tx, context, {
+      order,
+      type: "order.tender_voided",
+      payload: {
+        tenderId: hold.tenderId,
+        method: "qris",
+        amountIdr: hold.amountIdr,
+        reason: input.reason,
+        holdId: hold.id,
+      },
+      caller: input.caller,
+      now,
+    });
+  }
   await auditPos(
     tx,
     context,
@@ -265,7 +389,7 @@ export async function closeQrisHoldTx(
 
 async function holdDto(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   hold: HoldRow,
 ): Promise<PosQrisHold> {
   const [intent] = await tx
@@ -292,7 +416,7 @@ async function holdDto(
 
 async function newestHold(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   orderId: string,
 ): Promise<HoldRow | null> {
   const [hold] = await tx
@@ -484,6 +608,15 @@ export async function checkQrisHold(
   }
   const sameReference =
     answer !== null && answer.providerRef === intent.providerRef;
+  if (answer?.status === "paid" && sameReference) {
+    // The customer paid: settle through the normal path (evidence, link, the
+    // payment.paid event that captures the tender). Never closes the hold.
+    try {
+      await settleGatewayIntentNow(context, intent.id, now);
+    } catch {
+      // The next check retries.
+    }
+  }
   const dead =
     answer !== null &&
     sameReference &&
@@ -493,12 +626,31 @@ export async function checkQrisHold(
   const provenAt = intent.expiresAt.getTime() + HOLD_CLOSE_MARGIN_MS;
   const proof = dead && now.getTime() >= provenAt;
   return withTenant(db, context, async (tx) => {
-    const { order, pos } = await lockPosOrder(
-      tx,
-      context,
-      target.hold.outletId as OutletId,
-      target.hold.orderId,
-    );
+    // A guest split-bill hold has no POS row: lock the bill (orders) only.
+    const split = target.hold.tenderId === null;
+    let order: OrderRow;
+    let pos: PosRow | null = null;
+    if (split) {
+      const [row] = await tx
+        .select()
+        .from(orders)
+        .where(
+          and(
+            eq(orders.tenantId, tenantId),
+            eq(orders.id, target.hold.orderId),
+          ),
+        )
+        .for("update");
+      if (!row) return null;
+      order = row;
+    } else {
+      ({ order, pos } = await lockPosOrder(
+        tx,
+        context,
+        target.hold.outletId as OutletId,
+        target.hold.orderId,
+      ));
+    }
     const [hold] = await tx
       .select()
       .from(posQrisHolds)
