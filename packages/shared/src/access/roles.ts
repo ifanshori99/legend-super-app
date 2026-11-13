@@ -129,6 +129,7 @@ const templates: readonly RoleTemplate[] = [
       "org.integration.manage",
       "org.theme.manage",
       "org.config.export",
+      "org.config.import",
       "org.tax_config.manage",
       "org.notification_policy.manage",
       "device.registry.manage",

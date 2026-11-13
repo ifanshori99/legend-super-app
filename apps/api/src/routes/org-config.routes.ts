@@ -2,7 +2,8 @@
 // orgRouter). The target tenant is the server-minted context, never the request
 // (TEN-02): the body has no tenant id and stored templates are not accepted
 // (they are shared across tenants), only an uploaded bundle. The tenant admin
-// that sees the config screen holds `org.config.export`, which gates this too.
+// that sees the config screen holds `org.config.export`; import writes, so it
+// has its own `org.config.import` permission, separate from export.
 // Sections in TENANT_IMPORT_BLOCKED_SECTIONS (access, money, tax, loyalty,
 // payroll, facility rules) are refused here with 403 FORBIDDEN, whether named
 // in `sections` or present in the bundle; they stay on the platform admin path.
@@ -48,7 +49,7 @@ orgConfigRouter.post(
   requireTrustedOrigin,
   requireTenantContext,
   requireBackOfficeSurface(),
-  requireTenantPermission("org.config.export"),
+  requireTenantPermission("org.config.import"),
   jsonBody,
   async (req, res) => {
     const input = orgEndpoints.importConfig.body.parse(req.body);

@@ -23,8 +23,11 @@
 //   (matches org-brand-logo-media.test.ts); a role lacking the permission 403.
 // - an import succeeds with 200 or 201 and `data.status = "applied"`; a bundle
 //   that carries tenant identifiers is refused with 422 and nothing is written.
-// - the tenant admin template may import its own config (it holds
-//   org.config.export); the cashier template may not.
+// - importing needs its own permission `org.config.import` (NOT org.config.export):
+//   a role holding only export gets 403 on import, a role holding import passes.
+//   The tenant admin template holds import by default; the cashier template not.
+// - "another tenant is refused": a user whose only import-capable role is in
+//   tenant B has no tenant context in the seeded tenant (403) and writes nothing.
 // - `actorName` is the Super Admin's display name (user.name), never the email;
 //   null/absent when the user row is unknown.
 import { randomUUID } from "node:crypto";
@@ -39,6 +42,7 @@ import {
   requestSupportAccessInputSchema,
   textOverrideEndpoints,
 } from "@starter/shared/platform";
+import { PERMISSION_CODES, roleTemplate } from "@starter/shared/access";
 import { createApp } from "../app.ts";
 import {
   endSupportAccess,
@@ -103,6 +107,42 @@ async function memberOf(
   return { client, userId, email, name };
 }
 
+const createdRoles: string[] = [];
+
+/** A signed-up user holding a custom tenant-scoped role with exactly `permissions`. */
+async function memberWith(
+  tenantId: string,
+  permissions: string[],
+  name = "Uji izin khusus",
+): Promise<Member> {
+  const client = agent(app);
+  const email = await signUp(client, name);
+  const userId = (await client.get("/api/auth/get-session")).body.user
+    .id as string;
+  createdUsers.push(userId);
+  const roleId = randomUUID();
+  createdRoles.push(roleId);
+  await owner.query(
+    `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+     VALUES ($1, $2, $3, false, $4, $5)`,
+    [
+      roleId,
+      tenantId,
+      `Uji impor ${roleId.slice(0, 8)}`,
+      JSON.stringify(permissions),
+      JSON.stringify(["tenant"]),
+    ],
+  );
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by, assigned_at)
+     VALUES ($1, $2, $3, 'tenant', now() - interval '1 day', $2, now() - interval '1 day')`,
+    [tenantId, userId, roleId],
+  );
+  await verifySessionMfa(email);
+  return { client, userId, email, name };
+}
+
 const overrideRows = (tenantId: string, key: string) =>
   owner.query<{ id: string; value: string; locale: string }>(
     "SELECT id, value, locale FROM text_overrides WHERE tenant_id = $1 AND key = $2",
@@ -159,6 +199,10 @@ afterAll(async () => {
       createdUsers,
     ])
     .catch(() => undefined);
+  if (createdRoles.length)
+    await owner
+      .query("DELETE FROM roles WHERE id = ANY($1::uuid[])", [createdRoles])
+      .catch(() => undefined);
   if (createdAdmins.length)
     await owner
       .query("DELETE FROM platform_admins WHERE user_id = ANY($1::text[])", [
@@ -538,6 +582,91 @@ describe("legend-at8c POST /api/org/config/import", () => {
 
     expect(await importIds()).toHaveLength(before);
     expect(await overrideRows(seededTenantId, KEY)).toEqual(beforeRows);
+  });
+
+  it("org.config.import is a catalogued permission held by the tenant admin template, not the cashier", () => {
+    expect(PERMISSION_CODES as readonly string[]).toContain(
+      "org.config.import",
+    );
+    expect(
+      roleTemplate("tenant_admin").permissions as readonly string[],
+    ).toContain("org.config.import");
+    expect(
+      roleTemplate("cashier").permissions as readonly string[],
+    ).not.toContain("org.config.import");
+  });
+
+  it("a role holding only org.config.export gets 403 on import; nothing is written", async () => {
+    const exportOnly = await memberWith(seededTenantId, ["org.config.export"]);
+    const before = (await importIds()).length;
+    const beforeRows = await overrideRows(seededTenantId, KEY);
+    const denied = await exportOnly.client
+      .post(IMPORT)
+      .set(originHeader)
+      .send({ bundle: bundle("Hanya Ekspor") });
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    expect(await importIds()).toHaveLength(before);
+    expect(await overrideRows(seededTenantId, KEY)).toEqual(beforeRows);
+    // Export itself stays allowed for that role: the two permissions are separate.
+    const exported = await exportOnly.client
+      .post("/api/org/config/export")
+      .set(originHeader)
+      .send({});
+    expect(exported.status, JSON.stringify(exported.body)).not.toBe(403);
+  });
+
+  it("a role holding only org.config.import may import into its own tenant", async () => {
+    const importOnly = await memberWith(seededTenantId, ["org.config.import"]);
+    const response = await importOnly.client
+      .post(IMPORT)
+      .set(originHeader)
+      .send({
+        bundle: bundle(
+          "Hanya Impor",
+          {},
+          {
+            text_overrides: {
+              version: 1,
+              sets: [
+                {
+                  locale: "en",
+                  // A key no other test imports, so an earlier import can't mask a skip.
+                  overrides: [
+                    { key: "terms.stationPastry", value: "Hanya Impor" },
+                  ],
+                },
+              ],
+            },
+          },
+        ),
+      });
+    expect([200, 201], JSON.stringify(response.body)).toContain(
+      response.status,
+    );
+    expect(response.body.data).toMatchObject({
+      tenantId: seededTenantId,
+      status: "applied",
+    });
+    expect(
+      (await overrideRows(seededTenantId, "terms.stationPastry")).rows.map(
+        (row) => row.value,
+      ),
+    ).toContain("Hanya Impor");
+  });
+
+  it("a user whose import role lives in another tenant is refused and writes nothing", async () => {
+    const foreign = await memberWith(tenantB.tenantId, ["org.config.import"]);
+    const before = (await importIds()).length;
+    const response = await foreign.client
+      .post(IMPORT)
+      .set(originHeader)
+      .send({ bundle: bundle("Tenant Lain") });
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(await importIds()).toHaveLength(before);
+    for (const tenantId of [seededTenantId, tenantB.tenantId])
+      expect(
+        (await overrideRows(tenantId, KEY)).rows.map((row) => row.value),
+      ).not.toContain("Tenant Lain");
   });
 });
 
