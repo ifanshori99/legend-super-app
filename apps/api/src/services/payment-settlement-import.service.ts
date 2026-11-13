@@ -10,6 +10,7 @@ import {
   createUlid,
   idr,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import { GATEWAY_SETTLEMENT_PROVIDERS } from "@starter/shared/payment";
@@ -44,7 +45,11 @@ type SettlementRow = typeof settlements.$inferSelect;
 type MatchStatus = "matched" | "mismatch" | "unmatched";
 
 /** Gateway intents that were really paid (a refund later does not unpay them). */
-const SETTLED_INTENT_STATUSES = ["paid", "partially_refunded", "refunded"];
+const SETTLED_INTENT_STATUSES = [
+  "paid",
+  "partially_refunded",
+  "refunded",
+] as const;
 
 /** Unique violation (SQLSTATE 23505), also when the driver error is wrapped. */
 function isUniqueViolation(error: unknown, depth = 0): boolean {
@@ -95,7 +100,7 @@ type PosCandidate = { id: string; amountIdr: number };
 
 async function matchedElsewhere(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   source: "gateway" | "edc",
   ids: string[],
 ): Promise<Set<string>> {
@@ -113,7 +118,7 @@ async function matchedElsewhere(
 
 async function findEdcCandidates(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   input: Input,
   reference: string,
 ): Promise<PosCandidate[]> {
@@ -146,7 +151,7 @@ async function findEdcCandidates(
 
 async function findGatewayCandidates(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   input: Input,
   reference: string,
 ): Promise<PosCandidate[]> {
@@ -166,7 +171,7 @@ async function findGatewayCandidates(
     .limit(10);
 }
 
-async function countsOf(tx: Tx, tenantId: string, settlementId: string) {
+async function countsOf(tx: Tx, tenantId: TenantId, settlementId: string) {
   const [row] = await tx
     .select({
       matched: sql<number>`count(*) FILTER (WHERE ${lines.matchStatus} = 'matched')::int`,

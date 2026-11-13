@@ -25,7 +25,12 @@ type ReconRow = {
   journalId: string;
   statementLineId: unknown;
   description: string;
+  grossIdr: number;
+  feeIdr: number;
+  netIdr: number;
+  matchedAmountIdr: number;
   varianceIdr: number;
+  fees: { accountId: string; amountIdr: number }[];
 };
 
 const app = createApp();
@@ -491,11 +496,12 @@ describe("ACC-04 legend-ds1o gateway settlement recon", () => {
   });
 
   it("ACC-04 a client cannot override the computed totals", async () => {
-    for (const extra of [
+    const overrides: Record<string, string>[] = [
       { grossIdr: "1" },
       { varianceIdr: "0" },
       { netIdr: "1" },
-    ]) {
+    ];
+    for (const extra of overrides) {
       const response = await query(finance, { ...params(fx.e), ...extra });
       expect([400, 422]).toContain(response.status);
     }

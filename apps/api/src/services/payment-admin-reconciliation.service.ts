@@ -1,5 +1,6 @@
 // WS-05 settlement exceptions (PRD §3 F13, EDC-06).
 import { and, desc, eq, sql } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   assertTrustedScopedContext,
   createUlid,
@@ -143,7 +144,7 @@ export async function getReconciliationSummary(
         : { type: "tenant" },
       new Date(),
     );
-    const outletOf = (column: typeof cases.outletId) =>
+    const outletOf = (column: AnyPgColumn) =>
       query.outletId ? eq(column, query.outletId) : sql`TRUE`;
     const tenantId = context.tenant.tenantId;
     const [lineCounts] = await tx
