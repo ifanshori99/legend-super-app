@@ -1,6 +1,7 @@
 import "./load-env";
 import { createApp } from "./app";
 import { guardEdgeUpgrades } from "./edge/mode.ts";
+import { attachEmergencyRealtime } from "./edge/panic-relay-realtime.ts";
 import { expressClientAddress } from "./lib/client-address.ts";
 import { env } from "./config/env";
 import { checkDatabase, pool } from "./db";
@@ -138,6 +139,13 @@ const stopKdsWakeups = listenKdsWakeups(pool, kdsRealtime.dispatch).catch(
   },
 );
 
+// Emergency button socket (legend-bod): staff phones on a receiver session
+// (device + PIN cookie), in the edge process and in the cloud API of a
+// cloud-only outlet.
+const emergencyRealtime = attachEmergencyRealtime(server, {
+  trustedOrigins: env.trustedOrigins,
+});
+
 // WS-02 edge mode (legend-2pi). The cloud accepts edge links on
 // /api/edge-link; an edge node runs its boot guards and opens the link to the
 // cloud. A misconfigured or unprovisioned edge node refuses to keep running.
@@ -202,6 +210,7 @@ async function shutdown(signal: string) {
     await stopQrWakeups
   )();
   await kdsRealtime.close();
+  await emergencyRealtime.close();
   await (
     await stopKdsWakeups
   )();

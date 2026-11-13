@@ -207,6 +207,10 @@ const entries = [
   // Facility access, Wi-Fi & WFC (§3 Kelompok C, F22–F23, F38–F39)
   ["facility.booth.operate", []],
   ["facility.access.assist", []],
+  // Emergency button (legend-bod): `respond` receives and acknowledges an
+  // alert; `resolve` closes the incident in the cloud with a note.
+  ["facility.emergency.respond", []],
+  ["facility.emergency.resolve", []],
   ["facility.config.manage", []],
   ["wfc.policy.manage", []],
 

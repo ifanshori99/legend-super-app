@@ -90,9 +90,16 @@ export const EDGE_API_PREFIXES = [
 ] as const;
 
 /**
+ * Method name that `guardEdgeUpgrades` gives to a WebSocket upgrade, so an
+ * upgrade path is allowed on its own and never by a plain GET entry.
+ */
+const UPGRADE_METHOD = "UPGRADE";
+
+/**
  * Single routes served on the edge, matched by HTTP method AND exact path
- * (case-insensitive path, repeated slashes collapsed, no sub-path, no `:name`
- * segments). Used where a whole prefix would open too much: `/api/hris` and
+ * (case-insensitive path, repeated slashes collapsed, no sub-path; a `:name`
+ * segment matches exactly one non-empty segment). Used where a whole prefix
+ * would open too much: `/api/hris` and
  * `/api/storage` hold dozens of cloud-only routes (HR master data, QR secret
  * rotation, device binding, signed downloads), and writes there never sync to
  * the cloud (design docs/design/hris-edge-replication.md §9 T8).
@@ -103,17 +110,39 @@ export const EDGE_API_PREFIXES = [
  *   from the day keys the cloud sent (never the seed).
  * - `POST /api/storage/uploads`: the selfie upload. The `purpose` is in the
  *   body; the edge upload handler rejects every purpose except `selfie`.
+ * - The emergency button (legend-bod, design edge-emergency.md D-11): press,
+ *   receiver session open and end, acknowledge, the POS fallback read, and the
+ *   socket upgrade (pseudo method `UPGRADE`, see UPGRADE_METHOD). Resolve and
+ *   the manager list stay cloud only.
  */
 export const EDGE_API_EXACT_ROUTES = [
   { method: "POST", path: "/api/hris/attendance/outlet-clock" },
   { method: "GET", path: "/api/hris/attendance/qr" },
   { method: "POST", path: "/api/storage/uploads" },
+  { method: "POST", path: "/api/emergency/press" },
+  { method: "POST", path: "/api/emergency/sessions" },
+  { method: "DELETE", path: "/api/emergency/sessions/current" },
+  { method: "POST", path: "/api/emergency/alerts/:alertId/ack" },
+  { method: "GET", path: "/api/emergency/fallback" },
+  { method: UPGRADE_METHOD, path: "/api/emergency/ws" },
 ] as const;
 
 /** Prefixes served only by the edge node. */
 export const EDGE_ONLY_API_PREFIXES = ["/api/edge"] as const;
 
 export type ApiRouteClass = "edge_only" | "edge_and_cloud" | "cloud_only";
+
+function matchesExactPath(path: string, pattern: string): boolean {
+  const pathSegments = path.split("/");
+  const patternSegments = pattern.split("/");
+  return (
+    pathSegments.length === patternSegments.length &&
+    patternSegments.every((segment, index) => {
+      const actual = pathSegments[index] ?? "";
+      return segment.startsWith(":") ? actual.length > 0 : actual === segment;
+    })
+  );
+}
 
 function matchesPrefix(path: string, prefix: string): boolean {
   const pathSegments = path.split("/");
@@ -144,7 +173,8 @@ export function classifyApiPath(path: string, method?: string): ApiRouteClass {
     method !== undefined &&
     EDGE_API_EXACT_ROUTES.some(
       (route) =>
-        route.method === method.toUpperCase() && route.path === normalized,
+        route.method === method.toUpperCase() &&
+        matchesExactPath(normalized, route.path.toLowerCase()),
     )
   )
     return "edge_and_cloud";
@@ -253,7 +283,10 @@ export function guardEdgeUpgrades(
   ): boolean {
     if (event === "upgrade") {
       const [request, socket] = args as [IncomingMessage, Duplex];
-      const refusal = edgeRouteRefusal(request.url ?? "", options);
+      const refusal = edgeRouteRefusal(request.url ?? "", {
+        ...options,
+        method: UPGRADE_METHOD,
+      });
       if (refusal) {
         if (!socket.destroyed) {
           // Destroy once the refusal is flushed (as ws abortHandshake does).
