@@ -48,6 +48,40 @@ producer fills the keys only when the cloud accepted them (version check at link
 hello, M6; if that gate is not available the producer change ships behind the same
 deploy order and this is reported).
 
+### Follow-ups (legend-cqehx, legend-yu8z0)
+
+- `customerAttachedBy` (optional, nullable user id): the staff user who attached the
+  customer. With a customer the producer always sends it: the user id, or `null` when
+  nobody attached (the customer attached themselves); without a customer it is left
+  out. Ingest reads three cases: id = staff attached; `null` = nobody; missing key =
+  older producer, attacher unknown. All are stored in `orders.customer_attached_by`
+  (only together with a known customer; missing and `null` both store NULL), so the
+  LOY-02 guard (`loyalty-earn-consumer`) sees cashier and attacher. Staff who attached
+  themselves book no points (`blocked_self_serve`); the sale and its journal are
+  unaffected. A malformed id fails the strict schema: the event stays parked and
+  nothing is ingested, never "null with points". Open decision: a missing key with a
+  customer still earns unless the cashier is the member; blocking points whenever the
+  attacher is unknown needs a marker the earn guard can read.
+- tender `provider` (optional string, max 20): the `pos_order_tenders.provider` of the
+  tender. Ingest maps cash/points to `manual` and `edc_card`/`edc_qris` to `edc`
+  (a stated provider must agree, else `tender_unsupported`). A gateway method (`card`,
+  `va`, `ewallet`, `qris`) is ingested only when `provider` is a gateway adapter code
+  (`PAYMENT_GATEWAY_PROVIDERS`: `doit`, `duitku`; the DB check allows these plus `edc`
+  and `manual`, which are not gateways). No provider, an unknown, empty, wrong-case or
+  non-gateway one: refused `tender_unsupported` (recorded, parked, no money row, no
+  journal). The producer fills `provider` on every captured tender.
+- Legacy refusal stays: events without `lines`/`subtotalIdr` (or a gateway tender
+  without `provider`) are refused and recorded, never guessed. No backfill: parked
+  events are not redelivered, and a provider cannot be derived from the method alone.
+- `order_exists` / QR design note: a QR order is already a cloud `orders` row when the
+  edge pays it, so the ingest must not insert a second order. Today it refuses and
+  records `order_exists`, so the payment is not applied in cloud. A real fix needs a
+  business decision (open): an "adopt" path that attaches the edge tenders, lines and
+  journal to the existing order, only when the existing row is `awaiting_payment`,
+  its totals equal the payload, and it has no tender yet (idempotent on
+  `edge_order_ingests`). Until then refusing is the safe rule: no double order, no
+  double revenue.
+
 ## Table `edge_order_ingests` (migration 0522)
 
 PK `(tenant_id, order_id uuid)`. Columns: `outlet_id`, `paid_event_id`, `state`
@@ -94,12 +128,72 @@ edge tables. Replay: row exists with `paid_event_id` equal -> no-op.
   Note: edge itself cannot create final voids any more (EDGE_MODE guard in
   `pos-order-corrections.ts`), so `voidedFinalOrder=true` only occurs for old events.
 
-## Receipt-run wiring (legend-zy43): not done here
+## Receipt-run wiring (legend-zy43)
 
-No edge producer of `receipt_run.reported` exists on the base branch, so wiring
-cannot be proven. Reported as blocked on the producer; `receipt_run` stays in
-`posDeferredAggregates`. Ingest writes `pos_orders.device_id` and no receipt so the
-future merge works.
+Done. The edge reports its numbered receipts as `receipt_run.reported`; the cloud
+merges them with `mergeDeviceReceiptRun` (`edge/receipt-run-applier.ts`, wired in
+`registerEdgeLink`). `receipt_run` is no longer in `posDeferredAggregates()`, so the
+event has one handler and the cloud boots without a duplicate handler.
+
+Producer: `services/edge-receipt-run-reporter.ts`, a periodic reporter in the edge
+runtime (primary only, every 60 s and once after boot). It is not an event in the
+sale transaction: the sale allocates the receipt before it appends `order.paid`, so
+such an event would overtake the order in the outbox and the merge (which needs the
+order ingested first) would refuse it for good.
+
+- Scope: only runs bound to this edge node and database instance; never the
+  cloud-owned run (device id = outlet id); never an empty run.
+- Bounded events: receipts go out in ascending chunks of 100 (about 55 KB per
+  event; the link frame cap is 4 MB). A chunk starts right after the high-water of
+  what this edge already reported FOR THAT PREFIX (largest `sequence.lastNumber` of
+  its earlier chunk events with the same prefix) and carries its own last ordinal as
+  `sequence.lastNumber`, so the cloud merge sees 1..lastNumber as the cloud's earlier
+  chunks plus this one and advances without a gap refusal. At most 5 chunks per run
+  per pass, so an offline backlog drains over several ticks, never as one burst.
+  A retired run and a new run of the same device (new prefix) each have their own
+  high-water and keys.
+- Order of delivery: the outbox order is not the link order (the relay assigns
+  `link_seq` per aggregate on delivery), and the cloud refuses for good a chunk
+  whose order it has not ingested or a void it has no void row for. So a receipt is
+  reported only after the cloud acknowledged the event it depends on: `order.paid`
+  of its order, and `order.voided` when the receipt is voided. Acknowledged means
+  the outbox row is `delivered` (relayed into `edge_outbound_queue`) and its queue
+  row is `acked`; a queue row pruned after the ack counts as acknowledged. A chunk
+  ends before the first receipt not acknowledged yet, and the high-water moves only
+  with a chunk actually appended. An order with no `order.paid` event at all is
+  never reported (fail closed).
+- Exactly once: chunk key `<device>:<prefix>:c:<last ordinal>`; the high-water moves
+  in the same transaction as the append (the sequence row is locked). A receipt
+  voided after it was reported goes out as its own one-receipt event, key
+  `<device>:<prefix>:v:<ordinal>`, once `order.voided` is acknowledged (at most 20
+  per pass; found with one anti-join query, not by loading every voided receipt).
+  The cloud merge inserts nothing for a receipt it already holds, so a redelivery,
+  an overlap or a void already inside a chunk is safe. Aggregate sequence = max + 1
+  (like `appendPosEvent`). The outbox grows by one event per 100 receipts and one
+  per void; it is never rewritten.
+- One failing run does not stop the other runs of the pass; its error is reported
+  through the runtime log and the run is retried on the next tick.
+- Link batches are also capped by bytes (`LINK_BATCH_MAX_BYTES`, 3 MiB of encoded
+  events, at least one event per batch), so a backlog of large events cannot make
+  a frame the peer refuses. One single event above that bound is never sent and
+  never skipped: the link stays up, reports `Outbound event exceeds the link frame
+limit` through `onError`, and the queue behind it waits for an operator. No
+  producer should create such an event (the receipt reporter cannot).
+
+Known limitations (open decision for the CTO):
+
+1. No timed re-report. If the cloud still refuses a chunk (a sequence gap, an order
+   it refused for good), the refusal is recorded as an `applier_refused` conflict and
+   that chunk is NOT resent by itself. The order-not-ingested-yet case is avoided by
+   the acknowledgement gate above.
+2. A permanently refused order (`order_exists`, `legacy_payload`, an unsupported
+   tender) is never ingested, so the merge keeps refusing any chunk that contains
+   its receipt, and every later chunk of that device then hits the same hole
+   (`RECEIPT_SEQUENCE_GAP`). A new sale does NOT repair this: the reporter never
+   resends a chunk it already appended. The device's receipts stay unmerged after
+   that point and `receiptGapsForOutlet` keeps reporting the hole. Fixing it needs
+   a decision (for example a cloud-side receipt for a refused order, a manual
+   reconcile action, or write-off of the number); it is not implemented here.
 
 ## Out of scope (reported as follow-ups or business decisions)
 

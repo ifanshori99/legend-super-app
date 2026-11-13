@@ -84,6 +84,13 @@ const tenderLineSchema = z.strictObject({
    */
   receivedIdr: nonnegativeIdr.optional(),
   pointsUsed: z.number().int().positive().max(1_000_000).optional(),
+  /**
+   * legend-yu8z0: the `pos_order_tenders.provider` of the tender. Optional and
+   * deliberately a plain string: a value the cloud does not know is refused at
+   * ingest (recorded, parked), not by this schema. A gateway method (card, va,
+   * ewallet, qris) is ingested only with a gateway provider.
+   */
+  provider: z.string().max(20).optional(),
 });
 type TenderLine = z.infer<typeof tenderLineSchema>;
 
@@ -208,6 +215,13 @@ export const orderPaidPayloadSchema = z
     // Edge sales GL (legend-uctlr), additive. The order's customer (points
     // earn at ingest) and the tax rows behind `pbjtIdr` (tax_snapshots).
     customerProfileId: uuidSchema.nullable().optional(),
+    /**
+     * legend-cqehx: the staff user who attached the customer
+     * (`orders.customer_attached_by`); null when the customer attached
+     * themselves. The LOY-02 guard needs it: staff earn no points on their own
+     * sale, whoever the cashier is.
+     */
+    customerAttachedBy: userIdSchema.nullable().optional(),
     taxes: z.array(orderPaidTaxSchema).max(50).optional(),
   })
   .superRefine((payload, ctx) => {

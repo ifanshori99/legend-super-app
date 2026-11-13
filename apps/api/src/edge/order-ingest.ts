@@ -30,6 +30,10 @@ import {
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import type { EventEnvelope } from "@starter/shared/events";
 import {
+  PAYMENT_GATEWAY_PROVIDERS,
+  type PaymentGatewayProvider,
+} from "@starter/shared/platform";
+import {
   orderPaidPayloadSchema,
   orderVoidedPayloadSchema,
   type OrderPaidPayload,
@@ -381,7 +385,7 @@ async function applyPaid(
       logger.warn({ eventId: event.id, code }, "Edge order tax rows skipped");
   }
   for (const tender of payload.tenders) {
-    if (providerOf(tender.method) === null)
+    if (providerOf(tender.method, tender.provider) === null)
       throw new IngestRefusal("tender_unsupported");
     if (tender.method === "points" && tender.pointsUsed === undefined)
       throw new IngestRefusal("tender_invalid");
@@ -414,6 +418,16 @@ async function applyPaid(
       customerProfileId = null;
     }
   }
+  // legend-cqehx: who attached the customer, three cases. A user id: a staff
+  // user attached the member. null: nobody did (the member attached
+  // themselves). Missing key: an older producer, the attacher is unknown; it is
+  // stored as null like "nobody", so only the cashier check of the earn guard
+  // (LOY-02) applies. The id is stored verbatim, never turned into null, and
+  // only with the customer it belongs to.
+  const customerAttachedBy =
+    customerProfileId !== null && payload.customerAttachedBy !== undefined
+      ? payload.customerAttachedBy
+      : null;
 
   // 4. Writes.
   const paidAt = new Date(payload.paidAt);
@@ -433,6 +447,7 @@ async function applyPaid(
     totalIdr: payload.totalIdr,
     pricesIncludeTax,
     customerProfileId,
+    customerAttachedBy,
     depositAppliedIdr: payload.paidDepositIdr,
     status: "completed",
     businessDate: payload.businessDate,
@@ -487,7 +502,8 @@ async function applyPaid(
       orderId: payload.orderId,
       method: tender.method,
       // Non-null: unmappable methods were refused above.
-      provider: providerOf(tender.method) as "edc" | "manual",
+      provider: providerOf(tender.method, tender.provider) as
+        "edc" | "manual" | PaymentGatewayProvider,
       amountIdr: tender.amountIdr,
       receivedIdr: received === null ? null : idr(received),
       changeIdr:
@@ -573,13 +589,30 @@ async function lockLoyaltyEntityBounded(
 }
 
 /**
- * `pos_order_tenders.provider` of a payload tender method, or null when it
- * cannot be mapped for certain: gateway methods (card, va, ewallet, qris, ...)
- * need the real provider, which the edge event does not carry.
+ * `pos_order_tenders.provider` of a payload tender, or null when it cannot be
+ * mapped for certain. Cash, points and EDC methods map from the method; a
+ * stated provider must agree with it. Gateway methods (card, va, ewallet,
+ * qris) need the real gateway provider from the event (legend-yu8z0): without
+ * one, or with a code that is not a gateway adapter, they stay unsupported.
  */
-function providerOf(method: string): "edc" | "manual" | null {
-  if (method === "cash" || method === "points") return "manual";
-  if (method === "edc_card" || method === "edc_qris") return "edc";
+function providerOf(
+  method: string,
+  provider: string | undefined,
+): "edc" | "manual" | PaymentGatewayProvider | null {
+  let expected: "edc" | "manual" | null = null;
+  if (method === "cash" || method === "points") expected = "manual";
+  else if (method === "edc_card" || method === "edc_qris") expected = "edc";
+  if (expected !== null)
+    return provider === undefined || provider === expected ? expected : null;
+  if (
+    method === "card" ||
+    method === "va" ||
+    method === "ewallet" ||
+    method === "qris"
+  ) {
+    const gateway = PAYMENT_GATEWAY_PROVIDERS.find((code) => code === provider);
+    return gateway ?? null;
+  }
   return null;
 }
 

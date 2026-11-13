@@ -1381,6 +1381,12 @@ export async function completePosOrder(
         liveLinesTotal === Number(order.subtotalIdr)
           ? {
               customerProfileId: order.customerProfileId,
+              // legend-cqehx: with a customer the key is always sent: the staff
+              // user id, or null when nobody attached (the customer did). A
+              // missing key means "unknown" (an older producer) at ingest.
+              ...(order.customerProfileId !== null
+                ? { customerAttachedBy: order.customerAttachedBy }
+                : {}),
               ...taxKeys,
               orderNumber: order.number,
               subtotalIdr: order.subtotalIdr,
@@ -1420,6 +1426,7 @@ export async function completePosOrder(
           method: tender.method,
           amountIdr: tender.amountIdr,
           // Edge order ingest: only the keys the tender actually has.
+          provider: tender.provider,
           ...(tender.receivedIdr !== null
             ? { receivedIdr: tender.receivedIdr }
             : {}),

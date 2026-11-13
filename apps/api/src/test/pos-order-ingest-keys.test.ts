@@ -40,6 +40,7 @@ import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { signDeviceToken } from "../lib/device-token.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import { seedMember } from "./member-loyalty-helpers";
 import {
   createIsolatedTenant,
   owner,
@@ -524,5 +525,53 @@ describe("legend-771dl the ingest keys are left out when the lines do not add up
     const completed = await pos().complete(order.orderId, order.status);
     expect(completed.status, JSON.stringify(completed.body)).toBe(200);
     expect(await paidPayloadOf(order.orderId)).toHaveProperty("lines");
+  });
+});
+
+describe("legend-cqehx the cloud order.paid says who attached the customer", () => {
+  /** An open order with a member attached by the given staff user (or by nobody). */
+  async function orderWithCustomer(attachedBy: string | null) {
+    const order = await payableOrder();
+    const profile = await seedMember(tenant.tenantId);
+    await owner.query(
+      `UPDATE orders SET customer_profile_id = $3::uuid, customer_attached_by = $4
+        WHERE tenant_id = $1 AND id = $2::uuid`,
+      [tenant.tenantId, ulidToUuid(order.orderId), profile.id, attachedBy],
+    );
+    return { order, profileId: profile.id };
+  }
+
+  it("a customer attached by a staff user: the payload carries that user id", async () => {
+    const { order, profileId } = await orderWithCustomer(supervisor.userId);
+    const completed = await pos().complete(order.orderId, order.status);
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+
+    const payload = await paidPayloadOf(order.orderId);
+    expect(orderPaidPayloadSchema.safeParse(payload).success).toBe(true);
+    expect(payload).toMatchObject({
+      customerProfileId: profileId,
+      customerAttachedBy: supervisor.userId,
+    });
+  });
+
+  it("a customer nobody attached (they did it themselves): the key is present and null", async () => {
+    const { order, profileId } = await orderWithCustomer(null);
+    const completed = await pos().complete(order.orderId, order.status);
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+
+    const payload = await paidPayloadOf(order.orderId);
+    expect(orderPaidPayloadSchema.safeParse(payload).success).toBe(true);
+    expect(payload).toMatchObject({ customerProfileId: profileId });
+    expect(payload).toHaveProperty("customerAttachedBy", null);
+  });
+
+  it("a sale without a customer: the key is absent", async () => {
+    const order = await payableOrder();
+    const completed = await pos().complete(order.orderId, order.status);
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+
+    const payload = await paidPayloadOf(order.orderId);
+    expect(payload).toHaveProperty("customerProfileId", null);
+    expect(payload).not.toHaveProperty("customerAttachedBy");
   });
 });
