@@ -1462,3 +1462,4 @@ Langkah berikut CTO baru:
 - 23:13 Retro 3 jam dilewati: Retro 25 baru selesai 21:50 (jendela s.d. 21:40); hemat kuota. Retro berikut 01:43.
 - 23:15 G7cpa selesai: fix/edge-order-reemit c93ffaca9 (078n; guard A apply-scope, guard B lewati potong resep order edge; migr 0508; 104+106 test). Applier backfill POS-order belum ada di m1 (legend-kai). Batch58.
 - 23:25 Founder W4: folder legend super app dikecualikan dari Spotlight. Retro berikut cek mds_stores.
+- 23:26 G2aag selesai: fix/payroll-o2-o3 a9d87904a (bypw2, m6zdl; CTO: tanpa tagih mundur, pay_date <=; 126 test). Batch58 = flaky-641, followups-640, purchase-return-variance, cash-bank-table-mapping, payroll-o2-o3, edge-order-reemit (6).
