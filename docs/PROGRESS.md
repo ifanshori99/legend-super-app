@@ -1468,3 +1468,4 @@ Langkah berikut CTO baru:
 - 23:41 Mulai G95ca (647 edge applier: pd9t, zy43, 7h5s; base fix/edge-order-reemit; migr 0510-0513). P1 sisa (nnufz AI provider, 7mlf shift UI, POS FE) butuh mockup/gerbang founder; mockup nnufz ditunda ke akun Codex baru besok (Codex 7d 89-95%).
 - 23:43 Founder Q14 (Duitku+manual, DOIT ditunda), Q15 (biaya transfer ditanggung PT), Q16 (manual dulu, 2 orang), Q17 (BCA). Mulai G7a09 (648: wnkep .1/.2/.4, migr 0514-0517). Sisa founder: Q18.
 - 23:45 mulai 649 anti pecah kas lintas outlet (G2sah, Sonnet, akun 2, migr 0518-0519), founder Q18.
+- 00:02 649 G2sah lapor: fix/cash-antisplit-cross-outlet 037fac4c0 (migr 0518), architect 1 ronde 2 Medium dibetulkan; diminta rerun 6 file + db:generate. Q18 lanjutan ke founder: entri pertama tetap approved, kedua pending.
