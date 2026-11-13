@@ -50,6 +50,7 @@ import {
   createGoodsReceipt,
   type CreateGoodsReceiptInput,
 } from "../services/inventory-receiving.service.ts";
+import { setSupplierInvoicePostingEnabled } from "../services/purchasing-invoice.service.ts";
 import {
   createPurchaseReturn,
   setPurchaseReturnPostingEnabled,
@@ -257,6 +258,27 @@ async function makeAccountingWorld(): Promise<void> {
 
 // ---- purchase fixtures -----------------------------------------------------
 
+// Assumption (legend-29vw cutover): a return of uninvoiced value is refused
+// (409 GOODS_RECEIPT_NOT_JOURNALED) until the receipt's journal (Dr inventory /
+// Cr GRNI) is posted. The fixture delivers each receipt's
+// `goods_receipt.recorded` event to the auto-journal consumer, as the outbox
+// worker would.
+async function journalReceipt(receiptId: string): Promise<void> {
+  const { rows } = await owner.query<{ event: unknown }>(
+    `SELECT event FROM domain_event_outbox
+      WHERE tenant_id = $1 AND aggregate_id = $2 AND event->>'name' = 'goods_receipt.recorded'`,
+    [tenantA, receiptId],
+  );
+  if (rows.length !== 1)
+    throw new Error(`Expected one receipt event, found ${rows.length}`);
+  const event = eventEnvelopeSchema.parse(rows[0]!.event);
+  const result = await withTenant(db, tenantContext, (tx) =>
+    deliverAutoJournalEvent(tenantContext, event, tx, new Date()),
+  );
+  if (result.status !== "posted")
+    throw new Error(`Receipt journal not posted: ${result.status}`);
+}
+
 type Fixture = {
   poId: string;
   flourLine: string;
@@ -331,6 +353,7 @@ async function seedReceivedFixture(): Promise<Fixture> {
     ],
     idempotencyKey: key(),
   } as unknown as CreateGoodsReceiptInput);
+  await journalReceipt(receipt.receipt.id);
   return {
     poId,
     flourLine: lineIds[0]!,
@@ -555,6 +578,8 @@ beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   setPurchaseReturnPostingEnabled(true);
+  // The receipt journal is posted only while the purchasing posting flag is on.
+  setSupplierInvoicePostingEnabled(true);
   setAuditWriter(coreAuditWriter);
   await liftDocumentCounters(owner, tenantA);
   await makeAccountingWorld();
@@ -584,10 +609,12 @@ beforeAll(async () => {
 
 afterEach(() => {
   setPurchaseReturnPostingEnabled(true);
+  setSupplierInvoicePostingEnabled(true);
 });
 
 afterAll(async () => {
   setPurchaseReturnPostingEnabled(null);
+  setSupplierInvoicePostingEnabled(null);
   setAuditWriter(null);
   // Ledger, journal and outbox rows are append-only; replica mode lets the
   // owner remove its own fixtures (this file only touches its own outlet C).

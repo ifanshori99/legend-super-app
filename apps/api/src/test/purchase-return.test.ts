@@ -16,6 +16,11 @@
 // - RT-10 reads and outlet isolation
 //
 // Assumption: quantities in the request are in the item base unit (see service).
+// Assumption (legend-29vw cutover): a return of uninvoiced value is refused
+// (409 GOODS_RECEIPT_NOT_JOURNALED) until the receipt's journal (Dr inventory /
+// Cr GRNI) is posted. The fixture therefore delivers each receipt's
+// `goods_receipt.recorded` event to the auto-journal consumer, as the outbox
+// worker would, in a fresh legal entity + outlet with a mapped chart.
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { liftDocumentCounters } from "./purchasing-document-counters.ts";
@@ -29,8 +34,13 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { eventEnvelopeSchema } from "@starter/shared/events";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { deliverAutoJournalEvent } from "../services/accounting-auto-journal-consumer.ts";
+import { setSupplierInvoicePostingEnabled } from "../services/purchasing-invoice.service.ts";
 import { agent, signUp } from "./helpers.ts";
 import {
   createGoodsReceipt,
@@ -46,7 +56,11 @@ import {
 } from "../services/purchase-return.service.ts";
 
 const tenantA = cafeLegendPlatformFixtures.tenant.id;
-const outletA = cafeLegendPlatformFixtures.outlets[0]!.id;
+const brandA = cafeLegendPlatformFixtures.brand.id;
+// A fresh outlet of a fresh legal entity with its own chart (made in
+// beforeAll), so the receipt journals do not touch the shared template entity.
+const entityA = randomUUID();
+const outletA: string = randomUUID();
 const outletB = cafeLegendPlatformFixtures.outlets[1]!.id;
 
 const app = createApp();
@@ -61,6 +75,91 @@ const tenant = establishTenantContext({
   brandId: null,
   source: "domain",
 });
+
+const tenantWide: ScopedTenantContext = establishScopedTenantContext(tenant, {
+  kind: "tenant",
+});
+
+// [role, code, name, type, report_group]
+const CHART: [string, string, string, string, string][] = [
+  ["inventory", "1301", "Persediaan Bahan Baku", "asset", "current_asset"],
+  ["ppn_input", "1401", "PPN Masukan", "asset", "current_asset"],
+  ["accounts_payable", "2101", "Utang Usaha", "liability", "current_liability"],
+  [
+    "grni",
+    "2102",
+    "Barang Diterima Belum Ditagih",
+    "liability",
+    "current_liability",
+  ],
+  [
+    "purchase_price_variance",
+    "5105",
+    "Selisih Harga Pembelian",
+    "expense",
+    "cogs",
+  ],
+];
+
+/** A fresh legal entity + outlet + chart with the purchasing roles mapped. */
+async function makeAccountingWorld(): Promise<void> {
+  await owner.query(
+    "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, $3, true)",
+    [entityA, tenantA, `Entity RT ${randomUUID().slice(0, 6)}`],
+  );
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
+     VALUES ($1, $2, $3, $4, $5, 'Outlet RT', 'Jl. RT', 'Asia/Jakarta', '04:00', '{"mon":null,"tue":null,"wed":null,"thu":null,"fri":null,"sat":null,"sun":null}', 'active')`,
+    [
+      outletA,
+      tenantA,
+      brandA,
+      entityA,
+      `RT-${randomUUID().slice(0, 6)}`.toUpperCase(),
+    ],
+  );
+  for (const [role, code, name, type, group] of CHART) {
+    const { rows } = await owner.query<{ id: string }>(
+      `INSERT INTO chart_of_accounts (tenant_id, legal_entity_id, code, name, type, report_group)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [tenantA, entityA, code, name, type, group],
+    );
+    await owner.query(
+      `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+       VALUES ($1, $2, $3, $4)`,
+      [tenantA, entityA, role, rows[0]!.id],
+    );
+  }
+  // Open periods around today: the services stamp the outlet's business date.
+  const now = new Date();
+  for (const shift of [-1, 0, 1]) {
+    const d = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + shift, 1),
+    );
+    await owner.query(
+      `INSERT INTO fiscal_periods (tenant_id, legal_entity_id, period)
+       VALUES ($1, $2, $3) ON CONFLICT (tenant_id, legal_entity_id, period) DO NOTHING`,
+      [tenantA, entityA, d.toISOString().slice(0, 7)],
+    );
+  }
+}
+
+/** Delivers the receipt's `goods_receipt.recorded` event and asserts it posted. */
+async function journalReceipt(receiptId: string): Promise<void> {
+  const { rows } = await owner.query<{ event: unknown }>(
+    `SELECT event FROM domain_event_outbox
+      WHERE tenant_id = $1 AND aggregate_id = $2 AND event->>'name' = 'goods_receipt.recorded'`,
+    [tenantA, receiptId],
+  );
+  if (rows.length !== 1)
+    throw new Error(`Expected one receipt event, found ${rows.length}`);
+  const event = eventEnvelopeSchema.parse(rows[0]!.event);
+  const result = await withTenant(db, tenantWide, (tx) =>
+    deliverAutoJournalEvent(tenantWide, event, tx, new Date()),
+  );
+  if (result.status !== "posted")
+    throw new Error(`Receipt journal not posted: ${result.status}`);
+}
 
 function contextFor(outletId: string): ScopedTenantContext {
   return establishScopedTenantContext(tenant, {
@@ -229,6 +328,7 @@ async function seedReceivedFixture(): Promise<Fixture> {
       idempotencyKey: key(),
     } as unknown as CreateGoodsReceiptInput,
   );
+  await journalReceipt(receipt.receipt.id);
   return {
     poId,
     flourLine: lineIds[0]!,
@@ -371,7 +471,10 @@ beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   setPurchaseReturnPostingEnabled(true);
+  // The receipt journal is posted only while the purchasing posting flag is on.
+  setSupplierInvoicePostingEnabled(true);
   await liftDocumentCounters(owner, tenantA);
+  await makeAccountingWorld();
   creatorId = await plainUser("creator");
   approverId = await plainUser("approver");
   // warehouse holds inventory.stock.receive and purchasing.return.create.
@@ -391,10 +494,12 @@ beforeAll(async () => {
 
 afterEach(() => {
   setPurchaseReturnPostingEnabled(true);
+  setSupplierInvoicePostingEnabled(true);
 });
 
 afterAll(async () => {
   setPurchaseReturnPostingEnabled(null);
+  setSupplierInvoicePostingEnabled(null);
   // Ledger and history rows are append-only; replica mode lets the owner clean its own fixtures.
   const client = await owner.connect();
   try {
@@ -406,6 +511,14 @@ afterAll(async () => {
     await client.query(
       `DELETE FROM domain_event_outbox WHERE tenant_id = $1 AND (aggregate_id IN ${receipts} OR aggregate_id IN ${returns})`,
       args,
+    );
+    await client.query(
+      `DELETE FROM journal_lines WHERE tenant_id = $1 AND entry_id IN (SELECT id FROM journal_entries WHERE tenant_id = $1 AND legal_entity_id = $2)`,
+      [tenantA, entityA],
+    );
+    await client.query(
+      "DELETE FROM journal_entries WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [tenantA, entityA],
     );
     await client.query(
       `DELETE FROM stock_ledger WHERE tenant_id = $1 AND (source_id IN ${receipts} OR source_id IN ${returns})`,
@@ -473,6 +586,17 @@ afterAll(async () => {
     await client.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [
       createdUserIds,
     ]);
+    for (const table of [
+      "account_mappings",
+      "fiscal_periods",
+      "chart_of_accounts",
+    ])
+      await client.query(
+        `DELETE FROM ${table} WHERE tenant_id = $1 AND legal_entity_id = $2`,
+        [tenantA, entityA],
+      );
+    await client.query("DELETE FROM outlets WHERE id = $1", [outletA]);
+    await client.query("DELETE FROM legal_entities WHERE id = $1", [entityA]);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
