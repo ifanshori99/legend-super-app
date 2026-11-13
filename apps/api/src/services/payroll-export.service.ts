@@ -38,6 +38,7 @@ import {
   type BusinessDate,
   type RoundingMode,
   type ScopedTenantContext,
+  type TenantId,
   type UserId,
 } from "@starter/shared/core";
 import {
@@ -247,7 +248,7 @@ async function storeFile(
 const bankFileName = (periodLabel: string, runId: string, extension: string) =>
   `bank-transfer-${periodLabel}-${runId.slice(0, 8)}.${extension}`;
 
-async function loadRun(tx: Tx, tenantId: string, runId: string) {
+async function loadRun(tx: Tx, tenantId: TenantId, runId: PayrollRunId) {
   const [run] = await tx
     .select()
     .from(payrollRuns)
@@ -485,7 +486,7 @@ export async function createBankTransferFile(
           await removeFile();
           throw error;
         }
-        return { fileId };
+        return { fileId: fileId as BankFileRowRecord["id"] };
       },
     );
     // The stored response holds no URL: a replay gets a fresh one.
@@ -639,7 +640,7 @@ const isUnsupportedPtkp = (status: string) => status.startsWith("K/I/");
 /** The TER table a locked run pinned at lock (PAYR-02), checked against its ref. */
 async function loadPinnedTerVersion(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   configSnapshot: unknown,
 ): Promise<TerVersion> {
   const refs = statutoryVersionRefSchema
@@ -1120,7 +1121,7 @@ export async function createPayrollTaxExport(
           await removeFile();
           throw error;
         }
-        return { exportId, summary };
+        return { exportId: exportId as TaxExportRecord["id"], summary };
       },
     );
     // The stored response holds no URL: a replay gets a fresh one.

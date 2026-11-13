@@ -51,10 +51,8 @@ import {
 } from "@starter/shared/hris/payroll";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { FakeObjectStorage } from "@starter/shared/adapters";
-import type {
-  ScopedTenantContext,
-  StorageRequest,
-} from "@starter/shared/adapters";
+import type { StorageRequest } from "@starter/shared/adapters";
+import type { ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import { createLogger } from "../lib/logger.ts";
