@@ -1221,9 +1221,10 @@ export async function applyCatalogRecords(
  * second pass, once every printer of the page exists; a fallback this edge does
  * not have yet is stored as null (counted in `nulledRefs`: a printer without
  * fallback still prints) and reported in `deferredFallbacks`, so the puller
- * can persist it and run `repairPrinterFallbacks` once the target arrives. A deletion removes the printer, but not one that has
- * print jobs here (the jobs are evidence and point at it): it stays, and the
- * cloud's own guard already refuses such a delete on the cloud side.
+ * can persist it and run `repairPrinterFallbacks` once the target arrives. A deletion removes the printer, but one that has
+ * print jobs here (the jobs are evidence and point at it) stays with
+ * `retired_at` set (edge-owned, never in the cloud record); the print store no
+ * longer lists it. A live record with the same id clears `retired_at`.
  */
 async function applyPrinters(
   tx: Tx,
@@ -1257,6 +1258,8 @@ async function applyPrinters(
         paperWidth: r.paperWidth,
         // Second pass (below): the target may be later in this page.
         fallbackPrinterId: null,
+        // A live cloud record brings a retired printer back.
+        retiredAt: null,
         createdAt: date(r.createdAt),
         updatedAt: date(r.updatedAt),
         syncTxid: r.syncTxid,
@@ -1311,7 +1314,7 @@ async function applyPrinters(
     write: async (r) => {
       const outletId = outletIdSchema.parse(r.outletId);
       const hasJobs = sql`EXISTS (SELECT 1 FROM ${edgePrintJobs} j WHERE j.tenant_id = ${t.tenantId} AND j.outlet_id = ${t.outletId} AND (j.printer_id = ${t.id} OR j.original_printer_id = ${t.id}))`;
-      const removable = await tx
+      const known = await tx
         .select({ id: t.id })
         .from(t)
         .where(
@@ -1320,10 +1323,9 @@ async function applyPrinters(
             eq(t.outletId, outletId),
             eq(t.id, r.id),
             lt(t.syncTxid, sql`${r.syncTxid}::bigint`),
-            sql`NOT ${hasJobs}`,
           ),
         );
-      if (removable.length === 0) return false;
+      if (known.length === 0) return false;
       await tx
         .update(t)
         .set({ fallbackPrinterId: null })
@@ -1334,6 +1336,32 @@ async function applyPrinters(
             eq(t.fallbackPrinterId, r.id),
           ),
         );
+      // `hasJobs` stays in a WHERE (a select list would drop the table qualifier).
+      const withJobs = await tx
+        .select({ id: t.id })
+        .from(t)
+        .where(
+          and(
+            eq(t.tenantId, tenantId),
+            eq(t.outletId, outletId),
+            eq(t.id, r.id),
+            hasJobs,
+          ),
+        );
+      if (withJobs.length > 0) {
+        // The jobs are evidence and point at it: keep the row, take it out of use.
+        await tx
+          .update(t)
+          .set({ retiredAt: sql`COALESCE(${t.retiredAt}, now())` })
+          .where(
+            and(
+              eq(t.tenantId, tenantId),
+              eq(t.outletId, outletId),
+              eq(t.id, r.id),
+            ),
+          );
+        return true;
+      }
       await tx
         .delete(t)
         .where(

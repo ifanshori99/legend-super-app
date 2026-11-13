@@ -2227,6 +2227,13 @@
       "when": 1794580830852,
       "tag": "0501_edge_printer_sync_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 502,
+      "version": "7",
+      "when": 1794582707653,
+      "tag": "0502_edge_printer_retired_at",
+      "breakpoints": true
     }
   ]
 }

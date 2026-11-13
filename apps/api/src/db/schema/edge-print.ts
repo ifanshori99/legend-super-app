@@ -80,6 +80,8 @@ export const edgePrinters = pgTable(
       .default("unknown"),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     offlineSince: timestamp("offline_since", { withTimezone: true }),
+    /** Edge-owned (legend-fbf4v): the cloud deleted this printer but print jobs still point at it. Never part of the cloud record; cleared when the cloud brings the printer back. */
+    retiredAt: timestamp("retired_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
