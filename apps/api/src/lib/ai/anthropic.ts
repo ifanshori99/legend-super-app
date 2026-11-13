@@ -168,7 +168,7 @@ export function createAnthropicProvider(
     new Anthropic({
       apiKey: options.apiKey,
       timeout: options.timeoutMs,
-      maxRetries: 1,
+      maxRetries: 0,
     });
 
   return {
@@ -186,7 +186,9 @@ export function createAnthropicProvider(
         ],
         messages: toMessages(request.messages),
         ...(request.tools.length ? { tools: toTools(request.tools) } : {}),
-        output_config: { effort: options.effort },
+        ...(request.reasoningEffort
+          ? { output_config: { effort: request.reasoningEffort } }
+          : {}),
         fallbacks: "default",
         betas: [FALLBACK_BETA],
       };

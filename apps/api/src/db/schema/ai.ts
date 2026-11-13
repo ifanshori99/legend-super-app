@@ -132,6 +132,11 @@ export const aiUsageEvents = pgTable(
     /** `AI-01`..`AI-14`; null when a call belongs to no feature (MCP). */
     feature: varchar("feature", { length: 10 }),
     channel: varchar("channel", { length: 10 }).notNull(),
+    /** Server-owned billing source: a subscription is not an API invoice. */
+    billingMode: varchar("billing_mode", { length: 20 })
+      .$type<"api_metered" | "chatgpt_plan">()
+      .notNull()
+      .default("api_metered"),
     provider: varchar("provider", { length: 30 }).notNull(),
     model: varchar("model", { length: 100 }).notNull(),
     inputTokens: integer("input_tokens").notNull().default(0),
@@ -149,6 +154,10 @@ export const aiUsageEvents = pgTable(
     createdAt,
   },
   (table) => [
+    check(
+      "ai_usage_events_billing_mode_check",
+      sql`${table.billingMode} IN ('api_metered', 'chatgpt_plan')`,
+    ),
     foreignKey({
       name: "ai_usage_events_outlet_fk",
       columns: [table.tenantId, table.outletId],
@@ -215,6 +224,10 @@ export const aiUsageMonthly = pgTable(
     costIdr: idrColumn("cost_idr")
       .notNull()
       .default(sql`0`),
+    /** Worst-case cost authorized before I/O; ambiguous failures stay held. */
+    reservedCostIdr: idrColumn("reserved_cost_idr")
+      .notNull()
+      .default(sql`0`),
     costMicroUsd: bigint("cost_micro_usd", { mode: "number" })
       .notNull()
       .default(0),
@@ -237,6 +250,10 @@ export const aiUsageMonthly = pgTable(
     check(
       "ai_usage_monthly_month_check",
       sql`${table.usageMonth} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`,
+    ),
+    check(
+      "ai_usage_monthly_reserved_cost_check",
+      sql`${table.reservedCostIdr} >= 0`,
     ),
     check(
       "ai_usage_monthly_amounts_check",

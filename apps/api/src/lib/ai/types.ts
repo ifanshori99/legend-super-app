@@ -37,7 +37,9 @@ export type AiCompletionRequest = {
   system: string;
   messages: AiChatMessage[];
   tools: AiToolSpec[];
+  /** Total generated tokens, including hidden reasoning. */
   maxTokens: number;
+  reasoningEffort?: "low" | "medium" | "high";
 };
 
 export type AiStopReason =

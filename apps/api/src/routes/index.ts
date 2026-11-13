@@ -106,6 +106,7 @@ import { aiGovernanceRouter } from "./ai-governance.routes";
 import { aiGuidelinesRouter } from "./ai-guidelines.routes";
 import { aiMcpAdminRouter } from "./ai-mcp-admin.routes";
 import { aiProviderRouter } from "./ai-provider.routes";
+import { aiChatgptRouter } from "./ai-chatgpt.routes";
 import { aiInsightsRouter } from "./ai-insights.routes";
 import { hrisSchedulingRouter } from "./hris-scheduling.routes";
 import { hrisChecklistRouter } from "./hris-checklist.routes";
@@ -422,6 +423,7 @@ apiRouter.use("/ai", aiChatRouter);
 apiRouter.use("/ai", aiActionsRouter);
 apiRouter.use("/ai", aiGovernanceRouter);
 apiRouter.use("/ai", aiProviderRouter);
+apiRouter.use("/ai", aiChatgptRouter);
 apiRouter.use("/ai", aiMcpAdminRouter);
 // WS-12 AI insights: forecasts, purchase/roster inputs, anomalies, daily
 // summaries, promo copy and expense account drafts (legend-hkd4, legend-lely).

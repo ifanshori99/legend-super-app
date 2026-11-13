@@ -1,0 +1,64 @@
+# Tanya AI autodetect + device code — engineer execution brief
+
+Source of requirements: coordinator user brief, cards legend-39d.8 then legend-z83k, founder Q88 and z83k CTO safeguards.
+Branch: ws/ai-login-autodetect based on milestone/m1. A must be verified and committed before implementation of B. No UI, payments, loyalty, HRIS, merge, push or deployment.
+
+A ownership: implement_provider owns capability detector, tenant provider config/service/table/shared provider contract and migration 0417. implement_orchestrator owns request policy, neutral completion types, OpenAI adapter, gateway/orchestrator and ai.ts reservation counter. test_writer owns new behavioral tests; test_runner alone runs heavy.
+
+A sequence: test_writer creates red tests, test_runner runs them against baseline; implementers then code. Detect guarded GET models metadata fieldwise, then explicit known model table, then conservative defaults; validated tenant overrides persist separately and update cache version. Only detected reasoning permits reasoning_effort. Prompt budget includes system/tools/output and preserves tool pairs. Atomic worst-case budget reservation precedes every remote call/loop; reasoning output included in completion cap, default budget remains zero. Ambiguous network failure retains reservation.
+
+B follows A commit: isolated ChatGPT Codex device/refresh/inference adapter, tenant owner-only opt-in with risk consent actor/time, encrypted tokens and pending device secret, no token/error-body logging, status/start/poll/revoke API with auth/origin/permission and polling rate limit. Fixed auth URLs/client ID from research; global validated env kill switch disables every OAuth operation and cached answers. Custom tenant provider remains fallback, never unrelated platform credentials. Migration 0418 only. No real OpenAI test calls; mock transport and responses.
+
+Verification: failed-first targeted tests via heavy, related API tests, changed-file ESLint + Prettier, API/shared typecheck, migration registry/contract checks and generation drift check. Full pnpm check belongs to merge train per team policy. Build and auth e2e via heavy if required by active AGENTS. Fresh review A and architect-lens B before handoff, with release review architect xhigh + second opinion coordinated by CTO.
+
+Context7 inspected 12 Nov 2026: OpenAI Model has id/object/created/owned_by (no advertised context); OpenRouter context_length + top_provider context_length/max_completion_tokens + supported_parameters; vLLM ModelCard max_model_len; Ollama compatible models lacks context, native show exposes model_info/capabilities (do not add native endpoint in this slice).
+
+## B integration contract (engineering decisions, 13 Nov)
+
+After A commit only. Provider implementer owns shared `ai/chatgpt.ts` (+ index/errors), `ai-chatgpt` DB schema/export, `ai-chatgpt.service.ts`, `ai-chatgpt.routes.ts` + mount, env/example, migration0418 (generation by sole runner). Policy implementer owns isolated `lib/ai/chatgpt-codex.ts`, gateway/provider resolver integration and billing mode column in usage events if needed. Test writer owns all B tests; sole runner owns heavy. No shared file overlap without handoff.
+
+Endpoints under `/api/ai`: GET `/chatgpt` safe status, POST `/chatgpt/device` strict `{model,riskAccepted:true}` starts opt-in and returns `{attemptId,userCode,verificationUri,expiresAt,intervalSeconds}`; POST `/chatgpt/device/poll` strict `{attemptId}` returns safe status only; DELETE `/chatgpt` revokes locally first, best-effort upstream second (allowed with global switch off). Every endpoint has auth/origin/tenant/backoffice/ai.governance.manage and owner template permission check. No arbitrary owner/tenant IDs from body. Actor/time consent persisted server-side. Fixed auth host/client ID and protocol from research notes; no upstream tokens/auth code/PKCE/device_auth_id exposed.
+
+Service maintains one tenant row with generation/attempt ID and encrypted pending/token blobs bound by tenant+row+kind AAD. Start and poll atomically claim rate/lease in DB before external calls. Poll15min expiry; interval at least5s. Stale poll/refresh cannot resurrect revoked/replaced connection (CAS attempt/generation/cipher); serialize refresh with lease, token rotation atomic. Read/revoke tenant scoped. Recheck row and global `AI_CHATGPT_ENABLED` default false before any inference and after refresh; revoke clears all secret blobs even on upstream failure. Audit only allowlisted safe metadata.
+
+Adapter exports a fixed-host mockable transport plus start/poll/exchange/refresh/revoke/inference; agree exported names directly before tests. It maps neutral messages/tools to Responses SSE, retains provider-owned opaque reasoning, sanitizes all errors to fixed classes/codes, bounds bytes/time, requires terminal completed, classifies explicit auth failures for fallback. Never logs upstream bodies/headers/messages. Token storage stays in service, adapter independent of DB/client-ID consumer.
+
+Resolved providers carry server-owned billingMode `api_metered` or `chatgpt_plan`. Subscription mode records token usage with zero additional API invoice estimate, without implying a free/unlimited plan or guaranteeing upstream output cap. Fresh governance/default0 gates both modes. Custom fallback must rerun request policy and reserve its own API cost through gateway; never hide paid fallback inside a zero-cost plan adapter. Explicit auth failure/revocation uses only tenant custom config; when absent return AI_PROVIDER_UNAVAILABLE, never a platform key. Retain a disconnected tenant row so revoke/kill cannot accidentally select platform credentials. Cache version includes switch and tenant connection revision.
+
+## CTO integration steering (13 Nov, after baseline commit 61964fa1)
+
+User/CTO says continue without stopping to reply. UI is `origin/ui/ai-settings` commit `95de4c6d`; read `git show origin/ui/ai-settings:apps/web/src/features/ws12-ai-settings/contract.ts`. Follow its ChatGPT endpoint paths/status/start/poll/revoke shapes unless a strong reason, and report differences.
+
+Decisions: (1) status carries `platformDisabled`; (2) ChatGPT primary and custom automatic fallback must coexist, never overwrite one provider row; (3) API computes `viewerCanManage` from actual owner, enforces owner on start/revoke/risk acceptance (governance permission alone insufficient); (4) capabilityOverrides PATCH merges by field, omitted fields unchanged, with tests.
+
+Baseline already has separate `ai_provider_configs` and `ai_chatgpt_connections` with fallback, so no new database change is needed. Migrations 0417/0418 have been applied locally: do not rewrite applied SQL/snapshots. Preserve existing encrypted credential lifecycle and all auth/race fences.
+
+ChatGPT implementer owns shared `ai/chatgpt.ts` (+export aliases/index/errors if needed), chatgpt router/service, env/example. Return EXACT UI status keys: `state` (disconnected/pending/connected/failed/expired), `platformDisabled`, `viewerCanManage`, `deviceCode`, `verificationUrl`, `expiresAt`, `connectedAt`, `riskAcceptedAt`. Publish the UI's shared names (`getChatgptLogin`, `startChatgptLogin`, `pollChatgptLogin`, `revokeChatgptLogin`, `chatgptLoginStatusSchema`, states/type); existing names can alias these without adding response fields. GET status allows a governance viewer but computes manage permission using owner template AND no impersonation. Nonowners/impersonated viewers get no device code or verification URL. Mutations (including polling that can complete credential binding) remain actual-owner only. Global switch is ChatGPT-only; custom fallback remains available. Pending code/URL visible only to manage-capable owner while platform enabled and pending unexpired.
+
+Start accepts UI `{riskAccepted:true}`; an optional `model` extension may preserve explicit model choice. Server preserves an existing selected model, otherwise validated `AI_CHATGPT_MODEL` defaults to the verified Codex profile `gpt-6.1-sol`; this is configurable, not a promise of subscription model availability. Poll accepts UI `{}`; optional explicit `attemptId` retains old stale-attempt checks. Current pending row remains tenant-bound and operation/generation CAS remains mandatory. Map internal unavailable to UI failed. Preserve an expired pending deadline when invalidating that attempt so state expired can be reported without changing database schema. These input extensions and model default must be noted in handoff.
+
+Provider PATCH implementer owns shared `ai/provider.ts`, provider config service/router. Add `PATCH /api/ai/provider` with strict `{capabilityOverrides: partialOverrides | null}`. Read/merge under tenant row lock: omitted override fields stay, null resets all, no credential/model/address changes or metadata I/O. Keep tenant isolation and monotonic cache version/audit. PUT same-model provided override objects also merge server-side; absent retains; null resets; changed model/address resets previous overrides. Coordinate shared index writes with ChatGPT owner. UI's present PUT still works; new PATCH gives field-only safe updates (UI may switch its caller later).
+
+Test writer owns new contract/ownership/redaction/start-empty-poll/PATCH merge/concurrency/isolation proofs and updates previous B DTO assertions, without weakening auth/lifecycle tests. Runner remains sole heavy, preserves completed baseline proof (API/shared types, 227 AI+87 root, additional guards, build2/2, e2e18passed/1knownskip, setup/doctor). Run changed-scope red first, then affected A/B/contract gates and final types/build/e2e after compatibility code freezes. Reviewer reads compatibility diff against 61964fa1. No frontend edits, merge, deployment, or push by this thread.
+
+UI handoff findings from read-only review (no frontend edits in this thread): current `ai-settings-page.tsx` treats ChatGPT `platformDisabled` as a whole-screen lock and disables the custom model and budget cards too. Backend must report the ChatGPT kill switch honestly while custom fallback remains usable; UI owner should scope that lock to the ChatGPT card or use a separate governance flag. Current custom-model override dialog PUT sends a merge built from a cached snapshot (`custom-model-panel.tsx` around line 623); server merging cannot distinguish stale explicitly submitted fields from intentional ones. New PATCH should be called with changed fields only for concurrency-safe UI edits. Both are strong integration differences to report with the final handoff.
+
+## Final verification evidence (13 Nov)
+
+All commands below passed against source `3bca3c69191b981519b85da2d33eaea316d29590`. Targeted tests: 237 API + 88 root. Production build: 2/2 fresh; Playwright: 18 passed, one pre-existing `legend-ozud` skip. AI/OAuth transports were fixtures; no real OpenAI endpoint was called. Final documentation-only edits receive a separate format check before the handoff commit.
+
+```text
+Verified source: 3bca3c69191b981519b85da2d33eaea316d29590
+
+Exact executed commands (expanded xargs argv):
+pnpm exec eslint apps/api/src/config/env.ts apps/api/src/routes/ai-chatgpt.routes.ts apps/api/src/routes/ai-provider.routes.ts apps/api/src/services/ai-chatgpt.service.ts apps/api/src/services/ai-provider-config.service.ts apps/api/src/test/ai-chatgpt-device-code.test.ts apps/api/src/test/ai-provider-config.test.ts packages/shared/src/ai/chatgpt.ts packages/shared/src/ai/provider.ts tests/ai-contract.test.mjs
+pnpm exec prettier --check apps/api/src/config/env.ts apps/api/src/routes/ai-chatgpt.routes.ts apps/api/src/routes/ai-provider.routes.ts apps/api/src/services/ai-chatgpt.service.ts apps/api/src/services/ai-provider-config.service.ts apps/api/src/test/ai-chatgpt-device-code.test.ts apps/api/src/test/ai-provider-config.test.ts docs/briefs/sub-ai-login-autodetect.md packages/shared/src/ai/chatgpt.ts packages/shared/src/ai/provider.ts tests/ai-contract.test.mjs
+LEGEND_TEST_FILES="src/test/ai-model-capabilities.test.ts src/test/ai-thinking-budget.test.ts src/test/ai-provider-config.test.ts src/test/ai-provider-probe.test.ts src/test/ai-provider.test.ts src/test/ai-orchestrator.test.ts src/test/ai-gateway.test.ts src/test/ai-chatgpt-device-code.test.ts src/test/ai-chatgpt-codex-adapter.test.ts src/test/env.test.ts tests/ai-contract.test.mjs tests/text-contract.test.mjs" heavy pnpm test
+HEAVY_TIMEOUT=7200 heavy pnpm --filter @starter/api typecheck
+HEAVY_TIMEOUT=7200 heavy pnpm --filter @starter/shared typecheck
+HEAVY_TIMEOUT=7200 heavy pnpm test:e2e
+
+Extra document format: pnpm exec prettier --check docs/PROGRESS.md
+```
+
+Full `pnpm check` remains the merge-train gate. The release requires architect xhigh and second-opinion review of B; the frontend differences above are tracked in `legend-nnufz.1`.
