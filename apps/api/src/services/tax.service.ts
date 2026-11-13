@@ -83,9 +83,11 @@ import {
   type TaxSettingsId,
   type TaxCalculationResult,
   type TaxRuleConflict,
+  type TaxRuleId,
   type TaxRuleTie,
   type TaxRule,
   type TaxSettings,
+  type TaxType,
 } from "@starter/shared/tax";
 
 import { db } from "../db";
@@ -1886,6 +1888,99 @@ export async function recordTaxSnapshots(
       (serviceByRule.get(line.taxRuleId) ?? 0) + line.serviceChargeIdr,
     );
   }
+  const rows = input.result.taxes.map((summary) => {
+    const grossIdr = grossByRule.get(summary.taxRuleId);
+    if (grossIdr === undefined)
+      throw new TaxError(
+        "TAX_RULE_NOT_FOUND",
+        "A calculated tax line has no matching rule group.",
+      );
+    return {
+      taxRuleId: summary.taxRuleId,
+      taxRuleCode: summary.code,
+      taxRuleVersion: summary.version,
+      taxType: summary.taxType,
+      rateBp: summary.rateBp,
+      priceIncludesTax: summary.priceIncludesTax,
+      grossIdr: idr(grossIdr),
+      taxBaseIdr: summary.taxBaseIdr,
+      serviceChargeIdr: idr(serviceByRule.get(summary.taxRuleId) ?? 0),
+      taxIdr: summary.taxIdr,
+    };
+  });
+  await replaceTaxSnapshotRows(tx, context, input, rows);
+}
+
+/** One `tax_snapshots` row of a sale, before the sale's keys are added. */
+type TaxSnapshotRowValues = {
+  taxRuleId: TaxRuleId;
+  taxRuleCode: string;
+  taxRuleVersion: number;
+  taxType: TaxType;
+  rateBp: number;
+  priceIncludesTax: boolean;
+  grossIdr: Idr;
+  taxBaseIdr: Idr;
+  serviceChargeIdr: Idr;
+  taxIdr: Idr;
+};
+
+/**
+ * Edge sales GL (legend-uctlr): the same snapshot rows as
+ * `recordTaxSnapshots`, but copied from the rows the edge already computed
+ * (`order.paid` payload `taxes`), never recomputed. Same lock, same
+ * replace-the-set semantics, same table.
+ */
+export async function recordTaxSnapshotsFromPayload(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: Omit<TaxSnapshotInput, "result"> & {
+    taxes: readonly {
+      taxRuleId: TaxRuleId;
+      code: string;
+      version: number;
+      taxType: TaxType;
+      rateBp: number;
+      priceIncludesTax: boolean;
+      grossIdr: Idr;
+      taxBaseIdr: Idr;
+      serviceChargeIdr: Idr;
+      taxIdr: Idr;
+    }[];
+  },
+): Promise<void> {
+  assertTrustedScopedContext(context);
+  if (!isOutletInScope(context.outletScope, input.outletId))
+    throw new HttpError(404, "NOT_FOUND", "Outlet not found.");
+  await replaceTaxSnapshotRows(
+    tx,
+    context,
+    input,
+    input.taxes.map((row) => ({
+      taxRuleId: row.taxRuleId,
+      taxRuleCode: row.code,
+      taxRuleVersion: row.version,
+      taxType: row.taxType,
+      rateBp: row.rateBp,
+      priceIncludesTax: row.priceIncludesTax,
+      grossIdr: row.grossIdr,
+      taxBaseIdr: row.taxBaseIdr,
+      serviceChargeIdr: row.serviceChargeIdr,
+      taxIdr: row.taxIdr,
+    })),
+  );
+}
+
+/**
+ * Shared writer of both entry points: serializes re-quotes of the source,
+ * replaces its whole snapshot set. The caller has already checked the scope.
+ */
+async function replaceTaxSnapshotRows(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: Omit<TaxSnapshotInput, "result">,
+  rows: readonly TaxSnapshotRowValues[],
+): Promise<void> {
   // Serialize re-quotes of the same sale for the rest of this transaction.
   // The lock key names the source row, so unrelated bills never contend.
   const lockKey = `${context.tenant.tenantId}:${input.sourceType}:${input.sourceId}`;
@@ -1902,30 +1997,15 @@ export async function recordTaxSnapshots(
       ),
     );
   const outletId = outletIdSchema.parse(input.outletId);
-  const rows = input.result.taxes.map((summary) => {
-    const grossIdr = grossByRule.get(summary.taxRuleId);
-    if (grossIdr === undefined)
-      throw new TaxError(
-        "TAX_RULE_NOT_FOUND",
-        "A calculated tax line has no matching rule group.",
-      );
-    return {
-      tenantId: context.tenant.tenantId,
-      outletId,
-      sourceType: input.sourceType,
-      sourceId: input.sourceId,
-      businessDate: input.businessDate,
-      taxRuleId: summary.taxRuleId,
-      taxRuleCode: summary.code,
-      taxRuleVersion: summary.version,
-      taxType: summary.taxType,
-      rateBp: summary.rateBp,
-      priceIncludesTax: summary.priceIncludesTax,
-      grossIdr: idr(grossIdr),
-      taxBaseIdr: summary.taxBaseIdr,
-      serviceChargeIdr: idr(serviceByRule.get(summary.taxRuleId) ?? 0),
-      taxIdr: summary.taxIdr,
-    };
-  });
-  if (rows.length > 0) await tx.insert(taxSnapshots).values(rows);
+  if (rows.length > 0)
+    await tx.insert(taxSnapshots).values(
+      rows.map((row) => ({
+        tenantId: context.tenant.tenantId,
+        outletId,
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        businessDate: input.businessDate,
+        ...row,
+      })),
+    );
 }

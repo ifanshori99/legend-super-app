@@ -17,6 +17,7 @@ const cloudOwnedSweeps = [
   "runScheduledLeaveJobs",
   "runScheduledExitClearance",
   "expireDueSupportAccessGrants",
+  "redriveEdgeOrderRefusalsForTenant",
 ] as const;
 
 describe("legend-647 cloud-owned data sweeps never run on the edge", () => {

@@ -240,6 +240,7 @@ export function VoidForm({
             {correctionErrorText(
               voidItem.error,
               t("posCorrection.state.submitErrorBody"),
+              t("posCorrection.state.edgeBlockedBody"),
             )}
           </Notice>
         )}
@@ -271,6 +272,7 @@ export function VoidForm({
             ? correctionErrorText(
                 voidItem.error,
                 t("posCorrection.approval.failed"),
+                t("posCorrection.state.edgeBlockedBody"),
               )
             : null
         }

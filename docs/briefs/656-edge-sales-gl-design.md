@@ -1,0 +1,25 @@
+# 656 — jurnal GL, PBJT, poin untuk penjualan edge (legend-uctlr, 132mw, vje21)
+
+Worktree: `.worktrees/edge-gl-656`, cabang `ws/edge-sales-gl` (dari `ws/edge-order-ingest`). Area uang dan pajak: jangan sampai rugi.
+Keputusan CTO 14 Nov: GL dan PBJT sama seperti penjualan cloud; poin saat ingest bila ada customer, idempoten per order, tanpa penukaran offline; void/refund order edge dari cloud tetap diblok; void lama tanpa id aktor diblok.
+
+## Peta (sudah diverifikasi)
+- `apps/api/src/edge/order-ingest.ts`: `applyPaid` (insert orders/posOrders/items/tenders), `applyVoided` (insert posOrderVoids), `isTransientReason` ~l.127. Header R3 ("no outbox/journal/loyalty") diganti: jurnal dan poin kini dipanggil langsung di savepoint ingest.
+- Konsumen cloud (event-driven): `deliverAutoJournalEvent(context, event, tx, now)` di `services/accounting-auto-journal-consumer.ts:318` (kunci idempotensi `aj:sale:<orderId>` dan `aj:sale-void:<orderId>`, gagal = parkir bukan throw) dan `deliverLoyaltyEarnEvent(context, event, tx, now)` di `services/loyalty-earn-consumer.ts:126` (unik `point_earn_records(tenantId, orderId)`; membaca `orders.customerProfileId`; no-op bila null).
+- PBJT: `recordTaxSnapshots(tx, context, {sourceType:"order", sourceId: ulidToUuid(orderId), outletId, businessDate, result})` di `services/tax.service.ts:1869`. Cloud memanggilnya di `pos-order.service.ts:1319`. `saleTaxSplitOf` (accounting-auto-journal-tax-split.ts:76) membaca `tax_snapshots`; tanpa snapshot jatuh ke semua-PBJT.
+- Payload `order.paid` (`packages/shared/src/pos/events.ts:132`) hanya punya `pbjtIdr` total, TANPA rincian aturan pajak dan TANPA customer. Emisi payload: `pos-order.service.ts` ~l.1368 (`paidPayload`, `edgeIngestKeys`).
+
+## Keputusan desain (CTO/engineer, bisa dikoreksi reviewer)
+1. Kontrak aditif di `orderPaidPayloadSchema`: `customerProfileId` (uuid, nullable, optional) dan `taxes` (optional array baris snapshot: `taxRuleId, code, version, taxType, rateBp, priceIncludesTax, grossIdr, taxBaseIdr, serviceChargeIdr, taxIdr`) diisi dari `order.taxResult` di `edgeIngestKeys` (bila `order.taxResult` ada; angka diambil apa adanya, tidak dihitung ulang). Superrefine: bila `taxes` ada, Σ taxIdr harus sama dengan `pbjtIdr`.
+2. Ingest (`applyPaid`), setelah baris tertulis: (a) isi `orders.customerProfileId` dari payload; (b) tulis `tax_snapshots` dari `taxes` lewat fungsi baru di tax.service yang berbagi kode penulisan baris dengan `recordTaxSnapshots` (refaktor, perilaku cloud tidak berubah); `pbjtIdr > 0` tanpa `taxes` = refusal `tax_missing` (fail closed, jangan menebak aturan pajak); Σ taxes != pbjtIdr = `tax_mismatch`; (c) panggil `deliverAutoJournalEvent` lalu `deliverLoyaltyEarnEvent` dengan `event` yang sama (id event edge = kunci replay), `meta.context`, savepoint `tx`.
+3. Ingest (`applyVoided`), setelah `posOrderVoids` tertulis: panggil `deliverAutoJournalEvent` dan `deliverLoyaltyEarnEvent` dengan event void (jurnal dibalik tepat sekali lewat kunci `aj:sale-void:`; poin diambil kembali oleh reversal loyalty yang sudah ada).
+4. Replay/urutan acak: ledger `edge_order_ingests` + kunci idempotensi konsumen. Void tiba sebelum paid: tetap `order_not_ingested` (sudah ada), tidak menulis apa pun.
+5. Konsumen berhenti memarkir diam-diam: bila `deliverAutoJournalEvent` mengembalikan `parked`, ingest tetap sukses (sama dengan cloud) tetapi tulis log warning (event id + kode, tanpa payload). Tidak ada migrasi diperkirakan (rentang 0526-0529 cadangan).
+6. Kartu 132mw: `isTransientReason` hanya `lock_failed` bila disebabkan 40P01/55P03/40001, yaitu `db_error:40P01|55P03|40001` (dan `lock_failed` dari `lockOrThrow`); `db_error:*` lain final. Sweep operator: fungsi/job yang mengulang event `order.paid`/`order.voided` terparkir di `edge_deferred_events` yang ledger-nya `refused` dengan alasan transien. Alasan baru tidak boleh hilang dari ledger saat retry gagal (order-ingest.ts ~l.127-132 menghapus baris refused sebelum retry: bila retry gagal, catat alasan baru).
+7. Kartu vje21: pesan 409 `EDGE_ORDER_CORRECTION_BLOCKED` jelas untuk kasir/finance di `services/pos-order-corrections.ts:158`; teks UI terdaftar di katalog `packages/shared/src/i18n/messages/` (modul fitur lalu spread ke `id.ts`) supaya `node --test tests/text-contract.test.mjs` hijau; web memetakan kode error ke teks katalog bila ada titik tampilnya.
+
+## Test gagal-dulu (apps/api/src/test/)
+Total jurnal penjualan edge = total order edge (debit = kredit, tidak ada selisih); pajak jurnal = `pbjtIdr` dan tax_snapshots sama dengan yang ditulis cloud untuk order identik; replay paid dua kali dan urutan acak tidak menggandakan jurnal atau poin; void membalik jurnal tepat sekali (replay void tidak menggandakan); tenant lain tidak tersentuh (jurnal, snapshot, poin); `tax_missing`/`tax_mismatch` ditolak dan tidak menulis jurnal; `lock_failed` transien di-redrive, `db_error:23505` tidak.
+
+## Batas
+Tanpa merge/deploy/`pkill`/`pnpm test` penuh. Edit kecil (Edit, bukan Write ulang) pada file bersama `order-ingest.ts`. Satu token heavy per thread: hanya yang diberi izin menjalankan vitest/tsc.

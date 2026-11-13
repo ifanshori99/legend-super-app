@@ -234,6 +234,8 @@ export const posCorrectionMessages = {
     submitErrorTitle: "Koreksi belum diterapkan",
     submitErrorBody:
       "Tidak ada perubahan pada pesanan. Periksa isian lalu coba lagi.",
+    edgeBlockedBody:
+      "Pesanan ini dibayar di kasir edge dan sudah diterima server pusat. Void atau refund hanya bisa dilakukan di kasir edge tempat penjualan terjadi; hubungi kasir atau finance outlet tersebut.",
     voidedTitle: "Pesanan sudah di-void",
     voidedBody: "Tidak ada koreksi lain yang bisa dibuat untuk pesanan ini.",
   },

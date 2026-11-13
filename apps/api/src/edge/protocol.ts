@@ -19,6 +19,12 @@ import { syncAckSchema, syncBatchSchema } from "@starter/shared/edge";
 export const LINK_BATCH_SIZE = 100;
 /** Max encoded frame; the ws server's maxPayload uses the same bound. */
 export const LINK_MAX_FRAME_BYTES = 4 * 1024 * 1024;
+/**
+ * Max encoded bytes of the events in one batch frame: the frame cap minus 1 MiB
+ * of headroom for the batch fields and the framing. A batch always carries at
+ * least one event; a single event above this bound is not sent (link-peer.ts).
+ */
+export const LINK_BATCH_MAX_BYTES = LINK_MAX_FRAME_BYTES - 1024 * 1024;
 export const LINK_PATH = "/api/edge-link";
 
 export const linkCursorSchema = z

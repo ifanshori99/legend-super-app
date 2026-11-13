@@ -173,6 +173,16 @@ export function HeadingPill({ children }: { children: ReactNode }) {
 }
 
 /** Why a correction was refused, in words the cashier can act on. */
-export function correctionErrorText(error: unknown, fallback: string): string {
+export function correctionErrorText(
+  error: unknown,
+  fallback: string,
+  edgeBlocked?: string,
+): string {
+  if (
+    edgeBlocked &&
+    error instanceof ApiError &&
+    error.code === "EDGE_ORDER_CORRECTION_BLOCKED"
+  )
+    return edgeBlocked;
   return error instanceof ApiError && error.message ? error.message : fallback;
 }

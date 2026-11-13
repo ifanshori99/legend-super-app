@@ -68,6 +68,7 @@ const otherTenantId = randomUUID();
 const brandId = randomUUID();
 const categoryId = randomUUID();
 const menuItemId = randomUUID();
+const taxRuleId = randomUUID();
 const shiftId = randomUUID();
 const cashierId = randomUUID();
 const supervisorId = randomUUID();
@@ -167,6 +168,18 @@ async function createFixture() {
      VALUES ($1, $2, $3, $4, 'Kopi Susu', true, $5)`,
     [menuItemId, tenantId, brandId, categoryId, randomUUID()],
   );
+  // legend-uctlr: the PBJT rule the payload `taxes` rows point at
+  // (tax_snapshots has a foreign key to it).
+  await owner.query(
+    `INSERT INTO tax_rules
+       (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+        price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+        published_at, published_by)
+     VALUES ($1, $2, NULL, 'PBJT-ING', 'PBJT 10%', 'pbjt', 1000, NULL, '[]',
+             '{"itemClasses":["food_beverage"],"categoryIds":[],"itemIds":[]}',
+             false, true, true, 1, '2026-01-01', 'published', now(), $3)`,
+    [taxRuleId, tenantId, actor],
+  );
   await owner.query(
     `INSERT INTO "user" (id, name, email) VALUES ($1, 'Kasir Ingest', $2)`,
     [cashierId, `${cashierId}@example.test`],
@@ -265,6 +278,24 @@ function lines(): Payload[] {
 
 const PAID_AT = "2034-01-02T03:04:05.000Z";
 
+/** The `taxes` row of a sale: all of it is PBJT at 10% on `base`. */
+function taxRows(base: number, taxIdr: number, priceIncludesTax = false) {
+  return [
+    {
+      taxRuleId,
+      code: "PBJT-ING",
+      version: 1,
+      taxType: "pbjt",
+      rateBp: 1000,
+      priceIncludesTax,
+      grossIdr: base,
+      taxBaseIdr: base,
+      serviceChargeIdr: 0,
+      taxIdr,
+    },
+  ];
+}
+
 /**
  * A new-contract edge `order.paid` payload: subtotal 75000 (non-void lines),
  * discount 5000, tax 7000 on top, total 77000 = cash 50000 + EDC 20000 + points 7000.
@@ -285,6 +316,7 @@ function paidPayload(orderId: string, over: Payload = {}): Payload {
     discountIdr: 5000,
     serviceChargeIdr: 0,
     pbjtIdr: 7000,
+    taxes: taxRows(70000, 7000),
     roundingIdr: 0,
     totalIdr: 77000,
     paidCashIdr: 50000,
@@ -338,6 +370,7 @@ function taxInclusivePayload(orderId: string, businessDate = BUSINESS_DATE) {
     discountIdr: 0,
     serviceChargeIdr: 0,
     pbjtIdr: 10000,
+    taxes: taxRows(101000, 10000, true),
     totalIdr: 111000,
     paidCashIdr: 111000,
     paidEdcIdr: 0,
@@ -1431,7 +1464,7 @@ describe("legend-771dl a refused ingest is retried only for the same event and a
       )
     )[0]?.paid;
 
-  it("a db_error refusal is cleared and the same event ingests once the cause is gone", async () => {
+  it("a db_error:23505 refusal is final (legend-132mw): a replay of the same event does not retry it", async () => {
     const clashing = "RETRY-0001";
     const clashId = randomUUID();
     // 'sent' (not final) so the number can be changed afterwards.
@@ -1447,13 +1480,8 @@ describe("legend-771dl a refused ingest is retried only for the same event and a
     const event = paidEvent(orderId, { orderNumber: clashing });
 
     await deliver([event]);
-    expect((await ingestOf(orderId))?.reason).toMatch(/^db_error:/);
+    expect((await ingestOf(orderId))?.reason).toBe("db_error:23505");
     expect(await cloudOrders(orderId)).toBe(0);
-
-    // Still clashing: a replay refuses again, no half-written rows.
-    await redeliver(event);
-    expect((await ingestOf(orderId))?.reason).toMatch(/^db_error:/);
-    expect(await childCounts(orderId)).toEqual(NOTHING);
 
     await q(
       "UPDATE orders SET number = 'RETRY-MOVED' WHERE tenant_id = $1 AND id = $2::uuid",
@@ -1461,26 +1489,14 @@ describe("legend-771dl a refused ingest is retried only for the same event and a
     );
     await redeliver(event);
 
+    // The transient set is lock_failed and 40P01/55P03/40001 only; the
+    // redrive sweep is covered by edge-order-redrive.test.ts.
     expect(await ingestOf(orderId)).toMatchObject({
-      state: "ingested",
-      reason: null,
+      state: "refused",
+      reason: "db_error:23505",
     });
-    expect(await cloudOrders(orderId)).toBe(1);
-    expect(await childCounts(orderId)).toEqual({
-      items: 3,
-      posItems: 3,
-      tenders: 3,
-      posOrders: 1,
-    });
-    // And once ingested, further replays are no-ops.
-    await redeliver(event);
-    await redeliver(event);
-    expect(await childCounts(orderId)).toEqual({
-      items: 3,
-      posItems: 3,
-      tenders: 3,
-      posOrders: 1,
-    });
+    expect(await cloudOrders(orderId)).toBe(0);
+    expect(await childCounts(orderId)).toEqual(NOTHING);
     expect(await ingestRowCount(orderId)).toBe(1);
     expect(await parkedRowsOf(event)).toBe(1);
   });
