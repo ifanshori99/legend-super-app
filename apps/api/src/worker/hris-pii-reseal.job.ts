@@ -49,6 +49,7 @@ import type * as schema from "../db/schema/index.ts";
 import { employees, employmentContracts } from "../db/schema/hris.ts";
 import {
   employeePayComponents,
+  payrollRunResults,
   payslipBankSnapshots,
   payslips,
 } from "../db/schema/payroll.ts";
@@ -84,6 +85,7 @@ type ResealTable =
   | "employee_pay_components"
   | "payslips"
   | "payslip_bank_snapshots"
+  | "payroll_run_results"
   | "payroll_rapels"
   | "payroll_rapel_items";
 
@@ -94,6 +96,7 @@ export type HrisPiiResealResult = {
   payComponents: number;
   payslips: number;
   bankSnapshots: number;
+  runResults: number;
   rapels: number;
   rapelItems: number;
   failedTenants: number;
@@ -218,12 +221,22 @@ async function countStale(
           ne(payrollRapelItems.piiKeyVersion, active),
         ),
       );
+    const [staleRunResults] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(payrollRunResults)
+      .where(
+        and(
+          eq(payrollRunResults.tenantId, tenantId),
+          ne(payrollRunResults.piiKeyVersion, active),
+        ),
+      );
     return (
       Number(staleEmployees?.n ?? 0) +
       Number(staleContracts?.n ?? 0) +
       Number(stalePayComponents?.n ?? 0) +
       Number(stalePayslips?.n ?? 0) +
       Number(staleBankSnapshots?.n ?? 0) +
+      Number(staleRunResults?.n ?? 0) +
       Number(staleRapels?.n ?? 0) +
       Number(staleRapelItems?.n ?? 0)
     );
@@ -506,6 +519,61 @@ async function resealBankSnapshotBatch(
   });
 }
 
+/**
+ * legend-m6zdl: sealed simulation results of a payroll run ride the same key
+ * ring. The table has no id column: the seal is bound to the payslip id
+ * (unique per tenant), as payroll-run-lock.service.ts opens it.
+ */
+async function resealRunResultBatch(
+  database: Database,
+  context: ScopedTenantContext,
+  batchSize: number,
+  active: number,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  return withTenant(database, context, async (tx) => {
+    await tx.execute(
+      sql`SELECT set_config('app.payroll_reseal', 'on', true), set_config('app.payroll_reseal_target_version', ${String(active)}, true)`,
+    );
+    const rows = await tx
+      .select()
+      .from(payrollRunResults)
+      .where(
+        and(
+          eq(payrollRunResults.tenantId, tenantId),
+          lt(payrollRunResults.piiKeyVersion, active),
+        ),
+      )
+      .orderBy(asc(payrollRunResults.payslipId))
+      .limit(batchSize)
+      .for("update", { skipLocked: true });
+    for (const row of rows) {
+      const binding = {
+        tenantId,
+        table: "payroll_run_results",
+        rowId: row.payslipId,
+        field: "result",
+      } as const;
+      const resultEncrypted = sealPayrollValue(
+        openPayrollValue(row.resultEncrypted, binding, row.piiKeyVersion),
+        binding,
+        active,
+      );
+      await tx
+        .update(payrollRunResults)
+        .set({ resultEncrypted, piiKeyVersion: active })
+        .where(
+          and(
+            eq(payrollRunResults.tenantId, tenantId),
+            eq(payrollRunResults.payslipId, row.payslipId),
+            lt(payrollRunResults.piiKeyVersion, active),
+          ),
+        );
+    }
+    return rows.length;
+  });
+}
+
 /** Rapel targets and deltas are salary data on the same rotating key ring. */
 async function resealRapelBatch(
   database: Database,
@@ -630,6 +698,7 @@ export async function runHrisPiiReseal(
     payComponents: 0,
     payslips: 0,
     bankSnapshots: 0,
+    runResults: 0,
     rapels: 0,
     rapelItems: 0,
     failedTenants: 0,
@@ -643,6 +712,7 @@ export async function runHrisPiiReseal(
     ["employee_pay_components", resealPayComponentBatch],
     ["payslips", resealPayslipBatch],
     ["payslip_bank_snapshots", resealBankSnapshotBatch],
+    ["payroll_run_results", resealRunResultBatch],
     ["payroll_rapels", resealRapelBatch],
     ["payroll_rapel_items", resealRapelItemBatch],
   ];
@@ -669,6 +739,7 @@ export async function runHrisPiiReseal(
           else if (table === "payslips") result.payslips += count;
           else if (table === "payslip_bank_snapshots")
             result.bankSnapshots += count;
+          else if (table === "payroll_run_results") result.runResults += count;
           else if (table === "payroll_rapels") result.rapels += count;
           else result.rapelItems += count;
           await options.afterBatch?.({ tenantId, table, count });

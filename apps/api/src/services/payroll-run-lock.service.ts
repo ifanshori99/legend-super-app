@@ -90,9 +90,12 @@ import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { snapshotPayeeBankForLock } from "./payroll-bank-snapshot.service.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
 import {
+  expectedReceivableCollection,
   loadMonthPriorRunIds,
+  loadOpenPph21Receivables,
   loadTaxYearPriors,
   lockPayrollRunMonth,
+  lockPph21ReceivableScope,
   lockPayrollRunTax,
   type PayrollMonthBasis,
 } from "./payroll-run-pph21.service.ts";
@@ -385,6 +388,9 @@ export async function lockPayrollRunInTransaction(
   // LOCK 1: the month advisory lock. LOCK 2: rapel components, employees and
   // outlets. LOCK 3: the run row. Never the reverse.
   const month = await lockPayrollRunMonth(tx, tenantId, runId);
+  // LOCK 1b: the receivable of this legal entity (after the month lock, before
+  // any run row lock): one receivable is collected by one locked run.
+  await lockPph21ReceivableScope(tx, tenantId, month.legalEntityId);
   await lockRapelInputsForRun(tx, context, {
     runId,
     legalEntityId: month.legalEntityId,
@@ -510,6 +516,28 @@ export async function lockPayrollRunInTransaction(
     const fresh = [...priorOf(entry).payslipIds].sort();
     const simulated = [...entry.stored.priorPayslipIds].sort();
     if (!isDeepStrictEqual(fresh, simulated)) throw monthStale();
+  }
+
+  // The receivable collected on each stored payslip must be the one the
+  // balance open NOW allows (earlier locked/paid runs of this legal entity,
+  // under the receivable lock). Another run that collected it first, a
+  // reversed run, or an entity change makes the stored collection stale.
+  const openNow = await loadOpenPph21Receivables(
+    tx,
+    {
+      tenantId,
+      legalEntityId: month.legalEntityId,
+      runId,
+      employeeIds: plan.map((entry) => entry.employeeId),
+    },
+    resultStale,
+  );
+  for (const entry of plan) {
+    const { expectedIdr, storedIdr } = expectedReceivableCollection(
+      entry.calculation,
+      openNow.get(entry.employeeId) ?? 0,
+    );
+    if (expectedIdr !== storedIdr) throw resultStale();
   }
 
   const tables = await loadPinnedPph21Tables(tx, tenantId, {
