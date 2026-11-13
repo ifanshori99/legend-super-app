@@ -197,7 +197,10 @@ describe("legend-65i3t statement email brevo auth failure alert", () => {
       new Response(JSON.stringify({ messageId: "<m1@example.test>" }), {
         status: 201,
       })) as typeof globalThis.fetch;
-    await statementProvider(ok).send(contextOf(a.tenantId), emailFor(a.tenantId));
+    await statementProvider(ok).send(
+      contextOf(a.tenantId),
+      emailFor(a.tenantId),
+    );
     expect(await alertCount(a.tenantId)).toBe(0);
   });
 

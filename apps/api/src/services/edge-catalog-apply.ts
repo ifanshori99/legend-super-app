@@ -322,7 +322,7 @@ async function applyOrdered<R extends Stamped & { readonly id: string }>(
 /** Ids of `table` rows (any state) among `ids`, for optional references. */
 async function localIds(
   tx: Tx,
-  table: typeof stations | typeof menuCategories,
+  table: typeof stations | typeof menuCategories | typeof edgePrinters,
   tenantId: string,
   ids: readonly string[],
 ): Promise<Set<string>> {
@@ -1245,8 +1245,8 @@ async function applyPrinters(
     write: async (r) => {
       if (!("label" in r)) return false;
       const values = {
-        tenantId: r.tenantId,
-        outletId: r.outletId,
+        tenantId,
+        outletId: outletIdSchema.parse(r.outletId),
         label: r.label,
         role: r.role,
         stationId: r.stationId,
@@ -1309,6 +1309,7 @@ async function applyPrinters(
   }
   applied += await applyOrdered(tx, t, tenantId, gone, {
     write: async (r) => {
+      const outletId = outletIdSchema.parse(r.outletId);
       const hasJobs = sql`EXISTS (SELECT 1 FROM ${edgePrintJobs} j WHERE j.tenant_id = ${t.tenantId} AND j.outlet_id = ${t.outletId} AND (j.printer_id = ${t.id} OR j.original_printer_id = ${t.id}))`;
       const removable = await tx
         .select({ id: t.id })
@@ -1316,7 +1317,7 @@ async function applyPrinters(
         .where(
           and(
             eq(t.tenantId, tenantId),
-            eq(t.outletId, r.outletId),
+            eq(t.outletId, outletId),
             eq(t.id, r.id),
             lt(t.syncTxid, sql`${r.syncTxid}::bigint`),
             sql`NOT ${hasJobs}`,
@@ -1329,7 +1330,7 @@ async function applyPrinters(
         .where(
           and(
             eq(t.tenantId, tenantId),
-            eq(t.outletId, r.outletId),
+            eq(t.outletId, outletId),
             eq(t.fallbackPrinterId, r.id),
           ),
         );
@@ -1338,7 +1339,7 @@ async function applyPrinters(
         .where(
           and(
             eq(t.tenantId, tenantId),
-            eq(t.outletId, r.outletId),
+            eq(t.outletId, outletId),
             eq(t.id, r.id),
           ),
         );

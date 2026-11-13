@@ -52,6 +52,7 @@ import {
   CoreError,
   decodeCursor,
   encodeCursor,
+  outletIdSchema,
   uuidSchema,
   type TenantId,
 } from "@starter/shared/core";
@@ -282,6 +283,7 @@ const scanners: Record<
     // at `take`, then merged, so the merged head is exactly the union's head.
     const live = edgePrinters;
     const gone = edgePrinterTombstones;
+    const printerOutletId = outletIdSchema.parse(outletId);
     const [liveRows, goneRows] = await Promise.all([
       tx
         .select({ row: live, txid: txidOf(live.syncTxid) })
@@ -289,7 +291,7 @@ const scanners: Record<
         .where(
           and(
             eq(live.tenantId, tenantId),
-            eq(live.outletId, outletId),
+            eq(live.outletId, printerOutletId),
             committed(live.syncTxid),
             after(live.syncTxid, [live.id], since),
           ),
@@ -302,7 +304,7 @@ const scanners: Record<
         .where(
           and(
             eq(gone.tenantId, tenantId),
-            eq(gone.outletId, outletId),
+            eq(gone.outletId, printerOutletId),
             committed(gone.syncTxid),
             after(gone.syncTxid, [gone.id], since),
           ),
