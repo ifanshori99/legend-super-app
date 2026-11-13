@@ -49,6 +49,17 @@ const TABLES = [
 ] as const;
 type Table = (typeof TABLES)[number];
 
+/**
+ * Payroll tables added by later merged branches (month priors, run results,
+ * bank snapshots). Their rows need sealed-run fixtures that their own feature
+ * tests already build, so only the structural RLS case runs here.
+ */
+const RLS_ONLY_TABLES = [
+  "payroll_run_month_priors",
+  "payroll_run_results",
+  "payslip_bank_snapshots",
+] as const;
+
 /** Tables with a unique key on tenant_id alone (a second row clashes). */
 const ONE_ROW_PER_TENANT: ReadonlySet<Table> = new Set([
   "payroll_loan_policies",
@@ -496,8 +507,33 @@ describe("payroll core: coverage", () => {
       })
       .filter((name): name is string => name !== null)
       .sort();
-    expect(exported).toEqual([...TABLES].sort());
+    // Every exported table is either fully covered (TABLES) or RLS-only.
+    expect(exported).toEqual([...TABLES, ...RLS_ONLY_TABLES].sort());
     expect(TABLES).toHaveLength(15);
+    expect(TABLES.length + RLS_ONLY_TABLES.length).toBe(18);
+  });
+});
+
+describe.each(RLS_ONLY_TABLES)("payroll core: %s tenant isolation", (table) => {
+  it("[TEN-01] RLS is enabled and forced with a restrictive tenant_isolation policy", async () => {
+    const rls = await owner.query<{ rls: boolean; forced: boolean }>(
+      `SELECT relrowsecurity AS rls, relforcerowsecurity AS forced
+         FROM pg_class WHERE oid = $1::regclass`,
+      [`public.${table}`],
+    );
+    expect(rls.rows[0]).toEqual({ rls: true, forced: true });
+    const policies = await owner.query<{
+      policyname: string;
+      permissive: string;
+    }>(
+      `SELECT policyname, permissive FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = $1`,
+      [table],
+    );
+    expect(policies.rows).toContainEqual({
+      policyname: "tenant_isolation",
+      permissive: "RESTRICTIVE",
+    });
   });
 });
 
