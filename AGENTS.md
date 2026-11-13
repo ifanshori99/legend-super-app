@@ -103,6 +103,7 @@ Sebelum thread lapor selesai, dari root worktree, pada file yang diubah:
 - `pnpm exec eslint <file...>`
 - Teks UI baru: `node --test tests/text-contract.test.mjs` (daftarkan teks ke katalog, jangan longgarkan detector)
 - Migrasi baru: `pnpm db:generate` kosong, dan registry/referensi test memakai nomor yang sama
+- Typecheck paket yang tersentuh, sekali, lewat `heavy`: `pnpm --filter @starter/api typecheck`; bila `packages/shared` atau `apps/web` berubah, juga `pnpm --filter @starter/web typecheck` (Retro 26: 12 dari 30 kegagalan gate adalah typecheck yang lolos dari thread)
 Ringan; bila hook menolak tanpa `heavy`, jalankan lewat `heavy`.
 
 ## Verify and hand off
