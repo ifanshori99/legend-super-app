@@ -7,6 +7,7 @@
 // four digits against the line mask. A value is never logged or put in an
 // error message.
 
+import { tenantIdSchema } from "@starter/shared/core";
 import { and, eq, inArray } from "drizzle-orm";
 import {
   AccountingError,
@@ -61,7 +62,7 @@ export async function resolveCoretaxTaxIds(
       .from(employees)
       .where(
         and(
-          eq(employees.tenantId, tenantId),
+          eq(employees.tenantId, tenantIdSchema.parse(tenantId)),
           inArray(employees.id, employeeIds),
         ),
       );
