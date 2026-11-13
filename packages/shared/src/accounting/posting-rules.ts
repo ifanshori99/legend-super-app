@@ -615,6 +615,29 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["cash_over_short", "credit", "differenceIdr"],
     ],
   ),
+  // legend-89pn: drawer cash that does not pass through a sale. A drop (drawer
+  // to safe) is still the outlet's cash and has no rule; a cash movement held
+  // for approval is never booked (the consumer ignores it).
+  rule(
+    { event: "cash_movement.recorded", variant: "cash_out" },
+    "cashier_shift",
+    "Kas keluar kasir",
+    "§3.11 POS Kasir (kas masuk dan keluar dengan alasan); §4 E",
+    [
+      ["cash_out_expense", "debit", "amountIdr"],
+      ["cash_on_hand", "credit", "amountIdr"],
+    ],
+  ),
+  rule(
+    { event: "cash_movement.recorded", variant: "cash_in" },
+    "cashier_shift",
+    "Kas masuk kasir",
+    "§3.11 POS Kasir (kas masuk dan keluar dengan alasan); §4 E",
+    [
+      ["cash_on_hand", "debit", "amountIdr"],
+      ["cash_in_clearing", "credit", "amountIdr"],
+    ],
+  ),
   rule(
     { document: "depreciation" },
     "depreciation",

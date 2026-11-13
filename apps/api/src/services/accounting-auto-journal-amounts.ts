@@ -154,6 +154,8 @@ export const AUTO_JOURNAL_EVENTS = [
   "reservation.cancelled",
   "reservation.no_show",
   "cashier_shift.closed",
+  // legend-89pn
+  "cash_movement.recorded",
   "settlement.reconciled",
   "edc_transaction.settled",
   "goods_receipt.recorded",
@@ -340,6 +342,17 @@ const shiftClosedSchema = z.object({
   closedAt: time,
 });
 
+// legend-89pn: the amount and type are re-read from the stored cash_movements
+// row; the payload only names the movement and must agree with the row.
+const cashMovementRecordedSchema = z.object({
+  movementId: z.string().uuid(),
+  shiftId: z.string().uuid(),
+  outletId: z.string().uuid(),
+  type: z.enum(["cash_in", "cash_out", "drop"]),
+  amountIdr: idr,
+  recordedAt: time,
+});
+
 // Purchasing (legend-1xbs, legend-v3lh). The payload is the whole fact, there
 // is no backing guard: the emitting transaction already split the value.
 // supplier_invoice.recorded is NOT journaled here: its journal is posted in the
@@ -516,6 +529,11 @@ export function storedEventOf(event: {
     }
     case "cashier_shift.closed": {
       const payload = shiftClosedSchema.parse(event.payload);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
+    case "cash_movement.recorded": {
+      const payload = cashMovementRecordedSchema.parse(event.payload);
+      assertEnvelopeOutlet(event, payload.outletId);
       return { ...base, outletId: payload.outletId, occurredAt, payload };
     }
     case "settlement.reconciled": {
@@ -706,6 +724,8 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
       return boundedKey(`aj:dp-forfeit:${String(p.reservationId)}`);
     case "cashier_shift.closed":
       return boundedKey(`aj:shift:${String(p.shiftId)}`);
+    case "cash_movement.recorded":
+      return boundedKey(`aj:cash-movement:${String(p.movementId)}`);
     case "settlement.reconciled":
       return boundedKey(`aj:settlement:${String(p.settlementId)}`);
     case "edc_transaction.settled":
@@ -1165,6 +1185,77 @@ async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
  * outlet, amount = charge amount), booked straight to cash_on_hand; there is
  * no receipt to wait for or to bound, the sale journal rule is unchanged.
  */
+/**
+ * legend-89pn: cash in / cash out of an open or closed shift. Restrictive:
+ * - the amount and type come from the stored row; a payload that disagrees is
+ *   refused (POSTING_AMOUNTS_MISMATCH), never posted;
+ * - a drop stays the outlet's cash: nothing to book;
+ * - a movement held for approval (needs_approval, whatever its outcome) is
+ *   outside the shift's expected cash, so the close difference already
+ *   leaves it alone, and it is never booked here;
+ * - the cash_in that pays an order issue charge is booked as a sale by
+ *   order_issue.charge_paid (chargePaidFactOf): booking it again would count
+ *   the cash twice.
+ */
+async function cashMovementFactOf(
+  tx: Tx,
+  tenantId: TenantId,
+  stored: StoredAutoJournalEvent,
+): Promise<AutoJournalFact | null> {
+  const p = cashMovementRecordedSchema.parse(stored.payload);
+  const [movement] = await tx
+    .select({
+      outletId: cashMovements.outletId,
+      shiftId: cashMovements.shiftId,
+      type: cashMovements.type,
+      amountIdr: cashMovements.amountIdr,
+      needsApproval: cashMovements.needsApproval,
+      recordedAt: cashMovements.recordedAt,
+    })
+    .from(cashMovements)
+    .where(
+      and(
+        eq(cashMovements.tenantId, tenantId),
+        eq(cashMovements.id, p.movementId),
+      ),
+    );
+  if (
+    !movement ||
+    movement.outletId !== p.outletId ||
+    movement.shiftId !== p.shiftId ||
+    movement.type !== p.type
+  )
+    throw new AutoJournalPayloadInvalid(
+      "Cash movement of the event not found or not the one recorded",
+    );
+  const amountIdr = Number(movement.amountIdr);
+  if (amountIdr !== p.amountIdr)
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "amountIdr does not match the cash movement",
+    );
+  if (movement.type === "drop" || movement.needsApproval) return null;
+  const [charge] = await tx
+    .select({ id: orderIssueCharges.id })
+    .from(orderIssueCharges)
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, tenantId),
+        eq(orderIssueCharges.cashMovementId, p.movementId),
+      ),
+    )
+    .limit(1);
+  if (charge) return null;
+  return {
+    ruleEvent: "cash_movement.recorded",
+    variant: movement.type,
+    amounts: { amountIdr },
+    sourceId: p.movementId,
+    outletId: movement.outletId,
+    moneyTime: movement.recordedAt,
+  };
+}
+
 async function chargePaidFactOf(
   tx: Tx,
   tenantId: TenantId,
@@ -1856,6 +1947,8 @@ export async function autoJournalFactOf(
         moneyTime: new Date(p.closedAt),
       };
     }
+    case "cash_movement.recorded":
+      return cashMovementFactOf(tx, tenantId, stored);
     // No backing guard (design section 10): the bank statement is the fact,
     // finance reconciles the clearing account, so an over-settlement is a
     // reconciliation case, not a park. A zero fee posts Dr bank / Cr clearing
