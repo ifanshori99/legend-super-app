@@ -1464,3 +1464,4 @@ Langkah berikut CTO baru:
 - 23:25 Founder W4: folder legend super app dikecualikan dari Spotlight. Retro berikut cek mds_stores.
 - 23:26 G2aag selesai: fix/payroll-o2-o3 a9d87904a (bypw2, m6zdl; CTO: tanpa tagih mundur, pay_date <=; 126 test). Batch58 = flaky-641, followups-640, purchase-return-variance, cash-bank-table-mapping, payroll-o2-o3, edge-order-reemit (6).
 - 23:29 Batch57 masuk m1 1cbb842d5 (7 cabang + test-setup retur; migr 0330-0335; vitest 72 mnt 18 gagal -> 10 hilang via test-setup, 3 flake, 3 asli diperbaiki; root 2884/2884; build hijau; 9 bead). Perubahan test akses wc69d direview architect subagent. Mulai G8stk batch58 (brief 646, 6 cabang, migr dari 0336).
+- 23:29 Architect: perubahan test wc69d OK (manager hanya bisa beri peran yang izinnya subset; grants.ts:172-175). Selisih UI vs API (MFA, scope) aman, tanpa perubahan.
