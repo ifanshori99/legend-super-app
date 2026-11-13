@@ -28,6 +28,8 @@ import {
   assertTrustedScopedContext,
   toIsoDateTime,
   z,
+  type OutletId,
+  type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
 import {
@@ -79,6 +81,7 @@ import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
 import { isReservedAddress } from "../services/identity-email-login.service.ts";
+import { notifyBrevoAuthFailed } from "../services/edge-sync-conflict-alert.ts";
 import { issueInvitationLink } from "../services/identity-invitation.service.ts";
 import type { NotificationRecipientResolver } from "../services/notification-consumer.ts";
 import type { NotificationRecipient } from "../services/notification-core.ts";
@@ -1145,6 +1148,12 @@ export type BrevoEmailConfig = {
   from: string;
   fromName?: string;
   fetch?: FetchLike;
+  /** Called on a 401/403 (bad key or sender) before the throw; a failure here
+   * is swallowed. The caller throttles (legend-j75w). */
+  onAuthFailure?: (
+    context: ScopedTenantContext,
+    failure: { outletId: string | null; status: number },
+  ) => Promise<void>;
 };
 
 /** Brevo deduplicates on `headers.idempotencyKey` (a UUID) for 30 minutes.
@@ -1188,6 +1197,7 @@ export function createBrevoEmailProvider(
     from,
     fromName,
     fetch: fetchImpl = globalThis.fetch,
+    onAuthFailure,
   } = config;
   return {
     async send(context, input): Promise<OperationResult> {
@@ -1257,6 +1267,11 @@ export function createBrevoEmailProvider(
           accepted: false,
         });
       }
+      if (response.status === 401 || response.status === 403)
+        await onAuthFailure?.(context, {
+          outletId: request.outletId,
+          status: response.status,
+        }).catch(() => undefined);
       // Anything else (401/403 bad key or sender, 404, 408, 429, 5xx) is an
       // operator or transient problem: throw so it is retried and visible.
       throw new Error(
@@ -1362,6 +1377,14 @@ export function createWorkerNotificationHandlers(
           from: config.email.from,
           fromName: config.email.fromName,
           fetch: options.fetch,
+          onAuthFailure: (context, failure) =>
+            withTenant(database, context, (tx) =>
+              notifyBrevoAuthFailed(tx, context, {
+                tenantId: context.tenant.tenantId,
+                outletId: failure.outletId as OutletId | null,
+                status: failure.status,
+              }),
+            ),
         })
       : (disabledProvider("email") satisfies EmailProvider);
   return {

@@ -151,6 +151,7 @@ import {
   qrOrderServingEstimatePort,
 } from "./qr-order-ports.ts";
 import { listSessionSplitDtosTx } from "./bill-split.service.ts";
+import { requestRefundsForVoidedQrOrder } from "./qr-order-late-payment.ts";
 import { appendQrOrderPaid } from "./qr-order-paid.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { listSessionDepositSources } from "./reservation-deposit-credit.ts";
@@ -2497,6 +2498,9 @@ export async function voidUnpaidQrOrderTx(
     input,
     now,
   );
+  // legend-gjf1: every void path (sweep and cashier) returns the money of each
+  // paid intent of the link; once-only per intent, so a second void adds none.
+  await requestRefundsForVoidedQrOrder(tx, context, { order: voided, now });
   const items = await orderItemsOf(tx, context, [voided.id]);
   const swaps = await swapReplacementIdsOf(tx, context, [voided.id]);
   return orderDto(voided, items.get(voided.id) ?? [], swaps.get(voided.id));

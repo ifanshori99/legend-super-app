@@ -5054,3 +5054,13 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gate penuh diulang tidak sampai hijau utuh pada satu run; kegagalan terakhir dibuktikan flake atau test-bug per berkas (aturan batch54). Build `heavy pnpm build` EXIT=0 (18:20).
 - Biaya sesi (batch54+55): utama sonnet-5-5 221 req, subagent 100 req (haiku 34, opus 9, sonnet 57); 15 spawn subagent, puncak 2 bersamaan.
 
+
+## Penguatan pembayaran: srf6, gjf1, j75w (engineer, cabang `ws/payment-hardening` dari m1 1202164d, 13 Nov 2026 14:32 WIB)
+
+- legend-srf6: indeks dedupe webhook kini (tenant, provider, integration_id, event_id); migrasi 0482 (drop+create, journal idx 482, snapshot) + CHECK `gateway_webhook_events_verified_integration_check` (baris terverifikasi wajib integration_id, NOT VALID: baris lama NULL tidak divalidasi). Kode mati `recordIntegrationMismatch` dihapus. Dua integrasi dengan eventId sama kini masing-masing punya baris; replay integrasi sama tetap ditolak.
+- legend-gjf1: refund intent QR terbayar dipindah ke `voidUnpaidQrOrderTx` (helper `requestRefundsForVoidedQrOrder`, qr-order-late-payment.ts); jalur staf dan sweep memakai satu kode. Kunci `qr-late-payment-refund:<intentId>` + lock baris intent: void ulang tidak refund dobel. `voidUnpaidQrOrder` hanya dipanggil test, belum ada route.
+- legend-j75w: `notifyBrevoAuthFailed` (edge-sync-conflict-alert.ts), 1 alert per tenant per 15 menit (cek notification_outbox, advisory lock), dipasang via `onAuthFailure` di Brevo 401/403. Tanpa migrasi (0483 tidak dipakai). Provider statement API (`createStatementEmailProvider`) belum memasang hook.
+- Review: architect xhigh atas srf6+gjf1; temuan srf6 (NULL integration_id, test lama, kode mati) dibetulkan; gjf1 tanpa temuan.
+- Bukti: 5 file (36 test) + payment-webhook-api (90 test) hijau saat dijalankan terpisah; tsc api exit 0; db:generate kosong; eslint + prettier hijau pada 14 file. Satu run gabungan 6 file gagal 8 test (interferensi antar file saat berjalan bersamaan di DB sama; kedua kelompok hijau bila dipisah).
+- Gagal-dulu di HEAD: 16 dari 36 test gagal; penyebab per kasus tidak diperiksa satu-satu (worktree HEAD kena ERR_PNPM_NO_OFFLINE_TARBALL saat setup).
+- Subagent: total 16, puncak 5 bersamaan, token heavy dipegang test-runner (dan satu test-writer di awal).

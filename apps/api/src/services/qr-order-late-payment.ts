@@ -27,10 +27,12 @@ import {
   idr,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import type { PaymentStatus } from "@starter/shared/payment";
 import type { SystemRefundActor } from "@starter/shared/payment/admin";
-import { and, eq, isNull, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne } from "drizzle-orm";
 import {
   paymentIntents,
+  paymentLinks,
   paymentRefunds,
   paymentUnallocatedFunds,
 } from "../db/schema/index.ts";
@@ -196,6 +198,66 @@ export async function requestQrLatePaymentRefund(
     },
   );
   return response.refundId;
+}
+
+/**
+ * legend-g510l: intent statuses that still hold money to return. A refund that
+ * completed before the paid event was consumed moves the intent on to
+ * `partially_refunded`; its rest goes back like a full `paid` payment
+ * (`refunded` holds nothing).
+ */
+export const HOLDS_REFUNDABLE_MONEY: readonly PaymentStatus[] = [
+  "paid",
+  "partially_refunded",
+];
+
+/**
+ * legend-gjf1: a voided order whose link already settled holds money of a
+ * voided order (a split part, a partial code, a code paid after the void).
+ * One refund request per paid intent of the link, in id order. Each is replay
+ * safe (once-only key per intent in `requestQrLatePaymentRefund`), so the
+ * sweep, the staff void, and the callers that file the event's own refund
+ * afterwards all find the same request and a second void refunds nothing more.
+ * Shared by every QR void path (`voidUnpaidQrOrderTx`).
+ */
+export async function requestRefundsForVoidedQrOrder(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    order: { id: string; outletId: string; paymentLinkId: string | null };
+    now: Date;
+  },
+): Promise<void> {
+  const paymentLinkId = input.order.paymentLinkId;
+  if (paymentLinkId === null) return;
+  const [link] = await tx
+    .select({ paidIdr: paymentLinks.paidIdr })
+    .from(paymentLinks)
+    .where(
+      and(
+        eq(paymentLinks.tenantId, context.tenant.tenantId),
+        eq(paymentLinks.id, paymentLinkId),
+      ),
+    );
+  if (!link || link.paidIdr <= 0) return;
+  const paid = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.paymentLinkId, paymentLinkId),
+        inArray(paymentIntents.status, [...HOLDS_REFUNDABLE_MONEY]),
+      ),
+    )
+    .orderBy(asc(paymentIntents.id));
+  for (const row of paid)
+    await requestQrLatePaymentRefund(tx, context, {
+      order: input.order,
+      paymentLinkId,
+      intentId: row.id,
+      now: input.now,
+    });
 }
 
 /**

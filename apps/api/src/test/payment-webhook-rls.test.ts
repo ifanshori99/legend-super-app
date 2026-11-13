@@ -11,6 +11,10 @@ const tenantB = randomUUID();
 const actor = randomUUID();
 const eventA = randomUUID();
 const eventB = randomUUID();
+// A verified row always names the integration whose secret verified it
+// (database check gateway_webhook_events_verified_integration_check).
+const integrationA = randomUUID();
+const integrationB = randomUUID();
 const idA = `evt-a-${randomBytes(6).toString("hex")}`;
 const idB = `evt-b-${randomBytes(6).toString("hex")}`;
 const hash = (seed: string) => seed.padEnd(64, "0").slice(0, 64);
@@ -46,8 +50,8 @@ async function asTenant<T>(
 }
 
 const insertSql = `INSERT INTO gateway_webhook_events
-  (tenant_id, provider, event_id, signature_valid, payload_hash, status)
-  VALUES ($1, 'doit', $2, true, $3, 'received')`;
+  (tenant_id, provider, event_id, signature_valid, payload_hash, status, integration_id)
+  VALUES ($1, 'doit', $2, true, $3, 'received', $4)`;
 
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
@@ -72,10 +76,21 @@ beforeAll(async () => {
     ],
   );
   await owner.query(
-    `INSERT INTO gateway_webhook_events (id, tenant_id, provider, event_id, signature_valid, payload_hash, status)
-     VALUES ($1, $2, 'doit', $3, true, $4, 'received'),
-            ($5, $6, 'doit', $7, true, $8, 'received')`,
-    [eventA, tenantA, idA, hash("a"), eventB, tenantB, idB, hash("b")],
+    `INSERT INTO gateway_webhook_events (id, tenant_id, provider, event_id, signature_valid, payload_hash, status, integration_id)
+     VALUES ($1, $2, 'doit', $3, true, $4, 'received', $5),
+            ($6, $7, 'doit', $8, true, $9, 'received', $10)`,
+    [
+      eventA,
+      tenantA,
+      idA,
+      hash("a"),
+      integrationA,
+      eventB,
+      tenantB,
+      idB,
+      hash("b"),
+      integrationB,
+    ],
   );
 });
 
@@ -149,6 +164,7 @@ describe("TEN-01 gateway_webhook_events isolation", () => {
           tenantB,
           `evt-x-${randomBytes(4).toString("hex")}`,
           hash("x"),
+          integrationB,
         ]),
       ).rejects.toThrow();
       await client.query("ROLLBACK TO SAVEPOINT cross_tenant");
@@ -156,6 +172,7 @@ describe("TEN-01 gateway_webhook_events isolation", () => {
         tenantA,
         `evt-own-${randomBytes(4).toString("hex")}`,
         hash("y"),
+        integrationA,
       ]);
       expect(own.rowCount).toBe(1);
     });
@@ -230,7 +247,7 @@ describe("PAY-03 webhook event uniqueness", () => {
     await asTenant(tenantA, async (client) => {
       await client.query("SAVEPOINT duplicate_event");
       await expect(
-        client.query(insertSql, [tenantA, idA, hash("d")]),
+        client.query(insertSql, [tenantA, idA, hash("d"), integrationA]),
       ).rejects.toThrow(/duplicate key|unique/i);
       await client.query("ROLLBACK TO SAVEPOINT duplicate_event");
     });
@@ -242,8 +259,36 @@ describe("PAY-03 webhook event uniqueness", () => {
         tenantB,
         idA,
         hash("e"),
+        integrationB,
       ]);
       expect(rowCount).toBe(1);
+    });
+  });
+
+  it("PAY-03 the same event id is allowed for another integration of the same tenant", async () => {
+    await asTenant(tenantA, async (client) => {
+      const { rowCount } = await client.query(insertSql, [
+        tenantA,
+        idA,
+        hash("f"),
+        randomUUID(),
+      ]);
+      expect(rowCount).toBe(1);
+    });
+  });
+
+  it("PAY-03 the database refuses a verified event without an integration", async () => {
+    await asTenant(tenantA, async (client) => {
+      await client.query("SAVEPOINT no_integration");
+      await expect(
+        client.query(insertSql, [
+          tenantA,
+          `evt-nointeg-${randomBytes(4).toString("hex")}`,
+          hash("g"),
+          null,
+        ]),
+      ).rejects.toThrow(/verified_integration_check|check constraint/i);
+      await client.query("ROLLBACK TO SAVEPOINT no_integration");
     });
   });
 
@@ -288,15 +333,27 @@ describe("PAY-03 webhook event uniqueness", () => {
   it("PAY-03 the rejected-hash index does not restrict verified rows", async () => {
     await asTenant(tenantA, async (client) => {
       const verified = `INSERT INTO gateway_webhook_events
-        (tenant_id, provider, event_id, signature_valid, payload_hash, status)
-        VALUES ($1, 'doit', $2, true, $3, 'received')`;
+        (tenant_id, provider, event_id, signature_valid, payload_hash, status, integration_id)
+        VALUES ($1, 'doit', $2, true, $3, 'received', $4)`;
       expect(
-        (await client.query(verified, [tenantA, "same-hash-1", hash("v")]))
-          .rowCount,
+        (
+          await client.query(verified, [
+            tenantA,
+            "same-hash-1",
+            hash("v"),
+            integrationA,
+          ])
+        ).rowCount,
       ).toBe(1);
       expect(
-        (await client.query(verified, [tenantA, "same-hash-2", hash("v")]))
-          .rowCount,
+        (
+          await client.query(verified, [
+            tenantA,
+            "same-hash-2",
+            hash("v"),
+            integrationA,
+          ])
+        ).rowCount,
       ).toBe(1);
     });
   });

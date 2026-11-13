@@ -71,17 +71,21 @@ export type NewEdgeSyncConflict = {
 async function supervisorIds(
   tx: EdgeTx,
   tenantId: TenantId,
-  outletId: OutletId,
+  outletId: OutletId | null,
   alsoOwners = false,
 ): Promise<string[]> {
-  const [outlet] = await tx
-    .select({ brandId: outlets.brandId })
-    .from(outlets)
-    .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)));
-  if (!outlet) return [];
+  // No outlet (a tenant-wide alert): only the owners are reachable.
+  const [outlet] =
+    outletId === null
+      ? [undefined]
+      : await tx
+          .select({ brandId: outlets.brandId })
+          .from(outlets)
+          .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)));
+  if (outletId !== null && !outlet) return [];
   const holders = async (roleCondition: SQL, reach: "outlet" | "tenant") => {
     const scope =
-      reach === "tenant"
+      reach === "tenant" || outletId === null || !outlet
         ? eq(roleAssignments.scopeType, "tenant")
         : or(
             eq(roleAssignments.scopeType, "tenant"),
@@ -124,10 +128,13 @@ async function supervisorIds(
       );
     return rows.map((row) => row.userId);
   };
-  const supervisors = await holders(
-    inArray(roles.templateKey, SUPERVISOR_TEMPLATE_KEYS),
-    "outlet",
-  );
+  const supervisors =
+    outletId === null
+      ? []
+      : await holders(
+          inArray(roles.templateKey, SUPERVISOR_TEMPLATE_KEYS),
+          "outlet",
+        );
   if (supervisors.length > 0 && !alsoOwners) return supervisors;
   const owners = await holders(eq(roles.templateKey, "owner"), "tenant");
   return [...new Set([...supervisors, ...owners])];
@@ -139,7 +146,8 @@ export type SupervisorAlert = {
   category?: NotificationCategory;
   /** Owners get it even when the outlet has supervisors. */
   alsoOwners?: boolean;
-  outletId: OutletId;
+  /** `null` for a tenant-wide alert: only the owners are notified. */
+  outletId: OutletId | null;
   /** ULID; the notification consumer dedupes on it. */
   id: string;
   eventName: string;
@@ -403,6 +411,69 @@ export async function notifyEdgeEventParkedUnclassified(
       },
       title: "Event edge belum dikenali cloud",
       body: "Server lokal mengirim event yang belum diproses cloud. Event disimpan dan tidak menghentikan sinkronisasi; hubungi tim teknis.",
+    },
+    now,
+  );
+}
+
+export type BrevoAuthFailed = {
+  tenantId: TenantId;
+  /** `null` for a tenant-wide email (owners only). */
+  outletId: OutletId | null;
+  /** The 401 or 403 Brevo answered with. */
+  status: number;
+};
+
+const BREVO_AUTH_FAILED_EVENT = "notification_provider.email_auth_failed";
+const BREVO_AUTH_FAILED_WINDOW = "15 minutes";
+
+/**
+ * Notify the tenant's owners (and the outlet's supervisors) that Brevo
+ * refused the API key or sender (401/403, bead legend-j75w). Every delivery
+ * retry fails the same way, so at most one alert per tenant per 15 minutes,
+ * counted from the alerts actually sent (`notification_outbox`; no new
+ * table). The advisory lock serializes concurrent failures of one tenant so
+ * two of them cannot both see an empty window. Carries the status only.
+ */
+export async function notifyBrevoAuthFailed(
+  tx: EdgeTx,
+  context: ScopedTenantContext,
+  failed: BrevoAuthFailed,
+  now: Date = new Date(),
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${BREVO_AUTH_FAILED_EVENT}:${failed.tenantId}`}, 0))`,
+  );
+  const [recent] = await tx
+    .select({ one: sql<number>`1` })
+    .from(notificationOutbox)
+    .where(
+      and(
+        eq(notificationOutbox.tenantId, failed.tenantId),
+        eq(notificationOutbox.eventType, BREVO_AUTH_FAILED_EVENT),
+        gt(
+          notificationOutbox.createdAt,
+          sql`now() - interval '${sql.raw(BREVO_AUTH_FAILED_WINDOW)}'`,
+        ),
+      ),
+    )
+    .limit(1);
+  if (recent) return;
+  const alertId = createUlid(now.getTime());
+  await notifyOutletSupervisors(
+    tx,
+    context,
+    {
+      tenantId: failed.tenantId,
+      outletId: failed.outletId,
+      alsoOwners: true,
+      id: alertId,
+      eventName: BREVO_AUTH_FAILED_EVENT,
+      aggregateType: "notification_provider",
+      aggregateId: alertId,
+      payload: { status: String(failed.status) },
+      title: "Pengiriman email gagal: kunci atau pengirim ditolak",
+      body: "Penyedia email menolak kunci API atau alamat pengirim, sehingga email tidak terkirim. Hubungi tim teknis untuk memeriksa pengaturan email.",
     },
     now,
   );

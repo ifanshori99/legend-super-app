@@ -149,6 +149,7 @@ async function loadIntent(
 
 async function loadRow(
   context: ScopedTenantContext,
+  integrationId: string,
   eventId: string,
 ): Promise<GatewayWebhookEvent | null> {
   return withTenant(db, context, async (tx) => {
@@ -159,6 +160,7 @@ async function loadRow(
         and(
           eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
           eq(gatewayWebhookEvents.provider, PROVIDER),
+          eq(gatewayWebhookEvents.integrationId, integrationId),
           eq(gatewayWebhookEvents.eventId, eventId),
           eq(gatewayWebhookEvents.signatureValid, true),
         ),
@@ -496,6 +498,7 @@ async function insertRow(
         target: [
           gatewayWebhookEvents.tenantId,
           gatewayWebhookEvents.provider,
+          gatewayWebhookEvents.integrationId,
           gatewayWebhookEvents.eventId,
         ],
         where: sql`${gatewayWebhookEvents.signatureValid} AND ${gatewayWebhookEvents.eventId} IS NOT NULL`,
@@ -573,7 +576,7 @@ export async function receiveDuitkuCallback(input: {
     updatedAt: now,
   });
   if (!row) {
-    row = await loadRow(context, eventId);
+    row = await loadRow(context, intent.gatewayIntegrationId, eventId);
     if (!row) throw new Error("Webhook event conflicted without a winner");
     // Same signed fields. Only a settled intent makes it a plain duplicate:
     // the first delivery's unsigned `resultCode` may have been forged, so an
