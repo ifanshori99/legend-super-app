@@ -68,7 +68,6 @@ import {
   POS_QRIS_LIFETIME_MS,
   assertNoActiveQrisHold,
   activeHoldOf,
-  closeQrisHoldTx,
   lockHoldsOfOrder,
   openQrisHold,
 } from "./pos-qris-hold.ts";
@@ -604,16 +603,22 @@ async function voidTendersAndRefundPaidQris(
   // (the payment is real, the refund below returns it; never a second capture).
   const activeHold = await activeHoldOf(tx, context.tenant.tenantId, order.id);
   if (activeHold)
-    await closeQrisHoldTx(tx, context, {
-      order,
-      pos,
-      hold: activeHold,
-      reason: "provider_paid",
-      evidence: { anomaly: input.reason, intentId: input.intentId },
-      caller: null,
-      auditAction: "pos_qris_hold.closed_by_anomaly",
-      now,
-    });
+    await tx
+      .update(posQrisHolds)
+      .set({
+        state: "paid",
+        closedAt: now,
+        closeReason: "provider_paid",
+        closeEvidence: { anomaly: input.reason, intentId: input.intentId },
+        nextCheckAt: null,
+      })
+      .where(
+        and(
+          eq(posQrisHolds.tenantId, context.tenant.tenantId),
+          eq(posQrisHolds.id, activeHold.id),
+          inArray(posQrisHolds.state, ["open", "cancelling"]),
+        ),
+      );
   const voided = await voidPendingQrisTenders(tx, context, {
     orderId: order.id,
     now,
