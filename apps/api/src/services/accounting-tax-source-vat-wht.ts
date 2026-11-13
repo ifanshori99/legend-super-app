@@ -380,6 +380,20 @@ async function supplierTotals(
   };
 }
 
+/**
+ * Real NPWP (as snapshotted on the source invoices) per supplier, for the
+ * Coretax export. Same invoice set and same "latest invoice wins" rule as the
+ * report line, so the export reads the id the line was masked from.
+ */
+export async function supplierNpwpSnapshots(
+  tx: TenantTransaction,
+  args: TaxLineSourceArgs,
+  kind: "ppn" | "pph23",
+): Promise<Map<string, string | null>> {
+  const { suppliers: rows } = await supplierTotals(tx, args, kind);
+  return new Map(rows.map((row) => [row.supplierId, row.npwpSnapshot]));
+}
+
 /** Invoice numbers within the 50 x 60 characters a line may carry. */
 function invoiceReferences(numbers: string[]): string[] {
   if (numbers.length <= 50) return numbers;

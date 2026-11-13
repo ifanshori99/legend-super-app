@@ -124,6 +124,9 @@ const AUDIT_SAFE_FIELDS = [
   "sourceType",
   "reversalEntryId",
   "version",
+  // legend-xysyi: counts and a flag, never a tax id.
+  "lineTaxIds",
+  "taxpayerIncluded",
   // legend-b8y6l: "sole_owner" marks a sole Owner's self-approval.
   "selfApproval",
 ] as const;

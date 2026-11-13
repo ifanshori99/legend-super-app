@@ -27,6 +27,7 @@ import {
 } from "@starter/shared/accounting";
 import { FakeObjectStorage } from "@starter/shared/adapters";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { sealSecret } from "../lib/secrets";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import {
@@ -75,8 +76,14 @@ function makeRuntime(): StorageRuntime {
 async function freshPeriod(period = "2025-01") {
   const entity = randomUUID();
   await owner.query(
-    "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, $3, true)",
-    [entity, tenantA, `Coretax filename ${unique()}`],
+    "INSERT INTO legal_entities (id, tenant_id, name, is_pkp, npwp_encrypted, npwp_last4) VALUES ($1, $2, $3, true, $4, '1234')",
+    [
+      entity,
+      tenantA,
+      `Coretax filename ${unique()}`,
+      // The Coretax export refuses an entity without NPWP (legend-xysyi).
+      sealSecret("012345678901234", `legal_entity:${tenantA}`),
+    ],
   );
   await owner.query(
     `INSERT INTO chart_of_accounts (id, tenant_id, legal_entity_id, code, name, type, report_group)
