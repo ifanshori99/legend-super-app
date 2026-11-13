@@ -14,9 +14,11 @@ import {
   getReconciliationSummary as summaryEndpoint,
   resolveReconciliationCase as resolveEndpoint,
   reconciliationCaseViewSchema,
+  reconciliationSummarySchema,
 } from "@starter/shared/payment/admin";
 import { db } from "../db/index.ts";
 import { paymentReconciliationCases as cases } from "../db/schema/payment-admin.ts";
+import { paymentSettlementLines as lines } from "../db/schema/payment-settlement.ts";
 import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -141,13 +143,33 @@ export async function getReconciliationSummary(
         : { type: "tenant" },
       new Date(),
     );
-    // The settlement import/line ledger is not present yet: case rows cannot
-    // establish the number of matched lines. Never present invented counts.
-    throw new HttpError(
-      503,
-      "SETTLEMENT_IMPORT_UNAVAILABLE",
-      "Settlement import data is not available.",
-    );
+    const outletOf = (column: typeof cases.outletId) =>
+      query.outletId ? eq(column, query.outletId) : sql`TRUE`;
+    const tenantId = context.tenant.tenantId;
+    const [lineCounts] = await tx
+      .select({
+        matched: sql<number>`count(*) FILTER (WHERE ${lines.matchStatus} = 'matched')::int`,
+        mismatch: sql<number>`count(*) FILTER (WHERE ${lines.matchStatus} = 'mismatch')::int`,
+        unmatched: sql<number>`count(*) FILTER (WHERE ${lines.matchStatus} = 'unmatched')::int`,
+      })
+      .from(lines)
+      .where(and(eq(lines.tenantId, tenantId), outletOf(lines.outletId)));
+    const [caseCounts] = await tx
+      .select({
+        open: sql<number>`count(*) FILTER (WHERE ${cases.status} = 'open')::int`,
+        resolvedThisMonth: sql<number>`count(*) FILTER (WHERE ${cases.status} = 'resolved' AND ${cases.resolvedAt} >= date_trunc('month', now() AT TIME ZONE 'Asia/Jakarta') AT TIME ZONE 'Asia/Jakarta')::int`,
+        variance: sql<string>`COALESCE(sum(${cases.varianceIdr}) FILTER (WHERE ${cases.status} = 'open'), 0)::text`,
+      })
+      .from(cases)
+      .where(and(eq(cases.tenantId, tenantId), outletOf(cases.outletId)));
+    return reconciliationSummarySchema.parse({
+      matchedLines: lineCounts?.matched ?? 0,
+      unmatchedLines: lineCounts?.unmatched ?? 0,
+      mismatchLines: lineCounts?.mismatch ?? 0,
+      openCases: caseCounts?.open ?? 0,
+      resolvedThisMonth: caseCounts?.resolvedThisMonth ?? 0,
+      varianceIdr: Number(caseCounts?.variance ?? "0"),
+    });
   });
 }
 

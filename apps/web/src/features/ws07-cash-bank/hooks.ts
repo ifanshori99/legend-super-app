@@ -16,7 +16,7 @@ import {
   cashDepositsQuery,
   bankAccountsQuery,
   financePolicyQuery,
-  gatewaySettlementsQuery,
+  gatewaySettlementReconQuery,
   matchJournalsQuery,
   reconciliationCaseQuery,
   reconciliationCasesQuery,
@@ -108,12 +108,15 @@ export function useReconciliationCase(caseId: string | undefined) {
   return useQuery(reconciliationCaseQuery(caseId));
 }
 
-export function useGatewaySettlements(
+export function useGatewaySettlementRecon(
   legalEntityId: string | undefined,
+  bankAccountId: string | undefined,
   from: string,
   to: string,
 ) {
-  return useQuery(gatewaySettlementsQuery(legalEntityId, from, to));
+  return useQuery(
+    gatewaySettlementReconQuery(legalEntityId, bankAccountId, from, to),
+  );
 }
 
 export function useMatchJournals(

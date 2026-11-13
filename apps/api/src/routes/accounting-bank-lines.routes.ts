@@ -3,7 +3,7 @@
 // objects. The tenant comes from the server-minted context (TEN-02), never from
 // the body; permissions come from stored role assignments (TEN-03):
 //
-// - list, summary: `accounting.journal.view`;
+// - list, summary, gateway settlement recon: `accounting.journal.view`;
 // - match, exclude, unmatch: `accounting.reconcile`.
 //
 // Mounted by the squad lead under /api/accounting next to the core router.
@@ -11,6 +11,7 @@
 import { Router, type Request } from "express";
 import {
   excludeStatementLine,
+  getGatewaySettlementRecon,
   getReconciliationSummary,
   listStatementLines,
   matchStatementLine,
@@ -33,6 +34,7 @@ import {
   matchStatementLine as matchStatementLineService,
   unmatchStatementLine as unmatchStatementLineService,
 } from "../services/accounting-bank-lines.service.ts";
+import { getGatewaySettlementReconRows } from "../services/accounting-gateway-recon.service.ts";
 
 const BASE = "/api/accounting";
 const route = (path: string) => path.slice(BASE.length) || "/";
@@ -72,6 +74,20 @@ export function createAccountingBankLinesRouter(): Router {
         data: await getReconciliationSummaryService(
           getScopedTenantContext(req),
           bankAccountId,
+          query,
+        ),
+      });
+    },
+  );
+
+  router.get(
+    route(getGatewaySettlementRecon.path),
+    requireTenantPermission(VIEW),
+    async (req, res) => {
+      const query = getGatewaySettlementRecon.query.parse(req.query);
+      res.json({
+        data: await getGatewaySettlementReconRows(
+          getScopedTenantContext(req),
           query,
         ),
       });

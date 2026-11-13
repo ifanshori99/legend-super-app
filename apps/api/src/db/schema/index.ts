@@ -29,6 +29,7 @@ export * from "./identity";
 export * from "./tax";
 
 export * from "./payment-admin";
+export * from "./payment-settlement";
 export * from "./payment-gateway-webhook";
 export * from "./payment-recurring";
 // WS-01 generic approval requests (legend-y5q).

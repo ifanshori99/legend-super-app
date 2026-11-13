@@ -30,6 +30,7 @@ import {
   excludeStatementLine,
   findStatementMatch,
   getFinancePolicy,
+  getGatewaySettlementRecon,
   getReconciliationCase,
   getReconciliationSummary,
   importBankStatement,
@@ -68,6 +69,7 @@ import {
   candidateKey,
   journalBankAmount,
   matchCandidates,
+  settlementRows,
 } from "./lib.ts";
 
 const fixtures = cafeLegendAccountingFixtures;
@@ -610,6 +612,40 @@ register(getReconciliationSummary, ({ params, query }) => {
       autoMatchRateBp: autoMatchRateBp(lines),
     },
   };
+});
+
+// ---- Gateway settlement recon --------------------------------------------
+
+register(getGatewaySettlementRecon, ({ query }) => {
+  const account = findAccount(query.bankAccountId);
+  const journals = fixtures.journals.filter(
+    (entry) =>
+      entry.legalEntityId === query.legalEntityId &&
+      entry.entryDate >= query.from &&
+      entry.entryDate <= query.to,
+  );
+  const lines = state
+    .get()
+    .statementLines.filter((line) => line.bankAccountId === account.id);
+  const rows = settlementRows(journals, lines, account.glAccountId).map(
+    (row) => {
+      const feeIdr = row.feeLines.reduce((sum, fee) => sum + fee.amountIdr, 0);
+      return {
+        journalId: row.journalEntryId,
+        settlementId: row.settlementId,
+        entryDate: row.date,
+        description: row.description,
+        grossIdr: row.grossIdr,
+        fees: row.feeLines,
+        feeIdr,
+        netIdr: row.netIdr,
+        statementLineId: row.statementLine?.id ?? null,
+        matchedAmountIdr: row.matchedAmountIdr,
+        varianceIdr: row.varianceIdr,
+      };
+    },
+  );
+  return { data: { rows, truncated: false } };
 });
 
 // ---- Cash deposits (ACC-05) ----------------------------------------------

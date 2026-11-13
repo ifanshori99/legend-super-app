@@ -983,6 +983,26 @@ describe("display helpers", () => {
     assert.equal(row.varianceIdr, 0);
   });
 
+  test("gateway settlement recon mock returns the same gross, fee and net as settlementRows", async () => {
+    const result = await get("/api/accounting/gateway-settlement-recon", {
+      legalEntityId: entity,
+      bankAccountId: account.id,
+      ...period,
+    });
+    assert.equal(result.data.truncated, false);
+    assert.equal(result.data.rows.length, 1);
+    const [row] = result.data.rows;
+    assert.equal(row.journalId, fixtures.entries.gatewaySettlement.id);
+    assert.equal(row.settlementId, fixtures.entries.gatewaySettlement.sourceId);
+    assert.equal(row.grossIdr, 275_000);
+    assert.equal(row.netIdr, 273_075);
+    assert.equal(row.feeIdr, 1_925);
+    assert.equal(row.fees.length, 1);
+    assert.equal(row.statementLineId, fixtures.statementLines[0].id);
+    assert.equal(row.matchedAmountIdr, 273_075);
+    assert.equal(row.varianceIdr, 0);
+  });
+
   test("case actions and catalog keys follow the contract state machine", () => {
     assert.deepEqual(cash.reconciliationCaseActions("open"), [
       "start",
