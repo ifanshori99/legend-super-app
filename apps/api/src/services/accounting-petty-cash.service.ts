@@ -36,12 +36,15 @@ import {
   businessDateOf,
   decodeCursor,
   encodeCursor,
+  outletIdSchema,
   outletIdsForQuery,
   uuidSchema,
   type BusinessDate,
   type CursorPage,
   type Idr,
+  type OutletId,
   type ScopedTenantContext,
+  type TenantId,
   type UserId,
 } from "@starter/shared/core";
 import { db } from "../db";
@@ -125,7 +128,7 @@ const insufficient = (balanceIdr: number, deltaIdr: number) =>
 function reachOf(
   context: ScopedTenantContext,
   outletId?: string,
-): readonly string[] | null {
+): readonly OutletId[] | null {
   const filter = outletIdsForQuery(
     context.outletScope,
     outletId ? [outletId] : undefined,
@@ -135,7 +138,7 @@ function reachOf(
 
 async function loadEntry(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   entryId: string,
   options: { forUpdate?: boolean } = {},
 ): Promise<PettyCashEntryRow> {
@@ -157,16 +160,17 @@ async function loadEntry(
 /** The outlet's fund row, locked until the transaction ends; null when none. */
 async function lockFund(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   outletId: string,
 ): Promise<PettyCashFundRow | null> {
+  const outlet = outletIdSchema.parse(outletId);
   const [fund] = await tx
     .select()
     .from(pettyCashFunds)
     .where(
       and(
         eq(pettyCashFunds.tenantId, tenantId),
-        eq(pettyCashFunds.outletId, outletId),
+        eq(pettyCashFunds.outletId, outlet),
       ),
     )
     .limit(1)
@@ -219,7 +223,9 @@ export async function listPettyCashFunds(
       eq(pettyCashFunds.legalEntityId, query.legalEntityId),
     ];
     if (query.outletId)
-      filters.push(eq(pettyCashFunds.outletId, query.outletId));
+      filters.push(
+        eq(pettyCashFunds.outletId, outletIdSchema.parse(query.outletId)),
+      );
     if (reach)
       filters.push(
         reach.length === 0
@@ -246,7 +252,7 @@ export async function listPettyCashEntries(
   return withTenant(db, context, async (tx) => {
     const filters: SQL[] = [
       eq(pettyCashEntries.tenantId, context.tenant.tenantId),
-      eq(pettyCashEntries.outletId, query.outletId),
+      eq(pettyCashEntries.outletId, outletIdSchema.parse(query.outletId)),
       sql`${pettyCashEntries.entryDate} BETWEEN ${query.from}::date AND ${query.to}::date`,
     ];
     if (query.cursor) {
@@ -601,13 +607,14 @@ export async function drawPettyCashForPurchase(
   },
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
-  const fund = await lockFund(tx, tenantId, input.outletId);
+  const outletId = outletIdSchema.parse(input.outletId);
+  const fund = await lockFund(tx, tenantId, outletId);
   if (!fund) return;
   const balanceAfter = await changeBalance(tx, fund, -input.amountIdr);
   await tx.insert(pettyCashEntries).values({
     tenantId,
     legalEntityId: fund.legalEntityId,
-    outletId: input.outletId,
+    outletId,
     fundId: fund.id,
     kind: "purchase",
     amountIdr: input.amountIdr as Idr,

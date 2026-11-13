@@ -39,6 +39,7 @@ import {
   type BusinessDate,
   type CursorPage,
   type ScopedTenantContext,
+  type TenantId,
   type UserId,
 } from "@starter/shared/core";
 import { db } from "../db";
@@ -119,7 +120,7 @@ const outletIn = (ids: readonly string[]) =>
 
 async function loadEntry(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   entryId: string,
 ): Promise<CashBankEntryRow> {
   const [row] = await tx
@@ -255,7 +256,7 @@ const COUNTER_ACCOUNT_DENIED_ROLES: readonly PostingAccountRole[] = [
  */
 async function assertCounterAccount(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   legalEntityId: string,
   accountId: string,
 ): Promise<void> {
@@ -307,7 +308,7 @@ async function assertCounterAccount(
 /** A bank account that can take part in a document of this legal entity. */
 async function loadUsableBankAccount(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   legalEntityId: string,
   bankAccountId: string,
 ) {
@@ -321,7 +322,7 @@ async function loadUsableBankAccount(
 /** The cost-tag outlet must belong to the legal entity of the document. */
 async function assertOutletOfEntity(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   legalEntityId: string,
   outletId: string,
 ): Promise<void> {
