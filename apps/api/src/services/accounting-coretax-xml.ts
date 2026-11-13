@@ -21,6 +21,13 @@ function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
+/**
+ * Reports stored before `warnings` existed kept an auditor note in
+ * `references`, starting with this prefix. It is never exported: a safety net
+ * for that old stored data (legend-wqorb).
+ */
+export const TAX_LINE_WARNING_PREFIX = "Peringatan:";
+
 const element = (name: string, value: string | number, indent: string) =>
   `${indent}<${name}>${escapeXml(String(value))}</${name}>`;
 
@@ -91,7 +98,9 @@ export function buildCoretaxXml(
         : [element("Direction", line.direction, "      ")]),
       "      <References>",
       // `line.warnings` is for the screen and is never exported.
-      ...line.references.map((ref) => element("Reference", ref, "        ")),
+      ...line.references
+        .filter((ref) => !ref.startsWith(TAX_LINE_WARNING_PREFIX))
+        .map((ref) => element("Reference", ref, "        ")),
       "      </References>",
       "    </Line>",
     ].join("\n"),

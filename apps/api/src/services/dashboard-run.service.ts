@@ -508,6 +508,7 @@ export async function getDashboardValues(
             viewer: input.viewer,
           },
           now,
+          { today },
         ),
       });
     }

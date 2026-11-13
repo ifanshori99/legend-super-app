@@ -199,18 +199,12 @@ describe("a period is open until the outlet's own day has passed (legend-nipn7)"
       custom("2025-06-10"),
     );
     expect(periodOf(stillOpen, "owner.today_sales").status).toBe("open");
-    const closed = await run(
-      w,
-      JUST_BEFORE_WIB_MIDNIGHT,
-      custom("2025-06-09"),
-    );
+    const closed = await run(w, JUST_BEFORE_WIB_MIDNIGHT, custom("2025-06-09"));
     expect(periodOf(closed, "owner.today_sales").status).toBe("closed");
     // The default "today" tiles use that earliest day too.
     expect(
-      periodOf(
-        await run(w, JUST_BEFORE_WIB_MIDNIGHT),
-        "owner.today_sales",
-      ).endDate,
+      periodOf(await run(w, JUST_BEFORE_WIB_MIDNIGHT), "owner.today_sales")
+        .endDate,
     ).toBe("2025-06-10");
   });
 
@@ -220,5 +214,23 @@ describe("a period is open until the outlet's own day has passed (legend-nipn7)"
     const tile = result.tiles.find((t) => t.tileKey === "owner.today_sales")!;
     expect(tile.period.status).toBe("open");
     for (const entry of tile.values) expect(entry.finality).not.toBe("final");
+  });
+
+  it("tile finality follows the outlet's today, consistent with period.status", async () => {
+    const w = await world([{ timeZone: "Asia/Jayapura", cutoff: "00:00" }]);
+    // 22:00 WIB on 10 Jun = 00:00 on 11 Jun in Jayapura: 10 Jun is over there
+    // while the default (WIB) clock is still on 10 Jun.
+    const result = await run(
+      w,
+      "2025-06-10T15:00:00.000Z",
+      custom("2025-06-10"),
+    );
+    const tile = result.tiles.find(
+      (t) => t.tileKey === "owner.transactions_today",
+    )!;
+    expect(tile.period.status).toBe("closed");
+    const counted = tile.values.filter((entry) => entry.value !== null);
+    expect(counted.length).toBeGreaterThan(0);
+    for (const entry of counted) expect(entry.finality).toBe("final");
   });
 });

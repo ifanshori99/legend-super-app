@@ -54,4 +54,12 @@ describe("legend-powk0 Coretax XML leaves out auditor warnings", () => {
     const xml = xmlOf([line(["INV-009"], [])]);
     expect(xml).toContain("<Reference>INV-009</Reference>");
   });
+
+  it("still leaves out a 'Peringatan:' reference of an old stored report", () => {
+    const legacy = line(["INV-001", `Peringatan: ${WARNING}`], []);
+    const xml = xmlOf([legacy]);
+    expect(xml).toContain("<Reference>INV-001</Reference>");
+    expect(xml).not.toContain("Peringatan");
+    expect(xml).not.toContain("non-PBJT");
+  });
 });

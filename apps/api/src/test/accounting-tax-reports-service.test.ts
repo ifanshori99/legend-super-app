@@ -997,6 +997,55 @@ describe("legend-5nhkp finalize: no-change guard", () => {
     await expectCode(finalize(draft, "Cek"), "TAX_REPORT_NO_CHANGE", 409);
   });
 
+  it("treats an old stored line (no warnings, 'Peringatan:' reference) as unchanged against its new-shape draft", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const warning = "Pajak non-PBJT Rp2000 tidak ikut";
+    const withWarning = (): TaxReportLine[] =>
+      lines(100).map(
+        (row) =>
+          ({
+            ...row,
+            references: ["INV-001"],
+            warnings: [warning],
+          }) as unknown as TaxReportLine,
+      );
+    const newShape = withWarning();
+    const rev0 = await finalize(await generate(fx, newShape));
+    // Rewrite the stored row the way an old report looked.
+    const legacy = newShape.map(({ warnings: _w, ...row }) => ({
+      ...row,
+      references: ["INV-001", `Peringatan: ${warning}`],
+    }));
+    await owner.query(
+      "UPDATE tax_reports SET lines = $2::jsonb WHERE id = $1",
+      [rev0.id, JSON.stringify(legacy)],
+    );
+    const draft = await generate(fx, newShape);
+    await expectCode(finalize(draft, "Cek"), "TAX_REPORT_NO_CHANGE", 409);
+    // The stored row is left as it was.
+    const stored = (
+      await owner.query<{ lines: { references: string[] }[] }>(
+        "SELECT lines FROM tax_reports WHERE id = $1",
+        [rev0.id],
+      )
+    ).rows[0]!;
+    expect(stored.lines[0]!.references).toContain(`Peringatan: ${warning}`);
+  });
+
+  it("treats an old stored line without a warnings field as unchanged", async () => {
+    const fx = await fresh();
+    await close(fx.p);
+    const same = lines(100);
+    const rev0 = await finalize(await generate(fx, same));
+    const draft = await generate(
+      fx,
+      same.map((row) => ({ ...row, warnings: [] }) as unknown as TaxReportLine),
+    );
+    expect(rev0.status).toBe("final");
+    await expectCode(finalize(draft, "Cek"), "TAX_REPORT_NO_CHANGE", 409);
+  });
+
   it("allows a correction with the same period version when the amount changed", async () => {
     const fx = await fresh();
     await close(fx.p);
