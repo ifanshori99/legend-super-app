@@ -13,7 +13,11 @@ import {
 import {
   brandSchema,
   legalEntitySchema,
+  PlatformError,
   type Brand,
+  type CreateBrandInput,
+  type CreateLegalEntityInput,
+  type CreateOutletInput,
   type LegalEntity,
   type Outlet,
 } from "@starter/shared/platform";
@@ -27,8 +31,14 @@ import {
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { lockLoyaltyJournalEntity } from "./accounting-auto-journal-amounts.ts";
 import { recordAudit, type AuditTransaction } from "./audit-writer.ts";
-import { toOutlet } from "./org.service.ts";
+import {
+  createBrandInTx,
+  createLegalEntityInTx,
+  createOutletInTx,
+  toOutlet,
+} from "./org.service.ts";
 import { platformTenantScope } from "./platform-org.service.ts";
 import { isPlatformAdmin } from "./platform-support.service.ts";
 
@@ -69,6 +79,145 @@ async function readTenantResourceAny<T extends { data: unknown[] }>(
     );
     return result;
   });
+}
+
+/**
+ * Platform create: registry standing is checked before the transaction opens.
+ * Inside it, the tenant row is share-locked (`FOR SHARE`), must exist and must
+ * not be archived; then the write and its audit row share that transaction.
+ * `after` carries ids and non-private labels only. `beforeTenantLock` runs
+ * before the tenant SELECT, for locks that must precede the row lock.
+ */
+async function createTenantResourceAny<T>(
+  tenantId: string,
+  actorUserId: string,
+  audit: {
+    action: string;
+    objectType: string;
+    reason: string;
+    objectId: (created: T) => string;
+    after: (created: T) => Record<string, unknown>;
+  },
+  create: (
+    tx: Parameters<Parameters<typeof withTenant>[2]>[0],
+    context: ReturnType<typeof platformTenantScope>,
+  ) => Promise<T>,
+  beforeTenantLock?: (
+    tx: Parameters<Parameters<typeof withTenant>[2]>[0],
+    context: ReturnType<typeof platformTenantScope>,
+  ) => Promise<void>,
+): Promise<{ data: T }> {
+  if (!(await isPlatformAdmin(actorUserId)))
+    throw new HttpError(403, "FORBIDDEN", "Akun ini bukan Super Admin.");
+  const context = platformTenantScope(tenantId);
+  return withTenant(db, context, async (tx) => {
+    await beforeTenantLock?.(tx, context);
+    const [tenant] = await tx
+      .select({ status: tenants.status })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1)
+      .for("share");
+    if (!tenant) throw new HttpError(404, "NOT_FOUND", "Tenant not found.");
+    if (tenant.status === "archived")
+      throw new PlatformError(
+        "INVALID_TRANSITION",
+        "Pulihkan tenant terlebih dahulu sebelum menambah data organisasi.",
+      );
+    const created = await create(tx, context);
+    await recordAudit(
+      {
+        tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: audit.action,
+        objectType: audit.objectType,
+        objectId: audit.objectId(created),
+        reason: audit.reason,
+        before: null,
+        after: audit.after(created),
+        sensitiveAccess: true,
+      },
+      { tx, context },
+    );
+    return { data: created };
+  });
+}
+
+export async function createPlatformTenantBrandAny(
+  tenantId: string,
+  actorUserId: string,
+  input: CreateBrandInput,
+): Promise<{ data: Brand }> {
+  return createTenantResourceAny<Brand>(
+    tenantId,
+    actorUserId,
+    {
+      action: "brand.created",
+      objectType: "brand",
+      reason: "Super Admin membuat brand untuk tenant melalui panel platform.",
+      objectId: (brand) => brand.id,
+      after: (brand) => ({ id: brand.id, slug: brand.slug, name: brand.name }),
+    },
+    (tx, context) => createBrandInTx(tx, context, input),
+  );
+}
+
+export async function createPlatformTenantOutletAny(
+  tenantId: string,
+  actorUserId: string,
+  input: CreateOutletInput,
+): Promise<{ data: Outlet }> {
+  return createTenantResourceAny<Outlet>(
+    tenantId,
+    actorUserId,
+    {
+      action: "outlet.created",
+      objectType: "outlet",
+      reason: "Super Admin membuat outlet untuk tenant melalui panel platform.",
+      objectId: (outlet) => outlet.id,
+      after: (outlet) => ({
+        id: outlet.id,
+        brandId: outlet.brandId,
+        legalEntityId: outlet.legalEntityId,
+        code: outlet.code,
+        name: outlet.name,
+      }),
+    },
+    (tx, context) => createOutletInTx(tx, context, input, actorUserId),
+    // Lock order must match the loyalty/accounting paths: the advisory
+    // loyalty-entity lock first, then the tenant row. Taking them the other
+    // way round can deadlock with those paths. createOutletInTx re-takes it
+    // (advisory xact locks are re-entrant).
+    (tx, context) => lockLoyaltyJournalEntity(tx, context.tenant.tenantId),
+  );
+}
+
+export async function createPlatformTenantLegalEntityAny(
+  tenantId: string,
+  actorUserId: string,
+  input: CreateLegalEntityInput,
+): Promise<{ data: LegalEntity }> {
+  return createTenantResourceAny<LegalEntity>(
+    tenantId,
+    actorUserId,
+    {
+      action: "legal_entity.created",
+      objectType: "legal_entity",
+      reason:
+        "Super Admin membuat badan usaha untuk tenant melalui panel platform.",
+      objectId: (entity) => entity.id,
+      // No NPWP and no address: only the id, name and PKP flag are recorded.
+      after: (entity) => ({
+        id: entity.id,
+        name: entity.name,
+        isPkp: entity.isPkp,
+      }),
+    },
+    (tx, context) => createLegalEntityInTx(tx, context, input),
+  );
 }
 
 export async function listPlatformTenantBrandsAny(

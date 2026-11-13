@@ -4997,3 +4997,9 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - legend-moe5 dan legend-3sbl sudah ada di m1 (ce080d9d dan seterusnya, dengan test): ditutup dengan bukti. Sisa deploy moe5: SSR_SHARED_SECRET/WEB_TRUST_PROXY_HOPS belum di deploy/single-vm/*.example; origin hanya terima IP Cloudflare. Scanner malware 3sbl masih NoopMalwareScanner.
 - legend-2mey: safeReturnPath di 3 rute masuk, query /wifi?zone= utuh (signed-in, verify-link). legend-bj5m: resolver pelanggan facility default (active saja, fail-closed). Commit 7c04d6e7, status review.
 - Bukti: test 2mey 30/30, resolver 8/8 + facility-api, tsc web dan api hijau, eslint+prettier hijau.
+
+## 2026-11-13: legend-0mn8 endpoint platform buat brand/outlet/PT milik tenant
+
+- Sudah: `POST /api/platform/tenants/:tenantId/{brands,outlets,legal-entities}` (kontrak `platformEndpoints.createTenant*`, route + service `createPlatformTenant*Any`, refactor `org.service.ts` jadi `create*InTx`). Guard sama dengan GET (platform admin + MFA + origin), body strict tanpa tenantId, satu transaksi + audit `brand.created`/`outlet.created`/`legal_entity.created` (tanpa NPWP/alamat), tenant `archived` ditolak 409.
+- Bukti: `platform-tenant-create.test.ts` (19 test) + regresi org/platform 112/112 hijau; eslint+prettier 5 file hijau. Typecheck api/shared masih antre di `heavy` (slot dipegang `pnpm check` thread lain).
+- Berikut: typecheck hijau, lapor ke CTO. Tanpa migrasi. UI wizard menunggu gerbang mockup.

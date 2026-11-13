@@ -2,6 +2,7 @@
 // never a host, session tenant, support grant, or client tenant header.
 import { Router, type RequestHandler } from "express";
 import { platformEndpoints } from "@starter/shared/platform";
+import { jsonBody } from "../middleware/body";
 import { getAuth } from "../middleware/auth.ts";
 import { requireSessionMfa } from "../middleware/identity.ts";
 import { noStore } from "../middleware/no-store.ts";
@@ -11,6 +12,9 @@ import {
   requirePlatformAuth,
 } from "../middleware/platform-admin.ts";
 import {
+  createPlatformTenantBrandAny,
+  createPlatformTenantLegalEntityAny,
+  createPlatformTenantOutletAny,
   listPlatformTenantBrandsAny,
   listPlatformTenantLegalEntitiesAny,
   listPlatformTenantOutletsAny,
@@ -63,5 +67,70 @@ platformTenantResourcesRouter.get(
     res.json(
       await listPlatformTenantLegalEntitiesAny(tenantId, getAuth(req).user.id),
     );
+  },
+);
+
+platformTenantResourcesRouter.post(
+  "/tenants/:tenantId/brands",
+  ...platformGuards,
+  jsonBody,
+  async (req, res) => {
+    const { tenantId } = platformEndpoints.createTenantBrand.params.parse(
+      req.params,
+    );
+    const input = platformEndpoints.createTenantBrand.body.parse(req.body);
+    res
+      .status(201)
+      .json(
+        await createPlatformTenantBrandAny(
+          tenantId,
+          getAuth(req).user.id,
+          input,
+        ),
+      );
+  },
+);
+
+platformTenantResourcesRouter.post(
+  "/tenants/:tenantId/outlets",
+  ...platformGuards,
+  jsonBody,
+  async (req, res) => {
+    const { tenantId } = platformEndpoints.createTenantOutlet.params.parse(
+      req.params,
+    );
+    const input = platformEndpoints.createTenantOutlet.body.parse(req.body);
+    res
+      .status(201)
+      .json(
+        await createPlatformTenantOutletAny(
+          tenantId,
+          getAuth(req).user.id,
+          input,
+        ),
+      );
+  },
+);
+
+platformTenantResourcesRouter.post(
+  "/tenants/:tenantId/legal-entities",
+  ...platformGuards,
+  jsonBody,
+  async (req, res) => {
+    const { tenantId } = platformEndpoints.createTenantLegalEntity.params.parse(
+      req.params,
+    );
+    const input = platformEndpoints.createTenantLegalEntity.body.parse(
+      req.body,
+    );
+    res
+      .status(201)
+      .json(
+        await createPlatformTenantLegalEntityAny(
+          tenantId,
+          getAuth(req).user.id,
+          input,
+        ),
+      );
   },
 );
