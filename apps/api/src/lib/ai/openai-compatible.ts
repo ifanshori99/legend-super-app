@@ -1,5 +1,5 @@
 import { AiError } from "@starter/shared/ai";
-import { estimateTokens } from "./fake";
+import { estimateRequestInputTokens } from "./request-policy";
 import type {
   AiChatMessage,
   AiCompletionRequest,
@@ -199,7 +199,12 @@ export function createOpenAiCompatibleProvider(
     return {
       model: options.model,
       messages: toChatMessages(request),
-      [adaptation.tokenParam]: request.maxTokens,
+      [request.reasoningEffort
+        ? "max_completion_tokens"
+        : adaptation.tokenParam]: request.maxTokens,
+      ...(request.reasoningEffort
+        ? { reasoning_effort: request.reasoningEffort }
+        : {}),
       ...(request.tools.length && !adaptation.noTools
         ? {
             tools: request.tools.map((tool) => ({
@@ -315,23 +320,23 @@ export function createOpenAiCompatibleProvider(
   };
 }
 
-// Some services omit usage; the meter then estimates (about 4 chars per token)
-// rather than counting the request as free.
+// Missing usage is charged at the authorized upper bound, including hidden
+// reasoning. Releasing that reserve based on visible text could hide spend.
 function usageOf(
   response: ChatResponse,
   request: AiCompletionRequest,
-  outputText: string,
+  _outputText: string,
 ) {
+  void _outputText;
   const usage = response.usage ?? {};
   return {
     inputTokens:
       count(usage.prompt_tokens) ??
       count(usage.input_tokens) ??
-      estimateTokens(request.system) +
-        estimateTokens(JSON.stringify(request.messages)),
+      estimateRequestInputTokens(request),
     outputTokens:
       count(usage.completion_tokens) ??
       count(usage.output_tokens) ??
-      estimateTokens(outputText),
+      request.maxTokens,
   };
 }

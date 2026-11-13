@@ -45,6 +45,11 @@ import {
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { scanPii, type PiiKind } from "../lib/ai/pii.ts";
+import { ChatgptCodexError } from "../lib/ai/chatgpt-codex.ts";
+import {
+  estimateRequestInputTokens,
+  prepareAiRequest,
+} from "../lib/ai/request-policy.ts";
 import type {
   AiCompletionRequest,
   AiCompletionResult,
@@ -53,6 +58,8 @@ import { logger } from "../lib/logger.ts";
 import {
   aiProviderVersionOf,
   resolveTenantAiProvider,
+  resolveTenantCustomAiProvider,
+  type ResolvedAiProvider,
 } from "./ai-provider-config.service.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { costMicroUsd, microUsdToIdr, USD_IDR_RATE } from "./ai-pricing.ts";
@@ -62,6 +69,7 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /** `tanya_ai` is the tool-layer spelling of the contract channel `app`. */
 export type AiGatewayChannel = AiChannel | "tanya_ai";
+type AiBillingMode = "api_metered" | "chatgpt_plan";
 
 export type AiSettingsView = Omit<
   AiGovernanceSettings,
@@ -295,7 +303,11 @@ const BLOCKS = {
 async function recordBlocked(
   tx: Tx,
   access: AccessSnapshot,
-  p: { feature: string; channel: AiGatewayChannel },
+  p: {
+    feature: string;
+    channel: AiGatewayChannel;
+    billingMode?: AiBillingMode;
+  },
   block: Block,
 ) {
   await tx.insert(aiUsageEvents).values({
@@ -306,6 +318,7 @@ async function recordBlocked(
     channel: dbChannel(p.channel),
     provider: "none",
     model: "none",
+    billingMode: p.billingMode ?? "api_metered",
     status: "blocked",
     errorCode: block.code,
   });
@@ -343,7 +356,19 @@ export async function aiPreflight(
       const found = scanPii(p.text).found;
       if (found.some((kind) => !(p.allowOwnData && OWN_DATA_PII.has(kind))))
         return blocked(BLOCKS.pii);
-      const used = await monthlyUsedIdr(tx, access, usageMonthOf(now));
+      const month = usageMonthOf(now);
+      const [held] = await tx
+        .select({ reserved: aiUsageMonthly.reservedCostIdr })
+        .from(aiUsageMonthly)
+        .where(
+          and(
+            eq(aiUsageMonthly.tenantId, access.tenant.tenantId),
+            eq(aiUsageMonthly.usageMonth, month),
+          ),
+        )
+        .limit(1);
+      const used =
+        (await monthlyUsedIdr(tx, access, month)) + (held?.reserved ?? 0);
       if (
         budgetState(
           used,
@@ -387,6 +412,119 @@ export async function aiPreflight(
 }
 
 // -------------------------------------------------------------- complete
+
+/** Authorization is pinned to this month even if the provider crosses midnight. */
+type AiBudgetReservation = { month: string; amountIdr: number; at: Date };
+
+/**
+ * Commit the worst-case cost before any paid I/O. The settings lock serializes
+ * authorizations with governance edits; the conditional monthly upsert also
+ * arbitrates calls from other API processes. A later budget decrease stops new
+ * calls but cannot undo an already authorized or incurred provider charge.
+ */
+async function reserveAiBudget(
+  access: AccessSnapshot,
+  request: AiCompletionRequest,
+  model: string,
+  meta: { feature: string; channel: AiGatewayChannel },
+  billingMode: AiBillingMode,
+): Promise<AiBudgetReservation> {
+  const at = new Date();
+  const month = usageMonthOf(at);
+  const amountIdr =
+    billingMode === "chatgpt_plan"
+      ? 0
+      : microUsdToIdr(
+          costMicroUsd(model, {
+            inputTokens: estimateRequestInputTokens(request),
+            outputTokens: request.maxTokens,
+          }),
+        );
+  const outcome = await withTenant(
+    db,
+    gatewayContext(access),
+    async (
+      tx,
+    ): Promise<{ block: Block } | { reservation: AiBudgetReservation }> => {
+      const [row] = await tx
+        .select()
+        .from(aiSettings)
+        .where(eq(aiSettings.tenantId, access.tenant.tenantId))
+        .for("update");
+      const settings = row ? settingsRowToView(row) : defaultAiSettings(access);
+      const block = async (reason: Block) => {
+        await recordBlocked(tx, access, { ...meta, billingMode }, reason);
+        return { block: reason };
+      };
+      if (!settings.aiEnabled || !isFeatureEnabled(settings, meta.feature))
+        return block(BLOCKS.feature);
+      const cap = Math.min(
+        settings.monthlyBudgetIdr,
+        Number(
+          (BigInt(settings.monthlyBudgetIdr) * BigInt(settings.budgetStopPct)) /
+            100n,
+        ),
+      );
+      if (
+        !Number.isSafeInteger(amountIdr) ||
+        amountIdr < 0 ||
+        (amountIdr === 0 && billingMode !== "chatgpt_plan") ||
+        cap <= 0 ||
+        amountIdr > cap
+      )
+        return block(BLOCKS.budget);
+      const [reserved] = await tx
+        .insert(aiUsageMonthly)
+        .values({
+          tenantId: access.tenant.tenantId,
+          usageMonth: month,
+          reservedCostIdr: idr(amountIdr),
+        })
+        .onConflictDoUpdate({
+          target: [aiUsageMonthly.tenantId, aiUsageMonthly.usageMonth],
+          set: {
+            reservedCostIdr: sql`${aiUsageMonthly.reservedCostIdr} + ${amountIdr}`,
+            updatedAt: sql`now()`,
+          },
+          setWhere:
+            billingMode === "chatgpt_plan"
+              ? sql`${aiUsageMonthly.costIdr} + ${aiUsageMonthly.reservedCostIdr} < ${cap}`
+              : sql`${aiUsageMonthly.costIdr} + ${aiUsageMonthly.reservedCostIdr} + ${amountIdr} <= ${cap}`,
+        })
+        .returning({ id: aiUsageMonthly.id });
+      if (!reserved) {
+        const [monthly] = await tx
+          .select({
+            id: aiUsageMonthly.id,
+            costIdr: aiUsageMonthly.costIdr,
+            warnedAt: aiUsageMonthly.warnedAt,
+          })
+          .from(aiUsageMonthly)
+          .where(
+            and(
+              eq(aiUsageMonthly.tenantId, access.tenant.tenantId),
+              eq(aiUsageMonthly.usageMonth, month),
+            ),
+          )
+          .limit(1);
+        if (monthly)
+          await emitBudgetThresholds(
+            tx,
+            access,
+            gatewayContext(access),
+            settings,
+            monthly,
+            month,
+            at,
+          );
+        return block(BLOCKS.budget);
+      }
+      return { reservation: { month, amountIdr, at } };
+    },
+  );
+  if ("block" in outcome) throw new AiError(outcome.block.code);
+  return outcome.reservation;
+}
 
 async function nextSequence(
   tx: Tx,
@@ -545,9 +683,11 @@ async function recordUsage(
     provider: string;
     model: string;
     source: "tenant" | "platform";
+    billingMode: AiBillingMode;
   } | null,
+  reservation?: AiBudgetReservation,
 ): Promise<void> {
-  const now = new Date();
+  const now = reservation?.at ?? new Date();
   const context = gatewayContext(access);
   const ok = outcome.status === "ok";
   const usage = ok ? outcome.result.usage : { inputTokens: 0, outputTokens: 0 };
@@ -555,8 +695,14 @@ async function recordUsage(
   // A tenant's server names its own model in the answer: price the model the
   // tenant configured, never the name the remote reports.
   const priced = used?.source === "tenant" ? used.model : model;
-  const micro = ok ? costMicroUsd(priced, usage) : 0;
-  const month = usageMonthOf(now);
+  // A plan subscription is not an incremental metered API invoice. Actual
+  // successful token usage stays in the ledger with its server-owned mode.
+  // For failed plan attempts, zero token fields mean unknown, not free usage.
+  const micro =
+    ok && used?.billingMode !== "chatgpt_plan"
+      ? costMicroUsd(priced, usage)
+      : 0;
+  const month = reservation?.month ?? usageMonthOf(now);
   await withTenant(db, context, async (tx) => {
     await tx.insert(aiUsageEvents).values({
       tenantId: access.tenant.tenantId,
@@ -566,12 +712,14 @@ async function recordUsage(
       channel: dbChannel(meta.channel),
       provider: (used?.provider ?? "none").slice(0, 30),
       model: model.slice(0, 100),
+      billingMode: used?.billingMode ?? "api_metered",
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       costMicroUsd: micro,
       costIdr: idr(microUsdToIdr(micro)),
       status: outcome.status,
       errorCode: ok ? null : outcome.errorCode,
+      createdAt: now,
     });
     if (!ok) return;
     // Cost IDR of the month is recomputed from the micro-USD total (ceil), so
@@ -592,6 +740,7 @@ async function recordUsage(
         set: {
           costMicroUsd: sql`${aiUsageMonthly.costMicroUsd} + ${micro}`,
           costIdr: sql`ceil((${aiUsageMonthly.costMicroUsd} + ${micro})::numeric * ${USD_IDR_RATE} / 1000000)::bigint`,
+          reservedCostIdr: sql`${aiUsageMonthly.reservedCostIdr} - ${reservation?.amountIdr ?? 0}`,
           inputTokens: sql`${aiUsageMonthly.inputTokens} + ${usage.inputTokens}`,
           outputTokens: sql`${aiUsageMonthly.outputTokens} + ${usage.outputTokens}`,
           requestCount: sql`${aiUsageMonthly.requestCount} + 1`,
@@ -653,15 +802,40 @@ export async function aiComplete(
     ).catch(logBookkeepingFailure);
     throw new AiError("AI_PROVIDER_UNAVAILABLE");
   }
+  return completeAiAttempt(access, req, meta, resolved);
+}
+
+/** Every fallback is a new attempt with its own capabilities and reservation. */
+async function completeAiAttempt(
+  access: AccessSnapshot,
+  req: AiCompletionRequest,
+  meta: {
+    feature: string;
+    channel: AiGatewayChannel;
+    outletId?: string | null;
+  },
+  resolved: ResolvedAiProvider,
+): Promise<AiCompletionResult> {
   const { provider } = resolved;
   const used = {
     provider: provider.name,
     model: resolved.model,
     source: resolved.source,
+    billingMode: resolved.billingMode,
   };
+  const prepared = prepareAiRequest(req, resolved.capabilities);
+  // Platform adapters can perform a server-side model fallback. Reserve at
+  // the conservative unknown-model rate; tenant models use their configured rate.
+  const reservation = await reserveAiBudget(
+    access,
+    prepared,
+    resolved.source === "tenant" ? resolved.model : "unknown",
+    meta,
+    resolved.billingMode,
+  );
   let result: AiCompletionResult;
   try {
-    result = await provider.complete(req, {
+    result = await provider.complete(prepared, {
       signal: AbortSignal.timeout(env.AI_TIMEOUT_MS),
     });
   } catch (error) {
@@ -677,13 +851,32 @@ export async function aiComplete(
       meta,
       { status: "error", errorCode: "AI_PROVIDER_UNAVAILABLE" },
       used,
+      reservation,
     ).catch(logBookkeepingFailure);
+    // Only explicit authentication loss or a local kill/revoke may switch to
+    // the tenant's own API key. Ambiguous errors never trigger another call.
+    if (
+      resolved.billingMode === "chatgpt_plan" &&
+      error instanceof ChatgptCodexError &&
+      (error.kind === "auth" || error.kind === "disabled")
+    ) {
+      const fallback = await resolveTenantCustomAiProvider(
+        gatewayContext(access),
+      ).catch(() => null);
+      if (fallback) return completeAiAttempt(access, req, meta, fallback);
+    }
+    // A timeout, malformed response or transport failure may already be billed.
+    // Keep a metered hold; plan quota consumption is unknown on this error.
     throw new AiError("AI_PROVIDER_UNAVAILABLE");
   }
   // The answer is already paid for: a bookkeeping failure is logged, not thrown.
-  await recordUsage(access, meta, { status: "ok", result }, used).catch(
-    logBookkeepingFailure,
-  );
+  await recordUsage(
+    access,
+    meta,
+    { status: "ok", result },
+    used,
+    reservation,
+  ).catch(logBookkeepingFailure);
   return result;
 }
 

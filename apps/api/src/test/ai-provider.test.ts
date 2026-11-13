@@ -66,13 +66,36 @@ describe("anthropic adapter", () => {
     timeoutMs: 5000,
   };
 
+  it("legend-39d.8 A3 omits thinking parameters for requests without detected reasoning and honors explicit effort", async () => {
+    const { client, create } = anthropicDouble({
+      ...baseMessage,
+      content: [{ type: "text", text: "ok" }],
+      stop_reason: "end_turn",
+    });
+    const provider = createAnthropicProvider({ ...options, client });
+    await provider.complete(request);
+    await provider.complete({ ...request, reasoningEffort: "high" });
+    const plain = (
+      create.mock.calls[0] as unknown as [Record<string, unknown>]
+    )[0];
+    const thinking = (
+      create.mock.calls[1] as unknown as [Record<string, unknown>]
+    )[0];
+    expect(plain).not.toHaveProperty("output_config");
+    expect(plain).not.toHaveProperty("thinking");
+    expect(thinking.output_config).toEqual({ effort: "high" });
+  });
+
   it("sends effort, fallbacks, cache control, and no tool_choice or thinking", async () => {
     const { client, create } = anthropicDouble({
       ...baseMessage,
       content: [{ type: "text", text: "Hai" }],
       stop_reason: "end_turn",
     });
-    await createAnthropicProvider({ ...options, client }).complete(request);
+    await createAnthropicProvider({ ...options, client }).complete({
+      ...request,
+      reasoningEffort: "low",
+    });
     const body = (
       create.mock.calls[0] as unknown as [Record<string, unknown>]
     )[0];
@@ -355,6 +378,58 @@ describe("openai-compatible adapter", () => {
       fetch: fetchMock as never,
     }).complete(request);
     expect(result.stopReason).toBe("refusal");
+  });
+
+  it("legend-39d.8 A3 sends thinking only when requested and bounds total completion tokens", async () => {
+    const fetchMock = vi.fn(async () =>
+      chatResponse({
+        choices: [{ finish_reason: "stop", message: { content: "ok" } }],
+      }),
+    );
+    const provider = createOpenAiCompatibleProvider({
+      ...base,
+      fetch: fetchMock as never,
+    });
+    await provider.complete(request);
+    await provider.complete({ ...request, reasoningEffort: "high" });
+    const bodyAt = (index: number) =>
+      JSON.parse(
+        (fetchMock.mock.calls[index] as unknown as [string, RequestInit])[1]
+          .body as string,
+      );
+    expect(bodyAt(0)).not.toHaveProperty("reasoning_effort");
+    expect(bodyAt(1).reasoning_effort).toBe("high");
+    expect(bodyAt(1).max_completion_tokens).toBe(request.maxTokens);
+    expect(bodyAt(1)).not.toHaveProperty("max_tokens");
+  });
+
+  it("legend-39d.8 A4 does not retry an ambiguously failed paid tenant attempt", async () => {
+    const fetchMock = vi.fn(async () => chatResponse({}, 503));
+    const provider = createOpenAiCompatibleProvider({
+      ...base,
+      maxAttempts: 1,
+      fetch: fetchMock as never,
+    });
+    await expect(provider.complete(request)).rejects.toMatchObject({
+      code: "AI_PROVIDER_UNAVAILABLE",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("legend-39d.8 A4 accounts for missing usage conservatively rather than treating it as free", async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        id: "chatcmpl-no-usage",
+        model: base.model,
+        choices: [{ finish_reason: "stop", message: { content: "ok" } }],
+      }),
+    );
+    const result = await createOpenAiCompatibleProvider({
+      ...base,
+      fetch: fetchMock as never,
+    }).complete(request);
+    expect(result.usage.inputTokens).toBeGreaterThan(0);
+    expect(result.usage.outputTokens).toBe(request.maxTokens);
   });
 
   it("adapts max_tokens once, then retries 5xx once", async () => {

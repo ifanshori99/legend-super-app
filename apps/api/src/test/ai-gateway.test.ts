@@ -421,25 +421,33 @@ describe("aiComplete", () => {
       [tenantA],
     );
     expect(failed.rows[0].n).toBe(2);
-    const monthly = await owner.query(
-      `SELECT 1 FROM ai_usage_monthly WHERE tenant_id = $1`,
+    const monthly = await owner.query<{
+      cost_idr: string;
+      reserved_cost_idr: string;
+      request_count: number;
+    }>(
+      `SELECT cost_idr, reserved_cost_idr, request_count FROM ai_usage_monthly WHERE tenant_id = $1`,
       [tenantA],
     );
-    expect(monthly.rows).toHaveLength(0);
+    // A transport failure may already have been billed. Keep its reservation
+    // without inventing a successful request or a zero-cost completed call.
+    expect(monthly.rows).toHaveLength(1);
+    expect(Number(monthly.rows[0]!.cost_idr)).toBe(0);
+    expect(Number(monthly.rows[0]!.reserved_cost_idr)).toBeGreaterThan(0);
+    expect(monthly.rows[0]!.request_count).toBe(0);
   });
 
   it("[AIG-02] the warn event fires once per month, the stop event once, and the stop blocks", async () => {
     // Own tenant so the outbox rows are easy to count.
     await seedSettings(tenantB, userB, { monthlyBudgetIdr: 1000 });
     const b = accessFor(tenantB, userB, ["owner"]);
-    setAiProviderForTests(
-      createFakeProvider(() => ({
-        content: [{ type: "text", text: "ok" }],
-        stopReason: "end_turn",
-        usage: { inputTokens: 100, outputTokens: 50 },
-        model: "claude-opus-5-5",
-      })),
-    );
+    const answered = vi.fn(() => ({
+      content: [{ type: "text" as const, text: "ok" }],
+      stopReason: "end_turn" as const,
+      usage: { inputTokens: 100, outputTokens: 50 },
+      model: "claude-opus-5-5",
+    }));
+    setAiProviderForTests(createFakeProvider(answered));
     const month = usageMonthOf(new Date());
     const seed = (micro: number) =>
       owner.query(
@@ -464,9 +472,10 @@ describe("aiComplete", () => {
     await aiComplete(b, req, meta);
     await aiComplete(b, req, meta);
     expect(await thresholds()).toEqual(["warn"]);
-    await seed(61_000); // above 100%
-    await aiComplete(b, req, meta);
-    await aiComplete(b, req, meta);
+    await seed(61_000); // Previously incurred usage is now above 100%.
+    expect(await code(aiComplete(b, req, meta))).toBe("AI_BUDGET_EXCEEDED");
+    expect(await code(aiComplete(b, req, meta))).toBe("AI_BUDGET_EXCEEDED");
+    expect(answered).toHaveBeenCalledTimes(3);
     expect(await thresholds()).toEqual(["warn", "stop"]);
     expect(await code(ask(b))).toBe("AI_BUDGET_EXCEEDED");
   });

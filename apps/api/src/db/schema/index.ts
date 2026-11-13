@@ -179,3 +179,6 @@ export * from "./wa-login-reply";
 
 // legend-2qq HPP read model (menu_costs) and its recompute queue.
 export * from "./hpp";
+
+// WS-12 opt-in ChatGPT device-code connection.
+export * from "./ai-chatgpt";

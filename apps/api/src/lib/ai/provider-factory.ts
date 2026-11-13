@@ -22,6 +22,8 @@ function build(): AiProvider | null {
       apiKey: env.AI_API_KEY ?? null,
       model: env.AI_MODEL,
       timeoutMs: env.AI_TIMEOUT_MS,
+      // One paid attempt per gateway reservation.
+      maxAttempts: 1,
       checkUrl: (url) => checkAiUrl(url, env.isProduction),
     });
   }
@@ -110,6 +112,8 @@ export function buildTenantAiProvider(options: {
     apiKey: options.apiKey,
     model: options.model,
     timeoutMs: env.AI_TIMEOUT_MS,
+    // Ambiguous failures may already be billable; do not retry silently.
+    maxAttempts: 1,
     fetch: (url, init) => aiProviderNetwork().fetch(url, init),
     checkUrl: (url) => checkAiUrl(url, true, aiProviderNetwork().resolve),
   });

@@ -22,6 +22,33 @@ import type { AuditEntry, AuditWriter } from "./audit-writer.ts";
  * an empty list (fully redacted) until it is added here deliberately.
  */
 const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
+  "ai_chatgpt.opted_in": [
+    "enabled",
+    "status",
+    "model",
+    "generation",
+    "riskAcceptedBy",
+    "riskAcceptedAt",
+  ],
+  "ai_chatgpt.connected": [
+    "enabled",
+    "status",
+    "model",
+    "generation",
+    "riskAcceptedBy",
+    "riskAcceptedAt",
+  ],
+  "ai_chatgpt.revoked": [
+    "enabled",
+    "status",
+    "model",
+    "generation",
+    "riskAcceptedBy",
+    "riskAcceptedAt",
+  ],
+  "ai_chatgpt.unavailable": ["enabled", "status", "model", "generation"],
+  "ai_chatgpt.refreshed": ["enabled", "status", "model", "generation"],
+
   "pos_override.recorded": [
     "action",
     "method",

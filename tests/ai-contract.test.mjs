@@ -1331,6 +1331,15 @@ test("legend-dwrr provider read schema has no key field and stays strict", () =>
     connectionType: "api_key",
     baseUrl: "https://api.example.com/v1",
     defaultModel: "gpt-4o-mini",
+    capabilities: {
+      contextWindow: 128_000,
+      maxOutputTokens: 16_384,
+      supportsTools: true,
+      supportsReasoning: false,
+      reasoningEfforts: [],
+      source: "known",
+    },
+    capabilityOverrides: null,
     hasKey: true,
     keyLast4: "abcd",
     keySetAt: "2026-11-10T01:00:00.000Z",
@@ -1354,6 +1363,8 @@ test("legend-dwrr provider read schema has no key field and stays strict", () =>
   });
   assert.deepEqual(Object.keys(ai.aiProviderConfigSchema.shape).sort(), [
     "baseUrl",
+    "capabilities",
+    "capabilityOverrides",
     "connectionType",
     "defaultModel",
     "hasKey",
@@ -1457,4 +1468,142 @@ test("legend-dwrr provider endpoints and error codes", () => {
     assert.equal(err.status, status);
     assert.ok(err.message.length > 0);
   }
+});
+
+test("legend-39d.8 A2 capability overrides reject unbounded, inverted and injected values", () => {
+  accepts(ai.aiModelCapabilityOverridesSchema, {
+    contextWindow: 16_384,
+    maxOutputTokens: 2048,
+    supportsReasoning: false,
+  });
+  accepts(ai.aiModelCapabilityOverridesSchema, { supportsTools: true });
+  for (const value of [
+    { contextWindow: 0 },
+    { contextWindow: 2_000_001 },
+    { maxOutputTokens: 0 },
+    { contextWindow: 4096, maxOutputTokens: 4096 },
+    { contextWindow: 4096, maxOutputTokens: 8192 },
+    { tenantId: "injected" },
+    { reasoningEfforts: ["unlimited"] },
+  ])
+    rejects(ai.aiModelCapabilityOverridesSchema, value);
+});
+
+test("legend-z83k B1 UI login bodies accept model-free start/poll and optional legacy inputs without identity injection", () => {
+  accepts(ai.startChatgptLogin.body, { riskAccepted: true });
+  accepts(ai.startChatgptLogin.body, {
+    model: "gpt-5-codex",
+    riskAccepted: true,
+  });
+  for (const body of [
+    {},
+    { model: "gpt-5-codex" },
+    { riskAccepted: false },
+    { riskAccepted: true, tenantId: "injected" },
+    { riskAccepted: true, acceptedBy: "injected" },
+  ])
+    rejects(ai.startChatgptLogin.body, body);
+  accepts(ai.pollChatgptLogin.body, {});
+  accepts(ai.pollChatgptLogin.body, {
+    attemptId: "123e4567-e89b-42d3-a456-426614174000",
+  });
+  rejects(ai.pollChatgptLogin.body, {
+    attemptId: "123e4567-e89b-42d3-a456-426614174000",
+    tenantId: "injected",
+  });
+});
+
+test("legend-z83k B2 the eight-field UI status never accepts tokens, grant secrets or a server attempt ID", () => {
+  const view = {
+    state: "connected",
+    platformDisabled: false,
+    viewerCanManage: true,
+    deviceCode: null,
+    verificationUrl: null,
+    expiresAt: null,
+    connectedAt: "2026-11-13T01:01:00.000Z",
+    riskAcceptedAt: "2026-11-13T01:00:00.000Z",
+  };
+  accepts(ai.chatgptLoginStatusSchema, view);
+  assert.deepEqual(
+    Object.keys(ai.chatgptLoginStatusSchema.shape).sort(),
+    [
+      "state",
+      "platformDisabled",
+      "viewerCanManage",
+      "deviceCode",
+      "verificationUrl",
+      "expiresAt",
+      "connectedAt",
+      "riskAcceptedAt",
+    ].sort(),
+  );
+  assert.deepEqual(ai.CHATGPT_LOGIN_STATES, [
+    "disconnected",
+    "pending",
+    "connected",
+    "failed",
+    "expired",
+  ]);
+  for (const key of [
+    "accessToken",
+    "refreshToken",
+    "tokensEncrypted",
+    "deviceAuthId",
+    "codeVerifier",
+    "authorizationCode",
+    "attemptId",
+    "credentialVersion",
+    "model",
+    "consent",
+  ])
+    rejects(ai.chatgptLoginStatusSchema, { ...view, [key]: "secret" });
+  accepts(ai.chatgptLoginStatusSchema, {
+    ...view,
+    state: "pending",
+    deviceCode: "ABCD-EFGH",
+    verificationUrl: "https://auth.openai.com/codex/device",
+    expiresAt: "2026-11-13T01:15:00.000Z",
+  });
+});
+
+test("legend-z83k B1 canonical UI endpoints and safe error codes have fixed contract paths", () => {
+  assert.deepEqual(
+    [
+      ai.getChatgptLogin,
+      ai.startChatgptLogin,
+      ai.pollChatgptLogin,
+      ai.revokeChatgptLogin,
+    ].map((endpoint) => `${endpoint.method} ${endpoint.path}`),
+    [
+      "GET /api/ai/chatgpt",
+      "POST /api/ai/chatgpt/device",
+      "POST /api/ai/chatgpt/device/poll",
+      "DELETE /api/ai/chatgpt",
+    ],
+  );
+  for (const [code, status] of Object.entries({
+    AI_CHATGPT_DISABLED: 503,
+    AI_CHATGPT_NOT_CONNECTED: 404,
+    AI_CHATGPT_RATE_LIMITED: 429,
+  }))
+    assert.equal(new ai.AiError(code).status, status);
+});
+
+test("legend-39d.8 A2 capability PATCH accepts a partial override or clear and rejects missing/extra top-level fields", () => {
+  accepts(ai.patchAiProviderConfigInputSchema, {
+    capabilityOverrides: { maxOutputTokens: 1024 },
+  });
+  accepts(ai.patchAiProviderConfigInputSchema, { capabilityOverrides: {} });
+  accepts(ai.patchAiProviderConfigInputSchema, { capabilityOverrides: null });
+  rejects(ai.patchAiProviderConfigInputSchema, {});
+  rejects(ai.patchAiProviderConfigInputSchema, {
+    capabilityOverrides: {},
+    tenantId: "injected",
+  });
+  rejects(ai.patchAiProviderConfigInputSchema, {
+    capabilities: { maxOutputTokens: 1024 },
+  });
+  assert.equal(ai.patchAiProviderConfig.method, "PATCH");
+  assert.equal(ai.patchAiProviderConfig.path, "/api/ai/provider");
 });
