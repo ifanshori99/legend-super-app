@@ -35,13 +35,9 @@
 //    path is tested here.
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
-import {
-  createUlid,
-  ulidToUuid,
-  uuidToUlid,
-} from "@starter/shared/core";
+import { createUlid, ulidToUuid, uuidToUlid } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import * as hrisShared from "@starter/shared/hris";
 import { createApp } from "../app.ts";
@@ -209,15 +205,30 @@ const wibDate = (ms: number) =>
 /** Outlet-local (WIB) calendar date `offset` days from today. */
 const dateAt = (offset: number) => wibDate(Date.now() + offset * DAY);
 
-/** Never straddle outlet midnight: the business date is the local calendar day. */
+/**
+ * Never straddle outlet midnight: the business date is the local calendar day.
+ * Waits only until the safe window starts: before midnight until 2 minutes
+ * after it, just after midnight until 1 minute after it. (It used to wait
+ * `untilMidnight + 2 min` in both cases, and `untilMidnight` is almost a whole
+ * day just after midnight, so tests started in the first minute of the WIB day
+ * slept past their timeout.) The longest wait is under 4 minutes, so the
+ * `beforeEach` below carries a hook timeout above that.
+ */
 async function avoidOutletMidnight() {
   const sinceMidnight = (Date.now() + WIB_OFFSET) % DAY;
   const untilMidnight = DAY - sinceMidnight;
-  if (sinceMidnight < MINUTE || untilMidnight < 2 * MINUTE)
-    await new Promise((resolve) =>
-      setTimeout(resolve, untilMidnight + 2 * MINUTE),
-    );
+  let waitMs = 0;
+  if (untilMidnight < 2 * MINUTE) waitMs = untilMidnight + 2 * MINUTE;
+  else if (sinceMidnight < MINUTE) waitMs = MINUTE - sinceMidnight + 1_000;
+  if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
 }
+
+// A test that starts near midnight waits here, in a hook with its own long
+// timeout, instead of inside the test (default testTimeout 20 s). Later calls
+// in newStaff then find the window already passed.
+beforeEach(async () => {
+  await avoidOutletMidnight();
+}, 5 * MINUTE);
 
 const looksLikeUuid = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(id);
 const toUuid = (id: string) => (looksLikeUuid(id) ? id : ulidToUuid(id));
@@ -564,7 +575,10 @@ describe("[F5] leave.changed event contract", () => {
   });
 
   it("[F5] is exported, named leave.changed and registered with the HR events", () => {
-    expect(leaveChanged, "leaveChanged exported by @starter/shared/hris").toBeDefined();
+    expect(
+      leaveChanged,
+      "leaveChanged exported by @starter/shared/hris",
+    ).toBeDefined();
     expect(leaveChanged?.name).toBe("leave.changed");
     expect(
       (hrisShared as unknown as { hrisEventNames: string[] }).hrisEventNames,
@@ -651,9 +665,9 @@ describe("[F5] cancel_leave on a multi-day leave publishes leave.changed per cha
       status: "approved",
       changeReason: "range_split",
     });
-    expect(toUuid(String(tailEvent!.event.payload.splitFromLeaveRequestId))).toBe(
-      head.id,
-    );
+    expect(
+      toUuid(String(tailEvent!.event.payload.splitFromLeaveRequestId)),
+    ).toBe(head.id);
     for (const row of rows) {
       expect(toUuid(String(row.event.payload.employeeId))).toBe(
         staff.employeeId,
@@ -733,7 +747,9 @@ describe("[F5] cancel_leave on a multi-day leave publishes leave.changed per cha
     )!;
     const middleEvents = eventFor(rows, middle.id);
     expect(middleEvents, "created, then narrowed").toHaveLength(2);
-    expect(Number(middleEvents[0]!.sequence)).toBeLessThan(Number(middleEvents[1]!.sequence));
+    expect(Number(middleEvents[0]!.sequence)).toBeLessThan(
+      Number(middleEvents[1]!.sequence),
+    );
     expect(Number(middleEvents[0]!.sequence)).toBeGreaterThanOrEqual(1);
     expectPayloadMatchesRow(middleEvents[1]!, middle);
     // Head was changed once only.
@@ -840,9 +856,10 @@ describe("[F5] events are published in the same transaction as the leave change"
         expectPayloadMatchesRow(eventFor(rows, leave.id).at(-1)!, leave);
     } else {
       // Refused: no leave row changed and no event is left behind.
-      expect(response.status, JSON.stringify(response.body)).toBeGreaterThanOrEqual(
-        400,
-      );
+      expect(
+        response.status,
+        JSON.stringify(response.body),
+      ).toBeGreaterThanOrEqual(400);
       expect(after).toEqual(before);
       expect(rows).toHaveLength(0);
     }
@@ -920,9 +937,11 @@ describe("[F6] attendance.logged contract keeps validity so consumers can exclud
       expect.arrayContaining(["valid", "flagged", "rejected"]),
     );
     expect(
-      (hrisShared.attendanceLogged.payloadSchema as unknown as {
-        shape: Record<string, unknown>;
-      }).shape,
+      (
+        hrisShared.attendanceLogged.payloadSchema as unknown as {
+          shape: Record<string, unknown>;
+        }
+      ).shape,
     ).toHaveProperty("validity");
   });
 

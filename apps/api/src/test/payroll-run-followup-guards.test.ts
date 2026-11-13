@@ -93,6 +93,7 @@ import {
   approveSimulatedRun,
   deleteStatutoryTables,
   insertDraftRun,
+  insertContract,
   insertEmployee,
   insertPolicy,
   insertSalary,
@@ -1349,5 +1350,158 @@ describe("[receivable-no-backward-collection] a run never collects a receivable 
       collectedOf(await myResult(collector, emp2)),
       "equal pay date may collect",
     ).toBe(X);
+  }, 600_000);
+});
+
+// ---- 6. [thr-receivable-open] (bead legend-30dhj) ----------------------------------
+//
+// RULES UNDER TEST (founder rule "jangan sampai rugi": a THR run that also
+// collects an open PPh 21 receivable never pays anyone more than the THR the
+// rules give, and never collects more than is owed or more than the room)
+//  6a. A THR run (one calendar month) simulates an employee with an open
+//      receivable from an earlier locked payslip: one collection line equal to
+//      planPph21ReceivableCollection({ openIdr, roomIdr }) where room is the
+//      net THR of a control employee with the same THR and no receivable.
+//      collected <= open, collected <= room, net >= 0, net + collected = room,
+//      the control is untouched, the receivable above the room keeps the rest
+//      open, and the lock seals exactly what simulate stored.
+//  6b. The contract/component scheme mismatch is still refused (422
+//      PAYROLL_TAX_SCHEME_MISMATCH, ids only) when the same employee has an
+//      open receivable: nothing stored, run stays draft, receivable untouched.
+// The exact rupiah values come from the control employee (the engine's own
+// THR result) and the shared planner, not from numbers typed here.
+
+describe("[thr-receivable-open] a THR run collects an open PPh 21 receivable", () => {
+  for (const open of [50_000, 40_000_000]) {
+    const label =
+      open === 50_000
+        ? "room covers it: collected in full, nothing stays open"
+        : "receivable above the room: collects the room, net 0, rest stays open";
+    it(`${label}; simulate = what the lock seals`, async () => {
+      const world = await makeWorld();
+      const emp = await makeEmployee(world);
+      const control = await makeEmployee(world);
+      const earlier = await lockedRun(world, monthDates(6, 2025));
+      expect(await seedOpenReceivable(earlier, emp, open)).toBe(open);
+
+      const run = await draftRun(world, monthDates(11), "thr");
+      const simulated = await simulateRun(run);
+      expect(simulated.status).toBe("simulated");
+      const results = await storedResults(run);
+      expect(results).toHaveLength(2);
+      const mine = results.find((r) => r.employeeId === emp.id)!.calc;
+      const other = results.find((r) => r.employeeId === control.id)!.calc;
+
+      // Same THR for both; the control owes nothing, so his net is the room.
+      const thrOf = (calc: FullCalc) =>
+        calc.lines
+          .filter((l) => l.category === "thr")
+          .reduce((total, l) => total + l.amountIdr, 0);
+      expect(thrOf(mine)).toBeGreaterThan(0);
+      expect(thrOf(mine)).toBe(thrOf(other));
+      expect(collectionLines(other)).toHaveLength(0);
+      const room = other.netIdr;
+      expect(room).toBeGreaterThan(0);
+      expect(room).toBeLessThan(thrOf(other));
+      // A THR run pays only THR: gross equals the THR lines (no salary on top).
+      expect(other.grossIdr).toBe(thrOf(other));
+      expect(mine.grossIdr).toBe(thrOf(mine));
+      // The case label is true: the small receivable fits the room, the big
+      // one does not.
+      expect(open <= room).toBe(open === 50_000);
+
+      const plan = planPph21ReceivableCollection({
+        openIdr: open,
+        roomIdr: room,
+      });
+      expect(collectionLines(mine)).toHaveLength(1);
+      expect(collectedOf(mine)).toBe(plan.collectedIdr);
+      // Money invariants: never more than owed, never more than the room,
+      // never a negative net, never paid more than the control (no one is
+      // paid more than the THR rules give).
+      expect(collectedOf(mine)).toBeLessThanOrEqual(open);
+      expect(collectedOf(mine)).toBeLessThanOrEqual(room);
+      expect(mine.netIdr).toBeGreaterThanOrEqual(0);
+      expect(mine.netIdr).toBe(room - collectedOf(mine));
+      expect(mine.netIdr).toBeLessThanOrEqual(other.netIdr);
+      if (open <= room) {
+        expect(collectedOf(mine)).toBe(open);
+        expect(plan.openAfterIdr).toBe(0);
+      } else {
+        expect(collectedOf(mine)).toBe(room);
+        expect(mine.netIdr).toBe(0);
+        expect(plan.openAfterIdr).toBe(open - room);
+        expect(plan.openAfterIdr).toBeGreaterThan(0);
+      }
+      // Run totals follow the results: what is paid out + what is collected
+      // = what the two THR slips are worth after tax, nothing more.
+      expect(Number(simulated.totals?.netIdr)).toBe(mine.netIdr + other.netIdr);
+      expect(Number(simulated.totals?.netIdr) + collectedOf(mine)).toBe(
+        2 * room,
+      );
+
+      // The lock seals exactly the simulated numbers; the balance after the
+      // lock is open - collected (never negative, never collected twice).
+      await asTenant((conn) => approveSimulatedRun(conn, run));
+      await lockRun(run);
+      expect(await runStatus(run)).toBe("locked");
+      const slips = (await slipsOf([earlier, run])) as unknown as {
+        runId: string;
+        employeeId: string;
+        calc: FullCalc;
+      }[];
+      const sealedMine = slips.find(
+        (s) => s.runId === run && s.employeeId === emp.id,
+      )!.calc;
+      const sealedOther = slips.find(
+        (s) => s.runId === run && s.employeeId === control.id,
+      )!.calc;
+      expect(collectedOf(sealedMine)).toBe(plan.collectedIdr);
+      expect(sealedMine.netIdr).toBe(mine.netIdr);
+      expect(sealedOther.netIdr).toBe(other.netIdr);
+      expect(collectedOf(sealedOther)).toBe(0);
+      expect(
+        pph21ReceivableBalance(
+          slips.filter((s) => s.employeeId === emp.id).map((s) => s.calc),
+        ),
+      ).toBe(plan.openAfterIdr);
+    }, 600_000);
+  }
+
+  it("scheme mismatch is still refused with an open receivable: 422, ids only, nothing stored, run stays draft", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const control = await makeEmployee(world);
+    const earlier = await lockedRun(world, monthDates(6, 2025));
+    expect(await seedOpenReceivable(earlier, emp, 50_000)).toBe(50_000);
+    // From 2026 the contract is gross_up while the salary component stays
+    // gross: the THR tax would be borne for the THR but not for the salary.
+    await asTenant((conn) =>
+      insertContract(conn, {
+        tenantId: tenant.id,
+        employeeId: emp.id,
+        taxScheme: "gross_up",
+        startDate: "2026-01-01",
+      }),
+    );
+
+    const run = await draftRun(world, monthDates(11), "thr");
+    const refused = await failureOf(simulateRun(run));
+    expect(refused, "simulate must refuse the scheme mismatch").not.toBeNull();
+    expect(refused!.status).toBe(422);
+    expect(refused!.code).toBe("PAYROLL_TAX_SCHEME_MISMATCH");
+    expect((refused as unknown as Error).message).toContain(emp.id);
+    expect((refused as unknown as Error).message).not.toContain(control.id);
+    expect(await runStatus(run)).toBe("draft");
+    expect(await countOf("payroll_run_results", run)).toBe(0);
+    expect(await countOf("payslips", run)).toBe(0);
+    // The receivable is untouched: nothing was collected.
+    expect(
+      pph21ReceivableBalance(
+        (await slipsOf([earlier]))
+          .filter((s) => s.employeeId === emp.id)
+          .map((s) => s.calc as unknown as FullCalc),
+      ),
+    ).toBe(50_000);
   }, 600_000);
 });

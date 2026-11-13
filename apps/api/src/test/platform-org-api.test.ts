@@ -389,9 +389,14 @@ describe("Tenant organisation API", () => {
     expect(entity.body.data.npwpLast4).toBe("1000");
     expect(JSON.stringify(entity.body)).not.toContain("01.234.567");
 
-    const outlets = await client.get("/api/org/outlets?limit=100");
-    expect(outlets.status).toBe(200);
-    const seededOutlet = outlets.body.data[0];
+    // legend-1jxh8: jangan baca seluruh outlet tenant seed. Berkas lain menaruh
+    // baris outlet lewat SQL mentah dengan jam buka `{}` (tidak lolos
+    // openingHoursSchema), jadi daftar tenant-lebar melempar ZodError di
+    // toOutlet. Daftar dibatasi ke brand milik tes ini.
+    const brandOutletsUrl = `/api/org/outlets?limit=100&brandId=${brand.body.data.id}`;
+    const before = await client.get(brandOutletsUrl);
+    expect(before.status).toBe(200);
+    expect(before.body.data).toEqual([]);
 
     const code = `UJI-${randomBytes(3).toString("hex")}`.toUpperCase();
     const outlet = await client
@@ -416,7 +421,11 @@ describe("Tenant organisation API", () => {
       status: "preopening",
     });
     expect(outlet.body.data.id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(seededOutlet.id).not.toBe(outlet.body.data.id);
+    const after = await client.get(brandOutletsUrl);
+    expect(after.status).toBe(200);
+    expect(after.body.data.map((row: { id: string }) => row.id)).toEqual([
+      outlet.body.data.id,
+    ]);
 
     // Owner Q39: a new outlet starts its business day at 04:00 by default; the
     // admin may move it (audited) but only inside 00:00..11:59.
@@ -476,14 +485,47 @@ describe("Tenant organisation API", () => {
   });
 
   it("TEN-03 an outlet-scoped context only reaches its own outlets", async () => {
+    // legend-1jxh8: fixture sendiri (brand + entitas + 2 outlet berjam buka
+    // valid) dan daftar dibatasi ke brand itu. Baris outlet berjam buka `{}`
+    // dari berkas lain di tenant seed tidak ikut terbaca.
+    const brandId = randomUUID();
+    const entityId = randomUUID();
+    const suffix = randomBytes(3).toString("hex").toUpperCase();
+    await owner.query(
+      `INSERT INTO brands (id, tenant_id, slug, name)
+       VALUES ($1, $2, $3, 'Brand TEN-03')`,
+      [brandId, seededTenantId, `ten03-${suffix.toLowerCase()}`],
+    );
+    await owner.query(
+      `INSERT INTO legal_entities (id, tenant_id, name, is_pkp)
+       VALUES ($1, $2, 'Entitas TEN-03', false)`,
+      [entityId, seededTenantId],
+    );
+    const outletIds = [randomUUID(), randomUUID()];
+    for (const [index, outletId] of outletIds.entries())
+      await owner.query(
+        `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+         VALUES ($1, $2, $3, $4, $5, 'Outlet TEN-03', 'Jl. Uji', 'Asia/Jakarta', $6, 'active')`,
+        [
+          outletId,
+          seededTenantId,
+          brandId,
+          entityId,
+          `T03-${suffix}-${index + 1}`,
+          JSON.stringify(OPENING_HOURS),
+        ],
+      );
+
     const tenantWide = scopedContext();
-    const all = await listOutlets(tenantWide, { limit: 100 });
-    expect(all.data.length).toBeGreaterThanOrEqual(2);
+    const all = await listOutlets(tenantWide, { limit: 100, brandId });
+    expect(all.data.map((outlet) => outlet.id).sort()).toEqual(
+      [...outletIds].sort(),
+    );
     const [first, second] = all.data;
     expect(first && second).toBeTruthy();
 
     const outletScoped = scopedContext([first!.id]);
-    const scoped = await listOutlets(outletScoped, { limit: 100 });
+    const scoped = await listOutlets(outletScoped, { limit: 100, brandId });
     expect(scoped.data.map((outlet) => outlet.id)).toEqual([first!.id]);
 
     await expect(

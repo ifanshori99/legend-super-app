@@ -52,8 +52,10 @@ test("HR-03 directory lists the fixture employees with NIP, position and status"
     page.getByText("CL-1005").filter({ visible: true }).first(),
   ).toBeVisible();
   // The four kepegawaian metrics, not decorative deltas.
-  await expect(page.getByText("Karyawan aktif")).toBeVisible();
-  await expect(page.getByText("Kontrak berakhir ≤30 hari")).toBeVisible();
+  // Scoped to the metric strip: "Karyawan aktif" also appears elsewhere on the page.
+  const metrics = page.getByRole("region", { name: "Ringkasan kepegawaian" });
+  await expect(metrics.getByText("Karyawan aktif")).toBeVisible();
+  await expect(metrics.getByText("Kontrak berakhir ≤30 hari")).toBeVisible();
 
   // Filters run over the whole catalog in memory (name or NIP).
   await page.getByLabel("Cari nama atau NIP").fill("Dewi");
