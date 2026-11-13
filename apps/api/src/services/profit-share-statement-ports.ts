@@ -11,13 +11,19 @@
 // so. Messages name keys only, never values.
 
 import { S3Client } from "@aws-sdk/client-s3";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { EmailProvider, ObjectStorage } from "@starter/shared/adapters";
+import type { OutletId } from "@starter/shared/core";
+import { db } from "../db/index.ts";
+import type * as schema from "../db/schema/index.ts";
+import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import {
   createBrevoEmailProvider,
   parseNotificationProviderEnv,
 } from "../worker/notification-adapters.ts";
 import { S3ObjectStorage } from "./core-storage-provider.ts";
+import { notifyBrevoAuthFailed } from "./edge-sync-conflict-alert.ts";
 import {
   configureProfitShareStatementDeps,
   type StatementIssuerDeps,
@@ -70,8 +76,19 @@ export function createStatementObjectStorage(env: Env): ObjectStorage | null {
   });
 }
 
-/** `null` unless NOTIFICATION_EMAIL_PROVIDER=brevo with a valid setup. */
-export function createStatementEmailProvider(env: Env): EmailProvider | null {
+/**
+ * `null` unless NOTIFICATION_EMAIL_PROVIDER=brevo with a valid setup. A Brevo
+ * 401/403 raises the same throttled ops alert as the worker (legend-65i3t);
+ * `options` lets tests inject their own database and fetch.
+ */
+export function createStatementEmailProvider(
+  env: Env,
+  options: {
+    database?: NodePgDatabase<typeof schema>;
+    fetch?: typeof globalThis.fetch;
+  } = {},
+): EmailProvider | null {
+  const database = options.database ?? db;
   if (present(env, "NOTIFICATION_EMAIL_PROVIDER") !== "brevo") return null;
   try {
     // The API process does not set the push and WhatsApp keys the shared
@@ -86,6 +103,15 @@ export function createStatementEmailProvider(env: Env): EmailProvider | null {
       apiKey: config.email.apiKey,
       from: config.email.from,
       fromName: config.email.fromName,
+      fetch: options.fetch,
+      onAuthFailure: (context, failure) =>
+        withTenant(database, context, (tx) =>
+          notifyBrevoAuthFailed(tx, context, {
+            tenantId: context.tenant.tenantId,
+            outletId: failure.outletId as OutletId | null,
+            status: failure.status,
+          }),
+        ),
     });
   } catch (error) {
     // The notice is best effort: a broken mail setup must not stop the API.
