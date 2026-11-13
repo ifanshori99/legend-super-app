@@ -87,7 +87,10 @@ registerMock(updateEmployeePii, ({ params, body }) => {
 
   const patch: Partial<EmployeePii> = {};
   // `bankCode` is a plain column (not sealed): copied as-is, `null` clears it.
+  // Like the API, a new account sent without a code empties the old code so a
+  // stale code never reaches a transfer file.
   if (values.bankCode !== undefined) patch.bankCode = values.bankCode;
+  else if (values.bankAccount !== undefined) patch.bankCode = null;
   for (const field of Object.keys(
     PII_MASK_RULE,
   ) as (keyof typeof PII_MASK_RULE)[]) {

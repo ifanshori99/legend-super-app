@@ -7,7 +7,7 @@
 // restricted note here; a field the role may not see arrives as null. Editing
 // needs `hr.employee.manage`.
 import * as React from "react";
-import { Lock, Pencil } from "lucide-react";
+import { Lock, Pencil, TriangleAlert } from "lucide-react";
 import type { Employee } from "@starter/shared/hris";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import { ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api/errors";
 import { useEmployeePii } from "../hooks";
+import { bankCodeLabel } from "./bank-code-options";
 import { PII_FIELD_LABEL, PII_FIELDS } from "./pii-fields";
 import { PiiEditDialog } from "./pii-edit-dialog";
 
@@ -64,7 +65,8 @@ export function EmployeePiiPanel({
         {pending ? (
           <div className="grid gap-2 sm:grid-cols-2">
             <span className="sr-only">{t("common.loading")}</span>
-            {PII_FIELDS.map((field) => (
+            {/* One extra cell for the bank code row shown after the account. */}
+            {[...PII_FIELDS, "bankCode"].map((field) => (
               <div key={field} className="grid gap-1">
                 <Skeleton className="h-3 w-24" />
                 <Skeleton className="h-5 w-32" />
@@ -81,12 +83,29 @@ export function EmployeePiiPanel({
         ) : (
           <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
             {PII_FIELDS.map((field) => (
-              <PiiValue
-                key={field}
-                label={t(PII_FIELD_LABEL[field])}
-                value={pii?.[field]?.masked ?? null}
-                emptyLabel={t("employeeMaster.profile.pii.emptyValue")}
-              />
+              <React.Fragment key={field}>
+                <PiiValue
+                  label={t(PII_FIELD_LABEL[field])}
+                  value={pii?.[field]?.masked ?? null}
+                  emptyLabel={t("employeeMaster.profile.pii.emptyValue")}
+                />
+                {field === "bankAccount" && (
+                  <PiiValue
+                    label={t("employeeMaster.profile.pii.bankCode.label")}
+                    value={pii?.bankCode ? bankCodeLabel(pii.bankCode) : null}
+                    emptyLabel={t("employeeMaster.profile.pii.emptyValue")}
+                    // An account without a code blocks the transfer: say so
+                    // with an icon and text, not the plain optional-empty gray.
+                    warnLabel={
+                      pii?.bankAccount && !pii.bankCode
+                        ? t(
+                            "employeeMaster.profile.pii.bankCode.missingForAccount",
+                          )
+                        : undefined
+                    }
+                  />
+                )}
+              </React.Fragment>
             ))}
           </dl>
         )}
@@ -107,10 +126,13 @@ function PiiValue({
   label,
   value,
   emptyLabel,
+  warnLabel,
 }: {
   label: string;
   value: string | null;
   emptyLabel: string;
+  /** Shown instead of `emptyLabel` when the missing value blocks something. */
+  warnLabel?: string;
 }) {
   return (
     <div className="grid min-w-0 gap-0.5">
@@ -122,7 +144,14 @@ function PiiValue({
             : "text-sm leading-5 font-medium tabular"
         }
       >
-        {value ?? emptyLabel}
+        {value === null && warnLabel !== undefined ? (
+          <span className="inline-flex items-center gap-1.5 font-medium text-warning">
+            <TriangleAlert className="size-4 shrink-0" aria-hidden="true" />
+            {warnLabel}
+          </span>
+        ) : (
+          (value ?? emptyLabel)
+        )}
       </dd>
     </div>
   );

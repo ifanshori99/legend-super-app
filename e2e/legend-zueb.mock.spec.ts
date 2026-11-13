@@ -105,6 +105,74 @@ test("HR-03 edit flow stores a PII value write-only and shows the new masked for
   await expect(page.getByText("09.254.001.8-407.123")).toHaveCount(0);
 });
 
+test("HR-03 edit flow sets the bank code and shows it with the account", async ({
+  page,
+}) => {
+  await openProfile(page);
+  // Fixture employees carry BCA (014).
+  await expect(page.getByText("BCA (014)").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Ubah data pribadi" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("combobox", { name: "Kode bank" }).click();
+  await page.getByRole("option", { name: "Mandiri (008)" }).click();
+  await dialog.getByRole("button", { name: "Simpan data pribadi" }).click();
+
+  await expect(page.getByText("Data pribadi tersimpan").first()).toBeVisible();
+  await expect(page.getByText("Mandiri (008)").first()).toBeVisible();
+});
+
+test("HR-03 a new account without a bank code warns, then clears the old code", async ({
+  page,
+}) => {
+  await openProfile(page);
+  await page.getByRole("button", { name: "Ubah data pribadi" }).click();
+  const dialog = page.getByRole("dialog");
+
+  // Default hint: BCA-only manual channel; no warning yet.
+  await expect(dialog.getByText(/hanya menerima BCA \(014\)/)).toBeVisible();
+  const warning = dialog.getByText(
+    /kode lama \(bila ada\) dikosongkan, dan gaji transfer tertahan/,
+  );
+  await expect(warning).toHaveCount(0);
+
+  await dialog.getByLabel("Rekening bank").fill("9876543210");
+  await expect(warning).toBeVisible();
+
+  // Picking a code removes the warning.
+  await dialog.getByRole("combobox", { name: "Kode bank" }).click();
+  await page.getByRole("option", { name: "BCA (014)" }).click();
+  await expect(warning).toHaveCount(0);
+
+  // Back to "Tidak diubah": warning returns, and saving empties the code.
+  await dialog.getByRole("combobox", { name: "Kode bank" }).click();
+  await page.getByRole("option", { name: "Tidak diubah" }).click();
+  await expect(warning).toBeVisible();
+  await dialog.getByRole("button", { name: "Simpan data pribadi" }).click();
+
+  await expect(page.getByText("Data pribadi tersimpan").first()).toBeVisible();
+  await expect(page.getByText("BCA (014)")).toHaveCount(0);
+  await expect(page.getByText("****3210").first()).toBeVisible();
+  // Account set, code empty: the panel flags it as blocking the transfer.
+  await expect(
+    page.getByText("Belum diisi, gaji transfer tertahan"),
+  ).toBeVisible();
+});
+
+test("HR-03 the bank code select can empty the code on its own", async ({
+  page,
+}) => {
+  await openProfile(page);
+  await page.getByRole("button", { name: "Ubah data pribadi" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("combobox", { name: "Kode bank" }).click();
+  await page.getByRole("option", { name: "Kosongkan kode bank" }).click();
+  await dialog.getByRole("button", { name: "Simpan data pribadi" }).click();
+
+  await expect(page.getByText("Data pribadi tersimpan").first()).toBeVisible();
+  await expect(page.getByText("BCA (014)")).toHaveCount(0);
+});
+
 test("HR-03 a role without hr.employee.view sees the locked profile, not PII", async ({
   page,
 }) => {
