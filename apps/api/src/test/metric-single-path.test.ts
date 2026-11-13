@@ -25,6 +25,9 @@ const ACCOUNTING_DOMAIN = [
   /^db\/schema\//,
   /^services\/accounting-[^/]+\.ts$/,
   /^services\/payroll-gl-consumer\.ts$/,
+  // Payroll payout GL (legend-wnkep.5) reads the settle journal it posted to
+  // return money to the same bank account: ledger bookkeeping, not a metric.
+  /^services\/payroll-payout-gl\.service\.ts$/,
   // Profit share (legend-2ljb) is accounting: it derives distributable net
   // profit straight from the posted journal, which is the ledger of record.
   /^services\/profit-share-net-profit\.ts$/,
