@@ -42,3 +42,23 @@ Provider PATCH implementer owns shared `ai/provider.ts`, provider config service
 Test writer owns new contract/ownership/redaction/start-empty-poll/PATCH merge/concurrency/isolation proofs and updates previous B DTO assertions, without weakening auth/lifecycle tests. Runner remains sole heavy, preserves completed baseline proof (API/shared types, 227 AI+87 root, additional guards, build2/2, e2e18passed/1knownskip, setup/doctor). Run changed-scope red first, then affected A/B/contract gates and final types/build/e2e after compatibility code freezes. Reviewer reads compatibility diff against 61964fa1. No frontend edits, merge, deployment, or push by this thread.
 
 UI handoff findings from read-only review (no frontend edits in this thread): current `ai-settings-page.tsx` treats ChatGPT `platformDisabled` as a whole-screen lock and disables the custom model and budget cards too. Backend must report the ChatGPT kill switch honestly while custom fallback remains usable; UI owner should scope that lock to the ChatGPT card or use a separate governance flag. Current custom-model override dialog PUT sends a merge built from a cached snapshot (`custom-model-panel.tsx` around line 623); server merging cannot distinguish stale explicitly submitted fields from intentional ones. New PATCH should be called with changed fields only for concurrency-safe UI edits. Both are strong integration differences to report with the final handoff.
+
+## Final verification evidence (13 Nov)
+
+All commands below passed against source `3bca3c69191b981519b85da2d33eaea316d29590`. Targeted tests: 237 API + 88 root. Production build: 2/2 fresh; Playwright: 18 passed, one pre-existing `legend-ozud` skip. AI/OAuth transports were fixtures; no real OpenAI endpoint was called. Final documentation-only edits receive a separate format check before the handoff commit.
+
+```text
+Verified source: 3bca3c69191b981519b85da2d33eaea316d29590
+
+Exact executed commands (expanded xargs argv):
+pnpm exec eslint apps/api/src/config/env.ts apps/api/src/routes/ai-chatgpt.routes.ts apps/api/src/routes/ai-provider.routes.ts apps/api/src/services/ai-chatgpt.service.ts apps/api/src/services/ai-provider-config.service.ts apps/api/src/test/ai-chatgpt-device-code.test.ts apps/api/src/test/ai-provider-config.test.ts packages/shared/src/ai/chatgpt.ts packages/shared/src/ai/provider.ts tests/ai-contract.test.mjs
+pnpm exec prettier --check apps/api/src/config/env.ts apps/api/src/routes/ai-chatgpt.routes.ts apps/api/src/routes/ai-provider.routes.ts apps/api/src/services/ai-chatgpt.service.ts apps/api/src/services/ai-provider-config.service.ts apps/api/src/test/ai-chatgpt-device-code.test.ts apps/api/src/test/ai-provider-config.test.ts docs/briefs/sub-ai-login-autodetect.md packages/shared/src/ai/chatgpt.ts packages/shared/src/ai/provider.ts tests/ai-contract.test.mjs
+LEGEND_TEST_FILES="src/test/ai-model-capabilities.test.ts src/test/ai-thinking-budget.test.ts src/test/ai-provider-config.test.ts src/test/ai-provider-probe.test.ts src/test/ai-provider.test.ts src/test/ai-orchestrator.test.ts src/test/ai-gateway.test.ts src/test/ai-chatgpt-device-code.test.ts src/test/ai-chatgpt-codex-adapter.test.ts src/test/env.test.ts tests/ai-contract.test.mjs tests/text-contract.test.mjs" heavy pnpm test
+HEAVY_TIMEOUT=7200 heavy pnpm --filter @starter/api typecheck
+HEAVY_TIMEOUT=7200 heavy pnpm --filter @starter/shared typecheck
+HEAVY_TIMEOUT=7200 heavy pnpm test:e2e
+
+Extra document format: pnpm exec prettier --check docs/PROGRESS.md
+```
+
+Full `pnpm check` remains the merge-train gate. The release requires architect xhigh and second-opinion review of B; the frontend differences above are tracked in `legend-nnufz.1`.
