@@ -1443,3 +1443,4 @@ Langkah berikut CTO baru:
 - 19:19 G9mgc panic relay selesai (fix/panic-relay-load 003449e73; review ulang architect temukan slot kirim tertahan -> diperbaiki + test mutasi PRL-H5). a43bt+gyqdh ditutup. Batch57.
 - 19:27 G5dlj THR gross-up selesai (fix/thr-gross-up 3f37e056c; PAYROLL_TAX_SCHEME_MISMATCH; selisih 10.150 = oracle test salah, mesin benar, architect xhigh).
 - 19:38 CTO compact 2x: serah terima ke CTO baru setelah laporan batch56 (G04hs test penuh 67 mnt 0 gagal). Thread aktif: G04hs (batch56), G2zip (purchasing posting), G3t0j (kas: tambah migrasi 0498_cash_limit_antisplit, cek nomor saat batch57). Batch57 kandidat: fix/webhook-retry-guard, ws/menu-pdf, ws/brand-config, fix/panic-relay-load, fix/thr-gross-up, fix/petty-fund-required, ws/purchasing-posting.
+- 19:45 G3t0j selesai (fix/petty-fund-required 0abf250ce, migrasi 0498); Q18 anti pecah lintas outlet; bead legend-wjyps, legend-e61s5. Serah terima CTO: docs/briefs/638-cto-handover.md.
