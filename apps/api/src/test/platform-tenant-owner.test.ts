@@ -154,7 +154,7 @@ async function newTenant(admin: Admin) {
     .post("/api/platform/tenants")
     .set(originHeader)
     .send(tenantBody(`owner-${randomBytes(4).toString("hex")}`, whatsapp));
-  expect(created.status).toBe(201);
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
   const tenantId = created.body.data.id as string;
   const { rows } = await owner.query<{ id: string; user_id: string }>(
     `SELECT ra.id, ra.user_id FROM role_assignments ra JOIN roles r
@@ -881,7 +881,7 @@ describe("legend-ktc4d platform Super Admin appoints and replaces a tenant Owner
       const response = await appoint(admin, tenant.tenantId, invite(), {
         reason,
       });
-      expect(response.status).toBe(422);
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
     }
     expect(await activeOwners(tenant.tenantId)).toHaveLength(0);
   });
