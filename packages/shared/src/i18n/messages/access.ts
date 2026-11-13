@@ -492,7 +492,11 @@ const accessBaseMessages = {
         approve: "Setujui pengeluaran",
       },
       cash_deposit: { record: "Catat setoran kas" },
-      cash_bank: { record: "Catat kas masuk, kas keluar, dan transfer bank" },
+      cash_bank: {
+        record: "Catat kas masuk, kas keluar, dan transfer bank",
+        approve: "Setujui atau tolak kas keluar di atas batas",
+        limit: { manage: "Atur batas persetujuan kas keluar" },
+      },
       petty_cash: { manage: "Kelola dana kas kecil outlet" },
     },
     profit_share: {
