@@ -1376,3 +1376,9 @@ Langkah berikut CTO baru:
 3. Isi slot (Claude 5/8 kosong, Codex 1/3) dari `bd ready`, akun Claude #2 (7d rendah); Codex 86-92% 7d -> hanya second-opinion.
 4. Batch54 merge train (maks 7): ui/tenant-config 8c596b8a, ui/ai-settings setelah API, qris/edge/ai saat siap.
 5. Sebelum rilis: legend-ukbq3, gerbang gi697/fgg1h/qhqf8/svqew, Kirimdev legend-axmob (token via ghostex secret request).
+
+## 13 Nov 08:30 — CTO baru G24m1 ambil alih
+- Memory 1-4 disalin, cron retro 3 jam + push cadangan menit 17 dibuat ulang. Thread G1625, G2wb6, G66xb, G28l5 di-link ke G24m1.
+- Worktree dihapus (sudah di origin/milestone/m1, bersih): legend-f92d3497, legend-c765e143 (int/batch51), legend-b1a74398 (int/batch52). Disk 17 -> 20 GB. Sisanya menunggu batch53 masuk m1. legend-f10d077f menyimpan 2 worktree test/* yang belum di m1: jangan dihapus dulu. Kartu cleanup-ssd baca legend-* dibuat.
+- Thread baru G4wz0 (brief 596, Sonnet, akun #2): legend-48ft7 + legend-bxdhv, cabang fix/money-journal-refund, migrasi cadangan 0430-0431.
+- Kuota: Claude #1 93% 7d, #3 96% 7d, #2 6% 7d (5h 37%) -> hanya #2, hemat. Codex 86-92% 7d -> hanya second-opinion.
