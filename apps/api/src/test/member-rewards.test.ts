@@ -1163,6 +1163,61 @@ describe("LOY-03 member reward routes over HTTP", () => {
 });
 
 describe("LOY-03 fulfil a redemption by code", () => {
+  const otherEntityId = randomUUID();
+  const otherOutletId = randomUUID();
+  let previousProgramEntity: string | null;
+
+  beforeAll(async () => {
+    await asTenant(seededTenantId, async (client) => {
+      const program = await client.query<{ legal_entity_id: string | null }>(
+        "SELECT legal_entity_id FROM loyalty_programs WHERE tenant_id = $1",
+        [seededTenantId],
+      );
+      previousProgramEntity = program.rows[0]!.legal_entity_id;
+      // Other suites leave outlets from multiple PTs in this shared tenant.
+      // Make that shape deterministic, then select this fixture's PT per Q80.
+      await client.query(
+        "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Hadiah Lain', false)",
+        [otherEntityId, seededTenantId],
+      );
+      await client.query(
+        `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
+         SELECT $1, tenant_id, brand_id, $3, $4, 'Outlet Hadiah Lain', 'Jl. Uji', timezone, business_day_cutoff, opening_hours, 'active'
+         FROM outlets WHERE tenant_id = $2 AND id = $5`,
+        [
+          otherOutletId,
+          seededTenantId,
+          otherEntityId,
+          `RH-${otherOutletId.slice(0, 6)}`.toUpperCase(),
+          seededOutletA,
+        ],
+      );
+      await client.query(
+        `UPDATE loyalty_programs SET legal_entity_id =
+           (SELECT legal_entity_id FROM outlets WHERE tenant_id = $1 AND id = $2)
+         WHERE tenant_id = $1`,
+        [seededTenantId, seededOutletA],
+      );
+    });
+  });
+
+  afterAll(async () => {
+    await asTenant(seededTenantId, async (client) => {
+      await client.query(
+        "UPDATE loyalty_programs SET legal_entity_id = $2 WHERE tenant_id = $1",
+        [seededTenantId, previousProgramEntity],
+      );
+      await client.query(
+        "DELETE FROM outlets WHERE tenant_id = $1 AND id = $2",
+        [seededTenantId, otherOutletId],
+      );
+      await client.query(
+        "DELETE FROM legal_entities WHERE tenant_id = $1 AND id = $2",
+        [seededTenantId, otherEntityId],
+      );
+    });
+  });
+
   /** An active member with points and one pending redemption in the seeded tenant. */
   async function pendingRedemption(
     options: Parameters<typeof seedReward>[1] = {},
@@ -1184,6 +1239,7 @@ describe("LOY-03 fulfil a redemption by code", () => {
     expect([200, 201]).toContain(response.status);
     return {
       member,
+      rewardId,
       redemption: response.body.data as {
         id: string;
         redemptionCode: string;
@@ -1204,7 +1260,15 @@ describe("LOY-03 fulfil a redemption by code", () => {
       scopeId: seededOutletA,
       label: "Kasir Fulfil",
     });
-    const { member, redemption } = await pendingRedemption();
+    const { member, rewardId, redemption } = await pendingRedemption({
+      stock: 5,
+    });
+    const ledgerAfterRedeem = await ledgerDetail(
+      seededTenantId,
+      member.profileId!,
+    );
+    expect(await balanceOf(seededTenantId, member.profileId!)).toBe(250);
+    expect((await rewardOf(seededTenantId, rewardId)).stock).toBe(4);
 
     const response = await cashier.client
       .post("/api/loyalty/redemptions/fulfil")
@@ -1221,6 +1285,12 @@ describe("LOY-03 fulfil a redemption by code", () => {
     expect(response.body.data.fulfilledOutletId).toBe(seededOutletA);
     const row = await redemptionRow(seededTenantId, redemption.id);
     expect(row.status).toBe("fulfilled");
+    expect(await balanceOf(seededTenantId, member.profileId!)).toBe(250);
+    expect((await rewardOf(seededTenantId, rewardId)).stock).toBe(4);
+    expect(await ledgerDetail(seededTenantId, member.profileId!)).toEqual(
+      ledgerAfterRedeem,
+    );
+    expect(await vouchersOf(seededTenantId, member.profileId!)).toHaveLength(0);
 
     // Already fulfilled: a second fulfil and a member cancel both fail.
     const again = await cashier.client
@@ -1235,6 +1305,12 @@ describe("LOY-03 fulfil a redemption by code", () => {
       .set(originHeader);
     expect(cancel.status).toBe(409);
     expect(cancel.body.error.code).toBe("REDEMPTION_NOT_CANCELLABLE");
+    expect(await balanceOf(seededTenantId, member.profileId!)).toBe(250);
+    expect((await rewardOf(seededTenantId, rewardId)).stock).toBe(4);
+    expect(await ledgerDetail(seededTenantId, member.profileId!)).toEqual(
+      ledgerAfterRedeem,
+    );
+    expect(await vouchersOf(seededTenantId, member.profileId!)).toHaveLength(0);
   });
 
   it("LOY-03 fulfilling a voucher reward before its voucher is used answers 422 VOUCHER_INVALID; after use it is fulfilled with the order", async () => {
