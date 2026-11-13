@@ -79,6 +79,7 @@ import {
   orderIssueCharges,
   orders,
   outlets,
+  paymentAdminIdempotency,
   paymentIntents,
   paymentRefunds,
   paymentUnallocatedFunds,
@@ -807,6 +808,94 @@ async function receiptStatesOf(
   if (pendingIds.length > 0)
     await assertNotDeadLettered(tx, tenantId, pendingIds);
   return states;
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * legend-2jyr + legend-27mt: how much of an order refund's gateway part a
+ * payment refund will pay out later (payment.refunded debits customer_deposit
+ * for it). Only that part may credit customer_deposit; the rest never emits
+ * payment.refunded, so it reverses the sale's gateway_clearing instead.
+ * Linked payment refund rows:
+ * - POS refund: payment_admin_idempotency `pos-refund-gateway:<refundId>:<intent>`
+ *   (response.refundId = payment_refunds.id, see posRefundGatewayKey);
+ * - recovery refund: payment_refunds.order_issue_id = the refund id.
+ * Per linked intent: receipt "posted" counts to customer_deposit, "none" (money
+ * received before the wiring; its payout parks RECEIPT_MISSING) to clearing,
+ * "pending" parks the refund retryable. The deposit part never exceeds
+ * `gatewayIdr` (never credit more than was refunded).
+ */
+async function refundGatewaySplitOf(
+  tx: Tx,
+  tenantId: TenantId,
+  refundId: string,
+  gatewayIdr: number,
+): Promise<{ depositIdr: number; clearingIdr: number }> {
+  if (gatewayIdr <= 0) return { depositIdr: 0, clearingIdr: 0 };
+  const linked = new Map<string, { intentId: string; amountIdr: number }>();
+  const keyPrefix = `pos-refund-gateway:${refundId}:`;
+  const mapped = await tx
+    .select({
+      paymentRefundId: paymentRefunds.id,
+      intentId: paymentRefunds.paymentIntentId,
+      amountIdr: paymentRefunds.amountIdr,
+    })
+    .from(paymentAdminIdempotency)
+    .innerJoin(
+      paymentRefunds,
+      and(
+        eq(paymentRefunds.tenantId, paymentAdminIdempotency.tenantId),
+        sql`${paymentRefunds.id}::text = ${paymentAdminIdempotency.response}->>'refundId'`,
+      ),
+    )
+    .where(
+      and(
+        eq(paymentAdminIdempotency.tenantId, tenantId),
+        sql`left(${paymentAdminIdempotency.key}, ${keyPrefix.length}) = ${keyPrefix}`,
+      ),
+    );
+  for (const row of mapped)
+    linked.set(row.paymentRefundId, {
+      intentId: row.intentId,
+      amountIdr: row.amountIdr,
+    });
+  if (UUID_RE.test(refundId)) {
+    const recovery = await tx
+      .select({
+        paymentRefundId: paymentRefunds.id,
+        intentId: paymentRefunds.paymentIntentId,
+        amountIdr: paymentRefunds.amountIdr,
+      })
+      .from(paymentRefunds)
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, tenantId),
+          eq(paymentRefunds.orderIssueId, refundId),
+        ),
+      );
+    for (const row of recovery)
+      linked.set(row.paymentRefundId, {
+        intentId: row.intentId,
+        amountIdr: row.amountIdr,
+      });
+  }
+  if (linked.size === 0) return { depositIdr: 0, clearingIdr: gatewayIdr };
+  const states = await receiptStatesOf(tx, tenantId, [
+    ...new Set([...linked.values()].map((row) => row.intentId)),
+  ]);
+  let postedIdr = 0;
+  for (const row of linked.values()) {
+    const state = states.get(row.intentId);
+    if (state === "pending")
+      throw new AutoJournalReceiptPending(
+        "Gateway receipt of a refunded intent is not booked yet",
+      );
+    if (state === "posted") postedIdr += row.amountIdr;
+  }
+  const depositIdr = Math.min(postedIdr, gatewayIdr);
+  return { depositIdr, clearingIdr: gatewayIdr - depositIdr };
 }
 
 /**
@@ -1698,6 +1787,12 @@ export async function autoJournalFactOf(
         throw new AutoJournalPayloadInvalid(
           "A refund payout account is mapped to a sale service charge or tax account",
         );
+      const gatewaySplit = await refundGatewaySplitOf(
+        tx,
+        tenantId,
+        p.refundId,
+        p.refundGatewayIdr,
+      );
       return {
         ruleEvent: "order.refunded",
         accountOverrides,
@@ -1712,7 +1807,8 @@ export async function autoJournalFactOf(
             : {}),
           discountIdr: components.discountIdr,
           refundCashIdr: p.refundCashIdr,
-          refundGatewayIdr: p.refundGatewayIdr,
+          refundGatewayIdr: gatewaySplit.depositIdr,
+          refundGatewayClearingIdr: gatewaySplit.clearingIdr,
           refundEdcIdr: p.refundEdcIdr,
           refundPointsIdr: p.refundPointsIdr,
         },

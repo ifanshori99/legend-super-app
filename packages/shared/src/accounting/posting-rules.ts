@@ -225,6 +225,9 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["cash_on_hand", "credit", "refundCashIdr"],
       // Owed to the guest until the gateway pays it out (payment.refunded).
       ["customer_deposit", "credit", "refundGatewayIdr"],
+      // legend-2jyr: the gateway part no payment refund pays out later (no
+      // intent, receipt never booked) reverses the sale's clearing debit.
+      ["gateway_clearing", "credit", "refundGatewayClearingIdr"],
       ["edc_clearing", "credit", "refundEdcIdr"],
       // Points returned to the member restore the liability the sale used
       // (mirror of the order.paid loyalty_liability debit, §3.20).
@@ -269,6 +272,7 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["sales_discount", "credit", "discountIdr"],
       ["cash_on_hand", "credit", "refundCashIdr"],
       ["customer_deposit", "credit", "refundGatewayIdr"],
+      ["gateway_clearing", "credit", "refundGatewayClearingIdr"],
       ["edc_clearing", "credit", "refundEdcIdr"],
       ["loyalty_liability", "credit", "refundPointsIdr"],
     ],
