@@ -1496,3 +1496,4 @@ Langkah berikut CTO baru:
 - 03:49 mulai 658 jurnal payout gaji (wnkep.5 + f5n9y; thread S30:P6b2j:G7zpn, base m1 b17554cb9, migr 0534-0537). Keputusan CTO: paid_by penyetuju terakhir, fee auto-jurnal beban bank.
 - 04:08 657 selesai: ws/edge-contract-followups df90b7ac5 (cqehx, yu8z0, zy43; tanpa migrasi), architect xhigh 2 ronde. Keputusan CTO: tanpa marker edge lama; struk order ditolak dilewati+konflik (legend-n1fzg); dead-letter frame (legend-btx4d); desain QR edge (legend-dy7pc). G17kp di-resolve. Batch61 tunggu W24.
 - 04:08 mulai 659 ketahanan sync edge (n1fzg, btx4d, dy7pc; thread S30:P6b2j:G40bj, migr 0538-0541).
+- 04:25 658 selesai: ws/payroll-payout-gl 83892702e (wnkep.5, f5n9y; migr 0534/0536), architect xhigh 2 ronde 4 temuan dibetulkan. Keputusan CTO: fee tanpa mapping -> tolak approve/export + marker (8codi); route return/overpaid/trigger (qxkm6). G7zpn di-resolve. Mulai batch61 (S30:P6b2j:G2r4f) dan 661 (S30:P6b2j:G231t, migr 0542-0545).
