@@ -1423,3 +1423,4 @@ Langkah berikut CTO baru:
 - 17:03 Retro 24 selesai (RETRO.md): heavy gagal 13,8% (dari 28,2%), SSD 28,3 GB, error tsc brand berulang. Keputusan: batch56 wajib roles/merge-train.md; brief engineer tetap typecheck api lewat heavy sebelum lapor.
 - 17:39 G6ct5 kontrak tenant selesai (ws/tenant-config-contracts e623ce0b1; s6o8, at8c, 2gvt; izin baru org.config.import hanya tenant_admin; tanpa migrasi). Batch56. Codex second-opinion area akses masuk antrean 17-18 Nov.
 - 17:41 Audit kartu siap: 54 kartu sudah ada commit tapi belum ditutup (perlu rapikan setelah merge). Mulai G84ot purchasing AP/AR (Opus, 0490-0491), G3v9m QR menu (Sonnet), G6nze brand config (Sonnet, base ws/tenant-config-contracts, 0492-0493).
+- 17:47 G9336 lanjutan payroll selesai (ws/payroll-followups 72fd67d5e; c2yca, q5dx4, ele0u; 242 test). Tanya founder: pajak THR gross-up (legend-x7jas), metode bayar default (legend-2s2k4). Batch56/57 setelah rantai payroll.
