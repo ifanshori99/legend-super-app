@@ -14,6 +14,7 @@
 
 import {
   AUTO_MATCH_TARGET_BP,
+  MAX_CASH_OUT_APPROVAL_LIMIT_IDR,
   bankCsvMappingSchema,
   findStatementMatch,
   parseBankCsvAmount,
@@ -23,6 +24,7 @@ import {
   type BankCsvMapping,
   type BankStatementLine,
   type CashBankEntryKind,
+  type CashBankEntryStatus,
   type CashDeposit,
   type CashDepositStatus,
   type JournalEntry,
@@ -945,6 +947,41 @@ export const CASH_ENTRY_KIND_TONES: Record<CashBankEntryKind, Tone> = {
   transfer: "info",
 };
 
+export const CASH_ENTRY_STATUS_KEYS: Record<CashBankEntryStatus, MessageKey> = {
+  pending_approval: "accounting.cash.entries.status.pending_approval",
+  approved: "accounting.cash.entries.status.approved",
+  rejected: "accounting.cash.entries.status.rejected",
+};
+
+export const CASH_ENTRY_STATUS_TONES: Record<CashBankEntryStatus, Tone> = {
+  pending_approval: "warning",
+  approved: "success",
+  rejected: "danger",
+};
+
+export const CASH_REASON_MAX = 500;
+
+/**
+ * A cash out waits for a second person only above the tenant limit ("di
+ * atas" = strictly greater). The API decides; this only warns the person
+ * before they save.
+ */
+export function cashOutNeedsApproval(
+  kind: CashBankEntryKind,
+  amountIdr: number | null,
+  limitIdr: number | undefined,
+): boolean {
+  return (
+    kind === "cash_out" &&
+    amountIdr !== null &&
+    limitIdr !== undefined &&
+    amountIdr > limitIdr
+  );
+}
+
+/** The approval limit's ceiling in the contract (whole rupiah, minimum 1). */
+export const CASH_LIMIT_MAX_IDR = MAX_CASH_OUT_APPROVAL_LIMIT_IDR;
+
 export const PETTY_KIND_KEYS: Record<PettyCashEntryKind, MessageKey> = {
   topup: "accounting.cash.petty.kind.topup",
   return: "accounting.cash.petty.kind.return",
@@ -1008,6 +1045,12 @@ export function moneyErrorKey(code: string): MessageKey | null {
       return "accounting.cash.moneyError.mappingMissing";
     case "PERIOD_CLOSED":
       return "accounting.cash.moneyError.periodClosed";
+    case "CASH_OUT_SELF_APPROVAL":
+      return "accounting.cash.moneyError.selfApproval";
+    case "CASH_ENTRY_NOT_PENDING":
+      return "accounting.cash.moneyError.notPending";
+    case "CASH_ENTRY_NOT_FOUND":
+      return "accounting.cash.moneyError.entryNotFound";
     default:
       return null;
   }

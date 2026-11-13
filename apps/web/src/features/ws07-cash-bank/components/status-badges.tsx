@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type {
   CashBankEntryKind,
+  CashBankEntryStatus,
   CashDepositStatus,
   MatchStatus,
   PettyCashJournalStatus,
@@ -28,6 +29,8 @@ import {
   CASE_STATUS_TONES,
   CASH_ENTRY_KIND_KEYS,
   CASH_ENTRY_KIND_TONES,
+  CASH_ENTRY_STATUS_KEYS,
+  CASH_ENTRY_STATUS_TONES,
   DEPOSIT_STATUS_KEYS,
   DEPOSIT_STATUS_TONES,
   MATCH_STATUS_KEYS,
@@ -129,6 +132,27 @@ export function CashEntryKindBadge({ kind }: { kind: CashBankEntryKind }) {
       tone={CASH_ENTRY_KIND_TONES[kind]}
       icon={ENTRY_KIND_ICONS[kind]}
       label={t(CASH_ENTRY_KIND_KEYS[kind])}
+    />
+  );
+}
+
+const ENTRY_STATUS_ICONS: Record<CashBankEntryStatus, LucideIcon> = {
+  pending_approval: Clock,
+  approved: CircleCheck,
+  rejected: XCircle,
+};
+
+export function CashEntryStatusBadge({
+  status,
+}: {
+  status: CashBankEntryStatus;
+}) {
+  const t = useT();
+  return (
+    <ToneBadge
+      tone={CASH_ENTRY_STATUS_TONES[status]}
+      icon={ENTRY_STATUS_ICONS[status]}
+      label={t(CASH_ENTRY_STATUS_KEYS[status])}
     />
   );
 }

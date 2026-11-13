@@ -4,9 +4,16 @@
 // Design: docs/briefs/ws-cash-bank-design.md.
 //
 // - One document, one journal: the journal is posted in the same transaction
-//   as the `cash_bank_entries` row (journal_entry_id is NOT NULL and UNIQUE),
-//   under the server-derived key `cb:<entryId>`. A failed posting rolls the
-//   whole request back; a cash/bank document is never parked.
+//   as the `cash_bank_entries` row (journal_entry_id is UNIQUE), under the
+//   server-derived key `cb:<entryId>`. A failed posting rolls the whole
+//   request back; a cash/bank document is never parked.
+// - Founder Q7 (13 Nov 2026): a cash_out with amount > the tenant limit
+//   (strictly above; default Rp5.000.000, `finance_policies`) is stored
+//   `pending_approval` with NO journal. `approveCashBankEntry` (not its
+//   creator, `accounting.cash_bank.approve`) posts the journal once under the
+//   same key in one transaction with a row lock; `rejectCashBankEntry` ends it
+//   with no journal. Bank balance and reconciliation read the GL, so a pending
+//   entry never counts.
 // - Bank accounts live on the legal entity, so a write needs tenant scope
 //   (assertTenantScope). The optional outlet tag is only a cost tag.
 // - Idempotent per client key (`idempotentCommand`): a replay returns the same
@@ -27,7 +34,11 @@ import {
   type PostingAccountRole,
   cashBankJournalLines,
   createCashBankEntryInputSchema,
+  DEFAULT_CASH_OUT_APPROVAL_LIMIT_IDR,
+  putCashOutApprovalLimitInputSchema,
+  rejectCashBankEntryInputSchema,
   type CashBankEntry,
+  type CashOutApprovalLimit,
   type CreateCashBankEntryInput,
 } from "@starter/shared/accounting";
 import {
@@ -36,6 +47,7 @@ import {
   encodeCursor,
   outletIdsForQuery,
   uuidSchema,
+  idr,
   type BusinessDate,
   type CursorPage,
   type ScopedTenantContext,
@@ -44,6 +56,7 @@ import {
 } from "@starter/shared/core";
 import { db } from "../db";
 import { accountMappings, chartOfAccounts } from "../db/schema/accounting.ts";
+import { financePolicies } from "../db/schema/accounting-ap-fa.ts";
 import { bankAccounts } from "../db/schema/accounting-cash-bank.ts";
 import {
   cashBankEntries,
@@ -62,6 +75,7 @@ import {
 import { entityLock } from "./accounting-bank-matching.ts";
 import { loadBankAccount, notFound } from "./accounting-cash-bank-shared.ts";
 import { postJournalInTransaction } from "./accounting-journal.service.ts";
+import { assertPeriodOpenForPosting } from "./accounting-period.service.ts";
 import { requireLegalEntity } from "./accounting-shared.ts";
 
 export type CashBankEntryListQuery = {
@@ -95,6 +109,10 @@ export function cashBankEntryDto(row: CashBankEntryRow): CashBankEntry {
     counterAccountId: row.counterAccountId,
     description: row.description,
     reference: row.reference,
+    status: row.status,
+    approverId: row.approverId,
+    decidedAt: row.decidedAt?.toISOString() ?? null,
+    decisionReason: row.decisionReason,
     journalEntryId: row.journalEntryId,
     createdBy: row.createdBy,
     createdAt: row.createdAt.toISOString(),
@@ -403,6 +421,49 @@ export async function createCashBankEntry(
         await entityLock(tx, tenantId, input.legalEntityId);
 
         const entryId = randomUUID();
+        if (
+          input.kind === "cash_out" &&
+          input.amountIdr > (await readLimitIdr(tx, tenantId)).limitIdr
+        ) {
+          // Above the tenant limit: validated like a posting (period open,
+          // accounts usable) but parked without a journal until approved.
+          await assertPeriodOpenForPosting(tx, context, {
+            legalEntityId: input.legalEntityId,
+            entryDate: input.entryDate as BusinessDate,
+          });
+          await tx.insert(cashBankEntries).values({
+            id: entryId,
+            tenantId,
+            legalEntityId: input.legalEntityId,
+            outletId,
+            kind: input.kind,
+            entryDate: input.entryDate,
+            amountIdr: input.amountIdr,
+            bankAccountId: bank.id,
+            toBankAccountId: null,
+            counterAccountId: input.counterAccountId,
+            description: input.description,
+            reference: input.reference,
+            idempotencyKey: input.idempotencyKey,
+            journalEntryId: null,
+            status: "pending_approval",
+            createdBy: actorId,
+          });
+          await auditApFa(tx, context, {
+            actorId,
+            action: "accounting.cash_bank_entry.pending_approval",
+            objectType: "cash_bank_entry",
+            objectId: entryId,
+            outletId,
+            before: null,
+            after: {
+              kind: input.kind,
+              amountIdr: input.amountIdr,
+              status: "pending_approval",
+            },
+          });
+          return { id: entryId };
+        }
         const lines = cashBankJournalLines(
           { kind: input.kind, amountIdr: input.amountIdr, outletId },
           {
@@ -468,5 +529,238 @@ export async function createCashBankEntry(
       },
     );
     return cashBankEntryDto(await loadEntry(tx, tenantId, id));
+  });
+}
+
+// ------------------------------------------------- approval limit (Q7)
+
+/** The tenant's limit; no saved value means the default (never "no limit"). */
+async function readLimitIdr(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+): Promise<CashOutApprovalLimit> {
+  const [row] = await tx
+    .select({ limit: financePolicies.cashOutApprovalLimitIdr })
+    .from(financePolicies)
+    .where(eq(financePolicies.tenantId, tenantId))
+    .limit(1);
+  const saved = row?.limit ?? null;
+  return saved === null
+    ? { limitIdr: DEFAULT_CASH_OUT_APPROVAL_LIMIT_IDR, isDefault: true }
+    : { limitIdr: saved, isDefault: false };
+}
+
+/** Contract `getCashOutApprovalLimit`: reads are not outlet-narrowed (one tenant value). */
+export async function getCashOutApprovalLimit(
+  context: ScopedTenantContext,
+): Promise<CashOutApprovalLimit> {
+  assertTrustedScopedContext(context);
+  return withTenant(db, context, (tx) =>
+    readLimitIdr(tx, context.tenant.tenantId),
+  );
+}
+
+/** Contract `putCashOutApprovalLimit`: tenant scope, audited; 1..100.000.000.000. */
+export async function putCashOutApprovalLimit(
+  context: ScopedTenantContext,
+  rawInput: unknown,
+  actorId: UserId,
+  now: Date = new Date(),
+): Promise<CashOutApprovalLimit> {
+  const input = putCashOutApprovalLimitInputSchema.parse(rawInput);
+  assertTrustedScopedContext(context);
+  assertTenantScope(context);
+  return withTenant(db, context, async (tx) => {
+    const tenantId = context.tenant.tenantId;
+    const before = await readLimitIdr(tx, tenantId);
+    const values = {
+      cashOutApprovalLimitIdr: idr(input.limitIdr),
+      updatedBy: actorId,
+      updatedAt: now,
+    };
+    await tx
+      .insert(financePolicies)
+      .values({ tenantId, ...values, createdAt: now })
+      .onConflictDoUpdate({ target: financePolicies.tenantId, set: values });
+    await auditApFa(tx, context, {
+      actorId,
+      action: "accounting.cash_bank_limit.changed",
+      objectType: "cash_bank_approval_limit",
+      objectId: tenantId,
+      before: { limitIdr: before.limitIdr, isDefault: before.isDefault },
+      after: { limitIdr: input.limitIdr, isDefault: false },
+    });
+    return { limitIdr: input.limitIdr, isDefault: false };
+  });
+}
+
+// ------------------------------------------------- approve / reject (Q7)
+
+/** Row lock: concurrent decisions on one entry run one after the other. */
+async function lockEntryForDecision(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  entryId: string,
+  actorId: UserId,
+): Promise<CashBankEntryRow> {
+  const [row] = await tx
+    .select()
+    .from(cashBankEntries)
+    .where(
+      and(
+        eq(cashBankEntries.tenantId, tenantId),
+        eq(cashBankEntries.id, entryId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (!row) throw new AccountingError("CASH_ENTRY_NOT_FOUND");
+  // Nobody decides their own document, whatever its status.
+  if (row.createdBy === actorId)
+    throw new AccountingError("CASH_OUT_SELF_APPROVAL");
+  return row;
+}
+
+/**
+ * Approves a pending cash out: counter account and period are checked again,
+ * the journal is posted once (key `cb:<entryId>`) and the entry turns
+ * `approved` in the same transaction. An approved entry is returned as it is
+ * (no second journal); a rejected one is CASH_ENTRY_NOT_PENDING (409). A
+ * closed period or an unusable account fails the request and the entry stays
+ * pending.
+ */
+export async function approveCashBankEntry(
+  context: ScopedTenantContext,
+  entryId: string,
+  actorId: UserId,
+): Promise<CashBankEntry> {
+  assertTrustedScopedContext(context);
+  assertTenantScope(context);
+  return withTenant(db, context, async (tx) => {
+    const tenantId = context.tenant.tenantId;
+    const row = await lockEntryForDecision(tx, tenantId, entryId, actorId);
+    if (row.status === "approved") return cashBankEntryDto(row);
+    if (row.status !== "pending_approval" || row.counterAccountId === null)
+      throw new AccountingError("CASH_ENTRY_NOT_PENDING");
+    const now = new Date();
+    const kind = row.kind as CashBankEntry["kind"];
+    await entityLock(tx, tenantId, row.legalEntityId);
+    const bank = await loadUsableBankAccount(
+      tx,
+      tenantId,
+      row.legalEntityId,
+      row.bankAccountId,
+    );
+    await assertCounterAccount(
+      tx,
+      tenantId,
+      row.legalEntityId,
+      row.counterAccountId,
+    );
+    const journal = await postJournalInTransaction(
+      tx,
+      context,
+      {
+        legalEntityId: row.legalEntityId,
+        outletId: row.outletId,
+        entryDate: row.entryDate as BusinessDate,
+        sourceType: SOURCE_TYPES[kind],
+        sourceId: row.id,
+        description: row.description,
+        lines: cashBankJournalLines(
+          {
+            kind,
+            amountIdr: row.amountIdr,
+            outletId: row.outletId,
+          },
+          { bankGl: bank.glAccountId, counter: row.counterAccountId },
+        ),
+        postedBy: actorId,
+        idempotencyKey: `cb:${row.id}`,
+      },
+      now,
+    );
+    const [updated] = await tx
+      .update(cashBankEntries)
+      .set({
+        status: "approved",
+        approverId: actorId,
+        decidedAt: now,
+        journalEntryId: journal.id,
+      })
+      .where(
+        and(
+          eq(cashBankEntries.tenantId, tenantId),
+          eq(cashBankEntries.id, row.id),
+          eq(cashBankEntries.status, "pending_approval"),
+        ),
+      )
+      .returning();
+    if (!updated) throw new AccountingError("CASH_ENTRY_NOT_PENDING");
+    await auditApFa(tx, context, {
+      actorId,
+      action: "accounting.cash_bank_entry.approved",
+      objectType: "cash_bank_entry",
+      objectId: row.id,
+      outletId: row.outletId,
+      before: { status: "pending_approval" },
+      after: {
+        status: "approved",
+        amountIdr: row.amountIdr,
+        journalEntryId: journal.id,
+      },
+    });
+    return cashBankEntryDto(updated);
+  });
+}
+
+/**
+ * Rejects a pending cash out with a reason: no journal, final. Rejecting a
+ * rejected entry returns it; an approved one is CASH_ENTRY_NOT_PENDING (its
+ * journal is posted: correct it with a reversing document).
+ */
+export async function rejectCashBankEntry(
+  context: ScopedTenantContext,
+  entryId: string,
+  rawInput: unknown,
+  actorId: UserId,
+): Promise<CashBankEntry> {
+  const input = rejectCashBankEntryInputSchema.parse(rawInput);
+  assertTrustedScopedContext(context);
+  assertTenantScope(context);
+  return withTenant(db, context, async (tx) => {
+    const tenantId = context.tenant.tenantId;
+    const row = await lockEntryForDecision(tx, tenantId, entryId, actorId);
+    if (row.status === "rejected") return cashBankEntryDto(row);
+    if (row.status !== "pending_approval")
+      throw new AccountingError("CASH_ENTRY_NOT_PENDING");
+    const [updated] = await tx
+      .update(cashBankEntries)
+      .set({
+        status: "rejected",
+        approverId: actorId,
+        decidedAt: new Date(),
+        decisionReason: input.reason,
+      })
+      .where(
+        and(
+          eq(cashBankEntries.tenantId, tenantId),
+          eq(cashBankEntries.id, row.id),
+          eq(cashBankEntries.status, "pending_approval"),
+        ),
+      )
+      .returning();
+    if (!updated) throw new AccountingError("CASH_ENTRY_NOT_PENDING");
+    await auditApFa(tx, context, {
+      actorId,
+      action: "accounting.cash_bank_entry.rejected",
+      objectType: "cash_bank_entry",
+      objectId: row.id,
+      outletId: row.outletId,
+      reason: input.reason,
+      before: { status: "pending_approval" },
+      after: { status: "rejected", amountIdr: row.amountIdr },
+    });
+    return cashBankEntryDto(updated);
   });
 }

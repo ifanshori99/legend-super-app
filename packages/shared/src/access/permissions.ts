@@ -177,6 +177,10 @@ const entries = [
   // legend-4961: cash in/out and bank transfers (legal-entity level), and the
   // per-outlet petty cash fund (top-up, return, retry of a parked journal).
   ["accounting.cash_bank.record", ["finance"]],
+  // Founder Q7 (13 Nov 2026): approve/reject a cash out above the tenant limit
+  // (never its creator) and set that limit.
+  ["accounting.cash_bank.approve", ["finance", "approve"]],
+  ["accounting.cash_bank.limit.manage", ["finance"]],
   ["accounting.petty_cash.manage", ["finance"]],
 
   // Profit share & dividends (§3 Kelompok E, F34)

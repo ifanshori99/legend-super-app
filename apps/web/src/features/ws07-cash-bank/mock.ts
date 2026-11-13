@@ -17,6 +17,7 @@ import {
   actOnReconciliationCase,
   addDays,
   applyPettyCashDelta,
+  approveCashBankEntry,
   assertManualMatch,
   autoMatchRateBp,
   bankAccountSchema,
@@ -30,10 +31,12 @@ import {
   createCashBankEntry,
   createCashDeposit,
   createPettyCashMovement,
+  DEFAULT_CASH_OUT_APPROVAL_LIMIT_IDR,
   DEFAULT_FINANCE_POLICY,
   daysBetween,
   excludeStatementLine,
   findStatementMatch,
+  getCashOutApprovalLimit,
   getFinancePolicy,
   getGatewaySettlementRecon,
   getReconciliationCase,
@@ -53,7 +56,9 @@ import {
   pettyCashEntrySchema,
   pettyCashFundSchema,
   postPettyCashEntry,
+  putCashOutApprovalLimit,
   reconciliationCaseSchema,
+  rejectCashBankEntry,
   transitionReconciliationCase,
   undepositedCashAlerts,
   unmatchStatementLine,
@@ -110,6 +115,8 @@ type CashBankMockState = {
   /** Cash in/out, transfers and petty cash: key → request fingerprint + id. */
   moneyKeys: Map<string, { fingerprint: string; id: string }>;
   cashBankEntries: CashBankEntry[];
+  /** Cash out approval limit (Q7); null = the default, never unlimited. */
+  cashApprovalLimitIdr: number | null;
   pettyFunds: PettyCashFund[];
   pettyEntries: PettyCashEntry[];
 };
@@ -194,6 +201,10 @@ function seedState(): CashBankMockState {
       description: "Penerimaan sewa booth",
       reference: "INV-BOOTH-01",
       journalEntryId: newIdempotencyKey(),
+      status: "approved",
+      approverId: null,
+      decidedAt: null,
+      decisionReason: null,
       createdBy: finance,
       createdAt: nowIso(),
     }),
@@ -211,7 +222,34 @@ function seedState(): CashBankMockState {
       description: "Pindah dana operasional",
       reference: null,
       journalEntryId: newIdempotencyKey(),
+      status: "approved",
+      approverId: null,
+      decidedAt: null,
+      decisionReason: null,
       createdBy: finance,
+      createdAt: nowIso(),
+    }),
+    // A cash out above the default limit, made by someone else: the finance
+    // reviewer can approve or reject it (Q7).
+    cashBankEntrySchema.parse({
+      id: newIdempotencyKey(),
+      tenantId,
+      legalEntityId: fixtures.legalEntity.id,
+      outletId: null,
+      kind: "cash_out",
+      entryDate: today,
+      amountIdr: 7_500_000,
+      bankAccountId: fixtures.bankAccount.id,
+      toBankAccountId: null,
+      counterAccountId: counterAccount.id,
+      description: "Pembelian peralatan dapur",
+      reference: "PO-EQUIP-07",
+      journalEntryId: null,
+      status: "pending_approval",
+      approverId: null,
+      decidedAt: null,
+      decisionReason: null,
+      createdBy: outletManager,
       createdAt: nowIso(),
     }),
   ];
@@ -287,6 +325,7 @@ function seedState(): CashBankMockState {
     created: new Map(),
     moneyKeys: new Map(),
     cashBankEntries,
+    cashApprovalLimitIdr: null,
     pettyFunds,
     pettyEntries,
   };
@@ -1098,6 +1137,10 @@ register(createCashBankEntry, ({ body }) => {
       counter: counterGl,
     },
   );
+  const limit =
+    current.cashApprovalLimitIdr ?? DEFAULT_CASH_OUT_APPROVAL_LIMIT_IDR;
+  // Strictly above the limit: parked without a journal (Q7).
+  const pending = body.kind === "cash_out" && body.amountIdr > limit;
   const entry = cashBankEntrySchema.parse({
     id: newIdempotencyKey(),
     tenantId,
@@ -1111,7 +1154,11 @@ register(createCashBankEntry, ({ body }) => {
     counterAccountId: body.kind === "transfer" ? null : body.counterAccountId,
     description: body.description,
     reference: body.reference,
-    journalEntryId: newIdempotencyKey(),
+    journalEntryId: pending ? null : newIdempotencyKey(),
+    status: pending ? "pending_approval" : "approved",
+    approverId: null,
+    decidedAt: null,
+    decisionReason: null,
     createdBy: finance,
     createdAt: nowIso(),
   });
@@ -1121,6 +1168,76 @@ register(createCashBankEntry, ({ body }) => {
     id: entry.id,
   });
   return { data: entry };
+});
+
+// ---- Cash out approval (Q7) -----------------------------------------------
+
+function findCashEntry(entryId: string): CashBankEntry {
+  const entry = state.get().cashBankEntries.find((row) => row.id === entryId);
+  if (!entry) throw new AccountingError("CASH_ENTRY_NOT_FOUND");
+  return entry;
+}
+
+function replaceCashEntry(next: CashBankEntry): CashBankEntry {
+  const current = state.get();
+  const index = current.cashBankEntries.findIndex((row) => row.id === next.id);
+  current.cashBankEntries[index] = next;
+  return next;
+}
+
+register(getCashOutApprovalLimit, () => {
+  const stored = state.get().cashApprovalLimitIdr;
+  return {
+    data: {
+      limitIdr: stored ?? DEFAULT_CASH_OUT_APPROVAL_LIMIT_IDR,
+      isDefault: stored === null,
+    },
+  };
+});
+
+register(putCashOutApprovalLimit, ({ body }) => {
+  state.get().cashApprovalLimitIdr = body.limitIdr;
+  return { data: { limitIdr: body.limitIdr, isDefault: false } };
+});
+
+register(approveCashBankEntry, ({ params }) => {
+  const entry = findCashEntry(params.entryId);
+  // Approving an approved entry replays it: one journal, never two.
+  if (entry.status === "approved") return { data: entry };
+  if (entry.status === "rejected")
+    throw new AccountingError("CASH_ENTRY_NOT_PENDING");
+  if (entry.createdBy === finance)
+    throw new AccountingError("CASH_OUT_SELF_APPROVAL");
+  return {
+    data: replaceCashEntry(
+      cashBankEntrySchema.parse({
+        ...entry,
+        status: "approved",
+        approverId: finance,
+        decidedAt: nowIso(),
+        journalEntryId: newIdempotencyKey(),
+      }),
+    ),
+  };
+});
+
+register(rejectCashBankEntry, ({ params, body }) => {
+  const entry = findCashEntry(params.entryId);
+  if (entry.status !== "pending_approval")
+    throw new AccountingError("CASH_ENTRY_NOT_PENDING");
+  if (entry.createdBy === finance)
+    throw new AccountingError("CASH_OUT_SELF_APPROVAL");
+  return {
+    data: replaceCashEntry(
+      cashBankEntrySchema.parse({
+        ...entry,
+        status: "rejected",
+        approverId: finance,
+        decidedAt: nowIso(),
+        decisionReason: body.reason,
+      }),
+    ),
+  };
 });
 
 // ---- Petty cash (legend-4961) ---------------------------------------------

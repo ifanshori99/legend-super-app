@@ -359,11 +359,50 @@ export const accountingCashMessages = {
       counter: "Akun lawan",
       amount: "Nominal",
       reference: "Referensi",
+      status: "Status",
+      actions: "Tindakan",
     },
     kind: {
       cash_in: "Kas masuk",
       cash_out: "Kas keluar",
       transfer: "Transfer",
+    },
+    status: {
+      pending_approval: "Menunggu persetujuan",
+      approved: "Disetujui",
+      rejected: "Ditolak",
+    },
+    approval: {
+      approve: "Setujui",
+      approved: "Kas keluar disetujui dan dijurnal.",
+      reject: "Tolak",
+      rejected: "Kas keluar ditolak. Tidak ada jurnal yang dibuat.",
+      rejectTitle: "Tolak kas keluar",
+      rejectDescription:
+        "Kas keluar ditolak tidak dijurnal dan tidak bisa disetujui lagi. Tulis alasannya.",
+      reason: "Alasan penolakan",
+      reasonRequired: "Isi alasan penolakan.",
+      reasonTooLong: "Alasan paling banyak 500 karakter.",
+      rejectSubmit: "Tolak kas keluar",
+      ownEntry: "Tidak bisa menyetujui kas keluar buatan sendiri.",
+      decisionReason: "Alasan: {reason}",
+      failed: "Keputusan gagal disimpan. Coba lagi.",
+    },
+    limit: {
+      title: "Batas persetujuan kas keluar",
+      description:
+        "Kas keluar di atas batas ini menunggu persetujuan orang lain sebelum dijurnal. Sama dengan batas atau di bawahnya langsung dijurnal.",
+      current: "Batas saat ini",
+      defaultNote: "Batas bawaan. Belum diatur untuk badan usaha ini.",
+      edit: "Ubah batas",
+      field: "Batas (Rp)",
+      fieldHint: "Rupiah penuh, minimal Rp1.",
+      invalid: "Batas harus bilangan bulat lebih dari nol.",
+      tooLarge: "Batas paling besar Rp100.000.000.000.",
+      save: "Simpan batas",
+      saved: "Batas persetujuan disimpan.",
+      failed: "Batas gagal disimpan. Coba lagi.",
+      loadFailed: "Batas persetujuan belum bisa dimuat.",
     },
     transferArrow: "{from} ke {to}",
     form: {
@@ -404,6 +443,10 @@ export const accountingCashMessages = {
       invalidAmount: "Nominal harus lebih dari nol.",
       sameAccount: "Rekening asal dan tujuan harus berbeda.",
       futureDate: "Tanggal tidak boleh di masa depan.",
+      approvalBanner:
+        "Nominal di atas batas {limit}. Kas keluar ini menunggu persetujuan orang lain dan belum dijurnal.",
+      savedPending:
+        "Kas keluar tersimpan dan menunggu persetujuan. Belum ada jurnal.",
       needTwoAccounts: "Transfer butuh minimal dua rekening bank.",
       failed: "Dokumen gagal disimpan. Coba lagi.",
     },
@@ -605,6 +648,11 @@ export const accountingCashMessages = {
     mappingMissing:
       "Peta akun belum lengkap. Hubungi admin akuntansi, lalu coba lagi.",
     periodClosed: "Periode buku untuk tanggal ini sudah ditutup.",
+    selfApproval:
+      "Tidak bisa menyetujui atau menolak kas keluar buatan sendiri.",
+    notPending:
+      "Kas keluar ini sudah diputuskan. Muat ulang daftar lalu cek statusnya.",
+    entryNotFound: "Kas keluar tidak ditemukan. Muat ulang daftar.",
   },
 
   common: {

@@ -4,8 +4,10 @@
 //
 // - `cash_bank_entries`: one document per row, tenant-level (`outlet_id` is an
 //   optional cost tag, so there is no outlet RLS). The journal is posted in the
-//   same transaction, so `journal_entry_id` is NOT NULL and UNIQUE: one
-//   document, one journal. UNIQUE (tenant, idempotency_key) makes a re-sent
+//   same transaction, so `journal_entry_id` is UNIQUE: one document, one
+//   journal. A cash_out above the tenant approval limit is stored
+//   `pending_approval` with no journal (`journal_entry_id` NULL) and posts on
+//   approval (`status = 'approved'` <=> journal present). UNIQUE (tenant, idempotency_key) makes a re-sent
 //   request a replay, not a second document.
 // - `petty_cash_funds`: one fund per outlet; `balance_idr >= 0` is the last
 //   line of defence behind the service's row lock.
@@ -60,7 +62,13 @@ export const cashBankEntries = pgTable(
     description: varchar("description", { length: 255 }).notNull(),
     reference: varchar("reference", { length: 60 }),
     idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),
-    journalEntryId: uuid("journal_entry_id").notNull(),
+    /** NULL while `pending_approval` or `rejected`: no journal until approved. */
+    journalEntryId: uuid("journal_entry_id"),
+    /** `approved` (default, also every legacy row), `pending_approval`, `rejected`. */
+    status: varchar("status", { length: 20 }).notNull().default("approved"),
+    approverId: text("approver_id"),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    decisionReason: varchar("decision_reason", { length: 500 }),
     createdBy: text("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -141,6 +149,31 @@ export const cashBankEntries = pgTable(
     check(
       "cash_bank_entries_cash_check",
       sql`(${t.kind} IN ('cash_in','cash_out')) = (${t.counterAccountId} IS NOT NULL AND ${t.toBankAccountId} IS NULL)`,
+    ),
+    // Founder Q7 (13 Nov 2026): a cash_out above the tenant limit waits for
+    // approval. One document, one journal: only an approved entry has one.
+    check(
+      "cash_bank_entries_status_check",
+      sql`${t.status} IN ('pending_approval','approved','rejected')`,
+    ),
+    check(
+      "cash_bank_entries_status_journal_check",
+      sql`(${t.status} = 'approved') = (${t.journalEntryId} IS NOT NULL)`,
+    ),
+    // Only a cash_out can wait for approval or be rejected.
+    check(
+      "cash_bank_entries_status_kind_check",
+      sql`${t.status} = 'approved' OR ${t.kind} = 'cash_out'`,
+    ),
+    // A pending entry has no decision; a rejected one has the full decision.
+    check(
+      "cash_bank_entries_decision_check",
+      sql`(${t.status} <> 'pending_approval' OR (${t.approverId} IS NULL AND ${t.decidedAt} IS NULL)) AND (${t.status} <> 'rejected' OR (${t.approverId} IS NOT NULL AND ${t.decidedAt} IS NOT NULL AND ${t.decisionReason} IS NOT NULL))`,
+    ),
+    // Nobody decides their own document (DB-level last line of defence).
+    check(
+      "cash_bank_entries_distinct_decider_check",
+      sql`${t.approverId} IS NULL OR ${t.approverId} <> ${t.createdBy}`,
     ),
   ],
 );

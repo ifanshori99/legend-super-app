@@ -4924,3 +4924,13 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - legend-gq0w TERBLOKIR oleh legend-bzih (deferred): API belum menerbitkan tiket/kredensial; resolver tamu masih stub.
 - Pertanyaan founder: (1) dana kas kecil wajib ada sebelum pembelian sederhana? (2) kas keluar di atas nominal tertentu butuh persetujuan?
 - Bead baru: rekonsiliasi dana kas kecil vs GL 1102 (gaji/pinjaman/reimburse tunai tidak menarik dana).
+
+## fix/petty-fund-required: Q8 dana kas kecil wajib + Q7 persetujuan kas keluar (Claude engineer, 13 Nov 2026 18:52-19:20 WIB)
+
+- Cabang `fix/petty-fund-required` dari `ws/cash-bank` d54f4f71. Brief: `docs/briefs/sub-petty-fund-required.md`, `docs/briefs/sub-cash-out-approval.md`.
+- Q8 (commit 78c3a8222): outlet tanpa dana kas kecil ditolak `PETTY_CASH_FUND_REQUIRED` (422), seluruh pembelian rollback; saldo kurang tetap `PETTY_CASH_INSUFFICIENT`. Web: kunci teks + notice tautan ke Kas kecil (hanya untuk yang bisa melihat daftar dana; staf tanpa `accounting.petty_cash.manage` hanya melihat pesan error server). Test lama diberi fixture dana (asersi tidak dilonggarkan). Akar flaky antar-file ditemukan: `petty-purchase.test.ts` menghapus/menghitung baris tenant-wide milik file lain; dibatasi ke baris milik file sendiri.
+- Q7: `cash_out` > batas tenant (bawaan Rp5.000.000, strict `>`) menjadi `pending_approval` tanpa jurnal; setujui = jurnal sekali (key `cb:<id>`, FOR UPDATE, idempoten), tolak = tanpa jurnal; pembuat tidak boleh memutuskan (kode + CHECK DB). Batas di `finance_policies.cash_out_approval_limit_idr` (NULL = bawaan), izin baru `accounting.cash_bank.limit.manage`; izin penyetuju `accounting.cash_bank.approve`. Migrasi 0496 (skema) dan 0497 (grant kolom + backfill izin ke role owner/finance tenant yang sudah ada). Web: status, Setujui/Tolak, kartu batas.
+- Penyimpangan dari brief: tidak memakai tabel `approval_requests` (tidak ada item di inbox persetujuan); status di `cash_bank_entries`. Keputusan founder dibutuhkan bila inbox wajib.
+- Bukti: 6 file API (91 tes) hijau bersama; node tests 68/68; typecheck shared/API/web hijau; eslint + prettier hijau; db:generate kosong. Fail-first Q8 dibuktikan terhadap service HEAD (8 gagal); Q7 fail-first karena kolom/rute belum ada di HEAD (tidak dijalankan ulang terhadap HEAD).
+- Architect (xhigh) atas Q7: 1 High (izin tenant lama) dan 3 Medium diperbaiki; M3 (top-up kas kecil dari bank tanpa batas, pemecahan pembayaran di bawah batas) tidak dikerjakan, perlu keputusan founder.
+- Subagent: total 27, puncak 3-4 bersamaan, token heavy dipegang test-runner dan CTO-thread bergantian (tidak pernah bersamaan). Biaya sesi* 5816k (Sonnet utama 2042k, Sonnet sub 2879k, Opus sub 563k, Haiku 331k).

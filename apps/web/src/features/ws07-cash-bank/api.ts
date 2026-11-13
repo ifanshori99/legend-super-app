@@ -11,11 +11,13 @@ import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import { createUlid } from "@starter/shared/core";
 import {
   actOnReconciliationCase as actOnReconciliationCaseEndpoint,
+  approveCashBankEntry as approveCashBankEntryEndpoint,
   createBankAccount as createBankAccountEndpoint,
   createCashBankEntry as createCashBankEntryEndpoint,
   createCashDeposit as createCashDepositEndpoint,
   createPettyCashMovement as createPettyCashMovementEndpoint,
   excludeStatementLine as excludeStatementLineEndpoint,
+  getCashOutApprovalLimit as getCashOutApprovalLimitEndpoint,
   getFinancePolicy as getFinancePolicyEndpoint,
   getGatewaySettlementRecon as getGatewaySettlementReconEndpoint,
   getJournal as getJournalEndpoint,
@@ -34,6 +36,8 @@ import {
   matchStatementLine as matchStatementLineEndpoint,
   openReconciliationCase as openReconciliationCaseEndpoint,
   postPettyCashEntry as postPettyCashEntryEndpoint,
+  putCashOutApprovalLimit as putCashOutApprovalLimitEndpoint,
+  rejectCashBankEntry as rejectCashBankEntryEndpoint,
   unmatchStatementLine as unmatchStatementLineEndpoint,
   type BankCsvMapping,
   type JournalEntry,
@@ -374,6 +378,42 @@ export async function postPettyCashEntry(entryId: string) {
   const response = await callEndpoint(postPettyCashEntryEndpoint, {
     params: { entryId } as Params<typeof postPettyCashEntryEndpoint>,
     body: {},
+  });
+  return response.data;
+}
+
+// ---- Cash out approval above the tenant limit (Q7) -------------------------
+
+/** The tenant's cash out limit; amounts above it wait for a second person. */
+export async function fetchCashApprovalLimit(signal?: AbortSignal) {
+  const response = await callEndpoint(
+    getCashOutApprovalLimitEndpoint,
+    {},
+    { signal },
+  );
+  return response.data;
+}
+
+export async function updateCashApprovalLimit(limitIdr: number) {
+  const response = await callEndpoint(putCashOutApprovalLimitEndpoint, {
+    body: { limitIdr },
+  });
+  return response.data;
+}
+
+/** Posts the journal once; approving an approved entry replays it. */
+export async function approveCashBankEntry(entryId: string) {
+  const response = await callEndpoint(approveCashBankEntryEndpoint, {
+    params: { entryId } as Params<typeof approveCashBankEntryEndpoint>,
+    body: {},
+  });
+  return response.data;
+}
+
+export async function rejectCashBankEntry(entryId: string, reason: string) {
+  const response = await callEndpoint(rejectCashBankEntryEndpoint, {
+    params: { entryId } as Params<typeof rejectCashBankEntryEndpoint>,
+    body: { reason },
   });
   return response.data;
 }

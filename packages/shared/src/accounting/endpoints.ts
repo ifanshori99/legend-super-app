@@ -36,6 +36,9 @@ import {
   cashDepositSchema,
   createBankAccountInputSchema,
   createCashBankEntryInputSchema,
+  cashOutApprovalLimitSchema,
+  putCashOutApprovalLimitInputSchema,
+  rejectCashBankEntryInputSchema,
   createCashDepositInputSchema,
   excludeStatementLineInputSchema,
   importBankStatementInputSchema,
@@ -563,7 +566,9 @@ export const listUndepositedCashAlerts = defineEndpoint({
 });
 
 // ---- Cash in/out, transfers and petty cash (legend-4961) ------------------------
-// Cash/bank documents need `accounting.cash_bank.record`; the petty cash fund
+// Cash/bank documents need `accounting.cash_bank.record` (approve/reject of a
+// cash out above the limit: `accounting.cash_bank.approve`; the limit:
+// `accounting.cash_bank.limit.manage`); the petty cash fund
 // needs `accounting.petty_cash.manage`. Writes are tenant-scoped (bank accounts
 // live on the legal entity); reads are narrowed to the caller's outlets.
 
@@ -588,6 +593,38 @@ export const createCashBankEntry = defineEndpoint({
   path: `${BASE}/cash-bank/entries`,
   body: createCashBankEntryInputSchema,
   response: dataResponseSchema(cashBankEntrySchema),
+});
+/**
+ * Approves a pending cash out (needs `accounting.cash_bank.approve`, not the
+ * creator): posts its journal once; approving an approved entry returns it.
+ */
+export const approveCashBankEntry = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/cash-bank/entries/:entryId/approve`,
+  params: cashBankEntryParams,
+  body: z.strictObject({}),
+  response: dataResponseSchema(cashBankEntrySchema),
+});
+/** Rejects a pending cash out with a reason: no journal, final. */
+export const rejectCashBankEntry = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/cash-bank/entries/:entryId/reject`,
+  params: cashBankEntryParams,
+  body: rejectCashBankEntryInputSchema,
+  response: dataResponseSchema(cashBankEntrySchema),
+});
+/** Cash-out approval limit of the tenant (record, approve or limit.manage). */
+export const getCashOutApprovalLimit = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/cash-bank/approval-limit`,
+  response: dataResponseSchema(cashOutApprovalLimitSchema),
+});
+/** Sets the limit (needs `accounting.cash_bank.limit.manage`). */
+export const putCashOutApprovalLimit = defineEndpoint({
+  method: "PUT",
+  path: `${BASE}/cash-bank/approval-limit`,
+  body: putCashOutApprovalLimitInputSchema,
+  response: dataResponseSchema(cashOutApprovalLimitSchema),
 });
 
 export const listPettyCashFunds = defineEndpoint({
@@ -929,6 +966,10 @@ export const accountingEndpoints = Object.freeze({
   listCashBankEntries,
   getCashBankEntry,
   createCashBankEntry,
+  approveCashBankEntry,
+  rejectCashBankEntry,
+  getCashOutApprovalLimit,
+  putCashOutApprovalLimit,
   listPettyCashFunds,
   listPettyCashEntries,
   createPettyCashMovement,
