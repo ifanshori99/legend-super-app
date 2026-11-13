@@ -1,3 +1,11 @@
+## Desain pembayaran gaji: disbursement Duitku + transfer manual (architect, cabang `docs/payroll-disbursement` dari m1 4d299ba5e, 13 Nov 2026 18:57 WIB)
+
+- Sudah: `docs/design/payroll-disbursement.md` (riset Duitku + DOIT, model data 0530-0534, mesin status, aturan uang R1-R15, jurnal, keamanan, slice). Epic bd `legend-wnkep` + 9 kartu `.1`-`.9`. Review reviewer konteks segar: 4 temuan berat (bayar run yang dibalik, kunci jurnal tidak deterministik, jalur manual tanpa mesin status, konfigurasi berubah saat halted) dan 6 sedang, semua sudah masuk dokumen.
+- Temuan penting: DOIT tidak punya API payout ke rekening pihak ketiga ("payouts never will be, because we never hold funds"); kartu DOIT diparkir (`legend-wnkep.8`). Duitku Transfer Online dipakai v1 (Rp5.000/transfer, batas Rp50-100 juta per transaksi, butuh IP server tetap di-whitelist).
+- Keputusan: status tidak pasti (TO/68/-100/timeout) tidak pernah dikirim ulang otomatis; nama inquiry wajib sama persis; dua orang berbeda + MFA; jurnal per kelompok, `payroll.paid` alur baru tidak memposting.
+- Menunggu founder: Q-F1 DOIT ditunda, Q-F2 biaya transfer ditanggung PT, Q-F3 Duitku dinyalakan setelah rilis (manual dulu), Q-F4 layout bank pertama.
+- Berikut: UI-1/UI-2 mockup (`legend-wnkep.6`/`.7`) bisa mulai sekarang; TEST `.1` setelah review UI; BE-1 `.2` menunggu merge `ws/payroll-followups` (`legend-89cl7`).
+
 ## 539-U5b 12 layar konfigurasi (ui-engineer, cabang `ui/tenant-config` dari `origin/milestone/m1` 5cbe2a1e, 13 Nov 2026 06:35-08:00 WIB)
 
 - Kartu legend-y1jll. Pencocokan 12 layar Q29-Q40 vs m1: `docs/briefs/sub-u5b-gap.md`. 10 sudah ada (brief 505 `ws/ui-bo-config` dan `ws/ui-mixed-q36` sudah di m1); 2 dibangun di cabang ini.
