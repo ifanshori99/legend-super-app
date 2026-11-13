@@ -1481,3 +1481,4 @@ Langkah berikut CTO baru:
 - 00:34 mulai 652 UI kode bank (thread S30:P6b2j:G95z2, Sonnet, akun 2).
 - 00:44 652 selesai: fix/employee-bank-code-ui 9904fbbeb. Guard bank salah tidak ditambah (CTO). zueb:55 merah di base -> legend-rr0x1. G95z2 di-resolve. Antre batch59: cash-antisplit, edge-sync-appliers, payroll-disbursement-manual, employee-bank-code(-ui).
 - 01:00 batch58 masuk m1 ea399bb4d (1cbb842d5..), migr 0336-0340, test penuh 4466 dtk 17231 lulus/8 flake (legend-1jxh8), 11 bead ditutup, G8stk di-resolve. Konflik payroll-run-simulate direview architect subagent xhigh. Mulai batch59 (G4x08): antisplit, edge-sync-appliers, disbursement, bank-code, bank-code-ui, migr dari 0341.
+- 01:01 review architect konflik payroll batch58: OK (THR guard utuh, piutang tanpa tagih mundur, maks sekali, net>=0). Gap test THR+piutang dijadikan kartu.
