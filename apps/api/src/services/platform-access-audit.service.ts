@@ -12,6 +12,7 @@ import {
   tenants,
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { withoutSupportGrantLock } from "../lib/request-context.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { platformTenantContext } from "./platform-support.service.ts";
 
@@ -48,57 +49,59 @@ export async function recordImpersonatedPlatformDenial(
     .limit(1);
   if (!row) return false;
   const context = platformTenantContext(denial.tenantId);
-  return withTenant(db, context, async (tx) => {
-    const [member] = await tx
-      .select({ id: roleAssignments.id })
-      .from(roleAssignments)
-      .where(
-        and(
-          eq(roleAssignments.tenantId, denial.tenantId),
-          inArray(roleAssignments.userId, [
-            denial.impersonatedUserId,
-            denial.impersonatedBy,
-          ]),
-        ),
-      )
-      .limit(1);
-    const [tie] = member
-      ? [member]
-      : await tx
-          .select({ id: supportAccessGrants.id })
-          .from(supportAccessGrants)
-          .where(
-            and(
-              eq(supportAccessGrants.tenantId, denial.tenantId),
-              eq(supportAccessGrants.superAdminUserId, denial.impersonatedBy),
-            ),
-          )
-          .limit(1);
-    if (!tie) return false;
-    await recordAudit(
-      {
-        tenantId: denial.tenantId,
-        outletId: null,
-        actorType: "user",
-        actorId: denial.impersonatedBy,
-        deviceId: null,
-        action: PLATFORM_ACCESS_DENIED_ACTION,
-        objectType: "platform_route",
-        objectId: null,
-        reason: null,
-        before: null,
-        after: {
-          cause: "impersonated_session",
-          code: denial.code,
-          impersonatedBy: denial.impersonatedBy,
-          impersonatedUserId: denial.impersonatedUserId,
-          method: denial.method,
-          route: denial.route,
+  return withoutSupportGrantLock(() =>
+    withTenant(db, context, async (tx) => {
+      const [member] = await tx
+        .select({ id: roleAssignments.id })
+        .from(roleAssignments)
+        .where(
+          and(
+            eq(roleAssignments.tenantId, denial.tenantId),
+            inArray(roleAssignments.userId, [
+              denial.impersonatedUserId,
+              denial.impersonatedBy,
+            ]),
+          ),
+        )
+        .limit(1);
+      const [tie] = member
+        ? [member]
+        : await tx
+            .select({ id: supportAccessGrants.id })
+            .from(supportAccessGrants)
+            .where(
+              and(
+                eq(supportAccessGrants.tenantId, denial.tenantId),
+                eq(supportAccessGrants.superAdminUserId, denial.impersonatedBy),
+              ),
+            )
+            .limit(1);
+      if (!tie) return false;
+      await recordAudit(
+        {
+          tenantId: denial.tenantId,
+          outletId: null,
+          actorType: "user",
+          actorId: denial.impersonatedBy,
+          deviceId: null,
+          action: PLATFORM_ACCESS_DENIED_ACTION,
+          objectType: "platform_route",
+          objectId: null,
+          reason: null,
+          before: null,
+          after: {
+            cause: "impersonated_session",
+            code: denial.code,
+            impersonatedBy: denial.impersonatedBy,
+            impersonatedUserId: denial.impersonatedUserId,
+            method: denial.method,
+            route: denial.route,
+          },
+          sensitiveAccess: false,
         },
-        sensitiveAccess: false,
-      },
-      { tx, context },
-    );
-    return true;
-  });
+        { tx, context },
+      );
+      return true;
+    }),
+  );
 }

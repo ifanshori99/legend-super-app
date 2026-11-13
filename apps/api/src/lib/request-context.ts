@@ -11,6 +11,10 @@ export type RequestSupport = {
   impersonatedUserId: string;
   accessMode: "read_only" | "read_write";
   reason: string;
+  // legend-hqjde: true when the request method can change data. withTenant
+  // then locks and re-checks the grant inside the mutation's own transaction,
+  // so a revoke answered 200 is never followed by a late support write.
+  mutation?: boolean;
 };
 
 // Set by the acting-staff middleware (middleware/acting-staff.ts) when a POS
@@ -75,6 +79,22 @@ export function setRequestSupport(value: RequestSupport) {
 // to the platform admin, not the impersonated tenant user.
 export function getRequestSupport() {
   return storage.getStore()?.support;
+}
+
+/**
+ * legend-hqjde: runs `run` with the grant lock in withTenant switched off for
+ * this request. Only for the audit row of a refused support request
+ * (platform-access-audit.service.ts): it records a denial, not a support
+ * write, and may name another tenant than the grant's. The support attribution
+ * stays, so recordAudit still names the real actor.
+ */
+export function withoutSupportGrantLock<T>(run: () => T): T {
+  const store = storage.getStore();
+  if (!store?.support?.mutation) return run();
+  return storage.run(
+    { ...store, support: { ...store.support, mutation: false } },
+    run,
+  );
 }
 
 export function setRequestActingStaff(value: RequestActingStaff) {

@@ -41,6 +41,13 @@ import { findTenantContext } from "./tenant";
  *      not read the session there; the Better Auth hooks.after in lib/auth.ts
  *      answers null for an impersonated session no live grant covers (and
  *      tries to end it), so a leftover row never reads as the tenant user.
+ * 10. This guard runs before the body is read, so for a mutation it is only a
+ *     fast refusal. The check that decides is in withTenant
+ *     (db/tenant.ts lockSupportGrantForMutation, legend-hqjde): inside the
+ *     mutation's own transaction it locks the grant row FOR SHARE and
+ *     re-checks active, unexpired, read_write and same tenant. The revoke
+ *     locks the same row FOR UPDATE, so no support write commits after a
+ *     revoke answered 200, even when the request was held mid-body.
  *
  * Errors are thrown as PlatformError so the error handler shapes the reply.
  */
@@ -209,6 +216,7 @@ export async function enforceSupportSession(req: Request): Promise<void> {
       impersonatedUserId: req.auth.user.id,
       accessMode: grant.accessMode,
       reason: grant.reason,
+      mutation: !safe,
     });
 }
 
