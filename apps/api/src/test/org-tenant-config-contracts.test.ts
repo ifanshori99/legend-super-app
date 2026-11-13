@@ -692,12 +692,16 @@ describe("legend-at8c PATCH /api/org/brands/:brandId logoMediaId", () => {
     return brandId;
   }
 
-  async function ownMedia(brandId: string): Promise<string> {
-    const mediaId = await storedMedia({
-      ...tenantB,
-      tenantId: seededTenantId,
-      brandId,
-    });
+  // legend-bkdmc: a brand logo must be a `brand_logo` upload; pass "document"
+  // for own-tenant media of another purpose.
+  async function ownMedia(
+    brandId: string,
+    purpose: "document" | "brand_logo" = "brand_logo",
+  ): Promise<string> {
+    const mediaId = await storedMedia(
+      { ...tenantB, tenantId: seededTenantId, brandId },
+      purpose,
+    );
     createdMedia.push(mediaId);
     return mediaId;
   }
@@ -719,7 +723,7 @@ describe("legend-at8c PATCH /api/org/brands/:brandId logoMediaId", () => {
     const brandId = await newBrand(admin);
     const own = await ownMedia(brandId);
     await patch(admin, brandId, { logoMediaId: own });
-    const foreign = await storedMedia(tenantB);
+    const foreign = await storedMedia(tenantB, "brand_logo");
     for (const logoMediaId of [foreign, randomUUID()]) {
       const response = await patch(admin, brandId, { logoMediaId });
       expect(response.status, String(logoMediaId)).toBe(422);
@@ -730,6 +734,33 @@ describe("legend-at8c PATCH /api/org/brands/:brandId logoMediaId", () => {
       [brandId],
     );
     expect(rows[0]!.logo_media_id).toBe(own);
+  });
+
+  it("refuses own-tenant media of another purpose on PATCH and POST with 422", async () => {
+    const admin = await memberOf("tenant_admin");
+    const brandId = await newBrand(admin);
+    const own = await ownMedia(brandId);
+    await patch(admin, brandId, { logoMediaId: own });
+    const document = await ownMedia(brandId, "document");
+    const patched = await patch(admin, brandId, { logoMediaId: document });
+    expect(patched.status, JSON.stringify(patched.body)).toBe(422);
+    expect(patched.body.error.code).toBe("VALIDATION_ERROR");
+    const slug = `logo-${randomUUID().slice(0, 8)}`;
+    const posted = await admin.client
+      .post("/api/org/brands")
+      .set(originHeader)
+      .send({ slug, name: "Brand Dokumen", logoMediaId: document });
+    expect(posted.status, JSON.stringify(posted.body)).toBe(422);
+    expect(posted.body.error.code).toBe("VALIDATION_ERROR");
+    const { rows } = await owner.query<{ logo_media_id: string }>(
+      "SELECT logo_media_id FROM brands WHERE id = $1",
+      [brandId],
+    );
+    expect(rows[0]!.logo_media_id).toBe(own);
+    const stored = await owner.query("SELECT 1 FROM brands WHERE slug = $1", [
+      slug,
+    ]);
+    expect(stored.rows).toHaveLength(0);
   });
 
   it("a role without org.theme.manage gets 403, and another tenant's brand is 404", async () => {

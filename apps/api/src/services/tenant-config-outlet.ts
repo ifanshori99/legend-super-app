@@ -891,6 +891,8 @@ type WifiItem = {
   fullSpeedKbps: number;
   minSpendPerHourIdr: number | null;
   tierBonusMinutes: WifiRow["tierBonusMinutes"];
+  // legend-9k0a5: null or absent keeps the column default.
+  spendMode?: WifiRow["spendMode"];
 };
 
 const wifiPoliciesHandler: SectionHandler = {
@@ -930,6 +932,7 @@ const wifiPoliciesHandler: SectionHandler = {
             ? null
             : Number(row.minSpendPerHourIdr),
         tierBonusMinutes: row.tierBonusMinutes,
+        spendMode: row.spendMode,
       });
     }
     return exported(items);
@@ -990,6 +993,7 @@ const wifiPoliciesHandler: SectionHandler = {
             ? null
             : idr(item.minSpendPerHourIdr),
         tierBonusMinutes: item.tierBonusMinutes,
+        spendMode: item.spendMode ?? undefined,
       });
     }
     skips.flush();

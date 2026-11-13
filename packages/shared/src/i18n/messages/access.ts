@@ -101,6 +101,25 @@ const accessBaseMessages = {
     permissionsHint:
       "Pilih hanya yang dibutuhkan. Izin platform tidak tersedia untuk peran tenant.",
     permissionsReadOnlyHint: "Izin yang diberikan template ini.",
+    permissionsLimitedHint:
+      "Anda hanya dapat menambahkan izin yang Anda miliki sendiri. Izin lain tidak dapat dipilih.",
+    permissionsChecking: "Memeriksa izin Anda…",
+    permissionsCheckError:
+      "Izin Anda tidak dapat diperiksa, jadi izin baru belum bisa dipilih.",
+    blockedNotHeld: "Anda tidak memiliki izin ini.",
+    blockedOwnerOnly: "Khusus template Owner.",
+    blockedPlatform: "Izin platform, bukan untuk peran tenant.",
+    reauthHint:
+      "Menambahkan izin yang tidak Anda pegang sendiri memerlukan verifikasi ulang. Masukkan kode 6 digit dari aplikasi autentikator. Verifikasi ini berlaku {minutes} menit.",
+    reauthDone: "Verifikasi berhasil. Simpan peran lagi.",
+    reauthNoFactorHint:
+      "Aktifkan TOTP di pengaturan keamanan dulu sebelum menambahkan izin.",
+    selfElevation:
+      "Anda hanya dapat menambahkan izin yang Anda miliki sendiri. Hapus izin yang tidak Anda miliki lalu simpan lagi.",
+    mfaDropSelf:
+      "Anda tidak dapat mematikan syarat MFA pada peran yang Anda pegang sendiri. Minta pengelola lain yang tidak memegang peran ini untuk mengubahnya.",
+    mfaHeldSelf:
+      "Tidak dapat dimatikan: Anda memegang peran ini sendiri. Minta pengelola lain yang tidak memegang peran ini untuk mengubahnya.",
     searchPermissions: "Cari izin…",
     selectedCount: "{count} izin dipilih",
     selectModule: "Pilih semua di {module}",
@@ -146,6 +165,14 @@ const accessBaseMessages = {
     endTitle: "Akhiri penugasan?",
     endDescription:
       "Akses dari peran ini berakhir sekarang. Tindakan tercatat di audit log.",
+    endBlockedOwnerOnly:
+      "Hanya Owner aktif yang dapat mengakhiri penugasan Owner lain.",
+    endBlockedLastOwner:
+      "Ini Owner aktif terakhir. Tenant harus memiliki minimal satu Owner aktif tanpa batas waktu; beri peran Owner ke orang lain dulu.",
+    endLocked: "Terkunci",
+    endGuardLoading: "Memeriksa daftar Owner…",
+    endGuardError:
+      "Daftar Owner tidak dapat dimuat, jadi penugasan Owner belum bisa diakhiri.",
     endReason: "Alasan",
     endReasonHint: "Minimal 3 karakter, misalnya “Pindah outlet”.",
     endReasonError: "Tulis alasan minimal 3 karakter.",
@@ -340,7 +367,10 @@ const accessBaseMessages = {
       settings: { manage: "Ubah pengaturan tenant" },
       integration: { manage: "Kelola integrasi" },
       theme: { manage: "Ubah tema & tampilan" },
-      config: { export: "Ekspor konfigurasi tenant" },
+      config: {
+        export: "Ekspor konfigurasi tenant",
+        import: "Impor konfigurasi tenant",
+      },
       tax_config: { manage: "Kelola konfigurasi pajak" },
       notification_policy: {
         manage: "Kelola kebijakan & template notifikasi",

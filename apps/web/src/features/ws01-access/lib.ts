@@ -8,9 +8,13 @@
 import {
   APPROVAL_ACTION_TYPES,
   APPROVAL_MAX_LEVELS,
+  OWNER_TEMPLATE_ONLY_PERMISSIONS,
   PERMISSION_CATALOG,
+  ROLE_GRANT_REAUTH_MAX_AGE_MS,
+  ROLE_GRANT_TOP_AUTHORITY_TEMPLATES,
   permissionHasTag,
   permissionsRequireMfa,
+  rolePermissionsAsGranted,
   type ApprovalActionType,
   type ApprovalPolicy,
   type AssignmentScope,
@@ -205,6 +209,240 @@ export function selectablePeople<T extends { readonly status: string }>(
   people: readonly T[],
 ): T[] {
   return people.filter((row) => row.status === "active");
+}
+
+// ----------------------------------------------- grant rules (legend-tj8o)
+// Mirror packages/shared/src/access/grants.ts so the screens do not offer what
+// the API refuses. Presentation only: the API decides again and answers
+// SELF_ELEVATION_FORBIDDEN, PERMISSION_DENIED or CONFLICT.
+
+const OWNER_TEMPLATE_KEY = "owner";
+const sameId = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+/** This user's assignments that are active now and tenant-scoped. */
+function activeTenantAssignmentsOf(
+  assignments: readonly RoleAssignment[],
+  userId: string,
+  now: Date,
+): RoleAssignment[] {
+  return assignments.filter(
+    (row) =>
+      row.scope.type === "tenant" &&
+      sameId(row.userId, userId) &&
+      assignmentStatus(row, now) === "active",
+  );
+}
+
+/**
+ * The viewer is an active tenant-scoped Owner / Admin Tenant (with
+ * access.role.manage). The API then lets them add any tenant permission to a
+ * custom role, but only after a fresh re-auth (see `reauthIsFresh`), which the
+ * editor asks for on save. Unknown viewer, custom roles and brand scope never
+ * count.
+ */
+export function viewerHoldsTopAuthority(input: {
+  viewerUserId: string | undefined;
+  viewerAssignments: readonly RoleAssignment[];
+  roles: readonly Pick<Role, "id" | "templateKey" | "permissions">[];
+  now: Date;
+}): boolean {
+  if (!input.viewerUserId) return false;
+  const top: readonly string[] = ROLE_GRANT_TOP_AUTHORITY_TEMPLATES;
+  return activeTenantAssignmentsOf(
+    input.viewerAssignments,
+    input.viewerUserId,
+    input.now,
+  ).some((row) => {
+    const role = input.roles.find((r) => sameId(r.id, row.roleId));
+    return (
+      role !== undefined &&
+      typeof role.templateKey === "string" &&
+      top.includes(role.templateKey) &&
+      role.permissions.includes("access.role.manage")
+    );
+  });
+}
+
+/**
+ * Permissions the viewer holds at tenant scope (the target of
+ * assertCanEditCustomRole): only active tenant-scoped assignments count, a
+ * brand or outlet assignment never covers the tenant. Owner-template-only
+ * codes count on the Owner template only, as the API reads them. Pass empty
+ * lists while assignments or roles load or failed: nothing is held then.
+ */
+export function heldAtTenantScope(input: {
+  viewerUserId: string | undefined;
+  viewerAssignments: readonly RoleAssignment[];
+  roles: readonly Pick<Role, "id" | "templateKey" | "permissions">[];
+  now: Date;
+}): PermissionCode[] {
+  if (!input.viewerUserId) return [];
+  const held = new Set<PermissionCode>();
+  for (const row of activeTenantAssignmentsOf(
+    input.viewerAssignments,
+    input.viewerUserId,
+    input.now,
+  )) {
+    const role = input.roles.find((r) => sameId(r.id, row.roleId));
+    if (!role) continue;
+    for (const code of rolePermissionsAsGranted(
+      role.templateKey ?? null,
+      role.permissions,
+    ))
+      held.add(code);
+  }
+  return [...held];
+}
+
+/**
+ * The viewer holds this role through an assignment that is active now, in any
+ * scope. The API refuses to drop the MFA requirement of such a role
+ * (SELF_ELEVATION_FORBIDDEN in updateCustomRole), so the editor keeps it on.
+ * Pass the viewer's own assignments (empty while they load or failed).
+ */
+export function viewerHoldsRole(
+  viewerAssignments: readonly Pick<
+    RoleAssignment,
+    "roleId" | "validFrom" | "validUntil"
+  >[],
+  roleId: string,
+  now: Date,
+): boolean {
+  return viewerAssignments.some(
+    (row) =>
+      sameId(row.roleId, roleId) && assignmentStatus(row, now) === "active",
+  );
+}
+
+/** A re-auth within ROLE_GRANT_REAUTH_MAX_AGE_MS (never in the future). */
+export function reauthIsFresh(
+  reauthenticatedAt: Date | null,
+  now: Date,
+): boolean {
+  if (reauthenticatedAt === null) return false;
+  const age = now.getTime() - reauthenticatedAt.getTime();
+  return age >= 0 && age <= ROLE_GRANT_REAUTH_MAX_AGE_MS;
+}
+
+/**
+ * Saving needs a fresh re-auth first when the edit adds a permission the
+ * viewer does not hold and only top authority allows it. Adding only held
+ * permissions, or nothing, never does (assertCanEditCustomRole).
+ */
+export function roleEditNeedsReauth(input: {
+  topAuthority: boolean;
+  held: readonly PermissionCode[];
+  added: readonly PermissionCode[];
+  reauthenticatedAt: Date | null;
+  now: Date;
+}): boolean {
+  if (!input.topAuthority) return false;
+  if (input.added.every((code) => input.held.includes(code))) return false;
+  return !reauthIsFresh(input.reauthenticatedAt, input.now);
+}
+
+/**
+ * Permissions a custom-role editor may add: the ones they hold, or every
+ * tenant permission under top authority. Platform codes and Owner-template-only
+ * codes are never offered (normalizeCustomRolePermissions refuses them).
+ */
+export function permissionsViewerMayAdd(input: {
+  held: readonly PermissionCode[];
+  topAuthority: boolean;
+}): ReadonlySet<PermissionCode> {
+  const ownerOnly: readonly string[] = OWNER_TEMPLATE_ONLY_PERMISSIONS;
+  const pool = input.topAuthority
+    ? PERMISSION_CATALOG.map((entry) => entry.code)
+    : input.held;
+  return new Set(
+    pool.filter(
+      (code) =>
+        !permissionHasTag(code, "platform") && !ownerOnly.includes(code),
+    ),
+  );
+}
+
+/**
+ * Removing is always allowed. Adding needs the code to be offered, unless the
+ * saved role already has it (not an added permission).
+ */
+export function canSelectPermission(
+  code: PermissionCode,
+  state: {
+    selected: readonly PermissionCode[];
+    addable: ReadonlySet<PermissionCode>;
+    original: readonly PermissionCode[];
+  },
+): boolean {
+  return (
+    state.selected.includes(code) ||
+    state.addable.has(code) ||
+    state.original.includes(code)
+  );
+}
+
+export type PermissionBlockReason = "notHeld" | "ownerOnly" | "platform";
+
+/**
+ * Why a permission row cannot be ticked, or null when it can. Platform codes
+ * and Owner-template-only codes are named first because no role the viewer
+ * holds could ever offer them; everything else is simply not held.
+ */
+export function permissionBlockReason(
+  code: PermissionCode,
+  state: Parameters<typeof canSelectPermission>[1],
+): PermissionBlockReason | null {
+  if (canSelectPermission(code, state)) return null;
+  const ownerOnly: readonly string[] = OWNER_TEMPLATE_ONLY_PERMISSIONS;
+  if (permissionHasTag(code, "platform")) return "platform";
+  if (ownerOnly.includes(code)) return "ownerOnly";
+  return "notHeld";
+}
+
+export type EndAssignmentGuard =
+  | { allowed: true }
+  | { allowed: false; reason: "ownerOnly" | "lastOwner" | "loading" };
+
+/**
+ * Owner assignment protection (assertCanEndOwnerAssignment): only an active
+ * tenant Owner may end an Owner assignment, and the tenant keeps at least one
+ * active open-ended tenant-scoped Owner. `ownerAssignments` are the tenant's
+ * Owner-role assignments; undefined while they load (fail closed).
+ */
+export function endAssignmentGuard(input: {
+  target: RoleAssignment;
+  roles: readonly Pick<Role, "id" | "templateKey">[];
+  viewerUserId: string | undefined;
+  ownerAssignments: readonly RoleAssignment[] | undefined;
+  now: Date;
+}): EndAssignmentGuard {
+  const targetRole = input.roles.find((r) => sameId(r.id, input.target.roleId));
+  if (targetRole?.templateKey !== OWNER_TEMPLATE_KEY) return { allowed: true };
+  if (input.ownerAssignments === undefined)
+    return { allowed: false, reason: "loading" };
+  const ownerRoleIds = input.roles
+    .filter((r) => r.templateKey === OWNER_TEMPLATE_KEY)
+    .map((r) => r.id);
+  const activeOwners = input.ownerAssignments.filter(
+    (row) =>
+      row.scope.type === "tenant" &&
+      ownerRoleIds.some((id) => sameId(id, row.roleId)) &&
+      assignmentStatus(row, input.now) === "active",
+  );
+  const viewer = input.viewerUserId;
+  const viewerIsOwner =
+    viewer !== undefined &&
+    activeOwners.some((row) => sameId(row.userId, viewer));
+  const isSelf = viewer !== undefined && sameId(input.target.userId, viewer);
+  if (!isSelf && !viewerIsOwner) return { allowed: false, reason: "ownerOnly" };
+  if (
+    assignmentStatus(input.target, input.now) === "active" &&
+    !activeOwners.some(
+      (row) => row.id !== input.target.id && row.validUntil === null,
+    )
+  )
+    return { allowed: false, reason: "lastOwner" };
+  return { allowed: true };
 }
 
 export function filterRoles(

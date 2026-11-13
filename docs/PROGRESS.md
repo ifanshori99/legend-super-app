@@ -4992,3 +4992,14 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gate: satu `heavy pnpm check` penuh hijau (EXIT=0; 1000 berkas lulus/1 skip; 16140 test lulus/40 skip/3 todo, 0 gagal; ~68 menit) + `heavy pnpm build` hijau (EXIT=0). `git status` bersih setelah build (routeTree.gen.ts konsisten). Log `~/.claude/state/batch54b-{check,build}.log`.
 - Flake dicatat (bukan dari batch ini): run penuh sebelumnya yang memuat test panic gagal di berkas hris-db, hris-leave-jobs, hris-overtime-db, hris-overtime-collective-db, hris-master-writes (QUOTA_EXCEEDED: karyawan test panic mengisi kuota tenant fixture bersama) serta hris-leave-carry-expiry-db, hris-leave-collective-db, hris-leave-collective-reversal, hris-leave-release-event-db; dua yang terakhir juga gagal bila dijalankan bersama di m1 1202164d. Semuanya hijau bila dijalankan per berkas. Untuk batch55: test panic perlu tenant sendiri.
 - Subagent: total 7 (1 Explore, 6 test-runner, 2 dihentikan), puncak 1 bersamaan, token heavy dipegang test-runner.
+
+## WS-01 brand + tenant config (ws/brand-config, 13 Nov 2026, 17:41-18:11)
+- bkdmc: `PUT /api/org/brands/:brandId/logo` (org.theme.manage, tenant scope, audit brand.logo_set); media wajib purpose `brand_logo` di setBrandLogo, createThemeDraft, createBrand, updateBrand (celah ditemukan reviewer). Tanpa migrasi, tanpa UI.
+- 9k0a5: codec wifi_policies sudah ada (tct8); ditambah `spendMode` di item schema + handler ekspor/impor + 7 test.
+- datb2: sudah terpenuhi kode e623ce0b1 (tenant-config.service: satu transaksi, urutan roles/approval/CoA, blokir section sensitif di rute); hanya test guard ditambah. Catatan: ekspor CoA hanya legal entity tertua.
+- tj8o: picker izin memakai izin scope tenant + re-auth 5 menit (selaras assertCanEditCustomRole), End Owner (last Owner / Owner-only), mock meniru server, MFA-self loop ditutup. Architect xhigh 2 putaran, ui-auditor 2 putaran.
+- Label izin org.config.import ditambah (legend-g6d.test gagal dari commit dasar).
+- Bead baru: legend-sjq5w (server createCustomRole tanpa assertCanEditCustomRole, tingkat K).
+- Migrasi: tidak ada (`db:generate` kosong). Rentang 0492-0493 tidak dipakai; penomoran cabang ini berhenti di 0315.
+- Gate cabang: 6 berkas vitest (73 test) + node:test 160 lulus, typecheck api/shared/web bersih, eslint + prettier file berubah hijau.
+- Subagent: total 24, puncak 5 bersamaan, token heavy dipegang test-runner.

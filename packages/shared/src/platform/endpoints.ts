@@ -102,7 +102,9 @@ import {
   supportAccessRequestSchema,
 } from "./support-access.ts";
 import {
+  brandLogoSchema,
   createThemeDraftInputSchema,
+  setBrandLogoInputSchema,
   tenantThemeSchema,
   themeTokensSchema,
 } from "./themes.ts";
@@ -524,6 +526,13 @@ export const orgEndpoints = {
     path: "/api/org/themes",
     body: createThemeDraftInputSchema,
     response: dataResponseSchema(tenantThemeSchema),
+  }),
+  setBrandLogo: defineEndpoint({
+    method: "PUT",
+    path: "/api/org/brands/:brandId/logo",
+    params: brandParams,
+    body: setBrandLogoInputSchema,
+    response: dataResponseSchema(brandLogoSchema),
   }),
   activateTheme: defineEndpoint({
     method: "POST",

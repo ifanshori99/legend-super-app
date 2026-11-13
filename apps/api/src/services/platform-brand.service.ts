@@ -6,19 +6,29 @@
 // no platform name, logo or link (TEN-08), and no field the UI could use to
 // reach another tenant.
 import { and, asc, desc, eq } from "drizzle-orm";
-import type { TenantContext } from "@starter/shared/core";
+import { AccessError } from "@starter/shared/access";
+import {
+  createUlid,
+  type ScopedTenantContext,
+  type TenantContext,
+} from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import {
   brandContextSchema,
+  brandLogoSchema,
   isModuleEnabled,
   MODULE_KEYS,
   type BrandContext,
+  type BrandLogo,
+  type SetBrandLogoInput,
 } from "@starter/shared/platform";
 import { db } from "../db";
 import { brands, tenantThemes, tenants } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { recordAudit } from "./core-audit";
 import { getPublicTextOverrides } from "./text-override.service";
+import { assertTenantMedia } from "./tenant-media";
 
 /**
  * Brand of the tenant the request resolved to. When the source pins a brand
@@ -97,5 +107,76 @@ export async function getBrandContext(
   return brandContextSchema.parse({
     ...context,
     textOverrides: await getPublicTextOverrides(tenant),
+  });
+}
+
+/**
+ * Attaches an uploaded `brand_logo` object to a brand (legend-bkdmc, TEN-10).
+ * Only a tenant-wide scope may change brand configuration. The media must be in
+ * this tenant's library (another tenant's id and an unknown id both answer 422),
+ * and the brand must be this tenant's (404 otherwise). null clears the logo.
+ */
+export async function setBrandLogo(
+  context: ScopedTenantContext,
+  brandId: string,
+  input: SetBrandLogoInput,
+  actorUserId: string,
+): Promise<BrandLogo> {
+  if (context.outletScope.kind !== "tenant")
+    throw new AccessError(
+      "PERMISSION_DENIED",
+      "Your account cannot perform this action in this tenant.",
+    );
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    const [brand] = await tx
+      .select({ id: brands.id, logoMediaId: brands.logoMediaId })
+      .from(brands)
+      .where(and(eq(brands.tenantId, tenantId), eq(brands.id, brandId)))
+      .limit(1)
+      .for("update");
+    if (!brand) throw new HttpError(404, "NOT_FOUND", "Brand not found.");
+    await assertTenantMedia(
+      tx,
+      tenantId,
+      input.logoMediaId,
+      "Logo",
+      "brand_logo",
+    );
+    const [row] = await tx
+      .update(brands)
+      .set({ logoMediaId: input.logoMediaId })
+      .where(and(eq(brands.tenantId, tenantId), eq(brands.id, brandId)))
+      .returning({ id: brands.id, logoMediaId: brands.logoMediaId });
+    if (!row) throw new Error("Brand logo was not saved");
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(),
+        tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "brand.logo_set",
+        objectType: "brand",
+        objectId: row.id,
+        reason: null,
+        maskedChanges: {
+          before: { logoMediaId: brand.logoMediaId },
+          after: { logoMediaId: row.logoMediaId },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: new Date().toISOString(),
+      },
+      ["logoMediaId"],
+    );
+    return brandLogoSchema.parse({
+      id: row.id,
+      logoMediaId: row.logoMediaId,
+    });
   });
 }

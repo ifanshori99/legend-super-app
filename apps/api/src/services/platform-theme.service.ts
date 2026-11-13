@@ -124,7 +124,13 @@ export async function createThemeDraft(
       .limit(1);
     if (!brand) throw new HttpError(404, "NOT_FOUND", "Brand not found.");
     // legend-iiqx (TEN-10): the logo must be in this tenant's media library.
-    await assertTenantMedia(tx, tenantId, input.logoMediaId, "Logo");
+    await assertTenantMedia(
+      tx,
+      tenantId,
+      input.logoMediaId,
+      "Logo",
+      "brand_logo",
+    );
     await lockBrandThemes(tx, tenantId, input.brandId);
     const [latest] = await tx
       .select({ version: tenantThemes.version })

@@ -15,7 +15,13 @@ export const Route = createFileRoute("/_kelola/kelola/akses/role/$roleId")({
 });
 
 function RoleScreen() {
-  const { access } = Route.useRouteContext();
+  const { access, session } = Route.useRouteContext();
   const { roleId } = Route.useParams();
-  return <RoleDetailPage roleId={roleId} access={access} />;
+  return (
+    <RoleDetailPage
+      roleId={roleId}
+      access={access}
+      viewerUserId={session?.user.id}
+    />
+  );
 }

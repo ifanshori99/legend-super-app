@@ -9,6 +9,8 @@ export const Route = createFileRoute("/_kelola/kelola/akses/baru")({
 });
 
 function NewRoleScreen() {
-  const { access } = Route.useRouteContext();
-  return <CreateCustomRolePage access={access} />;
+  const { access, session } = Route.useRouteContext();
+  return (
+    <CreateCustomRolePage access={access} viewerUserId={session?.user.id} />
+  );
 }

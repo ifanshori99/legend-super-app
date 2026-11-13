@@ -9,7 +9,7 @@
 // identifier scan in config.ts.
 
 import { z } from "../core/index.ts";
-import { peakWindowSchema } from "../facility/schemas.ts";
+import { peakWindowSchema, wifiSpendModeSchema } from "../facility/schemas.ts";
 
 const UUID_SHAPE =
   /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
@@ -42,4 +42,8 @@ export const wifiPolicyItemSchema = z.strictObject({
     z.string().trim().min(1).max(30),
     z.number().int().min(0).max(720),
   ),
+  // legend-9k0a5: how spend turns into extra hours (wifi_policies.spend_mode).
+  // Null or absent reads as the default `per_day_multiple`; absent keeps
+  // bundles exported before this field parseable.
+  spendMode: wifiSpendModeSchema.nullable().optional(),
 });
