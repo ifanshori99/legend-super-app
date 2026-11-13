@@ -1,6 +1,6 @@
 // Query keys and options for Pengaturan AI. Every key starts with the endpoint
 // id, so invalidating `[endpoint.id]` refreshes every variant.
-import { getAiProviderConfig, getChatgptLogin } from "./contract";
+import { getAiProviderConfig, getChatgptLogin } from "@starter/shared/ai";
 import { fetchChatgpt, fetchProvider } from "./api";
 
 const RETRY = { retry: 1, retryDelay: 600 } as const;

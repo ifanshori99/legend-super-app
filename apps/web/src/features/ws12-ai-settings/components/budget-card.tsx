@@ -1,7 +1,7 @@
 // "Anggaran AI bulanan": this month's spend against the tenant cap, and the
 // cap itself. Rp 0 turns AI off. Reads and writes the governance settings of
 // features/ws12-ai-admin (monthlyBudgetIdr); the warn and stop percents shown
-// in the note are that same row. `disabled` is the platform kill switch.
+// in the note are that same row.
 import * as React from "react";
 import { CircleAlert, CircleCheck, TriangleAlert } from "lucide-react";
 import { idr } from "@starter/shared/core";
@@ -58,7 +58,7 @@ const monthName = (now: Date) =>
     now,
   );
 
-export function BudgetCard({ disabled }: { disabled: boolean }) {
+export function BudgetCard() {
   const t = useT();
   const governance = useGovernance(true);
   const budget = useBudget(true);
@@ -121,10 +121,7 @@ export function BudgetCard({ disabled }: { disabled: boolean }) {
         )}
       </div>
 
-      <fieldset
-        disabled={disabled}
-        className="m-0 grid min-w-0 gap-4 border-0 p-0"
-      >
+      <div className="grid gap-4">
         <div className="grid gap-1.5">
           <p className="text-sm leading-5 text-muted-foreground">
             {t("aiSettingsCustom.budget.usageLabel")}
@@ -214,7 +211,7 @@ export function BudgetCard({ disabled }: { disabled: boolean }) {
             stop: settings.budgetStopPct,
           })}
         </p>
-      </fieldset>
+      </div>
     </AdminCard>
   );
 }

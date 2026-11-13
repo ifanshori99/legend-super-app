@@ -11,6 +11,10 @@ export function OrderCard() {
   const provider = useProvider();
   const loading = login.isPending || provider.isPending;
   const connected = login.data?.data.state === "connected";
+  const platformOff = login.data?.data.platformDisabled === true;
+  // A failed first load is "unknown", never "not connected / not ready".
+  const loginUnknown = !login.data && login.isError;
+  const providerUnknown = !provider.data && provider.isError;
   // Ready = a model is saved with a key and its last test passed.
   const config = provider.data?.data.config ?? null;
   const ready =
@@ -30,26 +34,34 @@ export function OrderCard() {
               n={1}
               name={t("aiSettings.order.primary")}
               status={
-                connected
-                  ? t("aiSettings.order.primaryConnected")
-                  : t("aiSettings.order.primaryNotConnected")
+                loginUnknown
+                  ? t("aiSettings.order.primaryUnavailable")
+                  : platformOff
+                    ? t("aiSettings.order.primaryLocked")
+                    : connected
+                      ? t("aiSettings.order.primaryConnected")
+                      : t("aiSettings.order.primaryNotConnected")
               }
             />
             <OrderItem
               n={2}
               name={t("aiSettings.order.fallback")}
               status={
-                ready
-                  ? t("aiSettings.order.fallbackReady")
-                  : t("aiSettings.order.fallbackNotReady")
+                providerUnknown
+                  ? t("aiSettings.order.fallbackUnavailable")
+                  : ready
+                    ? t("aiSettings.order.fallbackReady")
+                    : t("aiSettings.order.fallbackNotReady")
               }
             />
           </ol>
-          <p className="text-sm leading-5 text-muted-foreground">
-            {ready
-              ? t("aiSettings.order.noteReady")
-              : t("aiSettings.order.noteNotReady")}
-          </p>
+          {!providerUnknown && (
+            <p className="text-sm leading-5 text-muted-foreground">
+              {ready
+                ? t("aiSettings.order.noteReady")
+                : t("aiSettings.order.noteNotReady")}
+            </p>
+          )}
         </>
       )}
     </AdminCard>

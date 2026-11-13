@@ -4,6 +4,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api/errors";
 import {
+  patchProvider,
   pollChatgpt,
   revokeChatgpt,
   saveProvider,
@@ -13,8 +14,9 @@ import {
 import {
   getAiProviderConfig,
   getChatgptLogin,
+  type AiModelCapabilityOverrides,
   type UpsertAiProviderConfigInput,
-} from "./contract";
+} from "@starter/shared/ai";
 import { chatgptQuery, providerQuery } from "./queries";
 
 /** Viewers without manage rights re-read a pending login this often. */
@@ -56,6 +58,20 @@ export function useSaveProvider() {
     mutationFn: (body: UpsertAiProviderConfigInput) => saveProvider(body),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: [getAiProviderConfig.id] }),
+  });
+}
+
+/**
+ * Changes capability overrides only (PATCH). Send only the fields that changed;
+ * `null` resets every override. The answer replaces the cached provider view.
+ */
+export function usePatchProviderCapabilities() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (capabilityOverrides: AiModelCapabilityOverrides | null) =>
+      patchProvider(capabilityOverrides),
+    onSuccess: (view) =>
+      queryClient.setQueryData([getAiProviderConfig.id], view),
   });
 }
 

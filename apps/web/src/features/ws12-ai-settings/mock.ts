@@ -5,25 +5,30 @@
 // Scenario URLs (page /kelola/pengaturan/ai):
 //   ?state=empty|device|connected|failed|expired|detected   starting state
 //   ?role=owner|admin     owner may connect/revoke ChatGPT, admin may not
-//   ?ai=off               platform kill switch: banner, every control locked
+//   ?ai=off               platform kill switch: ChatGPT status platformDisabled
 //   ?mock=slow|error|offline|empty    generic scenarios (lib/mock/control.ts)
 // Defaults: empty state as owner. A pending code turns connected after
 // POLLS_TO_CONNECT polls so the whole flow can be walked by hand.
 import { ApiError } from "../../lib/api/errors.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
+import { zodIssuesToDetails } from "@starter/shared/api";
 import {
+  aiErrorHttpStatus,
+  aiModelCapabilityOverridesSchema,
   getAiProviderConfig,
   getChatgptLogin,
+  patchAiProviderConfig,
   pollChatgptLogin,
   revokeChatgptLogin,
   startChatgptLogin,
   testAiProviderConfig,
   upsertAiProviderConfig,
   type AiModelCapabilities,
+  type AiModelCapabilityOverrides,
   type AiProviderConfig,
   type ChatgptLoginStatus,
-} from "./contract.ts";
+} from "@starter/shared/ai";
 
 const POLLS_TO_CONNECT = 2;
 const DEVICE_URL = "https://auth.openai.com/codex/device";
@@ -139,6 +144,54 @@ registerMock(upsertAiProviderConfig, ({ body }) => {
           lastTest: null,
         }
       : {}),
+    updatedAt: now(),
+  };
+  store.set({ ...state, config });
+  return { data: { config, fallbackAvailable: false } };
+});
+
+/** Same merge as the API's mergeCapabilityOverrides: undefined fields are dropped. */
+function mergeOverrides(
+  previous: AiModelCapabilityOverrides | null,
+  patch: AiModelCapabilityOverrides | null | undefined,
+): AiModelCapabilityOverrides | null {
+  if (patch === undefined) return previous;
+  if (patch === null) return null;
+  const fields = Object.fromEntries(
+    Object.entries(patch).filter(([, value]) => value !== undefined),
+  );
+  if (Object.keys(fields).length === 0) return previous;
+  const result = aiModelCapabilityOverridesSchema.safeParse({
+    ...previous,
+    ...fields,
+  });
+  if (!result.success)
+    throw new ApiError(
+      422,
+      "VALIDATION_ERROR",
+      "Input tidak valid.",
+      zodIssuesToDetails(result.error),
+    );
+  return result.data;
+}
+
+registerMock(patchAiProviderConfig, ({ body }) => {
+  const state = store.get();
+  const prev = state.config;
+  if (!prev)
+    throw new ApiError(
+      aiErrorHttpStatus.AI_PROVIDER_NOT_CONFIGURED,
+      "AI_PROVIDER_NOT_CONFIGURED",
+      "Provider AI belum diatur untuk tenant ini.",
+    );
+  const previous = prev.capabilityOverrides;
+  const merged = mergeOverrides(previous, body.capabilityOverrides);
+  // No-op edit: the row stays as it was, updatedAt included.
+  if (JSON.stringify(previous) === JSON.stringify(merged))
+    return { data: { config: prev, fallbackAvailable: false } };
+  const config: AiProviderConfig = {
+    ...prev,
+    capabilityOverrides: merged,
     updatedAt: now(),
   };
   store.set({ ...state, config });

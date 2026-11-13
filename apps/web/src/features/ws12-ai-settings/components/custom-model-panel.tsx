@@ -1,7 +1,7 @@
 // Card 2 "Model kustom": base URL, API key and model name, saved and then
 // tested in one press (useSaveProvider, then useTestProvider). Below it the
 // detected capabilities and the admin override. The API key is never shown
-// back: only its last 4 characters. `disabled` is the platform kill switch.
+// back: only its last 4 characters.
 import * as React from "react";
 import { CircleAlert, CircleCheck } from "lucide-react";
 import { cn } from "cn";
@@ -22,11 +22,17 @@ import {
 } from "@/features/ws12-ai-admin/components/shared";
 import type {
   AiModelCapabilities,
+  AiModelCapabilityOverrides,
   AiProviderConfig,
   AiProviderTestErrorCode,
   UpsertAiProviderConfigInput,
-} from "../contract";
-import { useProvider, useSaveProvider, useTestProvider } from "../hooks";
+} from "@starter/shared/ai";
+import {
+  usePatchProviderCapabilities,
+  useProvider,
+  useSaveProvider,
+  useTestProvider,
+} from "../hooks";
 
 type Field = "baseUrl" | "apiKey" | "model";
 type FieldErrors = Partial<Record<Field, MessageKey>>;
@@ -84,7 +90,7 @@ type Outcome =
   | { kind: "save"; error: unknown }
   | { kind: "unreachable" };
 
-export function CustomModelPanel({ disabled }: { disabled: boolean }) {
+export function CustomModelPanel() {
   const t = useT();
   const provider = useProvider();
 
@@ -117,22 +123,14 @@ export function CustomModelPanel({ disabled }: { disabled: boolean }) {
   const stored = provider.data.data.config;
   // The ChatGPT login is its own card; only an API-key setup is "custom".
   const config = stored?.connectionType === "api_key" ? stored : null;
-  return (
-    <CustomCard
-      config={config}
-      disabled={disabled}
-      refreshFailed={provider.isError}
-    />
-  );
+  return <CustomCard config={config} refreshFailed={provider.isError} />;
 }
 
 function CustomCard({
   config,
-  disabled,
   refreshFailed,
 }: {
   config: AiProviderConfig | null;
-  disabled: boolean;
   refreshFailed: boolean;
 }) {
   const t = useT();
@@ -155,6 +153,7 @@ function CustomCard({
     (field: Field) => (event: React.ChangeEvent<HTMLInputElement>) => {
       const next = { ...draft, [field]: event.target.value };
       setDraft(next);
+      setOutcome(null);
       // The "address changed" key error goes away once the address is restored.
       if (field === "baseUrl" && errors.apiKey !== undefined) {
         const kind = validateFields(next, config).apiKey;
@@ -293,10 +292,7 @@ function CustomCard({
         )}
       </div>
 
-      <fieldset
-        disabled={disabled}
-        className="m-0 grid min-w-0 gap-4 border-0 p-0"
-      >
+      <div className="grid min-w-0 gap-4">
         <p className="text-sm leading-5 text-muted-foreground">
           {t("aiSettingsCustom.custom.description")}
         </p>
@@ -394,7 +390,7 @@ function CustomCard({
         </form>
 
         {config !== null && <CapabilitiesBlock config={config} />}
-      </fieldset>
+      </div>
     </AdminCard>
   );
 }
@@ -529,7 +525,7 @@ function rangeOk(draft: Pick<CapsDraft, "context" | "output">): boolean {
     context <= CONTEXT_MAX &&
     output >= OUTPUT_MIN &&
     output <= OUTPUT_MAX &&
-    output <= context
+    output < context
   );
 }
 
@@ -542,10 +538,10 @@ function draftFrom(caps: AiModelCapabilities): CapsDraft {
   };
 }
 
-/** "Ubah kemampuan model": saves the override with the stored address, model and key. */
+/** "Ubah kemampuan model": PATCHes only the changed override fields; the server merges. */
 function CapabilityEditor({ config }: { config: AiProviderConfig }) {
   const t = useT();
-  const save = useSaveProvider();
+  const save = usePatchProviderCapabilities();
   const current: AiModelCapabilities = {
     ...config.capabilities,
     ...config.capabilityOverrides,
@@ -575,12 +571,6 @@ function CapabilityEditor({ config }: { config: AiProviderConfig }) {
     setInvalid(!rangeOk(draft));
   };
 
-  const base = {
-    connectionType: "api_key",
-    baseUrl: config.baseUrl,
-    defaultModel: config.defaultModel,
-  } as const;
-
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (save.isPending) return;
@@ -597,8 +587,9 @@ function CapabilityEditor({ config }: { config: AiProviderConfig }) {
       supportsTools: draft.tools === "yes",
       supportsReasoning: draft.reasoning === "yes",
     };
-    // Only what the admin changed goes on top of the overrides already stored.
-    const changed = {
+    // Only what the admin changed against the form's shown state is sent; the
+    // server merges it by field, so stale stored overrides are never re-sent.
+    const changed: AiModelCapabilityOverrides = {
       ...(next.contextWindow !== current.contextWindow && {
         contextWindow: next.contextWindow,
       }),
@@ -618,10 +609,7 @@ function CapabilityEditor({ config }: { config: AiProviderConfig }) {
       return;
     }
     try {
-      await save.mutateAsync({
-        ...base,
-        capabilityOverrides: { ...config.capabilityOverrides, ...changed },
-      });
+      await save.mutateAsync(changed);
       save.reset();
       setDirty(false);
       setSaved("saved");
@@ -635,7 +623,7 @@ function CapabilityEditor({ config }: { config: AiProviderConfig }) {
     setSaved(null);
     setInvalid(false);
     try {
-      await save.mutateAsync({ ...base, capabilityOverrides: null });
+      await save.mutateAsync(null);
       save.reset();
       setDraft(draftFrom(config.capabilities));
       setDirty(false);

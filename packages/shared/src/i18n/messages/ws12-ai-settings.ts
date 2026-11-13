@@ -1,5 +1,6 @@
 // Pengaturan AI tenant UI text, part "page" (bead legend-nnufz). Namespace:
-// `aiSettings`. Page frame, platform banner and the service order card.
+// `aiSettings`. Page frame, platform-off notice text (rendered inside the
+// ChatGPT card) and the service order card.
 // Copy follows the approved mockup design/mockups/ai/ai-settings.html.
 
 export const aiSettingsMessages = {
@@ -13,9 +14,9 @@ export const aiSettingsMessages = {
   noAccessHint:
     "Akun ini belum punya izin untuk mengatur AI. Minta admin tenant menambahkannya.",
   platformOff: {
-    title: "AI dimatikan oleh platform",
-    body: "AI untuk sementara tidak dapat digunakan. Semua pengaturan dikunci sampai platform mengaktifkannya kembali.",
-    hint: "Pengaturan tersimpan tetap dapat dilihat di bawah.",
+    title: "Login ChatGPT dimatikan oleh platform",
+    body: "Koneksi ChatGPT dikunci sampai platform mengaktifkannya kembali. Model kustom dan anggaran tetap bisa diatur.",
+    badge: "Dikunci platform",
   },
   error: {
     title: "Bagian ini belum bisa dimuat",
@@ -28,9 +29,12 @@ export const aiSettingsMessages = {
     primary: "ChatGPT",
     primaryConnected: "Utama · Terhubung",
     primaryNotConnected: "Utama · Belum terhubung",
+    primaryLocked: "Utama · Dikunci platform",
+    primaryUnavailable: "Utama · Status belum bisa dimuat",
     fallback: "Model kustom",
     fallbackReady: "Cadangan otomatis · Siap",
     fallbackNotReady: "Cadangan otomatis · Belum siap",
+    fallbackUnavailable: "Cadangan otomatis · Status belum bisa dimuat",
     noteReady: "Cadangan dipakai otomatis bila layanan utama bermasalah.",
     noteNotReady:
       "Siapkan model kustom agar AI memiliki cadangan saat ChatGPT bermasalah.",

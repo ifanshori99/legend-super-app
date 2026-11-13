@@ -7,19 +7,25 @@ import { callEndpoint } from "@/lib/api/endpoint";
 import {
   getAiProviderConfig,
   getChatgptLogin,
+  patchAiProviderConfig,
   pollChatgptLogin,
   revokeChatgptLogin,
   startChatgptLogin,
   testAiProviderConfig,
   upsertAiProviderConfig,
+  type AiModelCapabilityOverrides,
   type UpsertAiProviderConfigInput,
-} from "./contract";
+} from "@starter/shared/ai";
 
 export const fetchProvider = (signal?: AbortSignal) =>
   callEndpoint(getAiProviderConfig, undefined, { signal });
 
 export const saveProvider = (body: UpsertAiProviderConfigInput) =>
   callEndpoint(upsertAiProviderConfig, { body });
+
+export const patchProvider = (
+  capabilityOverrides: AiModelCapabilityOverrides | null,
+) => callEndpoint(patchAiProviderConfig, { body: { capabilityOverrides } });
 
 export const testProvider = () =>
   callEndpoint(testAiProviderConfig, { body: {} });
