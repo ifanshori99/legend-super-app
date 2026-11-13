@@ -2115,6 +2115,20 @@
       "when": 1794527747105,
       "tag": "0315_ai_chatgpt_connections",
       "breakpoints": true
+    },
+    {
+      "idx": 490,
+      "version": "7",
+      "when": 1794567240621,
+      "tag": "0490_purchase_invoices_apar",
+      "breakpoints": true
+    },
+    {
+      "idx": 491,
+      "version": "7",
+      "when": 1794567292431,
+      "tag": "0491_purchase_invoices_rls",
+      "breakpoints": true
     }
   ]
 }

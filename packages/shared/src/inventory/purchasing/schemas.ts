@@ -1040,6 +1040,21 @@ export type SupplierInvoiceMatchStatus = z.infer<
   typeof supplierInvoiceMatchStatusSchema
 >;
 
+/**
+ * Lifecycle of a recorded supplier invoice. `matched`: clean three-way match,
+ * the payable is booked. `held`: the match found an issue, nothing is booked
+ * and nothing can be paid. `released`: finance released a held invoice and the
+ * payable is booked. `rejected`: a held invoice that will never be booked.
+ * `matchStatus` stays the coarse view of the same fact.
+ */
+export const supplierInvoiceStatusSchema = z.enum([
+  "matched",
+  "held",
+  "released",
+  "rejected",
+]);
+export type SupplierInvoiceStatus = z.infer<typeof supplierInvoiceStatusSchema>;
+
 export const supplierInvoiceLineKindSchema = z.enum(["goods", "service"]);
 export type SupplierInvoiceLineKind = z.infer<
   typeof supplierInvoiceLineKindSchema
@@ -1092,6 +1107,7 @@ export const supplierInvoiceSchema = z
     payableIdr: nonnegativeIdrSchema,
     paidIdr: nonnegativeIdrSchema,
     outstandingIdr: nonnegativeIdrSchema,
+    status: supplierInvoiceStatusSchema,
     matchStatus: supplierInvoiceMatchStatusSchema,
     matchedAt: isoDateTimeSchema.nullable(),
     matchNote: z.string().trim().max(500).nullable(),
@@ -1131,6 +1147,16 @@ export const supplierInvoiceSchema = z
         code: "custom",
         path: ["dueDate"],
         message: "dueDate must not be before invoiceDate",
+      });
+    if (
+      (invoice.status === "matched" || invoice.status === "released") !==
+      (invoice.matchStatus === "matched")
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["matchStatus"],
+        message:
+          "matchStatus is matched exactly when status is matched or released",
       });
     if (invoice.matchStatus === "pending" && invoice.matchedAt !== null)
       context.addIssue({
@@ -1208,8 +1234,9 @@ export type ThreeWayMatch = z.infer<typeof threeWayMatchSchema>;
 /**
  * PO x receipt x invoice comparison. A goods line is discrepant when it
  * invoices more than the accepted receipt or when its unit price deviates from
- * the PO price by more than `toleranceBp`; header amounts must equal the line
- * sums. Service lines are matched on amount only. Throws
+ * the PO price by more than `toleranceBp` (compared exactly, no rounding);
+ * the cap is the accepted receipt minus returned quantity, with no quantity
+ * tolerance; header amounts must equal the line sums. Service lines are matched on amount only. Throws
  * `THREE_WAY_MATCH_INVALID_INPUT` when an invoice line points at a PO line
  * that is not in `purchaseOrderLines`.
  */
@@ -1235,6 +1262,15 @@ export function threeWayMatch(
       SupplierInvoiceLine,
       "purchaseOrderLineId" | "kind" | "quantity"
     >[];
+    /**
+     * Quantity already returned to the supplier per PO line, in the PO unit
+     * (the service converts base quantity with the receipt line's ratio). It
+     * is subtracted from the accepted receipt: a returned item is not billed.
+     */
+    returnedLines?: readonly {
+      purchaseOrderLineId: string;
+      quantity: Decimal4;
+    }[];
   },
   mode: RoundingMode,
 ): ThreeWayMatch {
@@ -1257,6 +1293,14 @@ export function threeWayMatch(
         parseDecimal4(line.quantityReceived) -
         parseDecimal4(line.quantityRejected),
     );
+  }
+  // Net received = accepted - returned (never below zero). This is the
+  // cumulative cap on the billed quantity; the quantity tolerance is zero.
+  for (const line of input.returnedLines ?? []) {
+    const current = acceptedByLine.get(line.purchaseOrderLineId);
+    if (current === undefined) continue;
+    const net = current - parseDecimal4(line.quantity);
+    acceptedByLine.set(line.purchaseOrderLineId, net > 0n ? net : 0n);
   }
 
   // Quantity already billed per PO line (earlier invoices, then this
@@ -1331,10 +1375,16 @@ export function threeWayMatch(
               mode,
             ),
           );
+    // Exact comparison: the rounded `priceVarianceBp` can pass 200.4 bp on a
+    // 200 bp tolerance, so the check never uses it.
+    const priceDifference =
+      invoicedPrice > orderedPrice
+        ? invoicedPrice - orderedPrice
+        : orderedPrice - invoicedPrice;
     if (
-      priceVarianceBp === null
+      orderedPrice === 0n
         ? invoicedPrice !== 0n
-        : Math.abs(priceVarianceBp) > input.toleranceBp
+        : priceDifference * 10_000n > BigInt(input.toleranceBp) * orderedPrice
     )
       issues.push("price_outside_tolerance");
     return {
@@ -1397,6 +1447,28 @@ export function threeWayMatch(
     computedAt: input.computedAt,
   });
 }
+
+/**
+ * Tenant purchasing policy (one row per tenant). A tenant without a row uses
+ * the default tolerance of 0 bp: the invoice must match the PO price exactly
+ * until finance sets a looser one. Loosening the tolerance raises the risk of
+ * overpaying a supplier, so the cap is 10%.
+ */
+export const PURCHASING_DEFAULT_TOLERANCE_BP = 0;
+export const PURCHASING_MAX_TOLERANCE_BP = 1000;
+
+export const purchasingPolicySchema = z.strictObject({
+  tenantId: tenantIdSchema,
+  threeWayMatchToleranceBp: z
+    .number()
+    .int()
+    .min(0)
+    .max(PURCHASING_MAX_TOLERANCE_BP),
+  /** Null while the tenant still runs on the default (no row yet). */
+  updatedAt: isoDateTimeSchema.nullable(),
+  updatedBy: userIdSchema.nullable(),
+});
+export type PurchasingPolicy = z.infer<typeof purchasingPolicySchema>;
 
 export const supplierInvoiceDetailSchema = z.strictObject({
   invoice: supplierInvoiceSchema,

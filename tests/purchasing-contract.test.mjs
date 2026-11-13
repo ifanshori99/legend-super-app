@@ -1068,3 +1068,173 @@ test("[50-F4] a document accepts at most 200 lines", () => {
     assert.equal(schema.safeParse(body(201)).success, false, "201 rejected");
   }
 });
+
+test("[APAR-I1] three-way match: net received cap (returns) and exact price tolerance", () => {
+  const base = invoiceByNumber("INV/KP/2026/0914");
+  const order = purchaseOrderByNumber("PO/BDG/2026/10/0042");
+  const receipt = receiptByNumber("GR/BDG/2026/11/0017");
+  const run = (extra) =>
+    shared.threeWayMatch(
+      {
+        invoice: base.invoice,
+        invoiceLines: base.lines,
+        purchaseOrderLines: order.lines,
+        goodsReceiptLines: receipt.lines,
+        toleranceBp: 0,
+        computedAt: base.invoice.matchedAt,
+        ...extra,
+      },
+      "half_up",
+    );
+  assert.equal(run({}).status, "matched");
+
+  // Returning part of a billed line leaves less than the invoice bills.
+  const billed = base.lines.find((line) => line.purchaseOrderLineId !== null);
+  const returned = run({
+    returnedLines: [
+      { purchaseOrderLineId: billed.purchaseOrderLineId, quantity: "0.0001" },
+    ],
+  });
+  const row = returned.rows.find((item) => item.invoiceLineId === billed.id);
+  assert.equal(returned.status, "discrepancy");
+  assert.ok(row.issues.includes("quantity_exceeds_receipt"));
+  // A return on another PO line does not touch this one.
+  assert.equal(
+    run({
+      returnedLines: [
+        { purchaseOrderLineId: crypto.randomUUID(), quantity: "1.0000" },
+      ],
+    }).status,
+    "matched",
+  );
+
+  // Price tolerance is exact: PO 1000.0000, 200.4 bp over is outside 200 bp
+  // even though the rounded variance equals 200.
+  const orderLine = {
+    ...order.lines[0],
+    quantity: "10.0000",
+    unitPriceIdr: "1000.0000",
+  };
+  const receiptLine = {
+    purchaseOrderLineId: orderLine.id,
+    quantityReceived: "10.0000",
+    quantityRejected: "0.0000",
+  };
+  const priced = (unitPriceIdr, lineTotalIdr, toleranceBp) =>
+    shared.threeWayMatch(
+      {
+        invoice: { ...base.invoice, goodsIdr: 0, servicesIdr: 0 },
+        invoiceLines: [
+          {
+            ...billed,
+            purchaseOrderLineId: orderLine.id,
+            quantity: "1.0000",
+            unitPriceIdr,
+            lineTotalIdr,
+          },
+        ],
+        purchaseOrderLines: [orderLine],
+        goodsReceiptLines: [receiptLine],
+        toleranceBp,
+        computedAt: base.invoice.matchedAt,
+      },
+      "half_up",
+    ).rows[0];
+  assert.equal(
+    priced("1020.0000", 1020, 200).issues.includes("price_outside_tolerance"),
+    false,
+    "exactly 200 bp passes",
+  );
+  const edge = priced("1020.0400", 1020, 200);
+  assert.equal(edge.priceVarianceBp, 200);
+  assert.ok(edge.issues.includes("price_outside_tolerance"));
+  assert.ok(
+    priced("1020.1000", 1020, 200).issues.includes("price_outside_tolerance"),
+  );
+  assert.ok(
+    priced("1020.0000", 1020, 199).issues.includes("price_outside_tolerance"),
+  );
+});
+
+test("[APAR-I1] invoice status, policy and decision contracts", () => {
+  for (const detail of fixtures.supplierInvoiceDetails) {
+    assert.equal(
+      detail.invoice.status,
+      detail.invoice.matchStatus === "matched" ? "matched" : "held",
+    );
+  }
+  const invoice = fixtures.supplierInvoices[0];
+  assert.equal(
+    shared.supplierInvoiceSchema.safeParse({ ...invoice, status: "held" })
+      .success,
+    false,
+    "held cannot carry matchStatus matched",
+  );
+  assert.equal(
+    shared.supplierInvoiceSchema.safeParse({ ...invoice, status: "released" })
+      .success,
+    true,
+  );
+  assert.equal(shared.PURCHASING_DEFAULT_TOLERANCE_BP, 0);
+  const policy = {
+    tenantId: invoice.tenantId,
+    threeWayMatchToleranceBp: 1000,
+    updatedAt: null,
+    updatedBy: null,
+  };
+  assert.equal(shared.purchasingPolicySchema.safeParse(policy).success, true);
+  assert.equal(
+    shared.purchasingPolicySchema.safeParse({
+      ...policy,
+      threeWayMatchToleranceBp: 1001,
+    }).success,
+    false,
+  );
+  const put = {
+    threeWayMatchToleranceBp: 200,
+    expectedUpdatedAt: null,
+    idempotencyKey: "policy-key-0001",
+  };
+  assert.equal(
+    shared.putPurchasingPolicyInputSchema.safeParse(put).success,
+    true,
+  );
+  assert.equal(
+    shared.putPurchasingPolicyInputSchema.safeParse({
+      ...put,
+      threeWayMatchToleranceBp: 1001,
+    }).success,
+    false,
+  );
+  const decide = { note: "Harga disetujui", idempotencyKey: "decide-key-0001" };
+  assert.equal(
+    shared.decideSupplierInvoiceInputSchema.safeParse(decide).success,
+    true,
+  );
+  assert.equal(
+    shared.decideSupplierInvoiceInputSchema.safeParse({
+      ...decide,
+      note: "singkat",
+    }).success,
+    false,
+    "note needs 10 characters",
+  );
+  for (const [code, status] of [
+    ["SUPPLIER_INVOICE_DUPLICATE", 409],
+    ["SUPPLIER_INVOICE_NOT_HELD", 409],
+    ["SUPPLIER_INVOICE_RELEASE_BLOCKED", 409],
+    ["SUPPLIER_INVOICE_SELF_RELEASE", 403],
+    ["SUPPLIER_INVOICE_POSTING_DISABLED", 409],
+    ["PURCHASE_RETURN_EXCEEDS_PAYABLE", 409],
+  ]) {
+    assert.equal(shared.purchasingErrorHttpStatus[code], status, code);
+    assert.ok(shared.purchasingErrorMessages[code], code);
+  }
+  for (const endpoint of [
+    shared.releaseSupplierInvoice,
+    shared.rejectSupplierInvoice,
+    shared.getPurchasingPolicy,
+    shared.putPurchasingPolicy,
+  ])
+    assert.ok(shared.purchasingEndpoints.includes(endpoint), endpoint.id);
+});

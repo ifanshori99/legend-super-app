@@ -48,6 +48,7 @@ import {
   getPettyPurchase,
   getPettyPurchasePolicy,
   getPurchaseReturn,
+  getPurchasingPolicy,
   getSupplierInvoice,
   getSupplierPayment,
   goodsReceiptDetailSchema,
@@ -60,10 +61,13 @@ import {
   pettyPurchaseSchema,
   postSupplierInvoiceMatch,
   postSupplierPaymentTransition,
+  putPurchasingPolicy,
   purchaseReturnDetailSchema,
   purchaseReturnLineSchema,
   purchaseReturnSchema,
   purchaseReturnValueIdr,
+  rejectSupplierInvoice,
+  releaseSupplierInvoice,
   supplierInvoiceDetailSchema,
   supplierInvoiceLineSchema,
   supplierInvoiceSchema,
@@ -84,14 +88,6 @@ import { todayBusinessDate } from "./receiving-lib.ts";
 import { INVENTORY_TIME_ZONE } from "../ws06-inventory/outlet.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
-/**
- * Tenant match tolerance in basis points. PRD §3.18 says the tolerance is
- * tenant configuration, never a constant; there is no settings endpoint yet,
- * so the mock uses the value the fixtures were matched with (200 bp) and shows
- * it on screen. The settings bead replaces this when the policy endpoint lands.
- */
-const MATCH_TOLERANCE_BP = 200;
-
 type ReceiptKey = Map<string, { fingerprint: string; value: unknown }>;
 
 type ReceivingState = {
@@ -100,6 +96,12 @@ type ReceivingState = {
   payments: SupplierPayment[];
   returns: PurchaseReturnDetail[];
   petty: PettyPurchase[];
+  /**
+   * Tenant purchasing policy (PRD §3.18: the match tolerance is tenant
+   * configuration, never a constant). Starts at the value the fixtures were
+   * matched with (200 bp); the server default without a row is 0 bp.
+   */
+  policy: { toleranceBp: number; updatedAt: string | null };
   created: ReceiptKey;
 };
 
@@ -109,6 +111,7 @@ const store = createMockStore<ReceivingState>(() => ({
   payments: structuredClone(fixtures.supplierPayments),
   returns: structuredClone(fixtures.purchaseReturnDetails),
   petty: structuredClone(fixtures.pettyPurchases),
+  policy: { toleranceBp: 200, updatedAt: null },
   created: new Map(),
 }));
 
@@ -222,7 +225,7 @@ function computeMatch(detail: SupplierInvoiceDetail): ThreeWayMatch {
         purchaseOrderLines:
           orderOf(detail.invoice.purchaseOrderId)?.lines ?? [],
         goodsReceiptLines: receiptLinesForOrder(detail.invoice.purchaseOrderId),
-        toleranceBp: MATCH_TOLERANCE_BP,
+        toleranceBp: store.get().policy.toleranceBp,
         computedAt: now(),
         previouslyInvoicedLines: previouslyInvoicedLines(
           detail.invoice.purchaseOrderId,
@@ -447,6 +450,7 @@ registerMock(createSupplierInvoice, ({ body, headers }) =>
           payableIdr: invoicedGoodsIdr + servicesIdr,
           paidIdr: 0,
           outstandingIdr: invoicedGoodsIdr + servicesIdr,
+          status: "held",
           matchStatus: "pending",
           matchedAt: null,
           matchNote: null,
@@ -480,6 +484,7 @@ registerMock(createSupplierInvoice, ({ body, headers }) =>
         payableIdr,
         paidIdr: 0,
         outstandingIdr: payableIdr,
+        status: "held",
         matchStatus: "pending",
         matchedAt: null,
         matchNote: null,
@@ -514,6 +519,7 @@ registerMock(postSupplierInvoiceMatch, ({ params, body, headers }) =>
         );
       const invoice = supplierInvoiceSchema.parse({
         ...detail.invoice,
+        status: match.status === "matched" ? "matched" : "held",
         matchStatus: match.status,
         matchedAt: now(),
         matchNote: note === "" ? null : note,
@@ -521,6 +527,78 @@ registerMock(postSupplierInvoiceMatch, ({ params, body, headers }) =>
       detail.invoice = invoice;
       detail.match = match;
       return { data: detail };
+    },
+  ),
+);
+
+/** Release or reject of a held invoice (finance; the reason is mandatory). */
+function decideHeldInvoice(
+  supplierInvoiceId: string,
+  decision: "released" | "rejected",
+  note: string,
+): { data: SupplierInvoiceDetail } {
+  const detail = invoiceOf(supplierInvoiceId);
+  if (detail.invoice.status !== "held")
+    throw new ApiError(
+      409,
+      "SUPPLIER_INVOICE_NOT_HELD",
+      "Faktur pemasok tidak sedang ditahan.",
+    );
+  detail.invoice = supplierInvoiceSchema.parse({
+    ...detail.invoice,
+    status: decision,
+    matchStatus: decision === "released" ? "matched" : "discrepancy",
+    matchedAt: detail.invoice.matchedAt ?? now(),
+    matchNote: detail.invoice.matchNote ?? note,
+  });
+  return { data: detail };
+}
+
+registerMock(releaseSupplierInvoice, ({ params, body, headers }) =>
+  once(
+    `invoice-release:${createKey(headers, body.idempotencyKey)}`,
+    { params, body },
+    () => decideHeldInvoice(params.supplierInvoiceId, "released", body.note),
+  ),
+);
+
+registerMock(rejectSupplierInvoice, ({ params, body, headers }) =>
+  once(
+    `invoice-reject:${createKey(headers, body.idempotencyKey)}`,
+    { params, body },
+    () => decideHeldInvoice(params.supplierInvoiceId, "rejected", body.note),
+  ),
+);
+
+// ---- Purchasing policy ---------------------------------------------------
+
+const policyView = () => {
+  const { toleranceBp, updatedAt } = store.get().policy;
+  return {
+    tenantId,
+    threeWayMatchToleranceBp: toleranceBp,
+    updatedAt,
+    updatedBy: updatedAt === null ? null : finance,
+  };
+};
+
+registerMock(getPurchasingPolicy, () => ({ data: policyView() }));
+
+registerMock(putPurchasingPolicy, ({ body, headers }) =>
+  once(
+    `purchasing-policy:${createKey(headers, body.idempotencyKey)}`,
+    body,
+    () => {
+      const policy = store.get().policy;
+      if (body.expectedUpdatedAt !== policy.updatedAt)
+        throw new ApiError(
+          412,
+          "PRECONDITION_FAILED",
+          "Kebijakan sudah berubah. Muat ulang lalu coba lagi.",
+        );
+      policy.toleranceBp = body.threeWayMatchToleranceBp;
+      policy.updatedAt = now();
+      return { data: policyView() };
     },
   ),
 );

@@ -32,6 +32,8 @@ import type {
   PurchaseOrderSource,
   PurchaseOrderStatus,
   PurchaseRequestStatus,
+  SupplierInvoiceStatus,
+  ThreeWayMatch,
 } from "@starter/shared/inventory";
 import {
   businessDate,
@@ -164,6 +166,248 @@ export const supplierInvoices = pgTable(
       table.tenantId,
       table.legalEntityId,
       table.invoiceDate,
+    ),
+  ],
+);
+
+/**
+ * `purchase_invoices` (T, outlet-owned): the WS-06 supplier invoice document
+ * and its three-way match. `id` equals the `supplier_invoices` tax record and
+ * the payable open item when the payable is booked (status `matched` or
+ * `released`); a `held` or `rejected` invoice has neither, so it cannot be
+ * paid. `price_variance_idr` is signed. `goods_idr` is at the PO price.
+ * `tolerance_bp` is the tenant policy the match used. The DB keeps the
+ * separation of duties (`decided_by <> recorded_by`) and the state shape.
+ * Only the status/decision/match columns can change (`purchasing.custom.sql`).
+ */
+export const purchaseInvoices = pgTable(
+  "purchase_invoices",
+  {
+    id: uuid("id").primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: uuid("outlet_id").notNull(),
+    legalEntityId: uuid("legal_entity_id").notNull(),
+    supplierId: uuid("supplier_id").notNull(),
+    purchaseOrderId: uuid("purchase_order_id").notNull(),
+    number: varchar("number", { length: 60 }).notNull(),
+    invoiceDate: businessDate("invoice_date").notNull(),
+    dueDate: businessDate("due_date").notNull(),
+    goodsIdr: idrColumn("goods_idr").notNull(),
+    priceVarianceIdr: idrColumn("price_variance_idr").notNull(),
+    servicesIdr: idrColumn("services_idr").notNull(),
+    ppnIdr: idrColumn("ppn_idr").notNull(),
+    pph23Idr: idrColumn("pph23_idr").notNull(),
+    totalIdr: idrColumn("total_idr").notNull(),
+    payableIdr: idrColumn("payable_idr").notNull(),
+    toleranceBp: integer("tolerance_bp").notNull(),
+    matchResult: varchar("match_result", { length: 12 })
+      .$type<"matched" | "discrepancy">()
+      .notNull(),
+    matchSnapshot: jsonb("match_snapshot").$type<ThreeWayMatch>().notNull(),
+    matchNote: varchar("match_note", { length: 500 }),
+    status: varchar("status", { length: 12 })
+      .$type<SupplierInvoiceStatus>()
+      .notNull(),
+    recordedBy: text("recorded_by")
+      .notNull()
+      .references(() => user.id),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    decidedBy: text("decided_by").references(() => user.id),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    decisionNote: varchar("decision_note", { length: 500 }),
+    journalEntryId: uuid("journal_entry_id"),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("purchase_invoices_tenant_id_id_key").on(table.tenantId, table.id),
+    unique("purchase_invoices_tenant_outlet_id_key").on(
+      table.tenantId,
+      table.outletId,
+      table.id,
+    ),
+    // Two live invoices with one number are two ways to pay once; a rejected
+    // invoice frees its number.
+    uniqueIndex("purchase_invoices_supplier_number_key")
+      .on(table.tenantId, table.supplierId, sql`lower(btrim(${table.number}))`)
+      .where(sql`${table.status} <> 'rejected'`),
+    foreignKey({
+      name: "purchase_invoices_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    foreignKey({
+      name: "purchase_invoices_order_fk",
+      columns: [table.tenantId, table.outletId, table.purchaseOrderId],
+      foreignColumns: [
+        purchaseOrders.tenantId,
+        purchaseOrders.outletId,
+        purchaseOrders.id,
+      ],
+    }),
+    foreignKey({
+      name: "purchase_invoices_supplier_fk",
+      columns: [table.tenantId, table.supplierId],
+      foreignColumns: [suppliers.tenantId, suppliers.id],
+    }),
+    foreignKey({
+      name: "purchase_invoices_legal_entity_fk",
+      columns: [table.tenantId, table.legalEntityId],
+      foreignColumns: [legalEntities.tenantId, legalEntities.id],
+    }),
+    foreignKey({
+      name: "purchase_invoices_journal_fk",
+      columns: [table.tenantId, table.journalEntryId],
+      foreignColumns: [journalEntries.tenantId, journalEntries.id],
+    }),
+    index("purchase_invoices_order_status_idx").on(
+      table.tenantId,
+      table.purchaseOrderId,
+      table.status,
+    ),
+    check(
+      "purchase_invoices_amounts_check",
+      sql`${table.goodsIdr} >= 0 AND ${table.servicesIdr} >= 0
+        AND ${table.ppnIdr} >= 0 AND ${table.pph23Idr} >= 0
+        AND ${table.totalIdr} >= 0 AND ${table.payableIdr} > 0
+        AND ${table.totalIdr} = ${table.goodsIdr} + ${table.priceVarianceIdr}
+          + ${table.servicesIdr} + ${table.ppnIdr}
+        AND ${table.payableIdr} = ${table.totalIdr} - ${table.pph23Idr}`,
+    ),
+    check(
+      "purchase_invoices_dates_check",
+      sql`${table.dueDate} >= ${table.invoiceDate}`,
+    ),
+    check(
+      "purchase_invoices_tolerance_check",
+      sql`${table.toleranceBp} BETWEEN 0 AND 1000`,
+    ),
+    check(
+      "purchase_invoices_number_check",
+      sql`length(btrim(${table.number})) > 0`,
+    ),
+    check(
+      "purchase_invoices_status_check",
+      sql`${table.status} IN ('matched', 'held', 'released', 'rejected')`,
+    ),
+    check(
+      "purchase_invoices_match_result_check",
+      sql`${table.matchResult} IN ('matched', 'discrepancy')`,
+    ),
+    // A payable (journal) exists exactly when the invoice is matched/released.
+    check(
+      "purchase_invoices_journal_state_check",
+      sql`(${table.status} IN ('matched', 'released')) = (${table.journalEntryId} IS NOT NULL)`,
+    ),
+    check(
+      "purchase_invoices_decision_state_check",
+      sql`(${table.status} IN ('released', 'rejected')) = (${table.decidedBy} IS NOT NULL)
+        AND (${table.decidedBy} IS NULL) = (${table.decidedAt} IS NULL)`,
+    ),
+    check(
+      "purchase_invoices_match_state_check",
+      sql`(${table.status} <> 'matched' OR ${table.matchResult} = 'matched')
+        AND (${table.status} NOT IN ('held', 'released') OR ${table.matchResult} = 'discrepancy')`,
+    ),
+    // Separation of duties: whoever recorded the invoice never decides it.
+    check(
+      "purchase_invoices_decider_check",
+      sql`${table.decidedBy} IS NULL OR ${table.decidedBy} <> ${table.recordedBy}`,
+    ),
+  ],
+);
+
+/** `purchase_invoice_lines` (T, outlet-owned, append-only): invoiced lines. */
+export const purchaseInvoiceLines = pgTable(
+  "purchase_invoice_lines",
+  {
+    id: uuid("id").primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: uuid("outlet_id").notNull(),
+    purchaseInvoiceId: uuid("purchase_invoice_id").notNull(),
+    lineNo: smallint("line_no").notNull(),
+    purchaseOrderLineId: uuid("purchase_order_line_id"),
+    kind: varchar("kind", { length: 8 }).$type<"goods" | "service">().notNull(),
+    description: varchar("description", { length: 200 }).notNull(),
+    quantity: decimal4Column("quantity").notNull(),
+    unitPriceIdr: decimal4Column("unit_price_idr").notNull(),
+    lineTotalIdr: idrColumn("line_total_idr").notNull(),
+  },
+  (table) => [
+    unique("purchase_invoice_lines_tenant_id_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("purchase_invoice_lines_invoice_line_no_key").on(
+      table.tenantId,
+      table.purchaseInvoiceId,
+      table.lineNo,
+    ),
+    foreignKey({
+      name: "purchase_invoice_lines_invoice_fk",
+      columns: [table.tenantId, table.outletId, table.purchaseInvoiceId],
+      foreignColumns: [
+        purchaseInvoices.tenantId,
+        purchaseInvoices.outletId,
+        purchaseInvoices.id,
+      ],
+    }),
+    foreignKey({
+      name: "purchase_invoice_lines_order_line_fk",
+      columns: [table.tenantId, table.purchaseOrderLineId],
+      foreignColumns: [purchaseOrderLines.tenantId, purchaseOrderLines.id],
+    }),
+    index("purchase_invoice_lines_order_line_idx").on(
+      table.tenantId,
+      table.purchaseOrderLineId,
+    ),
+    check("purchase_invoice_lines_line_no_check", sql`${table.lineNo} > 0`),
+    check(
+      "purchase_invoice_lines_kind_check",
+      sql`${table.kind} IN ('goods', 'service')`,
+    ),
+    check(
+      "purchase_invoice_lines_goods_line_check",
+      sql`${table.kind} = 'service' OR ${table.purchaseOrderLineId} IS NOT NULL`,
+    ),
+    check(
+      "purchase_invoice_lines_amounts_check",
+      sql`${table.quantity} > 0 AND ${table.unitPriceIdr} >= 0 AND ${table.lineTotalIdr} >= 0`,
+    ),
+  ],
+);
+
+/**
+ * `purchasing_policies` (T): one row per tenant. A tenant without a row uses
+ * the default three-way match tolerance (0 bp, exact). Finance loosens it, up
+ * to 10%, with `expected_updated_at` guarding concurrent edits.
+ */
+export const purchasingPolicies = pgTable(
+  "purchasing_policies",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    threeWayMatchToleranceBp: integer("three_way_match_tolerance_bp").notNull(),
+    updatedBy: text("updated_by")
+      .notNull()
+      .references(() => user.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "purchasing_policies_pkey",
+      columns: [table.tenantId],
+    }),
+    check(
+      "purchasing_policies_tolerance_check",
+      sql`${table.threeWayMatchToleranceBp} BETWEEN 0 AND 1000`,
     ),
   ],
 );

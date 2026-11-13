@@ -154,7 +154,7 @@ export const accountingOpenItemSettlements = pgTable(
       .notNull(),
     openItemId: uuid("open_item_id").notNull(),
     method: varchar("method", { length: 12 })
-      .$type<"payment" | "write_off">()
+      .$type<"payment" | "write_off" | "debit_note">()
       .notNull(),
     /** Source document (supplier payment, AR receipt) when there is one. */
     sourceId: uuid("source_id"),
@@ -192,8 +192,17 @@ export const accountingOpenItemSettlements = pgTable(
     ),
     check(
       "accounting_open_item_settlements_method_check",
-      sql`${table.method} IN ('payment', 'write_off')`,
+      sql`${table.method} IN ('payment', 'write_off', 'debit_note')`,
     ),
+    // A debit note is the supplier-return credit: it always names the return
+    // document, and one return reduces one open item at most once.
+    check(
+      "accounting_open_item_settlements_debit_note_source_check",
+      sql`${table.method} <> 'debit_note' OR ${table.sourceId} IS NOT NULL`,
+    ),
+    uniqueIndex("accounting_open_item_settlements_debit_note_key")
+      .on(table.tenantId, table.kind, table.openItemId, table.sourceId)
+      .where(sql`${table.method} = 'debit_note'`),
     // A write-off is a judgement call: it always carries its reason.
     check(
       "accounting_open_item_settlements_reason_check",

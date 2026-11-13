@@ -41,6 +41,7 @@ import {
   pettyPurchaseIdSchema,
   pettyPurchasePolicySchema,
   pettyPurchaseSchema,
+  PURCHASING_MAX_TOLERANCE_BP,
   purchaseOrderDetailSchema,
   purchaseOrderIdSchema,
   purchaseOrderLineIdSchema,
@@ -57,6 +58,7 @@ import {
   purchaseReturnIdSchema,
   purchaseReturnReasonSchema,
   purchaseReturnSchema,
+  purchasingPolicySchema,
   supplierCatalogItemSchema,
   supplierContactSchema,
   supplierDetailSchema,
@@ -66,6 +68,7 @@ import {
   supplierInvoiceLineKindSchema,
   supplierInvoiceMatchStatusSchema,
   supplierInvoiceSchema,
+  supplierInvoiceStatusSchema,
   supplierKindSchema,
   supplierPaymentActionSchema,
   supplierPaymentIdSchema,
@@ -121,6 +124,7 @@ export const supplierInvoiceQuerySchema = cursorPageQuerySchema.extend({
   supplierId: supplierIdSchema.optional(),
   purchaseOrderId: purchaseOrderIdSchema.optional(),
   matchStatus: supplierInvoiceMatchStatusSchema.optional(),
+  status: supplierInvoiceStatusSchema.optional(),
   fromDate: businessDateSchema.optional(),
   toDate: businessDateSchema.optional(),
 });
@@ -345,6 +349,27 @@ export const recordSupplierInvoiceMatchInputSchema = clientInputSchema({
   idempotencyKey: idempotencyKeySchema,
 });
 
+/** Release or reject of a held invoice: the reason is mandatory and audited. */
+export const decideSupplierInvoiceInputSchema = clientInputSchema({
+  note: z.string().trim().min(10).max(500),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+/**
+ * Tenant tolerance update. `expectedUpdatedAt` is the `updatedAt` the caller
+ * last read (null while the tenant still runs on the default); a stale value
+ * is a 412.
+ */
+export const putPurchasingPolicyInputSchema = clientInputSchema({
+  threeWayMatchToleranceBp: z
+    .number()
+    .int()
+    .min(0)
+    .max(PURCHASING_MAX_TOLERANCE_BP),
+  expectedUpdatedAt: isoDateTimeSchema.nullable(),
+  idempotencyKey: idempotencyKeySchema,
+});
+
 export const createSupplierPaymentInputSchema = clientInputSchema({
   supplierInvoiceId: supplierInvoiceIdSchema,
   amountIdr: z.number().int().positive(),
@@ -546,6 +571,12 @@ export const getPettyPurchasePolicy = defineEndpoint({
   response: dataResponseSchema(pettyPurchasePolicySchema),
 });
 
+export const getPurchasingPolicy = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/purchasing-policy",
+  response: dataResponseSchema(purchasingPolicySchema),
+});
+
 // ---- Write endpoints ------------------------------------------------------
 
 export const createSupplier = defineEndpoint({
@@ -655,6 +686,29 @@ export const postSupplierInvoiceMatch = defineEndpoint({
   response: dataResponseSchema(supplierInvoiceDetailSchema),
 });
 
+export const releaseSupplierInvoice = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/supplier-invoices/:supplierInvoiceId/release",
+  params: z.strictObject({ supplierInvoiceId: supplierInvoiceIdSchema }),
+  body: decideSupplierInvoiceInputSchema,
+  response: dataResponseSchema(supplierInvoiceDetailSchema),
+});
+
+export const rejectSupplierInvoice = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/supplier-invoices/:supplierInvoiceId/reject",
+  params: z.strictObject({ supplierInvoiceId: supplierInvoiceIdSchema }),
+  body: decideSupplierInvoiceInputSchema,
+  response: dataResponseSchema(supplierInvoiceDetailSchema),
+});
+
+export const putPurchasingPolicy = defineEndpoint({
+  method: "PUT",
+  path: "/api/inventory/purchasing-policy",
+  body: putPurchasingPolicyInputSchema,
+  response: dataResponseSchema(purchasingPolicySchema),
+});
+
 export const createSupplierPayment = defineEndpoint({
   method: "POST",
   path: "/api/inventory/supplier-payments",
@@ -718,6 +772,7 @@ export const purchasingEndpoints = [
   listPettyPurchases,
   getPettyPurchase,
   getPettyPurchasePolicy,
+  getPurchasingPolicy,
   createSupplier,
   updateSupplier,
   createSupplierContact,
@@ -732,6 +787,9 @@ export const purchasingEndpoints = [
   createGoodsReceipt,
   createSupplierInvoice,
   postSupplierInvoiceMatch,
+  releaseSupplierInvoice,
+  rejectSupplierInvoice,
+  putPurchasingPolicy,
   createSupplierPayment,
   postSupplierPaymentTransition,
   createPurchaseReturn,
