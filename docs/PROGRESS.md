@@ -1430,3 +1430,4 @@ Langkah berikut CTO baru:
 - 18:38 G56ji mesin PDF menu selesai (ws/menu-pdf f1da34fed, di atas ws/qr-menu; hspr8+iuvq ditutup; 55 test). Batch57: ws/menu-pdf mencakup ws/qr-menu.
 - 18:49 G84ot purchasing AP/AR selesai (ws/purchasing-apar 7ec074441; lspfy, nz13, uyk2, 179bw, a5wl, xysyi; migr 0490-0491; 261 test). Posting faktur dimatikan sampai legend-29vw. CTO setujui K4 harga PO, K5 posting off, K6 PPN 12%. Founder: toleransi 0/10%, retur > utang ditolak, jasa ditahan. Bead lanjutan gzeya, igclp, 3fi5v, ct27s, smrwb. Batch57.
 - 18:49 G6nze brand config selesai (ws/brand-config 3844c4f94; bkdmc, 9k0a5, datb2, tj8o, sjq5w, wc69d; architect xhigh). Mulai G2zip posting faktur pemasok (29vw, gzeya, 3fi5v, ct27s, smrwb; Opus; 0494-0495). Batch57 = webhook-retry-guard, menu-pdf (+qr-menu), brand-config (+tenant-config), purchasing-apar/posting, panic-relay-load.
+- 18:51 Founder Q13: aturan faktur pemasok disetujui (bd memory founder-q13-13-nov).
