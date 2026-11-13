@@ -1,0 +1,2 @@
+ALTER TABLE "item_availability" ADD COLUMN "source" varchar(10);--> statement-breakpoint
+ALTER TABLE "item_availability" ADD CONSTRAINT "item_availability_source_check" CHECK ("item_availability"."source" IS NULL OR "item_availability"."source" IN ('staff', 'auto'));

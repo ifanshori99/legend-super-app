@@ -15,12 +15,18 @@ import {
 } from "@starter/shared/core/server";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import type { EquipmentStatus } from "@starter/shared/operations";
+import { createApp } from "../app";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import {
+  setAvailabilityStatus,
+  updateAvailability,
+} from "../services/menu-pricing.service.ts";
 import {
   syncEquipmentAvailability,
   type EquipmentAvailabilityRow,
 } from "../services/operations-availability.service.ts";
+import { agent, signUp } from "./helpers";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const brandId = cafeLegendPlatformFixtures.brand.id;
@@ -63,6 +69,8 @@ async function asOwner<T>(run: (client: PoolClient) => Promise<T>): Promise<T> {
 
 const createdItemIds: string[] = [];
 const createdEquipmentIds: string[] = [];
+const createdUserIds: string[] = [];
+const createdRoleIds: string[] = [];
 let categoryId: string;
 
 async function seedMenuItem(options: { deleted?: boolean } = {}) {
@@ -91,13 +99,15 @@ async function seedAvailability(
   menuItemId: string,
   status: "available" | "sold_out",
   soldOutUntil: Date | null = null,
+  // legend-svmj: who placed the 86. Null is a pre-svmj row (read as staff).
+  source: "staff" | "auto" | null = null,
 ): Promise<string> {
   const id = randomUUID();
   await asOwner((client) =>
     client.query(
       `INSERT INTO item_availability
-         (id, tenant_id, outlet_id, menu_item_id, schedule, daily_limit, sold_out_until, status)
-       VALUES ($1, $2, $3, $4, '[]', NULL, $5, $6)`,
+         (id, tenant_id, outlet_id, menu_item_id, schedule, daily_limit, sold_out_until, status, source)
+       VALUES ($1, $2, $3, $4, '[]', NULL, $5, $6, $7)`,
       [
         id,
         tenantId,
@@ -105,6 +115,7 @@ async function seedAvailability(
         menuItemId,
         soldOutUntil?.toISOString() ?? null,
         status,
+        source,
       ],
     ),
   );
@@ -171,7 +182,7 @@ async function readEquipment(id: string) {
 async function readAvailability(itemIds: string[]) {
   const { rows } = await asOwner((client) =>
     client.query(
-      `SELECT id, menu_item_id, status, sold_out_until, daily_limit, schedule
+      `SELECT id, menu_item_id, status, sold_out_until, daily_limit, schedule, source
          FROM item_availability
         WHERE tenant_id = $1 AND outlet_id = $2
           AND menu_item_id = ANY($3::uuid[]) AND deleted_at IS NULL`,
@@ -187,9 +198,45 @@ async function readAvailability(itemIds: string[]) {
         sold_out_until: Date | null;
         daily_limit: number | null;
         schedule: unknown[];
+        source: string | null;
       }[]
     ).map((row) => [row.menu_item_id, row]),
   );
+}
+
+/**
+ * A real signed-up user holding the availability toggle on outlet A, so the
+ * service-level 86 path (setAvailabilityStatus) passes its permission check.
+ */
+async function seedAvailabilityToggler(): Promise<string> {
+  const client = agent(createApp());
+  await signUp(client, "OPS-04 Availability Staff");
+  const session = await client.get("/api/auth/get-session");
+  const userId = session.body.user.id as string;
+  createdUserIds.push(userId);
+  const roleId = randomUUID();
+  createdRoleIds.push(roleId);
+  await asOwner(async (connection) => {
+    await connection.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+       VALUES ($1, $2, $3, false, '["menu.availability.toggle"]', '["outlet"]')`,
+      [roleId, tenantId, `OPS-04 86 ${roleId.slice(0, 8)}`],
+    );
+    await connection.query(
+      `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'outlet', $4, $5, $2)`,
+      // The tests pass the fixed clock NOW to the service, so the assignment
+      // must already be active then: a wall-clock valid_from lies after NOW.
+      [
+        tenantId,
+        userId,
+        roleId,
+        outletA,
+        new Date(NOW.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+      ],
+    );
+  });
+  return userId;
 }
 
 /** Menu events the outbox holds for these items, oldest first. */
@@ -254,7 +301,18 @@ afterAll(async () => {
       "DELETE FROM menu_categories WHERE tenant_id = $1 AND id = $2",
       [tenantId, categoryId],
     );
+    await client.query(
+      "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
+      [tenantId, createdUserIds],
+    );
+    await client.query(
+      "DELETE FROM roles WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+      [tenantId, createdRoleIds],
+    );
   });
+  await ownerPool.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [
+    createdUserIds,
+  ]);
   await ownerPool.end();
 });
 
@@ -352,8 +410,10 @@ describe("OPS-04 sold-out write-through (legend-5zkp)", () => {
     const manual86 = await seedMenuItem();
     const alreadyRestored = await seedMenuItem();
     const manualAvailabilityId = await seedAvailability(manual86, "sold_out");
-    await seedAvailability(itemA, "sold_out");
-    await seedAvailability(itemB, "sold_out");
+    // legend-svmj: only an 86 the equipment placed itself (source 'auto') is
+    // lifted by the repair.
+    await seedAvailability(itemA, "sold_out", null, "auto");
+    await seedAvailability(itemB, "sold_out", null, "auto");
     await seedAvailability(alreadyRestored, "available");
     // `manual86` is a linked item sold out by an operator, not by this
     // equipment: it is absent from `disabled_item_ids` and must stay sold out.
@@ -596,6 +656,189 @@ describe("OPS-04 sold-out write-through (legend-5zkp)", () => {
     expect(row?.sold_out_until?.toISOString()).toBe(later.toISOString());
     expect((await readEquipment(machine)).disabled_item_ids).toEqual([]);
     expect(await readItemEvents([item])).toHaveLength(0);
+  });
+
+  it("[legend-svmj] OPS-04 a breakdown marks its 86 as auto; staff restore + re-86 without a deadline survives the repair", async () => {
+    const staffUserId = await seedAvailabilityToggler();
+    const item = await seedMenuItem();
+    await seedAvailability(item, "available");
+    const machine = await seedEquipment({ status: "broken", linked: [item] });
+
+    const broke = await withTenant(db, context, (tx) =>
+      syncEquipmentAvailability(
+        tx,
+        context,
+        actorUserId,
+        equipmentRow(machine, "broken", [item]),
+        "operational",
+        NOW,
+      ),
+    );
+    expect(broke).toEqual([item]);
+    let row = (await readAvailability([item])).get(item);
+    expect(row?.status).toBe("sold_out");
+    expect(row?.source).toBe("auto");
+    const availabilityId = row!.id;
+
+    // Staff lift the 86 and put it back with no deadline while the machine is
+    // still broken: the item now belongs to staff, not to the equipment.
+    await setAvailabilityStatus(
+      context,
+      staffUserId,
+      availabilityId,
+      { action: "restore", idempotencyKey: `legend-svmj-${randomUUID()}` },
+      NOW,
+    );
+    await setAvailabilityStatus(
+      context,
+      staffUserId,
+      availabilityId,
+      {
+        action: "sell_out",
+        soldOutUntil: null,
+        idempotencyKey: `legend-svmj-${randomUUID()}`,
+      },
+      NOW,
+    );
+    row = (await readAvailability([item])).get(item);
+    expect(row?.status).toBe("sold_out");
+    expect(row?.sold_out_until).toBeNull();
+    expect(row?.source).toBe("staff");
+    const eventsBeforeRepair = await readItemEvents([item]);
+
+    const repaired = await withTenant(db, context, (tx) =>
+      syncEquipmentAvailability(
+        tx,
+        context,
+        actorUserId,
+        equipmentRow(machine, "operational", [item], [item]),
+        "broken",
+        NOW,
+      ),
+    );
+    // The repair does not lift a staff 86, even one without a deadline.
+    expect(repaired).toEqual([]);
+    row = (await readAvailability([item])).get(item);
+    expect(row?.status).toBe("sold_out");
+    expect(row?.source).toBe("staff");
+    expect(await readItemEvents([item])).toHaveLength(
+      eventsBeforeRepair.length,
+    );
+  });
+
+  it("[legend-svmj] OPS-04 an auto 86 from a breakdown is lifted by the repair and its source is cleared", async () => {
+    const item = await seedMenuItem();
+    await seedAvailability(item, "available");
+    const machine = await seedEquipment({ status: "broken", linked: [item] });
+
+    await withTenant(db, context, (tx) =>
+      syncEquipmentAvailability(
+        tx,
+        context,
+        actorUserId,
+        equipmentRow(machine, "broken", [item]),
+        "operational",
+        NOW,
+      ),
+    );
+    expect((await readAvailability([item])).get(item)?.source).toBe("auto");
+
+    const repaired = await withTenant(db, context, (tx) =>
+      syncEquipmentAvailability(
+        tx,
+        context,
+        actorUserId,
+        equipmentRow(machine, "operational", [item], [item]),
+        "broken",
+        NOW,
+      ),
+    );
+    expect(repaired).toEqual([item]);
+    const row = (await readAvailability([item])).get(item);
+    expect(row?.status).toBe("available");
+    expect(row?.source).toBeNull();
+    expect(
+      (await readItemEvents([item])).map((entry) => entry.event.name),
+    ).toEqual(["item.sold_out", "item.restored"]);
+  });
+
+  it("[legend-svmj] OPS-04 a legacy sold-out row with a null source is treated as staff and not lifted by the repair", async () => {
+    const item = await seedMenuItem();
+    // A row written before the source column existed: sold out, no deadline,
+    // source null, and (worst case) listed in the equipment's bookkeeping.
+    await seedAvailability(item, "sold_out", null, null);
+    const machine = await seedEquipment({
+      status: "operational",
+      linked: [item],
+      disabled: [item],
+    });
+
+    const repaired = await withTenant(db, context, (tx) =>
+      syncEquipmentAvailability(
+        tx,
+        context,
+        actorUserId,
+        equipmentRow(machine, "operational", [item], [item]),
+        "broken",
+        NOW,
+      ),
+    );
+    expect(repaired).toEqual([]);
+    const row = (await readAvailability([item])).get(item);
+    expect(row?.status).toBe("sold_out");
+    expect(row?.source).toBeNull();
+    expect(await readItemEvents([item])).toHaveLength(0);
+  });
+
+  it("[legend-svmj] OPS-04 setAvailabilityStatus records staff as the source of a sell-out and clears it on restore", async () => {
+    const staffUserId = await seedAvailabilityToggler();
+    const item = await seedMenuItem();
+    const later = new Date(NOW.getTime() + 2 * 60 * 60_000);
+    // Starts as an equipment-placed 86: a staff action takes it over.
+    const availabilityId = await seedAvailability(
+      item,
+      "sold_out",
+      null,
+      "auto",
+    );
+    const key = () => `legend-svmj-${randomUUID()}`;
+
+    // The row is already sold_out, so sell_out is not a valid transition: staff
+    // take it over by setting a deadline through updateAvailability.
+    await updateAvailability(
+      context,
+      staffUserId,
+      availabilityId,
+      { soldOutUntil: later.toISOString() },
+      NOW,
+    );
+    let row = (await readAvailability([item])).get(item);
+    expect(row?.status).toBe("sold_out");
+    expect(row?.sold_out_until?.toISOString()).toBe(later.toISOString());
+    expect(row?.source).toBe("staff");
+
+    await setAvailabilityStatus(
+      context,
+      staffUserId,
+      availabilityId,
+      { action: "restore", idempotencyKey: key() },
+      NOW,
+    );
+    row = (await readAvailability([item])).get(item);
+    expect(row?.status).toBe("available");
+    expect(row?.sold_out_until).toBeNull();
+    expect(row?.source).toBeNull();
+
+    await setAvailabilityStatus(
+      context,
+      staffUserId,
+      availabilityId,
+      { action: "sell_out", soldOutUntil: null, idempotencyKey: key() },
+      NOW,
+    );
+    row = (await readAvailability([item])).get(item);
+    expect(row?.status).toBe("sold_out");
+    expect(row?.source).toBe("staff");
   });
 
   it("[legend-5zkp] OPS-04 equipment without linked items writes nothing", async () => {

@@ -353,6 +353,7 @@ export async function uploadEdgeSelfie(
         width: full.width,
         height: full.height,
         ownerUserId: deps.actorUserId,
+        uploadedBy: deps.actorUserId,
         pinProofId: deps.pinProofId ?? null,
         sourceKind,
         sourceId: null,

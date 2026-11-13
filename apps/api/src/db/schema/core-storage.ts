@@ -37,6 +37,10 @@ export const coreStorageObjects = pgTable(
     ownerUserId: text("owner_user_id"),
     sourceKind: varchar("source_kind", { length: 32 }),
     sourceId: uuid("source_id"),
+    // Who uploaded the file (bead legend-0pth). Set once at insert from the
+    // verified actor and never rewritten, unlike owner_user_id which a link
+    // can reassign. Null for rows from before 0477 and for system uploads.
+    uploadedBy: text("uploaded_by"),
     // The PIN proof that authorised an outlet-device selfie upload (bead
     // legend-u7g9w). Set by the server only; ON DELETE SET NULL.
     pinProofId: uuid("pin_proof_id").references(() => staffPinProofs.id, {

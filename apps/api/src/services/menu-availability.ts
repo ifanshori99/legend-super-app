@@ -528,7 +528,12 @@ export async function restoreExpiredSoldOut(
   for (const row of rows) {
     await tx
       .update(itemAvailability)
-      .set({ status: "available", soldOutUntil: null, updatedAt: input.now })
+      .set({
+        status: "available",
+        soldOutUntil: null,
+        source: null,
+        updatedAt: input.now,
+      })
       .where(
         and(
           eq(itemAvailability.tenantId, context.tenant.tenantId),

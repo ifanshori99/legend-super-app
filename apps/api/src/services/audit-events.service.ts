@@ -122,13 +122,44 @@ function isBlindCountEvent(event: AuditEvent): boolean {
   );
 }
 
-function redactVariance(side: AuditEvent["maskedChanges"]["before"]) {
+const BLIND_COUNT_QUANTITY_FIELDS = new Set([
+  "quantity",
+  "qty",
+  "countedQty",
+  "systemQty",
+  "snapshotQty",
+  "expectedQty",
+  "deltaQty",
+  "balanceBefore",
+  "balanceAfter",
+  "onHandQuantity",
+]);
+
+function isBlindCountQuantityField(key: string): boolean {
+  return (
+    (BLIND_COUNT_VARIANCE_FIELDS as readonly string[]).includes(key) ||
+    BLIND_COUNT_QUANTITY_FIELDS.has(key) ||
+    /(qty|quantity)$/i.test(key)
+  );
+}
+
+function redactBlindCountValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactBlindCountValue);
+  if (value === null || typeof value !== "object") return value;
+  const copy: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value))
+    copy[key] = isBlindCountQuantityField(key)
+      ? AUDIT_REDACTED
+      : redactBlindCountValue(child);
+  return copy;
+}
+
+function redactVariance(
+  side: AuditEvent["maskedChanges"]["before"],
+): AuditEvent["maskedChanges"]["before"] {
   if (side === null || typeof side !== "object" || Array.isArray(side))
     return side;
-  const copy = { ...side };
-  for (const field of BLIND_COUNT_VARIANCE_FIELDS)
-    if (field in copy) copy[field] = AUDIT_REDACTED;
-  return copy;
+  return redactBlindCountValue(side) as typeof side;
 }
 
 /**

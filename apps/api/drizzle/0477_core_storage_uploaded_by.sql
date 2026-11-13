@@ -1,0 +1,1 @@
+ALTER TABLE "core_storage_objects" ADD COLUMN "uploaded_by" text;

@@ -28,11 +28,13 @@ import type { Response } from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   businessDateSchema,
+  createUlid,
   decimal4,
   outletIdSchema,
   type OutletId,
   type ScopedTenantContext,
   type TenantContext,
+  ulidToUuid,
 } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
@@ -1245,6 +1247,198 @@ describe("F1 blind count variance in the audit log is not readable by the counte
     expect(await varianceOf(reviewer, blind.countId)).toContain(10500);
     // Non-blind counts are not redacted for anyone.
     expect(await varianceOf(admin, open.countId)).toContain(10500);
+  });
+});
+
+describe("legend-j5e3 blind count audit events carry no quantity or variance for a forbidden reader", () => {
+  // Assumptions: the audit viewer has no objectId filter, so rows are read by
+  // objectType + actorId and narrowed to the count client-side. "Forbidden
+  // reader" follows the existing legend-j5x rule: the counter, or anyone
+  // without `inventory.adjustment.approve`. A quantity field is any key
+  // matching variance, qty, quantity or balance; the forbidden reader must see
+  // the "[REDACTED]" marker (or no value), never a number.
+  const QUANTITY_KEY = /variance|qty|quantity|balance/i;
+  const EXTRA_QUANTITIES: Record<string, number> = {
+    quantity: 7771,
+    qty: 7772,
+    countedQty: 7773,
+    systemQty: 7774,
+    snapshotQty: 7775,
+    expectedQty: 7776,
+    deltaQty: 7777,
+    balanceBefore: 7778,
+    balanceAfter: 7779,
+    onHandQuantity: 7780,
+  };
+
+  type AuditRow = {
+    event: {
+      id: string;
+      objectId: string | null;
+      maskedChanges: {
+        before: Record<string, unknown> | null;
+        after: Record<string, unknown> | null;
+      };
+    };
+  };
+
+  async function assignTenantRole(userId: string, templateKey: string) {
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2)`,
+      [tenantA, userId, await roleIdOf(templateKey)],
+    );
+  }
+
+  /** Every stock_count audit row of this count, as `reader` sees it. */
+  async function countEventsFor(
+    reader: Actor,
+    countId: string,
+    authors: Actor[],
+  ): Promise<AuditRow[]> {
+    const rows: AuditRow[] = [];
+    for (const author of authors) {
+      const response = await ok(
+        await reader.client.get(
+          `/api/audit/events?objectType=stock_count&actorType=user&actorId=${author.userId}&limit=100`,
+        ),
+      );
+      for (const row of response.body.data as AuditRow[])
+        if (row.event.objectId === countId) rows.push(row);
+    }
+    return rows;
+  }
+
+  /** Every [key, value] pair under before/after, at any depth. */
+  function quantityEntries(rows: AuditRow[]): Array<[string, unknown]> {
+    const found: Array<[string, unknown]> = [];
+    const walk = (value: unknown) => {
+      if (Array.isArray(value)) return value.forEach(walk);
+      if (value === null || typeof value !== "object") return;
+      for (const [key, child] of Object.entries(value)) {
+        if (QUANTITY_KEY.test(key)) found.push([key, child]);
+        walk(child);
+      }
+    };
+    for (const row of rows) walk(row.event.maskedChanges);
+    return found;
+  }
+
+  const isHidden = (value: unknown) =>
+    value === null || value === undefined || value === "[REDACTED]";
+
+  it("a posted blind count shows no quantity or variance to the counter or a non-approver, and the approver who never counted still reads the variance", async () => {
+    const countingOwner = await makeActor("Opname J5e3 Counter", []);
+    await assignTenantRole(countingOwner.userId, "owner");
+    const admin = await makeActor("Opname J5e3 Admin", []);
+    await assignTenantRole(admin.userId, "tenant_admin");
+    const reviewer = await makeActor("Opname J5e3 Reviewer", []);
+    await assignTenantRole(reviewer.userId, "owner");
+
+    // 10 on hand at 1.500 counted as 3 -> variance Rp10.500, then posted.
+    const blind = await submittedCount([{ onHand: "10.0000" }], ["3.0000"], {
+      blind: true,
+      creator: countingOwner,
+    });
+    await ok(await transition(approver, blind.countId, "approve"));
+    expect(
+      (await ok(await get(approver, `/${blind.countId}`))).body.data.count
+        .status,
+    ).toBe("posted");
+
+    const authors = [countingOwner, approver];
+    for (const forbidden of [countingOwner, admin]) {
+      const rows = await countEventsFor(forbidden, blind.countId, authors);
+      expect(rows.length).toBeGreaterThan(0);
+      for (const [key, value] of quantityEntries(rows))
+        expect(isHidden(value), `${key} visible to a forbidden reader`).toBe(
+          true,
+        );
+      expect(JSON.stringify(rows)).not.toMatch(/\b10500\b/);
+    }
+
+    const visible = quantityEntries(
+      await countEventsFor(reviewer, blind.countId, authors),
+    );
+    expect(visible.map(([, value]) => value)).toContain(10500);
+  });
+
+  it("extra quantity fields on a stored blind stock_count event are redacted for a forbidden reader", async () => {
+    // Fail-first: today only the variance totals are redacted. The row below
+    // is a copy of a real blind-count event, with quantity fields added to both
+    // sides (a future or legacy writer could emit them).
+    const countingOwner = await makeActor("Opname J5e3 Extra Counter", []);
+    await assignTenantRole(countingOwner.userId, "owner");
+    const admin = await makeActor("Opname J5e3 Extra Admin", []);
+    await assignTenantRole(admin.userId, "tenant_admin");
+    const reviewer = await makeActor("Opname J5e3 Extra Reviewer", []);
+    await assignTenantRole(reviewer.userId, "owner");
+
+    const blind = await submittedCount([{ onHand: "10.0000" }], ["3.0000"], {
+      blind: true,
+      creator: countingOwner,
+    });
+    const { rows: source } = await owner.query<{
+      event: AuditRow["event"] & Record<string, unknown>;
+    }>(
+      `SELECT event FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'objectId' = $2
+          AND event->>'objectType' = 'stock_count'
+          AND event->>'actorId' = $3
+        ORDER BY id DESC LIMIT 1`,
+      [tenantA, blind.countId, countingOwner.userId],
+    );
+    expect(source[0], "a real blind-count audit event to copy").toBeDefined();
+    const ulid = createUlid(Date.now() + 5);
+    const copy = {
+      ...source[0]!.event,
+      id: ulid,
+      maskedChanges: {
+        before: {
+          ...(source[0]!.event.maskedChanges.before ?? {}),
+          ...EXTRA_QUANTITIES,
+        },
+        after: {
+          ...(source[0]!.event.maskedChanges.after ?? {}),
+          ...EXTRA_QUANTITIES,
+        },
+      },
+    };
+    await owner.query(
+      `INSERT INTO audit_logs (tenant_id, id, outlet_id, event, retention_class)
+       VALUES ($1, $2, $3, $4, 'audit_2y')`,
+      [
+        tenantA,
+        ulidToUuid(ulid),
+        (copy as { outletId?: string | null }).outletId ?? null,
+        JSON.stringify(copy),
+      ],
+    );
+
+    const authors = [countingOwner];
+    const pick = (rows: AuditRow[]) =>
+      rows.filter((row) => row.event.id === ulid);
+    for (const forbidden of [countingOwner, admin]) {
+      const rows = pick(
+        await countEventsFor(forbidden, blind.countId, authors),
+      );
+      expect(rows, "the copied event is listed").toHaveLength(1);
+      const text = JSON.stringify(rows);
+      for (const number of Object.values(EXTRA_QUANTITIES))
+        expect(text).not.toContain(String(number));
+      for (const side of ["before", "after"] as const)
+        for (const key of Object.keys(EXTRA_QUANTITIES))
+          expect(
+            isHidden(rows[0]!.event.maskedChanges[side]?.[key]),
+            `${side}.${key} visible to a forbidden reader`,
+          ).toBe(true);
+    }
+
+    // The approver who never counted still reads the numbers.
+    const rows = pick(await countEventsFor(reviewer, blind.countId, authors));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event.maskedChanges.after?.systemQty).toBe(7774);
   });
 });
 

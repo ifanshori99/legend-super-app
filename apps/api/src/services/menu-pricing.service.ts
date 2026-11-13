@@ -995,7 +995,13 @@ export async function updateAvailability(
   now = new Date(),
 ): Promise<Availability> {
   return withTenant(db, context, async (tx) => {
-    const existing = await requireAvailability(tx, context, availabilityId);
+    // Lock the row: `source` below depends on the status read here.
+    const existing = await requireAvailability(
+      tx,
+      context,
+      availabilityId,
+      true,
+    );
     await assertOutletPermission(
       tx,
       context,
@@ -1017,6 +1023,9 @@ export async function updateAvailability(
                 input.soldOutUntil === null
                   ? null
                   : new Date(input.soldOutUntil),
+              ...(existing.status === "sold_out"
+                ? { source: "staff" as const }
+                : {}),
             }
           : {}),
         updatedAt: now,
@@ -1169,7 +1178,12 @@ export async function setAvailabilityStatus(
     }
     const [row] = await tx
       .update(itemAvailability)
-      .set({ status: next, soldOutUntil, updatedAt: now })
+      .set({
+        status: next,
+        soldOutUntil,
+        source: next === "sold_out" ? "staff" : null,
+        updatedAt: now,
+      })
       .where(
         and(
           eq(itemAvailability.tenantId, context.tenant.tenantId),
