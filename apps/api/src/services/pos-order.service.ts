@@ -1334,6 +1334,37 @@ export async function completePosOrder(
         captured
           .filter((tender) => tenderBucket(tender.method as never) === name)
           .reduce((sum, tender) => sum + tender.amountIdr, 0);
+      // Edge order ingest (docs/design/edge-order-ingest.md): enough to
+      // rebuild the order on the cloud. Void lines are included; `status`
+      // tells the consumer which to skip. When the lines do not sum to the
+      // subtotal the keys are left out: the event stays valid and the sale
+      // is never blocked by this payload (the cloud parks the order).
+      const liveLinesTotal = items.reduce(
+        (sum, { item }) =>
+          item.status === "voided" ? sum : sum + Number(item.lineTotalIdr),
+        0,
+      );
+      const edgeIngestKeys =
+        liveLinesTotal === Number(order.subtotalIdr)
+          ? {
+              orderNumber: order.number,
+              subtotalIdr: order.subtotalIdr,
+              pricesIncludeTax: order.pricesIncludeTax,
+              paymentMode: order.paymentMode,
+              isTraining: pos.isTraining,
+              lines: items.map(({ item }) => ({
+                menuItemId: item.menuItemId,
+                name: item.name,
+                quantity: item.quantity,
+                unitPriceIdr: item.unitPriceIdr,
+                modifiersTotalIdr: item.modifiersTotalIdr,
+                lineTotalIdr: item.lineTotalIdr,
+                fireStatus: item.fireStatus,
+                reservedBusinessDate: item.reservedBusinessDate,
+                status: item.status,
+              })),
+            }
+          : {};
       const paidPayload = {
         orderId: order.id,
         outletId,
@@ -1365,25 +1396,7 @@ export async function completePosOrder(
         cashierId: pos.cashierId,
         deviceId: pos.deviceId,
         paidAt: now.toISOString(),
-        // Edge order ingest (docs/design/edge-order-ingest.md): enough to
-        // rebuild the order on the cloud. Void lines are included; `status`
-        // tells the consumer which to skip.
-        orderNumber: order.number,
-        subtotalIdr: order.subtotalIdr,
-        pricesIncludeTax: order.pricesIncludeTax,
-        paymentMode: order.paymentMode,
-        isTraining: pos.isTraining,
-        lines: items.map(({ item }) => ({
-          menuItemId: item.menuItemId,
-          name: item.name,
-          quantity: item.quantity,
-          unitPriceIdr: item.unitPriceIdr,
-          modifiersTotalIdr: item.modifiersTotalIdr,
-          lineTotalIdr: item.lineTotalIdr,
-          fireStatus: item.fireStatus,
-          reservedBusinessDate: item.reservedBusinessDate,
-          status: item.status,
-        })),
+        ...edgeIngestKeys,
       };
       // Every completed sale emits order.paid. A sale fully covered by the
       // reservation DP (legend-9pz9) carries empty tenders, so the deposit

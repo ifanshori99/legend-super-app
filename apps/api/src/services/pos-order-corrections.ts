@@ -14,7 +14,7 @@
 // is not voided afterwards and a voided sale is not refunded (one correction
 // path per sale keeps the day's totals unambiguous, POS-05).
 
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   allocateIdr,
   CoreError,
@@ -39,6 +39,7 @@ import {
 } from "@starter/shared/pos";
 import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
+import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
 import {
   posOrderRefunds,
   posOrderVoids,
@@ -131,6 +132,36 @@ function refundDto(row: RefundRow): PosRefund {
   });
 }
 
+/**
+ * Money guard: an order the cloud ingested from an edge node (state
+ * `ingested` or `voided`) may already have been, or be about to be, paid out
+ * offline by the edge, so a cloud void or refund on it could pay twice. Refused
+ * until the founder decides the rule. One query, shared by void and refund.
+ */
+async function assertNotEdgeIngested(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<void> {
+  const [row] = await tx
+    .select({ orderId: edgeOrderIngests.orderId })
+    .from(edgeOrderIngests)
+    .where(
+      and(
+        eq(edgeOrderIngests.tenantId, context.tenant.tenantId),
+        eq(edgeOrderIngests.orderId, orderId),
+        inArray(edgeOrderIngests.state, ["ingested", "voided"]),
+      ),
+    )
+    .limit(1);
+  if (row)
+    throw new HttpError(
+      409,
+      "EDGE_ORDER_CORRECTION_BLOCKED",
+      "Pesanan ini dibayar lewat node edge dan sudah diterima server pusat; void atau refund dari server pusat ditolak karena edge mungkin sudah atau akan membayar keluar secara offline.",
+    );
+}
+
 /** Corrections lock the final order (FOR UPDATE does not fire the triggers). */
 async function correct<T>(
   context: ScopedTenantContext,
@@ -165,6 +196,7 @@ async function correct<T>(
           input.orderId,
         );
         assertCorrectionTargetsFinalOrder({ status: locked.order.status });
+        await assertNotEdgeIngested(tx, context, locked.order.id);
         // legend-ykk88: the fact time is taken after the lock, later than every
         // money fact already committed on the bill, whatever clock the request
         // read before it waited. Persistence and events use this one time.

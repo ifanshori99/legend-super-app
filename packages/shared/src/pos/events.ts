@@ -182,25 +182,14 @@ export const orderPaidPayloadSchema = z
     lines: z.array(orderPaidLineSchema).max(999).optional(),
   })
   .superRefine((payload, ctx) => {
-    if (payload.lines !== undefined) {
-      if (payload.subtotalIdr === undefined)
-        ctx.addIssue({
-          code: "custom",
-          path: ["subtotalIdr"],
-          message: "subtotalIdr is required when lines are present",
-        });
-      else {
-        const linesTotal = payload.lines
-          .filter((line) => line.status !== "voided")
-          .reduce((sum, line) => sum + Number(line.lineTotalIdr), 0);
-        if (linesTotal !== Number(payload.subtotalIdr))
-          ctx.addIssue({
-            code: "custom",
-            path: ["lines"],
-            message: "Non-void lines must sum to subtotalIdr",
-          });
-      }
-    }
+    // Σ non-void lines == subtotalIdr is NOT a schema rule: the cloud checks it
+    // at ingest (`lines_mismatch`) so the event is still parked when it fails.
+    if (payload.lines !== undefined && payload.subtotalIdr === undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["subtotalIdr"],
+        message: "subtotalIdr is required when lines are present",
+      });
     const total =
       Number(payload.grossSalesIdr) -
       Number(payload.discountIdr) +

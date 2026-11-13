@@ -12,9 +12,16 @@
 //  - the refusal reason is read from `edge_order_ingests.reason` (text code); a
 //    refused void of an already ingested order is asserted on `reason` and on the
 //    absence of a void row, not on `state`.
-//  - a payload whose lines do not add up to `subtotalIdr` may be stopped by the
-//    contract refinement (rolled back or conflict) or by the ingest (`lines_mismatch`):
-//    both are accepted, a cloud order is not.
+//  - a payload whose lines do not add up to `subtotalIdr` passes the schema, is
+//    parked and refused by the ingest as `lines_mismatch` (review fix).
+//  - a gateway tender (card, va, ewallet, qris) is refused as `tender_unsupported`;
+//    cash, points, edc_card and edc_qris are ingested.
+//  - retry (review fix): a ledger row refused with the SAME event and reason
+//    `db_error:*` or `lock_failed` is cleared and retried when the event is applied
+//    again; any other row (other event, other reason) is a no-op. The retry is driven
+//    through applyEdgeDeferredEvent directly, because the link itself never
+//    redelivers an event it already recorded. `lock_failed` cannot be induced
+//    deterministically from outside and is not tested.
 //  - edge ids of lines are not sent; the cloud keeps every sent line (also a
 //    voided one) and only non-void lines count towards `subtotalIdr`.
 import { randomBytes, randomUUID } from "node:crypto";
@@ -352,12 +359,17 @@ function taxInclusivePayload(orderId: string, businessDate = BUSINESS_DATE) {
 function paidEvent(
   orderId: string,
   over: Payload = {},
-  opts: { where?: Where; aggregateId?: string; payload?: Payload } = {},
+  opts: {
+    where?: Where;
+    aggregateId?: string;
+    payload?: Payload;
+    sequence?: number;
+  } = {},
 ): EventEnvelope {
   return envelope(
     "order.paid",
     opts.aggregateId ?? orderId,
-    1,
+    opts.sequence ?? 1,
     opts.payload ?? paidPayload(orderId, over),
     opts.where,
   );
@@ -919,11 +931,11 @@ describe("legend-771dl refusals keep the parked event and never stall the link",
     });
   });
 
-  it("an event whose aggregate id is another order is refused as aggregate_mismatch", async () => {
+  it("an event whose aggregate id is another order creates no order and writes no ledger row (only parked)", async () => {
     const orderId = createUlid(++clock);
     const otherId = createUlid(++clock);
-    const before = await n(
-      "SELECT count(*)::int AS n FROM edge_order_ingests WHERE tenant_id = $1 AND reason = 'aggregate_mismatch'",
+    const ledgerBefore = await n(
+      "SELECT count(*)::int AS n FROM edge_order_ingests WHERE tenant_id = $1",
       [tenantId],
     );
     const event = paidEvent(orderId, {}, { aggregateId: otherId });
@@ -933,15 +945,35 @@ describe("legend-771dl refusals keep the parked event and never stall the link",
     expect(await parkedRowsOf(event)).toBe(1);
     expect(await cloudOrders(orderId)).toBe(0);
     expect(await cloudOrders(otherId)).toBe(0);
+    // legend-771dl review: a mismatch is only logged, never recorded, so it
+    // cannot occupy the ledger slot of either order.
+    expect(await ingestOf(orderId)).toBeUndefined();
+    expect(await ingestOf(otherId)).toBeUndefined();
     expect(
       await n(
-        "SELECT count(*)::int AS n FROM edge_order_ingests WHERE tenant_id = $1 AND reason = 'aggregate_mismatch'",
+        "SELECT count(*)::int AS n FROM edge_order_ingests WHERE tenant_id = $1",
         [tenantId],
       ),
-    ).toBe(before + 1);
+    ).toBe(ledgerBefore);
   });
 
-  it("lines that do not add up to the subtotal never create a cloud order", async () => {
+  it("a mismatched event does not poison the ledger: a valid paid event for either order is still ingested", async () => {
+    const orderId = createUlid(++clock);
+    const otherId = createUlid(++clock);
+    await deliver([paidEvent(orderId, {}, { aggregateId: otherId })]);
+
+    const forOrder = paidEvent(orderId);
+    // The aggregate `otherId` already carries sequence 1 (the mismatched event).
+    const forOther = paidEvent(otherId, {}, { sequence: 2 });
+    await deliver([forOrder, forOther]);
+
+    expect(await cloudOrders(orderId)).toBe(1);
+    expect(await cloudOrders(otherId)).toBe(1);
+    expect(await ingestOf(orderId)).toMatchObject({ state: "ingested" });
+    expect(await ingestOf(otherId)).toMatchObject({ state: "ingested" });
+  });
+
+  it("lines that do not add up to the subtotal are parked and refused as lines_mismatch", async () => {
     const orderId = createUlid(++clock);
     const event = paidEvent(orderId, {
       subtotalIdr: 76000,
@@ -955,15 +987,17 @@ describe("legend-771dl refusals keep the parked event and never stall the link",
       ],
     });
 
-    // The contract refinement may roll the batch back or record a conflict
-    // (like any malformed order.paid); the ingest may refuse it. Either way:
-    await deliver([event]).catch(() => undefined);
+    // The schema no longer checks the line sum: the event is accepted and
+    // parked, and the ingest refuses it (no "either way" any more).
+    await deliver([event]);
 
+    expect(await parkedRowsOf(event)).toBe(1);
     expect(await cloudOrders(orderId)).toBe(0);
     expect(await childCounts(orderId)).toEqual(NOTHING);
-    const row = await ingestOf(orderId);
-    if (row)
-      expect(row).toMatchObject({ state: "refused", reason: "lines_mismatch" });
+    expect(await ingestOf(orderId)).toMatchObject({
+      state: "refused",
+      reason: "lines_mismatch",
+    });
   });
 
   it("an order that already exists in the cloud is left as it is and refused as order_exists", async () => {
@@ -1286,5 +1320,247 @@ describe("legend-771dl no side effects of a cloud sale", () => {
       [tenantId, shiftId],
     );
     expect(shiftAfter).toEqual(shiftBefore);
+  });
+});
+
+describe("legend-771dl gateway tenders are refused", () => {
+  const gateway = (method: string): Payload => ({
+    paidCashIdr: 0,
+    paidGatewayIdr: 77000,
+    paidEdcIdr: 0,
+    paidPointsIdr: 0,
+    tenders: [{ method, amountIdr: 77000 }],
+  });
+
+  for (const method of ["qris", "card", "va", "ewallet"])
+    it(`a ${method} tender is refused as tender_unsupported and creates no order`, async () => {
+      const orderId = createUlid(++clock);
+      const event = paidEvent(orderId, gateway(method));
+
+      await deliver([event]);
+
+      expect(await parkedRowsOf(event)).toBe(1);
+      expect(await cloudOrders(orderId)).toBe(0);
+      expect(await childCounts(orderId)).toEqual(NOTHING);
+      expect(await ingestOf(orderId)).toMatchObject({
+        state: "refused",
+        reason: "tender_unsupported",
+      });
+    });
+
+  it("an edc_qris tender (an EDC machine, not a gateway) is ingested", async () => {
+    const orderId = createUlid(++clock);
+    await deliver([
+      paidEvent(orderId, {
+        paidCashIdr: 0,
+        paidEdcIdr: 77000,
+        paidPointsIdr: 0,
+        tenders: [{ method: "edc_qris", amountIdr: 77000 }],
+      }),
+    ]);
+
+    expect(await cloudOrders(orderId)).toBe(1);
+    expect(await ingestOf(orderId)).toMatchObject({ state: "ingested" });
+    const methods = await q<{ method: string }>(
+      "SELECT method FROM pos_order_tenders WHERE tenant_id = $1 AND order_id = $2::uuid",
+      [tenantId, dbId(orderId)],
+    );
+    expect(methods).toEqual([{ method: "edc_qris" }]);
+  });
+
+  it("one gateway tender among cash tenders refuses the whole order", async () => {
+    const orderId = createUlid(++clock);
+    await deliver([
+      paidEvent(orderId, {
+        paidCashIdr: 50000,
+        paidGatewayIdr: 27000,
+        paidEdcIdr: 0,
+        paidPointsIdr: 0,
+        tenders: [
+          { method: "cash", amountIdr: 50000, receivedIdr: 50000 },
+          { method: "qris", amountIdr: 27000 },
+        ],
+      }),
+    ]);
+
+    expect(await cloudOrders(orderId)).toBe(0);
+    expect(await childCounts(orderId)).toEqual(NOTHING);
+    expect(await ingestOf(orderId)).toMatchObject({
+      state: "refused",
+      reason: "tender_unsupported",
+    });
+  });
+});
+
+describe("legend-771dl a refused ingest is retried only for the same event and a retryable reason", () => {
+  /**
+   * The edge resends an event the cloud already holds (e.g. its ack was lost and
+   * the cloud's receipt rows were cleared): drop the cloud's receipt of it, then
+   * deliver it again. The parked row stays, so the hook sees a replay.
+   */
+  async function redeliver(event: EventEnvelope) {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
+      for (const table of ["edge_inbound_events", "edge_received_events"])
+        await client.query(
+          `DELETE FROM ${table} WHERE tenant_id = $1 AND event_id = $2::uuid`,
+          [tenantId, ulidToUuid(event.id)],
+        );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    await deliver([event]);
+  }
+
+  const ledgerEvent = async (orderId: string) =>
+    (
+      await q<{ paid: string }>(
+        `SELECT paid_event_id::text AS paid FROM edge_order_ingests
+          WHERE tenant_id = $1 AND order_id = $2::uuid`,
+        [tenantId, dbId(orderId)],
+      )
+    )[0]?.paid;
+
+  it("a db_error refusal is cleared and the same event ingests once the cause is gone", async () => {
+    const clashing = "RETRY-0001";
+    const clashId = randomUUID();
+    // 'sent' (not final) so the number can be changed afterwards.
+    await q(
+      `INSERT INTO orders (id, tenant_id, outlet_id, number, channel, service_type, payment_mode,
+                           subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr,
+                           total_idr, status, business_date, placed_at)
+       VALUES ($1::uuid, $2, $3, $4, 'qr', 'takeaway', 'pay_first',
+               1000, 0, 0, 0, 0, 1000, 'sent', $5, now())`,
+      [clashId, tenantId, outletA, clashing, BUSINESS_DATE],
+    );
+    const orderId = createUlid(++clock);
+    const event = paidEvent(orderId, { orderNumber: clashing });
+
+    await deliver([event]);
+    expect((await ingestOf(orderId))?.reason).toMatch(/^db_error:/);
+    expect(await cloudOrders(orderId)).toBe(0);
+
+    // Still clashing: a replay refuses again, no half-written rows.
+    await redeliver(event);
+    expect((await ingestOf(orderId))?.reason).toMatch(/^db_error:/);
+    expect(await childCounts(orderId)).toEqual(NOTHING);
+
+    await q(
+      "UPDATE orders SET number = 'RETRY-MOVED' WHERE tenant_id = $1 AND id = $2::uuid",
+      [tenantId, clashId],
+    );
+    await redeliver(event);
+
+    expect(await ingestOf(orderId)).toMatchObject({
+      state: "ingested",
+      reason: null,
+    });
+    expect(await cloudOrders(orderId)).toBe(1);
+    expect(await childCounts(orderId)).toEqual({
+      items: 3,
+      posItems: 3,
+      tenders: 3,
+      posOrders: 1,
+    });
+    // And once ingested, further replays are no-ops.
+    await redeliver(event);
+    await redeliver(event);
+    expect(await childCounts(orderId)).toEqual({
+      items: 3,
+      posItems: 3,
+      tenders: 3,
+      posOrders: 1,
+    });
+    expect(await ingestRowCount(orderId)).toBe(1);
+    expect(await parkedRowsOf(event)).toBe(1);
+  });
+
+  it("a non-retryable refusal (legacy_payload) stays refused on replay of the same event", async () => {
+    const orderId = createUlid(++clock);
+    const event = paidEvent(orderId, {}, { payload: legacyPayload(orderId) });
+
+    await deliver([event]);
+    await redeliver(event);
+
+    expect(await ingestOf(orderId)).toMatchObject({
+      state: "refused",
+      reason: "legacy_payload",
+    });
+    expect(await cloudOrders(orderId)).toBe(0);
+    expect(await ingestRowCount(orderId)).toBe(1);
+  });
+
+  it("a different event for an already refused order is a no-op: the first event keeps the ledger row", async () => {
+    const orderId = createUlid(++clock);
+    const first = paidEvent(orderId, {}, { payload: legacyPayload(orderId) });
+    await deliver([first]);
+    const keptEvent = await ledgerEvent(orderId);
+    expect(keptEvent).toBe(ulidToUuid(first.id));
+
+    // A well-formed event with another id for the same order (next sequence).
+    await deliver([paidEvent(orderId, {}, { sequence: 2 })]);
+
+    expect(await cloudOrders(orderId)).toBe(0);
+    expect(await ingestOf(orderId)).toMatchObject({
+      state: "refused",
+      reason: "legacy_payload",
+    });
+    expect(await ledgerEvent(orderId)).toBe(keptEvent);
+  });
+
+  it("a different event for an ingested order is a no-op: no second order or ledger change", async () => {
+    const orderId = createUlid(++clock);
+    const first = paidEvent(orderId);
+    await deliver([first]);
+    expect(await cloudOrders(orderId)).toBe(1);
+
+    await deliver([paidEvent(orderId, {}, { sequence: 2 })]);
+
+    expect(await cloudOrders(orderId)).toBe(1);
+    expect(await ledgerEvent(orderId)).toBe(ulidToUuid(first.id));
+    expect(await ingestRowCount(orderId)).toBe(1);
+  });
+});
+
+describe("legend-771dl an ingested order has no payment ledger rows", () => {
+  it("no payment intent or link exists for an ingested order, so refund recovery and late-payment paths have nothing to touch", async () => {
+    const orderId = createUlid(++clock);
+    await deliver([paidEvent(orderId)]);
+    expect(await cloudOrders(orderId)).toBe(1);
+
+    expect(
+      await n(
+        "SELECT count(*)::int AS n FROM payment_intents WHERE tenant_id = $1 AND order_id = $2::uuid",
+        [tenantId, dbId(orderId)],
+      ),
+    ).toBe(0);
+    expect(
+      await n(
+        "SELECT count(*)::int AS n FROM payment_links WHERE tenant_id = $1",
+        [tenantId],
+      ),
+    ).toBe(0);
+    const tenders = await q<{
+      payment_intent_id: string | null;
+      payment_link_id: string | null;
+    }>(
+      `SELECT payment_intent_id::text, payment_link_id::text FROM pos_order_tenders
+        WHERE tenant_id = $1 AND order_id = $2::uuid`,
+      [tenantId, dbId(orderId)],
+    );
+    for (const tender of tenders) {
+      expect(tender.payment_intent_id).toBeNull();
+      expect(tender.payment_link_id).toBeNull();
+    }
   });
 });

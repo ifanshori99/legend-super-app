@@ -95,6 +95,42 @@ function sameOrder(a: string, b: string): boolean {
   return sourceIdToDb(a).toLowerCase() === sourceIdToDb(b).toLowerCase();
 }
 
+/** True when the aggregate and the payload name the same order and outlet. */
+function aggregateMatches(
+  event: EventEnvelope,
+  payload: { orderId: string; outletId: string },
+  outletId: string,
+): boolean {
+  return (
+    sameOrder(event.aggregateId, payload.orderId) &&
+    payload.outletId.toLowerCase() === outletId.toLowerCase()
+  );
+}
+
+/**
+ * Takes the order lock inside the caller's savepoint. A failure (lock timeout,
+ * deadlock, ...) is a `lock_failed` refusal, never a throw out of the ingest.
+ */
+async function lockOrThrow(
+  tx: EdgeTx,
+  tenantId: TenantId,
+  orderId: string,
+): Promise<void> {
+  try {
+    await lockOrderSource(tx, tenantId, sourceIdToDb(orderId));
+  } catch {
+    throw new IngestRefusal("lock_failed");
+  }
+}
+
+/** Refusal reasons that a later delivery of the same event may retry. */
+function isTransientReason(reason: string | null): boolean {
+  return (
+    reason !== null &&
+    (reason === "lock_failed" || reason.startsWith("db_error:"))
+  );
+}
+
 /** Inserts the ledger row; false when a row for the order already exists. */
 async function insertLedger(
   tx: EdgeTx,
@@ -165,8 +201,15 @@ export async function ingestEdgeOrderPaid(
   }
   const payload = parsed.data;
   const tenantId = meta.context.tenant.tenantId;
-  // R4: one lock for paid, void and cost recompute of this order.
-  await lockOrderSource(tx, tenantId, sourceIdToDb(payload.orderId));
+  // A mismatching aggregate names no trustworthy order id: nothing is locked
+  // or written to the ledger, the parked event is the only record.
+  if (!aggregateMatches(event, payload, outletId)) {
+    logger.warn(
+      { eventId: event.id, reason: "aggregate_mismatch" },
+      "Edge order.paid refused",
+    );
+    return;
+  }
   try {
     await tx.transaction((sp) =>
       applyPaid(sp, tenantId, outletId, event, payload),
@@ -194,14 +237,42 @@ async function applyPaid(
   event: EventEnvelope,
   payload: OrderPaidPayload,
 ): Promise<void> {
-  // 1. The aggregate and the payload must name the same order and outlet.
-  if (
-    !sameOrder(event.aggregateId, payload.orderId) ||
-    payload.outletId.toLowerCase() !== outletId.toLowerCase()
-  )
-    throw new IngestRefusal("aggregate_mismatch");
+  // 1. R4: one lock for paid, void and cost recompute of this order. Inside
+  //    the savepoint so a failure is a recorded `lock_failed` refusal.
+  await lockOrThrow(tx, tenantId, payload.orderId);
 
-  // 2. Replay guard: a ledger row (any state) means this order was handled.
+  // 2. Replay guard: a ledger row means this order was handled. A row of
+  //    another event is final; a row of this very event is final too, except a
+  //    refusal with a transient reason, which is cleared and retried.
+  const [prior] = await tx
+    .select({
+      paidEventId: edgeOrderIngests.paidEventId,
+      state: edgeOrderIngests.state,
+      reason: edgeOrderIngests.reason,
+    })
+    .from(edgeOrderIngests)
+    .where(
+      and(
+        eq(edgeOrderIngests.tenantId, tenantId),
+        eq(edgeOrderIngests.orderId, payload.orderId),
+      ),
+    );
+  if (prior) {
+    const retry =
+      prior.state === "refused" &&
+      prior.paidEventId.toLowerCase() === event.id.toLowerCase() &&
+      isTransientReason(prior.reason);
+    if (!retry) return;
+    await tx
+      .delete(edgeOrderIngests)
+      .where(
+        and(
+          eq(edgeOrderIngests.tenantId, tenantId),
+          eq(edgeOrderIngests.orderId, payload.orderId),
+          eq(edgeOrderIngests.state, "refused"),
+        ),
+      );
+  }
   const claimed = await insertLedger(tx, {
     tenantId,
     orderId: payload.orderId,
@@ -251,6 +322,8 @@ async function applyPaid(
   if (tendered + Number(payload.paidDepositIdr) !== Number(payload.totalIdr))
     throw new IngestRefusal("money_mismatch");
   for (const tender of payload.tenders) {
+    if (providerOf(tender.method) === null)
+      throw new IngestRefusal("tender_unsupported");
     if (tender.method === "points" && tender.pointsUsed === undefined)
       throw new IngestRefusal("tender_invalid");
     if (
@@ -331,7 +404,8 @@ async function applyPaid(
       outletId,
       orderId: payload.orderId,
       method: tender.method,
-      provider: providerOf(tender.method),
+      // Non-null: unmappable methods were refused above.
+      provider: providerOf(tender.method) as "edc" | "manual",
       amountIdr: tender.amountIdr,
       receivedIdr: received === null ? null : idr(received),
       changeIdr:
@@ -347,11 +421,15 @@ async function applyPaid(
   }
 }
 
-/** `pos_order_tenders.provider` of a payload tender method. */
-function providerOf(method: string): "doit" | "edc" | "manual" {
+/**
+ * `pos_order_tenders.provider` of a payload tender method, or null when it
+ * cannot be mapped for certain: gateway methods (card, va, ewallet, qris, ...)
+ * need the real provider, which the edge event does not carry.
+ */
+function providerOf(method: string): "edc" | "manual" | null {
   if (method === "cash" || method === "points") return "manual";
   if (method === "edc_card" || method === "edc_qris") return "edc";
-  return "doit";
+  return null;
 }
 
 // ---- order.voided ---------------------------------------------------------
@@ -374,7 +452,13 @@ export async function ingestEdgeOrderVoided(
   }
   const payload = parsed.data;
   const tenantId = meta.context.tenant.tenantId;
-  await lockOrderSource(tx, tenantId, sourceIdToDb(payload.orderId));
+  if (!aggregateMatches(event, payload, outletId)) {
+    logger.warn(
+      { eventId: event.id, reason: "aggregate_mismatch" },
+      "Edge order.voided refused",
+    );
+    return;
+  }
   try {
     await tx.transaction((sp) =>
       applyVoided(sp, tenantId, outletId, event, payload),
@@ -407,11 +491,7 @@ async function applyVoided(
   event: EventEnvelope,
   payload: OrderVoidedPayload,
 ): Promise<void> {
-  if (
-    !sameOrder(event.aggregateId, payload.orderId) ||
-    payload.outletId.toLowerCase() !== outletId.toLowerCase()
-  )
-    throw new IngestRefusal("aggregate_mismatch");
+  await lockOrThrow(tx, tenantId, payload.orderId);
 
   const [ledger] = await tx
     .select({
