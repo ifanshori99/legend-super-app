@@ -428,7 +428,7 @@ describe("payout mapping changes after refund amounts are calculated (legend-48f
           idempotencyKey: `race-refund:${createUlid()}`,
         });
       }),
-    ).rejects.toMatchObject({ code: "POSTING_AMOUNTS_MISMATCH" });
+    ).rejects.toMatchObject({ code: "ACCOUNT_MAPPING_MISSING" });
 
     expect(await journalCount(world)).toBe(1);
     expect(await totalsOf(world, "tax_payable_pbjt")).toEqual(before);
