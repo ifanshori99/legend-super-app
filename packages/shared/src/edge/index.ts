@@ -8,3 +8,4 @@ export * from "./bootstrap.ts";
 export * from "./people-snapshot.ts";
 export * from "./catalog-sync.ts";
 export * from "./selfie-seal.ts";
+export * from "./printers.ts";
