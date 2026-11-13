@@ -1434,3 +1434,4 @@ Langkah berikut CTO baru:
 - 18:51 Founder Q9 (THR gross-up ditanggung perusahaan), Q10 (metode bayar default disetujui), Q12 (aturan perintah pendek test-runner ditambah). Mulai fix/thr-gross-up (brief 635).
 - 18:52 Founder Q8 dana kas kecil wajib -> G3t0j fix/petty-fund-required (brief 636). G5dlj fix/thr-gross-up (brief 635).
 - 18:55 Founder Q7: kas keluar > batas tenant (Rp5 jt) butuh persetujuan -> dikirim ke G3t0j (migr 0496-0497).
+- 18:55 Founder Q5 (R1 permanen) + Q6 (UI Kas & Bank disetujui).
