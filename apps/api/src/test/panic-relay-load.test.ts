@@ -784,6 +784,64 @@ describe("PRL-H4b recovery and a press reach one socket at the same time", () =>
   );
 });
 
+describe("PRL-H5 a slow delivery write never blocks a later send of the same alert", () => {
+  it(
+    "PRL-H5 while the first delivery insert hangs, a replayed press and the 3 s resend each still put a frame on the socket",
+    async () => {
+      const outlet = await world("PRL-H5");
+      const button = await registerPanicButton(outlet);
+      const rcv = await receiverFor(outlet, "PRLH5 Receiver");
+      // No receipt (autoReceive off): the alert stays due for resend (D-05).
+      const sock = await connect(rcv.cookie, { autoReceive: false });
+      // Every delivery insert stays open for 12 s. The press HTTP answer waits
+      // for the first send's delivery write, so presses are fired unawaited
+      // and the frames are read from the socket, not from the press response.
+      await slowDeliveryInsert(12_000);
+      const panicFrames = () =>
+        sock.frames.filter((f) => f.frame.type === PANIC_FRAME_ALERT);
+
+      const eventId = newEventId();
+      const firstPress = press(button.token, pressBody(eventId)).then(
+        (res) => res,
+      );
+      await vi.waitFor(() => expect(panicFrames()).toHaveLength(1), {
+        timeout: PANIC_DELIVERY_BUDGET_MS,
+        interval: 50,
+      });
+      const alertId = String(panicFrames()[0].frame.alertId);
+
+      // A replay of the same press (EM-07: shown again while open) is a forced
+      // send. The first send's delivery write is still hanging, yet a frame
+      // must go out.
+      const replayPress = press(button.token, pressBody(eventId)).then(
+        (res) => res,
+      );
+      await vi.waitFor(
+        () => expect(panicFrames().length).toBeGreaterThanOrEqual(2),
+        { timeout: PANIC_DELIVERY_BUDGET_MS, interval: 50 },
+      );
+      const afterReplay = panicFrames().length;
+
+      // The periodic resend (about every 3 s) is not starved either: one more
+      // frame arrives within a resend window while all writes still hang.
+      await vi.waitFor(
+        () => expect(panicFrames().length).toBeGreaterThan(afterReplay),
+        { timeout: 2 * PANIC_RESEND_INTERVAL_MS + 1_500, interval: 100 },
+      );
+      expect(new Set(panicFrames().map((f) => f.frame.alertId))).toEqual(
+        new Set([alertId]),
+      );
+      const [row] = await alertsOf(button.deviceId);
+      expect(row.unrouted_since).toBeNull();
+
+      // The hung writes end after 12 s; the presses are then answered.
+      for (const res of await Promise.all([firstPress, replayPress]))
+        expect([200, 201]).toContain(res.status);
+    },
+    SLOW_MS,
+  );
+});
+
 // PRL-H3 (receiver-session recheck rejecting) is not covered: see the header.
 
 // ===========================================================================

@@ -435,7 +435,7 @@ async function sessionStillLive(sub: HubSubscriber): Promise<boolean> {
   return false;
 }
 
-// Alerts a socket is being sent right now (check, send, record). A second send
+// Alerts a socket is being sent right now (check, send). A second send
 // of the same alert to the same socket awaits the running one and returns its
 // result, instead of racing it or being counted as unsent.
 const sendsInFlight = new WeakMap<
@@ -458,9 +458,12 @@ function sendFrame(
   }
   const running = inFlight.get(frame.alertId);
   if (running) return running;
-  const attempt = doSendFrame(sub, frame, alertReceivedAt).finally(() => {
+  const release = () => {
     if (inFlight.get(frame.alertId) === attempt) inFlight.delete(frame.alertId);
-  });
+  };
+  const attempt = doSendFrame(sub, frame, alertReceivedAt, release).finally(
+    release,
+  );
   inFlight.set(frame.alertId, attempt);
   return attempt;
 }
@@ -469,6 +472,7 @@ async function doSendFrame(
   sub: HubSubscriber,
   frame: PanicRealtimeFrame,
   alertReceivedAt: number,
+  release: () => void,
 ): Promise<boolean> {
   if (!(await sessionStillLive(sub))) return false;
   if (!sub.send(frame)) return false;
@@ -479,6 +483,10 @@ async function doSendFrame(
     lastSentAt: Date.now(),
     received: sub.alerts.get(frame.alertId)?.received ?? false,
   });
+  // The frame is out: free the slot before the (possibly slow) delivery write,
+  // so a replay or a resend is not held behind it. `release` runs after the
+  // first await, so `attempt` already exists.
+  release();
   try {
     await recordSent(sub.session, frame);
   } catch (error) {
