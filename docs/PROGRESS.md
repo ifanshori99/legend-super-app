@@ -5271,3 +5271,11 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gerbang: lint hijau (0 error, 2 warning lama); typecheck 49 dtk hijau; tes root `node --test tests/*.test.mjs` terarah 2851/2855 (4 gagal hanya "isolated database", lingkungan); `heavy pnpm run test` penuh 02:33-03:45 (72 mnt) exit 0: vitest 1082 berkas/17477 lulus/41 skip/16 todo, root 2884/2884; build hijau; e2e `legend-zueb.mock.spec.ts` 18/18 hijau.
 - Flake 654: `rotate-data-key`, `hris-leave-changed-event`, `platform-org-api` TEN-03/06 tidak muncul di run penuh (0 gagal). Bukti fix 654.
 - Belum: `legend-zy43` (tidak ada producer `receipt_run.reported` di edge). Rilis edge order ingest: deploy cloud dulu, baru edge.
+
+## 2026-11-14: Perbaikan laporan dan dasbor WS-11 (ws/reports-dashboard-fixes, dari m1 b17554cb9)
+
+- legend-nipn7 selesai: `today` dan `periodClosed` dasbor memakai zona waktu dan jam tutup tiap outlet (`outletBusinessDayClock`); multi-outlet memakai tanggal bisnis paling awal. `evaluateMetrics` menerima opsi `today` supaya finalitas nilai sejalan dengan `period.status`.
+- legend-wqorb selesai: `taxReportLineSchema.warnings` (default `[]`, tanpa migrasi); peringatan non-PBJT pindah dari `references`; tampil di tabel laporan web. Data lama berawalan "Peringatan:" tetap tersaring dari XML Coretax dan dinormalkan di guard TAX_REPORT_NO_CHANGE (temuan reviewer).
+- legend-20ucm sebagian: `loyalty-crm.ts` menghidupkan new_customers, returning_customers, review_rating, review_count, promo_cost. `active_members` dan `points_redeemed` (jadi `loyalty.members/points/tier_mix`) tetap `unavailable`: butuh keputusan (riwayat status/outlet anggota; hari dan outlet milik poin tebus).
+- legend-p4q10 DIPARKIR: butuh keputusan model kursi (penanda zona WFC, kursi tersedia, pendapatan zona lewat meja->sesi->order net/gross, pembagi jam). Tidak ada kode diubah.
+- Bukti: 18 test merah di base (b17554cb9) pada 4 berkas baru, hijau di HEAD; 12 berkas terarah 234 test + ws11-mock-drift 15 hijau; prettier, eslint, typecheck shared/api/web, check-journal hijau. Tanpa migrasi.
