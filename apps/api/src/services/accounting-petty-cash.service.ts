@@ -576,9 +576,7 @@ export async function createPettyCashMovement(
           (await requiresApproval(tx, {
             tenantId,
             actorId,
-            outletId: input.outletId,
             amountIdr: input.amountIdr,
-            now,
           }))
         ) {
           // Held for approval: validated like a posting (period open) but no

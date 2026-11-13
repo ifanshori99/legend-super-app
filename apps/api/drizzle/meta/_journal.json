@@ -2255,6 +2255,13 @@
       "when": 1794570500000,
       "tag": "0335_purchase_price_variance",
       "breakpoints": true
+    },
+    {
+      "idx": 518,
+      "version": "7",
+      "when": 1794570600000,
+      "tag": "0518_cash_limit_cross_outlet_topups",
+      "breakpoints": true
     }
   ]
 }

@@ -9,17 +9,18 @@
 //   and approval as a cash out: amount > limit (strict) -> pending_approval,
 //   no journal, no fund balance change, no petty_cash_entries row, until a
 //   different finance user approves. `return` is not gated.
-// - Anti-split: for one creator, one outlet, one business day (outlet time
-//   zone, measured on the SERVER created_at, never the back-datable
-//   entry_date), the amount of THIS entry + earlier cash outs + top-ups that
-//   are approved or pending > limit makes THIS entry pending. Earlier entries
-//   are never changed. Rejected entries, other creators, other outlets and
+// - Anti-split (founder Q18, 13 Nov 2026): for one creator and one tenant
+//   calendar day (Asia/Jakarta, 00:00, measured on the SERVER created_at,
+//   never the back-datable entry_date), across ALL outlets and entity-level
+//   entries (no outlet), the amount of THIS entry + earlier cash outs +
+//   top-ups that are approved or pending > limit makes THIS entry pending.
+//   Earlier entries are never changed. Rejected entries, other creators and
 //   other days are not summed. Parallel submits cannot all slip through.
 //
 // Fail-first mapping (brief items):
 //   AS-1 (1) direct at/below limit        AS-2 (2) pending topup, nothing moves
 //   AS-3 (3) approve once, seq + parallel AS-4 (4) self approval, reject
-//   AS-5 (5) 3 x 2jt, mixed kinds         AS-6 (6) other creator/outlet/day/zone,
+//   AS-5 (5) 3 x 2jt, mixed kinds         AS-6 (6) other creator/day; all outlets summed,
 //   AS-7 (7) parallel submits                      rejected not counted
 //   AS-8 (8) other tenant refused         AS-9 (9) no double count on approval
 //   (10) the old cash-out/petty suites stay green; AS-1 keeps small amounts.
@@ -27,7 +28,7 @@
 // Isolation: the Cafe Legend tenant is shared with other test files, so this
 // file only counts rows of its own outlets / own legal entity, and every test
 // uses its OWN creator (and its own outlet) so the per-creator daily
-// accumulation never leaks between tests. The tenant limit is shared state:
+// accumulation (now across all outlets) never leaks between tests. The tenant limit is shared state:
 // the cash-out approval file lowers it briefly, so each test first waits for
 // the default Rp5.000.000 to be back. This file never changes the limit.
 //
@@ -48,13 +49,12 @@
 // - Period closed before approval: the approve answers a 4xx domain error
 //   (not NOT_FOUND / NOT_PENDING), the entry stays pending, no petty entry,
 //   no fund, no journal, nothing parked (brief: do NOT park).
-// - Business day = local date of (created_at - outlet cutoff) in the outlet
-//   time zone. To control the SERVER time the tests move created_at of an
-//   earlier cash_bank_entries row as the migration owner (replica role, so
-//   triggers do not interfere). Only cash outs are moved, never top-ups.
-//   Cutoff is set to 00:00 on the outlets of the zone test, so "midnight" is
-//   the plain local midnight; the zones used have no DST.
-// - Entity-level entries (outlet NULL) are their own group.
+// - Day = calendar date in Asia/Jakarta (WIB, midnight cutoff), the same for
+//   every outlet: the outlet's own time zone and cutoff play no part. To
+//   control the SERVER time the tests move created_at of an earlier
+//   cash_bank_entries row as the migration owner (replica role, so triggers
+//   do not interfere). Only cash outs are moved, never top-ups. WIB has no DST.
+// - Entity-level entries (outlet NULL) are summed with the outlet entries.
 import { randomUUID } from "node:crypto";
 import type { Response } from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -707,7 +707,7 @@ describe("top-up approval: who may decide, reject", () => {
   });
 });
 
-describe("anti-split: same creator, same outlet, same day", () => {
+describe("anti-split: same creator, same day, all outlets", () => {
   it("[cash-limit-antisplit-AS-5a] 3 x Rp2.000.000 cash out: the first two post, the third is pending; earlier entries are not changed", async () => {
     const creator = await finance("as5a");
     const outlet = await freshOutlet();
@@ -798,7 +798,7 @@ describe("anti-split: same creator, same outlet, same day", () => {
     ).toBe("pending");
   });
 
-  it("[cash-limit-antisplit-AS-5g] entity-level entries (no outlet) form their own group: 3 x Rp2.000.000 -> third pending", async () => {
+  it("[cash-limit-antisplit-AS-5g] entity-level entries (no outlet) are summed too: 3 x Rp2.000.000 -> third pending", async () => {
     const creator = await finance("as5g");
     expect(coOutcome(await cashOut(creator, null, 2 * MIL))).toBe("direct");
     expect(coOutcome(await cashOut(creator, null, 2 * MIL))).toBe("direct");
@@ -806,7 +806,7 @@ describe("anti-split: same creator, same outlet, same day", () => {
   });
 });
 
-describe("anti-split: what is not summed", () => {
+describe("anti-split: what is and is not summed", () => {
   it("[cash-limit-antisplit-AS-6a] another creator at the same outlet is not summed", async () => {
     const one = await finance("as6a one");
     const two = await finance("as6a two");
@@ -817,27 +817,49 @@ describe("anti-split: what is not summed", () => {
     expect(coOutcome(await cashOut(one, outlet, 2 * MIL))).toBe("pending");
   });
 
-  it("[cash-limit-antisplit-AS-6b] another outlet, and the entity-level group, are not summed", async () => {
-    const creator = await finance("as6b");
+  it("[cash-limit-antisplit-AS-6b] other outlets, top-ups at other outlets and entity-level entries ARE summed (Q18)", async () => {
+    // Cash outs at two outlets: 4jt at X posts, 4jt at Y makes 8jt -> pending.
+    const one = await finance("as6b one");
     const outletX = await freshOutlet();
     const outletY = await freshOutlet();
-    expect(coOutcome(await cashOut(creator, outletX, 4 * MIL))).toBe("direct");
-    expect(coOutcome(await cashOut(creator, outletY, 4 * MIL))).toBe("direct");
-    expect(coOutcome(await cashOut(creator, null, 4 * MIL))).toBe("direct");
-    // A top-up at a third outlet is its own group too.
-    const outletZ = await freshOutlet();
-    expect(tuOutcome(await topup(creator, outletZ, 4 * MIL))).toBe("direct");
-    // Control: the same creator and outlet again would be summed.
-    expect(coOutcome(await cashOut(creator, outletX, 2 * MIL))).toBe("pending");
+    expect(coOutcome(await cashOut(one, outletX, 4 * MIL))).toBe("direct");
+    expect(coOutcome(await cashOut(one, outletY, 4 * MIL))).toBe("pending");
+    // The pending entry counts too: an entity-level entry is gated as well.
+    expect(coOutcome(await cashOut(one, null, 1))).toBe("pending");
+
+    // Exactly the limit across X, Y and entity-level posts; one rupiah more pends.
+    const two = await finance("as6b two");
+    expect(coOutcome(await cashOut(two, outletX, 2 * MIL))).toBe("direct");
+    expect(coOutcome(await cashOut(two, outletY, 2 * MIL))).toBe("direct");
+    expect(coOutcome(await cashOut(two, null, 1 * MIL))).toBe("direct");
+    expect(coOutcome(await cashOut(two, outletX, 1))).toBe("pending");
+
+    // A direct top-up at another outlet counts toward a cash out elsewhere.
+    const three = await finance("as6b three");
+    expect(tuOutcome(await topup(three, outletY, 3 * MIL))).toBe("direct");
+    expect(coOutcome(await cashOut(three, outletX, 2 * MIL))).toBe("direct");
+    expect(coOutcome(await cashOut(three, null, 1))).toBe("pending");
+
+    // ... and a cash out at one outlet counts toward a top-up at another.
+    const four = await finance("as6b four");
+    expect(coOutcome(await cashOut(four, outletX, 4 * MIL))).toBe("direct");
+    expect(tuOutcome(await topup(four, outletY, 2 * MIL))).toBe("pending");
+
+    // An entity-level cash out counts toward an outlet entry.
+    const five = await finance("as6b five");
+    expect(coOutcome(await cashOut(five, null, 4 * MIL))).toBe("direct");
+    expect(coOutcome(await cashOut(five, outletX, 2 * MIL))).toBe("pending");
   });
 
-  it("[cash-limit-antisplit-AS-6c] an entry of another business day is not summed (outlet and entity-level groups)", async () => {
-    const creator = await finance("as6c");
+  it("[cash-limit-antisplit-AS-6c] an entry of another calendar day is not summed (outlet and entity-level entries)", async () => {
     const outlet = await freshOutlet();
     for (const outletId of [outlet, null]) {
+      // One creator per case: all outlets are summed now, so the cases would
+      // otherwise add up against each other.
+      const creator = await finance(`as6c ${outletId ? "outlet" : "entity"}`);
       const earlier = await cashOut(creator, outletId, 4 * MIL);
       expect(coOutcome(earlier)).toBe("direct");
-      // 25 hours ago is a different business day in any zone without DST.
+      // 25 hours ago is a different WIB calendar day (no DST).
       await backdate(
         earlier.body.data.id as string,
         new Date(Date.now() - 25 * 3600_000),
@@ -852,7 +874,10 @@ describe("anti-split: what is not summed", () => {
     }
   });
 
-  it("[cash-limit-antisplit-AS-6d] the day is the outlet's local day: two entries across the outlet's local midnight are not summed", async () => {
+  it("[cash-limit-antisplit-AS-6d] the day is the tenant's WIB calendar day: two entries across WIB midnight are not summed, whatever the outlet's own zone", async () => {
+    // The outlet zone (and cutoff) must not matter: with Asia/Jayapura at
+    // 00:00 the two entries fall on the same outlet-local day for most of the
+    // WIB day, yet they are on different WIB days and must stay apart.
     for (const timeZone of ["Asia/Jakarta", "Asia/Jayapura"]) {
       const creator = await finance(`as6d ${timeZone}`);
       const outlet = await freshOutlet();
@@ -860,16 +885,16 @@ describe("anti-split: what is not summed", () => {
         "UPDATE outlets SET timezone = $3, business_day_cutoff = '00:00' WHERE tenant_id = $1 AND id = $2",
         [tenantId, outlet, timeZone],
       );
-      const midnight = lastLocalMidnight(timeZone);
+      const midnight = lastLocalMidnight("Asia/Jakarta");
 
-      // Entry A: one minute before the outlet's latest local midnight.
+      // Entry A: one minute before the latest WIB midnight.
       const before = await cashOut(creator, outlet, 4 * MIL);
       expect(coOutcome(before)).toBe("direct");
       await backdate(
         before.body.data.id as string,
         new Date(midnight.getTime() - 60_000),
       );
-      // Entry B: now (after that midnight): another local day, not summed.
+      // Entry B: now (after that midnight): another WIB day, not summed.
       const after = await cashOut(creator, outlet, 4 * MIL);
       expect(coOutcome(after), timeZone).toBe("direct");
 

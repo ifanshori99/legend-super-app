@@ -413,13 +413,11 @@ export async function createCashBankEntry(
           (await requiresApproval(tx, {
             tenantId,
             actorId,
-            outletId,
             amountIdr: input.amountIdr,
-            now,
           }))
         ) {
           // Above the tenant limit, or the creator's cash outs and top-ups of
-          // this outlet and day add up past it (anti-split): validated like a
+          // the day (all outlets) add up past it (anti-split): validated like a
           // posting (period open, accounts usable) but parked without a
           // journal until approved.
           await assertPeriodOpenForPosting(tx, context, {
