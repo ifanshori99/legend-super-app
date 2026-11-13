@@ -68,7 +68,8 @@ describe("cash-out approval contract", () => {
       acc.cashBankEntrySchema.safeParse(entry({ status: "done" })).success,
       false,
     );
-    const { status: _status, ...withoutStatus } = entry();
+    const withoutStatus = entry();
+    delete withoutStatus.status;
     assert.equal(
       acc.cashBankEntrySchema.safeParse(withoutStatus).success,
       false,
