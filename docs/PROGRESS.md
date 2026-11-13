@@ -1471,3 +1471,4 @@ Langkah berikut CTO baru:
 - 00:02 649 G2sah lapor: fix/cash-antisplit-cross-outlet 037fac4c0 (migr 0518), architect 1 ronde 2 Medium dibetulkan; diminta rerun 6 file + db:generate. Q18 lanjutan ke founder: entri pertama tetap approved, kedua pending.
 - 00:04 649 selesai: 121/121 test kas, db:generate kosong. G2sah di-resolve. fix/cash-antisplit-cross-outlet antre batch59. Tunggu jawaban founder Q18 lanjutan.
 - 00:12 founder Q18 lanjutan: hanya yang lewat batas ditahan (aturan sekarang). legend-fcali siap batch59.
+- 00:18 647 G95ca lapor: ws/edge-sync-appliers ab2e4e38d (pd9t, 7h5s; migr 0510), 225/225 x3, architect 2 blocker dibetulkan. zy43 diblokir legend-771dl, return-rows legend-8qm1d. Desain biaya overwrite disetujui CTO. Cek guard worker edge diminta.
