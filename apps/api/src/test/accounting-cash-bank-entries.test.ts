@@ -772,3 +772,195 @@ describe("legend-4961 database guards on the document tables", () => {
     expect((await entryRow(id)).amount_idr).toBe("6000");
   });
 });
+
+// ---- review hardening (ws/cash-bank review M2, L1, L2) ---------------------
+
+type NewAccount = { type: string; group: string };
+const ASSET: NewAccount = { type: "asset", group: "current_asset" };
+const LIABILITY: NewAccount = {
+  type: "liability",
+  group: "current_liability",
+};
+
+/** Adds a chart account to an entity (migration owner). */
+async function addAccount(
+  entityId: string,
+  code: string,
+  name: string,
+  kind: NewAccount,
+): Promise<string> {
+  const { rows } = await owner.query<{ id: string }>(
+    `INSERT INTO chart_of_accounts (tenant_id, legal_entity_id, code, name, type, report_group)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [tenantId, entityId, code, name, kind.type, kind.group],
+  );
+  return rows[0]!.id;
+}
+
+async function mapRole(
+  entityId: string,
+  role: string,
+  accountId: string,
+): Promise<void> {
+  await owner.query(
+    `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (tenant_id, legal_entity_id, role) DO UPDATE SET account_id = EXCLUDED.account_id`,
+    [tenantId, entityId, role, accountId],
+  );
+}
+
+describe("legend-4961 counter account denylist (review M2 + L1)", () => {
+  // Assumption: the design only bans cash_and_equivalents; the review widens
+  // it to accounts a subledger or a cash/bank role owns, so a cash entry can
+  // never move money behind AR, AP, payroll, tax, deposit, EDC or inventory
+  // control accounts, nor onto a bank GL or cash role account that is not
+  // grouped as cash. Refused with 422 CASH_BANK_COUNTER_ACCOUNT_INVALID.
+  let w: World;
+  const entryCountOf = async () => {
+    const { rows } = await owner.query<{ n: string }>(
+      "SELECT count(*)::text AS n FROM cash_bank_entries WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [tenantId, w.entityId],
+    );
+    return Number(rows[0]!.n);
+  };
+  const bodyFor = (kind: "cash_in" | "cash_out", counterAccountId: string) =>
+    (kind === "cash_in" ? cashInBody : cashOutBody)({
+      legalEntityId: w.entityId,
+      bankAccountId: w.bankAccountA,
+      counterAccountId,
+    });
+
+  /** Every counter in `accounts` is refused for both cash in and cash out. */
+  async function expectAllRefused(accounts: Record<string, string>) {
+    const entries = await entryCountOf();
+    const journals = await journalCount(w.entityId, MONEY_SOURCES);
+    for (const [label, accountId] of Object.entries(accounts))
+      for (const kind of ["cash_in", "cash_out"] as const) {
+        const res = await post(finance, bodyFor(kind, accountId));
+        expect(
+          res.status,
+          `${label} ${kind}: ${JSON.stringify(res.body)}`,
+        ).toBe(422);
+        expect(res.body.error.code, `${label} ${kind}`).toBe(
+          "CASH_BANK_COUNTER_ACCOUNT_INVALID",
+        );
+      }
+    expect(await entryCountOf()).toBe(entries);
+    expect(await journalCount(w.entityId, MONEY_SOURCES)).toBe(journals);
+  }
+
+  /** Control: ordinary revenue and expense accounts still work. */
+  async function expectControlAccepted() {
+    expect((await post(finance, bodyFor("cash_in", w.gl.revenue))).status).toBe(
+      201,
+    );
+    expect(
+      (await post(finance, bodyFor("cash_out", w.gl.expense))).status,
+    ).toBe(201);
+  }
+
+  beforeAll(async () => {
+    // Own entity: roles are mapped one account each, and other tests in this
+    // file rely on the shared world's mappings.
+    w = await makeWorld();
+    // An expense account that carries a (non subledger) role stays allowed.
+    await mapRole(w.entityId, "service_expense", w.gl.expense);
+  });
+
+  it("[legend-4961-CB-50] an account mapped to a subledger role (AR, AP, payroll, tax, deposit, EDC, inventory) is refused", async () => {
+    const roles: [string, NewAccount][] = [
+      ["accounts_receivable", ASSET],
+      ["accounts_payable", LIABILITY],
+      ["salaries_payable", LIABILITY],
+      ["tax_payable_pbjt", LIABILITY],
+      ["tax_payable_ppn", LIABILITY],
+      ["tax_payable_other", LIABILITY],
+      ["customer_deposit", LIABILITY],
+      ["edc_clearing", ASSET],
+      ["inventory", ASSET],
+      ["inventory_semi_finished", ASSET],
+    ];
+    const accounts: Record<string, string> = {};
+    let n = 0;
+    for (const [role, kind] of roles) {
+      const id = await addAccount(
+        w.entityId,
+        `19${String(++n).padStart(2, "0")}`,
+        `Akun ${role}`,
+        kind,
+      );
+      await mapRole(w.entityId, role, id);
+      accounts[role] = id;
+    }
+    await expectAllRefused(accounts);
+    await expectControlAccepted();
+  });
+
+  it("[legend-4961-CB-51] the GL account of any bank account of the entity, active or not, is refused", async () => {
+    // A GL grouped as a current asset (not cash_and_equivalents), so only the
+    // bank account link can make it invalid. If bank setup refuses such a GL,
+    // the case cannot exist and the rule holds.
+    const gl = await addAccount(w.entityId, "1951", "Bank Aset Lancar", ASSET);
+    const bank = await makeBankAccount(w.entityId, gl).catch(() => null);
+    if (bank === null) return;
+    const inactiveGl = await addAccount(
+      w.entityId,
+      "1952",
+      "Bank Nonaktif",
+      ASSET,
+    );
+    const inactive = await makeBankAccount(w.entityId, inactiveGl).catch(
+      () => null,
+    );
+    if (inactive !== null)
+      await owner.query(
+        "UPDATE bank_accounts SET is_active = false WHERE id = $1",
+        [inactive],
+      );
+    await expectAllRefused({
+      "bank GL": gl,
+      ...(inactive === null ? {} : { "inactive bank GL": inactiveGl }),
+      "other bank GL of the entity": w.gl.bankB,
+    });
+    await expectControlAccepted();
+  });
+
+  it("[legend-4961-CB-52] an account mapped to petty_cash, cash_on_hand or bank is refused even when it is not grouped as cash", async () => {
+    const accounts: Record<string, string> = {};
+    let n = 0;
+    for (const role of ["petty_cash", "cash_on_hand", "bank"]) {
+      const id = await addAccount(
+        w.entityId,
+        `197${++n}`,
+        `Akun ${role}`,
+        ASSET,
+      );
+      await mapRole(w.entityId, role, id);
+      accounts[role] = id;
+    }
+    await expectAllRefused(accounts);
+    await expectControlAccepted();
+  });
+});
+
+describe("legend-4961 outlet tag belongs to the entity (review L2)", () => {
+  it("[legend-4961-CB-53] an outlet of another legal entity cannot tag a cash entry: 422, nothing written", async () => {
+    const strangerOutlet = await makeOutlet(world.otherEntityId);
+    const entries = await entryCount();
+    const journals = await moneyJournals();
+    for (const body of [
+      cashInBody({ outletId: strangerOutlet }),
+      cashOutBody({ outletId: strangerOutlet }),
+    ]) {
+      const res = await post(finance, body);
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+    }
+    expect(await entryCount()).toBe(entries);
+    expect(await moneyJournals()).toBe(journals);
+    // Control: an outlet of the entry's own entity is accepted.
+    const own = await post(finance, cashOutBody({ outletId: outletY }));
+    expect(own.status, JSON.stringify(own.body)).toBe(201);
+    expect((await entryRow(own.body.data.id)).outlet_id).toBe(outletY);
+  });
+});

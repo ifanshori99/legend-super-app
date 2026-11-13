@@ -756,6 +756,93 @@ describe("legend-4961 one document, one journal (money rule 4)", () => {
     await expectLedgerConsistent(outletId);
   });
 
+  it("[legend-4961-PC-24] a topup parked, then its period closed, still posts on retry: one journal in the first open period, flagged with the real date", async () => {
+    // Own legal entity: closing a month must not disturb the shared `world`.
+    const w = await makeWorld();
+    const outletId = await makeOutlet(w.entityId);
+    const removeMapping = () =>
+      owner.query(
+        "DELETE FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'petty_cash'",
+        [tenantId, w.entityId],
+      );
+    await removeMapping();
+    const parked = await move(
+      finance,
+      movementBody(outletId, "topup", 45_000, {
+        bankAccountId: w.bankAccountA,
+      }),
+    );
+    expect(parked.status, JSON.stringify(parked.body)).toBe(201);
+    expect(parked.body.data).toMatchObject({
+      journalStatus: "parked",
+      parkCode: "ACCOUNT_MAPPING_MISSING",
+    });
+    const entryId = parked.body.data.id as string;
+
+    // The month of the entry's own business date is closed after parking.
+    const { rows: dates } = await owner.query<{ entry_date: string }>(
+      "SELECT entry_date::text AS entry_date FROM petty_cash_entries WHERE tenant_id = $1 AND id = $2",
+      [tenantId, entryId],
+    );
+    const entryDate = dates[0]!.entry_date;
+    await owner.query(
+      `UPDATE fiscal_periods SET status = 'closed', closed_by = $3, closed_at = now(), version = version + 1
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = $4`,
+      [tenantId, w.entityId, randomUUID(), entryDate.slice(0, 7)],
+    );
+    // The accountant fixes the chart: the petty_cash mapping is back.
+    await owner.query(
+      `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+       VALUES ($1, $2, 'petty_cash', $3)`,
+      [tenantId, w.entityId, w.gl.pettyCash],
+    );
+
+    const retry = await retryPost(finance, entryId);
+    expect(ok(retry.status), JSON.stringify(retry.body)).toBe(true);
+    expect(retry.body.data).toMatchObject({
+      id: entryId,
+      journalStatus: "posted",
+    });
+    const journals = await journalsByKey(w.entityId, `pc:${entryId}`);
+    expect(journals).toHaveLength(1);
+    expect(journals[0]).toMatchObject({
+      id: retry.body.data.journalEntryId,
+      source_type: "petty_cash_topup",
+    });
+
+    // Dated in an open period, with the original date kept as the late flag.
+    const { rows: journal } = await owner.query<{
+      entry_date: string;
+      late_adjustment_from: string | null;
+      period_status: string | null;
+    }>(
+      `SELECT j.entry_date::text AS entry_date,
+              j.late_adjustment_from::text AS late_adjustment_from,
+              (SELECT p.status FROM fiscal_periods p
+                WHERE p.tenant_id = j.tenant_id AND p.legal_entity_id = j.legal_entity_id
+                  AND p.period = to_char(j.entry_date, 'YYYY-MM')) AS period_status
+         FROM journal_entries j WHERE j.tenant_id = $1 AND j.id = $2`,
+      [tenantId, journals[0]!.id],
+    );
+    expect(journal[0]!.entry_date > entryDate).toBe(true);
+    expect(journal[0]!.entry_date.slice(0, 7)).not.toBe(entryDate.slice(0, 7));
+    expect(journal[0]!.period_status).toBe("open");
+    expect(journal[0]!.late_adjustment_from).toBe(entryDate);
+    const lines = await journalLinesOf(journals[0]!.id);
+    expect(lineOf(lines, w.gl.pettyCash)).toEqual({ debit: 45_000, credit: 0 });
+    expect(lineOf(lines, w.gl.bankA)).toEqual({ debit: 0, credit: 45_000 });
+
+    // A second retry stays at one journal.
+    expect(ok((await retryPost(finance, entryId)).status)).toBe(true);
+    expect(await journalsByKey(w.entityId, `pc:${entryId}`)).toHaveLength(1);
+    // The cash is in the drawer once.
+    const { rows: fund } = await owner.query<{ balance: string }>(
+      "SELECT balance_idr::text AS balance FROM petty_cash_funds WHERE tenant_id = $1 AND outlet_id = $2",
+      [tenantId, outletId],
+    );
+    expect(Number(fund[0]!.balance)).toBe(45_000);
+  });
+
   it("[legend-4961-PC-22] a petty purchase draws the fund once, keeps no journal of its own, and its auto journal is single", async () => {
     const outletId = await freshOutlet();
     await fundWith(outletId, 100_000);
