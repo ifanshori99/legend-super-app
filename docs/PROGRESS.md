@@ -1457,3 +1457,4 @@ Langkah berikut CTO baru:
 - 23:05 G8o3b selesai: fix/purchase-return-test-setup f569baa10 (RT-2..10 + PRE-1/3 test-only) -> dikirim ke G4twu untuk batch57; fix/purchase-return-variance e09eb217e (127 test, GR-18 fail-first terbukti) -> batch58. Bead efdx6 (UI journalize), eestb (cek retur lama sebelum flag).
 - 23:08 Mulai G7o31 (brief 643, Sonnet, wjyps P1 UI + e61s5, base fix/petty-fund-required).
 - 23:20 G0coa selesai: ws/followups-640 464645ff7 (3hb1n, fbf4v + retired_at 0502, 65i3t; edge-catalog-loop flaky akar setInterval+inFlight, fix test 5/5). Bead vj7ma. Batch58: fix/flaky-641, ws/followups-640, fix/purchase-return-variance (+test-setup bila belum di batch57).
+- 23:12 G7o31 selesai: fix/cash-bank-table-mapping 27a5a508c (wjyps, e61s5; support read-only ditolak API global, 8 test; UI tombol nonaktif). Batch58 + cabang ini.
