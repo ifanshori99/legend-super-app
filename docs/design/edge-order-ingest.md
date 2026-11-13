@@ -16,21 +16,21 @@ receipts of orders without a completed cloud row.
 ## Hard rules (from the architect review)
 
 R1. **Parking is never undone by ingest.** A refusal thrown by the parked hook rolls
-    back the parking of that event (`db-link-store.ts:141`). The parked
-    `order.voided` is the guard that stops cash being paid twice
-    (`payment-refund-edge-history.ts`). So after parking, ingest NEVER throws: it runs
-    in its own savepoint, catches every error (CoreError and SQL 23xxx), and records
-    `state='refused'` plus a reason code in `edge_order_ingests`, and logs a warning
-    (no payload, no ids beyond event id). A non-CoreError escaping the hook would roll
-    the batch back and stall the whole link, so this is also the stall guard.
+back the parking of that event (`db-link-store.ts:141`). The parked
+`order.voided` is the guard that stops cash being paid twice
+(`payment-refund-edge-history.ts`). So after parking, ingest NEVER throws: it runs
+in its own savepoint, catches every error (CoreError and SQL 23xxx), and records
+`state='refused'` plus a reason code in `edge_order_ingests`, and logs a warning
+(no payload, no ids beyond event id). A non-CoreError escaping the hook would roll
+the batch back and stall the whole link, so this is also the stall guard.
 R2. **Every amount comes from the payload.** The cloud computes nothing: no tax, no
-    rounding, no price lookup.
+rounding, no price lookup.
 R3. **No side effects of a cloud sale:** no `appendOutbox`, no recipe deduction, no
-    journal, no loyalty, no receipt number, no `pos_receipts` row (trigger
-    `pos_receipts_match_sequence_trg`).
+journal, no loyalty, no receipt number, no `pos_receipts` row (trigger
+`pos_receipts_match_sequence_trg`).
 R4. **One lock key** for order paid, void and cost recompute: the existing
-    `stock-source:<tenant>:order:<dbId>` advisory lock (`order-edge-applier.ts`), with
-    the id normalised by `sourceIdToDb`.
+`stock-source:<tenant>:order:<dbId>` advisory lock (`order-edge-applier.ts`), with
+the id normalised by `sourceIdToDb`.
 
 ## Contract change (additive, `order.paid.v1`, all new keys optional)
 
