@@ -23,7 +23,6 @@
 //   mapping is restored the sweep posts the refund exactly once (payout credit
 //   == sale total, never more).
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
 import type { EventEnvelope } from "@starter/shared/events";
 import { retryParkedAutoJournals } from "../services/accounting-auto-journal-consumer.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
@@ -184,9 +183,9 @@ describe("legend-5i6k1 gateway refund vs current + historical tax account", () =
     expect(outcomeOf(result)).toBe("posted");
     expect(await refundPayoutCredit(world)).toBe(SALE_TOTAL);
     // Tax account: credited TAX by the sale, debited TAX by the refund.
-    expect(await accountBalance(world, world.accounts.tax_payable_pbjt)).toEqual(
-      { debit: TAX, credit: TAX },
-    );
+    expect(
+      await accountBalance(world, world.accounts.tax_payable_pbjt),
+    ).toEqual({ debit: TAX, credit: TAX });
   });
 
   it("case 1: pbjt and customer_deposit both remapped to a new account B after the sale: the refund is parked ACCOUNT_MAPPING_MISSING, nothing credits B", async () => {
@@ -194,7 +193,10 @@ describe("legend-5i6k1 gateway refund vs current + historical tax account", () =
     const accountA = world.accounts.tax_payable_pbjt;
     const { orderUlid, paid } = await seedGatewaySale(world);
     expect(outcomeOf(await deliver(world, paid))).toBe("posted");
-    const accountB = await newAccount(world, `2999${Math.floor(Math.random() * 90 + 10)}`);
+    const accountB = await newAccount(
+      world,
+      `2999${Math.floor(Math.random() * 90 + 10)}`,
+    );
     await mapRole(world, "tax_payable_pbjt", accountB);
     await mapRole(world, "customer_deposit", accountB);
     const before = {
@@ -226,7 +228,10 @@ describe("legend-5i6k1 gateway refund vs current + historical tax account", () =
     const accountA = world.accounts.tax_payable_pbjt;
     const { orderUlid, paid } = await seedGatewaySale(world);
     expect(outcomeOf(await deliver(world, paid))).toBe("posted");
-    const accountB = await newAccount(world, `2998${Math.floor(Math.random() * 90 + 10)}`);
+    const accountB = await newAccount(
+      world,
+      `2998${Math.floor(Math.random() * 90 + 10)}`,
+    );
     await mapRole(world, "tax_payable_pbjt", accountB);
     await mapRole(world, "customer_deposit", accountA);
     const before = {
@@ -249,7 +254,10 @@ describe("legend-5i6k1 gateway refund vs current + historical tax account", () =
     const world = await makeWorld();
     const { orderUlid, paid } = await seedGatewaySale(world);
     expect(outcomeOf(await deliver(world, paid))).toBe("posted");
-    const accountB = await newAccount(world, `2997${Math.floor(Math.random() * 90 + 10)}`);
+    const accountB = await newAccount(
+      world,
+      `2997${Math.floor(Math.random() * 90 + 10)}`,
+    );
     await mapRole(world, "tax_payable_pbjt", accountB);
     await mapRole(world, "customer_deposit", accountB);
     const result = await deliver(world, gatewayRefund(world, orderUlid));

@@ -124,17 +124,35 @@ async function inRolledBackTx(work: (client: PoolClient) => Promise<void>) {
   }
 }
 
-/** The database as it was before the backfill ran: no holds for the tenant. */
+/** The database as it was before the backfill ran: no holds at all. The
+ *  backfill statements are not tenant-scoped, so holds that other test files
+ *  committed (in a combined run) must go too, or the backfill would insert a
+ *  second hold for their intents. Rolled back with the transaction. */
 async function removeHolds(client: PoolClient) {
+  // Block writers from other test files running in parallel: one that commits a
+  // hold for a pending intent after the DELETE would make the backfill insert a
+  // duplicate. Released by the ROLLBACK.
+  await client.query("LOCK TABLE pos_qris_holds IN EXCLUSIVE MODE");
   await client.query("SET LOCAL session_replication_role = replica");
-  await client.query("DELETE FROM pos_qris_holds WHERE tenant_id = $1", [
-    fx.tenant.tenantId,
-  ]);
+  await client.query("DELETE FROM pos_qris_holds");
   await client.query("SET LOCAL session_replication_role = origin");
 }
 
 async function runBackfill(client: PoolClient) {
   for (const statement of backfill) await client.query(statement);
+}
+
+/** Set (or clear, with null) the provider reference of an intent. The backfill
+ *  only counts and freezes guest intents that have one. */
+async function setProviderRef(
+  client: PoolClient,
+  intentId: string,
+  ref: string | null,
+) {
+  await client.query(
+    `UPDATE payment_intents SET provider_ref=$3 WHERE tenant_id=$1 AND id=$2`,
+    [fx.tenant.tenantId, intentId, ref],
+  );
 }
 
 /** A second collectible QR on the same bill: a copy of the first intent that
@@ -159,7 +177,7 @@ async function cloneIntentOntoPart(
         : name === "idempotency_key"
           ? "'0419-clone-' || gen_random_uuid()::text"
           : name === "provider_ref"
-            ? "NULL"
+            ? "'0419-clone-ref-' || gen_random_uuid()::text"
             : `"${name}"`;
   const cloned = await client.query<{ id: string }>(
     `INSERT INTO payment_intents (${cols.map((n) => `"${n}"`).join(",")})
@@ -191,6 +209,7 @@ describe("legend-eh9i4 A2 migration 0419 guest QRIS backfill", () => {
     const qr = await guestSplitWithQr();
     await inRolledBackTx(async (client) => {
       await removeHolds(client);
+      await setProviderRef(client, qr.intentId, `0419-ref-${randomUUID()}`);
       await runBackfill(client);
       const { rows } = await client.query<{
         order_id: string;
@@ -221,6 +240,7 @@ describe("legend-eh9i4 A2 migration 0419 guest QRIS backfill", () => {
     const qr = await guestSplitWithQr();
     await inRolledBackTx(async (client) => {
       await removeHolds(client);
+      await setProviderRef(client, qr.intentId, `0419-ref-${randomUUID()}`);
       await cloneIntentOntoPart(client, qr.intentId, qr.parts[1]!.id);
       // Two collectible QRs on one bill: the money cannot be frozen safely.
       await client.query("SAVEPOINT before_backfill");
@@ -235,6 +255,38 @@ describe("legend-eh9i4 A2 migration 0419 guest QRIS backfill", () => {
         "the backfill must raise when a bill has more than one collectible QR",
       ).not.toBeNull();
       await client.query("ROLLBACK TO SAVEPOINT before_backfill");
+    });
+  });
+
+  it("legend-eh9i4 backfill skips a guest intent without provider_ref: no hold and it does not trip the one-QR guard", async () => {
+    const qr = await guestSplitWithQr();
+    await inRolledBackTx(async (client) => {
+      await removeHolds(client);
+      await setProviderRef(client, qr.intentId, `0419-ref-${randomUUID()}`);
+      // The second QR on the bill has no provider_ref: it must not be counted.
+      await cloneIntentOntoPart(client, qr.intentId, qr.parts[1]!.id);
+      await client.query(
+        `UPDATE payment_intents SET provider_ref=NULL
+          WHERE tenant_id=$1 AND bill_split_id=$2`,
+        [fx.tenant.tenantId, qr.parts[1]!.id],
+      );
+      await runBackfill(client);
+      const { rows } = await client.query<{
+        payment_intent_id: string;
+        bill_split_id: string | null;
+      }>(
+        `SELECT payment_intent_id::text, bill_split_id::text
+           FROM pos_qris_holds WHERE tenant_id=$1 AND order_id=$2`,
+        [fx.tenant.tenantId, qr.orderId],
+      );
+      expect(
+        rows,
+        "only the intent with a provider_ref gets a hold; the one without gets none",
+      ).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        payment_intent_id: qr.intentId,
+        bill_split_id: qr.parts[0]!.id,
+      });
     });
   });
 });

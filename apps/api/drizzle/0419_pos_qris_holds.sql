@@ -54,7 +54,10 @@ CREATE INDEX "pos_qris_holds_due_idx" ON "pos_qris_holds" USING btree ("state","
 -- Backfill (design §5): every QRIS tender still waiting for its money gets one
 -- `open` hold (backfilled, basis NULL, amount from the tender) so the bill is
 -- frozen and the hold check job resolves it from the provider
--- (next_check_at = now()). The migrator may be a plain table owner (no
+-- (next_check_at = now()). A guest split-bill QR (a payment intent with
+-- bill_split_id, still pending) gets the same, with bill_split_id set and no
+-- tender. One bill with more than one collectible QR (POS tender and guest
+-- intent together) cannot be frozen safely: the migration fails. The migrator may be a plain table owner (no
 -- BYPASSRLS): lift FORCE on the source tables for this transaction only and
 -- restore it right after (same pattern as 0286, 0292).
 ALTER TABLE public.orders NO FORCE ROW LEVEL SECURITY;
@@ -65,22 +68,34 @@ ALTER TABLE public.pos_order_tenders NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE public.payment_intents NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
+ALTER TABLE public.bill_splits NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 DO $$
 DECLARE dup text;
 BEGIN
-  SELECT string_agg(d.order_id::text || ' (' || d.n || ' tenders)', ', ') INTO dup
+  SELECT string_agg(d.order_id::text || ' (' || d.n || ' QRs)', ', ') INTO dup
   FROM (
-    SELECT t.tenant_id, t.order_id, count(*) AS n
-    FROM public.pos_order_tenders t
-    JOIN public.payment_intents i
-      ON i.tenant_id = t.tenant_id AND i.id = t.payment_intent_id
-    WHERE t.method = 'qris' AND t.status = 'authorized'
-      AND t.payment_link_id IS NOT NULL AND i.status <> 'paid'
-    GROUP BY t.tenant_id, t.order_id
+    SELECT q.tenant_id, q.order_id, count(*) AS n
+    FROM (
+      SELECT t.tenant_id, t.order_id
+      FROM public.pos_order_tenders t
+      JOIN public.payment_intents i
+        ON i.tenant_id = t.tenant_id AND i.id = t.payment_intent_id
+      WHERE t.method = 'qris' AND t.status = 'authorized'
+        AND t.payment_link_id IS NOT NULL AND i.status <> 'paid'
+      UNION ALL
+      SELECT bs.tenant_id, bs.order_id
+      FROM public.payment_intents i
+      JOIN public.bill_splits bs
+        ON bs.tenant_id = i.tenant_id AND bs.id = i.bill_split_id
+      WHERE i.bill_split_id IS NOT NULL AND i.method = 'qris'
+        AND i.status = 'pending' AND i.provider_ref IS NOT NULL
+    ) q
+    GROUP BY q.tenant_id, q.order_id
     HAVING count(*) > 1
   ) d;
   IF dup IS NOT NULL THEN
-    RAISE EXCEPTION 'QRIS hold backfill: more than one waiting QRIS tender on bill(s) %; resolve them before migrating', dup;
+    RAISE EXCEPTION 'QRIS hold backfill: more than one collectible QRIS on bill(s) %; resolve them before migrating', dup;
   END IF;
 END $$;
 --> statement-breakpoint
@@ -97,6 +112,21 @@ JOIN public.pos_orders po
   ON po.tenant_id = t.tenant_id AND po.order_id = t.order_id
 WHERE t.method = 'qris' AND t.status = 'authorized'
   AND t.payment_link_id IS NOT NULL AND i.status <> 'paid';
+--> statement-breakpoint
+INSERT INTO public.pos_qris_holds
+  (tenant_id, id, outlet_id, order_id, tender_id, payment_intent_id,
+   bill_split_id, amount_idr, backfilled, state, opened_at, opened_by,
+   next_check_at)
+SELECT i.tenant_id, gen_random_uuid(), i.outlet_id, bs.order_id, NULL,
+       i.id, i.bill_split_id, i.amount_idr, true, 'open', i.created_at,
+       NULL, now()
+FROM public.payment_intents i
+JOIN public.bill_splits bs
+  ON bs.tenant_id = i.tenant_id AND bs.id = i.bill_split_id
+WHERE i.bill_split_id IS NOT NULL AND i.method = 'qris'
+  AND i.status = 'pending' AND i.provider_ref IS NOT NULL;
+--> statement-breakpoint
+ALTER TABLE public.bill_splits FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE public.payment_intents FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
