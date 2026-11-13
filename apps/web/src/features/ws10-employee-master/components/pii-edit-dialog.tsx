@@ -2,6 +2,7 @@
 // contract's own input schema, and sends them write-only. The response carries
 // masked values only, so the profile refetches the guarded endpoint.
 import * as React from "react";
+import { TriangleAlert } from "lucide-react";
 import { updateEmployeePiiInputSchema } from "@starter/shared/hris";
 import type { Employee } from "@starter/shared/hris";
 import type { MessageKey } from "@starter/shared/i18n";
@@ -17,11 +18,24 @@ import {
 } from "@/components/ui/dialog";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { newIdempotencyKey } from "@/lib/idempotency";
 import { useUpdateEmployeePii } from "../hooks";
+import { BANK_NAME, BANK_OPTIONS, bankCodeLabel } from "./bank-code-options";
 import { PII_FIELD_LABEL, PII_FIELDS, type PiiField } from "./pii-fields";
+
+/** Select sentinels: Radix items cannot carry an empty value. */
+const KEEP = "__keep";
+const CLEAR = "__clear";
 
 const HINT: Record<PiiField, MessageKey> = {
   nik: "employeeMaster.profile.pii.editHints.nik",
@@ -116,21 +130,32 @@ function PiiEditForm({
 
   const [values, setValues] =
     React.useState<Record<PiiField, string>>(EMPTY_VALUES);
-  const [errors, setErrors] = React.useState<Partial<Record<PiiField, string>>>(
-    {},
-  );
+  // Like the text fields, "keep" means the column is not sent and stays as is.
+  const [bankCode, setBankCode] = React.useState<string>(KEEP);
+  const [errors, setErrors] = React.useState<
+    Partial<Record<PiiField | "bankCode", string>>
+  >({});
   const [formError, setFormError] = React.useState<string>();
   const idempotencyKey = React.useRef(newIdempotencyKey());
+
+  // Server rule: a new account without a code empties the old code, so the
+  // stale code never lands in a transfer file. Warn before it happens.
+  const accountWithoutCode =
+    values.bankAccount.trim() !== "" && bankCode === KEEP;
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
     setFormError(undefined);
 
-    const input: Partial<Record<PiiField, string>> = {};
+    const input: Partial<Record<PiiField, string>> & {
+      bankCode?: string | null;
+    } = {};
     for (const field of PII_FIELDS) {
       const value = values[field].trim();
       if (value !== "") input[field] = value;
     }
+    if (bankCode === CLEAR) input.bankCode = null;
+    else if (bankCode !== KEEP) input.bankCode = bankCode;
     if (Object.keys(input).length === 0) {
       setFormError(t("employeeMaster.profile.pii.editEmpty"));
       return;
@@ -139,10 +164,12 @@ function PiiEditForm({
     // The contract owns the bounds; the catalog owns the wording.
     const parsed = updateEmployeePiiInputSchema.safeParse(input);
     if (!parsed.success) {
-      const next: Partial<Record<PiiField, string>> = {};
+      const next: Partial<Record<PiiField | "bankCode", string>> = {};
       for (const issue of parsed.error.issues) {
         const field = String(issue.path[0] ?? "");
         if (isPiiField(field)) next[field] = t(ERROR[field]);
+        else if (field === "bankCode")
+          next.bankCode = t("employeeMaster.profile.pii.bankCode.error");
       }
       setErrors(next);
       return;
@@ -177,26 +204,92 @@ function PiiEditForm({
     <form className="grid gap-4" onSubmit={submit} noValidate>
       <div className="grid gap-4 sm:grid-cols-2">
         {PII_FIELDS.map((field) => (
-          <FormField
-            key={field}
-            label={t(PII_FIELD_LABEL[field])}
-            id={`pii-${field}`}
-            hint={t(HINT[field])}
-            error={errors[field]}
-          >
-            <Input
+          <React.Fragment key={field}>
+            <FormField
+              label={t(PII_FIELD_LABEL[field])}
               id={`pii-${field}`}
-              autoComplete="off"
-              inputMode={INPUT_MODE[field]}
-              value={values[field]}
-              onChange={(event) =>
-                setValues((current) => ({
-                  ...current,
-                  [field]: event.target.value,
-                }))
-              }
-            />
-          </FormField>
+              hint={t(HINT[field])}
+              error={errors[field]}
+            >
+              <Input
+                id={`pii-${field}`}
+                autoComplete="off"
+                inputMode={INPUT_MODE[field]}
+                value={values[field]}
+                onChange={(event) =>
+                  setValues((current) => ({
+                    ...current,
+                    [field]: event.target.value,
+                  }))
+                }
+              />
+            </FormField>
+            {field === "bankAccount" && (
+              <FormField
+                label={t("employeeMaster.profile.pii.bankCode.label")}
+                id="pii-bankCode"
+                hint={t("employeeMaster.profile.pii.bankCode.hint")}
+                error={errors.bankCode}
+              >
+                <Select
+                  value={bankCode}
+                  onValueChange={(next) => {
+                    setBankCode(next);
+                    setErrors((current) => ({
+                      ...current,
+                      bankCode: undefined,
+                    }));
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={KEEP}>
+                      {t("employeeMaster.profile.pii.bankCode.keep")}
+                    </SelectItem>
+                    <SelectItem value={CLEAR}>
+                      {t("employeeMaster.profile.pii.bankCode.clear")}
+                    </SelectItem>
+                    <SelectSeparator />
+                    {BANK_OPTIONS.map((code) => (
+                      <SelectItem
+                        key={code}
+                        value={code}
+                        textValue={BANK_NAME[code]}
+                      >
+                        {bankCodeLabel(code)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </FormField>
+            )}
+            {field === "bankAccount" && (
+              // Always mounted so assistive tech announces the text when it
+              // appears; empty it takes no space (sr-only, no grid gap).
+              <div
+                role="status"
+                className={
+                  accountWithoutCode
+                    ? "flex items-start gap-2 rounded-container bg-warning-subtle px-3 py-2 text-sm leading-5 font-medium text-warning sm:col-span-2"
+                    : "sr-only"
+                }
+              >
+                {accountWithoutCode && (
+                  <>
+                    <TriangleAlert
+                      className="mt-0.5 size-4 shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span>
+                      {t("employeeMaster.profile.pii.bankCode.clearedHint")}
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
+          </React.Fragment>
         ))}
       </div>
       {formError && (

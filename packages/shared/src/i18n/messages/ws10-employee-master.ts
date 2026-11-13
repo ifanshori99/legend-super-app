@@ -161,6 +161,16 @@ export const employeeMasterMessages = {
         emergencyContactName: "Isi nama kontak darurat.",
         emergencyContactPhone: "Nomor telepon darurat harus 6–20 karakter.",
       },
+      bankCode: {
+        label: "Kode bank",
+        keep: "Tidak diubah",
+        clear: "Kosongkan kode bank",
+        hint: "Pilih bank atau ketik huruf awal namanya. Gaji transfer manual saat ini hanya menerima BCA (014).",
+        clearedHint:
+          "Rekening diubah tanpa kode bank: kode lama (bila ada) dikosongkan, dan gaji transfer tertahan sampai kode diisi.",
+        missingForAccount: "Belum diisi, gaji transfer tertahan",
+        error: "Kode bank tidak dikenal. Pilih dari daftar.",
+      },
       editEmpty: "Isi minimal satu kolom untuk menyimpan.",
       save: "Simpan data pribadi",
       savedTitle: "Data pribadi tersimpan",
