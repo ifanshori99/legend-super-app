@@ -5271,3 +5271,11 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gerbang: lint hijau (0 error, 2 warning lama); typecheck 49 dtk hijau; tes root `node --test tests/*.test.mjs` terarah 2851/2855 (4 gagal hanya "isolated database", lingkungan); `heavy pnpm run test` penuh 02:33-03:45 (72 mnt) exit 0: vitest 1082 berkas/17477 lulus/41 skip/16 todo, root 2884/2884; build hijau; e2e `legend-zueb.mock.spec.ts` 18/18 hijau.
 - Flake 654: `rotate-data-key`, `hris-leave-changed-event`, `platform-org-api` TEN-03/06 tidak muncul di run penuh (0 gagal). Bukti fix 654.
 - Belum: `legend-zy43` (tidak ada producer `receipt_run.reported` di edge). Rilis edge order ingest: deploy cloud dulu, baru edge.
+
+## 2026-11-14: Kartu kecil platform, POS, keamanan (cabang ws/platform-pos-security-small)
+
+- legend-bag1: kontrak `GET /api/platform/audit-events` dan `GET /api/platform/health` pindah ke `packages/shared/src/platform` (ops.ts, endpoints.ts); permission `platform.audit.view` + label Indonesia; route `GET /api/platform/health` (database mati = `degraded` di body); guard web audit ikut izin baru. Route audit-events belum dibuat (perlu keputusan masking/filter lintas tenant).
+- legend-ptp2: test HTTP qris tanpa device masuk `pos-receipt-kfix.test.ts`: C-000001, `pos_orders.device_id` null, `receipt.device_id` = outlet. Hijau, tidak ada bug uang, logika tidak diubah.
+- legend-ykam: `/notes` sudah hilang (appHomePath `/member`, commit 04d2836a3). Sisanya dikerjakan: `lib/areas/post-login.ts` `postLoginPath(access)`; sesi dengan `dashboard.management.view` mendarat di `/kelola`, customer di `/member` (`_auth.tsx`, `auth-form.tsx`).
+- legend-2ywn: denylist `SENSITIVE_FUNCTIONS` diganti baseline `pg_init_privs` (privtype 'i'); fail-closed bila baseline kosong (anchor `pg_read_file`, `lo_import`, `pg_switch_wal`). Review architect: tidak ada false negative; celah tersisa (extension 'e', `SENSITIVE_TABLES`) jadi kartu lanjutan.
+- Gerbang: 5 tes root + 3 berkas vitest hijau, 7 berkas kontrak root hijau, prettier+eslint hijau, typecheck api+web hijau, `db:generate` kosong. E2E Playwright tidak dijalankan (scripts/test.mjs tidak bisa memfilter).

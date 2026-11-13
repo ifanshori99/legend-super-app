@@ -30,7 +30,7 @@ import {
   tenantOwnerAssignmentIdSchema,
 } from "@starter/shared/platform";
 import { outletIdSchema, tenantIdSchema, z } from "@starter/shared/core";
-import { db } from "../db/index";
+import { checkDatabase, db } from "../db/index";
 import { verifiedMfaAt } from "../lib/mfa";
 import { getAuth } from "../middleware/auth";
 import { requireSessionMfa } from "../middleware/identity";
@@ -39,6 +39,7 @@ import {
   requirePlatformAuth,
 } from "../middleware/platform-admin";
 import { jsonBody } from "../middleware/body";
+import { logger } from "../lib/logger";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
   listOpenOutboxGaps,
@@ -94,6 +95,25 @@ const grantParams = z.strictObject({ grantId: supportAccessGrantIdSchema });
 const ownerAssignmentParams = z.strictObject({
   tenantId: tenantIdSchema,
   assignmentId: tenantOwnerAssignmentIdSchema,
+});
+
+// legend-bag1: platform health report.
+// Unreachable parts are reported in the body, never as an error status.
+platformRouter.get("/health", async (_req, res) => {
+  let database: "ok" | "unreachable" = "ok";
+  try {
+    await checkDatabase();
+  } catch (err) {
+    logger.warn({ err }, "Platform health: PostgreSQL is unreachable");
+    database = "unreachable";
+  }
+  res.json({
+    data: {
+      status: database === "ok" ? "ok" : "degraded",
+      checkedAt: new Date().toISOString(),
+      database,
+    },
+  });
 });
 
 platformRouter.get("/packages", async (_req, res) => {

@@ -51,6 +51,8 @@ const entries = [
   ["platform.package.manage", ["platform"]],
   ["platform.integration.manage", ["platform"]],
   ["platform.health.view", ["platform"]],
+  // Cross-tenant audit list, GET /api/platform/audit-events (legend-bag1).
+  ["platform.audit.view", ["platform"]],
   ["platform.support_access.request", ["platform"]],
   ["platform.config_template.manage", ["platform"]],
   // Inspect and skip outbox sequence gaps (legend-jcil); audited, reason required.

@@ -621,6 +621,71 @@ describe("POS-06 K F1 cloud sequence C and device sequences P1.. (legend-93a)", 
     expect(await sequenceRows(outletId)).toHaveLength(0);
   });
 
+  // legend-ptp2. Since pos-shift only cash needs a device, so a QRIS sale is the
+  // one way a cloud sale without a device token still completes over HTTP.
+  // Assumption: the captured QRIS tender is seeded with owner SQL (as
+  // pos-order-void-noncash.test.ts does; the gateway round trip is covered in
+  // pos-order-qris-lifecycle.test.ts); creating, submitting and completing the
+  // order all go through the HTTP routes and the real receipt port.
+  it("POS-06 a QRIS sale finished over HTTP without a device token is C-000001 with the outlet as receipt device and no device on the order (legend-ptp2)", async () => {
+    const outletId = await freshOutlet();
+    const draft = await draftOrder(outletId);
+    let status = draft.status;
+    if (status === "draft") {
+      const submitted = await api(outletId).post(
+        `/orders/${draft.orderId}/submit`,
+        { expectedStatus: status },
+      );
+      expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+      status = submitted.body.data.status as string;
+    }
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO pos_order_tenders
+           (tenant_id, outlet_id, order_id, method, provider, amount_idr,
+            received_idr, change_idr, points_used, payment_intent_id, reference, status,
+            requested_at, resolved_at)
+         VALUES ($1, $2, $3, 'qris', 'doit', $4, NULL, NULL, NULL, $5, NULL, 'captured', now(), now())`,
+        [
+          tenant.tenantId,
+          outletId,
+          ulidToUuid(draft.orderId),
+          draft.totalIdr,
+          randomUUID(),
+        ],
+      );
+    });
+    const completed = await api(outletId).post(
+      `/orders/${draft.orderId}/complete`,
+      { expectedStatus: status },
+    );
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+    expect(completed.body.data.status).toBe("completed");
+
+    const stored = await receiptRows(outletId);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({
+      order_id: ulidToUuid(draft.orderId),
+      device_id: outletId,
+      number: "C-000001",
+      sequence_number: 1,
+      status: "issued",
+    });
+    const [order] = await rows<{ device_id: string | null }>(
+      `SELECT device_id FROM pos_orders WHERE tenant_id = $1 AND order_id = $2::uuid`,
+      [tenant.tenantId, ulidToUuid(draft.orderId)],
+    );
+    expect(order).toBeDefined();
+    expect(order?.device_id).toBeNull();
+    expect(await sequenceRows(outletId)).toEqual([
+      expect.objectContaining({
+        prefix: "C",
+        device_id: outletId,
+        last_number: 1,
+      }),
+    ]);
+  });
+
   it("POS-06 a sale finished over HTTP with a valid device token stores that device on the order and receipt", async () => {
     const outletId = await freshOutlet();
     const device = randomUUID();
