@@ -81,14 +81,18 @@ const apiCall = (calls) =>
   );
 const rootCall = (calls) => calls.find((call) => call.command === "/test/node");
 
-test("API success and node:test failure are reported as separate steps", async () => {
+test("node:test failure runs first and stops before the API vitest run", async () => {
   const calls = await dispatch(
     { LEGEND_TEST_FILES: "src/test/example.test.ts tests/one.test.mjs" },
     { rootStatus: 1, exitCode: 1 },
   );
-  assert.ok(apiCall(calls));
   assert.ok(rootCall(calls));
-  assert.ok(calls.messages.includes("[vitest] Passed."));
+  assert.equal(
+    apiCall(calls),
+    undefined,
+    "root tests run first (legend-x778h)",
+  );
+  assert.equal(calls.messages.includes("[vitest] Passed."), false);
   assert.ok(
     calls.messages.some((message) => message.startsWith("[node:test] Failed:")),
   );
