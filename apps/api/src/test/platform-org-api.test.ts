@@ -81,6 +81,9 @@ function tenantBody(slug: string) {
   };
 }
 
+// Platform admin user ids this file inserted; cleanup deletes only these.
+const platformAdminIds: string[] = [];
+
 async function adminClient() {
   const client = agent(app);
   const email = await signUp(client, "Platform Admin");
@@ -91,6 +94,7 @@ async function adminClient() {
     "INSERT INTO platform_admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
     [userId],
   );
+  platformAdminIds.push(userId);
   // legend-4f9: the global Better Auth admin no longer holds org.* (TEN-04).
   // Tenant org routes authorize through stored role_assignments, so the test
   // admin also holds the seeded Owner template in the synthetic tenant.
@@ -152,7 +156,11 @@ afterAll(async () => {
   await owner.query("DELETE FROM support_access_grants WHERE tenant_id = $1", [
     seededTenantId,
   ]);
-  await owner.query("DELETE FROM platform_admins");
+  if (platformAdminIds.length > 0)
+    await owner.query(
+      "DELETE FROM platform_admins WHERE user_id = ANY($1::text[])",
+      [platformAdminIds],
+    );
   await owner.end();
 });
 
