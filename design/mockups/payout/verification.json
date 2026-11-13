@@ -1,0 +1,701 @@
+{
+  "command": "heavy node design/mockups/payout/render.mjs",
+  "checks": [
+    "All four states at 1440, 390, 320",
+    "No horizontal page overflow",
+    "No JavaScript exceptions",
+    "Local fonts settled before capture"
+  ],
+  "interactions": [
+    "Finance: unknown values, outlet fee scope, and invalid date range verified",
+    "Payout: active/inactive re-selection and navigation preserve payment rejection",
+    "Payout: unavailable Duitku and PT cannot relabel active payment context",
+    "Payout: review gating, simulation boundary and uncertain payment follow-up verified"
+  ],
+  "results": [
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "normal",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 11,
+      "exceptions": 0,
+      "screenshot": "payout-runs-normal-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "normal",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 10,
+      "exceptions": 0,
+      "screenshot": "payout-runs-normal-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "normal",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 10,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "empty",
+      "width": 1440,
+      "contentWidth": 1440,
+      "controls": 8,
+      "exceptions": 0,
+      "screenshot": "payout-runs-empty-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "empty",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "payout-runs-empty-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "empty",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 7,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "error",
+      "width": 1440,
+      "contentWidth": 1440,
+      "controls": 8,
+      "exceptions": 0,
+      "screenshot": "payout-runs-error-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "error",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "payout-runs-error-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "error",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 7,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "loading",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "payout-runs-loading-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "loading",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 6,
+      "exceptions": 0,
+      "screenshot": "payout-runs-loading-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "loading",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 6,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "normal",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 8,
+      "exceptions": 0,
+      "screenshot": "payout-approval-normal-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "normal",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "payout-approval-normal-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "normal",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 7,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "empty",
+      "width": 1440,
+      "contentWidth": 1440,
+      "controls": 8,
+      "exceptions": 0,
+      "screenshot": "payout-approval-empty-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "empty",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "payout-approval-empty-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "empty",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 7,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "error",
+      "width": 1440,
+      "contentWidth": 1440,
+      "controls": 8,
+      "exceptions": 0,
+      "screenshot": "payout-approval-error-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "error",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "payout-approval-error-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "error",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 7,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "loading",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "payout-approval-loading-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "loading",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 6,
+      "exceptions": 0,
+      "screenshot": "payout-approval-loading-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "loading",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 6,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "normal",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 12,
+      "exceptions": 0,
+      "screenshot": "payout-status-normal-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "normal",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 11,
+      "exceptions": 0,
+      "screenshot": "payout-status-normal-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "normal",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 11,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "empty",
+      "width": 1440,
+      "contentWidth": 1440,
+      "controls": 8,
+      "exceptions": 0,
+      "screenshot": "payout-status-empty-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "empty",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "payout-status-empty-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "empty",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 7,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "error",
+      "width": 1440,
+      "contentWidth": 1440,
+      "controls": 8,
+      "exceptions": 0,
+      "screenshot": "payout-status-error-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "error",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "payout-status-error-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "error",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 7,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "loading",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "payout-status-loading-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "loading",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 6,
+      "exceptions": 0,
+      "screenshot": "payout-status-loading-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "loading",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 6,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "normal",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 16,
+      "exceptions": 0,
+      "screenshot": "payout-settings-normal-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "normal",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 15,
+      "exceptions": 0,
+      "screenshot": "payout-settings-normal-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "normal",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 15,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "empty",
+      "width": 1440,
+      "contentWidth": 1440,
+      "controls": 8,
+      "exceptions": 0,
+      "screenshot": "payout-settings-empty-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "empty",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "payout-settings-empty-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "empty",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 7,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "error",
+      "width": 1440,
+      "contentWidth": 1440,
+      "controls": 8,
+      "exceptions": 0,
+      "screenshot": "payout-settings-error-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "error",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "payout-settings-error-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "error",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 7,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "loading",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "payout-settings-loading-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "loading",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 6,
+      "exceptions": 0,
+      "screenshot": "payout-settings-loading-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "loading",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 6,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "inactive-source",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 15,
+      "exceptions": 0,
+      "screenshot": "payout-settings-inactive-source-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "inactive-source",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 14,
+      "exceptions": 0,
+      "screenshot": "payout-settings-inactive-source-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "settings",
+      "state": "inactive-source",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 14,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "inactive-source",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 8,
+      "exceptions": 0,
+      "screenshot": "payout-approval-inactive-source-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "inactive-source",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "payout-approval-inactive-source-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "approval",
+      "state": "inactive-source",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 7,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "duitku-off",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 11,
+      "exceptions": 0,
+      "screenshot": "payout-runs-duitku-off-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "duitku-off",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 10,
+      "exceptions": 0,
+      "screenshot": "payout-runs-duitku-off-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "runs",
+      "state": "duitku-off",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 10,
+      "exceptions": 0
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "unknown",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 12,
+      "exceptions": 0,
+      "screenshot": "payout-status-unknown-desktop.png"
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "unknown",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 11,
+      "exceptions": 0,
+      "screenshot": "payout-status-unknown-mobile.png"
+    },
+    {
+      "area": "payout",
+      "view": "status",
+      "state": "unknown",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 11,
+      "exceptions": 0
+    },
+    {
+      "area": "finance-exceptions",
+      "state": "normal",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 12,
+      "exceptions": 0,
+      "screenshot": "finance-exceptions-normal-desktop.png"
+    },
+    {
+      "area": "finance-exceptions",
+      "state": "normal",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 12,
+      "exceptions": 0,
+      "screenshot": "finance-exceptions-normal-mobile.png"
+    },
+    {
+      "area": "finance-exceptions",
+      "state": "normal",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 12,
+      "exceptions": 0
+    },
+    {
+      "area": "finance-exceptions",
+      "state": "empty",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 13,
+      "exceptions": 0,
+      "screenshot": "finance-exceptions-empty-desktop.png"
+    },
+    {
+      "area": "finance-exceptions",
+      "state": "empty",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 13,
+      "exceptions": 0,
+      "screenshot": "finance-exceptions-empty-mobile.png"
+    },
+    {
+      "area": "finance-exceptions",
+      "state": "empty",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 13,
+      "exceptions": 0
+    },
+    {
+      "area": "finance-exceptions",
+      "state": "error",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 8,
+      "exceptions": 0,
+      "screenshot": "finance-exceptions-error-desktop.png"
+    },
+    {
+      "area": "finance-exceptions",
+      "state": "error",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 8,
+      "exceptions": 0,
+      "screenshot": "finance-exceptions-error-mobile.png"
+    },
+    {
+      "area": "finance-exceptions",
+      "state": "error",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 8,
+      "exceptions": 0
+    },
+    {
+      "area": "finance-exceptions",
+      "state": "loading",
+      "width": 1440,
+      "contentWidth": 1425,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "finance-exceptions-loading-desktop.png"
+    },
+    {
+      "area": "finance-exceptions",
+      "state": "loading",
+      "width": 390,
+      "contentWidth": 375,
+      "controls": 7,
+      "exceptions": 0,
+      "screenshot": "finance-exceptions-loading-mobile.png"
+    },
+    {
+      "area": "finance-exceptions",
+      "state": "loading",
+      "width": 320,
+      "contentWidth": 305,
+      "controls": 7,
+      "exceptions": 0
+    }
+  ]
+}
