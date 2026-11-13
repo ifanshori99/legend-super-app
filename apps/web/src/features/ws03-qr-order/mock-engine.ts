@@ -812,18 +812,26 @@ export function createEngine(
         "NOTHING_TO_SPLIT",
         "Belum ada pesanan yang bisa dibagi.",
       );
-    // Same scope as the bill screen's preview (domain.ts splitScope).
-    const scope = splitScope(allOrders, floor.paidOf(sessionId));
-    if (!scope)
+    // Same scope as the bill screen's preview (domain.ts splitScope): the one
+    // order waiting for payment, like the server (ORD-06 pay-first).
+    const scope = splitScope(allOrders);
+    if (!scope) {
+      const awaitingCount = allOrders.filter(
+        (order) => order.status === "awaiting_payment",
+      ).length;
+      if (awaitingCount === 0)
+        throw new ApiError(
+          422,
+          "NOTHING_TO_SPLIT",
+          "Tidak ada pesanan yang menunggu pembayaran untuk dibagi.",
+        );
       conflict(
-        "SPLIT_LOCKED",
-        "Sebagian tagihan sudah dibayar. Bayar sisanya sekaligus atau panggil waiter.",
+        "CONFLICT",
+        "Ada lebih dari satu pesanan yang menunggu pembayaran.",
       );
+    }
     const orders = scope.orders;
-    // ORD-06 pay-first: the split covers the order waiting for payment, even
-    // when an earlier order of the same session is already paid.
-    const target =
-      orders.find((order) => order.status === "awaiting_payment") ?? null;
+    const target = scope.orders[0];
     const totalIdr = idr(scope.totalIdr) as Idr;
     const lines = orders.flatMap((o) =>
       o.items.map((item) => ({
@@ -859,7 +867,7 @@ export function createEngine(
       tenantId: session.tenantId,
       outletId: session.outletId,
       tableSessionId: session.id,
-      orderId: target ? target.id : null,
+      orderId: target.id,
       method: draft.method,
       shareIndex: draft.shareIndex,
       amountIdr: draft.amountIdr,

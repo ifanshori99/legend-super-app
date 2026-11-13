@@ -26,6 +26,7 @@ import {
 import {
   previewEqualSplit,
   previewItemSplit,
+  splitCreateErrorKind,
   splitDraftError,
   splitScope,
   type SplitMode,
@@ -54,24 +55,44 @@ export function SplitPanel({
 }) {
   const t = useT();
   const create = useCreateSplits(sessionId);
-  const [mode, setMode] = useState<SplitMode>("equal");
-  const [parts, setParts] = useState(
+  const [mode, setModeState] = useState<SplitMode>("equal");
+  const [parts, setPartsState] = useState(
     Math.max(2, Math.min(participants.length, 8)),
   );
-  const [chosen, setChosen] = useState<ReadonlySet<string>>(
+  const [chosen, setChosenState] = useState<ReadonlySet<string>>(
     () => new Set(participants.map((p) => p.id)),
   );
-  const [owners, setOwners] = useState<Readonly<Record<string, string>>>({});
+  const [owners, setOwnersState] = useState<Readonly<Record<string, string>>>(
+    {},
+  );
   const [key, setKey] = useState(() => idempotencyKey("split"));
 
-  // The server splits a pay-first order waiting for payment on its own, else
-  // the whole bill; the preview must divide exactly the same amount (ORD-06).
-  const scope = useMemo(
-    () => splitScope(bill.orders, bill.totals.paidIdr),
-    [bill.orders, bill.totals.paidIdr],
-  );
+  // A changed mode or choice makes an earlier server refusal stale: clear it.
+  const setMode: typeof setModeState = (value) => {
+    create.reset();
+    setModeState(value);
+  };
+  const setParts: typeof setPartsState = (value) => {
+    create.reset();
+    setPartsState(value);
+  };
+  const setChosen: typeof setChosenState = (value) => {
+    create.reset();
+    setChosenState(value);
+  };
+  const setOwners: typeof setOwnersState = (value) => {
+    create.reset();
+    setOwnersState(value);
+  };
+
+  // The server splits the one pay-first order waiting for payment on its own;
+  // the preview must divide exactly the same amount (ORD-06).
+  const scope = useMemo(() => splitScope(bill.orders), [bill.orders]);
   const orderItems = useMemo(
-    () => (scope?.orders ?? bill.orders).flatMap((order) => order.items),
+    () =>
+      (scope?.orders ?? bill.orders).flatMap((order) =>
+        order.items.filter((item) => item.status !== "voided"),
+      ),
     [scope, bill.orders],
   );
   const itemIds = orderItems.map((item) => item.id);
@@ -135,6 +156,11 @@ export function SplitPanel({
     }));
   })();
 
+  // Money rule: never offer a split whose parts do not add up to the bill.
+  const sumsToTotal =
+    preview !== null &&
+    preview.reduce((sum, row) => sum + row.amountIdr, 0) === total;
+
   function buildInput(): CreateSplitsInput {
     if (mode === "equal")
       return { method: "equal", parts, idempotencyKey: key };
@@ -152,7 +178,7 @@ export function SplitPanel({
   }
 
   function submit() {
-    if (error !== null) return;
+    if (error !== null || !sumsToTotal) return;
     create.mutate(buildInput(), {
       onSuccess: () => {
         setKey(idempotencyKey("split"));
@@ -171,6 +197,24 @@ export function SplitPanel({
           : error === "ITEM_TWICE"
             ? t("qrOrders.bill.errorTwice")
             : null;
+
+  // The server's own refusals (409 SPLIT_LOCKED, 422 NOTHING_TO_SPLIT) get
+  // their own words; anything else keeps the generic retry message.
+  const createErrorKind = splitCreateErrorKind(create.error);
+  const createErrorText =
+    createErrorKind === "locked"
+      ? t("qrOrders.bill.errorLocked")
+      : createErrorKind === "nothing"
+        ? t("qrOrders.bill.errorNothingToSplit")
+        : createErrorKind === "cashier"
+          ? t("qrOrders.bill.errorCashier")
+          : t("qrOrders.bill.createFailed");
+  // Retrying cannot fix these refusals: pay the bill or ask the waiter.
+  const blockedByServer =
+    create.isError &&
+    (createErrorKind === "locked" ||
+      createErrorKind === "nothing" ||
+      createErrorKind === "cashier");
 
   return (
     <section aria-labelledby="bill-split" className="qr-paper grid gap-4 p-4">
@@ -316,7 +360,7 @@ export function SplitPanel({
 
       <div className="grid gap-2" aria-live="polite">
         <p className="font-semibold">{t("qrOrders.bill.previewTitle")}</p>
-        {preview ? (
+        {preview && sumsToTotal ? (
           <>
             <ul className="divide-y divide-border rounded-qr-media bg-surface-2 px-4">
               {preview.map((row, index) => (
@@ -335,7 +379,10 @@ export function SplitPanel({
           </>
         ) : (
           <p className="text-sm text-muted-foreground">
-            {errorText ?? t("qrOrders.bill.previewPending")}
+            {errorText ??
+              (error === null
+                ? t("qrOrders.bill.errorPreviewMismatch")
+                : t("qrOrders.bill.previewPending"))}
           </p>
         )}
       </div>
@@ -349,12 +396,12 @@ export function SplitPanel({
             className="mt-0.5 size-4 shrink-0 text-danger"
             aria-hidden="true"
           />
-          {t("qrOrders.bill.createFailed")}
+          {createErrorText}
         </p>
       )}
       <Button
         type="button"
-        disabled={error !== null}
+        disabled={error !== null || !sumsToTotal || blockedByServer}
         loading={create.isPending}
         onClick={submit}
       >

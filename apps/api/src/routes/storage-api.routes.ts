@@ -34,7 +34,11 @@ import { createHrisPayslipRouter } from "./hris-payslip.routes";
 import { createHrisRouter } from "./hris.routes";
 import { createMenuImportRouter } from "./menu-import.routes";
 import { createMenuRouter } from "./menu.routes";
+import { createPublicSiteRouter } from "./public-site.routes";
+import { createQrRouter } from "./qr.routes";
 import { createShareholderDocumentsRouter } from "./shareholder-documents.routes";
+import { createBrandLogoUrl } from "../services/guest-theme.service";
+import { createMenuMediaUrls } from "../services/menu-media.service";
 import { dbShareholderMembership } from "../services/profit-share-membership";
 
 /**
@@ -104,6 +108,18 @@ export function createStorageApiRouter(options: {
       scanner: runtime?.scanner,
     }),
   );
+
+  // Guest QR menu and public site menu (legend-tct6, legend-8qri): photo and
+  // brand logo URLs come from the storage; without it they stay null.
+  const resolveMediaUrls = createMenuMediaUrls(runtime?.storage ?? null);
+  router.use(
+    "/qr",
+    createQrRouter({
+      resolveMediaUrls,
+      resolveLogoUrl: createBrandLogoUrl(runtime?.storage ?? null),
+    }),
+  );
+  router.use("/public/site", createPublicSiteRouter(resolveMediaUrls));
 
   // Menu import + printable menu (legend-0w2wy): the print PDF is stored, so
   // it needs the storage and the scanner (a scanner that refuses documents

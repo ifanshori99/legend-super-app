@@ -78,6 +78,10 @@ import { setAuditWriter } from "./services/audit-writer";
 import { coreAuditWriter } from "./services/core-audit-writer";
 import { recipeBomSource } from "./services/recipe-bom.service.ts";
 import { retryDeliveryPlatformIntents } from "./services/delivery-platform-retry.ts";
+import {
+  createMenuPrintSweepLoop,
+  menuPrintOutboxDeliver,
+} from "./worker/menu-print.job.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
 import { fireDueBreakfastOrders } from "./services/facility-breakfast-consumers.ts";
 import { setQrOrderDepositCreditLookup } from "./services/qr-order-ports.ts";
@@ -371,6 +375,10 @@ const runtime = createWorkerRuntime({
           await handleProfitShareApprovalResolved(context, event);
           // WS-12 (legend-zw9r): approved AI/MCP action requests execute as the requester.
           await handleAiActionApprovalResolved(context, event);
+          // legend-iuvq (F8), cloud only: a menu/price/availability change marks
+          // the outlet's printable menu dirty in this transaction; the sweep
+          // below renders it once, debounced. Other events touch no outlet.
+          if (postsInventoryGl) await menuPrintOutboxDeliver(event, key, tx);
           await handlers.deliverEvent(context, event, key, tx, route);
         }
       },
@@ -842,6 +850,9 @@ async function stopRefundPayoutSweep() {
   if (refundSweepTimer) clearTimeout(refundSweepTimer);
   await refundSweepRound;
 }
+// legend-iuvq: renders dirty printable menus every 30 s. Needs object storage,
+// so it is built after the storage runtime and stays null without STORAGE_*.
+let menuPrintSweep: ReturnType<typeof createMenuPrintSweepLoop> | null = null;
 try {
   await runtime.start();
   if (maintenancePool) {
@@ -886,6 +897,32 @@ try {
       database: db,
       log: consoleLikeLog(logger),
     });
+    // The PDF engine is not chosen yet (renderer null): a due outlet fails with
+    // 503 before any write and stays due, like the on-demand request.
+    if (postsInventoryGl)
+      menuPrintSweep = createMenuPrintSweepLoop({
+        listTenantIds: async () =>
+          (
+            await registry.query<{ id: string }>(
+              "SELECT id FROM app.active_tenant_registry",
+            )
+          ).rows.map((row) => row.id),
+        resolveContext,
+        deps: {
+          storage: storageRuntime.storage,
+          scanner: storageRuntime.scanner,
+          renderer: null,
+        },
+        onError: (message, tenantId) =>
+          logger.error({ job: "menu_print_sweep", tenantId }, message),
+        onRound: (result) => {
+          if (result.failed > 0)
+            logger.warn(
+              { job: "menu_print_sweep", ...result },
+              "menu print sweep round had failures",
+            );
+        },
+      });
   } else
     logger.warn(
       "Object storage is not configured (STORAGE_*): attendance selfie purge and edge selfie orphan sweep jobs not registered.",
@@ -894,8 +931,10 @@ try {
   if (sweepsRefunds) {
     scheduleRefundPayoutRound();
   }
+  menuPrintSweep?.start();
 } catch (error) {
   refundSweepStopped = true;
+  await menuPrintSweep?.stop().catch(() => {});
   await runtime.stop().catch(() => {});
   await maintenancePool?.end().catch(() => {});
   await registry.end();
@@ -906,6 +945,7 @@ async function stop() {
   if (stopping) return;
   stopping = true;
   await stopRefundPayoutSweep();
+  await menuPrintSweep?.stop();
   await relay.stop();
   await runtime.stop();
   await maintenancePool?.end();

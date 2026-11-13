@@ -79,6 +79,14 @@ export const qrOrdersBillMessages = {
   errorUnassigned:
     "Masih ada item yang belum dipilih. Pilih tamu untuk setiap item.",
   errorTwice: "Satu item hanya boleh dibayar satu tamu. Periksa pilihan Anda.",
+  errorLocked:
+    "Ada bagian yang sudah dibayar, jadi pembagian tidak bisa diubah lagi. Bayar bagian yang tersisa.",
+  errorNothingToSplit:
+    "Tidak ada pesanan yang menunggu pembayaran untuk dibagi. Muat ulang tagihan atau panggil waiter.",
+  errorCashier:
+    "Tagihan ini belum bisa dibagi dari sini. Bayar sekaligus atau panggil waiter/kasir.",
+  errorPreviewMismatch:
+    "Jumlah bagian belum sama dengan total tagihan. Ubah pilihan atau panggil waiter/kasir.",
   createFailed:
     "Pembagian belum tersimpan. Pilihan Anda tetap ada, coba lagi sebentar lagi.",
   listTitle: "Bagian pembayaran",

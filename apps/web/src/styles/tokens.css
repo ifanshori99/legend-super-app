@@ -431,6 +431,21 @@
   --qr-radius-cta: 0.875rem;
 }
 
+/* A brand Tenant Theme inside the QR scope (same element carries both
+ * attributes): the fixed rust derivatives above would beat the [data-tenant]
+ * block and mix rust into hover/focus. Derive them again from the tenant's
+ * --primary with the same formula; the higher specificity is explicit. */
+[data-surface="qr"][data-tenant] {
+  --primary-hover: color-mix(in srgb, var(--primary) 88%, var(--background));
+  --primary-tint: color-mix(in srgb, var(--primary) 10%, var(--background));
+  --primary-tint-strong: color-mix(
+    in srgb,
+    var(--primary) 18%,
+    var(--background)
+  );
+  --focus-halo: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
+}
+
 /* ---------------------------------------------------- Reduced motion */
 @media (prefers-reduced-motion: reduce) {
   :root {

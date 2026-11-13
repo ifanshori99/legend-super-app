@@ -381,7 +381,7 @@ test("ORD-06 a pay-first split divides only the order waiting for payment, as th
   assert.equal(engine.getPayment(sessionId, pay.id).status, "paid");
   const second = placePlain(engine, sessionId, 3);
   const bill = engine.bill(sessionId);
-  const scope = splitScope(bill.orders, bill.totals.paidIdr);
+  const scope = splitScope(bill.orders);
   assert.deepEqual(
     scope.orders.map((o) => o.id),
     [second.id],
@@ -421,7 +421,7 @@ test("ORD-06 a bill partly paid outside a split is not split again (no double ch
   tick(5000);
   engine.getPayment(sessionId, pay.id);
   const bill = engine.bill(sessionId);
-  assert.equal(splitScope(bill.orders, bill.totals.paidIdr), null);
+  assert.equal(splitScope(bill.orders), null);
   assert.throws(
     () =>
       engine.createSplits(sessionId, {
@@ -429,7 +429,7 @@ test("ORD-06 a bill partly paid outside a split is not split again (no double ch
         parts: 2,
         idempotencyKey: key(),
       }),
-    (e) => e.status === 409 && e.code === "SPLIT_LOCKED",
+    (e) => e.status === 422 && e.code === "NOTHING_TO_SPLIT",
   );
 });
 

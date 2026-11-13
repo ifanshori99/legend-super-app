@@ -16,6 +16,7 @@ import { ApiError } from "@/lib/api/errors";
 import { useTableJourney } from "../../context";
 import { useChangeCartLine, useRemoveCartLine } from "../../hooks";
 import { formatAvailableFrom } from "../../lib/item-options.ts";
+import { outletTimeZone } from "../../lib/outlet-time-zone.ts";
 import { CompanionOffer, useCompanion } from "../glass/companion-offer";
 import { QrStepper, qrTextLink } from "../glass/qr-primitives";
 
@@ -49,7 +50,7 @@ export function TableNota({
       .filter((item) => item.status !== "available")
       .map((item) => item.id),
   );
-  const timeZone = menu?.outlet.timeZone ?? "Asia/Jakarta";
+  const timeZone = outletTimeZone(menu);
   const soldOutLabel = (menuItemId: string) => {
     const item = menu?.items.find((entry) => entry.id === menuItemId);
     const from =

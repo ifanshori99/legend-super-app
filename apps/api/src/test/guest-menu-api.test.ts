@@ -13,12 +13,19 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { FakeObjectStorage } from "@starter/shared/adapters";
 import { cafeLegendFixtures } from "@starter/shared/core";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
+import { NoopMalwareScanner } from "../services/core-image";
+import type { StorageRuntime } from "../services/core-storage-runtime";
 import { qrTokenHash, signTableQrToken } from "../services/qr-token";
 import { agent } from "./helpers";
-import { createIsolatedTenant, dropIsolatedTenant } from "./floor-test-helpers";
+import {
+  createIsolatedTenant,
+  dropIsolatedTenant,
+  owner,
+} from "./floor-test-helpers";
 
 const app = createApp();
 const { tenant, brand, outlets } = cafeLegendFixtures;
@@ -317,6 +324,240 @@ describe("guest menu reads (Q23 legend-qf0i)", () => {
         .expect(404);
     } finally {
       await dropIsolatedTenant(isolated);
+    }
+  });
+});
+
+// legend-tct6 / legend-8qri: with an object storage the guest menu carries the
+// media-library photo URL and the brand's active theme with its logo URL.
+describe("guest menu photo and theme (legend-tct6, legend-8qri)", () => {
+  const storageApp = createApp({
+    storageRuntime: {
+      storage: new FakeObjectStorage(),
+      scanner: new NoopMalwareScanner(),
+      fileSigner: async (_context, objectId) =>
+        `https://signed.invalid/${objectId}`,
+      hrisDocumentSigner: async () => null,
+    } satisfies StorageRuntime,
+  });
+  const logoId = randomUUID();
+  let themeId = "";
+  let seededTheme = false;
+  let previousLogoId: string | null = null;
+
+  beforeAll(async () => {
+    await asTenant(async (db) => {
+      await db.query(
+        `INSERT INTO core_storage_objects
+           (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
+         VALUES ($1, $2, $3, 'menu_photo', $4, 'image/webp', 1000),
+                ($1, NULL, $5, 'brand_logo', $6, 'image/webp', 1000)`,
+        [
+          tenantId,
+          outletId,
+          mediaId,
+          `${tenantId}/${outletId}/menu-photo/${mediaId}.webp`,
+          logoId,
+          `${tenantId}/brand-logo/${logoId}.webp`,
+        ],
+      );
+      const { rows } = await db.query<{
+        id: string;
+        logo_media_id: string | null;
+      }>(
+        `SELECT t.id, t.logo_media_id FROM tenant_themes t
+           LEFT JOIN brands b ON b.tenant_id = t.tenant_id AND b.theme_id = t.id
+          WHERE t.tenant_id = $1 AND t.brand_id = $2 AND t.status = 'active'
+          ORDER BY (b.id IS NULL), t.version DESC LIMIT 1`,
+        [tenantId, brandId],
+      );
+      if (rows[0]) {
+        themeId = rows[0].id;
+        previousLogoId = rows[0].logo_media_id;
+      } else {
+        // No active theme for the brand: seed one so the theme tests assert.
+        themeId = randomUUID();
+        seededTheme = true;
+        await db.query(
+          `INSERT INTO tenant_themes
+             (id, tenant_id, brand_id, version, tokens, font_family, corners,
+              contrast_check_passed, status, created_by, activated_at)
+           SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1,
+                  '{"light":{},"dark":{}}', 'inter', 'soft', true, 'active', $4, now()
+             FROM tenant_themes WHERE tenant_id = $2 AND brand_id = $3`,
+          [themeId, tenantId, brandId, randomUUID()],
+        );
+      }
+      await db.query(
+        "UPDATE tenant_themes SET logo_media_id = $3 WHERE tenant_id = $1 AND id = $2",
+        [tenantId, themeId, logoId],
+      );
+    });
+  });
+
+  afterAll(async () => {
+    await asTenant(async (db) => {
+      if (seededTheme)
+        await db.query(
+          "DELETE FROM tenant_themes WHERE tenant_id = $1 AND id = $2",
+          [tenantId, themeId],
+        );
+      else
+        await db.query(
+          "UPDATE tenant_themes SET logo_media_id = $3 WHERE tenant_id = $1 AND id = $2",
+          [tenantId, themeId, previousLogoId],
+        );
+      await db.query(
+        "DELETE FROM core_storage_objects WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+        [tenantId, [mediaId, logoId]],
+      );
+    });
+  });
+
+  it("legend-tct6: the QR menu item carries the media-library photo URL", async () => {
+    const response = await agent(storageApp)
+      .get(`/api/qr/menu/${qrToken}`)
+      .set("Host", hostname)
+      .expect(200);
+    const item = response.body.data.items.find(
+      (entry: { id: string }) => entry.id === ids.visibleItem,
+    );
+    expect(item.photoUrl).toMatch(/^https:\/\/storage\.invalid\/public\//);
+  });
+
+  it("legend-tct6: the public website menu resolves the same photo URL", async () => {
+    const response = await agent(storageApp)
+      .get("/api/public/site/menu")
+      .set("Host", hostname)
+      .expect(200);
+    const items = response.body.data.sections.flatMap(
+      (section: { items: { id: string; imageUrl: string | null }[] }) =>
+        section.items,
+    );
+    const item = items.find(
+      (entry: { id: string }) => entry.id === ids.visibleItem,
+    );
+    expect(item.imageUrl).toMatch(/^https:\/\/storage\.invalid\/public\//);
+  });
+
+  it("legend-8qri: the QR menu carries the active theme and the logo URL", async () => {
+    const { rows } = await asTenant((db) =>
+      db.query<{ tokens: unknown; font_family: string; corners: string }>(
+        "SELECT tokens, font_family, corners FROM tenant_themes WHERE tenant_id = $1 AND id = $2",
+        [tenantId, themeId],
+      ),
+    );
+    const response = await agent(storageApp)
+      .get(`/api/qr/menu/${qrToken}`)
+      .set("Host", hostname)
+      .expect(200);
+    const { theme, outlet } = response.body.data;
+    expect(theme).toMatchObject({
+      tokens: rows[0].tokens,
+      fontFamily: rows[0].font_family,
+      corners: rows[0].corners,
+    });
+    expect(theme.logoUrl).toMatch(/^https:\/\/storage\.invalid\/public\//);
+    expect(typeof outlet.timeZone).toBe("string");
+  });
+
+  it("legend-8qri: without a storage the theme still ships and the logo URL is null", async () => {
+    const response = await agent(createApp({ storageRuntime: null }))
+      .get(`/api/qr/menu/${qrToken}`)
+      .set("Host", hostname)
+      .expect(200);
+    expect(response.body.data.theme).not.toBeNull();
+    expect(response.body.data.theme.logoUrl).toBeNull();
+    expect(response.body.data.items[0].photoUrl).toBeNull();
+  });
+
+  const pointLogoAt = (mediaRef: string) =>
+    asTenant((db) =>
+      db.query(
+        "UPDATE tenant_themes SET logo_media_id = $3 WHERE tenant_id = $1 AND id = $2",
+        [tenantId, themeId, mediaRef],
+      ),
+    );
+
+  it("legend-8qri: a logo that is a menu photo of the tenant is not a brand logo", async () => {
+    await pointLogoAt(mediaId);
+    try {
+      const response = await agent(storageApp)
+        .get(`/api/qr/menu/${qrToken}`)
+        .set("Host", hostname)
+        .expect(200);
+      expect(response.body.data.theme).not.toBeNull();
+      expect(response.body.data.theme.logoUrl).toBeNull();
+    } finally {
+      await pointLogoAt(logoId);
+    }
+  });
+
+  it("legend-8qri: a logo from another tenant (menu photo or brand logo) gives no URL", async () => {
+    const isolated = await createIsolatedTenant("8qri");
+    const foreignPhoto = randomUUID();
+    const foreignLogo = randomUUID();
+    try {
+      await owner.query(
+        `INSERT INTO core_storage_objects
+           (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
+         VALUES ($1, $2, $3, 'menu_photo', $4, 'image/webp', 1000),
+                ($1, NULL, $5, 'brand_logo', $6, 'image/webp', 1000)`,
+        [
+          isolated.tenantId,
+          isolated.outletId,
+          foreignPhoto,
+          `${isolated.tenantId}/${isolated.outletId}/menu-photo/${foreignPhoto}.webp`,
+          foreignLogo,
+          `${isolated.tenantId}/brand-logo/${foreignLogo}.webp`,
+        ],
+      );
+      for (const foreignId of [foreignPhoto, foreignLogo]) {
+        await pointLogoAt(foreignId);
+        const response = await agent(storageApp)
+          .get(`/api/qr/menu/${qrToken}`)
+          .set("Host", hostname)
+          .expect(200);
+        expect(response.body.data.theme).not.toBeNull();
+        expect(response.body.data.theme.logoUrl).toBeNull();
+      }
+    } finally {
+      await pointLogoAt(logoId);
+      await owner.query(
+        "DELETE FROM core_storage_objects WHERE tenant_id = $1",
+        [isolated.tenantId],
+      );
+      await dropIsolatedTenant(isolated);
+    }
+  });
+
+  it("legend-8qri: a stored theme the contract rejects leaves the menu without a theme", async () => {
+    const { rows } = await asTenant((db) =>
+      db.query<{ font_family: string }>(
+        "SELECT font_family FROM tenant_themes WHERE tenant_id = $1 AND id = $2",
+        [tenantId, themeId],
+      ),
+    );
+    const originalFont = rows[0].font_family;
+    await asTenant((db) =>
+      db.query(
+        "UPDATE tenant_themes SET font_family = 'comic-sans' WHERE tenant_id = $1 AND id = $2",
+        [tenantId, themeId],
+      ),
+    );
+    try {
+      const response = await agent(storageApp)
+        .get(`/api/qr/menu/${qrToken}`)
+        .set("Host", hostname)
+        .expect(200);
+      expect(response.body.data.theme ?? null).toBeNull();
+    } finally {
+      await asTenant((db) =>
+        db.query(
+          "UPDATE tenant_themes SET font_family = $3 WHERE tenant_id = $1 AND id = $2",
+          [tenantId, themeId, originalFont],
+        ),
+      );
     }
   });
 });

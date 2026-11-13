@@ -28,6 +28,8 @@ import {
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import { paymentChannelSchema, paymentStatusSchema } from "../payment/index.ts";
+import { themeTokensSchema } from "../platform/themes.ts";
+import { BRAND_FONTS, CORNER_STYLES } from "../theme/types.ts";
 import {
   apologyVoucherIdSchema,
   billSplitIdSchema,
@@ -133,6 +135,19 @@ export const qrMenuItemSchema = z
 export type QrMenuItem = z.infer<typeof qrMenuItemSchema>;
 export type QrMenuModifierGroup = z.infer<typeof qrMenuModifierGroupSchema>;
 
+/**
+ * The brand's active Tenant Theme as the guest journey wears it (D43,
+ * legend-8qri): token overrides per mode, font, corner style and the logo's
+ * public URL (null when the brand has no logo or storage is not configured).
+ */
+export const qrMenuThemeSchema = z.strictObject({
+  tokens: themeTokensSchema,
+  fontFamily: z.enum(BRAND_FONTS),
+  corners: z.enum(CORNER_STYLES),
+  logoUrl: z.string().min(1).max(500).nullable(),
+});
+export type QrMenuTheme = z.infer<typeof qrMenuThemeSchema>;
+
 export const qrMenuSchema = z
   .strictObject({
     brand: brandRefSchema,
@@ -149,6 +164,11 @@ export const qrMenuSchema = z
       serviceChargeBp: basisPointsSchema,
       minimumSpendIdr: nonnegativeIdr,
     }),
+    /**
+     * Active Tenant Theme of the brand; null or absent keeps the Base Theme.
+     * The outlet time zone for every clock on screen is `outlet.timeZone`.
+     */
+    theme: qrMenuThemeSchema.nullable().optional(),
     /** False outside the zone's opening hours; the menu stays readable. */
     orderingOpen: z.boolean(),
     pricing: z.strictObject({

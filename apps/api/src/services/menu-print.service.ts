@@ -625,8 +625,10 @@ export async function runDueMenuPrints(
   deps: MenuPrintDeps,
   now = new Date(),
   limit = 20,
+  shouldStop: () => boolean = () => false,
 ): Promise<{ regenerated: string[]; failed: string[] }> {
   assertTrustedScopedContext(context);
+  if (shouldStop()) return { regenerated: [], failed: [] };
   const due = await withTenant(db, context, (tx) =>
     tx
       .select({ outletId: printableMenuRenders.outletId })
@@ -644,6 +646,7 @@ export async function runDueMenuPrints(
   const regenerated: string[] = [];
   const failed: string[] = [];
   for (const { outletId } of due) {
+    if (shouldStop()) break;
     try {
       await regenerateMenuPrint(context, outletId, deps, now);
       regenerated.push(outletId);
