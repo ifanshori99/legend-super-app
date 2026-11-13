@@ -250,3 +250,114 @@ export function buildPph21Prior(
     employerSchemeBaseIdr: out(employerScheme, "employerSchemeBaseIdr"),
   };
 }
+
+/**
+ * `buildPph21Prior` plus the earlier annual-recalculation payslips of the SAME
+ * last tax period (a second run in December: a THR or off-cycle run after the
+ * regular one). Each such payslip is folded in as its cumulative effect:
+ * X, JHT/JP, scheme bases and receivable add up; the tax it left standing
+ * (withheld less the lebih potong refund and the employer's allowance refund,
+ * borne less the employer's refund of borne tax) joins the earlier year's, so
+ * the engine's prior tax equals the annual tax of everything paid so far, and
+ * the later run owes the annual tax of the whole year minus that. The year's
+ * sum is the annual tax on all income, rounded once. Anything that is not an
+ * annual-recalculation payslip, a stored tax that does not add up, or a
+ * cumulative value below 0 is refused with a RangeError.
+ */
+export function buildPph21PriorWithLastPeriod(
+  periods: readonly Pph21PriorPeriod[],
+  lastPeriodEarlier: readonly Pph21PriorPeriod[],
+): Pph21Prior {
+  const base = buildPph21Prior(periods);
+  let taxableGross = BigInt(base.taxableGrossIdr);
+  let deductible = BigInt(base.employeeDeductibleIdr);
+  let withheld = BigInt(base.pph21WithheldIdr);
+  let borne = BigInt(base.pph21EmployerBorneIdr);
+  let allowance = BigInt(base.taxAllowanceIdr);
+  let receivable = BigInt(base.pph21ReceivableIdr);
+  let grossScheme = BigInt(base.grossSchemeBaseIdr);
+  let employerScheme = BigInt(base.employerSchemeBaseIdr);
+  lastPeriodEarlier.forEach((period, index) => {
+    const at = `last period payslip ${index}`;
+    const { tax } = period;
+    if (tax.method !== "annual_recalculation")
+      throw new RangeError(`${at} is not an annual recalculation`);
+    const x = wholeRupiah(tax.taxableGrossIdr, `${at} taxableGrossIdr`);
+    const w = wholeRupiah(tax.pph21WithheldIdr, `${at} pph21WithheldIdr`);
+    const allow = wholeRupiah(tax.taxAllowanceIdr, `${at} taxAllowanceIdr`);
+    const slipBorne = wholeRupiah(
+      tax.pph21EmployerBorneIdr,
+      `${at} pph21EmployerBorneIdr`,
+    );
+    const recv = wholeRupiah(
+      tax.pph21ReceivableIdr ?? 0,
+      `${at} pph21ReceivableIdr`,
+    );
+    const refund = wholeRupiah(tax.pph21RefundIdr, `${at} pph21RefundIdr`);
+    const empRefund = wholeRupiah(
+      tax.pph21EmployerRefundIdr,
+      `${at} pph21EmployerRefundIdr`,
+    );
+    const empAllowRefund = wholeRupiah(
+      tax.pph21EmployerAllowanceRefundIdr ?? 0,
+      `${at} pph21EmployerAllowanceRefundIdr`,
+    );
+    const slipGrossScheme = wholeRupiah(
+      tax.grossSchemeBaseIdr,
+      `${at} grossSchemeBaseIdr`,
+    );
+    const slipEmployerScheme = wholeRupiah(
+      tax.employerSchemeBaseIdr,
+      `${at} employerSchemeBaseIdr`,
+    );
+    // pph21Idr is signed: a lebih potong refund can take it below 0.
+    if (!Number.isSafeInteger(tax.pph21Idr))
+      throw new RangeError(`${at} pph21Idr must be a whole rupiah amount`);
+    if (BigInt(tax.pph21Idr) !== w + slipBorne + recv - refund - empRefund)
+      throw new RangeError(
+        `${at} pph21Idr does not match its withheld, borne, receivable and refund amounts`,
+      );
+    if (empAllowRefund > empRefund)
+      throw new RangeError(
+        `${at} pph21EmployerAllowanceRefundIdr exceeds pph21EmployerRefundIdr`,
+      );
+    if (slipGrossScheme + slipEmployerScheme !== x)
+      throw new RangeError(`${at} scheme bases do not sum to taxableGrossIdr`);
+    taxableGross += x;
+    deductible += wholeRupiah(
+      Number(period.employeeDeductibleIdr),
+      `${at} employeeDeductibleIdr`,
+    );
+    withheld += w - refund - empAllowRefund;
+    allowance += allow - empAllowRefund;
+    borne += slipBorne - (empRefund - empAllowRefund);
+    receivable += recv;
+    grossScheme += slipGrossScheme;
+    employerScheme += slipEmployerScheme;
+  });
+  // The cumulative sign checks run once, after every slip is folded in, so the
+  // result never depends on the order of `lastPeriodEarlier`.
+  if (withheld < 0n || allowance < 0n || borne < 0n)
+    throw new RangeError(
+      "last period payslips leave a negative cumulative tax",
+    );
+  if (allowance > withheld)
+    throw new RangeError(
+      "last period payslips leave taxAllowanceIdr above pph21WithheldIdr",
+    );
+  const out = (value: bigint, name: string): Idr => {
+    if (value > BigInt(Number.MAX_SAFE_INTEGER))
+      throw new RangeError(`prior ${name} is too large`);
+    return idr(Number(value));
+  };
+  return {
+    taxableGrossIdr: out(taxableGross, "taxableGrossIdr"),
+    employeeDeductibleIdr: out(deductible, "employeeDeductibleIdr"),
+    pph21WithheldIdr: out(withheld, "pph21WithheldIdr"),
+    pph21EmployerBorneIdr: out(borne, "pph21EmployerBorneIdr"),
+    taxAllowanceIdr: out(allowance, "taxAllowanceIdr"),
+    pph21ReceivableIdr: out(receivable, "pph21ReceivableIdr"),
+    grossSchemeBaseIdr: out(grossScheme, "grossSchemeBaseIdr"),
+    employerSchemeBaseIdr: out(employerScheme, "employerSchemeBaseIdr"),
+  };
+}

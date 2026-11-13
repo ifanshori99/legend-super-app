@@ -580,6 +580,7 @@ const earner = (
   lastTaxPeriod: false,
   monthsWorked: 11,
   priorPeriods: [],
+  lastPeriodEarlier: [],
   ...extra,
 });
 

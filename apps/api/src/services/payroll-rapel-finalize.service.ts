@@ -36,6 +36,7 @@ import { openPayrollValue } from "../lib/payroll-sealed.ts";
 import { recordAudit } from "./core-audit.ts";
 import { notFound, type Tx } from "./hris-access.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
+import { lockPayrollRunMonth } from "./payroll-run-pph21.service.ts";
 import { snapshotPayeeBankForLock } from "./payroll-bank-snapshot.service.ts";
 import {
   computeEmployeeGrossInTransaction,
@@ -250,6 +251,10 @@ export async function finalizePayrollRapelRunInTransaction(
     )
   )
     throw conflict("Revisi alokasi harus termasuk rencana finalisasi run.");
+
+  // Global lock order (design 0.4): the month advisory lock comes first, so
+  // finalize cannot interleave with a general lock of the same tax month.
+  await lockPayrollRunMonth(tx, tenantId, body.payrollRunId);
 
   // The same component locks serialize setter, Finance overlays and allocation.
   // Acquire all of them before employee/outlet/run rows; do not lock headers

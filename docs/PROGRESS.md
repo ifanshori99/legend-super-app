@@ -4933,3 +4933,16 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - TER split R1 unchanged (founder Q5 pending).
 - Reviews: architect xhigh x3 (round 1: 2 HIGH — December lastTaxPeriod double/missing withholding, reversal after bank file; round 2: export/reversal race; round 3: PASS). Fail-first proven each round with scratch-copy method.
 - Follow-ups filed: legend-c2yca (simulate service must persist results; no lock route before it), legend-ele0u (rapel runs cannot be locked; rapel months block month basis/Coretax).
+
+## 13 Nov 2026 — ws/payroll-followups (legend-c2yca, legend-q5dx4, legend-ele0u)
+
+- Branch ws/payroll-followups from origin/ws/payroll-run-lock 06f20291. Migrations 0486 `payroll_run_results`, 0487 `payroll_followup_guards` (custom SQL). `db:generate` empty.
+- legend-c2yca: `simulatePayrollRunInTransaction` (payroll-run-simulate.service.ts + pure payroll-run-compose.ts) computes per-employee results on the server and stores sealed rows in `payroll_run_results` (trigger: insert/delete only in draft/simulated with simulation_no = run.simulation_count, update only for reseal). `lockPayrollRunInTransaction` takes `{ payrollRunId }` only and re-proves tax from stored rows. Routes `POST /api/hris/payroll/runs/:id/simulate` (payroll.run) and `/lock` (payroll.lock), strict `{ idempotencyKey }` body (extra key -> 422 VALIDATION_ERROR).
+- legend-q5dx4: `buildPph21PriorWithLastPeriod` folds earlier December annual slips into the prior; year PPh 21 = annual tax on all income. `loadTaxYearPriors` reads the run itself; tax-year advisory lock before month lock; later-month annual lock -> 409 PAYROLL_PPH21_LATER_PERIOD_LOCKED. Month-prior edges span the tax year (reversal of Nov after Dec locked -> 409).
+- legend-ele0u: rapel runs lock through the general lock (status locked -> receipt -> v1 full slip); payroll-run-rapel-lock.ts helpers (allocation coverage, stale check, run unchanged). Finalize takes month lock first. 0487 lets a v1 full slip pass the rapel guard with same-tx receipt.
+- Fail closed (architect xhigh): open PPh 21 receivable -> 422; THR period != one calendar month -> 422; join/end date changed after simulate -> 409 STALE; contract tax scheme read per employee (no contract -> 422).
+- R1 unchanged. QRIS/settlement/kas bank untouched.
+- Follow-ups: legend-bypw2 (collect receivable), legend-m6zdl (reseal results), legend-2s2k4 (payment method, founder), legend-x7jas (THR tax gross_up, founder), legend-0ytbu, legend-vepv0, legend-2fk79, legend-4r2jr.
+- Note for founder: under gross_up, splitting December after a refund costs the company ~Rp 1.300 more allowance tax than one combined slip (law, not bug).
+- Gates (17:40): 15 targeted payroll files 242/242 pass; prettier + eslint green on 20 changed .ts; api/shared tsc (rerun after last test-type fix); migration-renumber check ok; `db:generate` no changes. Fail-first: base 06f20291 26/27 + December 11/11 fail; T4 mutation (4 guards off) 7 fail, 3 controls pass.
+- Wave metrics 16:29-17:40: 44 subagents, peak 5 concurrent, avg 1.06 (below target 2: long serial heavy queue + 403 retries); cost* 14.4M (main opus 3.6M, sub opus 5.3M, sonnet 5.0M, haiku 0.4M).

@@ -205,12 +205,16 @@ const employee = (
   label: string,
   fields: Omit<
     PayrollRunTaxEmployee,
-    "employeeId" | "lastTaxPeriod" | "monthsWorked" | "priorPeriods"
+    | "employeeId"
+    | "lastTaxPeriod"
+    | "monthsWorked"
+    | "priorPeriods"
+    | "lastPeriodEarlier"
   > &
     Partial<
       Pick<
         PayrollRunTaxEmployee,
-        "lastTaxPeriod" | "monthsWorked" | "priorPeriods"
+        "lastTaxPeriod" | "monthsWorked" | "priorPeriods" | "lastPeriodEarlier"
       >
     >,
 ): PayrollRunTaxEmployee => ({
@@ -218,6 +222,7 @@ const employee = (
   lastTaxPeriod: false,
   monthsWorked: 11,
   priorPeriods: [],
+  lastPeriodEarlier: [],
   ...fields,
 });
 

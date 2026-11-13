@@ -12,7 +12,9 @@
 // `computePayslipTax`, the same step the mock payslip builder uses.
 //
 // An employee's year-to-date history is passed as the earlier payslips
-// (`priorPeriods`), never as raw sums: `buildPph21Prior` fills every field the
+// (`priorPeriods`, plus `lastPeriodEarlier` for the annual payslips of an
+// earlier run in the same last tax period), never as raw sums:
+// `buildPph21PriorWithLastPeriod` fills every field the
 // last period needs from the stored taxes, the gross-up tax allowance and the
 // scheme mix included (bead legend-s5c1). Pass only the payslips of the
 // current period of service: after the latest annual recalculation of the
@@ -45,7 +47,7 @@ import type {
 } from "@starter/shared/core";
 import {
   PayrollError,
-  buildPph21Prior,
+  buildPph21PriorWithLastPeriod,
   computePayslipTax,
   isSamePph21PolicyRef,
   payslipCalculationSchema,
@@ -82,6 +84,12 @@ export type PayrollRunTaxEmployee = Omit<
    * (after the latest annual recalculation; none: []).
    */
   priorPeriods: readonly Pph21PriorPeriod[];
+  /**
+   * Earlier annual-recalculation payslips of the SAME last tax period (a
+   * second run in December; none: []). Folded into the prior so the year's
+   * tax is the annual tax of all income (`buildPph21PriorWithLastPeriod`).
+   */
+  lastPeriodEarlier: readonly Pph21PriorPeriod[];
 };
 
 /**
@@ -260,6 +268,178 @@ async function loadMonthBasis(
   return basis;
 }
 
+/** What `loadTaxYearPriors` finds for one employee. */
+export type TaxYearPriors = {
+  /** TER payslips of the current period of service, for `priorPeriods`. */
+  periods: Pph21PriorPeriod[];
+  /** Annual payslips of the run's own tax month, for `lastPeriodEarlier`. */
+  lastPeriodEarlier: Pph21PriorPeriod[];
+  /** Every payslip read (sorted): lets the lock detect a changed set. */
+  payslipIds: string[];
+  /** The runs those payslips belong to (sorted, unique). */
+  runIds: PayrollRunId[];
+};
+
+/**
+ * The earlier payslips of the tax year per employee: those of the same legal
+ * entity, in locked/paid runs paid from 1 January to the end of the run's pay
+ * month, from the month the employee joined on (the current period of
+ * service). The legal entity and pay date are read from the stored run, never
+ * taken from the caller. TER payslips go to `periods`, annual-recalculation
+ * payslips of the run's own month to `lastPeriodEarlier`. An annual payslip of
+ * an earlier month is 422 PAYROLL_PPH21_MONTH_PRIOR_INVALID for an employee in
+ * the last tax period (and skipped for the others); one that cannot be read
+ * is the same 422 (fail closed). A locked/paid run of a LATER month of the tax
+ * year that holds an annual-recalculation payslip of any of the employees is
+ * 409 PAYROLL_PPH21_LATER_PERIOD_LOCKED: its annual tax already counts income
+ * this run would add before it. The caller holds the month lock; the prior and
+ * later runs are locked `FOR SHARE` (ordered by id) so none is reversed while
+ * the result is used.
+ */
+export async function loadTaxYearPriors(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: PayrollRunId,
+  employees: readonly {
+    employeeId: string;
+    joinDate: BusinessDate;
+    lastTaxPeriod: boolean;
+  }[],
+): Promise<Map<string, TaxYearPriors>> {
+  const priors = new Map<string, TaxYearPriors>(
+    employees.map((e) => [
+      e.employeeId,
+      { periods: [], lastPeriodEarlier: [], payslipIds: [], runIds: [] },
+    ]),
+  );
+  if (employees.length === 0) return priors;
+  const run = await loadStoredRun(tx, tenantId, runId);
+  const month = run.payDate.slice(0, 7);
+  const year = run.payDate.slice(0, 4);
+  const employeeIds = employees.map((e) => e.employeeId);
+  const runFilter = (from: string, until: string) =>
+    and(
+      eq(payrollRuns.tenantId, tenantId),
+      eq(payrollRuns.legalEntityId, run.legalEntityId),
+      ne(payrollRuns.id, runId),
+      inArray(payrollRuns.status, [...MONTH_PRIOR_STATUSES]),
+      gte(payrollRuns.payDate, from),
+      lt(payrollRuns.payDate, until),
+    );
+  const earlierFilter = runFilter(`${year}-01-01`, nextMonthStart(month));
+  const laterFilter = runFilter(
+    nextMonthStart(month),
+    `${Number(year) + 1}-01-01`,
+  );
+  await tx
+    .select({ id: payrollRuns.id })
+    .from(payrollRuns)
+    .where(
+      and(
+        eq(payrollRuns.tenantId, tenantId),
+        eq(payrollRuns.legalEntityId, run.legalEntityId),
+        ne(payrollRuns.id, runId),
+        inArray(payrollRuns.status, [...MONTH_PRIOR_STATUSES]),
+        gte(payrollRuns.payDate, `${year}-01-01`),
+        lt(payrollRuns.payDate, `${Number(year) + 1}-01-01`),
+      ),
+    )
+    .orderBy(payrollRuns.id)
+    .for("share");
+  const readSlips = (filter: ReturnType<typeof runFilter>) =>
+    tx
+      .select({
+        id: payslips.id,
+        tenantId: payslips.tenantId,
+        employeeId: payslips.employeeId,
+        runId: payslips.payrollRunId,
+        runPayDate: payrollRuns.payDate,
+        calculationEncrypted: payslips.calculationEncrypted,
+        piiKeyVersion: payslips.piiKeyVersion,
+      })
+      .from(payslips)
+      .innerJoin(
+        payrollRuns,
+        and(
+          eq(payrollRuns.tenantId, payslips.tenantId),
+          eq(payrollRuns.id, payslips.payrollRunId),
+        ),
+      )
+      .where(
+        and(
+          filter,
+          eq(payslips.tenantId, tenantId),
+          inArray(payslips.employeeId, employeeIds),
+        ),
+      )
+      .orderBy(payslips.id);
+  const readCalculation = (row: {
+    id: string;
+    tenantId: string;
+    employeeId: string;
+    calculationEncrypted: Buffer;
+    piiKeyVersion: number;
+  }) => {
+    try {
+      const calc = payslipCalculationSchema.parse(
+        JSON.parse(
+          openPayrollValue(
+            row.calculationEncrypted,
+            {
+              tenantId: row.tenantId,
+              table: "payslips",
+              rowId: row.id,
+              field: "calculation",
+            },
+            row.piiKeyVersion,
+          ),
+        ),
+      );
+      if (calc.employeeId !== row.employeeId) throw monthPriorInvalid();
+      return calc;
+    } catch {
+      // Never echo the decrypt or parse error: it may carry payroll values.
+      throw monthPriorInvalid();
+    }
+  };
+  // Out of order: a later month of the year already holds an annual slip.
+  for (const row of await readSlips(laterFilter)) {
+    if (readCalculation(row).tax.method === "annual_recalculation")
+      throw new HttpError(
+        409,
+        "PAYROLL_PPH21_LATER_PERIOD_LOCKED",
+        "Payroll bulan pajak yang lebih akhir pada tahun ini sudah dikunci dengan perhitungan tahunan. Payroll bulan ini tidak bisa dikunci lagi.",
+      );
+  }
+  const joinMonthStart = new Map(
+    employees.map((e) => [e.employeeId, `${e.joinDate.slice(0, 7)}-01`]),
+  );
+  const lastPeriod = new Map(
+    employees.map((e) => [e.employeeId, e.lastTaxPeriod]),
+  );
+  for (const row of await readSlips(earlierFilter)) {
+    const entry = priors.get(row.employeeId);
+    const from = joinMonthStart.get(row.employeeId);
+    if (!entry || from === undefined || row.runPayDate < from) continue;
+    const calc = readCalculation(row);
+    const period: Pph21PriorPeriod = {
+      tax: calc.tax,
+      employeeDeductibleIdr: calc.bpjs
+        .filter((b) => b.type === "jht" || b.type === "jp")
+        .reduce((sum, b) => sum + b.employeeIdr, 0),
+    };
+    if (calc.tax.method === "ter") entry.periods.push(period);
+    else if (row.runPayDate.slice(0, 7) === month)
+      entry.lastPeriodEarlier.push(period);
+    else if (lastPeriod.get(row.employeeId) === true) throw monthPriorInvalid();
+    else continue;
+    entry.payslipIds.push(row.id);
+    if (!entry.runIds.includes(row.runId)) entry.runIds.push(row.runId);
+  }
+  for (const entry of priors.values()) entry.runIds.sort();
+  return priors;
+}
+
 /** Legal entity and pay date of the stored run (404 when it is not the tenant's). */
 async function loadStoredRun(
   tx: Tx,
@@ -284,7 +464,7 @@ async function loadStoredRun(
 }
 
 /**
- * Takes the advisory month lock of the stored run and re-reads the run under
+ * Takes the advisory year lock, then the month lock, of the stored run and re-reads the run under
  * it, so a legal entity or pay date edited while waiting for the lock is
  * refused (409 PAYROLL_PPH21_RUN_MISMATCH) instead of locking the wrong month.
  * The lock is re-entrant inside one transaction. `month` is `YYYY-MM`.
@@ -296,6 +476,12 @@ export async function lockPayrollRunMonth(
 ): Promise<{ legalEntityId: string; payDate: BusinessDate; month: string }> {
   const first = await loadStoredRun(tx, tenantId, runId);
   const month = first.payDate.slice(0, 7);
+  // Year lock first (always before the month lock, so locks never invert):
+  // runs of different months of one year serialize, so a December lock sees
+  // the earlier months' payslips of the year.
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`payroll-pph21-year:${tenantId}:${first.legalEntityId}:${month.slice(0, 4)}`}, 0))`,
+  );
   await lockPayrollTaxMonth(tx, tenantId, first.legalEntityId, month);
   const stored = await loadStoredRun(tx, tenantId, runId);
   if (
@@ -381,7 +567,7 @@ function taxOfPayslips(
     pph21Policy: ref,
     parameters,
     payslips: input.employees.map(
-      ({ employeeId, priorPeriods, ...employee }) => {
+      ({ employeeId, priorPeriods, lastPeriodEarlier, ...employee }) => {
         const basis = monthBasis.get(employeeId) ?? null;
         return {
           employeeId,
@@ -397,7 +583,10 @@ function taxOfPayslips(
                     pph21EmployeeIdr: basis.priorEmployeeTaxIdr,
                   },
                 }),
-            prior: buildPph21Prior(priorPeriods),
+            prior: buildPph21PriorWithLastPeriod(
+              priorPeriods,
+              lastPeriodEarlier,
+            ),
             tables: input.tables,
             policy: parameters,
           }).tax,

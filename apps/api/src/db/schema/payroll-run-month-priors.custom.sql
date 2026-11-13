@@ -1,6 +1,7 @@
 -- legend-ihjan: month-dependency edges written once in the lock transaction
--- (PAYR-05). Tenant RLS, append-only for the app role. A reversal of a prior
--- run is refused while a live (locked/paid) dependent exists.
+-- (PAYR-05); since 0487 also tax-year edges of a last tax period
+-- (legend-q5dx4). Tenant RLS, append-only for the app role. A reversal of a
+-- prior run is refused while a live (locked/paid) dependent exists.
 SELECT app.enforce_tenant_rls('public.payroll_run_month_priors'::regclass);
 --> statement-breakpoint
 REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public.payroll_run_month_priors FROM legend_app;
@@ -31,10 +32,14 @@ BEGIN
     RAISE EXCEPTION 'PAYR-05: prior run % must be locked or paid (it is %)', NEW.prior_payroll_run_id, prior_status
       USING ERRCODE = '23514';
   END IF;
+  -- legend-q5dx4 (0487): a December annual recalculation depends on every
+  -- earlier run of the tax year, so the prior may be any earlier or same month
+  -- of the same legal entity and tax year (before: the same month only).
   IF prior_entity IS DISTINCT FROM run_entity
-    OR date_trunc('month', prior_pay_date::timestamp) IS DISTINCT FROM date_trunc('month', run_pay_date::timestamp)
+    OR date_trunc('year', prior_pay_date::timestamp) IS DISTINCT FROM date_trunc('year', run_pay_date::timestamp)
+    OR date_trunc('month', prior_pay_date::timestamp) > date_trunc('month', run_pay_date::timestamp)
   THEN
-    RAISE EXCEPTION 'PAYR-05: prior run % is not in the same legal entity and tax month as run %', NEW.prior_payroll_run_id, NEW.payroll_run_id
+    RAISE EXCEPTION 'PAYR-05: prior run % is not in the same legal entity and tax year, on or before the month of run %', NEW.prior_payroll_run_id, NEW.payroll_run_id
       USING ERRCODE = '23514';
   END IF;
   RETURN NEW;

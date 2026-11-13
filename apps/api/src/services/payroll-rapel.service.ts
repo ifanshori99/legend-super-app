@@ -54,7 +54,7 @@ import { notFound, type Tx } from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-employee.service.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 
-type Header = typeof payrollRapels.$inferSelect;
+export type Header = typeof payrollRapels.$inferSelect;
 type History = typeof employeePayComponents.$inferSelect;
 const APPROVED = ["approved", "allocated"];
 const dayNumber = (value: string) =>
@@ -278,7 +278,7 @@ async function header(
   return row;
 }
 
-async function toDto(
+export async function toDto(
   tx: Tx,
   context: ScopedTenantContext,
   row: Header,

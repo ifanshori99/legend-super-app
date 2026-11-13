@@ -154,8 +154,15 @@ BEGIN
   IF octet_length(NEW.calculation_encrypted) < 50 THEN
     RAISE EXCEPTION 'PAYR-RAPEL: final seal needs authenticated allocation metadata' USING ERRCODE = '23514';
   END IF;
-  IF get_byte(NEW.calculation_encrypted, 0) <> 2
-    OR encode(substring(NEW.calculation_encrypted FROM 6 FOR 16), 'hex') <> replace(NEW.payroll_run_id::text, '-', '')
+  -- legend-ele0u (0487): the general run lock seals the full payslip as a v1
+  -- envelope (no revision header). It skips only the v2 header check below;
+  -- the same-transaction receipt (sha256, key version, revision count), the
+  -- reserved id, eligibility and legal entity checks still apply.
+  IF get_byte(NEW.calculation_encrypted, 0) NOT IN (1, 2) THEN
+    RAISE EXCEPTION 'PAYR-RAPEL: unknown payslip seal envelope' USING ERRCODE = '23514';
+  END IF;
+  IF get_byte(NEW.calculation_encrypted, 0) = 2 AND (
+    encode(substring(NEW.calculation_encrypted FROM 6 FOR 16), 'hex') <> replace(NEW.payroll_run_id::text, '-', '')
     OR (get_byte(NEW.calculation_encrypted, 1)::bigint * 16777216
       + get_byte(NEW.calculation_encrypted, 2)::bigint * 65536
       + get_byte(NEW.calculation_encrypted, 3)::bigint * 256
@@ -164,7 +171,7 @@ BEGIN
           AND h.employee_id = NEW.employee_id AND h.payroll_run_id = NEW.payroll_run_id
           AND h.status = 'allocated'
       )
-  THEN
+  ) THEN
     RAISE EXCEPTION 'PAYR-RAPEL: authenticated seal run or allocation revision is stale' USING ERRCODE = '23514';
   END IF;
   -- Preview is deliberately read-only. Only the trusted batch finalizer

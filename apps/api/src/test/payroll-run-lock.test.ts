@@ -1,45 +1,57 @@
-// Payroll run LOCK step + reversal (beads legend-b9y4y; design
-// docs/briefs/sub-payroll-run-lock-design.md sections 3.2, 4 and 6 tests 1-3;
-// PRD PAYR-01..PAYR-05; founder rule "jangan sampai rugi": no month under- or
-// double-withheld, no money to a wrong account, no reversal that breaks a later
-// run's tax). Fail-first: written before the implementation.
+// Payroll run LOCK step + reversal (beads legend-b9y4y, legend-c2yca; design
+// docs/briefs/sub-payroll-run-lock-design.md sections 3.2, 4 and 6 tests 1-3,
+// docs/briefs/sub-payroll-followups-design.md section 7; PRD PAYR-01..PAYR-05;
+// founder rule "jangan sampai rugi": no month under- or double-withheld, no
+// money to a wrong account, no reversal that breaks a later run's tax).
 //
-// RULES UNDER TEST (service API of the design, not of any implementation)
+// Round 2 (legend-c2yca): the lock no longer takes caller numbers. Every run is
+// SIMULATED by the service (results stored, sealed), approved with SQL (the
+// approval routes do not exist yet, design O6), then locked with
+// `{ payrollRunId }` only. The December two-run case moved to
+// payroll-pph21-december-runs.test.ts; the rapel lock to
+// payroll-run-lock-rapel.test.ts; the stored-result contract to
+// payroll-run-simulate.test.ts.
+//
+// RULES UNDER TEST
 //  1. [lock-atomic] `lockPayrollRunInTransaction` writes status `locked`,
 //     payslips (with the monthly PPh 21), month-dependency edges and the payee
 //     bank snapshot in ONE transaction.
-//     (a) a bank_transfer payee with net > 0 and no bank account:
-//         422 PAYROLL_BANK_ACCOUNT_MISSING, nothing persisted (run stays
-//         `approved`, 0 payslips, 0 snapshots, 0 edges, 0 payroll.locked events);
-//     (b) a wrong approved month basis: 409 PAYROLL_PPH21_MONTH_STALE, nothing
-//         persisted;
-//     (c) happy path: status `locked`, the sealed slip's tax equals the
-//         recomputed one, snapshot count = bank_transfer slips with net > 0
-//         (a cash slip is excluded).
-//  2. [lock-parallel-month] two runs (regular 8.000.020, THR 5.000.310) of one
-//     legal entity + month locked concurrently: exactly one is fulfilled, the
-//     other is 409 PAYROLL_PPH21_MONTH_STALE; after SQL re-approval with a fresh
-//     simulation the loser locks; PPh 21 of both slips = 650.017 (half up) and
-//     the loser has exactly one edge, to the winner.
+//     (a) a bank_transfer payee whose bank account is gone at lock time: 422
+//         PAYROLL_BANK_ACCOUNT_MISSING, nothing persisted;
+//     (b) a competing run of the month locked after this run was simulated:
+//         409 PAYROLL_PPH21_MONTH_STALE, nothing persisted;
+//     (c) happy path: status `locked`, the sealed slip equals the stored
+//         simulation, snapshot count = bank_transfer slips with net > 0 (a
+//         cash slip is excluded).
+//  2. [lock-parallel-month] two runs (regular, THR) of one legal entity + month
+//     locked concurrently: exactly one is fulfilled, the other is 409
+//     PAYROLL_PPH21_MONTH_STALE; after SQL return-to-draft, a fresh simulation
+//     and re-approval the loser locks; the month's PPh 21 of both slips equals
+//     the TER tax of the month's TOTAL (half up), and the loser has exactly one
+//     edge, to the winner.
 //  3. [reversal-blocked] reversing the earlier run is refused 409
 //     PAYROLL_RUN_REVERSAL_BLOCKED while the later run depends on it; a direct
 //     SQL update to `reversed` fails with SQLSTATE 23514; deciding as the
 //     requester is 403 PAYROLL_APPROVER_NOT_DISTINCT; reversing the later run
 //     first, then the earlier one, works.
+//  4. [reversal-after-bank-file] reversal is refused once a bank file exists.
+//  5. [lock-guards] a lock refuses what is not what was approved: a result row
+//     missing, run totals that differ from the stored results, a stored tax
+//     that no longer equals the recomputed one (all 409
+//     PAYROLL_RUN_RESULT_STALE), and loans/reimbursements/service charge in the
+//     totals (409 PAYROLL_RUN_LOCK_UNSUPPORTED).
 //
-// WORKED NUMBERS (TK/0, NPWP, TER; from payroll-ter-monthly.test.ts, computed by
-// hand from PP 58/2023 Lampiran A): salary 8.000.020 alone = 150 bp -> 120.000;
-// THR 5.000.310 alone = 0 bp -> 0; month total 13.000.330 = 500 bp ->
-// round(650.016,5) = 650.017 half up. Whoever locks second withholds the
-// difference to 650.017.
-//
-// ASSUMPTIONS (design silent; stated so the engineer can contest them)
-//  - Run approvers/creator are uuids (payrollRunSchema needs userIdSchema).
-//  - Calculations are built from the engine's own simulated tax (the lock
-//    re-proves tax equality), with lines GAJI + one PPH21 deduction line; the
-//    run's totals are `sumPayrollRunTotals` of those calculations.
-//  - The pinned statutory versions (ptkp, pph21_ter, pph21_annual) are published
-//    rows of the test tenant (design 3.2 step 8).
+// ASSUMPTIONS (design silent or OPEN; stated so the engineer can contest them)
+//  - Gross of a run = the employee's fixed base-salary component; a THR run's
+//    gross is whatever the THR rules give, so the month tax is compared with an
+//    oracle (the shared engine on the month's total taxable gross), not with
+//    hand numbers.
+//  - Payment method = bank_transfer when a bank account is on file, else cash
+//    (design O1). The "bank account missing" refusal therefore needs the
+//    account removed (raw SQL) after the simulation.
+//  - [lock-result-stale-tax] reseals one stored result with a changed
+//    `calculation.tax.terRateBp` (raw role, bypassing the freeze trigger) and
+//    expects the lock to refuse it as stale.
 //  - The payroll.locked event is counted in `domain_event_outbox` by event name
 //    and the run id appearing in the event JSON.
 //  - Reversal request permission: payroll.lock; decide: payroll.cancel.approve.
@@ -50,19 +62,15 @@ import { isDeepStrictEqual } from "node:util";
 import { Writable } from "node:stream";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { businessDateSchema, idr } from "@starter/shared/core";
+import { idr } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
 import {
-  payrollConfigSnapshotSchema,
+  computePayslipTax,
+  DEFAULT_PPH21_POLICY,
   payrollRunIdSchema,
-  payslipCalculationSchema,
-  payslipTaxSchema,
-  sumPayrollRunTotals,
-  type PayslipCalculation,
-  type PayslipTax,
 } from "@starter/shared/hris/payroll";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { FakeObjectStorage } from "@starter/shared/adapters";
@@ -71,29 +79,25 @@ import type { ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import { createLogger } from "../lib/logger.ts";
-import { openPayrollValue } from "../lib/payroll-sealed.ts";
+import {
+  openPayrollValue,
+  PAYROLL_SEAL_KEY_VERSION,
+  sealPayrollValue,
+} from "../lib/payroll-sealed.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { REFERENCE_TABLES } from "./fixtures/payroll/statutory-tables.ts";
+import { agent, originHeader, signUp } from "./helpers.ts";
 import {
-  calculatePayrollRunTax,
-  type PayrollRunMonthScope,
-  type PayrollRunTaxEmployee,
-  type PayrollRunTaxRun,
-} from "../services/payroll-run-pph21.service.ts";
-import type { PayrollRunLockEmployee } from "../services/payroll-run-lock.service.ts";
-import {
-  REFERENCE_PPH21_ANNUAL,
-  REFERENCE_PTKP,
-  REFERENCE_TABLES,
-  REFERENCE_TER,
-} from "./fixtures/payroll/statutory-tables.ts";
-import {
-  agent,
-  originHeader,
-  setRole,
-  signUp,
-  verifySessionMfa,
-} from "./helpers.ts";
+  approveSimulatedRun,
+  deleteStatutoryTables,
+  insertDraftRun,
+  insertEmployee,
+  insertPolicy,
+  insertSalary,
+  publishStatutoryTables,
+  returnRunToDraft,
+} from "./payroll-simulate-kit.ts";
 
 // ---- App, storage, DB pool -------------------------------------------------
 
@@ -131,9 +135,10 @@ const createdRoles: string[] = [];
 const createdEmployees: string[] = [];
 const createdRuns: string[] = [];
 const createdThrSchedules: string[] = [];
-const createdWorlds: World[] = [];
+const createdEntities: string[] = [];
+const createdPolicies: string[] = [];
 
-const key = () => `ter-monthly-${randomUUID()}`;
+const key = () => `run-lock-${randomUUID()}`;
 
 const tenantScope = () =>
   establishScopedTenantContext(
@@ -187,7 +192,7 @@ async function grantRole(userId: string, permissions: string[]) {
       [
         roleId,
         tenant.id,
-        `TER monthly ${roleId.slice(0, 8)}`,
+        `Run lock ${roleId.slice(0, 8)}`,
         JSON.stringify(permissions),
         JSON.stringify(["tenant"]),
       ],
@@ -204,7 +209,6 @@ async function grantRole(userId: string, permissions: string[]) {
 type Client = Awaited<ReturnType<typeof signedInClient>>["client"];
 let exporter: Client;
 let hr: Client;
-let orgAdmin: Client;
 let exporterUserId: string;
 
 // ---- Fixtures: worlds, employees, runs --------------------------------------
@@ -217,173 +221,64 @@ const digits = (length: number) => {
 };
 
 type World = { entityId: string; policyId: string };
-type Emp = { id: string; name: string; nik: string; npwp: string };
+type Emp = { id: string; name: string };
 
-/** A legal entity (NPWP through the org API) plus a payroll policy. */
+/** A legal entity plus a payroll policy and the published statutory tables. */
 async function makeWorld(): Promise<World> {
-  const created = await orgAdmin
-    .post("/api/org/legal-entities")
-    .set(originHeader)
-    .send({
-      name: `PT TER Monthly ${++counter}`,
-      npwp: digits(16),
-      isPkp: false,
-      address: "Kota Bandung",
-    });
-  expect(created.status, JSON.stringify(created.body)).toBe(201);
-  const entityId = created.body.data.id as string;
-  const policyId = randomUUID();
+  const world = { entityId: randomUUID(), policyId: randomUUID() };
+  createdEntities.push(world.entityId);
+  createdPolicies.push(world.policyId);
   await asTenant(async (conn) => {
-    const code = `TM${policyId.slice(0, 8)}`;
     await conn.query(
-      `INSERT INTO payroll_policies (id, tenant_id, legal_entity_id, name, employee_group_code,
-                                     employee_group, cycle, pay_date_adjustment, jkk_risk_class, bpjs_programmes)
-       VALUES ($1, $2, $3, 'Kebijakan TER bulanan', $4, $5, '{"kind":"monthly"}', 'none', 'low', '[]')`,
-      [policyId, tenant.id, entityId, code, JSON.stringify({ code })],
+      `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, $3, false)`,
+      [world.entityId, tenant.id, `PT Kunci Payroll ${++counter}`],
     );
+    await insertPolicy(conn, tenant.id, world.entityId, world.policyId);
+    await publishStatutoryTables(conn, tenant.id, exporterUserId);
   });
-  const world = { entityId, policyId };
-  createdWorlds.push(world);
   return world;
 }
 
-async function makeEmployee(world: World, withBank = true): Promise<Emp> {
-  const emp: Emp = {
-    id: randomUUID(),
-    name: `TER Person ${++counter}`,
-    nik: digits(16),
-    npwp: digits(15),
-  };
+async function makeEmployee(
+  world: World,
+  opts: { gross?: number; withBank?: boolean } = {},
+): Promise<Emp> {
+  const emp: Emp = { id: randomUUID(), name: `Kunci Person ${++counter}` };
   createdEmployees.push(emp.id);
   await asTenant(async (conn) => {
-    await conn.query(
-      `INSERT INTO employees (id, tenant_id, employee_no, full_name, home_outlet_id,
-                              legal_entity_id, employment_type, join_date, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pkwtt', '2025-03-01', 'active')`,
-      [
-        emp.id,
-        tenant.id,
-        `TM-${emp.id.slice(0, 8).toUpperCase()}`,
-        emp.name,
-        outlet.id,
-        world.entityId,
-      ],
-    );
+    await insertEmployee(conn, {
+      tenantId: tenant.id,
+      outletId: outlet.id,
+      entityId: world.entityId,
+      id: emp.id,
+      name: emp.name,
+    });
+    await insertSalary(conn, {
+      tenantId: tenant.id,
+      employeeId: emp.id,
+      amount: opts.gross ?? SALARY_GROSS,
+      createdBy: exporterUserId,
+    });
   });
-  // No PII row at all = no bank account on file (snapshot cannot be frozen).
-  if (!withBank) return emp;
+  // NPWP always (tax id); a bank account unless the test wants a cash payee.
   const put = await hr
     .put(`/api/hris/employees/${emp.id}/pii`)
     .set(originHeader)
     .send({
-      nik: emp.nik,
-      npwp: emp.npwp,
-      bankAccount: digits(12),
+      nik: digits(16),
+      npwp: digits(15),
+      ...(opts.withBank === false ? {} : { bankAccount: digits(12) }),
       idempotencyKey: key(),
     });
   expect(put.status, JSON.stringify(put.body)).toBe(200);
   return emp;
 }
 
-// ---- Fixtures: pinned statutory tables, runs, approvals --------------------------
-
-const date = (value: string) => businessDateSchema.parse(value);
-
-// Pinned tables (PAYR-02): ptkp, pph21_ter, pph21_annual. Own ids/versions; the
-// effective date is old so that no other file's version starts on it.
-const PINNED = [
-  { type: "ptkp", id: randomUUID(), version: 9301, params: REFERENCE_PTKP },
-  { type: "pph21_ter", id: randomUUID(), version: 9302, params: REFERENCE_TER },
-  {
-    type: "pph21_annual",
-    id: randomUUID(),
-    version: 9303,
-    params: REFERENCE_PPH21_ANNUAL,
-  },
-] as const;
-const PINNED_FROM = "2002-01-01";
-
-async function ensureStatutoryTables() {
-  await asTenant(async (conn) => {
-    for (const row of PINNED) {
-      await conn.query(
-        `INSERT INTO statutory_rates
-           (id, tenant_id, type, version, effective_from, status, legal_basis, parameters, created_by)
-         VALUES ($1, $2, $3, $4, $5, 'draft', 'PP 58/2023 (test)', $6::jsonb, $7)
-         ON CONFLICT (id) DO NOTHING`,
-        [
-          row.id,
-          tenant.id,
-          row.type,
-          row.version,
-          PINNED_FROM,
-          JSON.stringify(row.params),
-          exporterUserId,
-        ],
-      );
-      await conn.query(
-        `UPDATE statutory_rates
-            SET status = 'published', published_at = now(), published_by = $2
-          WHERE id = $1 AND status = 'draft'`,
-        [row.id, exporterUserId],
-      );
-    }
-  });
-}
-
-function snapshotFor(world: World, loanMaxDeductionOfNetPayBp = 0) {
-  return payrollConfigSnapshotSchema.parse({
-    statutoryVersions: PINNED.map((row) => ({
-      type: row.type,
-      versionId: row.id,
-      version: row.version,
-      effectiveFrom: PINNED_FROM,
-    })),
-    policy: {
-      id: world.policyId,
-      cycle: {
-        frequency: "monthly",
-        cutoffDay: null,
-        payDay: null,
-        payMonthOffset: 0,
-      },
-      payDateAdjustment: "none",
-      jkkRiskClass: "low",
-      bpjsProgrammes: [],
-    },
-    components: [
-      {
-        id: randomUUID(),
-        code: "GAJI",
-        category: "base_salary",
-        taxable: true,
-        taxScheme: "gross",
-        bpjsBase: true,
-        overtimeBase: true,
-        thrBase: true,
-      },
-    ],
-    loanMaxDeductionOfNetPayBp,
-    pph21Policy: null,
-    capturedAt: "2026-11-01T00:00:00.000Z",
-  });
-}
-
-// Run approvers and creator are uuids (payrollRunSchema).
-const CREATOR = randomUUID();
-const HR_APPROVER = randomUUID();
-const FINANCE_APPROVER = randomUUID();
-
 type RunDates = { periodStart: string; periodEnd: string; payDate: string };
 const NOV = (pay: number): RunDates => ({
   periodStart: "2026-11-01",
   periodEnd: "2026-11-30",
   payDate: `2026-11-${String(pay).padStart(2, "0")}`,
-});
-const DEC = (pay: number): RunDates => ({
-  periodStart: "2026-12-01",
-  periodEnd: "2026-12-31",
-  payDate: `2026-12-${String(pay).padStart(2, "0")}`,
 });
 const EARLIER_PAY = 15;
 const THR_PAY = 28;
@@ -397,270 +292,53 @@ async function seedDraftRun(
   const runId = randomUUID();
   createdRuns.push(runId);
   await asTenant(async (conn) => {
-    // payroll_runs_thr_schedule_check: a THR run needs a THR schedule.
-    let thrScheduleId: string | null = null;
-    if (runType === "thr") {
-      thrScheduleId = randomUUID();
-      createdThrSchedules.push(thrScheduleId);
-      await conn.query(
-        `INSERT INTO thr_schedules (id, tenant_id, legal_entity_id, name, holiday_name,
-                                    holiday_date, tenure_as_of_date, pay_date, created_by)
-         VALUES ($1, $2, $3, 'THR uji kunci payroll', 'Hari raya uji', $4, $4, $4, 'run-lock-test')`,
-        [thrScheduleId, tenant.id, world.entityId, dates.payDate],
-      );
-    }
-    await conn.query(
-      `INSERT INTO payroll_runs (id, tenant_id, legal_entity_id, payroll_policy_id, run_type,
-                                 period_start, period_end, pay_date, thr_schedule_id, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [
-        runId,
-        tenant.id,
-        world.entityId,
-        world.policyId,
-        runType,
-        dates.periodStart,
-        dates.periodEnd,
-        dates.payDate,
-        thrScheduleId,
-        CREATOR,
-      ],
-    );
+    const schedule = await insertDraftRun(conn, {
+      tenantId: tenant.id,
+      runId,
+      entityId: world.entityId,
+      policyId: world.policyId,
+      thr: runType === "thr",
+      ...dates,
+    });
+    if (schedule) createdThrSchedules.push(schedule);
   });
   return runId;
 }
 
-/**
- * The plan's totals plus an override. A loan override keeps the totals
- * internally consistent (deductions, net and bank transfer move with it), as
- * the totals schema requires.
- */
-function totalsWith(
-  calcs: PayslipCalculation[],
-  override?: Record<string, unknown>,
-) {
-  const base = sumPayrollRunTotals(calcs) as Record<string, unknown>;
-  const loan = Number(override?.loanRepaymentIdr ?? 0);
-  if (loan === 0) return { ...base, ...override };
-  return {
-    ...base,
-    ...override,
-    deductionsIdr: Number(base.deductionsIdr) + loan,
-    netIdr: Number(base.netIdr) - loan,
-    bankTransferIdr: Number(base.bankTransferIdr) - loan,
-  };
-}
+// ---- Service adapters (design 3.2 and 4) ----------------------------------------------
 
-/** draft -> simulated (totals + snapshot) -> hr_approved -> approved. */
-async function approveRun(
-  world: World,
-  runId: string,
-  calcs: PayslipCalculation[],
-  // Round 2 (F3): a test may approve totals that differ from the plan.
-  totalsOverride?: Record<string, unknown>,
-) {
-  await ensureStatutoryTables();
-  await asTenant(async (conn) => {
-    await conn.query(
-      `UPDATE payroll_runs SET status = 'simulated', simulation_count = 1,
-              last_simulated_at = now(), totals = $2::jsonb, config_snapshot = $3::jsonb
-        WHERE id = $1`,
-      [
-        runId,
-        JSON.stringify(totalsWith(calcs, totalsOverride)),
-        // A loan in the totals needs a loan cap in the snapshot, else the
-        // reducer refuses it as PAYROLL_SNAPSHOT_MISMATCH before the guard.
-        JSON.stringify(
-          snapshotFor(world, totalsOverride?.loanRepaymentIdr ? 5_000 : 0),
-        ),
-      ],
-    );
-    await conn.query(
-      `UPDATE payroll_runs SET status = 'hr_approved', approved_by_hr = $2, approved_by_hr_at = now()
-        WHERE id = $1`,
-      [runId, HR_APPROVER],
-    );
-    await conn.query(
-      `UPDATE payroll_runs SET status = 'approved', approved_by_finance = $2, approved_by_finance_at = now()
-        WHERE id = $1`,
-      [runId, FINANCE_APPROVER],
-    );
-  });
-}
-
-/** approved -> draft (return_to_draft), the way the reducer clears the run. */
-const returnToDraft = (runId: string) =>
-  asTenant((conn) =>
-    conn.query(
-      `UPDATE payroll_runs SET status = 'draft', simulation_count = 0, last_simulated_at = NULL,
-              totals = NULL, config_snapshot = NULL, approved_by_hr = NULL,
-              approved_by_hr_at = NULL, approved_by_finance = NULL,
-              approved_by_finance_at = NULL
-        WHERE id = $1`,
-      [runId],
-    ),
-  );
-
-// ---- Tax engine adapters (the engine's real signatures, as in ter-monthly) -----------
-
-type Facts = { run: PayrollRunTaxRun; monthScope: PayrollRunMonthScope };
-
-function runFacts(runId: string, payDate: string): Facts {
-  return {
-    run: { status: "approved", payDate: date(payDate), configSnapshot: null },
-    monthScope: { runId: runId as PayrollRunMonthScope["runId"] },
-  };
-}
-
-const earner = (emp: Emp, gross: number): PayrollRunTaxEmployee => ({
-  employeeId: emp.id,
-  ptkpStatus: "TK/0",
-  hasTaxId: true,
-  earnings: [{ amountIdr: idr(gross), taxable: true, taxScheme: "gross" }],
-  employerBenefitIdr: idr(0),
-  employeeDeductibleIdr: idr(0),
-  lastTaxPeriod: false,
-  monthsWorked: 11,
-  priorPeriods: [],
-});
-
-/** One employee of a run to be locked. */
-type Planned = {
-  emp: Emp;
-  gross: number;
-  method: "bank_transfer" | "cash";
-  /** December: the employee's last tax period (annual true-up, no month basis). */
-  lastTaxPeriod?: boolean;
-};
-
-function calculationOf(p: Planned, tax: PayslipTax, dates: RunDates) {
-  const withheld = Number(tax.pph21WithheldIdr);
-  const lines: Record<string, unknown>[] = [
-    {
-      componentCode: "GAJI",
-      name: "Gaji pokok",
-      category: "base_salary",
-      kind: "earning",
-      amountIdr: p.gross,
-      taxable: true,
-      quantity: null,
-      sourceId: null,
-    },
-  ];
-  if (withheld > 0)
-    lines.push({
-      componentCode: "PPH21",
-      name: "PPh 21",
-      category: "pph21",
-      kind: "deduction",
-      amountIdr: withheld,
-      taxable: false,
-      quantity: null,
-      sourceId: null,
-    });
-  return payslipCalculationSchema.parse({
-    employeeId: p.emp.id,
-    employeeNo: `RL-${p.emp.id.slice(0, 8).toUpperCase()}`,
-    employeeName: p.emp.name,
-    positionName: "Kasir",
-    outletId: outlet.id,
-    periodStart: dates.periodStart,
-    periodEnd: dates.periodEnd,
-    payDate: dates.payDate,
-    grossIdr: p.gross,
-    deductionsIdr: withheld,
-    netIdr: p.gross - withheld,
-    pph21Idr: Number(tax.pph21Idr),
-    bpjsEmployeeIdr: 0,
-    bpjsCompanyIdr: 0,
-    serviceChargeIdr: 0,
-    overtimeIdr: 0,
-    lines,
-    bpjs: [],
-    tax,
-    paymentMethod: p.method,
-  });
-}
-
-type Sim = Awaited<ReturnType<typeof calculatePayrollRunTax>>;
-
-/** The approved simulation of a run: what the lock step receives from its caller. */
-async function simulate(
-  runId: string,
-  dates: RunDates,
-  planned: Planned[],
-): Promise<{
-  employees: PayrollRunLockEmployee[];
-  calcs: PayslipCalculation[];
-  sim: Sim;
-}> {
-  const facts = runFacts(runId, dates.payDate);
-  const taxEmployees = planned.map((p) => ({
-    ...earner(p.emp, p.gross),
-    ...(p.lastTaxPeriod ? { lastTaxPeriod: true, monthsWorked: 12 } : {}),
-  }));
-  const sim = await withTenant(db, tenantScope(), (tx) =>
-    calculatePayrollRunTax(
-      tenantScope(),
-      {
-        run: facts.run,
-        tables: REFERENCE_TABLES,
-        employees: taxEmployees,
-        monthScope: facts.monthScope,
-      },
+async function simulateRun(runId: string) {
+  const { simulatePayrollRunInTransaction } =
+    await import("../services/payroll-run-simulate.service.ts");
+  return withTenant(db, tenantScope(), (tx) =>
+    simulatePayrollRunInTransaction(
       tx,
+      tenantScope(),
+      exporterUserId,
+      payrollRunIdSchema.parse(runId),
     ),
   );
-  const calcs: PayslipCalculation[] = [];
-  const employees: PayrollRunLockEmployee[] = planned.map((p, i) => {
-    const simulated = sim.payslips.find((s) => s.employeeId === p.emp.id);
-    expect(simulated, "the engine priced the employee").toBeDefined();
-    const calculation = calculationOf(
-      p,
-      payslipTaxSchema.parse(simulated!.tax),
-      dates,
-    );
-    calcs.push(calculation);
-    const taxInput: Omit<PayrollRunTaxEmployee, "employeeId"> = {
-      ...taxEmployees[i]!,
-    };
-    delete (taxInput as { employeeId?: string }).employeeId;
-    return {
-      calculation,
-      taxInput,
-      approvedMonthBasis: simulated!.monthBasis ?? null,
-    };
-  });
-  return { employees, calcs, sim };
 }
 
-/** A run seeded as `approved` with a fresh simulation, ready to lock. */
+/** A run simulated by the service and approved with SQL, ready to lock. */
 async function approvedRun(
   world: World,
   dates: RunDates,
-  planned: Planned[],
   runType: "regular" | "thr" = "regular",
-  totalsOverride?: Record<string, unknown>,
 ) {
   const runId = await seedDraftRun(world, dates, runType);
-  const simulated = await simulate(runId, dates, planned);
-  await approveRun(world, runId, simulated.calcs, totalsOverride);
+  await simulateRun(runId);
+  await asTenant((conn) => approveSimulatedRun(conn, runId));
   expect(await runStatus(runId), "seeded run is approved").toBe("approved");
-  return { runId, ...simulated };
+  return { runId };
 }
 
-// ---- Service adapters (design 3.2 and 4) ----------------------------------------------
-
-async function lockRun(
-  runId: string,
-  employees: readonly PayrollRunLockEmployee[],
-) {
+async function lockRun(runId: string) {
   const { lockPayrollRunInTransaction } =
     await import("../services/payroll-run-lock.service.ts");
   return withTenant(db, tenantScope(), (tx) =>
     lockPayrollRunInTransaction(tx, tenantScope(), exporterUserId, {
       payrollRunId: payrollRunIdSchema.parse(runId),
-      employees,
     }),
   );
 }
@@ -755,6 +433,15 @@ const priorsOf = async (runId: string) =>
     ).rows.map((row) => row.prior_payroll_run_id as string),
   );
 
+type Calc = {
+  employeeId: string;
+  grossIdr: number;
+  netIdr: number;
+  pph21Idr: number;
+  paymentMethod: string;
+  tax: Record<string, unknown> & { taxableGrossIdr: number };
+};
+
 /** The stored (decrypted) calculation of every payslip of the given runs. */
 const storedSlips = (runIds: string[]) =>
   asTenant(async (conn) => {
@@ -779,7 +466,38 @@ const storedSlips = (runIds: string[]) =>
           },
           row.pii_key_version,
         ),
-      ) as { pph21Idr: number; netIdr: number; tax: unknown },
+      ) as Calc,
+    }));
+  });
+
+const resultBinding = (payslipId: string) =>
+  ({
+    tenantId: tenant.id,
+    table: "payroll_run_results",
+    rowId: payslipId,
+    field: "result",
+  }) as never;
+
+/** The stored (decrypted) simulation of every employee of a run. */
+const storedResults = (runId: string) =>
+  asTenant(async (conn) => {
+    const rows = (
+      await conn.query(
+        `SELECT employee_id, payslip_id, result_encrypted, pii_key_version
+           FROM payroll_run_results WHERE tenant_id = $1 AND payroll_run_id = $2`,
+        [tenant.id, runId],
+      )
+    ).rows;
+    return rows.map((row) => ({
+      employeeId: row.employee_id as string,
+      payslipId: row.payslip_id as string,
+      envelope: JSON.parse(
+        openPayrollValue(
+          row.result_encrypted,
+          resultBinding(row.payslip_id),
+          row.pii_key_version,
+        ),
+      ) as { calculation: Calc },
     }));
   });
 
@@ -791,11 +509,65 @@ const reversalOf = async (runId: string) =>
     )
   ).reversal as { status: string } | null;
 
-const halfUp = (gross: number, bp: number) =>
-  Math.floor((gross * bp + 5_000) / 10_000);
-const SALARY_GROSS = 8_000_020; // 150 bp, tax 120.000 alone
-const THR_GROSS = 5_000_310; // alone 0 bp
-const MONTH_TAX = halfUp(SALARY_GROSS + THR_GROSS, 500); // 650.017
+/**
+ * Oracle for a TER month: the shared engine on the month's TOTAL taxable gross
+ * (TK/0, tax id, no earlier periods), default policy (half up). Whoever locks
+ * second withholds the difference, so the month sums to exactly this.
+ */
+const monthTax = (totalTaxableGross: number) =>
+  Number(
+    computePayslipTax({
+      tables: REFERENCE_TABLES,
+      policy: DEFAULT_PPH21_POLICY,
+      ptkpStatus: "TK/0",
+      hasTaxId: true,
+      lastTaxPeriod: false,
+      monthsWorked: 11,
+      earnings: [
+        {
+          amountIdr: idr(totalTaxableGross),
+          taxable: true,
+          taxScheme: "gross",
+        },
+      ],
+      employerBenefitIdr: 0,
+      employeeDeductibleIdr: 0,
+      prior: {
+        taxableGrossIdr: 0,
+        employeeDeductibleIdr: 0,
+        pph21WithheldIdr: 0,
+        pph21EmployerBorneIdr: 0,
+      },
+    }).tax.pph21Idr,
+  );
+
+const SALARY_GROSS = 8_000_020;
+
+/**
+ * Totals the approvers "saw" differ from what the stored results add up to, or
+ * carry an unsupported side effect (raw role: the freeze trigger would refuse).
+ */
+async function tamperTotals(runId: string, override: Record<string, number>) {
+  const loan = override.loanRepaymentIdr ?? 0;
+  await asTenant(
+    (conn) =>
+      conn.query(
+        `UPDATE payroll_runs
+            SET totals = totals || $2::jsonb
+                  || CASE WHEN $3::bigint > 0 THEN jsonb_build_object(
+                       'deductionsIdr', (totals->>'deductionsIdr')::bigint + $3::bigint,
+                       'netIdr', (totals->>'netIdr')::bigint - $3::bigint,
+                       'bankTransferIdr', (totals->>'bankTransferIdr')::bigint - $3::bigint)
+                     ELSE '{}'::jsonb END,
+                config_snapshot = CASE WHEN $3::bigint > 0
+                  THEN config_snapshot || '{"loanMaxDeductionOfNetPayBp":5000}'::jsonb
+                  ELSE config_snapshot END
+          WHERE id = $1`,
+        [runId, JSON.stringify(override), loan],
+      ),
+    true,
+  );
+}
 
 // ---- Setup / teardown ------------------------------------------------------------
 
@@ -822,21 +594,6 @@ beforeAll(async () => {
   await grantRole(decider.userId, ["payroll.view", "payroll.cancel.approve"]);
   approver = { userId: decider.userId };
 
-  const admin = agent(app);
-  const email = await signUp(admin, "Run lock org admin");
-  await setRole(email, "admin");
-  const session = await admin.get("/api/auth/get-session");
-  const adminId = session.body.user.id as string;
-  createdUsers.push(adminId);
-  await owner.query(
-    `INSERT INTO role_assignments
-       (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
-     SELECT $1, $2, id, 'tenant', now() - interval '1 minute', $2 FROM roles
-      WHERE tenant_id = $1 AND template_key = 'owner'`,
-    [tenant.id, adminId],
-  );
-  await verifySessionMfa(email);
-  orgAdmin = admin;
   // No tenant PPh 21 policy version: the default policy (half up) applies.
   await asTenant((conn) =>
     conn.query("DELETE FROM payroll_pph21_policies WHERE tenant_id = $1", [
@@ -847,10 +604,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await asTenant(async (conn) => {
-    const entities = createdWorlds.map((w) => w.entityId);
-    // Raw (replica role): append-only tables reference payslips and runs. The
-    // month-priors table does not exist before the implementation.
-    for (const table of ["payroll_run_month_priors", "payslip_bank_snapshots"])
+    // Raw (replica role): append-only tables reference payslips and runs.
+    for (const table of [
+      "payroll_run_results",
+      "payroll_run_month_priors",
+      "payslip_bank_snapshots",
+    ])
       if (
         (await conn.query("SELECT to_regclass($1) AS t", [`public.${table}`]))
           .rows[0].t !== null
@@ -868,6 +627,10 @@ afterAll(async () => {
       [tenant.id, createdRuns],
     );
     await conn.query(
+      "DELETE FROM hris_idempotency WHERE tenant_id = $1 AND key LIKE 'run-lock-%'",
+      [tenant.id],
+    );
+    await conn.query(
       "DELETE FROM payroll_runs WHERE tenant_id = $1 AND id = ANY($2)",
       [tenant.id, createdRuns],
     );
@@ -876,14 +639,26 @@ afterAll(async () => {
       [tenant.id, createdThrSchedules],
     );
     await conn.query("DELETE FROM payroll_policies WHERE id = ANY($1)", [
-      createdWorlds.map((w) => w.policyId),
+      createdPolicies,
     ]);
+    await deleteStatutoryTables(conn, tenant.id);
     await conn.query(
-      "DELETE FROM statutory_rates WHERE tenant_id = $1 AND id = ANY($2)",
-      [tenant.id, PINNED.map((row) => row.id)],
+      "DELETE FROM employee_pay_components WHERE tenant_id = $1 AND employee_id = ANY($2)",
+      [tenant.id, createdEmployees],
+    );
+    await conn.query(
+      "DELETE FROM pay_components WHERE tenant_id = $1 AND code LIKE 'SM\\_%'",
+      [tenant.id],
+    );
+    await conn.query(
+      "DELETE FROM employment_contracts WHERE tenant_id = $1 AND employee_id = ANY($2)",
+      [tenant.id, createdEmployees],
     );
     await conn.query("DELETE FROM employees WHERE id = ANY($1)", [
       createdEmployees,
+    ]);
+    await conn.query("DELETE FROM legal_entities WHERE id = ANY($1)", [
+      createdEntities,
     ]);
     await conn.query(
       "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2)",
@@ -893,9 +668,6 @@ afterAll(async () => {
       "DELETE FROM roles WHERE tenant_id = $1 AND id = ANY($2)",
       [tenant.id, createdRoles],
     );
-    await conn.query("DELETE FROM legal_entities WHERE id = ANY($1)", [
-      entities,
-    ]);
   }, true);
   await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers]);
   await owner.end();
@@ -904,16 +676,24 @@ afterAll(async () => {
 // ---- 1. [lock-atomic] -------------------------------------------------------------
 
 describe("run lock writes monthly tax and bank snapshot in one transaction", () => {
-  it("[lock-atomic-a] a bank_transfer payee with net > 0 and no bank account: 422 PAYROLL_BANK_ACCOUNT_MISSING and nothing persisted", async () => {
+  it("[lock-atomic-a] a bank_transfer payee with net > 0 whose bank account is gone at lock time: 422 PAYROLL_BANK_ACCOUNT_MISSING and nothing persisted", async () => {
     const world = await makeWorld();
     const paid = await makeEmployee(world);
-    const noBank = await makeEmployee(world, false);
-    const { runId, employees } = await approvedRun(world, NOV(THR_PAY), [
-      { emp: paid, gross: SALARY_GROSS, method: "bank_transfer" },
-      { emp: noBank, gross: SALARY_GROSS, method: "bank_transfer" },
-    ]);
+    const gone = await makeEmployee(world);
+    const { runId } = await approvedRun(world, NOV(THR_PAY));
+    // The simulation stored bank_transfer for both; HR then loses one account.
+    await asTenant(
+      (conn) =>
+        conn.query(
+          `UPDATE employees SET bank_account_encrypted = NULL, bank_account_hmac = NULL
+            WHERE id = $1`,
+          [gone.id],
+        ),
+      true,
+    );
+    expect(paid.id).not.toBe(gone.id);
 
-    const refused = await failureOf(lockRun(runId, employees));
+    const refused = await failureOf(lockRun(runId));
     expect(refused, "the lock must be refused").not.toBeNull();
     expect(refused!.status).toBe(422);
     expect(refused!.code).toBe("PAYROLL_BANK_ACCOUNT_MISSING");
@@ -925,45 +705,40 @@ describe("run lock writes monthly tax and bank snapshot in one transaction", () 
     expect(await snapshotCount(runId)).toBe(0);
     expect(await edgeCount(runId)).toBe(0);
     expect(await lockedEventCount(runId)).toBe(0);
-  });
+  }, 90_000);
 
-  it("[lock-atomic-b] a wrong approved month basis: 409 PAYROLL_PPH21_MONTH_STALE and nothing persisted", async () => {
+  it("[lock-atomic-b] a competing run of the month locked after this run was simulated: 409 PAYROLL_PPH21_MONTH_STALE and nothing persisted", async () => {
     const world = await makeWorld();
-    const emp = await makeEmployee(world);
-    const { runId, employees } = await approvedRun(world, NOV(THR_PAY), [
-      { emp, gross: THR_GROSS, method: "bank_transfer" },
-    ]);
-    // The simulation claims a prior of 1.000 that the month does not hold.
-    const wrong = employees.map((e) => ({
-      ...e,
-      approvedMonthBasis: {
-        priorGrossIdr: idr(1_000),
-        priorTaxIdr: idr(0),
-        priorEmployeeTaxIdr: idr(0),
-      },
-    })) as PayrollRunLockEmployee[];
+    await makeEmployee(world);
+    // Both approved against an empty month; the first locks, the second is stale.
+    const first = await approvedRun(world, NOV(EARLIER_PAY));
+    const second = await approvedRun(world, NOV(THR_PAY), "thr");
+    // `second` was simulated before `first` locked: its month basis is empty.
+    await lockRun(first.runId);
 
-    const refused = await failureOf(lockRun(runId, wrong));
+    const refused = await failureOf(lockRun(second.runId));
     expect(refused, "the stale lock must be refused").not.toBeNull();
     expect(refused!.status).toBe(409);
     expect(refused!.code).toBe("PAYROLL_PPH21_MONTH_STALE");
-    expect(await runStatus(runId)).toBe("approved");
-    expect(await payslipCount(runId)).toBe(0);
-    expect(await snapshotCount(runId)).toBe(0);
-    expect(await edgeCount(runId)).toBe(0);
-    expect(await lockedEventCount(runId)).toBe(0);
-  });
+    expect(await runStatus(second.runId)).toBe("approved");
+    expect(await payslipCount(second.runId)).toBe(0);
+    expect(await snapshotCount(second.runId)).toBe(0);
+    expect(await edgeCount(second.runId)).toBe(0);
+    expect(await lockedEventCount(second.runId)).toBe(0);
+  }, 90_000);
 
-  it("[lock-atomic-c] a good lock: status locked, sealed slip tax = recomputed tax, one snapshot per bank_transfer slip with net > 0 (cash excluded)", async () => {
+  it("[lock-atomic-c] a good lock: status locked, sealed slip = stored simulation, one snapshot per bank_transfer slip with net > 0 (cash excluded)", async () => {
     const world = await makeWorld();
     const bank = await makeEmployee(world);
-    const cash = await makeEmployee(world);
-    const { runId, employees, calcs } = await approvedRun(world, NOV(THR_PAY), [
-      { emp: bank, gross: SALARY_GROSS, method: "bank_transfer" },
-      { emp: cash, gross: 3_000_000, method: "cash" },
-    ]);
+    const cash = await makeEmployee(world, {
+      gross: 3_000_000,
+      withBank: false,
+    });
+    const { runId } = await approvedRun(world, NOV(THR_PAY));
+    const results = await storedResults(runId);
+    expect(results).toHaveLength(2);
 
-    const result = await lockRun(runId, employees);
+    const result = await lockRun(runId);
     expect(await runStatus(runId)).toBe("locked");
     expect(result.bankSnapshotCount).toBe(1);
     expect(result.payslips).toHaveLength(2);
@@ -972,40 +747,42 @@ describe("run lock writes monthly tax and bank snapshot in one transaction", () 
     expect(await lockedEventCount(runId)).toBe(1);
 
     const stored = await storedSlips([runId]);
-    for (const calc of calcs) {
-      const slip = stored.find((s) => s.employeeId === calc.employeeId);
+    for (const expected of results) {
+      const slip = stored.find((s) => s.employeeId === expected.employeeId);
       expect(slip, "a payslip exists for the employee").toBeDefined();
-      // The sealed tax is the recomputed tax; nobody's net exceeds gross - tax.
-      expect(isDeepStrictEqual(slip!.calculation.tax, calc.tax)).toBe(true);
-      expect(slip!.calculation.netIdr).toBe(Number(calc.netIdr));
+      // The sealed slip is the simulation the approvers saw, to the rupiah.
+      expect(
+        isDeepStrictEqual(slip!.calculation, expected.envelope.calculation),
+      ).toBe(true);
       const planned = result.payslips.find(
-        (p) => p.employeeId === calc.employeeId,
+        (p) => p.employeeId === expected.employeeId,
       );
-      expect(Number(planned!.netIdr)).toBe(Number(calc.netIdr));
+      expect(Number(planned!.netIdr)).toBe(
+        Number(expected.envelope.calculation.netIdr),
+      );
     }
-  });
+    expect(
+      stored.find((s) => s.employeeId === cash.id)!.calculation.paymentMethod,
+    ).toBe("cash");
+    expect(
+      stored.find((s) => s.employeeId === bank.id)!.calculation.paymentMethod,
+    ).toBe("bank_transfer");
+  }, 90_000);
 });
 
 // ---- 2. [lock-parallel-month] ------------------------------------------------------
 
 describe("two parallel locks of runs in the same month", () => {
-  it("[lock-parallel-month] one wins, the other is 409 PAYROLL_PPH21_MONTH_STALE; after re-approval the month withholds exactly round(TER(total) x rate)", async () => {
+  it("[lock-parallel-month] one wins, the other is 409 PAYROLL_PPH21_MONTH_STALE; after re-simulation the month withholds exactly the TER tax of the month total", async () => {
     const world = await makeWorld();
-    const emp = await makeEmployee(world);
-    const salary = await approvedRun(world, NOV(EARLIER_PAY), [
-      { emp, gross: SALARY_GROSS, method: "bank_transfer" },
-    ]);
-    const thr = await approvedRun(
-      world,
-      NOV(THR_PAY),
-      [{ emp, gross: THR_GROSS, method: "bank_transfer" }],
-      "thr",
-    );
+    await makeEmployee(world);
+    const salary = await approvedRun(world, NOV(EARLIER_PAY));
+    const thr = await approvedRun(world, NOV(THR_PAY), "thr");
 
-    // Both were approved against an empty month (zero basis).
+    // Both were simulated and approved against an empty month (zero basis).
     const [a, b] = await Promise.allSettled([
-      lockRun(salary.runId, salary.employees),
-      lockRun(thr.runId, thr.employees),
+      lockRun(salary.runId),
+      lockRun(thr.runId),
     ]);
     const settled = [
       { name: "salary", result: a, run: salary },
@@ -1025,22 +802,22 @@ describe("two parallel locks of runs in the same month", () => {
 
     // The loser is re-simulated against the winner's payslip, re-approved
     // through SQL (return_to_draft -> simulated -> hr_approved -> approved).
-    const dates = loser.name === "salary" ? NOV(EARLIER_PAY) : NOV(THR_PAY);
-    const gross = loser.name === "salary" ? SALARY_GROSS : THR_GROSS;
-    await returnToDraft(loser.run.runId);
-    const fresh = await simulate(loser.run.runId, dates, [
-      { emp, gross, method: "bank_transfer" },
-    ]);
-    await approveRun(world, loser.run.runId, fresh.calcs);
-    await lockRun(loser.run.runId, fresh.employees);
+    await asTenant((conn) => returnRunToDraft(conn, loser.run.runId));
+    await simulateRun(loser.run.runId);
+    await asTenant((conn) => approveSimulatedRun(conn, loser.run.runId));
+    await lockRun(loser.run.runId);
 
     expect(await runStatus(salary.runId)).toBe("locked");
     expect(await runStatus(thr.runId)).toBe("locked");
     const stored = await storedSlips([salary.runId, thr.runId]);
     expect(stored).toHaveLength(2);
     const total = stored.reduce((sum, s) => sum + s.calculation.pph21Idr, 0);
-    // Not 120.000 + 650.017 (double), not less (missing).
-    expect(total).toBe(MONTH_TAX);
+    const totalGross = stored.reduce(
+      (sum, s) => sum + s.calculation.tax.taxableGrossIdr,
+      0,
+    );
+    // Not the sum of each run alone (double), not less (missing).
+    expect(total).toBe(monthTax(totalGross));
     expect(await priorsOf(loser.run.runId)).toEqual([winner.run.runId]);
     expect(await edgeCount(winner.run.runId)).toBe(0);
   }, 90_000);
@@ -1051,19 +828,12 @@ describe("two parallel locks of runs in the same month", () => {
 describe("run reversal", () => {
   it("[reversal-blocked] refused while a later run of the month depends on it; SQL bypass fails with 23514; reverse later first, then earlier", async () => {
     const world = await makeWorld();
-    const emp = await makeEmployee(world);
+    await makeEmployee(world);
     // A locks first; B is simulated and locked on top of A (edge B -> A).
-    const earlier = await approvedRun(world, NOV(EARLIER_PAY), [
-      { emp, gross: SALARY_GROSS, method: "bank_transfer" },
-    ]);
-    await lockRun(earlier.runId, earlier.employees);
-    const later = await approvedRun(
-      world,
-      NOV(THR_PAY),
-      [{ emp, gross: THR_GROSS, method: "bank_transfer" }],
-      "thr",
-    );
-    await lockRun(later.runId, later.employees);
+    const earlier = await approvedRun(world, NOV(EARLIER_PAY));
+    await lockRun(earlier.runId);
+    const later = await approvedRun(world, NOV(THR_PAY), "thr");
+    await lockRun(later.runId);
     expect(await priorsOf(later.runId)).toEqual([earlier.runId]);
 
     // The requester cannot decide their own request (reducer, not permission).
@@ -1123,65 +893,22 @@ describe("run reversal", () => {
   }, 90_000);
 });
 
-// ---- Round 2 (F3): fail-first tests for the architect's findings -----------------------
+// ---- 4. [reversal-after-bank-file] ---------------------------------------------------
 //
-// ASSUMPTIONS (design silent; stated so the engineer can contest them)
-//  - [lock-december-two-runs] Both December runs are approved blind (a
-//    lastTaxPeriod employee has no month basis, design 3.2). Locked one after
-//    the other, the second must be refused 409 PAYROLL_PPH21_MONTH_STALE and
-//    persist nothing (fail closed: the engine cannot see the first slip).
+// ASSUMPTIONS
 //  - [reversal-after-bank-file] The bank file is made through the real export
 //    endpoint (201); for the decide step the file row is inserted with SQL
 //    after the request, so the test does not depend on whether the export
 //    endpoint itself refuses a run with a pending reversal.
-//  - [lock-unsupported] The unsupported side effects are put in the approved
-//    run totals (the guard reads totals, design 3.2 step 6, before it compares
-//    plan and totals).
-
-describe("[lock-december-two-runs] lastTaxPeriod employees: a second run of the same month", () => {
-  it("a second December run (same legal entity and employee) is refused 409 PAYROLL_PPH21_MONTH_STALE and nothing is persisted", async () => {
-    const world = await makeWorld();
-    const emp = await makeEmployee(world);
-    const regular = await approvedRun(world, DEC(15), [
-      {
-        emp,
-        gross: SALARY_GROSS,
-        method: "bank_transfer",
-        lastTaxPeriod: true,
-      },
-    ]);
-    const thr = await approvedRun(
-      world,
-      DEC(28),
-      [{ emp, gross: THR_GROSS, method: "bank_transfer", lastTaxPeriod: true }],
-      "thr",
-    );
-
-    await lockRun(regular.runId, regular.employees);
-    expect(await runStatus(regular.runId)).toBe("locked");
-
-    // The THR run was priced without seeing the regular slip: locking it would
-    // double or miss the annual withholding.
-    const refused = await failureOf(lockRun(thr.runId, thr.employees));
-    expect(refused, "the second December lock must be refused").not.toBeNull();
-    expect(refused!.status).toBe(409);
-    expect(refused!.code).toBe("PAYROLL_PPH21_MONTH_STALE");
-    expect(await runStatus(thr.runId)).toBe("approved");
-    expect(await payslipCount(thr.runId)).toBe(0);
-    expect(await snapshotCount(thr.runId)).toBe(0);
-    expect(await edgeCount(thr.runId)).toBe(0);
-    expect(await lockedEventCount(thr.runId)).toBe(0);
-  }, 90_000);
-});
+//  - The two-run December case ([lock-december-two-runs], formerly a refusal)
+//    is now a success and lives in payroll-pph21-december-runs.test.ts.
 
 describe("[reversal-after-bank-file] reversal is refused once a bank file exists", () => {
   it("request is refused 409 PAYROLL_RUN_REVERSAL_BLOCKED after the bank file was created through the export endpoint", async () => {
     const world = await makeWorld();
-    const emp = await makeEmployee(world);
-    const run = await approvedRun(world, NOV(THR_PAY), [
-      { emp, gross: SALARY_GROSS, method: "bank_transfer" },
-    ]);
-    await lockRun(run.runId, run.employees);
+    await makeEmployee(world);
+    const run = await approvedRun(world, NOV(THR_PAY));
+    await lockRun(run.runId);
 
     const made = await exporter
       .post(`/api/hris/payroll/runs/${run.runId}/bank-transfer-files`)
@@ -1202,11 +929,9 @@ describe("[reversal-after-bank-file] reversal is refused once a bank file exists
 
   it("approve is refused 409 PAYROLL_RUN_REVERSAL_BLOCKED when the bank file was made after the request", async () => {
     const world = await makeWorld();
-    const emp = await makeEmployee(world);
-    const run = await approvedRun(world, NOV(THR_PAY), [
-      { emp, gross: SALARY_GROSS, method: "bank_transfer" },
-    ]);
-    await lockRun(run.runId, run.employees);
+    await makeEmployee(world);
+    const run = await approvedRun(world, NOV(THR_PAY));
+    await lockRun(run.runId);
     await requestReversal(run.runId, exporterUserId);
     expect((await reversalOf(run.runId))?.status).toBe("pending");
 
@@ -1241,11 +966,9 @@ describe("[reversal-after-bank-file] reversal is refused once a bank file exists
   // code path is involved; the guard must live in the database itself.
   it("[reversal-bank-file-db-guard] a direct SQL update to reversed is refused with SQLSTATE 23514 while a bank file exists", async () => {
     const world = await makeWorld();
-    const emp = await makeEmployee(world);
-    const run = await approvedRun(world, NOV(THR_PAY), [
-      { emp, gross: SALARY_GROSS, method: "bank_transfer" },
-    ]);
-    await lockRun(run.runId, run.employees);
+    await makeEmployee(world);
+    const run = await approvedRun(world, NOV(THR_PAY));
+    await lockRun(run.runId);
 
     await asTenant(
       (conn) =>
@@ -1293,80 +1016,98 @@ describe("[reversal-after-bank-file] reversal is refused once a bank file exists
   }, 90_000);
 });
 
-describe("[lock-guards] the lock refuses a plan that is not what was approved", () => {
-  it("[lock-result-stale-totals] a plan missing an approved employee: 409 PAYROLL_RUN_RESULT_STALE, nothing persisted", async () => {
-    const world = await makeWorld();
-    const a = await makeEmployee(world);
-    const b = await makeEmployee(world);
-    const { runId, employees } = await approvedRun(world, NOV(THR_PAY), [
-      { emp: a, gross: SALARY_GROSS, method: "bank_transfer" },
-      { emp: b, gross: SALARY_GROSS, method: "bank_transfer" },
-    ]);
+// ---- 5. [lock-guards] ------------------------------------------------------------------
 
-    const refused = await failureOf(lockRun(runId, employees.slice(0, 1)));
-    expect(refused, "a short plan must be refused").not.toBeNull();
+describe("[lock-guards] the lock refuses a run that is not what was approved", () => {
+  it("[lock-result-stale-totals] a stored result missing for an approved employee: 409 PAYROLL_RUN_RESULT_STALE, nothing persisted", async () => {
+    const world = await makeWorld();
+    await makeEmployee(world);
+    await makeEmployee(world);
+    const { runId } = await approvedRun(world, NOV(THR_PAY));
+    await asTenant(
+      (conn) =>
+        conn.query(
+          `DELETE FROM payroll_run_results
+            WHERE tenant_id = $1 AND payroll_run_id = $2
+              AND employee_id = (SELECT employee_id FROM payroll_run_results
+                                  WHERE tenant_id = $1 AND payroll_run_id = $2 LIMIT 1)`,
+          [tenant.id, runId],
+        ),
+      true,
+    );
+
+    const refused = await failureOf(lockRun(runId));
+    expect(refused, "a short result set must be refused").not.toBeNull();
     expect(refused!.status).toBe(409);
     expect(refused!.code).toBe("PAYROLL_RUN_RESULT_STALE");
     expect(await runStatus(runId)).toBe("approved");
     expect(await payslipCount(runId)).toBe(0);
     expect(await snapshotCount(runId)).toBe(0);
-  });
+  }, 90_000);
 
-  it("[lock-result-stale-totals] a plan whose amounts differ from the approved totals: 409 PAYROLL_RUN_RESULT_STALE, nothing persisted", async () => {
+  it("[lock-result-stale-totals] run totals that differ from the stored results: 409 PAYROLL_RUN_RESULT_STALE, nothing persisted", async () => {
     const world = await makeWorld();
-    const emp = await makeEmployee(world);
-    const { runId, employees } = await approvedRun(world, NOV(THR_PAY), [
-      { emp, gross: SALARY_GROSS, method: "bank_transfer" },
-    ]);
-    // Same employee and tax, a bigger gross than the approved one: the totals no longer match.
-    const bigger = [
-      {
-        ...employees[0]!,
-        calculation: calculationOf(
-          { emp, gross: SALARY_GROSS + 1_000, method: "bank_transfer" },
-          payslipTaxSchema.parse(employees[0]!.calculation.tax),
-          NOV(THR_PAY),
-        ),
-      },
-    ];
+    await makeEmployee(world);
+    const { runId } = await approvedRun(world, NOV(THR_PAY));
+    const totals = (
+      await scalar(
+        "SELECT totals FROM payroll_runs WHERE tenant_id = $1 AND id = $2",
+        [tenant.id, runId],
+      )
+    ).totals as { grossIdr: number; netIdr: number; bankTransferIdr: number };
+    // A bigger gross than the results add up to; net and transfer move with it.
+    await tamperTotals(runId, {
+      grossIdr: Number(totals.grossIdr) + 1_000,
+      netIdr: Number(totals.netIdr) + 1_000,
+      bankTransferIdr: Number(totals.bankTransferIdr) + 1_000,
+    });
 
-    const refused = await failureOf(lockRun(runId, bigger));
+    const refused = await failureOf(lockRun(runId));
     expect(
       refused,
-      "a plan off the approved totals must be refused",
+      "totals off the stored results must be refused",
     ).not.toBeNull();
     expect(refused!.status).toBe(409);
     expect(refused!.code).toBe("PAYROLL_RUN_RESULT_STALE");
     expect(await runStatus(runId)).toBe("approved");
     expect(await payslipCount(runId)).toBe(0);
-  });
+  }, 90_000);
 
-  it("[lock-result-stale-tax] the recomputed tax differs from the planned tax: 409 PAYROLL_RUN_RESULT_STALE, nothing persisted", async () => {
+  it("[lock-result-stale-tax] a stored tax that differs from the recomputed one: 409 PAYROLL_RUN_RESULT_STALE, nothing persisted", async () => {
     const world = await makeWorld();
-    const emp = await makeEmployee(world);
-    const { runId, employees } = await approvedRun(world, NOV(THR_PAY), [
-      { emp, gross: SALARY_GROSS, method: "bank_transfer" },
-    ]);
-    // Totals and calculation untouched; the earnings the engine prices differ,
-    // so its tax is not the tax the approver saw.
-    const tampered = employees.map((e) => ({
-      ...e,
-      taxInput: {
-        ...e.taxInput,
-        earnings: [
-          { amountIdr: idr(12_000_000), taxable: true, taxScheme: "gross" },
-        ],
-      },
-    })) as PayrollRunLockEmployee[];
+    await makeEmployee(world);
+    const { runId } = await approvedRun(world, NOV(THR_PAY));
+    const [stored] = await storedResults(runId);
+    // Totals and amounts untouched; only the rate the approver saw is changed.
+    const tampered: { calculation: { tax: { terRateBp: number } } } =
+      JSON.parse(JSON.stringify(stored!.envelope));
+    tampered.calculation.tax.terRateBp += 1;
+    await asTenant(
+      (conn) =>
+        conn.query(
+          `UPDATE payroll_run_results SET result_encrypted = $3, pii_key_version = $4
+            WHERE tenant_id = $1 AND payslip_id = $2`,
+          [
+            tenant.id,
+            stored!.payslipId,
+            sealPayrollValue(
+              JSON.stringify(tampered),
+              resultBinding(stored!.payslipId),
+            ),
+            PAYROLL_SEAL_KEY_VERSION,
+          ],
+        ),
+      true,
+    );
 
-    const refused = await failureOf(lockRun(runId, tampered));
+    const refused = await failureOf(lockRun(runId));
     expect(refused, "a tax mismatch must be refused").not.toBeNull();
     expect(refused!.status).toBe(409);
     expect(refused!.code).toBe("PAYROLL_RUN_RESULT_STALE");
     expect(await runStatus(runId)).toBe("approved");
     expect(await payslipCount(runId)).toBe(0);
     expect(await snapshotCount(runId)).toBe(0);
-  });
+  }, 90_000);
 
   it.each([
     ["loanRepaymentIdr", 50_000],
@@ -1376,16 +1117,11 @@ describe("[lock-guards] the lock refuses a plan that is not what was approved", 
     "[lock-unsupported] approved totals with %s > 0: 409 PAYROLL_RUN_LOCK_UNSUPPORTED, nothing persisted",
     async (field, amount) => {
       const world = await makeWorld();
-      const emp = await makeEmployee(world);
-      const { runId, employees } = await approvedRun(
-        world,
-        NOV(THR_PAY),
-        [{ emp, gross: SALARY_GROSS, method: "bank_transfer" }],
-        "regular",
-        { [field]: amount },
-      );
+      await makeEmployee(world);
+      const { runId } = await approvedRun(world, NOV(THR_PAY));
+      await tamperTotals(runId, { [field]: amount });
 
-      const refused = await failureOf(lockRun(runId, employees));
+      const refused = await failureOf(lockRun(runId));
       expect(refused, `${field} > 0 must be refused`).not.toBeNull();
       expect(refused!.status).toBe(409);
       expect(refused!.code).toBe("PAYROLL_RUN_LOCK_UNSUPPORTED");
@@ -1393,5 +1129,6 @@ describe("[lock-guards] the lock refuses a plan that is not what was approved", 
       expect(await payslipCount(runId)).toBe(0);
       expect(await snapshotCount(runId)).toBe(0);
     },
+    90_000,
   );
 });

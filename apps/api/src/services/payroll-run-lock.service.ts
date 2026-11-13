@@ -1,24 +1,31 @@
-// Payroll run LOCK step (beads legend-b9y4y; PRD PAYR-01..PAYR-05; design
-// docs/briefs/sub-payroll-run-lock-design.md §3). Trusted in-transaction writer,
-// same boundary style as `finalizePayrollRapelRunInTransaction`: the caller owns
-// the transaction (`withTenant`) and supplies the approved per-employee results.
-// No create/simulate run service exists yet, so this step re-proves those
-// results under the month lock before it writes anything:
+// Payroll run LOCK step (beads legend-b9y4y, legend-c2yca, legend-q5dx4,
+// legend-ele0u; PRD PAYR-01..PAYR-05; designs
+// docs/briefs/sub-payroll-run-lock-design.md §3 and
+// docs/briefs/sub-payroll-followups-design.md §2). Trusted in-transaction
+// writer: the caller owns the transaction (`withTenant`) and passes only the
+// run id. What locks is what the server simulated and stored in
+// `payroll_run_results` (simulation_no = run.simulation_count); this step
+// re-proves those results under the locks before it writes anything:
 //
-//  1. permission, input shape (409 PAYROLL_RUN_RESULT_STALE on a bad plan);
-//  2. LOCK ORDER: month advisory lock first, then the `payroll_runs` row
-//     `FOR UPDATE`, then plain reads, then inserts. The reversal follows the
-//     same order. Never take the month lock after a run row lock;
+//  1. permission;
+//  2. LOCK ORDER (followups design §0.4): month advisory lock, then the rapel
+//     component locks with employees/outlets FOR SHARE, then the
+//     `payroll_runs` row `FOR UPDATE`, then the prior runs FOR SHARE (tax-year
+//     priors), then plain reads, then writes. The reversal follows the same
+//     order. Never take the month lock after a run row lock;
 //  3. status `approved -> locked` through the shared reducer (two distinct
 //     approvers, totals, snapshot);
 //  4. refusal of side effects this step does not perform (loans,
-//     reimbursements, service charge, rapel): refusing never pays anyone more;
-//  5. the plan equals the approved totals, the PPh 21 recomputed on the pinned
-//     tables and the month basis equals every stored tax (409
-//     PAYROLL_PPH21_MONTH_STALE when an earlier run of the month changed);
-//  6. only then the writes: status, payslips, month-dependency edges, payee
-//     bank snapshot, `payroll.locked` outbox event and audit. A throw anywhere
-//     rolls all of it back with the caller's transaction.
+//     reimbursements, service charge): refusing never pays anyone more. Rapel
+//     is locked here (receipt + full slip in the same transaction);
+//  5. the stored results equal the approved totals (409
+//     PAYROLL_RUN_RESULT_STALE), the tax-year priors are the ones simulated
+//     (409 PAYROLL_PPH21_MONTH_STALE), and the PPh 21 recomputed on the pinned
+//     tables equals every stored tax;
+//  6. only then the writes: status, rapel receipts, payslips, month and year
+//     dependency edges, payee bank snapshot, `payroll.locked` outbox event and
+//     audit. A throw anywhere rolls all of it back with the caller's
+//     transaction.
 //
 // OPEN Q-a (design §3.2 step 8): the tables are the ones pinned at simulation
 // (`configSnapshot.statutoryVersions`), not the ones in force at lock: what was
@@ -27,13 +34,16 @@
 // code `PPH21_REFUND` (category `custom_earning`; `components.ts` has no
 // `pph21_refund` category); like `tax_allowance` it is not an engine earning.
 // OPEN Q-d (step 16): the event actor is `{ type: "user", id: actor }`.
+// Rapel slips are sealed as v1 envelopes (a full calculation cannot carry the
+// v2 gross metadata); migration 0487 lets the rapel insert guard accept a v1
+// slip that has its same-transaction finalization receipt.
 
-import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   createUlid,
   isoDateTimeSchema,
+  type BusinessDate,
   type Idr,
   type ScopedTenantContext,
   type TenantId,
@@ -47,8 +57,6 @@ import {
   payrollRunIdSchema,
   payrollRunSchema,
   payrollRunTotalsSchema,
-  payslipCalculationSchema,
-  payslipIdSchema,
   payslipTaxSchema,
   statutoryTableVersionSchema,
   statutoryVersionsForRun,
@@ -62,19 +70,19 @@ import {
   type Pph21Tables,
   type StatutoryTableVersion,
 } from "@starter/shared/hris/payroll";
+import { employees } from "../db/schema/hris.ts";
 import {
   payrollRunMonthPriors,
+  payrollRunResults,
   payrollRuns,
   payslips,
   statutoryRates,
 } from "../db/schema/payroll.ts";
-import {
-  payrollRapelFinalizations,
-  payrollRapels,
-} from "../db/schema/payroll-rapel.ts";
+import { payrollRapelFinalizations } from "../db/schema/payroll-rapel.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
   PAYROLL_SEAL_KEY_VERSION,
+  openPayrollValue,
   sealPayrollValue,
 } from "../lib/payroll-sealed.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -83,25 +91,28 @@ import { snapshotPayeeBankForLock } from "./payroll-bank-snapshot.service.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
 import {
   loadMonthPriorRunIds,
+  loadTaxYearPriors,
   lockPayrollRunMonth,
   lockPayrollRunTax,
   type PayrollMonthBasis,
-  type PayrollRunTaxEmployee,
 } from "./payroll-run-pph21.service.ts";
+import {
+  assertAllAllocationsCovered,
+  assertRapelResultMatches,
+  assertRunUnchanged,
+  insertRapelReceipt,
+  loadRunRapelAllocations,
+  lockRapelInputsForRun,
+} from "./payroll-run-rapel-lock.ts";
+import {
+  storedRunResultSchema,
+  type StoredRunResult,
+} from "./payroll-run-simulate.service.ts";
 import type { Tx } from "./permission-resolver.ts";
 
-export type PayrollRunLockEmployee = {
-  /** Approved simulation result (full payslip body, tax included). */
-  calculation: PayslipCalculation;
-  /** Engine input of that simulation; employeeId comes from `calculation`. */
-  taxInput: Omit<PayrollRunTaxEmployee, "employeeId">;
-  /** Month basis the simulation computed against; null when lastTaxPeriod. */
-  approvedMonthBasis: PayrollMonthBasis | null;
-};
-
+/** Only the run: the results come from the stored simulation, never the caller. */
 export type PayrollRunLockInput = {
   payrollRunId: PayrollRunId;
-  employees: readonly PayrollRunLockEmployee[];
 };
 
 export type PayrollRunLockResult = {
@@ -125,11 +136,25 @@ const resultStale = () =>
     "Hasil perhitungan payroll tidak sama dengan yang disetujui. Simulasikan ulang sebelum mengunci.",
   );
 
+const resultUnreadable = () =>
+  new HttpError(
+    422,
+    "PAYROLL_RUN_RESULT_UNREADABLE",
+    "Hasil simulasi payroll tidak bisa dibaca. Simulasikan ulang sebelum mengunci.",
+  );
+
+const monthStale = () =>
+  new HttpError(
+    409,
+    "PAYROLL_PPH21_MONTH_STALE",
+    "Payroll lain pada tahun pajak ini berubah sejak simulasi. Simulasikan ulang sebelum mengunci.",
+  );
+
 const lockUnsupported = () =>
   new HttpError(
     409,
     "PAYROLL_RUN_LOCK_UNSUPPORTED",
-    "Payroll ini memuat pinjaman, reimbursement, service charge, atau rapel yang belum didukung langkah kunci. Penguncian ditahan.",
+    "Payroll ini memuat pinjaman, reimbursement, atau service charge yang belum didukung langkah kunci. Penguncian ditahan.",
   );
 
 /** Maps a stored `payroll_runs` row to the contract run (dates as ISO strings). */
@@ -253,6 +278,90 @@ function engineEarningKeys(calculation: PayslipCalculation): string[] {
     .sort();
 }
 
+type LockEntry = {
+  employeeId: EmployeeId;
+  payslipId: PayslipId;
+  stored: StoredRunResult;
+  calculation: PayslipCalculation;
+};
+
+/**
+ * The stored results of the run's latest simulation, sorted by employee. A
+ * row that cannot be opened or parsed, or whose body does not match its row
+ * (employee, payment method), is 422 PAYROLL_RUN_RESULT_UNREADABLE.
+ */
+async function loadStoredResults(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: PayrollRunId,
+  simulationNo: number,
+): Promise<LockEntry[]> {
+  const rows = await tx
+    .select()
+    .from(payrollRunResults)
+    .where(
+      and(
+        eq(payrollRunResults.tenantId, tenantId),
+        eq(payrollRunResults.payrollRunId, runId),
+        eq(payrollRunResults.simulationNo, simulationNo),
+      ),
+    )
+    .orderBy(asc(payrollRunResults.employeeId));
+  return rows.map((row) => {
+    let stored: StoredRunResult;
+    try {
+      stored = storedRunResultSchema.parse(
+        JSON.parse(
+          openPayrollValue(
+            row.resultEncrypted,
+            {
+              tenantId: row.tenantId,
+              table: "payroll_run_results",
+              rowId: row.payslipId,
+              field: "result",
+            },
+            row.piiKeyVersion,
+          ),
+        ),
+      );
+    } catch {
+      // Never echo the decrypt or parse error: it may carry payroll values.
+      throw resultUnreadable();
+    }
+    if (
+      stored.calculation.employeeId !== row.employeeId ||
+      stored.calculation.paymentMethod !== row.paymentMethod
+    )
+      throw resultUnreadable();
+    return {
+      employeeId: row.employeeId,
+      payslipId: row.payslipId,
+      stored,
+      calculation: stored.calculation,
+    };
+  });
+}
+
+/** The run as its contract DTO (the lock route answers with it). */
+export async function loadPayrollRunDto(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: PayrollRunId,
+): Promise<PayrollRun> {
+  const [row] = await tx
+    .select()
+    .from(payrollRuns)
+    .where(and(eq(payrollRuns.tenantId, tenantId), eq(payrollRuns.id, runId)))
+    .limit(1);
+  if (!row)
+    throw new HttpError(
+      404,
+      "PAYROLL_RUN_NOT_FOUND",
+      "Payroll tidak ditemukan.",
+    );
+  return toRun(row);
+}
+
 /**
  * Locks an approved payroll run inside the caller's tenant transaction (see
  * the header). Every check precedes the first write.
@@ -273,23 +382,14 @@ export async function lockPayrollRunInTransaction(
   const tenantId = context.tenant.tenantId;
   const runId = payrollRunIdSchema.parse(input.payrollRunId);
 
-  const parsedPlan = input.employees.map((entry) => {
-    const calculation = payslipCalculationSchema.safeParse(entry.calculation);
-    if (!calculation.success) throw resultStale();
-    return { ...entry, calculation: calculation.data };
-  });
-  if (
-    parsedPlan.length === 0 ||
-    new Set(parsedPlan.map((entry) => entry.calculation.employeeId)).size !==
-      parsedPlan.length
-  )
-    throw resultStale();
-  const plan = [...parsedPlan].sort((a, b) =>
-    a.calculation.employeeId.localeCompare(b.calculation.employeeId),
-  );
-
-  // LOCK 1: the month advisory lock. LOCK 2: the run row. Never the reverse.
+  // LOCK 1: the month advisory lock. LOCK 2: rapel components, employees and
+  // outlets. LOCK 3: the run row. Never the reverse.
   const month = await lockPayrollRunMonth(tx, tenantId, runId);
+  await lockRapelInputsForRun(tx, context, {
+    runId,
+    legalEntityId: month.legalEntityId,
+    payDate: month.payDate,
+  });
   const [row] = await tx
     .select()
     .from(payrollRuns)
@@ -302,15 +402,7 @@ export async function lockPayrollRunInTransaction(
       "PAYROLL_RUN_NOT_FOUND",
       "Payroll tidak ditemukan.",
     );
-  if (
-    row.legalEntityId !== month.legalEntityId ||
-    row.payDate !== month.payDate
-  )
-    throw new HttpError(
-      409,
-      "PAYROLL_PPH21_RUN_MISMATCH",
-      "Tanggal bayar atau badan hukum payroll tidak sesuai dengan data payroll yang tersimpan.",
-    );
+  assertRunUnchanged(row, month);
 
   const run = toRun(row);
   const at = isoDateTimeSchema.parse(now.toISOString());
@@ -327,17 +419,7 @@ export async function lockPayrollRunInTransaction(
     totals.serviceChargeIdr > 0
   )
     throw lockUnsupported();
-  const [allocated] = await tx
-    .select({ id: payrollRapels.id })
-    .from(payrollRapels)
-    .where(
-      and(
-        eq(payrollRapels.tenantId, tenantId),
-        eq(payrollRapels.payrollRunId, runId),
-        eq(payrollRapels.status, "allocated"),
-      ),
-    )
-    .limit(1);
+  // A run the rapel finalizer already wrote slips for cannot lock again.
   const [finalized] = await tx
     .select({ payslipId: payrollRapelFinalizations.payslipId })
     .from(payrollRapelFinalizations)
@@ -348,11 +430,18 @@ export async function lockPayrollRunInTransaction(
       ),
     )
     .limit(1);
-  if (allocated || finalized) throw lockUnsupported();
+  if (finalized) throw resultStale();
 
-  // The plan is what was approved.
+  // The stored results are what was approved.
+  const plan = await loadStoredResults(
+    tx,
+    tenantId,
+    runId,
+    run.simulationCount,
+  );
   const calculations = plan.map((entry) => entry.calculation);
   if (
+    plan.length === 0 ||
     calculations.some(
       (calculation) =>
         calculation.periodStart !== run.periodStart ||
@@ -364,14 +453,73 @@ export async function lockPayrollRunInTransaction(
   )
     throw resultStale();
 
+  // Tax-year priors under the month lock (prior runs FOR SHARE). A changed
+  // set since the simulation is stale; a later-month annual slip is 409
+  // PAYROLL_PPH21_LATER_PERIOD_LOCKED inside `loadTaxYearPriors`.
+  const joined = await tx
+    .select({
+      id: employees.id,
+      joinDate: employees.joinDate,
+      endDate: employees.endDate,
+    })
+    .from(employees)
+    .where(
+      and(
+        eq(employees.tenantId, tenantId),
+        inArray(
+          employees.id,
+          plan.map((entry) => entry.employeeId),
+        ),
+      ),
+    );
+  const joinDates = new Map(
+    joined.map((employee) => [employee.id, employee.joinDate as BusinessDate]),
+  );
+  // The join/end dates stored at simulation must still match the live row: a
+  // changed date moves the proration and the last-tax-period decision.
+  const liveDates = new Map(
+    joined.map((employee) => [employee.id, employee.endDate ?? null]),
+  );
+  for (const entry of plan) {
+    if (
+      joinDates.get(entry.employeeId) !== entry.stored.joinDate ||
+      liveDates.get(entry.employeeId) !== (entry.stored.endDate ?? null)
+    )
+      throw resultStale();
+  }
+  const priors = await loadTaxYearPriors(
+    tx,
+    tenantId,
+    runId,
+    plan.map((entry) => {
+      const joinDate = joinDates.get(entry.employeeId);
+      if (joinDate === undefined) throw resultStale();
+      return {
+        employeeId: entry.employeeId,
+        joinDate,
+        lastTaxPeriod: entry.stored.taxInput.lastTaxPeriod,
+      };
+    }),
+  );
+  const priorOf = (entry: LockEntry) => {
+    const prior = priors.get(entry.employeeId);
+    if (prior === undefined) throw monthStale();
+    return prior;
+  };
+  for (const entry of plan) {
+    const fresh = [...priorOf(entry).payslipIds].sort();
+    const simulated = [...entry.stored.priorPayslipIds].sort();
+    if (!isDeepStrictEqual(fresh, simulated)) throw monthStale();
+  }
+
   const tables = await loadPinnedPph21Tables(tx, tenantId, {
     payDate: run.payDate,
     configSnapshot,
   });
   const approvedBasis = new Map<string, PayrollMonthBasis>();
   for (const entry of plan)
-    if (entry.approvedMonthBasis !== null)
-      approvedBasis.set(entry.calculation.employeeId, entry.approvedMonthBasis);
+    if (entry.stored.monthBasis !== null)
+      approvedBasis.set(entry.employeeId, entry.stored.monthBasis);
   const tax = await lockPayrollRunTax(
     context,
     {
@@ -382,8 +530,10 @@ export async function lockPayrollRunInTransaction(
       },
       tables,
       employees: plan.map((entry) => ({
-        ...entry.taxInput,
-        employeeId: entry.calculation.employeeId,
+        ...entry.stored.taxInput,
+        employeeId: entry.employeeId,
+        priorPeriods: priorOf(entry).periods,
+        lastPeriodEarlier: priorOf(entry).lastPeriodEarlier,
       })),
       monthScope: { runId },
     },
@@ -395,7 +545,7 @@ export async function lockPayrollRunInTransaction(
     tax.payslips.map((entry) => [entry.employeeId, entry.tax]),
   );
   for (const entry of plan) {
-    const computed = taxByEmployee.get(entry.calculation.employeeId);
+    const computed = taxByEmployee.get(entry.employeeId);
     if (
       computed === undefined ||
       !isDeepStrictEqual(
@@ -404,45 +554,43 @@ export async function lockPayrollRunInTransaction(
       )
     )
       throw resultStale();
-    const expected = entry.taxInput.earnings
+    const expected = entry.stored.taxInput.earnings
       .map((earning) => `${earning.amountIdr}:${earning.taxable}`)
       .sort();
     if (!isDeepStrictEqual(expected, engineEarningKeys(entry.calculation)))
       throw resultStale();
   }
 
-  // Last-tax-period employees carry no month basis, so the stale check above
-  // cannot see a second run of the month (e.g. December regular + THR): both
-  // would lock blind and the annual withholding would double or go missing.
-  // Fail closed: a payslip of theirs in another locked/paid run of this legal
-  // entity and month refuses the lock.
-  const lastPeriodIds = plan
-    .filter((entry) => entry.taxInput.lastTaxPeriod)
-    .map((entry) => entry.calculation.employeeId);
-  if (
-    (
-      await loadMonthPriorRunIds(
-        tx,
-        tenantId,
-        { runId, legalEntityId: month.legalEntityId, month: month.month },
-        lastPeriodIds,
-      )
-    ).length > 0
-  )
-    throw new HttpError(
-      409,
-      "PAYROLL_PPH21_MONTH_STALE",
-      "Payroll kedua pada masa pajak terakhir karyawan di bulan ini belum didukung. Selesaikan payroll yang sudah terkunci pada bulan ini terlebih dahulu.",
-    );
-
-  const monthPriorRunIds = await loadMonthPriorRunIds(
-    tx,
-    tenantId,
-    { runId, legalEntityId: month.legalEntityId, month: month.month },
-    plan.map((entry) => entry.calculation.employeeId),
+  // Rapel: every allocation has a result, and each result matches the live
+  // allocations (reserved payslip id, revision, RAPEL lines).
+  const allocations = await loadRunRapelAllocations(tx, context, runId);
+  assertAllAllocationsCovered(
+    allocations,
+    new Set(plan.map((entry) => entry.employeeId)),
   );
+  for (const entry of plan)
+    assertRapelResultMatches(allocations.get(entry.employeeId), {
+      payslipId: entry.payslipId,
+      rapelAllocationRevision: entry.stored.rapelAllocationRevision,
+      calculation: entry.calculation,
+    });
 
-  // All checks done: the writes.
+  // Edges: same-month priors of every employee, plus the year priors of the
+  // last-tax-period employees (their annual tax folds those runs in).
+  const edgeIds = new Set<PayrollRunId>(
+    await loadMonthPriorRunIds(
+      tx,
+      tenantId,
+      { runId, legalEntityId: month.legalEntityId, month: month.month },
+      plan.map((entry) => entry.employeeId),
+    ),
+  );
+  for (const entry of plan)
+    if (entry.stored.taxInput.lastTaxPeriod)
+      for (const priorRunId of priorOf(entry).runIds) edgeIds.add(priorRunId);
+  const monthPriorRunIds = [...edgeIds].sort();
+
+  // All checks done: the writes. Order: status, receipts, payslips.
   const updated = await tx
     .update(payrollRuns)
     .set({ status: "locked", lockedBy: actor, lockedAt: now, updatedAt: now })
@@ -457,25 +605,36 @@ export async function lockPayrollRunInTransaction(
   if (updated.length !== 1)
     throw new PayrollError("PAYROLL_RUN_INVALID_TRANSITION");
 
-  const slips = plan.map((entry) => {
-    const payslipId = payslipIdSchema.parse(randomUUID());
-    return {
-      payslipId,
-      employeeId: entry.calculation.employeeId,
-      paymentMethod: entry.calculation.paymentMethod,
-      netIdr: entry.calculation.netIdr,
-      sealed: sealPayrollValue(
-        JSON.stringify(entry.calculation),
-        {
-          tenantId,
-          table: "payslips",
-          rowId: payslipId,
-          field: "calculation",
-        },
-        PAYROLL_SEAL_KEY_VERSION,
-      ),
-    };
-  });
+  const slips = plan.map((entry) => ({
+    payslipId: entry.payslipId,
+    employeeId: entry.employeeId,
+    paymentMethod: entry.calculation.paymentMethod,
+    netIdr: entry.calculation.netIdr,
+    sealed: sealPayrollValue(
+      JSON.stringify(entry.calculation),
+      {
+        tenantId,
+        table: "payslips",
+        rowId: entry.payslipId,
+        field: "calculation",
+      },
+      PAYROLL_SEAL_KEY_VERSION,
+    ),
+  }));
+  for (const slip of slips) {
+    const allocation = allocations.get(slip.employeeId);
+    if (allocation)
+      await insertRapelReceipt(tx, tenantId, {
+        payslipId: slip.payslipId,
+        employeeId: slip.employeeId,
+        runId,
+        revision: allocation.revision,
+        sealed: slip.sealed,
+        keyVersion: PAYROLL_SEAL_KEY_VERSION,
+        actorId: actor,
+        now,
+      });
+  }
   await tx.insert(payslips).values(
     slips.map((slip) => ({
       tenantId,
