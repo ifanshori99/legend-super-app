@@ -134,12 +134,11 @@ const createdEntities: string[] = [];
 const createdPolicies: string[] = [];
 
 const key = () => `thr-gu-${randomUUID()}`;
-// 15 jt (as payroll-pph21-december-runs): the biaya jabatan cap is reached in every
-// month, so the December two-run slips and the one-call merged oracle (rule 4)
-// treat it identically. At 8 jt the oracle's single December month would cap
-// the 5% allowance differently from the two real runs (a test-data effect, not
-// a payroll defect).
+// Default monthly salary of the test employees. The December case also runs
+// at 8 jt (DECEMBER_LOW_SALARY): there the year's biaya jabatan stays below the
+// 6 jt cap and a gross_up employee still owes tax at the December settlement.
 const SALARY = 15_000_000;
+const DECEMBER_LOW_SALARY = 8_000_000;
 
 const tenantScope = (): ScopedTenantContext =>
   establishScopedTenantContext(
@@ -250,6 +249,7 @@ async function makeEmployee(
   world: World,
   scheme: Scheme,
   componentScheme: Scheme = scheme,
+  salary: number = SALARY,
 ): Promise<Emp> {
   const emp: Emp = {
     id: randomUUID(),
@@ -271,7 +271,7 @@ async function makeEmployee(
     await insertSalary(conn, {
       tenantId: tenant.id,
       employeeId: emp.id,
-      amount: SALARY,
+      amount: salary,
       // The scheme lives on the contract (what simulate reads) and is
       // mirrored on the salary component (data that matches); a different
       // `componentScheme` builds the mismatch fixture.
@@ -769,80 +769,100 @@ describe("[thr-gross-up-run-totals] a THR run with a gross_up and a gross employ
 
 // ---- 4. [thr-gross-up-december] -------------------------------------------------
 
+async function decemberCase(salary: number) {
+  const world = await makeWorld();
+  const gu = await makeEmployee(world, "gross_up", "gross_up", salary);
+  const gr = await makeEmployee(world, "gross", "gross", salary);
+  const history: string[] = [];
+  for (let m = 1; m <= 11; m++)
+    history.push(await lockedRun(world, monthDates(m)));
+  const a = await lockedRun(world, DEC_A);
+  const b = await lockedRun(world, DEC_B, "thr");
+
+  const slips = await slipsOf([...history, a, b]);
+  const slipOf = (emp: Emp, runId: string) =>
+    slips.find((s) => s.employeeId === emp.id && s.runId === runId)!.calc;
+
+  // gross_up: the THR nets in full, the company bears the December tax on it.
+  const guB = slipOf(gu, b);
+  const guThr = thrOf(guB);
+  expect(guB.tax.method).toBe("annual_recalculation");
+  expect(guB.tax.taxAllowanceIdr).toBeGreaterThan(0);
+  expect(guB.tax.taxAllowanceIdr).toBe(guB.tax.pph21WithheldIdr);
+  expect(sumLines(guB, "tax_allowance")).toBe(guB.tax.taxAllowanceIdr);
+  expect(guB.netIdr).toBe(guThr);
+
+  // gross: the tax is taken from the THR, no allowance.
+  const grB = slipOf(gr, b);
+  const grThr = thrOf(grB);
+  expect(grB.tax.taxAllowanceIdr).toBe(0);
+  expect(grB.tax.pph21EmployerBorneIdr).toBe(0);
+  expect(grB.tax.pph21WithheldIdr).toBeGreaterThan(0);
+  expect(grB.netIdr).toBeLessThan(grThr);
+
+  // The year per employee: sum of PPh 21 = annual tax on all income, once.
+  for (const emp of [gu, gr]) {
+    const own = (ids: readonly string[]) => ids.map((id) => slipOf(emp, id));
+    const hist = own(history);
+    const december = own([a, b]);
+    const merged = computePayslipTax({
+      tables: REFERENCE_TABLES,
+      policy: DEFAULT_PPH21_POLICY,
+      ptkpStatus: "TK/0",
+      hasTaxId: true,
+      lastTaxPeriod: true,
+      monthsWorked: 12,
+      // The stored taxable gross also holds the company-paid tax (gross_up
+      // allowance or net borne tax). Feeding it back under the employee's own
+      // scheme would let the engine add that tax a second time (the history is
+      // already settled by the allowance, so it reads it as a company balance
+      // and grosses it up again: +203.000 PKP, +10.150 tax at 8 jt). The
+      // oracle therefore takes the December income WITHOUT the covered tax and
+      // lets the engine gross it up once, under the employee's scheme. The
+      // biaya jabatan (5%, max 6 jt a year) is computed once on the year's
+      // gross in December (PMK 168/2023 Pasal 21), never per run.
+      earnings: [
+        {
+          amountIdr: december.reduce(
+            (total, s) =>
+              total +
+              s.tax.taxableGrossIdr -
+              s.tax.taxAllowanceIdr -
+              s.tax.pph21EmployerBorneIdr,
+            0,
+          ),
+          taxable: true,
+          taxScheme: emp.scheme,
+        },
+      ],
+      employerBenefitIdr: 0,
+      employeeDeductibleIdr: 0,
+      prior: buildPph21Prior(
+        hist.map((s) => ({
+          tax: s.tax as never,
+          employeeDeductibleIdr: 0,
+        })),
+      ),
+    });
+    const year = [...hist, ...december].reduce(
+      (total, s) => total + s.tax.pph21Idr,
+      0,
+    );
+    expect(year, `${emp.scheme}: year PPh 21 = annual tax`).toBe(
+      merged.result.annual!.annualTaxIdr,
+    );
+  }
+}
+
 describe("[thr-gross-up-december] THR run in the last tax period", () => {
-  it("Jan-Nov TER, December regular run, then THR: the gross_up THR nets in full, the gross THR is taxed, and the year's PPh 21 equals the annual tax", async () => {
-    const world = await makeWorld();
-    const gu = await makeEmployee(world, "gross_up");
-    const gr = await makeEmployee(world, "gross");
-    const history: string[] = [];
-    for (let m = 1; m <= 11; m++)
-      history.push(await lockedRun(world, monthDates(m)));
-    const a = await lockedRun(world, DEC_A);
-    const b = await lockedRun(world, DEC_B, "thr");
-
-    const slips = await slipsOf([...history, a, b]);
-    const slipOf = (emp: Emp, runId: string) =>
-      slips.find((s) => s.employeeId === emp.id && s.runId === runId)!.calc;
-
-    // gross_up: the THR nets in full, the company bears the December tax on it.
-    const guB = slipOf(gu, b);
-    const guThr = thrOf(guB);
-    expect(guB.tax.method).toBe("annual_recalculation");
-    expect(guB.tax.taxAllowanceIdr).toBeGreaterThan(0);
-    expect(guB.tax.taxAllowanceIdr).toBe(guB.tax.pph21WithheldIdr);
-    expect(sumLines(guB, "tax_allowance")).toBe(guB.tax.taxAllowanceIdr);
-    expect(guB.netIdr).toBe(guThr);
-
-    // gross: the tax is taken from the THR, no allowance.
-    const grB = slipOf(gr, b);
-    const grThr = thrOf(grB);
-    expect(grB.tax.taxAllowanceIdr).toBe(0);
-    expect(grB.tax.pph21EmployerBorneIdr).toBe(0);
-    expect(grB.tax.pph21WithheldIdr).toBeGreaterThan(0);
-    expect(grB.netIdr).toBeLessThan(grThr);
-
-    // The year per employee: sum of PPh 21 = annual tax on all income, once.
-    for (const emp of [gu, gr]) {
-      const own = (ids: readonly string[]) => ids.map((id) => slipOf(emp, id));
-      const hist = own(history);
-      const december = own([a, b]);
-      const merged = computePayslipTax({
-        tables: REFERENCE_TABLES,
-        policy: DEFAULT_PPH21_POLICY,
-        ptkpStatus: "TK/0",
-        hasTaxId: true,
-        lastTaxPeriod: true,
-        monthsWorked: 12,
-        // The stored taxable gross already holds any gross_up allowance, so the
-        // total is taxed once under the gross scheme.
-        earnings: [
-          {
-            amountIdr: december.reduce(
-              (total, s) => total + s.tax.taxableGrossIdr,
-              0,
-            ),
-            taxable: true,
-            taxScheme: "gross",
-          },
-        ],
-        employerBenefitIdr: 0,
-        employeeDeductibleIdr: 0,
-        prior: buildPph21Prior(
-          hist.map((s) => ({
-            tax: s.tax as never,
-            employeeDeductibleIdr: 0,
-          })),
-        ),
-      });
-      const year = [...hist, ...december].reduce(
-        (total, s) => total + s.tax.pph21Idr,
-        0,
-      );
-      expect(year, `${emp.scheme}: year PPh 21 = annual tax`).toBe(
-        merged.result.annual!.annualTaxIdr,
-      );
-    }
-  }, 900_000);
+  const title =
+    "Jan-Nov TER, December regular run, then THR: the gross_up THR nets in full, the gross THR is taxed, and the year's PPh 21 equals the annual tax";
+  it(`${title} (salary 15.000.000)`, () => decemberCase(SALARY), 900_000);
+  it(
+    `${title} (salary 8.000.000)`,
+    () => decemberCase(DECEMBER_LOW_SALARY),
+    900_000,
+  );
 });
 
 // ---- 7. [thr-scheme-mismatch] ---------------------------------------------------
