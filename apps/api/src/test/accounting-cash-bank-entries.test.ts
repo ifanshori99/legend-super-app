@@ -585,7 +585,7 @@ describe("legend-4961 reading entries (empty and filled states)", () => {
       legalEntityId: world.entityId,
       from: daysAgo(30),
       to: daysAgo(0),
-      limit: 200,
+      limit: 100,
     };
     const all = await list(finance, query);
     expect(all.status, JSON.stringify(all.body)).toBe(200);
