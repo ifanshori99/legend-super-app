@@ -4915,3 +4915,12 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti: gagal-dulu di worktree basis m1 (404 route, 42P01 tabel belum ada); hijau 9 file/89 test (`LEGEND_TEST_FILES=... heavy pnpm test`); db:generate kosong; migration-renumber check idx300 hijau; typecheck web hijau; eslint+prettier 17 file hijau. Review architect xhigh 3 putaran: CLEAR.
 - Lanjutan: legend-sf6k7 (kasus "hilang" ditutup otomatis bila laporan berikut menyelesaikan), legend-glfau (impor bertahap > 1000 baris / 100 kB).
 - Gate akhir (13 Nov): typecheck api/shared/web hijau (api baru hijau setelah perbaikan 19 error tipe di 7faa0236; antre heavy ~1,5 jam di belakang `pnpm check` sesi lain). Test terarah setelah perubahan terakhir: payment-settlement-import + accounting-gateway-recon + payment-admin-mock-523 53/53; sebelumnya 9 file/89 (termasuk guard RLS/FORCE/migrasi); root tests/ws07-cash-bank.test.mjs 25/25. eslint+prettier 17 file hijau. Biaya sesi (session-usage) ~6,86M token-biaya, 20 subagent.
+
+## WS-07 kas & bank endpoint nyata (engineer, cabang `ws/cash-bank` dari 52346c44, 13 Nov 2026)
+- legend-4961: tabel `cash_bank_entries`, `petty_cash_funds` (CHECK saldo >= 0), `petty_cash_entries` (append-only); migrasi 0484 (drizzle) + 0485 (RLS tenant/outlet, REVOKE, GRANT kolom). Kontrak di `packages/shared/src/accounting/banking.ts` + 7 endpoint, izin `accounting.cash_bank.record` dan `accounting.petty_cash.manage`.
+- Posting: kas masuk/keluar/transfer sinkron (gagal = batal); kas kecil topup/return lewat aturan `document:petty_cash_topup|return`, peta `petty_cash` hilang -> parkir `ACCOUNT_MAPPING_MISSING`, retry `POST /petty-cash/entries/:id/post` (periode tutup -> periode terbuka + lateAdjustmentFrom). Pembelian sederhana menarik dana bila outlet punya dana.
+- Akun lawan: denylist role subledger/kas/bank/aset tetap/ekuitas + GL rekening bank mana pun (CASH_BANK_COUNTER_ACCOUNT_INVALID). Outlet tag harus satu badan usaha.
+- Web `ws07-cash-bank`: seksi kas masuk/keluar/transfer + kartu kas kecil, 13 temuan ui-auditor dibetulkan, akun lawan tanpa default.
+- legend-gq0w TERBLOKIR oleh legend-bzih (deferred): API belum menerbitkan tiket/kredensial; resolver tamu masih stub.
+- Pertanyaan founder: (1) dana kas kecil wajib ada sebelum pembelian sederhana? (2) kas keluar di atas nominal tertentu butuh persetujuan?
+- Bead baru: rekonsiliasi dana kas kecil vs GL 1102 (gaji/pinjaman/reimburse tunai tidak menarik dana).
