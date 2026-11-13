@@ -520,9 +520,24 @@ export async function unresolvedPrinterFallbacks(
   },
 ): Promise<DeferredPrinterFallback[]> {
   const t = edgePrinters;
-  const known = await localIds(tx, t, input.tenantId, [
-    ...new Set(input.pairs.map((pair) => pair.parentId)),
-  ]);
+  // A retired printer is not a usable fallback: it stays unresolved.
+  const parentIds = [...new Set(input.pairs.map((pair) => pair.parentId))];
+  const known = new Set(
+    parentIds.length === 0
+      ? []
+      : (
+          await tx
+            .select({ id: t.id })
+            .from(t)
+            .where(
+              and(
+                eq(t.tenantId, input.tenantId),
+                inArray(t.id, parentIds),
+                isNull(t.retiredAt),
+              ),
+            )
+        ).map((row) => row.id),
+  );
   const open = input.pairs.filter(
     (pair) => !known.has(pair.parentId) && pair.parentId !== pair.id,
   );
@@ -579,7 +594,7 @@ export async function repairPrinterFallbacks(
           eq(t.id, pair.id),
           isNull(t.fallbackPrinterId),
           eq(t.syncTxid, pair.syncTxid),
-          sql`EXISTS (SELECT 1 FROM edge_printers fb WHERE fb.tenant_id = ${t.tenantId} AND fb.outlet_id = ${t.outletId} AND fb.id = ${pair.parentId}::uuid)`,
+          sql`EXISTS (SELECT 1 FROM edge_printers fb WHERE fb.tenant_id = ${t.tenantId} AND fb.outlet_id = ${t.outletId} AND fb.id = ${pair.parentId}::uuid AND fb.retired_at IS NULL)`,
         ),
       )
       .returning({ id: t.id });
@@ -1295,7 +1310,7 @@ async function applyPrinters(
           eq(t.id, link.id),
           // Only the write that put this record there (a newer one wins).
           sql`${t.syncTxid} = ${link.syncTxid}::bigint`,
-          sql`EXISTS (SELECT 1 FROM edge_printers fb WHERE fb.tenant_id = ${t.tenantId} AND fb.outlet_id = ${t.outletId} AND fb.id = ${link.fallback}::uuid)`,
+          sql`EXISTS (SELECT 1 FROM edge_printers fb WHERE fb.tenant_id = ${t.tenantId} AND fb.outlet_id = ${t.outletId} AND fb.id = ${link.fallback}::uuid AND fb.retired_at IS NULL)`,
         ),
       )
       .returning({ id: t.id });
@@ -1322,6 +1337,8 @@ async function applyPrinters(
             eq(t.tenantId, tenantId),
             eq(t.outletId, outletId),
             eq(t.id, r.id),
+            // An already retired printer: replaying its tombstone is a no-op.
+            isNull(t.retiredAt),
             lt(t.syncTxid, sql`${r.syncTxid}::bigint`),
           ),
         );
