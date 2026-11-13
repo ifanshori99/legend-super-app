@@ -1068,9 +1068,12 @@ describe("REC-39 an event stuck in received for more than 5 minutes is retried b
 
   it("REC-39 a received event of 1 minute ago is left alone (still being processed)", async () => {
     const { invoiceId, body } = await stuckEvent(1);
-    // One minute sits exactly on the attempts=0 retry backoff, so the result
-    // would depend on millisecond clock skew between the host and the database.
-    // 30 seconds is clearly younger than any retry or stuck threshold.
+    // A received row is held back until it is 5 minutes idle (the stuck
+    // guard), not released on the 1 minute attempts=0 retry backoff (that
+    // backoff still applies to failed rows). One minute is still well inside
+    // the 5 minute hold, but sits exactly on the old backoff edge, so the
+    // result could depend on millisecond clock skew between the host and the
+    // database. 30 seconds is clearly younger than any retry or stuck threshold.
     await owner.query(
       `UPDATE gateway_webhook_events
           SET updated_at = now() - interval '30 seconds'

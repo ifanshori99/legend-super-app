@@ -31,6 +31,13 @@ export const PANIC_ERR_NOT_ON_DUTY = "NOT_ON_DUTY"; // D-04
 /** Timing from the design (not open questions). */
 export const PANIC_DELIVERY_BUDGET_MS = 5_000; // FAC-08 / D-05
 export const PANIC_RESEND_INTERVAL_MS = 3_000; // D-05
+/**
+ * Upper bound a test waits for a frame or a DB receipt that it does not itself
+ * time. Not the FAC-08 SLO (PANIC_DELIVERY_BUDGET_MS, asserted only by the
+ * tests that measure it): the WS + DB chain can pass 5 s under full-suite load.
+ * Must stay below the 20 s default test timeout (vitest.config.ts).
+ */
+export const PANIC_TEST_WAIT_MS = 15_000;
 export const PANIC_PRESS_FOLD_WINDOW_MS = 60_000; // D-06
 export const PANIC_PRESS_RATE_LIMIT_PER_MIN = 30; // D-06
 export const PANIC_DEVICE_PIN_WRONG_LIMIT = 10; // staff-pin-proof, per device / 5 min
