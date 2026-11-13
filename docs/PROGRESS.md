@@ -1424,3 +1424,4 @@ Langkah berikut CTO baru:
 - 17:39 G6ct5 kontrak tenant selesai (ws/tenant-config-contracts e623ce0b1; s6o8, at8c, 2gvt; izin baru org.config.import hanya tenant_admin; tanpa migrasi). Batch56. Codex second-opinion area akses masuk antrean 17-18 Nov.
 - 17:41 Audit kartu siap: 54 kartu sudah ada commit tapi belum ditutup (perlu rapikan setelah merge). Mulai G84ot purchasing AP/AR (Opus, 0490-0491), G3v9m QR menu (Sonnet), G6nze brand config (Sonnet, base ws/tenant-config-contracts, 0492-0493).
 - 17:47 G9336 lanjutan payroll selesai (ws/payroll-followups 72fd67d5e; c2yca, q5dx4, ele0u; 242 test). Tanya founder: pajak THR gross-up (legend-x7jas), metode bayar default (legend-2s2k4). Batch56/57 setelah rantai payroll.
+- 18:18 G3v9m QR menu selesai (ws/qr-menu a572311a0; iuvq sebagian, arp35, tct6, 8qri, 3qvvi; tema tenant hanya bila lolos kontras AA). Cetak menu PDF terblokir legend-hspr8 (pdf-lib, tanpa dependency baru). Batch56.
