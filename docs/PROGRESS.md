@@ -1362,3 +1362,17 @@ Disk 28,2 GB (< 30). Jangan hapus volume Docker.
 - 23:13 retro 3 jam dilewati: akun Claude 7 hari masih >90% (#1 93%, #2 99%, #3 96%).
 - 13 Nov 02:13 retro 3 jam dilewati: akun Claude 7 hari masih >90% (#1 93%, #2 99%, #3 96%).
 - 13 Nov 05:13 retro 3 jam dilewati: akun Claude 7 hari masih >90% (#1 93%, #2 99% pulih 06:00, #3 96%).
+
+## 13 Nov ~10:00 — serah terima CTO (sesi G32bf compact 2x)
+Sedang jalan:
+- G1625 Merge train batch53: int/batch53 71d99319 (dheu+loyalty+fix 48cfi afa441fe+revoke b285245f/ca50857e); run gate penuh lalu ff milestone/m1 + push bila hijau.
+- G2wb6 Tanya AI (ws/ai-login-autodetect, terakhir a8a48857): bagian A+B; lalu wire ui/ai-settings 95de4c6d ke API nyata, review architect xhigh z83k, second-opinion Codex area AI/auth sebelum rilis.
+- G66xb QRIS DP backend C1-C3 (ws/qris-dp-hold, migrasi 0419-0421): menunggu implementer C1. Buka UI menunggu sandbox legend-1yig6 (kunci Duitku sandbox dari founder).
+- G28l5 edge darurat E1-E4 (ws/edge-emergency-impl, migrasi 0400-0402).
+Keputusan CTO (Retro 21): gerbang penuh gagal -> ulang hanya berkas gagal, lalu satu run penuh akhir (disimpan di memory coordinator). Claude #2 hemat; Codex hanya second-opinion wajib.
+Langkah berikut CTO baru:
+1. Buat ulang cron (memory 1,2).
+2. Disk 17 GB bebas: hapus worktree saudara `legend-*` yang cabangnya sudah di milestone/m1 dan bersih (cek untracked dulu; Retro 21 menyebut 4 worktree ~8 GB). Perbaiki `cleanup-ssd` agar membaca `legend-*` (kartu baru).
+3. Isi slot (Claude 5/8 kosong, Codex 1/3) dari `bd ready`, akun Claude #2 (7d rendah); Codex 86-92% 7d -> hanya second-opinion.
+4. Batch54 merge train (maks 7): ui/tenant-config 8c596b8a, ui/ai-settings setelah API, qris/edge/ai saat siap.
+5. Sebelum rilis: legend-ukbq3, gerbang gi697/fgg1h/qhqf8/svqew, Kirimdev legend-axmob (token via ghostex secret request).
