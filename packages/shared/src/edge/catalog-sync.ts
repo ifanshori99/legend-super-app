@@ -67,6 +67,7 @@ export const EDGE_CATALOG_SYNC_PATH = "/api/edge-sync/catalog";
  */
 export const CATALOG_SYNC_STREAMS = [
   "stations",
+  "printers",
   "inventory_items",
   "menu_categories",
   "modifier_groups",
@@ -152,6 +153,43 @@ export const stationSyncRecordSchema = z.strictObject({
   targetSeconds: z.number().int().nullable(),
   ...stamps,
 });
+
+/**
+ * Printer registry of an outlet (legend-fbf4v); scope = the credential's
+ * outlet. The cloud deletes a printer for good, so a deletion travels as a
+ * TOMBSTONE record (`id`, scope, `deletedAt`) and the edge removes its row.
+ * `status`, `lastSeenAt` and `offlineSince` are measured by the print agent on
+ * the edge and never travel. `stationId` and the fallback are plain UUIDs.
+ */
+const livePrinterSyncRecordSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: uuidSchema,
+  outletId: uuidSchema,
+  label: z.string().min(1).max(255),
+  role: z.enum(["receipt", "station"]),
+  stationId: uuidSchema.nullable(),
+  transport: z.enum(["network", "usb"]),
+  host: z.string().max(255).nullable(),
+  port: z.number().int().min(1).max(65535).nullable(),
+  devicePath: z.string().max(255).nullable(),
+  paperWidth: z.union([z.literal(32), z.literal(48)]),
+  fallbackPrinterId: uuidSchema.nullable(),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+  deletedAt: z.null(),
+  syncTxid: syncTxidSchema,
+});
+const printerTombstoneSyncRecordSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: uuidSchema,
+  outletId: uuidSchema,
+  deletedAt: isoDateTimeSchema,
+  syncTxid: syncTxidSchema,
+});
+export const printerSyncRecordSchema = z.union([
+  livePrinterSyncRecordSchema,
+  printerTombstoneSyncRecordSchema,
+]);
 
 /**
  * Tenant-wide raw material / semi-finished good. No tombstone in the cloud
@@ -361,6 +399,7 @@ export const voucherSyncRecordSchema = voucherObjectSchema
 
 export const catalogSyncRecordSchemas = {
   stations: stationSyncRecordSchema,
+  printers: printerSyncRecordSchema,
   inventory_items: inventoryItemSyncRecordSchema,
   menu_categories: menuCategorySyncRecordSchema,
   modifier_groups: modifierGroupSyncRecordSchema,
@@ -375,6 +414,7 @@ export const catalogSyncRecordSchemas = {
 } as const;
 
 export type StationSyncRecord = z.infer<typeof stationSyncRecordSchema>;
+export type PrinterSyncRecord = z.infer<typeof printerSyncRecordSchema>;
 export type InventoryItemSyncRecord = z.infer<
   typeof inventoryItemSyncRecordSchema
 >;
@@ -418,6 +458,7 @@ function pageOf<S extends CatalogSyncStream>(stream: S) {
 
 export const catalogSyncPageSchema = z.discriminatedUnion("stream", [
   pageOf("stations"),
+  pageOf("printers"),
   pageOf("inventory_items"),
   pageOf("menu_categories"),
   pageOf("modifier_groups"),

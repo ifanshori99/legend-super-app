@@ -13,7 +13,7 @@
 // - Job content, kind, idempotency key and reprint link are immutable (DB
 //   trigger edge_print_jobs_guard).
 // Printer content is never logged and never placed in an error message.
-import { and, asc, desc, eq, lt, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lt, sql, type SQL } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   assertOutletInScope,
@@ -179,11 +179,19 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
       eq(edgePrintJobs.outletId, outletId),
     );
 
+  // A retired printer (deleted in the cloud, kept for its jobs) counts as
+  // unknown: no new job and no reroute target. Old jobs stay readable.
   async function printerExists(tx: Tx, printerId: string): Promise<boolean> {
     const rows = await tx
       .select({ id: edgePrinters.id })
       .from(edgePrinters)
-      .where(and(printerScope(), eq(edgePrinters.id, printerId)))
+      .where(
+        and(
+          printerScope(),
+          eq(edgePrinters.id, printerId),
+          isNull(edgePrinters.retiredAt),
+        ),
+      )
       .limit(1);
     return rows.length > 0;
   }
@@ -224,7 +232,7 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
         const rows = await tx
           .select()
           .from(edgePrinters)
-          .where(printerScope())
+          .where(and(printerScope(), isNull(edgePrinters.retiredAt)))
           .orderBy(asc(edgePrinters.createdAt), asc(edgePrinters.id));
         return rows.map(toPrinterConfig);
       });
@@ -236,7 +244,13 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
         const rows = await tx
           .select()
           .from(edgePrinters)
-          .where(and(printerScope(), eq(edgePrinters.id, printerId)))
+          .where(
+            and(
+              printerScope(),
+              eq(edgePrinters.id, printerId),
+              isNull(edgePrinters.retiredAt),
+            ),
+          )
           .limit(1);
         return rows[0] ? toPrinterConfig(rows[0]) : null;
       });

@@ -399,6 +399,21 @@ export async function processInboundWhatsApp(
         return { eventId: message.eventId, duplicate: false, kind: "rejected" };
       }
 
+      // legend-3hb1n (AUTH-02): the live channel is checked FIRST. A challenge
+      // keeps its stored receiving number for its TTL. If the tenant has no
+      // live sender mapping at all now, nothing is written for the claiming
+      // tenant (no account, no audit) and the challenge stays pending.
+      const route = await liveChannelRoute(
+        tx,
+        challenge.tenantId,
+        challenge.brandId,
+        message.receivingNumber,
+      );
+      if (route === "unavailable") {
+        await finish(tx, claim.id, { kind: "rejected" });
+        return { eventId: message.eventId, duplicate: false, kind: "rejected" };
+      }
+
       // legend-lgfru (design D-WA1/D-WA2): dispatch on the row's purpose
       // before anything else. A code sent with the other command is refused
       // and its challenge stays pending.
@@ -477,6 +492,20 @@ export async function processInboundWhatsApp(
         return { eventId: message.eventId, duplicate: false, kind };
       }
 
+      // legend-3hb1n: the tenant has a live channel but it no longer routes
+      // this number (moved after the code was issued). Refuse BEFORE any
+      // account is resolved or created; the tenant's own rejected audit stays
+      // (legend-wq3f).
+      if (route === "other_number") {
+        await auditRejected(tx, challenge, message.sender, now, false);
+        await finish(tx, claim.id, {
+          kind: "rejected",
+          tenantId: challenge.tenantId,
+          challengeId: challenge.id,
+        });
+        return { eventId: message.eventId, duplicate: false, kind: "rejected" };
+      }
+
       // The number is proven; resolve or create the account it belongs to.
       const account = await (deps.resolveAccount ?? resolveWhatsAppAccount)(
         message.sender,
@@ -536,6 +565,52 @@ export async function processInboundWhatsApp(
       now: deps.now ?? new Date(),
     });
   return outcome;
+}
+
+/**
+ * legend-3hb1n: how the tenant's live channel relates to the number the
+ * message arrived on. Same comparison completeChallenge makes (live channel
+ * routingNumber against the receiving number), run before any write for the
+ * tenant. "unavailable": no live channel. "other_number": routes elsewhere,
+ * or the tenant is no longer active (same status check completeChallenge
+ * makes; a tenant suspended while the challenge was pending).
+ */
+async function liveChannelRoute(
+  transaction: Transaction,
+  tenantId: string,
+  brandId: string | null,
+  receivingNumber: string,
+): Promise<"routes" | "other_number" | "unavailable"> {
+  const resolved = await withTenant(
+    transaction as unknown as typeof db,
+    webhookContext(tenantId, brandId),
+    async (tx) => {
+      const [tenantRow] = await tx
+        .select({ status: tenants.status })
+        .from(tenants)
+        .where(eq(tenants.id, tenantId))
+        .limit(1);
+      if (tenantRow?.status !== "active") return "inactive" as const;
+      return resolveWhatsAppChannel(
+        tx,
+        webhookContext(tenantId, brandId),
+      ).catch((error: unknown) => {
+        if (error instanceof CoreError && error.code === "SERVICE_UNAVAILABLE")
+          return null;
+        throw error;
+      });
+    },
+  );
+  if (resolved === "inactive") return "other_number";
+  const channel = resolved;
+  if (!channel) {
+    logger.warn(
+      { tenantId, reason: "channel_unavailable" },
+      "whatsapp inbound unrouted before account resolution",
+    );
+    return "unavailable";
+  }
+  return channel.routingNumber === receivingNumber ? "routes" : "other_number";
 }
 
 /** A found challenge whose completion was refused (inactive tenant, number

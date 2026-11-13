@@ -2255,6 +2255,27 @@
       "when": 1794570500000,
       "tag": "0335_purchase_price_variance",
       "breakpoints": true
+    },
+    {
+      "idx": 336,
+      "version": "7",
+      "when": 1794571500000,
+      "tag": "0336_edge_printer_sync",
+      "breakpoints": true
+    },
+    {
+      "idx": 337,
+      "version": "7",
+      "when": 1794572500000,
+      "tag": "0337_edge_printer_sync_guards",
+      "breakpoints": true
+    },
+    {
+      "idx": 338,
+      "version": "7",
+      "when": 1794573500000,
+      "tag": "0338_edge_printer_retired_at",
+      "breakpoints": true
     }
   ]
 }

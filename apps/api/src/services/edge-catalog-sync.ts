@@ -28,8 +28,12 @@
 //   item change (menu-pricing.service, menu-import.service, menu.service
 //   deleteItem), so the record carries the list's `syncTxid`.
 // - inventory_items: no `deleted_at` (inactive = `isActive` false).
-// Scope: price_lists and stations are outlet-owned (only the credential's
-// outlet). menu_categories, menu_items and recipes are limited to the brand of
+// - printers (legend-fbf4v): the cloud deletes a printer for good, so a
+//   deletion is a row of `edge_printer_tombstones` (written by trigger) served
+//   as a record with `deletedAt`; live rows and markers are merged in
+//   (sync_txid, id) order. Edge-measured status never travels.
+// Scope: price_lists, stations and printers are outlet-owned (only the
+// credential's outlet). menu_categories, menu_items and recipes are limited to the brand of
 // the credential's outlet (`outlets.brand_id`); item_variants and
 // menu_item_modifier_groups follow their menu item's brand. modifier_groups,
 // modifiers and inventory_items have no brand column: they are tenant-level.
@@ -48,6 +52,7 @@ import {
   CoreError,
   decodeCursor,
   encodeCursor,
+  outletIdSchema,
   uuidSchema,
   type TenantId,
 } from "@starter/shared/core";
@@ -67,6 +72,10 @@ import {
   stations,
 } from "../db/schema/menu.ts";
 import { inventoryItems } from "../db/schema/inventory.ts";
+import {
+  edgePrinters,
+  edgePrinterTombstones,
+} from "../db/schema/edge-print.ts";
 import { recipes } from "../db/schema/recipe.ts";
 import { promotions, vouchers } from "../db/schema/crm-promo.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
@@ -267,6 +276,86 @@ const scanners: Record<
         ...stamps(row),
       },
     }));
+  },
+  async printers({ tx, tenantId, outletId, since, take }) {
+    // Live rows and deletion markers (the cloud deletes a printer for good) are
+    // two tables read as one stream in (sync_txid, id) order: each side is cut
+    // at `take`, then merged, so the merged head is exactly the union's head.
+    const live = edgePrinters;
+    const gone = edgePrinterTombstones;
+    const printerOutletId = outletIdSchema.parse(outletId);
+    const [liveRows, goneRows] = await Promise.all([
+      tx
+        .select({ row: live, txid: txidOf(live.syncTxid) })
+        .from(live)
+        .where(
+          and(
+            eq(live.tenantId, tenantId),
+            eq(live.outletId, printerOutletId),
+            committed(live.syncTxid),
+            after(live.syncTxid, [live.id], since),
+          ),
+        )
+        .orderBy(asc(live.syncTxid), asc(live.id))
+        .limit(take),
+      tx
+        .select({ row: gone, txid: txidOf(gone.syncTxid) })
+        .from(gone)
+        .where(
+          and(
+            eq(gone.tenantId, tenantId),
+            eq(gone.outletId, printerOutletId),
+            committed(gone.syncTxid),
+            after(gone.syncTxid, [gone.id], since),
+          ),
+        )
+        .orderBy(asc(gone.syncTxid), asc(gone.id))
+        .limit(take),
+    ]);
+    const found: Found[] = [
+      ...liveRows.map(({ row, txid }) => ({
+        txid,
+        keys: [row.id],
+        // Runtime state (status, lastSeenAt, offlineSince) stays on the edge.
+        record: {
+          syncTxid: txid,
+          id: row.id,
+          tenantId: row.tenantId,
+          outletId: row.outletId,
+          label: row.label,
+          role: row.role,
+          stationId: row.stationId,
+          transport: row.transport,
+          host: row.host,
+          port: row.port,
+          devicePath: row.devicePath,
+          paperWidth: row.paperWidth,
+          fallbackPrinterId: row.fallbackPrinterId,
+          createdAt: iso(row.createdAt),
+          updatedAt: iso(row.updatedAt),
+          deletedAt: null,
+        },
+      })),
+      ...goneRows.map(({ row, txid }) => ({
+        txid,
+        keys: [row.id],
+        record: {
+          syncTxid: txid,
+          id: row.id,
+          tenantId: row.tenantId,
+          outletId: row.outletId,
+          deletedAt: iso(row.deletedAt),
+        },
+      })),
+    ];
+    return found
+      .sort((a, b) => {
+        const x = BigInt(a.txid);
+        const y = BigInt(b.txid);
+        if (x !== y) return x < y ? -1 : 1;
+        return a.keys[0] < b.keys[0] ? -1 : a.keys[0] > b.keys[0] ? 1 : 0;
+      })
+      .slice(0, take);
   },
   async inventory_items({ tx, tenantId, since, take }) {
     const t = inventoryItems;

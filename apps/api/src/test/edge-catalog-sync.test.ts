@@ -213,6 +213,7 @@ const created: { table: string; where: string; params: unknown[] }[] = [];
 /** Rows seeded for O1, per stream (the join table is keyed by item + group). */
 const MINE: Record<Table, string[]> = {
   stations: [ids.stn1],
+  printers: [],
   inventory_items: [ids.inv1, ids.invOff],
   menu_categories: [ids.cat1, ids.cat2],
   menu_items: [ids.item1, ids.item2, ids.item3, ids.itemStn],
@@ -235,6 +236,7 @@ const isMine = (stream: Stream, rec: Rec): boolean =>
 /** Stream order, parents first (the order the cloud and the puller use). */
 const ORDER: Stream[] = [
   "stations",
+  "printers",
   "inventory_items",
   "menu_categories",
   "modifier_groups",
@@ -611,6 +613,7 @@ async function edgeApplyAll(data: Record<Stream, Rec[]>) {
 
 const WHERE_COLUMN: Record<Table, string> = {
   stations: "id",
+  printers: "id",
   inventory_items: "id",
   menu_categories: "id",
   menu_items: "id",
@@ -626,11 +629,15 @@ const WHERE_COLUMN: Record<Table, string> = {
   vouchers: "id",
 };
 
+/** The stream `printers` lives in the table `edge_printers`. */
+const physicalTable = (table: Table): string =>
+  table === "printers" ? "edge_printers" : table;
+
 /** Table rows for the seeded ids, without time stamps. */
 async function tableRows(pool: Pool, table: Table): Promise<Row[]> {
   const rows = (
     await pool.query(
-      `SELECT row_to_json(t) AS row FROM ${table} t
+      `SELECT row_to_json(t) AS row FROM ${physicalTable(table)} t
         WHERE ${WHERE_COLUMN[table]} = ANY($1::uuid[]) ORDER BY t.${WHERE_COLUMN[table]}::text, t.tenant_id::text, (row_to_json(t)->>'group_id')`,
       [MINE[table]],
     )
@@ -1037,7 +1044,7 @@ describe("97p cloud export: paging, tombstones, commit-safe boundary", () => {
     for (const own of MINE.menu_items) expect(exported).toContain(own);
   });
 
-  it("24318/528 the 12 parent-first streams put promotions before vouchers and keep child documents inline", () => {
+  it("24318/528 the 13 parent-first streams put promotions before vouchers and keep child documents inline", () => {
     expect([...CATALOG_SYNC_STREAMS]).toEqual(ORDER);
     expect(CATALOG_SYNC_STREAMS).not.toContain("recipe_lines");
     expect(CATALOG_SYNC_STREAMS).not.toContain("price_list_items");
@@ -1218,7 +1225,7 @@ describe("97p apply on the edge", () => {
       for (const rec of data[stream]) {
         const edgeTxid = (
           await edge.rows(
-            `SELECT sync_txid::text AS t FROM ${stream} WHERE id = $1`,
+            `SELECT sync_txid::text AS t FROM ${physicalTable(stream)} WHERE id = $1`,
             [String(rec.id)],
           )
         )[0]?.t;
@@ -1649,11 +1656,13 @@ describe("97p edge pull: resume and broken connection", () => {
     expect(await edgeLineIds()).toHaveLength(MINE.recipe_lines.length);
     for (const row of await checkpoints()) {
       if (row.watermark === null) {
-        // This legacy fixture owns no promo/voucher documents; an empty
-        // stream still has a successful checkpoint, with no cursor yet.
-        expect(["catalog:promotions", "catalog:vouchers"]).toContain(
-          row.stream,
-        );
+        // This legacy fixture owns no printer/promo/voucher documents; an
+        // empty stream still has a successful checkpoint, with no cursor yet.
+        expect([
+          "catalog:printers",
+          "catalog:promotions",
+          "catalog:vouchers",
+        ]).toContain(row.stream);
       } else expect(decodeCursor(String(row.watermark))[0]).toBe("cat2");
     }
   });
@@ -1676,9 +1685,11 @@ describe("97p edge pull: resume and broken connection", () => {
     await expectEdgeEqualsCloud();
     for (const row of await checkpoints()) {
       if (row.watermark === null) {
-        expect(["catalog:promotions", "catalog:vouchers"]).toContain(
-          row.stream,
-        );
+        expect([
+          "catalog:printers",
+          "catalog:promotions",
+          "catalog:vouchers",
+        ]).toContain(row.stream);
       } else expect(decodeCursor(String(row.watermark))[0]).toBe("cat2");
     }
   });

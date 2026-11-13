@@ -129,6 +129,9 @@ const catalogStreams = (spy: FetchMock) =>
   callsTo(spy, CATALOG_PATH).map(([input]) =>
     urlOf(input).searchParams.get("stream"),
   );
+/** Number of catalog rounds started: calls to the first pull stream. */
+const catalogRounds = (spy: FetchMock) =>
+  catalogStreams(spy).filter((s) => s === CATALOG_SYNC_STREAMS[0]).length;
 /** Waits for the first full catalog round (a boot tick, if any, may add more). */
 const reported = () =>
   onError.mock.calls
@@ -274,9 +277,11 @@ describe("24318 the master-sync loop pulls the catalog", () => {
     startLoop();
     await tick();
     expect(await firstRound(spy)).toEqual([...CATALOG_SYNC_STREAMS]);
-    // Stations first, inventory items second (the design's order).
-    expect(catalogStreams(spy).slice(0, 2)).toEqual([
+    // Stations first, printers second, inventory items third (the order of
+    // CATALOG_SYNC_STREAMS).
+    expect(catalogStreams(spy).slice(0, 3)).toEqual([
       "stations",
+      "printers",
       "inventory_items",
     ]);
     // Masters before catalog: the uoms must arrive before inventory items.
@@ -328,8 +333,10 @@ describe("24318 the master-sync loop pulls the catalog", () => {
     );
     const mastersBefore = callsTo(spy, MASTERS_PATH).length;
     const catalogBefore = callsTo(spy, CATALOG_PATH).length;
-    await tick();
-    await vi.waitFor(() => {
+    // The loop skips an interval while a round is still in flight, so a single
+    // tick can be lost under load. Re-tick inside the retry until it lands.
+    await vi.waitFor(async () => {
+      await tick();
       expect(callsTo(spy, MASTERS_PATH).length).toBeGreaterThan(mastersBefore);
       expect(callsTo(spy, CATALOG_PATH).length).toBeGreaterThan(catalogBefore);
     });
@@ -348,11 +355,13 @@ describe("24318 the master-sync loop pulls the catalog", () => {
       expect(onError).toHaveBeenCalled();
       expect(callsTo(spy, CATALOG_PATH).length).toBeGreaterThanOrEqual(1);
     });
-    const before = callsTo(spy, CATALOG_PATH).length;
-    await tick();
-    await vi.waitFor(() =>
-      expect(callsTo(spy, CATALOG_PATH).length).toBeGreaterThan(before),
-    );
+    // Count ROUNDS (calls to the first stream), not total calls: leftover calls
+    // of round 1 must not make this pass. A tick is skipped while a round is in
+    // flight, so re-tick inside the retry until round 2 starts.
+    await vi.waitFor(async () => {
+      await tick();
+      expect(catalogRounds(spy)).toBeGreaterThanOrEqual(2);
+    });
   });
 
   it("after stop() no further masters or catalog request is made", async () => {
@@ -433,10 +442,12 @@ describe("dciax the loop refuses a cloud that does not send syncTxid", () => {
     );
     expect(stored.rowCount).toBe(0);
 
-    const before = callsTo(spy, CATALOG_PATH).length;
-    await tick();
-    await vi.waitFor(() =>
-      expect(callsTo(spy, CATALOG_PATH).length).toBeGreaterThan(before),
-    );
+    // Count ROUNDS (calls to the first stream), not total calls, and re-tick
+    // inside the retry: an interval that fires while round 1 is still in
+    // flight is skipped by the loop.
+    await vi.waitFor(async () => {
+      await tick();
+      expect(catalogRounds(spy)).toBeGreaterThanOrEqual(2);
+    });
   });
 });

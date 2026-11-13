@@ -104,6 +104,7 @@ const ids = {
 /** Rows this file owns, per stream, for filtering the shared fixture tenant. */
 const MINE: Record<Stream, string[]> = {
   stations: [ids.stn1, ids.stnX, ids.stnY],
+  printers: [],
   inventory_items: [ids.inv1],
   menu_categories: [ids.catA],
   modifier_groups: [],
@@ -404,7 +405,10 @@ afterAll(async () => {
 
 // ------------------------------------------------ cloud: the sync_txid column
 
-const STREAM_TABLES = [...CATALOG_SYNC_STREAMS];
+// The printers stream reads the cloud table `edge_printers` (legend-fbf4v).
+const STREAM_TABLES = CATALOG_SYNC_STREAMS.map((stream) =>
+  stream === "printers" ? "edge_printers" : stream,
+);
 
 describe("0mus6 cloud sync_txid column and trigger", () => {
   it("every stream table has a NOT NULL bigint sync_txid column and an index on (tenant_id, sync_txid, ...)", async () => {
@@ -427,7 +431,13 @@ describe("0mus6 cloud sync_txid column and trigger", () => {
         )
       ).rows.map((r) => String(r.indexdef));
       expect(
-        indexes.some((def) => /\(tenant_id, sync_txid[,)]/.test(def)),
+        indexes.some((def) =>
+          // edge_printers is outlet-scoped: (tenant_id, outlet_id, sync_txid, id).
+          (table === "edge_printers"
+            ? /\(tenant_id, outlet_id, sync_txid[,)]/
+            : /\(tenant_id, sync_txid[,)]/
+          ).test(def),
+        ),
         `${table} index on sync_txid`,
       ).toBe(true);
     }

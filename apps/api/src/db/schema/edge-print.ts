@@ -32,6 +32,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { outletIdColumn, tenantIdColumn, ulidInUuid } from "../columns.ts";
 import { outlets, tenants } from "./platform-org.ts";
+import { syncTxidColumn } from "./sync-txid";
 import type {
   FailurePhase,
   FallbackReason,
@@ -79,12 +80,16 @@ export const edgePrinters = pgTable(
       .default("unknown"),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     offlineSince: timestamp("offline_since", { withTimezone: true }),
+    /** Edge-owned (legend-fbf4v): the cloud deleted this printer but print jobs still point at it. Never part of the cloud record; cleared when the cloud brings the printer back. */
+    retiredAt: timestamp("retired_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    /** Catalog down-sync version (legend-fbf4v): stamped by `app.set_sync_txid`. */
+    syncTxid: syncTxidColumn(),
   },
   (t) => [
     unique("edge_printers_tenant_outlet_id_key").on(
@@ -103,6 +108,12 @@ export const edgePrinters = pgTable(
       foreignColumns: [t.tenantId, t.outletId, t.id],
     }),
     index("edge_printers_station_idx").on(t.tenantId, t.outletId, t.stationId),
+    index("edge_printers_sync_txid_idx").on(
+      t.tenantId,
+      t.outletId,
+      t.syncTxid,
+      t.id,
+    ),
     check("edge_printers_role_check", sql`${t.role} IN ('receipt', 'station')`),
     check(
       "edge_printers_status_check",
@@ -135,6 +146,40 @@ export const edgePrinters = pgTable(
     check(
       "edge_printers_not_own_fallback_check",
       sql`${t.fallbackPrinterId} IS NULL OR ${t.fallbackPrinterId} <> ${t.id}`,
+    ),
+  ],
+);
+
+/**
+ * Deletion marker of a cloud printer (legend-fbf4v). The cloud CRUD deletes the
+ * `edge_printers` row for good, so the catalog `printers` stream would never
+ * learn of it: the AFTER DELETE trigger `edge_printers_tombstone` writes one
+ * row here instead, and the stream serves it as a record with `deletedAt`.
+ * Append-only; the edge apply never writes it (the trigger skips edge applies).
+ */
+export const edgePrinterTombstones = pgTable(
+  "edge_printer_tombstones",
+  {
+    /** The deleted printer's id; a printer id is never reused. */
+    id: uuid("id").primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    syncTxid: syncTxidColumn(),
+  },
+  (t) => [
+    foreignKey({
+      name: "edge_printer_tombstones_outlet_fk",
+      columns: [t.tenantId, t.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    index("edge_printer_tombstones_sync_txid_idx").on(
+      t.tenantId,
+      t.outletId,
+      t.syncTxid,
+      t.id,
     ),
   ],
 );
