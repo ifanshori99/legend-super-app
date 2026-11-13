@@ -97,7 +97,11 @@ export function parseKirimSignatureHeader(
 /** Throws `CoreError` UNAUTHORIZED (same message for every failure, so the
  * response is no oracle) when the signature is missing, malformed, stale or
  * wrong; VALIDATION_ERROR when a signed delivery lacks its event id. Other
- * misuse (no secrets) is a `TypeError`: a configuration bug, not a bad request. */
+ * misuse (no secrets) is a `TypeError`: a configuration bug, not a bad request.
+ *
+ * Only `timestamp.body` is signed: the event id and delivery id headers are
+ * not, so whoever holds a captured body can replay it with other header values.
+ * Never use `eventId` as a dedupe key; dedupe on an id inside the signed body. */
 export async function verifyKirimWebhook(
   input: WebhookVerificationInput,
 ): Promise<VerifiedWebhook> {

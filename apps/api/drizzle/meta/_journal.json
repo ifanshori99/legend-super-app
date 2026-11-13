@@ -2143,6 +2143,13 @@
       "when": 1794543670328,
       "tag": "0319_payment_settlements",
       "breakpoints": true
+    },
+    {
+      "idx": 320,
+      "version": "7",
+      "when": 1794550700737,
+      "tag": "0320_kirimdev_sender_mappings",
+      "breakpoints": true
     }
   ]
 }

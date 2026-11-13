@@ -31,8 +31,19 @@ Simulator: `node scripts/wa-simulate-inbound.mjs --help`. Membaca `KIRIM_WEBHOOK
 
 Tanda tangan salah memang harus 401; jangan anggap itu galat. Reset PIN lewat WhatsApp hanya lolos dari nomor yang terverifikasi dan tertaut minimal 3 hari (`WA_PROOF_IDENTITY_MIN_AGE_DAYS`); untuk uji di staging, geser `user_identities.linked_at` lewat SQL pada akun uji saja.
 
+## Retry Kirimdev dan auto-disable
+
+Kirimdev mengirim ulang sampai 8 percobaan dalam 24 jam, timeout 10 detik per percobaan. Status 408, 429, dan 5xx diretry; 4xx lain dianggap mati. Setelah 20 kegagalan beruntun, Kirimdev mematikan langganan sendiri tanpa email atau alert. Akibatnya, 503 karena `KIRIM_WEBHOOK_SECRET` kosong (atau 401 terus karena secret salah) bisa mematikan langganan diam-diam.
+
+Cek dan pulihkan (pakai API key Kirimdev lewat redirect shell, jangan cetak nilainya):
+
+1. `GET /v1/webhook_subscriptions`: periksa `status` langganan. Bila bukan `active`, langganan sudah dimatikan.
+2. Perbaiki akar masalah dulu (secret terpasang dan cocok, API menjawab 200 pada uji simulator).
+3. Aktifkan lagi: `PATCH /v1/webhook_subscriptions/{id}` dengan `{"status":"active"}`.
+4. Kirim ulang kiriman yang gagal: `POST /v1/webhook_deliveries/{id}/replay`. Dedupe `X-Kirim-Event-Id` mencegah efek ganda.
+
 ## Bila webhook berhenti
 
-- 503 terus: `KIRIM_WEBHOOK_SECRET` kosong di proses API.
+- 503 terus: `KIRIM_WEBHOOK_SECRET` kosong di proses API. Cek juga apakah langganan sudah dimatikan (bagian di atas).
 - 401 terus dari Kirimdev: secret di API tidak cocok dengan langganan (rotasi tidak lengkap). Pasang kedua secret lalu ulangi langkah rotasi.
 - Login WhatsApp dan reset PIN mati bersama bila nomor diblokir Meta; login email dan Google serta reset PIN oleh HR tetap jalan.

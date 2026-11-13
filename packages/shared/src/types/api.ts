@@ -18,3 +18,16 @@ export type PageMeta = { limit: number; offset: number; hasMore: boolean };
 export type Paginated<T> = { data: T[]; meta: PageMeta };
 
 export type DataResponse<T> = { data: T };
+
+/** Platform-only: the Kirimdev sender number a tenant or outlet sends from. */
+export type KirimdevSenderMappingDto = {
+  id: string;
+  tenantId: string;
+  /** null = tenant-wide sender. */
+  outletId: string | null;
+  phoneNumberId: string;
+  createdByUserId: string | null;
+  updatedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
