@@ -611,6 +611,8 @@ export const itemAvailability = pgTable(
       .$type<Availability["status"]>()
       .notNull()
       .default("available"),
+    /** Who placed the 86 (`sold_out`): staff, or the equipment breakdown. */
+    source: varchar("source", { length: 10 }).$type<"staff" | "auto">(),
     createdAt,
     updatedAt,
     deletedAt,
@@ -644,6 +646,10 @@ export const itemAvailability = pgTable(
     check(
       "item_availability_status_check",
       sql`${table.status} IN ('available', 'sold_out')`,
+    ),
+    check(
+      "item_availability_source_check",
+      sql`${table.source} IS NULL OR ${table.source} IN ('staff', 'auto')`,
     ),
     check(
       "item_availability_limit_check",

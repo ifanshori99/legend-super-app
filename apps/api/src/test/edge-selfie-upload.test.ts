@@ -261,6 +261,27 @@ it("T5 edge selfie upload writes a 0600 sealed file and an edge-sealed object ro
   expect(stored.sizeBytes).toBe(statSync(file).size);
 });
 
+// core_storage_objects.uploaded_by is the immutable record of the verified
+// uploader (deps.actorUserId, the PIN proof's user), set at insert.
+it("T5 edge selfie upload records uploaded_by as the verified actor", async () => {
+  const actorUserId = randomUUID();
+  const stored = await upload(sealed, await jpegWithExif(), {
+    dir: newDir(),
+    actorUserId,
+  });
+
+  const { rows } = await owner.query<{
+    uploaded_by: string | null;
+    owner_user_id: string | null;
+  }>(
+    `SELECT uploaded_by, owner_user_id
+       FROM core_storage_objects WHERE tenant_id = $1 AND id = $2`,
+    [sealed.tenantId, stored.id],
+  );
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.uploaded_by).toBe(actorUserId);
+});
+
 it("T5 edge selfie upload round trips to an EXIF-free webp with the plain hash", async () => {
   const dir = newDir();
   const input = await jpegWithExif();

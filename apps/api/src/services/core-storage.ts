@@ -131,6 +131,7 @@ export async function uploadStorage(
         width,
         height,
         ownerUserId: deps.actorUserId,
+        uploadedBy: deps.actorUserId,
         sourceKind,
         sourceId: null,
       }),

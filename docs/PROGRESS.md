@@ -5064,3 +5064,10 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti: 5 file (36 test) + payment-webhook-api (90 test) hijau saat dijalankan terpisah; tsc api exit 0; db:generate kosong; eslint + prettier hijau pada 14 file. Satu run gabungan 6 file gagal 8 test (interferensi antar file saat berjalan bersamaan di DB sama; kedua kelompok hijau bila dipisah).
 - Gagal-dulu di HEAD: 16 dari 36 test gagal; penyebab per kasus tidak diperiksa satu-satu (worktree HEAD kena ERR_PNPM_NO_OFFLINE_TARBALL saat setup).
 - Subagent: total 16, puncak 5 bersamaan, token heavy dipegang test-runner (dan satu test-writer di awal).
+
+## 2026-11-13: ws/ops-menu-small (svmj, j5e3, 0pth)
+
+- svmj: kolom `item_availability.source` (staff|auto, null dianggap staf); perbaikan otomatis hanya mencabut 86 ber-source auto; migrasi 0476. Review reviewer: `updateAvailability` kini mengunci baris (race source). Tanpa backfill: 86 mesin rusak yang sudah terpasang sebelum deploy dianggap staf (tidak dicabut otomatis, arah aman).
+- j5e3: tidak ada event audit pergerakan stok; event stock_count tidak memuat kuantitas baris. Tidak ada kebocoran nyata; redaksi blind count diperluas ke field kuantitas (rekursif) + test regresi di inventory-count.test.ts.
+- 0pth: `core_storage_objects.uploaded_by` (nullable, tidak berubah saat owner berubah); migrasi 0477. Review architect: jalur edge-selfie-receive mengisi null (ownerUserId dari edge hanya klaim, bukan aktor terverifikasi).
+- Bukti: gagal-dulu 20/20 (kolom belum ada); hijau 9 file terarah, lalu operations-availability + menu-availability 21/21 setelah perbaikan test; tsc api, eslint, prettier hijau; `db:generate` kosong.

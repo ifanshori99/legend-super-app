@@ -92,6 +92,7 @@ type LockedAvailabilityRow = {
   menuItemId: string;
   status: AvailabilityStatus;
   soldOutUntil: Date | null;
+  source: "staff" | "auto" | null;
 };
 
 /**
@@ -125,6 +126,7 @@ async function ensureAvailabilityRow(
       menuItemId: itemAvailability.menuItemId,
       status: itemAvailability.status,
       soldOutUntil: itemAvailability.soldOutUntil,
+      source: itemAvailability.source,
     });
   if (inserted) return inserted;
   const [existing] = await tx
@@ -133,6 +135,7 @@ async function ensureAvailabilityRow(
       menuItemId: itemAvailability.menuItemId,
       status: itemAvailability.status,
       soldOutUntil: itemAvailability.soldOutUntil,
+      source: itemAvailability.source,
     })
     .from(itemAvailability)
     .where(
@@ -256,6 +259,7 @@ async function lockAvailabilityRows(
       menuItemId: itemAvailability.menuItemId,
       status: itemAvailability.status,
       soldOutUntil: itemAvailability.soldOutUntil,
+      source: itemAvailability.source,
     })
     .from(itemAvailability)
     .where(
@@ -382,7 +386,15 @@ async function markLinkedItemsSoldOut(
     }
     await tx
       .update(itemAvailability)
-      .set({ status: "sold_out", soldOutUntil: null, updatedAt: now })
+      .set({
+        status: "sold_out",
+        soldOutUntil: null,
+        // Reached only for a row that is not (effectively) sold out: a live
+        // staff 86 returned above and keeps its source. A lapsed deadline is
+        // effectively available, so the equipment owns the new 86.
+        source: "auto",
+        updatedAt: now,
+      })
       .where(
         and(
           eq(itemAvailability.tenantId, context.tenant.tenantId),
@@ -452,15 +464,19 @@ async function restoreEquipmentDisabledItems(
   const changed: { menuItemId: string; availabilityId: string }[] = [];
   for (const menuItemId of candidates) {
     const row = byItem.get(menuItemId);
-    // Only a row this equipment sold out is restored. A row already restored
-    // by an operator stays as it is, and so does a row an operator re-86'd
-    // with a deadline (the equipment only ever writes `soldOutUntil = null`).
-    if (!row || row.status !== "sold_out" || row.soldOutUntil !== null)
-      continue;
+    // Only a row this equipment sold out (`source === "auto"`) is restored.
+    // A row already restored by an operator stays as it is, and so does any
+    // staff 86, with or without a deadline; a legacy null source counts as staff.
+    if (!row || row.status !== "sold_out" || row.source !== "auto") continue;
     if (heldByOthers.has(menuItemId)) continue;
     await tx
       .update(itemAvailability)
-      .set({ status: "available", soldOutUntil: null, updatedAt: now })
+      .set({
+        status: "available",
+        soldOutUntil: null,
+        source: null,
+        updatedAt: now,
+      })
       .where(
         and(
           eq(itemAvailability.tenantId, context.tenant.tenantId),

@@ -270,6 +270,30 @@ describe("legend-0wvoz T6 receive: store, retry, conflict", () => {
     expect(receipt!.sealed_sha256.toString("hex")).toBe(sha256Hex(sealed));
   });
 
+  // core_storage_objects.uploaded_by records the verified uploader. The cloud
+  // receiver has no user actor (the edge node is the sender), so it stays NULL;
+  // the selfie's subject is recorded in owner_user_id from the sealed meta.
+  it("201 leaves uploaded_by NULL and sets owner_user_id to the sealed meta ownerUserId", async () => {
+    const objectId = randomUUID();
+    const sealed = await seal(objectId);
+    const response = await put(objectId, sealed);
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+
+    const { rows } = await fx.asTenant((client) =>
+      client.query<{
+        uploaded_by: string | null;
+        owner_user_id: string | null;
+      }>(
+        `SELECT uploaded_by, owner_user_id
+           FROM core_storage_objects WHERE tenant_id = $1 AND id = $2`,
+        [fx.tenantId, objectId],
+      ),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.uploaded_by).toBeNull();
+    expect(rows[0]!.owner_user_id).toBe(fx.employee.userId);
+  });
+
   it("201 then 200 on a retry with the same bytes, and the retry writes nothing", async () => {
     const objectId = randomUUID();
     const sealed = await seal(objectId);
@@ -721,7 +745,11 @@ describe("legend-0wvoz T6 receive: linking with the attendance log in either ord
     const log = (await fx.logByClientEvent(attendanceLogId))!;
     expect(log.photo_key).toBeNull();
     expect(log.flag_reasons).toEqual(
-      expect.arrayContaining(["offline_unverified", "selfie_unlinked", "leave_approved"]),
+      expect.arrayContaining([
+        "offline_unverified",
+        "selfie_unlinked",
+        "leave_approved",
+      ]),
     );
     expect(
       log.flag_reasons.filter((reason: string) => reason === "selfie_unlinked"),

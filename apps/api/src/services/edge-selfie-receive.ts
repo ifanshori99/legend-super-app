@@ -243,6 +243,9 @@ export async function receiveEdgeSelfie(
             width: image.full.width,
             height: image.full.height,
             ownerUserId: meta.ownerUserId,
+            // The edge only authenticates its node; ownerUserId is a claim,
+            // not a verified uploader.
+            uploadedBy: null,
             sourceKind: "attendance",
             sourceId: null,
           })
