@@ -1486,3 +1486,4 @@ Langkah berikut CTO baru:
 - 02:13 retro 3 jam dimulai (thread S30:P6b2j:G62es, akun 2).
 - 02:16 Retro 26 diterima: pra-gate typecheck ditambah ke AGENTS.md; target subagent tetap avg 1 (tidak diturunkan lagi); mulai 654 flake + celah test (thread S30:P6b2j:G5fvd). Usul prune volume Docker ditanyakan ke founder.
 - 02:17 batch59 masuk m1 ecab3cff8, migr 0341-0346, test penuh 69 mnt (4 gagal flake 1jxh8/TEN), 8 bead ditutup. G4x08 di-resolve. Batch60 menunggu fix/flaky-654 + ws/edge-order-ingest.
+- 02:22 sapu bead review: 25 ditutup (commit sendiri terbukti di m1 ecab3cff8). 74 lain bukti lemah + 25 belum di m1 + 48 tanpa SHA dibiarkan review.
