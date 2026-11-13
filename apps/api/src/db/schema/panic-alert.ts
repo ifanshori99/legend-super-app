@@ -6,10 +6,10 @@
 // - device_id and unit_id carry NO foreign key: a safety record is never
 //   refused because the cloud deleted the room or device while the edge was
 //   offline. The alert keeps label snapshots instead.
-// - panic_alerts is append-mostly: drizzle/0400_panic_alerts.sql adds the
+// - panic_alerts is append-mostly: drizzle/0316_panic_alerts.sql adds the
 //   guard trigger (identity, snapshots and received_at immutable;
 //   acknowledged_* and resolved_* set once; no DELETE).
-// - Tenant + outlet RLS (forced) on every table: drizzle/0400..0402.
+// - Tenant + outlet RLS (forced) on every table: drizzle/0316..0318.
 import { sql } from "drizzle-orm";
 import {
   boolean,
