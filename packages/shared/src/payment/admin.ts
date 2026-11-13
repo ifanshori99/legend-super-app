@@ -473,6 +473,99 @@ export type ResolveReconciliationCaseInput = z.infer<
   typeof resolveReconciliationCaseInputSchema
 >;
 
+// Settlement import (legend-jlqi). Reconciliation only reads and records
+// differences: an import never creates a payout, refund or journal posting.
+
+export const settlementLineInputSchema = z.strictObject({
+  reference: ref,
+  amountIdr: positiveIdr,
+  feeIdr: nonnegativeIdr,
+});
+export type SettlementLineInput = z.infer<typeof settlementLineInputSchema>;
+
+const edcSettlementProviderPattern = /^edc_(bca|mandiri|bni|bjb)$/;
+
+export const importSettlementInputSchema = clientInputSchema({
+  outletId: outletIdSchema,
+  source: reconciliationSourceSchema,
+  /** "doit"/"duitku" for a gateway, "edc_<bank>" for an EDC batch report. */
+  provider: ref,
+  /** The report id; with source and provider it identifies the report. */
+  reference: ref,
+  /** EDC only: the terminal the batch was settled for. */
+  terminalId: uuidSchema.optional(),
+  /** EDC only: the batch number printed on the settlement report. */
+  batchNo: z.string().min(1).max(20).optional(),
+  periodStart: businessDateSchema,
+  periodEnd: businessDateSchema,
+  grossIdr: nonnegativeIdr,
+  feeIdr: nonnegativeIdr,
+  netIdr: nonnegativeIdr,
+  lines: z.array(settlementLineInputSchema).min(1).max(1000),
+}).superRefine((s, ctx) => {
+  const issue = (path: (string | number)[], message: string) =>
+    ctx.addIssue({ code: "custom", path, message });
+  const lineGross = s.lines.reduce((sum, l) => sum + l.amountIdr, 0);
+  const lineFee = s.lines.reduce((sum, l) => sum + l.feeIdr, 0);
+  if (s.grossIdr !== lineGross)
+    issue(["grossIdr"], "gross must equal the sum of the line amounts");
+  if (s.feeIdr !== lineFee)
+    issue(["feeIdr"], "fee must equal the sum of the line fees");
+  if (s.netIdr !== s.grossIdr - s.feeIdr)
+    issue(["netIdr"], "net must equal gross minus fee");
+  if (s.periodEnd < s.periodStart)
+    issue(["periodEnd"], "period end must not be before period start");
+  else if (
+    (Date.parse(`${s.periodEnd}T00:00:00Z`) -
+      Date.parse(`${s.periodStart}T00:00:00Z`)) /
+      86_400_000 >
+    30
+  )
+    issue(["periodEnd"], "a settlement period is at most 31 days");
+  const seen = new Set<string>();
+  s.lines.forEach((line, i) => {
+    if (seen.has(line.reference))
+      issue(["lines", i, "reference"], "line references must be unique");
+    seen.add(line.reference);
+  });
+  if (s.source === "edc") {
+    if (!edcSettlementProviderPattern.test(s.provider))
+      issue(["provider"], "an EDC settlement provider is edc_<bank>");
+    if (s.terminalId === undefined)
+      issue(["terminalId"], "an EDC settlement needs the terminal");
+    if (s.batchNo === undefined)
+      issue(["batchNo"], "an EDC settlement needs the batch number");
+  } else {
+    if (s.terminalId !== undefined)
+      issue(["terminalId"], "a gateway settlement has no terminal");
+    if (s.batchNo !== undefined)
+      issue(["batchNo"], "a gateway settlement has no batch number");
+  }
+});
+export type ImportSettlementInput = z.infer<typeof importSettlementInputSchema>;
+
+/** What the import recorded. `replayed`: the same report was imported before. */
+export const settlementImportViewSchema = z.strictObject({
+  id: uuidSchema,
+  outletId: outletIdSchema,
+  source: reconciliationSourceSchema,
+  provider: ref,
+  reference: ref,
+  periodStart: businessDateSchema,
+  periodEnd: businessDateSchema,
+  grossIdr: nonnegativeIdr,
+  feeIdr: nonnegativeIdr,
+  netIdr: nonnegativeIdr,
+  lineCount: z.number().int().nonnegative(),
+  matchedLines: z.number().int().nonnegative(),
+  mismatchLines: z.number().int().nonnegative(),
+  unmatchedLines: z.number().int().nonnegative(),
+  casesCreated: z.number().int().nonnegative(),
+  replayed: z.boolean(),
+  createdAt: isoDateTimeSchema,
+});
+export type SettlementImportView = z.infer<typeof settlementImportViewSchema>;
+
 // ---- Endpoints ----------------------------------------------------------
 // All routes are staff-only (outlet session + RBAC: payment.transaction.view,
 // payment.reconcile, payment.edc.manage); the API re-checks every request.
@@ -665,6 +758,13 @@ export const getReconciliationSummary = defineEndpoint({
   path: `${ADMIN}/reconciliation/summary`,
   query: z.strictObject({ outletId: outletIdSchema.optional() }),
   response: dataResponseSchema(reconciliationSummarySchema),
+});
+/** EDC-06: a settlement report is matched to POS; each difference is a case. */
+export const importSettlement = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/reconciliation/settlements`,
+  body: importSettlementInputSchema,
+  response: dataResponseSchema(settlementImportViewSchema),
 });
 /** EDC-06: every settlement difference is a case resolved with a written note. */
 export const resolveReconciliationCase = defineEndpoint({

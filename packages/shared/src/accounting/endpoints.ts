@@ -11,6 +11,7 @@ import {
   cursorPageSchema,
   dataResponseSchema,
   idempotencyKeySchema,
+  idrSchema,
   outletIdSchema,
   uuidSchema,
   z,
@@ -483,6 +484,45 @@ export const getReconciliationSummary = defineEndpoint({
   response: dataResponseSchema(reconciliationSummarySchema),
 });
 
+/** One gateway settlement journal as the recon screen shows it (PRD §3.19
+ * "Rekonsiliasi Gateway"). Computed on the server: gross = credit lines, each
+ * non-bank debit line is a fee, net = the bank GL account's debit - credit.
+ * `settlementId` is the journal's sourceId (the journal id when it has none). */
+export const gatewaySettlementReconRowSchema = z.strictObject({
+  journalId: journalEntryIdSchema,
+  settlementId: z.string().min(1),
+  entryDate: businessDateSchema,
+  description: z.string().min(1).max(255),
+  grossIdr: idrSchema,
+  fees: z.array(
+    z.strictObject({ accountId: accountIdSchema, amountIdr: idrSchema }),
+  ),
+  /** Sum of `fees`. */
+  feeIdr: idrSchema,
+  netIdr: idrSchema,
+  statementLineId: bankStatementLineIdSchema.nullable(),
+  /** Amount of the matched bank statement line; 0 when there is none. */
+  matchedAmountIdr: idrSchema,
+  /** netIdr - matchedAmountIdr; non-zero is a settlement difference. */
+  varianceIdr: idrSchema,
+});
+export const gatewaySettlementReconSchema = z.strictObject({
+  rows: z.array(gatewaySettlementReconRowSchema),
+  /** True when more than the 500 newest journals matched the period. */
+  truncated: z.boolean(),
+});
+export const getGatewaySettlementRecon = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/gateway-settlement-recon`,
+  query: z.strictObject({
+    legalEntityId: legalEntityIdSchema,
+    bankAccountId: bankAccountIdSchema,
+    from: businessDateSchema,
+    to: businessDateSchema,
+  }),
+  response: dataResponseSchema(gatewaySettlementReconSchema),
+});
+
 export const listCashDeposits = defineEndpoint({
   method: "GET",
   path: `${BASE}/cash-deposits`,
@@ -816,6 +856,7 @@ export const accountingEndpoints = Object.freeze({
   excludeStatementLine,
   unmatchStatementLine,
   getReconciliationSummary,
+  getGatewaySettlementRecon,
   listCashDeposits,
   createCashDeposit,
   listUndepositedCashAlerts,

@@ -15,6 +15,7 @@ import {
   createCashDeposit as createCashDepositEndpoint,
   excludeStatementLine as excludeStatementLineEndpoint,
   getFinancePolicy as getFinancePolicyEndpoint,
+  getGatewaySettlementRecon as getGatewaySettlementReconEndpoint,
   getJournal as getJournalEndpoint,
   getReconciliationCase as getReconciliationCaseEndpoint,
   getReconciliationSummary as getReconciliationSummaryEndpoint,
@@ -291,15 +292,18 @@ export async function fetchMatchJournals(
   return fetchJournalEntries({ legalEntityId, from, to, limit: 30 }, signal);
 }
 
-/** Gateway settlements of the period, with their fee and bank lines. */
-export async function fetchGatewaySettlements(
+/** Gateway settlements of the period, matched to the bank statement by the API. */
+export async function fetchGatewaySettlementRecon(
   legalEntityId: string,
+  bankAccountId: string,
   from: string,
   to: string,
   signal?: AbortSignal,
 ) {
-  return fetchJournalEntries(
-    { legalEntityId, from, to, sourceType: "gateway_settlement", limit: 100 },
-    signal,
+  const response = await callEndpoint(
+    getGatewaySettlementReconEndpoint,
+    { query: { legalEntityId, bankAccountId, from, to } },
+    { signal },
   );
+  return response.data;
 }

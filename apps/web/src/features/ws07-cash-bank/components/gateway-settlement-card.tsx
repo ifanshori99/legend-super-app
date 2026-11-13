@@ -24,9 +24,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { accountById, accountLabel } from "@/features/ws07-accounting/lib";
-import { formatBusinessDate, settlementRows, type SettlementRow } from "../lib";
-import { useGatewaySettlements, useStatementLinesForPeriod } from "../hooks";
+import { formatBusinessDate } from "../lib";
+import { useGatewaySettlementRecon } from "../hooks";
 import { OpenCaseDialog } from "./open-case-dialog";
+
+type SettlementRow = NonNullable<
+  ReturnType<typeof useGatewaySettlementRecon>["data"]
+>["rows"][number];
 
 export function GatewaySettlementCard({
   legalEntityId,
@@ -44,24 +48,15 @@ export function GatewaySettlementCard({
   canWrite: boolean;
 }) {
   const t = useT();
-  const settlements = useGatewaySettlements(legalEntityId, from, to);
-  const lines = useStatementLinesForPeriod(account?.id, from, to);
+  const recon = useGatewaySettlementRecon(legalEntityId, account?.id, from, to);
   const [caseRow, setCaseRow] = React.useState<SettlementRow | null>(null);
-  const rows = React.useMemo(
-    () =>
-      settlementRows(
-        settlements.data ?? [],
-        lines.data?.data ?? [],
-        account?.glAccountId ?? "",
-      ),
-    [settlements.data, lines.data, account?.glAccountId],
-  );
+  const rows = React.useMemo(() => recon.data?.rows ?? [], [recon.data]);
   const byId = accountById(glAccounts);
   const state: DataState = !account
     ? "empty"
-    : settlements.isPending || lines.isPending
+    : recon.isPending
       ? "loading"
-      : settlements.isError || lines.isError
+      : recon.isError
         ? "error"
         : rows.length === 0
           ? "empty"
@@ -79,8 +74,7 @@ export function GatewaySettlementCard({
         description={t("accounting.cash.recon.settlement.subtitle")}
         state={state}
         onRetry={() => {
-          void settlements.refetch();
-          void lines.refetch();
+          void recon.refetch();
         }}
         rowCount={rows.length}
         empty={{
@@ -113,9 +107,9 @@ export function GatewaySettlementCard({
           </TableHeader>
           <TableBody>
             {rows.map((row) => (
-              <TableRow key={row.journalEntryId}>
+              <TableRow key={row.journalId}>
                 <TableCell className="whitespace-nowrap tabular">
-                  {formatBusinessDate(row.date)}
+                  {formatBusinessDate(row.entryDate)}
                 </TableCell>
                 <TableCell className="max-w-72">
                   <span className="block truncate font-medium">
@@ -129,13 +123,13 @@ export function GatewaySettlementCard({
                   <Money amount={row.grossIdr} />
                 </TableCell>
                 <TableCell>
-                  {row.feeLines.length === 0 ? (
+                  {row.fees.length === 0 ? (
                     <span className="text-sm text-muted-foreground">—</span>
                   ) : (
                     <ul className="grid gap-1">
-                      {row.feeLines.map((fee) => (
+                      {row.fees.map((fee) => (
                         <li
-                          key={`${row.journalEntryId}:${fee.accountId}`}
+                          key={`${row.journalId}:${fee.accountId}`}
                           className="flex flex-wrap items-center justify-between gap-2"
                         >
                           <span className="text-sm text-muted-foreground">
@@ -154,7 +148,7 @@ export function GatewaySettlementCard({
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="grid justify-items-end gap-1">
-                    {row.statementLine ? (
+                    {row.statementLineId ? (
                       <Badge tone="success">
                         {t("accounting.cash.recon.settlement.status")}
                       </Badge>
@@ -170,7 +164,7 @@ export function GatewaySettlementCard({
                       </span>
                     )}
                     {canWrite &&
-                      (!row.statementLine || row.varianceIdr !== 0) &&
+                      (!row.statementLineId || row.varianceIdr !== 0) &&
                       row.netIdr !== 0 && (
                         <Button
                           type="button"
@@ -203,11 +197,11 @@ export function GatewaySettlementCard({
           }
           refs={[
             { type: "gateway_settlement", id: caseRow.settlementId },
-            ...(caseRow.statementLine
+            ...(caseRow.statementLineId
               ? [
                   {
                     type: "bank_statement_line" as const,
-                    id: caseRow.statementLine.id,
+                    id: caseRow.statementLineId,
                   },
                 ]
               : []),

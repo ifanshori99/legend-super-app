@@ -19,6 +19,7 @@ import * as service from "../services/payment-admin.service.ts";
 import * as config from "../services/payment-admin-config.service.ts";
 import * as funds from "../services/payment-admin-funds.service.ts";
 import * as reconciliation from "../services/payment-admin-reconciliation.service.ts";
+import * as settlementImport from "../services/payment-settlement-import.service.ts";
 import * as refunds from "../services/payment-refund.service.ts";
 
 export const paymentAdminRouter = Router();
@@ -62,6 +63,10 @@ const settingsBody = byOutlet(
 const reconcileQuery = byOutlet(
   "payment.reconcile",
   (req) => req.query.outletId,
+);
+const reconcileBody = byOutlet(
+  "payment.reconcile",
+  (req) => req.body?.outletId,
 );
 const viewQuery = byOutlet(
   "payment.transaction.view",
@@ -367,6 +372,21 @@ paymentAdminRouter.get(
         scope(req),
         actor(req),
         contract.getReconciliationSummary.query.parse(req.query),
+      ),
+    });
+  },
+);
+paymentAdminRouter.post(
+  route(contract.importSettlement.path),
+  jsonBody,
+  reconcileBody,
+  async (req, res) => {
+    res.json({
+      data: await settlementImport.importSettlement(
+        scope(req),
+        actor(req),
+        contract.importSettlement.body.parse(req.body),
+        key(req),
       ),
     });
   },

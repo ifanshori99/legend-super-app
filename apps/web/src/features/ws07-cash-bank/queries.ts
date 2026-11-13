@@ -10,7 +10,7 @@ import {
   fetchBankAccounts,
   fetchCashDeposits,
   fetchFinancePolicy,
-  fetchGatewaySettlements,
+  fetchGatewaySettlementRecon,
   fetchMatchJournals,
   fetchReconciliationCase,
   fetchReconciliationCases,
@@ -52,11 +52,17 @@ export const cashBankKeys = {
   cases: (legalEntityId: string, status: string) =>
     [...cashBankKeys.all, "cases", legalEntityId, status] as const,
   case: (caseId: string) => [...cashBankKeys.all, "case", caseId] as const,
-  settlements: (legalEntityId: string, from: string, to: string) =>
+  settlementRecon: (
+    legalEntityId: string,
+    bankAccountId: string,
+    from: string,
+    to: string,
+  ) =>
     [
       ...cashBankKeys.all,
-      "gateway-settlements",
+      "gateway-settlement-recon",
       legalEntityId,
+      bankAccountId,
       from,
       to,
     ] as const,
@@ -218,16 +224,28 @@ export function reconciliationCaseQuery(caseId: string | undefined) {
   });
 }
 
-export function gatewaySettlementsQuery(
+export function gatewaySettlementReconQuery(
   legalEntityId: string | undefined,
+  bankAccountId: string | undefined,
   from: string,
   to: string,
 ) {
   return queryOptions({
-    queryKey: cashBankKeys.settlements(legalEntityId ?? "none", from, to),
+    queryKey: cashBankKeys.settlementRecon(
+      legalEntityId ?? "none",
+      bankAccountId ?? "none",
+      from,
+      to,
+    ),
     queryFn: ({ signal }) =>
-      fetchGatewaySettlements(legalEntityId ?? "", from, to, signal),
-    enabled: Boolean(legalEntityId && from && to),
+      fetchGatewaySettlementRecon(
+        legalEntityId ?? "",
+        bankAccountId ?? "",
+        from,
+        to,
+        signal,
+      ),
+    enabled: Boolean(legalEntityId && bankAccountId && from && to),
   });
 }
 
