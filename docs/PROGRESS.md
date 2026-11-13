@@ -1436,3 +1436,4 @@ Langkah berikut CTO baru:
 - 18:55 Founder Q7: kas keluar > batas tenant (Rp5 jt) butuh persetujuan -> dikirim ke G3t0j (migr 0496-0497).
 - 18:55 Founder Q5 (R1 permanen) + Q6 (UI Kas & Bank disetujui).
 - 18:56 Founder Q4: folder proyek dikeluarkan dari Spotlight.
+- 18:58 Founder Q3: gaji lewat disbursement Duitku/DOIT atau transfer manual per bank (config tenant). Mulai G435k desain (brief 637, Opus xhigh, dokumen saja).
