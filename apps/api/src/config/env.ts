@@ -5,6 +5,7 @@ import {
   deploymentEnvShape,
   deploymentPolicyCheck,
 } from "@starter/shared/env";
+import { isPublicHttpsUrl } from "@starter/shared/adapters";
 import { hostnameSchema, normalizeHostname } from "@starter/shared/platform";
 import { parseEdgeRuntimeConfig } from "../edge/config.ts";
 import { unsafeAiUrlReason } from "../lib/ai/url-guard.ts";
@@ -283,6 +284,32 @@ const schema = z
           .map((item) => item.trim())
           .filter(Boolean),
       ),
+    // KirimDev API key for outbound WhatsApp (legend-w8dfz). Optional: unset
+    // keeps outbound off. The message never echoes the value.
+    KIRIM_API_KEY: blankToUndefined(
+      z
+        .string()
+        .regex(
+          /^kdv_live_[A-Za-z0-9_-]{24}$/,
+          "Use a KirimDev API key (kdv_live_ followed by 24 characters).",
+        )
+        .optional(),
+    ),
+    // KirimDev API base URL override. Public https origin only (no path,
+    // query or fragment); default is https://api.kirimdev.com.
+    KIRIM_API_BASE_URL: blankToUndefined(
+      z
+        .url()
+        .refine(
+          isPublicHttpsUrl,
+          "Use a public https URL (no localhost or IP address).",
+        )
+        .refine((value) => {
+          const url = new URL(value);
+          return url.pathname === "/" && url.search === "" && url.hash === "";
+        }, "Use the origin only, without a path, query or fragment.")
+        .optional(),
+    ),
     // Delivery platform webhook signing secrets (legend-5bn3). Comma-separated
     // while a secret rotates. A platform without a secret is disabled: its
     // webhook answers 503 and processes nothing.
