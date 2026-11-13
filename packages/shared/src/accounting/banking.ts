@@ -13,6 +13,7 @@
 import { z } from "zod";
 import {
   businessDateSchema,
+  cursorPageQuerySchema,
   idempotencyKeySchema,
   idrSchema,
   isoDateTimeSchema,
@@ -28,11 +29,16 @@ import {
   bankAccountIdSchema,
   bankStatementImportIdSchema,
   bankStatementLineIdSchema,
+  cashBankEntryIdSchema,
   cashDepositIdSchema,
   journalEntryIdSchema,
   legalEntityIdSchema,
+  pettyCashEntryIdSchema,
+  pettyCashFundIdSchema,
   reconciliationCaseIdSchema,
 } from "./ids.ts";
+import { assertJournalBalanced } from "./journal.ts";
+import type { JournalLineInput } from "./journal.ts";
 import { daysBetween } from "./period-key.ts";
 
 const positiveIdr = idrSchema.refine(
@@ -616,3 +622,308 @@ export const openReconciliationCaseInputSchema = z.strictObject({
   refs: z.array(reconciliationRefSchema).min(1).max(50),
   idempotencyKey: idempotencyKeySchema,
 });
+
+// ---- Cash in/out and bank transfers (legend-4961, PRD v1.7 §3.19) -----------
+//
+// One document per row, one journal per document (journal_entry_id is NOT NULL
+// and unique). The bank leg is the GL account of the bank account; the counter
+// account of a cash in/out is chosen explicitly by the user, never guessed.
+
+export const CASH_BANK_ENTRY_KINDS = [
+  "cash_in",
+  "cash_out",
+  "transfer",
+] as const;
+export const cashBankEntryKindSchema = z.enum(CASH_BANK_ENTRY_KINDS);
+export type CashBankEntryKind = z.infer<typeof cashBankEntryKindSchema>;
+
+const entryDescriptionSchema = z.string().trim().min(1).max(255);
+const entryReferenceSchema = z.string().trim().min(1).max(60).nullable();
+
+export const cashBankEntrySchema = z
+  .strictObject({
+    id: cashBankEntryIdSchema,
+    tenantId: tenantIdSchema,
+    legalEntityId: legalEntityIdSchema,
+    /** Optional cost tag; null = whole legal entity. */
+    outletId: outletIdSchema.nullable(),
+    kind: cashBankEntryKindSchema,
+    entryDate: businessDateSchema,
+    amountIdr: positiveIdr,
+    /** The account money leaves (cash_out, transfer) or enters (cash_in). */
+    bankAccountId: bankAccountIdSchema,
+    /** Transfer only: the account that receives the money. */
+    toBankAccountId: bankAccountIdSchema.nullable(),
+    /** Cash in/out only: the other side of the journal. */
+    counterAccountId: accountIdSchema.nullable(),
+    description: entryDescriptionSchema,
+    reference: entryReferenceSchema,
+    journalEntryId: journalEntryIdSchema,
+    createdBy: userIdSchema,
+    createdAt: isoDateTimeSchema,
+  })
+  .superRefine((row, ctx) => {
+    const issue = (path: string, message: string) =>
+      ctx.addIssue({ code: "custom", path: [path], message });
+    if (row.kind === "transfer") {
+      if (row.toBankAccountId === null)
+        issue("toBankAccountId", "a transfer names its destination account");
+      else if (row.toBankAccountId === row.bankAccountId)
+        issue("toBankAccountId", "a transfer needs two different accounts");
+      if (row.counterAccountId !== null)
+        issue("counterAccountId", "a transfer has no counter account");
+    } else {
+      if (row.counterAccountId === null)
+        issue("counterAccountId", "cash in/out names its counter account");
+      if (row.toBankAccountId !== null)
+        issue("toBankAccountId", "only a transfer has a destination account");
+    }
+  });
+export type CashBankEntry = z.infer<typeof cashBankEntrySchema>;
+
+const cashInOutInputSchema = z.strictObject({
+  legalEntityId: legalEntityIdSchema,
+  bankAccountId: bankAccountIdSchema,
+  counterAccountId: accountIdSchema,
+  amountIdr: positiveIdr,
+  entryDate: businessDateSchema,
+  description: entryDescriptionSchema,
+  reference: entryReferenceSchema,
+  outletId: outletIdSchema.optional(),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+export const createCashBankEntryInputSchema = z
+  .discriminatedUnion("kind", [
+    cashInOutInputSchema.extend({ kind: z.literal("cash_in") }),
+    cashInOutInputSchema.extend({ kind: z.literal("cash_out") }),
+    z.strictObject({
+      kind: z.literal("transfer"),
+      legalEntityId: legalEntityIdSchema,
+      fromBankAccountId: bankAccountIdSchema,
+      toBankAccountId: bankAccountIdSchema,
+      amountIdr: positiveIdr,
+      entryDate: businessDateSchema,
+      description: entryDescriptionSchema,
+      reference: entryReferenceSchema,
+      idempotencyKey: idempotencyKeySchema,
+    }),
+  ])
+  .superRefine((input, ctx) => {
+    if (
+      input.kind === "transfer" &&
+      input.fromBankAccountId === input.toBankAccountId
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["toBankAccountId"],
+        message: "a transfer needs two different accounts",
+      });
+  });
+export type CreateCashBankEntryInput = z.infer<
+  typeof createCashBankEntryInputSchema
+>;
+
+export const cashBankEntryQuerySchema = cursorPageQuerySchema.extend({
+  legalEntityId: legalEntityIdSchema,
+  from: businessDateSchema,
+  to: businessDateSchema,
+  kind: cashBankEntryKindSchema.optional(),
+  bankAccountId: bankAccountIdSchema.optional(),
+});
+
+/** GL accounts a cash/bank document posts to, resolved by the service. */
+export type CashBankJournalAccounts = {
+  /** GL account of the document's bank account (the source for a transfer). */
+  bankGl: string;
+  /** Transfer: GL account of the destination bank account. */
+  toBankGl?: string | null;
+  /** Cash in/out: the user-chosen counter account. */
+  counter?: string | null;
+};
+
+/**
+ * Journal lines of a cash/bank document. cash_in: Dr bank / Cr counter.
+ * cash_out: Dr counter / Cr bank. transfer: Dr destination / Cr source.
+ * Always balanced (throws JOURNAL_UNBALANCED / JOURNAL_LINE_INVALID otherwise).
+ */
+export function cashBankJournalLines(
+  entry: {
+    kind: CashBankEntryKind;
+    amountIdr: number;
+    outletId?: OutletId | null;
+  },
+  accounts: CashBankJournalAccounts,
+): JournalLineInput[] {
+  const { kind, amountIdr } = entry;
+  const outletId = entry.outletId ?? null;
+  const line = (
+    accountId: string,
+    side: "debit" | "credit",
+  ): JournalLineInput =>
+    ({
+      accountId,
+      debitIdr: side === "debit" ? amountIdr : 0,
+      creditIdr: side === "credit" ? amountIdr : 0,
+      outletId,
+      costCenter: null,
+    }) as JournalLineInput;
+  let lines: JournalLineInput[];
+  if (kind === "transfer") {
+    const { toBankGl } = accounts;
+    if (!toBankGl)
+      throw new AccountingError(
+        "JOURNAL_LINE_INVALID",
+        "A transfer needs the destination GL account",
+      );
+    if (toBankGl === accounts.bankGl)
+      throw new AccountingError(
+        "JOURNAL_LINE_INVALID",
+        "A transfer needs two different GL accounts",
+      );
+    lines = [line(toBankGl, "debit"), line(accounts.bankGl, "credit")];
+  } else {
+    const { counter } = accounts;
+    if (!counter)
+      throw new AccountingError(
+        "JOURNAL_LINE_INVALID",
+        "Cash in/out needs a counter account",
+      );
+    lines =
+      kind === "cash_in"
+        ? [line(accounts.bankGl, "debit"), line(counter, "credit")]
+        : [line(counter, "debit"), line(accounts.bankGl, "credit")];
+  }
+  assertJournalBalanced(lines);
+  return lines;
+}
+
+// ---- Petty cash fund (legend-4961) -------------------------------------------
+//
+// One fund per outlet. The balance never goes below zero: every movement
+// changes it through `applyPettyCashDelta` (and the API under a row lock).
+
+export const pettyCashFundSchema = z.strictObject({
+  id: pettyCashFundIdSchema,
+  tenantId: tenantIdSchema,
+  legalEntityId: legalEntityIdSchema,
+  outletId: outletIdSchema,
+  balanceIdr: idrSchema.refine((value) => value >= 0, "Balance must be >= 0"),
+  updatedAt: isoDateTimeSchema,
+});
+export type PettyCashFund = z.infer<typeof pettyCashFundSchema>;
+
+export const PETTY_CASH_ENTRY_KINDS = ["topup", "return", "purchase"] as const;
+export const pettyCashEntryKindSchema = z.enum(PETTY_CASH_ENTRY_KINDS);
+export type PettyCashEntryKind = z.infer<typeof pettyCashEntryKindSchema>;
+
+/** posted = journal booked; parked = account mapping missing, retry later;
+ * external = a purchase, whose journal belongs to `petty_purchase.recorded`. */
+export const pettyCashJournalStatusSchema = z.enum([
+  "posted",
+  "parked",
+  "external",
+]);
+export type PettyCashJournalStatus = z.infer<
+  typeof pettyCashJournalStatusSchema
+>;
+
+export const pettyCashEntrySchema = z
+  .strictObject({
+    id: pettyCashEntryIdSchema,
+    tenantId: tenantIdSchema,
+    legalEntityId: legalEntityIdSchema,
+    outletId: outletIdSchema,
+    fundId: pettyCashFundIdSchema,
+    kind: pettyCashEntryKindSchema,
+    amountIdr: positiveIdr,
+    balanceAfterIdr: idrSchema.refine(
+      (value) => value >= 0,
+      "Balance must be >= 0",
+    ),
+    /** topup/return: the bank account on the other side. */
+    bankAccountId: bankAccountIdSchema.nullable(),
+    /** purchase: the petty purchase that spent the money. */
+    pettyPurchaseId: uuidSchema.nullable(),
+    entryDate: businessDateSchema,
+    description: z.string().trim().min(1).max(255),
+    journalStatus: pettyCashJournalStatusSchema,
+    journalEntryId: journalEntryIdSchema.nullable(),
+    parkCode: z.string().trim().min(1).max(60).nullable(),
+    createdBy: userIdSchema,
+    createdAt: isoDateTimeSchema,
+  })
+  .superRefine((row, ctx) => {
+    const issue = (path: string, message: string) =>
+      ctx.addIssue({ code: "custom", path: [path], message });
+    if (row.kind === "purchase") {
+      if (row.pettyPurchaseId === null)
+        issue("pettyPurchaseId", "a purchase names its petty purchase");
+      if (row.bankAccountId !== null)
+        issue("bankAccountId", "a purchase has no bank account");
+      if (row.journalStatus !== "external")
+        issue("journalStatus", "a purchase journal is external");
+    } else {
+      if (row.bankAccountId === null)
+        issue("bankAccountId", "top-up/return names its bank account");
+      if (row.pettyPurchaseId !== null)
+        issue("pettyPurchaseId", "only a purchase has a petty purchase");
+      if (row.journalStatus === "external")
+        issue("journalStatus", "top-up/return journals are posted or parked");
+    }
+    if ((row.journalStatus === "posted") !== (row.journalEntryId !== null))
+      issue("journalEntryId", "journal is set exactly when posted");
+    if ((row.journalStatus === "parked") !== (row.parkCode !== null))
+      issue("parkCode", "park code is set exactly when parked");
+  });
+export type PettyCashEntry = z.infer<typeof pettyCashEntrySchema>;
+
+export const pettyCashFundQuerySchema = z.strictObject({
+  legalEntityId: legalEntityIdSchema,
+  outletId: outletIdSchema.optional(),
+});
+
+export const pettyCashEntryQuerySchema = cursorPageQuerySchema.extend({
+  outletId: outletIdSchema,
+  from: businessDateSchema,
+  to: businessDateSchema,
+});
+
+const pettyCashMovementShape = {
+  outletId: outletIdSchema,
+  bankAccountId: bankAccountIdSchema,
+  amountIdr: positiveIdr,
+  description: z.string().trim().min(1).max(255),
+  idempotencyKey: idempotencyKeySchema,
+};
+export const pettyCashMovementInputSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("topup"), ...pettyCashMovementShape }),
+  z.strictObject({ kind: z.literal("return"), ...pettyCashMovementShape }),
+]);
+export type PettyCashMovementInput = z.infer<
+  typeof pettyCashMovementInputSchema
+>;
+
+/**
+ * New fund balance after a signed movement. Throws PETTY_CASH_INSUFFICIENT
+ * when the result would be below zero: a petty cash fund never goes negative.
+ */
+export function applyPettyCashDelta(balance: number, delta: number): Idr {
+  if (!Number.isSafeInteger(balance) || !Number.isSafeInteger(delta))
+    throw new AccountingError(
+      "JOURNAL_LINE_INVALID",
+      "Petty cash amounts are whole rupiah",
+    );
+  const next = balance + delta;
+  if (balance < 0 || next < 0)
+    throw new AccountingError("PETTY_CASH_INSUFFICIENT", undefined, {
+      balanceIdr: balance,
+      deltaIdr: delta,
+    });
+  if (!Number.isSafeInteger(next))
+    throw new AccountingError(
+      "JOURNAL_LINE_INVALID",
+      "Petty cash balance exceeds the safe rupiah range",
+    );
+  return next as Idr;
+}

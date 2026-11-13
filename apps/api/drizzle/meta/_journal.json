@@ -2108,6 +2108,20 @@
       "when": 1794543670328,
       "tag": "0440_payment_settlements",
       "breakpoints": true
+    },
+    {
+      "idx": 484,
+      "version": "7",
+      "when": 1794555906051,
+      "tag": "0484_cash_bank_entries",
+      "breakpoints": true
+    },
+    {
+      "idx": 485,
+      "version": "7",
+      "when": 1794555926898,
+      "tag": "0485_cash_bank_entries_rls",
+      "breakpoints": true
     }
   ]
 }

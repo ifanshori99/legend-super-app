@@ -311,7 +311,7 @@ export const journalEntries = pgTable(
     }),
     check(
       "journal_entries_source_type_check",
-      sql`${table.sourceType} IN ('sale', 'refund', 'gateway_settlement', 'edc_settlement', 'cogs', 'stock_adjustment', 'purchase', 'supplier_invoice', 'supplier_payment', 'production', 'payroll', 'loyalty', 'depreciation', 'asset_acquisition', 'asset_disposal', 'asset_revaluation', 'dividend', 'cash_deposit', 'cashier_shift', 'opening_balance', 'manual', 'recurring', 'reversal', 'customer_deposit', 'purchase_return', 'petty_purchase')`,
+      sql`${table.sourceType} IN ('sale', 'refund', 'gateway_settlement', 'edc_settlement', 'cogs', 'stock_adjustment', 'purchase', 'supplier_invoice', 'supplier_payment', 'production', 'payroll', 'loyalty', 'depreciation', 'asset_acquisition', 'asset_disposal', 'asset_revaluation', 'dividend', 'cash_deposit', 'cash_receipt', 'cash_payment', 'bank_transfer', 'petty_cash_topup', 'petty_cash_return', 'cashier_shift', 'opening_balance', 'manual', 'recurring', 'reversal', 'customer_deposit', 'purchase_return', 'petty_purchase')`,
     ),
     check(
       "journal_entries_late_adjustment_check",
