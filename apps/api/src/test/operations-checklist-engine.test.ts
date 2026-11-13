@@ -118,7 +118,7 @@ async function seedRole(tenant: string, label: string): Promise<string> {
         id,
         tenant,
         `Engine test role ${label} ${id.slice(0, 8)}`,
-        JSON.stringify(["ops.checklist.complete"]),
+        JSON.stringify(["ops.checklist.complete", "ops.checklist.manage"]),
       ],
     ),
   );

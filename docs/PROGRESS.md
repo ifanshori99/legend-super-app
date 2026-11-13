@@ -5271,3 +5271,11 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gerbang: lint hijau (0 error, 2 warning lama); typecheck 49 dtk hijau; tes root `node --test tests/*.test.mjs` terarah 2851/2855 (4 gagal hanya "isolated database", lingkungan); `heavy pnpm run test` penuh 02:33-03:45 (72 mnt) exit 0: vitest 1082 berkas/17477 lulus/41 skip/16 todo, root 2884/2884; build hijau; e2e `legend-zueb.mock.spec.ts` 18/18 hijau.
 - Flake 654: `rotate-data-key`, `hris-leave-changed-event`, `platform-org-api` TEN-03/06 tidak muncul di run penuh (0 gagal). Bukti fix 654.
 - Belum: `legend-zy43` (tidak ada producer `receipt_run.reported` di edge). Rilis edge order ingest: deploy cloud dulu, baru edge.
+
+## 2026-11-14: WS-11 laporan + WS-14 ops backend (cabang ghostex/62d6d898)
+
+- legend-rmvu: `GET /api/reports/schedule-recipients` (user tenant pemanggil saja; keluar hanya userId, name, roleName; tanpa email). Resolusi email untuk pengiriman terjadwal (legend-atcu) belum ada kodenya, bukan bagian kartu ini.
+- legend-wg0g: izin `ops.checklist.manage` (owner, outlet_manager, kitchen_lead); template POST/PATCH di route dan service memakainya. Migrasi 0550 mem-backfill role template tenant yang sudah ada. Route web template dan unggah bukti checklist belum diubah (di luar scope API).
+- legend-qq4k: creator WS-06 terpasang (production order `draft` per baris prep beresep aktif tunggal, tanpa biaya/stok/GL, idempoten, di transaksi sama); service food-safety meneruskan actor. Default tanpa pemasangan tetap no-op.
+- legend-24nl: tidak ada kode; `metrics_daily` (0176, job, sumber non-uang) sudah di m1 lewat legend-5wzoc.
+- Gerbang: 8 berkas tes terarah (138 test) hijau, tes kontrak root 76/76, prettier+eslint hijau, tsc api+web hijau, `db:generate` kosong.

@@ -600,7 +600,10 @@ const accessBaseMessages = {
     },
     mcp: { client: { manage: "Kelola klien MCP" } },
     ops: {
-      checklist: { complete: "Selesaikan checklist" },
+      checklist: {
+        complete: "Selesaikan checklist",
+        manage: "Kelola template checklist",
+      },
       food_safety: { log: "Catat keamanan pangan" },
       prep: { manage: "Kelola persiapan" },
       equipment: { maintain: "Perawatan peralatan" },

@@ -54,6 +54,7 @@ import * as checklists from "../services/operations-checklist.service.ts";
 import * as foodSafety from "../services/operations-food-safety.service.ts";
 
 const CHECKLIST = requireMenuPermission("ops.checklist.complete");
+const CHECKLIST_MANAGE = requireMenuPermission("ops.checklist.manage");
 const FOOD_SAFETY = requireMenuPermission("ops.food_safety.log");
 const PREP = requireMenuPermission("ops.prep.manage");
 
@@ -99,7 +100,7 @@ operationsRouter.get(
 operationsRouter.post(
   "/checklist-templates",
   ...guards,
-  CHECKLIST,
+  CHECKLIST_MANAGE,
   jsonBody,
   async (req, res) => {
     const input = createChecklistTemplateEndpoint.body.parse(req.body);
@@ -115,7 +116,7 @@ operationsRouter.post(
 operationsRouter.patch(
   "/checklist-templates/:templateId",
   ...guards,
-  CHECKLIST,
+  CHECKLIST_MANAGE,
   jsonBody,
   async (req, res) => {
     const { templateId } = updateChecklistTemplateEndpoint.params.parse(
