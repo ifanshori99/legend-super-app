@@ -57,6 +57,10 @@ import {
   deliverAutoJournalEvent,
   retryParkedAutoJournals,
 } from "../services/accounting-auto-journal-consumer.ts";
+import {
+  createGoodsReceipt,
+  type CreateGoodsReceiptInput,
+} from "../services/inventory-receiving.service.ts";
 import { setPurchaseReturnPostingEnabled } from "../services/purchase-return.service.ts";
 import {
   createSupplierInvoice,
@@ -74,6 +78,7 @@ import {
   owner,
   returnPo,
   returnRow,
+  deliverGoodsReceiptJournal,
   seedReceivedPo,
   setupApWorld,
   stockOf,
@@ -700,32 +705,59 @@ describe("legend-29vw price difference goes to purchase_price_variance", () => {
   });
 });
 
+// Assumption: a return is valued at the billed price (the PPN is already), so
+// the debit note equals the bill share and the price difference of the returned
+// units is reversed out of purchase_price_variance (5105). Asserted through the
+// ledger and the payable card only, not through the return row columns.
+async function returnAfterInvoice(
+  unitPriceIdr: number,
+  ppnIdr: number,
+  returnQuantity = 10,
+) {
+  const { world, fx, variance } = await receivedWorld();
+  await journalReceipt(fx);
+  const created = await recordInvoice(
+    world,
+    outletScope(world.outletId),
+    invoiceBody(world, fx, { quantity: 10, ppnIdr, unitPriceIdr }),
+  );
+  const invoice = await settled(world, created);
+  const billed = invoice.payableIdr;
+  expect(await apLedger(world)).toBe(billed);
+
+  const { purchaseReturn } = await returnPo(world, fx, returnQuantity);
+  expect(await deliver(await returnEvent(purchaseReturn.id))).toMatchObject({
+    status: "posted",
+  });
+  return { world, fx, variance, billed };
+}
+
+/**
+ * Nobody is paid more: every journal of the entity balances, and the payable
+ * never goes below zero (a debit note above the bill would do that).
+ */
+async function expectNoOnePaidMore(world: ApWorld) {
+  const { rows } = await owner.query<{
+    entry_id: string;
+    debit: string;
+    credit: string;
+  }>(
+    `SELECT l.entry_id, sum(l.debit_idr)::text AS debit, sum(l.credit_idr)::text AS credit
+       FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+      WHERE e.tenant_id = $1 AND e.legal_entity_id = $2 GROUP BY l.entry_id`,
+    [tenantId, world.entityId],
+  );
+  expect(rows.length).toBeGreaterThan(0);
+  for (const row of rows) expect(row.debit).toBe(row.credit);
+  expect(await apLedger(world)).toBeGreaterThanOrEqual(0);
+}
+
 describe("legend-29vw a full return of invoiced goods with a price difference leaves nothing owed", () => {
-  // Assumption: the full return is valued at the billed price (the PPN is
-  // already), so the debit note equals the bill and the price difference of the
-  // bill is reversed out of purchase_price_variance (5105). Asserted through the
-  // ledger and the payable card only, not through the return row columns.
-  async function fullReturnAfterInvoice(unitPriceIdr: number, ppnIdr: number) {
-    const { world, fx, variance } = await receivedWorld();
-    await journalReceipt(fx);
-    const created = await recordInvoice(
-      world,
-      outletScope(world.outletId),
-      invoiceBody(world, fx, { quantity: 10, ppnIdr, unitPriceIdr }),
-    );
-    const invoice = await settled(world, created);
-    const billed = invoice.payableIdr;
-    expect(await apLedger(world)).toBe(billed);
+  const fullReturnAfterInvoice = (unitPriceIdr: number, ppnIdr: number) =>
+    returnAfterInvoice(unitPriceIdr, ppnIdr, 10);
 
-    const { purchaseReturn } = await returnPo(world, fx, 10);
-    expect(await deliver(await returnEvent(purchaseReturn.id))).toMatchObject({
-      status: "posted",
-    });
-    return { world, fx, variance, billed };
-  }
-
-  // legend-5b7uf: nota debit masih di harga PO
-  it.skip("GR-11 invoice price +5% released, full return: payable 0, 5105 0, GRNI 0, inventory 0", async () => {
+  // legend-5b7uf: debit note must be valued at the billed price (+ PPN)
+  it("GR-11 invoice price +5% released, full return: payable 0, 5105 0, GRNI 0, inventory 0", async () => {
     const { world, fx, variance, billed } = await fullReturnAfterInvoice(
       10_500,
       11_000,
@@ -739,10 +771,11 @@ describe("legend-29vw a full return of invoiced goods with a price difference le
     expect(await creditBalance(variance)).toBe(0);
     expect(await creditBalance(world.accounts.grni)).toBe(0);
     expect(await creditBalance(world.accounts.inventory)).toBe(0);
+    await expectNoOnePaidMore(world);
   });
 
-  // legend-5b7uf: nota debit masih di harga PO
-  it.skip("GR-12 invoice price -5% (released or within tolerance), full return: payable 0, the debit note never exceeds the bill", async () => {
+  // legend-5b7uf: debit note must be valued at the billed price (+ PPN)
+  it("GR-12 invoice price -5% (released or within tolerance), full return: payable 0, the debit note never exceeds the bill", async () => {
     const { world, fx, variance, billed } = await fullReturnAfterInvoice(
       9_500,
       10_450,
@@ -755,6 +788,303 @@ describe("legend-29vw a full return of invoiced goods with a price difference le
     expect(await creditBalance(variance)).toBe(0);
     expect(await creditBalance(world.accounts.grni)).toBe(0);
     expect(await creditBalance(world.accounts.inventory)).toBe(0);
+    await expectNoOnePaidMore(world);
+  });
+});
+
+describe("legend-5b7uf a part return of invoiced goods with a price difference", () => {
+  // Assumption: the PPN of the bill is returned pro rata to the quantity (4 of
+  // 10 units = 40% of the bill's PPN), and the price difference per unit is
+  // reversed out of 5105 for the returned units only.
+  const partReturn = (unitPriceIdr: number, ppnIdr: number) =>
+    returnAfterInvoice(unitPriceIdr, ppnIdr, 4);
+
+  it("GR-13 invoice price +5%, return 4 of 10: debit note = 4 x 10.500 + PPN, payable = 6/10 of the bill, 5105 keeps 6/10 of the difference", async () => {
+    const { world, fx, variance, billed } = await partReturn(10_500, 11_000);
+    expect(billed).toBe(116_000);
+
+    // Debit note 42.000 + 4.400 = 46.400; 116.000 - 46.400 = 69.600 still owed.
+    expect(await apLedger(world)).toBe(69_600);
+    expect(await card(world, fx.receivedOn)).toBe(69_600);
+    // 5105 was debited 5.000 by the invoice; 2.000 of it goes back (credit).
+    expect(await creditBalance(variance)).toBe(-3_000);
+    expect(await creditBalance(world.accounts.grni)).toBe(0);
+    expect(await creditBalance(world.accounts.inventory)).toBe(-60_000);
+    await expectNoOnePaidMore(world);
+  });
+
+  it("GR-14 invoice price -5%, return 4 of 10: debit note = 4 x 9.500 + PPN (below the PO price), payable = 6/10 of the bill", async () => {
+    const { world, fx, variance, billed } = await partReturn(9_500, 10_450);
+    expect(billed).toBe(105_450);
+
+    // Debit note 38.000 + 4.180 = 42.180; 105.450 - 42.180 = 63.270 still owed.
+    expect(await apLedger(world)).toBe(63_270);
+    expect(await card(world, fx.receivedOn)).toBe(63_270);
+    // 5105 was credited 5.000 by the invoice; 2.000 of it goes back (debit).
+    expect(await creditBalance(variance)).toBe(3_000);
+    expect(await creditBalance(world.accounts.grni)).toBe(0);
+    expect(await creditBalance(world.accounts.inventory)).toBe(-60_000);
+    await expectNoOnePaidMore(world);
+  });
+});
+
+// Round 1 review (T1). Assumptions: the outlet pays part of an invoice by
+// writing the settlement directly (as purchase-return-parked-debit-note does);
+// PPN of the 10,333 invoice is 11% of 103.330 rounded down = 11.366; a +3.33%
+// difference is held at the default tolerance and released by finance
+// (`settled` takes either path).
+async function pay(invoiceId: string, receivedOn: string, amount: number) {
+  await owner.query(
+    `UPDATE accounting_open_items SET settled_idr = $3
+      WHERE tenant_id = $1 AND kind = 'payable' AND id = $2`,
+    [tenantId, invoiceId, amount],
+  );
+  await owner.query(
+    `INSERT INTO accounting_open_item_settlements (tenant_id, kind, open_item_id, method, settled_on, amount_idr)
+     VALUES ($1, 'payable', $2, 'payment', $3, $4)`,
+    [tenantId, invoiceId, receivedOn, amount],
+  );
+}
+
+describe("legend-5b7uf returns that split the bill unevenly, and returns still on their way", () => {
+  it("GR-15 returns of 3 + 3 + 4 units at an invoice unit price of 10.333: payable and 5105 end at exactly 0 (no rounding left behind)", async () => {
+    const { world, fx, variance } = await receivedWorld();
+    await journalReceipt(fx);
+    const created = await recordInvoice(
+      world,
+      outletScope(world.outletId),
+      invoiceBody(world, fx, {
+        quantity: 10,
+        ppnIdr: 11_366,
+        unitPriceIdr: 10_333,
+      }),
+    );
+    const invoice = await settled(world, created);
+    expect(invoice.payableIdr).toBe(103_330 + 11_366);
+    expect(await apLedger(world)).toBe(114_696);
+    // The invoice put 3.330 on 5105 (103.330 billed against 100.000 at PO price).
+    expect(await creditBalance(variance)).toBe(-3_330);
+
+    for (const units of [3, 3]) {
+      const { purchaseReturn } = await returnPo(world, fx, units);
+      expect(await deliver(await returnEvent(purchaseReturn.id))).toMatchObject(
+        { status: "posted" },
+      );
+      // Part way: something is still owed, never a negative payable.
+      expect(await apLedger(world)).toBeGreaterThan(0);
+    }
+    const last = await returnPo(world, fx, 4);
+    expect(
+      await deliver(await returnEvent(last.purchaseReturn.id)),
+    ).toMatchObject({ status: "posted" });
+
+    // The three notes add up to the bill exactly: not one rupiah owed, none overpaid.
+    expect(await apLedger(world)).toBe(0);
+    expect(await card(world, fx.receivedOn)).toBe(0);
+    expect(await creditBalance(variance)).toBe(0);
+    expect(await creditBalance(world.accounts.grni)).toBe(0);
+    expect(await creditBalance(world.accounts.inventory)).toBe(0);
+    await expectNoOnePaidMore(world);
+  });
+
+  it("GR-16 a +5% return recorded but not yet journaled keeps its billed value (+ PPN) reserved: the next return that no longer fits what is owed is refused 409", async () => {
+    const { world, fx } = await receivedWorld();
+    await journalReceipt(fx);
+    const created = await recordInvoice(
+      world,
+      outletScope(world.outletId),
+      invoiceBody(world, fx, {
+        quantity: 10,
+        ppnIdr: 11_000,
+        unitPriceIdr: 10_500,
+      }),
+    );
+    const invoice = await settled(world, created);
+    expect(invoice.payableIdr).toBe(116_000);
+
+    // Return 1: 3 units = 31.500 + PPN 3.300 = 34.800 billed value. Its event
+    // is NOT delivered yet.
+    const first = await returnPo(world, fx, 3);
+    // 70.200 is paid: 45.800 owed, 34.800 of it already claimed, 11.000 left.
+    await pay(invoice.id, fx.receivedOn, 70_200);
+    const returnsOf = async () =>
+      Number(
+        (
+          await owner.query<{ n: string }>(
+            "SELECT count(*)::text AS n FROM purchase_returns WHERE tenant_id = $1 AND goods_receipt_id = $2",
+            [tenantId, fx.receiptId],
+          )
+        ).rows[0]!.n,
+      );
+    expect(await returnsOf()).toBe(1);
+
+    // 1 unit = 10.500 + 1.100 = 11.600 > 11.000. At the PO price (11.100) it
+    // would have slipped through and the supplier would be short-debited.
+    await expect(returnPo(world, fx, 1)).rejects.toMatchObject({
+      status: 409,
+      code: "PURCHASE_RETURN_EXCEEDS_PAYABLE",
+    });
+    expect(await returnsOf()).toBe(1);
+
+    // The first note still posts once and what is owed ends at 11.000.
+    expect(
+      await deliver(await returnEvent(first.purchaseReturn.id)),
+    ).toMatchObject({ status: "posted" });
+    expect(await card(world, fx.receivedOn)).toBe(45_800 - 34_800);
+    await expectNoOnePaidMore(world);
+  });
+
+  it("GR-17 an old return event without returnPriceVarianceIdr still posts, at the old value with no variance line", async () => {
+    const { world, fx, variance } = await receivedWorld();
+    await journalReceipt(fx);
+    // Invoice at the PO price: the old rule and the new rule give the same number.
+    const created = await recordInvoice(
+      world,
+      outletScope(world.outletId),
+      invoiceBody(world, fx, { quantity: 10, ppnIdr: 11_000 }),
+    );
+    expect(created.invoice.status).toBe("matched");
+    expect(await apLedger(world)).toBe(111_000);
+
+    const { purchaseReturn } = await returnPo(world, fx, 4);
+    const event = await returnEvent(purchaseReturn.id);
+    // The event as an older release wrote it: the field does not exist.
+    const payload = { ...(event.payload as Record<string, unknown>) };
+    delete payload.returnPriceVarianceIdr;
+    expect("returnPriceVarianceIdr" in payload).toBe(false);
+    const oldEvent = { ...event, payload } as EventEnvelope;
+
+    expect(await deliver(oldEvent)).toMatchObject({ status: "posted" });
+
+    // 4 units: 40.000 + PPN 4.400 off the bill; 5105 untouched; no overpay.
+    expect(await apLedger(world)).toBe(111_000 - 44_400);
+    expect(await creditBalance(variance)).toBe(0);
+    expect(await creditBalance(world.accounts.grni)).toBe(0);
+    expect(await creditBalance(world.accounts.inventory)).toBe(-60_000);
+    await expectNoOnePaidMore(world);
+  });
+
+  // Round 2 review (T3). Assumptions: the PO unit "box" is 10/3 base units
+  // (kg): stored as the reverse direction (1 kg = 0.3 box, factor 0.3000), the
+  // only way a 4-decimal factor can express a third exactly. 3 box received
+  // are then exactly 10 kg. Receipt and invoice quantities are in the PO unit
+  // (box), the return quantity is in base units (kg), as the shared contract
+  // says. Each invoice bills 1 box = 3.3333 kg, so the part of the stock that
+  // one invoice covers (10 / 3) is not a whole number in 4 decimals: the three
+  // parts round to 3.3333 kg each and add to 9.9999 kg, 0.0001 kg short. The
+  // full return of 10 kg must still succeed, never be refused as worth more
+  // than owed, and leave only that rounding crumb (at most 3 scaled units, i.e.
+  // under Rp 5 here), never a negative payable. If this fixture cannot be
+  // built (the receipt refuses the conversion) the test fails in setup, not in
+  // the rule under test.
+  it("GR-18 a PO unit that is not a whole number of base units, billed on 3 invoices of 1 PO unit: a full return of all 10 base units is accepted and leaves at most a rounding crumb, never a negative payable", async () => {
+    const world = await setupApWorld();
+    const { rows: box } = await owner.query<{ id: string }>(
+      "INSERT INTO uoms (tenant_id, code, name) VALUES ($1, $2, $2) RETURNING id",
+      [tenantId, `bx${hex(3)}`.slice(0, 10)],
+    );
+    const { rows: item } = await owner.query<{ id: string }>(
+      "INSERT INTO inventory_items (tenant_id, name, category, type, base_uom_id) VALUES ($1, $2, 'Bahan Baku', 'raw_material', $3) RETURNING id",
+      [tenantId, `Tepung dus ${hex(3)}`, world.uomKg],
+    );
+    await owner.query(
+      `INSERT INTO uom_conversions (tenant_id, inventory_item_id, from_uom_id, to_uom_id, factor)
+       VALUES ($1, $2, $3, $4, 0.3000)`,
+      [tenantId, item[0]!.id, world.uomKg, box[0]!.id],
+    );
+    const { rows: location } = await owner.query<{ id: string }>(
+      "INSERT INTO stock_locations (tenant_id, outlet_id, name, type) VALUES ($1, $2, $3, 'warehouse') RETURNING id",
+      [tenantId, world.outletId, `Gudang dus ${hex(3)}`],
+    );
+    const poId = randomUUID();
+    const unitPriceIdr = 30_000;
+    await owner.query(
+      `INSERT INTO purchase_orders
+         (id, tenant_id, outlet_id, supplier_id, number, status, expected_date,
+          subtotal_idr, tax_idr, total_idr, source, created_by, approved_by,
+          approved_at, sent_at)
+       VALUES ($1, $2, $3, $4, $5, 'sent', '2099-12-20', $6, 0, $6, 'user', $7, $8, now(), now())`,
+      [
+        poId,
+        tenantId,
+        world.outletId,
+        world.supplierId,
+        `PO/209912/${hex()}`,
+        3 * unitPriceIdr,
+        world.creatorId,
+        world.approverId,
+      ],
+    );
+    const { rows: line } = await owner.query<{ id: string }>(
+      `INSERT INTO purchase_order_lines
+         (tenant_id, outlet_id, purchase_order_id, inventory_item_id, quantity,
+          uom_id, unit_price_idr, line_total_idr, line_no)
+       VALUES ($1, $2, $3, $4, '3.0000', $5, $6, $7, 1) RETURNING id`,
+      [
+        tenantId,
+        world.outletId,
+        poId,
+        item[0]!.id,
+        box[0]!.id,
+        `${unitPriceIdr}.0000`,
+        3 * unitPriceIdr,
+      ],
+    );
+    const receipt = await createGoodsReceipt(
+      outletScope(world.outletId),
+      world.warehouse.userId,
+      {
+        outletId: world.outletId,
+        purchaseOrderId: poId,
+        lines: [
+          {
+            purchaseOrderLineId: line[0]!.id,
+            locationId: location[0]!.id,
+            quantityReceived: "3.0000",
+            quantityRejected: "0.0000",
+          },
+        ],
+        idempotencyKey: key(),
+      } as unknown as CreateGoodsReceiptInput,
+    );
+    await deliverGoodsReceiptJournal(receipt.receipt.id);
+    const fx: ReceivedPo = {
+      poId,
+      poLineId: line[0]!.id,
+      itemId: item[0]!.id,
+      locationId: location[0]!.id,
+      receiptId: receipt.receipt.id,
+      receivedOn: receipt.receipt.receivedOn,
+      unitPriceIdr,
+    };
+    expect(Number(await stockOf(fx.locationId, fx.itemId))).toBe(10);
+
+    // Three invoices of 1 box at the PO price: 30.000 + PPN 3.300 each.
+    for (let n = 0; n < 3; n++) {
+      const created = await recordInvoice(
+        world,
+        outletScope(world.outletId),
+        invoiceBody(world, fx, { quantity: 1, ppnIdr: 3_300 }),
+      );
+      expect(created.invoice.status).toBe("matched");
+    }
+    expect(await apLedger(world)).toBe(99_900);
+
+    // The whole stock goes back (10 kg). It is not refused as exceeding what
+    // is owed even though each invoice's share of the stock does not divide.
+    const { purchaseReturn } = await returnPo(world, fx, 10);
+    expect(await deliver(await returnEvent(purchaseReturn.id))).toMatchObject({
+      status: "posted",
+    });
+
+    expect(Number(await stockOf(fx.locationId, fx.itemId))).toBe(0);
+    const owed = await apLedger(world);
+    expect(owed).toBeGreaterThanOrEqual(0);
+    expect(owed).toBeLessThanOrEqual(5);
+    const cardTotal = await card(world, fx.receivedOn);
+    expect(cardTotal).toBeGreaterThanOrEqual(0);
+    expect(cardTotal).toBeLessThanOrEqual(5);
+    await expectNoOnePaidMore(world);
   });
 });
 

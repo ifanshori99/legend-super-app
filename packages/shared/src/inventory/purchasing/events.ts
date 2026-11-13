@@ -19,6 +19,7 @@
 
 import {
   businessDateSchema,
+  idr,
   idrSchema,
   isoDateTimeSchema,
   outletIdSchema,
@@ -178,6 +179,13 @@ export const purchaseReturnRecordedEventPayloadSchema = z
     uninvoicedValueIdr: nonNegativeIdrSchema,
     /** Part of `valueIdr` already on a supplier invoice (debit note against AP). */
     invoicedValueIdr: nonNegativeIdrSchema,
+    /**
+     * Billed value minus order-price value of the invoiced part (signed): the
+     * debit note clears the payable at the billed value, so the price variance
+     * the invoice booked to 5105 is reversed. Absent on events recorded before
+     * legend-5b7uf, which replay as 0.
+     */
+    returnPriceVarianceIdr: idrSchema.default(idr(0)),
     /** PPN masukan reversed on the invoiced part. */
     ppnIdr: nonNegativeIdrSchema,
     returnedBy: userIdSchema,
@@ -197,7 +205,23 @@ export const purchaseReturnRecordedEventPayloadSchema = z
   .refine((payload) => payload.ppnIdr === 0 || payload.invoicedValueIdr > 0, {
     path: ["ppnIdr"],
     message: "ppnIdr needs an invoiced value",
-  });
+  })
+  .refine(
+    (payload) =>
+      payload.returnPriceVarianceIdr === 0 || payload.invoicedValueIdr > 0,
+    {
+      path: ["returnPriceVarianceIdr"],
+      message: "returnPriceVarianceIdr needs an invoiced value",
+    },
+  )
+  // The debit note (invoiced + variance + PPN) is never negative.
+  .refine(
+    (payload) => payload.invoicedValueIdr + payload.returnPriceVarianceIdr >= 0,
+    {
+      path: ["returnPriceVarianceIdr"],
+      message: "the billed value of the invoiced part cannot be negative",
+    },
+  );
 export type PurchaseReturnRecordedEventPayload = z.infer<
   typeof purchaseReturnRecordedEventPayloadSchema
 >;

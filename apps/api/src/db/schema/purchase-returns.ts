@@ -22,6 +22,7 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import { idr } from "@starter/shared/core";
 import {
   businessDate,
   decimal4Column,
@@ -62,6 +63,9 @@ export const purchaseReturns = pgTable(
     uninvoicedValueIdr: idrColumn("uninvoiced_value_idr").notNull(),
     invoicedValueIdr: idrColumn("invoiced_value_idr").notNull(),
     ppnIdr: idrColumn("ppn_idr").notNull(),
+    // Signed: billed value minus order-price value of the invoiced part
+    // (legend-5b7uf). The debit note is invoiced + price variance + PPN.
+    priceVarianceIdr: idrColumn("price_variance_idr").notNull().default(idr(0)),
     note: varchar("note", { length: 300 }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -127,6 +131,13 @@ export const purchaseReturns = pgTable(
     check(
       "purchase_returns_split_check",
       sql`${table.valueIdr} = ${table.uninvoicedValueIdr} + ${table.invoicedValueIdr}`,
+    ),
+    // The billed value of the invoiced part is never negative, and a variance
+    // needs an invoiced part (legend-5b7uf).
+    check(
+      "purchase_returns_price_variance_check",
+      sql`${table.invoicedValueIdr} + ${table.priceVarianceIdr} >= 0
+        AND (${table.priceVarianceIdr} = 0 OR ${table.invoicedValueIdr} > 0)`,
     ),
     check(
       "purchase_returns_ppn_check",

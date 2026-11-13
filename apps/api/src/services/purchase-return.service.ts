@@ -16,8 +16,10 @@
 // - Not-invoiced-first split (docs/briefs/ws-purchasing-apar-design.md §6): per
 //   PO line the return first consumes the quantity no matched/released supplier
 //   invoice bills (`uninvoicedValueIdr`, Dr GRNI); the rest is
-//   `invoicedValueIdr` plus the proportional PPN of the invoices it falls on,
-//   which the accounting consumer books as a debit note on the payable. A held
+//   `invoicedValueIdr` (order-price value, what leaves stock) plus the
+//   proportional PPN of the invoices it falls on. The debit note clears the
+//   payable at the BILLED value: invoiced + `priceVarianceIdr` (signed, billed
+//   minus order-price value, credited to 5105) + PPN (legend-5b7uf). A held
 //   invoice has no AP and never counts as billed. A return whose debit note
 //   exceeds what is still owed is refused (409 PURCHASE_RETURN_EXCEEDS_PAYABLE).
 // - Numbering `RT/<YYYYMM>/<0001>` from `purchasing_document_sequences`.
@@ -295,6 +297,8 @@ async function assertLocations(
 type ReturnSplit = {
   uninvoicedValueIdr: number;
   invoicedValueIdr: number;
+  /** Signed: billed value minus order-price value of the invoiced part. */
+  priceVarianceIdr: number;
   ppnIdr: number;
 };
 
@@ -317,6 +321,7 @@ async function splitReturnAgainstInvoices(
   const unsplit = (): ReturnSplit => ({
     uninvoicedValueIdr: lines.reduce((sum, line) => sum + line.lineValueIdr, 0),
     invoicedValueIdr: 0,
+    priceVarianceIdr: 0,
     ppnIdr: 0,
   });
   // A held or rejected invoice has no AP: only matched/released are billed.
@@ -464,6 +469,7 @@ async function splitReturnAgainstInvoices(
     return {
       uninvoicedValueIdr: split.uninvoicedValueIdr,
       invoicedValueIdr: 0,
+      priceVarianceIdr: 0,
       ppnIdr: 0,
     };
 
@@ -485,6 +491,7 @@ async function splitReturnAgainstInvoices(
     .select({
       id: purchaseReturns.id,
       invoicedValueIdr: purchaseReturns.invoicedValueIdr,
+      priceVarianceIdr: purchaseReturns.priceVarianceIdr,
       ppnIdr: purchaseReturns.ppnIdr,
     })
     .from(purchaseReturns)
@@ -499,7 +506,9 @@ async function splitReturnAgainstInvoices(
   // returns used the first part, this return takes the next. Per invoice the
   // PPN is the cumulative share of its billed value consumed so far, so the
   // sum over all returns never passes the invoice's PPN.
-  const ppnIdr = guardMoneyMath(() => {
+  // The same slots give the billed value of the returned quantity (the
+  // invoice line totals consumed), which the debit note clears.
+  const billing = guardMoneyMath(() => {
     type Slot = {
       invoice: (typeof invoices)[number];
       base: bigint;
@@ -550,9 +559,21 @@ async function splitReturnAgainstInvoices(
         entry.after += valueOf(used + taken);
         delta.set(slot.invoice.id, entry);
       }
+      // Invoice slots used up but part of the return is still unbilled: the
+      // billed value would come out short and the supplier be debited too
+      // little. Refuse instead of silently favoring the supplier. Each slot
+      // base is rounded on its own (at most 1 scaled unit off), so a line
+      // spread over several invoices may leave that crumb: not a refusal.
+      if (wanted > BigInt(slots.length))
+        throw new PurchasingError(
+          "PURCHASE_RETURN_EXCEEDS_PAYABLE",
+          "The return is worth more than the supplier invoices still owed.",
+        );
     }
     let ppn = 0n;
+    let billed = 0n;
     for (const [invoiceId, entry] of delta) {
+      billed += entry.after - entry.before;
       const invoice = invoices[invoiceIndex.get(invoiceId)!]!;
       // DPP billed = total - PPN (goods + price variance + services).
       const dpp = BigInt(invoice.totalIdr) - BigInt(invoice.ppnIdr);
@@ -572,8 +593,14 @@ async function splitReturnAgainstInvoices(
       0n,
     );
     const room = ceiling > creditedBefore ? ceiling - creditedBefore : 0n;
-    return Number(ppn < room ? ppn : room);
+    return { ppnIdr: Number(ppn < room ? ppn : room), billedIdr: billed };
   });
+  const { ppnIdr } = billing;
+  // Billed minus order-price value of the invoiced part (signed). Billed is
+  // never negative, so invoiced + variance (the debit note base) is too.
+  const priceVarianceIdr = guardMoneyMath(() =>
+    Number(billing.billedIdr - BigInt(split.invoicedValueIdr)),
+  );
 
   // Refuse a debit note larger than what is still owed on this PO's invoices.
   // Earlier returns whose debit note the consumer has not booked yet count as
@@ -601,7 +628,7 @@ async function splitReturnAgainstInvoices(
   // closed) post on their own later, so they stay reserved: else two quick
   // returns could both pass and the supplier be paid for goods already returned.
   const debitReturns = priorReturns.filter(
-    (row) => row.invoicedValueIdr + row.ppnIdr > 0,
+    (row) => row.invoicedValueIdr + row.priceVarianceIdr + row.ppnIdr > 0,
   );
   let reservedDebit = 0;
   if (debitReturns.length > 0) {
@@ -638,12 +665,16 @@ async function splitReturnAgainstInvoices(
           !settledIds.has(row.id) &&
           !failedKeys.has(`aj:purchase-return:${row.id}`),
       )
-      .reduce((sum, row) => sum + row.invoicedValueIdr + row.ppnIdr, 0);
+      .reduce(
+        (sum, row) =>
+          sum + row.invoicedValueIdr + row.priceVarianceIdr + row.ppnIdr,
+        0,
+      );
   }
   const owed =
     openItems.reduce((sum, row) => sum + row.originalIdr - row.settledIdr, 0) -
     reservedDebit;
-  if (split.invoicedValueIdr + ppnIdr > owed)
+  if (split.invoicedValueIdr + priceVarianceIdr + ppnIdr > owed)
     throw new PurchasingError(
       "PURCHASE_RETURN_EXCEEDS_PAYABLE",
       "The return is worth more than the supplier invoices still owed.",
@@ -651,6 +682,7 @@ async function splitReturnAgainstInvoices(
   return {
     uninvoicedValueIdr: split.uninvoicedValueIdr,
     invoicedValueIdr: split.invoicedValueIdr,
+    priceVarianceIdr,
     ppnIdr,
   };
 }
@@ -684,6 +716,7 @@ async function appendReturnRecordedEvent(
       valueIdr: row.valueIdr,
       uninvoicedValueIdr: row.uninvoicedValueIdr,
       invoicedValueIdr: row.invoicedValueIdr,
+      returnPriceVarianceIdr: row.priceVarianceIdr,
       ppnIdr: row.ppnIdr,
       returnedBy: row.returnedBy,
       returnedAt,
@@ -993,6 +1026,7 @@ export async function createPurchaseReturn(
           valueIdr,
           uninvoicedValueIdr: idr(split.uninvoicedValueIdr),
           invoicedValueIdr: idr(split.invoicedValueIdr),
+          priceVarianceIdr: idr(split.priceVarianceIdr),
           ppnIdr: idr(split.ppnIdr),
           note: input.note ? input.note : null,
         })
