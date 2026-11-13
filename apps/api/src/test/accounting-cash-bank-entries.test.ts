@@ -247,7 +247,10 @@ describe("legend-4961 cash in / cash out", () => {
     );
     const foreignAccount = rows[0]!.id;
     const entries = await entryCount();
-    const res = await post(finance, cashInBody({ counterAccountId: foreignAccount }));
+    const res = await post(
+      finance,
+      cashInBody({ counterAccountId: foreignAccount }),
+    );
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(await entryCount()).toBe(entries);
   });
@@ -337,7 +340,11 @@ describe("legend-4961 transfer between bank accounts (money rule 1 and 4)", () =
     const journals = await moneyJournals();
     for (const changed of [
       { ...body, amountIdr: 444_001 },
-      { ...body, fromBankAccountId: world.bankAccountB, toBankAccountId: world.bankAccountA },
+      {
+        ...body,
+        fromBankAccountId: world.bankAccountB,
+        toBankAccountId: world.bankAccountA,
+      },
     ]) {
       const reused = await post(finance, changed);
       expect(reused.status, JSON.stringify(reused.body)).toBe(409);
@@ -367,7 +374,10 @@ describe("legend-4961 transfer between bank accounts (money rule 1 and 4)", () =
   it("[legend-4961-CB-14] the same replay also holds for cash in (one document, one journal)", async () => {
     const body = cashInBody({ amountIdr: 91_000 });
     const journals = await moneyJournals();
-    const results = await Promise.all([post(finance, body), post(finance, body)]);
+    const results = await Promise.all([
+      post(finance, body),
+      post(finance, body),
+    ]);
     for (const res of results)
       expect(ok(res.status), JSON.stringify(res.body)).toBe(true);
     expect(results[0]!.body.data.id).toBe(results[1]!.body.data.id);
@@ -438,14 +448,20 @@ describe("legend-4961 transfer between bank accounts (money rule 1 and 4)", () =
       () => null,
     );
     if (spare === null) return;
-    await owner.query("UPDATE bank_accounts SET is_active = false WHERE id = $1", [
-      spare,
-    ]);
+    await owner.query(
+      "UPDATE bank_accounts SET is_active = false WHERE id = $1",
+      [spare],
+    );
     const entries = await entryCount();
     const res = await post(finance, transferBody({ toBankAccountId: spare }));
-    expect(res.status >= 400 && res.status < 500, String(res.status)).toBe(true);
+    expect(res.status >= 400 && res.status < 500, String(res.status)).toBe(
+      true,
+    );
     const cashIn = await post(finance, cashInBody({ bankAccountId: spare }));
-    expect(cashIn.status >= 400 && cashIn.status < 500, String(cashIn.status)).toBe(true);
+    expect(
+      cashIn.status >= 400 && cashIn.status < 500,
+      String(cashIn.status),
+    ).toBe(true);
     expect(await entryCount()).toBe(entries);
     // Control: an active account takes the same transfer.
     expect((await post(finance, transferBody())).status).toBe(201);
@@ -457,7 +473,8 @@ describe("legend-4961 access and isolation (money rule 3)", () => {
     const entries = await entryCount();
     const anonymous = agent(app);
     expect(
-      (await anonymous.post(ENTRIES).set(originHeader).send(cashInBody())).status,
+      (await anonymous.post(ENTRIES).set(originHeader).send(cashInBody()))
+        .status,
     ).toBe(401);
     expect(
       (
@@ -518,8 +535,14 @@ describe("legend-4961 access and isolation (money rule 3)", () => {
   });
 
   it("[legend-4961-CB-23] reads: an outlet-scoped user sees only entries tagged to their outlet; foreign ids are 404", async () => {
-    const own = await post(finance, cashOutBody({ outletId: outletX, amountIdr: 11_000 }));
-    const other = await post(finance, cashOutBody({ outletId: outletY, amountIdr: 22_000 }));
+    const own = await post(
+      finance,
+      cashOutBody({ outletId: outletX, amountIdr: 11_000 }),
+    );
+    const other = await post(
+      finance,
+      cashOutBody({ outletId: outletY, amountIdr: 22_000 }),
+    );
     expect(own.status, JSON.stringify(own.body)).toBe(201);
     expect(other.status, JSON.stringify(other.body)).toBe(201);
 
@@ -575,9 +598,18 @@ describe("legend-4961 reading entries (empty and filled states)", () => {
   it("[legend-4961-CB-30] lists newest first by entity and window, filters by kind and bank account, and pages with a cursor", async () => {
     // Own entity per scenario would be cleaner; here the entity already holds
     // entries, so the window is today's date only and ids are matched.
-    const a = await post(finance, transferBody({ entryDate: daysAgo(2), amountIdr: 1_001 }));
-    const b = await post(finance, cashInBody({ entryDate: daysAgo(1), amountIdr: 1_002 }));
-    const c = await post(finance, cashOutBody({ entryDate: daysAgo(1), amountIdr: 1_003 }));
+    const a = await post(
+      finance,
+      transferBody({ entryDate: daysAgo(2), amountIdr: 1_001 }),
+    );
+    const b = await post(
+      finance,
+      cashInBody({ entryDate: daysAgo(1), amountIdr: 1_002 }),
+    );
+    const c = await post(
+      finance,
+      cashOutBody({ entryDate: daysAgo(1), amountIdr: 1_003 }),
+    );
     for (const res of [a, b, c])
       expect(res.status, JSON.stringify(res.body)).toBe(201);
 
@@ -589,19 +621,29 @@ describe("legend-4961 reading entries (empty and filled states)", () => {
     };
     const all = await list(finance, query);
     expect(all.status, JSON.stringify(all.body)).toBe(200);
-    const rows = all.body.data as { id: string; kind: string; amountIdr: number }[];
+    const rows = all.body.data as {
+      id: string;
+      kind: string;
+      amountIdr: number;
+    }[];
     const ids = rows.map((row) => row.id);
     expect(ids).toEqual(
       expect.arrayContaining([a.body.data.id, b.body.data.id, c.body.data.id]),
     );
     // Newest first: the two latest creates come before the older transfer.
-    expect(ids.indexOf(c.body.data.id)).toBeLessThan(ids.indexOf(b.body.data.id));
-    expect(ids.indexOf(b.body.data.id)).toBeLessThan(ids.indexOf(a.body.data.id));
+    expect(ids.indexOf(c.body.data.id)).toBeLessThan(
+      ids.indexOf(b.body.data.id),
+    );
+    expect(ids.indexOf(b.body.data.id)).toBeLessThan(
+      ids.indexOf(a.body.data.id),
+    );
 
     const transfers = await list(finance, { ...query, kind: "transfer" });
     expect(transfers.status).toBe(200);
     expect(
-      transfers.body.data.every((row: { kind: string }) => row.kind === "transfer"),
+      transfers.body.data.every(
+        (row: { kind: string }) => row.kind === "transfer",
+      ),
     ).toBe(true);
     expect(transfers.body.data.map((row: { id: string }) => row.id)).toContain(
       a.body.data.id,
@@ -712,10 +754,10 @@ describe("legend-4961 database guards on the document tables", () => {
     const id = made.body.data.id as string;
     await expect(
       asRuntime((client) =>
-        client.query("DELETE FROM cash_bank_entries WHERE tenant_id = $1 AND id = $2", [
-          tenantId,
-          id,
-        ]),
+        client.query(
+          "DELETE FROM cash_bank_entries WHERE tenant_id = $1 AND id = $2",
+          [tenantId, id],
+        ),
       ),
     ).rejects.toMatchObject({ code: "42501" });
     await expect(

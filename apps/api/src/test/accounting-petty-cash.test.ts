@@ -29,7 +29,10 @@
 // - Table and column names are the ones the design fixes.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eventEnvelopeSchema, type EventEnvelope } from "@starter/shared/events";
+import {
+  eventEnvelopeSchema,
+  type EventEnvelope,
+} from "@starter/shared/events";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -284,7 +287,8 @@ async function expectLedgerConsistent(outletId: string): Promise<void> {
   );
   expect(fund!.balance).toBe(expected);
   expect(fund!.balance).toBeGreaterThanOrEqual(0);
-  for (const row of entries) expect(row.balance_after).toBeGreaterThanOrEqual(0);
+  for (const row of entries)
+    expect(row.balance_after).toBeGreaterThanOrEqual(0);
   if (entries.length > 0)
     expect(entries[entries.length - 1]!.balance_after).toBe(fund!.balance);
   for (const row of entries) {
@@ -412,7 +416,9 @@ describe("legend-4961 petty cash movements", () => {
     expect(replay.body.data.id).toBe(first.body.data.id);
     expect(await balanceOf(outletId)).toBe(60_000);
     expect(await entryRows(outletId)).toHaveLength(1);
-    expect(await journalCount(world.entityId, PETTY_SOURCES)).toBe(journals + 1);
+    expect(await journalCount(world.entityId, PETTY_SOURCES)).toBe(
+      journals + 1,
+    );
 
     const reused = await move(finance, { ...body, amountIdr: 61_000 });
     expect(reused.status, JSON.stringify(reused.body)).toBe(409);
@@ -508,12 +514,18 @@ describe("legend-4961 petty cash never goes below zero (money rule 2)", () => {
     expect(await entryRows(outletId)).toHaveLength(1);
     expect(await journalCount(world.entityId, PETTY_SOURCES)).toBe(journals);
 
-    const oneOver = await move(finance, movementBody(outletId, "return", 100_001));
+    const oneOver = await move(
+      finance,
+      movementBody(outletId, "return", 100_001),
+    );
     expect(oneOver.status).toBe(422);
     expect(oneOver.body.error.code).toBe("PETTY_CASH_INSUFFICIENT");
 
     // Boundary: exactly the balance is fine and leaves 0, and then 1 is too much.
-    const exact = await move(finance, movementBody(outletId, "return", 100_000));
+    const exact = await move(
+      finance,
+      movementBody(outletId, "return", 100_000),
+    );
     expect(exact.status, JSON.stringify(exact.body)).toBe(201);
     expect(exact.body.data.balanceAfterIdr).toBe(0);
     expect(await balanceOf(outletId)).toBe(0);
@@ -592,9 +604,10 @@ describe("legend-4961 petty cash never goes below zero (money rule 2)", () => {
     await fundWith(outletId, 10_000);
     const fund = (await fundRow(outletId))!;
     await expect(
-      owner.query("UPDATE petty_cash_funds SET balance_idr = -1 WHERE id = $1", [
-        fund.id,
-      ]),
+      owner.query(
+        "UPDATE petty_cash_funds SET balance_idr = -1 WHERE id = $1",
+        [fund.id],
+      ),
     ).rejects.toMatchObject({ code: "23514" });
     // The runtime login may move the balance column, but not below zero.
     await expect(
@@ -674,7 +687,9 @@ describe("legend-4961 one document, one journal (money rule 4)", () => {
       park_code: "ACCOUNT_MAPPING_MISSING",
       journal_entry_id: null,
     });
-    expect(await journalsByKey(world.entityId, `pc:${parkedId}`)).toHaveLength(0);
+    expect(await journalsByKey(world.entityId, `pc:${parkedId}`)).toHaveLength(
+      0,
+    );
     await expectLedgerConsistent(outletId);
 
     const first = await retryPost(finance, parkedId);
@@ -707,7 +722,9 @@ describe("legend-4961 one document, one journal (money rule 4)", () => {
       expect(ok(res.status), JSON.stringify(res.body)).toBe(true);
       expect(res.body.data.journalEntryId).toBe(journalId);
     }
-    expect(await journalsByKey(world.entityId, `pc:${parkedId}`)).toHaveLength(1);
+    expect(await journalsByKey(world.entityId, `pc:${parkedId}`)).toHaveLength(
+      1,
+    );
     expect(await balanceOf(outletId)).toBe(30_000);
 
     // Replaying the original create now shows the current (posted) state.
@@ -731,7 +748,10 @@ describe("legend-4961 one document, one journal (money rule 4)", () => {
     const journals = await journalCount(world.entityId, PETTY_SOURCES);
     const posted = await retryPost(finance, entryId);
     expect(ok(posted.status), JSON.stringify(posted.body)).toBe(true);
-    expect(posted.body.data).toMatchObject({ id: entryId, journalStatus: "posted" });
+    expect(posted.body.data).toMatchObject({
+      id: entryId,
+      journalStatus: "posted",
+    });
     expect(await journalCount(world.entityId, PETTY_SOURCES)).toBe(journals);
     await expectLedgerConsistent(outletId);
   });
@@ -872,7 +892,10 @@ describe("legend-4961 access and isolation (money rule 3)", () => {
 
     for (const outletId of [scopedOutlet, otherOutlet]) {
       for (const kind of ["topup", "return"] as const) {
-        const res = await move(scopedFinance, movementBody(outletId, kind, 1_000));
+        const res = await move(
+          scopedFinance,
+          movementBody(outletId, kind, 1_000),
+        );
         expect(res.status, JSON.stringify(res.body)).toBe(403);
         expect(res.body.error.code).toBe("OUTLET_OUT_OF_SCOPE");
       }
@@ -900,7 +923,9 @@ describe("legend-4961 access and isolation (money rule 3)", () => {
       to: daysAgo(-2),
     });
     expect(mine.status, JSON.stringify(mine.body)).toBe(200);
-    expect(mine.body.data.map((row: { id: string }) => row.id)).toContain(entryId);
+    expect(mine.body.data.map((row: { id: string }) => row.id)).toContain(
+      entryId,
+    );
     expect(ok((await retryPost(finance, entryId)).status)).toBe(true);
   });
 });
@@ -930,14 +955,19 @@ describe("legend-4961 reading funds and entries (empty and filled states)", () =
     const wide = await listFunds(finance, { legalEntityId: world.entityId });
     expect(wide.status).toBe(200);
     expect(
-      wide.body.data.find((row: { outletId: string }) => row.outletId === outletId),
+      wide.body.data.find(
+        (row: { outletId: string }) => row.outletId === outletId,
+      ),
     ).toMatchObject({ balanceIdr: 50_000 });
   });
 
   it("[legend-4961-PC-41] entries: newest first with all three kinds, a cursor page, and an empty window", async () => {
     const outletId = await freshOutlet();
     const topupId = await fundWith(outletId, 100_000);
-    const returnRes = await move(finance, movementBody(outletId, "return", 20_000));
+    const returnRes = await move(
+      finance,
+      movementBody(outletId, "return", 20_000),
+    );
     expect(returnRes.status).toBe(201);
     const purchase = await buy(await purchaseBody(outletId, 10_000));
     expect(purchase.status, JSON.stringify(purchase.body)).toBe(201);
@@ -945,9 +975,19 @@ describe("legend-4961 reading funds and entries (empty and filled states)", () =
     const query = { outletId, from: daysAgo(30), to: daysAgo(-2), limit: 100 };
     const all = await listEntries(finance, query);
     expect(all.status, JSON.stringify(all.body)).toBe(200);
-    const rows = all.body.data as { id: string; kind: string; balanceAfterIdr: number }[];
-    expect(rows.map((row) => row.kind)).toEqual(["purchase", "return", "topup"]);
-    expect(rows.map((row) => row.balanceAfterIdr)).toEqual([70_000, 80_000, 100_000]);
+    const rows = all.body.data as {
+      id: string;
+      kind: string;
+      balanceAfterIdr: number;
+    }[];
+    expect(rows.map((row) => row.kind)).toEqual([
+      "purchase",
+      "return",
+      "topup",
+    ]);
+    expect(rows.map((row) => row.balanceAfterIdr)).toEqual([
+      70_000, 80_000, 100_000,
+    ]);
     expect(rows[2]!.id).toBe(topupId);
 
     const first = await listEntries(finance, { ...query, limit: 2 });

@@ -120,7 +120,10 @@ async function loadEntry(
     .select()
     .from(cashBankEntries)
     .where(
-      and(eq(cashBankEntries.tenantId, tenantId), eq(cashBankEntries.id, entryId)),
+      and(
+        eq(cashBankEntries.tenantId, tenantId),
+        eq(cashBankEntries.id, entryId),
+      ),
     )
     .limit(1);
   if (!row) throw notFound("Transaksi kas dan bank");
@@ -268,7 +271,9 @@ export async function createCashBankEntry(
         if (input.entryDate > entityToday(now))
           throw invalid("Tanggal transaksi tidak boleh di masa depan.");
         const bankAccountId =
-          input.kind === "transfer" ? input.fromBankAccountId : input.bankAccountId;
+          input.kind === "transfer"
+            ? input.fromBankAccountId
+            : input.bankAccountId;
         const bank = await loadUsableBankAccount(
           tx,
           tenantId,
@@ -298,7 +303,8 @@ export async function createCashBankEntry(
           if (input.counterAccountId === bank.glAccountId)
             throw new AccountingError("CASH_BANK_COUNTER_ACCOUNT_INVALID");
         }
-        const outletId = input.kind === "transfer" ? null : (input.outletId ?? null);
+        const outletId =
+          input.kind === "transfer" ? null : (input.outletId ?? null);
         await entityLock(tx, tenantId, input.legalEntityId);
 
         const entryId = randomUUID();
@@ -348,7 +354,8 @@ export async function createCashBankEntry(
             createdBy: actorId,
           })
           .returning({ id: cashBankEntries.id });
-        if (!created) throw new Error("Cash/bank entry insert returned no row.");
+        if (!created)
+          throw new Error("Cash/bank entry insert returned no row.");
         await auditApFa(tx, context, {
           actorId,
           action: "accounting.cash_bank_entry.recorded",

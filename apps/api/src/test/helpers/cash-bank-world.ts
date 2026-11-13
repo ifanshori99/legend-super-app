@@ -197,12 +197,7 @@ export async function makeWorld(): Promise<World> {
     entity = entityId,
   ) => insertAccount(entity, tenantId, code, name, type, group);
   const gl = {
-    pettyCash: await acct(
-      "1102",
-      "Kas Kecil",
-      "asset",
-      "cash_and_equivalents",
-    ),
+    pettyCash: await acct("1102", "Kas Kecil", "asset", "cash_and_equivalents"),
     bankA: await acct(
       "1103",
       "Bank Operasional",
@@ -210,13 +205,13 @@ export async function makeWorld(): Promise<World> {
       "cash_and_equivalents",
     ),
     bankB: await acct("1104", "Bank Cadangan", "asset", "cash_and_equivalents"),
-    cashDrawer: await acct(
-      "1101",
-      "Kas Laci",
-      "asset",
-      "cash_and_equivalents",
+    cashDrawer: await acct("1101", "Kas Laci", "asset", "cash_and_equivalents"),
+    expense: await acct(
+      "6101",
+      "Beban Listrik",
+      "expense",
+      "operating_expense",
     ),
-    expense: await acct("6101", "Beban Listrik", "expense", "operating_expense"),
     pettyExpense: await acct(
       "5104",
       "Pembelian Langsung (Kas Kecil)",

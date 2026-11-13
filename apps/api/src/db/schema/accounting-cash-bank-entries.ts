@@ -154,7 +154,9 @@ export const pettyCashFunds = pgTable(
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
     legalEntityId: uuid("legal_entity_id").notNull(),
     outletId: outletIdColumn(() => outlets.id).notNull(),
-    balanceIdr: idrColumn("balance_idr").notNull().default(sql`0`),
+    balanceIdr: idrColumn("balance_idr")
+      .notNull()
+      .default(sql`0`),
     createdBy: text("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -271,10 +273,7 @@ export const pettyCashEntries = pgTable(
     ),
     index("petty_cash_entries_fund_idx").on(t.tenantId, t.fundId),
     check("petty_cash_entries_amount_check", sql`${t.amountIdr} > 0`),
-    check(
-      "petty_cash_entries_balance_check",
-      sql`${t.balanceAfterIdr} >= 0`,
-    ),
+    check("petty_cash_entries_balance_check", sql`${t.balanceAfterIdr} >= 0`),
     check(
       "petty_cash_entries_kind_check",
       sql`${t.kind} IN ('topup','return','purchase')`,
@@ -302,10 +301,7 @@ export const pettyCashEntries = pgTable(
       "petty_cash_entries_parked_check",
       sql`(${t.journalStatus} = 'parked') = (${t.parkCode} IS NOT NULL)`,
     ),
-    check(
-      "petty_cash_entries_attempts_check",
-      sql`${t.parkAttempts} >= 0`,
-    ),
+    check("petty_cash_entries_attempts_check", sql`${t.parkAttempts} >= 0`),
   ],
 );
 

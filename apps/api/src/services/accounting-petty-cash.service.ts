@@ -214,7 +214,8 @@ export async function listPettyCashFunds(
       eq(pettyCashFunds.tenantId, tenantId),
       eq(pettyCashFunds.legalEntityId, query.legalEntityId),
     ];
-    if (query.outletId) filters.push(eq(pettyCashFunds.outletId, query.outletId));
+    if (query.outletId)
+      filters.push(eq(pettyCashFunds.outletId, query.outletId));
     if (reach)
       filters.push(
         reach.length === 0
@@ -370,7 +371,9 @@ export async function createPettyCashMovement(
         const now = new Date();
         const bank = await loadBankAccount(tx, tenantId, input.bankAccountId);
         if (bank.legalEntityId !== outlet.legalEntityId)
-          throw invalid("Outlet dan rekening bank harus milik badan usaha yang sama.");
+          throw invalid(
+            "Outlet dan rekening bank harus milik badan usaha yang sama.",
+          );
         if (!bank.isActive) throw invalid("Rekening bank ini tidak aktif.");
         await entityLock(tx, tenantId, bank.legalEntityId);
 
@@ -389,7 +392,8 @@ export async function createPettyCashMovement(
         const fund = await lockFund(tx, tenantId, input.outletId);
         // A return from an outlet with no fund has nothing to give back.
         if (!fund) throw insufficient(0, -input.amountIdr);
-        const delta = input.kind === "topup" ? input.amountIdr : -input.amountIdr;
+        const delta =
+          input.kind === "topup" ? input.amountIdr : -input.amountIdr;
         const balanceAfter = await changeBalance(tx, fund, delta);
 
         const clock = await loadOutletClock(tx, input.outletId);
@@ -434,7 +438,8 @@ export async function createPettyCashMovement(
             createdBy: actorId,
           })
           .returning({ id: pettyCashEntries.id });
-        if (!created) throw new Error("Petty cash entry insert returned no row.");
+        if (!created)
+          throw new Error("Petty cash entry insert returned no row.");
         await auditApFa(tx, context, {
           actorId,
           action: "accounting.petty_cash.movement_recorded",

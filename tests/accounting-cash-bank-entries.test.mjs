@@ -103,6 +103,12 @@ function assertBalanced(lines) {
     );
 }
 
+const without = (obj, key) => {
+  const copy = { ...obj };
+  delete copy[key];
+  return copy;
+};
+
 describe("legend-4961 cash-bank entry input contract", () => {
   test("legend-4961 cash_in, cash_out and transfer bodies parse", () => {
     for (const body of [cashInBody(), cashOutBody(), transferBody()]) {
@@ -111,10 +117,11 @@ describe("legend-4961 cash-bank entry input contract", () => {
       assert.equal(parsed.data.kind, body.kind);
       assert.equal(parsed.data.amountIdr, body.amountIdr);
     }
-    assert.deepEqual(
-      [...acc.CASH_BANK_ENTRY_KINDS].sort(),
-      ["cash_in", "cash_out", "transfer"],
-    );
+    assert.deepEqual([...acc.CASH_BANK_ENTRY_KINDS].sort(), [
+      "cash_in",
+      "cash_out",
+      "transfer",
+    ]);
   });
 
   test("legend-4961 the optional outlet tag is accepted on cash entries", () => {
@@ -140,7 +147,7 @@ describe("legend-4961 cash-bank entry input contract", () => {
   });
 
   test("legend-4961 a cash entry needs the counter account; a transfer must not carry one", () => {
-    const { counterAccountId: _drop, ...noCounter } = cashInBody();
+    const noCounter = without(cashInBody(), "counterAccountId");
     assert.equal(
       acc.createCashBankEntryInputSchema.safeParse(noCounter).success,
       false,
@@ -151,7 +158,7 @@ describe("legend-4961 cash-bank entry input contract", () => {
       ).success,
       false,
     );
-    const { toBankAccountId: _to, ...noTarget } = transferBody();
+    const noTarget = without(transferBody(), "toBankAccountId");
     assert.equal(
       acc.createCashBankEntryInputSchema.safeParse(noTarget).success,
       false,
@@ -173,7 +180,7 @@ describe("legend-4961 cash-bank entry input contract", () => {
     refused(cashInBody({ description: "" }));
     refused(cashInBody({ idempotencyKey: "short" }));
     refused(cashInBody({ idempotencyKey: "has space in key" }));
-    const { idempotencyKey: _key, ...noKey } = transferBody();
+    const noKey = without(transferBody(), "idempotencyKey");
     refused(noKey);
   });
 
@@ -274,10 +281,11 @@ describe("legend-4961 petty cash movement contract and balance rule", () => {
         false,
         `${kind} must not be a movement`,
       );
-    assert.deepEqual(
-      [...acc.PETTY_CASH_ENTRY_KINDS].sort(),
-      ["purchase", "return", "topup"],
-    );
+    assert.deepEqual([...acc.PETTY_CASH_ENTRY_KINDS].sort(), [
+      "purchase",
+      "return",
+      "topup",
+    ]);
   });
 
   test("legend-4961 movement money must be whole, positive rupiah; no extra fields", () => {
@@ -295,8 +303,9 @@ describe("legend-4961 petty cash movement contract and balance rule", () => {
       false,
     );
     assert.equal(
-      acc.pettyCashMovementInputSchema.safeParse(movement({ idempotencyKey: "x" }))
-        .success,
+      acc.pettyCashMovementInputSchema.safeParse(
+        movement({ idempotencyKey: "x" }),
+      ).success,
       false,
     );
   });
@@ -315,10 +324,7 @@ describe("legend-4961 petty cash movement contract and balance rule", () => {
       () => acc.applyPettyCashDelta(100_000, -150_000),
       "PETTY_CASH_INSUFFICIENT",
     );
-    throwsCode(
-      () => acc.applyPettyCashDelta(0, -1),
-      "PETTY_CASH_INSUFFICIENT",
-    );
+    throwsCode(() => acc.applyPettyCashDelta(0, -1), "PETTY_CASH_INSUFFICIENT");
   });
 
   test("legend-4961 the entry DTO enforces a non-negative balance after the movement", () => {
@@ -354,10 +360,11 @@ describe("legend-4961 petty cash movement contract and balance rule", () => {
       ),
       "the refusal names balanceAfterIdr",
     );
-    assert.deepEqual(
-      [...acc.pettyCashJournalStatusSchema.options].sort(),
-      ["external", "parked", "posted"],
-    );
+    assert.deepEqual([...acc.pettyCashJournalStatusSchema.options].sort(), [
+      "external",
+      "parked",
+      "posted",
+    ]);
   });
 });
 
@@ -410,7 +417,10 @@ describe("legend-4961 errors, source types, posting rules, endpoints, permission
       { outletId: null },
     );
     assertBalanced(topLines);
-    assert.deepEqual(totals(topLines).get(petty), { debit: 100_000, credit: 0 });
+    assert.deepEqual(totals(topLines).get(petty), {
+      debit: 100_000,
+      credit: 0,
+    });
     assert.deepEqual(totals(topLines).get(bank), { debit: 0, credit: 100_000 });
 
     const back = acc.resolvePostingRule(acc.defaultPostingRules, {
@@ -425,7 +435,10 @@ describe("legend-4961 errors, source types, posting rules, endpoints, permission
     );
     assertBalanced(backLines);
     assert.deepEqual(totals(backLines).get(bank), { debit: 40_000, credit: 0 });
-    assert.deepEqual(totals(backLines).get(petty), { debit: 0, credit: 40_000 });
+    assert.deepEqual(totals(backLines).get(petty), {
+      debit: 0,
+      credit: 40_000,
+    });
   });
 
   test("legend-4961 a missing petty_cash mapping fails closed with ACCOUNT_MAPPING_MISSING; a wrong amount key is refused", () => {
