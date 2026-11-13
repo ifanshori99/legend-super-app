@@ -1493,3 +1493,4 @@ Langkah berikut CTO baru:
 - 03:27 founder: volume Docker jangan dihapus, tanya tiap kali (dicatat di coordinator memory).
 - 03:38 mulai 657 lanjutan kontrak edge (cqehx, yu8z0, zy43; thread S30:P6b2j:G17kp, base ws/edge-sales-gl, migr 0530-0533).
 - 03:48 batch60 masuk m1 b17554cb9 (flaky-654 + edge-order-ingest, 0522->0347), test penuh 72 mnt 0 gagal, flake 654 tidak muncul, e2e zueb 18/18. 4 bead ditutup. G02r0 di-resolve. Batch61 menunggu ws/edge-sales-gl + ws/edge-contract-followups.
+- 03:49 mulai 658 jurnal payout gaji (wnkep.5 + f5n9y; thread S30:P6b2j:G7zpn, base m1 b17554cb9, migr 0534-0537). Keputusan CTO: paid_by penyetuju terakhir, fee auto-jurnal beban bank.
