@@ -662,4 +662,45 @@ describe("legend-0mn8 concurrency", () => {
     expect(await auditCount(tenantId, "brands")).toBe(rounds);
     expect(await auditCount(tenantId, "legal-entities")).toBe(rounds);
   });
+
+  // Root cause of the first-outlet LOYALTY_ENTITY_BUSY: brand / legal-entity
+  // creates held FOR SHARE (+ FK KEY SHARE) on the tenants row without the
+  // advisory loyalty-entity lock, so the loyalty guard (FOR UPDATE NOWAIT)
+  // collided with them. Every platform org create must queue on that lock.
+  it.each([
+    ["brands", () => brandBody()],
+    ["legal-entities", () => entityBody({ npwp: null })],
+  ] as const)(
+    "TEN-06 POST %s waits for the loyalty-entity advisory lock, then returns 201",
+    async (resource, body) => {
+      const tenantId = await tenant(`Lock Wait ${resource}`);
+      const holder = await owner.connect();
+      try {
+        await holder.query("BEGIN");
+        await holder.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`loyalty-entity:${tenantId}`],
+        );
+        const startedAt = Date.now();
+        const pending = admin.client
+          .post(path(tenantId, resource))
+          .set(originHeader)
+          .send(body())
+          .then((res) => ({ res, doneAt: Date.now() }));
+        const early = await Promise.race([
+          pending,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 300)),
+        ]);
+        expect(early, "create must be blocked by the advisory lock").toBeNull();
+        await holder.query("COMMIT");
+        const { res, doneAt } = await pending;
+        expect(res.status, JSON.stringify(res.body)).toBe(201);
+        expect(doneAt - startedAt).toBeGreaterThanOrEqual(300);
+        expect(await count(tenantId, resource)).toBe(1);
+      } finally {
+        await holder.query("ROLLBACK").catch(() => undefined);
+        holder.release();
+      }
+    },
+  );
 });

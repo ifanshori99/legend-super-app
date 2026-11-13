@@ -85,8 +85,14 @@ async function readTenantResourceAny<T extends { data: unknown[] }>(
  * Platform create: registry standing is checked before the transaction opens.
  * Inside it, the tenant row is share-locked (`FOR SHARE`), must exist and must
  * not be archived; then the write and its audit row share that transaction.
- * `after` carries ids and non-private labels only. `beforeTenantLock` runs
- * before the tenant SELECT, for locks that must precede the row lock.
+ * `after` carries ids and non-private labels only. The advisory
+ * `loyalty-entity` lock is taken before the tenant row lock: that order must
+ * match the loyalty/accounting paths (the other way round can deadlock with
+ * them), and it serializes every platform org create (brand, outlet, legal
+ * entity) with loyalty-entity changes. The FK inserts hold a KEY SHARE on the
+ * tenant row until commit, which would otherwise make the first-outlet
+ * loyalty guard (FOR UPDATE NOWAIT) fail with LOYALTY_ENTITY_BUSY.
+ * Advisory xact locks are re-entrant, so createOutletInTx may re-take it.
  */
 async function createTenantResourceAny<T>(
   tenantId: string,
@@ -102,16 +108,12 @@ async function createTenantResourceAny<T>(
     tx: Parameters<Parameters<typeof withTenant>[2]>[0],
     context: ReturnType<typeof platformTenantScope>,
   ) => Promise<T>,
-  beforeTenantLock?: (
-    tx: Parameters<Parameters<typeof withTenant>[2]>[0],
-    context: ReturnType<typeof platformTenantScope>,
-  ) => Promise<void>,
 ): Promise<{ data: T }> {
   if (!(await isPlatformAdmin(actorUserId)))
     throw new HttpError(403, "FORBIDDEN", "Akun ini bukan Super Admin.");
   const context = platformTenantScope(tenantId);
   return withTenant(db, context, async (tx) => {
-    await beforeTenantLock?.(tx, context);
+    await lockLoyaltyJournalEntity(tx, context.tenant.tenantId);
     const [tenant] = await tx
       .select({ status: tenants.status })
       .from(tenants)
@@ -187,11 +189,6 @@ export async function createPlatformTenantOutletAny(
       }),
     },
     (tx, context) => createOutletInTx(tx, context, input, actorUserId),
-    // Lock order must match the loyalty/accounting paths: the advisory
-    // loyalty-entity lock first, then the tenant row. Taking them the other
-    // way round can deadlock with those paths. createOutletInTx re-takes it
-    // (advisory xact locks are re-entrant).
-    (tx, context) => lockLoyaltyJournalEntity(tx, context.tenant.tenantId),
   );
 }
 
