@@ -13,8 +13,13 @@
 // - The PO row of the receipt is locked FOR UPDATE first (the receipt itself is
 //   immutable and cannot be locked by the app role), so two returns of one
 //   receipt never run side by side and cannot over-return.
-// - No supplier invoice exists yet: `uninvoicedValueIdr = valueIdr`,
-//   `invoicedValueIdr = ppnIdr = 0`.
+// - Not-invoiced-first split (docs/briefs/ws-purchasing-apar-design.md §6): per
+//   PO line the return first consumes the quantity no matched/released supplier
+//   invoice bills (`uninvoicedValueIdr`, Dr GRNI); the rest is
+//   `invoicedValueIdr` plus the proportional PPN of the invoices it falls on,
+//   which the accounting consumer books as a debit note on the payable. A held
+//   invoice has no AP and never counts as billed. A return whose debit note
+//   exceeds what is still owed is refused (409 PURCHASE_RETURN_EXCEEDS_PAYABLE).
 // - Numbering `RT/<YYYYMM>/<0001>` from `purchasing_document_sequences`.
 // - Gate: while `PURCHASE_RETURN_POSTING_ENABLED` is off, every POST is refused
 //   (403 FEATURE_DISABLED) before anything is claimed or written. Stock would
@@ -46,9 +51,11 @@ import {
   idr,
   parseDecimal4,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import {
   assertPurchaseReturnWithinReceipt,
+  PurchasingError,
   purchaseReturnDetailSchema,
   purchaseReturnSchema,
   purchasingEvents,
@@ -58,9 +65,17 @@ import {
   type PurchaseReturnDetail,
   type PurchaseReturnLine,
 } from "@starter/shared/inventory";
+import { isModuleEnabled } from "@starter/shared/platform";
 import type { z } from "zod";
 import { env } from "../config/env.ts";
 import { db } from "../db/index.ts";
+import {
+  accountingOpenItemSettlements,
+  accountingOpenItems,
+} from "../db/schema/accounting-ap-fa.ts";
+import { autoJournalParked } from "../db/schema/accounting-auto-journal.ts";
+import { journalEntries } from "../db/schema/accounting.ts";
+import { tenants } from "../db/schema/index.ts";
 import {
   goodsReceiptLines,
   goodsReceipts,
@@ -71,6 +86,8 @@ import {
   purchaseReturns,
 } from "../db/schema/purchase-returns.ts";
 import {
+  purchaseInvoiceLines,
+  purchaseInvoices,
   purchaseOrders,
   purchasingDocumentSequences,
 } from "../db/schema/purchasing.ts";
@@ -273,6 +290,369 @@ async function assertLocations(
     );
   if (rows.length !== unique.length)
     throw invalid("A stock location does not belong to this outlet.");
+}
+
+type ReturnSplit = {
+  uninvoicedValueIdr: number;
+  invoicedValueIdr: number;
+  ppnIdr: number;
+};
+
+/**
+ * Not-invoiced-first split of a return (design §6). Runs under the PO lock, so
+ * the earlier returns it reads are final. Quantities are base units; invoice
+ * lines are in the PO unit and are converted with the PO line's accepted
+ * base/PO ratio over all its receipts.
+ */
+async function splitReturnAgainstInvoices(
+  tx: Tx,
+  tenantId: TenantId,
+  purchaseOrderId: string,
+  lines: readonly {
+    purchaseOrderLineId: string;
+    quantity: bigint;
+    lineValueIdr: number;
+  }[],
+): Promise<ReturnSplit> {
+  const unsplit = (): ReturnSplit => ({
+    uninvoicedValueIdr: lines.reduce((sum, line) => sum + line.lineValueIdr, 0),
+    invoicedValueIdr: 0,
+    ppnIdr: 0,
+  });
+  // A held or rejected invoice has no AP: only matched/released are billed.
+  const invoices = await tx
+    .select()
+    .from(purchaseInvoices)
+    .where(
+      and(
+        eq(purchaseInvoices.tenantId, tenantId),
+        eq(purchaseInvoices.purchaseOrderId, purchaseOrderId),
+        inArray(purchaseInvoices.status, ["matched", "released"]),
+      ),
+    )
+    .orderBy(asc(purchaseInvoices.invoiceDate), asc(purchaseInvoices.id));
+  if (invoices.length === 0) return unsplit();
+
+  const poLineIds = lines.map((line) => line.purchaseOrderLineId);
+  const invoiceLineRows = await tx
+    .select({
+      purchaseInvoiceId: purchaseInvoiceLines.purchaseInvoiceId,
+      purchaseOrderLineId: purchaseInvoiceLines.purchaseOrderLineId,
+      quantity: purchaseInvoiceLines.quantity,
+      lineTotalIdr: purchaseInvoiceLines.lineTotalIdr,
+    })
+    .from(purchaseInvoiceLines)
+    .where(
+      and(
+        eq(purchaseInvoiceLines.tenantId, tenantId),
+        inArray(
+          purchaseInvoiceLines.purchaseInvoiceId,
+          invoices.map((invoice) => invoice.id),
+        ),
+        eq(purchaseInvoiceLines.kind, "goods"),
+        inArray(purchaseInvoiceLines.purchaseOrderLineId, poLineIds),
+      ),
+    );
+  const receiptRows = await tx
+    .select({
+      purchaseOrderLineId: goodsReceiptLines.purchaseOrderLineId,
+      quantityReceived: goodsReceiptLines.quantityReceived,
+      quantityRejected: goodsReceiptLines.quantityRejected,
+      acceptedBaseQuantity: goodsReceiptLines.acceptedBaseQuantity,
+    })
+    .from(goodsReceiptLines)
+    .where(
+      and(
+        eq(goodsReceiptLines.tenantId, tenantId),
+        inArray(goodsReceiptLines.purchaseOrderLineId, poLineIds),
+      ),
+    );
+  const returnedRows = await tx
+    .select({
+      purchaseOrderLineId: purchaseReturnLines.purchaseOrderLineId,
+      quantity: purchaseReturnLines.quantity,
+    })
+    .from(purchaseReturnLines)
+    .where(
+      and(
+        eq(purchaseReturnLines.tenantId, tenantId),
+        inArray(purchaseReturnLines.purchaseOrderLineId, poLineIds),
+      ),
+    );
+  const sumBy = <T extends { purchaseOrderLineId: string | null }>(
+    rows: readonly T[],
+    amount: (row: T) => bigint,
+  ) => {
+    const totals = new Map<string, bigint>();
+    for (const row of rows)
+      if (row.purchaseOrderLineId)
+        totals.set(
+          row.purchaseOrderLineId,
+          (totals.get(row.purchaseOrderLineId) ?? 0n) + amount(row),
+        );
+    return totals;
+  };
+  const invoicedPo = sumBy(invoiceLineRows, (row) =>
+    parseDecimal4(row.quantity),
+  );
+  const acceptedPo = sumBy(
+    receiptRows,
+    (row) =>
+      parseDecimal4(row.quantityReceived) - parseDecimal4(row.quantityRejected),
+  );
+  const acceptedBase = sumBy(receiptRows, (row) =>
+    parseDecimal4(row.acceptedBaseQuantity),
+  );
+  const returnedBase = sumBy(returnedRows, (row) =>
+    parseDecimal4(row.quantity),
+  );
+
+  const split = guardMoneyMath(() => {
+    let uninvoicedValueIdr = 0;
+    let invoicedValueIdr = 0;
+    const invoicedParts: {
+      purchaseOrderLineId: string;
+      before: bigint;
+      part: bigint;
+      accepted: bigint;
+      poUnits: bigint;
+    }[] = [];
+    for (const line of lines) {
+      const accepted = acceptedBase.get(line.purchaseOrderLineId) ?? 0n;
+      const poUnits = acceptedPo.get(line.purchaseOrderLineId) ?? 0n;
+      const billedBase =
+        poUnits > 0n
+          ? divideRounded(
+              (invoicedPo.get(line.purchaseOrderLineId) ?? 0n) * accepted,
+              poUnits,
+              ROUNDING_MODE,
+            )
+          : 0n;
+      // Received, not billed, and not already taken by an earlier return.
+      const open =
+        accepted -
+        billedBase -
+        (returnedBase.get(line.purchaseOrderLineId) ?? 0n);
+      const notBilled = open > 0n ? open : 0n;
+      const take = line.quantity < notBilled ? line.quantity : notBilled;
+      // Earlier returns took the not-billed quantity first, the rest of them
+      // was billed; this return's billed part follows it.
+      const returned = returnedBase.get(line.purchaseOrderLineId) ?? 0n;
+      const openBefore = accepted - billedBase;
+      const priorNotBilled =
+        openBefore <= 0n ? 0n : returned < openBefore ? returned : openBefore;
+      invoicedParts.push({
+        purchaseOrderLineId: line.purchaseOrderLineId,
+        before: returned - priorNotBilled,
+        part: line.quantity - take,
+        accepted,
+        poUnits,
+      });
+      const lineUninvoiced = Number(
+        divideRounded(
+          BigInt(line.lineValueIdr) * take,
+          line.quantity,
+          ROUNDING_MODE,
+        ),
+      );
+      uninvoicedValueIdr += lineUninvoiced;
+      invoicedValueIdr += line.lineValueIdr - lineUninvoiced;
+    }
+    return { uninvoicedValueIdr, invoicedValueIdr, invoicedParts };
+  });
+  if (split.invoicedValueIdr === 0)
+    return {
+      uninvoicedValueIdr: split.uninvoicedValueIdr,
+      invoicedValueIdr: 0,
+      ppnIdr: 0,
+    };
+
+  // A billed part needs a debit note against the AP open item. With the
+  // accounting module off no AP exists to reduce, so refuse (R1, design §13).
+  const [tenantRow] = await tx
+    .select({ featureFlags: tenants.featureFlags })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  if (!isModuleEnabled(tenantRow?.featureFlags ?? null, "accounting"))
+    throw new PurchasingError(
+      "SUPPLIER_INVOICE_POSTING_DISABLED",
+      "The return has an invoiced part, but supplier payables are not enabled for this tenant.",
+    );
+
+  // Payable check below needs the earlier returns of this PO.
+  const priorReturns = await tx
+    .select({
+      id: purchaseReturns.id,
+      invoicedValueIdr: purchaseReturns.invoicedValueIdr,
+      ppnIdr: purchaseReturns.ppnIdr,
+    })
+    .from(purchaseReturns)
+    .where(
+      and(
+        eq(purchaseReturns.tenantId, tenantId),
+        eq(purchaseReturns.purchaseOrderId, purchaseOrderId),
+      ),
+    );
+  // PPN goes to the invoices that actually bill the returned PO line. Per PO
+  // line, the invoices holding it are filled in (date, id) order: earlier
+  // returns used the first part, this return takes the next. Per invoice the
+  // PPN is the cumulative share of its billed value consumed so far, so the
+  // sum over all returns never passes the invoice's PPN.
+  const ppnIdr = guardMoneyMath(() => {
+    type Slot = {
+      invoice: (typeof invoices)[number];
+      base: bigint;
+      billedIdr: bigint;
+    };
+    const invoiceIndex = new Map(
+      invoices.map((invoice, index) => [invoice.id, index]),
+    );
+    const delta = new Map<string, { before: bigint; after: bigint }>();
+    for (const part of split.invoicedParts) {
+      if (part.part === 0n || part.poUnits === 0n) continue;
+      const perInvoice = new Map<string, { qtyPo: bigint; totalIdr: bigint }>();
+      for (const row of invoiceLineRows) {
+        if (row.purchaseOrderLineId !== part.purchaseOrderLineId) continue;
+        const current = perInvoice.get(row.purchaseInvoiceId) ?? {
+          qtyPo: 0n,
+          totalIdr: 0n,
+        };
+        current.qtyPo += parseDecimal4(row.quantity);
+        current.totalIdr += BigInt(row.lineTotalIdr);
+        perInvoice.set(row.purchaseInvoiceId, current);
+      }
+      const slots: Slot[] = [...perInvoice]
+        .sort(([a], [b]) => invoiceIndex.get(a)! - invoiceIndex.get(b)!)
+        .map(([invoiceId, row]) => ({
+          invoice: invoices[invoiceIndex.get(invoiceId)!]!,
+          base: divideRounded(
+            row.qtyPo * part.accepted,
+            part.poUnits,
+            ROUNDING_MODE,
+          ),
+          billedIdr: row.totalIdr,
+        }));
+      let priorLeft = part.before;
+      let wanted = part.part;
+      for (const slot of slots) {
+        const used = priorLeft < slot.base ? priorLeft : slot.base;
+        priorLeft -= used;
+        const room = slot.base - used;
+        const taken = wanted < room ? wanted : room;
+        wanted -= taken;
+        if (taken === 0n) continue;
+        // Billed value of the consumed quantity of this invoice line.
+        const valueOf = (qty: bigint) =>
+          divideRounded(slot.billedIdr * qty, slot.base, ROUNDING_MODE);
+        const entry = delta.get(slot.invoice.id) ?? { before: 0n, after: 0n };
+        entry.before += valueOf(used);
+        entry.after += valueOf(used + taken);
+        delta.set(slot.invoice.id, entry);
+      }
+    }
+    let ppn = 0n;
+    for (const [invoiceId, entry] of delta) {
+      const invoice = invoices[invoiceIndex.get(invoiceId)!]!;
+      // DPP billed = total - PPN (goods + price variance + services).
+      const dpp = BigInt(invoice.totalIdr) - BigInt(invoice.ppnIdr);
+      if (dpp <= 0n) continue;
+      const share = (value: bigint) =>
+        divideRounded(BigInt(invoice.ppnIdr) * value, dpp, ROUNDING_MODE);
+      ppn += share(entry.after) - share(entry.before);
+    }
+    // Rounding across lines of one invoice must never credit more PPN in total
+    // than the PO's invoices carry.
+    const creditedBefore = priorReturns.reduce(
+      (sum, row) => sum + BigInt(row.ppnIdr),
+      0n,
+    );
+    const ceiling = invoices.reduce(
+      (sum, invoice) => sum + BigInt(invoice.ppnIdr),
+      0n,
+    );
+    const room = ceiling > creditedBefore ? ceiling - creditedBefore : 0n;
+    return Number(ppn < room ? ppn : room);
+  });
+
+  // Refuse a debit note larger than what is still owed on this PO's invoices.
+  // Earlier returns whose debit note the consumer has not booked yet count as
+  // already taken, so two quick returns cannot both pass.
+  const openItems = await tx
+    .select({
+      originalIdr: accountingOpenItems.originalIdr,
+      settledIdr: accountingOpenItems.settledIdr,
+    })
+    .from(accountingOpenItems)
+    .where(
+      and(
+        eq(accountingOpenItems.tenantId, tenantId),
+        eq(accountingOpenItems.kind, "payable"),
+        inArray(
+          accountingOpenItems.id,
+          invoices.map((invoice) => invoice.id),
+        ),
+      ),
+    );
+  // legend-3fi5v: only a debit note that will still land on the payable keeps
+  // room reserved. Settled ones are already inside the open item outstanding;
+  // one parked non-retryable (`retryable = false`) has reduced nothing and is
+  // not counted. Pending and retryable-parked ones (mapping missing, period
+  // closed) post on their own later, so they stay reserved: else two quick
+  // returns could both pass and the supplier be paid for goods already returned.
+  const debitReturns = priorReturns.filter(
+    (row) => row.invoicedValueIdr + row.ppnIdr > 0,
+  );
+  let reservedDebit = 0;
+  if (debitReturns.length > 0) {
+    const returnIds = debitReturns.map((row) => row.id);
+    const settled = await tx
+      .select({ sourceId: accountingOpenItemSettlements.sourceId })
+      .from(accountingOpenItemSettlements)
+      .where(
+        and(
+          eq(accountingOpenItemSettlements.tenantId, tenantId),
+          eq(accountingOpenItemSettlements.kind, "payable"),
+          eq(accountingOpenItemSettlements.method, "debit_note"),
+          inArray(accountingOpenItemSettlements.sourceId, returnIds),
+        ),
+      );
+    const failed = await tx
+      .select({ idempotencyKey: autoJournalParked.idempotencyKey })
+      .from(autoJournalParked)
+      .where(
+        and(
+          eq(autoJournalParked.tenantId, tenantId),
+          eq(autoJournalParked.retryable, false),
+          inArray(
+            autoJournalParked.idempotencyKey,
+            returnIds.map((id) => `aj:purchase-return:${id}`),
+          ),
+        ),
+      );
+    const settledIds = new Set(settled.map((row) => row.sourceId));
+    const failedKeys = new Set(failed.map((row) => row.idempotencyKey));
+    reservedDebit = debitReturns
+      .filter(
+        (row) =>
+          !settledIds.has(row.id) &&
+          !failedKeys.has(`aj:purchase-return:${row.id}`),
+      )
+      .reduce((sum, row) => sum + row.invoicedValueIdr + row.ppnIdr, 0);
+  }
+  const owed =
+    openItems.reduce((sum, row) => sum + row.originalIdr - row.settledIdr, 0) -
+    reservedDebit;
+  if (split.invoicedValueIdr + ppnIdr > owed)
+    throw new PurchasingError(
+      "PURCHASE_RETURN_EXCEEDS_PAYABLE",
+      "The return is worth more than the supplier invoices still owed.",
+    );
+  return {
+    uninvoicedValueIdr: split.uninvoicedValueIdr,
+    invoicedValueIdr: split.invoicedValueIdr,
+    ppnIdr,
+  };
 }
 
 async function appendReturnRecordedEvent(
@@ -562,6 +942,40 @@ export async function createPurchaseReturn(
         idr(lineRows.reduce((sum, line) => sum + line.lineValueIdr, 0)),
       );
 
+      const split = await splitReturnAgainstInvoices(
+        tx,
+        context.tenant.tenantId,
+        receipt.purchaseOrderId,
+        lineRows.map((line) => ({
+          purchaseOrderLineId: line.purchaseOrderLineId,
+          quantity: parseDecimal4(line.quantity),
+          lineValueIdr: line.lineValueIdr,
+        })),
+      );
+      // Cutover guard (design §2.3): the not-invoiced part debits GRNI, which
+      // only exists once the receipt's own journal is posted. No Dr GRNI
+      // without a Cr GRNI; nothing has been written yet, so the refusal is clean.
+      if (split.uninvoicedValueIdr > 0) {
+        const [receiptJournal] = await tx
+          .select({ id: journalEntries.id })
+          .from(journalEntries)
+          .where(
+            and(
+              eq(journalEntries.tenantId, context.tenant.tenantId),
+              eq(
+                journalEntries.idempotencyKey,
+                `aj:goods-receipt:${receipt.id}`,
+              ),
+            ),
+          )
+          .limit(1);
+        if (!receiptJournal)
+          throw new PurchasingError(
+            "GOODS_RECEIPT_NOT_JOURNALED",
+            "The goods receipt journal is not posted yet; the return cannot be booked.",
+          );
+      }
+
       const [row] = await tx
         .insert(purchaseReturns)
         .values({
@@ -577,10 +991,9 @@ export async function createPurchaseReturn(
           returnedAt: now,
           returnedBy: actorUserId,
           valueIdr,
-          // No supplier invoice exists yet: everything is still on GRNI.
-          uninvoicedValueIdr: valueIdr,
-          invoicedValueIdr: idr(0),
-          ppnIdr: idr(0),
+          uninvoicedValueIdr: idr(split.uninvoicedValueIdr),
+          invoicedValueIdr: idr(split.invoicedValueIdr),
+          ppnIdr: idr(split.ppnIdr),
           note: input.note ? input.note : null,
         })
         .returning();

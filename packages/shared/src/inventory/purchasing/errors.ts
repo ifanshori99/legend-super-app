@@ -29,6 +29,16 @@ export const PURCHASING_ERROR_CODES = [
   "SUPPLIER_INVOICE_NOT_PAYABLE",
   /** A payment amount exceeds the invoice's outstanding payable. */
   "SUPPLIER_INVOICE_OVERPAYMENT",
+  /** The supplier already has an invoice with that number (not rejected). */
+  "SUPPLIER_INVOICE_DUPLICATE",
+  /** Release or reject was asked for an invoice that is not held. */
+  "SUPPLIER_INVOICE_NOT_HELD",
+  /** The held invoice has an issue finance may not release (quantity, totals). */
+  "SUPPLIER_INVOICE_RELEASE_BLOCKED",
+  /** The person who recorded the invoice tried to release it. */
+  "SUPPLIER_INVOICE_SELF_RELEASE",
+  /** Booking a supplier invoice payable is switched off (legend-29vw). */
+  "SUPPLIER_INVOICE_POSTING_DISABLED",
   /** The supplier payment action is not allowed from its status. */
   "SUPPLIER_PAYMENT_INVALID_TRANSITION",
   /** Approval was attempted before the payment was requested. */
@@ -37,6 +47,10 @@ export const PURCHASING_ERROR_CODES = [
   "SUPPLIER_PAYMENT_SELF_APPROVAL",
   /** A return line exceeds the quantity accepted for that PO line. */
   "PURCHASE_RETURN_EXCEEDS_RECEIPT",
+  /** A return that was invoiced exceeds what is still owed on the invoice. */
+  "PURCHASE_RETURN_EXCEEDS_PAYABLE",
+  /** The goods receipt behind this invoice or return has no posted receipt journal yet (GRNI, legend-29vw). */
+  "GOODS_RECEIPT_NOT_JOURNALED",
   /** PRD §3.18 "Pembelian Sederhana ... batas nominal": over the outlet limit. */
   "PETTY_PURCHASE_LIMIT_EXCEEDED",
   /** The three-way match input does not describe one order (unknown line). */
@@ -82,10 +96,17 @@ export const purchasingErrorHttpStatus = {
   SUPPLIER_INVOICE_NOT_MATCHED: 409,
   SUPPLIER_INVOICE_NOT_PAYABLE: 409,
   SUPPLIER_INVOICE_OVERPAYMENT: 409,
+  SUPPLIER_INVOICE_DUPLICATE: 409,
+  SUPPLIER_INVOICE_NOT_HELD: 409,
+  SUPPLIER_INVOICE_RELEASE_BLOCKED: 409,
+  SUPPLIER_INVOICE_SELF_RELEASE: 403,
+  SUPPLIER_INVOICE_POSTING_DISABLED: 409,
   SUPPLIER_PAYMENT_INVALID_TRANSITION: 409,
   SUPPLIER_PAYMENT_NOT_PENDING_APPROVAL: 409,
   SUPPLIER_PAYMENT_SELF_APPROVAL: 409,
   PURCHASE_RETURN_EXCEEDS_RECEIPT: 409,
+  PURCHASE_RETURN_EXCEEDS_PAYABLE: 409,
+  GOODS_RECEIPT_NOT_JOURNALED: 409,
   PETTY_PURCHASE_LIMIT_EXCEEDED: 409,
   THREE_WAY_MATCH_INVALID_INPUT: 422,
   SUPPLIER_INACTIVE: 409,
@@ -120,6 +141,15 @@ export const purchasingErrorMessages: Record<PurchasingErrorCode, string> = {
   SUPPLIER_INVOICE_NOT_PAYABLE: "Faktur pemasok tidak memiliki sisa tagihan.",
   SUPPLIER_INVOICE_OVERPAYMENT:
     "Jumlah pembayaran melebihi sisa tagihan faktur.",
+  SUPPLIER_INVOICE_DUPLICATE:
+    "Pemasok ini sudah memiliki faktur dengan nomor yang sama.",
+  SUPPLIER_INVOICE_NOT_HELD: "Faktur pemasok tidak sedang ditahan.",
+  SUPPLIER_INVOICE_RELEASE_BLOCKED:
+    "Faktur ini tidak dapat dirilis. Minta pemasok mengirim faktur koreksi.",
+  SUPPLIER_INVOICE_SELF_RELEASE:
+    "Pencatat faktur tidak dapat merilis fakturnya sendiri.",
+  SUPPLIER_INVOICE_POSTING_DISABLED:
+    "Pencatatan utang faktur pemasok belum diaktifkan.",
   SUPPLIER_PAYMENT_INVALID_TRANSITION:
     "Aksi ini tidak dapat dilakukan pada status pembayaran pemasok saat ini.",
   SUPPLIER_PAYMENT_NOT_PENDING_APPROVAL:
@@ -128,6 +158,10 @@ export const purchasingErrorMessages: Record<PurchasingErrorCode, string> = {
     "Pemohon tidak dapat menyetujui pembayaran pemasoknya sendiri.",
   PURCHASE_RETURN_EXCEEDS_RECEIPT:
     "Jumlah retur melebihi jumlah yang sudah diterima.",
+  PURCHASE_RETURN_EXCEEDS_PAYABLE:
+    "Nilai retur melebihi sisa utang faktur pemasok.",
+  GOODS_RECEIPT_NOT_JOURNALED:
+    "Jurnal penerimaan barang belum terposting; faktur/retur belum bisa dibukukan.",
   PETTY_PURCHASE_LIMIT_EXCEEDED:
     "Pembelian sederhana melebihi batas nominal outlet.",
   THREE_WAY_MATCH_INVALID_INPUT:

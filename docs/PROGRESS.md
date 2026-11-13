@@ -1,3 +1,29 @@
+## WS-06/07 posting faktur pemasok + lanjutan AP (engineer, cabang `ws/purchasing-posting` dari `ws/purchasing-apar` aefe28175, 13 Nov 2026 18:49-19:47 WIB)
+
+- Desain: `docs/briefs/ws-purchasing-posting-design.md` (architect xhigh), review K architect xhigh: H1 dibetulkan, H2/M1 jadi bead penghalang flag.
+- legend-29vw (bagian GRNI): jurnal penerimaan `goods_receipt.recorded` Dr persediaan / Cr GRNI lewat konsumen auto-journal (`aj:goods-receipt:<id>`, mapping hilang -> parkir `ACCOUNT_MAPPING_MISSING` retryable); faktur Dr GRNI (harga PO) + selisih harga ke akun baru 5105 `purchase_price_variance` + PPN masukan / Cr utang. Penjaga cutover: faktur/retur atas penerimaan tanpa jurnal -> 409 `GOODS_RECEIPT_NOT_JOURNALED`. Flag `SUPPLIER_INVOICE_POSTING_ENABLED` TETAP mati (H2 legend-5b7uf + cutover legend-7e0q4 belum, keputusan founder F1/F2).
+- legend-gzeya: aset dengan dokumen sumber wajib blok `payable` dan membuat open item utang = cost di tx yang sama. Sumber = id PO/GR/faktur ditolak 409; satu nomor dokumen pemasok = satu utang (aset atau faktur, kunci `payable-doc`).
+- legend-3fi5v: pre-check retur tidak lagi menghitung nota debit yang diparkir non-retryable; pending/parkir retryable tetap dicadangkan (membatasi bayar). Kode parkir `AUTO_JOURNAL_DEBIT_NOTE_SHORT` dicek ulang harian.
+- legend-ct27s: kunci advisory `payable-src:<tenant>:<id>` di tx aset dan tx faktur; cek tenant-wide setelah kunci.
+- legend-smrwb: dilewati, belum ada pemanggil AR nyata.
+- Migrasi 0494 (akun + mapping 5105, idempoten, insert-only). 0495 tidak dipakai.
+- Follow-up: legend-5b7uf (P1, retur faktur selisih harga, sebelum flag nyala), legend-7e0q4 (jalur cutover jurnal penerimaan), legend-wjjez (sisa pembulatan GRNI).
+
+- Verifikasi: 24 file test terarah 451 lulus/3 skip (GR-11/GR-12 skip menunggu legend-5b7uf), typecheck api+shared+web lulus, `db:generate` kosong, eslint+prettier file berubah bersih. Gagal-dulu: service dikembalikan ke base -> GR-01..10, CP-01..08, AR-05/06 gagal dengan sebab benar; PD-01 gagal-dulu 409 pada base asli; PD-04..06 di base gagal karena setup (ZodError helper baru), bukan bukti.
+- Biaya gelombang (18:49-19:46, 57 menit): biaya* total 6784k (utama Opus 1576k; subagent Sonnet 3557k, Opus 1370k, Haiku 282k). 21 subagent, maks 4 bersamaan, rata-rata 0.61 berjalan.
+
+## WS-06/07 purchasing, AP/AR, akuntansi (engineer, cabang `ws/purchasing-apar` dari `origin/milestone/m1` d56eafb4, 13 Nov 2026 17:41-18:45 WIB)
+
+- Selesai: legend-xysyi (XML Coretax NPWP asli, gagal tertutup), legend-a5wl (registry deep-link jurnal + guard tujuan), legend-lspfy + legend-nz13 (faktur pemasok, 3-way match, toleransi tenant, hold/release/reject), legend-uyk2 (AP di tx purchasing; anti dobel buku aset; bagian AR tanpa pemanggil = tidak dikerjakan), legend-179bw (debit note retur -> settlement `debit_note` tepat sekali).
+- Migrasi 0490 (`purchase_invoices`, lines, `purchasing_policies`, settlement `debit_note` + unique index) dan 0491 (RLS, GRANT kolom, trigger transisi status).
+- Desain: `docs/briefs/ws-purchasing-apar-design.md` (§12 keputusan engineer, §13 temuan architect R1-R4 dibetulkan).
+- Gate `SUPPLIER_INVOICE_POSTING_ENABLED` default mati (GRNI legend-29vw belum ada). Posting juga butuh modul `accounting` tenant.
+- Aturan faktur pemasok disetujui permanen founder Q13 (13 Nov 2026): toleransi default 0 bp maks 1000 bp, retur melebihi sisa utang ditolak, baris jasa selalu held. PPN <= 12% DPP tetap aturan engineer (K6).
+- Sisa: XSD Coretax resmi belum ada di repo; aset dari pembelian kredit tanpa open item AP (K7); debit note retur yang diparkir menahan retur berikutnya pada PO (runbook finance).
+- Verifikasi: 18 file test terarah 261 lulus/1 skip, test root `.mjs` 40 lulus, typecheck api+web lulus, `db:generate` kosong, eslint+prettier bersih. Cleanup test bersama diperbaiki (helper `purchasing-document-counters.ts`, `purchasing-flow` tidak menghapus PO milik suite lain).
+- Follow-up: legend-gzeya (K7), legend-igclp (XSD), legend-3fi5v (debit note diparkir), legend-ct27s (race guard aset), legend-smrwb (sisi AR).
+- Biaya gelombang (17:40-18:49, 68 menit): biaya* total 14874k (utama Opus 3603k; subagent Sonnet 8944k, Opus 1654k, Haiku 673k). 35 subagent, maks 7 bersamaan, rata-rata 0.89 berjalan.
+
 ## 539-U5b 12 layar konfigurasi (ui-engineer, cabang `ui/tenant-config` dari `origin/milestone/m1` 5cbe2a1e, 13 Nov 2026 06:35-08:00 WIB)
 
 - Kartu legend-y1jll. Pencocokan 12 layar Q29-Q40 vs m1: `docs/briefs/sub-u5b-gap.md`. 10 sudah ada (brief 505 `ws/ui-bo-config` dan `ws/ui-mixed-q36` sudah di m1); 2 dibangun di cabang ini.

@@ -54,7 +54,10 @@ import {
   outlets,
   tenants,
 } from "../db/schema/index.ts";
+import { purchaseReturns } from "../db/schema/purchase-returns.ts";
 import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
+import { applySupplierDebitNoteInTransaction } from "./accounting-ap.service.ts";
 import {
   AutoJournalDepositCutoverMixed,
   AutoJournalLoyaltyEntityAmbiguous,
@@ -128,6 +131,17 @@ const RETRYABLE_CODES = [
 
 const PAYLOAD_INVALID = "AUTO_JOURNAL_PAYLOAD_INVALID";
 const DEAD_LETTERED_CODE = "AUTO_JOURNAL_RECEIPT_DEAD_LETTERED";
+const DEBIT_NOTE_SHORT_CODE = "AUTO_JOURNAL_DEBIT_NOTE_SHORT";
+
+/**
+ * legend-3fi5v: the supplier's payable no longer covers a debit note (a payment
+ * landed after the return). Parked, not retryable at the 10 minute pace, but
+ * rechecked daily: a new invoice of the same supplier can absorb the credit.
+ * The return journal and its settlement post together or not at all.
+ */
+class AutoJournalDebitNoteShort extends Error {
+  readonly code = DEBIT_NOTE_SHORT_CODE;
+}
 
 /** The outlet has no legal entity yet: parked until finance assigns one. */
 class OutletLegalEntityMissing extends Error {
@@ -139,6 +153,8 @@ const RETRY_BATCH = 100;
 export const AUTO_JOURNAL_RETRY_AFTER_MS = 10 * 60 * 1000;
 /** legend-3r6r: recheck pace of a row parked RECEIPT_DEAD_LETTERED. */
 export const AUTO_JOURNAL_DEAD_LETTER_RECHECK_MS = 24 * 60 * 60 * 1000;
+/** legend-3fi5v: recheck pace of a row parked DEBIT_NOTE_SHORT. */
+export const AUTO_JOURNAL_DEBIT_NOTE_SHORT_RECHECK_MS = 24 * 60 * 60 * 1000;
 const LATE_AUDIT_FIELDS = [
   "journalId",
   "trigger",
@@ -153,6 +169,7 @@ function parkCodeOf(error: unknown): string | null {
   if (error instanceof OutletLegalEntityMissing) return error.code;
   if (error instanceof AccountingError) return error.code;
   if (error instanceof AutoJournalPayloadInvalid) return error.code;
+  if (error instanceof AutoJournalDebitNoteShort) return error.code;
   if (error instanceof AutoJournalReceiptPending) return error.code;
   if (error instanceof AutoJournalReceiptMissing) return error.code;
   if (error instanceof AutoJournalReceiptDeadLettered) return error.code;
@@ -274,7 +291,9 @@ async function park(
     ? new Date(now.getTime() + AUTO_JOURNAL_RETRY_AFTER_MS)
     : code === DEAD_LETTERED_CODE
       ? new Date(now.getTime() + AUTO_JOURNAL_DEAD_LETTER_RECHECK_MS)
-      : null;
+      : code === DEBIT_NOTE_SHORT_CODE
+        ? new Date(now.getTime() + AUTO_JOURNAL_DEBIT_NOTE_SHORT_RECHECK_MS)
+        : null;
   await tx
     .insert(autoJournalParked)
     .values({
@@ -675,6 +694,56 @@ async function postAutoJournal(
       },
       now,
     );
+    // A return with an invoiced part is a debit note: the supplier's open
+    // items fall in this same savepoint, so the card and the ledger move
+    // together or not at all. A replay never gets here (the journal key above
+    // returns `already_posted` first).
+    if (fact.debitNote) {
+      const [purchaseReturn] = await tx
+        .select({
+          purchaseOrderId: purchaseReturns.purchaseOrderId,
+          supplierId: purchaseReturns.supplierId,
+        })
+        .from(purchaseReturns)
+        .where(
+          and(
+            eq(purchaseReturns.tenantId, tenantId),
+            eq(purchaseReturns.id, fact.debitNote.purchaseReturnId),
+          ),
+        )
+        .limit(1);
+      // Events from before the payload carried the supplier: read it from the
+      // return row; park only when neither knows the supplier.
+      const supplierId =
+        purchaseReturn?.supplierId ?? fact.debitNote.supplierId;
+      if (!supplierId)
+        throw new AutoJournalPayloadInvalid(
+          "purchase_return with an invoiced value has no supplier for its debit note",
+        );
+      try {
+        await applySupplierDebitNoteInTransaction(
+          tx,
+          context,
+          {
+            purchaseReturnId: fact.debitNote.purchaseReturnId,
+            amountIdr: fact.debitNote.amountIdr,
+            supplierId,
+            legalEntityId,
+            purchaseOrderId: purchaseReturn?.purchaseOrderId ?? null,
+            settledOn: entryDate,
+            journalEntryId: journal.id,
+          },
+          null,
+        );
+      } catch (error) {
+        if (
+          error instanceof HttpError &&
+          error.code === "PURCHASE_RETURN_EXCEEDS_PAYABLE"
+        )
+          throw new AutoJournalDebitNoteShort(error.message);
+        throw error;
+      }
+    }
   } else return { status: "ignored" };
   if (lateAdjustmentFrom !== null)
     await recordAudit(
@@ -741,6 +810,7 @@ export async function retryParkedAutoJournals(
           or(
             eq(autoJournalParked.retryable, true),
             eq(autoJournalParked.errorCode, DEAD_LETTERED_CODE),
+            eq(autoJournalParked.errorCode, DEBIT_NOTE_SHORT_CODE),
           ),
           lte(autoJournalParked.nextRetryAt, now),
         ),

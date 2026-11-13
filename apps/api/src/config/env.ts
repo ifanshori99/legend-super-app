@@ -266,6 +266,19 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
+    // Gate for supplier invoice posting (ws/purchasing-apar, K5). Off by
+    // default. One switch for the whole chain (legend-29vw): ON also journals
+    // every goods receipt (Dr inventory / Cr GRNI, auto-journal consumer), and
+    // an invoice or a return of the uninvoiced part is refused 409
+    // GOODS_RECEIPT_NOT_JOURNALED until its receipt journal exists. While off,
+    // a match that would book the payable (create, re-match, release) answers
+    // 409 SUPPLIER_INVOICE_POSTING_DISABLED and writes nothing; a held invoice
+    // is still stored, and goods receipt events are ignored. Turn it on only
+    // after the money tests are green and finance made the cutover journals.
+    SUPPLIER_INVOICE_POSTING_ENABLED: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
     // Keyed-digest secret for contact values (WhatsApp numbers, emails) that
     // must link across modules — identity rows, reservations, CRM (AUTH-01/07).
     // Optional so existing deployments start; it falls back to

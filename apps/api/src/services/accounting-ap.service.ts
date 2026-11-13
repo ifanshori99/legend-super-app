@@ -11,6 +11,9 @@
 //   open item. The invoice journal itself posts through the
 //   `supplier_invoice.recorded` rule (one business fact posts once); the
 //   caller links that entry.
+// - applySupplierDebitNoteInTransaction: an invoiced purchase return (debit
+//   note) lowers the supplier's open items, in the transaction that posts the
+//   return journal.
 // - paySupplierInvoiceInTransaction: allocates an approved payment to the
 //   invoice under a row lock and posts the `document:supplier_payment` rule
 //   (debit accounts_payable / credit bank) in the same transaction.
@@ -29,10 +32,18 @@ import {
   type UserId,
 } from "@starter/shared/core";
 import { legalEntityIdSchema, type OpenItem } from "@starter/shared/accounting";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import { journalEntries } from "../db/schema/accounting.ts";
+import {
+  accountingOpenItems,
+  accountingOpenItemSettlements,
+} from "../db/schema/accounting-ap-fa.ts";
 import { user } from "../db/schema/user.ts";
-import { suppliers, supplierInvoices } from "../db/schema/purchasing.ts";
+import {
+  purchaseInvoices,
+  suppliers,
+  supplierInvoices,
+} from "../db/schema/purchasing.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
 import {
@@ -290,6 +301,134 @@ export async function paySupplierInvoiceInTransaction(
       return entry.id;
     },
   );
+}
+
+export const applySupplierDebitNoteInputSchema = z.strictObject({
+  purchaseReturnId: uuidSchema,
+  supplierId: uuidSchema,
+  legalEntityId: legalEntityIdSchema,
+  /** PO of the return: its invoices absorb the debit note first. */
+  purchaseOrderId: uuidSchema.nullable(),
+  /** Invoiced value + PPN of the return (Dr accounts_payable of its journal). */
+  amountIdr: positiveIdr,
+  settledOn: businessDateSchema,
+  journalEntryId: uuidSchema,
+});
+
+/**
+ * Supplier debit note (kartu D): the invoiced part of a purchase return, plus
+ * its PPN, reduces the supplier's payable open items by exactly `amountIdr`,
+ * once. Open items of the supplier in the legal entity are locked, then used
+ * in this order: invoices of the return's PO, due date, document date, id.
+ * One `debit_note` settlement per item (source = the return, journal = the
+ * return journal); idempotent on a per-item key and on the unique index
+ * (tenant, kind, item, source). A shortfall (the supplier was already paid,
+ * or a payment raced the return) throws 409 `PURCHASE_RETURN_EXCEEDS_PAYABLE`
+ * and records nothing: the caller's transaction or savepoint rolls back.
+ */
+export async function applySupplierDebitNoteInTransaction(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  rawInput: z.input<typeof applySupplierDebitNoteInputSchema>,
+  actorId: UserId | null,
+): Promise<{ settlements: SettlementResult[] }> {
+  const input = applySupplierDebitNoteInputSchema.parse(rawInput);
+  const tenantId = context.tenant.tenantId;
+  // A replay (an item already took this return's debit note) never takes it
+  // again: the whole note is recorded together or not at all.
+  const [already] = await tx
+    .select({ id: accountingOpenItemSettlements.id })
+    .from(accountingOpenItemSettlements)
+    .where(
+      and(
+        eq(accountingOpenItemSettlements.tenantId, tenantId),
+        eq(accountingOpenItemSettlements.kind, "payable"),
+        eq(accountingOpenItemSettlements.method, "debit_note"),
+        eq(accountingOpenItemSettlements.sourceId, input.purchaseReturnId),
+      ),
+    )
+    .limit(1);
+  if (already) return { settlements: [] };
+  const items = await tx
+    .select()
+    .from(accountingOpenItems)
+    .where(
+      and(
+        eq(accountingOpenItems.tenantId, tenantId),
+        eq(accountingOpenItems.kind, "payable"),
+        eq(accountingOpenItems.legalEntityId, input.legalEntityId),
+        eq(accountingOpenItems.counterpartyType, "supplier"),
+        eq(accountingOpenItems.counterpartyId, input.supplierId),
+        gt(accountingOpenItems.originalIdr, accountingOpenItems.settledIdr),
+      ),
+    )
+    .orderBy(
+      asc(accountingOpenItems.dueOn),
+      asc(accountingOpenItems.documentDate),
+      asc(accountingOpenItems.id),
+    )
+    .for("update");
+  const ofReturnPo = new Set<string>();
+  if (input.purchaseOrderId !== null && items.length > 0) {
+    const invoices = await tx
+      .select({ id: purchaseInvoices.id })
+      .from(purchaseInvoices)
+      .where(
+        and(
+          eq(purchaseInvoices.tenantId, tenantId),
+          eq(purchaseInvoices.purchaseOrderId, input.purchaseOrderId),
+          inArray(
+            purchaseInvoices.id,
+            items.map((item) => item.id),
+          ),
+        ),
+      );
+    for (const invoice of invoices) ofReturnPo.add(invoice.id);
+  }
+  // Array sort is stable: ties keep the SQL order above.
+  const ordered = [...items].sort(
+    (a, b) => Number(ofReturnPo.has(b.id)) - Number(ofReturnPo.has(a.id)),
+  );
+  const outstanding = ordered.reduce(
+    (sum, item) => sum + (item.originalIdr - item.settledIdr),
+    0,
+  );
+  if (outstanding < input.amountIdr)
+    throw new HttpError(
+      409,
+      "PURCHASE_RETURN_EXCEEDS_PAYABLE",
+      "The invoiced value of this return exceeds the supplier's outstanding payable.",
+    );
+  const settlements: SettlementResult[] = [];
+  let remaining: number = input.amountIdr;
+  for (const item of ordered) {
+    if (remaining === 0) break;
+    const amountIdr = Math.min(remaining, item.originalIdr - item.settledIdr);
+    settlements.push(
+      await settleOpenItemInTransaction(
+        tx,
+        context,
+        {
+          kind: "payable",
+          openItemId: item.id,
+          method: "debit_note",
+          sourceId: input.purchaseReturnId,
+          // Never before the invoice: a settlement cannot predate its document.
+          settledOn:
+            input.settledOn > item.documentDate
+              ? input.settledOn
+              : item.documentDate,
+          amountIdr,
+          reason: null,
+          idempotencyKey: `ap-dn:${input.purchaseReturnId}:${item.id}`,
+        },
+        actorId,
+        async () => input.journalEntryId,
+      ),
+    );
+    remaining -= amountIdr;
+  }
+  return { settlements };
 }
 
 const repairSupplierInvoiceNpwpInputSchema = z.strictObject({

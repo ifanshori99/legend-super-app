@@ -18,6 +18,7 @@
 // Assumption: quantities in the request are in the item base unit (see service).
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { liftDocumentCounters } from "./purchasing-document-counters.ts";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   outletIdSchema,
@@ -370,6 +371,7 @@ beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   setPurchaseReturnPostingEnabled(true);
+  await liftDocumentCounters(owner, tenantA);
   creatorId = await plainUser("creator");
   approverId = await plainUser("approver");
   // warehouse holds inventory.stock.receive and purchasing.return.create.

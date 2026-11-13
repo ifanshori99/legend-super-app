@@ -44,6 +44,7 @@ import { db } from "../db";
 import { fiscalPeriods, legalEntities, taxReports } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { resolveCoretaxTaxIds } from "./accounting-coretax-tax-ids";
 import { buildCoretaxXml } from "./accounting-coretax-xml";
 import {
   auditAccountingChange,
@@ -490,7 +491,9 @@ export async function exportTaxReport(
 
     const fileName = reportFileName(row);
     const fileKey = `tax-reports/${row.id}/${fileName}`;
-    const xml = buildCoretaxXml(toTaxReport(row));
+    const report = toTaxReport(row);
+    const taxIds = await resolveCoretaxTaxIds(tx, tenantId, report);
+    const xml = buildCoretaxXml(report, taxIds);
     const lookup = {
       tenantId,
       outletId: null,
@@ -527,6 +530,18 @@ export async function exportTaxReport(
         objectId: exported.id,
         before: { status: row.status },
         after: { status: "exported", type: row.type },
+      });
+      // The real NPWPs were opened for this file. Count only, never a value.
+      await auditAccountingChange(tx, context, {
+        actorId,
+        action: "accounting.tax_report.npwp_opened",
+        objectType: "tax_report",
+        objectId: exported.id,
+        before: null,
+        after: {
+          lineTaxIds: taxIds.lines.size,
+          taxpayerIncluded: taxIds.taxpayer !== null,
+        },
       });
       return exported;
     } catch (error) {

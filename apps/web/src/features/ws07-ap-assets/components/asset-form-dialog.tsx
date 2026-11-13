@@ -3,7 +3,7 @@
 // only v1 method (contract note in assets.ts). Money fields are typed as whole
 // rupiah and parsed for display only.
 import * as React from "react";
-import { createFixedAssetInputSchema } from "@starter/shared/accounting";
+import { createFixedAssetBaseSchema } from "@starter/shared/accounting";
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/errors";
 import { Button } from "@/components/ui/button";
@@ -29,8 +29,12 @@ import { businessDateToday, monthRange } from "@/features/ws07-accounting/lib";
 import { useAccountingOutlets, useCreateFixedAsset } from "../hooks";
 import { parseAmountInput } from "../lib";
 
-/** The form omits the idempotency key; the endpoint caller mints it. */
-const createAssetFormSchema = createFixedAssetInputSchema.omit({
+/**
+ * The form omits the idempotency key; the endpoint caller mints it. It is built
+ * from the base schema (refined schemas cannot be omitted) and registers
+ * opening-balance assets only: no source document, so no supplier payable.
+ */
+const createAssetFormSchema = createFixedAssetBaseSchema.omit({
   idempotencyKey: true,
 });
 

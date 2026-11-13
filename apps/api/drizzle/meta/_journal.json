@@ -2234,6 +2234,27 @@
       "when": 1794570200000,
       "tag": "0332_cash_limit_antisplit",
       "breakpoints": true
+    },
+    {
+      "idx": 333,
+      "version": "7",
+      "when": 1794570300000,
+      "tag": "0333_purchase_invoices_apar",
+      "breakpoints": true
+    },
+    {
+      "idx": 334,
+      "version": "7",
+      "when": 1794570400000,
+      "tag": "0334_purchase_invoices_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 335,
+      "version": "7",
+      "when": 1794570500000,
+      "tag": "0335_purchase_price_variance",
+      "breakpoints": true
     }
   ]
 }

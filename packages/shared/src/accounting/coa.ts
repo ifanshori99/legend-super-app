@@ -216,6 +216,8 @@ export const POSTING_ACCOUNT_ROLES = {
   cogs: "expense",
   waste_expense: "expense",
   inventory_adjustment: "expense",
+  /** Supplier invoice price vs purchase order price (GRNI is cleared at the order price, legend-29vw). */
+  purchase_price_variance: "expense",
   /** Direct cash purchases paid from petty cash (PRD §3.18 pembelian sederhana). */
   petty_purchase_expense: "expense",
   salary_expense: "expense",
@@ -485,6 +487,13 @@ const standardRows: Row[] = [
     "cogs",
     "5100",
     ["petty_purchase_expense"],
+  ],
+  [
+    "5105",
+    "Selisih Harga Pembelian",
+    "cogs",
+    "5100",
+    ["purchase_price_variance"],
   ],
   ["6100", "Beban Operasional", "operating_expense", null],
   [

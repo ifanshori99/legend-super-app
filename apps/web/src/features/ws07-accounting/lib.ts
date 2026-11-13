@@ -28,6 +28,14 @@ import {
   type OutletId,
 } from "@starter/shared/core";
 import type { MessageKey } from "@starter/shared/i18n";
+import {
+  journalSourceGuard,
+  journalSourceHref,
+  type JournalSourceGuard,
+} from "./journal-source-links.ts";
+
+export { journalSourceGuard, journalSourceHref };
+export type { JournalSourceGuard };
 
 // ---- Chart of accounts ----------------------------------------------------
 
@@ -218,40 +226,43 @@ export function journalSourceLabelKey(source: JournalSourceType): MessageKey {
 
 /**
  * Where a journal's source document lives. Only screens that exist in this app
- * are linked; the rest keep the reference id and say the source opens in its
- * own module. `Screen` names a route family, not a URL, so this file stays
- * testable without the router.
+ * are linked (journal-source-links.ts); the rest keep the reference id and say
+ * the source opens in its own module. `href` is a concrete path with the id
+ * already encoded, so this file stays testable without the router.
  */
-export type JournalSourceScreen = "journal" | "manualJournal" | "recurring";
-
 export type JournalSourceInfo = {
   labelKey: MessageKey;
   /** Source document id from the entry, for tracing (ACC-03). */
   reference: string | null;
-  link: { screen: JournalSourceScreen; id?: string } | null;
+  link: { href: string } | null;
 };
 
+/**
+ * `canOpen` answers whether the visitor passes the destination screen's guard
+ * (useSourceGate in ./guard.ts). Without it no link is offered, so a caller
+ * that forgets the gate fails closed.
+ *
+ * A reversal journal stores no source id (the service posts it with
+ * sourceId null); the entry it reverses is in `reversalOf`.
+ */
 export function journalSourceInfo(
-  entry: Pick<JournalEntry, "sourceType" | "sourceId">,
+  entry: Pick<JournalEntry, "sourceType" | "sourceId" | "reversalOf">,
+  canOpen?: (guard: JournalSourceGuard) => boolean,
 ): JournalSourceInfo {
-  const labelKey = journalSourceLabelKey(entry.sourceType);
-  const reference = entry.sourceId;
-  if (entry.sourceType === "manual")
-    return {
-      labelKey,
-      reference,
-      link:
-        reference === null ? null : { screen: "manualJournal", id: reference },
-    };
-  if (entry.sourceType === "recurring")
-    return { labelKey, reference, link: { screen: "recurring" } };
-  if (entry.sourceType === "reversal")
-    return {
-      labelKey,
-      reference,
-      link: reference === null ? null : { screen: "journal", id: reference },
-    };
-  return { labelKey, reference, link: null };
+  const reference =
+    entry.sourceType === "reversal"
+      ? (entry.reversalOf ?? entry.sourceId)
+      : entry.sourceId;
+  const guard = journalSourceGuard(entry.sourceType);
+  const href =
+    guard !== null && canOpen?.(guard) === true
+      ? journalSourceHref(entry.sourceType, reference)
+      : null;
+  return {
+    labelKey: journalSourceLabelKey(entry.sourceType),
+    reference,
+    link: href === null ? null : { href },
+  };
 }
 
 // ---- Balance (ACC-01) -----------------------------------------------------

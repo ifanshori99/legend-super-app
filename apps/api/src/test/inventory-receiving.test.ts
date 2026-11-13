@@ -21,6 +21,7 @@
 // - The same media id twice in one request is stored once, in first-seen order.
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { liftDocumentCounters } from "./purchasing-document-counters.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   outletIdSchema,
@@ -453,6 +454,7 @@ async function countRows(
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
+  await liftDocumentCounters(owner, tenantA);
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
      VALUES ($1, $2, 'Goods Receipt Tenant B', 'lengkap', 'active', 'shared', $3, $4, $5)`,

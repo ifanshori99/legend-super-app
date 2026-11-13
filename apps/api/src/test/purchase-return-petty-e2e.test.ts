@@ -23,6 +23,7 @@
 //   the other 403s are asserted by status (the code name is not pinned).
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { liftDocumentCounters } from "./purchasing-document-counters.ts";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   outletIdSchema,
@@ -555,6 +556,7 @@ beforeAll(async () => {
     throw new Error("Requires the disposable test database");
   setPurchaseReturnPostingEnabled(true);
   setAuditWriter(coreAuditWriter);
+  await liftDocumentCounters(owner, tenantA);
   await makeAccountingWorld();
   creatorId = await plainUser("creator");
   approverId = await plainUser("approver");

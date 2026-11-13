@@ -15,6 +15,7 @@ import { createPurchasingSupplierRouter } from "./purchasing-supplier.routes.ts"
 import { createPurchasingOrderRouter } from "./purchasing-order.routes.ts";
 import { createInventoryReceivingRouter } from "./inventory-receiving.routes.ts";
 import { createPurchaseReturnRouter } from "./purchase-return.routes.ts";
+import { createPurchasingInvoiceRouter } from "./purchasing-invoice.routes.ts";
 import { createPettyPurchaseRouter } from "./petty-purchase.routes.ts";
 import {
   createPurchasingSendRouter,
@@ -228,6 +229,8 @@ apiRouter.use("/inventory", createInventoryReceivingRouter());
 // Supplier returns and simple petty purchases (legend-65mgw).
 apiRouter.use("/inventory", createPurchaseReturnRouter());
 apiRouter.use("/inventory", createPettyPurchaseRouter());
+// Supplier invoices, three-way match, hold/release, tolerance policy (ws/purchasing-apar).
+apiRouter.use("/inventory", createPurchasingInvoiceRouter());
 // Send PO by email or share link (PRD §3.18 "Kirim PO", legend-9yz).
 apiRouter.use("/inventory", createPurchasingSendRouter());
 // Stock opname / stok opname with blind count and approval (legend-j5x, INV-03).
