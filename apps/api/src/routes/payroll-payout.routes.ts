@@ -1,0 +1,288 @@
+// Payroll payout (disbursement): per-legal-entity payout config, batches,
+// manual bank export and confirmation, cash handover. Design:
+// docs/design/payroll-disbursement.md. Mounted at `/api/hris/payroll`; guards
+// sit on each route so every other payroll path falls through untouched.
+// Money moves only behind a tenant permission AND a recent second factor
+// (`requireTenantStepUpMfa`): config write, approve, export, confirm. Each
+// handler is one transaction, so the export state change is committed before
+// the file leaves the server (a second download answers 409).
+
+import { Router, type Request } from "express";
+import {
+  approveDisbursementBatchInputSchema,
+  cancelDisbursementBatchInputSchema,
+  confirmCashHandoverInputSchema,
+  confirmManualItemsInputSchema,
+  createDisbursementBatchInputSchema,
+  payoutBatchParamsSchema,
+  payoutLegalEntityParamsSchema,
+  payoutRunParamsSchema,
+  resolveManualItemsSchema,
+  upsertPayoutConfigInputSchema,
+} from "@starter/shared/validators/payroll-payout";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { getAuth, requireAuth } from "../middleware/auth.ts";
+import { jsonBody } from "../middleware/body.ts";
+import { requireTenantStepUpMfa } from "../middleware/identity.ts";
+import { requireTrustedOrigin } from "../middleware/origin.ts";
+import {
+  getScopedTenantContext,
+  requireTenantPermission,
+} from "../middleware/permissions.ts";
+import { requireTenantContext } from "../middleware/tenant.ts";
+import {
+  getPayoutConfig,
+  upsertPayoutConfig,
+} from "../services/payroll-payout-config.service.ts";
+import {
+  exportManualBatch,
+  confirmCashHandover,
+  confirmManualItems,
+  resolveManualItems,
+} from "../services/payroll-payout-manual.service.ts";
+import {
+  approveDisbursementBatch,
+  cancelDisbursementBatch,
+  createDisbursementBatch,
+  getDisbursementBatch,
+  listDisbursementBatches,
+  submitDisbursementBatch,
+} from "../services/payroll-payout.service.ts";
+
+export const payrollPayoutRouter = Router();
+
+const stepUp = requireTenantStepUpMfa({ maxAgeMinutes: 15 });
+
+function actorOf(req: Request) {
+  const context = getScopedTenantContext(req);
+  return {
+    context,
+    actor: { tenantId: context.tenant.tenantId, userId: getAuth(req).user.id },
+  };
+}
+
+payrollPayoutRouter.get(
+  "/payout-configs/:legalEntityId",
+  requireAuth,
+  requireTenantContext,
+  requireTenantPermission("payroll.view"),
+  async (req, res) => {
+    const { legalEntityId } = payoutLegalEntityParamsSchema.parse(req.params);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      getPayoutConfig(tx, actor.tenantId, legalEntityId),
+    );
+    res.json({ data });
+  },
+);
+
+payrollPayoutRouter.put(
+  "/payout-configs/:legalEntityId",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.payout.configure"),
+  stepUp,
+  jsonBody,
+  async (req, res) => {
+    const { legalEntityId } = payoutLegalEntityParamsSchema.parse(req.params);
+    const input = upsertPayoutConfigInputSchema.parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      upsertPayoutConfig(tx, actor, legalEntityId, input),
+    );
+    res.json({ data });
+  },
+);
+
+payrollPayoutRouter.get(
+  "/runs/:id/disbursement-batches",
+  requireAuth,
+  requireTenantContext,
+  requireTenantPermission("payroll.view"),
+  async (req, res) => {
+    const { id } = payoutRunParamsSchema.parse(req.params);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      listDisbursementBatches(tx, actor.tenantId, id),
+    );
+    res.json({ data });
+  },
+);
+
+payrollPayoutRouter.post(
+  "/runs/:id/disbursement-batches",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.disburse.request"),
+  jsonBody,
+  async (req, res) => {
+    const { id } = payoutRunParamsSchema.parse(req.params);
+    const { channel } = createDisbursementBatchInputSchema.parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      createDisbursementBatch(tx, actor, { payrollRunId: id, channel }),
+    );
+    res.status(201).json({ data });
+  },
+);
+
+payrollPayoutRouter.get(
+  "/disbursement-batches/:id",
+  requireAuth,
+  requireTenantContext,
+  requireTenantPermission("payroll.view"),
+  async (req, res) => {
+    const { id } = payoutBatchParamsSchema.parse(req.params);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      getDisbursementBatch(tx, actor.tenantId, id),
+    );
+    res.json({ data });
+  },
+);
+
+payrollPayoutRouter.post(
+  "/disbursement-batches/:id/submit",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.disburse.request"),
+  jsonBody,
+  async (req, res) => {
+    const { id } = payoutBatchParamsSchema.parse(req.params);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      submitDisbursementBatch(tx, actor, id),
+    );
+    res.json({ data });
+  },
+);
+
+payrollPayoutRouter.post(
+  "/disbursement-batches/:id/approve",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.disburse.approve"),
+  stepUp,
+  jsonBody,
+  async (req, res) => {
+    const { id } = payoutBatchParamsSchema.parse(req.params);
+    const { contentHash } = approveDisbursementBatchInputSchema.parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      approveDisbursementBatch(tx, actor, id, { contentHash }),
+    );
+    res.json({ data });
+  },
+);
+
+payrollPayoutRouter.post(
+  "/disbursement-batches/:id/cancel",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.disburse.request"),
+  jsonBody,
+  async (req, res) => {
+    const { id } = payoutBatchParamsSchema.parse(req.params);
+    const { reason } = cancelDisbursementBatchInputSchema.parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      cancelDisbursementBatch(tx, actor, id, { reason }),
+    );
+    res.json({ data });
+  },
+);
+
+// The download is a POST: it changes state (batch and items become
+// `exported`) and works once. The file is never stored, only its checksum.
+payrollPayoutRouter.post(
+  "/disbursement-batches/:id/export",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.disburse.request"),
+  stepUp,
+  jsonBody,
+  async (req, res) => {
+    const { id } = payoutBatchParamsSchema.parse(req.params);
+    const { context, actor } = actorOf(req);
+    // Respond only after the transaction committed the export state.
+    const file = await withTenant(db, context, (tx) =>
+      exportManualBatch(tx, actor, id),
+    );
+    res
+      .status(200)
+      .setHeader("Content-Type", file.contentType)
+      .setHeader(
+        "Content-Disposition",
+        `attachment; filename="${file.filename.replace(/["\\\r\n]/g, "_")}"`,
+      )
+      .setHeader("Cache-Control", "no-store")
+      .setHeader("X-Content-Checksum-Sha256", file.checksumSha256)
+      .send(file.content);
+  },
+);
+
+payrollPayoutRouter.post(
+  "/disbursement-batches/:id/confirm",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.disburse.approve"),
+  stepUp,
+  jsonBody,
+  async (req, res) => {
+    const { id } = payoutBatchParamsSchema.parse(req.params);
+    const input = confirmManualItemsInputSchema.parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      confirmManualItems(tx, actor, id, input),
+    );
+    res.json({ data });
+  },
+);
+
+// Two-step: an exported item moves to failed or not_sent only after two
+// different non-requesters each call this with the same outcome and evidence.
+payrollPayoutRouter.post(
+  "/disbursement-batches/:id/resolve",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.disburse.approve"),
+  stepUp,
+  jsonBody,
+  async (req, res) => {
+    const { id } = payoutBatchParamsSchema.parse(req.params);
+    const input = resolveManualItemsSchema.parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      resolveManualItems(tx, actor, id, input),
+    );
+    res.json({ data });
+  },
+);
+
+payrollPayoutRouter.post(
+  "/disbursement-batches/:id/confirm-cash",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.disburse.approve"),
+  stepUp,
+  jsonBody,
+  async (req, res) => {
+    const { id } = payoutBatchParamsSchema.parse(req.params);
+    const input = confirmCashHandoverInputSchema.parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      confirmCashHandover(tx, actor, id, input),
+    );
+    res.json({ data });
+  },
+);

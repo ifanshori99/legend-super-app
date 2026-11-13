@@ -637,6 +637,9 @@ export const payslipBankSnapshots = pgTable(
     employeeId: uuid("employee_id").notNull(),
     snapshotEncrypted: bytea("snapshot_encrypted").notNull(),
     piiKeyVersion: smallint("pii_key_version").notNull(),
+    /** BI bank code (3 digits, not secret) copied from the employee at lock;
+     * null when the employee has none. Never rewritten (0345). */
+    bankCode: text("bank_code"),
     createdAt: createdAt(),
   },
   (table) => [
@@ -667,6 +670,10 @@ export const payslipBankSnapshots = pgTable(
     check(
       "payslip_bank_snapshots_key_version_check",
       sql`${table.piiKeyVersion} >= 1`,
+    ),
+    check(
+      "payslip_bank_snapshots_bank_code_check",
+      sql`${table.bankCode} IS NULL OR ${table.bankCode} ~ '^[0-9]{3}$'`,
     ),
   ],
 );

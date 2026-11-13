@@ -1,0 +1,1331 @@
+// Payroll disbursement batches (bead legend-wnkep.1; founder Q15-Q17; design
+// docs/design/payroll-disbursement.md sections 4-7). Money area: nobody is paid
+// twice, nobody is paid more than net pay, no item is lost. When a rule is
+// unclear this file picks the one that limits payment.
+//
+// Trusted in-transaction writers: the caller wraps `withTenant`, a throw rolls
+// back everything. Lock order everywhere: payroll run row, then the batch row,
+// then items (`loadBatchRunFirst` does this for a batch that already exists).
+// The database is the net (partial unique indexes, CHECKs and the guard
+// triggers of migration 0344); these functions choose the happy path and give
+// every refusal a readable code.
+//
+// Flow: create (draft) -> submit by the requester (pending_approval, content
+// hash stored, blocked items cancelled) -> approve by a DIFFERENT person who
+// saw the same hash (approved, valid 24h) -> export or cash handover
+// (payroll-payout-manual.service.ts). Cancel is possible until a file left.
+//
+// Net pay is the amount, always in full. The bank fee is paid by the company
+// (Q15): it is stored per item (sealed) and never subtracted from the amount.
+// Only `manual_bank` and `cash` batches exist in this slice; `duitku` is
+// refused 409 PAYOUT_CHANNEL_NOT_AVAILABLE.
+
+import { createHash, randomUUID } from "node:crypto";
+import { and, asc, eq, inArray } from "drizzle-orm";
+import {
+  createUlid,
+  idr,
+  type Idr,
+  type TenantId,
+  type UserId,
+} from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import {
+  payslipCalculationSchema,
+  type PayrollRunId,
+  type PayslipId,
+} from "@starter/shared/hris/payroll";
+import type {
+  PayrollDisbursementBatchDto,
+  PayrollDisbursementItemDto,
+} from "@starter/shared/types";
+import {
+  payrollDisbursementBatches,
+  payrollDisbursementItems,
+  payrollPayoutConfigs,
+  PAYOUT_LIVE_ITEM_STATUSES,
+  type PayoutChannel,
+  type PayoutItemStatus,
+} from "../db/schema/payroll-payout.ts";
+import {
+  bankTransferFiles,
+  payrollRuns,
+  payslipBankSnapshots,
+  payslips,
+} from "../db/schema/payroll.ts";
+import { HttpError } from "../lib/http-error.ts";
+import { getBankFormatter } from "../lib/payroll-export/bank-formats.ts";
+import {
+  PAYROLL_SEAL_KEY_VERSION,
+  openPayrollAmount,
+  openPayrollValue,
+  sealPayrollAmount,
+  sealPayrollValue,
+} from "../lib/payroll-sealed.ts";
+import { recordAudit } from "./core-audit.ts";
+import type { Tx } from "./hris-access.ts";
+
+export type PayoutActor = { tenantId: string; userId: string };
+export type BatchRow = typeof payrollDisbursementBatches.$inferSelect;
+export type ItemRow = typeof payrollDisbursementItems.$inferSelect;
+
+/** An approval is valid this long; export or handover after it is refused. */
+export const PAYOUT_APPROVAL_TTL_HOURS = 24;
+
+/** The BI code of BCA: the only bank the `bca` file format can pay. */
+const BCA_BANK_CODE = "014";
+
+/** Last attempt states that free a payslip for a new batch (R7). */
+const RETRYABLE_ITEM_STATUSES: readonly PayoutItemStatus[] = [
+  "failed",
+  "not_sent",
+  "returned",
+  "cancelled",
+];
+const FINAL_BATCH_STATUSES = [
+  "completed",
+  "partially_failed",
+  "cancelled",
+] as const;
+
+// ------------------------------------------------------------ small helpers
+
+const UUID_FORMAT =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export const payoutRefuse = (
+  status: number,
+  code: string,
+  message: string,
+): HttpError => new HttpError(status, code, message);
+
+const asTenant = (tenantId: string) => tenantId as TenantId;
+const asUser = (userId: string) => userId as UserId;
+
+export function payoutScope(tenantId: string) {
+  return establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: asTenant(tenantId),
+      brandId: null,
+      source: "domain",
+    }),
+    { kind: "tenant" },
+  );
+}
+
+const PAYOUT_AUDIT_SAFE_FIELDS = [
+  "status",
+  "channel",
+  "itemCount",
+  "runId",
+  "by",
+  "contentHash",
+  "checksum",
+  "confirmed",
+  "failed",
+  "outcome",
+  "resolved",
+  "evidenceKey",
+  "method",
+  "enabled",
+  "bankFormat",
+] as const;
+
+/**
+ * Audit row of a payout step. Values are ids, statuses and counts only: no
+ * amounts, names or account numbers (the masker redacts anything else).
+ */
+export async function recordPayoutAudit(
+  tx: Tx,
+  actor: PayoutActor,
+  input: {
+    action: string;
+    objectType: string;
+    objectId: string;
+    reason?: string | null;
+    before: Record<string, string | number | null>;
+    after: Record<string, string | number | null>;
+  },
+): Promise<void> {
+  const now = new Date();
+  // The audit schema wants a UUID actor; the user id is also kept in `by`.
+  const actorId = UUID_FORMAT.test(actor.userId) ? actor.userId : null;
+  await recordAudit(
+    tx,
+    payoutScope(actor.tenantId),
+    {
+      id: createUlid(now.getTime()),
+      tenantId: asTenant(actor.tenantId),
+      outletId: null,
+      actorType: actorId ? "user" : "system",
+      actorId,
+      deviceId: null,
+      action: input.action,
+      objectType: input.objectType,
+      objectId: input.objectId,
+      reason: input.reason ?? null,
+      maskedChanges: {
+        before: input.before,
+        after: { ...input.after, by: actor.userId },
+      },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: now.toISOString(),
+    },
+    PAYOUT_AUDIT_SAFE_FIELDS,
+  );
+}
+
+// ------------------------------------------------------------ sealed values
+
+const itemBinding = (
+  tenantId: string,
+  itemId: string,
+  field: "amount" | "fee",
+) =>
+  ({
+    tenantId,
+    table: "payroll_disbursement_items",
+    rowId: itemId,
+    field,
+  }) as const;
+
+const batchTotalsBinding = (tenantId: string, batchId: string) =>
+  ({
+    tenantId,
+    table: "payroll_disbursement_batches",
+    rowId: batchId,
+    field: "totals",
+  }) as const;
+
+/** Net pay of one item, whole rupiah, sealed to this item row. */
+export function sealItemAmount(
+  tenantId: string,
+  itemId: string,
+  amountIdr: number,
+): Buffer {
+  return sealPayrollAmount(
+    idr(amountIdr),
+    itemBinding(tenantId, itemId, "amount"),
+  );
+}
+
+/** Opens the sealed net pay of an item (throws on tamper or wrong row). */
+export function openItemAmount(
+  row: Pick<ItemRow, "id" | "tenantId" | "amountEncrypted" | "piiKeyVersion">,
+): Idr {
+  return openPayrollAmount(
+    row.amountEncrypted,
+    itemBinding(row.tenantId, row.id, "amount"),
+    row.piiKeyVersion,
+  );
+}
+
+export function sealItemFee(
+  tenantId: string,
+  itemId: string,
+  feeIdr: number,
+): Buffer {
+  return sealPayrollAmount(idr(feeIdr), itemBinding(tenantId, itemId, "fee"));
+}
+
+export function openItemFee(
+  row: Pick<ItemRow, "id" | "tenantId" | "feeIdrEncrypted" | "piiKeyVersion">,
+): Idr {
+  return openPayrollAmount(
+    row.feeIdrEncrypted,
+    itemBinding(row.tenantId, row.id, "fee"),
+    row.piiKeyVersion,
+  );
+}
+
+type BatchTotals = { totalIdr: number; totalFeeIdr: number; itemCount: number };
+
+function sealBatchTotals(
+  tenantId: string,
+  batchId: string,
+  totals: BatchTotals,
+): Buffer {
+  return sealPayrollValue(
+    JSON.stringify(totals),
+    batchTotalsBinding(tenantId, batchId),
+    PAYROLL_SEAL_KEY_VERSION,
+  );
+}
+
+export function openBatchTotals(
+  row: Pick<BatchRow, "id" | "tenantId" | "totalsEncrypted" | "piiKeyVersion">,
+): BatchTotals {
+  const parsed: unknown = JSON.parse(
+    openPayrollValue(
+      row.totalsEncrypted,
+      batchTotalsBinding(row.tenantId, row.id),
+      row.piiKeyVersion,
+    ),
+  );
+  const value = parsed as Partial<BatchTotals>;
+  if (
+    !Number.isSafeInteger(value.totalIdr) ||
+    !Number.isSafeInteger(value.totalFeeIdr) ||
+    !Number.isSafeInteger(value.itemCount)
+  )
+    throw new Error("Sealed batch totals are malformed");
+  return value as BatchTotals;
+}
+
+// ------------------------------------------------------------- content hash
+
+export type HashItem = {
+  payslipId: string;
+  amountIdr: number;
+  bankSnapshotId: string | null;
+  bankCode: string | null;
+};
+
+/**
+ * SHA-256 of the ordered items of one batch: payslip, net amount, the frozen
+ * bank snapshot (its id stands for the account, which is never copied) and the
+ * bank code. The approver stores the hash they saw; export recomputes it, so
+ * an item changed after approval stops the file (R5).
+ */
+export function computeBatchContentHash(items: readonly HashItem[]): string {
+  const lines = [...items]
+    .sort((a, b) =>
+      a.payslipId < b.payslipId ? -1 : a.payslipId > b.payslipId ? 1 : 0,
+    )
+    .map((item) =>
+      [
+        item.payslipId,
+        String(item.amountIdr),
+        item.bankSnapshotId ?? "",
+        item.bankCode ?? "",
+      ].join("|"),
+    );
+  return createHash("sha256")
+    .update(`payout-batch-v1\n${lines.join("\n")}`)
+    .digest("hex");
+}
+
+/** Hash over the batch items that are in one of `statuses` right now. */
+export async function batchContentHash(
+  tx: Tx,
+  batch: Pick<BatchRow, "id" | "tenantId">,
+  statuses: readonly PayoutItemStatus[],
+): Promise<string> {
+  const rows = await tx
+    .select()
+    .from(payrollDisbursementItems)
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, batch.tenantId),
+        eq(payrollDisbursementItems.batchId, batch.id),
+        inArray(payrollDisbursementItems.status, [...statuses]),
+      ),
+    );
+  return computeBatchContentHash(
+    rows.map((row) => ({
+      payslipId: row.payslipId,
+      amountIdr: openItemAmount(row),
+      bankSnapshotId: row.bankSnapshotId,
+      bankCode: row.bankCode,
+    })),
+  );
+}
+
+// --------------------------------------------------------------- row loaders
+
+const batchNotFound = () =>
+  payoutRefuse(
+    404,
+    "PAYOUT_BATCH_NOT_FOUND",
+    "Batch pembayaran tidak ditemukan.",
+  );
+
+/** Reads a batch row without a lock (to find its run before the lock order). */
+async function readBatch(
+  tx: Tx,
+  tenantId: string,
+  batchId: string,
+): Promise<BatchRow> {
+  if (!UUID_FORMAT.test(batchId)) throw batchNotFound();
+  const [row] = await tx
+    .select()
+    .from(payrollDisbursementBatches)
+    .where(
+      and(
+        eq(payrollDisbursementBatches.tenantId, asTenant(tenantId)),
+        eq(payrollDisbursementBatches.id, batchId),
+      ),
+    );
+  if (!row) throw batchNotFound();
+  return row;
+}
+
+/** Reads a batch row and locks it (`FOR UPDATE`) for the rest of the transaction. */
+export async function loadBatchForUpdate(
+  tx: Tx,
+  tenantId: string,
+  batchId: string,
+): Promise<BatchRow> {
+  if (!UUID_FORMAT.test(batchId)) throw batchNotFound();
+  const [row] = await tx
+    .select()
+    .from(payrollDisbursementBatches)
+    .where(
+      and(
+        eq(payrollDisbursementBatches.tenantId, asTenant(tenantId)),
+        eq(payrollDisbursementBatches.id, batchId),
+      ),
+    )
+    .for("update");
+  if (!row) throw batchNotFound();
+  return row;
+}
+
+/**
+ * Lock order of every step on an existing batch: the run row first, then the
+ * batch row (create, submit and approve do the same). The run lock is `update`
+ * because a result step may turn the run `paid` in the same transaction.
+ */
+export async function loadBatchRunFirst(
+  tx: Tx,
+  tenantId: string,
+  batchId: string,
+): Promise<BatchRow> {
+  const peek = await readBatch(tx, tenantId, batchId);
+  await lockRun(tx, tenantId, peek.payrollRunId, "update");
+  return loadBatchForUpdate(tx, tenantId, batchId);
+}
+
+export async function loadBatchItems(
+  tx: Tx,
+  tenantId: string,
+  batchId: string,
+  lock = false,
+): Promise<ItemRow[]> {
+  const query = tx
+    .select()
+    .from(payrollDisbursementItems)
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, asTenant(tenantId)),
+        eq(payrollDisbursementItems.batchId, batchId),
+      ),
+    )
+    .orderBy(
+      asc(payrollDisbursementItems.createdAt),
+      asc(payrollDisbursementItems.id),
+    );
+  return lock ? query.for("update") : query;
+}
+
+/** Reads the run row with a lock; the status gate of every payout step. */
+async function lockRun(
+  tx: Tx,
+  tenantId: string,
+  runId: string,
+  mode: "update" | "share",
+) {
+  const query = tx
+    .select({
+      id: payrollRuns.id,
+      status: payrollRuns.status,
+      legalEntityId: payrollRuns.legalEntityId,
+    })
+    .from(payrollRuns)
+    .where(
+      and(
+        eq(payrollRuns.tenantId, asTenant(tenantId)),
+        eq(payrollRuns.id, runId as PayrollRunId),
+      ),
+    );
+  const [run] = await (mode === "update"
+    ? query.for("update")
+    : query.for("share"));
+  if (!run)
+    throw payoutRefuse(
+      404,
+      "PAYROLL_RUN_NOT_FOUND",
+      "Payroll tidak ditemukan.",
+    );
+  return run;
+}
+
+/** Step gate: the run must still be locked (or paid, for a follow-up batch). */
+export async function assertRunPayable(
+  tx: Tx,
+  tenantId: string,
+  runId: string,
+): Promise<void> {
+  const run = await lockRun(tx, tenantId, runId, "share");
+  if (run.status !== "locked" && run.status !== "paid")
+    throw payoutRefuse(
+      409,
+      "PAYOUT_RUN_NOT_PAYABLE",
+      "Payroll belum dikunci atau sudah dibatalkan, pembayaran tidak bisa dilanjutkan.",
+    );
+}
+
+/** Per-PT switch (R15): a manual batch moves only while its PT config is on. */
+export async function assertManualConfigEnabled(
+  tx: Tx,
+  tenantId: string,
+  legalEntityId: string,
+) {
+  const [config] = await tx
+    .select()
+    .from(payrollPayoutConfigs)
+    .where(
+      and(
+        eq(payrollPayoutConfigs.tenantId, asTenant(tenantId)),
+        eq(payrollPayoutConfigs.legalEntityId, legalEntityId),
+      ),
+    )
+    .for("share");
+  if (!config || !config.enabled)
+    throw payoutRefuse(
+      409,
+      "PAYOUT_CONFIG_DISABLED",
+      "Pembayaran gaji untuk PT ini belum diaktifkan di pengaturan.",
+    );
+  // L6: a config set to another method (duitku) never opens a manual batch.
+  if (config.method !== "manual_bank")
+    throw payoutRefuse(
+      409,
+      "PAYOUT_CHANNEL_NOT_AVAILABLE",
+      "Pengaturan PT ini bukan transfer bank manual.",
+    );
+  return config;
+}
+
+// --------------------------------------------------------------------- DTOs
+
+const iso = (value: Date | null) => (value ? value.toISOString() : null);
+
+function toItemDto(row: ItemRow): PayrollDisbursementItemDto {
+  return {
+    id: row.id,
+    batchId: row.batchId,
+    payslipId: row.payslipId,
+    employeeId: row.employeeId,
+    channel: row.channel,
+    attemptNo: row.attemptNo,
+    status: row.status,
+    excludedReason:
+      row.excludedReason as PayrollDisbursementItemDto["excludedReason"],
+    amountIdr: openItemAmount(row),
+    feeIdr: openItemFee(row),
+    bankCode: row.bankCode,
+    nameMatch: row.nameMatch === null ? null : row.nameMatch === "exact",
+    providerRef: row.providerRef,
+    confirmedBy: row.confirmedBy,
+    confirmationRef: row.confirmationRef,
+    settledAt: iso(row.settledAt),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function toBatchDto(
+  row: BatchRow,
+  items: readonly ItemRow[],
+): PayrollDisbursementBatchDto {
+  return {
+    id: row.id,
+    legalEntityId: row.legalEntityId,
+    payrollRunId: row.payrollRunId,
+    channel: row.channel,
+    status: row.status,
+    haltReason: row.haltReason,
+    requestedBy: row.requestedBy,
+    requestedAt: row.requestedAt.toISOString(),
+    approvedBy: row.approvedBy,
+    approvedAt: iso(row.approvedAt),
+    approvalExpiresAt: iso(row.approvalExpiresAt),
+    contentHash: row.contentHash,
+    itemCount: row.itemCount,
+    totalIdr: openBatchTotals(row).totalIdr,
+    bankFormat: row.bankFormat as PayrollDisbursementBatchDto["bankFormat"],
+    exportChecksumSha256: row.exportChecksumSha256,
+    exportedBy: row.exportedBy,
+    exportedAt: iso(row.exportedAt),
+    cancelledBy: row.cancelledBy,
+    cancelledAt: iso(row.cancelledAt),
+    cancelReason: row.cancelledReason,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    items: items.map(toItemDto),
+  };
+}
+
+export async function getDisbursementBatch(
+  tx: Tx,
+  tenantId: string,
+  batchId: string,
+): Promise<PayrollDisbursementBatchDto> {
+  if (!UUID_FORMAT.test(batchId)) throw batchNotFound();
+  const [row] = await tx
+    .select()
+    .from(payrollDisbursementBatches)
+    .where(
+      and(
+        eq(payrollDisbursementBatches.tenantId, asTenant(tenantId)),
+        eq(payrollDisbursementBatches.id, batchId),
+      ),
+    );
+  if (!row) throw batchNotFound();
+  return toBatchDto(row, await loadBatchItems(tx, tenantId, batchId));
+}
+
+export async function listDisbursementBatches(
+  tx: Tx,
+  tenantId: string,
+  payrollRunId: string,
+): Promise<PayrollDisbursementBatchDto[]> {
+  if (!UUID_FORMAT.test(payrollRunId)) return [];
+  const batches = await tx
+    .select()
+    .from(payrollDisbursementBatches)
+    .where(
+      and(
+        eq(payrollDisbursementBatches.tenantId, asTenant(tenantId)),
+        eq(
+          payrollDisbursementBatches.payrollRunId,
+          payrollRunId as PayrollRunId,
+        ),
+      ),
+    )
+    .orderBy(
+      asc(payrollDisbursementBatches.createdAt),
+      asc(payrollDisbursementBatches.id),
+    );
+  const out: PayrollDisbursementBatchDto[] = [];
+  for (const batch of batches)
+    out.push(toBatchDto(batch, await loadBatchItems(tx, tenantId, batch.id)));
+  return out;
+}
+
+// ------------------------------------------------------------------- create
+
+/** Net pay of a payslip. Fails closed: an unreadable slip stops the batch. */
+function netOfPayslip(row: {
+  id: string;
+  tenantId: string;
+  employeeId: string;
+  paymentMethod: string;
+  calculationEncrypted: Buffer;
+  piiKeyVersion: number;
+}): number {
+  let calculation: ReturnType<typeof payslipCalculationSchema.parse>;
+  try {
+    calculation = payslipCalculationSchema.parse(
+      JSON.parse(
+        openPayrollValue(
+          row.calculationEncrypted,
+          {
+            tenantId: row.tenantId,
+            table: "payslips",
+            rowId: row.id,
+            field: "calculation",
+          },
+          row.piiKeyVersion,
+        ),
+      ),
+    );
+  } catch {
+    // Never echo the decrypt or parse error: it may carry payroll values.
+    throw payoutRefuse(
+      422,
+      "PAYOUT_PAYSLIP_UNREADABLE",
+      "Slip gaji tidak bisa dibaca atau tidak sesuai format, batch tidak bisa dibuat.",
+    );
+  }
+  if (
+    calculation.employeeId !== row.employeeId ||
+    calculation.paymentMethod !== row.paymentMethod
+  )
+    throw payoutRefuse(
+      422,
+      "PAYOUT_PAYSLIP_MISMATCH",
+      "Isi slip gaji tidak sama dengan barisnya, batch tidak bisa dibuat.",
+    );
+  return calculation.netIdr;
+}
+
+/** True when the PT's manual bank file format can pay this bank code. */
+function formatSupportsBank(format: string, bankCode: string): boolean {
+  try {
+    getBankFormatter(format as never);
+  } catch {
+    return false;
+  }
+  return format === "bca" ? bankCode === BCA_BANK_CODE : true;
+}
+
+type PlannedItem = {
+  id: string;
+  payslipId: string;
+  employeeId: string;
+  attemptNo: number;
+  amountIdr: number;
+  status: "prepared" | "blocked";
+  excludedReason: "bank_code_missing" | "bank_format_unsupported" | null;
+  bankSnapshotId: string | null;
+  bankCode: string | null;
+};
+
+/**
+ * Creates a draft batch for a `locked` run (or a follow-up batch for a `paid`
+ * run that already has batches). `cash` takes the cash payslips, `manual_bank`
+ * the bank_transfer payslips and needs the PT config enabled. Only slips with
+ * net > 0 and no live item (R7) are taken; each item's amount is the sealed net
+ * pay of its slip (R8) and the sum is checked against the slips.
+ */
+export async function createDisbursementBatch(
+  tx: Tx,
+  actor: PayoutActor,
+  input: { payrollRunId: string; channel: PayoutChannel },
+): Promise<PayrollDisbursementBatchDto> {
+  const { channel } = input;
+  if (channel === "duitku")
+    throw payoutRefuse(
+      409,
+      "PAYOUT_CHANNEL_NOT_AVAILABLE",
+      "Pembayaran lewat Duitku belum tersedia.",
+    );
+  if (channel !== "manual_bank" && channel !== "cash")
+    throw payoutRefuse(
+      422,
+      "PAYOUT_CHANNEL_INVALID",
+      "Kanal pembayaran tidak dikenal.",
+    );
+  const tenantId = actor.tenantId;
+  if (!UUID_FORMAT.test(input.payrollRunId))
+    throw payoutRefuse(
+      404,
+      "PAYROLL_RUN_NOT_FOUND",
+      "Payroll tidak ditemukan.",
+    );
+
+  // The run row lock serialises creators of one run and blocks a reversal.
+  const run = await lockRun(tx, tenantId, input.payrollRunId, "update");
+  if (run.status !== "locked" && run.status !== "paid")
+    throw payoutRefuse(
+      409,
+      "PAYOUT_RUN_NOT_PAYABLE",
+      "Hanya payroll yang sudah dikunci yang bisa dibayarkan.",
+    );
+  const batchesOfRun = await tx
+    .select({
+      channel: payrollDisbursementBatches.channel,
+      status: payrollDisbursementBatches.status,
+    })
+    .from(payrollDisbursementBatches)
+    .where(
+      and(
+        eq(payrollDisbursementBatches.tenantId, asTenant(tenantId)),
+        eq(
+          payrollDisbursementBatches.payrollRunId,
+          input.payrollRunId as PayrollRunId,
+        ),
+      ),
+    );
+  // A paid run without any batch was paid the old way: paying again is refused.
+  if (
+    run.status === "paid" &&
+    !batchesOfRun.some((batch) => batch.status !== "cancelled")
+  )
+    throw payoutRefuse(
+      409,
+      "PAYOUT_RUN_ALREADY_PAID",
+      "Payroll ini sudah ditandai dibayar tanpa batch pembayaran.",
+    );
+  if (
+    batchesOfRun.some(
+      (batch) =>
+        batch.channel === channel &&
+        !(FINAL_BATCH_STATUSES as readonly string[]).includes(batch.status),
+    )
+  )
+    throw payoutRefuse(
+      409,
+      "PAYOUT_BATCH_ALREADY_OPEN",
+      "Masih ada batch terbuka untuk payroll dan kanal ini.",
+    );
+
+  // H1: the old bank file path and a bank batch never both pay one run.
+  if (channel !== "cash") {
+    const [bankFile] = await tx
+      .select({ id: bankTransferFiles.id })
+      .from(bankTransferFiles)
+      .where(
+        and(
+          eq(bankTransferFiles.tenantId, asTenant(tenantId)),
+          eq(
+            bankTransferFiles.payrollRunId,
+            input.payrollRunId as PayrollRunId,
+          ),
+        ),
+      )
+      .limit(1);
+    if (bankFile)
+      throw payoutRefuse(
+        409,
+        "PAYOUT_RUN_HAS_BANK_FILE",
+        "Payroll ini sudah punya berkas transfer bank lama, jadi tidak bisa dibayar lewat batch bank.",
+      );
+  }
+
+  const config =
+    channel === "manual_bank"
+      ? await assertManualConfigEnabled(tx, tenantId, run.legalEntityId)
+      : null;
+  const feeIdr = config ? config.feePerTransferIdr : 0;
+
+  const slipMethod = channel === "cash" ? "cash" : "bank_transfer";
+  const slips = await tx
+    .select({
+      id: payslips.id,
+      tenantId: payslips.tenantId,
+      employeeId: payslips.employeeId,
+      paymentMethod: payslips.paymentMethod,
+      calculationEncrypted: payslips.calculationEncrypted,
+      piiKeyVersion: payslips.piiKeyVersion,
+    })
+    .from(payslips)
+    .where(
+      and(
+        eq(payslips.tenantId, asTenant(tenantId)),
+        eq(payslips.payrollRunId, input.payrollRunId as PayrollRunId),
+        eq(payslips.paymentMethod, slipMethod),
+      ),
+    )
+    .orderBy(asc(payslips.id));
+
+  // R7: a slip is free only when it has no live item and its last attempt
+  // ended failed/not_sent/returned/cancelled (or it never had one).
+  const history = new Map<
+    string,
+    { last: number; status: string; live: boolean }
+  >();
+  if (slips.length > 0) {
+    const past = await tx
+      .select({
+        payslipId: payrollDisbursementItems.payslipId,
+        attemptNo: payrollDisbursementItems.attemptNo,
+        status: payrollDisbursementItems.status,
+      })
+      .from(payrollDisbursementItems)
+      .where(
+        and(
+          eq(payrollDisbursementItems.tenantId, asTenant(tenantId)),
+          inArray(
+            payrollDisbursementItems.payslipId,
+            slips.map((slip) => slip.id),
+          ),
+        ),
+      );
+    for (const item of past) {
+      const seen = history.get(item.payslipId) ?? {
+        last: 0,
+        status: "",
+        live: false,
+      };
+      if (
+        (PAYOUT_LIVE_ITEM_STATUSES as readonly string[]).includes(item.status)
+      )
+        seen.live = true;
+      if (item.attemptNo > seen.last) {
+        seen.last = item.attemptNo;
+        seen.status = item.status;
+      }
+      history.set(item.payslipId, seen);
+    }
+  }
+  const open = slips.filter((slip) => {
+    const seen = history.get(slip.id);
+    if (!seen) return true;
+    return (
+      !seen.live &&
+      (RETRYABLE_ITEM_STATUSES as readonly string[]).includes(seen.status)
+    );
+  });
+
+  const snapshots = new Map<string, { id: string; bankCode: string | null }>();
+  if (channel === "manual_bank" && open.length > 0) {
+    const rows = await tx
+      .select({
+        id: payslipBankSnapshots.id,
+        payslipId: payslipBankSnapshots.payslipId,
+        bankCode: payslipBankSnapshots.bankCode,
+      })
+      .from(payslipBankSnapshots)
+      .where(
+        and(
+          eq(payslipBankSnapshots.tenantId, asTenant(tenantId)),
+          inArray(
+            payslipBankSnapshots.payslipId,
+            open.map((slip) => slip.id),
+          ),
+        ),
+      );
+    for (const row of rows) snapshots.set(row.payslipId, row);
+  }
+
+  const planned: PlannedItem[] = [];
+  let netOfIncludedSlips = 0;
+  for (const slip of open) {
+    const net = netOfPayslip(slip);
+    if (net <= 0) continue;
+    netOfIncludedSlips += net;
+    const base = {
+      id: randomUUID(),
+      payslipId: slip.id,
+      employeeId: slip.employeeId,
+      attemptNo: (history.get(slip.id)?.last ?? 0) + 1,
+      amountIdr: net,
+    };
+    if (channel === "cash") {
+      planned.push({
+        ...base,
+        status: "prepared",
+        excludedReason: null,
+        bankSnapshotId: null,
+        bankCode: null,
+      });
+      continue;
+    }
+    const snapshot = snapshots.get(slip.id);
+    // No frozen bank data: the item cannot exist, so the batch is refused.
+    if (!snapshot)
+      throw payoutRefuse(
+        422,
+        "PAYOUT_BANK_SNAPSHOT_MISSING",
+        "Data rekening slip gaji belum dibekukan, batch tidak bisa dibuat.",
+      );
+    const bankCode = snapshot.bankCode;
+    const excludedReason =
+      bankCode === null
+        ? "bank_code_missing"
+        : !formatSupportsBank(config!.manualBankFormat, bankCode)
+          ? "bank_format_unsupported"
+          : null;
+    planned.push({
+      ...base,
+      status: excludedReason ? "blocked" : "prepared",
+      excludedReason,
+      bankSnapshotId: snapshot.id,
+      bankCode,
+    });
+  }
+  if (planned.length === 0)
+    throw payoutRefuse(
+      409,
+      "PAYOUT_NOTHING_TO_PAY",
+      "Tidak ada slip yang perlu dibayar lewat kanal ini.",
+    );
+  // R8: the items add up to exactly the net pay of the slips they stand for.
+  const itemSum = planned.reduce((sum, item) => sum + item.amountIdr, 0);
+  if (itemSum !== netOfIncludedSlips)
+    throw new Error("Payout items do not add up to the net pay of the slips");
+
+  const payable = planned.filter((item) => item.status === "prepared");
+  const batchId = randomUUID();
+  const now = new Date();
+  await tx.insert(payrollDisbursementBatches).values({
+    id: batchId,
+    tenantId: asTenant(tenantId),
+    legalEntityId: run.legalEntityId,
+    payrollRunId: input.payrollRunId as PayrollRunId,
+    channel,
+    status: "draft",
+    requestedBy: asUser(actor.userId),
+    requestedAt: now,
+    itemCount: planned.length,
+    totalsEncrypted: sealBatchTotals(tenantId, batchId, {
+      totalIdr: payable.reduce((sum, item) => sum + item.amountIdr, 0),
+      totalFeeIdr: payable.length * feeIdr,
+      itemCount: payable.length,
+    }),
+    piiKeyVersion: PAYROLL_SEAL_KEY_VERSION,
+    bankFormat: config ? config.manualBankFormat : null,
+  });
+  await tx.insert(payrollDisbursementItems).values(
+    planned.map((item) => ({
+      id: item.id,
+      tenantId: asTenant(tenantId),
+      batchId,
+      payrollRunId: input.payrollRunId as PayrollRunId,
+      payslipId: item.payslipId as PayslipId,
+      employeeId: item.employeeId,
+      channel,
+      attemptNo: item.attemptNo,
+      idempotencyKey: `payslip:${item.payslipId}:attempt:${item.attemptNo}`,
+      amountEncrypted: sealItemAmount(tenantId, item.id, item.amountIdr),
+      feeIdrEncrypted: sealItemFee(tenantId, item.id, feeIdr),
+      piiKeyVersion: PAYROLL_SEAL_KEY_VERSION,
+      bankSnapshotId: item.bankSnapshotId,
+      bankCode: item.bankCode,
+      status: item.status,
+      excludedReason: item.excludedReason,
+    })),
+  );
+  await recordPayoutAudit(tx, actor, {
+    action: "payroll.disbursement.batch_created",
+    objectType: "payroll_disbursement_batch",
+    objectId: batchId,
+    before: { status: null },
+    after: {
+      status: "draft",
+      channel,
+      runId: input.payrollRunId,
+      itemCount: planned.length,
+    },
+  });
+  return getDisbursementBatch(tx, tenantId, batchId);
+}
+
+// ------------------------------------------------------------------- submit
+
+export type SubmitResult = {
+  batch: PayrollDisbursementBatchDto;
+  /** Items left out of the batch (no bank code, unsupported bank). */
+  excluded: {
+    itemId: string;
+    payslipId: string;
+    employeeId: string;
+    reason: string | null;
+  }[];
+};
+
+/**
+ * The requester sends a draft batch to approval. Blocked items are cancelled
+ * and listed (their slips stay free); the content hash of the remaining items
+ * is stored. A batch with nothing left to pay is refused.
+ */
+export async function submitDisbursementBatch(
+  tx: Tx,
+  actor: PayoutActor,
+  batchId: string,
+): Promise<SubmitResult> {
+  const tenantId = actor.tenantId;
+  const peek = await readBatch(tx, tenantId, batchId);
+  // Lock order: run row first, then the batch row (create does the same).
+  await assertRunPayable(tx, tenantId, peek.payrollRunId);
+  const batch = await loadBatchForUpdate(tx, tenantId, batchId);
+  if (batch.status !== "draft")
+    throw payoutRefuse(
+      409,
+      "PAYOUT_BATCH_STATE",
+      "Batch ini sudah diajukan atau tidak lagi berstatus draf.",
+    );
+  if (batch.requestedBy !== actor.userId)
+    throw payoutRefuse(
+      403,
+      "PAYOUT_SUBMIT_REQUESTER_ONLY",
+      "Hanya pembuat batch yang bisa mengajukannya.",
+    );
+  if (batch.channel === "manual_bank")
+    await assertManualConfigEnabled(tx, tenantId, batch.legalEntityId);
+
+  const items = await loadBatchItems(tx, tenantId, batchId, true);
+  const prepared = items.filter((item) => item.status === "prepared");
+  if (prepared.length === 0)
+    throw payoutRefuse(
+      422,
+      "PAYOUT_BATCH_EMPTY",
+      "Batch tidak punya item yang bisa dibayar, batalkan batch ini.",
+    );
+  const blocked = items.filter((item) => item.status === "blocked");
+  if (blocked.length > 0) {
+    const moved = await tx
+      .update(payrollDisbursementItems)
+      .set({ status: "cancelled", updatedAt: new Date() })
+      .where(
+        and(
+          eq(payrollDisbursementItems.tenantId, asTenant(tenantId)),
+          eq(payrollDisbursementItems.batchId, batchId),
+          eq(payrollDisbursementItems.status, "blocked"),
+        ),
+      )
+      .returning({ id: payrollDisbursementItems.id });
+    if (moved.length !== blocked.length)
+      throw payoutRefuse(
+        409,
+        "PAYOUT_BATCH_STATE",
+        "Batch berubah, coba lagi.",
+      );
+  }
+
+  const contentHash = await batchContentHash(tx, batch, ["prepared"]);
+  const totalIdr = prepared.reduce(
+    (sum, item) => sum + openItemAmount(item),
+    0,
+  );
+  const totalFeeIdr = prepared.reduce(
+    (sum, item) => sum + openItemFee(item),
+    0,
+  );
+  const [updated] = await tx
+    .update(payrollDisbursementBatches)
+    .set({
+      status: "pending_approval",
+      contentHash,
+      itemCount: prepared.length,
+      totalsEncrypted: sealBatchTotals(tenantId, batchId, {
+        totalIdr,
+        totalFeeIdr,
+        itemCount: prepared.length,
+      }),
+      piiKeyVersion: PAYROLL_SEAL_KEY_VERSION,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(payrollDisbursementBatches.tenantId, asTenant(tenantId)),
+        eq(payrollDisbursementBatches.id, batchId),
+        eq(payrollDisbursementBatches.status, "draft"),
+      ),
+    )
+    .returning();
+  if (!updated)
+    throw payoutRefuse(409, "PAYOUT_BATCH_STATE", "Batch berubah, coba lagi.");
+  await recordPayoutAudit(tx, actor, {
+    action: "payroll.disbursement.batch_submitted",
+    objectType: "payroll_disbursement_batch",
+    objectId: batchId,
+    before: { status: "draft", itemCount: items.length },
+    after: {
+      status: "pending_approval",
+      itemCount: prepared.length,
+      contentHash: updated.contentHash,
+    },
+  });
+  return {
+    batch: await getDisbursementBatch(tx, tenantId, batchId),
+    excluded: blocked.map((item) => ({
+      itemId: item.id,
+      payslipId: item.payslipId,
+      employeeId: item.employeeId,
+      reason: item.excludedReason,
+    })),
+  };
+}
+
+// ------------------------------------------------------------------ approve
+
+/**
+ * A second person approves the batch they saw (same content hash). Valid for
+ * 24 hours. The database also refuses approver = requester (CHECK).
+ */
+export async function approveDisbursementBatch(
+  tx: Tx,
+  actor: PayoutActor,
+  batchId: string,
+  input: { contentHash: string },
+): Promise<PayrollDisbursementBatchDto> {
+  const tenantId = actor.tenantId;
+  const peek = await readBatch(tx, tenantId, batchId);
+  await assertRunPayable(tx, tenantId, peek.payrollRunId);
+  const batch = await loadBatchForUpdate(tx, tenantId, batchId);
+  if (batch.status !== "pending_approval")
+    throw payoutRefuse(
+      409,
+      "PAYOUT_BATCH_STATE",
+      "Batch belum diajukan atau sudah diproses.",
+    );
+  if (batch.requestedBy === actor.userId)
+    throw payoutRefuse(
+      403,
+      "PAYOUT_SELF_APPROVAL",
+      "Pembuat batch tidak boleh menyetujui batchnya sendiri.",
+    );
+  if (batch.channel === "manual_bank")
+    await assertManualConfigEnabled(tx, tenantId, batch.legalEntityId);
+
+  // The approver must have seen exactly what is stored, and what is stored
+  // must still be what the items say now.
+  const current = await batchContentHash(tx, batch, ["prepared"]);
+  if (
+    batch.contentHash === null ||
+    input.contentHash !== batch.contentHash ||
+    current !== batch.contentHash
+  )
+    throw payoutRefuse(
+      409,
+      "PAYOUT_HASH_MISMATCH",
+      "Isi batch berubah sejak diajukan. Buka ulang batch lalu setujui.",
+    );
+
+  const now = new Date();
+  const expires = new Date(
+    now.getTime() + PAYOUT_APPROVAL_TTL_HOURS * 3_600_000,
+  );
+  const [approved] = await tx
+    .update(payrollDisbursementBatches)
+    .set({
+      status: "approved",
+      approvedBy: asUser(actor.userId),
+      approvedAt: now,
+      approvalExpiresAt: expires,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(payrollDisbursementBatches.tenantId, asTenant(tenantId)),
+        eq(payrollDisbursementBatches.id, batchId),
+        eq(payrollDisbursementBatches.status, "pending_approval"),
+      ),
+    )
+    .returning();
+  if (!approved)
+    throw payoutRefuse(409, "PAYOUT_BATCH_STATE", "Batch berubah, coba lagi.");
+  // Items move after the batch: the database lets an item become approved only
+  // while its batch is approved by a second person (R5).
+  const moved = await tx
+    .update(payrollDisbursementItems)
+    .set({ status: "approved", updatedAt: now })
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, asTenant(tenantId)),
+        eq(payrollDisbursementItems.batchId, batchId),
+        eq(payrollDisbursementItems.status, "prepared"),
+      ),
+    )
+    .returning({ id: payrollDisbursementItems.id });
+  if (moved.length !== batch.itemCount)
+    throw payoutRefuse(
+      409,
+      "PAYOUT_BATCH_STATE",
+      "Item batch berubah, coba lagi.",
+    );
+  await recordPayoutAudit(tx, actor, {
+    action: "payroll.disbursement.batch_approved",
+    objectType: "payroll_disbursement_batch",
+    objectId: batchId,
+    before: { status: "pending_approval" },
+    after: {
+      status: "approved",
+      itemCount: moved.length,
+      contentHash: batch.contentHash,
+    },
+  });
+  return getDisbursementBatch(tx, tenantId, batchId);
+}
+
+// ------------------------------------------------------------------- cancel
+
+/**
+ * Cancels a batch that has not left yet (draft, pending_approval, approved).
+ * Items that were never sent become `cancelled` (or `not_sent` when they were
+ * already approved), which frees their slips for a new batch (R7). An exported
+ * or finished batch cannot be cancelled here.
+ */
+export async function cancelDisbursementBatch(
+  tx: Tx,
+  actor: PayoutActor,
+  batchId: string,
+  input: { reason: string },
+): Promise<PayrollDisbursementBatchDto> {
+  const tenantId = actor.tenantId;
+  const reason = input.reason.trim();
+  if (reason.length === 0 || reason.length > 500)
+    throw payoutRefuse(
+      422,
+      "PAYOUT_CANCEL_REASON_INVALID",
+      "Alasan pembatalan wajib diisi (maksimal 500 karakter).",
+    );
+  const batch = await loadBatchRunFirst(tx, tenantId, batchId);
+  if (
+    batch.status !== "draft" &&
+    batch.status !== "pending_approval" &&
+    batch.status !== "approved"
+  )
+    throw payoutRefuse(
+      409,
+      "PAYOUT_BATCH_STATE",
+      "Batch ini sudah diekspor atau selesai dan tidak bisa dibatalkan.",
+    );
+  const now = new Date();
+  const items = await loadBatchItems(tx, tenantId, batchId, true);
+  // M2: cash already handed over stays paid. The rest of the batch is stopped
+  // and the batch closes as `partially_failed` instead of being refused.
+  const handedOver = items.filter((item) => item.status === "succeeded").length;
+  // approved -> not_sent first (never reached a bank), the rest -> cancelled.
+  await tx
+    .update(payrollDisbursementItems)
+    .set({ status: "not_sent", updatedAt: now })
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, asTenant(tenantId)),
+        eq(payrollDisbursementItems.batchId, batchId),
+        eq(payrollDisbursementItems.status, "approved"),
+      ),
+    );
+  await tx
+    .update(payrollDisbursementItems)
+    .set({ status: "cancelled", updatedAt: now })
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, asTenant(tenantId)),
+        eq(payrollDisbursementItems.batchId, batchId),
+        inArray(payrollDisbursementItems.status, ["prepared", "blocked"]),
+      ),
+    );
+  const [left] = await tx
+    .select({ id: payrollDisbursementItems.id })
+    .from(payrollDisbursementItems)
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, asTenant(tenantId)),
+        eq(payrollDisbursementItems.batchId, batchId),
+        inArray(
+          payrollDisbursementItems.status,
+          PAYOUT_LIVE_ITEM_STATUSES.filter((status) => status !== "succeeded"),
+        ),
+      ),
+    )
+    .limit(1);
+  if (left)
+    throw payoutRefuse(
+      409,
+      "PAYOUT_BATCH_STATE",
+      "Ada item yang sudah berjalan, batch tidak bisa dibatalkan.",
+    );
+  const [cancelled] = await tx
+    .update(payrollDisbursementBatches)
+    .set(
+      handedOver > 0
+        ? { status: "partially_failed", updatedAt: now }
+        : {
+            status: "cancelled",
+            cancelledBy: asUser(actor.userId),
+            cancelledAt: now,
+            cancelledReason: reason,
+            updatedAt: now,
+          },
+    )
+    .where(
+      and(
+        eq(payrollDisbursementBatches.tenantId, asTenant(tenantId)),
+        eq(payrollDisbursementBatches.id, batchId),
+        eq(payrollDisbursementBatches.status, batch.status),
+      ),
+    )
+    .returning();
+  if (!cancelled)
+    throw payoutRefuse(409, "PAYOUT_BATCH_STATE", "Batch berubah, coba lagi.");
+  await recordPayoutAudit(tx, actor, {
+    action: "payroll.disbursement.batch_cancelled",
+    objectType: "payroll_disbursement_batch",
+    objectId: batchId,
+    reason,
+    before: { status: batch.status },
+    after: { status: cancelled.status, confirmed: handedOver },
+  });
+  return getDisbursementBatch(tx, tenantId, batchId);
+}

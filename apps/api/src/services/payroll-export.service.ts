@@ -31,7 +31,17 @@
 // and a short-lived signed URL is minted on every read.
 
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  inArray,
+  lt,
+  ne,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import type { PermissionCode } from "@starter/shared/access";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
@@ -70,6 +80,7 @@ import {
 } from "@starter/shared/hris/payroll";
 import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
+import { payrollDisbursementBatches } from "../db/schema/payroll-payout.ts";
 import { payrollRapelFinalizations } from "../db/schema/payroll-rapel.ts";
 import {
   bankTransferFiles,
@@ -359,8 +370,11 @@ async function loadRun(
     .limit(1);
   // `shareLock` is for the bank-file write only: a concurrent reversal approve
   // holds the row, so this waits for its commit and then sees `reversed`
-  // (READ COMMITTED re-reads the locked row). Other exports stay lock-free.
-  const [run] = options.shareLock ? await query.for("share") : await query;
+  // (READ COMMITTED re-reads the locked row). It takes FOR UPDATE, not SHARE:
+  // the bank-file guard trigger (0344) locks the run FOR UPDATE, so two
+  // concurrent creates holding SHARE would deadlock. Run row first, always.
+  // Other exports stay lock-free.
+  const [run] = options.shareLock ? await query.for("update") : await query;
   if (!run) throw notFound("Payroll");
   return run;
 }
@@ -422,6 +436,27 @@ export async function createBankTransferFile(
           shareLock: true,
         });
         assertExportable(run);
+        // H1: a run with a bank disbursement batch is paid by that batch,
+        // never also by this old file. The share lock above waits for a
+        // concurrent batch creator, which holds the run row.
+        const [bankBatch] = await tx
+          .select({ id: payrollDisbursementBatches.id })
+          .from(payrollDisbursementBatches)
+          .where(
+            and(
+              eq(payrollDisbursementBatches.tenantId, tenantId),
+              eq(payrollDisbursementBatches.payrollRunId, payrollRunId),
+              ne(payrollDisbursementBatches.channel, "cash"),
+              ne(payrollDisbursementBatches.status, "cancelled"),
+            ),
+          )
+          .limit(1);
+        if (bankBatch)
+          throw new HttpError(
+            409,
+            "PAYOUT_RUN_HAS_PAYOUT_BATCH",
+            "Payroll ini sudah punya batch pembayaran bank, jadi berkas transfer lama tidak bisa dibuat.",
+          );
         const totals = payrollRunTotalsSchema.safeParse(run.totals);
         if (!totals.success)
           throw new PayrollError("PAYROLL_BANK_FILE_MISMATCH");

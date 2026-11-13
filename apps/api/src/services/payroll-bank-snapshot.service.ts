@@ -12,6 +12,10 @@
 // at lock (the export shows the payee as locked), and bankName = null. If HR
 // gains those fields, add them here (the sealed JSON is versioned).
 //
+// The employee's BI bank code (`employees.bank_code`, 3 digits) is copied into
+// the snapshot row at lock too; the disbursement batch reads the code from the
+// snapshot only, so a later HR edit cannot change which bank a frozen item uses.
+//
 // The run service that locks calls `snapshotPayeeBankForLock` inside its lock
 // transaction, after it inserted the payslips (the DB refuses a snapshot for an
 // unlocked run or a non-bank_transfer payslip). No account number is ever
@@ -109,6 +113,7 @@ export async function snapshotPayeeBankForLock(
       id: employees.id,
       employeeNo: employees.employeeNo,
       fullName: employees.fullName,
+      bankCode: employees.bankCode,
       bankAccountEncrypted: employees.bankAccountEncrypted,
       piiKeyVersion: employees.piiKeyVersion,
     })
@@ -173,6 +178,8 @@ export async function snapshotPayeeBankForLock(
       employeeId: payee.employeeId as EmployeeId,
       snapshotEncrypted: sealed,
       piiKeyVersion: PAYROLL_SEAL_KEY_VERSION,
+      // BI bank code, plain and not secret (0345); null when HR has none.
+      bankCode: person.bankCode ?? null,
     });
   }
   if (missing.length > 0)

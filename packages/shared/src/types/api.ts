@@ -1,6 +1,15 @@
 // The JSON contract between the API and the web app. Timestamps cross the wire
 // as ISO strings, so these are the shapes the browser actually receives.
 
+import type {
+  PayoutBankFormat,
+  PayoutBatchStatus,
+  PayoutChannel,
+  PayoutExcludedReason,
+  PayoutItemStatus,
+  PayoutMethod,
+} from "../validators/payroll-payout";
+
 export type ApiErrorBody = {
   error: {
     code: string;
@@ -30,4 +39,71 @@ export type KirimdevSenderMappingDto = {
   updatedByUserId: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+/** Per-legal-entity payroll payout settings. Amounts are whole rupiah. */
+export type PayrollPayoutConfigDto = {
+  id: string;
+  legalEntityId: string;
+  method: PayoutMethod;
+  integrationId: string | null;
+  manualSourceBankAccountId: string;
+  manualBankFormat: PayoutBankFormat;
+  maxPerTransferIdr: number;
+  dailyCapIdr: number | null;
+  feePerTransferIdr: number;
+  enabled: boolean;
+  updatedBy: string | null;
+  updatedAt: string;
+  createdAt: string;
+};
+
+/** One payee line of a disbursement batch. Never carries a full account number. */
+export type PayrollDisbursementItemDto = {
+  id: string;
+  batchId: string;
+  payslipId: string;
+  employeeId: string;
+  channel: PayoutChannel;
+  attemptNo: number;
+  status: PayoutItemStatus;
+  excludedReason: PayoutExcludedReason | null;
+  amountIdr: number;
+  feeIdr: number;
+  bankCode: string | null;
+  nameMatch: boolean | null;
+  providerRef: string | null;
+  confirmedBy: string | null;
+  confirmationRef: string | null;
+  settledAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** A disbursement batch for one payroll run. totalIdr is the sum of items. */
+export type PayrollDisbursementBatchDto = {
+  id: string;
+  legalEntityId: string;
+  payrollRunId: string;
+  channel: PayoutChannel;
+  status: PayoutBatchStatus;
+  haltReason: string | null;
+  requestedBy: string;
+  requestedAt: string;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  approvalExpiresAt: string | null;
+  contentHash: string | null;
+  itemCount: number;
+  totalIdr: number;
+  bankFormat: PayoutBankFormat | null;
+  exportChecksumSha256: string | null;
+  exportedBy: string | null;
+  exportedAt: string | null;
+  cancelledBy: string | null;
+  cancelledAt: string | null;
+  cancelReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  items: PayrollDisbursementItemDto[];
 };

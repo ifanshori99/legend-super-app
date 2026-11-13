@@ -27,8 +27,8 @@
 //   holds the employee's bank account number, their net pay as a plain
 //   integer, and the employee full name (account name; only a person's
 //   own name exists in the data). Header row first, no footer/total row.
-// - Unsupported bank layouts (bca|mandiri|bni|bjb are in the enum but have no
-//   confirmed layout) -> 422 PAYROLL_BANK_FORMAT_NOT_SUPPORTED (brief rule 5).
+// - Unsupported bank layouts (mandiri|bni|bjb are in the enum but have no
+//   confirmed layout; bca is registered since legend-648) -> 422 PAYROLL_BANK_FORMAT_NOT_SUPPORTED (brief rule 5).
 // - A locked run with no bank_transfer payslip of net > 0 -> 422
 //   PAYROLL_BANK_FILE_EMPTY, no file row, nothing left in storage.
 // - A mismatch between payslips and run totals -> 409
@@ -713,13 +713,13 @@ describe("bank transfer file export: permission and run state", () => {
     }
   });
 
-  it("[bank-export-unsupported-format] bca/mandiri/bni/bjb answer 422 format_not_supported and write no file; an unknown format is 422 too", async () => {
+  it("[bank-export-unsupported-format] mandiri/bni/bjb answer 422 format_not_supported and write no file; an unknown format is 422 too", async () => {
     const runId = await seedRun(tenant.id, {
       status: "locked",
       slips: mainSlips(),
       totals: totalsOf(BANK_TOTAL, CASH_TOTAL),
     });
-    for (const format of ["bca", "mandiri", "bni", "bjb"]) {
+    for (const format of ["mandiri", "bni", "bjb"]) {
       const response = await exportRun(exporter, runId, format);
       expect(
         response.status,

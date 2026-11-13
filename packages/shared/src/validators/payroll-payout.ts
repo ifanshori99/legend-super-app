@@ -1,0 +1,195 @@
+// Payroll payout (disbursement) contract: per-legal-entity payout config,
+// batches, manual bank confirmation, cash handover. Money is whole rupiah.
+// Design: docs/design/payroll-disbursement.md. There is no `doit` channel.
+import { z } from "zod";
+
+export const PAYOUT_METHODS = ["duitku", "manual_bank"] as const;
+export type PayoutMethod = (typeof PAYOUT_METHODS)[number];
+
+export const PAYOUT_CHANNELS = ["duitku", "manual_bank", "cash"] as const;
+export type PayoutChannel = (typeof PAYOUT_CHANNELS)[number];
+
+export const PAYOUT_BANK_FORMATS = [
+  "generic_csv",
+  "bca",
+  "mandiri",
+  "bni",
+  "bjb",
+] as const;
+export type PayoutBankFormat = (typeof PAYOUT_BANK_FORMATS)[number];
+
+export const PAYOUT_BATCH_STATUSES = [
+  "draft",
+  "pending_approval",
+  "approved",
+  "sending",
+  "exported",
+  "completed",
+  "partially_failed",
+  "halted",
+  "cancelled",
+] as const;
+export type PayoutBatchStatus = (typeof PAYOUT_BATCH_STATUSES)[number];
+
+export const PAYOUT_ITEM_STATUSES = [
+  "prepared",
+  "blocked",
+  "approved",
+  "sending",
+  "exported",
+  "unknown",
+  "succeeded",
+  "failed",
+  "not_sent",
+  "cancelled",
+  "returned",
+  "overpaid",
+] as const;
+export type PayoutItemStatus = (typeof PAYOUT_ITEM_STATUSES)[number];
+
+export const PAYOUT_EXCLUDED_REASONS = [
+  "inquiry_failed",
+  "name_mismatch",
+  "bank_code_missing",
+  "bank_format_unsupported",
+  "over_cap",
+] as const;
+export type PayoutExcludedReason = (typeof PAYOUT_EXCLUDED_REASONS)[number];
+
+/** Per-transfer ceiling a PT may set (whole rupiah). */
+export const PAYOUT_MAX_PER_TRANSFER_CEILING_IDR = 100_000_000;
+export const PAYOUT_DEFAULT_MAX_PER_TRANSFER_IDR = 50_000_000;
+export const PAYOUT_DEFAULT_FEE_PER_TRANSFER_IDR = 5_000;
+
+const idr = z.number().int().safe();
+const text = (max: number) => z.string().trim().min(1).max(max);
+
+export const payoutLegalEntityParamsSchema = z.strictObject({
+  legalEntityId: z.uuid(),
+});
+export const payoutRunParamsSchema = z.strictObject({ id: z.uuid() });
+export const payoutBatchParamsSchema = z.strictObject({ id: z.uuid() });
+
+export const payoutMethodSchema = z.enum(PAYOUT_METHODS);
+export const payoutChannelSchema = z.enum(PAYOUT_CHANNELS);
+export const payoutBankFormatSchema = z.enum(PAYOUT_BANK_FORMATS);
+
+/** SHA-256 hex of the ordered batch items, as shown to the approver. */
+export const payoutContentHashSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+export const upsertPayoutConfigInputSchema = z
+  .strictObject({
+    method: payoutMethodSchema,
+    integrationId: z.uuid().nullable(),
+    manualSourceBankAccountId: z.uuid(),
+    manualBankFormat: payoutBankFormatSchema.default("generic_csv"),
+    maxPerTransferIdr: idr
+      .positive()
+      .max(PAYOUT_MAX_PER_TRANSFER_CEILING_IDR)
+      .default(PAYOUT_DEFAULT_MAX_PER_TRANSFER_IDR),
+    dailyCapIdr: idr.positive().nullable().default(null),
+    feePerTransferIdr: idr
+      .nonnegative()
+      .default(PAYOUT_DEFAULT_FEE_PER_TRANSFER_IDR),
+    enabled: z.boolean().default(false),
+  })
+  .superRefine((value, ctx) => {
+    if (value.method === "duitku" && value.integrationId === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["integrationId"],
+        message: "integrationId is required for duitku.",
+      });
+    if (value.method === "manual_bank" && value.integrationId !== null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["integrationId"],
+        message: "integrationId must be null for manual_bank.",
+      });
+  });
+
+export const createDisbursementBatchInputSchema = z.strictObject({
+  channel: payoutChannelSchema,
+});
+
+export const approveDisbursementBatchInputSchema = z.strictObject({
+  contentHash: payoutContentHashSchema,
+});
+
+export const cancelDisbursementBatchInputSchema = z.strictObject({
+  reason: text(500),
+});
+
+// Confirm only ever records a success (one non-requester, bank ref required).
+// Moving an exported item to failed or not_sent is `resolveManualItems`.
+const confirmResultSchema = z.strictObject({
+  itemId: z.uuid(),
+  result: z.literal("succeeded"),
+  bankRef: text(64),
+  evidenceKey: text(200).optional(),
+});
+
+export const confirmManualItemsInputSchema = z
+  .strictObject({
+    results: z.array(confirmResultSchema).min(1).max(1000),
+  })
+  .superRefine((value, ctx) => {
+    const seen = new Set<string>();
+    for (const [index, entry] of value.results.entries()) {
+      if (seen.has(entry.itemId))
+        ctx.addIssue({
+          code: "custom",
+          path: ["results", index, "itemId"],
+          message: "Each item may appear once.",
+        });
+      seen.add(entry.itemId);
+    }
+  });
+
+/** Outcomes a manual resolve may propose for an `exported` item. */
+export const PAYOUT_RESOLVE_OUTCOMES = ["failed", "not_sent"] as const;
+export type PayoutResolveOutcome = (typeof PAYOUT_RESOLVE_OUTCOMES)[number];
+
+// Two different non-requesters must give the same outcome before an exported
+// item leaves `exported`; evidence and a note are mandatory on every call.
+export const resolveManualItemsSchema = z
+  .strictObject({
+    itemIds: z.array(z.uuid()).min(1).max(1000),
+    outcome: z.enum(PAYOUT_RESOLVE_OUTCOMES),
+    evidenceKey: text(200),
+    note: text(500),
+  })
+  .refine((value) => new Set(value.itemIds).size === value.itemIds.length, {
+    path: ["itemIds"],
+    message: "Each item may appear once.",
+  });
+
+export const confirmCashHandoverInputSchema = z
+  .strictObject({
+    itemIds: z.array(z.uuid()).min(1).max(1000),
+    evidenceKey: text(200).optional(),
+  })
+  .refine((value) => new Set(value.itemIds).size === value.itemIds.length, {
+    path: ["itemIds"],
+    message: "Each item may appear once.",
+  });
+
+export type UpsertPayoutConfigInput = z.infer<
+  typeof upsertPayoutConfigInputSchema
+>;
+export type CreateDisbursementBatchInput = z.infer<
+  typeof createDisbursementBatchInputSchema
+>;
+export type ApproveDisbursementBatchInput = z.infer<
+  typeof approveDisbursementBatchInputSchema
+>;
+export type CancelDisbursementBatchInput = z.infer<
+  typeof cancelDisbursementBatchInputSchema
+>;
+export type ConfirmManualItemsInput = z.infer<
+  typeof confirmManualItemsInputSchema
+>;
+export type ResolveManualItemsInput = z.infer<typeof resolveManualItemsSchema>;
+export type ConfirmCashHandoverInput = z.infer<
+  typeof confirmCashHandoverInputSchema
+>;

@@ -2304,6 +2304,34 @@
       "when": 1794577500000,
       "tag": "0342_edge_deferred_cost_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 343,
+      "version": "7",
+      "when": 1794578500000,
+      "tag": "0343_payroll_payout_configs",
+      "breakpoints": true
+    },
+    {
+      "idx": 344,
+      "version": "7",
+      "when": 1794579500000,
+      "tag": "0344_payroll_disbursement_batches_items",
+      "breakpoints": true
+    },
+    {
+      "idx": 345,
+      "version": "7",
+      "when": 1794580500000,
+      "tag": "0345_payout_bank_codes",
+      "breakpoints": true
+    },
+    {
+      "idx": 346,
+      "version": "7",
+      "when": 1794581500000,
+      "tag": "0346_payroll_disbursement_grants",
+      "breakpoints": true
     }
   ]
 }

@@ -9,6 +9,7 @@
     "./types": "./src/types/api.ts",
     "./site": "./src/site.ts",
     "./validators/kirimdev-sender": "./src/validators/kirimdev-sender.ts",
+    "./validators/payroll-payout": "./src/validators/payroll-payout.ts",
     "./theme": "./src/theme/index.ts",
     "./i18n": "./src/i18n/index.ts",
     "./env": "./src/env/index.ts",

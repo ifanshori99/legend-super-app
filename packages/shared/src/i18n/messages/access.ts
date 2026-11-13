@@ -561,6 +561,11 @@ const accessBaseMessages = {
       approve: "Setujui payroll",
       lock: "Kunci payroll",
       cancel: { approve: "Setujui pembatalan payroll" },
+      payout: { configure: "Atur pembayaran gaji per PT" },
+      disburse: {
+        request: "Ajukan pembayaran gaji",
+        approve: "Setujui pembayaran gaji",
+      },
     },
     self: {
       profile: { view: "Lihat profil sendiri" },
