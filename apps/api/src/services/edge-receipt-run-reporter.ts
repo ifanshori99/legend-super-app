@@ -103,7 +103,11 @@ async function acknowledgedOrders(
           AND NOT EXISTS (
             SELECT 1 FROM edge_outbound_queue q
             WHERE q.tenant_id = o.tenant_id AND q.direction = 'edge_to_cloud'
-              AND q.event_id = o.event_id AND q.status <> 'acked')`,
+              AND q.event_id = o.event_id AND q.status <> 'acked')
+          AND NOT EXISTS (
+            SELECT 1 FROM edge_link_dead_letters d
+            WHERE d.tenant_id = o.tenant_id AND d.direction = 'edge_to_cloud'
+              AND d.event_id = o.event_id)`,
   );
   return new Set((result.rows as { id: string }[]).map((row) => row.id));
 }
@@ -297,7 +301,11 @@ export async function reportEdgeReceiptRuns(
                     AND NOT EXISTS (
                       SELECT 1 FROM edge_outbound_queue q
                       WHERE q.tenant_id = o.tenant_id AND q.direction = 'edge_to_cloud'
-                        AND q.event_id = o.event_id AND q.status <> 'acked'))
+                        AND q.event_id = o.event_id AND q.status <> 'acked')
+                    AND NOT EXISTS (
+                      SELECT 1 FROM edge_link_dead_letters d
+                      WHERE d.tenant_id = o.tenant_id AND d.direction = 'edge_to_cloud'
+                        AND d.event_id = o.event_id))
               ORDER BY r.sequence_number LIMIT ${maxVoids}`,
         );
         const ids = (found.rows as { id: string }[]).map((row) => row.id);

@@ -77,6 +77,7 @@ export * from "./operations";
 export * from "./edge-deferred-event";
 export * from "./edge-link-dead-letter";
 export * from "./edge-order-ingest";
+export * from "./edge-receipt-skip";
 export * from "./edge-node";
 export * from "./edge-hris";
 export * from "./edge-sync-conflict";

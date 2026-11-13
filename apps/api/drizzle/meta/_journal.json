@@ -2241,6 +2241,13 @@
       "when": 1794604460029,
       "tag": "0538_edge_link_dead_letters",
       "breakpoints": true
+    },
+    {
+      "idx": 334,
+      "version": "7",
+      "when": 1794604953079,
+      "tag": "0539_edge_receipt_skips",
+      "breakpoints": true
     }
   ]
 }

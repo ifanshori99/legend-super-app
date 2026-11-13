@@ -141,7 +141,12 @@ export async function enqueueEdgeEvent(
   if (existing.rows[0])
     return { linkSeq: Number(existing.rows[0].link_seq), duplicate: true };
   const last = await tx.execute(
-    sql`SELECT MAX(aggregate_sequence) AS last FROM edge_outbound_queue WHERE edge_node_id = ${input.edgeNodeId}::uuid AND direction = ${direction} AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${event.aggregateId}`,
+    // legend-btx4d: a dead-lettered event has left the queue but its
+    // sequence is used (the cloud counts it too), so it still counts here.
+    sql`SELECT GREATEST(
+      (SELECT MAX(aggregate_sequence) FROM edge_outbound_queue WHERE edge_node_id = ${input.edgeNodeId}::uuid AND direction = ${direction} AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${event.aggregateId}),
+      (SELECT MAX(aggregate_sequence) FROM edge_link_dead_letters WHERE edge_node_id = ${input.edgeNodeId}::uuid AND direction = ${direction} AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${event.aggregateId})
+    ) AS last`,
   );
   const lastQueued =
     last.rows[0]?.last === null || last.rows[0]?.last === undefined

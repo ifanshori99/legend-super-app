@@ -22,22 +22,30 @@
 //     (each with the full original event) for this node and direction.
 // Part 1 is a pure unit test of the peer; part 2 runs the Postgres store.
 import { randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   cafeLegendFixtures,
   createUlid,
   outletIdSchema,
+  ulidToUuid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import {
+  EDGE_LINK_DEAD_LETTERED_EVENT,
+  edgeLinkDeadLetteredEvent,
+} from "@starter/shared/edge";
 import type { EventEnvelope } from "@starter/shared/events";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
+import { applyEdgeLinkDeadLettered } from "../edge/link-dead-letter-applier.ts";
+import type { EdgeEventApplier } from "../edge/ports.ts";
 import {
   createLinkPeer,
   type LinkStore,
@@ -346,15 +354,32 @@ describe("legend-btx4d Postgres link store dead-letters an oversized event", () 
 
     // The queue behind it is readable and renumbered down by one, so it stays
     // contiguous from the cursor (the dead letter keeps its original seq).
+    // The small notice for the cloud (legend-btx4d review 1) is queued last.
     const readable = await store.readOutbound(0, 10);
-    expect(readable.map((q) => q.linkSeq)).toEqual([bigSeq]);
+    expect(readable.map((q) => q.linkSeq)).toEqual([bigSeq, bigSeq + 1]);
     expect(smallSeq).toBe(bigSeq + 1);
     expect(readable[0]!.event.id).toBe(small.id);
-    expect(await store.outboundHead()).toBe(bigSeq);
+    expect(await store.outboundHead()).toBe(bigSeq + 1);
+    const notice = readable[1]!.event;
+    expect(notice.name).toBe(EDGE_LINK_DEAD_LETTERED_EVENT);
+    expect(
+      edgeLinkDeadLetteredEvent.envelopeSchema.safeParse(notice).success,
+    ).toBe(true);
+    expect(notice.payload).toEqual({
+      eventId: big.id,
+      eventName: big.name,
+      aggregateType: big.aggregateType,
+      aggregateId: aggregates[0]!,
+      aggregateSequence: 1,
+      linkSeq: bigSeq,
+      bytes: entry.bytes,
+      reason: "frame_too_large",
+    });
+    expect(JSON.stringify(notice).length).toBeLessThan(2000);
 
-    // Acking the delivered event leaves nothing pending: the cursor moved
+    // Acking the delivered events leaves nothing pending: the cursor moved
     // past the dead letter instead of being held behind it.
-    await store.ackOutbound(bigSeq);
+    await store.ackOutbound(bigSeq + 1);
     const backlog = await edgeQueueBacklog(
       db,
       context,
@@ -371,5 +396,210 @@ describe("legend-btx4d Postgres link store dead-letters an oversized event", () 
       classify: () => "transaction_event" as const,
     }) as typeof store;
     expect(await reopened.listDeadLetters()).toHaveLength(1);
+  });
+});
+
+// ---- legend-btx4d review: cloud trace, later events, trigger guard ----------
+
+/** The primary of outlet B: its own cursors, apart from the standby above. */
+async function primaryNode(label: string) {
+  const registered = await registerEdgeNode(outletScope(), actor, {
+    outletId: outletB,
+    role: "primary",
+    label,
+  });
+  const node = await authenticateEdgeCredential(registered.credential);
+  if (!node) throw new Error("Edge node did not authenticate");
+  return { nodeId: registered.edgeNode.id, node };
+}
+
+/** The standby registered in beforeAll. */
+async function sharedNode() {
+  const node = await authenticateEdgeCredential(credential);
+  if (!node) throw new Error("Edge node did not authenticate");
+  return { nodeId, node };
+}
+
+function edgeStore(node: Awaited<ReturnType<typeof sharedNode>>["node"]) {
+  return createDbLinkStore({
+    database: db,
+    context: node.context,
+    node: node.scope,
+    outboundDirection: "edge_to_cloud",
+    classify: () => "transaction_event" as const,
+  });
+}
+
+async function rejection(work: Promise<unknown>): Promise<string> {
+  try {
+    await work;
+  } catch (error) {
+    const cause = (error as { cause?: unknown }).cause;
+    return `${String(error)} ${String(cause ?? "")}`;
+  }
+  return "";
+}
+
+function enqueueEdgeEventFor(
+  tx: Parameters<Parameters<typeof withTenant>[2]>[0],
+  edgeNodeId: string,
+  event: EventEnvelope,
+) {
+  return enqueueEdgeEvent(tx, outletScope(), {
+    edgeNodeId,
+    direction: "edge_to_cloud",
+    kind: "transaction_event",
+    event,
+  });
+}
+
+describe("legend-btx4d review: the cloud keeps a trace of a dead-lettered sale", () => {
+  it("the cloud applier records one conflict for the dead letter, and the next sequence of its aggregate is not a gap", async () => {
+    const { nodeId: cloudNodeId, node } = await primaryNode("Cloud jejak");
+    const scope = { tenantId, outletId: outletB };
+    const aggregateId = randomUUID();
+    const first = { ...makeEvent(scope, 1, 100), aggregateId };
+    const dead = {
+      ...makeEvent(scope, 2, OVERSIZE),
+      aggregateId,
+    };
+    const third = { ...makeEvent(scope, 3, 100), aggregateId };
+    clock += 1;
+    const notice = edgeLinkDeadLetteredEvent.envelopeSchema.parse({
+      id: createUlid(clock),
+      tenantId,
+      outletId: outletB,
+      name: EDGE_LINK_DEAD_LETTERED_EVENT,
+      version: 1,
+      aggregateType: "edge_link",
+      aggregateId: dead.id,
+      sequence: 1,
+      occurredAt: new Date(clock).toISOString(),
+      actor: { type: "system" },
+      deviceId: null,
+      idempotencyKey: `${EDGE_LINK_DEAD_LETTERED_EVENT}:${dead.id}`,
+      payloadSchemaRef: `${EDGE_LINK_DEAD_LETTERED_EVENT}.v1`,
+      payload: {
+        eventId: dead.id,
+        eventName: dead.name,
+        aggregateType: dead.aggregateType,
+        aggregateId,
+        aggregateSequence: 2,
+        linkSeq: 2,
+        bytes: OVERSIZE,
+        reason: "frame_too_large",
+      },
+    });
+    const applier: EdgeEventApplier = {
+      async apply(tx, event, meta) {
+        if (event.name === EDGE_LINK_DEAD_LETTERED_EVENT)
+          await applyEdgeLinkDeadLettered(tx, event, meta);
+      },
+    };
+    const cloud = createDbLinkStore({
+      database: db,
+      context: node.context,
+      node: node.scope,
+      outboundDirection: "cloud_to_edge",
+      applier,
+      classify: () => "transaction_event" as const,
+    });
+    // On the edge the dead letter's slot was renumbered away: the cloud sees
+    // the first event, the notice, then the third event.
+    await cloud.applyInbound({
+      fromSeq: 0,
+      toSeq: 3,
+      events: [
+        { linkSeq: 1, event: first },
+        { linkSeq: 2, event: notice },
+        { linkSeq: 3, event: third },
+      ],
+    });
+    const rows = await withTenant(db, outletScope(), async (tx) => {
+      const conflicts = await tx.execute(
+        sql`SELECT reason, aggregate_id, aggregate_sequence, event_id FROM edge_sync_conflicts WHERE edge_node_id = ${cloudNodeId}::uuid`,
+      );
+      const receipts = await tx.execute(
+        sql`SELECT event_id, outcome FROM edge_inbound_events WHERE edge_node_id = ${cloudNodeId}::uuid AND aggregate_id = ${aggregateId}`,
+      );
+      return { conflicts: conflicts.rows, receipts: receipts.rows };
+    });
+    // Exactly one conflict, for the dead event, and none for a sequence gap.
+    expect(rows.conflicts).toHaveLength(1);
+    expect(rows.conflicts[0]).toMatchObject({
+      reason: "link_event_dead_lettered",
+      aggregate_id: aggregateId,
+      aggregate_sequence: "2",
+      event_id: ulidToUuid(dead.id),
+    });
+    const thirdReceipt = rows.receipts.find(
+      (row) => row.event_id === ulidToUuid(third.id),
+    );
+    expect(thirdReceipt?.outcome).toBe("applied");
+  });
+});
+
+describe("legend-btx4d review: events behind a dead letter of the same aggregate", () => {
+  it("the next sequence of the aggregate is still queued after its predecessor was dead-lettered", async () => {
+    const { nodeId: id, node } = await sharedNode();
+    const store = edgeStore(node);
+    const context = outletScope();
+    const scope = { tenantId, outletId: outletB };
+    const aggregateId = randomUUID();
+    const queue = (event: EventEnvelope) =>
+      withTenant(db, context, (tx) =>
+        enqueueEdgeEvent(tx, context, {
+          edgeNodeId: id,
+          direction: "edge_to_cloud",
+          kind: "transaction_event",
+          event: { ...event, aggregateId },
+        }),
+      );
+    const one = makeEvent(scope, 1, 100);
+    const big = makeEvent(scope, 2, OVERSIZE);
+    const next = makeEvent(scope, 3, 100);
+    const oneQueued = await queue(one);
+    await store.ackOutbound(oneQueued.linkSeq);
+    const bigQueued = await queue(big);
+    await store.deadLetterOutbound({
+      linkSeq: bigQueued.linkSeq,
+      event: { ...big, aggregateId },
+      bytes: JSON.stringify(big).length,
+      reason: "frame_too_large",
+    });
+    await expect(queue(next)).resolves.toMatchObject({ duplicate: false });
+  });
+});
+
+describe("legend-btx4d review: the queue guard only allows the dead-letter renumbering", () => {
+  it("a pending link_seq cannot jump anywhere, even while the dead-letter marker is on", async () => {
+    const { nodeId: id } = await sharedNode();
+    const context = outletScope();
+    const scope = { tenantId, outletId: outletB };
+    const seqs: number[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const queued = await withTenant(db, context, (tx) =>
+        enqueueEdgeEventFor(tx, id, makeEvent(scope, 1, 100)),
+      );
+      seqs.push(queued.linkSeq);
+    }
+    const last = seqs[2]!;
+    const attempt = (target: string) =>
+      rejection(
+        withTenant(db, context, async (tx) => {
+          await tx.execute(
+            sql`SELECT set_config('app.edge_dead_letter', 'on', true)`,
+          );
+          await tx.execute(
+            sql.raw(
+              `UPDATE edge_outbound_queue SET link_seq = ${target} WHERE edge_node_id = '${id}'::uuid AND direction = 'edge_to_cloud' AND link_seq = ${last}`,
+            ),
+          );
+        }),
+      );
+    // Forward, back by two, and into the parking zone off the exact step.
+    expect(await attempt(`link_seq + 7`)).toContain("immutable");
+    expect(await attempt(`link_seq - 2`)).toContain("immutable");
+    expect(await attempt(`link_seq + 1000000000001`)).toContain("immutable");
   });
 });

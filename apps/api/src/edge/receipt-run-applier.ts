@@ -23,9 +23,12 @@
 // The applier SKIPS it before the merge (no revenue, no receipt row), records
 // it once per (tenant, order) as an `edge_sync_conflicts` row finance sees
 // (number, order, reason) and lets the merge treat its number as accounted for,
-// also in later chunks (the conflict rows are the memory). Other refusals
-// (transient `db_error:*`, ...) are never skipped. A chunk with more skips than
-// fit one conflict detail (500 chars) is refused whole (fail closed, visible).
+// also in later chunks. Review of n1fzg: the skips live in `edge_receipt_skips`
+// (one row per tenant, outlet, order, receipt number, reason; the unique key
+// makes a redelivery idempotent), not in a conflict detail, which holds 500
+// chars and refused the run whole past ~5 skips. The event gets ONE compact
+// conflict (skip count, no list). Other refusals (transient `db_error:*`, ...)
+// are never skipped.
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   CoreError,
@@ -43,7 +46,7 @@ import {
   receiptRunReportedPayloadSchema,
 } from "@starter/shared/pos";
 import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
-import { edgeSyncConflicts } from "../db/schema/edge-node.ts";
+import { edgeReceiptSkips } from "../db/schema/edge-receipt-skip.ts";
 import { notifyEdgeSyncConflictRecorded } from "../services/edge-sync-conflict-alert.ts";
 import { mergeDeviceReceiptRun } from "../services/pos-receipt.service.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
@@ -68,8 +71,6 @@ const PERMANENT_INGEST_REFUSALS: ReadonlySet<string> = new Set([
   "order_exists",
   "legacy_payload",
 ]);
-const CONFLICT_DETAIL_MAX = 500;
-const SKIP_DETAIL = /skipped receipt (\S+) order (\S+) reason (\S+)/g;
 
 /**
  * Each report is a self-contained run (the device resends the full range), so
@@ -104,7 +105,7 @@ async function permanentlyRefusedOrders(
     .from(edgeOrderIngests)
     .where(
       and(
-        eq(edgeOrderIngests.tenantId, tenantId),
+        eq(edgeOrderIngests.tenantId, tenantIdSchema.parse(tenantId)),
         eq(edgeOrderIngests.state, "refused"),
         inArray(edgeOrderIngests.orderId, orderIds),
       ),
@@ -122,23 +123,21 @@ async function recordedSkips(
   outletId: string,
 ): Promise<{ numbers: Set<string>; orders: Set<string> }> {
   const rows = await tx
-    .select({ detail: edgeSyncConflicts.detail })
-    .from(edgeSyncConflicts)
+    .select({
+      number: edgeReceiptSkips.receiptNumber,
+      orderId: edgeReceiptSkips.orderId,
+    })
+    .from(edgeReceiptSkips)
     .where(
       and(
-        eq(edgeSyncConflicts.tenantId, tenantId),
-        eq(edgeSyncConflicts.outletId, outletId),
-        eq(edgeSyncConflicts.reason, RECEIPT_SKIPPED_REFUSED_ORDER_REASON),
+        eq(edgeReceiptSkips.tenantId, tenantIdSchema.parse(tenantId)),
+        eq(edgeReceiptSkips.outletId, outletIdSchema.parse(outletId)),
       ),
     );
-  const numbers = new Set<string>();
-  const orders = new Set<string>();
-  for (const { detail } of rows)
-    for (const match of (detail ?? "").matchAll(SKIP_DETAIL)) {
-      numbers.add(match[1]!);
-      orders.add(match[2]!);
-    }
-  return { numbers, orders };
+  return {
+    numbers: new Set(rows.map((row) => row.number)),
+    orders: new Set(rows.map((row) => row.orderId)),
+  };
 }
 
 function ordinalOf(number: string, prefix: string): number | null {
@@ -147,8 +146,9 @@ function ordinalOf(number: string, prefix: string): number | null {
 }
 
 /**
- * Records the new skips of one event as ONE conflict row (the row is unique
- * per event). Idempotent: a conflict already held for the event is kept.
+ * Records the new skips of one event: one `edge_receipt_skips` row each
+ * (idempotent: the unique key keeps what is already held) and ONE compact
+ * conflict row for the event (skip count only; it is unique per event).
  */
 async function recordSkips(
   tx: EdgeTx,
@@ -158,17 +158,22 @@ async function recordSkips(
   skips: { number: string; orderId: string; reason: string }[],
 ): Promise<void> {
   if (skips.length === 0) return;
-  const detail = skips
-    .map(
-      (skip) =>
-        `skipped receipt ${skip.number} order ${skip.orderId} reason ${skip.reason}`,
+  const stored = await tx
+    .insert(edgeReceiptSkips)
+    .values(
+      skips.map((skip) => ({
+        tenantId: tenantIdSchema.parse(meta.context.tenant.tenantId),
+        outletId: outletIdSchema.parse(outletId),
+        orderId: skip.orderId,
+        receiptNumber: skip.number,
+        reason: skip.reason,
+        eventId: event.id,
+      })),
     )
-    .join("; ");
-  if (detail.length > CONFLICT_DETAIL_MAX)
-    throw new CoreError(
-      "VALIDATION_ERROR",
-      "Too many receipts of refused orders in one run to record",
-    );
+    .onConflictDoNothing()
+    .returning({ orderId: edgeReceiptSkips.orderId });
+  if (stored.length === 0) return;
+  const detail = `skipped ${stored.length} receipt${stored.length === 1 ? "" : "s"} of refused orders (see edge_receipt_skips)`;
   const conflictId = createUlid();
   const inserted = await tx.execute(
     sql`INSERT INTO edge_sync_conflicts (id, tenant_id, outlet_id, edge_node_id, direction, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, reason, resolution, existing_sequence, detail, event) VALUES (${ulidToUuid(conflictId)}::uuid, ${meta.context.tenant.tenantId}::uuid, ${outletId}::uuid, ${meta.edgeNodeId}::uuid, ${meta.direction}, ${ulidToUuid(event.id)}::uuid, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${meta.kind}, ${RECEIPT_SKIPPED_REFUSED_ORDER_REASON}, ${conflictResolution(meta.kind)}, ${Math.max(0, event.sequence - 1)}, ${detail}, ${JSON.stringify(redactEdgeEnvelopeSecrets(event))}::jsonb) ON CONFLICT DO NOTHING RETURNING id`,

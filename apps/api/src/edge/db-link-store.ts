@@ -21,7 +21,12 @@ import {
   ulidToUuid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
-import { conflictResolution } from "@starter/shared/edge";
+import {
+  conflictResolution,
+  EDGE_LINK_AGGREGATE,
+  EDGE_LINK_DEAD_LETTERED_EVENT,
+  edgeLinkDeadLetteredEvent,
+} from "@starter/shared/edge";
 import {
   eventEnvelopeSchema,
   type EventEnvelope,
@@ -38,7 +43,11 @@ import {
   notifyEdgeSyncConflictRecorded,
   type NewEdgeSyncConflict,
 } from "../services/edge-sync-conflict-alert.ts";
-import { lockSyncCursor, type EdgeTx } from "../services/edge-queue.service.ts";
+import {
+  enqueueEdgeEvent,
+  lockSyncCursor,
+  type EdgeTx,
+} from "../services/edge-queue.service.ts";
 import { decideInbound, type EdgeConflictReason } from "./conflict.ts";
 import { redactEdgeEnvelopeSecrets } from "./envelope-secrets.ts";
 import {
@@ -411,6 +420,41 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
         await tx.execute(
           sql`SELECT set_config('app.edge_dead_letter', '', true)`,
         );
+        // The dead letter must not leave the cloud without a trace: a small
+        // notice (id, aggregate, sequence, size) goes to the cloud in the same
+        // transaction, queued behind the rest. The cloud records a conflict
+        // and counts the dead event's aggregate sequence as used.
+        if (outbound === "edge_to_cloud")
+          await enqueueEdgeEvent(tx, context, {
+            edgeNodeId: nodeId,
+            direction: outbound,
+            kind: "transaction_event",
+            event: edgeLinkDeadLetteredEvent.envelopeSchema.parse({
+              id: createUlid(),
+              tenantId: node.tenantId,
+              outletId: node.outletId,
+              name: EDGE_LINK_DEAD_LETTERED_EVENT,
+              version: 1,
+              aggregateType: EDGE_LINK_AGGREGATE,
+              aggregateId: entry.event.id,
+              sequence: 1,
+              occurredAt: new Date().toISOString(),
+              actor: { type: "system" },
+              deviceId: null,
+              idempotencyKey: `${EDGE_LINK_DEAD_LETTERED_EVENT}:${entry.event.id}`,
+              payloadSchemaRef: `${EDGE_LINK_DEAD_LETTERED_EVENT}.v1`,
+              payload: {
+                eventId: entry.event.id,
+                eventName: entry.event.name,
+                aggregateType: String(row.aggregate_type),
+                aggregateId: String(row.aggregate_id),
+                aggregateSequence: Number(row.aggregate_sequence),
+                linkSeq: entry.linkSeq,
+                bytes: entry.bytes,
+                reason: entry.reason,
+              },
+            }),
+          });
       });
     },
 

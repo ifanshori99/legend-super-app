@@ -148,6 +148,7 @@ describe("EDG-01 edge registry", () => {
       "edge_nodes",
       "edge_order_ingests",
       "edge_outbound_queue",
+      "edge_receipt_skips",
       "edge_sync_conflicts",
       "sync_cursors",
     ];

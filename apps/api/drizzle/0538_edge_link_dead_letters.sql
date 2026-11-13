@@ -35,6 +35,9 @@ FOR EACH ROW EXECUTE FUNCTION app.reject_edge_sync_log_mutation();
 -- stay strict except inside that one transaction, marked with the local
 -- setting app.edge_dead_letter = 'on'. The delete additionally needs the
 -- dead-letter copy of the same event, so a pending event can never vanish.
+-- A pending link_seq moves only one step down, to the parking zone (+10^12,
+-- the RENUMBER_PARK of db-link-store.ts) or from the parking zone back down
+-- by one step (OLD - 10^12 - 1): it can never jump anywhere else.
 CREATE OR REPLACE FUNCTION app.guard_edge_outbound_update() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 DECLARE
@@ -55,7 +58,11 @@ BEGIN
   END IF;
   IF NEW.tenant_id <> OLD.tenant_id OR NEW.outlet_id <> OLD.outlet_id
      OR NEW.edge_node_id <> OLD.edge_node_id OR NEW.direction <> OLD.direction
-     OR (NEW.link_seq <> OLD.link_seq AND NOT (dead_letter AND OLD.status = 'pending' AND NEW.status = 'pending'))
+     OR (NEW.link_seq <> OLD.link_seq AND NOT (
+           dead_letter AND OLD.status = 'pending' AND NEW.status = 'pending'
+           AND (NEW.link_seq = OLD.link_seq - 1
+             OR NEW.link_seq = OLD.link_seq + 1000000000000
+             OR (OLD.link_seq > 1000000000000 AND NEW.link_seq = OLD.link_seq - 1000000000001))))
      OR NEW.event_id <> OLD.event_id
      OR NEW.aggregate_type <> OLD.aggregate_type OR NEW.aggregate_id <> OLD.aggregate_id
      OR NEW.aggregate_sequence <> OLD.aggregate_sequence OR NEW.kind <> OLD.kind

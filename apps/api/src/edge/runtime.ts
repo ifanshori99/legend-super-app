@@ -77,6 +77,7 @@ import {
 } from "./wifi-quota-queue-worker.ts";
 import { registerOrderEdgeApplier } from "./order-edge-applier.ts";
 import { registerReceiptRunEdgeApplier } from "./receipt-run-applier.ts";
+import { registerEdgeLinkDeadLetterApplier } from "./link-dead-letter-applier.ts";
 import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
 import { registerPanicAlertEdgeApplier } from "./panic-alert-applier.ts";
@@ -194,8 +195,8 @@ export async function reportEdgeLinkDeadLetter(
         payload: {
           edgeNodeId: identity.scope.edgeNodeId,
           eventId: entry.event.id,
-          linkSeq: entry.linkSeq,
-          bytes: entry.bytes,
+          linkSeq: String(entry.linkSeq),
+          bytes: String(entry.bytes),
           reason: entry.reason,
         },
         title: "Satu data sinkron terlalu besar",
@@ -1442,6 +1443,9 @@ export async function registerEdgeLink(
   // legend-zy43: receipt_run.reported merged with mergeDeviceReceiptRun. Its
   // aggregate is excluded from posDeferredAggregates (one handler per event).
   registerReceiptRunEdgeApplier();
+  // legend-btx4d: edge_link.dead_lettered notice (an oversized event the edge
+  // parked) recorded as a conflict; its aggregate sequence counts as used.
+  registerEdgeLinkDeadLetterApplier();
   // legend-kyie: pos_override.* / staff_pin.* applied (and parked ones drained).
   registerAccessEdgeApplier();
   // legend-bod.5: emergency button alerts (panic_alert.*) mirrored idempotently.

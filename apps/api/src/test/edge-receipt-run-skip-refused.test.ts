@@ -12,11 +12,10 @@
 //   LEGEND_TEST_FILES="src/test/edge-receipt-run-skip-refused.test.ts" heavy pnpm test
 //
 // Assumptions (brief does not fix them):
-//  - The conflict row's `reason` code is chosen by the implementation, so it is
-//    not asserted. The row is found by its `detail` text (max 500 chars), which
-//    must name the order (ULID or UUID form), the receipt number and the refusal
-//    reason. Rows of the run event itself (whose `event` JSON also names the
-//    order) do not count unless `detail` names the order.
+//  - The skip is recorded in `edge_receipt_skips`, one row per (tenant, outlet,
+//    order, receipt number, reason) (review of n1fzg: a conflict detail holds
+//    500 chars, so a list of skips there overflowed and refused the run). The
+//    run event itself gets ONE summary conflict (skip count, no list).
 //  - "Once per (tenant, order)" holds across a same-event redelivery AND a
 //    re-sent run under a new event id (the reporter's retry after a lost ack).
 //  - A refusal that is not permanent (e.g. `db_error:40001`) is NOT skipped:
@@ -307,22 +306,44 @@ async function cloudOrderExists(orderUlid: string): Promise<boolean> {
   });
 }
 
-type ConflictRow = { reason: string; detail: string | null };
+type SkipRow = { receipt_number: string; reason: string };
 
-/** Skip conflicts finance sees: rows whose detail names this order. */
+/** Skips recorded for this order (edge_receipt_skips). */
 async function skipConflicts(
   outletId: string,
   orderUlid: string,
-): Promise<ConflictRow[]> {
-  const uuid = ulidToUuid(orderUlid);
+): Promise<SkipRow[]> {
   return asOwnerTenant(tenant.tenantId, async (client) => {
     const result = await client.query(
-      `SELECT reason, detail FROM edge_sync_conflicts
-       WHERE tenant_id = $1 AND outlet_id = $2
-         AND (detail ILIKE '%' || $3 || '%' OR detail ILIKE '%' || $4 || '%')`,
-      [tenant.tenantId, outletId, orderUlid, uuid],
+      `SELECT receipt_number, reason FROM edge_receipt_skips
+       WHERE tenant_id = $1 AND outlet_id = $2 AND order_id = $3::uuid`,
+      [tenant.tenantId, outletId, ulidToUuid(orderUlid)],
     );
-    return result.rows as ConflictRow[];
+    return result.rows as SkipRow[];
+  });
+}
+
+async function skipRowCount(outletId: string): Promise<number> {
+  return asOwnerTenant(tenant.tenantId, async (client) => {
+    const result = await client.query(
+      `SELECT count(*)::int AS n FROM edge_receipt_skips WHERE tenant_id = $1 AND outlet_id = $2`,
+      [tenant.tenantId, outletId],
+    );
+    return (result.rows[0] as { n: number }).n;
+  });
+}
+
+/** The summary conflicts of skipped receipts (one per recording event). */
+async function skipSummaries(outletId: string): Promise<string[]> {
+  return asOwnerTenant(tenant.tenantId, async (client) => {
+    const result = await client.query(
+      `SELECT detail FROM edge_sync_conflicts
+       WHERE tenant_id = $1 AND outlet_id = $2 AND reason = 'receipt_skipped_refused_order'`,
+      [tenant.tenantId, outletId],
+    );
+    return result.rows.map(
+      (row: { detail: string | null }) => row.detail ?? "",
+    );
   });
 }
 
@@ -603,9 +624,8 @@ describe("legend-n1fzg receipt run skips receipts of permanently refused orders"
     expect(recorded, "one finance-visible record for the order").toHaveLength(
       1,
     );
-    const detail = recorded[0]!.detail ?? "";
-    expect(detail).toContain("OFF1-000002");
-    expect(detail).toContain("legacy_payload");
+    expect(recorded[0]!.receipt_number).toBe("OFF1-000002");
+    expect(recorded[0]!.reason).toBe("legacy_payload");
 
     // Same event delivered again: no new record, no throw.
     await applyEvent(first, node);
@@ -622,6 +642,67 @@ describe("legend-n1fzg receipt run skips receipts of permanently refused orders"
     // Receipts stay merged exactly once.
     expect(await receiptRows(outletId)).toHaveLength(2);
     expect(await lastNumber(outletId)).toBe(3);
+    // One summary conflict only: the redelivery and the re-sent run add none.
+    expect(await skipSummaries(outletId)).toHaveLength(1);
+  });
+
+  it("legend-n1fzg review: 12 skips in one chunk are accepted, the next run still merges, and a repeated event adds no skip row or conflict", async () => {
+    const { outletId, orders, node, device } = await scenario(2);
+    const [o1, o14] = orders;
+    const refusedOrders = Array.from({ length: 12 }, () => createUlid());
+    for (const refused of refusedOrders)
+      await markRefused(outletId, refused, "legacy_payload");
+    const receipts: [string, number][] = [
+      [o1!, 1],
+      ...refusedOrders.map((refused, i): [string, number] => [refused, i + 2]),
+    ];
+    const first = runEvent({
+      outletId,
+      deviceId: device,
+      prefix: "OFF1",
+      lastNumber: 13,
+      receipts,
+    });
+    await applyEvent(first, node);
+
+    expect(await skipRowCount(outletId)).toBe(12);
+    expect((await receiptRows(outletId)).map((row) => row.order_id)).toEqual([
+      ulidToUuid(o1!),
+    ]);
+    expect(await lastNumber(outletId)).toBe(13);
+    const summaries = await skipSummaries(outletId);
+    expect(summaries, "one compact conflict per event").toHaveLength(1);
+    expect(summaries[0]).toContain("12");
+    expect(summaries[0]!.length).toBeLessThan(200);
+
+    // A later run is still merged: the stored skips are the memory.
+    await applyEvent(
+      runEvent({
+        outletId,
+        deviceId: device,
+        prefix: "OFF1",
+        lastNumber: 14,
+        receipts: [[o14!, 14]],
+      }),
+      node,
+    );
+    expect(await receiptRows(outletId)).toHaveLength(2);
+    expect(await lastNumber(outletId)).toBe(14);
+
+    // Repeating the event, and the same run under a new event id: no growth.
+    await applyEvent(first, node);
+    await applyEvent(
+      runEvent({
+        outletId,
+        deviceId: device,
+        prefix: "OFF1",
+        lastNumber: 13,
+        receipts,
+      }),
+      node,
+    );
+    expect(await skipRowCount(outletId)).toBe(12);
+    expect(await skipSummaries(outletId)).toHaveLength(1);
   });
 
   it("legend-n1fzg an order_exists refusal (order lives in the cloud by another path) is skipped too, and no receipt or revenue is added for it", async () => {
