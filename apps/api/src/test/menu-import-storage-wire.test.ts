@@ -2,6 +2,7 @@
 // createApp({ storageRuntime }) hands createMenuImportRouter the storage and
 // scanner, and the print path refuses a scanner that cannot vet documents (the
 // production noop) BEFORE rendering or storing anything.
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FakeObjectStorage } from "@starter/shared/adapters";
 import { cafeLegendFixtures } from "@starter/shared/core";
@@ -10,6 +11,9 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { printableMenuRenders } from "../db/schema/menu-import.ts";
+import { withTenant } from "../db/tenant.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import {
@@ -119,6 +123,15 @@ describe("menu print with a scanner that refuses documents", () => {
     expect(renderer.calls).toBe(0);
     expect(storage.puts).toBe(0);
 
+    // An earlier test in this file already stored a render of the same menu
+    // (GET /api/menu/print); with the same content hash the next run would be
+    // reused and never call the renderer. Forget the stored hash first.
+    await withTenant(db, ctx(), (tx) =>
+      tx
+        .update(printableMenuRenders)
+        .set({ contentHash: null })
+        .where(eq(printableMenuRenders.outletId, outletA)),
+    );
     await regenerateMenuPrint(ctx(), outletA, {
       storage,
       renderer,

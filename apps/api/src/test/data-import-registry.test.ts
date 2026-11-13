@@ -195,6 +195,10 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "backfills the new journal_entries.order_id of existing sale and refund journals from their source ids (orders, pos_order_refunds, order_issues; legend-knfl6, 538-G3); only rows with order_id NULL, sets that one link column and no amount, date or account; the append-only trigger is disabled for these statements and enabled again, FORCE RLS lifted and restored",
   "0308_hris_u4.sql":
     "appends dashboard.management.view to existing supervisor template role rows; idempotent, never touches a custom role or another template, FORCE RLS on roles lifted for the backfill and restored",
+  "0331_cash_out_approval_grants.sql":
+    "appends accounting.cash_bank.approve, accounting.cash_bank.limit.manage and accounting.cash_bank.record to the stored owner and finance template role rows of existing tenants; idempotent, no duplicates, never touches tenant_admin, another template or a custom role; each tenant is named (app.tenant_id) before its roles rows are touched, FORCE RLS stays on",
+  "0335_purchase_price_variance.sql":
+    "adds account 5105 Selisih Harga Pembelian and its purchase_price_variance mapping to every already provisioned (tenant, legal entity) pair; idempotent, never updates or deletes an existing account or mapping, no amount or journal touched; FORCE RLS lifted for the backfill and restored",
 };
 
 // Entrypoints that open a database pool but import no data.
