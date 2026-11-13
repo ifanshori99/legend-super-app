@@ -571,7 +571,9 @@ export async function processInboundWhatsApp(
  * legend-3hb1n: how the tenant's live channel relates to the number the
  * message arrived on. Same comparison completeChallenge makes (live channel
  * routingNumber against the receiving number), run before any write for the
- * tenant. "unavailable": no live channel. "other_number": routes elsewhere.
+ * tenant. "unavailable": no live channel. "other_number": routes elsewhere,
+ * or the tenant is no longer active (same status check completeChallenge
+ * makes; a tenant suspended while the challenge was pending).
  */
 async function liveChannelRoute(
   transaction: Transaction,
@@ -579,21 +581,28 @@ async function liveChannelRoute(
   brandId: string | null,
   receivingNumber: string,
 ): Promise<"routes" | "other_number" | "unavailable"> {
-  const channel = await withTenant(
+  const resolved = await withTenant(
     transaction as unknown as typeof db,
     webhookContext(tenantId, brandId),
-    (tx) =>
-      resolveWhatsAppChannel(tx, webhookContext(tenantId, brandId)).catch(
-        (error: unknown) => {
-          if (
-            error instanceof CoreError &&
-            error.code === "SERVICE_UNAVAILABLE"
-          )
-            return null;
-          throw error;
-        },
-      ),
+    async (tx) => {
+      const [tenantRow] = await tx
+        .select({ status: tenants.status })
+        .from(tenants)
+        .where(eq(tenants.id, tenantId))
+        .limit(1);
+      if (tenantRow?.status !== "active") return "inactive" as const;
+      return resolveWhatsAppChannel(
+        tx,
+        webhookContext(tenantId, brandId),
+      ).catch((error: unknown) => {
+        if (error instanceof CoreError && error.code === "SERVICE_UNAVAILABLE")
+          return null;
+        throw error;
+      });
+    },
   );
+  if (resolved === "inactive") return "other_number";
+  const channel = resolved;
   if (!channel) {
     logger.warn(
       { tenantId, reason: "channel_unavailable" },

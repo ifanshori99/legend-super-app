@@ -149,6 +149,9 @@ beforeAll(async () => {
 beforeEach(async () => {
   await isolation.cleanup();
   await unmapKirimdevSender(TENANT_A);
+  await owner.query("UPDATE tenants SET status = 'active' WHERE id = $1", [
+    TENANT_A,
+  ]);
 });
 
 afterEach(() => {
@@ -199,6 +202,30 @@ describe("legend-3hb1n sign-in without a live channel", () => {
 
     expect(outcome.kind).toBe("rejected");
     expect(await isolation.count("user_identities")).toBe(identitiesBefore);
+    expect(await auditCount(TENANT_A)).toBe(auditBefore + 1);
+    expect(await statusOf(issued.challenge.id)).toBe("pending");
+  });
+});
+
+describe("legend-3hb1n suspended tenant", () => {
+  it("AUTH-02 an old challenge, tenant suspended while it was pending: rejected, no account (own audit stays), challenge pending", async () => {
+    await mapKirimdevSender(TENANT_A, MAPPED_M);
+    const issued = await issueLogin(TENANT_A);
+    await owner.query("UPDATE tenants SET status = 'suspended' WHERE id = $1", [
+      TENANT_A,
+    ]);
+
+    const identitiesBefore = await isolation.count("user_identities");
+    const sessionsBefore = await isolation.count("session");
+    const auditBefore = await auditCount(TENANT_A);
+
+    const outcome = await processInboundWhatsApp(
+      inbound(`MASUK LEGEND ${issued.codeFormatted}`, MAPPED_M),
+    );
+
+    expect(outcome.kind).toBe("rejected");
+    expect(await isolation.count("user_identities")).toBe(identitiesBefore);
+    expect(await isolation.count("session")).toBe(sessionsBefore);
     expect(await auditCount(TENANT_A)).toBe(auditBefore + 1);
     expect(await statusOf(issued.challenge.id)).toBe("pending");
   });
