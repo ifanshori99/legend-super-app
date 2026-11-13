@@ -28,6 +28,7 @@ import {
   z,
   idr,
   idrSchema,
+  basisPointsSchema,
   outletIdSchema,
   uuidIdSchema,
   userIdSchema,
@@ -43,6 +44,11 @@ import {
   paymentModeSchema,
 } from "../qr-order/schemas.ts";
 import { defineDomainEvent, eventEnvelopeSchema } from "../events/index.ts";
+import {
+  ruleCodeSchema,
+  taxRuleIdSchema,
+  taxTypeSchema,
+} from "../tax/schemas.ts";
 import type { EventCatalogEntry, EventEnvelope } from "../events/index.ts";
 import { tenderBucket } from "./calculations.ts";
 import {
@@ -129,6 +135,25 @@ const orderPaidLineSchema = z.strictObject({
   status: orderItemStatusSchema,
 });
 
+/**
+ * Edge sales GL (legend-uctlr): one `tax_snapshots` row of the sale, copied
+ * from the edge's `order.taxResult` as it stood (never recomputed). The cloud
+ * writes the same rows a cloud-paid order gets, so the sale journal splits
+ * PBJT from the revenue the same way.
+ */
+const orderPaidTaxSchema = z.strictObject({
+  taxRuleId: taxRuleIdSchema,
+  code: ruleCodeSchema,
+  version: z.number().int().positive(),
+  taxType: taxTypeSchema,
+  rateBp: basisPointsSchema,
+  priceIncludesTax: z.boolean(),
+  grossIdr: nonnegativeIdr,
+  taxBaseIdr: nonnegativeIdr,
+  serviceChargeIdr: nonnegativeIdr,
+  taxIdr: nonnegativeIdr,
+});
+
 export const orderPaidPayloadSchema = z
   .strictObject({
     ...orderScope,
@@ -180,8 +205,15 @@ export const orderPaidPayloadSchema = z
     paymentMode: paymentModeSchema.optional(),
     isTraining: z.boolean().optional(),
     lines: z.array(orderPaidLineSchema).max(999).optional(),
+    // Edge sales GL (legend-uctlr), additive. The order's customer (points
+    // earn at ingest) and the tax rows behind `pbjtIdr` (tax_snapshots).
+    customerProfileId: uuidSchema.nullable().optional(),
+    taxes: z.array(orderPaidTaxSchema).max(50).optional(),
   })
   .superRefine((payload, ctx) => {
+    // Σ taxes == pbjtIdr is NOT a schema rule either (same reason as the
+    // lines below): the cloud checks it at ingest (`tax_mismatch`) so the
+    // event is still parked and recorded when it fails.
     // Σ non-void lines == subtotalIdr is NOT a schema rule: the cloud checks it
     // at ingest (`lines_mismatch`) so the event is still parked when it fails.
     if (payload.lines !== undefined && payload.subtotalIdr === undefined)

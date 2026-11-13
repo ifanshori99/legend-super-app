@@ -383,6 +383,19 @@ describe("legend-771dl cloud corrections of an ingested edge sale are blocked", 
     expect(await correctionRows(bill)).toEqual(NONE);
   });
 
+  it("the refusal tells cashier/finance to correct at the edge cashier and promises no cloud void", async () => {
+    const bill = await sale(100_000, "ingested");
+    for (const attempt of [refund(bill), voidOrder(bill)]) {
+      const error = await attempt.then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(error?.message).toMatch(/kasir edge tempat penjualan terjadi/);
+      expect(error?.message).toMatch(/kasir atau finance/);
+      expect(error?.message).not.toMatch(/akan di-?(void|refund)/i);
+    }
+  });
+
   it("an ordinary cloud order (no ledger row) can still be refunded", async () => {
     const bill = await sale(100_000);
     const result = await refund(bill, 50_000);
