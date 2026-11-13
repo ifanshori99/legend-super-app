@@ -83,6 +83,9 @@ import { aiGuideMessages } from "./ws12-ai-guide.ts";
 import { aiConsentMessages } from "./ws12-ai-consent.ts";
 import { aiAdminMessages } from "./ws12-ai-admin.ts";
 import { aiAdminUsageMessages } from "./ws12-ai-admin-usage.ts";
+import { aiSettingsMessages } from "./ws12-ai-settings.ts";
+import { aiSettingsChatgptMessages } from "./ws12-ai-settings-chatgpt.ts";
+import { aiSettingsCustomMessages } from "./ws12-ai-settings-custom.ts";
 import { payslipPinChangeMessages } from "./ws10-payslip-pin-change.ts";
 import { payslipPinListMessages } from "./ws10-payslip-pin-list.ts";
 import { payslipPinGateMessages } from "./ws10-payslip-pin-gate.ts";
@@ -259,6 +262,9 @@ export const id = {
   aiConsent: aiConsentMessages,
   aiAdmin: aiAdminMessages,
   aiAdminUsage: aiAdminUsageMessages,
+  aiSettings: aiSettingsMessages,
+  aiSettingsChatgpt: aiSettingsChatgptMessages,
+  aiSettingsCustom: aiSettingsCustomMessages,
   learning: learningMessages,
   // WS-09/WS-14 ops squad (2026-11-03): one catalog file per bead so the six
   // parallel beads never edit the same lines.

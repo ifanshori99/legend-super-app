@@ -1,0 +1,63 @@
+// Pengaturan AI (bead legend-nnufz): ChatGPT login (main), custom model
+// (automatic fallback), monthly budget and the service order. When the platform
+// kill switch is on (ChatGPT status `platformDisabled`) every control is disabled
+// and a banner says why. The API authorizes every request; the route guard and
+// `disabled` here are presentation.
+import { Ban } from "lucide-react";
+import { useT } from "@/components/i18n";
+import { Badge } from "@/components/ui/badge";
+import { API_MOCK } from "@/lib/api/mock-flag";
+import { BudgetCard } from "./budget-card";
+import { ChatgptPanel } from "./chatgpt-panel";
+import { CustomModelPanel } from "./custom-model-panel";
+import { useChatgptLogin } from "../hooks";
+import { OrderCard } from "./order-card";
+
+export function AiSettingsPage() {
+  const t = useT();
+  // The platform kill switch rides on the ChatGPT status. Controls stay locked
+  // until it is known (fail closed); the API enforces it regardless.
+  const status = useChatgptLogin();
+  const platformOff = status.data?.data.platformDisabled === true;
+  const locked = platformOff || status.isPending;
+
+  return (
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <p className="max-w-2xl text-sm leading-5 text-muted-foreground">
+          {t("aiSettings.intro")}
+        </p>
+        {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
+      </div>
+
+      {platformOff && (
+        <div
+          role="alert"
+          className="flex gap-3 rounded-container border-(length:--border-w) border-danger bg-danger-subtle p-card text-danger"
+        >
+          <Ban aria-hidden="true" className="mt-0.5 size-5 shrink-0" />
+          <div className="grid gap-1">
+            <p className="font-semibold">{t("aiSettings.platformOff.title")}</p>
+            <p className="text-sm leading-5">
+              {t("aiSettings.platformOff.body")}
+            </p>
+            <p className="text-sm leading-5">
+              {t("aiSettings.platformOff.hint")}
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_17.5rem] lg:items-start">
+        <div className="grid min-w-0 gap-4">
+          <ChatgptPanel disabled={locked} />
+          <CustomModelPanel disabled={locked} />
+        </div>
+        <div className="grid min-w-0 gap-4">
+          <BudgetCard disabled={locked} />
+          <OrderCard />
+        </div>
+      </div>
+    </div>
+  );
+}

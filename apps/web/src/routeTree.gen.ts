@@ -198,6 +198,7 @@ import { Route as KelolaKelolaPengadaanFakturRouteImport } from './routes/_kelol
 import { Route as KelolaKelolaPengadaanKecilRouteImport } from './routes/_kelola/kelola.pengadaan_.kecil'
 import { Route as KelolaKelolaPengadaanReturRouteImport } from './routes/_kelola/kelola.pengadaan_.retur'
 import { Route as KelolaKelolaPengajuanIndexRouteImport } from './routes/_kelola/kelola.pengajuan.index'
+import { Route as KelolaKelolaPengaturanAiRouteImport } from './routes/_kelola/kelola.pengaturan_.ai'
 import { Route as KelolaKelolaPengaturanDomainRouteImport } from './routes/_kelola/kelola.pengaturan_.domain'
 import { Route as KelolaKelolaPengaturanIntegrasiRouteImport } from './routes/_kelola/kelola.pengaturan_.integrasi'
 import { Route as KelolaKelolaPengaturanIstilahRouteImport } from './routes/_kelola/kelola.pengaturan_.istilah'
@@ -1399,6 +1400,12 @@ const KelolaKelolaPengajuanIndexRoute =
   KelolaKelolaPengajuanIndexRouteImport.update({
     id: '/kelola/pengajuan/',
     path: '/kelola/pengajuan/',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaPengaturanAiRoute =
+  KelolaKelolaPengaturanAiRouteImport.update({
+    id: '/kelola/pengaturan_/ai',
+    path: '/kelola/pengaturan/ai',
     getParentRoute: () => KelolaRoute,
   } as any)
 const KelolaKelolaPengaturanDomainRoute =
@@ -2662,6 +2669,7 @@ export interface FileRoutesByFullPath {
   '/kelola/pengadaan/faktur': typeof KelolaKelolaPengadaanFakturRoute
   '/kelola/pengadaan/kecil': typeof KelolaKelolaPengadaanKecilRoute
   '/kelola/pengadaan/retur': typeof KelolaKelolaPengadaanReturRoute
+  '/kelola/pengaturan/ai': typeof KelolaKelolaPengaturanAiRoute
   '/kelola/pengaturan/domain': typeof KelolaKelolaPengaturanDomainRoute
   '/kelola/pengaturan/integrasi': typeof KelolaKelolaPengaturanIntegrasiRoute
   '/kelola/pengaturan/istilah': typeof KelolaKelolaPengaturanIstilahRoute
@@ -3027,6 +3035,7 @@ export interface FileRoutesByTo {
   '/kelola/pengadaan/faktur': typeof KelolaKelolaPengadaanFakturRoute
   '/kelola/pengadaan/kecil': typeof KelolaKelolaPengadaanKecilRoute
   '/kelola/pengadaan/retur': typeof KelolaKelolaPengadaanReturRoute
+  '/kelola/pengaturan/ai': typeof KelolaKelolaPengaturanAiRoute
   '/kelola/pengaturan/domain': typeof KelolaKelolaPengaturanDomainRoute
   '/kelola/pengaturan/integrasi': typeof KelolaKelolaPengaturanIntegrasiRoute
   '/kelola/pengaturan/istilah': typeof KelolaKelolaPengaturanIstilahRoute
@@ -3406,6 +3415,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/pengadaan_/faktur': typeof KelolaKelolaPengadaanFakturRoute
   '/_kelola/kelola/pengadaan_/kecil': typeof KelolaKelolaPengadaanKecilRoute
   '/_kelola/kelola/pengadaan_/retur': typeof KelolaKelolaPengadaanReturRoute
+  '/_kelola/kelola/pengaturan_/ai': typeof KelolaKelolaPengaturanAiRoute
   '/_kelola/kelola/pengaturan_/domain': typeof KelolaKelolaPengaturanDomainRoute
   '/_kelola/kelola/pengaturan_/integrasi': typeof KelolaKelolaPengaturanIntegrasiRoute
   '/_kelola/kelola/pengaturan_/istilah': typeof KelolaKelolaPengaturanIstilahRoute
@@ -3776,6 +3786,7 @@ export interface FileRouteTypes {
     | '/kelola/pengadaan/faktur'
     | '/kelola/pengadaan/kecil'
     | '/kelola/pengadaan/retur'
+    | '/kelola/pengaturan/ai'
     | '/kelola/pengaturan/domain'
     | '/kelola/pengaturan/integrasi'
     | '/kelola/pengaturan/istilah'
@@ -4141,6 +4152,7 @@ export interface FileRouteTypes {
     | '/kelola/pengadaan/faktur'
     | '/kelola/pengadaan/kecil'
     | '/kelola/pengadaan/retur'
+    | '/kelola/pengaturan/ai'
     | '/kelola/pengaturan/domain'
     | '/kelola/pengaturan/integrasi'
     | '/kelola/pengaturan/istilah'
@@ -4519,6 +4531,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pengadaan_/faktur'
     | '/_kelola/kelola/pengadaan_/kecil'
     | '/_kelola/kelola/pengadaan_/retur'
+    | '/_kelola/kelola/pengaturan_/ai'
     | '/_kelola/kelola/pengaturan_/domain'
     | '/_kelola/kelola/pengaturan_/integrasi'
     | '/_kelola/kelola/pengaturan_/istilah'
@@ -6075,6 +6088,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaPengajuanIndexRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/pengaturan_/ai': {
+      id: '/_kelola/kelola/pengaturan_/ai'
+      path: '/kelola/pengaturan/ai'
+      fullPath: '/kelola/pengaturan/ai'
+      preLoaderRoute: typeof KelolaKelolaPengaturanAiRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/pengaturan_/domain': {
       id: '/_kelola/kelola/pengaturan_/domain'
       path: '/kelola/pengaturan/domain'
@@ -7613,6 +7633,7 @@ interface KelolaRouteChildren {
   KelolaKelolaPengadaanFakturRoute: typeof KelolaKelolaPengadaanFakturRoute
   KelolaKelolaPengadaanKecilRoute: typeof KelolaKelolaPengadaanKecilRoute
   KelolaKelolaPengadaanReturRoute: typeof KelolaKelolaPengadaanReturRoute
+  KelolaKelolaPengaturanAiRoute: typeof KelolaKelolaPengaturanAiRoute
   KelolaKelolaPengaturanDomainRoute: typeof KelolaKelolaPengaturanDomainRoute
   KelolaKelolaPengaturanIntegrasiRoute: typeof KelolaKelolaPengaturanIntegrasiRoute
   KelolaKelolaPengaturanIstilahRoute: typeof KelolaKelolaPengaturanIstilahRoute
@@ -7871,6 +7892,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaPengadaanFakturRoute: KelolaKelolaPengadaanFakturRoute,
   KelolaKelolaPengadaanKecilRoute: KelolaKelolaPengadaanKecilRoute,
   KelolaKelolaPengadaanReturRoute: KelolaKelolaPengadaanReturRoute,
+  KelolaKelolaPengaturanAiRoute: KelolaKelolaPengaturanAiRoute,
   KelolaKelolaPengaturanDomainRoute: KelolaKelolaPengaturanDomainRoute,
   KelolaKelolaPengaturanIntegrasiRoute: KelolaKelolaPengaturanIntegrasiRoute,
   KelolaKelolaPengaturanIstilahRoute: KelolaKelolaPengaturanIstilahRoute,
