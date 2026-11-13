@@ -128,10 +128,19 @@ export const upsertAiProviderConfigInputSchema = z.strictObject({
     .regex(/^[\w.:/@+-]+$/),
   /** Omit to keep the stored key (only while `baseUrl` is unchanged). */
   apiKey: z.string().trim().min(16).max(500).regex(/^\S+$/).optional(),
+  /** Same provider/model: merge given fields; null clears; a new model resets. */
   capabilityOverrides: aiModelCapabilityOverridesSchema.nullable().optional(),
 });
 export type UpsertAiProviderConfigInput = z.infer<
   typeof upsertAiProviderConfigInputSchema
+>;
+
+/** Change overrides only. Unsent nested fields are retained; null clears all. */
+export const patchAiProviderConfigInputSchema = z.strictObject({
+  capabilityOverrides: aiModelCapabilityOverridesSchema.nullable(),
+});
+export type PatchAiProviderConfigInput = z.infer<
+  typeof patchAiProviderConfigInputSchema
 >;
 
 export const aiProviderTestResultSchema = z.strictObject({
@@ -152,6 +161,13 @@ export const upsertAiProviderConfig = defineEndpoint({
   method: "PUT",
   path: "/api/ai/provider",
   body: upsertAiProviderConfigInputSchema,
+  response: dataResponseSchema(aiProviderViewSchema),
+});
+
+export const patchAiProviderConfig = defineEndpoint({
+  method: "PATCH",
+  path: "/api/ai/provider",
+  body: patchAiProviderConfigInputSchema,
   response: dataResponseSchema(aiProviderViewSchema),
 });
 

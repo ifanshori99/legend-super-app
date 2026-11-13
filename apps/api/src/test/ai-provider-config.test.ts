@@ -174,6 +174,8 @@ const fakeResolve = async (host: string) =>
 const getCfg = (who: Actor) => who.client.get("/api/ai/provider");
 const putCfg = (who: Actor, body: Record<string, unknown>) =>
   who.client.put("/api/ai/provider").set(originHeader).send(body);
+const patchCfg = (who: Actor, body: Record<string, unknown>) =>
+  who.client.patch("/api/ai/provider").set(originHeader).send(body);
 const delCfg = (who: Actor) =>
   who.client.delete("/api/ai/provider").set(originHeader);
 const testCfg = (who: Actor) =>
@@ -1458,4 +1460,189 @@ describe("legend-39d.8 tenant capability persistence", () => {
     );
     expect(calls.length).toBeGreaterThan(beforeChange);
   }, 60_000);
+});
+
+describe("legend-39d.8 UI capability PATCH", () => {
+  it("legend-39d.8 A2 PATCH merges supplied capability fields without replacing earlier overrides or fetching metadata", async () => {
+    metadataResponder = () =>
+      Response.json({ data: [discoveredModel(MODEL_A)] });
+    const initial = await putCfg(adminA, {
+      ...configA,
+      capabilityOverrides: { contextWindow: 16_384, supportsTools: false },
+    });
+    expect(initial.status, initial.text).toBe(200);
+    const before = metadataCalls.length;
+    const patched = await patchCfg(adminA, {
+      capabilityOverrides: { maxOutputTokens: 1024 },
+    });
+    expect(patched.status, patched.text).toBe(200);
+    expect(patched.body.data.config.capabilityOverrides).toEqual({
+      contextWindow: 16_384,
+      maxOutputTokens: 1024,
+      supportsTools: false,
+    });
+    expect(patched.body.data.config.capabilities).toMatchObject({
+      contextWindow: 16_384,
+      maxOutputTokens: 1024,
+      supportsTools: false,
+    });
+    expect((await configOf(adminA))?.capabilityOverrides).toEqual({
+      contextWindow: 16_384,
+      maxOutputTokens: 1024,
+      supportsTools: false,
+    });
+    expect(metadataCalls).toHaveLength(before);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("legend-39d.8 A2 preserves omitted override fields on PUT and empty PATCH overrides, then clears explicit null", async () => {
+    metadataResponder = () =>
+      Response.json({ data: [discoveredModel(MODEL_A)] });
+    const existing = { contextWindow: 16_384, maxOutputTokens: 1024 };
+    expect(
+      (await putCfg(adminA, { ...configA, capabilityOverrides: existing }))
+        .status,
+    ).toBe(200);
+    const merged = await putCfg(adminA, {
+      ...configA,
+      capabilityOverrides: { supportsTools: false },
+    });
+    expect(merged.status, merged.text).toBe(200);
+    expect(merged.body.data.config.capabilityOverrides).toEqual({
+      ...existing,
+      supportsTools: false,
+    });
+    const omitted = await putCfg(adminA, configA);
+    expect(omitted.status).toBe(200);
+    expect(omitted.body.data.config.capabilityOverrides).toEqual({
+      ...existing,
+      supportsTools: false,
+    });
+    const before = metadataCalls.length;
+    const unchanged = await patchCfg(adminA, { capabilityOverrides: {} });
+    expect(unchanged.status, unchanged.text).toBe(200);
+    expect(unchanged.body.data.config.capabilityOverrides).toEqual({
+      ...existing,
+      supportsTools: false,
+    });
+    const cleared = await patchCfg(adminA, { capabilityOverrides: null });
+    expect(cleared.status, cleared.text).toBe(200);
+    expect(cleared.body.data.config.capabilityOverrides).toBeNull();
+    expect(cleared.body.data.config.capabilities).toMatchObject({
+      contextWindow: 32_768,
+      maxOutputTokens: 2048,
+      supportsTools: true,
+    });
+    expect(metadataCalls).toHaveLength(before);
+  });
+
+  it("legend-39d.8 A2 rejects a partial update whose merged output would no longer fit its context", async () => {
+    metadataResponder = () =>
+      Response.json({ data: [discoveredModel(MODEL_A)] });
+    const original = { contextWindow: 8192, maxOutputTokens: 4096 };
+    expect(
+      (await putCfg(adminA, { ...configA, capabilityOverrides: original }))
+        .status,
+    ).toBe(200);
+    const refused = await patchCfg(adminA, {
+      capabilityOverrides: { contextWindow: 2048 },
+    });
+    expect(refused.status, refused.text).toBe(422);
+    expect((await configOf(adminA))?.capabilityOverrides).toEqual(original);
+  });
+
+  it("legend-39d.8 A2 keeps both partial capability changes under concurrent PATCH requests", async () => {
+    metadataResponder = () =>
+      Response.json({ data: [discoveredModel(MODEL_A)] });
+    expect(
+      (
+        await putCfg(adminA, {
+          ...configA,
+          capabilityOverrides: { contextWindow: 16_384 },
+        })
+      ).status,
+    ).toBe(200);
+    const before = metadataCalls.length;
+    const results = await Promise.all([
+      patchCfg(adminA, { capabilityOverrides: { maxOutputTokens: 1024 } }),
+      patchCfg(adminA, { capabilityOverrides: { supportsTools: false } }),
+    ]);
+    for (const result of results) expect(result.status, result.text).toBe(200);
+    expect((await configOf(adminA))?.capabilityOverrides).toEqual({
+      contextWindow: 16_384,
+      maxOutputTokens: 1024,
+      supportsTools: false,
+    });
+    expect(metadataCalls).toHaveLength(before);
+  });
+
+  it("legend-39d.8 A2 applies PATCH only to the current tenant and refuses a submitted target tenant", async () => {
+    expect(
+      (
+        await putCfg(adminA, {
+          ...configA,
+          capabilityOverrides: { maxOutputTokens: 512 },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await putCfg(adminB, {
+          ...configB,
+          capabilityOverrides: { maxOutputTokens: 768 },
+        })
+      ).status,
+    ).toBe(200);
+    const patched = await patchCfg(adminA, {
+      capabilityOverrides: { contextWindow: 8192 },
+    });
+    expect(patched.status, patched.text).toBe(200);
+    expect((await configOf(adminA))?.capabilityOverrides).toEqual({
+      maxOutputTokens: 512,
+      contextWindow: 8192,
+    });
+    expect((await configOf(adminB))?.capabilityOverrides).toEqual({
+      maxOutputTokens: 768,
+    });
+    const injected = await patchCfg(adminA, {
+      capabilityOverrides: { maxOutputTokens: 1024 },
+      tenantId: tenantB,
+    });
+    expect(injected.status).toBe(422);
+    expect((await configOf(adminB))?.capabilityOverrides).toEqual({
+      maxOutputTokens: 768,
+    });
+  });
+
+  it("legend-39d.8 A2 PATCH requires auth, trusted origin, governance permission, a valid body and an existing config", async () => {
+    const anonymous = await agent(app)
+      .patch("/api/ai/provider")
+      .set("Host", tenantHost)
+      .set(originHeader)
+      .send({ capabilityOverrides: null });
+    expect(anonymous.status).toBe(401);
+    const missing = await patchCfg(adminA, { capabilityOverrides: null });
+    expect(missing.status, missing.text).toBe(404);
+    expect(codeOf(missing)).toBe("AI_PROVIDER_NOT_CONFIGURED");
+    expect((await putCfg(adminA, configA)).status).toBe(200);
+    const foreign = await adminA.client
+      .patch("/api/ai/provider")
+      .set("Origin", "https://evil.example")
+      .send({ capabilityOverrides: null });
+    expect(foreign.status).toBe(403);
+    const withoutPermission = await plainUserA(
+      ["ai.ask"],
+      "Capability observer",
+    );
+    expect(
+      (await patchCfg(withoutPermission, { capabilityOverrides: null })).status,
+    ).toBe(403);
+    for (const body of [
+      {},
+      { capabilities: { contextWindow: 8192 } },
+      { capabilityOverrides: { ownerId: adminA.userId } },
+      { capabilityOverrides: { contextWindow: -1 } },
+    ])
+      expect((await patchCfg(adminA, body)).status).toBe(422);
+  });
 });

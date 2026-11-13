@@ -7,6 +7,7 @@ import {
   startChatgptConnectionInputSchema,
   type ChatgptConnectionView,
   type ChatgptDeviceAttempt,
+  type ChatgptLoginState,
   type StartChatgptConnectionInput,
 } from "@starter/shared/ai";
 import {
@@ -80,22 +81,42 @@ async function read(
   const [row] = await (locked ? query.for("update") : query);
   return row;
 }
-function view(row?: Row): ChatgptConnectionView {
+function view(row?: Row, viewerCanManage = false): ChatgptConnectionView {
+  let state: ChatgptLoginState =
+    row?.status === "unavailable" ? "failed" : (row?.status ?? "disconnected");
+  if (
+    row &&
+    (row.status === "pending" || row.status === "unavailable") &&
+    row.expiresAt &&
+    row.expiresAt.getTime() <= Date.now()
+  )
+    state = "expired";
+  let deviceCode: string | null = null;
+  // A governance viewer may see status without ever opening a secret envelope.
+  if (
+    viewerCanManage &&
+    env.AI_CHATGPT_ENABLED &&
+    state === "pending" &&
+    row?.expiresAt &&
+    row.expiresAt.getTime() > Date.now() &&
+    row.pendingEncrypted
+  ) {
+    try {
+      deviceCode = openPending(row).userCode;
+    } catch {
+      state = "failed";
+    }
+  }
   return {
-    enabled: Boolean(env.AI_CHATGPT_ENABLED && row?.enabled),
-    status:
-      row && row.status !== "disconnected" && !env.AI_CHATGPT_ENABLED
-        ? "unavailable"
-        : (row?.status ?? "disconnected"),
-    model: row?.model ?? null,
-    consent:
-      row?.riskAcceptedBy && row.riskAcceptedAt
-        ? {
-            acceptedBy: row.riskAcceptedBy,
-            acceptedAt: row.riskAcceptedAt.toISOString(),
-          }
-        : null,
+    state,
+    platformDisabled: !env.AI_CHATGPT_ENABLED,
+    viewerCanManage,
+    deviceCode,
+    verificationUrl:
+      deviceCode === null ? null : "https://auth.openai.com/codex/device",
+    expiresAt: row?.expiresAt?.toISOString() ?? null,
     connectedAt: row?.connectedAt?.toISOString() ?? null,
+    riskAcceptedAt: row?.riskAcceptedAt?.toISOString() ?? null,
   };
 }
 function safeSnapshot(row: Row): Record<string, unknown> {
@@ -148,11 +169,13 @@ async function invalidate(
   tx: AuditTransaction,
   context: ScopedTenantContext,
   row: Row,
+  preserveDeviceExpiry = false,
 ): Promise<Row> {
   const [saved] = await tx
     .update(T)
     .set({
       ...clearedSecrets,
+      ...(preserveDeviceExpiry ? { expiresAt: row.expiresAt } : {}),
       status: "unavailable",
       generation: row.generation + 1,
       updatedAt: version(),
@@ -226,7 +249,7 @@ function openPending(row: Row): { deviceAuthId: string; userCode: string } {
       v.deviceAuthId.length > 10_000 ||
       typeof v.userCode !== "string" ||
       !v.userCode ||
-      v.userCode.length > 100
+      v.userCode.length > 40
     )
       throw 0;
     return { deviceAuthId: v.deviceAuthId, userCode: v.userCode };
@@ -274,10 +297,11 @@ async function bestEffortRevoke(
 
 export async function getChatgptConnectionView(
   context: ScopedTenantContext,
+  viewerCanManage = false,
 ): Promise<ChatgptConnectionView> {
   assertScope(context);
   return withTenant(db, context, async (tx) =>
-    view(await read(tx, context.tenant.tenantId)),
+    view(await read(tx, context.tenant.tenantId), viewerCanManage),
   );
 }
 
@@ -305,7 +329,7 @@ export async function startChatgptConnection(
       tenantId: context.tenant.tenantId,
       enabled: true,
       status: "pending" as const,
-      model: input.model,
+      model: input.model ?? current?.model ?? env.AI_CHATGPT_MODEL,
       generation: (current?.generation ?? 0) + 1,
       attemptId: randomUUID(),
       pendingEncrypted: null,
@@ -364,13 +388,7 @@ export async function startChatgptConnection(
       return row;
     });
     if (!saved) throw new AiError("AI_CHATGPT_NOT_CONNECTED");
-    return {
-      attemptId: saved.attemptId!,
-      userCode: result.userCode,
-      verificationUri: "https://auth.openai.com/codex/device",
-      expiresAt: result.expiresAt.toISOString(),
-      intervalSeconds,
-    };
+    return view(saved, true);
   } catch (error) {
     await invalidateChatgptConnection(context, claim.row.generation, {
       operationId: claim.operationId,
@@ -388,7 +406,7 @@ export async function startChatgptConnection(
 export async function pollChatgptConnection(
   context: ScopedTenantContext,
   userId: string,
-  attemptId: string,
+  attemptId?: string,
 ): Promise<ChatgptConnectionView> {
   assertScope(context);
   assertEnabled();
@@ -398,12 +416,12 @@ export async function pollChatgptConnection(
     async (tx): Promise<PollClaim> => {
       await lock(tx, context.tenant.tenantId);
       const row = await read(tx, context.tenant.tenantId, true);
-      if (!row || row.attemptId !== attemptId)
+      if (!row || (attemptId !== undefined && row.attemptId !== attemptId))
         throw new AiError("AI_CHATGPT_NOT_CONNECTED");
-      if (row.status !== "pending") return { done: view(row) };
+      if (row.status !== "pending") return { done: view(row, true) };
       const now = new Date();
       if (!row.expiresAt || row.expiresAt <= now)
-        return { done: view(await invalidate(tx, context, row)) };
+        return { done: view(await invalidate(tx, context, row, true), true) };
       if (
         (row.nextPollAt && row.nextPollAt > now) ||
         (row.operationLeaseUntil && row.operationLeaseUntil > now)
@@ -413,7 +431,7 @@ export async function pollChatgptConnection(
       try {
         pending = openPending(row);
       } catch {
-        return { done: view(await invalidate(tx, context, row)) };
+        return { done: view(await invalidate(tx, context, row), true) };
       }
       const operationId = randomUUID();
       await tx
@@ -456,7 +474,7 @@ export async function pollChatgptConnection(
   }
   if (result.status === "pending") {
     await release(context, row, operationId);
-    return getChatgptConnectionView(context);
+    return getChatgptConnectionView(context, true);
   }
   let saved: Row | undefined;
   try {
@@ -501,9 +519,9 @@ export async function pollChatgptConnection(
   if (!saved) {
     // Discard a stale result locally. Its refresh token may also belong to a
     // newer winner, so an upstream revoke here could revoke that winner.
-    return getChatgptConnectionView(context);
+    return getChatgptConnectionView(context, true);
   }
-  return view(saved);
+  return view(saved, true);
 }
 
 /** Local revoke commits before the best-effort upstream request. Also works
@@ -548,7 +566,7 @@ export async function removeChatgptConnection(
     return { row: saved, refreshToken };
   });
   await bestEffortRevoke(outcome.refreshToken);
-  return view(outcome.row);
+  return view(outcome.row, true);
 }
 
 export async function getChatgptProviderState(

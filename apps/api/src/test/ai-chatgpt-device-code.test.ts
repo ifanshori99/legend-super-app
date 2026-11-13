@@ -250,6 +250,8 @@ async function inTenant<T>(
     c.release();
   }
 }
+const currentAttempt = async (tid = tenantA) =>
+  (await rawConnection(tid))!.attempt_id as string;
 const status = (actor = ownerA) => actor.client.get("/api/ai/chatgpt");
 const start = (
   actor = ownerA,
@@ -278,12 +280,12 @@ async function unlockPoll(tid = tenantA) {
 async function connect(actor = ownerA, tid = tenantA) {
   const begun = await start(actor);
   expect(begun.status, begun.text).toBe(200);
-  const attemptId = begun.body.data.attemptId as string;
+  const attemptId = (await rawConnection(tid))!.attempt_id as string;
   expect(typeof attemptId).toBe("string");
   await unlockPoll(tid);
   const connected = await poll(attemptId, actor);
   expect(connected.status, connected.text).toBe(200);
-  expect(connected.body.data.status).toBe("connected");
+  expect(connected.body.data.state).toBe("connected");
   return { begun, connected, attemptId };
 }
 // Seed authenticated provider state independently from the device endpoints so
@@ -524,7 +526,58 @@ afterAll(async () => {
 });
 
 describe("legend-z83k B1 owner opt-in and consent", () => {
-  it("legend-z83k B1 refuses a support-impersonated owner even with an approved read-write grant", async () => {
+  it("legend-z83k B1 matches the eight-field UI state contract with model-free start and server-owned polling", async () => {
+    const begun = await start(ownerA, { riskAccepted: true });
+    expect(begun.status, begun.text).toBe(200);
+    const keys = [
+      "state",
+      "platformDisabled",
+      "viewerCanManage",
+      "deviceCode",
+      "verificationUrl",
+      "expiresAt",
+      "connectedAt",
+      "riskAcceptedAt",
+    ].sort();
+    expect(Object.keys(begun.body.data).sort()).toEqual(keys);
+    expect(begun.body.data).toMatchObject({
+      state: "pending",
+      platformDisabled: false,
+      viewerCanManage: true,
+      deviceCode: "ABCD-EFGH",
+      verificationUrl: "https://auth.openai.com/codex/device",
+      connectedAt: null,
+    });
+    expect(begun.body.data).not.toHaveProperty("attemptId");
+    const readonly = await status(nonOwner);
+    expect(readonly.status, readonly.text).toBe(200);
+    expect(Object.keys(readonly.body.data).sort()).toEqual(keys);
+    expect(readonly.body.data).toMatchObject({
+      state: "pending",
+      viewerCanManage: false,
+      deviceCode: null,
+      verificationUrl: null,
+    });
+    await unlockPoll();
+    const connected = await ownerA.client
+      .post("/api/ai/chatgpt/device/poll")
+      .set(originHeader)
+      .send({});
+    expect(connected.status, connected.text).toBe(200);
+    expect(connected.body.data).toMatchObject({
+      state: "connected",
+      platformDisabled: false,
+      viewerCanManage: true,
+      deviceCode: null,
+      verificationUrl: null,
+    });
+    expect(Object.keys(connected.body.data).sort()).toEqual(keys);
+    const row = (await rawConnection())!;
+    expect(row.risk_accepted_by).toBe(ownerA.userId);
+    expect(typeof row.model).toBe("string");
+  });
+
+  it("legend-z83k B1 keeps a support-impersonated owner read-only even with an approved read-write grant", async () => {
     const client = agent(app);
     const email = await signUp(client, "ChatGPT support admin");
     await setRole(email, "admin");
@@ -576,8 +629,14 @@ describe("legend-z83k B1 owner opt-in and consent", () => {
     const controlled = await client.get("/api/ai/provider");
     expect(controlled.status, controlled.text).toBe(200);
     const support = { client, userId: ownerA.userId, email: ownerA.email };
+    const readonly = await status(support);
+    expect(readonly.status, readonly.text).toBe(200);
+    expect(readonly.body.data).toMatchObject({
+      viewerCanManage: false,
+      deviceCode: null,
+      verificationUrl: null,
+    });
     for (const response of [
-      await status(support),
       await start(support),
       await poll(randomUUID(), support),
       await revoke(support),
@@ -590,14 +649,18 @@ describe("legend-z83k B1 owner opt-in and consent", () => {
   it("legend-z83k B1 starts disconnected, blocks global default-off, and makes no external call", async () => {
     const initial = await status();
     expect(initial.status, initial.text).toBe(200);
-    expect(initial.body.data.status).toBe("disconnected");
-    expect(initial.body.data.consent).toBeNull();
+    expect(initial.body.data.state).toBe("disconnected");
+    expect(initial.body.data).toMatchObject({
+      platformDisabled: false,
+      viewerCanManage: true,
+    });
+    expect(initial.body.data.riskAcceptedAt).toBeNull();
     setEnabled(false);
     const disabled = await start();
     expect(disabled.status, disabled.text).toBe(503);
     expect(codeOf(disabled)).toBe("AI_CHATGPT_DISABLED");
     expect(calls).toHaveLength(0);
-    expect((await status()).body.data.enabled).toBe(false);
+    expect((await status()).body.data.platformDisabled).toBe(true);
   });
   it("legend-z83k B1 requires explicit risk consent and rejects submitted tenant or owner identity", async () => {
     for (const body of [
@@ -612,7 +675,7 @@ describe("legend-z83k B1 owner opt-in and consent", () => {
     expect(calls).toHaveLength(0);
     expect(await rawConnection()).toBeUndefined();
   });
-  it("legend-z83k B1 refuses anonymous, foreign-origin, and custom-role administrators without owner template", async () => {
+  it("legend-z83k B1 blocks anonymous or foreign-origin access and keeps custom-role administrators read-only", async () => {
     const anonymous = await agent(app)
       .get("/api/ai/chatgpt")
       .set("Host", tenantHost);
@@ -622,8 +685,15 @@ describe("legend-z83k B1 owner opt-in and consent", () => {
       .set("Origin", "https://evil.example")
       .send({ model: MODEL, riskAccepted: true });
     expect(foreign.status).toBe(403);
-    expect((await status(nonOwner)).status).toBe(403);
+    const readonly = await status(nonOwner);
+    expect(readonly.status, readonly.text).toBe(200);
+    expect(readonly.body.data).toMatchObject({
+      viewerCanManage: false,
+      deviceCode: null,
+      verificationUrl: null,
+    });
     expect((await start(nonOwner)).status).toBe(403);
+    expect((await poll(randomUUID(), nonOwner)).status).toBe(403);
     expect((await revoke(nonOwner)).status).toBe(403);
     expect(calls).toHaveLength(0);
   });
@@ -631,9 +701,11 @@ describe("legend-z83k B1 owner opt-in and consent", () => {
     const begun = await start();
     expect(begun.status, begun.text).toBe(200);
     expect(begun.body.data).toMatchObject({
-      userCode: "ABCD-EFGH",
-      verificationUri: "https://auth.openai.com/codex/device",
-      intervalSeconds: 5,
+      state: "pending",
+      platformDisabled: false,
+      viewerCanManage: true,
+      deviceCode: "ABCD-EFGH",
+      verificationUrl: "https://auth.openai.com/codex/device",
     });
     expect(new Date(begun.body.data.expiresAt).getTime()).toBeGreaterThan(
       Date.now(),
@@ -641,12 +713,19 @@ describe("legend-z83k B1 owner opt-in and consent", () => {
     const read = await status();
     expect(read.status).toBe(200);
     expect(read.body.data).toMatchObject({
-      status: "pending",
-      model: MODEL,
-      consent: { acceptedBy: ownerA.userId },
+      state: "pending",
+      platformDisabled: false,
+      viewerCanManage: true,
+      deviceCode: "ABCD-EFGH",
+      verificationUrl: "https://auth.openai.com/codex/device",
     });
-    expect(Number.isFinite(Date.parse(read.body.data.consent.acceptedAt))).toBe(
+    expect(Number.isFinite(Date.parse(read.body.data.riskAcceptedAt))).toBe(
       true,
+    );
+    const consentRow = (await rawConnection())!;
+    expect(consentRow.risk_accepted_by).toBe(ownerA.userId);
+    expect(new Date(String(consentRow.risk_accepted_at)).getTime()).toBe(
+      Date.parse(read.body.data.riskAcceptedAt),
     );
     for (const text of [
       begun.text,
@@ -734,11 +813,11 @@ describe("legend-z83k B2 encrypted tokens and bounded polling", () => {
     const begun = await start();
     expect(begun.status, begun.text).toBe(200);
     await unlockPoll();
-    const first = await poll(begun.body.data.attemptId);
+    const first = await poll(await currentAttempt());
     expect(first.status, first.text).toBe(200);
-    expect(first.body.data.status).toBe("pending");
+    expect(first.body.data.state).toBe("pending");
     const before = calls.length;
-    const again = await poll(begun.body.data.attemptId);
+    const again = await poll(await currentAttempt());
     expect(again.status, again.text).toBe(429);
     expect(calls).toHaveLength(before);
   });
@@ -752,22 +831,22 @@ describe("legend-z83k B2 encrypted tokens and bounded polling", () => {
       ),
     );
     const before = calls.length;
-    const expired = await poll(begun.body.data.attemptId);
+    const expired = await poll(await currentAttempt());
     expect(expired.status, expired.text).toBe(200);
-    expect(expired.body.data.status).toBe("unavailable");
+    expect(expired.body.data.state).toBe("expired");
     expect(calls).toHaveLength(before);
   });
   it("legend-z83k B2 prevents another tenant from seeing or polling A and keeps A connected when B revokes", async () => {
     const { attemptId } = await connect();
     const other = await status(ownerB);
     expect(other.status, other.text).toBe(200);
-    expect(other.body.data.status).toBe("disconnected");
-    expect(other.body.data.consent).toBeNull();
+    expect(other.body.data.state).toBe("disconnected");
+    expect(other.body.data.riskAcceptedAt).toBeNull();
     const denied = await poll(attemptId, ownerB);
     expect(denied.status, denied.text).toBe(404);
     const removed = await revoke(ownerB);
     expect(removed.status, removed.text).toBe(200);
-    expect((await status()).body.data.status).toBe("connected");
+    expect((await status()).body.data.state).toBe("connected");
     expect((await rawConnection())?.tokens_encrypted).not.toBeNull();
   });
   it("legend-z83k B2 does not resurrect a revoked connection when an in-flight device poll finishes", async () => {
@@ -791,7 +870,7 @@ describe("legend-z83k B2 encrypted tokens and bounded polling", () => {
         code_verifier: VERIFIER,
       });
     };
-    const polling = poll(begun.body.data.attemptId).then((result) => result);
+    const polling = poll(await currentAttempt()).then((result) => result);
     await entered;
     try {
       expect((await revoke()).status).toBe(200);
@@ -800,12 +879,40 @@ describe("legend-z83k B2 encrypted tokens and bounded polling", () => {
       await polling.catch(() => undefined);
     }
     await polling;
-    expect((await status()).body.data.status).toBe("disconnected");
+    expect((await status()).body.data.state).toBe("disconnected");
     expect((await rawConnection())?.tokens_encrypted).toBeNull();
   });
 });
 
 describe("legend-z83k B3 kill switch, fallback and billing", () => {
+  it("legend-z83k B3 keeps ChatGPT primary and the custom provider row as an independent fallback", async () => {
+    const saved = await ownerA.client
+      .put("/api/ai/provider")
+      .set(originHeader)
+      .send({
+        connectionType: "api_key",
+        baseUrl: CUSTOM_URL,
+        defaultModel: "gpt-4o",
+        apiKey: CUSTOM_KEY,
+      });
+    expect(saved.status, saved.text).toBe(200);
+    await seedConnected();
+    customCalls = [];
+    const answered = await ask();
+    expect(answered.status, answered.text).toBe(200);
+    expect(answered.body.data.assistantMessage.content).toBe(
+      "Jawaban paket ChatGPT.",
+    );
+    expect(customCalls).toHaveLength(0);
+    const persisted = await inTenant(tenantA, (c) =>
+      c.query<{ chatgpt: number; custom: number }>(
+        "SELECT (SELECT count(*)::int FROM ai_chatgpt_connections WHERE tenant_id=$1 AND status='connected') AS chatgpt,(SELECT count(*)::int FROM ai_provider_configs WHERE tenant_id=$1) AS custom",
+        [tenantA],
+      ),
+    );
+    expect(persisted.rows[0]).toEqual({ chatgpt: 1, custom: 1 });
+  });
+
   it("legend-z83k B3 kill switch invalidates an already cached ChatGPT answer", async () => {
     await seedConnected();
     const question = `Jawaban cache ChatGPT ${randomUUID()}`;
@@ -916,8 +1023,11 @@ describe("legend-z83k B3 kill switch, fallback and billing", () => {
     expect(calls).toHaveLength(before);
     expect(platform.requests).toHaveLength(0);
     expect((await status()).body.data).toMatchObject({
-      enabled: false,
-      status: "unavailable",
+      platformDisabled: true,
+      state: "connected",
+      viewerCanManage: true,
+      deviceCode: null,
+      verificationUrl: null,
     });
   });
   it("legend-z83k B3 falls back to the tenant custom provider after explicit ChatGPT authentication failure", async () => {
@@ -1137,7 +1247,7 @@ describe("legend-z83k B4 leased operations and credential races", () => {
       expect(
         calls.filter((call) => call.url.endsWith("/oauth/revoke")),
       ).toHaveLength(0);
-      expect((await status()).body.data.status).toBe("connected");
+      expect((await status()).body.data.state).toBe("connected");
       expect((await getChatgptCredentials(contextA(), 1))?.accessToken).toBe(
         winning,
       );
@@ -1187,10 +1297,10 @@ describe("legend-z83k B4 leased operations and credential races", () => {
       await gate;
       return new Response(null, { status: 403 });
     };
-    const first = poll(begun.body.data.attemptId).then((result) => result);
+    const first = poll(await currentAttempt()).then((result) => result);
     try {
       await vi.waitFor(() => expect(entered).toBe(true), { timeout: 5000 });
-      const second = await poll(begun.body.data.attemptId);
+      const second = await poll(await currentAttempt());
       expect(second.status, second.text).toBe(429);
       expect(
         calls.filter((call) => call.url.endsWith("/deviceauth/token")),
@@ -1248,7 +1358,7 @@ describe("legend-z83k B4 leased operations and credential races", () => {
     expect(
       calls.filter((call) => call.url.endsWith("/oauth/token")),
     ).toHaveLength(1);
-    expect((await status()).body.data.status).toBe("disconnected");
+    expect((await status()).body.data.state).toBe("disconnected");
     expect((await rawConnection())?.tokens_encrypted).toBeNull();
   });
 
@@ -1292,7 +1402,7 @@ describe("legend-z83k B4 leased operations and credential races", () => {
         await oldInference.catch(() => undefined);
       }
       expect((await oldInference).status).toBe(503);
-      expect((await status()).body.data.status).toBe("connected");
+      expect((await status()).body.data.state).toBe("connected");
       const stillFresh = await getChatgptCredentials(contextA(), 1);
       expect(stillFresh?.accessToken).toBe(expectedAccess);
       expect(stillFresh?.refreshToken).toBe("rotated-refresh-credential");
@@ -1321,7 +1431,7 @@ describe("legend-z83k B4 leased operations and credential races", () => {
       await newGate;
       return new Response(null, { status: 403 });
     };
-    const old = poll(begun.body.data.attemptId).then((result) => result);
+    const old = poll(await currentAttempt()).then((result) => result);
     let newer: ReturnType<typeof old.then> | undefined;
     try {
       await vi.waitFor(() => expect(started).toBe(1), { timeout: 5000 });
@@ -1331,7 +1441,7 @@ describe("legend-z83k B4 leased operations and credential races", () => {
           [tenantA],
         ),
       );
-      newer = poll(begun.body.data.attemptId).then((result) => result);
+      newer = poll(await currentAttempt()).then((result) => result);
       await vi.waitFor(() => expect(started).toBe(2), { timeout: 5000 });
       const newOperation = (await rawConnection())?.operation_id;
       expect(typeof newOperation).toBe("string");

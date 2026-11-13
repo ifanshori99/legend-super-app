@@ -6,6 +6,7 @@
 // the API key.
 import { Router } from "express";
 import {
+  patchAiProviderConfig as patchEndpoint,
   testAiProviderConfig as testEndpoint,
   upsertAiProviderConfig as upsertEndpoint,
 } from "@starter/shared/ai";
@@ -20,6 +21,7 @@ import {
 import { requireTenantContext } from "../middleware/tenant.ts";
 import {
   getAiProviderView,
+  patchAiProviderCapabilities,
   removeAiProviderConfig,
   saveAiProviderConfig,
   testAiProviderConnection,
@@ -43,6 +45,17 @@ export function createAiProviderRouter(): Router {
     const body = upsertEndpoint.body.parse(req.body);
     res.json({
       data: await saveAiProviderConfig(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        body,
+      ),
+    });
+  });
+
+  router.patch("/provider", ...gate, jsonBody, async (req, res) => {
+    const body = patchEndpoint.body.parse(req.body);
+    res.json({
+      data: await patchAiProviderCapabilities(
         getScopedTenantContext(req),
         getAuth(req).user.id,
         body,

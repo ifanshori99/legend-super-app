@@ -1,5 +1,5 @@
-// Tenant owner opt-in for the isolated Codex device flow. Secrets are write-only
-// server state; only start returns the short user-facing verification code.
+// Canonical contract for the tenant Pengaturan AI screen (legend-nnufz).
+// OAuth credentials, PKCE and server device_auth_id never enter these DTOs.
 import { defineEndpoint } from "../api/index.ts";
 import {
   dataResponseSchema,
@@ -14,6 +14,7 @@ export const chatgptModelSchema = z
   .min(1)
   .max(200)
   .regex(/^[\w.:/@+-]+$/);
+/** Stored state stays independent from the presentation state and kill switch. */
 export const chatgptConnectionStatusSchema = z.enum([
   "disconnected",
   "pending",
@@ -23,56 +24,70 @@ export const chatgptConnectionStatusSchema = z.enum([
 export type ChatgptConnectionStatus = z.infer<
   typeof chatgptConnectionStatusSchema
 >;
-export const chatgptConnectionViewSchema = z.strictObject({
-  enabled: z.boolean(),
-  status: chatgptConnectionStatusSchema,
-  model: chatgptModelSchema.nullable(),
-  consent: z
-    .strictObject({
-      acceptedBy: z.string().min(1),
-      acceptedAt: isoDateTimeSchema,
-    })
-    .nullable(),
+export const CHATGPT_LOGIN_STATES = [
+  "disconnected",
+  "pending",
+  "connected",
+  "failed",
+  "expired",
+] as const;
+export const chatgptLoginStateSchema = z.enum(CHATGPT_LOGIN_STATES);
+export type ChatgptLoginState = z.infer<typeof chatgptLoginStateSchema>;
+export const chatgptLoginStatusSchema = z.strictObject({
+  state: chatgptLoginStateSchema,
+  /** ChatGPT-only global switch; the tenant's custom fallback remains available. */
+  platformDisabled: z.boolean(),
+  /** Actual owner permission, independent of the global availability switch. */
+  viewerCanManage: z.boolean(),
+  /** Short verification code, visible only to an actual owner while pending. */
+  deviceCode: z.string().min(1).max(40).nullable(),
+  verificationUrl: z.string().max(200).nullable(),
+  expiresAt: isoDateTimeSchema.nullable(),
   connectedAt: isoDateTimeSchema.nullable(),
+  riskAcceptedAt: isoDateTimeSchema.nullable(),
 });
-export type ChatgptConnectionView = z.infer<typeof chatgptConnectionViewSchema>;
+export type ChatgptLoginStatus = z.infer<typeof chatgptLoginStatusSchema>;
 export const startChatgptConnectionInputSchema = z.strictObject({
-  model: chatgptModelSchema,
   riskAccepted: z.literal(true),
+  /** Optional extension; omit to preserve the selected model or use the server default. */
+  model: chatgptModelSchema.optional(),
 });
 export type StartChatgptConnectionInput = z.infer<
   typeof startChatgptConnectionInputSchema
 >;
-export const chatgptDeviceAttemptSchema = z.strictObject({
-  attemptId: uuidSchema,
-  userCode: z.string().min(1).max(100),
-  verificationUri: z.literal("https://auth.openai.com/codex/device"),
-  expiresAt: isoDateTimeSchema,
-  intervalSeconds: z.number().int().min(5).max(60),
-});
-export type ChatgptDeviceAttempt = z.infer<typeof chatgptDeviceAttemptSchema>;
 export const pollChatgptConnectionInputSchema = z.strictObject({
-  attemptId: uuidSchema,
+  /** Optional extension for clients that pin a particular login attempt. */
+  attemptId: uuidSchema.optional(),
 });
-export const getChatgptConnection = defineEndpoint({
+export const getChatgptLogin = defineEndpoint({
   method: "GET",
   path: "/api/ai/chatgpt",
-  response: dataResponseSchema(chatgptConnectionViewSchema),
+  response: dataResponseSchema(chatgptLoginStatusSchema),
 });
-export const startChatgptDeviceConnection = defineEndpoint({
+export const startChatgptLogin = defineEndpoint({
   method: "POST",
   path: "/api/ai/chatgpt/device",
   body: startChatgptConnectionInputSchema,
-  response: dataResponseSchema(chatgptDeviceAttemptSchema),
+  response: dataResponseSchema(chatgptLoginStatusSchema),
 });
-export const pollChatgptDeviceConnection = defineEndpoint({
+export const pollChatgptLogin = defineEndpoint({
   method: "POST",
   path: "/api/ai/chatgpt/device/poll",
   body: pollChatgptConnectionInputSchema,
-  response: dataResponseSchema(chatgptConnectionViewSchema),
+  response: dataResponseSchema(chatgptLoginStatusSchema),
 });
-export const revokeChatgptConnection = defineEndpoint({
+export const revokeChatgptLogin = defineEndpoint({
   method: "DELETE",
   path: "/api/ai/chatgpt",
-  response: dataResponseSchema(chatgptConnectionViewSchema),
+  response: dataResponseSchema(chatgptLoginStatusSchema),
 });
+
+// Legacy import names use the same canonical response, never a second wire shape.
+export const chatgptConnectionViewSchema = chatgptLoginStatusSchema;
+export type ChatgptConnectionView = ChatgptLoginStatus;
+export const chatgptDeviceAttemptSchema = chatgptLoginStatusSchema;
+export type ChatgptDeviceAttempt = ChatgptLoginStatus;
+export const getChatgptConnection = getChatgptLogin;
+export const startChatgptDeviceConnection = startChatgptLogin;
+export const pollChatgptDeviceConnection = pollChatgptLogin;
+export const revokeChatgptConnection = revokeChatgptLogin;

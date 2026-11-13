@@ -34,6 +34,8 @@ import {
   aiModelCapabilitiesSchema,
   aiModelCapabilityOverridesSchema,
   type AiModelCapabilities,
+  type AiModelCapabilityOverrides,
+  type PatchAiProviderConfigInput,
   type AiProviderConfig,
   type AiProviderTestErrorCode,
   type AiProviderTestResult,
@@ -224,6 +226,68 @@ export async function getAiProviderView(
   );
 }
 
+/** Partial override edits never erase fields the caller did not provide. */
+function mergeCapabilityOverrides(
+  previous: AiModelCapabilityOverrides | null,
+  patch: AiModelCapabilityOverrides | null | undefined,
+): AiModelCapabilityOverrides | null {
+  if (patch === undefined) return previous;
+  if (patch === null) return null;
+  const fields = Object.fromEntries(
+    Object.entries(patch).filter(([, value]) => value !== undefined),
+  );
+  if (Object.keys(fields).length === 0) return previous;
+  // Validate the combined tuple: individually valid partial context/output
+  // values can conflict with a field already saved in the tenant's settings.
+  return aiModelCapabilityOverridesSchema.parse({ ...previous, ...fields });
+}
+
+/** Overrides-only edit: row-lock merge, no credential opening or network I/O. */
+export async function patchAiProviderCapabilities(
+  context: ScopedTenantContext,
+  userId: string,
+  input: PatchAiProviderConfigInput,
+): Promise<AiProviderView> {
+  assertTenantScope(context);
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    const current = await readRow(tx, tenantId, true);
+    if (!current) throw new AiError("AI_PROVIDER_NOT_CONFIGURED");
+    const previous =
+      current.capabilityOverrides === null
+        ? null
+        : aiModelCapabilityOverridesSchema.parse(current.capabilityOverrides);
+    const capabilityOverrides = mergeCapabilityOverrides(
+      previous,
+      input.capabilityOverrides,
+    );
+    if (JSON.stringify(previous) === JSON.stringify(capabilityOverrides))
+      return toView(current);
+    const [saved] = await tx
+      .update(aiProviderConfigs)
+      .set({
+        capabilityOverrides,
+        updatedAt: sql`greatest(clock_timestamp(), ${aiProviderConfigs.updatedAt} + interval '1 microsecond')`,
+      })
+      .where(
+        and(
+          eq(aiProviderConfigs.tenantId, tenantId),
+          eq(aiProviderConfigs.id, current.id),
+        ),
+      )
+      .returning();
+    if (!saved) throw new AiError("AI_PROVIDER_NOT_CONFIGURED");
+    await audit(tx, context, {
+      action: "ai_provider.updated",
+      actorUserId: userId,
+      row: saved,
+      before: current,
+      after: saved,
+    });
+    return toView(saved);
+  });
+}
+
 /** Save or replace the tenant's provider config (PUT). */
 export async function saveAiProviderConfig(
   context: ScopedTenantContext,
@@ -248,6 +312,14 @@ export async function saveAiProviderConfig(
   // Never send a stored key to a changed host, including during discovery.
   if (!input.apiKey && (!before || before.baseUrl !== baseUrl))
     throw new AiError("AI_PROVIDER_KEY_REQUIRED");
+  const sameModel =
+    before?.baseUrl === baseUrl && before.defaultModel === input.defaultModel;
+  // This snapshot is fenced by rowVersion under the write lock below. A
+  // concurrent PATCH makes this PUT retry rather than losing either update.
+  const capabilityOverrides = mergeCapabilityOverrides(
+    sameModel ? before.capabilityOverrides : null,
+    input.capabilityOverrides,
+  );
   const discoveryKey = input.apiKey ?? (before ? openKey(before) : null);
   if (!discoveryKey) throw new AiError("AI_PROVIDER_KEY_REQUIRED");
   // Do network I/O outside the DB transaction; the snapshot guard below makes
@@ -257,14 +329,6 @@ export async function saveAiProviderConfig(
     apiKey: discoveryKey,
     model: input.defaultModel,
   });
-  const sameModel =
-    before?.baseUrl === baseUrl && before.defaultModel === input.defaultModel;
-  const capabilityOverrides =
-    input.capabilityOverrides !== undefined
-      ? input.capabilityOverrides
-      : sameModel
-        ? before.capabilityOverrides
-        : null;
   const row = await withTenant(db, context, async (tx) => {
     const current = await readRow(tx, tenantId, true);
     if (
