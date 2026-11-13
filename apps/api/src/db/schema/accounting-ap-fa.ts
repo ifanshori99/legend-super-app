@@ -628,6 +628,8 @@ export const financePolicies = pgTable(
       .notNull()
       .default(2),
     maxDaysUndeposited: integer("max_days_undeposited").notNull().default(2),
+    /** Cash-out approval limit (Rp, founder Q7); NULL = the default Rp5.000.000. */
+    cashOutApprovalLimitIdr: idrColumn("cash_out_approval_limit_idr"),
     updatedBy: text("updated_by"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -644,6 +646,10 @@ export const financePolicies = pgTable(
     check(
       "finance_policies_undeposited_check",
       sql`${table.maxDaysUndeposited} BETWEEN 0 AND 30`,
+    ),
+    check(
+      "finance_policies_cash_out_limit_check",
+      sql`${table.cashOutApprovalLimitIdr} IS NULL OR ${table.cashOutApprovalLimitIdr} BETWEEN 1 AND 100000000000`,
     ),
   ],
 );

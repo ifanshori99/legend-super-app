@@ -196,12 +196,21 @@ function MovementForm({
             idempotencyKey: keySession.current(JSON.stringify(request)),
           } as CreatePettyCashMovementBody;
           create.mutate(body, {
-            onSuccess: () => {
+            onSuccess: (result) => {
               keySession.reset();
-              toast({
-                title: t("accounting.cash.petty.form.saved"),
-                tone: "success",
-              });
+              // 202: a top-up above the limit is held as a pending cash/bank
+              // entry (no balance, no journal yet); the list shows its status.
+              toast(
+                result.kind === "petty_topup"
+                  ? {
+                      title: t("accounting.cash.petty.form.pendingApproval"),
+                      tone: "info",
+                    }
+                  : {
+                      title: t("accounting.cash.petty.form.saved"),
+                      tone: "success",
+                    },
+              );
               onClose();
             },
             onError: (error) => {

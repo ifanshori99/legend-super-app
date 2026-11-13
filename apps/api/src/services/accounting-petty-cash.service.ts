@@ -17,6 +17,13 @@
 //   guess an account: the entry is saved `parked` with ACCOUNT_MAPPING_MISSING
 //   (the cash did move) and `postPettyCashEntry` posts it later, under the same
 //   key `pc:<entryId>`, so one entry makes at most one journal.
+// - Founder Q7 (13 Nov 2026): a top-up above the tenant cash limit, or one that
+//   takes the creator's day total of cash outs and top-ups at the outlet past
+//   it (`accounting-cash-limit.service.ts`), is NOT executed: it is stored as a
+//   `petty_topup` document in `cash_bank_entries` (`pending_approval`, no
+//   journal, fund and ledger untouched). `approveCashBankEntry` then runs the
+//   real top-up in its own transaction (`approvePettyTopupInTransaction`, ledger
+//   key `pt/<entryId>`). A return (fund -> bank) is never held.
 // - Writes need tenant scope (bank accounts live on the legal entity). Reads
 //   are narrowed to the caller's outlets.
 
@@ -25,6 +32,7 @@ import { and, desc, eq, gte, inArray, max, sql, type SQL } from "drizzle-orm";
 import {
   AccountingError,
   pettyCashMovementInputSchema,
+  type CashBankEntry,
   type PettyCashEntry,
   type PettyCashFund,
   type PettyCashMovementInput,
@@ -49,6 +57,7 @@ import {
 } from "@starter/shared/core";
 import { db } from "../db";
 import {
+  cashBankEntries,
   pettyCashEntries,
   pettyCashFunds,
   type PettyCashEntryRow,
@@ -65,9 +74,20 @@ import {
   type TenantTransaction,
 } from "./accounting-ap-fa-shared.ts";
 import { entityLock } from "./accounting-bank-matching.ts";
-import { loadBankAccount, notFound } from "./accounting-cash-bank-shared.ts";
+import {
+  cashBankEntryDto,
+  loadBankAccount,
+  notFound,
+} from "./accounting-cash-bank-shared.ts";
+import {
+  APPROVED_TOPUP_KEY_PREFIX,
+  requiresApproval,
+} from "./accounting-cash-limit.service.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
-import { wouldPostingBeBlockedByClosedPeriod } from "./accounting-period.service.ts";
+import {
+  assertPeriodOpenForPosting,
+  wouldPostingBeBlockedByClosedPeriod,
+} from "./accounting-period.service.ts";
 import { requireLegalEntity } from "./accounting-shared.ts";
 import { loadOutletClock } from "./inventory-ops.shared.ts";
 
@@ -353,19 +373,177 @@ async function postMovementJournal(
 
 // ---------------------------------------------------------------- movements
 
+type BankForMovement = { id: string; glAccountId: string };
+
+/**
+ * One top-up/return, the part shared by a direct movement and an approved
+ * `petty_topup`: fund row (created by a top-up), balance, journal, ledger row.
+ * `park` lets a missing account mapping save the entry parked; an approval never
+ * parks (a failure aborts and the document stays pending).
+ */
+async function applyMovement(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  input: {
+    kind: "topup" | "return";
+    legalEntityId: string;
+    outletId: string;
+    bank: BankForMovement;
+    amountIdr: number;
+    description: string;
+    entryDate: BusinessDate;
+    idempotencyKey: string;
+    /** Owner of the ledger row (the requester, not the approver). */
+    createdBy: string;
+    /** Poster of the journal. */
+    actorId: UserId;
+    park: boolean;
+  },
+): Promise<{ id: string; balanceAfter: Idr; posted: Posted }> {
+  const tenantId = context.tenant.tenantId;
+  const outletId = outletIdSchema.parse(input.outletId);
+  if (input.kind === "topup")
+    await tx
+      .insert(pettyCashFunds)
+      .values({
+        tenantId,
+        legalEntityId: input.legalEntityId,
+        outletId,
+        createdBy: input.actorId,
+      })
+      .onConflictDoNothing({
+        target: [pettyCashFunds.tenantId, pettyCashFunds.outletId],
+      });
+  const fund = await lockFund(tx, tenantId, outletId);
+  // A return from an outlet with no fund has nothing to give back.
+  if (!fund) throw insufficient(0, -input.amountIdr);
+  const delta = input.kind === "topup" ? input.amountIdr : -input.amountIdr;
+  const balanceAfter = await changeBalance(tx, fund, delta);
+
+  const entryId = randomUUID();
+  const posted = await postMovementJournal(
+    tx,
+    context,
+    {
+      entryId,
+      kind: input.kind,
+      legalEntityId: input.legalEntityId,
+      outletId,
+      entryDate: input.entryDate,
+      amountIdr: input.amountIdr,
+      description: input.description,
+      bankGlAccountId: input.bank.glAccountId,
+      actorId: input.actorId,
+    },
+    { park: input.park },
+  );
+  const [created] = await tx
+    .insert(pettyCashEntries)
+    .values({
+      id: entryId,
+      tenantId,
+      legalEntityId: input.legalEntityId,
+      outletId,
+      fundId: fund.id,
+      kind: input.kind,
+      amountIdr: input.amountIdr as Idr,
+      balanceAfterIdr: balanceAfter,
+      bankAccountId: input.bank.id,
+      entryDate: input.entryDate,
+      description: input.description,
+      idempotencyKey: input.idempotencyKey,
+      journalStatus: posted.status,
+      journalEntryId: posted.status === "posted" ? posted.journalEntryId : null,
+      parkCode: posted.status === "parked" ? posted.code : null,
+      parkAttempts: posted.status === "parked" ? 1 : 0,
+      createdBy: input.createdBy,
+    })
+    .returning({ id: pettyCashEntries.id });
+  if (!created) throw new Error("Petty cash entry insert returned no row.");
+  return { id: created.id, balanceAfter, posted };
+}
+
+/**
+ * Runs the top-up of an approved `petty_topup` document inside the caller's
+ * transaction (`approveCashBankEntry`, entity lock and row lock held). Fund
+ * balance and ledger row move exactly once: the document only leaves
+ * `pending_approval` in the same transaction, and a repeat approval returns
+ * before reaching here. The journal is booked, never parked: a closed period
+ * (PERIOD_CLOSED) or a missing petty cash mapping fails the request and the
+ * document stays pending. Returns the journal the document links to.
+ */
+export async function approvePettyTopupInTransaction(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  input: {
+    cashBankEntryId: string;
+    legalEntityId: string;
+    outletId: string;
+    entryDate: string;
+    amountIdr: number;
+    description: string;
+    bank: BankForMovement;
+    createdBy: string;
+    approverId: UserId;
+  },
+): Promise<{ id: string }> {
+  const moved = await applyMovement(tx, context, {
+    kind: "topup",
+    legalEntityId: input.legalEntityId,
+    outletId: input.outletId,
+    bank: input.bank,
+    amountIdr: input.amountIdr,
+    description: input.description,
+    entryDate: input.entryDate as BusinessDate,
+    // Marks the ledger row: the anti-split sum counts the document, not this.
+    idempotencyKey: `${APPROVED_TOPUP_KEY_PREFIX}${input.cashBankEntryId}`,
+    createdBy: input.createdBy,
+    actorId: input.approverId,
+    park: false,
+  });
+  if (moved.posted.status !== "posted")
+    throw new Error("An approved petty cash top-up must book its journal.");
+  await auditApFa(tx, context, {
+    actorId: input.approverId,
+    action: "accounting.petty_cash.movement_recorded",
+    objectType: "petty_cash_entry",
+    objectId: moved.id,
+    outletId: input.outletId,
+    before: null,
+    after: {
+      kind: "topup",
+      amountIdr: input.amountIdr,
+      balanceAfterIdr: moved.balanceAfter,
+      journalStatus: "posted",
+      cashBankEntryId: input.cashBankEntryId,
+    },
+  });
+  return { id: moved.posted.journalEntryId };
+}
+
+export type PettyCashMovementResult =
+  | { pending: false; entry: PettyCashEntry }
+  | { pending: true; entry: CashBankEntry };
+
 /**
  * Top-up from / return to a bank account (contract `createPettyCashMovement`).
- * Idempotent per key; a return above the balance is PETTY_CASH_INSUFFICIENT.
+ * Idempotent per key; a return above the balance is PETTY_CASH_INSUFFICIENT. A
+ * top-up held by the cash limit (see header) comes back `pending: true` with
+ * its `petty_topup` document and changes nothing else.
  */
 export async function createPettyCashMovement(
   context: ScopedTenantContext,
   rawInput: unknown,
   actorId: UserId,
-): Promise<PettyCashEntry> {
+): Promise<PettyCashMovementResult> {
   const input: PettyCashMovementInput =
     pettyCashMovementInputSchema.parse(rawInput);
   assertTrustedScopedContext(context);
   assertTenantScope(context);
+  // "pt/" marks the ledger row of an approved top-up (server-derived); "pt:" is
+  // refused too so no client key can look like one.
+  if (/^pt[:/]/.test(input.idempotencyKey))
+    throw invalid("Kunci idempotensi tidak boleh diawali pt: atau pt/.");
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
     const [outlet] = await tx
@@ -376,7 +554,7 @@ export async function createPettyCashMovement(
       )
       .limit(1);
     if (!outlet) throw notFound("Outlet");
-    const { id } = await idempotentCommand(
+    const stored = await idempotentCommand<{ id: string; pending: boolean }>(
       tx,
       context,
       { key: input.idempotencyKey, operation: OPERATION, request: input },
@@ -390,89 +568,112 @@ export async function createPettyCashMovement(
         if (!bank.isActive) throw invalid("Rekening bank ini tidak aktif.");
         await entityLock(tx, tenantId, bank.legalEntityId);
 
-        if (input.kind === "topup")
-          await tx
-            .insert(pettyCashFunds)
-            .values({
-              tenantId,
-              legalEntityId: outlet.legalEntityId,
-              outletId: input.outletId,
-              createdBy: actorId,
-            })
-            .onConflictDoNothing({
-              target: [pettyCashFunds.tenantId, pettyCashFunds.outletId],
-            });
-        const fund = await lockFund(tx, tenantId, input.outletId);
-        // A return from an outlet with no fund has nothing to give back.
-        if (!fund) throw insufficient(0, -input.amountIdr);
-        const delta =
-          input.kind === "topup" ? input.amountIdr : -input.amountIdr;
-        const balanceAfter = await changeBalance(tx, fund, delta);
-
         const clock = await loadOutletClock(tx, input.outletId);
         const entryDate = businessDateOf(now, clock);
-        const entryId = randomUUID();
-        const posted = await postMovementJournal(
-          tx,
-          context,
-          {
-            entryId,
-            kind: input.kind,
-            legalEntityId: outlet.legalEntityId,
-            outletId: input.outletId,
-            entryDate,
-            amountIdr: input.amountIdr,
-            description: input.description,
-            bankGlAccountId: bank.glAccountId,
+
+        if (
+          input.kind === "topup" &&
+          (await requiresApproval(tx, {
+            tenantId,
             actorId,
-          },
-          { park: true },
-        );
-        const [created] = await tx
-          .insert(pettyCashEntries)
-          .values({
-            id: entryId,
+            outletId: input.outletId,
+            amountIdr: input.amountIdr,
+            now,
+          }))
+        ) {
+          // Held for approval: validated like a posting (period open) but no
+          // fund, ledger row or journal until a second person approves.
+          await assertPeriodOpenForPosting(tx, context, {
+            legalEntityId: outlet.legalEntityId,
+            entryDate,
+          });
+          const documentId = randomUUID();
+          await tx.insert(cashBankEntries).values({
+            id: documentId,
             tenantId,
             legalEntityId: outlet.legalEntityId,
             outletId: input.outletId,
-            fundId: fund.id,
-            kind: input.kind,
-            amountIdr: input.amountIdr,
-            balanceAfterIdr: balanceAfter,
-            bankAccountId: bank.id,
+            kind: "petty_topup",
             entryDate,
+            amountIdr: input.amountIdr,
+            bankAccountId: bank.id,
+            toBankAccountId: null,
+            counterAccountId: null,
             description: input.description,
+            reference: null,
             idempotencyKey: input.idempotencyKey,
-            journalStatus: posted.status,
-            journalEntryId:
-              posted.status === "posted" ? posted.journalEntryId : null,
-            parkCode: posted.status === "parked" ? posted.code : null,
-            parkAttempts: posted.status === "parked" ? 1 : 0,
+            journalEntryId: null,
+            status: "pending_approval",
             createdBy: actorId,
-          })
-          .returning({ id: pettyCashEntries.id });
-        if (!created)
-          throw new Error("Petty cash entry insert returned no row.");
+          });
+          await auditApFa(tx, context, {
+            actorId,
+            action: "accounting.cash_bank_entry.pending_approval",
+            objectType: "cash_bank_entry",
+            objectId: documentId,
+            outletId: input.outletId,
+            before: null,
+            after: {
+              kind: "petty_topup",
+              amountIdr: input.amountIdr,
+              status: "pending_approval",
+            },
+          });
+          return { id: documentId, pending: true };
+        }
+
+        const moved = await applyMovement(tx, context, {
+          kind: input.kind,
+          legalEntityId: outlet.legalEntityId,
+          outletId: input.outletId,
+          bank,
+          amountIdr: input.amountIdr,
+          description: input.description,
+          entryDate,
+          idempotencyKey: input.idempotencyKey,
+          createdBy: actorId,
+          actorId,
+          park: true,
+        });
         await auditApFa(tx, context, {
           actorId,
           action: "accounting.petty_cash.movement_recorded",
           objectType: "petty_cash_entry",
-          objectId: created.id,
+          objectId: moved.id,
           outletId: input.outletId,
           before: null,
           after: {
             kind: input.kind,
             amountIdr: input.amountIdr,
-            balanceAfterIdr: balanceAfter,
-            journalStatus: posted.status,
-            ...(posted.status === "parked" ? { parkCode: posted.code } : {}),
+            balanceAfterIdr: moved.balanceAfter,
+            journalStatus: moved.posted.status,
+            ...(moved.posted.status === "parked"
+              ? { parkCode: moved.posted.code }
+              : {}),
           },
         });
-        return { id: created.id };
+        return { id: moved.id, pending: false };
       },
     );
+    if (stored.pending) {
+      const [document] = await tx
+        .select()
+        .from(cashBankEntries)
+        .where(
+          and(
+            eq(cashBankEntries.tenantId, tenantId),
+            eq(cashBankEntries.id, stored.id),
+          ),
+        )
+        .limit(1);
+      if (!document) throw notFound("Transaksi kas dan bank");
+      return { pending: true, entry: cashBankEntryDto(document) };
+    }
     // Read the current state: a replay shows a parked entry that got posted.
-    return pettyCashEntryDto(await loadEntry(tx, tenantId, id));
+    return {
+      pending: false,
+      entry: pettyCashEntryDto(await loadEntry(tx, tenantId, stored.id)),
+    };
   });
 }
 
@@ -589,10 +790,11 @@ export async function postPettyCashEntry(
 
 /**
  * A petty purchase spends the outlet's fund (called from
- * `createPettyPurchase`, same transaction). An outlet without a fund keeps the
- * old behavior (no effect); with a fund, a purchase above the balance is
- * PETTY_CASH_INSUFFICIENT and the whole purchase is rolled back. The ledger row
- * is `external`: its journal belongs to `petty_purchase.recorded`.
+ * `createPettyPurchase`, same transaction). An outlet without a fund is refused
+ * with PETTY_CASH_FUND_REQUIRED (founder Q8); with a fund, a purchase above the
+ * balance is PETTY_CASH_INSUFFICIENT. Either way the whole purchase is rolled
+ * back. The ledger row is `external`: its journal belongs to
+ * `petty_purchase.recorded`.
  */
 export async function drawPettyCashForPurchase(
   tx: TenantTransaction,
@@ -609,7 +811,7 @@ export async function drawPettyCashForPurchase(
   const tenantId = context.tenant.tenantId;
   const outletId = outletIdSchema.parse(input.outletId);
   const fund = await lockFund(tx, tenantId, outletId);
-  if (!fund) return;
+  if (!fund) throw new AccountingError("PETTY_CASH_FUND_REQUIRED");
   const balanceAfter = await changeBalance(tx, fund, -input.amountIdr);
   await tx.insert(pettyCashEntries).values({
     tenantId,

@@ -2,12 +2,15 @@
 // document per row, one journal per document. The write menu is one action;
 // the list stays quiet. Shown only to people who hold
 // accounting.cash_bank.record, because the endpoint answers 403 to everyone
-// else.
+// else. A cash out above the tenant limit waits for a second person (Q7): the
+// row says so, and Setujui/Tolak show only to someone who holds
+// accounting.cash_bank.approve and did not create the entry.
+import * as React from "react";
 import { ChevronDown, Plus } from "lucide-react";
 import type {
   BankAccount,
   CashBankEntry,
-  CashBankEntryKind,
+  CreatableCashBankEntryKind,
 } from "@starter/shared/accounting";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -36,9 +39,16 @@ import {
   formatMonthLabel,
   monthRange,
 } from "../lib";
-import { useCashBankEntries } from "../hooks";
+import { useApproveCashBankEntry, useCashBankEntries } from "../hooks";
+import { useToast } from "@/components/ui/toast";
+import { ApiError } from "@/lib/api/errors";
 import { useAccounts } from "@/features/ws07-accounting/hooks";
-import { CashEntryKindBadge } from "./status-badges";
+import { useCurrentAuth } from "@/features/ws01-approvals/hooks";
+import { useCanApproveCashBank, useCanManageCashApprovalLimit } from "../guard";
+import { moneyErrorKey } from "../lib";
+import { CashApprovalLimitCard } from "./cash-approval-limit-card";
+import { CashEntryRejectDialog } from "./cash-entry-reject-dialog";
+import { CashEntryKindBadge, CashEntryStatusBadge } from "./status-badges";
 
 export function CashEntriesSection({
   legalEntityId,
@@ -50,9 +60,15 @@ export function CashEntriesSection({
   accounts: readonly BankAccount[];
   /** False while the bank accounts load: labels show "—", not a miss. */
   accountsReady: boolean;
-  onAdd: (kind: CashBankEntryKind) => void;
+  onAdd: (kind: CreatableCashBankEntryKind) => void;
 }) {
   const t = useT();
+  const toast = useToast();
+  const canApprove = useCanApproveCashBank();
+  const canManageLimit = useCanManageCashApprovalLimit();
+  const userId = useCurrentAuth().data?.data.user.id ?? null;
+  const approve = useApproveCashBankEntry();
+  const [rejectId, setRejectId] = React.useState<string | null>(null);
   const today = businessDateToday();
   const range = monthRange(today);
   const entries = useCashBankEntries(legalEntityId, range.from, range.to);
@@ -84,6 +100,33 @@ export function CashEntriesSection({
       ? `${account.code} · ${account.name}`
       : t("accounting.cash.entries.accountMissing");
   };
+  // Fail closed: without a known user the buttons stay hidden (the API also
+  // refuses the creator, CASH_OUT_SELF_APPROVAL).
+  const canDecide = (entry: CashBankEntry) =>
+    canApprove &&
+    entry.status === "pending_approval" &&
+    userId !== null &&
+    entry.createdBy !== userId;
+  const approveEntry = (entryId: string) =>
+    approve.mutate(entryId, {
+      onSuccess: () =>
+        toast({
+          title: t("accounting.cash.entries.approval.approved"),
+          tone: "success",
+        }),
+      onError: (error) => {
+        const key =
+          error instanceof ApiError ? moneyErrorKey(error.code) : null;
+        toast({
+          title: key
+            ? t(key)
+            : error instanceof ApiError
+              ? error.message
+              : t("accounting.cash.entries.approval.failed"),
+          tone: "danger",
+        });
+      },
+    });
   const accountCell = (entry: CashBankEntry) =>
     entry.kind === "transfer" && entry.toBankAccountId !== null
       ? t("accounting.cash.entries.transferArrow", {
@@ -134,7 +177,8 @@ export function CashEntriesSection({
   ) : undefined;
 
   return (
-    <div id="cash-entries" className="min-w-0">
+    <div id="cash-entries" className="grid min-w-0 gap-5">
+      {canManageLimit ? <CashApprovalLimitCard /> : null}
       <DataTableShell
         title={t("accounting.cash.entries.title")}
         description={`${t("accounting.cash.entries.subtitle")} ${t(
@@ -154,7 +198,7 @@ export function CashEntriesSection({
           action: addMenu,
         }}
       >
-        <Table className="min-w-[56rem]">
+        <Table className="min-w-[64rem]">
           <TableHeader>
             <TableRow>
               <TableHead>{t("accounting.cash.entries.columns.date")}</TableHead>
@@ -174,6 +218,14 @@ export function CashEntriesSection({
               <TableHead>
                 {t("accounting.cash.entries.columns.reference")}
               </TableHead>
+              <TableHead>
+                {t("accounting.cash.entries.columns.status")}
+              </TableHead>
+              {canApprove ? (
+                <TableHead>
+                  {t("accounting.cash.entries.columns.actions")}
+                </TableHead>
+              ) : null}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -194,11 +246,60 @@ export function CashEntriesSection({
                 <TableCell className="text-sm tabular">
                   {entry.reference ?? "—"}
                 </TableCell>
+                <TableCell className="text-sm">
+                  <CashEntryStatusBadge status={entry.status} />
+                  {entry.status === "rejected" &&
+                  entry.decisionReason !== null ? (
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      {t("accounting.cash.entries.approval.decisionReason", {
+                        reason: entry.decisionReason,
+                      })}
+                    </p>
+                  ) : null}
+                </TableCell>
+                {canApprove ? (
+                  <TableCell>
+                    {canDecide(entry) ? (
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          loading={
+                            approve.isPending && approve.variables === entry.id
+                          }
+                          disabled={approve.isPending}
+                          onClick={() => approveEntry(entry.id)}
+                        >
+                          {t("accounting.cash.entries.approval.approve")}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={approve.isPending}
+                          onClick={() => setRejectId(entry.id)}
+                        >
+                          {t("accounting.cash.entries.approval.reject")}
+                        </Button>
+                      </div>
+                    ) : entry.status === "pending_approval" &&
+                      userId !== null &&
+                      entry.createdBy === userId ? (
+                      <span className="text-xs leading-5 text-muted-foreground">
+                        {t("accounting.cash.entries.approval.ownEntry")}
+                      </span>
+                    ) : null}
+                  </TableCell>
+                ) : null}
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </DataTableShell>
+      <CashEntryRejectDialog
+        entryId={rejectId}
+        onClose={() => setRejectId(null)}
+      />
     </div>
   );
 }

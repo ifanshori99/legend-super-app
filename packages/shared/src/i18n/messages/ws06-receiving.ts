@@ -37,6 +37,10 @@ export const inventoryReceivingMessages = {
       "Jumlah retur melebihi jumlah diterima baik. Kurangi jumlah retur.",
     pettyLimit:
       "Nominal melebihi batas pembelian kecil. Kurangi nominal atau ajukan PO.",
+    pettyFundRequired:
+      "Outlet ini belum punya dana kas kecil. Buat dana dulu di layar Kas kecil.",
+    pettyInsufficient:
+      "Saldo kas kecil outlet tidak cukup untuk pembelian ini.",
     invoiceNotMatched:
       "Faktur belum cocok dengan PO dan penerimaan. Jalankan 3-way match lebih dulu.",
     invoiceNotPayable: "Faktur tidak punya sisa tagihan untuk dibayar.",
@@ -296,6 +300,9 @@ export const inventoryReceivingMessages = {
     listDescription:
       "Belanja tunai dengan bukti foto dan batas nominal per transaksi.",
     newPurchase: "Pembelian kecil",
+    noFund:
+      "Outlet ini belum punya dana kas kecil. Buat dana dulu di layar Kas kecil.",
+    noFundLink: "Buka Kas kecil",
     columns: {
       date: "Tanggal",
       vendor: "Vendor",

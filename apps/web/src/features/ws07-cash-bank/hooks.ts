@@ -12,6 +12,7 @@ import type {
 } from "@starter/shared/accounting";
 import * as api from "./api";
 import {
+  cashApprovalLimitQuery,
   cashBankEntriesQuery,
   cashBankKeys,
   cashDepositsQuery,
@@ -35,6 +36,11 @@ import {
 
 export function useFinancePolicy() {
   return useQuery(financePolicyQuery());
+}
+
+/** The cash out approval limit; `enabled` false skips the call (no permission). */
+export function useCashApprovalLimit(enabled = true) {
+  return useQuery({ ...cashApprovalLimitQuery(), enabled });
 }
 
 export function useBankAccounts(legalEntityId: string | undefined) {
@@ -239,6 +245,31 @@ export function useCreateCashBankEntry() {
   return useMutation({
     mutationFn: (body: api.CreateCashBankEntryBody) =>
       api.createCashBankEntry(body),
+    onSuccess: invalidate,
+  });
+}
+
+export function useApproveCashBankEntry() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (entryId: string) => api.approveCashBankEntry(entryId),
+    onSuccess: invalidate,
+  });
+}
+
+export function useRejectCashBankEntry() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (variables: { entryId: string; reason: string }) =>
+      api.rejectCashBankEntry(variables.entryId, variables.reason),
+    onSuccess: invalidate,
+  });
+}
+
+export function useUpdateCashApprovalLimit() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (limitIdr: number) => api.updateCashApprovalLimit(limitIdr),
     onSuccess: invalidate,
   });
 }

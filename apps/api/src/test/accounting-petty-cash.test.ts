@@ -19,9 +19,10 @@
 // - Success is 201 for a create; a replay answers 200 or 201 with the same id;
 //   a retry post answers 200 or 201.
 // - Errors use the `{ error: { code } }` envelope of the other suites.
-// - An outlet WITHOUT a fund keeps the old behavior: a petty purchase is still
-//   recorded (design 3; open question to the founder whether a fund must exist).
-//   If the founder decides the opposite, update CASH-10.
+// - Founder decision Q8 (13 Nov 2026): an outlet WITHOUT a fund cannot record
+//   a petty purchase. It answers 422 PETTY_CASH_FUND_REQUIRED and writes no
+//   purchase, no ledger entry, no outbox event and no journal (PC-23, PC-25..27).
+//   A fund that exists but holds too little stays 422 PETTY_CASH_INSUFFICIENT.
 // - A petty purchase refused for lack of balance answers 422 PETTY_CASH_INSUFFICIENT
 //   (the limit policy is set high so the limit check cannot be the cause).
 // - A scoped finance user is refused on POST with 403 (OUTLET_OUT_OF_SCOPE per
@@ -74,6 +75,9 @@ let scopedFinance: Session;
 let recorder: Session;
 let nobody: Session;
 let scopedOutlet: string;
+// Outlets created by THIS file. The other petty test files run in parallel on
+// the same tenant, so tenant-wide outbox counts would pick up their events.
+const ownOutletIds: string[] = [];
 
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
@@ -81,6 +85,7 @@ beforeAll(async () => {
   setAuditWriter(coreAuditWriter);
   world = await makeWorld();
   scopedOutlet = await makeOutlet(world.entityId);
+  ownOutletIds.push(scopedOutlet);
   finance = await signedIn(app, "PC finance", [
     { role: "finance", outletId: null },
   ]);
@@ -92,8 +97,37 @@ beforeAll(async () => {
   nobody = await signedIn(app, "PC nobody", []);
 });
 
+// Other-tenant fixtures of PC-27 (outlet, brand and fund of `world.foreign`).
+const foreignFixture: { outletId?: string; brandId?: string } = {};
+
 afterAll(async () => {
   setAuditWriter(null);
+  // Owner cleanup of PC-27's other-tenant rows; replica mode skips FKs/triggers.
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query("DELETE FROM petty_cash_entries WHERE tenant_id = $1", [
+      world.foreign.tenantId,
+    ]);
+    await client.query("DELETE FROM petty_cash_funds WHERE tenant_id = $1", [
+      world.foreign.tenantId,
+    ]);
+    if (foreignFixture.outletId)
+      await client.query("DELETE FROM outlets WHERE id = $1", [
+        foreignFixture.outletId,
+      ]);
+    if (foreignFixture.brandId)
+      await client.query("DELETE FROM brands WHERE id = $1", [
+        foreignFixture.brandId,
+      ]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
   await closeKit();
 });
 
@@ -101,6 +135,7 @@ afterAll(async () => {
 
 async function freshOutlet(): Promise<string> {
   const outletId = await makeOutlet(world.entityId);
+  ownOutletIds.push(outletId);
   const { rows } = await owner.query<{ id: string }>(
     "SELECT id FROM roles WHERE tenant_id = $1 AND template_key = 'outlet_manager'",
     [tenantId],
@@ -262,11 +297,18 @@ async function pettyPurchaseCount(outletId: string): Promise<number> {
   );
   return Number(rows[0]!.n);
 }
+/**
+ * petty_purchase.recorded events whose payload outlet is one of THIS file's
+ * outlets (including PC-27's other-tenant outlet, so a leak there is caught).
+ */
 async function recordedEventCount(): Promise<number> {
+  const outletIds = [...ownOutletIds];
+  if (foreignFixture.outletId) outletIds.push(foreignFixture.outletId);
   const { rows } = await owner.query<{ n: string }>(
     `SELECT count(*)::text AS n FROM domain_event_outbox
-      WHERE tenant_id = $1 AND event->>'name' = 'petty_purchase.recorded'`,
-    [tenantId],
+      WHERE event->>'name' = 'petty_purchase.recorded'
+        AND event->'payload'->>'outletId' = ANY($1::text[])`,
+    [outletIds],
   );
   return Number(rows[0]!.n);
 }
@@ -902,15 +944,170 @@ describe("legend-4961 one document, one journal (money rule 4)", () => {
     await expectLedgerConsistent(outletId);
   });
 
-  it("[legend-4961-PC-23] an outlet without a fund keeps the old behavior: the purchase is recorded and no fund appears", async () => {
-    // Assumption (see header): until the founder decides a fund is mandatory,
-    // the balance rule applies only to outlets that have a fund.
+  it("[legend-4961-PC-23] an outlet without a fund is refused: 422 PETTY_CASH_FUND_REQUIRED, no purchase, no ledger entry, no event, no journal, no fund appears", async () => {
     const outletId = await freshOutlet();
+    const events = await recordedEventCount();
+    const journals = await journalCount(world.entityId, ["petty_purchase"]);
+
     const res = await buy(await purchaseBody(outletId, 25_000));
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(await fundRow(outletId)).toBeNull();
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error.code).toBe("PETTY_CASH_FUND_REQUIRED");
+    expect(await pettyPurchaseCount(outletId)).toBe(0);
     expect(await entryRows(outletId)).toHaveLength(0);
+    expect(await fundRow(outletId)).toBeNull();
+    expect(await recordedEventCount()).toBe(events);
+    expect(await journalCount(world.entityId, ["petty_purchase"])).toBe(
+      journals,
+    );
+  });
+
+  it("[legend-4961-PC-25] a fund that covers the purchase: 201, the balance drops by exactly the total, one purchase entry", async () => {
+    const outletId = await freshOutlet();
+    await fundWith(outletId, 100_000);
+
+    const res = await buy(await purchaseBody(outletId, 35_000));
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const purchaseId = res.body.data.id as string;
+    expect(await balanceOf(outletId)).toBe(65_000);
     expect(await pettyPurchaseCount(outletId)).toBe(1);
+    const purchaseEntries = (await entryRows(outletId)).filter(
+      (row) => row.kind === "purchase",
+    );
+    expect(purchaseEntries).toHaveLength(1);
+    expect(purchaseEntries[0]).toMatchObject({
+      amount: 35_000,
+      balance_after: 65_000,
+      petty_purchase_id: purchaseId,
+    });
+    await expectLedgerConsistent(outletId);
+  });
+
+  it("[legend-4961-PC-26] a fund that is too small answers PETTY_CASH_INSUFFICIENT (not FUND_REQUIRED) and writes nothing", async () => {
+    const outletId = await freshOutlet();
+    await fundWith(outletId, 20_000);
+    const events = await recordedEventCount();
+    const journals = await journalCount(world.entityId, ["petty_purchase"]);
+
+    const res = await buy(await purchaseBody(outletId, 20_001));
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error.code).toBe("PETTY_CASH_INSUFFICIENT");
+    expect(await pettyPurchaseCount(outletId)).toBe(0);
+    expect(await recordedEventCount()).toBe(events);
+    expect(await journalCount(world.entityId, ["petty_purchase"])).toBe(
+      journals,
+    );
+    expect(await balanceOf(outletId)).toBe(20_000);
+    expect(await entryRows(outletId)).toHaveLength(1);
+    await expectLedgerConsistent(outletId);
+  });
+
+  it("[legend-4961-PC-27] the fund of outlet A is never used by outlet B; another tenant sees no fund", async () => {
+    const outletA = await freshOutlet();
+    const outletB = await freshOutlet();
+    await fundWith(outletA, 500_000);
+
+    // B has no fund of its own: refused, even though A holds plenty.
+    const res = await buy(await purchaseBody(outletB, 10_000));
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error.code).toBe("PETTY_CASH_FUND_REQUIRED");
+    expect(await pettyPurchaseCount(outletB)).toBe(0);
+    expect(await entryRows(outletB)).toHaveLength(0);
+    expect(await fundRow(outletB)).toBeNull();
+    // A is untouched.
+    expect(await balanceOf(outletA)).toBe(500_000);
+    expect(await entryRows(outletA)).toHaveLength(1);
+
+    // Control: A itself can still buy and only A's balance moves.
+    const own = await buy(await purchaseBody(outletA, 10_000));
+    expect(own.status, JSON.stringify(own.body)).toBe(201);
+    expect(await balanceOf(outletA)).toBe(490_000);
+    expect(await fundRow(outletB)).toBeNull();
+
+    // Another tenant has a REAL outlet with a REAL fund (opened as the owner).
+    const foreignBrandId = randomUUID();
+    const foreignOutletId = randomUUID();
+    foreignFixture.brandId = foreignBrandId;
+    foreignFixture.outletId = foreignOutletId;
+    await owner.query(
+      `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'pc27', 'Brand PC27')`,
+      [foreignBrandId, world.foreign.tenantId],
+    );
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
+       VALUES ($1, $2, $3, $4, $5, 'Outlet asing PC27', 'Jl. Uji 2', 'Asia/Jakarta', '04:00', '{"mon":null,"tue":null,"wed":null,"thu":null,"fri":null,"sat":null,"sun":null}', 'active')`,
+      [
+        foreignOutletId,
+        world.foreign.tenantId,
+        foreignBrandId,
+        world.foreign.entityId,
+        `PC27-${randomUUID().slice(0, 6)}`.toUpperCase(),
+      ],
+    );
+    await owner.query(
+      `INSERT INTO petty_cash_funds (tenant_id, legal_entity_id, outlet_id, balance_idr, created_by)
+       VALUES ($1, $2, $3, 777000, $4)`,
+      [
+        world.foreign.tenantId,
+        world.foreign.entityId,
+        foreignOutletId,
+        finance.userId,
+      ],
+    );
+    const foreignBalance = async () =>
+      (
+        await owner.query<{ balance: string }>(
+          "SELECT balance_idr::text AS balance FROM petty_cash_funds WHERE tenant_id = $1 AND outlet_id = $2",
+          [world.foreign.tenantId, foreignOutletId],
+        )
+      ).rows.map((row) => Number(row.balance));
+    const foreignRows = async (table: string) =>
+      Number(
+        (
+          await owner.query<{ n: string }>(
+            `SELECT count(*)::text AS n FROM ${table} WHERE outlet_id = $1`,
+            [foreignOutletId],
+          )
+        ).rows[0]!.n,
+      );
+
+    // Tenant A cannot spend from it: the other tenant's real outlet is refused
+    // (never 201), nothing is written, the other tenant's balance is unchanged.
+    const events = await recordedEventCount();
+    const foreign = await buy(
+      await purchaseBody(outletA, 10_000, { outletId: foreignOutletId }),
+    );
+    expect([403, 404, 422], JSON.stringify(foreign.body)).toContain(
+      foreign.status,
+    );
+    expect(foreign.status).not.toBe(201);
+    expect(foreign.body.error?.code).not.toBe("PETTY_CASH_INSUFFICIENT");
+    expect(await foreignBalance()).toEqual([777_000]);
+    expect(await foreignRows("petty_purchases")).toBe(0);
+    expect(await foreignRows("petty_cash_entries")).toBe(0);
+    expect(await recordedEventCount()).toBe(events);
+    // And an unknown outlet id is refused the same way.
+    const unknown = await buy(
+      await purchaseBody(outletA, 10_000, { outletId: randomUUID() }),
+    );
+    expect([403, 404, 422]).toContain(unknown.status);
+
+    // The other tenant's fund never shows up for tenant A: its legal entity
+    // lists nothing (empty or refused) and A's own listings do not contain it.
+    const other = await listFunds(finance, {
+      legalEntityId: world.foreign.entityId,
+    });
+    expect([200, 403, 404]).toContain(other.status);
+    if (other.status === 200) expect(other.body.data).toEqual([]);
+    const byOutlet = await listFunds(finance, {
+      legalEntityId: world.entityId,
+      outletId: foreignOutletId,
+    });
+    if (byOutlet.status === 200) expect(byOutlet.body.data).toEqual([]);
+    const wide = await listFunds(finance, { legalEntityId: world.entityId });
+    expect(wide.status).toBe(200);
+    expect(
+      (wide.body.data as { outletId: string }[]).map((row) => row.outletId),
+    ).not.toContain(foreignOutletId);
   });
 });
 

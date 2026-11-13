@@ -14,6 +14,7 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type {
   BankAccount,
+  CashBankEntry,
   BankStatementLine,
   CashDeposit,
   ReconciliationCase,
@@ -28,6 +29,7 @@ import {
   type BankStatementLineRow,
   type CashDepositRow,
 } from "../db/schema/accounting-cash-bank.ts";
+import type { CashBankEntryRow } from "../db/schema/accounting-cash-bank-entries.ts";
 import type { TenantId } from "@starter/shared/core";
 import { HttpError } from "../lib/http-error.ts";
 import type { TenantTransaction } from "./accounting-shared.ts";
@@ -163,4 +165,28 @@ export async function loadMatchesByLine(
     byLine.set(row.lineId, list);
   }
   return byLine;
+}
+
+export function cashBankEntryDto(row: CashBankEntryRow): CashBankEntry {
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    legalEntityId: row.legalEntityId,
+    outletId: row.outletId,
+    kind: row.kind,
+    entryDate: row.entryDate,
+    amountIdr: row.amountIdr,
+    bankAccountId: row.bankAccountId,
+    toBankAccountId: row.toBankAccountId,
+    counterAccountId: row.counterAccountId,
+    description: row.description,
+    reference: row.reference,
+    status: row.status,
+    approverId: row.approverId,
+    decidedAt: row.decidedAt?.toISOString() ?? null,
+    decisionReason: row.decisionReason,
+    journalEntryId: row.journalEntryId,
+    createdBy: row.createdBy,
+    createdAt: row.createdAt.toISOString(),
+  } as CashBankEntry;
 }

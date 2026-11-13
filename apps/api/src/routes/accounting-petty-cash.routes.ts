@@ -74,13 +74,20 @@ export function createAccountingPettyCashRouter(): Router {
     requireMenuPermission(MANAGE),
     async (req, res) => {
       const input = createPettyCashMovement.body.parse(req.body);
-      res.status(201).json({
-        data: await createPettyCashMovementService(
-          getScopedTenantContext(req),
-          input,
-          actorId(req),
-        ),
-      });
+      const result = await createPettyCashMovementService(
+        getScopedTenantContext(req),
+        input,
+        actorId(req),
+      );
+      // 202: a top-up still held for approval (Q7), the body is its cash/bank
+      // document. A replay after the decision shows the document as decided: 201.
+      res
+        .status(
+          result.pending && result.entry.status === "pending_approval"
+            ? 202
+            : 201,
+        )
+        .json({ data: result.entry });
     },
   );
 

@@ -120,6 +120,7 @@ describe("legend-4961 cash-bank entry input contract", () => {
     assert.deepEqual([...acc.CASH_BANK_ENTRY_KINDS].sort(), [
       "cash_in",
       "cash_out",
+      "petty_topup",
       "transfer",
     ]);
   });
@@ -372,6 +373,7 @@ describe("legend-4961 errors, source types, posting rules, endpoints, permission
   test("legend-4961 new error codes are 422 and carry a readable message", () => {
     for (const code of [
       "PETTY_CASH_INSUFFICIENT",
+      "PETTY_CASH_FUND_REQUIRED",
       "CASH_BANK_COUNTER_ACCOUNT_INVALID",
     ]) {
       assert.equal(acc.accountingErrorHttpStatus[code], 422, code);

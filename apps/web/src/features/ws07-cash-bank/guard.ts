@@ -9,6 +9,12 @@ import { holdsAny } from "@/lib/areas/guard";
 const CASH_BANK_RECORD: readonly PermissionCode[] = [
   "accounting.cash_bank.record",
 ];
+const CASH_BANK_APPROVE: readonly PermissionCode[] = [
+  "accounting.cash_bank.approve",
+];
+const CASH_BANK_LIMIT_MANAGE: readonly PermissionCode[] = [
+  "accounting.cash_bank.limit.manage",
+];
 const PETTY_CASH_MANAGE: readonly PermissionCode[] = [
   "accounting.petty_cash.manage",
 ];
@@ -28,4 +34,14 @@ export function useCanRecordCashBank(): boolean {
 /** Petty cash funds: view, top up, return and retry a parked journal. */
 export function useCanManagePettyCash(): boolean {
   return useHolds(PETTY_CASH_MANAGE);
+}
+
+/** Approve or reject a cash out above the limit (never your own). */
+export function useCanApproveCashBank(): boolean {
+  return useHolds(CASH_BANK_APPROVE);
+}
+
+/** Change the cash out approval limit. */
+export function useCanManageCashApprovalLimit(): boolean {
+  return useHolds(CASH_BANK_LIMIT_MANAGE);
 }

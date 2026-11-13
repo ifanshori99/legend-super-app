@@ -97,8 +97,16 @@ export const accountingErrorHttpStatus = {
   ADJUSTMENT_EXCEEDS_PAID: 422,
   /** A petty cash movement or purchase would take the outlet's fund below zero (legend-4961). */
   PETTY_CASH_INSUFFICIENT: 422,
+  /** The outlet has no petty cash fund, so a petty purchase is refused (founder Q8, 13 Nov 2026). */
+  PETTY_CASH_FUND_REQUIRED: 422,
   /** Cash in/out counter account is a cash or bank account: use a transfer instead (legend-4961). */
   CASH_BANK_COUNTER_ACCOUNT_INVALID: 422,
+  /** The creator of a cash out cannot approve or reject it (founder Q7, 13 Nov 2026). */
+  CASH_OUT_SELF_APPROVAL: 403,
+  /** The cash entry is not waiting for approval (already rejected). */
+  CASH_ENTRY_NOT_PENDING: 409,
+  /** No such cash/bank entry for this tenant. */
+  CASH_ENTRY_NOT_FOUND: 404,
 } as const satisfies Record<string, number>;
 
 export type AccountingErrorCode = keyof typeof accountingErrorHttpStatus;
@@ -176,8 +184,15 @@ const defaultMessages: Record<AccountingErrorCode, string> = {
   ADJUSTMENT_EXCEEDS_PAID:
     "Pengembalian melebihi jumlah yang sudah dibayarkan kepada pemegang saham.",
   PETTY_CASH_INSUFFICIENT: "Saldo kas kecil outlet tidak cukup.",
+  PETTY_CASH_FUND_REQUIRED:
+    "Outlet ini belum punya dana kas kecil. Buat dana dulu di layar Kas kecil.",
   CASH_BANK_COUNTER_ACCOUNT_INVALID:
     "Akun lawan tidak boleh akun kas atau bank. Gunakan transfer antar-rekening.",
+  CASH_OUT_SELF_APPROVAL:
+    "Pembuat kas keluar tidak boleh menyetujui atau menolaknya sendiri.",
+  CASH_ENTRY_NOT_PENDING:
+    "Entri ini sudah diputuskan dan tidak bisa diubah lagi.",
+  CASH_ENTRY_NOT_FOUND: "Transaksi kas dan bank tidak ditemukan.",
 };
 
 export class AccountingError extends Error {

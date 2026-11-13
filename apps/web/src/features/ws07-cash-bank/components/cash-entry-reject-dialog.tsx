@@ -1,0 +1,138 @@
+// Reject a cash out that waits for approval (Q7). A rejected entry never gets
+// a journal and cannot be approved again, so the dialog says so and asks for a
+// reason (1 to 500 characters), which the list then shows.
+import * as React from "react";
+import { useT } from "@/components/i18n";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { FormField } from "@/components/ui/form-field";
+import { Textarea } from "@/components/ui/textarea";
+import { useToast } from "@/components/ui/toast";
+import { ApiError } from "@/lib/api/errors";
+import { useRejectCashBankEntry } from "../hooks";
+import { CASH_REASON_MAX, moneyErrorKey } from "../lib";
+import { ServerError } from "./server-error";
+
+export function CashEntryRejectDialog({
+  entryId,
+  onClose,
+}: {
+  /** The entry being rejected; null keeps the dialog closed. */
+  entryId: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog
+      open={entryId !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <DialogContent>
+        {entryId !== null ? (
+          <RejectForm entryId={entryId} onClose={onClose} />
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RejectForm({
+  entryId,
+  onClose,
+}: {
+  entryId: string;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const toast = useToast();
+  const reject = useRejectCashBankEntry();
+  const [reason, setReason] = React.useState("");
+  const [submitted, setSubmitted] = React.useState(false);
+  const [serverError, setServerError] = React.useState<string | null>(null);
+  const trimmed = reason.trim();
+  const error =
+    trimmed === ""
+      ? t("accounting.cash.entries.approval.reasonRequired")
+      : trimmed.length > CASH_REASON_MAX
+        ? t("accounting.cash.entries.approval.reasonTooLong")
+        : undefined;
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>
+          {t("accounting.cash.entries.approval.rejectTitle")}
+        </DialogTitle>
+        <DialogDescription>
+          {t("accounting.cash.entries.approval.rejectDescription")}
+        </DialogDescription>
+      </DialogHeader>
+      <form
+        className="grid gap-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setSubmitted(true);
+          if (reject.isPending || error !== undefined) return;
+          reject.mutate(
+            { entryId, reason: trimmed },
+            {
+              onSuccess: () => {
+                toast({
+                  title: t("accounting.cash.entries.approval.rejected"),
+                  tone: "success",
+                });
+                onClose();
+              },
+              onError: (cause) => {
+                const key =
+                  cause instanceof ApiError ? moneyErrorKey(cause.code) : null;
+                setServerError(
+                  key
+                    ? t(key)
+                    : cause instanceof ApiError
+                      ? cause.message
+                      : t("accounting.cash.entries.approval.failed"),
+                );
+              },
+            },
+          );
+        }}
+      >
+        <FormField
+          label={t("accounting.cash.entries.approval.reason")}
+          error={submitted ? error : undefined}
+          required
+        >
+          <Textarea
+            value={reason}
+            onChange={(event) => {
+              setReason(event.target.value);
+              setServerError(null);
+            }}
+            maxLength={CASH_REASON_MAX}
+          />
+        </FormField>
+        <ServerError message={serverError} />
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose}>
+            {t("common.cancel")}
+          </Button>
+          <Button
+            type="submit"
+            variant="destructive"
+            loading={reject.isPending}
+          >
+            {t("accounting.cash.entries.approval.rejectSubmit")}
+          </Button>
+        </DialogFooter>
+      </form>
+    </>
+  );
+}

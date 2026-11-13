@@ -8,7 +8,7 @@ import * as React from "react";
 import type {
   Account,
   BankAccount,
-  CashBankEntryKind,
+  CreatableCashBankEntryKind,
 } from "@starter/shared/accounting";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/components/ui/toast";
+import { formatRupiah } from "@starter/shared/i18n";
 import { ApiError } from "@/lib/api/errors";
 import {
   businessDateToday,
@@ -38,8 +39,9 @@ import {
 } from "@/features/ws07-accounting/lib";
 import { useOutlets } from "@/features/ws07-accounting/hooks";
 import type { CreateCashBankEntryBody } from "../api";
-import { useCreateCashBankEntry } from "../hooks";
+import { useCashApprovalLimit, useCreateCashBankEntry } from "../hooks";
 import {
+  cashOutNeedsApproval,
   counterAccountChoices,
   createIdempotencyKeySession,
   moneyErrorKey,
@@ -71,7 +73,7 @@ export function CashEntryDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  kind: CashBankEntryKind;
+  kind: CreatableCashBankEntryKind;
   legalEntityId: string;
   accounts: readonly BankAccount[];
   glAccounts: readonly Account[];
@@ -101,7 +103,7 @@ function CashEntryForm({
   defaultBankAccountId,
   onClose,
 }: {
-  kind: CashBankEntryKind;
+  kind: CreatableCashBankEntryKind;
   legalEntityId: string;
   accounts: readonly BankAccount[];
   glAccounts: readonly Account[];
@@ -112,6 +114,7 @@ function CashEntryForm({
   const toast = useToast();
   const outletsQuery = useOutlets();
   const create = useCreateCashBankEntry();
+  const limitQuery = useCashApprovalLimit(kind === "cash_out");
   const today = businessDateToday();
   // The form lives inside DialogContent, so it mounts once per opened dialog:
   // keys are stable across resends of one body and new for the next dialog.
@@ -139,6 +142,13 @@ function CashEntryForm({
   );
   const outlets = outletsQuery.data ?? [];
   const amountIdr = parseRupiahInput(amount);
+  // Above the tenant limit a cash out is parked until a second person
+  // approves it; the API decides, this only tells the person first.
+  const needsApproval = cashOutNeedsApproval(
+    kind,
+    amountIdr,
+    limitQuery.data?.limitIdr,
+  );
   const sameAccount = isTransfer && bankAccountId === toBankAccountId;
   const errors = {
     bank:
@@ -226,10 +236,14 @@ function CashEntryForm({
             idempotencyKey: keySession.current(JSON.stringify(request)),
           } as CreateCashBankEntryBody;
           create.mutate(body, {
-            onSuccess: () => {
+            onSuccess: (entry) => {
               keySession.reset();
               toast({
-                title: t("accounting.cash.entries.form.saved"),
+                title: t(
+                  entry.status === "pending_approval"
+                    ? "accounting.cash.entries.form.savedPending"
+                    : "accounting.cash.entries.form.saved",
+                ),
                 tone: "success",
               });
               onClose();
@@ -436,6 +450,16 @@ function CashEntryForm({
             maxLength={60}
           />
         </FormField>
+        {needsApproval && limitQuery.data ? (
+          <p
+            role="status"
+            className="rounded-control border border-warning bg-warning-subtle px-3 py-2 text-sm leading-5 text-foreground"
+          >
+            {t("accounting.cash.entries.form.approvalBanner", {
+              limit: formatRupiah(limitQuery.data.limitIdr),
+            })}
+          </p>
+        ) : null}
         <ServerError message={serverError} />
         <DialogFooter>
           <Button type="button" variant="outline" onClick={onClose}>

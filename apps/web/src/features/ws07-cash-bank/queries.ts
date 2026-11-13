@@ -8,6 +8,7 @@ import type {
 } from "@starter/shared/accounting";
 import {
   fetchBankAccounts,
+  fetchCashApprovalLimit,
   fetchCashBankEntries,
   fetchCashDeposits,
   fetchFinancePolicy,
@@ -40,6 +41,7 @@ export type StatementLineFilters = {
 export const cashBankKeys = {
   all: ["accounting", "cash-bank"] as const,
   financePolicy: () => [...cashBankKeys.all, "finance-policy"] as const,
+  approvalLimit: () => [...cashBankKeys.all, "approval-limit"] as const,
   bankAccounts: (legalEntityId: string) =>
     [...cashBankKeys.all, "bank-accounts", legalEntityId] as const,
   lines: () => [...cashBankKeys.all, "statement-lines"] as const,
@@ -79,6 +81,13 @@ export const cashBankKeys = {
   matchJournals: (legalEntityId: string, from: string, to: string) =>
     [...cashBankKeys.all, "match-journals", legalEntityId, from, to] as const,
 };
+
+export function cashApprovalLimitQuery() {
+  return queryOptions({
+    queryKey: cashBankKeys.approvalLimit(),
+    queryFn: ({ signal }) => fetchCashApprovalLimit(signal),
+  });
+}
 
 export function financePolicyQuery() {
   return queryOptions({
