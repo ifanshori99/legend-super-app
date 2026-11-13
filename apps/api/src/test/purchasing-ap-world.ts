@@ -413,6 +413,8 @@ export type ReturnRow = {
   value: number;
   uninvoiced: number;
   invoiced: number;
+  /** Billed minus order price of the invoiced part (signed; legend-29vw). */
+  priceVariance: number;
   ppn: number;
 };
 
@@ -422,9 +424,10 @@ export async function returnRow(returnId: string): Promise<ReturnRow> {
     value_idr: string;
     uninvoiced_value_idr: string;
     invoiced_value_idr: string;
+    price_variance_idr: string;
     ppn_idr: string;
   }>(
-    `SELECT value_idr::text, uninvoiced_value_idr::text, invoiced_value_idr::text, ppn_idr::text
+    `SELECT value_idr::text, uninvoiced_value_idr::text, invoiced_value_idr::text, price_variance_idr::text, ppn_idr::text
        FROM purchase_returns WHERE tenant_id = $1 AND id = $2`,
     [tenantId, returnId],
   );
@@ -434,6 +437,7 @@ export async function returnRow(returnId: string): Promise<ReturnRow> {
     value: Number(row.value_idr),
     uninvoiced: Number(row.uninvoiced_value_idr),
     invoiced: Number(row.invoiced_value_idr),
+    priceVariance: Number(row.price_variance_idr),
     ppn: Number(row.ppn_idr),
   };
 }

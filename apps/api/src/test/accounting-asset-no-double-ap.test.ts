@@ -286,11 +286,12 @@ describe("legend-uyk2 the ledger accounts_payable equals the payable card", () =
     await tie(66_600 + 52_400);
 
     // 4. A return of 3 units, all billed now: the debit note lowers both
-    // sides by the invoiced value plus PPN of the return row, once.
+    // sides by the billed value (order price plus price variance) plus PPN of
+    // the return row, once (legend-5b7uf).
     const { purchaseReturn } = await returnPo(world, fx, 3);
     const split = await returnRow(purchaseReturn.id);
     expect(split.invoiced).toBeGreaterThan(0);
-    const debitNote = split.invoiced + split.ppn;
+    const debitNote = split.invoiced + split.priceVariance + split.ppn;
 
     const { rows } = await owner.query<{ event: unknown }>(
       `SELECT event FROM domain_event_outbox
