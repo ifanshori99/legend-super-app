@@ -37,7 +37,6 @@ import {
   outlets,
   taxSnapshots,
 } from "../db/schema";
-import { TAX_LINE_WARNING_PREFIX } from "./accounting-coretax-xml";
 import type { TenantTransaction } from "./accounting-shared";
 import { pph23Lines, ppnLines } from "./accounting-tax-source-vat-wht";
 import { pph21Lines } from "./accounting-tax-source-pph21";
@@ -669,13 +668,11 @@ async function pbjtLines(
         outletId,
         baseIdr: toIdr(base > 0n ? base : 0n),
         taxIdr: toIdr(pbjtTax),
-        // No warnings field on a line or report yet: the auditor note rides in
-        // `references` (the only free text), kept within its 60 characters.
-        references:
+        references: [],
+        // Auditor note for the screen; the Coretax export never carries it.
+        warnings:
           legacyOtherTax(outletId) !== 0n
-            ? [
-                `${TAX_LINE_WARNING_PREFIX} pajak non-PBJT Rp${legacyOtherTax(outletId)} tidak ikut`,
-              ]
+            ? [`Pajak non-PBJT Rp${legacyOtherTax(outletId)} tidak ikut`]
             : [],
       }),
     );

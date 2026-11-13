@@ -154,8 +154,6 @@ const OWNER_BOARD_UNAVAILABLE: ReadonlySet<string> = new Set([
   "avg_spend_per_pax",
   "table_occupancy_pct",
   "sold_out_menu_count",
-  "review_rating",
-  "review_count",
   "shower_revenue",
   "active_subscriptions",
   "shower_fnb_conversion_pct",
