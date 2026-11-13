@@ -384,7 +384,7 @@ export async function issueDeviceToken(
 }
 
 /** Closes the open training period of a device, if any. */
-async function closeTrainingPeriod(
+export async function closeTrainingPeriod(
   tx: Tx,
   deviceId: string,
   actorUserId: string,

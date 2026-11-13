@@ -136,6 +136,7 @@ import { posReceiptWriteoffRouter } from "./pos-receipt-writeoff.routes.ts";
 import { posShiftRouter } from "./pos-shift.routes.ts";
 import { staffPinSyncRouter } from "./staff-pin-sync.routes.ts";
 import { deviceRouter } from "./device.routes.ts";
+import { printerRouter } from "./printer.routes.ts";
 import { edgeDeviceRouter } from "./edge-device.routes.ts";
 import { edgeWifiRouter } from "./edge-wifi.routes.ts";
 import { deviceRecordSyncRouter } from "./edge-device-sync.routes.ts";
@@ -455,6 +456,8 @@ apiRouter.use("/edge-sync/staff-pin-records", staffPinSyncRouter);
 // Device registry (WS-02 F5, legend-165): enroll, token, revoke, training mode
 // and the device heartbeat, cloud only.
 apiRouter.use("/devices", deviceRouter);
+// Printer registry (legend-2lp.6): cloud only, not under /edge.
+apiRouter.use("/printers", printerRouter);
 // Device registry replica feed for edge nodes: edge credential only.
 apiRouter.use("/edge-sync/device-records", deviceRecordSyncRouter);
 // Catalog (menu, prices, recipes) down-sync for edge nodes (legend-97p): edge credential only.
