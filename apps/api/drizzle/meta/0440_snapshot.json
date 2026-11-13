@@ -17171,6 +17171,10 @@
         "payment_settlements_line_count_check": {
           "name": "payment_settlements_line_count_check",
           "value": "\"payment_settlements\".\"line_count\" >= 0"
+        },
+        "payment_settlements_edc_batch_check": {
+          "name": "payment_settlements_edc_batch_check",
+          "value": "(\"payment_settlements\".\"source\" = 'edc') = (\"payment_settlements\".\"terminal_id\" IS NOT NULL AND \"payment_settlements\".\"batch_no\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false

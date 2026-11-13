@@ -21,6 +21,13 @@ import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
 import { agent, signUp, verifySessionMfa } from "./helpers";
 
+type ReconRow = {
+  journalId: string;
+  statementLineId: unknown;
+  description: string;
+  varianceIdr: number;
+};
+
 const app = createApp();
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const owner = new Pool({
@@ -364,7 +371,7 @@ describe("ACC-04 legend-ds1o gateway settlement recon", () => {
     const response = await query(finance, params(fx.e));
     expect(response.status).toBe(200);
     expect(response.body.data.truncated).toBe(false);
-    const rows = response.body.data.rows as Record<string, any>[];
+    const rows = response.body.data.rows as ReconRow[];
     // Newest first; only settlement journals of this entity inside the period.
     expect(rows.map((r) => r.journalId)).toEqual([
       fx.j[3],
@@ -446,13 +453,15 @@ describe("ACC-04 legend-ds1o gateway settlement recon", () => {
   it("ACC-04 the period filter is inclusive on both ends", async () => {
     const one = await query(finance, params(fx.e, "2026-11-05", "2026-11-05"));
     expect(one.status).toBe(200);
-    expect(one.body.data.rows.map((r: any) => r.journalId)).toEqual([fx.j[0]]);
+    expect(one.body.data.rows.map((r: ReconRow) => r.journalId)).toEqual([
+      fx.j[0],
+    ]);
 
     const middle = await query(
       finance,
       params(fx.e, "2026-11-06", "2026-11-09"),
     );
-    expect(middle.body.data.rows.map((r: any) => r.journalId)).toEqual([
+    expect(middle.body.data.rows.map((r: ReconRow) => r.journalId)).toEqual([
       fx.j[2],
       fx.j[1],
     ]);
@@ -621,10 +630,7 @@ describe("ACC-04 legend-ds1o gateway recon statement lines respect the period (L
     const narrow = await query(finance, params(e, "2026-11-15", "2026-11-30"));
     expect(narrow.status).toBe(200);
     const byJournal = new Map(
-      (narrow.body.data.rows as Record<string, any>[]).map((r) => [
-        r.journalId,
-        r,
-      ]),
+      (narrow.body.data.rows as ReconRow[]).map((r) => [r.journalId, r]),
     );
     expect(byJournal.size).toBe(3);
     // Statement lines outside the period: not matched, the whole net is variance.
@@ -651,7 +657,7 @@ describe("ACC-04 legend-ds1o gateway recon statement lines respect the period (L
     // Widen the period around the statement lines: now every one is matched.
     const wide = await query(finance, params(e, "2026-10-01", "2026-12-31"));
     expect(wide.status).toBe(200);
-    const wideRows = wide.body.data.rows as Record<string, any>[];
+    const wideRows = wide.body.data.rows as ReconRow[];
     expect(wideRows).toHaveLength(3);
     for (const r of wideRows) {
       expect(r.statementLineId, r.description).not.toBeNull();

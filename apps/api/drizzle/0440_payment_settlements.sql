@@ -44,7 +44,8 @@ CREATE TABLE "payment_settlements" (
 	CONSTRAINT "payment_settlements_source_check" CHECK ("payment_settlements"."source" IN ('gateway','edc')),
 	CONSTRAINT "payment_settlements_period_check" CHECK ("payment_settlements"."period_start" <= "payment_settlements"."period_end"),
 	CONSTRAINT "payment_settlements_amount_check" CHECK ("payment_settlements"."gross_idr" >= 0 AND "payment_settlements"."fee_idr" >= 0 AND "payment_settlements"."net_idr" >= 0 AND "payment_settlements"."net_idr" = "payment_settlements"."gross_idr" - "payment_settlements"."fee_idr"),
-	CONSTRAINT "payment_settlements_line_count_check" CHECK ("payment_settlements"."line_count" >= 0)
+	CONSTRAINT "payment_settlements_line_count_check" CHECK ("payment_settlements"."line_count" >= 0),
+	CONSTRAINT "payment_settlements_edc_batch_check" CHECK (("payment_settlements"."source" = 'edc') = ("payment_settlements"."terminal_id" IS NOT NULL AND "payment_settlements"."batch_no" IS NOT NULL))
 );
 --> statement-breakpoint
 ALTER TABLE "payment_settlement_lines" ADD CONSTRAINT "payment_settlement_lines_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

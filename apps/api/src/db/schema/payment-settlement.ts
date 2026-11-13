@@ -84,6 +84,12 @@ export const paymentSettlements = pgTable(
       sql`${t.grossIdr} >= 0 AND ${t.feeIdr} >= 0 AND ${t.netIdr} >= 0 AND ${t.netIdr} = ${t.grossIdr} - ${t.feeIdr}`,
     ),
     check("payment_settlements_line_count_check", sql`${t.lineCount} >= 0`),
+    // An EDC report always names its terminal and batch; a gateway report never
+    // does, so the per-batch unique index above cannot be bypassed with NULLs.
+    check(
+      "payment_settlements_edc_batch_check",
+      sql`(${t.source} = 'edc') = (${t.terminalId} IS NOT NULL AND ${t.batchNo} IS NOT NULL)`,
+    ),
   ],
 );
 

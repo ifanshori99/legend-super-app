@@ -21,6 +21,20 @@ import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
 
+type MutableBody = {
+  reference: string;
+  source: string;
+  periodStart: string;
+  periodEnd: string;
+  grossIdr: number;
+  feeIdr: number;
+  netIdr: number;
+  lines: { reference: string; amountIdr: number; feeIdr: number }[];
+  tenantId?: string;
+  batchNo?: string;
+  terminalId?: string;
+};
+
 const app = createApp();
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const outletA = cafeLegendAccessFixtures.outletIds.bandung;
@@ -948,7 +962,7 @@ describe("EDC-06 legend-jlqi idempotent re-import", () => {
     });
     const conflict = await post(manager, changed);
     expect(conflict.status).toBe(409);
-    expect(conflict.body.error.message).toContain("SETTLEMENT_CONFLICT");
+    expect(conflict.body.error.code).toBe("SETTLEMENT_CONFLICT");
     expect(await settlementsBy(s.reference)).toHaveLength(1);
     expect((await settlementsBy(s.reference))[0]).toMatchObject({
       gross_idr: 370000,
@@ -1294,7 +1308,7 @@ describe("EDC-06 legend-jlqi round 2: report key and EDC batch key (M2)", () => 
       edcBody({ day, reference: `EDC-${tag}-2`, terminalId, batchNo, lines }),
     );
     expect(second.status).toBe(409);
-    expect(second.body.error.message).toContain("SETTLEMENT_CONFLICT");
+    expect(second.body.error.code).toBe("SETTLEMENT_CONFLICT");
     expect(await settlementsBy(`EDC-${tag}-2`)).toHaveLength(0);
     // The sale stays settled once.
     expect(await linesOf(first.body.data.id)).toEqual(before.lines);
@@ -1519,7 +1533,7 @@ describe("EDC-06 legend-jlqi payload validation writes nothing", () => {
 
   it("EDC-06 rejects totals that do not add up and malformed reports with 422", async () => {
     const terminalId = await seedTerminal();
-    const cases: [string, (b: Record<string, any>) => void][] = [
+    const cases: [string, (b: MutableBody) => void][] = [
       ["net != gross - fee", (b) => (b.netIdr = b.netIdr + 1)],
       ["gross != sum of lines", (b) => (b.grossIdr = b.grossIdr + 1)],
       ["fee != sum of lines", (b) => (b.feeIdr = b.feeIdr + 1)],
@@ -1548,7 +1562,7 @@ describe("EDC-06 legend-jlqi payload validation writes nothing", () => {
       ],
     ];
     for (const [name, mutate] of cases) {
-      const body = valid() as Record<string, any>;
+      const body = valid() as unknown as MutableBody;
       mutate(body);
       const response = await post(manager, body);
       expect(response.status, name).toBe(422);
@@ -1801,5 +1815,22 @@ describe("TEN-01 TEN-02 legend-jlqi settlement tables (RLS and append-only)", ()
         ),
       ),
     ).rejects.toThrow(/check constraint/i);
+  });
+
+  it("EDC-06 the database refuses an EDC report without a batch number, so the per-batch key cannot be bypassed", async () => {
+    await expect(
+      asTenant(tenantId, (c) =>
+        c.query(
+          `INSERT INTO payment_settlements
+             (tenant_id, outlet_id, source, provider, terminal_id, batch_no, reference, period_start, period_end,
+              gross_idr, fee_idr, net_idr, line_count, content_hash, imported_by)
+           VALUES ($1, $2, 'edc', 'bca', $3, NULL, $4, '2020-02-01', '2020-02-01', 1000, 7, 993, 1, $5, 'seed')`,
+          [tenantId, outletA, randomUUID(), `RLS-${uid()}`, "c".repeat(64)],
+        ),
+      ),
+    ).rejects.toMatchObject({
+      code: "23514",
+      constraint: "payment_settlements_edc_batch_check",
+    });
   });
 });

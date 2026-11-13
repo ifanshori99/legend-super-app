@@ -418,7 +418,7 @@ export async function importSettlement(
                   // Already settled by a line of any report.
                   sql`NOT EXISTS (SELECT 1 FROM ${lines} WHERE ${lines.tenantId} = ${tenantId} AND ${lines.matchedEdcTransactionId} = ${edcTransactions.id})`,
                   // Voided on the same terminal: the sale is not owed.
-                  sql`NOT EXISTS (SELECT 1 FROM ${voids} WHERE ${voids.tenantId} = ${tenantId} AND ${voids.terminalId} = ${edcTransactions.terminalId} AND ${voids.type} = 'void' AND ${voids.status} = 'approved' AND (${voids.reference} = ${edcTransactions.reference} OR (${edcTransactions.rrn} IS NOT NULL AND ${voids.rrn} = ${edcTransactions.rrn})))`,
+                  sql`NOT EXISTS (SELECT 1 FROM ${edcTransactions} AS ${voids} WHERE ${voids.tenantId} = ${tenantId} AND ${voids.terminalId} = ${edcTransactions.terminalId} AND ${voids.type} = 'void' AND ${voids.status} = 'approved' AND (${voids.reference} = ${edcTransactions.reference} OR (${edcTransactions.rrn} IS NOT NULL AND ${voids.rrn} = ${edcTransactions.rrn})))`,
                   // One sale, at most one open "missing" case.
                   sql`NOT EXISTS (SELECT 1 FROM ${cases} WHERE ${cases.tenantId} = ${tenantId} AND ${cases.outletId} = ${input.outletId} AND ${cases.source} = 'edc' AND ${cases.provider} = ${input.provider} AND ${cases.status} = 'open' AND ${cases.settlementLineId} IS NULL AND ${cases.reference} = COALESCE(${edcTransactions.rrn}, ${edcTransactions.approvalCode}, ${edcTransactions.reference}))`,
                 ),
