@@ -5043,3 +5043,14 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - `data-import-registry`: `apps/api/src/services/payment-settlement-import.service.ts` belum ada di `DATA_IMPORT_SOURCES` atau `NOT_A_WRITER`. Keputusan perlu CTO: NOT_A_WRITER (endpoint HTTP bertenant yang hanya mencatat selisih) atau daftar `deployment` + `guardDataImport` seperti `menu-import.service.ts`.
 - TEN-06 (`platform-tenant-create.test.ts`): create outlet memanggil `protectLoyaltyEntityChange` (`org.service.ts:140`, `FOR UPDATE NOWAIT` pada baris tenant) sedangkan create brand/PT platform memegang `.for("share")` pada baris yang sama (`platform-tenant-resources.service.ts:~110`) -> 409 LOYALTY_ENTITY_BUSY. Guard Q80 dari m1 bertemu test baru cabang `ws/platform-tenant-wizard`. Perlu keputusan logika.
 - Subagent: total 7 (3 Explore, 2 test-runner, 1 dihentikan), puncak 2 bersamaan, token heavy dipegang test-runner dan saya (test terarah, proof).
+
+### Hasil akhir batch55 (keputusan CTO diterapkan)
+
+- Registry: `payment-settlement.import` didaftarkan `deployment` dengan `guardDataImport` di `importSettlement` + test di `data-import-registry.test.ts` (6b98d12e6).
+- TEN-06: guard Q80 `protectLoyaltyEntityChange` tidak diubah. Create brand/PT/outlet platform kini mengambil advisory lock `lockLoyaltyJournalEntity` sebelum `FOR SHARE` pada baris tenant, dengan dua test baru (922863f4c).
+- Gate ronde 3 (16:02-17:08, 3775 s): semua test API hijau (16504), 4 test root gagal: label izin `facility.emergency.respond/resolve` belum ada di katalog i18n, dan test WS-09 belum memisahkan event `panic_alert.*` (hidup di `emergency.ts`). Diperbaiki mekanis: label di `packages/shared/src/i18n/messages/access.ts`, test event memeriksa `panicAlertEvents` terpisah (f1d084d60).
+- Gate ronde 4 (17:10-18:17, 3909 s): lint dan typecheck hijau, 3 gagal dari 16547: `edge-access-applier` (clamp setAt), `panic-relay` (EM-19 Q94), keduanya hijau saat diulang per berkas (flake beban, bead legend-gcdq0); `payment-recurring-round4` REC-39 "event 1 menit lalu dibiarkan" gagal juga sendirian: test mem-backdate tepat 1 menit = backoff retry attempts=0, hasil bergantung selisih milidetik jam host dan DB. Test diubah ke 30 detik (dbb4a921d), hijau 73/73. Pertanyaan produk (event `received` attempts=0 diretry setelah 1 menit, bukan 5 menit): bead legend-okrmg P3, tidak diubah.
+- Flake `metrics-daily-job` (timeout 20 detik saat beban): bead legend-u7ozi P3, tidak diubah.
+- Gate penuh diulang tidak sampai hijau utuh pada satu run; kegagalan terakhir dibuktikan flake atau test-bug per berkas (aturan batch54). Build `heavy pnpm build` EXIT=0 (18:20).
+- Biaya sesi (batch54+55): utama sonnet-5-5 221 req, subagent 100 req (haiku 34, opus 9, sonnet 57); 15 spawn subagent, puncak 2 bersamaan.
+
