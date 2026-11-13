@@ -1461,3 +1461,4 @@ Langkah berikut CTO baru:
 - 23:16 Mulai G2aag (644 payroll bypw2+m6zdl, migr 0506-0507) dan G7cpa (645 edge 078n, migr 0508-0509). Kuota #2 5h 18%, 7d 45%.
 - 23:13 Retro 3 jam dilewati: Retro 25 baru selesai 21:50 (jendela s.d. 21:40); hemat kuota. Retro berikut 01:43.
 - 23:15 G7cpa selesai: fix/edge-order-reemit c93ffaca9 (078n; guard A apply-scope, guard B lewati potong resep order edge; migr 0508; 104+106 test). Applier backfill POS-order belum ada di m1 (legend-kai). Batch58.
+- 23:25 Founder W4: folder legend super app dikecualikan dari Spotlight. Retro berikut cek mds_stores.
