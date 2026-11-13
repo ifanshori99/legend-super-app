@@ -2,7 +2,7 @@
 // one step away (ACC-03), and the only correction path — a reversing journal
 // (ACC-01). Posted entries are final; the screen never offers edit or delete.
 import * as React from "react";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, type LinkProps } from "@tanstack/react-router";
 import { ArrowLeft, ExternalLink, Link2 } from "lucide-react";
 import type { JournalEntry } from "@starter/shared/accounting";
 import { ApiError } from "@/lib/api/errors";
@@ -41,7 +41,7 @@ import {
 } from "../lib";
 import { AccountingPage } from "./accounting-shell";
 import { JournalLinesTable } from "./lines-table";
-import { useCanPostJournals } from "../guard";
+import { useCanPostJournals, useSourceGate } from "../guard";
 
 export function JournalDetailPage({
   journalEntryId,
@@ -59,6 +59,7 @@ export function JournalDetailPage({
   const entitiesQuery = useLegalEntities();
   const reverse = useReverseJournal(journalEntryId);
   const canWrite = useCanPostJournals();
+  const canOpenSource = useSourceGate();
 
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [entryDate, setEntryDate] = React.useState(businessDateToday());
@@ -118,7 +119,7 @@ export function JournalDetailPage({
   const entityName = entitiesQuery.data?.find(
     (entity) => entity.id === journal.legalEntityId,
   )?.name;
-  const source = journalSourceInfo(journal);
+  const source = journalSourceInfo(journal, canOpenSource);
   const reversalState = journalReversalState(journal, reversedBy);
   const outletName = journal.outletId
     ? (outlets.get(journal.outletId) ?? journal.outletId)
@@ -264,28 +265,10 @@ export function JournalDetailPage({
             {source.link ? (
               <div>
                 <Button asChild variant="outline" size="sm">
-                  {source.link.screen === "manualJournal" ? (
-                    <Link
-                      to="/kelola/akuntansi/jurnal-manual/$manualJournalId"
-                      params={{ manualJournalId: source.link.id ?? "" }}
-                    >
-                      <Link2 aria-hidden="true" />
-                      {t("accounting.journal.sourceOpen")}
-                    </Link>
-                  ) : source.link.screen === "journal" ? (
-                    <Link
-                      to="/kelola/akuntansi/jurnal/$journalEntryId"
-                      params={{ journalEntryId: source.link.id ?? "" }}
-                    >
-                      <Link2 aria-hidden="true" />
-                      {t("accounting.journal.sourceOpen")}
-                    </Link>
-                  ) : (
-                    <Link to="/kelola/akuntansi/jurnal-berulang">
-                      <Link2 aria-hidden="true" />
-                      {t("accounting.journal.sourceOpen")}
-                    </Link>
-                  )}
+                  <Link to={source.link.href as LinkProps["to"]}>
+                    <Link2 aria-hidden="true" />
+                    {t("accounting.journal.sourceOpen")}
+                  </Link>
                 </Button>
               </div>
             ) : (

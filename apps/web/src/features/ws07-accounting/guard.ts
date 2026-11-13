@@ -37,3 +37,28 @@ export function useCanPostJournals(): boolean {
   };
   return context.access ? holdsAny(context.access, ACCOUNTING_POST) : false;
 }
+
+/**
+ * Gate for journal source links (ACC-03): true when the visitor would pass the
+ * destination screen's own guard. Same evaluateGuard the route's beforeLoad
+ * uses; fails closed when the route context carries no access.
+ */
+export function useSourceGate(): (guard: {
+  surface: "dashboard" | "pos";
+  anyOf: readonly string[];
+}) => boolean {
+  const context = useRouteContext({ strict: false }) as {
+    access?: AreaAccess;
+  };
+  const access = context.access;
+  return (guard) =>
+    access !== undefined &&
+    evaluateGuard(
+      {
+        kind: "permission",
+        surface: guard.surface,
+        anyOf: guard.anyOf as readonly PermissionCode[],
+      },
+      access,
+    ).status === "allowed";
+}

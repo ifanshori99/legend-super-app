@@ -10,18 +10,22 @@
 // exercised in e2e/legend-mzg.mock.spec.ts.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { afterEach, describe, test } from "node:test";
 import { setScenario } from "../apps/web/src/lib/mock/control.ts";
 import { dispatchMock, resetMocks } from "../apps/web/src/lib/mock/runtime.ts";
 // Registers every handler of the feature.
 import "../apps/web/src/features/ws07-accounting/mock.ts";
 import * as accounting from "../apps/web/src/features/ws07-accounting/lib.ts";
+import { JOURNAL_SOURCE_ROUTES } from "../apps/web/src/features/ws07-accounting/journal-source-links.ts";
 import { cafeLegendAccountingFixtures as fixtures } from "../packages/shared/src/accounting/fixtures.ts";
 
 const entity = fixtures.legalEntity.id;
 const account = (code) => fixtures.accountByCode(code).id;
 /** Deterministic valid ULID for idempotency keys (26 Crockford chars). */
 const ulid = (n) => `01JBQ9A2B3C4D5E6F7G8H9${String(n).padStart(6, "0")}`;
+/** A visitor who passes every destination guard. */
+const allow = () => true;
 const line = (code, debitIdr, creditIdr = 0) => ({
   accountId: account(code),
   debitIdr,
@@ -227,26 +231,150 @@ describe("ACC-03 drill-down to the source transaction", () => {
     assert.equal(entry.sourceType, "manual");
     assert.equal(entry.sourceId, fixtures.manualJournals[0].id);
 
-    const source = accounting.journalSourceInfo(entry);
+    const source = accounting.journalSourceInfo(entry, allow);
     assert.deepEqual(source.link, {
-      screen: "manualJournal",
-      id: entry.sourceId,
+      href: `/kelola/akuntansi/jurnal-manual/${entry.sourceId}`,
     });
     assert.equal(source.reference, entry.sourceId);
     assert.equal(source.labelKey, "accounting.source.manual");
 
     // The linked screen resolves: the source request is reachable.
-    const manual = await get(`${manualPath}/${source.link.id}`);
+    const linkedId = decodeURIComponent(source.link.href.split("/").pop());
+    assert.equal(linkedId, entry.sourceId);
+    const manual = await get(`${manualPath}/${linkedId}`);
     assert.equal(manual.data.id, entry.sourceId);
     assert.equal(manual.data.postedEntryId, entryId);
   });
 
-  test("ACC-03: an automatic sale keeps the reference and says where it opens", () => {
+  test("ACC-03: an automatic sale links to its order and keeps the reference", () => {
     const entry = fixtures.entries.cashSale;
-    const source = accounting.journalSourceInfo(entry);
+    const source = accounting.journalSourceInfo(entry, allow);
     assert.equal(source.reference, entry.sourceId);
-    assert.equal(source.link, null);
+    assert.deepEqual(source.link, {
+      href: `/pos/pesanan/${encodeURIComponent(entry.sourceId)}`,
+    });
     assert.equal(source.labelKey, "accounting.source.sale");
+  });
+
+  test("ACC-03: source registry links only existing screens and encodes ids", () => {
+    const href = accounting.journalSourceHref;
+    // Document routes put the encoded id in the path; no id, no link.
+    assert.equal(
+      href("manual", "a/b c?x"),
+      "/kelola/akuntansi/jurnal-manual/a%2Fb%20c%3Fx",
+    );
+    assert.equal(href("reversal", "j-1"), "/kelola/akuntansi/jurnal/j-1");
+    assert.equal(href("sale", "o 1"), "/pos/pesanan/o%201");
+    assert.equal(href("manual", null), null);
+    assert.equal(href("sale", null), null);
+    // Screen routes ignore the id (it may name another document).
+    assert.equal(href("payroll", "loan-1"), "/kelola/payroll/run");
+    assert.equal(href("payroll", null), "/kelola/payroll/run");
+    assert.equal(
+      href("gateway_settlement", "x"),
+      "/kelola/akuntansi/rekonsiliasi",
+    );
+    assert.equal(href("recurring", null), "/kelola/akuntansi/jurnal-berulang");
+    assert.equal(href("supplier_invoice", "x"), "/kelola/pengadaan/faktur");
+    assert.equal(href("depreciation", "x"), "/kelola/akuntansi/aset-tetap");
+    assert.equal(href("cash_deposit", "x"), "/kelola/akuntansi/kas-bank");
+    // No screen yet: stays "opens in its own module".
+    for (const type of [
+      "refund",
+      "cogs",
+      "loyalty",
+      "customer_deposit",
+      "cashier_shift",
+      "edc_settlement",
+      "opening_balance",
+    ])
+      assert.equal(href(type, "x"), null, type);
+  });
+
+  test("ACC-03: a reversal links to the entry it reverses (sourceId is null)", () => {
+    const entry = {
+      sourceType: "reversal",
+      sourceId: null,
+      reversalOf: "0f8fad5b-d9cb-469f-a165-70867728950e",
+    };
+    const source = accounting.journalSourceInfo(entry, allow);
+    assert.equal(source.reference, entry.reversalOf);
+    assert.deepEqual(source.link, {
+      href: `/kelola/akuntansi/jurnal/${entry.reversalOf}`,
+    });
+  });
+
+  test("ACC-03: a source link shows only when the destination guard passes", () => {
+    const sale = fixtures.entries.cashSale;
+    const seen = [];
+    // No gate given: fails closed.
+    assert.equal(accounting.journalSourceInfo(sale).link, null);
+    // Gate refuses: no link, reference stays.
+    const denied = accounting.journalSourceInfo(sale, (guard) => {
+      seen.push(guard);
+      return false;
+    });
+    assert.equal(denied.link, null);
+    assert.equal(denied.reference, sale.sourceId);
+    // The sale guard is the POS order detail guard (orderDetailGuard).
+    assert.deepEqual(seen, [
+      {
+        surface: "pos",
+        anyOf: ["pos.sale.create", "pos.payment.accept", "pos.void.request"],
+      },
+    ]);
+    // Only the permission the destination needs opens it.
+    const needs = (code) => (guard) => guard.anyOf.includes(code);
+    assert.ok(
+      accounting.journalSourceInfo(
+        { sourceType: "payroll", sourceId: null, reversalOf: null },
+        needs("payroll.lock"),
+      ).link,
+    );
+    assert.equal(
+      accounting.journalSourceInfo(
+        { sourceType: "payroll", sourceId: null, reversalOf: null },
+        needs("accounting.journal.view"),
+      ).link,
+      null,
+    );
+    // A type without a screen never asks the gate and never links.
+    assert.equal(
+      accounting.journalSourceInfo(
+        { sourceType: "refund", sourceId: "x", reversalOf: null },
+        allow,
+      ).link,
+      null,
+    );
+  });
+
+  test("ACC-03: every registry route exists in the generated route tree", () => {
+    const tree = readFileSync(
+      new URL("../apps/web/src/routeTree.gen.ts", import.meta.url),
+      "utf8",
+    );
+    const start = tree.indexOf("export interface FileRoutesByTo {");
+    assert.ok(start >= 0, "FileRoutesByTo not found");
+    const end = tree.indexOf("\n}", start);
+    const byTo = new Set(
+      [...tree.slice(start, end).matchAll(/^ {2}'([^']+)':/gm)].map(
+        (match) => match[1],
+      ),
+    );
+    assert.ok(byTo.size > 100, "FileRoutesByTo looks empty");
+    for (const [type, route] of Object.entries(JOURNAL_SOURCE_ROUTES)) {
+      assert.ok(
+        byTo.has(route.to),
+        `${type}: ${route.to} not in FileRoutesByTo`,
+      );
+      assert.ok(
+        route.guard.anyOf.length > 0,
+        `${type}: guard has no permission`,
+      );
+      // A document route's param is a real `$param` segment of its path.
+      if (route.param !== undefined)
+        assert.ok(route.to.endsWith(`/$${route.param}`), `${type}: param`);
+    }
   });
 
   test("ACC-03: the list filters by period, source and account, and pages", async () => {
