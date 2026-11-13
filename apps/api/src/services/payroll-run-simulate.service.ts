@@ -813,7 +813,18 @@ export async function simulatePayrollRunInTransaction(
       earnings,
       grossDeductions: deductions,
       bpjs,
-      taxSchemeOf,
+      // THR runs only (a THR-category line in a regular run keeps its
+      // component scheme). Founder Q9 (13 Nov 2026, legend-x7jas): the THR tax follows the
+      // employee's contract scheme. Only a gross_up employee gets the company
+      // paid tax allowance; every other scheme (net, gross, or a tenant THR
+      // component set to gross_up/net) is withheld from the THR (never pays
+      // more than the rule, the outlet bears no tax of a non-gross-up employee).
+      taxSchemeOf: (line) =>
+        isThr && line.category === "thr"
+          ? contractSchemeById.get(member.id) === "gross_up"
+            ? "gross_up"
+            : "gross"
+          : taxSchemeOf(line),
     });
     const taxInput = storedTaxInputSchema.parse({
       ptkpStatus: member.ptkpStatus,
