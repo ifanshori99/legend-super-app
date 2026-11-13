@@ -1474,3 +1474,4 @@ Langkah berikut CTO baru:
 - 00:18 647 G95ca lapor: ws/edge-sync-appliers ab2e4e38d (pd9t, 7h5s; migr 0510), 225/225 x3, architect 2 blocker dibetulkan. zy43 diblokir legend-771dl, return-rows legend-8qm1d. Desain biaya overwrite disetujui CTO. Cek guard worker edge diminta.
 - 00:24 648 G7a09 selesai: ws/payroll-disbursement-manual 5c73da044 (wnkep.1/.2/.4, migr 0514-0517), 422 test, architect xhigh+reviewer temuan dibetulkan. Di-resolve. Kartu baru legend-86he4 (API bank_code), legend-f5n9y (L5 step-up). Founder diminta contoh berkas BCA. G95ca diminta cek guard worker edge.
 - 00:24 mulai 650 API bank_code (G5by7, Sonnet, akun 2, base ws/payroll-disbursement-manual).
+- 00:31 647 G95ca: sweep cloud-only (approval/cuti/exit/support) jalan di edge tanpa gate -> CONFLICT tiap tick. CTO setuju gate edgeMode di worker-main.ts (slot holds hanya bila pasti cloud-only).
