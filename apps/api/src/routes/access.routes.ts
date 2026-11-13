@@ -75,10 +75,16 @@ accessRouter.post(
   jsonBody,
   async (req, res) => {
     const input = createCustomRoleSchema.parse(req.body);
+    // Creating a role grants its permissions: same re-authentication rule as
+    // the PATCH below (legend-sjq5w).
+    const session = await loadSessionRow(getAuth(req).session.id);
+    const reauthenticatedAt = session?.mfaVerifiedAt ?? null;
     const role = await createCustomRole(
       getScopedTenantContext(req),
       input,
       getAuth(req).user.id,
+      new Date(),
+      { reauthenticatedAt, mfaVerified: reauthenticatedAt !== null },
     );
     res
       .status(201)

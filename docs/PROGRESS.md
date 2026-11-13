@@ -5003,3 +5003,9 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Migrasi: tidak ada (`db:generate` kosong). Rentang 0492-0493 tidak dipakai; penomoran cabang ini berhenti di 0315.
 - Gate cabang: 6 berkas vitest (73 test) + node:test 160 lulus, typecheck api/shared/web bersih, eslint + prettier file berubah hijau.
 - Subagent: total 24, puncak 5 bersamaan, token heavy dipegang test-runner.
+
+## WS-01 grant rules (ws/brand-config, 13 Nov 2026, lanjutan, selesai 18:39)
+- legend-sjq5w: createCustomRole memanggil assertCanEditCustomRole (opsi reauthenticatedAt/mfaVerified dari route POST /roles, sama dengan PATCH). Run merah di kode lama: 2 test 201 != 403. Test lama diperbaiki: access-owner-grant (re-auth segar), access-hardening (fixture Admin Tenant kurang menu.item.view).
+- legend-wc69d: server sudah menolak non-Owner memberi Owner (test API hijau di kode lama); UI grant-role-dialog memakai grantableRoles (selaras assertCanGrantRole, gagal-tertutup: izin yang dipegang hanya di satu outlet tidak ditawarkan).
+- Architect xhigh: tidak ada temuan terbuka. Gate: vitest 14 berkas (186 test; 2 kegagalan fixture diperbaiki lalu 14/14), typecheck api/shared/web bersih, db:generate kosong, eslint+prettier hijau.
+- Subagent: total 9, puncak 3 bersamaan, token heavy dipegang test-writer/test-runner/implementer diagnosis bergantian.

@@ -508,6 +508,7 @@ export function AssignmentsPage({
         open={grantOpen}
         onOpenChange={setGrantOpen}
         roles={roles.data?.data ?? []}
+        viewerUserId={viewerUserId}
         people={grantablePeople}
         lookup={lookup}
         onGranted={() => setEnding(null)}

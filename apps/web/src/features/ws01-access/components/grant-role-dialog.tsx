@@ -35,6 +35,7 @@ import type {
 import type { UserId } from "@starter/shared/core";
 import { accessErrorMessage } from "../errors";
 import {
+  grantableRoles,
   scopeName,
   scopeOptionsForRole,
   SCOPE_LABEL_KEY,
@@ -42,7 +43,13 @@ import {
   validityIsOrdered,
   type ScopeLookup,
 } from "../lib";
-import { useGrantRole, useMfaFactors, useVerifyMfaFactor } from "../hooks";
+import {
+  useGrantRole,
+  useMfaFactors,
+  useNow,
+  useVerifyMfaFactor,
+  useViewerAssignments,
+} from "../hooks";
 import type { AssignablePerson } from "../people";
 
 type Step = 1 | 2 | 3;
@@ -64,6 +71,7 @@ export function GrantRoleDialog({
   roles,
   people,
   lookup,
+  viewerUserId,
   onGranted,
 }: {
   open: boolean;
@@ -71,12 +79,16 @@ export function GrantRoleDialog({
   roles: readonly Role[];
   people: readonly AssignablePerson[];
   lookup: ScopeLookup;
+  /** The signed-in user's id (session), used to mirror the grant rules. */
+  viewerUserId?: string;
   onGranted?: () => void;
 }) {
   const t = useT();
   const toast = useToast();
   const grant = useGrantRole();
   const verify = useVerifyMfaFactor();
+  const now = useNow();
+  const viewerAssignments = useViewerAssignments(viewerUserId);
 
   const [step, setStep] = React.useState<Step>(1);
   const [userId, setUserId] = React.useState("");
@@ -90,6 +102,18 @@ export function GrantRoleDialog({
   const [error, setError] = React.useState<string | null>(null);
   const [verifyError, setVerifyError] = React.useState<string | null>(null);
 
+  // Only offer roles the API accepts (assertCanGrantRole, legend-wc69d); while
+  // the viewer's assignments load or failed nothing is held, which fails closed.
+  const grantable = React.useMemo(
+    () =>
+      grantableRoles({
+        roles,
+        viewerUserId,
+        viewerAssignments: viewerAssignments.data?.data ?? [],
+        now,
+      }),
+    [roles, viewerUserId, viewerAssignments.data, now],
+  );
   const role = roles.find((row) => row.id === roleId);
   const allowedScopes = role ? scopeOptionsForRole(role) : SCOPE_TYPES;
   const factors = useMfaFactors(open && step === 3);
@@ -274,7 +298,7 @@ export function GrantRoleDialog({
                   />
                 </SelectTrigger>
                 <SelectContent>
-                  {roles.map((row) => (
+                  {grantable.map((row) => (
                     <SelectItem key={row.id} value={row.id}>
                       {row.name}
                     </SelectItem>

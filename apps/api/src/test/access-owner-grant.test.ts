@@ -263,6 +263,8 @@ describe("legend-7vsby only an Owner may grant the Owner template", () => {
         allowedScopeTypes: ["tenant"],
       }),
       admin,
+      new Date(),
+      freshAuth(),
     );
     const accountB = await signedInMember(tenant, founder, "Chain Account B");
     await grantRoleAssignment(

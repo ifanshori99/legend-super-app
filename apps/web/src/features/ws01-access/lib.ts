@@ -245,8 +245,11 @@ export function viewerHoldsTopAuthority(input: {
   viewerAssignments: readonly RoleAssignment[];
   roles: readonly Pick<Role, "id" | "templateKey" | "permissions">[];
   now: Date;
+  /** Permission the top-authority role must carry; defaults to the editor's. */
+  permission?: PermissionCode;
 }): boolean {
   if (!input.viewerUserId) return false;
+  const permission = input.permission ?? "access.role.manage";
   const top: readonly string[] = ROLE_GRANT_TOP_AUTHORITY_TEMPLATES;
   return activeTenantAssignmentsOf(
     input.viewerAssignments,
@@ -258,7 +261,7 @@ export function viewerHoldsTopAuthority(input: {
       role !== undefined &&
       typeof role.templateKey === "string" &&
       top.includes(role.templateKey) &&
-      role.permissions.includes("access.role.manage")
+      role.permissions.includes(permission)
     );
   });
 }
@@ -360,6 +363,54 @@ export function permissionsViewerMayAdd(input: {
         !permissionHasTag(code, "platform") && !ownerOnly.includes(code),
     ),
   );
+}
+
+/**
+ * Roles the viewer may hand out (assertCanGrantRole), so the grant dialog does
+ * not offer what the API refuses. The Owner role needs an active tenant-scoped
+ * Owner assignment and every role permission held; top authority never applies
+ * to it. Any other role needs top authority (Owner / Admin Tenant with
+ * access.role.assign) or every role permission held at tenant scope. Pass empty
+ * lists while the viewer's assignments or roles load or failed: only roles
+ * without permissions remain then (fail closed). The API decides again.
+ */
+export function grantableRoles<
+  T extends Pick<Role, "id" | "templateKey" | "permissions">,
+>(input: {
+  roles: readonly T[];
+  viewerUserId: string | undefined;
+  viewerAssignments: readonly RoleAssignment[];
+  now: Date;
+}): T[] {
+  const check = {
+    viewerUserId: input.viewerUserId,
+    viewerAssignments: input.viewerAssignments,
+    roles: input.roles,
+    now: input.now,
+  };
+  const held = heldAtTenantScope(check);
+  const holdsAll = (role: T) =>
+    role.permissions.every((code) => held.includes(code));
+  const viewerIsOwner =
+    input.viewerUserId !== undefined &&
+    activeTenantAssignmentsOf(
+      input.viewerAssignments,
+      input.viewerUserId,
+      input.now,
+    ).some(
+      (row) =>
+        input.roles.find((r) => sameId(r.id, row.roleId))?.templateKey ===
+        OWNER_TEMPLATE_KEY,
+    );
+  const topAuthority = viewerHoldsTopAuthority({
+    ...check,
+    permission: "access.role.assign",
+  });
+  return input.roles.filter((role) => {
+    if (role.templateKey === OWNER_TEMPLATE_KEY)
+      return viewerIsOwner && holdsAll(role);
+    return topAuthority || holdsAll(role);
+  });
 }
 
 /**

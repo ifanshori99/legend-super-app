@@ -416,6 +416,11 @@ export async function createCustomRole(
   input: CreateCustomRoleInput,
   actorUserId: string,
   now = new Date(),
+  options: {
+    /** Last successful re-authentication of the creator, or null (no bypass). */
+    reauthenticatedAt: Date | null;
+    mfaVerified: boolean;
+  } = { reauthenticatedAt: null, mfaVerified: false },
 ): Promise<Role> {
   return withTenant(db, context, async (tx) => {
     await assertTenantPermission(
@@ -427,6 +432,23 @@ export async function createCustomRole(
     );
     const normalized = normalizeCustomRolePermissions(input.permissions, {
       mfaRequested: input.mfaRequired,
+    });
+    // legend-sjq5w: a new role is a grant of every permission it lists. Same
+    // rule as updateCustomRole: hold each one at tenant scope, or be a
+    // re-authenticated Owner/Admin Tenant (PRD §3.7; coordinator decision C6).
+    const data = await loadTenantAccessInTransaction(tx, context, actorUserId);
+    assertCanEditCustomRole({
+      grantor: {
+        tenantId: context.tenant.tenantId,
+        userId: userIdSchema.parse(actorUserId),
+        assignments: data.assignments,
+      },
+      grantorRoles: data.roles,
+      grantorMfaVerified: options.mfaVerified,
+      grantorReauthenticatedAt: options.reauthenticatedAt,
+      addedPermissions: normalized.permissions,
+      org: data.org,
+      now,
     });
     let row: RoleRow;
     try {
