@@ -439,35 +439,44 @@ export async function listBrands(
   });
 }
 
+type TenantTx = Parameters<Parameters<typeof withTenant>[2]>[0];
+
+/** Body of `createBrand`; runs inside the caller's `withTenant` transaction. */
+export async function createBrandInTx(
+  tx: TenantTx,
+  context: ScopedTenantContext,
+  input: CreateBrandInput,
+): Promise<Brand> {
+  // legend-ja7i7 (TEN-10): the logo must be in this tenant's media library.
+  await assertTenantMedia(
+    tx,
+    context.tenant.tenantId,
+    input.logoMediaId,
+    "Logo",
+  );
+  try {
+    const [row] = await tx
+      .insert(brands)
+      .values({
+        tenantId: context.tenant.tenantId,
+        slug: input.slug,
+        name: input.name,
+        logoMediaId: input.logoMediaId,
+      })
+      .returning();
+    return toBrand(row, []);
+  } catch (error) {
+    if (uniqueViolation(error))
+      throw new HttpError(409, "CONFLICT", "That brand slug is taken.");
+    throw error;
+  }
+}
+
 export async function createBrand(
   context: ScopedTenantContext,
   input: CreateBrandInput,
 ): Promise<Brand> {
-  return withTenant(db, context, async (tx) => {
-    // legend-ja7i7 (TEN-10): the logo must be in this tenant's media library.
-    await assertTenantMedia(
-      tx,
-      context.tenant.tenantId,
-      input.logoMediaId,
-      "Logo",
-    );
-    try {
-      const [row] = await tx
-        .insert(brands)
-        .values({
-          tenantId: context.tenant.tenantId,
-          slug: input.slug,
-          name: input.name,
-          logoMediaId: input.logoMediaId,
-        })
-        .returning();
-      return toBrand(row, []);
-    } catch (error) {
-      if (uniqueViolation(error))
-        throw new HttpError(409, "CONFLICT", "That brand slug is taken.");
-      throw error;
-    }
-  });
+  return withTenant(db, context, (tx) => createBrandInTx(tx, context, input));
 }
 
 export async function updateBrand(
@@ -587,37 +596,46 @@ async function assertNpwpFree(
   if (hit) throw npwpTaken();
 }
 
-export async function createLegalEntity(
+/** Body of `createLegalEntity`; runs inside the caller's `withTenant` transaction. */
+export async function createLegalEntityInTx(
+  tx: TenantTx,
   context: ScopedTenantContext,
   input: CreateLegalEntityInput,
 ): Promise<LegalEntity> {
   const id = randomUUID();
-  return withTenant(db, context, async (tx) => {
-    await assertNpwpFree(tx, context.tenant.tenantId, input.npwp, null);
-    let inserted: typeof legalEntities.$inferSelect;
-    try {
-      const [row] = await tx
-        .insert(legalEntities)
-        .values({
-          id,
-          tenantId: context.tenant.tenantId,
-          name: input.name,
-          ...npwpColumns(context.tenant.tenantId, input.npwp),
-          isPkp: input.isPkp,
-          address: input.address,
-        })
-        .returning();
-      inserted = row;
-    } catch (error) {
-      if (uniqueViolation(error)) throw npwpTaken();
-      throw error;
-    }
-    // Outside the NPWP catch, same transaction: a provisioning failure rolls
-    // the entity back instead of being read as a duplicate NPWP (PRD v1.7
-    // §3.19, legend-a7x7).
-    await provisionStandardChart(tx, context, inserted.id, null);
-    return toLegalEntity(inserted);
-  });
+  await assertNpwpFree(tx, context.tenant.tenantId, input.npwp, null);
+  let inserted: typeof legalEntities.$inferSelect;
+  try {
+    const [row] = await tx
+      .insert(legalEntities)
+      .values({
+        id,
+        tenantId: context.tenant.tenantId,
+        name: input.name,
+        ...npwpColumns(context.tenant.tenantId, input.npwp),
+        isPkp: input.isPkp,
+        address: input.address,
+      })
+      .returning();
+    inserted = row;
+  } catch (error) {
+    if (uniqueViolation(error)) throw npwpTaken();
+    throw error;
+  }
+  // Outside the NPWP catch, same transaction: a provisioning failure rolls
+  // the entity back instead of being read as a duplicate NPWP (PRD v1.7
+  // §3.19, legend-a7x7).
+  await provisionStandardChart(tx, context, inserted.id, null);
+  return toLegalEntity(inserted);
+}
+
+export async function createLegalEntity(
+  context: ScopedTenantContext,
+  input: CreateLegalEntityInput,
+): Promise<LegalEntity> {
+  return withTenant(db, context, (tx) =>
+    createLegalEntityInTx(tx, context, input),
+  );
 }
 
 export async function updateLegalEntity(
@@ -727,10 +745,15 @@ function assertOutletWritable(
   assertOutletInScope(context.outletScope, outletId);
 }
 
-export async function createOutlet(
+/**
+ * Body of `createOutlet`; runs inside the caller's `withTenant` transaction.
+ * Needs a whole-tenant outlet scope and enforces the outlet quota.
+ */
+export async function createOutletInTx(
+  tx: TenantTx,
   context: ScopedTenantContext,
   input: CreateOutletInput,
-  actorUserId: string | null = null,
+  actorUserId: string | null,
 ): Promise<Outlet> {
   if (context.outletScope.kind !== "tenant")
     throw new HttpError(
@@ -738,105 +761,113 @@ export async function createOutlet(
       "PERMISSION_DENIED",
       "Pembuatan outlet membutuhkan akses seluruh tenant.",
     );
-  return withTenant(db, context, async (tx) => {
-    await lockLoyaltyJournalEntity(tx, context.tenant.tenantId);
-    await protectLoyaltyEntityChange(tx, context.tenant.tenantId, {
-      add: input.legalEntityId,
-    });
-    await requireBrand(tx, input.brandId);
-    await requireLegalEntity(tx, input.legalEntityId);
-    let inserted: typeof outlets.$inferSelect;
-    const [count] = await tx
-      .select({ value: sql<number>`count(*)::int` })
-      .from(outlets);
-    const limits = await tenantLimits(tx, context.tenant.tenantId);
-    // Only the outlet count is needed here; employee/device/AI usage comes
-    // with their own tables (WS-10, WS-02, WS-12).
-    const usage: TenantUsage = tenantUsageSchema.parse({
-      month: new Date().toISOString().slice(0, 7),
-      outlets: count?.value ?? 0,
-      activeEmployees: 0,
-      devices: 0,
-      aiRequests: 0,
-      whatsappCostIdr: 0,
-      aiCostIdr: 0,
-      emailCostIdr: 0,
-    });
-    if (!checkCountQuota(limits, usage, "outlets").allowed)
-      throw new PlatformError("QUOTA_EXCEEDED");
-    try {
-      const [row] = await tx
-        .insert(outlets)
-        .values({
-          tenantId: context.tenant.tenantId,
-          brandId: input.brandId,
-          legalEntityId: input.legalEntityId,
-          code: input.code,
-          name: input.name,
-          address: input.address,
-          regionId: input.regionId,
-          geofence: input.geofence,
-          timezone: input.timeZone,
-          businessDayCutoff: input.businessDayCutoff,
-          openingHours: input.openingHours,
-        })
-        .returning();
-      inserted = row;
-      // legend-2nb9: a new outlet starts with an availability row for every
-      // existing item of its brand, so its 86 screen lists them on day one
-      // (the item-create path seeds only the outlets that exist then).
-      const items = await tx
-        .select({ id: menuItems.id })
-        .from(menuItems)
-        .where(
-          and(
-            eq(menuItems.tenantId, context.tenant.tenantId),
-            eq(menuItems.brandId, input.brandId),
-            isNull(menuItems.deletedAt),
-          ),
-        );
-      if (items.length > 0) {
-        const now = new Date();
-        await tx
-          .insert(itemAvailability)
-          .values(
-            items.map((item) => ({
-              tenantId: context.tenant.tenantId,
-              outletId: row.id,
-              menuItemId: item.id,
-              schedule: [],
-              status: "available" as const,
-              createdAt: now,
-              updatedAt: now,
-            })),
-          )
-          .onConflictDoNothing();
-      }
-    } catch (error) {
-      if (uniqueViolation(error))
-        throw new HttpError(409, "CONFLICT", "That outlet code is taken.");
-      throw error;
-    }
-    // Same transaction (PRD v1.7 §3.19, §16 Lokasi Stok, legend-4ryw): older
-    // tenants without UOMs get them here too; both calls are idempotent.
-    await provisionStandardUoms(tx, context, null);
-    await provisionOutletStockLocations(tx, context, inserted.id, null);
-    await pauseAmbiguousGuestClaims(tx, context.tenant.tenantId);
-    // A new outlet has no menu_costs rows yet: the next job tick rebuilds it.
-    await markHppStale(tx, {
-      tenantId: context.tenant.tenantId,
-      outletId: inserted.id,
-    });
-    // Default 5% dine-in service charge for this outlet only (legend-2qz7, Q25).
-    const actor = userIdSchema.safeParse(actorUserId);
-    await provisionDefaultServiceChargeRule(
-      tx,
-      context,
-      actor.success ? actor.data : null,
-      outletIdSchema.parse(inserted.id),
-    );
-    return toOutlet(inserted);
+  await lockLoyaltyJournalEntity(tx, context.tenant.tenantId);
+  await protectLoyaltyEntityChange(tx, context.tenant.tenantId, {
+    add: input.legalEntityId,
   });
+  await requireBrand(tx, input.brandId);
+  await requireLegalEntity(tx, input.legalEntityId);
+  let inserted: typeof outlets.$inferSelect;
+  const [count] = await tx
+    .select({ value: sql<number>`count(*)::int` })
+    .from(outlets);
+  const limits = await tenantLimits(tx, context.tenant.tenantId);
+  // Only the outlet count is needed here; employee/device/AI usage comes
+  // with their own tables (WS-10, WS-02, WS-12).
+  const usage: TenantUsage = tenantUsageSchema.parse({
+    month: new Date().toISOString().slice(0, 7),
+    outlets: count?.value ?? 0,
+    activeEmployees: 0,
+    devices: 0,
+    aiRequests: 0,
+    whatsappCostIdr: 0,
+    aiCostIdr: 0,
+    emailCostIdr: 0,
+  });
+  if (!checkCountQuota(limits, usage, "outlets").allowed)
+    throw new PlatformError("QUOTA_EXCEEDED");
+  try {
+    const [row] = await tx
+      .insert(outlets)
+      .values({
+        tenantId: context.tenant.tenantId,
+        brandId: input.brandId,
+        legalEntityId: input.legalEntityId,
+        code: input.code,
+        name: input.name,
+        address: input.address,
+        regionId: input.regionId,
+        geofence: input.geofence,
+        timezone: input.timeZone,
+        businessDayCutoff: input.businessDayCutoff,
+        openingHours: input.openingHours,
+      })
+      .returning();
+    inserted = row;
+    // legend-2nb9: a new outlet starts with an availability row for every
+    // existing item of its brand, so its 86 screen lists them on day one
+    // (the item-create path seeds only the outlets that exist then).
+    const items = await tx
+      .select({ id: menuItems.id })
+      .from(menuItems)
+      .where(
+        and(
+          eq(menuItems.tenantId, context.tenant.tenantId),
+          eq(menuItems.brandId, input.brandId),
+          isNull(menuItems.deletedAt),
+        ),
+      );
+    if (items.length > 0) {
+      const now = new Date();
+      await tx
+        .insert(itemAvailability)
+        .values(
+          items.map((item) => ({
+            tenantId: context.tenant.tenantId,
+            outletId: row.id,
+            menuItemId: item.id,
+            schedule: [],
+            status: "available" as const,
+            createdAt: now,
+            updatedAt: now,
+          })),
+        )
+        .onConflictDoNothing();
+    }
+  } catch (error) {
+    if (uniqueViolation(error))
+      throw new HttpError(409, "CONFLICT", "That outlet code is taken.");
+    throw error;
+  }
+  // Same transaction (PRD v1.7 §3.19, §16 Lokasi Stok, legend-4ryw): older
+  // tenants without UOMs get them here too; both calls are idempotent.
+  await provisionStandardUoms(tx, context, null);
+  await provisionOutletStockLocations(tx, context, inserted.id, null);
+  await pauseAmbiguousGuestClaims(tx, context.tenant.tenantId);
+  // A new outlet has no menu_costs rows yet: the next job tick rebuilds it.
+  await markHppStale(tx, {
+    tenantId: context.tenant.tenantId,
+    outletId: inserted.id,
+  });
+  // Default 5% dine-in service charge for this outlet only (legend-2qz7, Q25).
+  const actor = userIdSchema.safeParse(actorUserId);
+  await provisionDefaultServiceChargeRule(
+    tx,
+    context,
+    actor.success ? actor.data : null,
+    outletIdSchema.parse(inserted.id),
+  );
+  return toOutlet(inserted);
+}
+
+export async function createOutlet(
+  context: ScopedTenantContext,
+  input: CreateOutletInput,
+  actorUserId: string | null = null,
+): Promise<Outlet> {
+  return withTenant(db, context, (tx) =>
+    createOutletInTx(tx, context, input, actorUserId),
+  );
 }
 
 export async function updateOutlet(

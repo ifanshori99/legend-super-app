@@ -298,6 +298,27 @@ export const platformEndpoints = {
     params: tenantParams,
     response: z.object({ data: z.array(legalEntitySchema) }),
   }),
+  createTenantBrand: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/brands",
+    params: tenantParams,
+    body: createBrandInputSchema,
+    response: dataResponseSchema(brandSchema),
+  }),
+  createTenantOutlet: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/outlets",
+    params: tenantParams,
+    body: createOutletInputSchema,
+    response: dataResponseSchema(outletSchema),
+  }),
+  createTenantLegalEntity: defineEndpoint({
+    method: "POST",
+    path: "/api/platform/tenants/:tenantId/legal-entities",
+    params: tenantParams,
+    body: createLegalEntityInputSchema,
+    response: dataResponseSchema(legalEntitySchema),
+  }),
   assignTenantOwner: defineEndpoint({
     method: "POST",
     path: "/api/platform/tenants/:tenantId/owners",
