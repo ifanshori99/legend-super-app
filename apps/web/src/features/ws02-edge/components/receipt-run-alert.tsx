@@ -8,9 +8,12 @@ import { formatAlertTime } from "../logic.ts";
 export function ReceiptRunAlert({
   edgeNodeId,
   alertAt,
+  guideOpen = false,
 }: {
   edgeNodeId: string;
   alertAt: string | null;
+  /** Show the recovery steps expanded (back-office screen). */
+  guideOpen?: boolean;
 }) {
   const t = useT();
   const recordedAt = formatAlertTime(alertAt);
@@ -43,7 +46,10 @@ export function ReceiptRunAlert({
           </dd>
         </div>
       </dl>
-      <details className="mt-4 border-t-(length:--border-w) border-warning pt-3 sm:ml-8">
+      <details
+        open={guideOpen}
+        className="mt-4 border-t-(length:--border-w) border-warning pt-3 sm:ml-8"
+      >
         <summary className="min-h-11 cursor-pointer py-2 text-sm font-semibold">
           {t("edge.receiptRun.guideTitle")}
         </summary>

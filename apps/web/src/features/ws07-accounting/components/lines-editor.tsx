@@ -3,12 +3,11 @@
 // side per row, whole rupiah, at least two rows, totals equal. Validation text
 // comes from the catalog; the contract (evaluateManualDraft) decides.
 import * as React from "react";
-import { CircleAlert, CircleCheck, Plus, Trash2 } from "lucide-react";
+import { CircleAlert, Plus, Trash2 } from "lucide-react";
 import type { Account } from "@starter/shared/accounting";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { focusFirstInvalid } from "@/lib/focus-first-invalid";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,6 +20,7 @@ import {
 } from "@/components/ui/select";
 import { accountLabel, formatRupiahInput, type DraftEvaluation } from "../lib";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
+import { JournalTotalPanel } from "./journal-total-panel";
 
 export type EditorLine = {
   /** Stable React key; regenerated per row. */
@@ -398,37 +398,10 @@ export function JournalLinesEditor({
             </span>
           </div>
         )}
-      <div
-        aria-live="polite"
-        className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 rounded-lg border-(length:--border-w) border-border bg-muted p-card"
-      >
-        <p className="text-sm tabular">
-          {t("accounting.manual.form.balance", {
-            debit: formatRupiah(evaluation.debitIdr),
-            credit: formatRupiah(evaluation.creditIdr),
-          })}
-        </p>
-        {evaluation.balanced ? (
-          <Badge tone="success">
-            <CircleCheck aria-hidden="true" />
-            {t("accounting.manual.form.balanced")}
-          </Badge>
-        ) : evaluation.filled < 2 ? (
-          // Nothing entered yet: a hint, not an error.
-          <p className="text-sm text-muted-foreground">
-            {t("accounting.manual.form.linesRequired")}
-          </p>
-        ) : (
-          <p className="flex items-center gap-2 text-sm font-medium text-danger">
-            <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
-            {evaluation.differenceIdr !== 0 && !hasAmountIssue
-              ? `${t("accounting.manual.form.difference", {
-                  amount: formatRupiah(Math.abs(evaluation.differenceIdr)),
-                })} · ${t("accounting.manual.form.unbalanced")}`
-              : t("form.invalid")}
-          </p>
-        )}
-      </div>
+      <JournalTotalPanel
+        evaluation={evaluation}
+        hasAmountIssue={hasAmountIssue}
+      />
     </div>
   );
 }

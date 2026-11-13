@@ -106,7 +106,14 @@ test.describe("legend-5ac3 outlet on journal lines", () => {
     await page.getByLabel("Kredit baris 2").fill("400000");
     // Amounts group thousands while typing (value sent to the API stays whole rupiah).
     await expect(page.getByLabel("Debit baris 1")).toHaveValue("500.000");
-    await expect(page.getByText(/Selisih Rp/)).toBeVisible();
+    // Total panel: the difference (absolute), its direction and the status.
+    const difference = page
+      .locator("form")
+      .getByText("Selisih", { exact: true })
+      .locator("..");
+    await expect(difference).toContainText(/Rp\s*100\.000/);
+    await expect(difference).toContainText("Debit lebih besar");
+    await expect(difference).toContainText("Belum seimbang");
     await expect(
       page.getByRole("alert").filter({ hasText: "Jurnal belum seimbang" }),
     ).toContainText("Debit lebih besar Rp");

@@ -15,6 +15,9 @@ import {
 import { createUlid } from "@starter/shared/core";
 import { apiFetch } from "@/lib/api/client";
 import { callEndpoint } from "@/lib/api/endpoint";
+import { ApiError } from "@/lib/api/errors";
+import { API_MOCK } from "@/lib/api/mock-flag";
+import { CONTRACT_PENDING, type EdgeNodesOverview } from "./types.ts";
 
 export function fetchEdgeStatus(signal?: AbortSignal) {
   return callEndpoint(getEdgeStatus, undefined, { signal });
@@ -67,6 +70,22 @@ export function grantCatalogOverrideCall(body: {
     method: "POST",
     body,
   });
+}
+
+/**
+ * Back-office list of edge nodes with their receipt-run alert (legend-ph62j).
+ * No cloud endpoint yet (./CONTRACT-GAPS.md): mock fixture in mock mode,
+ * CONTRACT_PENDING everywhere else.
+ */
+export async function fetchEdgeNodes(): Promise<EdgeNodesOverview> {
+  if (!API_MOCK)
+    throw new ApiError(
+      501,
+      CONTRACT_PENDING,
+      "Fitur ini belum tersambung ke server (status edge).",
+    );
+  const { mockEdgeNodes } = await import("./nodes-mock.ts");
+  return mockEdgeNodes();
 }
 
 /** Dev-only mock control handle (see mock.ts); typed for the console. */

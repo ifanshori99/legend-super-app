@@ -1,4 +1,5 @@
-import { Network } from "lucide-react";
+import { Network, Server } from "lucide-react";
+import { API_MOCK } from "@/lib/api/mock-flag";
 import type { AreaNavEntry } from "@/lib/areas/nav";
 
 // Supervisor entry: connectivity, sync backlog, print queue, device alerts
@@ -13,6 +14,21 @@ const nav: AreaNavEntry[] = [
     order: 80,
     anyPermission: ["report.operational.view"],
   },
+  // Back-office edge nodes and receipt-run alert (legend-ph62j). Hidden until
+  // the cloud has the node list endpoint (CONTRACT-GAPS.md): mock mode only.
+  ...(API_MOCK
+    ? ([
+        {
+          area: "kelola",
+          labelKey: "edgeNodes.nav",
+          to: "/kelola/status-edge",
+          icon: Server,
+          order: 97,
+          group: "operations",
+          anyPermission: ["report.operational.view"],
+        },
+      ] satisfies AreaNavEntry[])
+    : []),
 ];
 
 export default nav;

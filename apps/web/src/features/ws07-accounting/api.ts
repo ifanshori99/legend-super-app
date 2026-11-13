@@ -235,6 +235,44 @@ export async function runManualJournalCommand(
   }
 }
 
+/** The draft was saved but the submit step failed: the draft id survives. */
+export class SubmitAfterSaveError extends Error {
+  constructor(
+    readonly journal: import("@starter/shared/accounting").ManualJournal,
+    readonly cause: unknown,
+  ) {
+    super("Draft saved, submit for approval failed");
+  }
+}
+
+/**
+ * "Ajukan untuk persetujuan" from the form: save the draft (create, or update
+ * when `journalId` is set), then submit it. Both steps are the existing
+ * endpoints; approval stays with a different person (AUTH-06). A failed submit
+ * leaves the saved draft and reports it as SubmitAfterSaveError.
+ */
+export async function saveAndSubmitManualJournal(
+  input:
+    | {
+        journalId?: undefined;
+        body: Omit<Body<typeof createManualJournalEndpoint>, "idempotencyKey">;
+      }
+    | {
+        journalId: string;
+        body: Body<typeof updateManualJournalEndpoint>;
+      },
+) {
+  const saved =
+    input.journalId === undefined
+      ? await createManualJournal(input.body)
+      : await updateManualJournal(input.journalId, input.body);
+  try {
+    return await runManualJournalCommand("submit", saved.id);
+  } catch (error) {
+    throw new SubmitAfterSaveError(saved, error);
+  }
+}
+
 // ---- Recurring journals ----------------------------------------------------
 
 export async function fetchRecurringJournals(

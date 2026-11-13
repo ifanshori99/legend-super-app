@@ -7,7 +7,12 @@ import {
   type PrintJobListQuery,
   type PrintJob,
 } from "@starter/shared/edge";
-import { fetchEdgeDevices, fetchEdgeStatus, fetchPrintJobs } from "./api.ts";
+import {
+  fetchEdgeDevices,
+  fetchEdgeNodes,
+  fetchEdgeStatus,
+  fetchPrintJobs,
+} from "./api.ts";
 
 export const PRINT_QUEUE_PAGE_SIZE = 20;
 
@@ -16,6 +21,7 @@ export const edgeKeys = {
   status: () => [...edgeKeys.all, "status"] as const,
   devices: (query: DeviceListQuery & { outletId?: string }) =>
     [...edgeKeys.all, "devices", query] as const,
+  nodes: () => [...edgeKeys.all, "nodes"] as const,
   /** Last order refusal for a stale catalog, kept until the next status read. */
   catalogSalesBlock: () => [...edgeKeys.all, "catalog-sales-block"] as const,
   printJobs: () => [...edgeKeys.all, "print-jobs"] as const,
@@ -31,6 +37,17 @@ export function edgeStatusQuery() {
     refetchIntervalInBackground: false,
     staleTime: 5_000,
     // A failed probe is the offline signal; retrying would only delay the banner.
+    retry: false,
+  });
+}
+
+export function edgeNodesQuery() {
+  return queryOptions({
+    queryKey: edgeKeys.nodes(),
+    queryFn: () => fetchEdgeNodes(),
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    staleTime: 5_000,
     retry: false,
   });
 }

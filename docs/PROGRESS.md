@@ -1,3 +1,12 @@
+## 539-U5b 12 layar konfigurasi (ui-engineer, cabang `ui/tenant-config` dari `origin/milestone/m1` 5cbe2a1e, 13 Nov 2026 06:35-08:00 WIB)
+
+- Kartu legend-y1jll. Pencocokan 12 layar Q29-Q40 vs m1: `docs/briefs/sub-u5b-gap.md`. 10 sudah ada (brief 505 `ws/ui-bo-config` dan `ws/ui-mixed-q36` sudah di m1); 2 dibangun di cabang ini.
+- Dibangun: S35 `/kelola/status-edge` (bagian UI legend-ph62j): kartu node, alert struk berulang dengan petunjuk terbuka, memuat/kosong/galat/terputus, pill "Contoh data"; menu hanya tampil di mode mock dan di luar mock `CONTRACT_PENDING` sampai API cloud daftar node ada (`ws02-edge/CONTRACT-GAPS.md`). S31 jurnal manual (bagian UI legend-ktpc0): panel total debit/kredit/selisih + arah, tombol "Ajukan untuk persetujuan" (simpan lalu `submitManualJournal` yang sudah ada, draf tetap tersimpan bila kirim gagal), banner sukses di detail, tombol Setujui disembunyikan bagi pemohon (tampilan saja, API tetap menolak).
+- Bukti (setelah perubahan terakhir): tsc web 0 error; eslint + prettier 15 berkas bersih; `tests/text-contract.test.mjs` + `tests/legend-u5b-journal-approve.test.mjs` 17/17; `scripts/ui-check-u5b.mjs` 32/32 (1280/390, termasuk gelap, axe tanpa serious/critical, tanpa overflow) di `design/screens/ui-u5b/`; e2e mock 5ac3 + s7szu 8/8.
+- Review: reviewer S31, reviewer S35, reviewer putaran perbaikan, ui-auditor, impeccable-finish-reviewer; temuan nyata dibetulkan (menu buntu non-mock, label data contoh, urutan fokus, banner basi, dll.).
+- Terbuka: legend-ug14o (3 test `legend-mzg.mock.spec.ts` gagal juga di base m1); backend legend-ph62j (API cloud node) masih terbuka; Lighthouse dan impeccable detect tidak dijalankan.
+- Subagent: total 14 (Explore 6, implementer 3, reviewer 3, ui-auditor 1, impeccable-finish-reviewer 1), puncak 4 bersamaan, token heavy dipegang agent. Biaya sesi* 4.07M (utama Opus 1.35M, Sonnet 2.72M).
+
 ## 539-U4 HRIS pengajuan + akses dukungan Owner (Claude, ui/hris-requests, 12 Nov 2026 13:35 WIB)
 
 - Kartu legend-ydf2 (HR-05 UI) dan legend-8r77t. Lanjutan dari commit persiapan c12c7217 dan `docs/briefs/sub-539-u4.md`.

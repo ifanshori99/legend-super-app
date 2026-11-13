@@ -10,6 +10,7 @@ import {
 } from "@tanstack/react-query";
 import type { Device } from "@starter/shared/edge";
 import { ANONYMOUS_ACCESS, type AreaAccess } from "@/lib/areas/access";
+import { ApiError } from "@/lib/api/errors";
 import { useOnline } from "@/lib/use-online";
 import {
   grantCatalogOverrideCall,
@@ -21,10 +22,12 @@ import {
   CATALOG_OVERRIDE_PERMISSION,
   isCatalogSalesBlockedError,
 } from "./catalog-sales.ts";
+import { CONTRACT_PENDING } from "./types.ts";
 import { cloudConnectionOnline } from "./logic.ts";
 import {
   edgeDevicesQuery,
   edgeKeys,
+  edgeNodesQuery,
   edgeStatusQuery,
   printQueueQuery,
   printQueueJobs,
@@ -39,6 +42,19 @@ export function useEdgeStatus(options?: { enabled?: boolean }) {
     ...edgeStatusQuery(),
     enabled: typeof window !== "undefined" && (options?.enabled ?? true),
   });
+}
+
+/** Back-office node list; browser only, like the status probe above. */
+export function useEdgeNodes() {
+  return useQuery({
+    ...edgeNodesQuery(),
+    enabled: typeof window !== "undefined",
+  });
+}
+
+/** True when the server has no contract for the node list yet. */
+export function isEdgeContractPending(error: unknown): boolean {
+  return error instanceof ApiError && error.code === CONTRACT_PENDING;
 }
 
 /**
