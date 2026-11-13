@@ -40,8 +40,17 @@
 //  6. [thr-component-gross-up-contract-gross] a `gross` contract whose tenant
 //     THR component is typed `gross_up`: no allowance, the tax is withheld, net
 //     < THR, tax numbers equal the engine's `gross` result.
+//  7. [thr-scheme-mismatch] CTO decision (13 Nov 2026): a THR run simulation fails
+//     closed (HttpError 422, code PAYROLL_TAX_SCHEME_MISMATCH) when the
+//     employee's CONTRACT scheme differs from the scheme of a taxable earning
+//     component with thrBase = true (the salary). The Indonesian message names
+//     the employee id (not the name) and how to align (contract scheme or
+//     salary component scheme). No result or slip is stored. The tenant's own
+//     THR component scheme is not checked (rule 6 stays valid).
 //
 // ASSUMPTIONS (the spec is silent or ambiguous; stated so they can be contested)
+//  - Test data now keeps the salary component's scheme equal to the contract's
+//    (the mismatch tests are the only exception).
 //  - The employee's scheme is the one on the active contract (what simulate
 //    reads), mirrored on the salary component. The THR line follows the
 //    employee's scheme (Q9), not a scheme of the THR component itself.
@@ -52,7 +61,7 @@
 //    the tenant's THR pay component: a `gross` contract with a `gross_up` THR
 //    component is still withheld (rule 6).
 //  - The THR amount is read from the slip's `thr` line (never hard-coded). The
-//    employee (TK/0, NPWP, joined 2025-03-01, one fixed salary of 8.000.000, no
+//    employee (TK/0, NPWP, joined 2025-03-01, one fixed salary of 15.000.000, no
 //    BPJS) is employed for 12 months or more at the THR date, so the THR is > 0.
 //  - A THR run alone in its month is taxed by TER on that month's gross; the
 //    oracle is `computePayslipTax` with the THR as the only earning.
@@ -125,7 +134,12 @@ const createdEntities: string[] = [];
 const createdPolicies: string[] = [];
 
 const key = () => `thr-gu-${randomUUID()}`;
-const SALARY = 8_000_000;
+// 15 jt (as payroll-pph21-december-runs): the biaya jabatan cap is reached in every
+// month, so the December two-run slips and the one-call merged oracle (rule 4)
+// treat it identically. At 8 jt the oracle's single December month would cap
+// the 5% allowance differently from the two real runs (a test-data effect, not
+// a payroll defect).
+const SALARY = 15_000_000;
 
 const tenantScope = (): ScopedTenantContext =>
   establishScopedTenantContext(
@@ -209,7 +223,7 @@ const digits = (length: number) => {
 
 type Scheme = "gross" | "gross_up" | "net";
 type World = { entityId: string; policyId: string };
-type Emp = { id: string; scheme: Scheme };
+type Emp = { id: string; scheme: Scheme; name: string };
 
 async function makeWorld(): Promise<World> {
   const world = { entityId: randomUUID(), policyId: randomUUID() };
@@ -226,9 +240,22 @@ async function makeWorld(): Promise<World> {
   return world;
 }
 
-/** Active pkwtt employee TK/0 with NPWP and a bank account, paid by `scheme`. */
-async function makeEmployee(world: World, scheme: Scheme): Promise<Emp> {
-  const emp: Emp = { id: randomUUID(), scheme };
+/**
+ * Active pkwtt employee TK/0 with NPWP and a bank account, paid by `scheme` on
+ * the contract. The salary component (thrBase = true) carries `componentScheme`,
+ * by default the same scheme: simulate of a THR run refuses an employee whose
+ * contract scheme differs from the scheme of a THR-base salary component.
+ */
+async function makeEmployee(
+  world: World,
+  scheme: Scheme,
+  componentScheme: Scheme = scheme,
+): Promise<Emp> {
+  const emp: Emp = {
+    id: randomUUID(),
+    scheme,
+    name: `THR ${scheme}/${componentScheme} ${++counter}`,
+  };
   createdEmployees.push(emp.id);
   await asTenant(async (conn) => {
     await insertEmployee(conn, {
@@ -236,7 +263,7 @@ async function makeEmployee(world: World, scheme: Scheme): Promise<Emp> {
       outletId: outlet.id,
       entityId: world.entityId,
       id: emp.id,
-      name: `THR ${scheme} ${++counter}`,
+      name: emp.name,
       joinDate: "2025-03-01",
       ptkpStatus: "TK/0",
       taxScheme: scheme,
@@ -245,9 +272,10 @@ async function makeEmployee(world: World, scheme: Scheme): Promise<Emp> {
       tenantId: tenant.id,
       employeeId: emp.id,
       amount: SALARY,
-      // The scheme lives on the contract (what simulate reads). The salary
-      // component keeps its default (gross): a gross_up employee must not
-      // depend on the component carrying the scheme too.
+      // The scheme lives on the contract (what simulate reads) and is
+      // mirrored on the salary component (data that matches); a different
+      // `componentScheme` builds the mismatch fixture.
+      scheme: componentScheme,
       createdBy: exporterUserId,
     });
   });
@@ -650,8 +678,9 @@ describe("[thr-net-withheld] THR slip of a net employee", () => {
 describe("[thr-component-gross-up-contract-gross] gross contract, gross_up THR component", () => {
   it("follows the contract: the tax is withheld, no allowance", async () => {
     const world = await makeWorld();
-    await makeEmployee(world, "gross");
-    // A tenant THR component typed gross_up; removed again in `finally`.
+    // Contract gross + salary component gross (match); only the tenant THR
+    // component is gross_up, which is not checked. Removed again in `finally`.
+    await makeEmployee(world, "gross", "gross");
     const componentId = randomUUID();
     await asTenant((conn) =>
       conn.query(
@@ -814,4 +843,64 @@ describe("[thr-gross-up-december] THR run in the last tax period", () => {
       );
     }
   }, 900_000);
+});
+
+// ---- 7. [thr-scheme-mismatch] ---------------------------------------------------
+
+const storedCount = (runId: string) =>
+  asTenant(async (conn) => {
+    const count = async (table: string) =>
+      Number(
+        (
+          await conn.query(
+            `SELECT count(*)::int AS n FROM ${table}
+              WHERE tenant_id = $1 AND payroll_run_id = $2`,
+            [tenant.id, runId],
+          )
+        ).rows[0].n,
+      );
+    return {
+      results: await count("payroll_run_results"),
+      slips: await count("payslips"),
+    };
+  });
+
+describe("[thr-scheme-mismatch] contract scheme differs from the salary component scheme", () => {
+  const cases: ReadonlyArray<[Scheme, Scheme]> = [
+    ["gross_up", "gross"],
+    ["gross", "gross_up"],
+    ["net", "gross"],
+  ];
+  for (const [contract, component] of cases)
+    it(`fails closed (422) for a ${contract} contract with a ${component} salary component, naming the employee id`, async () => {
+      const world = await makeWorld();
+      const emp = await makeEmployee(world, contract, component);
+      const runId = await draftRun(world, NOV_THR, "thr");
+
+      await expect(simulateRun(runId)).rejects.toMatchObject({
+        status: 422,
+        code: "PAYROLL_TAX_SCHEME_MISMATCH",
+        message: expect.stringContaining(emp.id),
+      });
+      // The message names the id, never the employee's name.
+      const error = await simulateRun(runId).catch((e: Error) => e);
+      expect((error as Error).message).not.toContain(emp.name);
+      expect(await storedCount(runId)).toEqual({ results: 0, slips: 0 });
+    }, 120_000);
+
+  it("with two employees, names only the one whose schemes differ", async () => {
+    const world = await makeWorld();
+    const matching = await makeEmployee(world, "gross_up", "gross_up");
+    const mismatched = await makeEmployee(world, "gross", "gross_up");
+    const runId = await draftRun(world, NOV_THR, "thr");
+
+    await expect(simulateRun(runId)).rejects.toMatchObject({
+      status: 422,
+      code: "PAYROLL_TAX_SCHEME_MISMATCH",
+      message: expect.stringContaining(mismatched.id),
+    });
+    const error = (await simulateRun(runId).catch((e: Error) => e)) as Error;
+    expect(error.message).not.toContain(matching.id);
+    expect(await storedCount(runId)).toEqual({ results: 0, slips: 0 });
+  }, 120_000);
 });
