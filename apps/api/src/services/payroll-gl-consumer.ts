@@ -16,7 +16,8 @@
 //   mapped account, where the POS credited it. No service_charge mapping: the base rule, which then fails
 //   ACCOUNT_MAPPING_MISSING when the service charge is above 0.
 // - `payroll.paid`: Dr salaries_payable net, Cr bank / petty_cash, on the
-//   business date of the payment. Skipped when the run has no locked entry
+//   business date of the payment. With `settledPerItem: true` it posts nothing:
+//   the payout settle (payroll-payout-gl.service.ts) journaled every item. Skipped when the run has no locked entry
 //   (accounting switched on after the lock): the payable was never booked.
 // - `payroll.reversed`: reverses the locked entry itself (ACC-01 path), so the
 //   reversal mirrors what was really posted. The `payroll.reversed` rule built
@@ -127,6 +128,9 @@ const CALENDAR_CLOCK = Object.freeze({
 function entryDateOf(instant: string) {
   return businessDateOf(instant, CALENDAR_CLOCK);
 }
+
+/** The Asia/Jakarta calendar date of an instant, for the payout journals. */
+export const payrollEntryDateOf = entryDateOf;
 
 const minDate = (a: string, b: string) => (a < b ? a : b);
 const maxDate = (a: string, b: string) => (a > b ? a : b);
@@ -298,6 +302,10 @@ export async function deliverPayrollGlEvent(
 
   if (event.name === payrollPaid.name) {
     const payload = payrollPaid.payloadSchema.parse(event.payload);
+    // Settled per item (legend-658): each confirmed group of items posted its
+    // own journal (Dr salaries_payable / Cr bank or petty cash, plus the fee).
+    // A run-level journal on top would pay the payable twice (R10).
+    if (payload.settledPerItem === true) return { status: "skipped" };
     if (!(await lockedEntryOf(tx, context, payload.payrollRunId)))
       return (await accountingEnabled(tx, context))
         ? { status: "skipped" }

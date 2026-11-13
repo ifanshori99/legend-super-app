@@ -1,0 +1,502 @@
+// Payroll payout -> GL (bead legend-658 card wnkep.5; design
+// docs/design/payroll-disbursement.md 4.6, 6 R9/R10, 7.7-7.9, 8; tests
+// apps/api/src/test/payroll-payout-gl.test.ts).
+//
+// Money rules held here (nobody is paid twice, the PT does not lose):
+// - R10: the ledger is credited exactly once. Every `succeeded` item without a
+//   posting is settled by `settleBatchPayouts` under the batch advisory lock:
+//   one journal `payroll-payout:<item_set_hash>` (Dr salaries_payable / Cr the
+//   source account) for the group, one posting row, and every item of the group
+//   linked to it in the same transaction. The count of linked items must equal
+//   the count selected, else the whole transaction rolls back. A replay finds
+//   no unlinked item and posts nothing; the journal key and the unique
+//   `journal_key` of the posting are the second and third guard.
+// - R9: the bank fee is borne by the PT (Q15). It is its own journal
+//   `payroll-payout-fee:<item_set_hash>` (Dr bank_charges / Cr the source
+//   account), from the fee stored per item at export, for succeeded items only.
+//   It never reduces the salary payable or anyone's net pay. The fee is posted
+//   automatically (finance does not record it apart), so it is also posted
+//   when the salary journal is skipped, as long as accounting is on.
+// - A return (funds came back after success, 7.8) reverses the item's net
+//   exactly once: `payroll-payout-return:<itemId>` (Dr source account / Cr
+//   salaries_payable). It credits the account the batch's own settle journal
+//   used, not the account the config points at today. The fee is not
+//   refunded: the bank keeps it.
+// - A run without a locked journal (accounting switched on after the lock) has
+//   no payable to settle: the items are linked to a `settle_skipped` posting,
+//   no salary journal is posted, and the settle never retries.
+// - `payroll.paid` leaves the outbox once, when the run turned paid, with
+//   `settledPerItem: true`: the GL consumer posts nothing for it.
+//
+// Lock order: the run row, then the batch row (`loadBatchRunFirst`), then the
+// batch advisory lock. The caller's transaction is the unit: a throw rolls back
+// every row and every journal. Amounts are sealed; nothing here logs one.
+
+import { createHash, randomUUID } from "node:crypto";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import type { TenantId } from "@starter/shared/core";
+import { isModuleEnabled } from "@starter/shared/platform";
+import { payrollPaid, type PayrollRunType } from "@starter/shared/hris/payroll";
+import { bankAccounts } from "../db/schema/accounting-cash-bank.ts";
+import {
+  accountMappings,
+  journalEntries,
+  journalLines,
+  tenants,
+} from "../db/schema/index.ts";
+import { payrollRuns } from "../db/schema/payroll.ts";
+import {
+  payrollDisbursementItems,
+  payrollPayoutConfigs,
+  payrollPayoutGlPostings,
+  type PayoutPostingKind,
+} from "../db/schema/payroll-payout.ts";
+import { logger } from "../lib/logger.ts";
+import {
+  PAYROLL_SEAL_KEY_VERSION,
+  sealPayrollValue,
+} from "../lib/payroll-sealed.ts";
+import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
+import type { Tx } from "./hris-access.ts";
+import { payrollEntryDateOf, payrollGlKeys } from "./payroll-gl-consumer.ts";
+import { emitPayrollEvent } from "./payroll-events.ts";
+import {
+  loadBatchRunFirst,
+  openItemAmount,
+  openItemFee,
+  payoutRefuse,
+  payoutScope,
+  type BatchRow,
+  type ItemRow,
+  type PayoutActor as Actor,
+} from "./payroll-payout.service.ts";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export const payoutGlKeys = {
+  settle: (hash: string) => `payroll-payout:${hash}`,
+  fee: (hash: string) => `payroll-payout-fee:${hash}`,
+  return: (itemId: string) => `payroll-payout-return:${itemId}`,
+};
+
+export type SettleResult = {
+  /** The posting row of this call; null when nothing was waiting. */
+  postingId: string | null;
+  kind: PayoutPostingKind | null;
+  /** Items linked to a posting by this call. */
+  settled: number;
+};
+
+const itemSetHash = (itemIds: readonly string[]) =>
+  createHash("sha256")
+    .update([...itemIds].sort().join("\n"))
+    .digest("hex");
+
+/** Whole-rupiah amount of a sealed value; a tampered value throws. */
+function safeAmount(read: () => number): number {
+  const value = Number(read());
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw payoutRefuse(
+      422,
+      "PAYROLL_BANK_ACCOUNT_UNREADABLE",
+      "Data pembayaran tidak bisa dibaca, jurnal tidak diposting.",
+    );
+  return value;
+}
+
+/**
+ * The GL account of the company bank account a manual file is paid from, as
+ * the `bank` role override of the journal. Null for cash (the petty cash role).
+ */
+async function sourceBankOverride(
+  tx: Tx,
+  tenantId: TenantId,
+  batch: Pick<BatchRow, "channel" | "legalEntityId">,
+  options: { optional?: boolean } = {},
+): Promise<Partial<Record<"bank", string>> | undefined | null> {
+  if (batch.channel === "cash") return undefined;
+  const [row] = await tx
+    .select({ glAccountId: bankAccounts.glAccountId })
+    .from(payrollPayoutConfigs)
+    .innerJoin(
+      bankAccounts,
+      and(
+        eq(bankAccounts.tenantId, payrollPayoutConfigs.tenantId),
+        eq(bankAccounts.legalEntityId, payrollPayoutConfigs.legalEntityId),
+        eq(bankAccounts.id, payrollPayoutConfigs.manualSourceBankAccountId),
+      ),
+    )
+    .where(
+      and(
+        eq(payrollPayoutConfigs.tenantId, tenantId),
+        eq(payrollPayoutConfigs.legalEntityId, batch.legalEntityId),
+      ),
+    )
+    .limit(1);
+  // `optional`: the caller can go on without the account (answered with null).
+  if (!row && options.optional) return null;
+  if (!row)
+    throw payoutRefuse(
+      409,
+      "PAYOUT_CONFIG_DISABLED",
+      "Rekening sumber pembayaran gaji PT ini tidak ditemukan.",
+    );
+  return { bank: row.glAccountId };
+}
+
+/**
+ * The account the settle journal of a batch credited (the `bank` role it was
+ * posted with). A return must give back to that account even when the config
+ * has pointed at another bank account since.
+ */
+async function settledSourceAccount(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+  journalKey: string,
+): Promise<string> {
+  const [row] = await tx
+    .select({ accountId: journalLines.accountId })
+    .from(journalEntries)
+    .innerJoin(
+      journalLines,
+      and(
+        eq(journalLines.tenantId, journalEntries.tenantId),
+        eq(journalLines.entryId, journalEntries.id),
+      ),
+    )
+    .where(
+      and(
+        eq(journalEntries.tenantId, tenantId),
+        eq(journalEntries.legalEntityId, legalEntityId),
+        eq(journalEntries.idempotencyKey, journalKey),
+        sql`${journalLines.creditIdr} > 0`,
+      ),
+    )
+    .limit(1);
+  if (!row)
+    throw payoutRefuse(
+      409,
+      "PAYOUT_CONFIG_DISABLED",
+      "Jurnal pembayaran batch ini tidak ditemukan, pengembalian tidak diposting.",
+    );
+  return row.accountId;
+}
+
+async function accountingEnabled(tx: Tx, tenantId: TenantId): Promise<boolean> {
+  const [row] = await tx
+    .select({ featureFlags: tenants.featureFlags })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  return isModuleEnabled(row?.featureFlags ?? null, "accounting");
+}
+
+async function bankChargesMapped(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ accountId: accountMappings.accountId })
+    .from(accountMappings)
+    .where(
+      and(
+        eq(accountMappings.tenantId, tenantId),
+        eq(accountMappings.legalEntityId, legalEntityId),
+        eq(accountMappings.role, "bank_charges"),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+async function runHasLockedJournal(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: string,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: journalEntries.id })
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, tenantId),
+        eq(journalEntries.idempotencyKey, payrollGlKeys.locked(runId)),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
+ * Settles every `succeeded` item of the batch that has no posting yet.
+ * Idempotent and safe to call from confirm, cash handover, return and replay:
+ * a second call (also a concurrent one, after it waited on the lock) finds
+ * nothing to do.
+ */
+export async function settleBatchPayouts(
+  tx: Tx,
+  actor: Actor,
+  batchId: string,
+  now = new Date(),
+): Promise<SettleResult> {
+  const tenantId = actor.tenantId as TenantId;
+  const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`payroll-payout-gl:${tenantId}:${batch.id}`}))`,
+  );
+  const items = await tx
+    .select()
+    .from(payrollDisbursementItems)
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, tenantId),
+        eq(payrollDisbursementItems.batchId, batch.id),
+        eq(payrollDisbursementItems.status, "succeeded"),
+        isNull(payrollDisbursementItems.glPostingId),
+      ),
+    )
+    .orderBy(asc(payrollDisbursementItems.id))
+    .for("update");
+  if (items.length === 0) return { postingId: null, kind: null, settled: 0 };
+
+  let netIdr = 0;
+  let feeIdr = 0;
+  for (const item of items) {
+    netIdr += safeAmount(() => openItemAmount(item));
+    // Cash has no bank fee; the manual file's fee was stored per item.
+    if (item.channel === "manual_bank")
+      feeIdr += safeAmount(() => openItemFee(item));
+  }
+  const hash = itemSetHash(items.map((item) => item.id));
+  const journalKey = payoutGlKeys.settle(hash);
+  const journaled =
+    netIdr > 0 && (await runHasLockedJournal(tx, tenantId, batch.payrollRunId));
+  const kind: PayoutPostingKind = journaled ? "settle" : "settle_skipped";
+
+  // The fee is real money the PT paid, whether or not the salary journal
+  // applies. With the salary journal a missing mapping fails closed (the
+  // posting throws). Without it (settle_skipped) the fee is posted only when
+  // accounting is on and both accounts exist: a real payment confirmation is
+  // never blocked by the fee, the skip is logged instead.
+  let feeJournaled = feeIdr > 0 && journaled;
+  if (feeIdr > 0 && !journaled && (await accountingEnabled(tx, tenantId))) {
+    feeJournaled =
+      (await bankChargesMapped(tx, tenantId, batch.legalEntityId)) &&
+      (await sourceBankOverride(tx, tenantId, batch, { optional: true })) !==
+        null;
+    if (!feeJournaled)
+      logger.warn(
+        { tenantId, batchId: batch.id, reason: "fee_skipped_no_mapping" },
+        "payout fee not posted: bank charges mapping or source account missing",
+      );
+  }
+  if (journaled || feeJournaled) {
+    const context = payoutScope(actor.tenantId);
+    const entryDate = payrollEntryDateOf(now.toISOString());
+    const accountOverrides =
+      (await sourceBankOverride(tx, tenantId, batch)) ?? undefined;
+    if (journaled)
+      await postJournalFromRuleInTransaction(
+        tx,
+        context,
+        {
+          eventName: "payroll.paid",
+          variant: batch.channel === "cash" ? "payout_cash" : "payout_bank",
+          amounts: { netIdr },
+          legalEntityId: batch.legalEntityId,
+          outletId: null,
+          entryDate,
+          sourceId: batch.payrollRunId,
+          postedBy: null,
+          idempotencyKey: journalKey,
+          accountOverrides,
+        },
+        now,
+      );
+    if (feeJournaled)
+      await postJournalFromRuleInTransaction(
+        tx,
+        context,
+        {
+          eventName: "payroll.paid",
+          variant: "payout_fee",
+          amounts: { feeIdr },
+          legalEntityId: batch.legalEntityId,
+          outletId: null,
+          entryDate,
+          sourceId: batch.payrollRunId,
+          postedBy: null,
+          idempotencyKey: payoutGlKeys.fee(hash),
+          accountOverrides,
+        },
+        now,
+      );
+  }
+
+  const postingId = randomUUID();
+  await tx.insert(payrollPayoutGlPostings).values({
+    id: postingId,
+    tenantId,
+    batchId: batch.id,
+    kind,
+    itemSetHash: hash,
+    journalKey,
+    totalEncrypted: sealPayrollValue(
+      JSON.stringify({ netIdr, feeIdr, itemCount: items.length }),
+      {
+        tenantId,
+        table: "payroll_payout_gl_postings",
+        rowId: postingId,
+        field: "total",
+      },
+      PAYROLL_SEAL_KEY_VERSION,
+    ),
+    piiKeyVersion: PAYROLL_SEAL_KEY_VERSION,
+    postedAt: now,
+  });
+  const linked = await tx
+    .update(payrollDisbursementItems)
+    .set({ glPostingId: postingId })
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, tenantId),
+        eq(payrollDisbursementItems.batchId, batch.id),
+        inArray(
+          payrollDisbursementItems.id,
+          items.map((item) => item.id),
+        ),
+        eq(payrollDisbursementItems.status, "succeeded"),
+        isNull(payrollDisbursementItems.glPostingId),
+      ),
+    )
+    .returning({ id: payrollDisbursementItems.id });
+  // The linked count must equal the selected count: a short link would leave
+  // an item settled in the ledger that a later call settles again.
+  if (linked.length !== items.length)
+    throw payoutRefuse(
+      409,
+      "PAYOUT_BATCH_STATE_CHANGED",
+      "Status batch berubah saat diproses. Coba lagi.",
+    );
+  return { postingId, kind, settled: items.length };
+}
+
+/**
+ * Reverses the net of one returned item, once (key = the item). Posts nothing
+ * when the item was settled without a journal (`settle_skipped`). The caller
+ * has already moved the item to `returned` in the same transaction.
+ */
+export async function postPayoutReturn(
+  tx: Tx,
+  actor: Actor,
+  batch: BatchRow,
+  item: ItemRow,
+  now = new Date(),
+): Promise<void> {
+  const tenantId = actor.tenantId as TenantId;
+  if (item.glPostingId === null)
+    throw payoutRefuse(
+      409,
+      "PAYOUT_ITEM_NOT_CONFIRMABLE",
+      "Item ini belum dijurnal, jadi belum bisa dikembalikan.",
+    );
+  const [posting] = await tx
+    .select({
+      kind: payrollPayoutGlPostings.kind,
+      journalKey: payrollPayoutGlPostings.journalKey,
+    })
+    .from(payrollPayoutGlPostings)
+    .where(
+      and(
+        eq(payrollPayoutGlPostings.tenantId, tenantId),
+        eq(payrollPayoutGlPostings.id, item.glPostingId),
+      ),
+    )
+    .limit(1);
+  if (!posting || posting.kind !== "settle") return;
+  const netIdr = safeAmount(() => openItemAmount(item));
+  if (netIdr === 0) return;
+  const settledBank = await settledSourceAccount(
+    tx,
+    tenantId,
+    batch.legalEntityId,
+    posting.journalKey,
+  );
+  await postJournalFromRuleInTransaction(
+    tx,
+    payoutScope(actor.tenantId),
+    {
+      eventName: "payroll.paid",
+      variant: "payout_return",
+      amounts: { netIdr },
+      legalEntityId: batch.legalEntityId,
+      outletId: null,
+      entryDate: payrollEntryDateOf(now.toISOString()),
+      sourceId: batch.payrollRunId,
+      postedBy: null,
+      idempotencyKey: payoutGlKeys.return(item.id),
+      accountOverrides: { bank: settledBank },
+    },
+    now,
+  );
+}
+
+/**
+ * `payroll.paid` for a run that just turned paid by its items. Carries
+ * `settledPerItem: true`: the GL consumer posts nothing for it. `paidBy` is the
+ * last approver of the batch (CTO 14 Nov); a system identity without a UUID
+ * is sent as null.
+ */
+export async function emitPayoutRunPaid(
+  tx: Tx,
+  actor: Actor,
+  batch: Pick<BatchRow, "approvedBy" | "payrollRunId">,
+  now: Date,
+): Promise<void> {
+  const tenantId = actor.tenantId as TenantId;
+  const [run] = await tx
+    .select({
+      id: payrollRuns.id,
+      legalEntityId: payrollRuns.legalEntityId,
+      runType: payrollRuns.runType,
+      periodStart: payrollRuns.periodStart,
+      periodEnd: payrollRuns.periodEnd,
+      payDate: payrollRuns.payDate,
+      totals: payrollRuns.totals,
+    })
+    .from(payrollRuns)
+    .where(
+      and(
+        eq(payrollRuns.tenantId, tenantId),
+        eq(payrollRuns.id, batch.payrollRunId),
+      ),
+    );
+  // A locked run always carries its totals; without them there is nothing to
+  // announce (and the consumer would post nothing anyway).
+  if (!run || !run.totals) return;
+  const paidBy = batch.approvedBy ?? actor.userId;
+  await emitPayrollEvent(tx, payoutScope(actor.tenantId), payrollPaid, {
+    aggregateId: run.id,
+    actor: UUID.test(actor.userId)
+      ? { type: "user", id: actor.userId }
+      : { type: "system" },
+    payload: {
+      payrollRunId: run.id,
+      legalEntityId: run.legalEntityId,
+      runType: run.runType as PayrollRunType,
+      periodStart: run.periodStart,
+      periodEnd: run.periodEnd,
+      payDate: run.payDate,
+      netIdr: run.totals.netIdr,
+      bankTransferIdr: run.totals.bankTransferIdr,
+      cashIdr: run.totals.cashIdr,
+      bankTransferFileId: null,
+      paidBy: UUID.test(paidBy) ? paidBy : null,
+      paidAt: now.toISOString(),
+      settledPerItem: true,
+    },
+    now,
+  });
+}

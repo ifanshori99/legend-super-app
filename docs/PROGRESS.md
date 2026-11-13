@@ -5271,3 +5271,11 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gerbang: lint hijau (0 error, 2 warning lama); typecheck 49 dtk hijau; tes root `node --test tests/*.test.mjs` terarah 2851/2855 (4 gagal hanya "isolated database", lingkungan); `heavy pnpm run test` penuh 02:33-03:45 (72 mnt) exit 0: vitest 1082 berkas/17477 lulus/41 skip/16 todo, root 2884/2884; build hijau; e2e `legend-zueb.mock.spec.ts` 18/18 hijau.
 - Flake 654: `rotate-data-key`, `hris-leave-changed-event`, `platform-org-api` TEN-03/06 tidak muncul di run penuh (0 gagal). Bukti fix 654.
 - Belum: `legend-zy43` (tidak ada producer `receipt_run.reported` di edge). Rilis edge order ingest: deploy cloud dulu, baru edge.
+
+## 2026-11-14: 658 GL payout gaji + step-up bukti (ws/payroll-payout-gl, legend-wnkep.5, legend-f5n9y)
+
+- Selesai: jurnal per item payout (settle di bawah advisory lock batch, kunci `payroll-payout:<hash>`, item tertaut di transaksi sama), fee Rp5.000 ke beban bank (8101) otomatis dan tidak mengurangi gaji, jurnal return (kredit akun yang sama dengan jurnal settle), `payroll.paid` dengan `settledPerItem` tidak memposting di level run, `paid_by` = penyetuju batch. Migrasi 0534 (postings + kolom return + role `bank_charges`), 0536 (`mfa_challenge_verified_at`). Nomor sementara; merge train memetakan ulang.
+- f5n9y: kunci bukti harus `tenants/<tenantId>/payroll-payout/<batchId>/<file>` (`PAYOUT_EVIDENCE_INVALID`); confirm/resolve/confirm-cash minta password bila tantangan MFA bukan dari faktor lama atau lebih dari 15 menit (`REAUTH_REQUIRED`).
+- Review: architect K xhigh 2 ronde; 5 temuan diperbaiki dengan test.
+- Gerbang: tsc api + web hijau, 10 berkas test terarah (402 test) hijau, `db:generate` kosong, text-contract 11/11, prettier+eslint hijau.
+- Belum: rute HTTP `returnManualItems`; jurnal `overpaid`; fee yang dilewati karena mapping hilang (settle_skipped) hanya dilog; cek awal mapping `bank_charges` di approve/export.

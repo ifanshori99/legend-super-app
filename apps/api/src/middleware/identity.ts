@@ -15,6 +15,11 @@
 //   rule and no platform session policy: a tenant approver may sign in by any
 //   method, but must hold a factor.
 //
+// - requireTenantStepUpPassword: payout confirm, resolve and cash handover. Mount
+//   AFTER jsonBody and requireTenantStepUpMfa. When `mfa_verified_at` may only
+//   come from the first MFA enrollment (no code or passkey was ever checked in
+//   this session), the body's `password` must be the account password.
+//
 // The first two use the same session policy: a guarded surface makes the session
 // management, so it ends after 30 idle minutes (§3 F6 "Sesi & Perangkat").
 
@@ -26,6 +31,7 @@ import {
 } from "@starter/shared/access";
 import { getAuth } from "./auth";
 import { HttpError } from "../lib/http-error";
+import { assertPayoutReauth } from "../services/payroll-payout-evidence";
 import {
   assertSurfaceFacts,
   denySurfaceAccessFacts,
@@ -152,6 +158,35 @@ export function requireTenantStepUpMfa(
     const age = now.getTime() - row.mfaVerifiedAt.getTime();
     if (!(age >= 0 && age <= maxAgeMs))
       throw new AccessError("REAUTH_REQUIRED");
+    next();
+  };
+}
+
+/**
+ * Password step-up for a payout money action (legend-658, L5). Reads
+ * `req.body.password`, so mount it after `jsonBody`. A session that passed a
+ * real second-factor challenge goes through without a password; one whose MFA
+ * stamp comes from enrollment alone needs it (401 REAUTH_REQUIRED when absent,
+ * 403 REAUTH_PASSWORD_INVALID when wrong). The route schema, not this
+ * middleware, validates the rest of the body.
+ */
+export function requireTenantStepUpPassword(
+  options: { readonly now?: Clock } = {},
+): RequestHandler {
+  const clock = options.now ?? (() => new Date());
+  return async (req, _res, next) => {
+    const auth = getAuth(req);
+    const body: unknown = req.body;
+    const password =
+      body !== null && typeof body === "object"
+        ? (body as { password?: unknown }).password
+        : undefined;
+    await assertPayoutReauth({
+      userId: auth.user.id,
+      sessionId: auth.session.id,
+      password: typeof password === "string" ? password : undefined,
+      now: clock(),
+    });
     next();
   };
 }

@@ -230,6 +230,8 @@ export const POSTING_ACCOUNT_ROLES = {
   pph21_borne_expense: "expense",
   bpjs_expense: "expense",
   gateway_fee_expense: "expense",
+  /** Bank fee of a payroll transfer, borne by the company (Q15, bead legend-658). */
+  bank_charges: "expense",
   depreciation_expense: "expense",
   service_expense: "expense",
   cash_over_short: "expense",
@@ -566,7 +568,13 @@ const standardRows: Row[] = [
     ["deposit_forfeit_income"],
   ],
   ["8100", "Beban Lain-lain", "other_expense", null],
-  ["8101", "Beban Administrasi Bank", "other_expense", "8100"],
+  [
+    "8101",
+    "Beban Administrasi Bank",
+    "other_expense",
+    "8100",
+    ["bank_charges"],
+  ],
   [
     "8102",
     "Rugi Revaluasi Aset Tetap",

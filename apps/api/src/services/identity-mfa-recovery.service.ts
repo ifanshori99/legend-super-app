@@ -48,6 +48,7 @@ import {
 } from "../lib/mfa-recovery-code";
 import { MAX_MFA_ATTEMPTS, MFA_LOCK_MINUTES } from "../lib/mfa-policy";
 import { recordAudit } from "./core-audit";
+import { challengeStampValue } from "./identity-step-up-stamp";
 
 const recoveryLog = logger.child({ module: "identity-mfa-recovery" });
 
@@ -355,7 +356,10 @@ export async function verifyMfaRecoveryCode(input: {
     // be marked verified for someone else.
     const marked = await tx
       .update(session)
-      .set({ mfaVerifiedAt: now })
+      .set({
+        mfaVerifiedAt: now,
+        mfaChallengeVerifiedAt: challengeStampValue(set.createdAt, now),
+      })
       .where(
         and(
           eq(session.id, input.sessionId),

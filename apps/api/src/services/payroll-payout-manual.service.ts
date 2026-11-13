@@ -22,7 +22,16 @@
 //   can never make a paid slip payable again.
 // - A run turns `paid` only when every payslip with net pay above zero has a
 //   succeeded item (R10). The transition sets `app.payout_settle` for its own
-//   statement only. No `payroll.paid` event here (that is legend-wnkep.5).
+//   statement only. `paid_by` is the last approver of the batch (CTO 14 Nov);
+//   the person who confirmed stays on the item (`confirmed_by`).
+// - Every confirmed item is journaled exactly once by `settleBatchPayouts` in
+//   the same transaction (payroll-payout-gl.service.ts), and a run that turned
+//   paid emits `payroll.paid` with `settledPerItem: true` (legend-658).
+// - A paid item whose funds come back moves `succeeded -> returned` only after
+//   two different non-requesters agree (`returnManualItems`); the return is
+//   journaled once.
+// - A payment-proof key must name an object of this tenant's batch folder
+//   (`assertEvidenceKeyForBatch`), checked before any row is written.
 //
 // Lock order: the run row, then the batch row (`loadBatchRunFirst`), same as
 // create, submit and approve. Account numbers are never
@@ -49,6 +58,15 @@ import {
 import { openPayrollValue } from "../lib/payroll-sealed.ts";
 import type { Tx } from "./hris-access.ts";
 import { openPayeeBankSnapshot } from "./payroll-bank-snapshot.service.ts";
+import {
+  emitPayoutRunPaid,
+  postPayoutReturn,
+  settleBatchPayouts,
+} from "./payroll-payout-gl.service.ts";
+import {
+  assertEvidenceKeyForBatch,
+  assertOptionalEvidenceKeyForBatch,
+} from "./payroll-payout-evidence.ts";
 import {
   computeBatchContentHash,
   loadBatchRunFirst,
@@ -79,6 +97,12 @@ export type ManualConfirmInput = {
 export type ManualResolveInput = {
   itemIds: string[];
   outcome: "failed" | "not_sent";
+  evidenceKey: string;
+  note: string;
+};
+
+export type ManualReturnInput = {
+  itemIds: string[];
   evidenceKey: string;
   note: string;
 };
@@ -404,13 +428,15 @@ function readSlipNet(row: {
  * R10: the run becomes `paid` only when every payslip with net pay above zero
  * has a succeeded item. A payslip that cannot be read counts as unpaid (fail
  * closed: it blocks `paid`, it never pays anyone). Returns true when the run
- * turned paid in this call. The caller holds the batch lock.
+ * turned paid in this call. The caller holds the batch lock. `paidBy` is the
+ * last approver of the batch, not the person who confirmed.
  */
 async function settleRunWhenAllPaid(
   tx: Tx,
   actor: Actor,
   runId: PayrollRunId,
   now: Date,
+  paidBy: string,
 ): Promise<boolean> {
   const tenantId = actor.tenantId as TenantId;
   const [run] = await tx
@@ -459,7 +485,7 @@ async function settleRunWhenAllPaid(
       .set({
         status: "paid",
         paidAt: now,
-        paidBy: actor.userId as UserId,
+        paidBy: paidBy as UserId,
         updatedAt: now,
       })
       .where(
@@ -519,6 +545,28 @@ async function closeBatchWhenDone(
   return next;
 }
 
+/**
+ * After items became `succeeded`: journal them (once), then turn the run paid
+ * when every payslip is paid and announce it. Same transaction as the caller.
+ */
+async function settleAndMaybePay(
+  tx: Tx,
+  actor: Actor,
+  batch: BatchRow,
+  now: Date,
+): Promise<boolean> {
+  await settleBatchPayouts(tx, actor, batch.id, now);
+  const runPaid = await settleRunWhenAllPaid(
+    tx,
+    actor,
+    batch.payrollRunId,
+    now,
+    batch.approvedBy ?? actor.userId,
+  );
+  if (runPaid) await emitPayoutRunPaid(tx, actor, batch, now);
+  return runPaid;
+}
+
 function assertNotRequester(batch: BatchRow, actor: Actor): void {
   if (batch.requestedBy === actor.userId)
     throw refuse(
@@ -566,7 +614,9 @@ async function loadItemsForConfirm(
       "PAYOUT_ITEM_NOT_CONFIRMABLE",
       expected === "exported"
         ? "Ada item yang belum diunduh atau sudah dikonfirmasi."
-        : "Ada item yang belum disetujui atau sudah diserahkan.",
+        : expected === "succeeded"
+          ? "Ada item yang belum dibayar atau sudah dikembalikan."
+          : "Ada item yang belum disetujui atau sudah diserahkan.",
     );
   return rows;
 }
@@ -621,6 +671,16 @@ export async function confirmManualItems(
     if ((result.evidenceKey ?? "").length > 500)
       throw refuse(422, "PAYOUT_ITEMS_INVALID", "Kunci bukti terlalu panjang.");
   }
+  // Each proof key must lie in this tenant's folder of this batch (L5).
+  const evidenceByItem = new Map(
+    input.results.map((result) => [
+      result.itemId,
+      assertOptionalEvidenceKeyForBatch(
+        { tenantId: actor.tenantId, batchId: batch.id },
+        result.evidenceKey,
+      ),
+    ]),
+  );
   await loadItemsForConfirm(
     tx,
     tenantId,
@@ -638,7 +698,7 @@ export async function confirmManualItems(
         settledAt: now,
         confirmedBy: actor.userId as UserId,
         confirmationRef: result.bankRef?.trim() || null,
-        confirmationEvidenceKey: result.evidenceKey?.trim() || null,
+        confirmationEvidenceKey: evidenceByItem.get(result.itemId) ?? null,
         updatedAt: now,
       })
       .where(
@@ -660,12 +720,7 @@ export async function confirmManualItems(
   }
 
   const closed = await closeBatchWhenDone(tx, tenantId, batch, "exported", now);
-  const runPaid = await settleRunWhenAllPaid(
-    tx,
-    actor,
-    batch.payrollRunId,
-    now,
-  );
+  const runPaid = await settleAndMaybePay(tx, actor, batch, now);
   await auditBatch(
     tx,
     actor,
@@ -726,9 +781,9 @@ export async function resolveManualItems(
       "PAYOUT_ITEMS_INVALID",
       "Hasil penyelesaian tidak dikenal.",
     );
-  const evidence = input.evidenceKey.trim();
+  const evidenceInput = input.evidenceKey.trim();
   const note = input.note.trim();
-  if (evidence === "" || evidence.length > 500)
+  if (evidenceInput === "" || evidenceInput.length > 500)
     throw refuse(
       422,
       "PAYOUT_EVIDENCE_REQUIRED",
@@ -740,6 +795,11 @@ export async function resolveManualItems(
       "PAYOUT_NOTE_REQUIRED",
       "Catatan wajib diisi (maks 500 karakter).",
     );
+  // Both steps: the proof lies in this tenant's folder of this batch (L5).
+  const evidence = assertEvidenceKeyForBatch(
+    { tenantId: actor.tenantId, batchId: batch.id },
+    evidenceInput,
+  );
   const rows = await loadItemsForConfirm(
     tx,
     tenantId,
@@ -836,6 +896,137 @@ export async function resolveManualItems(
 }
 
 /**
+ * Funds came back after a paid transfer (design 7.8): moves `succeeded` items
+ * to `returned` and reverses their net in the ledger, once. Same two-person
+ * rule as `resolveManualItems`: step one, by a non-requester, records the
+ * evidence and note and the item stays `succeeded` (no journal); step two, by
+ * a DIFFERENT non-requester, moves the item and posts the return journal
+ * (`payroll-payout-return:<itemId>`). The database trigger repeats the rule.
+ * A returned item frees its payslip for a new payment (R7), the run stays
+ * `paid`, and the bank fee is not refunded.
+ */
+export async function returnManualItems(
+  tx: Tx,
+  actor: Actor,
+  batchId: string,
+  input: ManualReturnInput,
+  now = new Date(),
+): Promise<{
+  batchStatus: BatchRow["status"];
+  /** Items returned by this call (second step). */
+  returned: number;
+  /** Items that only got a first proposal in this call. */
+  proposed: number;
+}> {
+  const tenantId = actor.tenantId as TenantId;
+  const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
+  if (batch.channel !== "manual_bank")
+    throw refuse(
+      409,
+      "PAYOUT_CHANNEL_MISMATCH",
+      "Pengembalian dana hanya untuk transfer bank manual.",
+    );
+  assertNotRequester(batch, actor);
+  const note = input.note.trim();
+  if (note === "" || note.length > 500)
+    throw refuse(
+      422,
+      "PAYOUT_NOTE_REQUIRED",
+      "Catatan wajib diisi (maks 500 karakter).",
+    );
+  const evidence = assertEvidenceKeyForBatch(
+    { tenantId: actor.tenantId, batchId: batch.id },
+    input.evidenceKey,
+  );
+  // Every succeeded item has its posting before it can come back.
+  await settleBatchPayouts(tx, actor, batch.id, now);
+  const rows = await loadItemsForConfirm(
+    tx,
+    tenantId,
+    batch,
+    input.itemIds,
+    "succeeded",
+  );
+  for (const row of rows) {
+    if (row.returnedBy === null) continue;
+    if (row.returnedBy === actor.userId)
+      throw refuse(
+        403,
+        "PAYOUT_RETURN_SAME_PERSON",
+        "Pengembalian kedua harus dilakukan orang lain, bukan orang yang mengajukan pengembalian pertama.",
+      );
+  }
+
+  let returned = 0;
+  let proposed = 0;
+  for (const row of rows) {
+    const secondStep = row.returnedBy !== null;
+    const updated = secondStep
+      ? await tx
+          .update(payrollDisbursementItems)
+          .set({
+            returnedBy2: actor.userId as UserId,
+            status: "returned",
+            returnedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(payrollDisbursementItems.tenantId, tenantId),
+              eq(payrollDisbursementItems.batchId, batch.id),
+              eq(payrollDisbursementItems.id, row.id),
+              eq(payrollDisbursementItems.status, "succeeded"),
+              eq(payrollDisbursementItems.returnedBy, row.returnedBy!),
+              isNull(payrollDisbursementItems.returnedBy2),
+            ),
+          )
+          .returning({ id: payrollDisbursementItems.id })
+      : await tx
+          .update(payrollDisbursementItems)
+          .set({
+            returnedBy: actor.userId as UserId,
+            returnEvidenceKey: evidence,
+            returnNote: note,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(payrollDisbursementItems.tenantId, tenantId),
+              eq(payrollDisbursementItems.batchId, batch.id),
+              eq(payrollDisbursementItems.id, row.id),
+              eq(payrollDisbursementItems.status, "succeeded"),
+              isNull(payrollDisbursementItems.returnedBy),
+            ),
+          )
+          .returning({ id: payrollDisbursementItems.id });
+    if (updated.length !== 1)
+      throw refuse(
+        409,
+        "PAYOUT_ITEM_NOT_CONFIRMABLE",
+        "Ada item yang belum dibayar atau sudah dikembalikan.",
+      );
+    if (secondStep) {
+      await postPayoutReturn(tx, actor, batch, row, now);
+      returned += 1;
+    } else proposed += 1;
+  }
+  await auditBatch(
+    tx,
+    actor,
+    "payroll.disbursement.manual_returned",
+    batch,
+    { status: batch.status },
+    {
+      status: batch.status,
+      itemCount: rows.length,
+      resolved: returned,
+      evidenceKey: evidence,
+    },
+  );
+  return { batchStatus: batch.status, returned, proposed };
+}
+
+/**
  * Cash handover: approved cash items become `succeeded` once a person other
  * than the requester confirms the money was handed over. The batch closes when
  * every item is handed over.
@@ -871,9 +1062,12 @@ export async function confirmCashHandover(
       "PAYOUT_APPROVAL_EXPIRED",
       "Persetujuan batch sudah lewat 24 jam. Batalkan batch dan buat yang baru.",
     );
-  const evidence = input.evidenceKey?.trim() || null;
-  if ((evidence ?? "").length > 500)
+  if ((input.evidenceKey?.trim() ?? "").length > 500)
     throw refuse(422, "PAYOUT_ITEMS_INVALID", "Kunci bukti terlalu panjang.");
+  const evidence = assertOptionalEvidenceKeyForBatch(
+    { tenantId: actor.tenantId, batchId: batch.id },
+    input.evidenceKey,
+  );
   await loadItemsForConfirm(tx, tenantId, batch, input.itemIds, "approved");
 
   const updated = await tx
@@ -902,12 +1096,7 @@ export async function confirmCashHandover(
       "Ada item yang belum disetujui atau sudah diserahkan.",
     );
   const closed = await closeBatchWhenDone(tx, tenantId, batch, "approved", now);
-  const runPaid = await settleRunWhenAllPaid(
-    tx,
-    actor,
-    batch.payrollRunId,
-    now,
-  );
+  const runPaid = await settleAndMaybePay(tx, actor, batch, now);
   await auditBatch(
     tx,
     actor,
