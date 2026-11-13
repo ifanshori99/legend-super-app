@@ -52,6 +52,14 @@ export const DATA_IMPORT_SOURCES = {
     beforeWrite: "withTenant(",
     description: "Menu CSV/spreadsheet upload committed by commitMenuImport.",
   },
+  "payment-settlement.import": {
+    classification: "deployment",
+    file: "apps/api/src/services/payment-settlement-import.service.ts",
+    entry: "export async function importSettlement(",
+    beforeWrite: "withTenant(",
+    description:
+      "Gateway and EDC bank settlement report upload committed by importSettlement.",
+  },
   "seed.dev-tenant": {
     classification: "synthetic",
     modes: ["development"],

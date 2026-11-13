@@ -630,6 +630,46 @@ describe("guardDataImport behaviour", () => {
       });
   });
 
+  describe("payment-settlement.import (classification follows the deployment)", () => {
+    const allowed: [DeploymentMode, DataClassification][] = [
+      ["development", "synthetic"],
+      ["staging", "synthetic"],
+      ["production", "real"],
+      ["production", "synthetic"],
+    ];
+    const blocked: [DeploymentMode, DataClassification][] = [
+      ["staging", "real"],
+      ["development", "real"],
+    ];
+
+    for (const [mode, classification] of allowed)
+      it(`passes in ${mode} with ${classification} data`, () => {
+        expect(() =>
+          guardDataImport(
+            "payment-settlement.import",
+            deployment(mode, classification),
+          ),
+        ).not.toThrow();
+      });
+
+    for (const [mode, classification] of blocked)
+      it(`throws DataImportBlockedError (403) in ${mode} with ${classification} data`, () => {
+        try {
+          guardDataImport(
+            "payment-settlement.import",
+            deployment(mode, classification),
+          );
+          expect.unreachable("guard should have thrown");
+        } catch (error) {
+          expect(error).toBeInstanceOf(DataImportBlockedError);
+          expect((error as DataImportBlockedError).status).toBe(403);
+          expect((error as DataImportBlockedError).sourceId).toBe(
+            "payment-settlement.import",
+          );
+        }
+      });
+  });
+
   it("throws DataImportBlockedError carrying the source id", () => {
     try {
       guardDataImport("menu-import.commit", deployment("staging", "real"));

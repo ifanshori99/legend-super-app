@@ -18,6 +18,7 @@ import {
   importSettlement as importEndpoint,
   settlementImportViewSchema,
 } from "@starter/shared/payment/admin";
+import { guardDataImport } from "../config/data-import.ts";
 import { db } from "../db/index.ts";
 import { edcTransactions } from "../db/schema/edc.ts";
 import {
@@ -226,6 +227,8 @@ export async function importSettlement(
   key: string,
 ) {
   assertTrustedScopedContext(context);
+  // Data import guard: classify the upload before any write.
+  guardDataImport("payment-settlement.import");
   const input = importEndpoint.body.parse(body);
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx) => {
