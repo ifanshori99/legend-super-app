@@ -660,18 +660,36 @@ export async function recordReceipt(
           ),
         );
     else
-      await tx.insert(panicAlertDeliveries).values({
-        tenantId: session.tenantId as TenantId,
-        outletId: session.outletId as OutletId,
-        alertId,
-        sessionId: session.id,
-        userId: session.userId,
-        receivedAt: now,
-      });
+      // Upsert, not a plain insert: `sendFrame` sends the frame before it
+      // records the send, so the receipt can race that insert. A plain insert
+      // then hit the unique key, the receipt was lost and delivered_count
+      // stayed one short (flake EM-01 Q95).
+      await tx
+        .insert(panicAlertDeliveries)
+        .values({
+          tenantId: session.tenantId as TenantId,
+          outletId: session.outletId as OutletId,
+          alertId,
+          sessionId: session.id,
+          userId: session.userId,
+          receivedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [
+            panicAlertDeliveries.tenantId,
+            panicAlertDeliveries.alertId,
+            panicAlertDeliveries.sessionId,
+          ],
+          set: {
+            receivedAt: sql`COALESCE(${panicAlertDeliveries.receivedAt}, ${now.toISOString()}::timestamptz)`,
+          },
+        });
     await tx
       .update(panicAlerts)
       .set({
-        deliveredCount: sql`${panicAlerts.deliveredCount} + 1`,
+        // Counted from the receipt rows (same transaction, alert row locked):
+        // a blind +1 could drift from the rows if a receipt were ever skipped.
+        deliveredCount: sql`(SELECT count(*)::int FROM panic_alert_deliveries WHERE tenant_id = ${session.tenantId}::uuid AND alert_id = ${alertId}::uuid AND received_at IS NOT NULL)`,
         firstDeliveredAt: sql`COALESCE(${panicAlerts.firstDeliveredAt}, ${now.toISOString()}::timestamptz)`,
       })
       .where(

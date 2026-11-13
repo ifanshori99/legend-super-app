@@ -17,6 +17,7 @@ import { db } from "../db/index.ts";
 import { panicAlerts } from "../db/schema/panic-alert.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { queuePanicAlertResolvedToEdge } from "./panic-alert-outbox.ts";
 
 export type PanicAlertDto = {
   id: string;
@@ -140,7 +141,12 @@ export async function acknowledgeEmergencyAlert(
   });
 }
 
-/** Closes the incident with a note; acknowledges too when nobody did. */
+/**
+ * Closes the incident with a note; acknowledges too when nobody did. On the
+ * same transaction it queues `panic_alert.resolved` cloud -> edge (only when
+ * the resolve changed the alert and the outlet has an active edge node), so the
+ * edge stops the resend and the POS banner.
+ */
 export async function resolveEmergencyAlert(
   context: ScopedTenantContext,
   outletId: string,
@@ -174,6 +180,17 @@ export async function resolveEmergencyAlert(
         ),
       )
       .returning();
+    await queuePanicAlertResolvedToEdge(tx, context, {
+      outletId,
+      alertId,
+      now,
+      payload: {
+        alertId,
+        resolvedBy: userId,
+        resolvedAt: toIsoDateTime(now),
+        resolutionNote: note,
+      },
+    });
     return toDto(updated!);
   });
 }

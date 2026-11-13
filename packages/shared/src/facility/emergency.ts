@@ -221,11 +221,29 @@ export const panicAlertAcknowledgedEvent = defineDomainEvent({
   }),
 });
 
+/**
+ * Cloud to edge (direction `cloud_to_edge`, aggregate `panic_alert`): a manager
+ * closed the incident in the cloud. The edge closes its copy: no resend, no POS
+ * fallback banner. Set-once on the edge; a replay changes nothing. Resolve also
+ * counts as an acknowledgement when the alert had none (D-07).
+ */
+export const panicAlertResolvedEvent = defineDomainEvent({
+  name: "panic_alert.resolved",
+  payload: z.strictObject({
+    alertId: panicAlertIdSchema,
+    resolvedBy: userIdSchema,
+    /** Cloud clock. */
+    resolvedAt: isoDateTimeSchema,
+    resolutionNote: z.string().max(500).nullable(),
+  }),
+});
+
 export const panicAlertEvents = {
   raised: panicAlertRaisedEvent,
   pressed: panicAlertPressedEvent,
   delivered: panicAlertDeliveredEvent,
   acknowledged: panicAlertAcknowledgedEvent,
+  resolved: panicAlertResolvedEvent,
 } as const;
 
 export const PANIC_ALERT_AGGREGATE_TYPE = "panic_alert";

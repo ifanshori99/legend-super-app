@@ -14,8 +14,9 @@
 // existing alert, counters only go up, the acknowledgement is set once. The
 // link orders one stream, and a standby continues the primary's sequences, so
 // the link accepts any aggregate sequence (as access-applier.ts) and these
-// handlers keep the state correct themselves. The cloud never sends panic
-// events back to the edge.
+// handlers keep the state correct themselves. The one event the cloud sends
+// back is `panic_alert.resolved` (a manager closed the incident): the edge
+// handler below closes its copy, see applyResolved.
 import { and, eq, sql } from "drizzle-orm";
 import {
   CoreError,
@@ -34,6 +35,7 @@ import {
   panicAlertDeliveredEvent,
   panicAlertPressedEvent,
   panicAlertRaisedEvent,
+  panicAlertResolvedEvent,
 } from "@starter/shared/facility";
 import { devices } from "../db/schema/device.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
@@ -433,6 +435,88 @@ async function applyAcknowledged(
 }
 
 /**
+ * Edge side of the cloud -> edge `panic_alert.resolved` (G2). A manager closed
+ * the incident in the cloud: the edge stores `resolved_*` set once, and counts
+ * the resolve as the acknowledgement when nobody acknowledged (D-07; no ack
+ * device). An acknowledged alert leaves the open-alert reads, so the resend
+ * loop stops, the POS fallback drops it and a socket that connects later never
+ * gets it. A replay changes nothing. An alert the edge does not know is
+ * ignored with an `edge_sync_conflicts` row (the edge is the only writer of
+ * alerts, so this only happens when its database was lost).
+ */
+async function applyResolved(
+  tx: EdgeTx,
+  event: EventEnvelope,
+  meta: EdgeApplyMeta,
+): Promise<void> {
+  if (meta.direction !== "cloud_to_edge")
+    throw new CoreError(
+      "FORBIDDEN",
+      "panic_alert.resolved is only accepted from the cloud",
+    );
+  const parsed = panicAlertResolvedEvent.payloadSchema.safeParse(event.payload);
+  if (!parsed.success)
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Invalid panic_alert.resolved payload",
+    );
+  const payload = parsed.data;
+  const tenantId = meta.context.tenant.tenantId;
+  const outletId = event.outletId;
+  if (event.tenantId !== tenantId)
+    throw new CoreError("FORBIDDEN", "Event tenant does not match the context");
+  if (!outletId || !isOutletInScope(meta.context.outletScope, outletId))
+    throw new CoreError("FORBIDDEN", "Event outlet is outside the node scope");
+  if (
+    event.aggregateType !== PANIC_ALERT_AGGREGATE_TYPE ||
+    event.aggregateId !== payload.alertId
+  )
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Event does not match its panic alert",
+    );
+  const [alert] = await tx
+    .select({ outletId: panicAlerts.outletId })
+    .from(panicAlerts)
+    .where(
+      and(
+        eq(panicAlerts.tenantId, tenantId),
+        eq(panicAlerts.id, payload.alertId),
+      ),
+    );
+  if (!alert) {
+    await recordUnknownRef(
+      tx,
+      event,
+      meta,
+      outletId,
+      "The resolved alert is not known on the edge",
+    );
+    return;
+  }
+  if (alert.outletId !== outletId)
+    throw new CoreError("FORBIDDEN", "Alert belongs to another outlet");
+  const resolvedAt = new Date(payload.resolvedAt);
+  // COALESCE keeps every set-once column as it is: the first resolve and the
+  // first acknowledgement (edge or cloud) win, a replay writes the same values.
+  await tx
+    .update(panicAlerts)
+    .set({
+      resolvedAt: sql`COALESCE(${panicAlerts.resolvedAt}, ${resolvedAt}::timestamptz)`,
+      resolvedBy: sql`COALESCE(${panicAlerts.resolvedBy}, ${payload.resolvedBy})`,
+      resolutionNote: sql`CASE WHEN ${panicAlerts.resolvedAt} IS NULL THEN ${payload.resolutionNote}::varchar ELSE ${panicAlerts.resolutionNote} END`,
+      acknowledgedAt: sql`COALESCE(${panicAlerts.acknowledgedAt}, ${resolvedAt}::timestamptz)`,
+      acknowledgedBy: sql`COALESCE(${panicAlerts.acknowledgedBy}, ${payload.resolvedBy})`,
+    })
+    .where(
+      and(
+        eq(panicAlerts.tenantId, tenantId),
+        eq(panicAlerts.id, payload.alertId),
+      ),
+    );
+}
+
+/**
  * The link accepts any aggregate sequence of `panic_alert` (see the header):
  * its default would also count the sender's own queue, which a database that
  * is both edge and cloud (the tests, a promoted standby) would read as a
@@ -442,8 +526,9 @@ const acceptIncomingSequence: EdgeLastSequenceHook = async (_tx, aggregate) =>
   aggregate.sequence === undefined ? null : aggregate.sequence - 1;
 
 /**
- * Cloud boot (registerEdgeLink): routes the four edge `panic_alert.*` events
- * to their handlers and classifies the aggregate as an append-only transaction
+ * Boot (registerEdgeLink, edge runtime): routes the four edge `panic_alert.*`
+ * events (cloud) and the cloud's `panic_alert.resolved` (edge) to their
+ * handlers and classifies the aggregate as an append-only transaction
  * event. Idempotent.
  */
 export function registerPanicAlertEdgeApplier(): void {
@@ -467,9 +552,22 @@ export function registerPanicAlertEdgeApplier(): void {
     panicAlertAcknowledgedEvent.name,
     applyAcknowledged,
   );
+  registerEdgeEventHandler(
+    "cloud_to_edge",
+    panicAlertResolvedEvent.name,
+    applyResolved,
+  );
   registerEdgeAggregateKind(PANIC_ALERT_AGGREGATE_TYPE, "transaction_event");
   registerEdgeAggregateLastSequence(
     "edge_to_cloud",
+    PANIC_ALERT_AGGREGATE_TYPE,
+    acceptIncomingSequence,
+  );
+  // The edge already holds its own `raised` (sequence 1 and up, edge_to_cloud)
+  // of the same alert: the default would count that queue and read the cloud's
+  // first `resolved` (sequence 1) as a collision.
+  registerEdgeAggregateLastSequence(
+    "cloud_to_edge",
     PANIC_ALERT_AGGREGATE_TYPE,
     acceptIncomingSequence,
   );

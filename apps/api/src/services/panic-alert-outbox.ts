@@ -7,7 +7,8 @@
 // Aggregate `panic_alert`, aggregate id = alert id. `raised` is sequence 1; the
 // next sequence is read under a row lock on the alert, so two writers (press
 // fold, receipt batch, acknowledge) cannot take the same number. Resolve is
-// cloud-only and is never queued from here.
+// cloud-only: it travels cloud -> edge through `queuePanicAlertResolvedToEdge`,
+// a separate stream with its own sequence, and never through the edge writer.
 import { createHash } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import type { z } from "zod";
@@ -63,14 +64,17 @@ export async function activePanicEdgeNodeId(
   return node?.id ?? null;
 }
 
+/** The events the edge writes (edge -> cloud); `resolved` is cloud -> edge. */
+type PanicAlertEdgeEventKey = Exclude<PanicAlertEventKey, "resolved">;
+
 type PayloadOf<K extends PanicAlertEventKey> = z.input<
   (typeof panicAlertEvents)[K]["payloadSchema"]
 >;
 
 /** One event to queue: the key picks the name, the payload is validated by it. */
 export type PanicAlertOutboxEvent = {
-  [K in PanicAlertEventKey]: { key: K; payload: PayloadOf<K> };
-}[PanicAlertEventKey];
+  [K in PanicAlertEdgeEventKey]: { key: K; payload: PayloadOf<K> };
+}[PanicAlertEdgeEventKey];
 
 function envelopeActor(event: PanicAlertOutboxEvent) {
   switch (event.key) {
@@ -163,6 +167,60 @@ export async function queuePanicAlertEvent(
   await enqueueEdgeEvent(tx, context, {
     edgeNodeId,
     direction: "edge_to_cloud",
+    kind: "transaction_event",
+    event,
+  });
+  return sequence;
+}
+
+/**
+ * Queues `panic_alert.resolved` cloud -> edge on the caller's transaction (the
+ * cloud resolve, G1). Call it only when the resolve really changed the alert.
+ * Aggregate `panic_alert`, id = alert id; the cloud -> edge stream has its own
+ * sequence per (edge node, direction, aggregate), so it never meets the edge
+ * writer. Returns the queued sequence, or null when the outlet has no active
+ * edge node (a cloud-only outlet queues nothing).
+ */
+export async function queuePanicAlertResolvedToEdge(
+  tx: EdgeTx,
+  context: ScopedTenantContext,
+  input: {
+    outletId: string;
+    alertId: string;
+    payload: PayloadOf<"resolved">;
+    now?: Date;
+  },
+): Promise<number | null> {
+  const tenantId = context.tenant.tenantId;
+  const edgeNodeId = await activePanicEdgeNodeId(tx, tenantId, input.outletId);
+  if (!edgeNodeId) return null;
+  if (input.payload.alertId !== input.alertId)
+    throw new CoreError("VALIDATION_ERROR", "Event alert does not match");
+  const last = await tx.execute(
+    sql`SELECT MAX(aggregate_sequence) AS last FROM edge_outbound_queue WHERE edge_node_id = ${edgeNodeId}::uuid AND direction = 'cloud_to_edge' AND aggregate_type = ${PANIC_ALERT_AGGREGATE_TYPE} AND aggregate_id = ${input.alertId}`,
+  );
+  const sequence = Number(last.rows[0]?.last ?? 0) + 1;
+  const definition = panicAlertEvents.resolved;
+  const now = input.now ?? new Date();
+  const event = definition.envelopeSchema.parse({
+    id: createUlid(now.getTime()),
+    tenantId,
+    outletId: input.outletId,
+    name: definition.name,
+    version: definition.version,
+    aggregateType: PANIC_ALERT_AGGREGATE_TYPE,
+    aggregateId: input.alertId,
+    sequence,
+    occurredAt: now.toISOString(),
+    actor: { type: "user" as const, id: input.payload.resolvedBy },
+    deviceId: null,
+    idempotencyKey: `${PANIC_ALERT_AGGREGATE_TYPE}:${input.alertId}:resolved:${sequence}`,
+    payloadSchemaRef: definition.payloadSchemaRef,
+    payload: input.payload,
+  });
+  await enqueueEdgeEvent(tx, context, {
+    edgeNodeId,
+    direction: "cloud_to_edge",
     kind: "transaction_event",
     event,
   });
