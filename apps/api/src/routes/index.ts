@@ -40,6 +40,7 @@ import {
   platformUsageRouter,
 } from "./platform-integrations.routes";
 import { orgThemesRouter } from "./org-themes.routes";
+import { orgConfigRouter } from "./org-config.routes";
 import { opsOutboxRouter } from "./ops-outbox.routes";
 import { consentRouter, textOverridesRouter } from "./text-consent.routes";
 import { platformBrandRouter } from "./platform-brand.routes";
@@ -188,6 +189,7 @@ apiRouter.use("/platform", platformKirimdevSendersRouter);
 apiRouter.use("/org", orgIntegrationsRouter);
 apiRouter.use("/org", orgRouter);
 apiRouter.use("/org", orgThemesRouter);
+apiRouter.use("/org", orgConfigRouter);
 apiRouter.use("/org/text-overrides", textOverridesRouter);
 apiRouter.use("/consents", consentRouter);
 // Operator outbox replay (legend-m119).

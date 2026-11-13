@@ -97,6 +97,18 @@ export const createThemeDraftInputSchema = clientInputSchema({
 });
 export type CreateThemeDraftInput = z.infer<typeof createThemeDraftInputSchema>;
 
+/** Attaches an uploaded `brand_logo` object to a brand; null clears it. */
+export const setBrandLogoInputSchema = clientInputSchema({
+  logoMediaId: uuidSchema.nullable(),
+});
+export type SetBrandLogoInput = z.infer<typeof setBrandLogoInputSchema>;
+
+export const brandLogoSchema = z.strictObject({
+  id: brandIdSchema,
+  logoMediaId: uuidSchema.nullable(),
+});
+export type BrandLogo = z.infer<typeof brandLogoSchema>;
+
 /** Base Theme merged with the tenant overrides. */
 export function mergedThemePalettes(tokens: ThemeTokens): ThemePalettes {
   return mergeTenantPalettes(basePalettes, {

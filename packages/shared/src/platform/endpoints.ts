@@ -28,6 +28,7 @@ import {
   configTemplateSummarySchema,
   createConfigTemplateInputSchema,
   importConfigInputSchema,
+  orgImportConfigInputSchema,
 } from "./config.ts";
 import {
   listOutboxGapsQuerySchema,
@@ -96,11 +97,14 @@ import {
   decideSupportAccessRequestInputSchema,
   requestSupportAccessInputSchema,
   requestSupportWriteAccessInputSchema,
+  supportAccessGrantPageSchema,
   supportAccessGrantSchema,
   supportAccessRequestSchema,
 } from "./support-access.ts";
 import {
+  brandLogoSchema,
   createThemeDraftInputSchema,
+  setBrandLogoInputSchema,
   tenantThemeSchema,
   themeTokensSchema,
 } from "./themes.ts";
@@ -342,7 +346,7 @@ export const platformEndpoints = {
     query: cursorPageQuerySchema.extend({
       tenantId: tenantIdSchema.optional(),
     }),
-    response: cursorPageSchema(supportAccessGrantSchema),
+    response: supportAccessGrantPageSchema,
   }),
   endSupportAccess: defineEndpoint({
     method: "POST",
@@ -544,6 +548,13 @@ export const orgEndpoints = {
     body: createThemeDraftInputSchema,
     response: dataResponseSchema(tenantThemeSchema),
   }),
+  setBrandLogo: defineEndpoint({
+    method: "PUT",
+    path: "/api/org/brands/:brandId/logo",
+    params: brandParams,
+    body: setBrandLogoInputSchema,
+    response: dataResponseSchema(brandLogoSchema),
+  }),
   activateTheme: defineEndpoint({
     method: "POST",
     path: "/api/org/themes/:themeId/activate",
@@ -554,7 +565,7 @@ export const orgEndpoints = {
     method: "GET",
     path: "/api/org/support-access",
     query: cursorPageQuerySchema,
-    response: cursorPageSchema(supportAccessGrantSchema),
+    response: supportAccessGrantPageSchema,
   }),
   listSupportAccessRequests: defineEndpoint({
     method: "GET",
@@ -594,5 +605,16 @@ export const orgEndpoints = {
     path: "/api/org/config/export",
     body: createConfigTemplateInputSchema.pick({ sections: true }),
     response: dataResponseSchema(configBundleSchema),
+  }),
+  /**
+   * Import an uploaded bundle into the caller's own tenant (no tenant id in the
+   * path, TEN-02). Stored platform templates are not importable here: they are
+   * shared across tenants, so only a bundle is accepted.
+   */
+  importConfig: defineEndpoint({
+    method: "POST",
+    path: "/api/org/config/import",
+    body: orgImportConfigInputSchema,
+    response: dataResponseSchema(configImportSchema),
   }),
 } as const;

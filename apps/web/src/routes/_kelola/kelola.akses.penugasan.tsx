@@ -20,6 +20,6 @@ export const Route = createFileRoute("/_kelola/kelola/akses/penugasan")({
 });
 
 function AssignmentsScreen() {
-  const { access } = Route.useRouteContext();
-  return <AssignmentsPage access={access} />;
+  const { access, session } = Route.useRouteContext();
+  return <AssignmentsPage access={access} viewerUserId={session?.user.id} />;
 }

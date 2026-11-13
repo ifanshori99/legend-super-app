@@ -12,6 +12,7 @@
 // user, never the caller's own tenant context.
 
 import {
+  cursorPageSchema,
   isoDateTimeSchema,
   tenantIdSchema,
   userIdSchema,
@@ -55,6 +56,8 @@ export const supportAccessGrantSchema = z
     id: supportAccessGrantIdSchema,
     tenantId: tenantIdSchema,
     superAdminUserId: userIdSchema,
+    /** Super Admin display name (never the email); null when unknown. */
+    actorName: z.string().nullable().optional(),
     reason: reasonSchema,
     accessMode: supportAccessModeSchema,
     durationMinutes: z.union(
@@ -84,6 +87,15 @@ export const supportAccessGrantSchema = z
     { path: ["mfaVerifiedAt"], message: "MFA must precede the session" },
   );
 export type SupportAccessGrant = z.infer<typeof supportAccessGrantSchema>;
+
+/** Session list page. `serverNow` is the API clock at read time, so a device
+ * clock running ahead does not hide the banner early. */
+export const supportAccessGrantPageSchema = cursorPageSchema(
+  supportAccessGrantSchema,
+).extend({ serverNow: isoDateTimeSchema });
+export type SupportAccessGrantPage = z.infer<
+  typeof supportAccessGrantPageSchema
+>;
 
 /** Super Admin opens a session (tenant in the path). The TOTP code is
  * checked by the API; this schema checks its shape only. */

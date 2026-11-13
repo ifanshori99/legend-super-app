@@ -1211,3 +1211,129 @@ test("pos_discount threshold: codec fromTemplate accepts 1..5000 bp and refuses 
     assert.equal(refused.ok, false, `${bp} bp must be refused`);
   }
 });
+
+// legend-9k0a5: wifi_policies codec. `spendMode` (0216_wifi_quota_engine.sql,
+// legend-kmd3) must survive the bundle; the item stays secret-free (no Wi-Fi
+// password) and id-free (zoneKey/facilityKey/outletKey are keys).
+const wifiCodec = platform.CONFIG_SECTION_CODECS.wifi_policies;
+
+function wifiItem(overrides = {}) {
+  return {
+    key: "kemang.wifi.main",
+    outletKey: "kemang",
+    zoneKey: "main-hall",
+    facilityKey: null,
+    freeMinutes: 60,
+    peakFreeMinutes: 30,
+    spendPerExtraHourIdr: 50_000,
+    extraMinutes: 60,
+    maxDevices: 3,
+    peakSchedule: [{ daysOfWeek: [5, 6], startsAt: "18:00", endsAt: "23:00" }],
+    baseSpeedKbps: 2000,
+    fullSpeedKbps: 10_000,
+    minSpendPerHourIdr: null,
+    tierBonusMinutes: { gold: 30 },
+    ...overrides,
+  };
+}
+
+test("legend-9k0a5: wifi spendMode round-trips through toTemplate and fromTemplate", () => {
+  for (const spendMode of ["per_day_multiple", "per_order", null]) {
+    const row = wifiItem({ spendMode });
+    const [exported] = wifiCodec.toTemplate([row]);
+    assert.equal(exported.spendMode, spendMode, String(spendMode));
+    const decoded = wifiCodec.fromTemplate([exported]);
+    assert.equal(decoded.ok, true, JSON.stringify(decoded.issues));
+    assert.deepEqual(decoded.drafts, [exported]);
+  }
+});
+
+test("legend-9k0a5: wifi item without spendMode (older bundle) still decodes", () => {
+  const decoded = wifiCodec.fromTemplate([wifiItem()]);
+  assert.equal(decoded.ok, true, JSON.stringify(decoded.issues));
+  assert.equal(decoded.drafts[0].spendMode ?? null, null);
+});
+
+test("legend-9k0a5: wifi spendMode refuses values the DB check refuses", () => {
+  const ok = wifiCodec.fromTemplate([wifiItem({ spendMode: "per_order" })]);
+  assert.equal(ok.ok, true, JSON.stringify(ok.issues));
+  for (const spendMode of ["weekly", "", "PER_ORDER", 1, true]) {
+    const refused = wifiCodec.fromTemplate([wifiItem({ spendMode })]);
+    assert.equal(refused.ok, false, `${String(spendMode)} must be refused`);
+    assert.match(refused.issues.join(), /spendMode/);
+  }
+  assert.throws(
+    () => wifiCodec.toTemplate([wifiItem({ spendMode: "weekly" })]),
+    /spendMode/,
+  );
+});
+
+test("legend-9k0a5: wifi item refuses secrets (password, ssid key, token)", () => {
+  for (const field of [
+    "password",
+    "wifiPassword",
+    "psk",
+    "passphrase",
+    "radiusSecret",
+    "apiToken",
+  ]) {
+    const refused = wifiCodec.fromTemplate([wifiItem({ [field]: "hunter2" })]);
+    assert.equal(refused.ok, false, `${field} must be refused`);
+    assert.throws(
+      () => wifiCodec.toTemplate([wifiItem({ [field]: "hunter2" })]),
+      new RegExp(field),
+    );
+  }
+});
+
+test("legend-9k0a5: wifi item refuses ids and id-shaped references", () => {
+  const id = crypto.randomUUID();
+  for (const field of [
+    "id",
+    "tenantId",
+    "outletId",
+    "zoneId",
+    "facilityId",
+    "createdAt",
+  ]) {
+    const refused = wifiCodec.fromTemplate([wifiItem({ [field]: id })]);
+    assert.equal(refused.ok, false, `${field} must be refused`);
+    assert.throws(() => wifiCodec.toTemplate([wifiItem({ [field]: id })]));
+  }
+  for (const field of ["key", "outletKey", "zoneKey", "facilityKey"]) {
+    const refused = wifiCodec.fromTemplate([wifiItem({ [field]: id })]);
+    assert.equal(refused.ok, false, `${field} as a uuid must be refused`);
+  }
+});
+
+test("legend-9k0a5: wifi refs are keys checked against the bundle, spendMode kept", () => {
+  const item = wifiItem({
+    spendMode: "per_order",
+    facilityKey: "kemang.facility.lounge",
+  });
+  const good = wifiCodec.fromTemplate([item], {
+    zoneKeys: new Set(["main-hall"]),
+    facilityKeys: new Set(["kemang.facility.lounge"]),
+  });
+  assert.equal(good.ok, true, JSON.stringify(good.issues));
+  assert.equal(good.drafts[0].spendMode, "per_order");
+  const bad = wifiCodec.fromTemplate([item], {
+    zoneKeys: new Set(["other-zone"]),
+    facilityKeys: new Set(),
+  });
+  assert.equal(bad.ok, false);
+  assert.match(bad.issues.join(), /zoneKey main-hall/);
+  assert.match(bad.issues.join(), /facilityKey kemang\.facility\.lounge/);
+});
+
+test("legend-9k0a5: wifi section item schema in the bundle accepts spendMode", () => {
+  const schema = sectionItemSchemas.wifi_policies;
+  assert.equal(
+    schema.safeParse(wifiItem({ spendMode: "per_order" })).success,
+    true,
+  );
+  assert.equal(
+    schema.safeParse(wifiItem({ spendMode: "weekly" })).success,
+    false,
+  );
+});

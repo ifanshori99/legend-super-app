@@ -60,11 +60,25 @@ export async function createTestTenant(label: string): Promise<TestTenant> {
 }
 
 /** Best-effort cleanup as the migration owner (append-only tables may refuse). */
-/** A stored object in a new outlet of the tenant (media library row). */
-export async function storedMedia(t: TestTenant): Promise<string> {
+/**
+ * A stored object in the tenant's media library. `document` lives in a new
+ * outlet; `brand_logo` is tenant-level (outlet_id NULL, per core_storage_objects check).
+ */
+export async function storedMedia(
+  t: TestTenant,
+  purpose: "document" | "brand_logo" = "document",
+): Promise<string> {
+  const mediaId = randomUUID();
+  if (purpose === "brand_logo") {
+    await owner.query(
+      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
+       VALUES ($1, NULL, $2, 'brand_logo', $3, 'image/webp', 1024)`,
+      [t.tenantId, mediaId, `legend-iiqx/${mediaId}.webp`],
+    );
+    return mediaId;
+  }
   const legalEntityId = randomUUID();
   const outletId = randomUUID();
-  const mediaId = randomUUID();
   await owner.query(
     "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Logo', false)",
     [legalEntityId, t.tenantId],

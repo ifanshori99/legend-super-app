@@ -8,8 +8,10 @@
 // and accepts any 6-digit code (it cannot compute TOTP); the flow, the factor
 // pick and the error states are the same.
 import {
+  AccessError,
   approvalMatrixSchema,
   approvalPolicySchema,
+  assertCanEditCustomRole,
   cafeLegendAccessFixtures,
   isAssignmentActive,
   normalizeCustomRolePermissions,
@@ -33,10 +35,11 @@ import {
   cafeLegendPlatformFixtures,
   orgEndpoints,
 } from "@starter/shared/platform";
-import { ApiError } from "@/lib/api/errors";
-import { registerMock } from "@/lib/mock/registry";
-import { paginateFixture } from "@/lib/mock/paginate";
-import { createMockStore } from "@/lib/mock/store";
+import { ApiError } from "../../lib/api/errors.ts";
+import { endAssignmentGuard } from "./lib.ts";
+import { registerMock } from "../../lib/mock/registry.ts";
+import { paginateFixture } from "../../lib/mock/paginate.ts";
+import { createMockStore } from "../../lib/mock/store.ts";
 
 const NOW = () => new Date().toISOString();
 
@@ -71,6 +74,21 @@ const policies = createMockStore<ApprovalPolicy[]>(() =>
 
 const actorId = cafeLegendAccessFixtures.users.tenantAdmin.id;
 const tenantId = cafeLegendAccessFixtures.tenantId;
+
+// The mock actor as the access contract sees it (branded ids come from the
+// fixture assignment). The mock cannot know the session's MFA or re-auth state,
+// so the editor rule below runs without top authority: the Admin Tenant may
+// only add permissions it holds, the same limit the API applies.
+const actorAssignment = cafeLegendAccessFixtures.assignments.find(
+  (row) => row.userId.toLowerCase() === actorId.toLowerCase(),
+);
+if (!actorAssignment) throw new Error("mock actor has no fixture assignment");
+
+function accessErrorToApiError(error: unknown): unknown {
+  return error instanceof AccessError
+    ? new ApiError(error.status, error.code, error.message)
+    : error;
+}
 
 function roleById(roleId: string): Role {
   const role = roles.get().find((row) => row.id === roleId);
@@ -119,6 +137,28 @@ registerMock(updateCustomRole, ({ params, body }) => {
       : normalizeCustomRolePermissions(body.permissions, {
           mfaRequested: body.mfaRequired,
         });
+  // Adding permissions follows the grant rule (assertCanEditCustomRole, PRD
+  // §3.7 "tidak dapat menaikkan hak dirinya sendiri"), as the API does.
+  const added = (normalized?.permissions ?? []).filter(
+    (code) => !current.permissions.includes(code),
+  );
+  try {
+    assertCanEditCustomRole({
+      grantor: {
+        tenantId: actorAssignment.tenantId,
+        userId: actorAssignment.userId,
+        assignments: assignments.get(),
+      },
+      grantorRoles: roles.get(),
+      grantorMfaVerified: false,
+      grantorReauthenticatedAt: null,
+      addedPermissions: added,
+      org: cafeLegendAccessFixtures.org,
+      now: new Date(),
+    });
+  } catch (error) {
+    throw accessErrorToApiError(error);
+  }
   const next = roleSchema.parse({
     ...current,
     name: body.name ?? current.name,
@@ -160,6 +200,29 @@ registerMock(grantRole, ({ body }) => {
       "SELF_ELEVATION_FORBIDDEN",
       "Anda tidak dapat memberi peran kepada diri sendiri.",
     );
+  // An Owner role only comes from an active tenant-scoped Owner (legend-7vsby,
+  // assertCanGrantRole). The mock actor is the Admin Tenant.
+  if (role.templateKey === "owner") {
+    const ownerRoleIds = roles
+      .get()
+      .filter((row) => row.templateKey === "owner")
+      .map((row) => row.id);
+    const actorIsOwner = assignments
+      .get()
+      .some(
+        (row) =>
+          row.userId.toLowerCase() === actorId.toLowerCase() &&
+          row.scope.type === "tenant" &&
+          ownerRoleIds.includes(row.roleId) &&
+          isAssignmentActive(row, new Date()),
+      );
+    if (!actorIsOwner)
+      throw new ApiError(
+        403,
+        "PERMISSION_DENIED",
+        "Hanya Owner yang dapat memberikan role Owner.",
+      );
+  }
   const now = NOW();
   const assignment = roleAssignmentSchema.parse({
     id: uuidFrom("a5510000", assignmentSeed++),
@@ -187,6 +250,28 @@ registerMock(endRoleAssignment, ({ params, body }) => {
     Date.parse(current.validUntil) <= Date.now()
   )
     throw new ApiError(409, "CONFLICT", "Penugasan ini sudah berakhir.");
+  // Owner assignment protection (assertCanEndOwnerAssignment, legend-tj8o).
+  // The mock actor is the Admin Tenant, never an Owner: only an Owner may end
+  // another Owner's assignment, and the last open-ended Owner stays.
+  const guard = endAssignmentGuard({
+    target: current,
+    roles: roles.get(),
+    viewerUserId: actorId,
+    ownerAssignments: assignments.get(),
+    now: new Date(),
+  });
+  if (!guard.allowed)
+    throw guard.reason === "lastOwner"
+      ? new ApiError(
+          409,
+          "CONFLICT",
+          "Tenant harus memiliki minimal satu Owner aktif.",
+        )
+      : new ApiError(
+          403,
+          "PERMISSION_DENIED",
+          "Hanya Owner yang dapat mengakhiri penugasan Owner lain.",
+        );
   const next = roleAssignmentSchema.parse({
     ...current,
     validUntil: body.validUntil ?? NOW(),

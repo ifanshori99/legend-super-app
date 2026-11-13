@@ -3,6 +3,8 @@
 // uuid would let one tenant point its brand at another tenant's file.
 // Assumption: refusal is 422 VALIDATION_ERROR, identical for "other tenant" and
 // "does not exist" (no existence oracle); null clears the logo.
+// legend-bkdmc: the media must also be a `brand_logo` upload; another purpose
+// (own-tenant `document`) gets the same 422.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type {
@@ -55,13 +57,13 @@ const refused = { status: 422, code: "VALIDATION_ERROR" };
 
 describe("legend-ja7i7 brand logoMediaId belongs to the tenant", () => {
   it("createBrand accepts the tenant's own media and null", async () => {
-    const mediaId = await storedMedia(a);
+    const mediaId = await storedMedia(a, "brand_logo");
     expect((await create(a, mediaId)).logoMediaId).toBe(mediaId);
     expect((await create(a, null)).logoMediaId).toBeNull();
   });
 
   it("createBrand refuses another tenant's media and an unknown id (nothing stored)", async () => {
-    const foreign = await storedMedia(b);
+    const foreign = await storedMedia(b, "brand_logo");
     const name = slug();
     await expect(
       createBrand(a.context, {
@@ -79,17 +81,46 @@ describe("legend-ja7i7 brand logoMediaId belongs to the tenant", () => {
   });
 
   it("updateBrand accepts the tenant's own media, then null clears it", async () => {
-    const mediaId = await storedMedia(a);
+    const mediaId = await storedMedia(a, "brand_logo");
     expect((await update(a, mediaId)).logoMediaId).toBe(mediaId);
     expect((await update(a, null)).logoMediaId).toBeNull();
   });
 
   it("updateBrand refuses another tenant's media and an unknown id (logo unchanged)", async () => {
-    const own = await storedMedia(a);
+    const own = await storedMedia(a, "brand_logo");
     await update(a, own);
-    const foreign = await storedMedia(b);
+    const foreign = await storedMedia(b, "brand_logo");
     await expect(update(a, foreign)).rejects.toMatchObject(refused);
     await expect(update(a, randomUUID())).rejects.toMatchObject(refused);
+    const { rows } = await owner.query<{ logo_media_id: string }>(
+      "SELECT logo_media_id FROM brands WHERE id = $1",
+      [a.brandId],
+    );
+    expect(rows[0]!.logo_media_id).toBe(own);
+  });
+
+  it("createBrand refuses own-tenant media of another purpose (nothing stored)", async () => {
+    const document = await storedMedia(a);
+    const name = slug();
+    await expect(
+      createBrand(a.context, {
+        slug: name,
+        name: "Document",
+        logoMediaId: document,
+      } as unknown as CreateBrandInput),
+    ).rejects.toMatchObject(refused);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM brands WHERE tenant_id = $1 AND slug = $2",
+      [a.tenantId, name],
+    );
+    expect(rows).toHaveLength(0);
+  });
+
+  it("updateBrand refuses own-tenant media of another purpose (logo unchanged)", async () => {
+    const own = await storedMedia(a, "brand_logo");
+    await update(a, own);
+    const document = await storedMedia(a);
+    await expect(update(a, document)).rejects.toMatchObject(refused);
     const { rows } = await owner.query<{ logo_media_id: string }>(
       "SELECT logo_media_id FROM brands WHERE id = $1",
       [a.brandId],

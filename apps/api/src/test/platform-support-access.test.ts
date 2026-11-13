@@ -653,3 +653,123 @@ describe("TEN-04 support access sessions", () => {
     await endSupportAccess({ grantId: grant.id, actorUserId: admin });
   });
 });
+
+describe("legend-2gvt org support access list: serverNow and Super Admin name", () => {
+  /** A real Super Admin (user row + platform_admins) with the given name. */
+  async function namedAdmin(name: string): Promise<string> {
+    const client = agent(app);
+    await signUp(client, "Nama Awal");
+    const userId = (await client.get("/api/auth/get-session")).body.user
+      .id as string;
+    await owner.query('UPDATE "user" SET name = $1 WHERE id = $2', [
+      name,
+      userId,
+    ]);
+    await owner.query("INSERT INTO platform_admins (user_id) VALUES ($1)", [
+      userId,
+    ]);
+    admins.push(userId);
+    return userId;
+  }
+
+  // HTTP tenant context comes from the caller's role assignment in the seeded
+  // tenant (throwaway tenants have no HTTP route in), so the viewing owner is
+  // the seeded tenant's owner; tenant A (throwaway) plays "another tenant".
+  const seededOwnerUserIds: string[] = [];
+  let seededOwner: ReturnType<typeof agent> | undefined;
+  async function ownerClient() {
+    if (seededOwner) return seededOwner;
+    const client = agent(app);
+    const email = await signUp(client, "Pemilik Seeded Dukungan");
+    const userId = (await client.get("/api/auth/get-session")).body.user
+      .id as string;
+    seededOwnerUserIds.push(userId);
+    const assigned = await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by, assigned_at)
+       SELECT $1, $2, id, 'tenant', now() - interval '1 minute', $2, now() - interval '1 day'
+         FROM roles WHERE tenant_id = $1 AND template_key = 'owner'`,
+      [seededTenantId, userId],
+    );
+    expect(assigned.rowCount).toBe(1);
+    await verifySessionMfa(email);
+    seededOwner = client;
+    return client;
+  }
+  afterAll(async () => {
+    if (seededOwnerUserIds.length)
+      await owner.query(
+        "DELETE FROM role_assignments WHERE user_id = ANY($1::text[])",
+        [seededOwnerUserIds],
+      );
+  });
+
+  type Row = { id: string; actorName?: string | null };
+  const find = (rows: Row[], id: string) => rows.find((row) => row.id === id);
+
+  it("TEN-04 returns serverNow as an ISO timestamp from the API clock", async () => {
+    const client = await ownerClient();
+    const before = Date.now();
+    const listed = await client.get("/api/org/support-access?limit=10");
+    const after = Date.now();
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect(listed.body.serverNow).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/,
+    );
+    const serverNow = Date.parse(listed.body.serverNow);
+    expect(serverNow).toBeGreaterThanOrEqual(before - 5_000);
+    expect(serverNow).toBeLessThanOrEqual(after + 5_000);
+  });
+
+  it("TEN-04 shows the Super Admin's display name as actorName", async () => {
+    const adminId = await namedAdmin("Rina Super Admin");
+    const grant = await open(seededTenantId, adminId);
+    const client = await ownerClient();
+    const listed = await client.get("/api/org/support-access?limit=100");
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect(find(listed.body.data, grant.id)?.actorName).toBe(
+      "Rina Super Admin",
+    );
+    await endSupportAccess({
+      tenantId: seededTenantId,
+      grantId: grant.id,
+      actorUserId: adminId,
+    });
+  });
+
+  it("TEN-04 hides a name that contains '@' or is blank: actorName is null", async () => {
+    const client = await ownerClient();
+    for (const name of ["rina@legend.example", "   "]) {
+      const adminId = await namedAdmin(name);
+      const grant = await open(seededTenantId, adminId);
+      const listed = await client.get("/api/org/support-access?limit=100");
+      expect(listed.status).toBe(200);
+      const row = find(listed.body.data, grant.id);
+      expect(row, name).toBeDefined();
+      expect(row?.actorName ?? null, name).toBeNull();
+      expect(JSON.stringify(listed.body)).not.toContain("rina@legend.example");
+      await endSupportAccess({
+        tenantId: seededTenantId,
+        grantId: grant.id,
+        actorUserId: adminId,
+      });
+    }
+  });
+
+  it("TEN-04 an owner of another tenant never sees this tenant's grant but still gets serverNow", async () => {
+    const adminId = await namedAdmin("Bima Super Admin");
+    const grant = await open(tenantA, adminId);
+    const listed = await (
+      await ownerClient()
+    ).get("/api/org/support-access?limit=100");
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect(listed.body.data.map((row: Row) => row.id)).not.toContain(grant.id);
+    expect(JSON.stringify(listed.body)).not.toContain("Bima Super Admin");
+    expect(Number.isNaN(Date.parse(listed.body.serverNow))).toBe(false);
+    await endSupportAccess({
+      tenantId: tenantA,
+      grantId: grant.id,
+      actorUserId: adminId,
+    });
+  });
+});

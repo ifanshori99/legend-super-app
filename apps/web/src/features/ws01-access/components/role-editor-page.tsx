@@ -16,16 +16,35 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
 import type { PermissionCode, Role, ScopeType } from "@starter/shared/access";
-import { roleTemplate } from "@starter/shared/access";
+import {
+  ROLE_GRANT_REAUTH_MAX_AGE_MS,
+  roleTemplate,
+} from "@starter/shared/access";
+import { ApiError } from "@/lib/api/errors";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
-import { useCreateCustomRole, useRoles, useUpdateCustomRole } from "../hooks";
-import { accessErrorMessage } from "../errors";
 import {
+  useCreateCustomRole,
+  useMfaFactors,
+  useNow,
+  useRoles,
+  useUpdateCustomRole,
+  useVerifyMfaFactor,
+  useViewerAssignments,
+} from "../hooks";
+import { accessErrorMessage, roleEditorErrorMessage } from "../errors";
+import {
+  canSelectPermission,
   customRoleMfaRequired,
+  heldAtTenantScope,
+  permissionBlockReason,
+  permissionsViewerMayAdd,
+  roleEditNeedsReauth,
   SCOPE_LABEL_KEY,
   SCOPE_TYPES,
   togglePermission,
+  viewerHoldsRole,
+  viewerHoldsTopAuthority,
 } from "../lib";
 import { AccessPage } from "./access-shell";
 import {
@@ -70,9 +89,12 @@ function RoleFrame({
 export function RoleDetailPage({
   roleId,
   access,
+  viewerUserId,
 }: {
   roleId: string;
   access: AreaAccess;
+  /** The signed-in user's id (session), used to mirror the grant rules. */
+  viewerUserId?: string;
 }) {
   const t = useT();
   const roles = useRoles();
@@ -118,10 +140,22 @@ export function RoleDetailPage({
     );
 
   if (role.isTemplate) return <TemplateRole role={role} access={access} />;
-  return <CustomRoleEditor role={role} canManage={canManage} />;
+  return (
+    <CustomRoleEditor
+      role={role}
+      canManage={canManage}
+      viewerUserId={viewerUserId}
+    />
+  );
 }
 
-export function CreateCustomRolePage({ access }: { access: AreaAccess }) {
+export function CreateCustomRolePage({
+  access,
+  viewerUserId,
+}: {
+  access: AreaAccess;
+  viewerUserId?: string;
+}) {
   const t = useT();
   if (!holdsAny(access, ["access.role.manage"]))
     return (
@@ -139,7 +173,7 @@ export function CreateCustomRolePage({ access }: { access: AreaAccess }) {
         </Card>
       </RoleFrame>
     );
-  return <CustomRoleEditor canManage />;
+  return <CustomRoleEditor canManage viewerUserId={viewerUserId} />;
 }
 
 function TemplateRole({ role, access }: { role: Role; access: AreaAccess }) {
@@ -212,9 +246,11 @@ function TemplateRole({ role, access }: { role: Role; access: AreaAccess }) {
 function CustomRoleEditor({
   role,
   canManage,
+  viewerUserId,
 }: {
   role?: Role;
   canManage: boolean;
+  viewerUserId?: string;
 }) {
   const t = useT();
   const toast = useToast();
@@ -222,6 +258,10 @@ function CustomRoleEditor({
   const createRole = useCreateCustomRole();
   const updateRole = useUpdateCustomRole(role?.id ?? "");
   const mutation = role ? updateRole : createRole;
+  const now = useNow();
+  const allRoles = useRoles();
+  const viewerAssignments = useViewerAssignments(viewerUserId);
+  const verify = useVerifyMfaFactor();
 
   const [name, setName] = React.useState(role?.name ?? "");
   const [scopes, setScopes] = React.useState<ScopeType[]>(
@@ -234,10 +274,162 @@ function CustomRoleEditor({
     role?.mfaRequired ?? false,
   );
   const [errors, setErrors] = React.useState<FormErrors>({});
+  const [reauthOpen, setReauthOpen] = React.useState(false);
+  const [reauthAt, setReauthAt] = React.useState<Date | null>(null);
+  // Bumped on every request to show the block, so a block that is already open
+  // is scrolled to and focused again.
+  const [reauthTick, setReauthTick] = React.useState(0);
+  // Permissions added by the save that failed, kept so the error text does not
+  // change while the form is edited afterwards.
+  const [failedAdded, setFailedAdded] = React.useState<
+    PermissionCode[] | undefined
+  >(undefined);
+  const reauthRef = React.useRef<HTMLDivElement>(null);
+  const codeInputRef = React.useRef<HTMLInputElement>(null);
+  const noticeRef = React.useRef<HTMLParagraphElement>(null);
+  const [otpCode, setOtpCode] = React.useState("");
+  const [verifyError, setVerifyError] = React.useState<string | null>(null);
+  const factors = useMfaFactors(reauthOpen);
+  const totpFactor = factors.data?.data.find((row) => row.type === "totp");
 
   const mfaForced = customRoleMfaRequired(permissions);
-  const mfaRequired = mfaForced || mfaRequested;
   const readOnly = !canManage;
+
+  // Only offer what the API will accept (assertCanEditCustomRole, legend-tj8o):
+  // permissions the editor holds at tenant scope, or every tenant permission
+  // for a tenant Owner / Admin Tenant (who must re-authenticate on save).
+  // While the viewer's own assignments load or failed nothing is held, which
+  // fails closed.
+  const checkState: "ready" | "loading" | "error" =
+    viewerAssignments.isError || allRoles.isError
+      ? "error"
+      : viewerUserId === undefined ||
+          (viewerAssignments.isSuccess && allRoles.isSuccess)
+        ? "ready"
+        : "loading";
+  const check = React.useMemo(
+    () => ({
+      viewerUserId,
+      viewerAssignments:
+        checkState === "ready" ? (viewerAssignments.data?.data ?? []) : [],
+      roles: checkState === "ready" ? (allRoles.data?.data ?? []) : [],
+      now,
+    }),
+    [checkState, viewerUserId, viewerAssignments.data, allRoles.data, now],
+  );
+  const held = React.useMemo(() => heldAtTenantScope(check), [check]);
+  const topAuthority = React.useMemo(
+    () => viewerHoldsTopAuthority(check),
+    [check],
+  );
+  const addable = React.useMemo(
+    () => permissionsViewerMayAdd({ held, topAuthority }),
+    [held, topAuthority],
+  );
+  const original = role?.permissions ?? [];
+  // The API refuses to drop MFA from a role the editor holds themselves
+  // (SELF_ELEVATION_FORBIDDEN), so the switch stays on for that role.
+  const mfaHeldSelf =
+    role !== undefined &&
+    role.mfaRequired &&
+    viewerHoldsRole(check.viewerAssignments, role.id, now);
+  const mfaRequired = mfaForced || mfaHeldSelf || mfaRequested;
+  const limited = !topAuthority;
+  const reauthMinutes = Math.round(ROLE_GRANT_REAUTH_MAX_AGE_MS / 60_000);
+
+  const blockReason = (code: PermissionCode) => {
+    if (readOnly) return null;
+    const state = { selected: permissions, addable, original };
+    if (checkState !== "ready")
+      return canSelectPermission(code, state) ? null : ("checking" as const);
+    return permissionBlockReason(code, state);
+  };
+
+  const openReauth = () => {
+    setReauthAt(null);
+    setReauthOpen(true);
+    setReauthTick((tick) => tick + 1);
+  };
+
+  const askReauth = () => {
+    mutation.reset();
+    openReauth();
+  };
+
+  // A fresh verification only counts for ROLE_GRANT_REAUTH_MAX_AGE_MS: drop it
+  // (and its status text) when it runs out.
+  React.useEffect(() => {
+    if (reauthAt === null) return;
+    const timer = window.setTimeout(
+      () => setReauthAt(null),
+      Math.max(
+        0,
+        reauthAt.getTime() + ROLE_GRANT_REAUTH_MAX_AGE_MS - Date.now(),
+      ),
+    );
+    return () => window.clearTimeout(timer);
+  }, [reauthAt]);
+
+  // Bring the re-verify block into view and put focus where the next step is:
+  // the code field, or the text when there is no factor or loading failed.
+  React.useEffect(() => {
+    if (reauthTick === 0 || !reauthOpen || factors.isPending) return;
+    const block = reauthRef.current;
+    if (!block) return;
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    block.scrollIntoView({
+      block: "center",
+      behavior: reduceMotion ? "auto" : "smooth",
+    });
+    (totpFactor ? codeInputRef.current : noticeRef.current)?.focus({
+      preventScroll: true,
+    });
+  }, [reauthTick, reauthOpen, factors.isPending, factors.isError, totpFactor]);
+
+  const afterSave = () => {
+    setReauthOpen(false);
+    setReauthAt(null);
+    setOtpCode("");
+    setVerifyError(null);
+    setFailedAdded(undefined);
+  };
+
+  const verifyCode = () => {
+    if (!totpFactor) return;
+    if (!/^\d{6}$/.test(otpCode)) {
+      setVerifyError(t("access.grant.reauthCodeError"));
+      return;
+    }
+    setVerifyError(null);
+    verify.mutate(
+      { factorId: totpFactor.id, code: otpCode },
+      {
+        onSuccess: () => {
+          setReauthAt(new Date());
+          setOtpCode("");
+        },
+        onError: (failure) => setVerifyError(accessErrorMessage(failure, t)),
+      },
+    );
+  };
+
+  const onSaveError = (failure: unknown, added: readonly PermissionCode[]) => {
+    setFailedAdded([...added]);
+    // The held roles may have changed since the page loaded.
+    void viewerAssignments.refetch();
+    void allRoles.refetch();
+    // SELF_ELEVATION_FORBIDDEN asks for a re-auth only when the edit adds a
+    // permission the editor does not hold; with none added it is the MFA rule.
+    if (
+      topAuthority &&
+      failure instanceof ApiError &&
+      failure.code === "SELF_ELEVATION_FORBIDDEN" &&
+      added.some((code) => !held.includes(code))
+    )
+      openReauth();
+  };
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -249,6 +441,22 @@ function CustomRoleEditor({
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
+    // Owner / Admin Tenant adding permissions they do not hold: the API wants a
+    // re-authentication within ROLE_GRANT_REAUTH_MAX_AGE_MS first.
+    const added = permissions.filter((code) => !original.includes(code));
+    if (
+      roleEditNeedsReauth({
+        topAuthority,
+        held,
+        added,
+        reauthenticatedAt: reauthAt,
+        now: new Date(),
+      })
+    ) {
+      askReauth();
+      return;
+    }
+
     const body = {
       name: name.trim(),
       permissions,
@@ -257,18 +465,24 @@ function CustomRoleEditor({
     };
     if (role) {
       updateRole.mutate(body, {
-        onSuccess: () => toast({ title: t("access.role.saved") }),
+        onSuccess: () => {
+          afterSave();
+          toast({ title: t("access.role.saved") });
+        },
+        onError: (failure) => onSaveError(failure, added),
       });
       return;
     }
     createRole.mutate(body, {
       onSuccess: (created) => {
+        afterSave();
         toast({ title: t("access.role.created") });
         void navigate({
           to: "/kelola/akses/role/$roleId",
           params: { roleId: created.data.id },
         });
       },
+      onError: (failure) => onSaveError(failure, added),
     });
   };
 
@@ -345,18 +559,20 @@ function CustomRoleEditor({
           <div className="flex items-start justify-between gap-4 rounded-container bg-surface-2 p-3">
             <div className="grid gap-1">
               <Label htmlFor="role-mfa">{t("access.role.mfaTitle")}</Label>
-              <p className="text-sm text-muted-foreground">
-                {mfaForced
-                  ? t("access.role.mfaForced")
-                  : t("access.role.mfaHint")}
+              <p id="role-mfa-hint" className="text-sm text-muted-foreground">
+                {mfaHeldSelf
+                  ? t("access.role.mfaHeldSelf")
+                  : mfaForced
+                    ? t("access.role.mfaForced")
+                    : t("access.role.mfaHint")}
               </p>
             </div>
             <Switch
               id="role-mfa"
               checked={mfaRequired}
-              disabled={readOnly || mfaForced}
+              disabled={readOnly || mfaForced || mfaHeldSelf}
               onCheckedChange={setMfaRequested}
-              aria-describedby={undefined}
+              aria-describedby={mfaHeldSelf ? "role-mfa-hint" : undefined}
             />
           </div>
         </Card>
@@ -369,15 +585,144 @@ function CustomRoleEditor({
             <p className="text-sm text-muted-foreground">
               {t("access.role.permissionsHint")}
             </p>
+            {!readOnly && checkState === "loading" && (
+              <p className="text-sm text-muted-foreground" role="status">
+                {t("access.role.permissionsChecking")}
+              </p>
+            )}
+            {!readOnly && checkState === "error" && (
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm text-danger" role="alert">
+                  {t("access.role.permissionsCheckError")}
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    if (viewerAssignments.isError)
+                      void viewerAssignments.refetch();
+                    if (allRoles.isError) void allRoles.refetch();
+                  }}
+                >
+                  {t("common.retry")}
+                </Button>
+              </div>
+            )}
+            {!readOnly && checkState === "ready" && limited && (
+              <p className="text-sm text-muted-foreground">
+                {t("access.role.permissionsLimitedHint")}
+              </p>
+            )}
           </div>
           <PermissionChecklist
             selected={permissions}
+            blockReason={blockReason}
             onToggle={(code) =>
-              readOnly
+              blockReason(code) !== null
                 ? undefined
                 : setPermissions((current) => togglePermission(current, code))
             }
           />
+          {reauthOpen && (
+            <div ref={reauthRef} className="grid gap-2 rounded-md border p-3">
+              <p className="text-sm text-muted-foreground">
+                {t("access.role.reauthHint", { minutes: reauthMinutes })}
+              </p>
+              {reauthAt === null && !mutation.isError && (
+                <p className="text-sm text-danger" role="alert">
+                  {t("access.errors.reauthRequired")}
+                </p>
+              )}
+              {factors.isPending ? (
+                <div aria-busy="true" className="grid gap-2">
+                  <span className="sr-only">{t("common.loading")}</span>
+                  <Skeleton className="h-control" />
+                </div>
+              ) : factors.isError ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <p
+                    ref={noticeRef}
+                    tabIndex={-1}
+                    className="text-sm text-danger focus-visible:outline-none"
+                    role="alert"
+                  >
+                    {t("access.grant.reauthUnavailable")}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void factors.refetch()}
+                  >
+                    {t("common.retry")}
+                  </Button>
+                </div>
+              ) : totpFactor ? (
+                <div className="grid gap-2">
+                  <FormField
+                    label={t("access.grant.reauthCode")}
+                    error={verifyError ?? undefined}
+                    required
+                  >
+                    <Input
+                      ref={codeInputRef}
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      pattern="[0-9]{6}"
+                      maxLength={6}
+                      value={otpCode}
+                      onChange={(event) =>
+                        setOtpCode(
+                          event.target.value.replace(/\D/g, "").slice(0, 6),
+                        )
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter") return;
+                        event.preventDefault();
+                        verifyCode();
+                      }}
+                      disabled={reauthAt !== null}
+                      className="tabular tracking-[0.3em]"
+                    />
+                  </FormField>
+                  {reauthAt === null && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      loading={verify.isPending}
+                      disabled={otpCode.length !== 6}
+                      onClick={verifyCode}
+                    >
+                      {t("access.grant.reauthSend")}
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <div className="grid gap-1">
+                  <p
+                    ref={noticeRef}
+                    tabIndex={-1}
+                    className="text-sm font-semibold focus-visible:outline-none"
+                  >
+                    {t("access.grant.reauthNoFactor")}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    {t("access.role.reauthNoFactorHint")}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+          {/* Live region stays mounted (empty) so the text is announced. */}
+          <div role="status" className="empty:hidden">
+            {reauthOpen && reauthAt !== null && (
+              <p className="text-sm text-success">
+                {t("access.role.reauthDone")}
+              </p>
+            )}
+          </div>
           {errors.permissions && (
             <p className="text-sm text-danger" role="alert">
               {errors.permissions}
@@ -387,7 +732,10 @@ function CustomRoleEditor({
 
         {mutation.isError && (
           <p className="text-sm text-danger" role="alert">
-            {accessErrorMessage(mutation.error, t)}
+            {roleEditorErrorMessage(mutation.error, t, {
+              topAuthority,
+              added: failedAdded,
+            })}
           </p>
         )}
 

@@ -62,3 +62,29 @@ export function accessErrorMessage(
   if (fallback) return t(fallback);
   return error.message || t("access.errors.generic");
 }
+
+/**
+ * Custom-role save errors. SELF_ELEVATION_FORBIDDEN there means "you added a
+ * permission you do not hold" (assertCanEditCustomRole), not the grant text
+ * ("you cannot give a role to yourself") the shared catalog carries. For a
+ * tenant Owner / Admin Tenant (`topAuthority`) the same code means the
+ * re-authentication is missing or stale, so the text asks for it instead.
+ * With no added permission (`added` empty) the code can only mean the editor
+ * dropped the MFA requirement of a role they hold themselves.
+ */
+export function roleEditorErrorMessage(
+  error: unknown,
+  t: Translate,
+  options: { topAuthority?: boolean; added?: readonly unknown[] } = {},
+): string {
+  if (error instanceof ApiError && error.code === "SELF_ELEVATION_FORBIDDEN") {
+    if (options.added !== undefined && options.added.length === 0)
+      return t("access.role.mfaDropSelf");
+    return t(
+      options.topAuthority
+        ? "access.errors.reauthRequired"
+        : "access.role.selfElevation",
+    );
+  }
+  return accessErrorMessage(error, t);
+}

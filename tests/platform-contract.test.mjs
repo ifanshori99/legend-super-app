@@ -469,6 +469,7 @@ test("TEN-04 every session emits an event the tenant admin is notified from", ()
   platform.orgEndpoints.listSupportAccess.response.parse({
     data: fx.supportGrants,
     meta: { limit: 25, nextCursor: null },
+    serverNow: "2026-11-13T00:00:00.000Z",
   });
 });
 

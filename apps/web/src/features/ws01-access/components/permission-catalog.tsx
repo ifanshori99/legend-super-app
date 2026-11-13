@@ -3,20 +3,41 @@
 // template role; both group by module and show the machine code so an admin can
 // cross-check it against the API and audit log.
 import * as React from "react";
-import { Check } from "lucide-react";
+import { Check, Lock } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import type { PermissionCode } from "@starter/shared/access";
-import { normalizeQuery, permissionGroups, permissionLabelKey } from "../lib";
+import type { MessageKey } from "@starter/shared/i18n";
+import {
+  normalizeQuery,
+  permissionGroups,
+  permissionLabelKey,
+  type PermissionBlockReason,
+} from "../lib";
+
+/** "checking" blocks the row while the viewer's own permissions load. */
+export type PermissionRowBlock = PermissionBlockReason | "checking";
+
+const BLOCK_REASON_KEY: Readonly<Record<PermissionBlockReason, MessageKey>> = {
+  notHeld: "access.role.blockedNotHeld",
+  ownerOnly: "access.role.blockedOwnerOnly",
+  platform: "access.role.blockedPlatform",
+};
 
 export function PermissionChecklist({
   selected,
   onToggle,
+  blockReason,
 }: {
   selected: readonly PermissionCode[];
   onToggle: (code: PermissionCode) => void;
+  /**
+   * Rows this returns a reason for are disabled and show it as visible text
+   * (cannot be added; legend-tj8o). null leaves the row editable.
+   */
+  blockReason?: (code: PermissionCode) => PermissionRowBlock | null;
 }) {
   const t = useT();
   const [search, setSearch] = React.useState("");
@@ -63,16 +84,29 @@ export function PermissionChecklist({
               <div className="grid min-w-0 gap-0.5 sm:grid-cols-2">
                 {visible.map((permission) => {
                   const id = `perm-${permission.code.replaceAll(".", "-")}`;
+                  const reason = blockReason?.(permission.code) ?? null;
+                  const blocked = reason !== null;
+                  const reasonKey =
+                    reason === null || reason === "checking"
+                      ? null
+                      : BLOCK_REASON_KEY[reason];
+                  const reasonId = `${id}-reason`;
                   return (
                     <label
                       key={permission.code}
                       htmlFor={id}
-                      className="flex min-h-control-sm cursor-pointer items-start gap-2 rounded-control px-2 py-1.5 transition-colors duration-(--duration-fast) hover:bg-surface-2"
+                      className={
+                        blocked
+                          ? "flex min-h-control-sm cursor-not-allowed items-start gap-2 rounded-control px-2 py-1.5"
+                          : "flex min-h-control-sm cursor-pointer items-start gap-2 rounded-control px-2 py-1.5 transition-colors duration-(--duration-fast) hover:bg-surface-2"
+                      }
                     >
                       <Checkbox
                         id={id}
-                        className="mt-1"
+                        className={blocked ? "mt-1 opacity-60" : "mt-1"}
                         checked={selectedSet.has(permission.code)}
+                        disabled={blocked}
+                        aria-describedby={reasonKey ? reasonId : undefined}
                         onCheckedChange={() => onToggle(permission.code)}
                       />
                       <span className="grid min-w-0 gap-0.5">
@@ -82,6 +116,18 @@ export function PermissionChecklist({
                         <code className="truncate font-mono text-xs text-muted-foreground">
                           {permission.code}
                         </code>
+                        {reasonKey && (
+                          <span
+                            id={reasonId}
+                            className="flex items-center gap-1 text-xs text-muted-foreground"
+                          >
+                            <Lock
+                              className="size-3 shrink-0"
+                              aria-hidden="true"
+                            />
+                            {t(reasonKey)}
+                          </span>
+                        )}
                       </span>
                     </label>
                   );

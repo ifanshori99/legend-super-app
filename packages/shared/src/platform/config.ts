@@ -100,6 +100,21 @@ export const CONFIG_SECTIONS = [
 export const configSectionSchema = z.enum(CONFIG_SECTIONS);
 export type ConfigSection = z.infer<typeof configSectionSchema>;
 
+/** Sections a tenant admin may not import themselves (access, money, tax,
+ * loyalty, payroll, facility rules). Only the platform admin path applies
+ * them. */
+export const TENANT_IMPORT_BLOCKED_SECTIONS = [
+  "roles",
+  "approval_policies",
+  "chart_of_accounts",
+  "tax_rules",
+  "service_charge_rules",
+  "loyalty_policy",
+  "payroll_settings",
+  "facilities",
+  "wifi_policies",
+] as const satisfies readonly ConfigSection[];
+
 const jsonObject = z.record(z.string(), z.json());
 
 // ---- Item schemas (TEN-09) -------------------------------------------------
@@ -645,6 +660,17 @@ export const importConfigInputSchema = z
       (input.templateId === undefined) !== (input.bundle === undefined),
     { message: "Give exactly one of templateId or bundle" },
   );
+
+/** Tenant self-service import: an uploaded bundle only, never a template. */
+export const orgImportConfigInputSchema = z
+  .strictObject({
+    bundle: z.unknown(),
+    sections: z.array(configSectionSchema).min(1).optional(),
+  })
+  .refine((input) => input.bundle !== undefined, {
+    message: "bundle is required",
+    path: ["bundle"],
+  });
 
 export const configImportStatusSchema = z.enum([
   "validating",

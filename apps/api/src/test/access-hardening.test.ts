@@ -85,10 +85,13 @@ async function createTenant(founderId: string) {
      RETURNING id`,
     [
       tenantId,
+      // Mirrors the real tenant_admin template, which holds menu.item.view
+      // (so the Admin can build a role from it) but never payroll.view.
       JSON.stringify([
         "access.role.view",
         "access.role.manage",
         "access.role.assign",
+        "menu.item.view",
       ]),
     ],
   );

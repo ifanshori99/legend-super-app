@@ -3,7 +3,9 @@
 // tenant point at another tenant's file (TEN-10, legend-iiqx, legend-ja7i7).
 // The refusal is the same for "other tenant" and "does not exist", so it is no
 // existence oracle. Purpose is not restricted: storage re-checks purpose
-// permissions on every read (core-storage.ts).
+// permissions on every read (core-storage.ts). A caller may pass `purpose` to
+// also require that purpose (logo assignment: `brand_logo`, legend-bkdmc); a
+// media id of another purpose gets the same refusal.
 import { and, eq } from "drizzle-orm";
 import { coreStorageObjects } from "../db/schema/index.ts";
 import type { withTenant } from "../db/tenant.ts";
@@ -16,6 +18,7 @@ export async function assertTenantMedia(
   tenantId: string,
   mediaId: string | null | undefined,
   label: string,
+  purpose?: string,
 ): Promise<void> {
   if (!mediaId) return;
   const [media] = await tx
@@ -25,6 +28,7 @@ export async function assertTenantMedia(
       and(
         eq(coreStorageObjects.tenantId, tenantId),
         eq(coreStorageObjects.id, mediaId),
+        purpose ? eq(coreStorageObjects.purpose, purpose) : undefined,
       ),
     )
     .limit(1);

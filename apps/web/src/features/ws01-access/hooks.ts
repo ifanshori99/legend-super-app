@@ -13,8 +13,10 @@ import type {
   CreateCustomRoleInput,
   EndRoleAssignmentInput,
   GrantRoleInput,
+  RoleId,
   UpdateCustomRoleInput,
 } from "@starter/shared/access";
+import type { UserId } from "@starter/shared/core";
 import * as api from "./api";
 import {
   approvalMatrixQuery,
@@ -33,6 +35,33 @@ export function useRoles() {
 
 export function useAssignments(query: Parameters<typeof assignmentsQuery>[0]) {
   return useQuery(assignmentsQuery(query));
+}
+
+/**
+ * The viewer's own active assignments, and the tenant's active Owner
+ * assignments: the screens use them to mirror the grant rules (legend-tj8o).
+ * Disabled until the id is known; the API decides again on every write.
+ */
+export function useViewerAssignments(userId: string | undefined) {
+  return useQuery({
+    ...assignmentsQuery({
+      userId: userId as UserId,
+      activeOnly: "true",
+      limit: 100,
+    }),
+    enabled: userId !== undefined,
+  });
+}
+
+export function useRoleAssignmentsActive(roleId: string | undefined) {
+  return useQuery({
+    ...assignmentsQuery({
+      roleId: roleId as RoleId,
+      activeOnly: "true",
+      limit: 100,
+    }),
+    enabled: roleId !== undefined,
+  });
 }
 
 export function useApprovalMatrix() {

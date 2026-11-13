@@ -7,6 +7,7 @@ import { Router } from "express";
 import { apiErrorBody, brandIdSchema, z } from "@starter/shared/core";
 import {
   createThemeDraftInputSchema,
+  setBrandLogoInputSchema,
   tenantThemeIdSchema,
   themeTokensSchema,
 } from "@starter/shared/platform";
@@ -19,6 +20,7 @@ import {
   requireTenantPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
+import { setBrandLogo } from "../services/platform-brand.service.ts";
 import {
   activateTheme,
   checkTheme,
@@ -38,6 +40,25 @@ const themeAuth = [
   requireBackOfficeSurface(),
   requireTenantPermission("org.theme.manage"),
 ];
+
+// legend-bkdmc: attach an uploaded `brand_logo` to the brand (org.theme.manage).
+orgThemesRouter.put(
+  "/brands/:brandId/logo",
+  ...themeAuth,
+  jsonBody,
+  async (req, res) => {
+    const brandId = brandIdSchema.parse(req.params.brandId);
+    const input = setBrandLogoInputSchema.parse(req.body);
+    res.json({
+      data: await setBrandLogo(
+        getScopedTenantContext(req),
+        brandId,
+        input,
+        getAuth(req).user.id,
+      ),
+    });
+  },
+);
 
 orgThemesRouter.get("/themes", ...themeAuth, async (req, res) => {
   const query = z.strictObject({ brandId: brandIdSchema }).parse(req.query);

@@ -215,7 +215,7 @@ describe("TEN-10 theme contrast gate", () => {
 
 describe("legend-iiqx / TEN-10 logoMediaId belongs to the tenant", () => {
   it("legend-iiqx a draft may use a logo from the tenant's own media library", async () => {
-    const mediaId = await storedMedia(a);
+    const mediaId = await storedMedia(a, "brand_logo");
     const created = await draft(a, goodTokens, mediaId);
     expect(created.logoMediaId).toBe(mediaId);
   });
@@ -226,7 +226,7 @@ describe("legend-iiqx / TEN-10 logoMediaId belongs to the tenant", () => {
   });
 
   it("legend-iiqx a draft cannot point at another tenant's media (422, nothing stored)", async () => {
-    const foreign = await storedMedia(b);
+    const foreign = await storedMedia(b, "brand_logo");
     const before = (await listThemes(a.context, a.brandId)).data.length;
     await expect(draft(a, goodTokens, foreign)).rejects.toMatchObject({
       status: 422,

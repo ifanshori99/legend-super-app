@@ -7,6 +7,7 @@ import {
   CircleSlash,
   Clock,
   Info,
+  Lock,
   Plus,
   UserMinus,
 } from "lucide-react";
@@ -33,11 +34,19 @@ import {
 import type { RoleAssignment } from "@starter/shared/access";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
-import { useAssignments, useNow, useRoles, useScopeLookup } from "../hooks";
+import {
+  useAssignments,
+  useNow,
+  useRoleAssignmentsActive,
+  useRoles,
+  useScopeLookup,
+} from "../hooks";
 import { useAssignablePeople } from "../people";
 import {
   assignmentStatus,
   ASSIGNMENT_STATUS_LABEL_KEY,
+  endAssignmentGuard,
+  type EndAssignmentGuard,
   filterAssignmentRows,
   formatInstant,
   SCOPE_LABEL_KEY,
@@ -80,12 +89,134 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-export function AssignmentsPage({ access }: { access: AreaAccess }) {
+const END_BLOCKED_KEY = {
+  ownerOnly: "access.assignments.endBlockedOwnerOnly",
+  lastOwner: "access.assignments.endBlockedLastOwner",
+} as const;
+
+/** Id of the single Owner-list error banner; failed rows point at it. */
+const END_GUARD_ERROR_ID = "end-guard-error";
+
+/** What a row says about its End button: nothing, the shared list error, or a sentence. */
+type EndNote =
+  { kind: "none" } | { kind: "listError" } | { kind: "text"; text: string };
+
+function endNote(
+  t: ReturnType<typeof useT>,
+  guard: EndAssignmentGuard,
+  ownerListFailed: boolean,
+): EndNote {
+  if (guard.allowed) return { kind: "none" };
+  if (guard.reason === "loading") {
+    return ownerListFailed
+      ? { kind: "listError" }
+      : { kind: "text", text: t("access.assignments.endGuardLoading") };
+  }
+  return { kind: "text", text: t(END_BLOCKED_KEY[guard.reason]) };
+}
+
+/**
+ * Below md the reason sits in the first cell under the name (like the scope);
+ * a visual copy only, the action column keeps the accessible description.
+ */
+function EndNoteInline({ note }: { note: EndNote }) {
+  if (note.kind !== "text") return null;
+  return (
+    <span
+      className="flex items-start gap-1.5 text-xs leading-5 text-foreground md:hidden"
+      aria-hidden="true"
+    >
+      <Lock className="mt-0.5 size-3.5 shrink-0" />
+      {note.text}
+    </span>
+  );
+}
+
+/**
+ * The End button of one row. A blocked button stays focusable (aria-disabled)
+ * and points at a sentence that says why: the full text from md up, a short
+ * lock label below it (the sentence then shows in the first cell). When the
+ * Owner list fails, one banner above the table explains it (fail closed).
+ */
+function EndAssignmentButton({
+  assignmentId,
+  label,
+  note,
+  onEnd,
+}: {
+  assignmentId: string;
+  label: string;
+  note: EndNote;
+  onEnd: () => void;
+}) {
+  const t = useT();
+  const reasonId = `end-reason-${assignmentId}`;
+  const blocked = note.kind !== "none";
+  const describedBy =
+    note.kind === "listError"
+      ? END_GUARD_ERROR_ID
+      : note.kind === "text"
+        ? reasonId
+        : undefined;
+  return (
+    <div className="grid justify-items-start gap-1">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        className="aria-disabled:cursor-not-allowed aria-disabled:text-muted-foreground aria-disabled:opacity-100 aria-disabled:hover:bg-transparent"
+        aria-disabled={blocked ? "true" : undefined}
+        aria-describedby={describedBy}
+        aria-label={`${t("access.assignments.end")} ${label}`}
+        onClick={() => {
+          // aria-disabled keeps the button focusable so the reason is reachable.
+          if (!blocked) onEnd();
+        }}
+      >
+        <UserMinus aria-hidden="true" />
+      </Button>
+      {note.kind === "text" && (
+        <p
+          id={reasonId}
+          className="hidden max-w-60 items-start gap-1.5 text-xs leading-5 text-foreground md:flex"
+        >
+          <Lock className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          {note.text}
+        </p>
+      )}
+      {blocked && (
+        <span
+          className={`flex items-center gap-1 text-xs leading-5 text-foreground ${
+            note.kind === "text" ? "md:hidden" : ""
+          }`}
+        >
+          <Lock className="size-3.5 shrink-0" aria-hidden="true" />
+          {t("access.assignments.endLocked")}
+        </span>
+      )}
+    </div>
+  );
+}
+
+export function AssignmentsPage({
+  access,
+  viewerUserId,
+}: {
+  access: AreaAccess;
+  /** The signed-in user's id (session), used to mirror the Owner end rule. */
+  viewerUserId?: string;
+}) {
   const t = useT();
   const now = useNow();
   const roles = useRoles();
   const assignments = useAssignments({ limit: 100 });
   const people = useAssignablePeople();
+  // Active Owner assignments of the tenant: who may end an Owner assignment and
+  // whether it is the last one (legend-tj8o). The API decides again (409).
+  const ownerRoleId = roles.data?.data.find(
+    (row) => row.templateKey === "owner",
+  )?.id;
+  const ownerAssignments = useRoleAssignmentsActive(ownerRoleId);
   const canAssign = holdsAny(access, ["access.role.assign"]);
   const { lookup } = useScopeLookup({
     org: holdsAny(access, ["org.structure.manage"]),
@@ -132,6 +263,26 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
       }),
     [rows, search, roleId, status],
   );
+
+  const endGuard = (row: RoleAssignment) =>
+    endAssignmentGuard({
+      target: row,
+      roles: roles.data?.data ?? [],
+      viewerUserId,
+      ownerAssignments: ownerAssignments.data?.data,
+      now,
+    });
+
+  // One banner for the whole table when the Owner list failed and a visible
+  // row is held back by it (rows then show only a short lock label).
+  const ownerListBanner =
+    ownerAssignments.isError &&
+    canAssign &&
+    filtered.some((row) => {
+      if (row.status === "expired") return false;
+      const guard = endGuard(row.assignment);
+      return !guard.allowed && guard.reason === "loading";
+    });
 
   const loading = assignments.isPending || roles.isPending;
   const failed = assignments.isError || roles.isError;
@@ -256,6 +407,25 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
         }}
         rowCount={filtered.length}
       >
+        {ownerListBanner && (
+          <div
+            id={END_GUARD_ERROR_ID}
+            role="alert"
+            className="m-card flex flex-wrap items-center gap-3 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm leading-6 text-destructive"
+          >
+            <span className="min-w-0 flex-1">
+              {t("access.assignments.endGuardError")}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void ownerAssignments.refetch()}
+            >
+              {t("common.retry")}
+            </Button>
+          </div>
+        )}
         <Table>
           <TableHeader>
             <TableRow>
@@ -276,52 +446,60 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filtered.map((row) => (
-              <TableRow key={row.assignment.id}>
-                <TableCell>
-                  <span className="grid gap-0.5">
-                    <span className="font-semibold">
-                      {personLabel(row.assignment)}
+            {filtered.map((row) => {
+              const note: EndNote =
+                canAssign && row.status !== "expired"
+                  ? endNote(
+                      t,
+                      endGuard(row.assignment),
+                      ownerAssignments.isError,
+                    )
+                  : { kind: "none" };
+              return (
+                <TableRow key={row.assignment.id}>
+                  <TableCell>
+                    <span className="grid gap-0.5">
+                      <span className="font-semibold">
+                        {personLabel(row.assignment)}
+                      </span>
+                      <span className="text-xs text-muted-foreground md:hidden">
+                        {scopeLabel(row.assignment)}
+                      </span>
+                      <EndNoteInline note={note} />
                     </span>
-                    <span className="text-xs text-muted-foreground md:hidden">
+                  </TableCell>
+                  <TableCell>{row.role?.name ?? "—"}</TableCell>
+                  <TableCell className="hidden md:table-cell">
+                    <span className="text-sm text-muted-foreground">
                       {scopeLabel(row.assignment)}
                     </span>
-                  </span>
-                </TableCell>
-                <TableCell>{row.role?.name ?? "—"}</TableCell>
-                <TableCell className="hidden md:table-cell">
-                  <span className="text-sm text-muted-foreground">
-                    {scopeLabel(row.assignment)}
-                  </span>
-                </TableCell>
-                <TableCell className="hidden lg:table-cell">
-                  <span className="grid gap-0.5 text-sm">
-                    <span>{formatInstant(row.assignment.validFrom)}</span>
-                    <span className="text-muted-foreground">
-                      {row.assignment.validUntil
-                        ? formatInstant(row.assignment.validUntil)
-                        : t("access.assignments.noEnd")}
+                  </TableCell>
+                  <TableCell className="hidden lg:table-cell">
+                    <span className="grid gap-0.5 text-sm">
+                      <span>{formatInstant(row.assignment.validFrom)}</span>
+                      <span className="text-muted-foreground">
+                        {row.assignment.validUntil
+                          ? formatInstant(row.assignment.validUntil)
+                          : t("access.assignments.noEnd")}
+                      </span>
                     </span>
-                  </span>
-                </TableCell>
-                <TableCell>
-                  <StatusBadge status={row.status} />
-                </TableCell>
-                <TableCell>
-                  {canAssign && row.status !== "expired" && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={`${t("access.assignments.end")} ${personLabel(row.assignment)} — ${row.role?.name ?? ""}`}
-                      onClick={() => setEnding(row)}
-                    >
-                      <UserMinus aria-hidden="true" />
-                    </Button>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge status={row.status} />
+                  </TableCell>
+                  <TableCell>
+                    {canAssign && row.status !== "expired" && (
+                      <EndAssignmentButton
+                        assignmentId={row.assignment.id}
+                        label={`${personLabel(row.assignment)} — ${row.role?.name ?? ""}`}
+                        note={note}
+                        onEnd={() => setEnding(row)}
+                      />
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </DataTableShell>
@@ -330,6 +508,7 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
         open={grantOpen}
         onOpenChange={setGrantOpen}
         roles={roles.data?.data ?? []}
+        viewerUserId={viewerUserId}
         people={grantablePeople}
         lookup={lookup}
         onGranted={() => setEnding(null)}

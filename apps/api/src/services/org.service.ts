@@ -447,12 +447,14 @@ export async function createBrandInTx(
   context: ScopedTenantContext,
   input: CreateBrandInput,
 ): Promise<Brand> {
-  // legend-ja7i7 (TEN-10): the logo must be in this tenant's media library.
+  // legend-ja7i7 (TEN-10): the logo must be in this tenant's media library;
+  // legend-bkdmc: and it must be a `brand_logo` upload.
   await assertTenantMedia(
     tx,
     context.tenant.tenantId,
     input.logoMediaId,
     "Logo",
+    "brand_logo",
   );
   try {
     const [row] = await tx
@@ -485,12 +487,14 @@ export async function updateBrand(
   input: UpdateBrandInput,
 ): Promise<Brand> {
   return withTenant(db, context, async (tx) => {
-    // legend-ja7i7 (TEN-10): same rule as createBrand; null clears the logo.
+    // legend-ja7i7 (TEN-10), legend-bkdmc: same rule as createBrand; null
+    // clears the logo.
     await assertTenantMedia(
       tx,
       context.tenant.tenantId,
       input.logoMediaId,
       "Logo",
+      "brand_logo",
     );
     const changes = {
       ...(input.name === undefined ? {} : { name: input.name }),

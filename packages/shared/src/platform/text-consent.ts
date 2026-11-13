@@ -52,6 +52,12 @@ export const textOverrideEndpoints = {
     body: textOverrideInputSchema,
     response: dataResponseSchema(textOverrideRecordSchema),
   }),
+  /** Clearing a term deletes its row (never an empty string); 204, no body. */
+  deleteTextOverride: defineEndpoint({
+    method: "DELETE",
+    path: "/api/org/text-overrides/:overrideId",
+    params: z.strictObject({ overrideId: uuidSchema }),
+  }),
 } as const;
 
 // ------------------------------------------------------------------ consents
