@@ -1383,3 +1383,4 @@ Langkah berikut CTO baru:
 - Thread baru G4wz0 (brief 596, Sonnet, akun #2): legend-48ft7 + legend-bxdhv, cabang fix/money-journal-refund, migrasi cadangan 0430-0431.
 - Kuota: Claude #1 93% 7d, #3 96% 7d, #2 6% 7d (5h 37%) -> hanya #2, hemat. Codex 86-92% 7d -> hanya second-opinion.
 - 08:35 G4wz0 selesai: fix/money-journal-refund c660fd6b (legend-48ft7, architect xhigh lolos; tanpa migrasi) -> antre batch54. legend-bxdhv ditutup (lulus di m1). Antrean second-opinion Codex area uang/jurnal: tambah c660fd6b. Celah tersisa: race payout gateway tanpa test (butuh seed payment intent).
+- 08:50 G2wb6 (Codex) selesai Tanya AI A+B: ws/ai-login-autodetect eb1df93a (dipush CTO), migrasi 0417-0418, 237 API + 88 root + build + PW 18/1 skip. Belum: login ChatGPT nyata (fixture). Review architect xhigh B jalan (subagent CTO). Second-opinion Codex area AI/auth wajib sebelum rilis. Thread baru G8y7k (brief 597): sambungkan ui/ai-settings ke API + legend-nnufz.1.
