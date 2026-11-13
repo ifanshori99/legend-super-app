@@ -70,12 +70,12 @@ beforeAll(async () => {
 afterAll(() => undefined);
 
 describe("menu import router in createApp", () => {
-  it("with a storage runtime the print route reaches the renderer check, not the storage check", async () => {
+  it("with a storage runtime the print route has a default PDF renderer (no 503 for renderer or storage)", async () => {
     const res = await withStaff.client.get(
       `/api/menu/print?outletId=${outletA}`,
     );
-    expect(res.status, JSON.stringify(res.body)).toBe(503);
-    expect(res.body.error.message).toContain("Pembuat PDF");
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain("Pembuat PDF");
   });
 
   it("without a storage runtime the print route answers the storage 503", async () => {

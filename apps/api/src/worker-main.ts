@@ -82,6 +82,7 @@ import {
   createMenuPrintSweepLoopIfEnabled,
   menuPrintOutboxDeliver,
 } from "./worker/menu-print.job.ts";
+import { createMenuPdfRenderer } from "./services/menu-pdf-renderer.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
 import { fireDueBreakfastOrders } from "./services/facility-breakfast-consumers.ts";
 import { setQrOrderDepositCreditLookup } from "./services/qr-order-ports.ts";
@@ -897,9 +898,8 @@ try {
       database: db,
       log: consoleLikeLog(logger),
     });
-    // The PDF engine is not chosen yet (renderer null): the sweep loop is not
-    // started (one info log, no per-round queries); the outbox consumer that
-    // marks outlets dirty keeps running.
+    // Sweep loop renders due outlets with the pdf-lib menu renderer; the
+    // outbox consumer marks outlets dirty.
     if (postsInventoryGl)
       menuPrintSweep = createMenuPrintSweepLoopIfEnabled(
         {
@@ -913,7 +913,7 @@ try {
           deps: {
             storage: storageRuntime.storage,
             scanner: storageRuntime.scanner,
-            renderer: null,
+            renderer: createMenuPdfRenderer(),
           },
           onError: (message, tenantId) =>
             logger.error({ job: "menu_print_sweep", tenantId }, message),

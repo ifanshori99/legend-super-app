@@ -1,14 +1,14 @@
 // Printable menu (bead legend-dmi; PRD v1.7 §3 F8 "Menu Cetak Otomatis", §7
-// HTML -> PDF).
+// PDF).
 //
 // One PDF per outlet. Content rules:
 // - only items a guest could order: active, with a photo (Q23, same rule as
 //   `menuItemVisibleToGuests`), not deleted, availability `available` for the
 //   outlet, and with a price in the dine_in list in force today;
 // - prices EXCLUDE tax and service (owner decision) and the PDF says so;
-// - HTML is escaped (item names are tenant input).
-// Rendering goes through the `MenuPdfRenderer` port (the repo has no HTML->PDF
-// engine yet; the real adapter, e.g. headless Chromium, is wired by the lead).
+// Rendering goes through the `MenuPdfRenderer` port; the real adapter is
+// `createMenuPdfRenderer` (menu-pdf-renderer.ts, pdf-lib), wired in the worker
+// and the menu import router.
 // The PDF is stored through core-storage (`document`, private) and served via
 // the existing short-lived signed URL.
 //
@@ -62,9 +62,9 @@ import {
 import { readChannelPriceGrid } from "./menu-pricing.service.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
 
-/** HTML -> PDF port. The real adapter must not fetch remote resources. */
+/** Menu -> PDF port. The real adapter (`createMenuPdfRenderer`) draws the PDF itself and fetches no remote resources. */
 export interface MenuPdfRenderer {
-  render(html: string): Promise<Uint8Array>;
+  render(menu: PrintableMenu): Promise<Uint8Array>;
 }
 
 export type MenuPrintDeps = {
@@ -93,58 +93,10 @@ export type PrintableMenu = {
   }[];
 };
 
-export function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (ch) => {
-    switch (ch) {
-      case "&":
-        return "&amp;";
-      case "<":
-        return "&lt;";
-      case ">":
-        return "&gt;";
-      case '"':
-        return "&quot;";
-      default:
-        return "&#39;";
-    }
-  });
-}
-
 export function formatRupiah(value: number): string {
   return `Rp ${Math.trunc(value)
     .toString()
     .replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
-}
-
-/** Self-contained HTML (inline CSS, no remote resources). */
-export function renderMenuPrintHtml(menu: PrintableMenu): string {
-  const sections = menu.categories
-    .map(
-      (category) =>
-        `<section><h2>${escapeHtml(category.name)}</h2>${category.items
-          .map(
-            (item) =>
-              `<div class="row"><div class="n"><strong>${escapeHtml(item.name)}</strong>${
-                item.description ? `<p>${escapeHtml(item.description)}</p>` : ""
-              }</div><div class="p">${formatRupiah(item.priceIdr)}</div></div>`,
-          )
-          .join("")}</section>`,
-    )
-    .join("");
-  return `<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Menu ${escapeHtml(
-    menu.outletName,
-  )}</title><style>
-body{font-family:Helvetica,Arial,sans-serif;color:#111;margin:32px}
-h1{font-size:24px;margin:0}header p,footer{color:#555;font-size:12px}
-h2{font-size:16px;border-bottom:1px solid #999;padding-bottom:4px;margin-top:24px}
-.row{display:flex;justify-content:space-between;gap:16px;margin:8px 0;break-inside:avoid}
-.row p{margin:2px 0 0;font-size:12px;color:#444}.p{white-space:nowrap}
-footer{margin-top:32px;border-top:1px solid #ccc;padding-top:8px}
-</style></head><body><header><h1>${escapeHtml(menu.brandName)}</h1><p>${escapeHtml(
-    menu.outletName,
-  )} - ${escapeHtml(menu.date)}</p></header>${sections}<footer>${escapeHtml(
-    PRINT_TAX_NOTE,
-  )}</footer></body></html>`;
 }
 
 /** Stable hash of what is printed (the date is part of it: the footer shows it). */
@@ -534,7 +486,7 @@ export async function regenerateMenuPrint(
       );
       return { objectId: previous.objectId, itemCount, reused: true };
     }
-    const pdf = await deps.renderer.render(renderMenuPrintHtml(menu));
+    const pdf = await deps.renderer.render(menu);
     const object = await uploadStorage(
       db,
       context,

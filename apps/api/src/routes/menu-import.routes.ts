@@ -35,6 +35,7 @@ import {
   refreshMenuPrintNow,
   type MenuPdfRenderer,
 } from "../services/menu-print.service.ts";
+import { createMenuPdfRenderer } from "../services/menu-pdf-renderer.ts";
 import { IMPORT_MAX_FILE_BYTES } from "../services/menu-import-parse.ts";
 import type { MalwareScanner } from "../services/core-image.ts";
 
@@ -76,7 +77,7 @@ export function createMenuImportRouter(options: {
       );
     return {
       storage: options.storage,
-      renderer: options.renderer ?? null,
+      renderer: options.renderer ?? createMenuPdfRenderer(),
       scanner: options.scanner,
     };
   };
