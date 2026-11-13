@@ -29,6 +29,7 @@ import {
   type SplitClaim,
   type QrMenu,
   type QrMenuItem,
+  type QrMenuTheme,
   type QrOrder,
   type ServiceRequest,
   type Table,
@@ -161,6 +162,32 @@ function isActive(session: TableSession): boolean {
 }
 
 /**
+ * Sample active Tenant Theme (blue, not the rust Base Theme) so the mock QR menu
+ * shows the brand colors, font and corners of `menu.theme`.
+ */
+const mockTenantTheme: QrMenuTheme = {
+  tokens: {
+    light: {
+      primary: "#1d4ed8",
+      "primary-foreground": "#ffffff",
+      brand: "#1d4ed8",
+      "brand-foreground": "#ffffff",
+      "brand-subtle": "#dbeafe",
+    },
+    dark: {
+      primary: "#60a5fa",
+      "primary-foreground": "#0b1b3a",
+      brand: "#60a5fa",
+      "brand-foreground": "#0b1b3a",
+      "brand-subtle": "#172554",
+    },
+  },
+  fontFamily: "inter",
+  corners: "lembut",
+  logoUrl: null,
+};
+
+/**
  * legend-qf0i (owner Q23): the guest copy of the menu hides every active item
  * without a photo, the same rule the API read applies in SQL. With
  * `?mock=photo-missing` the legacy row is injected *before* the filter, so the
@@ -173,7 +200,7 @@ function guestMenu(table: Table, zone: FloorZone): QrMenu {
     getScenario() === "photo-missing"
       ? { ...menu, items: [...menu.items, legacyGuestItem(menu)] }
       : menu;
-  return hidePhotoLessMenuItems(withLegacy);
+  return { ...hidePhotoLessMenuItems(withLegacy), theme: mockTenantTheme };
 }
 
 /** The legacy row as a guest menu item: active, priced, and without a photo. */

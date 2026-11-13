@@ -15,6 +15,7 @@ import {
 } from "@/features/ws03-qr-order/hooks";
 import { useOnline } from "@/lib/use-online";
 import type { GuestOrderIssue } from "@starter/shared/qr-order";
+import { outletTimeZone } from "../../lib/outlet-time-zone.ts";
 import { QrSubPage } from "../session-states";
 import { IssueChoices } from "./issue-choices";
 import { VoucherReceipt } from "./voucher-receipt";
@@ -243,7 +244,7 @@ export function IssuePage({ issueId }: { issueId: string }) {
         <Resolved
           issue={issue}
           token={qrToken}
-          timeZone={menu?.outlet.timeZone}
+          timeZone={outletTimeZone(menu)}
         />
       )}
     </QrSubPage>

@@ -49,6 +49,30 @@ export async function runMenuPrintSweepJob(
   return { regenerated, failed };
 }
 
+/** Without a PDF renderer every due outlet would fail, so the sweep stays off. */
+export function shouldStartMenuPrintSweep(
+  renderer: MenuPrintDeps["renderer"],
+): boolean {
+  return renderer !== null;
+}
+
+/**
+ * Decides once at start: returns the loop, or null (after one `onDisabled`
+ * call) when the renderer is missing, so no round ever queries the database.
+ */
+export function createMenuPrintSweepLoopIfEnabled(
+  options: Parameters<typeof createMenuPrintSweepLoop>[0],
+  onDisabled: (message: string) => void,
+) {
+  if (!shouldStartMenuPrintSweep(options.deps.renderer)) {
+    onDisabled(
+      "menu print sweep dinonaktifkan: renderer PDF belum dikonfigurasi",
+    );
+    return null;
+  }
+  return createMenuPrintSweepLoop(options);
+}
+
 /**
  * Self-scheduling sweep loop for the worker process (legend-iuvq). Rounds never
  * overlap; a tenant whose context cannot be resolved is skipped, never stops

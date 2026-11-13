@@ -10,7 +10,11 @@ vi.mock("../services/menu-print.service.ts", () => ({
   runDueMenuPrints,
 }));
 
-import { createMenuPrintSweepLoop } from "../worker/menu-print.job.ts";
+import {
+  createMenuPrintSweepLoop,
+  createMenuPrintSweepLoopIfEnabled,
+  shouldStartMenuPrintSweep,
+} from "../worker/menu-print.job.ts";
 
 const deps = { storage: {}, scanner: {}, renderer: null } as never;
 const ctx = (id: string) =>
@@ -109,5 +113,37 @@ describe("menu print sweep loop", () => {
     });
     await expect(loop.runRound()).resolves.toBeUndefined();
     expect(onError).toHaveBeenCalledWith("Menu print sweep failed");
+  });
+});
+
+describe("menu print sweep start decision", () => {
+  const options = (renderer: unknown) => ({
+    listTenantIds: vi.fn(async () => ["a"]),
+    resolveContext: async (id: string) => ctx(id),
+    deps: { storage: {}, scanner: {}, renderer } as never,
+  });
+
+  it("does not start the loop without a renderer", () => {
+    const opts = options(null);
+    const onDisabled = vi.fn();
+    expect(shouldStartMenuPrintSweep(null)).toBe(false);
+    expect(createMenuPrintSweepLoopIfEnabled(opts, onDisabled)).toBeNull();
+    expect(onDisabled).toHaveBeenCalledTimes(1);
+    expect(onDisabled).toHaveBeenCalledWith(
+      "menu print sweep dinonaktifkan: renderer PDF belum dikonfigurasi",
+    );
+    expect(opts.listTenantIds).not.toHaveBeenCalled();
+  });
+
+  it("creates the loop when a renderer exists", async () => {
+    const onDisabled = vi.fn();
+    const loop = createMenuPrintSweepLoopIfEnabled(
+      options({ render: async () => Buffer.alloc(0) }),
+      onDisabled,
+    );
+    expect(shouldStartMenuPrintSweep({} as never)).toBe(true);
+    expect(loop).not.toBeNull();
+    expect(onDisabled).not.toHaveBeenCalled();
+    await loop!.stop();
   });
 });

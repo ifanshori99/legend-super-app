@@ -79,7 +79,7 @@ import { coreAuditWriter } from "./services/core-audit-writer";
 import { recipeBomSource } from "./services/recipe-bom.service.ts";
 import { retryDeliveryPlatformIntents } from "./services/delivery-platform-retry.ts";
 import {
-  createMenuPrintSweepLoop,
+  createMenuPrintSweepLoopIfEnabled,
   menuPrintOutboxDeliver,
 } from "./worker/menu-print.job.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
@@ -852,7 +852,7 @@ async function stopRefundPayoutSweep() {
 }
 // legend-iuvq: renders dirty printable menus every 30 s. Needs object storage,
 // so it is built after the storage runtime and stays null without STORAGE_*.
-let menuPrintSweep: ReturnType<typeof createMenuPrintSweepLoop> | null = null;
+let menuPrintSweep: ReturnType<typeof createMenuPrintSweepLoopIfEnabled> = null;
 try {
   await runtime.start();
   if (maintenancePool) {
@@ -897,32 +897,36 @@ try {
       database: db,
       log: consoleLikeLog(logger),
     });
-    // The PDF engine is not chosen yet (renderer null): a due outlet fails with
-    // 503 before any write and stays due, like the on-demand request.
+    // The PDF engine is not chosen yet (renderer null): the sweep loop is not
+    // started (one info log, no per-round queries); the outbox consumer that
+    // marks outlets dirty keeps running.
     if (postsInventoryGl)
-      menuPrintSweep = createMenuPrintSweepLoop({
-        listTenantIds: async () =>
-          (
-            await registry.query<{ id: string }>(
-              "SELECT id FROM app.active_tenant_registry",
-            )
-          ).rows.map((row) => row.id),
-        resolveContext,
-        deps: {
-          storage: storageRuntime.storage,
-          scanner: storageRuntime.scanner,
-          renderer: null,
+      menuPrintSweep = createMenuPrintSweepLoopIfEnabled(
+        {
+          listTenantIds: async () =>
+            (
+              await registry.query<{ id: string }>(
+                "SELECT id FROM app.active_tenant_registry",
+              )
+            ).rows.map((row) => row.id),
+          resolveContext,
+          deps: {
+            storage: storageRuntime.storage,
+            scanner: storageRuntime.scanner,
+            renderer: null,
+          },
+          onError: (message, tenantId) =>
+            logger.error({ job: "menu_print_sweep", tenantId }, message),
+          onRound: (result) => {
+            if (result.failed > 0)
+              logger.warn(
+                { job: "menu_print_sweep", ...result },
+                "menu print sweep round had failures",
+              );
+          },
         },
-        onError: (message, tenantId) =>
-          logger.error({ job: "menu_print_sweep", tenantId }, message),
-        onRound: (result) => {
-          if (result.failed > 0)
-            logger.warn(
-              { job: "menu_print_sweep", ...result },
-              "menu print sweep round had failures",
-            );
-        },
-      });
+        (message) => logger.info({ job: "menu_print_sweep" }, message),
+      );
   } else
     logger.warn(
       "Object storage is not configured (STORAGE_*): attendance selfie purge and edge selfie orphan sweep jobs not registered.",
