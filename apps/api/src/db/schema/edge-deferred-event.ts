@@ -27,7 +27,12 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import type { EventEnvelope } from "@starter/shared/events";
-import { outletIdColumn, tenantIdColumn, ulidInUuid } from "../columns.ts";
+import {
+  idrColumn,
+  outletIdColumn,
+  tenantIdColumn,
+  ulidInUuid,
+} from "../columns.ts";
 import { edgeNodes } from "./edge-node.ts";
 import { outlets, tenants } from "./platform-org.ts";
 
@@ -63,6 +68,13 @@ export const edgeDeferredEvents = pgTable(
     applyOutcome: varchar("apply_outcome", {
       length: 20,
     }).$type<EdgeDeferredApplyOutcome>(),
+    /**
+     * Total HPP (whole rupiah) of a parked `order.paid`: the sum of the order's
+     * edge `stock.moved` sale rows, recomputed (assigned, never added) by
+     * edge/order-edge-applier.ts whenever either side arrives (legend-pd9t).
+     * NULL = no stock row seen yet; informational, never a money source.
+     */
+    costSnapshotIdr: idrColumn("cost_snapshot_idr"),
   },
   (table) => [
     primaryKey({ columns: [table.tenantId, table.eventId] }),
@@ -85,6 +97,10 @@ export const edgeDeferredEvents = pgTable(
       table.tenantId,
       table.aggregateType,
       table.aggregateId,
+    ),
+    check(
+      "edge_deferred_events_cost_snapshot_check",
+      sql`${table.costSnapshotIdr} IS NULL OR ${table.costSnapshotIdr} >= 0`,
     ),
     check(
       "edge_deferred_events_apply_outcome_check",

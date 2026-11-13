@@ -25,6 +25,7 @@ import {
   registerEdgeAggregateKind,
   registerEdgeEventHandler,
 } from "./applier-registry.ts";
+import { recomputeEdgeOrderCost } from "./order-edge-applier.ts";
 import type { EdgeApplyMeta } from "./ports.ts";
 
 export const STOCK_MOVED_EVENT = "stock.moved";
@@ -79,6 +80,11 @@ export async function applyEdgeStockMoved(
     event,
     payload,
   );
+
+  // legend-pd9t: an order's sale row changes the cost snapshot of its parked
+  // order.paid. Also on a replay: the recompute assigns, so it never doubles.
+  if (payload.sourceType === "order" && payload.movementType === "sale")
+    await recomputeEdgeOrderCost(tx, tenantId, payload.sourceId);
 }
 
 /**

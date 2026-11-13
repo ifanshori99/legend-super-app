@@ -21,10 +21,14 @@ import {
 import type * as schema from "../db/schema";
 import { domainEventOutbox } from "../db/schema/core-events";
 import { withTenant } from "../db/tenant";
+import { isEdgeNode } from "../edge/mode.ts";
 import {
   inEdgeApplyScope,
   isEdgeApplyRefusedEvent,
 } from "../edge/apply-scope.ts";
+
+/** The stream the edge sync link relays (worker/transport.ts). */
+const CLOUD_SYNC_DESTINATION = "cloud-sync";
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -60,6 +64,19 @@ export async function appendOutbox(
     throw new CoreError(
       "CONFLICT",
       `${event.name} cannot be appended to the outbox while applying an edge event: the edge already deducted stock`,
+    );
+  // legend-7h5s: the edge sync link carries outlet-scoped events only (the
+  // worker transport dead-letters a tenant-wide one after the fact). Refuse it
+  // at the producer so the domain transaction rolls back with a clear error.
+  // Other destinations (identity, notification) never travel the link.
+  if (
+    !event.outletId &&
+    input.destination === CLOUD_SYNC_DESTINATION &&
+    isEdgeNode()
+  )
+    throw new CoreError(
+      "CONFLICT",
+      `${event.name} is tenant-wide and cannot be appended to the cloud-sync outbox on an edge node: the edge sync link carries outlet-scoped events only`,
     );
   if (event.outletId) assertOutletInScope(context.outletScope, event.outletId);
   else if (context.outletScope.kind !== "tenant")

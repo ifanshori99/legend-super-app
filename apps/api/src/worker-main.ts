@@ -171,6 +171,12 @@ const sendsReceiptEmails = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // escalate them (duplicate alerts, provider calls from the edge); same
 // fail-closed rule.
 const sweepsRefunds = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
+// legend-7h5s: approval deadlines, leave, exit clearance and support-access
+// expiry own cloud-only data (their routes are not in EDGE_API_PREFIXES) and
+// may emit tenant-wide cloud-sync events, which an edge node must never
+// produce (appendOutbox refuses them). Same fail-closed rule. Facility slot
+// holds are NOT gated: /api/facility is served on the edge (offline smart lock).
+const sweepsCloudOwnedData = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // legend-usyi: the audit retention purge runs on the cloud only, as its own
 // maintenance login. A production cloud worker without the URL fails here at
 // startup; an edge worker skips the job (follow-up: edge retention).
@@ -445,32 +451,40 @@ const relay = createRelayRuntime({
     // §3 F7 approval deadlines (legend-y5q): expire overdue levels and append
     // approval.resolved for the source module + notifications. Fail closed: a
     // sweep error never blocks the relay, the next tick retries.
-    try {
-      await expireDueApprovalRequests(context);
-    } catch {
-      console.error("Approval deadline sweep failed");
+    if (sweepsCloudOwnedData) {
+      try {
+        await expireDueApprovalRequests(context);
+      } catch {
+        console.error("Approval deadline sweep failed");
+      }
     }
     // legend-arj.1: leave accrual, carry-over and carry-over expiry once per
     // local day (idempotent through the ledger). Fail closed: an error leaves
     // no day marker, so the next tick retries, and never blocks the relay.
-    try {
-      await runScheduledLeaveJobs(context);
-    } catch {
-      console.error("Scheduled leave jobs failed");
+    if (sweepsCloudOwnedData) {
+      try {
+        await runScheduledLeaveJobs(context);
+      } catch {
+        console.error("Scheduled leave jobs failed");
+      }
     }
     // legend-arj.6: exit clearance for offboardings past their last working
     // day, as the system actor. Same fail-closed rule: a failed employee leaves
     // no day marker, so the next tick retries; never blocks the relay.
-    try {
-      await runScheduledExitClearance(context);
-    } catch {
-      console.error("Scheduled exit clearance failed");
+    if (sweepsCloudOwnedData) {
+      try {
+        await runScheduledExitClearance(context);
+      } catch {
+        console.error("Scheduled exit clearance failed");
+      }
     }
     // TEN-04: record lapsed support-access sessions exactly once.
-    try {
-      await expireDueSupportAccessGrants(context);
-    } catch {
-      console.error("Support access expiry sweep failed");
+    if (sweepsCloudOwnedData) {
+      try {
+        await expireDueSupportAccessGrants(context);
+      } catch {
+        console.error("Support access expiry sweep failed");
+      }
     }
     // FAC-02 (legend-nm4f): cancel facility slot holds whose payment TTL
     // lapsed so the unit frees up. Same fail-closed rule as above.

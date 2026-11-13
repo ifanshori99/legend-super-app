@@ -30,7 +30,24 @@
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import type { RequestHandler } from "express";
+import { env } from "../config/env.ts";
 import { HttpError } from "../lib/http-error.ts";
+
+let readEdgeMode: () => boolean = () => env.EDGE_MODE;
+
+/**
+ * Whether this process is an edge node (`env.EDGE_MODE`). Read per call and
+ * process wide (API server and worker both get the env), unlike the in-memory
+ * edge runtime state which only the API server process installs.
+ */
+export function isEdgeNode(): boolean {
+  return readEdgeMode();
+}
+
+/** Test seam: override how edge mode is read (null restores `env.EDGE_MODE`). */
+export function setEdgeNodeForTests(fn: (() => boolean) | null): void {
+  readEdgeMode = fn ?? (() => env.EDGE_MODE);
+}
 
 /** Web paths the edge serves (PRD §5 site map, "Dilayani edge node"). */
 export const EDGE_WEB_PREFIXES = [

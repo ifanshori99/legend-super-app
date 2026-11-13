@@ -135,9 +135,35 @@ export async function applyEdgeDeferredEvent(
   return inserted.length > 0;
 }
 
+/**
+ * Runs after a "deferred" event is parked (also on a replay), in the same
+ * transaction. The registry allows one handler per event, so a domain that
+ * must react to a parked event (order cost, legend-pd9t) adds a hook here
+ * instead of replacing the parking handler.
+ */
+export type EdgeParkedEventHook = (
+  tx: EdgeTx,
+  event: EventEnvelope,
+  meta: EdgeApplyMeta,
+) => Promise<void>;
+
+const parkedEventHooks = new Map<string, EdgeParkedEventHook>();
+
+/** Idempotent; a different hook for a taken event name throws (wiring bug). */
+export function registerEdgeParkedEventHook(
+  eventName: string,
+  hook: EdgeParkedEventHook,
+): void {
+  const existing = parkedEventHooks.get(eventName);
+  if (existing && existing !== hook)
+    throw new Error(`A parked-event hook for ${eventName} is already set`);
+  parkedEventHooks.set(eventName, hook);
+}
+
 // Stable identities: the registry treats a different handler as a wiring bug.
 const applyExplicitDeferred: EdgeEventHandler = async (tx, event, meta) => {
   await applyEdgeDeferredEvent(tx, event, meta, "deferred");
+  await parkedEventHooks.get(event.name)?.(tx, event, meta);
 };
 
 const applyUnclassified: EdgeEventHandler = async (tx, event, meta) => {
