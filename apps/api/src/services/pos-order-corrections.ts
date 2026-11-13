@@ -413,6 +413,7 @@ export async function voidPosOrderCorrection(
         voidId: row.id,
         receiptNumber: receipt.number,
         voidedAt: now.toISOString(),
+        requestedBy: caller.userId,
       };
       await appendPosEvent(tx, context, "order.voided", {
         order,

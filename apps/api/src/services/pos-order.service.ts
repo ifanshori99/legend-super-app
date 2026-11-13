@@ -1353,11 +1353,37 @@ export async function completePosOrder(
         tenders: captured.map((tender) => ({
           method: tender.method,
           amountIdr: tender.amountIdr,
+          // Edge order ingest: only the keys the tender actually has.
+          ...(tender.receivedIdr !== null
+            ? { receivedIdr: tender.receivedIdr }
+            : {}),
+          ...(tender.pointsUsed !== null && tender.pointsUsed > 0
+            ? { pointsUsed: tender.pointsUsed }
+            : {}),
         })),
         shiftId: pos.shiftId,
         cashierId: pos.cashierId,
         deviceId: pos.deviceId,
         paidAt: now.toISOString(),
+        // Edge order ingest (docs/design/edge-order-ingest.md): enough to
+        // rebuild the order on the cloud. Void lines are included; `status`
+        // tells the consumer which to skip.
+        orderNumber: order.number,
+        subtotalIdr: order.subtotalIdr,
+        pricesIncludeTax: order.pricesIncludeTax,
+        paymentMode: order.paymentMode,
+        isTraining: pos.isTraining,
+        lines: items.map(({ item }) => ({
+          menuItemId: item.menuItemId,
+          name: item.name,
+          quantity: item.quantity,
+          unitPriceIdr: item.unitPriceIdr,
+          modifiersTotalIdr: item.modifiersTotalIdr,
+          lineTotalIdr: item.lineTotalIdr,
+          fireStatus: item.fireStatus,
+          reservedBusinessDate: item.reservedBusinessDate,
+          status: item.status,
+        })),
       };
       // Every completed sale emits order.paid. A sale fully covered by the
       // reservation DP (legend-9pz9) carries empty tenders, so the deposit
@@ -1625,6 +1651,7 @@ export async function voidPosOrder(
         voidId: null,
         receiptNumber: null,
         voidedAt: now.toISOString(),
+        requestedBy: caller.userId,
       };
       await appendPosEvent(tx, context, "order.voided", {
         order,

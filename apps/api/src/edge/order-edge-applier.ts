@@ -14,7 +14,7 @@
 // and can never double. No ledger row yet -> the column stays NULL (never
 // guessed). Only this module writes the column. The value is informational
 // (HPP); it is never a payment, refund or GL source.
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   CoreError,
   idr,
@@ -30,12 +30,18 @@ import type { EdgeTx } from "../services/edge-queue.service.ts";
 import { sourceIdToDb } from "../services/inventory.service.ts";
 import { scaledCostToIdr } from "../services/inventory-ops.shared.ts";
 import {
+  ingestEdgeOrderPaid,
+  ingestEdgeOrderVoided,
+  lockOrderSource,
+} from "./order-ingest.ts";
+import {
   ORDER_AGGREGATE,
   registerEdgeParkedEventHook,
   type EdgeParkedEventHook,
 } from "./deferred-event-applier.ts";
 
 export const ORDER_PAID_EVENT = "order.paid";
+export const ORDER_VOIDED_EVENT = "order.voided";
 /** Ledger source type and movement type of an order's recipe deduction. */
 const ORDER_SOURCE_TYPE = "order";
 const SALE_MOVEMENT_TYPE = "sale";
@@ -66,13 +72,10 @@ export async function recomputeEdgeOrderCost(
   // Not an order id of either form: nothing of ours can match it.
   if (!DB_UUID_PATTERN.test(dbId)) return;
   // Same advisory lock as the stock row insert (inventory.service.ts
-  // lockStockSource), so a concurrent stock.moved and order.paid for one
-  // order serialise: the later one always reads the earlier one's rows.
-  const lockKey =
-    `stock-source:${tenantId}:${ORDER_SOURCE_TYPE}:${dbId}`.toLowerCase();
-  await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`,
-  );
+  // lockStockSource) and the order ingest (R4), so a concurrent stock.moved
+  // and order.paid for one order serialise: the later one always reads the
+  // earlier one's rows.
+  await lockOrderSource(tx, tenantId, dbId);
   const parked = await tx
     .select({
       eventId: edgeDeferredEvents.eventId,
@@ -149,13 +152,27 @@ const costAfterOrderPaidParked: EdgeParkedEventHook = async (
     meta.context.tenant.tenantId,
     event.aggregateId,
   );
+  // legend-771dl: rebuild the cloud order. Never throws (refusals are
+  // recorded in edge_order_ingests), so parking is never undone.
+  await ingestEdgeOrderPaid(tx, event, meta);
+};
+
+// Stable identity (see above). Same never-throw rule.
+const ingestAfterOrderVoidedParked: EdgeParkedEventHook = async (
+  tx,
+  event,
+  meta,
+) => {
+  await ingestEdgeOrderVoided(tx, event, meta);
 };
 
 /**
  * Cloud boot (registerEdgeLink): after `order.paid` is parked, recompute its
- * cost snapshot from the order's stock rows already received. Idempotent.
+ * cost snapshot from the order's stock rows already received, then ingest
+ * the order; `order.voided` ingests the void. Idempotent.
  * Call alongside registerPosDeferredEdgeApplier.
  */
 export function registerOrderEdgeApplier(): void {
   registerEdgeParkedEventHook(ORDER_PAID_EVENT, costAfterOrderPaidParked);
+  registerEdgeParkedEventHook(ORDER_VOIDED_EVENT, ingestAfterOrderVoidedParked);
 }

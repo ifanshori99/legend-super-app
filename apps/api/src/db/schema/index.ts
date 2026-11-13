@@ -75,6 +75,7 @@ export * from "./consents";
 export * from "./operations";
 // WS-02 edge node registry + cloud <-> edge link (legend-2pi).
 export * from "./edge-deferred-event";
+export * from "./edge-order-ingest";
 export * from "./edge-node";
 export * from "./edge-hris";
 export * from "./edge-sync-conflict";
