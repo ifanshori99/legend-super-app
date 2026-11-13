@@ -1413,3 +1413,4 @@ Langkah berikut CTO baru:
 - 14:34 Batch54 masuk m1 d56eafb4 (refund jurnal, AI login, layar AI, tenant config; migrasi 0314-0315; 16140 test hijau + build). G04hs lanjut batch55 (brief 623, 7 cabang, migrasi mulai 0316) + cleanup-ssd (SSD 13 GiB).
 - 15:10 G8b64 ops/menu selesai (ws/ops-menu-small 56254fbb, migrasi 0476-0477 berurutan). Akun Claude #2 5h 84% (reset 16:29): slot baru ditahan sampai reset.
 - 15:12 G5r5c payment hardening selesai (ws/payment-hardening de9d6ca4b, migrasi 0482, architect xhigh 3 temuan dibetulkan). Interferensi run gabungan = akar sama legend-2187v (worker 2), tertutup oleh fix/flaky-restore-window di batch55.
+- 15:12 G05pg kunci run payroll selesai (ws/payroll-run-lock 06f20291, 110 test, 3x architect xhigh). Belum ada route kunci (legend-c2yca P1); run pinjaman/reimburse/SC/rapel ditolak (legend-ele0u). CTO: THR/bonus Desember tetap ditolak sampai kartu tahunan Desember selesai (P1).
