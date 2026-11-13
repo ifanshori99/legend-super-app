@@ -4934,3 +4934,14 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti: 6 file API (91 tes) hijau bersama; node tests 68/68; typecheck shared/API/web hijau; eslint + prettier hijau; db:generate kosong. Fail-first Q8 dibuktikan terhadap service HEAD (8 gagal); Q7 fail-first karena kolom/rute belum ada di HEAD (tidak dijalankan ulang terhadap HEAD).
 - Architect (xhigh) atas Q7: 1 High (izin tenant lama) dan 3 Medium diperbaiki; M3 (top-up kas kecil dari bank tanpa batas, pemecahan pembayaran di bawah batas) tidak dikerjakan, perlu keputusan founder.
 - Subagent: total 27, puncak 3-4 bersamaan, token heavy dipegang test-runner dan CTO-thread bergantian (tidak pernah bersamaan). Biaya sesi* 5816k (Sonnet utama 2042k, Sonnet sub 2879k, Opus sub 563k, Haiku 331k).
+
+## fix/petty-fund-required: batas kas keluar untuk top-up kas kecil + anti pecah (Claude engineer, 13 Nov 2026)
+
+- Brief: `docs/briefs/sub-cash-limit-antisplit.md`. Keputusan CTO "pilih yang membatasi".
+- Top-up kas kecil dari bank kena batas dan persetujuan yang sama dengan kas keluar: di atas batas menjadi entri `petty_topup` berstatus `pending_approval` (tanpa saldo berubah, tanpa jurnal); setujui menjalankan top-up sungguhan sekali (key `pt/<entryId>`), tolak tanpa efek. Kunci idempotensi klien berawalan `pt:` atau `pt/` ditolak 422.
+- Anti pecah: pembuat + outlet + hari bisnis outlet yang sama; bila total kas keluar + top-up (pending dan approved, bukan rejected) melewati batas, entri yang melewatinya menjadi pending. Tes gagal-dulu: 3 x Rp2 jt hari sama, yang ke-3 pending. Dikunci per (tenant, pembuat, outlet) dengan advisory lock; hari bisnis dihitung dari `created_at` server, bukan tanggal input pengguna.
+- Migrasi 0498 (`cash_limit_antisplit`): kind `petty_topup`, CHECK, indeks. Di luar rentang 0496-0497 sebelumnya, nomor perlu dikonfirmasi CTO.
+- Bead `legend-4qowr` (P2): inbox persetujuan umum (approval_requests action cash_out + approval_policies + entri inbox), belum dikerjakan.
+- Risiko terbuka: pengelompokan per outlet dan outlet opsional pada kas keluar, jadi bergantian outlet A / B / tanpa outlet bisa tetap di bawah batas. L2 belum: top-up pending tanpa pemetaan akun petty_cash baru gagal saat disetujui. Toast setujui/tolak masih bertuliskan "Kas keluar" untuk top-up.
+- Bukti: 7 file API (122 tes) hijau; node tests 68/68; typecheck hijau; eslint + prettier hijau; db:generate kosong. Architect xhigh: H1 (bypass/jam kunci `pt:`) dan L1 (kondisi 202) diperbaiki.
+- Screenshot Kas & Bank 390/1280 di `docs/screenshots/cash-bank/` (cash-approval, cash-limit-card, petty-topup-pending).

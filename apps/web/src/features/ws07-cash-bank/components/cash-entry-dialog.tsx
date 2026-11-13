@@ -8,7 +8,7 @@ import * as React from "react";
 import type {
   Account,
   BankAccount,
-  CashBankEntryKind,
+  CreatableCashBankEntryKind,
 } from "@starter/shared/accounting";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -73,7 +73,7 @@ export function CashEntryDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  kind: CashBankEntryKind;
+  kind: CreatableCashBankEntryKind;
   legalEntityId: string;
   accounts: readonly BankAccount[];
   glAccounts: readonly Account[];
@@ -103,7 +103,7 @@ function CashEntryForm({
   defaultBankAccountId,
   onClose,
 }: {
-  kind: CashBankEntryKind;
+  kind: CreatableCashBankEntryKind;
   legalEntityId: string;
   accounts: readonly BankAccount[];
   glAccounts: readonly Account[];

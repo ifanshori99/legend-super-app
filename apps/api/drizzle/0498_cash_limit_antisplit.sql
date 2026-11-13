@@ -1,0 +1,6 @@
+ALTER TABLE "cash_bank_entries" DROP CONSTRAINT "cash_bank_entries_kind_check";--> statement-breakpoint
+ALTER TABLE "cash_bank_entries" DROP CONSTRAINT "cash_bank_entries_status_kind_check";--> statement-breakpoint
+CREATE INDEX "cash_bank_entries_limit_idx" ON "cash_bank_entries" USING btree ("tenant_id","created_by","created_at") WHERE "cash_bank_entries"."kind" IN ('cash_out','petty_topup');--> statement-breakpoint
+ALTER TABLE "cash_bank_entries" ADD CONSTRAINT "cash_bank_entries_petty_topup_check" CHECK ("cash_bank_entries"."kind" <> 'petty_topup' OR ("cash_bank_entries"."outlet_id" IS NOT NULL AND "cash_bank_entries"."counter_account_id" IS NULL AND "cash_bank_entries"."to_bank_account_id" IS NULL));--> statement-breakpoint
+ALTER TABLE "cash_bank_entries" ADD CONSTRAINT "cash_bank_entries_kind_check" CHECK ("cash_bank_entries"."kind" IN ('cash_in','cash_out','transfer','petty_topup'));--> statement-breakpoint
+ALTER TABLE "cash_bank_entries" ADD CONSTRAINT "cash_bank_entries_status_kind_check" CHECK ("cash_bank_entries"."status" = 'approved' OR "cash_bank_entries"."kind" IN ('cash_out','petty_topup'));

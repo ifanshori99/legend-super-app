@@ -939,12 +939,14 @@ export const CASH_ENTRY_KIND_KEYS: Record<CashBankEntryKind, MessageKey> = {
   cash_in: "accounting.cash.entries.kind.cash_in",
   cash_out: "accounting.cash.entries.kind.cash_out",
   transfer: "accounting.cash.entries.kind.transfer",
+  petty_topup: "accounting.cash.entries.kind.petty_topup",
 };
 
 export const CASH_ENTRY_KIND_TONES: Record<CashBankEntryKind, Tone> = {
   cash_in: "success",
   cash_out: "warning",
   transfer: "info",
+  petty_topup: "warning",
 };
 
 export const CASH_ENTRY_STATUS_KEYS: Record<CashBankEntryStatus, MessageKey> = {

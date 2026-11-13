@@ -11,6 +11,7 @@ import {
   ExternalLink,
   FolderOpen,
   Link2,
+  Wallet,
   XCircle,
   type LucideIcon,
 } from "lucide-react";
@@ -123,6 +124,7 @@ const ENTRY_KIND_ICONS: Record<CashBankEntryKind, LucideIcon> = {
   cash_in: ArrowDownLeft,
   cash_out: ArrowUpRight,
   transfer: ArrowLeftRight,
+  petty_topup: Wallet,
 };
 
 export function CashEntryKindBadge({ kind }: { kind: CashBankEntryKind }) {

@@ -120,6 +120,7 @@ describe("legend-4961 cash-bank entry input contract", () => {
     assert.deepEqual([...acc.CASH_BANK_ENTRY_KINDS].sort(), [
       "cash_in",
       "cash_out",
+      "petty_topup",
       "transfer",
     ]);
   });

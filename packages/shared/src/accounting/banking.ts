@@ -633,9 +633,16 @@ export const CASH_BANK_ENTRY_KINDS = [
   "cash_in",
   "cash_out",
   "transfer",
+  /** Petty cash top-up held for approval (above the limit); never a posted cash/bank document by itself. */
+  "petty_topup",
 ] as const;
 export const cashBankEntryKindSchema = z.enum(CASH_BANK_ENTRY_KINDS);
 export type CashBankEntryKind = z.infer<typeof cashBankEntryKindSchema>;
+/** Kinds a user can create directly; `petty_topup` only appears via the petty cash movement. */
+export type CreatableCashBankEntryKind = Exclude<
+  CashBankEntryKind,
+  "petty_topup"
+>;
 
 export const CASH_BANK_ENTRY_STATUSES = [
   "pending_approval",
@@ -645,7 +652,12 @@ export const CASH_BANK_ENTRY_STATUSES = [
 export const cashBankEntryStatusSchema = z.enum(CASH_BANK_ENTRY_STATUSES);
 export type CashBankEntryStatus = z.infer<typeof cashBankEntryStatusSchema>;
 
-/** Founder Q7 (13 Nov 2026): a cash_out above this (strictly) needs approval; default Rp5.000.000. */
+/**
+ * Founder Q7 (13 Nov 2026): a cash_out or a petty cash top-up above this
+ * (strictly) needs approval, and so does one that makes the creator's total of
+ * cash outs and top-ups at one outlet on one business day pass it (anti-split);
+ * default Rp5.000.000.
+ */
 export const DEFAULT_CASH_OUT_APPROVAL_LIMIT_IDR = 5_000_000;
 export const MAX_CASH_OUT_APPROVAL_LIMIT_IDR = 100_000_000_000;
 
@@ -685,7 +697,7 @@ export const cashBankEntrySchema = z
     counterAccountId: accountIdSchema.nullable(),
     description: entryDescriptionSchema,
     reference: entryReferenceSchema,
-    /** Founder Q7: a cash_out above the tenant limit is `pending_approval` (no journal yet). */
+    /** Founder Q7: a cash_out / petty_topup above the tenant limit is `pending_approval` (no journal yet). */
     status: cashBankEntryStatusSchema,
     approverId: userIdSchema.nullable(),
     decidedAt: isoDateTimeSchema.nullable(),
@@ -700,9 +712,23 @@ export const cashBankEntrySchema = z
       ctx.addIssue({ code: "custom", path: [path], message });
     if ((row.status === "approved") !== (row.journalEntryId !== null))
       issue("journalEntryId", "only an approved entry has a journal");
-    if (row.status !== "approved" && row.kind !== "cash_out")
-      issue("status", "only a cash out waits for approval");
-    if (row.kind === "transfer") {
+    if (
+      row.status !== "approved" &&
+      row.kind !== "cash_out" &&
+      row.kind !== "petty_topup"
+    )
+      issue(
+        "status",
+        "only a cash out or a petty cash top-up waits for approval",
+      );
+    if (row.kind === "petty_topup") {
+      if (row.outletId === null)
+        issue("outletId", "a petty cash top-up names its outlet");
+      if (row.counterAccountId !== null)
+        issue("counterAccountId", "a petty cash top-up has no counter account");
+      if (row.toBankAccountId !== null)
+        issue("toBankAccountId", "only a transfer has a destination account");
+    } else if (row.kind === "transfer") {
       if (row.toBankAccountId === null)
         issue("toBankAccountId", "a transfer names its destination account");
       else if (row.toBankAccountId === row.bankAccountId)

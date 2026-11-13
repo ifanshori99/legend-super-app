@@ -45,6 +45,7 @@ import {
   type Session,
   type World,
 } from "./helpers/cash-bank-world.ts";
+import { withLimitSharedLock } from "./helpers/cash-limit-lock.ts";
 
 const app = createApp();
 const ENTRIES = "/api/accounting/cash-bank/entries";
@@ -71,6 +72,9 @@ beforeAll(async () => {
   ]);
   nobody = await signedIn(app, "CB nobody", []);
 });
+
+// The cash-out approval file briefly lowers the shared tenant limit (CO-8d).
+withLimitSharedLock();
 
 afterAll(async () => {
   // Journals and ledger rows are append-only; the disposable DB keeps them.

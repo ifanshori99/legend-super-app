@@ -366,6 +366,7 @@ export const accountingCashMessages = {
       cash_in: "Kas masuk",
       cash_out: "Kas keluar",
       transfer: "Transfer",
+      petty_topup: "Isi kas kecil",
     },
     status: {
       pending_approval: "Menunggu persetujuan",
@@ -518,6 +519,8 @@ export const accountingCashMessages = {
       description: "Keterangan",
       submit: "Simpan",
       saved: "Pergerakan kas kecil tercatat.",
+      pendingApproval:
+        "Isi kas kecil menunggu persetujuan. Saldo belum bertambah dan belum dijurnal.",
       invalidAmount: "Nominal harus lebih dari nol.",
       overBalance: "Nominal melebihi saldo kas kecil.",
       failed: "Pergerakan gagal disimpan. Coba lagi.",

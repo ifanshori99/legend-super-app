@@ -1208,6 +1208,15 @@ register(approveCashBankEntry, ({ params }) => {
     throw new AccountingError("CASH_ENTRY_NOT_PENDING");
   if (entry.createdBy === finance)
     throw new AccountingError("CASH_OUT_SELF_APPROVAL");
+  // An approved top-up really fills the fund, once (the approved replay above).
+  if (entry.kind === "petty_topup" && entry.outletId !== null)
+    applyPettyMovement({
+      kind: "topup",
+      outletId: entry.outletId,
+      bankAccountId: entry.bankAccountId,
+      amountIdr: entry.amountIdr,
+      description: entry.description,
+    });
   return {
     data: replaceCashEntry(
       cashBankEntrySchema.parse({
@@ -1286,7 +1295,59 @@ register(createPettyCashMovement, ({ body }) => {
   if (replayId) {
     const existing = current.pettyEntries.find((row) => row.id === replayId);
     if (existing) return { data: existing };
+    const held = current.cashBankEntries.find((row) => row.id === replayId);
+    if (held) return { data: held };
   }
+  const limit =
+    current.cashApprovalLimitIdr ?? DEFAULT_CASH_OUT_APPROVAL_LIMIT_IDR;
+  // A top-up strictly above the limit (Q7) is held as a pending cash/bank
+  // entry (the real API answers 202): no balance change, no journal yet.
+  if (body.kind === "topup" && body.amountIdr > limit) {
+    const held = cashBankEntrySchema.parse({
+      id: newIdempotencyKey(),
+      tenantId,
+      legalEntityId: findAccount(body.bankAccountId).legalEntityId,
+      outletId: body.outletId,
+      kind: "petty_topup",
+      entryDate: businessDateToday(),
+      amountIdr: body.amountIdr,
+      bankAccountId: body.bankAccountId,
+      toBankAccountId: null,
+      counterAccountId: null,
+      description: body.description,
+      reference: null,
+      journalEntryId: null,
+      status: "pending_approval",
+      approverId: null,
+      decidedAt: null,
+      decisionReason: null,
+      createdBy: finance,
+      createdAt: nowIso(),
+    });
+    current.cashBankEntries.push(held);
+    current.moneyKeys.set(`petty:${idempotencyKey}`, {
+      fingerprint: JSON.stringify(request),
+      id: held.id,
+    });
+    return { data: held };
+  }
+  const entry = applyPettyMovement(body);
+  current.moneyKeys.set(`petty:${idempotencyKey}`, {
+    fingerprint: JSON.stringify(request),
+    id: entry.id,
+  });
+  return { data: entry };
+});
+
+/** Moves the fund and writes the ledger row; shared by a direct top-up and an approved one. */
+function applyPettyMovement(body: {
+  kind: "topup" | "return";
+  outletId: string;
+  bankAccountId: string;
+  amountIdr: number;
+  description: string;
+}): PettyCashEntry {
+  const current = state.get();
   const bank = findAccount(body.bankAccountId);
   let index = current.pettyFunds.findIndex(
     (fund) => fund.outletId === body.outletId,
@@ -1338,12 +1399,8 @@ register(createPettyCashMovement, ({ body }) => {
     updatedAt: nowIso(),
   });
   current.pettyEntries.push(entry);
-  current.moneyKeys.set(`petty:${idempotencyKey}`, {
-    fingerprint: JSON.stringify(request),
-    id: entry.id,
-  });
-  return { data: entry };
-});
+  return entry;
+}
 
 register(postPettyCashEntry, ({ params }) => {
   const entries = state.get().pettyEntries;

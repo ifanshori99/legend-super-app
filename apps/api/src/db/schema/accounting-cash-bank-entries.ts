@@ -7,7 +7,11 @@
 //   same transaction, so `journal_entry_id` is UNIQUE: one document, one
 //   journal. A cash_out above the tenant approval limit is stored
 //   `pending_approval` with no journal (`journal_entry_id` NULL) and posts on
-//   approval (`status = 'approved'` <=> journal present). UNIQUE (tenant, idempotency_key) makes a re-sent
+//   approval (`status = 'approved'` <=> journal present). A petty cash top-up
+//   above the limit (or that makes the creator's day total of cash outs and
+//   top-ups at one outlet pass it) waits the same way as kind `petty_topup`
+//   (outlet required, no counter account) and runs the real top-up on approval.
+//   UNIQUE (tenant, idempotency_key) makes a re-sent
 //   request a replay, not a second document.
 // - `petty_cash_funds`: one fund per outlet; `balance_idr >= 0` is the last
 //   line of defence behind the service's row lock.
@@ -138,7 +142,7 @@ export const cashBankEntries = pgTable(
     check("cash_bank_entries_amount_check", sql`${t.amountIdr} > 0`),
     check(
       "cash_bank_entries_kind_check",
-      sql`${t.kind} IN ('cash_in','cash_out','transfer')`,
+      sql`${t.kind} IN ('cash_in','cash_out','transfer','petty_topup')`,
     ),
     // A transfer names a different destination and no counter account.
     check(
@@ -160,11 +164,22 @@ export const cashBankEntries = pgTable(
       "cash_bank_entries_status_journal_check",
       sql`(${t.status} = 'approved') = (${t.journalEntryId} IS NOT NULL)`,
     ),
-    // Only a cash_out can wait for approval or be rejected.
+    // Only a cash_out or a petty cash top-up can wait for approval or be rejected.
     check(
       "cash_bank_entries_status_kind_check",
-      sql`${t.status} = 'approved' OR ${t.kind} = 'cash_out'`,
+      sql`${t.status} = 'approved' OR ${t.kind} IN ('cash_out','petty_topup')`,
     ),
+    // A petty cash top-up (bank -> an outlet's petty cash fund, Q7 anti-split)
+    // names its outlet, the source bank account, and neither a counter account
+    // (derived from the fund mapping at approval) nor a destination account.
+    check(
+      "cash_bank_entries_petty_topup_check",
+      sql`${t.kind} <> 'petty_topup' OR (${t.outletId} IS NOT NULL AND ${t.counterAccountId} IS NULL AND ${t.toBankAccountId} IS NULL)`,
+    ),
+    // Anti-split sum: one creator's cash outs and petty top-ups of the day.
+    index("cash_bank_entries_limit_idx")
+      .on(t.tenantId, t.createdBy, t.createdAt)
+      .where(sql`${t.kind} IN ('cash_out','petty_topup')`),
     // A pending entry has no decision; a rejected one has the full decision.
     check(
       "cash_bank_entries_decision_check",

@@ -639,12 +639,18 @@ export const listPettyCashEntries = defineEndpoint({
   query: pettyCashEntryQuerySchema,
   response: cursorPageSchema(pettyCashEntrySchema),
 });
-/** Top-up from a bank account or return to it; the fund never goes below zero. */
+/**
+ * Top-up from a bank account or return to it; the fund never goes below zero.
+ * 201 + the ledger entry; a top-up held by the cash limit (Q7, anti-split) is
+ * 202 + a `petty_topup` cash/bank entry in `pending_approval`.
+ */
 export const createPettyCashMovement = defineEndpoint({
   method: "POST",
   path: `${BASE}/petty-cash/movements`,
   body: pettyCashMovementInputSchema,
-  response: dataResponseSchema(pettyCashEntrySchema),
+  response: dataResponseSchema(
+    z.union([pettyCashEntrySchema, cashBankEntrySchema]),
+  ),
 });
 /** Retry the journal of a parked top-up/return once the account map is fixed. */
 export const postPettyCashEntry = defineEndpoint({

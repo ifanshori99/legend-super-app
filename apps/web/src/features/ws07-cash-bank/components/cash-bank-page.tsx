@@ -6,7 +6,7 @@
 import * as React from "react";
 import type {
   BankAccount,
-  CashBankEntryKind,
+  CreatableCashBankEntryKind,
 } from "@starter/shared/accounting";
 import type { DataState } from "@/components/ui/data-table-shell";
 import { businessDateToday, monthRange } from "../lib";
@@ -39,11 +39,10 @@ export function CashBankPage({ legalEntityId }: { legalEntityId: string }) {
   const [accountDialogOpen, setAccountDialogOpen] = React.useState(false);
   const [importDialogOpen, setImportDialogOpen] = React.useState(false);
   const [depositDialogOpen, setDepositDialogOpen] = React.useState(false);
-  const [entryKind, setEntryKind] = React.useState<CashBankEntryKind | null>(
-    null,
-  );
+  const [entryKind, setEntryKind] =
+    React.useState<CreatableCashBankEntryKind | null>(null);
   const [lastEntryKind, setLastEntryKind] =
-    React.useState<CashBankEntryKind>("cash_in");
+    React.useState<CreatableCashBankEntryKind>("cash_in");
   const [pettyMove, setPettyMove] = React.useState<PettyMovementRequest | null>(
     null,
   );

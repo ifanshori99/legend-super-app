@@ -17,6 +17,12 @@
 //   CO-3c approve vs reject race     CO-12 period closed before approval
 //   CO-13 outlet-scoped approver
 //
+// Anti-split (sub-cash-limit-antisplit): cash outs and top-ups are summed per
+// creator + outlet + day against the limit. The shared `creator` below files
+// many entries on the same day at the entity level, so every test that expects
+// an immediate posting at or below the limit (CO-1, CO-8d, CO-9, CO-10) uses a
+// fresh finance user via `freshCreator()`. Amounts and assertions are unchanged.
+//
 // Isolation: the Cafe Legend tenant is shared with other test files, so this
 // file only counts rows of its own legal entity / own GL accounts (makeWorld)
 // and never deletes or counts tenant-wide. The tenant limit is the one shared
@@ -64,6 +70,10 @@ import {
   type Session,
   type World,
 } from "./helpers/cash-bank-world.ts";
+import {
+  limitExclusiveLock,
+  withLimitSharedLock,
+} from "./helpers/cash-limit-lock.ts";
 
 const app = createApp();
 const ENTRIES = "/api/accounting/cash-bank/entries";
@@ -106,6 +116,10 @@ afterAll(async () => {
     .catch(() => {});
   await closeKit();
 });
+
+/** A fresh tenant-wide finance user: its daily anti-split total starts at zero. */
+const freshCreator = (label: string) =>
+  signedIn(app, `CO ${label}`, [{ role: "finance", outletId: null }]);
 
 // ---- request helpers -------------------------------------------------------
 
@@ -231,10 +245,14 @@ const is4xx = (status: number) => status >= 400 && status < 500;
 // ============================================================================
 
 describe("cash-out approval: limit gating", () => {
+  withLimitSharedLock();
+
   it("[cash-out-approval-CO-1] a cash out at or below the limit posts at once with one balanced journal", async () => {
     const before = await bankNet();
     for (const amountIdr of [DEFAULT_LIMIT, DEFAULT_LIMIT - 1, 175_000]) {
-      const res = await post(creator, cashOutBody({ amountIdr }));
+      // One fresh creator per amount: the daily total must not add them up.
+      const single = await freshCreator(`co1 ${amountIdr}`);
+      const res = await post(single, cashOutBody({ amountIdr }));
       expect(res.status, JSON.stringify(res.body)).toBe(201);
       expect(res.body.data).toMatchObject({
         kind: "cash_out",
@@ -336,15 +354,13 @@ describe("cash-out approval: limit gating", () => {
   });
 
   it("[cash-out-approval-CO-10] cash in and transfers above the limit are not gated", async () => {
-    const cashIn = await post(creator, cashInBody({ amountIdr: 9_000_000 }));
+    const solo = await freshCreator("co10");
+    const cashIn = await post(solo, cashInBody({ amountIdr: 9_000_000 }));
     expect(cashIn.status, JSON.stringify(cashIn.body)).toBe(201);
     expect(cashIn.body.data.status).toBe("approved");
     expect(await journalsOf(cashIn.body.data.id)).toHaveLength(1);
 
-    const transfer = await post(
-      creator,
-      transferBody({ amountIdr: 9_000_000 }),
-    );
+    const transfer = await post(solo, transferBody({ amountIdr: 9_000_000 }));
     expect(transfer.status, JSON.stringify(transfer.body)).toBe(201);
     expect(transfer.body.data.status).toBe("approved");
     expect(await journalsOf(transfer.body.data.id)).toHaveLength(1);
@@ -365,6 +381,8 @@ describe("cash-out approval: limit gating", () => {
 });
 
 describe("cash-out approval: approve posts exactly once", () => {
+  withLimitSharedLock();
+
   it("[cash-out-approval-CO-3a] approving twice in sequence answers 200 both times and leaves one journal", async () => {
     const entry = await submitPending({ amountIdr: 6_100_000 });
     const netBefore = await bankNet();
@@ -454,6 +472,8 @@ describe("cash-out approval: approve posts exactly once", () => {
 });
 
 describe("cash-out approval: period closed after submission", () => {
+  withLimitSharedLock();
+
   it("[cash-out-approval-CO-12] approving after the period closed is refused, the entry stays pending with no journal", async () => {
     const w = await makeWorld(); // own legal entity: closing its period is private
     const entryDate = daysAgo(1);
@@ -510,6 +530,8 @@ describe("cash-out approval: period closed after submission", () => {
 });
 
 describe("cash-out approval: who may decide", () => {
+  withLimitSharedLock();
+
   it("[cash-out-approval-CO-4] the creator cannot approve or reject their own entry", async () => {
     const entry = await submitPending({ amountIdr: 5_500_000 });
     const netBefore = await bankNet();
@@ -581,6 +603,8 @@ describe("cash-out approval: who may decide", () => {
 });
 
 describe("cash-out approval: reject", () => {
+  withLimitSharedLock();
+
   it("[cash-out-approval-CO-6] a rejected entry has no journal, keeps its reason and can never be approved", async () => {
     const entry = await submitPending({ amountIdr: 5_700_000 });
     const netBefore = await bankNet();
@@ -658,6 +682,8 @@ describe("cash-out approval: reject", () => {
 });
 
 describe("cash-out approval: tenant isolation", () => {
+  withLimitSharedLock();
+
   it("[cash-out-approval-CO-5] another tenant's entry is invisible: 404, nothing changes; unknown ids are 404", async () => {
     // Seed a pending entry of the foreign tenant by copying a real pending row
     // of this tenant (columns copied as they are, only the ids move over).
@@ -738,6 +764,8 @@ describe("cash-out approval: tenant isolation", () => {
 });
 
 describe("cash-out approval: tenant limit", () => {
+  withLimitSharedLock();
+
   it("[cash-out-approval-CO-8a] the limit defaults to Rp5.000.000 and is readable by finance, not by outsiders", async () => {
     const res = await getLimit(creator);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -779,8 +807,15 @@ describe("cash-out approval: tenant limit", () => {
     const after = await getLimit(creator);
     expect(after.body).toEqual(before.body);
   });
+});
+
+// CO-8d changes the shared tenant limit: it takes the exclusive lock, so it waits
+// for every running test and no test sees the lowered limit.
+describe("cash-out approval: tenant limit change", () => {
+  limitExclusiveLock();
 
   it("[cash-out-approval-CO-8d] a new limit takes effect: above it pends, equal to it posts; then it is restored", async () => {
+    const solo = await freshCreator("co8d");
     try {
       const set = await putLimit(creator, { limitIdr: 1_000_000 });
       expect(set.status, JSON.stringify(set.body)).toBe(200);
@@ -790,12 +825,18 @@ describe("cash-out approval: tenant limit", () => {
         isDefault: false,
       });
 
-      const above = await post(creator, cashOutBody({ amountIdr: 1_000_001 }));
+      const above = await post(solo, cashOutBody({ amountIdr: 1_000_001 }));
       expect(above.status, JSON.stringify(above.body)).toBe(201);
       expect(above.body.data.status).toBe("pending_approval");
       expect(await journalsOf(above.body.data.id)).toHaveLength(0);
 
-      const equal = await post(creator, cashOutBody({ amountIdr: 1_000_000 }));
+      // Equal to the limit posts at once. Filed by a second fresh creator so the
+      // pending entry above does not add to this creator's daily total.
+      const soloEqual = await freshCreator("co8d equal");
+      const equal = await post(
+        soloEqual,
+        cashOutBody({ amountIdr: 1_000_000 }),
+      );
       expect(equal.status, JSON.stringify(equal.body)).toBe(201);
       expect(equal.body.data.status).toBe("approved");
       expect(await journalsOf(equal.body.data.id)).toHaveLength(1);
@@ -806,19 +847,26 @@ describe("cash-out approval: tenant limit", () => {
       const restore = await putLimit(creator, { limitIdr: DEFAULT_LIMIT });
       expect(restore.status, JSON.stringify(restore.body)).toBe(200);
     }
-    const back = await post(creator, cashOutBody({ amountIdr: DEFAULT_LIMIT }));
+    const soloBack = await freshCreator("co8d back");
+    const back = await post(
+      soloBack,
+      cashOutBody({ amountIdr: DEFAULT_LIMIT }),
+    );
     expect(back.body.data.status).toBe("approved");
   });
 });
 
 describe("cash-out approval: idempotent submission", () => {
+  withLimitSharedLock();
+
   it("[cash-out-approval-CO-9] the same key above the limit makes one entry, sequentially and in parallel", async () => {
+    const solo = await freshCreator("co9");
     const entries = await entryCount();
     const body = cashOutBody({ amountIdr: 8_800_000 });
-    const first = await post(creator, body);
+    const first = await post(solo, body);
     expect(first.status, JSON.stringify(first.body)).toBe(201);
     expect(first.body.data.status).toBe("pending_approval");
-    const replay = await post(creator, body);
+    const replay = await post(solo, body);
     expect(ok(replay.status), JSON.stringify(replay.body)).toBe(true);
     expect(replay.body.data.id).toBe(first.body.data.id);
     expect(replay.body.data.status).toBe("pending_approval");
@@ -826,7 +874,7 @@ describe("cash-out approval: idempotent submission", () => {
 
     const parallel = cashOutBody({ amountIdr: 8_900_000 });
     const results = await Promise.all(
-      Array.from({ length: 5 }, () => post(creator, parallel)),
+      Array.from({ length: 5 }, () => post(solo, parallel)),
     );
     for (const res of results)
       expect(ok(res.status), JSON.stringify(res.body)).toBe(true);
@@ -837,7 +885,7 @@ describe("cash-out approval: idempotent submission", () => {
       expect(await journalsOf(id)).toHaveLength(0);
 
     // The same key with another body is a conflict, not a second entry.
-    const reused = await post(creator, { ...body, amountIdr: 8_800_001 });
+    const reused = await post(solo, { ...body, amountIdr: 8_800_001 });
     expect(reused.status, JSON.stringify(reused.body)).toBe(409);
     expect(reused.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
     expect(await entryCount()).toBe(entries + 2);

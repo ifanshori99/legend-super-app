@@ -10,7 +10,7 @@ import { ChevronDown, Plus } from "lucide-react";
 import type {
   BankAccount,
   CashBankEntry,
-  CashBankEntryKind,
+  CreatableCashBankEntryKind,
 } from "@starter/shared/accounting";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -60,7 +60,7 @@ export function CashEntriesSection({
   accounts: readonly BankAccount[];
   /** False while the bank accounts load: labels show "—", not a miss. */
   accountsReady: boolean;
-  onAdd: (kind: CashBankEntryKind) => void;
+  onAdd: (kind: CreatableCashBankEntryKind) => void;
 }) {
   const t = useT();
   const toast = useToast();
