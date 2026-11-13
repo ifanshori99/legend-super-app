@@ -34,6 +34,10 @@ import { createHrisPayslipRouter } from "./hris-payslip.routes";
 import { createHrisRouter } from "./hris.routes";
 import { createMenuImportRouter } from "./menu-import.routes";
 import { createMenuRouter } from "./menu.routes";
+import {
+  createPayrollExportRouter,
+  PAYROLL_EXPORT_PATH,
+} from "./payroll-export.routes";
 import { createShareholderDocumentsRouter } from "./shareholder-documents.routes";
 import { dbShareholderMembership } from "../services/profit-share-membership";
 
@@ -144,6 +148,13 @@ export function createStorageApiRouter(options: {
   );
   router.use("/hris", (req, res, next) =>
     req.path.startsWith("/attendance/") ? attendance(req, res, next) : next(),
+  );
+
+  // Payroll bank transfer file and Coretax PPh 21 export (legend-34qx): the
+  // files go to the object storage. Only the three export paths enter.
+  const payrollExport = createPayrollExportRouter({ runtime });
+  router.use("/hris/payroll", (req, res, next) =>
+    PAYROLL_EXPORT_PATH.test(req.path) ? payrollExport(req, res, next) : next(),
   );
 
   // Tax report export and download (legend-5nhkp) mint or read stored files.
