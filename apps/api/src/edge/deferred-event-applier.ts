@@ -10,6 +10,13 @@
 // GL): the edge already deducted stock and `stock.moved` carries it. A future
 // POS-order applier backfills from this table (bead legend-078n).
 //
+// Never re-emit onto the cloud outbox (legend-078n): the cloud worker would
+// deduct stock a second time. Two guards enforce it, also for that future
+// applier: edge/apply-scope.ts (appendOutbox refuses order.* / order_issue.recorded
+// / day.closed inside an edge_to_cloud handler) and
+// recipe-deduction.service.ts (deliverRecipeDeductionEvent skips an order that
+// has a parked row here).
+//
 // Fail closed like stock-moved-applier.ts: a wrong direction, tenant or
 // outlet throws a CoreError and the link records an `applier_refused`
 // conflict instead of stalling.

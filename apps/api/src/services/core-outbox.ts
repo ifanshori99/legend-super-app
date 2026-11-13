@@ -4,6 +4,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   assertOutletInScope,
   assertTrustedScopedContext,
+  CoreError,
   ulidToUuid,
   uuidSchema,
   uuidToUlid,
@@ -20,6 +21,10 @@ import {
 import type * as schema from "../db/schema";
 import { domainEventOutbox } from "../db/schema/core-events";
 import { withTenant } from "../db/tenant";
+import {
+  inEdgeApplyScope,
+  isEdgeApplyRefusedEvent,
+} from "../edge/apply-scope.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -49,6 +54,13 @@ export async function appendOutbox(
     isControlPlaneDestination(input.destination)
   )
     throw new Error("Control-plane events and destinations must match");
+  // legend-078n guard A: an edge -> cloud applier must never re-emit the
+  // events the cloud recipe deduction consumes (the edge already deducted).
+  if (inEdgeApplyScope() && isEdgeApplyRefusedEvent(event))
+    throw new CoreError(
+      "CONFLICT",
+      `${event.name} cannot be appended to the outbox while applying an edge event: the edge already deducted stock`,
+    );
   if (event.outletId) assertOutletInScope(context.outletScope, event.outletId);
   else if (context.outletScope.kind !== "tenant")
     throw new Error("Tenant-wide event requires tenant scope");

@@ -1,0 +1,1 @@
+CREATE INDEX "edge_deferred_events_aggregate_id_idx" ON "edge_deferred_events" USING btree ("tenant_id","aggregate_type","aggregate_id");
