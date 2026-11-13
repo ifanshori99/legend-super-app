@@ -19,8 +19,10 @@ import {
   parseBankCsvAmount,
   parseBankCsvDate,
   statementLineDedupeKey,
+  type Account,
   type BankCsvMapping,
   type BankStatementLine,
+  type CashBankEntryKind,
   type CashDeposit,
   type CashDepositStatus,
   type JournalEntry,
@@ -28,6 +30,8 @@ import {
   type MatchOutcome,
   type MatchStatus,
   type MatchingPolicy,
+  type PettyCashEntryKind,
+  type PettyCashJournalStatus,
   type ReconciliationCase,
   type ReconciliationCaseStatus,
   type ReconciliationRef,
@@ -69,6 +73,16 @@ export function monthRange(businessDate: string): { from: string; to: string } {
     from: `${prefix}-01`,
     to: `${prefix}-${String(lastDay).padStart(2, "0")}`,
   };
+}
+
+/** "2026-11-03" → "November 2026" (the month a list covers). */
+export function formatMonthLabel(businessDate: string): string {
+  const [year, month] = businessDate.split("-").map(Number);
+  return new Intl.DateTimeFormat("id-ID", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(year, month - 1, 1)));
 }
 
 /** "2026-11-03" → "3 Nov 2026" (locale-stable, id-ID, no time zone drift). */
@@ -914,5 +928,87 @@ export function caseErrorKey(code: string): MessageKey {
       return "accounting.cash.recon.drawer.error";
     default:
       return "accounting.cash.recon.drawer.failed";
+  }
+}
+
+// ---- Cash in/out, transfers and petty cash (legend-4961) -------------------
+
+export const CASH_ENTRY_KIND_KEYS: Record<CashBankEntryKind, MessageKey> = {
+  cash_in: "accounting.cash.entries.kind.cash_in",
+  cash_out: "accounting.cash.entries.kind.cash_out",
+  transfer: "accounting.cash.entries.kind.transfer",
+};
+
+export const CASH_ENTRY_KIND_TONES: Record<CashBankEntryKind, Tone> = {
+  cash_in: "success",
+  cash_out: "warning",
+  transfer: "info",
+};
+
+export const PETTY_KIND_KEYS: Record<PettyCashEntryKind, MessageKey> = {
+  topup: "accounting.cash.petty.kind.topup",
+  return: "accounting.cash.petty.kind.return",
+  purchase: "accounting.cash.petty.kind.purchase",
+};
+
+export const PETTY_JOURNAL_KEYS: Record<PettyCashJournalStatus, MessageKey> = {
+  posted: "accounting.cash.petty.journal.posted",
+  parked: "accounting.cash.petty.journal.parked",
+  external: "accounting.cash.petty.journal.external",
+};
+
+export const PETTY_JOURNAL_TONES: Record<PettyCashJournalStatus, Tone> = {
+  posted: "success",
+  parked: "warning",
+  external: "neutral",
+};
+
+/**
+ * Counter accounts a cash in/out may name: active, not a header (nothing hangs
+ * under it) and not a cash or bank account, which is what a transfer is for.
+ * The API refuses the same accounts (CASH_BANK_COUNTER_ACCOUNT_INVALID); this
+ * only keeps the picker honest.
+ */
+export function counterAccountChoices(accounts: readonly Account[]): Account[] {
+  const parents = new Set(
+    accounts.flatMap((account) => (account.parentId ? [account.parentId] : [])),
+  );
+  return accounts
+    .filter(
+      (account) =>
+        account.isActive &&
+        !parents.has(account.id) &&
+        account.reportGroup !== "cash_and_equivalents",
+    )
+    .sort((a, b) => a.code.localeCompare(b.code, "en"));
+}
+
+/** A return above the fund balance: the API refuses it, the form says so first. */
+export function pettyReturnExceedsBalance(
+  kind: "topup" | "return",
+  amountIdr: number,
+  balanceIdr: number,
+): boolean {
+  return kind === "return" && amountIdr > balanceIdr;
+}
+
+/**
+ * The sentence for a refused money request, by contract error code. Unknown
+ * codes return null so the caller shows the server's own message instead.
+ */
+export function moneyErrorKey(code: string): MessageKey | null {
+  switch (code) {
+    case "PETTY_CASH_INSUFFICIENT":
+      return "accounting.cash.moneyError.insufficient";
+    case "CASH_BANK_COUNTER_ACCOUNT_INVALID":
+      return "accounting.cash.moneyError.counterInvalid";
+    case "IDEMPOTENCY_KEY_REUSED":
+      return "accounting.cash.moneyError.keyReused";
+    case "ACCOUNT_MAPPING_MISSING":
+      return "accounting.cash.moneyError.mappingMissing";
+    case "PERIOD_CLOSED":
+      return "accounting.cash.moneyError.periodClosed";
+    default:
+      return null;
   }
 }

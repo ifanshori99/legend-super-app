@@ -331,6 +331,156 @@ export const accountingCashMessages = {
     },
   },
 
+  // ---- Kas masuk, kas keluar, transfer (legend-4961) ------------------------
+  entries: {
+    title: "Kas masuk, kas keluar, dan transfer",
+    subtitle:
+      "Uang yang masuk dan keluar rekening bank di luar penjualan, serta pemindahan antar rekening. Setiap dokumen menghasilkan satu jurnal.",
+    add: "Catat transaksi",
+    period: "Periode {month}",
+    noBankAccounts: "Tambah rekening bank dulu.",
+    noBankAccountsLink: "Ke daftar rekening",
+    transferNeedsTwo: "Butuh 2 rekening",
+    lookupPending: "Memuat…",
+    bankMissing: "Rekening tidak ditemukan",
+    accountMissing: "Akun tidak ditemukan",
+    addCashIn: "Catat kas masuk",
+    addCashOut: "Catat kas keluar",
+    addTransfer: "Pindah antar rekening",
+    count: "{count} dokumen dimuat",
+    emptyTitle: "Belum ada kas masuk, kas keluar, atau transfer",
+    emptyHint:
+      "Catat uang masuk atau keluar rekening bank, atau pindahkan dana antar rekening.",
+    columns: {
+      date: "Tanggal",
+      kind: "Jenis",
+      description: "Keterangan",
+      account: "Rekening",
+      counter: "Akun lawan",
+      amount: "Nominal",
+      reference: "Referensi",
+    },
+    kind: {
+      cash_in: "Kas masuk",
+      cash_out: "Kas keluar",
+      transfer: "Transfer",
+    },
+    transferArrow: "{from} ke {to}",
+    form: {
+      titleCashIn: "Catat kas masuk",
+      titleCashOut: "Catat kas keluar",
+      titleTransfer: "Pindah antar rekening",
+      descriptionCashIn:
+        "Uang masuk ke rekening bank. Pilih akun lawan yang menjelaskan asal uangnya.",
+      descriptionCashOut:
+        "Uang keluar dari rekening bank. Pilih akun lawan yang menjelaskan tujuan uangnya.",
+      descriptionTransfer:
+        "Dana pindah dari satu rekening ke rekening lain di badan usaha yang sama.",
+      bankAccount: "Rekening",
+      fromAccount: "Dari rekening",
+      toAccount: "Ke rekening",
+      counterAccount: "Akun lawan",
+      counterHint:
+        "Akun kas dan bank tidak bisa dipilih di sini. Pakai transfer untuk memindahkan dana antar rekening.",
+      noCounterAccounts: "Belum ada akun yang bisa dipilih.",
+      counterPlaceholder: "Pilih akun lawan",
+      counterRequired: "Pilih akun lawan. Tidak ada pilihan otomatis.",
+      bankRequired: "Pilih rekening.",
+      toAccountRequired: "Pilih rekening tujuan.",
+      descriptionRequired: "Isi keterangan.",
+      amount: "Nominal",
+      amountHint: "Rupiah penuh, tanpa desimal.",
+      date: "Tanggal",
+      dateHint: "Tidak boleh di masa depan.",
+      description: "Keterangan",
+      reference: "Nomor referensi",
+      referenceHint: "Nomor faktur atau bukti, bila ada.",
+      outlet: "Outlet (opsional)",
+      outletHint:
+        "Tandai biaya ke satu outlet. Kosongkan untuk seluruh badan usaha.",
+      noOutlet: "Seluruh badan usaha",
+      submit: "Simpan",
+      saved: "Dokumen kas dan bank tercatat.",
+      invalidAmount: "Nominal harus lebih dari nol.",
+      sameAccount: "Rekening asal dan tujuan harus berbeda.",
+      futureDate: "Tanggal tidak boleh di masa depan.",
+      needTwoAccounts: "Transfer butuh minimal dua rekening bank.",
+      failed: "Dokumen gagal disimpan. Coba lagi.",
+    },
+  },
+
+  // ---- Kas kecil (legend-4961) ----------------------------------------------
+  petty: {
+    title: "Kas kecil",
+    subtitle:
+      "Saldo kas kecil tiap outlet. Isi dari bank, kembalikan ke bank, dan pembelian sederhana mengurangi saldo. Saldo tidak bisa kurang dari nol.",
+    topup: "Isi kas kecil",
+    return: "Kembalikan ke bank",
+    balance: "Saldo",
+    emptyTitle: "Belum ada kas kecil",
+    emptyHint:
+      "Kas kecil outlet dibuat saat pengisian pertama dari rekening bank.",
+    history: "Riwayat kas kecil {outlet}",
+    historyEmpty: "Belum ada pergerakan kas kecil di periode ini.",
+    columns: {
+      date: "Tanggal",
+      kind: "Jenis",
+      description: "Keterangan",
+      amount: "Nominal",
+      balanceAfter: "Saldo sesudahnya",
+      actions: "Aksi",
+      journal: "Jurnal",
+    },
+    kind: {
+      topup: "Isi",
+      return: "Kembali ke bank",
+      purchase: "Pembelian",
+    },
+    journal: {
+      posted: "Terjurnal",
+      parked: "Menunggu peta akun",
+      external: "Dijurnal oleh pembelian",
+    },
+    parkedHint:
+      "Peta akun kas kecil belum diatur. Saldo sudah bergerak; jurnal dikirim setelah peta akun dilengkapi.",
+    period: "Periode {month}",
+    noBankAccounts: "Tambah rekening bank dulu.",
+    noBankAccountsLink: "Ke daftar rekening",
+    returnNeedsBalance: "Saldo kosong",
+    lookupPending: "Memuat…",
+    outletMissing: "Outlet tidak ditemukan",
+    retry: "Coba jurnal lagi",
+    retried: "Jurnal kas kecil terkirim.",
+    retryFailed: "Jurnal belum bisa dikirim. Periksa peta akun lalu coba lagi.",
+    form: {
+      titleTopup: "Isi kas kecil",
+      titleReturn: "Kembalikan kas kecil ke bank",
+      descriptionTopup: "Dana pindah dari rekening bank ke kas kecil outlet.",
+      descriptionReturn:
+        "Dana pindah dari kas kecil outlet ke rekening bank. Tidak boleh melebihi saldo.",
+      outlet: "Outlet",
+      outletHint: "Outlet pemilik kas kecil.",
+      noOutlets: "Belum ada outlet yang bisa dipilih.",
+      outletRequired: "Pilih outlet.",
+      outletPlaceholder: "Pilih outlet",
+      bankRequired: "Pilih rekening bank.",
+      descriptionRequired: "Isi keterangan.",
+      balanceError:
+        "Saldo belum bisa dimuat, jadi batas pengembalian belum bisa dicek.",
+      balanceRetry: "Muat saldo lagi",
+      bankAccount: "Rekening bank",
+      amount: "Nominal",
+      amountHint: "Rupiah penuh, tanpa desimal.",
+      currentBalance: "Saldo sekarang",
+      description: "Keterangan",
+      submit: "Simpan",
+      saved: "Pergerakan kas kecil tercatat.",
+      invalidAmount: "Nominal harus lebih dari nol.",
+      overBalance: "Nominal melebihi saldo kas kecil.",
+      failed: "Pergerakan gagal disimpan. Coba lagi.",
+    },
+  },
+
   // ---- Rekonsiliasi gateway -------------------------------------------------
   recon: {
     title: "Rekonsiliasi gateway",
@@ -445,6 +595,18 @@ export const accountingCashMessages = {
   },
 
   // ---- Labels shared by both screens ---------------------------------------
+  // Kode galat dari API untuk uang masuk/keluar dan kas kecil.
+  moneyError: {
+    insufficient: "Saldo kas kecil tidak cukup. Kurangi nominalnya.",
+    counterInvalid:
+      "Akun lawan tidak boleh akun kas atau bank. Pakai transfer antar rekening.",
+    keyReused:
+      "Permintaan ini sudah dikirim dengan isi berbeda. Tutup dialog lalu isi ulang.",
+    mappingMissing:
+      "Peta akun belum lengkap. Hubungi admin akuntansi, lalu coba lagi.",
+    periodClosed: "Periode buku untuk tanggal ini sudah ditutup.",
+  },
+
   common: {
     selectedAccount: "Rekening: {bank} {number}",
     noAccount: "Belum ada rekening bank",

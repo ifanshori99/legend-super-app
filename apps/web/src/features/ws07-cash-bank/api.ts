@@ -12,7 +12,9 @@ import { createUlid } from "@starter/shared/core";
 import {
   actOnReconciliationCase as actOnReconciliationCaseEndpoint,
   createBankAccount as createBankAccountEndpoint,
+  createCashBankEntry as createCashBankEntryEndpoint,
   createCashDeposit as createCashDepositEndpoint,
+  createPettyCashMovement as createPettyCashMovementEndpoint,
   excludeStatementLine as excludeStatementLineEndpoint,
   getFinancePolicy as getFinancePolicyEndpoint,
   getGatewaySettlementRecon as getGatewaySettlementReconEndpoint,
@@ -21,13 +23,17 @@ import {
   getReconciliationSummary as getReconciliationSummaryEndpoint,
   importBankStatement as importBankStatementEndpoint,
   listBankAccounts as listBankAccountsEndpoint,
+  listCashBankEntries as listCashBankEntriesEndpoint,
   listCashDeposits as listCashDepositsEndpoint,
   listJournals as listJournalsEndpoint,
+  listPettyCashEntries as listPettyCashEntriesEndpoint,
+  listPettyCashFunds as listPettyCashFundsEndpoint,
   listReconciliationCases as listReconciliationCasesEndpoint,
   listStatementLines as listStatementLinesEndpoint,
   listUndepositedCashAlerts as listUndepositedCashAlertsEndpoint,
   matchStatementLine as matchStatementLineEndpoint,
   openReconciliationCase as openReconciliationCaseEndpoint,
+  postPettyCashEntry as postPettyCashEntryEndpoint,
   unmatchStatementLine as unmatchStatementLineEndpoint,
   type BankCsvMapping,
   type JournalEntry,
@@ -43,6 +49,12 @@ export type CreateCashDepositBody = Omit<
   Body<typeof createCashDepositEndpoint>,
   "idempotencyKey"
 >;
+export type CreateCashBankEntryBody = Body<typeof createCashBankEntryEndpoint>;
+export type CreatePettyCashMovementBody = Body<
+  typeof createPettyCashMovementEndpoint
+>;
+export type CashBankEntryQuery = Query<typeof listCashBankEntriesEndpoint>;
+export type PettyCashEntryQuery = Query<typeof listPettyCashEntriesEndpoint>;
 export type BankStatementLineQuery = Query<typeof listStatementLinesEndpoint>;
 export type ReconciliationSummaryInput = {
   bankAccountId: string;
@@ -305,5 +317,63 @@ export async function fetchGatewaySettlementRecon(
     { query: { legalEntityId, bankAccountId, from, to } },
     { signal },
   );
+  return response.data;
+}
+
+// ---- Cash in, cash out and transfers (legend-4961) ------------------------
+
+export async function fetchCashBankEntries(
+  query: CashBankEntryQuery,
+  signal?: AbortSignal,
+) {
+  return callEndpoint(listCashBankEntriesEndpoint, { query }, { signal });
+}
+
+// The body carries its idempotency key from the caller: the dialog keeps one
+// per request (lib.ts createIdempotencyKeySession), so a resend replays on the
+// server instead of moving the money twice.
+export async function createCashBankEntry(body: CreateCashBankEntryBody) {
+  const response = await callEndpoint(createCashBankEntryEndpoint, { body });
+  return response.data;
+}
+
+// ---- Petty cash (legend-4961) ---------------------------------------------
+
+export async function fetchPettyCashFunds(
+  legalEntityId: string,
+  signal?: AbortSignal,
+) {
+  const response = await callEndpoint(
+    listPettyCashFundsEndpoint,
+    {
+      query: { legalEntityId } as Query<typeof listPettyCashFundsEndpoint>,
+    },
+    { signal },
+  );
+  return response.data;
+}
+
+export async function fetchPettyCashEntries(
+  query: PettyCashEntryQuery,
+  signal?: AbortSignal,
+) {
+  return callEndpoint(listPettyCashEntriesEndpoint, { query }, { signal });
+}
+
+export async function createPettyCashMovement(
+  body: CreatePettyCashMovementBody,
+) {
+  const response = await callEndpoint(createPettyCashMovementEndpoint, {
+    body,
+  });
+  return response.data;
+}
+
+/** Retries the journal of a parked petty cash entry (the mapping was fixed). */
+export async function postPettyCashEntry(entryId: string) {
+  const response = await callEndpoint(postPettyCashEntryEndpoint, {
+    params: { entryId } as Params<typeof postPettyCashEntryEndpoint>,
+    body: {},
+  });
   return response.data;
 }

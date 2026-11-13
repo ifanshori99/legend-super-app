@@ -16,15 +16,20 @@ import {
   AccountingError,
   actOnReconciliationCase,
   addDays,
+  applyPettyCashDelta,
   assertManualMatch,
   autoMatchRateBp,
   bankAccountSchema,
   bankStatementImportSchema,
   bankStatementLineSchema,
   cafeLegendAccountingFixtures,
+  cashBankEntrySchema,
+  cashBankJournalLines,
   cashDepositSchema,
   createBankAccount,
+  createCashBankEntry,
   createCashDeposit,
+  createPettyCashMovement,
   DEFAULT_FINANCE_POLICY,
   daysBetween,
   excludeStatementLine,
@@ -35,13 +40,19 @@ import {
   getReconciliationSummary,
   importBankStatement,
   listBankAccounts,
+  listCashBankEntries,
   listCashDeposits,
+  listPettyCashEntries,
+  listPettyCashFunds,
   listReconciliationCases,
   listStatementLines,
   listUndepositedCashAlerts,
   maskAccountNumber,
   matchStatementLine,
   openReconciliationCase,
+  pettyCashEntrySchema,
+  pettyCashFundSchema,
+  postPettyCashEntry,
   reconciliationCaseSchema,
   transitionReconciliationCase,
   undepositedCashAlerts,
@@ -49,9 +60,12 @@ import {
   type BankAccount,
   type BankStatementImport,
   type BankStatementLine,
+  type CashBankEntry,
   type CashCollection,
   type CashDeposit,
   type MatchCandidate,
+  type PettyCashEntry,
+  type PettyCashFund,
   type ReconciliationCase,
   type ReconciliationRef,
 } from "@starter/shared/accounting";
@@ -93,6 +107,11 @@ type CashBankMockState = {
   collections: CashCollection[];
   /** Idempotency replay: request key → created id. */
   created: Map<string, string>;
+  /** Cash in/out, transfers and petty cash: key → request fingerprint + id. */
+  moneyKeys: Map<string, { fingerprint: string; id: string }>;
+  cashBankEntries: CashBankEntry[];
+  pettyFunds: PettyCashFund[];
+  pettyEntries: PettyCashEntry[];
 };
 
 function seedState(): CashBankMockState {
@@ -105,8 +124,10 @@ function seedState(): CashBankMockState {
       bank: "Mandiri",
       accountName: "PT Sultan Solusi Nusantara",
       accountNumberMasked: "****7702",
-      // The sample chart has one bank GL account; a second one is tenant data.
-      glAccountId: fixtures.accountByCode("1103").id,
+      // The sample chart has one bank GL account, and a transfer needs two
+      // different GL accounts (the API refuses the same one), so the second
+      // account borrows "Kas Outlet"; a real tenant maps its own bank GL.
+      glAccountId: fixtures.accountByCode("1101").id,
       isActive: true,
     }),
   ];
@@ -154,6 +175,108 @@ function seedState(): CashBankMockState {
     },
     ...fixtures.cashCollections,
   ];
+  const today = businessDateToday();
+  const counterAccount =
+    fixtures.accounts.find((account) => account.type === "revenue") ??
+    fixtures.accounts[0];
+  const cashBankEntries = [
+    cashBankEntrySchema.parse({
+      id: newIdempotencyKey(),
+      tenantId,
+      legalEntityId: fixtures.legalEntity.id,
+      outletId: null,
+      kind: "cash_in",
+      entryDate: today,
+      amountIdr: 1_000_000,
+      bankAccountId: fixtures.bankAccount.id,
+      toBankAccountId: null,
+      counterAccountId: counterAccount.id,
+      description: "Penerimaan sewa booth",
+      reference: "INV-BOOTH-01",
+      journalEntryId: newIdempotencyKey(),
+      createdBy: finance,
+      createdAt: nowIso(),
+    }),
+    cashBankEntrySchema.parse({
+      id: newIdempotencyKey(),
+      tenantId,
+      legalEntityId: fixtures.legalEntity.id,
+      outletId: null,
+      kind: "transfer",
+      entryDate: today,
+      amountIdr: 5_000_000,
+      bankAccountId: fixtures.bankAccount.id,
+      toBankAccountId: CASH_BANK_MOCK_IDS.secondBankAccount,
+      counterAccountId: null,
+      description: "Pindah dana operasional",
+      reference: null,
+      journalEntryId: newIdempotencyKey(),
+      createdBy: finance,
+      createdAt: nowIso(),
+    }),
+  ];
+  const fundId = newIdempotencyKey();
+  const pettyBase = {
+    tenantId,
+    legalEntityId: fixtures.legalEntity.id,
+    outletId: fixtures.outletId,
+    fundId,
+    createdBy: finance,
+    createdAt: nowIso(),
+    entryDate: today,
+  };
+  // Σ topup − Σ return − Σ purchase = balance: 2.000.000 − 150.000 + 250.000.
+  const pettyEntries = [
+    pettyCashEntrySchema.parse({
+      ...pettyBase,
+      id: newIdempotencyKey(),
+      kind: "topup",
+      amountIdr: 2_000_000,
+      balanceAfterIdr: 2_000_000,
+      bankAccountId: fixtures.bankAccount.id,
+      pettyPurchaseId: null,
+      description: "Isi awal kas kecil",
+      journalStatus: "posted",
+      journalEntryId: newIdempotencyKey(),
+      parkCode: null,
+    }),
+    pettyCashEntrySchema.parse({
+      ...pettyBase,
+      id: newIdempotencyKey(),
+      kind: "purchase",
+      amountIdr: 150_000,
+      balanceAfterIdr: 1_850_000,
+      bankAccountId: null,
+      pettyPurchaseId: newIdempotencyKey(),
+      description: "Pembelian sederhana: es batu",
+      journalStatus: "external",
+      journalEntryId: null,
+      parkCode: null,
+    }),
+    pettyCashEntrySchema.parse({
+      ...pettyBase,
+      id: newIdempotencyKey(),
+      kind: "topup",
+      amountIdr: 250_000,
+      balanceAfterIdr: 2_100_000,
+      bankAccountId: fixtures.bankAccount.id,
+      pettyPurchaseId: null,
+      description: "Tambah kas kecil",
+      journalStatus: "parked",
+      journalEntryId: null,
+      parkCode: "ACCOUNT_MAPPING_MISSING",
+    }),
+  ];
+  const pettyFunds = [
+    pettyCashFundSchema.parse({
+      id: fundId,
+      tenantId,
+      legalEntityId: fixtures.legalEntity.id,
+      outletId: fixtures.outletId,
+      balanceIdr: 2_100_000,
+      updatedAt: nowIso(),
+    }),
+  ];
   return {
     bankAccounts,
     imports: [fixtures.statementImport],
@@ -162,6 +285,10 @@ function seedState(): CashBankMockState {
     cases: [...fixtures.reconciliationCases],
     collections,
     created: new Map(),
+    moneyKeys: new Map(),
+    cashBankEntries,
+    pettyFunds,
+    pettyEntries,
   };
 }
 
@@ -876,4 +1003,244 @@ register(actOnReconciliationCase, ({ params, body }) => {
     }
   }
   return { data: next };
+});
+
+// ---- Cash in, cash out and transfers (legend-4961) ------------------------
+
+/**
+ * One key, one document: the same key with the same body replays the first
+ * document, the same key with another body is refused (the API does the same).
+ */
+function claimMoneyKey(
+  key: string,
+  fingerprint: string,
+): { replayId: string | null } {
+  const claimed = state.get().moneyKeys.get(key);
+  if (!claimed) return { replayId: null };
+  if (claimed.fingerprint !== fingerprint)
+    throw new ApiError(
+      409,
+      "IDEMPOTENCY_KEY_REUSED",
+      "Kunci idempoten ini sudah dipakai untuk permintaan lain.",
+    );
+  return { replayId: claimed.id };
+}
+
+register(listCashBankEntries, ({ query, scenario }) => {
+  const rows = state
+    .get()
+    .cashBankEntries.filter(
+      (entry) =>
+        entry.legalEntityId === query.legalEntityId &&
+        entry.entryDate >= query.from &&
+        entry.entryDate <= query.to &&
+        (!query.kind || entry.kind === query.kind) &&
+        (!query.bankAccountId ||
+          entry.bankAccountId === query.bankAccountId ||
+          entry.toBankAccountId === query.bankAccountId),
+    )
+    .sort(
+      (a, b) =>
+        b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id),
+    );
+  return paginateFixture(
+    rows,
+    { cursor: query.cursor, limit: query.limit },
+    (row) => row.id,
+    scenario,
+  );
+});
+
+register(createCashBankEntry, ({ body }) => {
+  const current = state.get();
+  const { idempotencyKey, ...request } = body;
+  const { replayId } = claimMoneyKey(
+    `cash-bank:${idempotencyKey}`,
+    JSON.stringify(request),
+  );
+  if (replayId) {
+    const existing = current.cashBankEntries.find((row) => row.id === replayId);
+    if (existing) return { data: existing };
+  }
+  if (body.entryDate > businessDateToday())
+    throw invalid("Tanggal tidak boleh di masa depan.");
+  const bankAccountId =
+    body.kind === "transfer" ? body.fromBankAccountId : body.bankAccountId;
+  const bank = findAccount(bankAccountId);
+  const toBank =
+    body.kind === "transfer" ? findAccount(body.toBankAccountId) : null;
+  if (toBank && toBank.legalEntityId !== bank.legalEntityId)
+    throw invalid("Transfer antar badan usaha tidak didukung.");
+  if (toBank && toBank.glAccountId === bank.glAccountId)
+    throw invalid("Kedua rekening memakai akun buku besar yang sama.");
+  let counterGl: string | null = null;
+  if (body.kind !== "transfer") {
+    const counter = fixtures.accounts.find(
+      (account) =>
+        account.id === body.counterAccountId &&
+        account.legalEntityId === bank.legalEntityId,
+    );
+    if (!counter) throw invalid("Akun lawan tidak ditemukan.");
+    if (counter.reportGroup === "cash_and_equivalents")
+      throw new AccountingError("CASH_BANK_COUNTER_ACCOUNT_INVALID");
+    counterGl = counter.id;
+  }
+  // The contract's own posting rule: throws unless debit equals credit.
+  cashBankJournalLines(
+    {
+      kind: body.kind,
+      amountIdr: body.amountIdr,
+      outletId: body.kind === "transfer" ? null : (body.outletId ?? null),
+    },
+    {
+      bankGl: bank.glAccountId,
+      toBankGl: toBank?.glAccountId,
+      counter: counterGl,
+    },
+  );
+  const entry = cashBankEntrySchema.parse({
+    id: newIdempotencyKey(),
+    tenantId,
+    legalEntityId: bank.legalEntityId,
+    outletId: body.kind === "transfer" ? null : (body.outletId ?? null),
+    kind: body.kind,
+    entryDate: body.entryDate,
+    amountIdr: body.amountIdr,
+    bankAccountId,
+    toBankAccountId: toBank ? toBank.id : null,
+    counterAccountId: body.kind === "transfer" ? null : body.counterAccountId,
+    description: body.description,
+    reference: body.reference,
+    journalEntryId: newIdempotencyKey(),
+    createdBy: finance,
+    createdAt: nowIso(),
+  });
+  current.cashBankEntries.push(entry);
+  current.moneyKeys.set(`cash-bank:${idempotencyKey}`, {
+    fingerprint: JSON.stringify(request),
+    id: entry.id,
+  });
+  return { data: entry };
+});
+
+// ---- Petty cash (legend-4961) ---------------------------------------------
+
+register(listPettyCashFunds, ({ query, scenario }) => {
+  if (scenario === "empty") return { data: [] };
+  return {
+    data: state
+      .get()
+      .pettyFunds.filter(
+        (fund) =>
+          fund.legalEntityId === query.legalEntityId &&
+          (!query.outletId || fund.outletId === query.outletId),
+      ),
+  };
+});
+
+register(listPettyCashEntries, ({ query, scenario }) => {
+  const rows = state
+    .get()
+    .pettyEntries.filter(
+      (entry) =>
+        entry.outletId === query.outletId &&
+        entry.entryDate >= query.from &&
+        entry.entryDate <= query.to,
+    )
+    .sort(
+      (a, b) =>
+        b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id),
+    );
+  return paginateFixture(
+    rows,
+    { cursor: query.cursor, limit: query.limit },
+    (row) => row.id,
+    scenario,
+  );
+});
+
+register(createPettyCashMovement, ({ body }) => {
+  const current = state.get();
+  const { idempotencyKey, ...request } = body;
+  const { replayId } = claimMoneyKey(
+    `petty:${idempotencyKey}`,
+    JSON.stringify(request),
+  );
+  if (replayId) {
+    const existing = current.pettyEntries.find((row) => row.id === replayId);
+    if (existing) return { data: existing };
+  }
+  const bank = findAccount(body.bankAccountId);
+  let index = current.pettyFunds.findIndex(
+    (fund) => fund.outletId === body.outletId,
+  );
+  if (index === -1) {
+    // The fund is created by the first top-up; a return has nothing to give.
+    if (body.kind === "return")
+      throw new AccountingError("PETTY_CASH_INSUFFICIENT");
+    current.pettyFunds.push(
+      pettyCashFundSchema.parse({
+        id: newIdempotencyKey(),
+        tenantId,
+        legalEntityId: bank.legalEntityId,
+        outletId: body.outletId,
+        balanceIdr: 0,
+        updatedAt: nowIso(),
+      }),
+    );
+    index = current.pettyFunds.length - 1;
+  }
+  const fund = current.pettyFunds[index];
+  // Throws PETTY_CASH_INSUFFICIENT: the balance never goes below zero.
+  const balanceIdr = applyPettyCashDelta(
+    fund.balanceIdr,
+    body.kind === "topup" ? body.amountIdr : -body.amountIdr,
+  );
+  const entry = pettyCashEntrySchema.parse({
+    id: newIdempotencyKey(),
+    tenantId,
+    legalEntityId: bank.legalEntityId,
+    outletId: body.outletId,
+    fundId: fund.id,
+    kind: body.kind,
+    amountIdr: body.amountIdr,
+    balanceAfterIdr: balanceIdr,
+    bankAccountId: bank.id,
+    pettyPurchaseId: null,
+    entryDate: businessDateToday(),
+    description: body.description,
+    journalStatus: "posted",
+    journalEntryId: newIdempotencyKey(),
+    parkCode: null,
+    createdBy: finance,
+    createdAt: nowIso(),
+  });
+  current.pettyFunds[index] = pettyCashFundSchema.parse({
+    ...fund,
+    balanceIdr,
+    updatedAt: nowIso(),
+  });
+  current.pettyEntries.push(entry);
+  current.moneyKeys.set(`petty:${idempotencyKey}`, {
+    fingerprint: JSON.stringify(request),
+    id: entry.id,
+  });
+  return { data: entry };
+});
+
+register(postPettyCashEntry, ({ params }) => {
+  const entries = state.get().pettyEntries;
+  const index = entries.findIndex((row) => row.id === params.entryId);
+  if (index === -1) throw notFound("Pergerakan kas kecil tidak ditemukan.");
+  const entry = entries[index];
+  // A posted entry comes back as it is: one document, one journal.
+  if (entry.journalStatus !== "parked") return { data: entry };
+  const posted = pettyCashEntrySchema.parse({
+    ...entry,
+    journalStatus: "posted",
+    journalEntryId: newIdempotencyKey(),
+    parkCode: null,
+  });
+  entries[index] = posted;
+  return { data: posted };
 });
