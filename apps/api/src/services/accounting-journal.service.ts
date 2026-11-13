@@ -606,6 +606,34 @@ export async function postJournalFromRuleInTransaction(
     });
     accountMap.set(mapping.role, mapping.accountId);
   }
+  // legend-48ft7: the refund fact builder reads the mapping in a separate,
+  // unlocked read. Re-check on the exact map the lines are built from, so a
+  // payout role can never credit a sale service charge or tax account.
+  if (input.eventName === "order.refunded") {
+    const protectedAccountIds = new Set<string>();
+    for (const role of [
+      "service_charge",
+      "tax_payable_pbjt",
+      "tax_payable_ppn",
+      "tax_payable_other",
+    ] as const) {
+      const accountId = accountMap.get(role);
+      if (accountId !== undefined) protectedAccountIds.add(accountId);
+    }
+    for (const role of [
+      "cash_on_hand",
+      "customer_deposit",
+      "edc_clearing",
+      "loyalty_liability",
+    ] as const) {
+      const accountId = accountMap.get(role);
+      if (accountId !== undefined && protectedAccountIds.has(accountId))
+        throw new AccountingError(
+          "ACCOUNT_MAPPING_MISSING",
+          "A refund payout account is mapped to a sale service charge or tax account",
+        );
+    }
+  }
   const lines = buildJournalLinesFromRule(rule, input.amounts, accountMap, {
     outletId: input.outletId as OutletId | null,
     costCenter: input.costCenter ?? null,
