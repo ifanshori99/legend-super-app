@@ -2108,6 +2108,13 @@
       "when": 1794551150826,
       "tag": "0472_payslip_bank_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 478,
+      "version": "7",
+      "when": 1794555585651,
+      "tag": "0478_payroll_run_month_priors",
+      "breakpoints": true
     }
   ]
 }

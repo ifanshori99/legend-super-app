@@ -30,6 +30,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   smallint,
   text,
   timestamp,
@@ -610,6 +611,50 @@ export const payslipBankSnapshots = pgTable(
     check(
       "payslip_bank_snapshots_key_version_check",
       sql`${table.piiKeyVersion} >= 1`,
+    ),
+  ],
+);
+
+/**
+ * Month-dependency edges written once at lock (PAYR-05): the later run of a
+ * tax month was computed on the earlier locked/paid run. Reversal of the
+ * earlier run is refused while a live (locked/paid) dependent exists. Append
+ * only (UPDATE/DELETE revoked from the app role).
+ */
+export const payrollRunMonthPriors = pgTable(
+  "payroll_run_month_priors",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    /** The later run, the one that was locked. */
+    payrollRunId: uuid("payroll_run_id").$type<PayrollRunId>().notNull(),
+    /** The earlier locked/paid run it was computed against. */
+    priorPayrollRunId: uuid("prior_payroll_run_id")
+      .$type<PayrollRunId>()
+      .notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    primaryKey({
+      name: "payroll_run_month_priors_pkey",
+      columns: [table.tenantId, table.payrollRunId, table.priorPayrollRunId],
+    }),
+    foreignKey({
+      name: "payroll_run_month_priors_run_fk",
+      columns: [table.tenantId, table.payrollRunId],
+      foreignColumns: [payrollRuns.tenantId, payrollRuns.id],
+    }),
+    foreignKey({
+      name: "payroll_run_month_priors_prior_fk",
+      columns: [table.tenantId, table.priorPayrollRunId],
+      foreignColumns: [payrollRuns.tenantId, payrollRuns.id],
+    }),
+    index("payroll_run_month_priors_prior_idx").on(
+      table.tenantId,
+      table.priorPayrollRunId,
+    ),
+    check(
+      "payroll_run_month_priors_distinct_check",
+      sql`${table.payrollRunId} <> ${table.priorPayrollRunId}`,
     ),
   ],
 );

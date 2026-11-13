@@ -39,11 +39,13 @@ import {
   encodeCursor,
   idr,
   type BusinessDate,
+  type Idr,
   type RoundingMode,
   type ScopedTenantContext,
   type TenantId,
   type UserId,
 } from "@starter/shared/core";
+import { employeeIdSchema, type EmployeeId } from "@starter/shared/hris";
 import {
   PayrollError,
   assertBankFileMatchesRun,
@@ -54,18 +56,21 @@ import {
   payrollRunTotalsSchema,
   payrollTaxExportSchema,
   payslipCalculationSchema,
+  payslipPaymentMethodSchema,
   statutoryTableVersionSchema,
   statutoryVersionRefSchema,
   type BankTransferFile,
   type BankTransferFormat,
   type PayrollRunId,
   type PayrollRunStatus,
+  type PayslipId,
   type PayrollTaxExport,
   type PayslipCalculation,
   type StatutoryTableVersionOf,
 } from "@starter/shared/hris/payroll";
 import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
+import { payrollRapelFinalizations } from "../db/schema/payroll-rapel.ts";
 import {
   bankTransferFiles,
   payrollRuns,
@@ -78,6 +83,7 @@ import { legalEntities } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { normalizeHrisPii, openHrisPii } from "../lib/hris-pii.ts";
+import { payrollGrossEnvelopeSchema } from "../lib/payroll-gross-envelope.ts";
 import { openPayrollValue } from "../lib/payroll-sealed.ts";
 import { getBankFormatter } from "../lib/payroll-export/bank-formats.ts";
 import type { BankFileRow } from "../lib/payroll-export/bank-formats.ts";
@@ -91,6 +97,7 @@ import {
   openPayeeBankSnapshot,
   type PayeeBankSnapshot,
 } from "./payroll-bank-snapshot.service.ts";
+import { openRapelFinalizedPayslip } from "./payroll-rapel-finalize.service.ts";
 import { loadPph21PolicyVersionsForRun } from "./payroll-pph21-policy.service.ts";
 import type { StorageRuntime } from "./core-storage-runtime.ts";
 import { cursorPair, notFound } from "./hris-access.ts";
@@ -136,6 +143,12 @@ function idList(ids: readonly string[]): string {
   return sorted.length > 20 ? `${shown}, ...` : shown;
 }
 
+const unreadableSlip = () =>
+  refuse(
+    "PAYROLL_PAYSLIP_UNREADABLE",
+    "Slip gaji tidak bisa dibaca atau tidak sesuai format, berkas tidak bisa dibuat.",
+  );
+
 function sealedCalculation(row: {
   id: string;
   tenantId: string;
@@ -159,11 +172,88 @@ function sealedCalculation(row: {
     );
   } catch {
     // Never echo the decrypt or parse error: it may carry payroll values.
-    throw refuse(
-      "PAYROLL_PAYSLIP_UNREADABLE",
-      "Slip gaji tidak bisa dibaca atau tidak sesuai format, berkas tidak bisa dibuat.",
-    );
+    throw unreadableSlip();
   }
+}
+
+type BankSlip = {
+  employeeId: EmployeeId;
+  paymentMethod: PayslipCalculation["paymentMethod"];
+  netIdr: Idr;
+  source: "full" | "rapel";
+};
+
+/**
+ * One payslip of a bank file run. A full payslip must agree with its row
+ * columns. A rapel-finalized payslip (gross envelope) is accepted only when
+ * its finalization receipt vouches for it (PAYR-04): employee and payment
+ * method come from the row columns (the receipt binds the employee; the
+ * payslips immutability trigger, drizzle/0248, keeps payment_method fixed),
+ * and the net from the envelope. Anything else fails closed.
+ */
+function bankSlipOf(
+  row: {
+    id: PayslipId;
+    tenantId: TenantId;
+    employeeId: string;
+    paymentMethod: string;
+    calculationEncrypted: Buffer;
+    piiKeyVersion: number;
+  },
+  runId: PayrollRunId,
+  receipts: ReadonlyMap<string, typeof payrollRapelFinalizations.$inferSelect>,
+): BankSlip {
+  let sealed: unknown;
+  try {
+    sealed = JSON.parse(
+      openPayrollValue(
+        row.calculationEncrypted,
+        {
+          tenantId: row.tenantId,
+          table: "payslips",
+          rowId: row.id,
+          field: "calculation",
+        },
+        row.piiKeyVersion,
+      ),
+    );
+  } catch {
+    // Never echo the decrypt or parse error: it may carry payroll values.
+    throw unreadableSlip();
+  }
+  const full = payslipCalculationSchema.safeParse(sealed);
+  if (full.success) {
+    // The row's own columns must agree with the sealed body.
+    if (
+      full.data.employeeId !== row.employeeId ||
+      full.data.paymentMethod !== row.paymentMethod
+    )
+      throw new PayrollError("PAYROLL_BANK_FILE_MISMATCH");
+    return {
+      employeeId: full.data.employeeId,
+      paymentMethod: full.data.paymentMethod,
+      netIdr: full.data.netIdr,
+      source: "full",
+    };
+  }
+  if (!payrollGrossEnvelopeSchema.safeParse(sealed).success)
+    throw unreadableSlip();
+  const method = payslipPaymentMethodSchema.safeParse(row.paymentMethod);
+  const employeeId = employeeIdSchema.safeParse(row.employeeId);
+  if (!method.success || !employeeId.success)
+    throw new PayrollError("PAYROLL_BANK_FILE_MISMATCH");
+  let envelope: ReturnType<typeof openRapelFinalizedPayslip>;
+  try {
+    envelope = openRapelFinalizedPayslip(row, receipts.get(row.id), runId);
+  } catch {
+    throw new PayrollError("PAYROLL_BANK_FILE_MISMATCH");
+  }
+  return {
+    employeeId: employeeId.data,
+    paymentMethod: method.data,
+    netIdr: envelope.netIdr,
+    source: "rapel",
+  };
 }
 
 async function audit(
@@ -341,16 +431,22 @@ export async function createBankTransferFile(
               eq(payslips.payrollRunId, payrollRunId),
             ),
           );
-        const calculations = slipRows.map((row) => {
-          const calc = sealedCalculation(row);
-          // The row's own columns must agree with the sealed body.
-          if (
-            calc.employeeId !== row.employeeId ||
-            calc.paymentMethod !== row.paymentMethod
-          )
-            throw new PayrollError("PAYROLL_BANK_FILE_MISMATCH");
-          return calc;
-        });
+        const receiptRows = await tx
+          .select()
+          .from(payrollRapelFinalizations)
+          .where(
+            and(
+              eq(payrollRapelFinalizations.tenantId, tenantId),
+              eq(payrollRapelFinalizations.payrollRunId, payrollRunId),
+            ),
+          );
+        const receipts = new Map(receiptRows.map((r) => [r.payslipId, r]));
+        const calculations = slipRows.map((row) =>
+          bankSlipOf(row, payrollRunId, receipts),
+        );
+        // A run is all full payslips or all rapel-finalized ones, never both.
+        if (new Set(calculations.map((calc) => calc.source)).size > 1)
+          throw new PayrollError("PAYROLL_BANK_FILE_MISMATCH");
 
         const bankSlips = calculations.filter(
           (calc) => calc.paymentMethod === "bank_transfer" && calc.netIdr > 0,

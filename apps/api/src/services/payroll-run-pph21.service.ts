@@ -136,6 +136,13 @@ const monthPriorInvalid = () =>
     "Slip gaji run lain pada bulan pajak ini tidak bisa dibaca atau bukan PPh 21 TER, total bulanan tidak bisa dihitung.",
   );
 
+const runMismatch = () =>
+  new HttpError(
+    409,
+    "PAYROLL_PPH21_RUN_MISMATCH",
+    "Tanggal bayar atau badan hukum payroll tidak sesuai dengan data payroll yang tersimpan.",
+  );
+
 /** First day of the month after `YYYY-MM`. */
 function nextMonthStart(month: string): string {
   const [year, number] = month.split("-").map(Number) as [number, number];
@@ -277,11 +284,74 @@ async function loadStoredRun(
 }
 
 /**
+ * Takes the advisory month lock of the stored run and re-reads the run under
+ * it, so a legal entity or pay date edited while waiting for the lock is
+ * refused (409 PAYROLL_PPH21_RUN_MISMATCH) instead of locking the wrong month.
+ * The lock is re-entrant inside one transaction. `month` is `YYYY-MM`.
+ */
+export async function lockPayrollRunMonth(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: PayrollRunId,
+): Promise<{ legalEntityId: string; payDate: BusinessDate; month: string }> {
+  const first = await loadStoredRun(tx, tenantId, runId);
+  const month = first.payDate.slice(0, 7);
+  await lockPayrollTaxMonth(tx, tenantId, first.legalEntityId, month);
+  const stored = await loadStoredRun(tx, tenantId, runId);
+  if (
+    stored.payDate !== first.payDate ||
+    stored.legalEntityId !== first.legalEntityId
+  )
+    throw runMismatch();
+  return {
+    legalEntityId: stored.legalEntityId,
+    payDate: stored.payDate as BusinessDate,
+    month,
+  };
+}
+
+/**
+ * The other locked/paid runs of the same legal entity and tax month that hold
+ * a payslip of any of `employeeIds` (sorted, unique). The caller holds the
+ * month lock. These are the runs a later run's month basis depends on; the
+ * set also covers last-tax-period employees (doubt limits reversal).
+ */
+export async function loadMonthPriorRunIds(
+  tx: Tx,
+  tenantId: TenantId,
+  run: { runId: PayrollRunId; legalEntityId: string; month: string },
+  employeeIds: readonly string[],
+): Promise<PayrollRunId[]> {
+  if (employeeIds.length === 0) return [];
+  const rows = await tx
+    .selectDistinct({ id: payrollRuns.id })
+    .from(payslips)
+    .innerJoin(
+      payrollRuns,
+      and(
+        eq(payrollRuns.tenantId, payslips.tenantId),
+        eq(payrollRuns.id, payslips.payrollRunId),
+      ),
+    )
+    .where(
+      and(
+        eq(payslips.tenantId, tenantId),
+        eq(payrollRuns.legalEntityId, run.legalEntityId),
+        ne(payrollRuns.id, run.runId),
+        inArray(payrollRuns.status, [...MONTH_PRIOR_STATUSES]),
+        gte(payrollRuns.payDate, `${run.month}-01`),
+        lt(payrollRuns.payDate, nextMonthStart(run.month)),
+        inArray(payslips.employeeId, [...employeeIds]),
+      ),
+    );
+  return rows.map((row) => row.id).sort();
+}
+
+/**
  * Takes the month lock and reads the month basis of every employee that is
  * not in the last tax period (annual rule unchanged: no basis). The legal
  * entity and pay date come from the stored run; the caller's pay date must
- * match. The run is read again under the lock, so a pay date edited while
- * waiting for the lock is refused instead of locking the wrong month.
+ * match.
  */
 async function monthBasisForInput(
   context: ScopedTenantContext,
@@ -290,27 +360,13 @@ async function monthBasisForInput(
 ): Promise<Map<string, PayrollMonthBasis>> {
   const { runId } = input.monthScope;
   const { tenantId } = context.tenant;
-  const mismatch = () =>
-    new HttpError(
-      409,
-      "PAYROLL_PPH21_RUN_MISMATCH",
-      "Tanggal bayar atau badan hukum payroll tidak sesuai dengan data payroll yang tersimpan.",
-    );
-  const first = await loadStoredRun(tx, tenantId, runId);
-  if (first.payDate !== input.run.payDate) throw mismatch();
-  const month = first.payDate.slice(0, 7);
-  await lockPayrollTaxMonth(tx, tenantId, first.legalEntityId, month);
-  const stored = await loadStoredRun(tx, tenantId, runId);
-  if (
-    stored.payDate !== first.payDate ||
-    stored.legalEntityId !== first.legalEntityId
-  )
-    throw mismatch();
+  const stored = await lockPayrollRunMonth(tx, tenantId, runId);
+  if (stored.payDate !== input.run.payDate) throw runMismatch();
   return loadMonthBasis(
     tx,
     tenantId,
     { runId, legalEntityId: stored.legalEntityId },
-    month,
+    stored.month,
     input.employees.filter((e) => !e.lastTaxPeriod).map((e) => e.employeeId),
   );
 }

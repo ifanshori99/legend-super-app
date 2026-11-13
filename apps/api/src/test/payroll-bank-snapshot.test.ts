@@ -996,11 +996,11 @@ describe("rapel finalization is a lock path too", () => {
       }),
     );
 
-    // Known gap, outside this card: rapel finalization seals a gross envelope
-    // (payrollGrossEnvelopeSchema), not a full payslipCalculationSchema, so the
-    // bank transfer export cannot read these payslips and fails closed with
-    // 422 PAYROLL_PAYSLIP_UNREADABLE. This test therefore checks the stored
-    // snapshot itself instead of the bank file.
+    // Rapel finalization seals a gross envelope (payrollGrossEnvelopeSchema),
+    // not a full payslipCalculationSchema. The bank transfer export now reads
+    // these payslips through openRapelFinalizedPayslip (design §5); the
+    // [rapel-bank-export] tests cover the file itself. This test checks the
+    // stored snapshot itself.
     const frozen = await readSnapshots();
     expect(
       frozen,

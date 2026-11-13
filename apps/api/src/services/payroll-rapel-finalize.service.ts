@@ -7,6 +7,7 @@ import {
   idr,
   z,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import {
   payrollConfigSnapshotSchema,
@@ -14,7 +15,9 @@ import {
   payrollRunTotalsSchema,
   payslipIdSchema,
   payslipPaymentMethodSchema,
+  type PayrollRunId,
   type PayrollRunTotals,
+  type PayslipId,
 } from "@starter/shared/hris/payroll";
 import { employeeIdSchema } from "@starter/shared/hris";
 import { employees } from "../db/schema/hris.ts";
@@ -151,17 +154,44 @@ function assertTotals(
       "Hasil terkini tidak sama dengan total run yang telah disetujui; finalisasi ditahan untuk persetujuan ulang.",
     );
 }
-function openGross(
-  context: ScopedTenantContext,
-  slip: typeof payslips.$inferSelect,
+/**
+ * Opens a rapel-finalized payslip and proves it is the sealed envelope this
+ * run's finalization receipt vouches for: same run, same employee, same
+ * allocation revision, and (while the key version is unchanged) the same
+ * ciphertext digest. Shared by the finalize replay and the bank transfer
+ * export, so both accept exactly the same slips. Throws 409 on any mismatch.
+ */
+export function openRapelFinalizedPayslip(
+  slip: {
+    id: PayslipId;
+    tenantId: TenantId;
+    employeeId: string;
+    calculationEncrypted: Buffer;
+    piiKeyVersion: number;
+  },
+  receipt: typeof payrollRapelFinalizations.$inferSelect | undefined,
+  runId: PayrollRunId,
 ): GrossEnvelope {
+  if (
+    !receipt ||
+    receipt.payrollRunId !== runId ||
+    receipt.payslipId !== slip.id ||
+    receipt.employeeId !== slip.employeeId ||
+    slip.piiKeyVersion < receipt.piiKeyVersion ||
+    (slip.piiKeyVersion === receipt.piiKeyVersion &&
+      digest(slip.calculationEncrypted) !== receipt.calculationSha256)
+  )
+    throw conflict(
+      "Batch finalisasi tersimpan tidak cocok dengan rencana run.",
+    );
+  let gross: GrossEnvelope;
   try {
-    return payrollGrossEnvelopeSchema.parse(
+    gross = payrollGrossEnvelopeSchema.parse(
       JSON.parse(
         openPayrollValue(
           slip.calculationEncrypted,
           {
-            tenantId: context.tenant.tenantId,
+            tenantId: slip.tenantId,
             table: "payslips",
             rowId: slip.id,
             field: "calculation",
@@ -173,6 +203,13 @@ function openGross(
   } catch {
     throw conflict("Slip final tidak dapat diverifikasi; pembayaran ditahan.");
   }
+  if (
+    gross.payrollRunId?.toLowerCase() !== runId.toLowerCase() ||
+    gross.rapelAllocationRevision === undefined ||
+    gross.rapelAllocationRevision !== receipt.allocationRevision
+  )
+    throw conflict("Seal final tidak cocok dengan revisi alokasi tersimpan.");
+  return gross;
 }
 
 /**
@@ -355,24 +392,13 @@ export async function finalizePayrollRapelRunInTransaction(
         !slip ||
         !receipt ||
         slip.id !== entry.payslipId ||
-        receipt.payslipId !== slip.id ||
         slip.paymentMethod !== entry.paymentMethod ||
-        receipt.allocationRevision !== revisions.get(entry.employeeId) ||
-        slip.piiKeyVersion < receipt.piiKeyVersion ||
-        (slip.piiKeyVersion === receipt.piiKeyVersion &&
-          digest(slip.calculationEncrypted) !== receipt.calculationSha256)
+        receipt.allocationRevision !== revisions.get(entry.employeeId)
       )
         throw conflict(
           "Batch finalisasi tersimpan tidak cocok dengan rencana run.",
         );
-      const gross = openGross(context, slip);
-      if (
-        gross.payrollRunId !== run.id ||
-        gross.rapelAllocationRevision !== receipt.allocationRevision
-      )
-        throw conflict(
-          "Seal final tidak cocok dengan revisi alokasi tersimpan.",
-        );
+      const gross = openRapelFinalizedPayslip(slip, receipt, run.id);
       return { plan: entry, gross };
     });
     assertTotals(totals, aggregate(replay));
