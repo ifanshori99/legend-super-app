@@ -36,8 +36,8 @@ export function VerifyLinkScreen({
 
   useEffect(() => {
     if (!result || !returnTo) return;
-    // A runtime path cannot be checked against the generated route union.
-    void navigate({ to: returnTo as "/", replace: true });
+    // `href` keeps the query (e.g. `/wifi?zone=...`), which `to` would read as path.
+    void navigate({ href: returnTo, replace: true });
   }, [result, returnTo, navigate]);
 
   async function submit() {

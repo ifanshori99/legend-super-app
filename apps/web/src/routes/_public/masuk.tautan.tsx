@@ -1,10 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createTranslator } from "@starter/shared/i18n";
-import {
-  magicLinkTokenSchema,
-  returnPathSchema,
-} from "@starter/shared/identity";
+import { magicLinkTokenSchema } from "@starter/shared/identity";
 import { z } from "zod";
+import { safeReturnPath } from "@/features/ws01-login/flow";
 import { VerifyLinkScreen } from "@/features/ws01-login/components/verify-link";
 
 // "/masuk/tautan" — the page an email sign-in link opens (PRD v1.7 §3 F3
@@ -14,7 +12,10 @@ const t = createTranslator();
 
 const searchSchema = z.object({
   token: magicLinkTokenSchema.optional().catch(undefined),
-  lanjut: returnPathSchema.optional().catch(undefined),
+  lanjut: z
+    .unknown()
+    .optional()
+    .transform((v) => (typeof v === "string" ? safeReturnPath(v) : undefined)),
 });
 
 export const Route = createFileRoute("/_public/masuk/tautan")({
