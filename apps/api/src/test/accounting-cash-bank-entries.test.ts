@@ -880,6 +880,9 @@ describe("legend-4961 counter account denylist (review M2 + L1)", () => {
       ["edc_clearing", ASSET],
       ["inventory", ASSET],
       ["inventory_semi_finished", ASSET],
+      ["ppn_input", ASSET],
+      ["fixed_assets", ASSET],
+      ["accumulated_depreciation", ASSET],
     ];
     const accounts: Record<string, string> = {};
     let n = 0;
