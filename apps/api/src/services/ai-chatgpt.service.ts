@@ -41,7 +41,11 @@ type PollClaim =
   | { done: ChatgptConnectionView }
   | { row: Row; pending: Pending; operationId: string };
 type RefreshClaim =
-  | { tokens: IssuedChatgptCredentials | null; revokeToken?: string }
+  | {
+      tokens: IssuedChatgptCredentials | null;
+      revokeToken?: string;
+      ownerRemoved?: true;
+    }
   | { row: Row; current: ChatgptTokenBundle; operationId: string };
 const T = aiChatgptConnections;
 const credentialVersion = (ciphertext: string) =>
@@ -716,7 +720,11 @@ export async function getChatgptCredentials(
         ).allowsVia("owner", "ai.governance.manage", { type: "tenant" });
       if (!approverStillOwner) {
         const removed = await disconnectInTransaction(tx, context, row, null);
-        return { tokens: null, revokeToken: removed.refreshToken };
+        return {
+          tokens: null,
+          revokeToken: removed.refreshToken,
+          ownerRemoved: true,
+        };
       }
       let tokens: ChatgptTokenBundle;
       try {
@@ -748,6 +756,9 @@ export async function getChatgptCredentials(
   );
   if ("tokens" in claim) {
     await bestEffortRevoke(claim.revokeToken);
+    // Null would read as "auth" upstream and fall back to the tenant API key;
+    // a removed owner must refuse the call instead.
+    if (claim.ownerRemoved) throw new ChatgptCodexError("unavailable");
     return env.AI_CHATGPT_ENABLED ? claim.tokens : null;
   }
   const { row, current, operationId } = claim;
@@ -777,10 +788,42 @@ export async function getChatgptCredentials(
     return null;
   }
   let saved: Row | undefined;
+  // Assigned inside the transaction callback; the cast stops TS narrowing it
+  // to `undefined` at the read below.
+  let ownerRemoved = undefined as
+    { revokeToken: string | undefined } | undefined;
   try {
     const encrypted = sealTokens(row, refreshed);
     saved = await withTenant(db, context, async (tx) => {
       if (!env.AI_CHATGPT_ENABLED) return undefined;
+      // The refresh waited on the network: re-check under the connection lock
+      // that the approving owner still holds an active owner assignment, using
+      // the same check as the claim. If not, the new token is never stored.
+      await lock(tx, context.tenant.tenantId);
+      const latest = await read(tx, context.tenant.tenantId, true);
+      if (
+        !latest ||
+        latest.status !== "connected" ||
+        latest.generation !== row.generation ||
+        latest.operationId !== operationId
+      )
+        return undefined;
+      const approver = latest.riskAcceptedBy;
+      const approverStillOwner =
+        approver !== null &&
+        (
+          await accessSnapshotInTransaction(tx, context, approver, new Date())
+        ).allowsVia("owner", "ai.governance.manage", { type: "tenant" });
+      if (!approverStillOwner) {
+        const removed = await disconnectInTransaction(
+          tx,
+          context,
+          latest,
+          null,
+        );
+        ownerRemoved = { revokeToken: removed.refreshToken };
+        return undefined;
+      }
       const [updated] = await tx
         .update(T)
         .set({
@@ -807,6 +850,15 @@ export async function getChatgptCredentials(
       operationId,
       tokensEncrypted: row.tokensEncrypted,
     });
+    throw new ChatgptCodexError("unavailable");
+  }
+  if (ownerRemoved) {
+    // Disconnected in the save transaction: revoke the new token and the old
+    // one upstream. Throw "unavailable": null would read as "auth" and the
+    // gateway would fall back to the tenant API key.
+    await bestEffortRevoke(refreshed.refreshToken);
+    if (ownerRemoved.revokeToken !== refreshed.refreshToken)
+      await bestEffortRevoke(ownerRemoved.revokeToken);
     throw new ChatgptCodexError("unavailable");
   }
   if (!saved) {

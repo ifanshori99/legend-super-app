@@ -78,7 +78,6 @@ let pendingPoll: (() => Promise<Response>) | null = null;
 let tokenReply: (() => Response | Promise<Response>) | null = null;
 let inferenceReply: (() => Response | Promise<Response>) | null = null;
 let ownerA: Actor;
-let approver: Actor;
 const enabledBefore = (env as unknown as { AI_CHATGPT_ENABLED: boolean })
   .AI_CHATGPT_ENABLED;
 const setEnabled = (enabled: boolean) =>
@@ -308,10 +307,23 @@ async function saveCustomFallback() {
   customCalls = [];
 }
 
+// audit_logs.event is jsonb (AuditEvent); the action name is event->>'action'.
+// Forced disconnect writes ai_chatgpt.revoked, a saved refresh ai_chatgpt.refreshed.
+const auditCount = async (action: string) =>
+  Number(
+    (
+      await inTenant(tenantA, (c) =>
+        c.query(
+          "SELECT count(*) AS n FROM audit_logs WHERE tenant_id=$1 AND event->>'action'=$2",
+          [tenantA, action],
+        ),
+      )
+    ).rows[0].n,
+  );
+
 beforeAll(async () => {
   globalThis.fetch = denyRealFetch;
   ownerA = await newOwner("ChatGPT review-B owner A");
-  approver = await newOwner("ChatGPT review-B approving owner");
 }, 60_000);
 beforeEach(async () => {
   setEnabled(true);
@@ -375,11 +387,15 @@ afterAll(async () => {
 
 describe("legend-z83k review B P2 approving owner must still hold the owner role", () => {
   it("legend-z83k review-B P2 stops using the account and revokes it once the approving owner loses the owner role", async () => {
+    // A fresh owner per test: removing the role is permanent.
+    const approver = await newOwner("ChatGPT review-B P2 approving owner");
     await seedConnected(approver.userId);
+    await saveCustomFallback();
     // Positive control: the connection works while the approver is an owner.
     const before = await ask();
     expect(before.status, before.text).toBe(200);
     expect(inferenceCalls()).toHaveLength(1);
+    const revokedAuditBefore = await auditCount("ai_chatgpt.revoked");
 
     await removeAssignments(approver.userId);
     const platform = plainAnswer("Must never be used");
@@ -390,10 +406,17 @@ describe("legend-z83k review B P2 approving owner must still hold the owner role
     // The paid ChatGPT account was not used again, nor was a platform key.
     expect(inferenceCalls()).toHaveLength(1);
     expect(platform.requests).toHaveLength(0);
+    // No fallback to the tenant API key either.
+    expect(customCalls.filter((call) => call.method === "POST")).toHaveLength(
+      0,
+    );
     // The connection is invalidated: disconnected, tokens dropped and revoked.
     expect((await status()).body.data.state).toBe("disconnected");
     expect((await rawConnection())?.tokens_encrypted).toBeNull();
     expect(revokedTokens()).toContain(REFRESH_TOKEN);
+    expect(await auditCount("ai_chatgpt.revoked")).toBeGreaterThan(
+      revokedAuditBefore,
+    );
   });
 });
 
@@ -567,5 +590,75 @@ describe("legend-z83k review B P3 finished answer must not trigger a paid fallba
     expect(customCalls.filter((call) => call.method === "POST")).toHaveLength(
       0,
     );
+  }, 60_000);
+});
+
+describe("legend-80oot approving owner is re-checked when the refreshed tokens are saved", () => {
+  it("legend-80oot rejects, disconnects and revokes a refresh when the approving owner loses the role while the refresh is in flight", async () => {
+    const approver = await newOwner("ChatGPT legend-80oot removed owner");
+    await seedConnected(approver.userId, {
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+    await saveCustomFallback();
+    const revokedAuditBefore = await auditCount("ai_chatgpt.revoked");
+    const refreshedAuditBefore = await auditCount("ai_chatgpt.refreshed");
+    const platform = plainAnswer("Must never be used");
+    setPlatformAiProviderForTests(platform);
+    const NEW_REFRESH = "refresh-after-owner-removed-fixture";
+    let entered = false;
+    tokenReply = async () => {
+      entered = true;
+      // Owner role is removed after the claim check, before the save.
+      await removeAssignments(approver.userId);
+      return Response.json({
+        access_token: jwt({ sub: "refresh-owner-removed" }),
+        id_token: idToken,
+        refresh_token: NEW_REFRESH,
+        expires_in: 3600,
+      });
+    };
+
+    const answered = await ask();
+    expect(entered).toBe(true);
+    // The credentials are refused, with no fallback to a paid key.
+    expect(answered.status, answered.text).toBe(503);
+    expect(codeOf(answered)).toBe("AI_PROVIDER_UNAVAILABLE");
+    expect(inferenceCalls()).toHaveLength(0);
+    expect(customCalls.filter((call) => call.method === "POST")).toHaveLength(
+      0,
+    );
+    expect(platform.requests).toHaveLength(0);
+    // The connection is disconnected and the new token pair was not saved.
+    expect((await status()).body.data.state).toBe("disconnected");
+    const row = await rawConnection();
+    expect(row?.status).toBe("disconnected");
+    expect(row?.tokens_encrypted).toBeNull();
+    expect(await auditCount("ai_chatgpt.refreshed")).toBe(refreshedAuditBefore);
+    expect(await auditCount("ai_chatgpt.revoked")).toBeGreaterThan(
+      revokedAuditBefore,
+    );
+    // Both the freshly issued token and the old one are revoked upstream.
+    expect(revokedTokens()).toContain(NEW_REFRESH);
+    expect(revokedTokens()).toContain(REFRESH_TOKEN);
+  }, 60_000);
+
+  it("legend-80oot keeps saving the refresh when the approving owner still holds the role", async () => {
+    const approver = await newOwner("ChatGPT legend-80oot kept owner");
+    await seedConnected(approver.userId, {
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+    const NEW_REFRESH = "refresh-owner-kept-fixture";
+    tokenReply = () =>
+      Response.json({
+        access_token: jwt({ sub: "refresh-owner-kept" }),
+        id_token: idToken,
+        refresh_token: NEW_REFRESH,
+        expires_in: 3600,
+      });
+    const answered = await ask();
+    expect(answered.status, answered.text).toBe(200);
+    expect(inferenceCalls()).toHaveLength(1);
+    expect((await status()).body.data.state).toBe("connected");
+    expect(revokedTokens()).toHaveLength(0);
   }, 60_000);
 });
