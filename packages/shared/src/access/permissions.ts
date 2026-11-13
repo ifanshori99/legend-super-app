@@ -174,6 +174,10 @@ const entries = [
   ["accounting.expense.request", []],
   ["accounting.expense.approve", ["finance", "approve"]],
   ["accounting.cash_deposit.record", ["finance"]],
+  // legend-4961: cash in/out and bank transfers (legal-entity level), and the
+  // per-outlet petty cash fund (top-up, return, retry of a parked journal).
+  ["accounting.cash_bank.record", ["finance"]],
+  ["accounting.petty_cash.manage", ["finance"]],
 
   // Profit share & dividends (§3 Kelompok E, F34)
   ["profit_share.own.view", ["self"]],

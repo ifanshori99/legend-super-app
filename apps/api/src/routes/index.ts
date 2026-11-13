@@ -29,6 +29,8 @@ import { createAccountingBankAccountsRouter } from "./accounting-bank-accounts.r
 import { createAccountingBankStatementsRouter } from "./accounting-bank-statements.routes";
 import { createAccountingBankLinesRouter } from "./accounting-bank-lines.routes";
 import { createAccountingCashDepositsRouter } from "./accounting-cash-deposits.routes";
+import { createAccountingCashBankEntriesRouter } from "./accounting-cash-bank-entries.routes";
+import { createAccountingPettyCashRouter } from "./accounting-petty-cash.routes";
 import { createAccountingBankReconCasesRouter } from "./accounting-bank-recon-cases.routes";
 import { createAccountingLegalEntitiesRouter } from "./accounting-legal-entities.routes";
 import { meRouter } from "./me.routes";
@@ -336,6 +338,9 @@ apiRouter.use("/accounting", createAccountingBankAccountsRouter());
 apiRouter.use("/accounting", createAccountingBankStatementsRouter());
 apiRouter.use("/accounting", createAccountingBankLinesRouter());
 apiRouter.use("/accounting", createAccountingCashDepositsRouter());
+// Cash in/out, bank transfers and the petty cash fund (legend-4961).
+apiRouter.use("/accounting", createAccountingCashBankEntriesRouter());
+apiRouter.use("/accounting", createAccountingPettyCashRouter());
 apiRouter.use("/accounting", createAccountingBankReconCasesRouter());
 // Legal-entity picker for finance screens, accounting.journal.view (legend-bddb).
 apiRouter.use("/accounting", createAccountingLegalEntitiesRouter());

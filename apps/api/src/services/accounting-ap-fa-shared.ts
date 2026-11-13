@@ -230,6 +230,9 @@ const AUDIT_SAFE_FIELDS = [
   "settledOn",
   "acquiredOn",
   "journalEntryId",
+  "balanceAfterIdr",
+  "journalStatus",
+  "parkCode",
 ] as const;
 
 /** One append-only audit row inside the caller's transaction. */

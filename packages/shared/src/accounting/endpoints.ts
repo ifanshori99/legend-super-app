@@ -31,14 +31,22 @@ import {
   bankAccountSchema,
   bankStatementImportSchema,
   bankStatementLineSchema,
+  cashBankEntryQuerySchema,
+  cashBankEntrySchema,
   cashDepositSchema,
   createBankAccountInputSchema,
+  createCashBankEntryInputSchema,
   createCashDepositInputSchema,
   excludeStatementLineInputSchema,
   importBankStatementInputSchema,
   matchStatementLineInputSchema,
   matchStatusSchema,
   openReconciliationCaseInputSchema,
+  pettyCashEntryQuerySchema,
+  pettyCashEntrySchema,
+  pettyCashFundQuerySchema,
+  pettyCashFundSchema,
+  pettyCashMovementInputSchema,
   reconciliationCaseActionInputSchema,
   reconciliationCaseSchema,
   reconciliationCaseStatusSchema,
@@ -65,12 +73,14 @@ import {
   accountIdSchema,
   bankAccountIdSchema,
   bankStatementLineIdSchema,
+  cashBankEntryIdSchema,
   fiscalPeriodIdSchema,
   fixedAssetIdSchema,
   journalEntryIdSchema,
   legalEntityIdSchema,
   manualJournalIdSchema,
   periodReopenRequestIdSchema,
+  pettyCashEntryIdSchema,
   reconciliationCaseIdSchema,
   recurringJournalIdSchema,
   taxReportIdSchema,
@@ -552,6 +562,62 @@ export const listUndepositedCashAlerts = defineEndpoint({
   response: list(undepositedCashAlertSchema),
 });
 
+// ---- Cash in/out, transfers and petty cash (legend-4961) ------------------------
+// Cash/bank documents need `accounting.cash_bank.record`; the petty cash fund
+// needs `accounting.petty_cash.manage`. Writes are tenant-scoped (bank accounts
+// live on the legal entity); reads are narrowed to the caller's outlets.
+
+const cashBankEntryParams = z.strictObject({
+  entryId: cashBankEntryIdSchema,
+});
+export const listCashBankEntries = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/cash-bank/entries`,
+  query: cashBankEntryQuerySchema,
+  response: cursorPageSchema(cashBankEntrySchema),
+});
+export const getCashBankEntry = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/cash-bank/entries/:entryId`,
+  params: cashBankEntryParams,
+  response: dataResponseSchema(cashBankEntrySchema),
+});
+/** Cash in, cash out or a transfer between two bank accounts: one document, one journal. */
+export const createCashBankEntry = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/cash-bank/entries`,
+  body: createCashBankEntryInputSchema,
+  response: dataResponseSchema(cashBankEntrySchema),
+});
+
+export const listPettyCashFunds = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/petty-cash/funds`,
+  query: pettyCashFundQuerySchema,
+  response: list(pettyCashFundSchema),
+});
+export const listPettyCashEntries = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/petty-cash/entries`,
+  query: pettyCashEntryQuerySchema,
+  response: cursorPageSchema(pettyCashEntrySchema),
+});
+/** Top-up from a bank account or return to it; the fund never goes below zero. */
+export const createPettyCashMovement = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/petty-cash/movements`,
+  body: pettyCashMovementInputSchema,
+  response: dataResponseSchema(pettyCashEntrySchema),
+});
+/** Retry the journal of a parked top-up/return once the account map is fixed. */
+export const postPettyCashEntry = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/petty-cash/entries/:entryId/post`,
+  params: z.strictObject({ entryId: pettyCashEntryIdSchema }),
+  body: z.strictObject({}),
+  response: dataResponseSchema(pettyCashEntrySchema),
+});
+
 const caseParams = z.strictObject({ caseId: reconciliationCaseIdSchema });
 export const listReconciliationCases = defineEndpoint({
   method: "GET",
@@ -860,6 +926,13 @@ export const accountingEndpoints = Object.freeze({
   listCashDeposits,
   createCashDeposit,
   listUndepositedCashAlerts,
+  listCashBankEntries,
+  getCashBankEntry,
+  createCashBankEntry,
+  listPettyCashFunds,
+  listPettyCashEntries,
+  createPettyCashMovement,
+  postPettyCashEntry,
   listReconciliationCases,
   openReconciliationCase,
   getReconciliationCase,

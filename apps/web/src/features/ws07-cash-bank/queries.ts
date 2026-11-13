@@ -8,10 +8,13 @@ import type {
 } from "@starter/shared/accounting";
 import {
   fetchBankAccounts,
+  fetchCashBankEntries,
   fetchCashDeposits,
   fetchFinancePolicy,
   fetchGatewaySettlementRecon,
   fetchMatchJournals,
+  fetchPettyCashEntries,
+  fetchPettyCashFunds,
   fetchReconciliationCase,
   fetchReconciliationCases,
   fetchReconciliationSummary,
@@ -22,6 +25,7 @@ import {
 export const STATEMENT_PAGE_SIZE = 50;
 export const DEPOSIT_PAGE_SIZE = 50;
 export const CASE_PAGE_SIZE = 50;
+export const ENTRY_PAGE_SIZE = 50;
 
 /** Dedupe keys are unique per account, so the preview reads a wide window. */
 export const DEDUPE_SCAN_RANGE = { from: "2000-01-01", to: "2100-12-31" };
@@ -66,6 +70,12 @@ export const cashBankKeys = {
       from,
       to,
     ] as const,
+  entries: (legalEntityId: string, from: string, to: string) =>
+    [...cashBankKeys.all, "entries", legalEntityId, from, to] as const,
+  pettyFunds: (legalEntityId: string) =>
+    [...cashBankKeys.all, "petty-funds", legalEntityId] as const,
+  pettyEntries: (outletId: string, from: string, to: string) =>
+    [...cashBankKeys.all, "petty-entries", outletId, from, to] as const,
   matchJournals: (legalEntityId: string, from: string, to: string) =>
     [...cashBankKeys.all, "match-journals", legalEntityId, from, to] as const,
 };
@@ -259,5 +269,50 @@ export function matchJournalsQuery(
     queryFn: ({ signal }) =>
       fetchMatchJournals(legalEntityId ?? "", from, to, signal),
     enabled: Boolean(legalEntityId && from && to),
+  });
+}
+
+export function cashBankEntriesQuery(
+  legalEntityId: string | undefined,
+  from: string,
+  to: string,
+) {
+  return queryOptions({
+    queryKey: cashBankKeys.entries(legalEntityId ?? "none", from, to),
+    queryFn: ({ signal }) =>
+      fetchCashBankEntries(
+        {
+          legalEntityId: legalEntityId ?? "",
+          from,
+          to,
+          limit: ENTRY_PAGE_SIZE,
+        },
+        signal,
+      ),
+    enabled: Boolean(legalEntityId && from && to),
+  });
+}
+
+export function pettyCashFundsQuery(legalEntityId: string | undefined) {
+  return queryOptions({
+    queryKey: cashBankKeys.pettyFunds(legalEntityId ?? "none"),
+    queryFn: ({ signal }) => fetchPettyCashFunds(legalEntityId ?? "", signal),
+    enabled: Boolean(legalEntityId),
+  });
+}
+
+export function pettyCashEntriesQuery(
+  outletId: string | undefined,
+  from: string,
+  to: string,
+) {
+  return queryOptions({
+    queryKey: cashBankKeys.pettyEntries(outletId ?? "none", from, to),
+    queryFn: ({ signal }) =>
+      fetchPettyCashEntries(
+        { outletId: outletId ?? "", from, to, limit: ENTRY_PAGE_SIZE },
+        signal,
+      ),
+    enabled: Boolean(outletId && from && to),
   });
 }

@@ -95,6 +95,10 @@ export const accountingErrorHttpStatus = {
   ADJUSTMENT_TARGET_INVALID: 422,
   /** Every shareholder's paid gross is already given back: nothing left for a claw-back to absorb (founder rule Q83). */
   ADJUSTMENT_EXCEEDS_PAID: 422,
+  /** A petty cash movement or purchase would take the outlet's fund below zero (legend-4961). */
+  PETTY_CASH_INSUFFICIENT: 422,
+  /** Cash in/out counter account is a cash or bank account: use a transfer instead (legend-4961). */
+  CASH_BANK_COUNTER_ACCOUNT_INVALID: 422,
 } as const satisfies Record<string, number>;
 
 export type AccountingErrorCode = keyof typeof accountingErrorHttpStatus;
@@ -171,6 +175,9 @@ const defaultMessages: Record<AccountingErrorCode, string> = {
     "Penyesuaian hanya untuk distribusi yang sudah disetujui dan wajib beralasan.",
   ADJUSTMENT_EXCEEDS_PAID:
     "Pengembalian melebihi jumlah yang sudah dibayarkan kepada pemegang saham.",
+  PETTY_CASH_INSUFFICIENT: "Saldo kas kecil outlet tidak cukup.",
+  CASH_BANK_COUNTER_ACCOUNT_INVALID:
+    "Akun lawan tidak boleh akun kas atau bank. Gunakan transfer antar-rekening.",
 };
 
 export class AccountingError extends Error {

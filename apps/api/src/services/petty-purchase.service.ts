@@ -48,6 +48,7 @@ import {
 } from "../db/schema/petty-purchases.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { drawPettyCashForPurchase } from "./accounting-petty-cash.service.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { linkStorageObjectSource } from "./core-storage.ts";
 import {
@@ -309,6 +310,16 @@ export async function createPettyPurchase(
         })
         .returning();
       const purchase = toPettyPurchase(row!);
+      // An outlet with a petty cash fund spends it here (refused when the
+      // balance is short); an outlet without one is unchanged (legend-4961).
+      await drawPettyCashForPurchase(tx, context, {
+        outletId: input.outletId,
+        purchaseId,
+        amountIdr: input.amountIdr,
+        businessDate,
+        description: input.description,
+        actorId: actorUserId,
+      });
       await recordOpsAudit(tx, context, {
         actorUserId,
         outletId: input.outletId,

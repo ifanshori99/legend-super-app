@@ -21,6 +21,9 @@ export const bankStatementImportIdSchema =
   uuidIdSchema<"BankStatementImportId">();
 export const bankStatementLineIdSchema = uuidIdSchema<"BankStatementLineId">();
 export const cashDepositIdSchema = uuidIdSchema<"CashDepositId">();
+export const cashBankEntryIdSchema = uuidIdSchema<"CashBankEntryId">();
+export const pettyCashFundIdSchema = uuidIdSchema<"PettyCashFundId">();
+export const pettyCashEntryIdSchema = uuidIdSchema<"PettyCashEntryId">();
 export const reconciliationCaseIdSchema =
   uuidIdSchema<"ReconciliationCaseId">();
 export const fixedAssetIdSchema = uuidIdSchema<"FixedAssetId">();
@@ -48,6 +51,9 @@ export type BankAccountId = z.infer<typeof bankAccountIdSchema>;
 export type BankStatementImportId = z.infer<typeof bankStatementImportIdSchema>;
 export type BankStatementLineId = z.infer<typeof bankStatementLineIdSchema>;
 export type CashDepositId = z.infer<typeof cashDepositIdSchema>;
+export type CashBankEntryId = z.infer<typeof cashBankEntryIdSchema>;
+export type PettyCashFundId = z.infer<typeof pettyCashFundIdSchema>;
+export type PettyCashEntryId = z.infer<typeof pettyCashEntryIdSchema>;
 export type ReconciliationCaseId = z.infer<typeof reconciliationCaseIdSchema>;
 export type FixedAssetId = z.infer<typeof fixedAssetIdSchema>;
 export type DepreciationRunId = z.infer<typeof depreciationRunIdSchema>;

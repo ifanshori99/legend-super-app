@@ -12,12 +12,15 @@ import type {
 } from "@starter/shared/accounting";
 import * as api from "./api";
 import {
+  cashBankEntriesQuery,
   cashBankKeys,
   cashDepositsQuery,
   bankAccountsQuery,
   financePolicyQuery,
   gatewaySettlementReconQuery,
   matchJournalsQuery,
+  pettyCashEntriesQuery,
+  pettyCashFundsQuery,
   reconciliationCaseQuery,
   reconciliationCasesQuery,
   reconciliationSummaryQuery,
@@ -127,6 +130,26 @@ export function useMatchJournals(
   return useQuery(matchJournalsQuery(legalEntityId, from, to));
 }
 
+export function useCashBankEntries(
+  legalEntityId: string | undefined,
+  from: string,
+  to: string,
+) {
+  return useQuery(cashBankEntriesQuery(legalEntityId, from, to));
+}
+
+export function usePettyCashFunds(legalEntityId: string | undefined) {
+  return useQuery(pettyCashFundsQuery(legalEntityId));
+}
+
+export function usePettyCashEntries(
+  outletId: string | undefined,
+  from: string,
+  to: string,
+) {
+  return useQuery(pettyCashEntriesQuery(outletId, from, to));
+}
+
 // ---- Mutations ------------------------------------------------------------
 
 function useInvalidate() {
@@ -207,6 +230,32 @@ export function useCaseAction() {
       caseId: string;
       action: Parameters<typeof api.actOnReconciliationCase>[1];
     }) => api.actOnReconciliationCase(variables.caseId, variables.action),
+    onSuccess: invalidate,
+  });
+}
+
+export function useCreateCashBankEntry() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (body: api.CreateCashBankEntryBody) =>
+      api.createCashBankEntry(body),
+    onSuccess: invalidate,
+  });
+}
+
+export function useCreatePettyCashMovement() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (body: api.CreatePettyCashMovementBody) =>
+      api.createPettyCashMovement(body),
+    onSuccess: invalidate,
+  });
+}
+
+export function usePostPettyCashEntry() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (entryId: string) => api.postPettyCashEntry(entryId),
     onSuccess: invalidate,
   });
 }

@@ -5071,3 +5071,12 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - j5e3: tidak ada event audit pergerakan stok; event stock_count tidak memuat kuantitas baris. Tidak ada kebocoran nyata; redaksi blind count diperluas ke field kuantitas (rekursif) + test regresi di inventory-count.test.ts.
 - 0pth: `core_storage_objects.uploaded_by` (nullable, tidak berubah saat owner berubah); migrasi 0477. Review architect: jalur edge-selfie-receive mengisi null (ownerUserId dari edge hanya klaim, bukan aktor terverifikasi).
 - Bukti: gagal-dulu 20/20 (kolom belum ada); hijau 9 file terarah, lalu operations-availability + menu-availability 21/21 setelah perbaikan test; tsc api, eslint, prettier hijau; `db:generate` kosong.
+
+## WS-07 kas & bank endpoint nyata (engineer, cabang `ws/cash-bank` dari 52346c44, 13 Nov 2026)
+- legend-4961: tabel `cash_bank_entries`, `petty_cash_funds` (CHECK saldo >= 0), `petty_cash_entries` (append-only); migrasi 0484 (drizzle) + 0485 (RLS tenant/outlet, REVOKE, GRANT kolom). Kontrak di `packages/shared/src/accounting/banking.ts` + 7 endpoint, izin `accounting.cash_bank.record` dan `accounting.petty_cash.manage`.
+- Posting: kas masuk/keluar/transfer sinkron (gagal = batal); kas kecil topup/return lewat aturan `document:petty_cash_topup|return`, peta `petty_cash` hilang -> parkir `ACCOUNT_MAPPING_MISSING`, retry `POST /petty-cash/entries/:id/post` (periode tutup -> periode terbuka + lateAdjustmentFrom). Pembelian sederhana menarik dana bila outlet punya dana.
+- Akun lawan: denylist role subledger/kas/bank/aset tetap/ekuitas + GL rekening bank mana pun (CASH_BANK_COUNTER_ACCOUNT_INVALID). Outlet tag harus satu badan usaha.
+- Web `ws07-cash-bank`: seksi kas masuk/keluar/transfer + kartu kas kecil, 13 temuan ui-auditor dibetulkan, akun lawan tanpa default.
+- legend-gq0w TERBLOKIR oleh legend-bzih (deferred): API belum menerbitkan tiket/kredensial; resolver tamu masih stub.
+- Pertanyaan founder: (1) dana kas kecil wajib ada sebelum pembelian sederhana? (2) kas keluar di atas nominal tertentu butuh persetujuan?
+- Bead baru: rekonsiliasi dana kas kecil vs GL 1102 (gaji/pinjaman/reimburse tunai tidak menarik dana).

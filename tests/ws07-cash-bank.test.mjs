@@ -1160,3 +1160,219 @@ describe("display helpers", () => {
     assert.equal(accounts.data[0].accountNumberMasked, "****4821");
   });
 });
+
+// ---- legend-4961: cash in/out, transfers and petty cash --------------------
+
+describe("legend-4961: cash in/out, transfers and petty cash (mock)", () => {
+  const entriesPath = "/api/accounting/cash-bank/entries";
+  const fundsPath = "/api/accounting/petty-cash/funds";
+  const pettyEntriesPath = "/api/accounting/petty-cash/entries";
+  const movementsPath = "/api/accounting/petty-cash/movements";
+  const second = CASH_BANK_MOCK_IDS.secondBankAccount;
+  const today = cash.businessDateToday();
+  const range = cash.monthRange(today);
+  const counter = fixtures.accounts.find((row) => row.type === "revenue");
+
+  const transfer = (overrides = {}) => ({
+    kind: "transfer",
+    legalEntityId: entity,
+    fromBankAccountId: account.id,
+    toBankAccountId: second,
+    amountIdr: 750_000,
+    entryDate: today,
+    description: "Pindah dana",
+    reference: null,
+    idempotencyKey: "k-transfer-0001",
+    ...overrides,
+  });
+  const listEntries = () =>
+    get(entriesPath, { legalEntityId: entity, ...range, limit: 50 });
+  const outletFund = async () =>
+    (await get(fundsPath, { legalEntityId: entity })).data.find(
+      (fund) => fund.outletId === outlet,
+    );
+  const movement = (kind, amountIdr, idempotencyKey) => ({
+    kind,
+    outletId: outlet,
+    bankAccountId: account.id,
+    amountIdr,
+    description: "Uji kas kecil",
+    idempotencyKey,
+  });
+
+  test("a transfer is recorded once: the same key replays, another body is refused", async () => {
+    const before = (await listEntries()).data.length;
+    const first = await post(entriesPath, transfer());
+    const again = await post(entriesPath, transfer());
+    assert.equal(again.data.id, first.data.id);
+    assert.equal(first.data.kind, "transfer");
+    assert.equal(first.data.counterAccountId, null);
+    assert.equal((await listEntries()).data.length, before + 1);
+    const reused = await failure(
+      post(entriesPath, transfer({ amountIdr: 750_001 })),
+    );
+    assert.equal(reused.status, 409);
+    assert.equal(reused.code, "IDEMPOTENCY_KEY_REUSED");
+    assert.equal((await listEntries()).data.length, before + 1);
+  });
+
+  test("a transfer needs two different accounts and a counter account is never cash or bank", async () => {
+    const same = await failure(
+      post(entriesPath, transfer({ toBankAccountId: account.id })),
+    );
+    assert.ok(same.status >= 400 && same.status < 500);
+    const cashCounter = fixtures.accounts.find(
+      (row) => row.reportGroup === "cash_and_equivalents" && row.id !== bankGl,
+    );
+    const refused = await failure(
+      post(entriesPath, {
+        kind: "cash_out",
+        legalEntityId: entity,
+        bankAccountId: account.id,
+        counterAccountId: cashCounter.id,
+        amountIdr: 10_000,
+        entryDate: today,
+        description: "Salah akun",
+        reference: null,
+        idempotencyKey: "k-cashout-0001",
+      }),
+    );
+    assert.equal(refused.code, "CASH_BANK_COUNTER_ACCOUNT_INVALID");
+    assert.deepEqual(
+      cash
+        .counterAccountChoices(fixtures.accounts)
+        .filter((row) => row.reportGroup === "cash_and_equivalents"),
+      [],
+    );
+  });
+
+  test("cash in names a counter account and cannot be dated in the future", async () => {
+    const created = await post(entriesPath, {
+      kind: "cash_in",
+      legalEntityId: entity,
+      bankAccountId: account.id,
+      counterAccountId: counter.id,
+      amountIdr: 125_000,
+      entryDate: today,
+      description: "Uang masuk",
+      reference: "REF-1",
+      idempotencyKey: "k-cashin-0001",
+    });
+    assert.equal(created.data.counterAccountId, counter.id);
+    assert.equal(created.data.toBankAccountId, null);
+    const future = await failure(
+      post(entriesPath, {
+        kind: "cash_in",
+        legalEntityId: entity,
+        bankAccountId: account.id,
+        counterAccountId: counter.id,
+        amountIdr: 125_000,
+        entryDate: "2099-01-01",
+        description: "Masa depan",
+        reference: null,
+        idempotencyKey: "k-cashin-0002",
+      }),
+    );
+    assert.equal(future.status, 422);
+  });
+
+  test("petty cash never goes below zero and a refused return leaves balance and ledger untouched", async () => {
+    const fund = await outletFund();
+    const ledgerBefore = (
+      await get(pettyEntriesPath, { outletId: outlet, ...range, limit: 50 })
+    ).data.length;
+    const refused = await failure(
+      post(
+        movementsPath,
+        movement("return", fund.balanceIdr + 1, "k-return-0001"),
+      ),
+    );
+    assert.equal(refused.status, 422);
+    assert.equal(refused.code, "PETTY_CASH_INSUFFICIENT");
+    assert.equal((await outletFund()).balanceIdr, fund.balanceIdr);
+    assert.equal(
+      (await get(pettyEntriesPath, { outletId: outlet, ...range, limit: 50 }))
+        .data.length,
+      ledgerBefore,
+    );
+    assert.equal(cash.pettyReturnExceedsBalance("return", 101, 100), true);
+    assert.equal(cash.pettyReturnExceedsBalance("return", 100, 100), false);
+    assert.equal(cash.pettyReturnExceedsBalance("topup", 101, 100), false);
+  });
+
+  test("petty cash balance equals top-ups minus returns minus purchases, and a resend replays", async () => {
+    const start = (await outletFund()).balanceIdr;
+    const topup = await post(
+      movementsPath,
+      movement("topup", 300_000, "k-topup-0001"),
+    );
+    const replay = await post(
+      movementsPath,
+      movement("topup", 300_000, "k-topup-0001"),
+    );
+    assert.equal(replay.data.id, topup.data.id);
+    await post(movementsPath, movement("return", 100_000, "k-return-0002"));
+    const fund = await outletFund();
+    assert.equal(fund.balanceIdr, start + 300_000 - 100_000);
+    const ledger = (
+      await get(pettyEntriesPath, { outletId: outlet, ...range, limit: 50 })
+    ).data;
+    const signed = ledger.reduce(
+      (sum, row) =>
+        sum + (row.kind === "topup" ? row.amountIdr : -row.amountIdr),
+      0,
+    );
+    assert.equal(fund.balanceIdr, signed);
+    assert.equal(
+      ledger.find((row) => row.id === topup.data.id).balanceAfterIdr,
+      start + 300_000,
+    );
+    const reused = await failure(
+      post(movementsPath, movement("topup", 300_001, "k-topup-0001")),
+    );
+    assert.equal(reused.code, "IDEMPOTENCY_KEY_REUSED");
+  });
+
+  test("a parked petty cash journal posts once on retry and a posted entry comes back as it is", async () => {
+    const ledger = (
+      await get(pettyEntriesPath, { outletId: outlet, ...range, limit: 50 })
+    ).data;
+    const parked = ledger.find((row) => row.journalStatus === "parked");
+    assert.equal(parked.parkCode, "ACCOUNT_MAPPING_MISSING");
+    assert.equal(parked.journalEntryId, null);
+    const retryPath = `${pettyEntriesPath}/${parked.id}/post`;
+    const posted = await post(retryPath, {});
+    assert.equal(posted.data.journalStatus, "posted");
+    assert.notEqual(posted.data.journalEntryId, null);
+    const again = await post(retryPath, {});
+    assert.equal(again.data.journalEntryId, posted.data.journalEntryId);
+    const missing = await failure(
+      post(`${pettyEntriesPath}/b9999999-0000-4000-8000-000000000000/post`, {}),
+    );
+    assert.equal(missing.status, 404);
+  });
+  test("refused money requests map to a sentence, unknown codes fall back to the server text", () => {
+    assert.equal(
+      cash.moneyErrorKey("PETTY_CASH_INSUFFICIENT"),
+      "accounting.cash.moneyError.insufficient",
+    );
+    assert.equal(
+      cash.moneyErrorKey("CASH_BANK_COUNTER_ACCOUNT_INVALID"),
+      "accounting.cash.moneyError.counterInvalid",
+    );
+    assert.equal(
+      cash.moneyErrorKey("IDEMPOTENCY_KEY_REUSED"),
+      "accounting.cash.moneyError.keyReused",
+    );
+    assert.equal(
+      cash.moneyErrorKey("ACCOUNT_MAPPING_MISSING"),
+      "accounting.cash.moneyError.mappingMissing",
+    );
+    assert.equal(
+      cash.moneyErrorKey("PERIOD_CLOSED"),
+      "accounting.cash.moneyError.periodClosed",
+    );
+    assert.equal(cash.moneyErrorKey("SOMETHING_ELSE"), null);
+    assert.equal(cash.formatMonthLabel("2026-11-13"), "November 2026");
+  });
+});

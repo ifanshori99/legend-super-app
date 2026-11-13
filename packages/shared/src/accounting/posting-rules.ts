@@ -632,6 +632,26 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     ],
   ),
   rule(
+    { document: "petty_cash_topup" },
+    "petty_cash_topup",
+    "Isi dana kas kecil outlet dari bank",
+    "§3.19 Kas & Bank; Kas Kecil",
+    [
+      ["petty_cash", "debit", "amountIdr"],
+      ["bank", "credit", "amountIdr"],
+    ],
+  ),
+  rule(
+    { document: "petty_cash_return" },
+    "petty_cash_return",
+    "Kembalikan dana kas kecil outlet ke bank",
+    "§3.19 Kas & Bank; Kas Kecil",
+    [
+      ["bank", "debit", "amountIdr"],
+      ["petty_cash", "credit", "amountIdr"],
+    ],
+  ),
+  rule(
     { document: "supplier_payment" },
     "supplier_payment",
     "Pembayaran supplier disetujui",
