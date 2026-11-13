@@ -49860,6 +49860,21 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
+        "pos_qris_holds_bill_split_fk": {
+          "name": "pos_qris_holds_bill_split_fk",
+          "tableFrom": "pos_qris_holds",
+          "tableTo": "bill_splits",
+          "columnsFrom": [
+            "tenant_id",
+            "bill_split_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
         "pos_qris_holds_intent_fk": {
           "name": "pos_qris_holds_intent_fk",
           "tableFrom": "pos_qris_holds",

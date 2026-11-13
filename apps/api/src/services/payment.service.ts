@@ -1155,16 +1155,18 @@ export async function recordUnsettledGatewayFunds(
   );
 }
 
-/** The same recording inside the caller's transaction (and lock order). */
+/** The same recording inside the caller's transaction (and lock order).
+ * Returns false when nothing was recorded (a replay of the same provider
+ * transaction, or no money). */
 async function recordUnsettledGatewayFundsInTx(
   tx: Tx,
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   funds: UnsettledGatewayFunds,
   now: Date,
-): Promise<void> {
+): Promise<boolean> {
   const paid = funds.paidAmountIdr;
-  if (!(paid > 0)) return;
+  if (!(paid > 0)) return false;
   const reason =
     paid > Number(intent.amountIdr) ? "overpayment" : "double_payment";
   {
@@ -1189,7 +1191,7 @@ async function recordUnsettledGatewayFundsInTx(
         ],
       })
       .returning({ id: paymentEvidence.id });
-    if (!inserted) return;
+    if (!inserted) return false;
     const [fund] = await tx
       .insert(paymentUnallocatedFunds)
       .values({
@@ -1250,6 +1252,7 @@ async function recordUnsettledGatewayFundsInTx(
       ["status", "unallocatedIdr", "providerRef"],
     );
   }
+  return true;
 }
 
 const MISMATCH_HELD_ACTION = "payment.amount_mismatch_held";
@@ -1701,7 +1704,7 @@ async function parkWhenQrisHoldRefuses(
   intent: PaymentIntentRow,
   paid: { providerRef: string; amountIdr: number; source: string },
   now: Date,
-): Promise<void> {
+): Promise<PaymentIntentRow | null> {
   const [hold] = await withTenant(db, context, (tx) =>
     tx
       .select({
@@ -1718,11 +1721,11 @@ async function parkWhenQrisHoldRefuses(
         ),
       ),
   );
-  if (!hold || hold.state === "paid") return;
+  if (!hold || hold.state === "paid") return null;
   const mismatch = paid.amountIdr !== Number(hold.amountIdr);
-  if (hold.state !== "closed" && !mismatch) return;
-  await withTenant(db, context, async (tx) => {
-    await recordUnsettledGatewayFundsInTx(
+  if (hold.state !== "closed" && !mismatch) return null;
+  const recorded = await withTenant(db, context, async (tx) => {
+    const inserted = await recordUnsettledGatewayFundsInTx(
       tx,
       context,
       intent,
@@ -1738,6 +1741,20 @@ async function parkWhenQrisHoldRefuses(
       },
       now,
     );
+    // A replay of the same provider transaction records and alerts nothing.
+    if (!inserted) return false;
+    // Parked: nothing more to learn from the provider; the hold check slows
+    // down to once a day (the hold itself stays until a manager releases it).
+    await tx
+      .update(posQrisHolds)
+      .set({ nextCheckAt: new Date(now.getTime() + 24 * 3_600_000) })
+      .where(
+        and(
+          eq(posQrisHolds.tenantId, context.tenant.tenantId),
+          eq(posQrisHolds.id, hold.id),
+          inArray(posQrisHolds.state, ["open", "cancelling"]),
+        ),
+      );
     await notifyOutletSupervisors(
       tx,
       context,
@@ -1757,7 +1774,10 @@ async function parkWhenQrisHoldRefuses(
       },
       now,
     );
+    return true;
   });
+  // Replay: the money is already parked; answer as handled (no retry storm).
+  if (!recorded) return intent;
   throw new PaymentConfirmationRejected(
     mismatch ? "AMOUNT_MISMATCH" : "BILL_CLOSED",
     "This QRIS payment cannot settle its bill; the money is parked.",
@@ -1800,7 +1820,13 @@ export async function confirmPayment(
   });
   if (!intent) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
   assertOutletInScope(context.outletScope, intent.outletId);
-  await parkWhenQrisHoldRefuses(context, intent, parsed, now);
+  const parkedReplay = await parkWhenQrisHoldRefuses(
+    context,
+    intent,
+    parsed,
+    now,
+  );
+  if (parkedReplay) return toPaymentIntent(parkedReplay);
   const updated = await applyConfirmation(
     context,
     intent,

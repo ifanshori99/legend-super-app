@@ -47679,7 +47679,7 @@
       "checkConstraints": {
         "pos_order_approval_uses_purpose_check": {
           "name": "pos_order_approval_uses_purpose_check",
-          "value": "\"pos_order_approval_uses\".\"purpose\" IN ('order_void', 'item_void', 'discount', 'correction_void', 'refund', 'edc_standalone')"
+          "value": "\"pos_order_approval_uses\".\"purpose\" IN ('order_void', 'item_void', 'discount', 'correction_void', 'refund', 'edc_standalone', 'qris_release')"
         }
       },
       "isRLSEnabled": false
@@ -49852,6 +49852,21 @@
           "columnsFrom": [
             "tenant_id",
             "tender_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_qris_holds_bill_split_fk": {
+          "name": "pos_qris_holds_bill_split_fk",
+          "tableFrom": "pos_qris_holds",
+          "tableTo": "bill_splits",
+          "columnsFrom": [
+            "tenant_id",
+            "bill_split_id"
           ],
           "columnsTo": [
             "tenant_id",

@@ -43,6 +43,7 @@ CREATE TABLE "pos_qris_holds" (
 	CONSTRAINT "pos_qris_holds_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "pos_qris_holds_order_fk" FOREIGN KEY ("tenant_id","order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "pos_qris_holds_tender_fk" FOREIGN KEY ("tenant_id","tender_id") REFERENCES "public"."pos_order_tenders"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "pos_qris_holds_bill_split_fk" FOREIGN KEY ("tenant_id","bill_split_id") REFERENCES "public"."bill_splits"("tenant_id","id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "pos_qris_holds_intent_fk" FOREIGN KEY ("tenant_id","payment_intent_id") REFERENCES "public"."payment_intents"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint

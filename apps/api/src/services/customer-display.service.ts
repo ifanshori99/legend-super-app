@@ -510,7 +510,9 @@ async function applySelection(
           eq(orders.outletId, outletId),
           eq(orders.id, orderId),
         ),
-      );
+      )
+      // The FK of the session row needs the order to stay until we commit.
+      .for("key share");
     if (!order) throw new CoreError("NOT_FOUND", "Pesanan tidak ditemukan.");
   }
   const orderUuid = orderId === null ? null : ulidToUuid(orderId);

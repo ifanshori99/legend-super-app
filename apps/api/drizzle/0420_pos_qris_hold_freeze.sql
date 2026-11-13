@@ -92,21 +92,35 @@ CREATE TRIGGER "orders_qris_hold_freeze_trg"
 --> statement-breakpoint
 
 -- 3. The tenders: while a hold is open/cancelling, no new tender and no change
---    of status or amount (the hold's own tender included). The apply path sets
---    the hold `paid` first, then captures; the closure path sets the hold
---    `closed` first, then voids.
+--    of status, amount or bill (the hold's own tender included; moving a tender
+--    to another bill is refused for the bill it leaves and the bill it joins).
+--    The apply path sets the hold `paid` first, then captures; the closure path
+--    sets the hold `closed` first, then voids.
 CREATE OR REPLACE FUNCTION app.pos_order_tenders_qris_hold_freeze() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  frozen boolean;
 BEGIN
-  IF (TG_OP = 'INSERT'
-      OR NEW.status IS DISTINCT FROM OLD.status
-      OR NEW.amount_idr IS DISTINCT FROM OLD.amount_idr)
-    AND EXISTS (
+  IF TG_OP = 'INSERT' THEN
+    SELECT EXISTS (
       SELECT 1 FROM public.pos_qris_holds h
       WHERE h.tenant_id = NEW.tenant_id AND h.order_id = NEW.order_id
         AND h.state IN ('open', 'cancelling')
-    )
+    ) INTO frozen;
+  ELSIF NEW.status IS DISTINCT FROM OLD.status
+    OR NEW.amount_idr IS DISTINCT FROM OLD.amount_idr
+    OR NEW.order_id IS DISTINCT FROM OLD.order_id
   THEN
+    SELECT EXISTS (
+      SELECT 1 FROM public.pos_qris_holds h
+      WHERE h.tenant_id = NEW.tenant_id
+        AND h.order_id IN (OLD.order_id, NEW.order_id)
+        AND h.state IN ('open', 'cancelling')
+    ) INTO frozen;
+  ELSE
+    frozen := false;
+  END IF;
+  IF frozen THEN
     RAISE EXCEPTION 'QRIS_HOLD_ACTIVE: order % has a QRIS that can still be paid', NEW.order_id
       USING ERRCODE = '23514';
   END IF;
@@ -116,3 +130,8 @@ END $$;
 CREATE TRIGGER "pos_order_tenders_qris_hold_freeze_trg"
   BEFORE INSERT OR UPDATE ON "pos_order_tenders"
   FOR EACH ROW EXECUTE FUNCTION app.pos_order_tenders_qris_hold_freeze();
+--> statement-breakpoint
+
+-- 4. Q93: a manager release of a stuck hold uses its own approval purpose.
+ALTER TABLE "pos_order_approval_uses" DROP CONSTRAINT "pos_order_approval_uses_purpose_check";--> statement-breakpoint
+ALTER TABLE "pos_order_approval_uses" ADD CONSTRAINT "pos_order_approval_uses_purpose_check" CHECK ("pos_order_approval_uses"."purpose" IN ('order_void', 'item_void', 'discount', 'correction_void', 'refund', 'edc_standalone', 'qris_release'));

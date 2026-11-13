@@ -1089,6 +1089,7 @@ export async function submitPosOrder(
       const { order, pos } = locked;
       assertExpectedStatus(order, input.expectedStatus);
       assertMutable(order);
+      await assertNoActiveQrisHold(tx, context, order.id);
       const next = transitionPosOrder(order.status, "submit");
       const shiftId = await posShiftLookup()(tx, context, {
         outletId,

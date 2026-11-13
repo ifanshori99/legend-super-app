@@ -12,7 +12,7 @@
 // pos_orders -> pos_qris_holds -> pos_order_tenders -> payment_links ->
 // payment_intents -> funds/refunds. Every writer below follows it.
 
-import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import {
   CoreError,
   createUlid,
@@ -23,7 +23,11 @@ import {
 } from "@starter/shared/core";
 import { PosError, type PosQrisHold } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
-import { orders, paymentIntents } from "../db/schema/index.ts";
+import {
+  orders,
+  paymentIntents,
+  paymentUnallocatedFunds,
+} from "../db/schema/index.ts";
 import { posOrders, posOrderTenders } from "../db/schema/pos-order.ts";
 import {
   posQrisHolds,
@@ -37,6 +41,7 @@ import {
 } from "./payment.service.ts";
 import { paymentGatewayFor } from "./payment-gateway.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
+import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
 import { mutatePosOrder } from "./pos-order.service.ts";
 import {
   appendOrderEvent,
@@ -679,12 +684,28 @@ export async function checkQrisHold(
       });
       return "closed";
     }
+    // Money of this QR already parked (wrong amount): nothing more can be
+    // learned from the provider, so stop reading it every few minutes. The
+    // hold stays active until the manager releases it.
+    const [parkedRow] = await tx
+      .select({ id: paymentUnallocatedFunds.id })
+      .from(paymentUnallocatedFunds)
+      .where(
+        and(
+          eq(paymentUnallocatedFunds.tenantId, tenantId),
+          eq(paymentUnallocatedFunds.paymentIntentId, intent.id),
+        ),
+      )
+      .limit(1);
+    const parked = parkedRow !== undefined;
     await tx
       .update(posQrisHolds)
       .set({
         lastCheckedAt: now,
         checkAttempts: hold.checkAttempts + 1,
-        nextCheckAt: nextHoldCheckAt(intent.expiresAt, now),
+        nextCheckAt: parked
+          ? new Date(now.getTime() + 24 * 3_600_000)
+          : nextHoldCheckAt(intent.expiresAt, now),
       })
       .where(
         and(
@@ -692,6 +713,27 @@ export async function checkQrisHold(
           eq(posQrisHolds.id, hold.id),
           inArray(posQrisHolds.state, [...ACTIVE_STATES]),
         ),
+      );
+    // Stuck: still active 30 min after the QR lapsed. One alert per hold (the
+    // notification consumer dedupes on the hold id used as the event id).
+    if (now.getTime() >= intent.expiresAt.getTime() + HOLD_RELEASE_AFTER_MS)
+      await notifyOutletSupervisors(
+        tx,
+        context,
+        {
+          tenantId: context.tenant.tenantId,
+          outletId: hold.outletId as OutletId,
+          alsoOwners: true,
+          alsoUserIds: hold.openedBy ? [hold.openedBy] : [],
+          id: hold.id,
+          eventName: "pos_qris_hold.stuck",
+          aggregateType: "pos_qris_hold",
+          aggregateId: hold.id,
+          payload: { holdId: hold.id, orderId: hold.orderId },
+          title: "QRIS belum bisa ditutup",
+          body: "Penyedia belum memastikan QRIS ini kedaluwarsa. Tagihan tetap terkunci; manajer dapat merilisnya dengan PIN.",
+        },
+        now,
       );
     return hold.state;
   });
@@ -715,6 +757,51 @@ export async function releasePosQris(
   now = new Date(),
 ): Promise<PosQrisHold> {
   const { idempotencyKey, ...request } = input;
+  // Last provider read before the manager gives up on the QR: when it says
+  // the customer paid, the payment is settled and the release is refused.
+  const waiting = await withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select({ paymentIntentId: posQrisHolds.paymentIntentId })
+      .from(posQrisHolds)
+      .where(
+        and(
+          eq(posQrisHolds.tenantId, context.tenant.tenantId),
+          eq(posQrisHolds.orderId, orderId),
+          inArray(posQrisHolds.state, [...ACTIVE_STATES]),
+        ),
+      );
+    return row ?? null;
+  });
+  if (waiting) {
+    // Provider paid and nothing recorded yet: apply or park it first.
+    try {
+      await settleGatewayIntentNow(context, waiting.paymentIntentId, now);
+    } catch {
+      // A rejected (parked) payment is decided below from what was recorded.
+    }
+    // Refuse only when money of this QR was APPLIED to the bill (evidence
+    // beyond what sits in unallocated funds). Parked money cannot be paid
+    // again on this QR, so the manager may release.
+    const money = await withTenant(db, context, async (tx) => {
+      const result = await tx.execute(sql`
+        SELECT
+          (SELECT coalesce(sum(e.amount_idr), 0)::bigint FROM payment_evidence e
+            WHERE e.tenant_id = ${context.tenant.tenantId}
+              AND e.payment_intent_id = ${waiting.paymentIntentId}) AS evidence,
+          (SELECT coalesce(sum(f.amount_idr), 0)::bigint FROM payment_unallocated_funds f
+            WHERE f.tenant_id = ${context.tenant.tenantId}
+              AND f.payment_intent_id = ${waiting.paymentIntentId}) AS parked
+      `);
+      const row = result.rows[0] as
+        { evidence: string | number; parked: string | number } | undefined;
+      return row ?? { evidence: 0, parked: 0 };
+    });
+    if (Number(money.evidence) > Number(money.parked))
+      throw new CoreError(
+        "CONFLICT",
+        "QRIS ini sudah dibayar pelanggan, tidak bisa dirilis.",
+      );
+  }
   return mutatePosOrder(
     context,
     caller,
@@ -751,7 +838,7 @@ export async function releasePosQris(
         );
       const override = await consumeApproval(tx, context, {
         action: "void",
-        purpose: "order_void",
+        purpose: "qris_release",
         outletId,
         orderId: order.id,
         objectType: "order",

@@ -25,6 +25,7 @@ import {
   tenantIdColumn,
   ulidInUuid,
 } from "../columns";
+import { billSplits } from "./bill-splits";
 import { paymentIntents } from "./payment";
 import { outlets, tenants } from "./platform-org";
 import { posOrderTenders } from "./pos-order";
@@ -109,6 +110,11 @@ export const posQrisHolds = pgTable(
       name: "pos_qris_holds_tender_fk",
       columns: [table.tenantId, table.tenderId],
       foreignColumns: [posOrderTenders.tenantId, posOrderTenders.id],
+    }),
+    foreignKey({
+      name: "pos_qris_holds_bill_split_fk",
+      columns: [table.tenantId, table.billSplitId],
+      foreignColumns: [billSplits.tenantId, billSplits.id],
     }),
     foreignKey({
       name: "pos_qris_holds_intent_fk",
