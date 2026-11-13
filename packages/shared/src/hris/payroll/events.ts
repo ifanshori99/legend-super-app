@@ -71,8 +71,15 @@ export const payrollPaid = defineDomainEvent({
       /** Paid in cash (the run totals' `cashIdr`). */
       cashIdr: nonNegativeIdr,
       bankTransferFileId: bankTransferFileIdSchema.nullable(),
-      paidBy: userIdSchema,
+      /** Null when the approver has no UUID identity (a system actor). */
+      paidBy: userIdSchema.nullable(),
       paidAt: isoDateTimeSchema,
+      /**
+       * Every item was settled by its own payout journal (legend-658): the
+       * consumer posts nothing at run level. Absent means false (a run paid
+       * without disbursement batches, posted as before).
+       */
+      settledPerItem: z.boolean().optional(),
     })
     .refine((p) => p.netIdr === p.bankTransferIdr + p.cashIdr, {
       path: ["netIdr"],

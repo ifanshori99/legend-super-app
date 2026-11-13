@@ -63,6 +63,13 @@ export const session = pgTable(
       .defaultNow()
       .notNull(),
     mfaVerifiedAt: timestamp("mfa_verified_at", { withTimezone: true }),
+    // legend-658 (L5): stamped only when a code, recovery code or passkey is
+    // checked against an already verified factor, never by the first
+    // enrollment. NULL means mfa_verified_at (if any) may come from enrollment
+    // alone, so a payout action asks for the password again.
+    mfaChallengeVerifiedAt: timestamp("mfa_challenge_verified_at", {
+      withTimezone: true,
+    }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     // legend-k2l: sign-in method gate. Set by the server only (Better Auth
     // `additionalFields` with `input: false`), never by a client. Existing

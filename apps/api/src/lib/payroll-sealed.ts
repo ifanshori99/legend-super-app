@@ -32,7 +32,8 @@ export type PayrollSealBinding = {
     | "payslip_bank_snapshots"
     | "payroll_run_results"
     | "payroll_disbursement_items"
-    | "payroll_disbursement_batches";
+    | "payroll_disbursement_batches"
+    | "payroll_payout_gl_postings";
   readonly rowId: string;
   readonly field:
     | "amount"
@@ -41,6 +42,7 @@ export type PayrollSealBinding = {
     | "result"
     | "fee"
     | "totals"
+    | "total"
     | "inquiryName";
 };
 
