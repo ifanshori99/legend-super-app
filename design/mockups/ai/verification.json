@@ -7,8 +7,10 @@
     {
       "state": "empty",
       "width": 1280,
+      "theme": "light",
       "viewport": 1280,
       "content": 1280,
+      "height": 1339,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -16,8 +18,10 @@
     {
       "state": "device",
       "width": 1280,
+      "theme": "light",
       "viewport": 1280,
       "content": 1280,
+      "height": 1522,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -25,8 +29,10 @@
     {
       "state": "connected",
       "width": 1280,
+      "theme": "light",
       "viewport": 1280,
       "content": 1280,
+      "height": 1271,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -34,8 +40,10 @@
     {
       "state": "failed",
       "width": 1280,
+      "theme": "light",
       "viewport": 1280,
       "content": 1280,
+      "height": 1450,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -43,17 +51,98 @@
     {
       "state": "expired",
       "width": 1280,
+      "theme": "light",
       "viewport": 1280,
       "content": 1280,
+      "height": 1450,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
     },
     {
+      "check": "Source color contrast",
+      "theme": "light",
+      "pairs": [
+        {
+          "label": "Text on --canvas",
+          "foreground": "oklch(0.222466 0.004121 84.5879)",
+          "background": "oklch(0.973353 0.002864 84.5590)",
+          "required": 4.5,
+          "ratio": 15.934841693687568
+        },
+        {
+          "label": "Helper on --canvas",
+          "foreground": "oklch(0.473002 0.010790 78.2231)",
+          "background": "oklch(0.973353 0.002864 84.5590)",
+          "required": 4.5,
+          "ratio": 6.243509962332506
+        },
+        {
+          "label": "Input edge on --canvas",
+          "foreground": "oklch(0.618655 0.013266 79.7561)",
+          "background": "oklch(0.973353 0.002864 84.5590)",
+          "required": 3,
+          "ratio": 3.39220999043422
+        },
+        {
+          "label": "Text on --paper",
+          "foreground": "oklch(0.222466 0.004121 84.5879)",
+          "background": "oklch(0.985587 0.001706 67.8028)",
+          "required": 4.5,
+          "ratio": 16.508959488745695
+        },
+        {
+          "label": "Helper on --paper",
+          "foreground": "oklch(0.473002 0.010790 78.2231)",
+          "background": "oklch(0.985587 0.001706 67.8028)",
+          "required": 4.5,
+          "ratio": 6.468457924910494
+        },
+        {
+          "label": "Input edge on --paper",
+          "foreground": "oklch(0.618655 0.013266 79.7561)",
+          "background": "oklch(0.985587 0.001706 67.8028)",
+          "required": 3,
+          "ratio": 3.5144282187366533
+        },
+        {
+          "label": "Text on --surface",
+          "foreground": "oklch(0.222466 0.004121 84.5879)",
+          "background": "oklch(1.000000 0.000000 0.0000)",
+          "required": 4.5,
+          "ratio": 17.21049242545693
+        },
+        {
+          "label": "Helper on --surface",
+          "foreground": "oklch(0.473002 0.010790 78.2231)",
+          "background": "oklch(1.000000 0.000000 0.0000)",
+          "required": 4.5,
+          "ratio": 6.7433290509284
+        },
+        {
+          "label": "Input edge on --surface",
+          "foreground": "oklch(0.618655 0.013266 79.7561)",
+          "background": "oklch(1.000000 0.000000 0.0000)",
+          "required": 3,
+          "ratio": 3.6637705895161026
+        },
+        {
+          "label": "Primary action",
+          "foreground": "oklch(1.000000 0.000000 0.0000)",
+          "background": "oklch(0.442728 0.071632 208.2011)",
+          "required": 4.5,
+          "ratio": 7.443408018492971
+        }
+      ],
+      "pass": true
+    },
+    {
       "state": "detected",
       "width": 1280,
+      "theme": "light",
       "viewport": 1280,
       "content": 1280,
+      "height": 1701,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -61,8 +150,43 @@
     {
       "state": "disabled",
       "width": 1280,
+      "theme": "light",
       "viewport": 1280,
       "content": 1280,
+      "height": 1850,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "loading",
+      "width": 1280,
+      "theme": "light",
+      "viewport": 1280,
+      "content": 1280,
+      "height": 1170,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "offline",
+      "width": 1280,
+      "theme": "light",
+      "viewport": 1280,
+      "content": 1280,
+      "height": 900,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "session",
+      "width": 1280,
+      "theme": "light",
+      "viewport": 1280,
+      "content": 1280,
+      "height": 900,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -70,8 +194,10 @@
     {
       "state": "empty",
       "width": 390,
+      "theme": "light",
       "viewport": 390,
       "content": 390,
+      "height": 2649,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -79,8 +205,10 @@
     {
       "state": "device",
       "width": 390,
+      "theme": "light",
       "viewport": 390,
       "content": 390,
+      "height": 2829,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -88,8 +216,10 @@
     {
       "state": "connected",
       "width": 390,
+      "theme": "light",
       "viewport": 390,
       "content": 390,
+      "height": 2436,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -97,8 +227,10 @@
     {
       "state": "failed",
       "width": 390,
+      "theme": "light",
       "viewport": 390,
       "content": 390,
+      "height": 2775,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -106,8 +238,10 @@
     {
       "state": "expired",
       "width": 390,
+      "theme": "light",
       "viewport": 390,
       "content": 390,
+      "height": 2775,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -115,8 +249,10 @@
     {
       "state": "detected",
       "width": 390,
+      "theme": "light",
       "viewport": 390,
       "content": 390,
+      "height": 2935,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -124,8 +260,43 @@
     {
       "state": "disabled",
       "width": 390,
+      "theme": "light",
       "viewport": 390,
       "content": 390,
+      "height": 3161,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "loading",
+      "width": 390,
+      "theme": "light",
+      "viewport": 390,
+      "content": 390,
+      "height": 1911,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "offline",
+      "width": 390,
+      "theme": "light",
+      "viewport": 390,
+      "content": 390,
+      "height": 957,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "session",
+      "width": 390,
+      "theme": "light",
+      "viewport": 390,
+      "content": 390,
+      "height": 957,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -133,8 +304,10 @@
     {
       "state": "empty",
       "width": 320,
+      "theme": "light",
       "viewport": 320,
       "content": 320,
+      "height": 2928,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -142,8 +315,10 @@
     {
       "state": "device",
       "width": 320,
+      "theme": "light",
       "viewport": 320,
       "content": 320,
+      "height": 3143,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -151,8 +326,10 @@
     {
       "state": "connected",
       "width": 320,
+      "theme": "light",
       "viewport": 320,
       "content": 320,
+      "height": 2748,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -160,8 +337,10 @@
     {
       "state": "failed",
       "width": 320,
+      "theme": "light",
       "viewport": 320,
       "content": 320,
+      "height": 3138,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -169,8 +348,10 @@
     {
       "state": "expired",
       "width": 320,
+      "theme": "light",
       "viewport": 320,
       "content": 320,
+      "height": 3114,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -178,8 +359,10 @@
     {
       "state": "detected",
       "width": 320,
+      "theme": "light",
       "viewport": 320,
       "content": 320,
+      "height": 3430,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -187,8 +370,450 @@
     {
       "state": "disabled",
       "width": 320,
+      "theme": "light",
       "viewport": 320,
       "content": 320,
+      "height": 3680,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "loading",
+      "width": 320,
+      "theme": "light",
+      "viewport": 320,
+      "content": 320,
+      "height": 1973,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "offline",
+      "width": 320,
+      "theme": "light",
+      "viewport": 320,
+      "content": 320,
+      "height": 1068,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "session",
+      "width": 320,
+      "theme": "light",
+      "viewport": 320,
+      "content": 320,
+      "height": 1068,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "empty",
+      "width": 1280,
+      "theme": "dark",
+      "viewport": 1280,
+      "content": 1280,
+      "height": 1339,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "device",
+      "width": 1280,
+      "theme": "dark",
+      "viewport": 1280,
+      "content": 1280,
+      "height": 1522,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "connected",
+      "width": 1280,
+      "theme": "dark",
+      "viewport": 1280,
+      "content": 1280,
+      "height": 1271,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "failed",
+      "width": 1280,
+      "theme": "dark",
+      "viewport": 1280,
+      "content": 1280,
+      "height": 1450,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "expired",
+      "width": 1280,
+      "theme": "dark",
+      "viewport": 1280,
+      "content": 1280,
+      "height": 1450,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "check": "Source color contrast",
+      "theme": "dark",
+      "pairs": [
+        {
+          "label": "Text on --canvas",
+          "foreground": "oklch(0.958849 0.004544 78.2979)",
+          "background": "oklch(0.196091 0.004248 84.5908)",
+          "required": 4.5,
+          "ratio": 16.18693139491751
+        },
+        {
+          "label": "Helper on --canvas",
+          "foreground": "oklch(0.723774 0.012771 79.7690)",
+          "background": "oklch(0.196091 0.004248 84.5908)",
+          "required": 4.5,
+          "ratio": 7.454157750366733
+        },
+        {
+          "label": "Input edge on --canvas",
+          "foreground": "oklch(0.571269 0.013523 79.7477)",
+          "background": "oklch(0.196091 0.004248 84.5908)",
+          "required": 3,
+          "ratio": 4.106145040060806
+        },
+        {
+          "label": "Text on --paper",
+          "foreground": "oklch(0.958849 0.004544 78.2979)",
+          "background": "oklch(0.204976 0.004203 84.5899)",
+          "required": 4.5,
+          "ratio": 15.890860519127662
+        },
+        {
+          "label": "Helper on --paper",
+          "foreground": "oklch(0.723774 0.012771 79.7690)",
+          "background": "oklch(0.204976 0.004203 84.5899)",
+          "required": 4.5,
+          "ratio": 7.317815724841145
+        },
+        {
+          "label": "Input edge on --paper",
+          "foreground": "oklch(0.571269 0.013523 79.7477)",
+          "background": "oklch(0.204976 0.004203 84.5899)",
+          "required": 3,
+          "ratio": 4.031040628454251
+        },
+        {
+          "label": "Text on --surface",
+          "foreground": "oklch(0.958849 0.004544 78.2979)",
+          "background": "oklch(0.218127 0.004140 84.5884)",
+          "required": 4.5,
+          "ratio": 15.426003211251835
+        },
+        {
+          "label": "Helper on --surface",
+          "foreground": "oklch(0.723774 0.012771 79.7690)",
+          "background": "oklch(0.218127 0.004140 84.5884)",
+          "required": 4.5,
+          "ratio": 7.103746756500104
+        },
+        {
+          "label": "Input edge on --surface",
+          "foreground": "oklch(0.571269 0.013523 79.7477)",
+          "background": "oklch(0.218127 0.004140 84.5884)",
+          "required": 3,
+          "ratio": 3.913120098459933
+        },
+        {
+          "label": "Primary action",
+          "foreground": "oklch(0.246908 0.038615 206.3437)",
+          "background": "oklch(0.758049 0.094203 204.1210)",
+          "required": 4.5,
+          "ratio": 7.6487789250023575
+        }
+      ],
+      "pass": true
+    },
+    {
+      "state": "detected",
+      "width": 1280,
+      "theme": "dark",
+      "viewport": 1280,
+      "content": 1280,
+      "height": 1701,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "disabled",
+      "width": 1280,
+      "theme": "dark",
+      "viewport": 1280,
+      "content": 1280,
+      "height": 1850,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "loading",
+      "width": 1280,
+      "theme": "dark",
+      "viewport": 1280,
+      "content": 1280,
+      "height": 1170,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "offline",
+      "width": 1280,
+      "theme": "dark",
+      "viewport": 1280,
+      "content": 1280,
+      "height": 900,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "session",
+      "width": 1280,
+      "theme": "dark",
+      "viewport": 1280,
+      "content": 1280,
+      "height": 900,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "empty",
+      "width": 390,
+      "theme": "dark",
+      "viewport": 390,
+      "content": 390,
+      "height": 2649,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "device",
+      "width": 390,
+      "theme": "dark",
+      "viewport": 390,
+      "content": 390,
+      "height": 2829,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "connected",
+      "width": 390,
+      "theme": "dark",
+      "viewport": 390,
+      "content": 390,
+      "height": 2436,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "failed",
+      "width": 390,
+      "theme": "dark",
+      "viewport": 390,
+      "content": 390,
+      "height": 2775,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "expired",
+      "width": 390,
+      "theme": "dark",
+      "viewport": 390,
+      "content": 390,
+      "height": 2775,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "detected",
+      "width": 390,
+      "theme": "dark",
+      "viewport": 390,
+      "content": 390,
+      "height": 2935,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "disabled",
+      "width": 390,
+      "theme": "dark",
+      "viewport": 390,
+      "content": 390,
+      "height": 3161,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "loading",
+      "width": 390,
+      "theme": "dark",
+      "viewport": 390,
+      "content": 390,
+      "height": 1911,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "offline",
+      "width": 390,
+      "theme": "dark",
+      "viewport": 390,
+      "content": 390,
+      "height": 957,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "session",
+      "width": 390,
+      "theme": "dark",
+      "viewport": 390,
+      "content": 390,
+      "height": 957,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "empty",
+      "width": 320,
+      "theme": "dark",
+      "viewport": 320,
+      "content": 320,
+      "height": 2928,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "device",
+      "width": 320,
+      "theme": "dark",
+      "viewport": 320,
+      "content": 320,
+      "height": 3143,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "connected",
+      "width": 320,
+      "theme": "dark",
+      "viewport": 320,
+      "content": 320,
+      "height": 2748,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "failed",
+      "width": 320,
+      "theme": "dark",
+      "viewport": 320,
+      "content": 320,
+      "height": 3138,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "expired",
+      "width": 320,
+      "theme": "dark",
+      "viewport": 320,
+      "content": 320,
+      "height": 3114,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "detected",
+      "width": 320,
+      "theme": "dark",
+      "viewport": 320,
+      "content": 320,
+      "height": 3430,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "disabled",
+      "width": 320,
+      "theme": "dark",
+      "viewport": 320,
+      "content": 320,
+      "height": 3680,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "loading",
+      "width": 320,
+      "theme": "dark",
+      "viewport": 320,
+      "content": 320,
+      "height": 1973,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "offline",
+      "width": 320,
+      "theme": "dark",
+      "viewport": 320,
+      "content": 320,
+      "height": 1068,
+      "fontLoaded": true,
+      "heading": "Pengaturan AI",
+      "clipped": []
+    },
+    {
+      "state": "session",
+      "width": 320,
+      "theme": "dark",
+      "viewport": 320,
+      "content": 320,
+      "height": 1068,
       "fontLoaded": true,
       "heading": "Pengaturan AI",
       "clipped": []
@@ -202,6 +827,14 @@
       "pass": true
     },
     {
+      "check": "offline recovery reaches simulated settings",
+      "pass": true
+    },
+    {
+      "check": "session recovery reaches simulated settings",
+      "pass": true
+    },
+    {
       "check": "Revocation opens a cancellable native dialog",
       "pass": true
     },
@@ -209,6 +842,402 @@
       "check": "Keyboard focus is visible",
       "tag": "SELECT",
       "outline": "solid",
+      "pass": true
+    },
+    {
+      "check": "Review page",
+      "width": 1280,
+      "viewport": 1280,
+      "content": 1280,
+      "height": 6757,
+      "images": [
+        {
+          "source": "preview-empty-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-empty-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-device-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-device-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-connected-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-connected-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-failed-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-failed-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-expired-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-expired-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-detected-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-detected-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-disabled-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-disabled-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-loading-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-loading-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-offline-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-offline-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-session-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-session-mobile.jpg",
+          "loaded": true
+        }
+      ],
+      "anchors": [
+        {
+          "href": "#empty",
+          "exists": true
+        },
+        {
+          "href": "#device",
+          "exists": true
+        },
+        {
+          "href": "#connected",
+          "exists": true
+        },
+        {
+          "href": "#failed",
+          "exists": true
+        },
+        {
+          "href": "#expired",
+          "exists": true
+        },
+        {
+          "href": "#detected",
+          "exists": true
+        },
+        {
+          "href": "#disabled",
+          "exists": true
+        },
+        {
+          "href": "#loading",
+          "exists": true
+        },
+        {
+          "href": "#offline",
+          "exists": true
+        },
+        {
+          "href": "#session",
+          "exists": true
+        }
+      ],
+      "pass": true
+    },
+    {
+      "check": "Review page",
+      "width": 390,
+      "viewport": 390,
+      "content": 390,
+      "height": 7452,
+      "images": [
+        {
+          "source": "preview-empty-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-empty-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-device-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-device-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-connected-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-connected-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-failed-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-failed-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-expired-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-expired-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-detected-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-detected-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-disabled-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-disabled-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-loading-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-loading-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-offline-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-offline-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-session-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-session-mobile.jpg",
+          "loaded": true
+        }
+      ],
+      "anchors": [
+        {
+          "href": "#empty",
+          "exists": true
+        },
+        {
+          "href": "#device",
+          "exists": true
+        },
+        {
+          "href": "#connected",
+          "exists": true
+        },
+        {
+          "href": "#failed",
+          "exists": true
+        },
+        {
+          "href": "#expired",
+          "exists": true
+        },
+        {
+          "href": "#detected",
+          "exists": true
+        },
+        {
+          "href": "#disabled",
+          "exists": true
+        },
+        {
+          "href": "#loading",
+          "exists": true
+        },
+        {
+          "href": "#offline",
+          "exists": true
+        },
+        {
+          "href": "#session",
+          "exists": true
+        }
+      ],
+      "pass": true
+    },
+    {
+      "check": "Review page",
+      "width": 320,
+      "viewport": 320,
+      "content": 320,
+      "height": 7780,
+      "images": [
+        {
+          "source": "preview-empty-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-empty-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-device-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-device-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-connected-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-connected-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-failed-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-failed-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-expired-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-expired-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-detected-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-detected-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-disabled-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-disabled-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-loading-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-loading-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-offline-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-offline-mobile.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-session-desktop.jpg",
+          "loaded": true
+        },
+        {
+          "source": "preview-session-mobile.jpg",
+          "loaded": true
+        }
+      ],
+      "anchors": [
+        {
+          "href": "#empty",
+          "exists": true
+        },
+        {
+          "href": "#device",
+          "exists": true
+        },
+        {
+          "href": "#connected",
+          "exists": true
+        },
+        {
+          "href": "#failed",
+          "exists": true
+        },
+        {
+          "href": "#expired",
+          "exists": true
+        },
+        {
+          "href": "#detected",
+          "exists": true
+        },
+        {
+          "href": "#disabled",
+          "exists": true
+        },
+        {
+          "href": "#loading",
+          "exists": true
+        },
+        {
+          "href": "#offline",
+          "exists": true
+        },
+        {
+          "href": "#session",
+          "exists": true
+        }
+      ],
       "pass": true
     }
   ]

@@ -1,0 +1,27 @@
+{
+  "scope": "Static mockup review; all ten states included",
+  "results": [
+    {
+      "viewport": 1280,
+      "image": "review.png",
+      "pixels": [1280, 6789],
+      "command": "heavy ghostex visual check design/mockups/ai/review.html --width 1280 --out design/mockups/ai/review.png",
+      "result": [
+        "Computer, 1280px wide (dark theme): design/mockups/ai/review.png",
+        "  Fits: nothing reaches past the screen and the kit had nothing to fit.",
+        "Look at each screenshot before sending the page."
+      ]
+    },
+    {
+      "viewport": 390,
+      "image": "review-mobile.png",
+      "pixels": [780, 15352],
+      "command": "heavy ghostex visual check design/mockups/ai/review.html --width 390 --out design/mockups/ai/review-mobile.png",
+      "result": [
+        "Phone, 390px wide (dark theme): design/mockups/ai/review-mobile.png",
+        "  Fits: nothing reaches past the screen and the kit had nothing to fit.",
+        "Look at each screenshot before sending the page."
+      ]
+    }
+  ]
+}
