@@ -1,4 +1,4 @@
-## WS-06/07 posting faktur pemasok + lanjutan AP (engineer, cabang `ws/purchasing-posting` dari `ws/purchasing-apar` aefe28175, 13 Nov 2026 18:49- WIB)
+## WS-06/07 posting faktur pemasok + lanjutan AP (engineer, cabang `ws/purchasing-posting` dari `ws/purchasing-apar` aefe28175, 13 Nov 2026 18:49-19:47 WIB)
 
 - Desain: `docs/briefs/ws-purchasing-posting-design.md` (architect xhigh), review K architect xhigh: H1 dibetulkan, H2/M1 jadi bead penghalang flag.
 - legend-29vw (bagian GRNI): jurnal penerimaan `goods_receipt.recorded` Dr persediaan / Cr GRNI lewat konsumen auto-journal (`aj:goods-receipt:<id>`, mapping hilang -> parkir `ACCOUNT_MAPPING_MISSING` retryable); faktur Dr GRNI (harga PO) + selisih harga ke akun baru 5105 `purchase_price_variance` + PPN masukan / Cr utang. Penjaga cutover: faktur/retur atas penerimaan tanpa jurnal -> 409 `GOODS_RECEIPT_NOT_JOURNALED`. Flag `SUPPLIER_INVOICE_POSTING_ENABLED` TETAP mati (H2 legend-5b7uf + cutover legend-7e0q4 belum, keputusan founder F1/F2).
@@ -8,6 +8,9 @@
 - legend-smrwb: dilewati, belum ada pemanggil AR nyata.
 - Migrasi 0494 (akun + mapping 5105, idempoten, insert-only). 0495 tidak dipakai.
 - Follow-up: legend-5b7uf (P1, retur faktur selisih harga, sebelum flag nyala), legend-7e0q4 (jalur cutover jurnal penerimaan), legend-wjjez (sisa pembulatan GRNI).
+
+- Verifikasi: 24 file test terarah 451 lulus/3 skip (GR-11/GR-12 skip menunggu legend-5b7uf), typecheck api+shared+web lulus, `db:generate` kosong, eslint+prettier file berubah bersih. Gagal-dulu: service dikembalikan ke base -> GR-01..10, CP-01..08, AR-05/06 gagal dengan sebab benar; PD-01 gagal-dulu 409 pada base asli; PD-04..06 di base gagal karena setup (ZodError helper baru), bukan bukti.
+- Biaya gelombang (18:49-19:46, 57 menit): biaya* total 6784k (utama Opus 1576k; subagent Sonnet 3557k, Opus 1370k, Haiku 282k). 21 subagent, maks 4 bersamaan, rata-rata 0.61 berjalan.
 
 ## WS-06/07 purchasing, AP/AR, akuntansi (engineer, cabang `ws/purchasing-apar` dari `origin/milestone/m1` d56eafb4, 13 Nov 2026 17:41-18:45 WIB)
 
