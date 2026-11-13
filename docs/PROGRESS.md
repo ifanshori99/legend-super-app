@@ -8,6 +8,7 @@
 - Sisa: XSD Coretax resmi belum ada di repo; aset dari pembelian kredit tanpa open item AP (K7); debit note retur yang diparkir menahan retur berikutnya pada PO (runbook finance).
 - Verifikasi: 18 file test terarah 261 lulus/1 skip, test root `.mjs` 40 lulus, typecheck api+web lulus, `db:generate` kosong, eslint+prettier bersih. Cleanup test bersama diperbaiki (helper `purchasing-document-counters.ts`, `purchasing-flow` tidak menghapus PO milik suite lain).
 - Follow-up: legend-gzeya (K7), legend-igclp (XSD), legend-3fi5v (debit note diparkir), legend-ct27s (race guard aset), legend-smrwb (sisi AR).
+- Biaya gelombang (17:40-18:49, 68 menit): biaya* total 14874k (utama Opus 3603k; subagent Sonnet 8944k, Opus 1654k, Haiku 673k). 35 subagent, maks 7 bersamaan, rata-rata 0.89 berjalan.
 
 ## 539-U5b 12 layar konfigurasi (ui-engineer, cabang `ui/tenant-config` dari `origin/milestone/m1` 5cbe2a1e, 13 Nov 2026 06:35-08:00 WIB)
 
