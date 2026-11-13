@@ -59,7 +59,7 @@ function addMonthsUtc(date: Date, months: number): Date {
   return result;
 }
 
-type GrantState = {
+export type GrantState = {
   id: string;
   expiresAt: Date;
   /**
@@ -69,6 +69,8 @@ type GrantState = {
    */
   unused: number;
   expireRowCount: number;
+  /** Sum of the points the expire rows of this grant took (positive). */
+  expiredPoints: number;
 };
 
 /** One grant during the replay; `expiresAt` null never expires. */
@@ -111,7 +113,7 @@ function fifoOrder(a: Lot, b: Lot): number {
  * to the grants that paid. After each restore, `settle` moves claims of rows
  * posted after a refilled grant off later-expiring grants onto it.
  */
-async function loadGrantStates(
+export async function loadGrantStates(
   tx: Tx,
   tenantId: string,
   profileId: string,
@@ -141,6 +143,7 @@ async function loadGrantStates(
   /** Allocations still charged to each lot. */
   const claims = new Map<Lot, Allocation[]>();
   const expireRows = new Map<string, number>();
+  const expiredPoints = new Map<string, number>();
 
   const charge = (
     owner: Allocation[],
@@ -268,11 +271,17 @@ async function loadGrantStates(
     }
     const target =
       row.reversesEntryId === null ? undefined : lots.get(row.reversesEntryId);
-    if (row.type === "expire" && row.reversesEntryId !== null)
+    if (row.type === "expire" && row.reversesEntryId !== null) {
       expireRows.set(
         row.reversesEntryId,
         (expireRows.get(row.reversesEntryId) ?? 0) + 1,
       );
+      expiredPoints.set(
+        row.reversesEntryId,
+        (expiredPoints.get(row.reversesEntryId) ?? 0) +
+          Math.max(0, -row.points),
+      );
+    }
     if (row.points < 0) {
       const points = -row.points;
       if (target !== undefined) takeFromGrant(target, points, seq, rowAt);
@@ -306,6 +315,7 @@ async function loadGrantStates(
       expiresAt: lot.expiresAt!,
       unused: lot.left,
       expireRowCount: expireRows.get(lot.id) ?? 0,
+      expiredPoints: expiredPoints.get(lot.id) ?? 0,
     }));
 }
 
