@@ -4747,4 +4747,4 @@ Native Codex subagents: 10 total, peak 6 concurrent; heavy commands assigned to 
 
 - Sudah: `holdGatewayAmountMismatch` (jalur `assertStrictAmount` dan webhook Duitku) kini, saat uang baru diparkir dan ada hold QRIS yang belum `paid`, memanggil helper baru `alertQrisFundsParked` (sama dengan jalur `parkWhenQrisHoldRefusesInTx`): cek hold melambat 24 jam dan supervisor, owner, serta kasir pembuka QR mendapat alert "Uang QRIS perlu dikembalikan". Hold tidak ditutup otomatis (QH-13); manajer buka kunci lewat Q93 lalu refund dari dana tak teralokasi. Replay tidak parkir dan tidak alert dua kali. Teks alert khusus hanya untuk hold yang masih terkunci; callback vs status tidak cocok punya kalimat sendiri.
 - Bukti: test baru `pos-qris-hold-strict-amount.test.ts` (4 test): gagal-dulu di source lama (3 gagal, alert 0 vs 1), hijau sesudahnya; run gabungan 4 file (71 test) hijau; prettier + eslint hijau. Review architect xhigh: tanpa penghalang, 2 saran kata dibetulkan. Tanpa migrasi.
-- Belum: typecheck api (antre heavy saat catatan ini ditulis).
+- Typecheck api (`tsc --noEmit`, lewat heavy) hijau tanpa error.
