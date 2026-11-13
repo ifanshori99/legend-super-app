@@ -1427,3 +1427,4 @@ Langkah berikut CTO baru:
 - 18:18 G3v9m QR menu selesai (ws/qr-menu a572311a0; iuvq sebagian, arp35, tct6, 8qri, 3qvvi; tema tenant hanya bila lolos kontras AA). Cetak menu PDF terblokir legend-hspr8 (pdf-lib, tanpa dependency baru). Batch56.
 - 18:22 Batch55 masuk m1 4d299ba5e (7 cabang, migr 0316-0320, build hijau; run penuh terakhir 3 flake hijau per berkas). Batch56 = test-isolation, kirimdev-inbound, payment-hardening, edge-device-security, ops-menu-small, cash-bank, payroll-followups (brief 631, renumber dari 0321). legend-okrmg keputusan CTO: tahan received 5 menit (brief 632).
 - 18:35 G2dgv webhook retry guard selesai (fix/webhook-retry-guard 7304b5180; okrmg + gcdq0 ditutup). Panic relay receipt hilang saat beban -> bead P2 baru.
+- 18:38 G56ji mesin PDF menu selesai (ws/menu-pdf f1da34fed, di atas ws/qr-menu; hspr8+iuvq ditutup; 55 test). Batch57: ws/menu-pdf mencakup ws/qr-menu.
