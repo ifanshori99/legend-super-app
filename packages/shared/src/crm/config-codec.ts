@@ -18,8 +18,13 @@ import {
 
 const itemKeySchema = z.string().regex(/^[a-z0-9][a-z0-9_.-]{0,99}$/);
 const placeholderId = "00000000-0000-4000-8000-000000000001";
+// legalEntityId is deliberately omitted (TEN-09: no tenant/PT id in config
+// copies; Q80: points are per PT). The schema is strict, so an imported item
+// carrying legalEntityId is rejected, and a program decoded from config never
+// picks a PT: the entity guard decides it (single-PT tenant) or blocks earn and
+// redeem as ambiguous (multi-PT tenant).
 const programItemSchema = loyaltyProgramSchema
-  .omit({ id: true, tenantId: true, updatedAt: true })
+  .omit({ id: true, tenantId: true, legalEntityId: true, updatedAt: true })
   .extend({ key: itemKeySchema, kind: z.literal("program") });
 const tierItemSchema = loyaltyTierSchema
   .omit({ id: true, tenantId: true })

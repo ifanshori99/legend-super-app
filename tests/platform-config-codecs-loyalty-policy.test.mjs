@@ -264,3 +264,19 @@ test("legend-1tzvg: export strips source ids and uses stable keys for menu refer
   );
   assert.equal(value.fromTemplate(exported, menuContext).ok, true);
 });
+
+test("legend-5tmks: loyalty program config never carries a PT and import rejects one", () => {
+  const value = codec();
+  const legalEntityId = "11111111-1111-4111-8111-111111111111";
+  const decoded = value.fromTemplate([program], menuContext);
+  assert.equal(decoded.ok, true, JSON.stringify(decoded.issues));
+  assert.equal("legalEntityId" in decoded.drafts[0], false);
+  for (const legalEntityValue of [legalEntityId, null]) {
+    const result = value.fromTemplate(
+      [{ ...program, legalEntityId: legalEntityValue }],
+      menuContext,
+    );
+    assert.equal(result.ok, false, String(legalEntityValue));
+    assert.match(result.issues.join("\n"), /legalEntityId|unrecognized/i);
+  }
+});
