@@ -30,6 +30,7 @@ import {
 import { HttpError } from "../lib/http-error.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import { recordAudit, type AuditTransaction } from "./audit-writer.ts";
+import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 
 export type IssuedChatgptCredentials = ChatgptTokenBundle & {
   credentialVersion: string;
@@ -40,7 +41,7 @@ type PollClaim =
   | { done: ChatgptConnectionView }
   | { row: Row; pending: Pending; operationId: string };
 type RefreshClaim =
-  | { tokens: IssuedChatgptCredentials | null }
+  | { tokens: IssuedChatgptCredentials | null; revokeToken?: string }
   | { row: Row; current: ChatgptTokenBundle; operationId: string };
 const T = aiChatgptConnections;
 const credentialVersion = (ciphertext: string) =>
@@ -192,6 +193,37 @@ async function invalidate(
   await audit(tx, context, saved, "ai_chatgpt.unavailable", null);
   return saved;
 }
+/** Local disconnect on an open transaction (same shape as an owner revoke).
+ * Returns the stored refresh token so the caller can revoke it upstream after
+ * the commit. Unreadable secrets are still cleared. */
+async function disconnectInTransaction(
+  tx: AuditTransaction,
+  context: ScopedTenantContext,
+  row: Row,
+  actorId: string | null,
+): Promise<{ row: Row; refreshToken: string | undefined }> {
+  let refreshToken: string | undefined;
+  if (row.tokensEncrypted) {
+    try {
+      refreshToken = openTokens(row).refreshToken;
+    } catch {
+      /* unreadable secrets are still cleared */
+    }
+  }
+  const [saved] = await tx
+    .update(T)
+    .set({
+      ...clearedSecrets,
+      status: "disconnected",
+      generation: row.generation + 1,
+      updatedAt: version(),
+    })
+    .where(and(eq(T.tenantId, row.tenantId), eq(T.id, row.id)))
+    .returning();
+  if (!saved) throw new ChatgptCodexError("unavailable");
+  await audit(tx, context, saved, "ai_chatgpt.revoked", actorId);
+  return { row: saved, refreshToken };
+}
 function tokenBundle(value: unknown): ChatgptTokenBundle {
   // Never propagate a JSON/schema exception: Node may include a plaintext
   // fragment in its error message. No decrypted value reaches the logger.
@@ -324,6 +356,16 @@ export async function startChatgptConnection(
         (current.operationLeaseUntil && current.operationLeaseUntil > now))
     )
       throw new AiError("AI_CHATGPT_RATE_LIMITED");
+    // The previous account's tokens are dropped below; revoke them upstream
+    // after the commit instead of leaving them valid at OpenAI.
+    let previousRefreshToken: string | undefined;
+    if (current?.tokensEncrypted) {
+      try {
+        previousRefreshToken = openTokens(current).refreshToken;
+      } catch {
+        /* unreadable secrets are still cleared */
+      }
+    }
     const operationId = randomUUID();
     const values = {
       tenantId: context.tenant.tenantId,
@@ -353,8 +395,9 @@ export async function startChatgptConnection(
       : await tx.insert(T).values(values).returning();
     if (!saved) throw new ChatgptCodexError("unavailable");
     await audit(tx, context, saved, "ai_chatgpt.opted_in", userId);
-    return { row: saved, operationId };
+    return { row: saved, operationId, previousRefreshToken };
   });
+  await bestEffortRevoke(claim.previousRefreshToken);
   try {
     assertEnabled();
     const result = await startChatgptDevice();
@@ -517,8 +560,10 @@ export async function pollChatgptConnection(
     );
   }
   if (!saved) {
-    // Discard a stale result locally. Its refresh token may also belong to a
-    // newer winner, so an upstream revoke here could revoke that winner.
+    // Lost the race (local revoke, replacement or expiry). These tokens come
+    // from this attempt's own device-code exchange, so no other operation can
+    // share them: revoke them upstream instead of leaving them valid.
+    await bestEffortRevoke(result.tokens.refreshToken);
     return getChatgptConnectionView(context, true);
   }
   return view(saved, true);
@@ -661,6 +706,18 @@ export async function getChatgptCredentials(
         !row.tokensEncrypted
       )
         return { tokens: null };
+      // The approving owner's consent backs this paid account. If that user no
+      // longer holds an active owner assignment here, disconnect and refuse.
+      const approver = row.riskAcceptedBy;
+      const approverStillOwner =
+        approver !== null &&
+        (
+          await accessSnapshotInTransaction(tx, context, approver, new Date())
+        ).allowsVia("owner", "ai.governance.manage", { type: "tenant" });
+      if (!approverStillOwner) {
+        const removed = await disconnectInTransaction(tx, context, row, null);
+        return { tokens: null, revokeToken: removed.refreshToken };
+      }
       let tokens: ChatgptTokenBundle;
       try {
         tokens = openTokens(row);
@@ -689,7 +746,10 @@ export async function getChatgptCredentials(
       return { row, current: tokens, operationId };
     },
   );
-  if ("tokens" in claim) return env.AI_CHATGPT_ENABLED ? claim.tokens : null;
+  if ("tokens" in claim) {
+    await bestEffortRevoke(claim.revokeToken);
+    return env.AI_CHATGPT_ENABLED ? claim.tokens : null;
+  }
   const { row, current, operationId } = claim;
   let refreshed: ChatgptTokenBundle;
   try {
@@ -750,8 +810,14 @@ export async function getChatgptCredentials(
     throw new ChatgptCodexError("unavailable");
   }
   if (!saved) {
-    // A non-rotating refresh token can be shared with the winning operation.
-    // Stale/failed results are discarded, never revoked upstream.
+    // A non-rotating refresh token can be shared with the winning operation,
+    // so a stale result is only revoked upstream when the connection was
+    // removed locally meanwhile (no winner can own it then).
+    const now = await withTenant(db, context, (tx) =>
+      read(tx, context.tenant.tenantId),
+    );
+    if (!now || now.status === "disconnected")
+      await bestEffortRevoke(refreshed.refreshToken);
     return null;
   }
   const latest = await getChatgptProviderState(context);

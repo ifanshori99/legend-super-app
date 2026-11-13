@@ -633,6 +633,10 @@ export async function resolveTenantAiProvider(
               issuedCredentialVersion = credentials?.credentialVersion;
               return credentials;
             },
+            stillConnected: async () => {
+              const state = await getChatgptProviderState(context);
+              return state.active && state.generation === generation;
+            },
           });
           try {
             return await provider.complete(request, options);

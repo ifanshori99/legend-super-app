@@ -503,6 +503,8 @@ async function readCompletion(
 export function createChatgptCodexProvider(options: {
   model: string;
   getCredentials: () => Promise<ChatgptTokenBundle | null>;
+  /** Read-only check run after the answer finished; it must never refresh. */
+  stillConnected: () => Promise<boolean>;
 }): AiProvider {
   return {
     name: PROVIDER,
@@ -567,10 +569,14 @@ export function createChatgptCodexProvider(options: {
         });
         if (!response.ok) return refuse(response);
         const result = await readCompletion(response, options.model);
-        enabled();
-        if (!(await options.getCredentials()))
-          throw new ChatgptCodexError("auth");
-        enabled();
+        // A finished answer is already billed to the plan. Losing the
+        // connection or the global switch now must not read as an auth or
+        // disabled failure: both trigger a second, paid call through the
+        // tenant API key. Only `unavailable` skips that fallback.
+        if (!env.AI_CHATGPT_ENABLED) throw unavailable();
+        if (!(await options.stillConnected().catch(() => false)))
+          throw unavailable();
+        if (!env.AI_CHATGPT_ENABLED) throw unavailable();
         return result;
       } catch (error) {
         throw safeError(error);

@@ -79,6 +79,7 @@ const makeProvider = () =>
   createChatgptCodexProvider({
     model: "gpt-5-codex",
     getCredentials: async () => credentials(),
+    stillConnected: async () => true,
   });
 const event = (type: string, payload: Record<string, unknown>) =>
   `event: ${type}\r\ndata: ${JSON.stringify({ type, ...payload })}\r\n\r\n`;
@@ -530,6 +531,7 @@ describe("legend-z83k B3 bounded Responses SSE adapter", () => {
       createChatgptCodexProvider({
         model: "gpt-5-codex",
         getCredentials: async () => null,
+        stillConnected: async () => true,
       }).complete(request),
     ).rejects.toMatchObject({ kind: "auth" });
     expect(fetch).not.toHaveBeenCalled();
