@@ -1458,3 +1458,4 @@ Langkah berikut CTO baru:
 - 23:08 Mulai G7o31 (brief 643, Sonnet, wjyps P1 UI + e61s5, base fix/petty-fund-required).
 - 23:20 G0coa selesai: ws/followups-640 464645ff7 (3hb1n, fbf4v + retired_at 0502, 65i3t; edge-catalog-loop flaky akar setInterval+inFlight, fix test 5/5). Bead vj7ma. Batch58: fix/flaky-641, ws/followups-640, fix/purchase-return-variance (+test-setup bila belum di batch57).
 - 23:12 G7o31 selesai: fix/cash-bank-table-mapping 27a5a508c (wjyps, e61s5; support read-only ditolak API global, 8 test; UI tombol nonaktif). Batch58 + cabang ini.
+- 23:16 Mulai G2aag (644 payroll bypw2+m6zdl, migr 0506-0507) dan G7cpa (645 edge 078n, migr 0508-0509). Kuota #2 5h 18%, 7d 45%.
