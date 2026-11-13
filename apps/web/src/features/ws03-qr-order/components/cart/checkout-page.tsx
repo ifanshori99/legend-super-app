@@ -30,6 +30,7 @@ import {
 } from "../../hooks";
 import { idempotencyKey } from "../../lib/ids.ts";
 import { formatAvailableFrom } from "../../lib/item-options.ts";
+import { outletTimeZone } from "../../lib/outlet-time-zone.ts";
 import { CompanionOffer, useCompanion } from "../glass/companion-offer";
 import {
   QrFooter,
@@ -415,10 +416,7 @@ export function CheckoutPage() {
     const item = menu.items.find((entry) => entry.id === menuItemId);
     const time =
       item?.status === "unavailable_until" && item.availableFrom
-        ? formatAvailableFrom(
-            item.availableFrom,
-            menu.outlet.timeZone ?? "Asia/Jakarta",
-          )
+        ? formatAvailableFrom(item.availableFrom, outletTimeZone(menu))
         : null;
     return time ? t("qrGlass.menu.card.availableFrom", { time }) : null;
   };

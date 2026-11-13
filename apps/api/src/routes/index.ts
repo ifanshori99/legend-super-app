@@ -55,8 +55,6 @@ import { platformKirimdevSendersRouter } from "./platform-kirimdev-senders.route
 import { createNotificationRouter } from "./notification.routes";
 import { taxRouter } from "./tax.routes";
 import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
-import { qrRouter } from "./qr.routes";
-import { publicSiteRouter } from "./public-site.routes";
 import { websiteAdminRouter } from "./website-admin.routes";
 import { openBillRouter } from "./open-bill.routes";
 import { salesTargetsRouter } from "./sales-targets.routes";
@@ -302,7 +300,8 @@ apiRouter.use(orderRecoveryChargeRouter);
 apiRouter.use("/apology-vouchers", apologyVoucherRouter);
 apiRouter.use("/table-sessions", tableSessionsRouter);
 apiRouter.use("/table-sessions", qrOrderRouter);
-apiRouter.use("/qr", qrRouter);
+// /qr (scan + guest menu) needs the storage resolvers for photo and logo
+// URLs, so createApp mounts it (routes/storage-api.routes.ts) ahead of this.
 // Acting cashier token (legend-aruta), before staffPinRouter; its routes carry
 // their own guards so /staff-pins/verify stays sessionless.
 apiRouter.use("/staff-pins", posActingStaffRouter);
@@ -310,7 +309,7 @@ apiRouter.use("/staff-pins", staffPinRouter);
 apiRouter.use("/pos-overrides", posOverrideRouter);
 // Public brand website (WS-08 F21): the online menu page, tenant and brand from
 // the request host (TEN-08). Q23 hides items without a photo.
-apiRouter.use("/public/site", publicSiteRouter);
+// /public/site is mounted by routes/storage-api.routes.ts (menu photo URLs).
 // Public e-receipt page and PDF by link token, tenant from the host (legend-93a).
 apiRouter.use("/public/receipts", publicReceiptRouter);
 // Staff editor of the brand website content (WS-08, legend-qgr6).

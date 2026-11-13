@@ -90,6 +90,11 @@ import { outletBusinessDayClock } from "./outlet-clock";
 import { readChannelPriceGrid } from "./menu-pricing.service";
 import { loadTaxConfig, selectServiceChargeRules } from "./qr-order-pricing";
 import { verifyTableQrToken } from "./qr-token";
+import {
+  noBrandLogoUrl,
+  readGuestTheme,
+  type BrandLogoUrl,
+} from "./guest-theme.service";
 
 /** The contract caps a guest item's lists; the database does not. */
 const MAX_LABELS = 6;
@@ -666,6 +671,7 @@ export async function getQrMenu(
   qrToken: string,
   now = new Date(),
   resolveMediaUrls: MenuMediaUrls = noMediaUrls,
+  resolveLogoUrl: BrandLogoUrl = noBrandLogoUrl,
 ): Promise<QrMenu> {
   const verified = verifyTableQrToken({
     token: qrToken,
@@ -727,6 +733,7 @@ export async function getQrMenu(
       today: businessDateOf(now, outletBusinessDayClock(outlet)),
       items: catalogue.items,
     });
+    const theme = await readGuestTheme(tx, context, brand, resolveLogoUrl);
 
     return qrMenuSchema.parse({
       brand: {
@@ -757,6 +764,7 @@ export async function getQrMenu(
         serviceChargeBp: taxNote.serviceChargeBp,
         minimumSpendIdr: zone.minimumSpendIdr,
       },
+      theme,
       orderingOpen: zoneOrderingOpen(zone.hours, now, outlet.timezone),
       pricing: {
         pricesIncludeTaxAndService: taxNote.pricesIncludeTaxAndService,

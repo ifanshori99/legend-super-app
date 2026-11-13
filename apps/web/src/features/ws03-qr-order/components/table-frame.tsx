@@ -4,25 +4,37 @@
 // [data-surface="qr"]): warm ivory canvas, coffee ink, one rust action.
 // Light only: the approved palette and its glass contrast were verified on
 // light, and photos read best on it (DESIGN.md "Tema QR pelanggan").
+// The brand's active Tenant Theme (menu.theme) overrides the brand tokens, font
+// and corners inside this scope; without one the QR theme stays as is.
 //
 // Phones get no global header or bottom nav: each page owns one floating
 // glass bar on top (menu header or QrTopBar) and one at the bottom (cart bar
 // or QrFooter), so a screen never stacks more than two blur regions. From lg
 // up the frame shows one glass header with the table sections; pages then
 // render plain titles.
-import type { ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { CircleHelp } from "lucide-react";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { RouterShellLink } from "@/components/layout/router-link";
 import { ThemeScope } from "@/components/theme-scope";
+import { TenantThemeStyle } from "@/lib/theme";
+import {
+  buildTenantThemeCss,
+  type TenantThemeConfig,
+} from "@starter/shared/theme";
 import { TableJourneyProvider, useTableJourney } from "../context";
 import { QrPhotoBand, QrSampleBadge } from "./glass/qr-primitives";
 import { CallWaiterSheet } from "./orders/call-waiter-sheet";
 
+// Fixed scope id: the theme CSS is rendered inside this frame only, and the
+// API sends no slug.
+const QR_TENANT_ID = "qr-menu";
+
 function DesktopHeader({ pathname }: { pathname: string }) {
   const t = useT();
   const { qrToken, menu, sessionId, ended } = useTableJourney();
+  const [logoFailed, setLogoFailed] = useState(false);
   const base = `/t/${encodeURIComponent(qrToken)}`;
   const section = pathname.slice(base.length).split("/")[1] ?? "";
   const activeKey = ["orders", "issue", "pay", "kasir", "bayar"].includes(
@@ -50,7 +62,18 @@ function DesktopHeader({ pathname }: { pathname: string }) {
           href={base}
           className="min-w-0 truncate rounded-xs text-[1.75rem] leading-tight font-bold tracking-[-0.03em]"
         >
-          {menu?.brand.name ?? t("app.defaultBrand")}
+          {menu?.theme?.logoUrl && !logoFailed ? (
+            <img
+              src={menu.theme.logoUrl}
+              alt={menu.brand.name}
+              width={192}
+              height={36}
+              onError={() => setLogoFailed(true)}
+              className="h-9 w-auto max-w-48 object-contain"
+            />
+          ) : (
+            (menu?.brand.name ?? t("app.defaultBrand"))
+          )}
         </RouterShellLink>
         <QrSampleBadge className="shrink-0" />
         <nav
@@ -104,13 +127,32 @@ function Frame({
   // the slim page nav elsewhere, so no page text ever lands on the photo.
   const base = `/t/${encodeURIComponent(qrToken)}`;
   const onMenu = pathname.slice(base.length).replace(/\/$/, "") === "";
+  const theme = menu?.theme;
+  const brandName = menu?.brand.name;
+  // A theme that fails the contrast check renders no CSS (TenantThemeStyle), so
+  // data-tenant must stay off too: tokens.css derives the QR chrome from
+  // --primary under [data-tenant], and would otherwise follow the base primary.
+  const tenantTheme = useMemo<TenantThemeConfig | null>(() => {
+    if (!brandName || !theme) return null;
+    const config: TenantThemeConfig = {
+      id: QR_TENANT_ID,
+      name: brandName,
+      colors: theme.tokens,
+      font: theme.fontFamily,
+      corners: theme.corners,
+      logoUrl: theme.logoUrl,
+    };
+    return buildTenantThemeCss(config).ok ? config : null;
+  }, [brandName, theme]);
   return (
     <ThemeScope
       density="hangat"
       mode="light"
+      tenant={tenantTheme ? QR_TENANT_ID : undefined}
       data-surface="qr"
       className="relative isolate min-h-dvh bg-background"
     >
+      {tenantTheme ? <TenantThemeStyle tenant={tenantTheme} /> : null}
       <QrPhotoBand src={bandPhoto} size={onMenu ? "menu" : "page"} />
       <DesktopHeader pathname={pathname} />
       <main className="mx-auto grid w-full max-w-[90rem] grid-cols-[minmax(0,1fr)] content-start gap-4 px-4 pt-3 pb-4 lg:px-14 lg:pt-8 lg:pb-8">

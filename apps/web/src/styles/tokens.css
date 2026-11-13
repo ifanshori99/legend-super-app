@@ -431,6 +431,36 @@
   --qr-radius-cta: 0.875rem;
 }
 
+/* A brand Tenant Theme inside the QR scope (same element carries both
+ * attributes): the fixed rust derivatives above would beat the [data-tenant]
+ * block and mix rust into hover/focus. Derive them again from the tenant's
+ * --primary with the same formula; the higher specificity is explicit. */
+[data-surface="qr"][data-tenant] {
+  --primary-hover: color-mix(in srgb, var(--primary) 88%, var(--background));
+  --primary-tint: color-mix(in srgb, var(--primary) 10%, var(--background));
+  --primary-tint-strong: color-mix(
+    in srgb,
+    var(--primary) 18%,
+    var(--background)
+  );
+  --focus-halo: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
+  /* Dark glass (header, category chips, cart bar) and the dark nota panels
+   * follow the tenant brand, not the fixed coffee brown. Every text-on-dark
+   * pair is built so its contrast equals --primary-foreground on --primary
+   * (the pair the tenant theme already checks): muted text is the same
+   * --primary-foreground, panel is --primary-hover (derived above), control is
+   * --primary, and the glass is 96% primary so it stays near-opaque over
+   * content. Stepper hover still reads: control (primary) -> panel
+   * (primary-hover). Shifting panel/control toward --primary-foreground would
+   * lower contrast and fail for some tenant colors. */
+  --qr-glass-dark-solid: var(--primary);
+  --qr-glass-dark: color-mix(in srgb, var(--primary) 96%, transparent);
+  --qr-on-dark: var(--primary-foreground);
+  --qr-on-dark-muted: var(--primary-foreground);
+  --qr-coffee-panel: var(--primary-hover);
+  --qr-coffee-control: var(--primary);
+}
+
 /* ---------------------------------------------------- Reduced motion */
 @media (prefers-reduced-motion: reduce) {
   :root {

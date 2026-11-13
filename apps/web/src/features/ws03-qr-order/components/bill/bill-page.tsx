@@ -5,7 +5,6 @@ import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { CircleAlert, CircleCheck, ReceiptText } from "lucide-react";
 import type { BillSplit, GuestPaymentTarget } from "@starter/shared/qr-order";
-import { DEFAULT_TIME_ZONE } from "@starter/shared/core";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,6 +18,7 @@ import { canSplitBill, splitScope } from "../../domain.ts";
 import { useTableJourney } from "../../context";
 import { useSendServiceRequest, useSessionBill } from "../../hooks";
 import { storedPayerSecret } from "../../session-store.ts";
+import { outletTimeZone } from "../../lib/outlet-time-zone.ts";
 import { BillTotals, MinimumSpendStatus } from "./bill-totals";
 import { ClaimCard } from "./claim-card";
 import { PayDialog } from "./pay-dialog";
@@ -137,7 +137,7 @@ export function BillPage() {
   const closed = sessionStatus === "closed" || sessionStatus === "voided";
   const canSplit =
     canSplitBill({ sessionStatus, outstandingIdr: outstanding }) &&
-    splitScope(data.orders, data.totals.paidIdr) !== null;
+    splitScope(data.orders) !== null;
   const openBill =
     (menu?.zone.paymentMode ?? session?.paymentMode) === "open_bill";
   const settled = outstanding === 0;
@@ -267,10 +267,7 @@ export function BillPage() {
         )
       )}
 
-      <ClaimCard
-        sessionId={sessionId}
-        timeZone={menu?.outlet.timeZone ?? DEFAULT_TIME_ZONE}
-      />
+      <ClaimCard sessionId={sessionId} timeZone={outletTimeZone(menu)} />
 
       <PayDialog
         open={pay !== null}

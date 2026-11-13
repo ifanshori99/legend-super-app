@@ -15,6 +15,7 @@ import { MediaPlate } from "@/components/ui/media-plate";
 import { Money } from "@/components/ui/money";
 import { useTableJourney } from "../context";
 import { formatAvailableFrom, hasPriceRange } from "../lib/item-options.ts";
+import { outletTimeZone } from "../lib/outlet-time-zone.ts";
 import { QrStepper, qrRoundIcon } from "./glass/qr-primitives";
 
 export function labelText(t: ReturnType<typeof useT>, label: string): string {
@@ -67,10 +68,7 @@ export function ItemCard({
   const soldOut = item.status !== "available";
   const availableTime =
     item.status === "unavailable_until" && item.availableFrom
-      ? formatAvailableFrom(
-          item.availableFrom,
-          menu?.outlet.timeZone ?? "Asia/Jakarta",
-        )
+      ? formatAvailableFrom(item.availableFrom, outletTimeZone(menu))
       : null;
   const availableLabel = availableTime
     ? t("qrGlass.menu.card.availableFrom", { time: availableTime })

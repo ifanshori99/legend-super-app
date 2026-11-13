@@ -4,12 +4,15 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FakeObjectStorage } from "@starter/shared/adapters";
-import { cafeLegendFixtures } from "@starter/shared/core";
+import { cafeLegendFixtures, tenantIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { PDFDocument } from "pdf-lib";
 import { createApp } from "../app";
+import { createMenuPdfRenderer } from "../services/menu-pdf-renderer";
+import { allText } from "./pdf-text";
 import { NoopMalwareScanner } from "../services/core-image";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
@@ -20,10 +23,13 @@ import {
   collectPrintableMenu,
   getLatestMenuPrint,
   markMenuPrintDirty,
+  PRINT_TAX_NOTE,
   regenerateMenuPrint,
   runDueMenuPrints,
   type MenuPdfRenderer,
+  type PrintableMenu,
 } from "../services/menu-print.service";
+import { buildMenuPdfSpec } from "../services/menu-pdf-renderer";
 import {
   createIsolatedTenant,
   dropIsolatedTenant,
@@ -55,10 +61,11 @@ const ctx = () =>
 
 class CountingRenderer implements MenuPdfRenderer {
   calls = 0;
-  html = "";
-  async render(html: string) {
+  /** What the real renderer would draw for the last menu (pure spec as JSON). */
+  drawn = "";
+  async render(menu: PrintableMenu) {
     this.calls += 1;
-    this.html = html;
+    this.drawn = JSON.stringify(buildMenuPdfSpec(menu));
     return new Uint8Array(Buffer.from(`%PDF-1.4 fake ${this.calls}`));
   }
 }
@@ -243,7 +250,7 @@ describe("printable menu", () => {
     expect(renderer.calls).toBe(1);
     expect(latest.url).toBeTruthy();
     expect(latest.stale).toBe(false);
-    expect(renderer.html).toContain("belum termasuk pajak");
+    expect(renderer.drawn).toContain("belum termasuk pajak");
   });
 
   it("debounce: a burst of changes yields ONE regeneration per outlet", async () => {
@@ -292,7 +299,7 @@ describe("printable menu", () => {
     const second = await runDueMenuPrints(ctx(), deps, due);
     expect(second.regenerated).toEqual([]);
     expect(renderer.calls).toBe(before + 1);
-    expect(renderer.html).toContain("Rp 22.000");
+    expect(renderer.drawn).toContain("Rp 22.000");
   });
 
   it("fails closed without a PDF renderer: 503 on first read, sweep does not throw", async () => {
@@ -510,5 +517,133 @@ describe("printable menu: old PDF cleanup", () => {
     expect(await objectRowExists(first.objectId)).toBe(true);
     const audits = await cleanupAudits(first.objectId);
     expect(audits.rows).toHaveLength(1);
+  });
+});
+
+// legend-hspr8: the real PDF engine, stored per tenant (brief
+// docs/briefs/menu-pdf-engine.md). The fake renderer above only counts calls.
+describe("printable menu: real PDF renderer", () => {
+  const realDeps = () => ({
+    storage: new FakeObjectStorage(),
+    renderer: createMenuPdfRenderer(),
+    scanner: deps.scanner,
+  });
+  const pdfLookup = (objectId: string) => ({
+    tenantId,
+    outletId: outletA,
+    reference: objectId,
+    visibility: "private" as const,
+    key: `${objectId}/original.pdf`,
+  });
+  // A price no other test in this file uses, so the payload hash differs from
+  // any render row left behind and the real renderer really runs.
+  const setPrice = async (price: number) => {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
+      await client.query(
+        "UPDATE price_list_items SET price_idr = $3 WHERE tenant_id = $1 AND item_id = $2",
+        [tenantId, ids.ok, price],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+
+  it("regenerateMenuPrint stores a valid PDF with the menu in the tenant's storage", async () => {
+    const d = realDeps();
+    await setPrice(41000);
+    const result = await regenerateMenuPrint(ctx(), outletA, d, now);
+    const stored = await d.storage.get(ctx(), pdfLookup(result.objectId));
+    const bytes = Buffer.from(stored.content as Uint8Array);
+    expect(bytes.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+    const loaded = await PDFDocument.load(bytes);
+    expect(loaded.getPageCount()).toBeGreaterThanOrEqual(1);
+    const text = allText(bytes);
+    expect(text).toContain("Kopi Cetak");
+    expect(text).toContain("Rp 41.000");
+    expect(text).toContain(PRINT_TAX_NOTE);
+    // only what the guest may see is printed
+    expect(text).not.toContain("Kopi Habis");
+    expect(text).not.toContain("Kopi Draft Cetak");
+    expect(text).not.toContain("Kopi Tanpa Harga");
+    // the stored object is a tenant-owned row
+    const rows = await withTenant(db, ctx(), (tx) =>
+      tx
+        .select({ id: coreStorageObjects.id })
+        .from(coreStorageObjects)
+        .where(
+          and(
+            eq(coreStorageObjects.tenantId, tenantId),
+            eq(coreStorageObjects.id, result.objectId),
+          ),
+        ),
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  it("getLatestMenuPrint with the real renderer returns a URL for the owner tenant", async () => {
+    const d = realDeps();
+    await setPrice(42000);
+    await withTenant(db, ctx(), (tx) =>
+      markMenuPrintDirty(tx, tenantId, [outletA], now, 0),
+    );
+    await runDueMenuPrints(ctx(), d, new Date(now.getTime() + 1_000));
+    const latest = await getLatestMenuPrint(
+      ctx(),
+      staff.userId,
+      { outletId: outletA },
+      d,
+      new Date(now.getTime() + 2_000),
+    );
+    expect(latest.url).toBeTruthy();
+    expect(latest.taxNote).toBe(PRINT_TAX_NOTE);
+    expect(latest.stale).toBe(false);
+  });
+
+  it("TEN-01 another tenant cannot read the stored PDF, its row, or the menu", async () => {
+    const d = realDeps();
+    await setPrice(43000);
+    const result = await regenerateMenuPrint(ctx(), outletA, d, now);
+    const other = await createIsolatedTenant(`prp-${randomUUID().slice(0, 6)}`);
+    isolatedTenants.push(other);
+    const otherCtx = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: other.tenantId,
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+    // The same object key, asked for by the other tenant: refused.
+    await expect(
+      d.storage.get(otherCtx, pdfLookup(result.objectId)),
+    ).rejects.toBeDefined();
+    await expect(
+      d.storage.get(otherCtx, {
+        ...pdfLookup(result.objectId),
+        tenantId: tenantIdSchema.parse(other.tenantId),
+      }),
+    ).rejects.toBeDefined();
+    // The storage row is invisible to the other tenant (RLS).
+    const visible = await withTenant(db, otherCtx, (tx) =>
+      tx
+        .select({ id: coreStorageObjects.id })
+        .from(coreStorageObjects)
+        .where(eq(coreStorageObjects.id, result.objectId)),
+    );
+    expect(visible).toEqual([]);
+    // And the menu itself is not readable through the service.
+    await expect(
+      getLatestMenuPrint(otherCtx, staff.userId, { outletId: outletA }, d, now),
+    ).rejects.toBeDefined();
   });
 });

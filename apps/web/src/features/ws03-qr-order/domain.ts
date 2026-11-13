@@ -105,27 +105,21 @@ export function hasDuplicateAssignment(
 }
 
 /**
- * What a split divides (ORD-06). A pay-first order waiting for payment is
- * split on its own; otherwise the whole bill. Once part of the bill was paid
- * outside a split (a pay-first order, or "Bayar semua" before new orders), a
- * new split is refused: shares of the full total would charge that part twice.
- * PRD is silent on splitting a partly paid bill; the guest pays the rest in
- * one go or asks the waiter (safest option, reviewer note legend-2m4).
+ * What a split divides (ORD-06). Same rule as the server (bill-split.service):
+ * only a single pay-first order waiting for payment is split, on its own.
+ * No such order (nothing to split) or several of them (server CONFLICT) means
+ * no split is offered; the guest pays the bill in one go or asks the waiter.
+ * Orders already paid, and a part of the bill paid before, do not matter: the
+ * split covers the awaiting order's total only.
  */
 export function splitScope<
   O extends { id: string; status: QrOrderStatus; totalIdr: number },
->(
-  orders: readonly O[],
-  paidIdr: number,
-): { orders: O[]; totalIdr: number } | null {
-  const awaiting = orders.find((order) => order.status === "awaiting_payment");
-  if (awaiting) return { orders: [awaiting], totalIdr: awaiting.totalIdr };
-  const live = orders.filter((order) => order.status !== "voided");
-  if (live.length === 0 || paidIdr > 0) return null;
-  return {
-    orders: live,
-    totalIdr: live.reduce((sum, order) => sum + order.totalIdr, 0),
-  };
+>(orders: readonly O[]): { orders: [O]; totalIdr: number } | null {
+  const awaiting = orders.filter(
+    (order) => order.status === "awaiting_payment",
+  );
+  if (awaiting.length !== 1) return null;
+  return { orders: [awaiting[0]], totalIdr: awaiting[0].totalIdr };
 }
 
 /** True when a share of this order is already paid: paying the whole order again would charge twice. */
@@ -224,6 +218,25 @@ export function splitDraftError(input: {
   if (parts < 2) return "TOO_FEW_PARTS";
   if (parts > 50) return "TOO_MANY_PARTS";
   return null;
+}
+
+/**
+ * What a failed split request means for the guest: 409 SPLIT_LOCKED (a part is
+ * already paid), 422 NOTHING_TO_SPLIT (no bill waiting for payment), 409
+ * CONFLICT or 422 VALIDATION_ERROR (the server refuses this bill's shape, only
+ * the cashier can fix it), or any other failure (generic retry). Reads `code` only, so it needs no ApiError import.
+ */
+export function splitCreateErrorKind(
+  error: unknown,
+): "locked" | "nothing" | "cashier" | "generic" {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? (error as { code: unknown }).code
+      : null;
+  if (code === "SPLIT_LOCKED") return "locked";
+  if (code === "NOTHING_TO_SPLIT") return "nothing";
+  if (code === "CONFLICT" || code === "VALIDATION_ERROR") return "cashier";
+  return "generic";
 }
 
 /** Splitting is allowed while there is something left to pay. */

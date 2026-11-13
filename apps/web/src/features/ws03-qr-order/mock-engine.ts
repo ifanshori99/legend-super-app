@@ -29,6 +29,7 @@ import {
   type SplitClaim,
   type QrMenu,
   type QrMenuItem,
+  type QrMenuTheme,
   type QrOrder,
   type ServiceRequest,
   type Table,
@@ -161,6 +162,38 @@ function isActive(session: TableSession): boolean {
 }
 
 /**
+ * Sample active Tenant Theme (blue, not the rust Base Theme) so the mock QR menu
+ * shows the brand colors, font and corners of `menu.theme`.
+ *
+ * "Demo tema tenant": only the demo table below gets it. Every other mock menu
+ * carries no theme, so the QR journey keeps its default brown look.
+ */
+export const mockTenantTheme: QrMenuTheme = {
+  tokens: {
+    light: {
+      primary: "#1d4ed8",
+      "primary-foreground": "#ffffff",
+      brand: "#1d4ed8",
+      "brand-foreground": "#ffffff",
+      "brand-subtle": "#dbeafe",
+    },
+    dark: {
+      primary: "#60a5fa",
+      "primary-foreground": "#0b1b3a",
+      brand: "#60a5fa",
+      "brand-foreground": "#0b1b3a",
+      "brand-subtle": "#172554",
+    },
+  },
+  fontFamily: "inter",
+  corners: "lembut",
+  logoUrl: null,
+};
+
+/** Demo tema tenant: the one mock table (A01, token `freeTable`) with the blue theme. */
+export const MOCK_TENANT_THEME_DEMO_TABLE_CODE = "A01";
+
+/**
  * legend-qf0i (owner Q23): the guest copy of the menu hides every active item
  * without a photo, the same rule the API read applies in SQL. With
  * `?mock=photo-missing` the legacy row is injected *before* the filter, so the
@@ -173,7 +206,10 @@ function guestMenu(table: Table, zone: FloorZone): QrMenu {
     getScenario() === "photo-missing"
       ? { ...menu, items: [...menu.items, legacyGuestItem(menu)] }
       : menu;
-  return hidePhotoLessMenuItems(withLegacy);
+  const guest = hidePhotoLessMenuItems(withLegacy);
+  return table.code === MOCK_TENANT_THEME_DEMO_TABLE_CODE
+    ? { ...guest, theme: mockTenantTheme }
+    : guest;
 }
 
 /** The legacy row as a guest menu item: active, priced, and without a photo. */
@@ -812,18 +848,26 @@ export function createEngine(
         "NOTHING_TO_SPLIT",
         "Belum ada pesanan yang bisa dibagi.",
       );
-    // Same scope as the bill screen's preview (domain.ts splitScope).
-    const scope = splitScope(allOrders, floor.paidOf(sessionId));
-    if (!scope)
+    // Same scope as the bill screen's preview (domain.ts splitScope): the one
+    // order waiting for payment, like the server (ORD-06 pay-first).
+    const scope = splitScope(allOrders);
+    if (!scope) {
+      const awaitingCount = allOrders.filter(
+        (order) => order.status === "awaiting_payment",
+      ).length;
+      if (awaitingCount === 0)
+        throw new ApiError(
+          422,
+          "NOTHING_TO_SPLIT",
+          "Tidak ada pesanan yang menunggu pembayaran untuk dibagi.",
+        );
       conflict(
-        "SPLIT_LOCKED",
-        "Sebagian tagihan sudah dibayar. Bayar sisanya sekaligus atau panggil waiter.",
+        "CONFLICT",
+        "Ada lebih dari satu pesanan yang menunggu pembayaran.",
       );
+    }
     const orders = scope.orders;
-    // ORD-06 pay-first: the split covers the order waiting for payment, even
-    // when an earlier order of the same session is already paid.
-    const target =
-      orders.find((order) => order.status === "awaiting_payment") ?? null;
+    const target = scope.orders[0];
     const totalIdr = idr(scope.totalIdr) as Idr;
     const lines = orders.flatMap((o) =>
       o.items.map((item) => ({
@@ -859,7 +903,7 @@ export function createEngine(
       tenantId: session.tenantId,
       outletId: session.outletId,
       tableSessionId: session.id,
-      orderId: target ? target.id : null,
+      orderId: target.id,
       method: draft.method,
       shareIndex: draft.shareIndex,
       amountIdr: draft.amountIdr,

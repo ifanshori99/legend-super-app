@@ -17,6 +17,11 @@ import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { jsonBody } from "../middleware/body";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
 import { getQrMenu as readQrMenu } from "../services/guest-menu.service";
+import {
+  noBrandLogoUrl,
+  type BrandLogoUrl,
+} from "../services/guest-theme.service";
+import { noMediaUrls, type MenuMediaUrls } from "../services/menu-internals";
 import { verifyTableQrToken } from "../services/qr-token";
 import { openOrJoinTableSession } from "../services/table-session.service";
 
@@ -39,22 +44,48 @@ function qrGuestContext(req: Request, qrToken: unknown) {
   });
 }
 
-export const qrRouter = Router();
+/**
+ * The QR router. Photo and logo URLs need the object storage, so createApp
+ * hands in the resolvers (routes/storage-api.routes.ts); without them the
+ * menu still answers, with `photoUrl` and `theme.logoUrl` null.
+ */
+export function createQrRouter(
+  options: {
+    resolveMediaUrls?: MenuMediaUrls;
+    resolveLogoUrl?: BrandLogoUrl;
+  } = {},
+): Router {
+  const resolveMediaUrls = options.resolveMediaUrls ?? noMediaUrls;
+  const resolveLogoUrl = options.resolveLogoUrl ?? noBrandLogoUrl;
+  const router = Router();
 
-qrRouter.use(requireTenantContext);
+  router.use(requireTenantContext);
 
-qrRouter.post("/sessions", jsonBody, async (req, res) => {
-  const input = qrScanInputSchema.parse(req.body);
-  // The guest acts inside the tenant resolved from the host, reaching only
-  // the outlet the signed table token names.
-  const context = qrGuestContext(req, input.qrToken);
-  res.status(201).json({ data: await openOrJoinTableSession(context, input) });
-});
+  router.post("/sessions", jsonBody, async (req, res) => {
+    const input = qrScanInputSchema.parse(req.body);
+    // The guest acts inside the tenant resolved from the host, reaching only
+    // the outlet the signed table token names.
+    const context = qrGuestContext(req, input.qrToken);
+    res
+      .status(201)
+      .json({ data: await openOrJoinTableSession(context, input) });
+  });
 
-qrRouter.get("/menu/:qrToken", async (req, res) => {
-  const { qrToken } = getQrMenu.params.parse(req.params);
-  // Q23 (legend-qf0i): the read hides active items without a photo, and the
-  // signed token names the tenant, outlet and table (TEN-02/ORD-04).
-  const context = qrGuestContext(req, qrToken);
-  res.json({ data: await readQrMenu(context, qrToken) });
-});
+  router.get("/menu/:qrToken", async (req, res) => {
+    const { qrToken } = getQrMenu.params.parse(req.params);
+    // Q23 (legend-qf0i): the read hides active items without a photo, and the
+    // signed token names the tenant, outlet and table (TEN-02/ORD-04).
+    const context = qrGuestContext(req, qrToken);
+    res.json({
+      data: await readQrMenu(
+        context,
+        qrToken,
+        new Date(),
+        resolveMediaUrls,
+        resolveLogoUrl,
+      ),
+    });
+  });
+
+  return router;
+}

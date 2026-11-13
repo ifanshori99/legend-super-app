@@ -1,7 +1,6 @@
 // "Pesanan": status of every order of the table session, waiter actions and
 // the path to the bill (bead legend-woz, PRD §3 F10 "Status Pesanan", flows
 // A and B, ORD-07). Data comes from hooks only.
-import { DEFAULT_TIME_ZONE } from "@starter/shared/core";
 import { useMemo } from "react";
 import { Link } from "@tanstack/react-router";
 import { ClipboardList, WifiOff } from "lucide-react";
@@ -14,6 +13,7 @@ import { useTableJourney } from "@/features/ws03-qr-order/context";
 import { useOrderEtas, useSessionView } from "@/features/ws03-qr-order/hooks";
 import { useOnline } from "@/lib/use-online";
 import { orderPhase } from "../../domain";
+import { outletTimeZone } from "../../lib/outlet-time-zone.ts";
 import { OrderCard, type OrderEta } from "./order-card";
 import { WaiterActions } from "./waiter-actions";
 
@@ -127,7 +127,7 @@ export function OrdersPage() {
               key={order.id}
               order={order}
               qrToken={qrToken}
-              timeZone={menu?.outlet.timeZone ?? DEFAULT_TIME_ZONE}
+              timeZone={outletTimeZone(menu)}
               etaByOrderId={etaByOrderId}
               isPrimaryPay={order.id === firstAwaitingPaymentId}
             />

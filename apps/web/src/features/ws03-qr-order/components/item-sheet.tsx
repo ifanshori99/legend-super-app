@@ -38,6 +38,7 @@ import { Money } from "@/components/ui/money";
 import { useToast } from "@/components/ui/toast";
 import { useTableJourney } from "../context";
 import { useAddToCart } from "../hooks";
+import { outletTimeZone } from "../lib/outlet-time-zone.ts";
 import {
   MAX_NOTE_LENGTH,
   emptySelection,
@@ -162,10 +163,7 @@ function SheetBody({
   const soldOut = item.status !== "available";
   const availableTime =
     item.status === "unavailable_until" && item.availableFrom
-      ? formatAvailableFrom(
-          item.availableFrom,
-          menu?.outlet.timeZone ?? "Asia/Jakarta",
-        )
+      ? formatAvailableFrom(item.availableFrom, outletTimeZone(menu))
       : null;
   const availableLabel = availableTime
     ? t("qrGlass.menu.card.availableFrom", { time: availableTime })
