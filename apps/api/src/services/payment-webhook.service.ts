@@ -115,8 +115,6 @@ const WEBHOOK_RETRY_MAX_BACKOFF_MINUTES = 60;
  * stores its provider ref after the create call): retried this long. */
 export const WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS = 15 * 60_000;
 const SECRET_CACHE_TTL_MS = 60_000;
-/** Audit snapshot keys of a refused cross-integration retry (ids only). */
-const MISMATCH_AUDIT_FIELDS = ["eventId", "integrationId"] as const;
 /** Audit snapshot keys of a refund event signed by the wrong integration. */
 const REFUND_MISMATCH_AUDIT_FIELDS = [
   "eventId",
@@ -1485,6 +1483,7 @@ async function insertRow(
         target: [
           gatewayWebhookEvents.tenantId,
           gatewayWebhookEvents.provider,
+          gatewayWebhookEvents.integrationId,
           gatewayWebhookEvents.eventId,
         ],
         where: sql`${gatewayWebhookEvents.signatureValid} AND ${gatewayWebhookEvents.eventId} IS NOT NULL`,
@@ -1553,6 +1552,7 @@ export async function recordRejectedAttempt(
 
 async function loadVerifiedRow(
   context: ScopedTenantContext,
+  integrationId: string,
   eventId: string,
 ): Promise<GatewayWebhookEvent | null> {
   return withTenant(db, context, async (tx) => {
@@ -1563,55 +1563,13 @@ async function loadVerifiedRow(
         and(
           eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
           eq(gatewayWebhookEvents.provider, PROVIDER),
+          eq(gatewayWebhookEvents.integrationId, integrationId),
           eq(gatewayWebhookEvents.eventId, eventId),
           eq(gatewayWebhookEvents.signatureValid, true),
         ),
       )
       .limit(1);
     return row ?? null;
-  });
-}
-
-/**
- * Audit of a delivery that reused the event id of another integration's row.
- * Ids only: no payload, no secret.
- */
-async function recordIntegrationMismatch(
-  context: ScopedTenantContext,
-  row: GatewayWebhookEvent,
-  receivedIntegrationId: string,
-  now: Date,
-): Promise<void> {
-  logger.warn(
-    { module: "payment-webhook", tenantId: context.tenant.tenantId },
-    "DOIT webhook event id reused by another integration",
-  );
-  await withTenant(db, context, async (tx) => {
-    await recordAudit(
-      tx,
-      context,
-      {
-        id: createUlid(now.getTime()),
-        tenantId: context.tenant.tenantId,
-        outletId: null,
-        actorType: "system",
-        actorId: null,
-        deviceId: null,
-        action: "payment.webhook.integration_mismatch",
-        objectType: "gateway_webhook_event",
-        objectId: row.id,
-        reason: null,
-        maskedChanges: {
-          before: { eventId: row.eventId, integrationId: row.integrationId },
-          after: { eventId: row.eventId, integrationId: receivedIntegrationId },
-        },
-        ipHash: null,
-        sensitiveAccess: false,
-        retentionClass: "audit_2y",
-        createdAt: now.toISOString(),
-      },
-      MISMATCH_AUDIT_FIELDS,
-    );
   });
 }
 
@@ -1771,26 +1729,11 @@ export async function receiveDoitWebhook(input: {
   // stored.
   let toProcess: ParsedEvent = parsedEvent;
   if (!row) {
-    row = await loadVerifiedRow(context, event.id);
+    row = await loadVerifiedRow(context, verified.integrationId, event.id);
     if (!row) throw new Error("Webhook event conflicted without a winner");
-    // An event id belongs to the integration that stored it first: another
-    // integration of the tenant, even with a valid secret, may not replay,
-    // complete or settle it. A row without an owner cannot prove it is this
-    // integration's either. Nothing is processed and the row is untouched.
-    if (
-      row.integrationId === null ||
-      row.integrationId.toLowerCase() !== verified.integrationId.toLowerCase()
-    ) {
-      await recordIntegrationMismatch(
-        context,
-        row,
-        verified.integrationId,
-        now,
-      );
-      // 200, like REFERENCE_MISMATCH: a deterministic refusal that DOIT must
-      // not resend forever.
-      return { status: "ignored", eventId: event.id };
-    }
+    // loadVerifiedRow filters by this integration, so the row is its own: an
+    // event id of another integration never matches here (the unique key is
+    // per integration) and cannot be replayed, completed or settled by it.
     if (row.status === "processed" || row.status === "ignored")
       return { status: "duplicate", eventId: event.id };
     // `received` or `failed`: the earlier delivery never finished, retry it.
@@ -1823,7 +1766,11 @@ export async function receiveDoitWebhook(input: {
       if (filled) useStored = false;
       else {
         // A concurrent delivery filled it first: continue with what it stored.
-        const fresh = await loadVerifiedRow(context, event.id);
+        const fresh = await loadVerifiedRow(
+          context,
+          verified.integrationId,
+          event.id,
+        );
         if (!fresh || fresh.payload === null)
           throw new Error("Webhook event could not be completed");
         row = fresh;

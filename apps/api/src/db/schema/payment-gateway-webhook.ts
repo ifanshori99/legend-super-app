@@ -72,9 +72,10 @@ export const gatewayWebhookEvents = pgTable(
       columns: [table.tenantId, table.paymentIntentId],
       foreignColumns: [paymentIntents.tenantId, paymentIntents.id],
     }),
-    // Retry dedupe: one verified row per provider event id.
+    // Retry dedupe: one verified row per provider event id and integration,
+    // so two integrations of a tenant never block each other's event ids.
     uniqueIndex("gateway_webhook_events_event_key")
-      .on(table.tenantId, table.provider, table.eventId)
+      .on(table.tenantId, table.provider, table.integrationId, table.eventId)
       .where(sql`${table.signatureValid} AND ${table.eventId} IS NOT NULL`),
     // Rejected rows: one per (tenant, body hash), so a replayed bad request
     // cannot grow the table without bound.
@@ -94,6 +95,13 @@ export const gatewayWebhookEvents = pgTable(
     check(
       "gateway_webhook_events_provider_check",
       sql`${table.provider} IN ('doit', 'duitku')`,
+    ),
+    // The dedupe key needs an owner: a verified row without integration_id
+    // would never conflict (NULLs are distinct). NOT VALID in the migration:
+    // existing rows are not rechecked, new writes are.
+    check(
+      "gateway_webhook_events_verified_integration_check",
+      sql`NOT ${table.signatureValid} OR ${table.integrationId} IS NOT NULL`,
     ),
     check(
       "gateway_webhook_events_status_check",

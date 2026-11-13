@@ -46,7 +46,6 @@
 import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
 import { uuidSchema, z, type ScopedTenantContext } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
-import type { PaymentStatus } from "@starter/shared/payment";
 import { db } from "../db/index.ts";
 import {
   billSplits,
@@ -70,6 +69,7 @@ import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { listSessionDepositSources } from "./reservation-deposit-credit.ts";
 import { pendingRefundIdr } from "./pos-order-late-payment.ts";
 import {
+  HOLDS_REFUNDABLE_MONEY,
   requestQrDoublePaymentRefund,
   requestQrLatePaymentRefund,
 } from "./qr-order-late-payment.ts";
@@ -87,17 +87,6 @@ export const MAX_QR_PAYMENT_ATTEMPTS = 3;
 export const LATE_PAYMENT_GRACE_MS = 2 * 60_000;
 /** PRD silent: no open code for 15 minutes means the guests walked away. */
 export const UNPAID_ORDER_ABANDON_MS = 15 * 60_000;
-
-/**
- * legend-g510l: intent statuses that still hold money to return. A refund that
- * completed before the paid event was consumed moves the intent on to
- * `partially_refunded`; its rest goes back like a full `paid` payment
- * (`refunded` holds nothing).
- */
-const HOLDS_REFUNDABLE_MONEY: readonly PaymentStatus[] = [
-  "paid",
-  "partially_refunded",
-];
 
 const paidPayloadSchema = z.looseObject({
   intentId: uuidSchema,
@@ -420,44 +409,10 @@ async function voidAndNotify(
     now,
   );
   // Split bill: unpaid parts can no longer be paid, and the paid parts'
-  // claim links stop redeeming (the order is gone).
+  // claim links stop redeeming (the order is gone). The refund per paid
+  // intent is filed by `voidUnpaidQrOrderTx` (legend-gjf1).
   await voidLiveSplitsTx(tx, context, order.id, now);
   await expireSplitClaimsTx(tx, context, order.id, now);
-  // Split bill: a part (or any code) already settled on this link holds
-  // money of a voided order. One refund request per paid intent; each is
-  // replay safe (once-only key per intent), so the callers that file the
-  // event's own refund afterwards find the same request.
-  if (order.paymentLinkId !== null) {
-    const [link] = await tx
-      .select({ paidIdr: paymentLinks.paidIdr })
-      .from(paymentLinks)
-      .where(
-        and(
-          eq(paymentLinks.tenantId, context.tenant.tenantId),
-          eq(paymentLinks.id, order.paymentLinkId),
-        ),
-      );
-    if (link && link.paidIdr > 0) {
-      const paid = await tx
-        .select({ id: paymentIntents.id })
-        .from(paymentIntents)
-        .where(
-          and(
-            eq(paymentIntents.tenantId, context.tenant.tenantId),
-            eq(paymentIntents.paymentLinkId, order.paymentLinkId),
-            inArray(paymentIntents.status, [...HOLDS_REFUNDABLE_MONEY]),
-          ),
-        )
-        .orderBy(asc(paymentIntents.id));
-      for (const row of paid)
-        await requestQrLatePaymentRefund(tx, context, {
-          order,
-          paymentLinkId: order.paymentLinkId,
-          intentId: row.id,
-          now,
-        });
-    }
-  }
   if (order.tableSessionId !== null)
     await notifyQrOrderChange(tx, context, {
       sessionId: order.tableSessionId,

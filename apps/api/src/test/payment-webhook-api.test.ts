@@ -1922,8 +1922,9 @@ describe("PAY-03 rejected rows are purged after 30 days", () => {
     const hash = sha256(`purge-${randomBytes(8).toString("hex")}`);
     await owner.query(
       `INSERT INTO gateway_webhook_events
-         (tenant_id, provider, event_id, signature_valid, payload_hash, status, received_at)
-       VALUES ($1, 'doit', $2, $3, $4, $5, now() - make_interval(days => $6))`,
+         (tenant_id, provider, event_id, signature_valid, payload_hash, status, received_at,
+          integration_id)
+       VALUES ($1, 'doit', $2, $3, $4, $5, now() - make_interval(days => $6), $7)`,
       [
         tenantId,
         status === "processed" ? `evt-purge-${unique()}` : null,
@@ -1931,6 +1932,10 @@ describe("PAY-03 rejected rows are purged after 30 days", () => {
         hash,
         status,
         daysOld,
+        // A verified row must name its integration
+        // (gateway_webhook_events_verified_integration_check); only tenant A
+        // has a seeded integration, and "processed" is only stored for A.
+        status === "processed" ? integrationAId : null,
       ],
     );
     return hash;

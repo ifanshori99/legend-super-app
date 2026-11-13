@@ -1,17 +1,17 @@
-// A retried DOIT event id must stay bound to the integration that first stored
-// it (bead legend-101, sub-brief 101; PRD v1.7 §3.13, PAY-03, TEN-01).
-//
-// Before the fix a delivery that hit the unique event-id index re-processed the
-// stored row with the NEW payload and the NEW signer's secret, so integration B
-// (any other active DOIT integration of the tenant) that knew an event id of
-// integration A could settle A's intent with a paid body signed by B's key.
+// A retried DOIT event id stays bound to the integration that stored it (bead
+// legend-101, sub-brief 101; PRD v1.7 §3.13, PAY-03, TEN-01), and since bead
+// legend-srf6 the verified-event key is per integration.
 //
 // Contract under test:
-// - stored row of another integration: nothing is processed, the row is not
-//   touched, an audit row `payment.webhook.integration_mismatch` is written and
-//   the answer is `200 { status: "ignored" }` (same convention as
-//   REFERENCE_MISMATCH: a deterministic refusal must not make DOIT retry
-//   forever);
+// - the dedupe key is (tenant, provider, integration, event id): integration B
+//   reusing an event id of integration A gets its OWN row; A's row is never
+//   touched, completed or replayed by B, and B's body cannot settle, expire or
+//   otherwise move A's intent (a deterministic refusal answers 200 so DOIT does
+//   not retry forever). Assumption: the exact response body of B's delivery is
+//   not specified, only the 200 and the unchanged money state;
+// - the database refuses a verified row without an integration (check
+//   gateway_webhook_events_verified_integration_check), so no row can escape
+//   the per-integration key;
 // - same integration, stored payload present: the STORED payload is processed,
 //   a replacement body is ignored;
 // - same integration, stored row was MALFORMED (payload null): the replacement
@@ -63,7 +63,6 @@ const outletA = cafeLegendAccessFixtures.outletIds.bandung;
 const outletB = cafeLegendAccessFixtures.outletIds.bandung2;
 const actor = randomUUID();
 const BILL_TOTAL = 144_375;
-const AUDIT_ACTION = "payment.webhook.integration_mismatch";
 
 const apiKeyA = `doit-key-a-${randomBytes(12).toString("hex")}`;
 const secretA = `whsec-a-${randomBytes(16).toString("hex")}`;
@@ -434,7 +433,10 @@ async function linkPaidIdr(linkId: string): Promise<number> {
   return Number(rows[0]?.paid_idr);
 }
 
-async function eventRow(eventId: string) {
+async function eventRow(
+  eventId: string,
+  integrationId: string = integrationAId,
+) {
   const { rows } = await owner.query<{
     status: string;
     payload: { data: { status: string; amount: number } } | null;
@@ -447,22 +449,29 @@ async function eventRow(eventId: string) {
   }>(
     `SELECT status, payload, payload_hash, integration_id, payment_intent_id,
             last_error_code, attempts, updated_at
-     FROM gateway_webhook_events WHERE tenant_id = $1 AND event_id = $2`,
-    [tenantA, eventId],
+     FROM gateway_webhook_events
+     WHERE tenant_id = $1 AND event_id = $2 AND integration_id = $3`,
+    [tenantA, eventId, integrationId],
   );
   expect(rows).toHaveLength(1);
   return rows[0]!;
 }
 
-/** Mismatch audit rows that name this event id. */
-async function mismatchAudits(eventId: string) {
-  const { rows } = await owner.query<{ event: Record<string, unknown> }>(
-    `SELECT event FROM audit_logs
-     WHERE tenant_id = $1 AND event->>'action' = $2
-       AND event->'maskedChanges'->'after'->>'eventId' = $3`,
-    [tenantA, AUDIT_ACTION, eventId],
+/** Verified rows stored for this event id, one per integration. */
+async function rowIntegrations(eventId: string): Promise<string[]> {
+  const { rows } = await owner.query<{ integration_id: string }>(
+    `SELECT integration_id FROM gateway_webhook_events
+     WHERE tenant_id = $1 AND event_id = $2 AND signature_valid
+     ORDER BY integration_id`,
+    [tenantA, eventId],
   );
-  return rows.map((row) => row.event);
+  return rows.map((row) => row.integration_id);
+}
+
+async function expectBothRows(eventId: string) {
+  expect(await rowIntegrations(eventId)).toEqual(
+    [integrationAId, integrationBId].sort(),
+  );
 }
 
 async function expectPending(bill: Bill) {
@@ -476,7 +485,7 @@ async function expectPaidOnce(bill: Bill) {
 }
 
 describe("PAY-03 a retried event id stays bound to the integration that stored it", () => {
-  it("TEN-01 integration B cannot settle A's intent by reusing A's event id (received row)", async () => {
+  it("TEN-01 integration B reusing A's event id gets its own row and cannot settle A's intent (received row)", async () => {
     const bill = await openIntent();
     const eventId = newEventId();
     // A's earlier delivery: stored, never finished, payment still pending.
@@ -494,25 +503,18 @@ describe("PAY-03 a retried event id stays bound to the integration that stored i
     );
 
     expect(response.status).toBe(200);
-    expect(response.body.status).toBe("ignored");
+    // B's delivery is stored as B's own row; A's row and the money are intact.
+    await expectBothRows(eventId);
     await expectPending(bill);
-    const after = await eventRow(eventId);
+    const after = await eventRow(eventId, integrationAId);
     expect(after).toEqual(before);
     expect(after.integration_id).toBe(integrationAId);
-    const audits = await mismatchAudits(eventId);
-    expect(audits).toHaveLength(1);
-    expect(audits[0]).toMatchObject({
-      actorType: "system",
-      action: AUDIT_ACTION,
-    });
-    // No payload and no secret in the audit row.
-    const serialized = JSON.stringify(audits[0]);
-    expect(serialized).not.toContain(secretA);
-    expect(serialized).not.toContain(secretB);
-    expect(serialized).not.toContain("qr_content");
+    expect((await eventRow(eventId, integrationBId)).integration_id).toBe(
+      integrationBId,
+    );
   });
 
-  it("TEN-01 the same attack on a failed row is refused too, and the owner's retry then settles from the stored payload", async () => {
+  it("TEN-01 the same attack on a failed row leaves A's row alone, and the owner's retry then settles from the stored payload", async () => {
     const bill = await openIntent();
     const eventId = newEventId();
     const stored = doit.eventFor(bill.providerRef, "paid", eventId);
@@ -525,21 +527,19 @@ describe("PAY-03 a retried event id stays bound to the integration that stored i
       secretB,
     );
     expect(attack.status).toBe(200);
-    expect(attack.body.status).toBe("ignored");
+    await expectBothRows(eventId);
     await expectPending(bill);
-    expect(await eventRow(eventId)).toEqual(before);
-    expect(await mismatchAudits(eventId)).toHaveLength(1);
+    expect(await eventRow(eventId, integrationAId)).toEqual(before);
 
     // The owner's own retry is not refused and settles the bill once.
     const retry = await deliver(stored, secretA);
     expect(retry.status).toBe(200);
     expect(retry.body.status).toBe("processed");
     await expectPaidOnce(bill);
-    expect((await eventRow(eventId)).status).toBe("processed");
-    expect(await mismatchAudits(eventId)).toHaveLength(1);
+    expect((await eventRow(eventId, integrationAId)).status).toBe("processed");
   });
 
-  it("TEN-01 after a refused attack the worker settles the intent from A's stored payload", async () => {
+  it("TEN-01 after B's attack the worker settles the intent from A's stored payload", async () => {
     const bill = await openIntent();
     const eventId = newEventId();
     await storeRow(
@@ -552,7 +552,7 @@ describe("PAY-03 a retried event id stays bound to the integration that stored i
       doit.eventFor(bill.providerRef, "expired", eventId),
       secretB,
     );
-    expect(attack.body.status).toBe("ignored");
+    expect(attack.status).toBe(200);
     await expectPending(bill);
 
     // Past the back-off of the stored row.
@@ -569,38 +569,21 @@ describe("PAY-03 a retried event id stays bound to the integration that stored i
     expect(after.integration_id).toBe(integrationAId);
   });
 
-  it("TEN-01 a row without an owning integration is refused to everyone and left unchanged", async () => {
+  it("TEN-01 the database refuses a verified event row without an owning integration", async () => {
     const bill = await openIntent();
     const eventId = newEventId();
-    await storeRow(
-      eventId,
-      null,
-      "received",
-      doit.eventFor(bill.providerRef, "pending", eventId),
-    );
-    const before = await eventRow(eventId);
 
-    const response = await deliver(
-      doit.eventFor(bill.providerRef, "paid", eventId),
-      secretB,
-    );
+    await expect(
+      storeRow(
+        eventId,
+        null,
+        "received",
+        doit.eventFor(bill.providerRef, "pending", eventId),
+      ),
+    ).rejects.toThrow(/verified_integration_check|check constraint/i);
 
-    expect(response.status).toBe(200);
-    expect(response.body.status).toBe("ignored");
+    expect(await rowIntegrations(eventId)).toEqual([]);
     await expectPending(bill);
-    expect(await eventRow(eventId)).toEqual(before);
-    expect(await mismatchAudits(eventId)).toHaveLength(1);
-
-    // Signed with A's secret: an unowned row is refused too.
-    const fromA = await deliver(
-      doit.eventFor(bill.providerRef, "paid", eventId),
-      secretA,
-    );
-    expect(fromA.status).toBe(200);
-    expect(fromA.body.status).toBe("ignored");
-    await expectPending(bill);
-    expect(await eventRow(eventId)).toEqual(before);
-    expect(await mismatchAudits(eventId)).toHaveLength(2);
   });
 
   it("PAY-03 a retry from the same integration with a different body processes the STORED payload", async () => {
@@ -624,7 +607,7 @@ describe("PAY-03 a retried event id stays bound to the integration that stored i
     expect(after.payment_intent_id).toBe(bill.intentId);
     expect(after.payload).toEqual(before.payload);
     expect(after.payload_hash).toBe(before.payload_hash);
-    expect(await mismatchAudits(eventId)).toHaveLength(0);
+    expect(await rowIntegrations(eventId)).toEqual([integrationAId]);
   });
 
   it("PAY-03 a retry of a MALFORMED row from the same integration stores the new payload and processes it", async () => {
@@ -658,13 +641,10 @@ describe("PAY-03 a retried event id stays bound to the integration that stored i
     );
 
     expect(response.status).toBe(200);
-    expect(response.body.status).toBe("ignored");
+    await expectBothRows(eventId);
     await expectPending(bill);
-    const after = await eventRow(eventId);
+    const after = await eventRow(eventId, integrationAId);
     expect(after).toEqual(before);
     expect(after.payload).toBeNull();
-    expect(await mismatchAudits(eventId)).toHaveLength(1);
-    // The audit row belongs to integration B's delivery of A's event id.
-    expect(integrationBId).not.toBe(integrationAId);
   });
 });
