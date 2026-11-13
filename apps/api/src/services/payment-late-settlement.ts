@@ -24,6 +24,10 @@ import type { Tx } from "./permission-resolver";
  *
  *   1. bill owner: reservations row (deposit link), OR orders rows
  *      (ORDER BY id) then their pos_orders rows (ORDER BY order_id);
+ *   1b. pos_qris_holds of the bill (ORDER BY id), then pos_order_tenders
+ *      (legend-yhia9: cashier cancel, manager release, hold check job,
+ *      handlePosPaymentPaid / handlePosPaymentClosed and the hold guards all
+ *      lock orders -> pos_orders -> pos_qris_holds -> tender -> link -> intent);
  *   2. payment_links (the bill);
  *   3. payment_intents (ORDER BY id when several);
  *   4. funds / refunds (payment_unallocated_funds, refunds).

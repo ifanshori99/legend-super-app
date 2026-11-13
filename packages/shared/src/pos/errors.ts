@@ -65,6 +65,8 @@ export const posErrorHttpStatus = {
   RECEIPT_ALREADY_VOIDED: 409,
   /** The business day was already closed for this outlet. */
   BUSINESS_DAY_ALREADY_CLOSED: 409,
+  /** legend-yhia9: a QRIS can still be paid; the bill's money is frozen. */
+  QRIS_HOLD_ACTIVE: 409,
 } as const satisfies Record<string, number>;
 
 export type PosErrorCode = keyof typeof posErrorHttpStatus;
@@ -115,6 +117,8 @@ const defaultMessages: Record<PosErrorCode, string> = {
     "Perangkat ini memberi nomor struk lewat server lokal outlet. Lakukan penjualan lewat server lokal.",
   RECEIPT_ALREADY_VOIDED: "Struk ini sudah di-void.",
   BUSINESS_DAY_ALREADY_CLOSED: "Hari kerja ini sudah ditutup.",
+  QRIS_HOLD_ACTIVE:
+    "QR masih bisa dibayar. Batalkan QR dan tunggu konfirmasi penyedia dulu.",
 };
 
 export class PosError extends Error {

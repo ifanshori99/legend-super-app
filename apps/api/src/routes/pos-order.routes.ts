@@ -26,6 +26,7 @@ import { CoreError, userIdSchema, type OutletId } from "@starter/shared/core";
 import {
   addPosTender,
   applyPosDiscount,
+  cancelPosQris,
   completePosOrder,
   createPosOrder,
   firePosOrderItems,
@@ -34,9 +35,11 @@ import {
   getPosCatalog,
   getPosOrder,
   getPosOrderActionAvailability,
+  getPosQris,
   listPosOrderEvents,
   listPosOrders,
   refundPosOrder,
+  releasePosQris,
   removePosDiscount,
   submitPosOrder,
   voidPosOrder,
@@ -58,6 +61,7 @@ import * as corrections from "../services/pos-order-corrections.ts";
 import * as discounts from "../services/pos-order-discounts.ts";
 import { addPosTender as addPosTenderService } from "../services/pos-order-payment.ts";
 import * as pos from "../services/pos-order.service.ts";
+import * as qrisHold from "../services/pos-qris-hold.ts";
 import { readNextPickupCall } from "../services/pickup.service.ts";
 import { getPosCatalog as getPosCatalogService } from "../services/pos-catalog.service.ts";
 import type { MenuMediaUrls } from "../services/menu-internals.ts";
@@ -383,6 +387,57 @@ posOrderRouter.post(
       body,
     );
     await sendOrder(req, res, outletId, orderId, data, 201);
+  },
+);
+
+// legend-yhia9: the QR hold. Cancel hides the QR and waits for provider proof
+// (202); release is a manager approval (Q93, pos-overrides flow).
+posOrderRouter.get("/orders/:orderId/qris", view, async (req, res) => {
+  const { outletId, orderId } = getPosQris.params.parse(req.params);
+  res.json({
+    data: await qrisHold.getPosQrisHold(
+      getScopedTenantContext(req),
+      outletId,
+      orderId,
+    ),
+  });
+});
+
+posOrderRouter.post(
+  "/orders/:orderId/qris/cancel",
+  pay,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, orderId } = cancelPosQris.params.parse(req.params);
+    const body = cancelPosQris.body.parse(req.body);
+    res.status(202).json({
+      data: await qrisHold.cancelPosQris(
+        getScopedTenantContext(req),
+        await caller(req),
+        outletId,
+        orderId,
+        body,
+      ),
+    });
+  },
+);
+
+posOrderRouter.post(
+  "/orders/:orderId/qris/release",
+  pay,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, orderId } = releasePosQris.params.parse(req.params);
+    const body = releasePosQris.body.parse(req.body);
+    res.json({
+      data: await qrisHold.releasePosQris(
+        getScopedTenantContext(req),
+        await caller(req),
+        outletId,
+        orderId,
+        body,
+      ),
+    });
   },
 );
 

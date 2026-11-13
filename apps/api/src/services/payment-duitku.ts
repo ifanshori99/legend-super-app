@@ -480,6 +480,7 @@ export function createDuitkuGateway(
           providerRef: input.providerRef,
           amountIdr: answer.status === "paid" ? answer.amountIdr : null,
           paidAt: null,
+          rawStatus: answer.statusCode,
         };
       } catch (error) {
         failure = error;

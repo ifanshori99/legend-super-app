@@ -2066,6 +2066,20 @@
       "when": 1794465896647,
       "tag": "0308_hris_u4",
       "breakpoints": true
+    },
+    {
+      "idx": 419,
+      "version": "7",
+      "when": 1794531030978,
+      "tag": "0419_pos_qris_holds",
+      "breakpoints": true
+    },
+    {
+      "idx": 420,
+      "version": "7",
+      "when": 1794531030979,
+      "tag": "0420_pos_qris_hold_freeze",
+      "breakpoints": true
     }
   ]
 }

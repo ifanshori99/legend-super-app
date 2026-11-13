@@ -54,6 +54,7 @@ import {
   posOrderEventSchema,
   posOrderStatusSchema,
   posOrderSummarySchema,
+  posQrisHoldSchema,
   posReceiptIdSchema,
   posReceiptIssueResultSchema,
   posRefundItemSchema,
@@ -297,6 +298,46 @@ export const posStandaloneEdcSchema = z
     overrideId: posOverrideIdSchema,
   })
   .strict();
+
+/**
+ * legend-yhia9 D-04: the cashier hides the QR (`open` -> `cancelling`). The
+ * tender stays authorized until the provider proves the QR is dead; a repeat
+ * returns the current state, a `paid` / `closed` hold is returned as is.
+ */
+export const cancelPosQris = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/qris/cancel",
+  params: orderParams,
+  body: clientInputSchema({
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(posQrisHoldSchema),
+});
+
+/** The newest QRIS hold of the bill (404 when the bill never had one). */
+export const getPosQris = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/qris",
+  params: orderParams,
+  response: dataResponseSchema(posQrisHoldSchema),
+});
+
+/**
+ * Q93: a manager releases a stuck hold with a pos-overrides approval, only from
+ * 30 minutes after the QR expired. Money paid on that QR afterwards is parked
+ * as unallocated funds.
+ */
+export const releasePosQris = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/qris/release",
+  params: orderParams,
+  body: clientInputSchema({
+    approvedBy: userIdSchema,
+    overrideId: posOverrideIdSchema,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(posQrisHoldSchema),
+});
 
 /**
  * Add one tender. The body has no amount: cash sends what the customer handed

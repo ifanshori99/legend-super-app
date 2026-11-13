@@ -1844,6 +1844,43 @@ export const posTenderResultSchema = z.strictObject({
 });
 export type PosTenderResult = z.infer<typeof posTenderResultSchema>;
 
+// ---- QRIS hold (legend-yhia9 D-01..D-04) -----------------------------------
+
+export const posQrisHoldStateSchema = z.enum([
+  "open",
+  "cancelling",
+  "paid",
+  "closed",
+]);
+export type PosQrisHoldStateDto = z.infer<typeof posQrisHoldStateSchema>;
+
+/**
+ * The newest QRIS hold of a bill, as the cashier sees it. While `open` or
+ * `cancelling` the bill's money is frozen; `cancelling` means the cashier hid
+ * the QR and the provider has not yet proven it can no longer be paid.
+ */
+export const posQrisHoldSchema = z.strictObject({
+  id: z.string().min(1),
+  orderId: orderIdSchema,
+  tenderId: uuidSchema,
+  state: posQrisHoldStateSchema,
+  amountIdr: positiveIdr,
+  /** When the QR stops being payable at the provider. */
+  expiresAt: isoDateTimeSchema.nullable(),
+  cancelRequestedAt: isoDateTimeSchema.nullable(),
+  lastCheckedAt: isoDateTimeSchema.nullable(),
+  closeReason: z
+    .enum([
+      "provider_paid",
+      "provider_expired",
+      "provider_failed",
+      "provider_cancelled",
+      "force_released",
+    ])
+    .nullable(),
+});
+export type PosQrisHold = z.infer<typeof posQrisHoldSchema>;
+
 // ---- Documents: receipt, kuitansi, invoice (POS-07, F43/F44) --------------
 
 export const posDocumentLineSchema = z
