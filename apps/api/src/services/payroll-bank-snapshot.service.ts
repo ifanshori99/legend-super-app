@@ -20,6 +20,9 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
+import type { TenantId } from "@starter/shared/core";
+import type { EmployeeId } from "@starter/shared/hris";
+import type { PayrollRunId, PayslipId } from "@starter/shared/hris/payroll";
 import { employees } from "../db/schema/hris.ts";
 import { payslipBankSnapshots } from "../db/schema/payroll.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -112,10 +115,10 @@ export async function snapshotPayeeBankForLock(
     .from(employees)
     .where(
       and(
-        eq(employees.tenantId, tenantId),
+        eq(employees.tenantId, tenantId as TenantId),
         inArray(
           employees.id,
-          payees.map((payee) => payee.employeeId),
+          payees.map((payee) => payee.employeeId as EmployeeId),
         ),
       ),
     );
@@ -164,10 +167,10 @@ export async function snapshotPayeeBankForLock(
     }
     rows.push({
       id,
-      tenantId,
-      payrollRunId,
-      payslipId: payee.payslipId,
-      employeeId: payee.employeeId,
+      tenantId: tenantId as TenantId,
+      payrollRunId: payrollRunId as PayrollRunId,
+      payslipId: payee.payslipId as PayslipId,
+      employeeId: payee.employeeId as EmployeeId,
       snapshotEncrypted: sealed,
       piiKeyVersion: PAYROLL_SEAL_KEY_VERSION,
     });

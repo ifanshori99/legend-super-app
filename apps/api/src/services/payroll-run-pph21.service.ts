@@ -38,7 +38,11 @@
 // count only once locked (the stale check covers the gap).
 
 import { and, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
-import type { BusinessDate, ScopedTenantContext } from "@starter/shared/core";
+import type {
+  BusinessDate,
+  ScopedTenantContext,
+  TenantId,
+} from "@starter/shared/core";
 import {
   PayrollError,
   buildPph21Prior,
@@ -167,7 +171,7 @@ async function lockPayrollTaxMonth(
  */
 async function loadMonthBasis(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   run: { runId: PayrollRunId; legalEntityId: string },
   month: string,
   employeeIds: readonly string[],
@@ -252,7 +256,7 @@ async function loadMonthBasis(
 /** Legal entity and pay date of the stored run (404 when it is not the tenant's). */
 async function loadStoredRun(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   runId: PayrollRunId,
 ): Promise<{ legalEntityId: string; payDate: string }> {
   const [row] = await tx
