@@ -42,6 +42,10 @@ import {
   setIntegrationNumber,
   uniqueDigits,
 } from "./helpers/identity-isolation";
+import {
+  mapKirimdevSender,
+  unmapKirimdevSender,
+} from "./helpers/kirimdev-sender";
 
 const SECRET = "test-kirim-webhook-secret";
 // Own tenants, host, numbers and sender per run: this file never shares rows
@@ -218,6 +222,10 @@ beforeAll(async () => {
     id: TENANT_B,
     withDomain: false,
   });
+  // Inbound routing comes only from the platform-written sender mapping
+  // (legend-52tdq); the webhooks send NUMBER_A / NUMBER_B as phone_number_id.
+  await mapKirimdevSender(TENANT_A, NUMBER_A);
+  await mapKirimdevSender(TENANT_B, NUMBER_B);
 });
 
 beforeEach(cleanLoginState);
@@ -226,6 +234,8 @@ afterAll(async () => {
   releaseTrustedProxy();
   await cleanLoginState();
   // Audit rows stay: audit_logs is append-only and has no tenant FK.
+  await unmapKirimdevSender(TENANT_A);
+  await unmapKirimdevSender(TENANT_B);
   await isolation.dropTenants([TENANT_A, TENANT_B]);
   await owner.end();
 });
@@ -485,6 +495,7 @@ describe("WhatsApp login audit trail (legend-wq3f)", () => {
     );
     // The tenant moved to another receiving number after the code was issued.
     await setIntegrationNumber(owner, TENANT_B, NUMBER_B_CHANGED);
+    await mapKirimdevSender(TENANT_B, NUMBER_B_CHANGED);
     try {
       const outcome = await processInboundWhatsApp({
         eventId: `wamid.${randomUUID()}`,
@@ -495,6 +506,7 @@ describe("WhatsApp login audit trail (legend-wq3f)", () => {
       expect(outcome.kind).toBe("rejected");
     } finally {
       await setIntegrationNumber(owner, TENANT_B, NUMBER_B);
+      await mapKirimdevSender(TENANT_B, NUMBER_B);
     }
 
     const events = await auditOfChallenge(issued.challenge.id);

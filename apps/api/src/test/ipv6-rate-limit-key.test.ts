@@ -36,6 +36,10 @@ import {
 } from "../middleware/public-rate-limit";
 import { tenantContext as tenantResolver } from "../middleware/tenant";
 import { issueWhatsAppChallenge } from "../services/identity-login.service";
+import {
+  mapKirimdevSender,
+  unmapKirimdevSender,
+} from "./helpers/kirimdev-sender";
 
 const TENANT_ID = randomUUID();
 const HOST = "tenant-a.example.test";
@@ -399,6 +403,9 @@ beforeAll(async () => {
       JSON.stringify({ vendor: "kirimdev", receivingNumber: NUMBER }),
     ],
   );
+  // Issuing a challenge needs the platform-written sender mapping, else it
+  // fails closed (legend-52tdq).
+  await mapKirimdevSender(AUTH_TENANT, NUMBER);
 });
 
 beforeEach(async () => {
@@ -411,6 +418,7 @@ afterAll(async () => {
   await owner.query("DELETE FROM login_challenges WHERE tenant_id = $1", [
     AUTH_TENANT,
   ]);
+  await unmapKirimdevSender(AUTH_TENANT);
   await owner.query("DELETE FROM tenant_integrations WHERE tenant_id = $1", [
     AUTH_TENANT,
   ]);

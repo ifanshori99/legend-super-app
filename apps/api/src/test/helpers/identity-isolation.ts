@@ -11,6 +11,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { whatsAppDigest } from "../../lib/identity-digest";
+import { mapKirimdevSender, unmapKirimdevSender } from "./kirimdev-sender.ts";
 
 const tenantLimits = {
   maxOutlets: 2,
@@ -92,6 +93,9 @@ export async function setIntegrationNumber(
      DO UPDATE SET config = EXCLUDED.config, status = EXCLUDED.status`,
     [tenantId, JSON.stringify({ vendor: "kirimdev", receivingNumber })],
   );
+  // Inbound routing reads kirimdev_sender_mappings only (legend-52tdq), so the
+  // webhook's phone_number_id (the receiving number here) must be mapped.
+  await mapKirimdevSender(tenantId, receivingNumber);
 }
 
 export type IdentityScopeInput = {
@@ -214,6 +218,7 @@ export function createIdentityScope(owner: Pool) {
       "DELETE FROM tenant_integrations WHERE tenant_id = ANY($1)",
       [tenantIds],
     );
+    for (const tenantId of tenantIds) await unmapKirimdevSender(tenantId);
     await owner.query("DELETE FROM tenant_domains WHERE tenant_id = ANY($1)", [
       tenantIds,
     ]);

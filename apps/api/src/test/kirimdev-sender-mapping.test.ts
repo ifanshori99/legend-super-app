@@ -465,6 +465,17 @@ describe("legend-nqxtb 3: only a platform admin may use the routes", () => {
       (await agent(app).get(`${ROUTE}?tenantId=${tenantB.tenantId}`)).status,
     ).toBe(401);
 
+    // Other test files may map the seeded tenant in the shared DB, so
+    // snapshot its rows and assert they are unchanged instead of expecting 0.
+    const snapshotSeeded = async () =>
+      (
+        await owner.query(
+          "SELECT id, phone_number_id FROM kirimdev_sender_mappings WHERE tenant_id = $1 ORDER BY id",
+          [seededTenantId],
+        )
+      ).rows;
+    const seededBefore = await snapshotSeeded();
+
     const member = await tenantAdmin();
     expect(
       (await member.get(`${ROUTE}?tenantId=${tenantB.tenantId}`)).status,
@@ -487,11 +498,7 @@ describe("legend-nqxtb 3: only a platform admin may use the routes", () => {
     ).toBe(403);
 
     expect(await mappingsOf(tenantB.tenantId)).toHaveLength(1);
-    const seeded = await owner.query(
-      "SELECT 1 FROM kirimdev_sender_mappings WHERE tenant_id = $1",
-      [seededTenantId],
-    );
-    expect(seeded.rowCount).toBe(0);
+    expect(await snapshotSeeded()).toEqual(seededBefore);
   });
 
   it("a legacy user.role admin who is not in platform_admins gets 403", async () => {

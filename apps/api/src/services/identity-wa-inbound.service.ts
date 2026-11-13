@@ -63,6 +63,7 @@ import {
   user,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
+import { logger } from "../lib/logger";
 import {
   identityDigest,
   loginCodeDigest,
@@ -707,7 +708,13 @@ async function pendingChallengeFor(
   // the message, so a code issued by one tenant is never completed on another
   // tenant's number — before any account work happens. `completeChallenge`
   // re-checks it against the tenant's live integration.
-  if (row.receivingNumber !== receivingNumber) return { kind: "none" };
+  if (row.receivingNumber !== receivingNumber) {
+    logger.warn(
+      { tenantId: row.tenantId, reason: "challenge_number_mismatch" },
+      "whatsapp inbound unrouted",
+    );
+    return { kind: "none" };
+  }
   return {
     kind: "found",
     id: row.id,
@@ -778,8 +785,16 @@ async function completeChallenge(
           throw error;
         },
       );
-      if (!channel || channel.routingNumber !== input.receivingNumber)
+      if (!channel || channel.routingNumber !== input.receivingNumber) {
+        logger.warn(
+          {
+            tenantId: input.tenantId,
+            reason: channel ? "routing_mismatch" : "channel_unavailable",
+          },
+          "whatsapp inbound unrouted",
+        );
         return "unrouted";
+      }
       // Card lnbtp: a concurrent "Bukan saya" may delete the auto-created
       // account (it takes FOR UPDATE on this row). Share-lock the user so it
       // cannot vanish before this commit; no row means it already did.
@@ -867,8 +882,16 @@ async function completeLink(
           throw error;
         },
       );
-      if (!channel || channel.routingNumber !== input.receivingNumber)
+      if (!channel || channel.routingNumber !== input.receivingNumber) {
+        logger.warn(
+          {
+            tenantId: input.tenantId,
+            reason: channel ? "routing_mismatch" : "channel_unavailable",
+          },
+          "whatsapp inbound unrouted",
+        );
         return "unrouted";
+      }
       // Serialize both the challenge and all attempts for this number.
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtextextended(${digest}, 0))`,

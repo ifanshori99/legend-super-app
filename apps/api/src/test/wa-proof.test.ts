@@ -57,6 +57,10 @@ import {
   createIdentityTenant,
   uniqueDigits,
 } from "./helpers/identity-isolation";
+import {
+  mapKirimdevSender,
+  unmapKirimdevSender,
+} from "./helpers/kirimdev-sender";
 
 const SECRET = "test-kirim-webhook-secret";
 // Own tenants, host, receiving numbers and senders: this file never shares rows
@@ -246,6 +250,11 @@ beforeAll(async () => {
   await seedTenant(TENANT_B, "uji-bukti-wa-b");
   await seedTenant(TENANT_C, "uji-bukti-wa-c");
   await seedWhatsAppIntegration(TENANT_B, NUMBER_B);
+  // Inbound routing comes only from the platform-written sender mapping
+  // (legend-52tdq); the webhooks send NUMBER_A / NUMBER_B as phone_number_id.
+  // TENANT_C stays unmapped: it has no WhatsApp channel.
+  await mapKirimdevSender(TENANT_A, NUMBER_A);
+  await mapKirimdevSender(TENANT_B, NUMBER_B);
 });
 
 beforeEach(cleanup);
@@ -253,6 +262,8 @@ beforeEach(cleanup);
 afterAll(async () => {
   releaseTrustedProxy();
   await cleanup();
+  await unmapKirimdevSender(TENANT_A);
+  await unmapKirimdevSender(TENANT_B);
   await isolation.dropTenants([TENANT_A, TENANT_B, TENANT_C]);
   await owner.end();
 });

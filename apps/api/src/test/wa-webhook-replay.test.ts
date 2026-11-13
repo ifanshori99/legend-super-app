@@ -41,6 +41,10 @@ import {
   createIdentityTenant,
   uniqueDigits,
 } from "./helpers/identity-isolation";
+import {
+  mapKirimdevSender,
+  unmapKirimdevSender,
+} from "./helpers/kirimdev-sender";
 
 const SECRET = "replay-secret-current";
 const OLD_SECRET = "replay-secret-previous";
@@ -146,6 +150,10 @@ beforeAll(async () => {
     id: TENANT_B,
     withDomain: false,
   });
+  // Inbound routing comes only from the platform-written sender mapping
+  // (legend-52tdq); UNREGISTERED stays unmapped on purpose.
+  await mapKirimdevSender(TENANT_A, NUMBER_A);
+  await mapKirimdevSender(TENANT_B, NUMBER_B);
 });
 
 beforeEach(isolation.cleanup);
@@ -153,6 +161,8 @@ beforeEach(isolation.cleanup);
 afterAll(async () => {
   releaseTrustedProxy();
   await isolation.cleanup();
+  await unmapKirimdevSender(TENANT_A);
+  await unmapKirimdevSender(TENANT_B);
   await isolation.dropTenants([TENANT_A, TENANT_B]);
   await owner.end();
 });

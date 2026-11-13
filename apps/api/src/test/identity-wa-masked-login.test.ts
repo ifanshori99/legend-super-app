@@ -40,6 +40,10 @@ import {
   createIdentityTenant,
   uniqueDigits,
 } from "./helpers/identity-isolation";
+import {
+  mapKirimdevSender,
+  unmapKirimdevSender,
+} from "./helpers/kirimdev-sender";
 
 const SECRET = "test-kirim-webhook-secret";
 // Own tenant, host, receiving number and sender per run: this file never shares
@@ -177,6 +181,9 @@ beforeAll(async () => {
   host = (
     await createIdentityTenant(owner, "masked", NUMBER_A, { id: TENANT_A })
   ).hostname;
+  // Inbound routing comes only from the platform-written sender mapping
+  // (legend-52tdq); the webhook sends NUMBER_A as phone_number_id.
+  await mapKirimdevSender(TENANT_A, NUMBER_A);
 });
 
 beforeEach(wipe);
@@ -184,6 +191,7 @@ beforeEach(wipe);
 afterAll(async () => {
   releaseTrustedProxy();
   await wipe();
+  await unmapKirimdevSender(TENANT_A);
   await isolation.dropTenants([TENANT_A]);
   await owner.end();
 });
