@@ -1432,3 +1432,4 @@ Langkah berikut CTO baru:
 - 18:49 G6nze brand config selesai (ws/brand-config 3844c4f94; bkdmc, 9k0a5, datb2, tj8o, sjq5w, wc69d; architect xhigh). Mulai G2zip posting faktur pemasok (29vw, gzeya, 3fi5v, ct27s, smrwb; Opus; 0494-0495). Batch57 = webhook-retry-guard, menu-pdf (+qr-menu), brand-config (+tenant-config), purchasing-apar/posting, panic-relay-load.
 - 18:51 Founder Q13: aturan faktur pemasok disetujui (bd memory founder-q13-13-nov).
 - 18:51 Founder Q9 (THR gross-up ditanggung perusahaan), Q10 (metode bayar default disetujui), Q12 (aturan perintah pendek test-runner ditambah). Mulai fix/thr-gross-up (brief 635).
+- 18:52 Founder Q8 dana kas kecil wajib -> G3t0j fix/petty-fund-required (brief 636). G5dlj fix/thr-gross-up (brief 635).
