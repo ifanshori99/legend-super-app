@@ -589,10 +589,11 @@ export async function postPettyCashEntry(
 
 /**
  * A petty purchase spends the outlet's fund (called from
- * `createPettyPurchase`, same transaction). An outlet without a fund keeps the
- * old behavior (no effect); with a fund, a purchase above the balance is
- * PETTY_CASH_INSUFFICIENT and the whole purchase is rolled back. The ledger row
- * is `external`: its journal belongs to `petty_purchase.recorded`.
+ * `createPettyPurchase`, same transaction). An outlet without a fund is refused
+ * with PETTY_CASH_FUND_REQUIRED (founder Q8); with a fund, a purchase above the
+ * balance is PETTY_CASH_INSUFFICIENT. Either way the whole purchase is rolled
+ * back. The ledger row is `external`: its journal belongs to
+ * `petty_purchase.recorded`.
  */
 export async function drawPettyCashForPurchase(
   tx: TenantTransaction,
@@ -609,7 +610,7 @@ export async function drawPettyCashForPurchase(
   const tenantId = context.tenant.tenantId;
   const outletId = outletIdSchema.parse(input.outletId);
   const fund = await lockFund(tx, tenantId, outletId);
-  if (!fund) return;
+  if (!fund) throw new AccountingError("PETTY_CASH_FUND_REQUIRED");
   const balanceAfter = await changeBalance(tx, fund, -input.amountIdr);
   await tx.insert(pettyCashEntries).values({
     tenantId,

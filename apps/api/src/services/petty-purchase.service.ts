@@ -310,8 +310,9 @@ export async function createPettyPurchase(
         })
         .returning();
       const purchase = toPettyPurchase(row!);
-      // An outlet with a petty cash fund spends it here (refused when the
-      // balance is short); an outlet without one is unchanged (legend-4961).
+      // The outlet's petty cash fund is spent here: an outlet without a fund
+      // is refused (PETTY_CASH_FUND_REQUIRED, founder Q8) and so is a balance
+      // that is too short; either way the whole purchase rolls back.
       await drawPettyCashForPurchase(tx, context, {
         outletId: input.outletId,
         purchaseId,

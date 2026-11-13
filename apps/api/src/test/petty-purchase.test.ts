@@ -13,7 +13,14 @@
 // - 65mgw-PP-7 permissions
 // - 65mgw-PP-8 reads
 // - 65mgw-PP-9 RLS and immutability
+// - 65mgw-PP-10 petty cash fund required (founder Q8, 13 Nov 2026): no fund is
+//   refused 422 PETTY_CASH_FUND_REQUIRED; a fund covers the total exactly; too
+//   little stays 422 PETTY_CASH_INSUFFICIENT; no write on any refusal
 //
+// Founder rule Q8: a petty purchase needs a petty cash fund for its outlet.
+// Fixture: outlet A gets a large fund as the migration owner in beforeAll
+// (the ledger rules themselves are pinned in accounting-petty-cash.test.ts);
+// outlet B has none unless a test gives it one.
 // Assumptions where the shared contract is silent:
 // - Error responses use the `{ error: { code } }` envelope of the other suites.
 // - A replayed create answers 200 or 201 (only the same id is pinned).
@@ -46,6 +53,7 @@ const appPool = new Pool({
 
 const createdUserIds: string[] = [];
 const createdStorageIds: string[] = [];
+const createdFundIds: string[] = [];
 
 type Session = { client: ReturnType<typeof agent>; userId: string };
 let recorder: Session;
@@ -56,7 +64,16 @@ let nobody: Session;
 let outletBManager: Session;
 let today: string;
 
-const key = () => `k-${randomUUID()}`;
+// Other petty test files run in parallel on the same tenant (fresh outlets of
+// their own). Every delete and count below is scoped to THIS file's outlets
+// (A, B), the tenant-wide policy row, or the ids/keys it created.
+const ownOutletIds = [outletA, outletB];
+const usedKeys: string[] = [];
+const key = () => {
+  const value = `k-${randomUUID()}`;
+  usedKeys.push(value);
+  return value;
+};
 
 async function roleIdOf(templateKey: string): Promise<string> {
   const { rows } = await owner.query<{ id: string }>(
@@ -142,9 +159,10 @@ async function purchaseBody(
 }
 
 async function deletePolicies(): Promise<void> {
+  // Tenant-wide policy (outlet null) plus this file's two outlets only.
   await owner.query(
-    "DELETE FROM petty_purchase_policies WHERE tenant_id = $1",
-    [tenantA],
+    "DELETE FROM petty_purchase_policies WHERE tenant_id = $1 AND (outlet_id IS NULL OR outlet_id = ANY($2::uuid[]))",
+    [tenantA, ownOutletIds],
   );
 }
 
@@ -156,10 +174,41 @@ async function setTenantLimit(limitIdr: number) {
   });
 }
 
+/**
+ * Opens (or resets) the outlet's petty cash fund at `balanceIdr` as the
+ * migration owner. No ledger entry: the fund only has to exist and hold money.
+ */
+async function setFund(outletId: string, balanceIdr: number): Promise<void> {
+  const { rows } = await owner.query<{ id: string }>(
+    `INSERT INTO petty_cash_funds (tenant_id, legal_entity_id, outlet_id, balance_idr, created_by)
+     SELECT $1, legal_entity_id, id, $3, $4 FROM outlets WHERE id = $2 AND tenant_id = $1
+     ON CONFLICT (tenant_id, outlet_id) DO UPDATE SET balance_idr = EXCLUDED.balance_idr
+     RETURNING id`,
+    [tenantA, outletId, balanceIdr, finance.userId],
+  );
+  createdFundIds.push(rows[0]!.id);
+}
+
+async function fundBalance(outletId: string): Promise<number | null> {
+  const { rows } = await owner.query<{ balance: string }>(
+    "SELECT balance_idr::text AS balance FROM petty_cash_funds WHERE tenant_id = $1 AND outlet_id = $2",
+    [tenantA, outletId],
+  );
+  return rows[0] ? Number(rows[0].balance) : null;
+}
+
+async function ledgerCount(outletId: string): Promise<number> {
+  const { rows } = await owner.query<{ n: number }>(
+    "SELECT count(*)::int AS n FROM petty_cash_entries WHERE tenant_id = $1 AND outlet_id = $2",
+    [tenantA, outletId],
+  );
+  return rows[0]!.n;
+}
+
 async function purchaseCount(): Promise<number> {
   const { rows } = await owner.query<{ n: number }>(
-    "SELECT count(*)::int AS n FROM petty_purchases WHERE tenant_id = $1",
-    [tenantA],
+    "SELECT count(*)::int AS n FROM petty_purchases WHERE tenant_id = $1 AND outlet_id = ANY($2::uuid[])",
+    [tenantA, ownOutletIds],
   );
   return rows[0]!.n;
 }
@@ -242,6 +291,8 @@ beforeAll(async () => {
   outletBManager = await signedIn("PP manager B", [
     { role: "outlet_manager", outletId: outletB },
   ]);
+  // Founder rule Q8: outlet A needs a fund for every purchase below.
+  await setFund(outletA, 1_000_000_000);
   const { rows } = await owner.query<{
     timezone: string;
     business_day_cutoff: string;
@@ -263,21 +314,30 @@ afterAll(async () => {
   try {
     await client.query("BEGIN");
     await client.query("SET LOCAL session_replication_role = replica");
-    const purchases = `(SELECT id FROM petty_purchases WHERE tenant_id = $1)`;
+    const purchases = `(SELECT id FROM petty_purchases WHERE tenant_id = $1 AND outlet_id = ANY($2::uuid[]))`;
+    await client.query(
+      "DELETE FROM petty_cash_entries WHERE tenant_id = $1 AND fund_id = ANY($2::uuid[])",
+      [tenantA, createdFundIds],
+    );
+    await client.query(
+      "DELETE FROM petty_cash_funds WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+      [tenantA, createdFundIds],
+    );
     await client.query(
       `DELETE FROM domain_event_outbox WHERE tenant_id = $1 AND aggregate_id IN ${purchases}`,
-      [tenantA],
-    );
-    await client.query("DELETE FROM petty_purchases WHERE tenant_id = $1", [
-      tenantA,
-    ]);
-    await client.query(
-      "DELETE FROM petty_purchase_policies WHERE tenant_id = $1",
-      [tenantA],
+      [tenantA, ownOutletIds],
     );
     await client.query(
-      "DELETE FROM purchasing_idempotency WHERE tenant_id = $1 AND operation LIKE 'petty_purchase%'",
-      [tenantA],
+      "DELETE FROM petty_purchases WHERE tenant_id = $1 AND outlet_id = ANY($2::uuid[])",
+      [tenantA, ownOutletIds],
+    );
+    await client.query(
+      "DELETE FROM petty_purchase_policies WHERE tenant_id = $1 AND (outlet_id IS NULL OR outlet_id = ANY($2::uuid[]))",
+      [tenantA, ownOutletIds],
+    );
+    await client.query(
+      "DELETE FROM purchasing_idempotency WHERE tenant_id = $1 AND operation LIKE 'petty_purchase%' AND idempotency_key = ANY($2::text[])",
+      [tenantA, usedKeys],
     );
     await client.query(
       "DELETE FROM core_storage_objects WHERE id = ANY($1::uuid[])",
@@ -290,6 +350,17 @@ afterAll(async () => {
     await client.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [
       createdUserIds,
     ]);
+    await client.query("DELETE FROM petty_cash_entries WHERE tenant_id = $1", [
+      tenantB,
+    ]);
+    await client.query("DELETE FROM petty_cash_funds WHERE tenant_id = $1", [
+      tenantB,
+    ]);
+    await client.query("DELETE FROM outlets WHERE tenant_id = $1", [tenantB]);
+    await client.query("DELETE FROM legal_entities WHERE tenant_id = $1", [
+      tenantB,
+    ]);
+    await client.query("DELETE FROM brands WHERE tenant_id = $1", [tenantB]);
     await client.query("DELETE FROM tenants WHERE id = $1", [tenantB]);
     await client.query("COMMIT");
   } catch (error) {
@@ -754,5 +825,128 @@ describe("65mgw-PP petty purchase", () => {
         client.query("DELETE FROM petty_purchases WHERE id = $1", [id]),
       ),
     ).rejects.toThrow(/permission denied/);
+  });
+
+  it("[65mgw-PP-10] petty cash fund required: no fund is refused; a fund covers the total exactly; too little is refused; nothing is written on a refusal", async () => {
+    await deletePolicies();
+    await setTenantLimit(100000);
+
+    // Outlet B has no fund: refused with the fund code, nothing written.
+    expect(await fundBalance(outletB)).toBeNull();
+    const before = await purchaseCount();
+    const noFund = await record(
+      outletBManager.client,
+      await purchaseBody(
+        {
+          outletId: outletB,
+          photoMediaId: await insertPhoto(outletBManager.userId, {
+            outletId: outletB,
+          }),
+        },
+        outletBManager,
+      ),
+    );
+    expect(noFund.status, JSON.stringify(noFund.body)).toBe(422);
+    expect(noFund.body.error.code).toBe("PETTY_CASH_FUND_REQUIRED");
+    expect(await purchaseCount()).toBe(before);
+    expect(await fundBalance(outletB)).toBeNull();
+    expect(await ledgerCount(outletB)).toBe(0);
+
+    // Outlet A's fund is not outlet B's: A stays untouched by B's refusal.
+    await setFund(outletA, 200_000);
+    expect(await fundBalance(outletA)).toBe(200_000);
+    const ledgerBefore = await ledgerCount(outletA);
+
+    // A fund that covers the total: 201, balance down by exactly 50.000, one
+    // purchase entry in the ledger.
+    const ok = await record(recorder.client, await purchaseBody());
+    expect(ok.status, JSON.stringify(ok.body)).toBe(201);
+    expect(await fundBalance(outletA)).toBe(150_000);
+    expect(await ledgerCount(outletA)).toBe(ledgerBefore + 1);
+    expect(await purchaseCount()).toBe(before + 1);
+
+    // A fund with too little: PETTY_CASH_INSUFFICIENT (not the fund code), no
+    // new purchase, no new ledger entry, balance unchanged.
+    await setFund(outletA, 49_999);
+    const short = await record(recorder.client, await purchaseBody());
+    expect(short.status, JSON.stringify(short.body)).toBe(422);
+    expect(short.body.error.code).toBe("PETTY_CASH_INSUFFICIENT");
+    expect(await purchaseCount()).toBe(before + 1);
+    expect(await fundBalance(outletA)).toBe(49_999);
+    expect(await ledgerCount(outletA)).toBe(ledgerBefore + 1);
+
+    // Put the large fund back for any later test.
+    await setFund(outletA, 1_000_000_000);
+
+    // Another tenant has a REAL outlet with a REAL fund of 777.000 (opened as
+    // the owner). Tenant A cannot spend it: refused, never 201, nothing is
+    // written, the other tenant's balance does not move.
+    const brandId = randomUUID();
+    const entityId = randomUUID();
+    const foreignOutlet = randomUUID();
+    // afterAll removes tenantB's brand, entity, outlet and fund by tenant id.
+    await owner.query(
+      `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'pp10', 'Brand PP10')`,
+      [brandId, tenantB],
+    );
+    await owner.query(
+      `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'Entity PP10', false)`,
+      [entityId, tenantB],
+    );
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       VALUES ($1, $2, $3, $4, $5, 'Outlet asing PP10', 'Jl. Uji 3', 'Asia/Jakarta', $6, 'active')`,
+      [
+        foreignOutlet,
+        tenantB,
+        brandId,
+        entityId,
+        `PP10-${randomUUID().slice(0, 6)}`.toUpperCase(),
+        JSON.stringify(cafeLegendPlatformFixtures.outlets[0]!.openingHours),
+      ],
+    );
+    await owner.query(
+      `INSERT INTO petty_cash_funds (tenant_id, legal_entity_id, outlet_id, balance_idr, created_by)
+       VALUES ($1, $2, $3, 777000, $4)`,
+      [tenantB, entityId, foreignOutlet, finance.userId],
+    );
+    const foreignFund = async () =>
+      (
+        await owner.query<{ balance: string }>(
+          "SELECT balance_idr::text AS balance FROM petty_cash_funds WHERE tenant_id = $1 AND outlet_id = $2",
+          [tenantB, foreignOutlet],
+        )
+      ).rows.map((row) => Number(row.balance));
+    const foreignCount = async (table: string) =>
+      (
+        await owner.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM ${table} WHERE outlet_id = $1`,
+          [foreignOutlet],
+        )
+      ).rows[0]!.n;
+
+    const fundBeforeCross = await fundBalance(outletA);
+    const crossTenant = await record(
+      recorder.client,
+      await purchaseBody({ outletId: foreignOutlet }),
+    );
+    expect([403, 404, 422], JSON.stringify(crossTenant.body)).toContain(
+      crossTenant.status,
+    );
+    expect(crossTenant.status).not.toBe(201);
+    expect(crossTenant.body.error?.code).not.toBe("PETTY_CASH_INSUFFICIENT");
+    expect(await foreignFund()).toEqual([777_000]);
+    expect(await foreignCount("petty_purchases")).toBe(0);
+    expect(await foreignCount("petty_cash_entries")).toBe(0);
+    expect(await purchaseCount()).toBe(before + 1);
+    expect(await fundBalance(outletA)).toBe(fundBeforeCross);
+
+    // Tenant A's fund listing never shows the other tenant's fund.
+    const funds = await finance.client
+      .get("/api/accounting/petty-cash/funds")
+      .set(originHeader)
+      .query({ legalEntityId: entityId });
+    expect([200, 403, 404]).toContain(funds.status);
+    if (funds.status === 200) expect(funds.body.data).toEqual([]);
   });
 });

@@ -55,6 +55,7 @@ import {
   type CreatePurchaseReturnInput,
 } from "../services/purchase-return.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import { makeBankAccount } from "./helpers/cash-bank-world.ts";
 
 const tenantA = cafeLegendPlatformFixtures.tenant.id;
 const brandA = cafeLegendPlatformFixtures.brand.id;
@@ -407,6 +408,40 @@ async function pettyBody(uploader: Session) {
   };
 }
 
+/**
+ * Founder rule Q8 (13 Nov 2026): a petty purchase needs a petty cash fund for
+ * the outlet. Opens outlet C's fund through the real topup route (finance, own
+ * bank account on its own GL account).
+ */
+async function fundOutletC(amountIdr: number): Promise<void> {
+  const { rows } = await owner.query<{ id: string }>(
+    `INSERT INTO chart_of_accounts (tenant_id, legal_entity_id, code, name, type, report_group)
+     VALUES ($1, $2, '1103', 'Bank Operasional PRE', 'asset', 'cash_and_equivalents') RETURNING id`,
+    [tenantA, entityId],
+  );
+  const bankAccountId = await makeBankAccount(entityId, rows[0]!.id);
+  const res = await finance.client
+    .post("/api/accounting/petty-cash/movements")
+    .set(originHeader)
+    .send({
+      kind: "topup",
+      outletId: outletC,
+      bankAccountId,
+      amountIdr,
+      description: "Isi kas kecil PRE",
+      idempotencyKey: key(),
+    });
+  expect(res.status, JSON.stringify(res.body)).toBe(201);
+}
+
+async function pettyFundBalance(): Promise<number | null> {
+  const { rows } = await owner.query<{ balance: string }>(
+    "SELECT balance_idr::text AS balance FROM petty_cash_funds WHERE tenant_id = $1 AND outlet_id = $2",
+    [tenantA, outletC],
+  );
+  return rows[0] ? Number(rows[0].balance) : null;
+}
+
 const postPetty = (client: Session["client"], body: Record<string, unknown>) =>
   client
     .post("/api/inventory/petty-purchases")
@@ -433,6 +468,20 @@ async function outboxEvent(
   );
   expect(rows, `${name} outbox rows of ${aggregateId}`).toHaveLength(1);
   return eventEnvelopeSchema.parse(rows[0]!.event);
+}
+
+/**
+ * Count of petty_purchase.recorded outbox events of this file's outlet C. Not
+ * tenant-wide: the other petty test files run in parallel on the same tenant.
+ */
+async function pettyEventCount(): Promise<number> {
+  const { rows } = await owner.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM domain_event_outbox
+      WHERE tenant_id = $1 AND event->>'name' = 'petty_purchase.recorded'
+        AND event->'payload'->>'outletId' = $2`,
+    [tenantA, outletC],
+  );
+  return Number(rows[0]!.n);
 }
 
 const NOW = () => new Date();
@@ -588,6 +637,19 @@ afterAll(async () => {
       "DELETE FROM petty_purchase_policies WHERE tenant_id = $1 AND outlet_id = $2",
       [tenantA, outletC],
     );
+    // fundOutletC fixtures: ledger, fund and the bank account (before the chart).
+    await client.query(
+      "DELETE FROM petty_cash_entries WHERE tenant_id = $1 AND outlet_id = $2",
+      [tenantA, outletC],
+    );
+    await client.query(
+      "DELETE FROM petty_cash_funds WHERE tenant_id = $1 AND outlet_id = $2",
+      [tenantA, outletC],
+    );
+    await client.query(
+      "DELETE FROM bank_accounts WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [tenantA, entityId],
+    );
     for (const table of ["stock_balances", "stock_batches"])
       await client.query(
         `DELETE FROM ${table} WHERE tenant_id = $1 AND location_id = ANY($2::uuid[])`,
@@ -720,8 +782,22 @@ describe("purchase return and petty purchase to the ledger, end to end", () => {
       .send({ outletId: outletC, limitIdr: 100_000, idempotencyKey: key() });
     expect(policy.status).toBe(200);
 
+    // No fund yet: refused, nothing written (no purchase, no event, no journal).
+    const journalsBefore = await journalCount();
+    const eventsBefore = await pettyEventCount();
+    const refused = await postPetty(recorder.client, await pettyBody(recorder));
+    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+    expect(refused.body.error.code).toBe("PETTY_CASH_FUND_REQUIRED");
+    expect(await pettyCount()).toBe(0);
+    expect(await pettyFundBalance()).toBeNull();
+    expect(await journalCount()).toBe(journalsBefore);
+    expect(await pettyEventCount()).toBe(eventsBefore);
+
+    // With a fund (100.000) the same purchase of 50.000 is recorded.
+    await fundOutletC(100_000);
     const res = await postPetty(recorder.client, await pettyBody(recorder));
     expect(res.status).toBe(201);
+    expect(await pettyFundBalance()).toBe(50_000);
     const purchase = res.body.data as { id: string; amountIdr: number };
     expect(purchase.amountIdr).toBe(50_000);
 

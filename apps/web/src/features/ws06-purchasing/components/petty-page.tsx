@@ -8,6 +8,7 @@
 // description carries the purpose, and the picked photo stays a data URL in
 // local state while only a media id is sent (reported storage gap).
 import * as React from "react";
+import { Link } from "@tanstack/react-router";
 import { Wallet } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { useTenantContext } from "@/lib/tenant-context";
@@ -43,6 +44,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import type { BusinessDate, Idr } from "@starter/shared/core";
+import { useOutlets } from "@/features/ws07-accounting/hooks";
+import { usePettyCashFunds } from "@/features/ws07-cash-bank/hooks";
 import { PhotoField } from "../../ws06-inventory/components/photo-field.tsx";
 import {
   WASTE_PHOTO_MAX_BYTES,
@@ -345,6 +348,17 @@ function PettyContent({ canCreate }: { canCreate: boolean }) {
   const outletId = outlet?.id ?? "";
   const purchases = usePettyPurchases(outletId);
   const policy = usePettyPurchasePolicy(outletId);
+  // Deny by default (legend petty fund): no fund row for this outlet means the
+  // server refuses the purchase, so say so up front. Shown only once the funds
+  // loaded; a failed lookup keeps the server error as the fallback.
+  const outlets = useOutlets();
+  const entityId = outlets.data?.find((o) => o.id === outletId)?.legalEntityId;
+  const funds = usePettyCashFunds(entityId);
+  const noFund =
+    Boolean(outletId) &&
+    Boolean(entityId) &&
+    funds.isSuccess &&
+    !funds.data.some((fund) => fund.outletId === outletId);
   const [formOpen, setFormOpen] = React.useState(false);
   const [search, setSearch] = React.useState("");
   const [today] = React.useState<BusinessDate>(() => todayBusinessDate());
@@ -400,6 +414,17 @@ function PettyContent({ canCreate }: { canCreate: boolean }) {
             </Button>
           )}
         </div>
+        {noFund && (
+          <p role="status" className="text-sm leading-5 text-muted-foreground">
+            {t("inventoryReceiving.petty.noFund")}{" "}
+            <Link
+              to="/kelola/akuntansi/kas-bank"
+              className="font-medium text-primary underline underline-offset-4"
+            >
+              {t("inventoryReceiving.petty.noFundLink")}
+            </Link>
+          </p>
+        )}
         {policy.isPending ? (
           <Skeleton className="h-12" />
         ) : policyFailed ? (

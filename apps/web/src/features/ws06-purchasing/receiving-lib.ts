@@ -245,6 +245,8 @@ const ERROR_KEYS: Record<string, MessageKey> = {
   PURCHASE_ORDER_LINE_MISMATCH: "inventoryReceiving.errors.lineMismatch",
   PURCHASE_RETURN_EXCEEDS_RECEIPT: "inventoryReceiving.errors.returnExceeds",
   PETTY_PURCHASE_LIMIT_EXCEEDED: "inventoryReceiving.errors.pettyLimit",
+  PETTY_CASH_FUND_REQUIRED: "inventoryReceiving.errors.pettyFundRequired",
+  PETTY_CASH_INSUFFICIENT: "inventoryReceiving.errors.pettyInsufficient",
   SUPPLIER_INVOICE_NOT_MATCHED: "inventoryReceiving.errors.invoiceNotMatched",
   SUPPLIER_INVOICE_NOT_PAYABLE: "inventoryReceiving.errors.invoiceNotPayable",
   SUPPLIER_INVOICE_OVERPAYMENT: "inventoryReceiving.errors.overpayment",
