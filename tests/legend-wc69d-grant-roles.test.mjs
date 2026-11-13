@@ -39,10 +39,14 @@ const assignment = (id, userId, roleId, over = {}) => ({
   assignedAt: PAST,
   ...over,
 });
-const ids = (viewerAssignments, viewerUserId = "viewer") =>
-  lib
+// An explicit `undefined` must reach the helper (a default parameter would turn
+// it into "viewer"), so the unknown-viewer case really runs.
+const ids = (viewerAssignments, ...rest) => {
+  const viewerUserId = rest.length ? rest[0] : "viewer";
+  return lib
     .grantableRoles({ roles, viewerUserId, viewerAssignments, now: NOW })
     .map((r) => r.id);
+};
 
 test("wc69d · Owner sees every role, Owner included", () => {
   assert.deepEqual(
@@ -65,8 +69,10 @@ test("wc69d · custom role holder sees only roles within what they hold", () => 
 });
 
 test("wc69d · manager does not see roles with permissions it lacks", () => {
+  // r-custom holds only access.role.assign, which the manager has too; the
+  // owner and admin roles need access.role.manage, which it lacks.
   const list = ids([assignment("a1", "viewer", "r-manager")]);
-  assert.deepEqual(list, ["r-manager", "r-empty"]);
+  assert.deepEqual(list, ["r-manager", "r-custom", "r-empty"]);
 });
 
 test("wc69d · brand-scoped, ended and future assignments grant nothing", () => {

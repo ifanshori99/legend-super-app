@@ -169,6 +169,9 @@ function seedState(clock: () => number): FloorState {
           id: orderId,
           number: "QR-20261101-0043",
           tableSessionId: extra.id,
+          // Pay-first (ORD-06): the guest split scope is the one order waiting
+          // for payment (legend-jzud), so the seeded W02 order awaits payment.
+          status: "awaiting_payment",
           subtotalIdr: inclusiveQuote.subtotalIdr,
           discountIdr: inclusiveQuote.discountIdr,
           serviceChargeIdr: inclusiveQuote.serviceCharge.amountIdr,
