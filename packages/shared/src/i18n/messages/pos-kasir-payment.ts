@@ -19,6 +19,12 @@ export const posKasirPaymentMessages = {
     depositPaidNoRef: "DP lunas",
     depositUnpaidNoRef: "DP belum lunas",
   },
+  holdActive: {
+    // Mirrors the QRIS_HOLD_ACTIVE fallback in packages/shared/src/pos/errors.ts.
+    // The customer may already have paid, so the text never tells the cashier to cancel.
+    title:
+      "Pembayaran QR sedang dikonfirmasi penyedia. Tunggu konfirmasi sebelum menerima pembayaran lain.",
+  },
   dpLunas: {
     title: "Tidak ada pembayaran tambahan",
     body: "DP reservasi {amount} sudah dialokasikan ke seluruh tagihan. Tidak perlu menerima pembayaran lagi.",

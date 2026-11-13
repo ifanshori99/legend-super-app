@@ -120,7 +120,7 @@ const defaultMessages: Record<PosErrorCode, string> = {
   RECEIPT_ALREADY_VOIDED: "Struk ini sudah di-void.",
   BUSINESS_DAY_ALREADY_CLOSED: "Hari kerja ini sudah ditutup.",
   QRIS_HOLD_ACTIVE:
-    "QR masih bisa dibayar. Batalkan QR dan tunggu konfirmasi penyedia dulu.",
+    "Pembayaran QR sedang dikonfirmasi penyedia. Tunggu konfirmasi sebelum menerima pembayaran lain.",
   QRIS_NEEDS_CLOUD:
     "QRIS belum bisa dibuat dari server lokal outlet. Pakai kasir online atau metode lain.",
 };
