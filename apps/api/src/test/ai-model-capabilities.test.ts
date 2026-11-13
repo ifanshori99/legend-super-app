@@ -225,3 +225,36 @@ describe("legend-39d.8 unknown model identity", () => {
     },
   );
 });
+
+describe("legend-39d.8 explicit reasoning effort ceilings", () => {
+  it.each([{ reasoningEfforts: [] }, { reasoningEfforts: ["xhigh"] }])(
+    "legend-39d.8 A3 does not invent supported reasoning efforts from explicit metadata $reasoningEfforts",
+    async ({ reasoningEfforts }) => {
+      const detected = await detectModelCapabilities({
+        ...options,
+        fetch: (async () =>
+          Response.json({
+            data: [
+              {
+                id: options.model,
+                context_length: 16_384,
+                max_output_tokens: 2048,
+                supported_parameters: ["reasoning_effort"],
+                reasoning_efforts: reasoningEfforts,
+              },
+            ],
+          })) as typeof fetch,
+      });
+      expect(detected.supportsReasoning).toBe(true);
+      expect(detected.reasoningEfforts).toEqual([]);
+      const { selectReasoningEffort } =
+        await import("../lib/ai/request-policy.ts");
+      expect(
+        selectReasoningEffort({
+          question: "Analisis forecast",
+          capabilities: detected,
+        }),
+      ).toBeUndefined();
+    },
+  );
+});

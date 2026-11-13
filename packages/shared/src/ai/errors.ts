@@ -3,6 +3,9 @@
 // AiError the same way it maps CoreError.
 
 export const aiErrorHttpStatus = {
+  AI_CHATGPT_DISABLED: 503,
+  AI_CHATGPT_NOT_CONNECTED: 404,
+  AI_CHATGPT_RATE_LIMITED: 429,
   /** AIG-01: the tenant or the feature switch is off. */
   AI_FEATURE_DISABLED: 403,
   /** AIG-01: this tool is turned off by the per-tool kill switch. */
@@ -39,7 +42,7 @@ export const aiErrorHttpStatus = {
   AI_PROVIDER_URL_BLOCKED: 422,
   /** WS-12 provider: a key is needed (new config, or the base URL changed). */
   AI_PROVIDER_KEY_REQUIRED: 422,
-  /** WS-12 provider: the connection type is reserved and not supported yet. */
+  /** PUT /provider is API-key only; ChatGPT has separate owner device endpoints. */
   AI_PROVIDER_CONNECTION_UNSUPPORTED: 422,
   /** WS-12 provider: the tenant has no provider config. */
   AI_PROVIDER_NOT_CONFIGURED: 404,
@@ -52,6 +55,12 @@ export const AI_ERROR_CODES = Object.keys(aiErrorHttpStatus) as AiErrorCode[];
 
 /** Safe Indonesian fallback messages; the UI maps `code` to catalog text. */
 const defaultMessages: Record<AiErrorCode, string> = {
+  AI_CHATGPT_DISABLED:
+    "Koneksi ChatGPT sedang dimatikan oleh pengelola sistem.",
+  AI_CHATGPT_NOT_CONNECTED:
+    "Koneksi atau percobaan login ChatGPT tidak ditemukan.",
+  AI_CHATGPT_RATE_LIMITED:
+    "Permintaan koneksi ChatGPT terlalu sering. Coba lagi sebentar lagi.",
   AI_FEATURE_DISABLED: "Fitur AI sedang dimatikan oleh admin.",
   AI_TOOL_DISABLED: "Alat AI ini sedang dimatikan oleh admin.",
   AI_QUOTA_EXCEEDED:

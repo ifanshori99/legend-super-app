@@ -1488,3 +1488,87 @@ test("legend-39d.8 A2 capability overrides reject unbounded, inverted and inject
   ])
     rejects(ai.aiModelCapabilityOverridesSchema, value);
 });
+
+test("legend-z83k B1 device login inputs require risk opt-in and reject tenant/owner injection", () => {
+  accepts(ai.startChatgptConnectionInputSchema, {
+    model: "gpt-5-codex",
+    riskAccepted: true,
+  });
+  for (const body of [
+    { model: "gpt-5-codex" },
+    { model: "gpt-5-codex", riskAccepted: false },
+    { model: "gpt-5-codex", riskAccepted: true, tenantId: "injected" },
+    { model: "gpt-5-codex", riskAccepted: true, acceptedBy: "injected" },
+  ])
+    rejects(ai.startChatgptConnectionInputSchema, body);
+  accepts(ai.pollChatgptConnectionInputSchema, {
+    attemptId: "123e4567-e89b-42d3-a456-426614174000",
+  });
+  rejects(ai.pollChatgptConnectionInputSchema, {
+    attemptId: "123e4567-e89b-42d3-a456-426614174000",
+    tenantId: "injected",
+  });
+});
+
+test("legend-z83k B2 safe connection/attempt schemas never accept token or grant secrets", () => {
+  const view = {
+    enabled: true,
+    status: "connected",
+    model: "gpt-5-codex",
+    consent: {
+      acceptedBy: "verified-owner",
+      acceptedAt: "2026-11-13T01:00:00.000Z",
+    },
+    connectedAt: "2026-11-13T01:01:00.000Z",
+  };
+  accepts(ai.chatgptConnectionViewSchema, view);
+  for (const key of [
+    "accessToken",
+    "refreshToken",
+    "tokensEncrypted",
+    "deviceAuthId",
+    "codeVerifier",
+    "authorizationCode",
+  ])
+    rejects(ai.chatgptConnectionViewSchema, { ...view, [key]: "secret" });
+  const attempt = {
+    attemptId: "123e4567-e89b-42d3-a456-426614174000",
+    userCode: "ABCD-EFGH",
+    verificationUri: "https://auth.openai.com/codex/device",
+    expiresAt: "2026-11-13T01:15:00.000Z",
+    intervalSeconds: 5,
+  };
+  accepts(ai.chatgptDeviceAttemptSchema, attempt);
+  rejects(ai.chatgptDeviceAttemptSchema, {
+    ...attempt,
+    verificationUri: "https://evil.example",
+  });
+  rejects(ai.chatgptDeviceAttemptSchema, { ...attempt, intervalSeconds: 0 });
+  rejects(ai.chatgptDeviceAttemptSchema, {
+    ...attempt,
+    deviceAuthId: "secret",
+  });
+});
+
+test("legend-z83k B1 device endpoints and safe error codes have fixed contract paths", () => {
+  assert.deepEqual(
+    [
+      ai.getChatgptConnection,
+      ai.startChatgptDeviceConnection,
+      ai.pollChatgptDeviceConnection,
+      ai.revokeChatgptConnection,
+    ].map((endpoint) => `${endpoint.method} ${endpoint.path}`),
+    [
+      "GET /api/ai/chatgpt",
+      "POST /api/ai/chatgpt/device",
+      "POST /api/ai/chatgpt/device/poll",
+      "DELETE /api/ai/chatgpt",
+    ],
+  );
+  for (const [code, status] of Object.entries({
+    AI_CHATGPT_DISABLED: 503,
+    AI_CHATGPT_NOT_CONNECTED: 404,
+    AI_CHATGPT_RATE_LIMITED: 429,
+  }))
+    assert.equal(new ai.AiError(code).status, status);
+});

@@ -73,9 +73,9 @@ export function applyCapabilityOverrides(
       ? [
           ...new Set(
             valid.reasoningEfforts ??
-              (detected.reasoningEfforts.length
-                ? detected.reasoningEfforts
-                : EFFORTS),
+              (valid.supportsReasoning === true && !detected.supportsReasoning
+                ? EFFORTS
+                : detected.reasoningEfforts),
           ),
         ]
       : [],
@@ -161,7 +161,7 @@ function metadataCapabilities(
     supportsTools: tools ?? base.supportsTools,
     supportsReasoning,
     reasoningEfforts: supportsReasoning
-      ? efforts?.length
+      ? efforts !== undefined
         ? efforts
         : [...EFFORTS]
       : [],

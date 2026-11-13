@@ -1,7 +1,7 @@
 // Per-tenant AI provider config (WS-12, bead legend-dwrr; docs/DECISIONS.md
 // "WS-12 provider AI per tenant" items 1-3). One OpenAI-compatible provider per
 // tenant, authenticated by an API key. `chatgpt_oauth` is reserved: the service
-// rejects it and no OAuth flow exists.
+// rejects it; the device flow uses its own ai_chatgpt_connections table.
 //
 // (T) rules: tenant_id NOT NULL with enforced tenant RLS
 // (ai-provider.custom.sql); the table is tenant-level, so no outlet_id. The key

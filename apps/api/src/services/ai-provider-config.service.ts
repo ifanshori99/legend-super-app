@@ -8,6 +8,18 @@
 // Tenant URLs are always checked strictly (even in development and tests).
 import { randomUUID } from "node:crypto";
 import {
+  ChatgptCodexError,
+  createChatgptCodexProvider,
+  getChatgptCodexModelCapabilities,
+} from "../lib/ai/chatgpt-codex.ts";
+import {
+  getChatgptCredentials,
+  getChatgptProviderState,
+  invalidateChatgptConnection,
+  chatgptConnectionVersionOf,
+} from "./ai-chatgpt.service.ts";
+
+import {
   and,
   asc,
   eq,
@@ -478,6 +490,8 @@ export type ResolvedAiProvider = {
   model: string;
   source: "tenant" | "platform";
   capabilities: AiModelCapabilities;
+  /** Chosen only by this server; never accepted from callers or remote models. */
+  billingMode: "api_metered" | "chatgpt_plan";
 };
 
 /**
@@ -487,6 +501,28 @@ export type ResolvedAiProvider = {
  * is never used behind a misconfigured tenant. No cache: one indexed query and
  * one decryption per call, and a DELETE applies in every process at once.
  */
+/** The tenant's explicit API-key fallback, never the platform's credentials. */
+export async function resolveTenantCustomAiProvider(
+  context: ScopedTenantContext,
+): Promise<ResolvedAiProvider | null> {
+  const row = await withTenant(db, context, (tx) =>
+    readRow(tx, context.tenant.tenantId),
+  );
+  if (!row) return null;
+  const apiKey = openKey(row);
+  if (apiKey === null || !hasTenantPort(row.baseUrl)) return null;
+  return {
+    provider: buildTenantAiProvider({
+      baseUrl: row.baseUrl,
+      apiKey,
+      model: row.defaultModel,
+    }),
+    model: row.defaultModel,
+    source: "tenant",
+    capabilities: capabilitiesOf(row),
+    billingMode: "api_metered",
+  };
+}
 export async function resolveTenantAiProvider(
   context: ScopedTenantContext,
 ): Promise<ResolvedAiProvider | null> {
@@ -498,26 +534,68 @@ export async function resolveTenantAiProvider(
           model: env.AI_MODEL,
           source: "platform",
           capabilities: getModelCapabilities(env.AI_MODEL),
+          billingMode: "api_metered",
         }
       : null;
   }
-  const row = await withTenant(db, context, (tx) =>
-    readRow(tx, context.tenant.tenantId),
-  );
-  if (row) {
-    const apiKey = openKey(row);
-    if (apiKey === null || !hasTenantPort(row.baseUrl)) return null;
+  const chatgpt = await getChatgptProviderState(context);
+  if (chatgpt.exists) {
+    if (!chatgpt.active || !chatgpt.model || chatgpt.generation === null)
+      return resolveTenantCustomAiProvider(context);
+    const model = chatgpt.model;
+    const generation = chatgpt.generation;
+    // The transport speaks tools/reasoning, but that alone does not prove a
+    // particular unknown model supports either. Keep A's conservative default.
+    const capabilities = getChatgptCodexModelCapabilities(model);
     return {
-      provider: buildTenantAiProvider({
-        baseUrl: row.baseUrl,
-        apiKey,
-        model: row.defaultModel,
-      }),
-      model: row.defaultModel,
+      model,
       source: "tenant",
-      capabilities: capabilitiesOf(row),
+      capabilities,
+      billingMode: "chatgpt_plan",
+      provider: {
+        name: "chatgpt-codex",
+        async complete(request, options) {
+          // Capture only inside this attempt. A shared provider object may be
+          // used concurrently; no other call can replace its issued credential
+          // fingerprint. Refresh-only rotations change this fingerprint too.
+          let issuedCredentialVersion: string | undefined;
+          const provider = createChatgptCodexProvider({
+            model,
+            getCredentials: async () => {
+              const credentials = await getChatgptCredentials(
+                context,
+                generation,
+              );
+              issuedCredentialVersion = credentials?.credentialVersion;
+              return credentials;
+            },
+          });
+          try {
+            return await provider.complete(request, options);
+          } catch (error) {
+            if (
+              error instanceof ChatgptCodexError &&
+              error.kind === "auth" &&
+              error.upstreamAuthRejected &&
+              issuedCredentialVersion
+            ) {
+              await invalidateChatgptConnection(context, generation, {
+                credentialVersion: issuedCredentialVersion,
+              });
+            }
+            throw error;
+          }
+        },
+      },
     };
   }
+  const custom = await resolveTenantCustomAiProvider(context);
+  if (custom) return custom;
+  // A broken API-key configuration never falls through to a platform key.
+  const configured = await withTenant(db, context, (tx) =>
+    readRow(tx, context.tenant.tenantId),
+  );
+  if (configured) return null;
   const provider = getAiProvider();
   return provider
     ? {
@@ -525,6 +603,7 @@ export async function resolveTenantAiProvider(
         model: env.AI_MODEL,
         source: "platform",
         capabilities: getModelCapabilities(env.AI_MODEL),
+        billingMode: "api_metered",
       }
     : null;
 }
@@ -618,5 +697,5 @@ export async function aiProviderVersionOf(
     .from(aiProviderConfigs)
     .where(eq(aiProviderConfigs.tenantId, tenantId))
     .limit(1);
-  return row?.version ?? "none";
+  return `${row?.version ?? "none"}|chatgpt:${await chatgptConnectionVersionOf(tx, tenantId)}`;
 }

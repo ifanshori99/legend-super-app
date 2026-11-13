@@ -9,7 +9,7 @@
 import { dataResponseSchema, isoDateTimeSchema, z } from "../core/index.ts";
 import { defineEndpoint } from "../api/index.ts";
 
-/** `chatgpt_oauth` is reserved; the API refuses it until OAuth is built. */
+/** Legacy discriminator. PUT /provider is API-key only; ChatGPT uses /chatgpt. */
 export const AI_CONNECTION_TYPES = ["api_key", "chatgpt_oauth"] as const;
 export const aiConnectionTypeSchema = z.enum(AI_CONNECTION_TYPES);
 export type AiConnectionType = z.infer<typeof aiConnectionTypeSchema>;

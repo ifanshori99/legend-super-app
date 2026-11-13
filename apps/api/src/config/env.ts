@@ -349,6 +349,11 @@ const schema = z
     AI_PROVIDER: z
       .enum(["anthropic", "openai-compatible", "fake"])
       .default("anthropic"),
+    // Global emergency switch; connections remain opt-in per tenant.
+    AI_CHATGPT_ENABLED: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
     ANTHROPIC_API_KEY: z.string().min(1).optional(),
     AI_MODEL: z.string().min(1).max(200).default("claude-opus-5-5"),
     AI_EFFORT: z.enum(["low", "medium", "high"]).default("low"),
