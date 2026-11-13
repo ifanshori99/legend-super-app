@@ -5,7 +5,7 @@
 //    null) and never overwritten; a replay or a later event changes nothing;
 //  - the edge already holds sequence 1 of the same alert in its own queue
 //    (edge_to_cloud), so the link must still accept the cloud's sequence 1;
-//  - an alert the edge does not know is ignored with `panic_alert_unknown_ref`;
+//  - an alert the edge does not know is a no-op (no conflict row);
 //  - effect: no resend, no POS fallback, nothing for a socket that connects later.
 // How the edge is simulated: as panic-sync.test.ts (one database, the real
 // press route, the real link store). The socket is a fake hub subscriber; its
@@ -420,15 +420,13 @@ describe("G2 the edge applies panic_alert.resolved", () => {
   );
 
   it(
-    "an alert the edge does not know is ignored and recorded as panic_alert_unknown_ref",
+    "an alert the edge does not know is a no-op: no conflict row, the event is applied",
     async () => {
       const unknown = randomUUID();
       // The id is not checked against a press here: the handler only looks it up.
       await deliver([resolvedEnvelope(unknown, 1)]);
       expect(await alertState(unknown)).toBeUndefined();
-      expect(await conflictReasons(unknown)).toEqual([
-        "panic_alert_unknown_ref",
-      ]);
+      expect(await conflictReasons(unknown)).toEqual([]);
     },
     T,
   );

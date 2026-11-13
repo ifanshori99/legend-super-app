@@ -7,7 +7,7 @@
 //  (7) the 3-live-sessions-per-staff cap counts across the outlets of the tenant.
 // Fixtures follow panic-receiver-session.test.ts.
 import { randomBytes, randomUUID } from "node:crypto";
-import { Pool, type PoolClient } from "pg";
+import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 // Must run before ../config/env is first imported (imports are hoisted).
@@ -24,10 +24,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import {
-  DEVICE_TOKEN_HEADER,
-  cafeLegendPlatformFixtures,
-} from "@starter/shared/platform";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import {
   installEdgeStaffPinPeppers,
@@ -47,6 +44,11 @@ import {
 } from "../services/device.service.ts";
 import { authenticateReceiverSession } from "../services/panic-receiver-session.ts";
 import { withEdgeModeEnv } from "./edge-mode-env.ts";
+import {
+  createIsolatedTenant,
+  owner,
+  type IsolatedTenant,
+} from "./floor-test-helpers.ts";
 import { agent, WEB_ORIGIN } from "./helpers.ts";
 import {
   PANIC_COOKIE_NAME,
@@ -61,16 +63,9 @@ const HOUR = 60 * 60_000;
 const edge = createApp({ edgeMode: true });
 delete process.env.EDGE_MODE;
 
-const tenant = cafeLegendPlatformFixtures.tenant;
-const owner = new Pool({
-  connectionString: process.env.STARTER_TEST_DATABASE_URL,
-  max: 3,
-});
-const tenantContext = establishTenantContext({
-  tenantId: tenant.id,
-  brandId: null,
-  source: "session",
-});
+// A tenant of its own (not the shared seeded one), created in beforeAll.
+let tenant: IsolatedTenant;
+let tenantContext: ReturnType<typeof establishTenantContext>;
 const outletScope = (id: string) =>
   establishScopedTenantContext(tenantContext, {
     kind: "outlets",
@@ -91,7 +86,7 @@ async function asTenant<T>(
     await client.query("BEGIN");
     await client.query(
       "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
-      [tenant.id],
+      [tenant.tenantId],
     );
     const result = await run(client);
     await client.query("COMMIT");
@@ -113,7 +108,7 @@ function holdPeppers(outlet: string) {
     pepper = randomBytes(32);
     outletPeppers.set(outlet, pepper);
   }
-  installEdgeStaffPinPeppers(tenant.id, outlet, [{ version: 2, pepper }]);
+  installEdgeStaffPinPeppers(tenant.tenantId, outlet, [{ version: 2, pepper }]);
   edgeOutlet = outlet;
 }
 const ensurePeppers = (outlet: string) => {
@@ -128,9 +123,9 @@ async function seedOutlet(label: string) {
        VALUES ($1, $2, $3, $4, $5, $6, 'Jl. Darurat', 'Asia/Jakarta', '{"mon":null,"tue":null,"wed":null,"thu":null,"fri":null,"sat":null,"sun":null}', 'active')`,
       [
         id,
-        tenant.id,
-        cafeLegendPlatformFixtures.brand.id,
-        cafeLegendPlatformFixtures.legalEntity.id,
+        tenant.tenantId,
+        tenant.brandId,
+        tenant.legalEntityId,
         `RB-${id.slice(0, 8)}`.toUpperCase(),
         label,
       ],
@@ -169,7 +164,7 @@ async function grantRespond(userId: string, outlet: string) {
        VALUES ($1, $2, $3, false, $4, false, '["outlet"]')`,
       [
         roleId,
-        tenant.id,
+        tenant.tenantId,
         `Darurat ${roleId.slice(0, 8)}`,
         JSON.stringify([PANIC_PERMISSION_RESPOND]),
       ],
@@ -178,7 +173,7 @@ async function grantRespond(userId: string, outlet: string) {
       `INSERT INTO role_assignments
          (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
        VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
-      [tenant.id, userId, roleId, outlet],
+      [tenant.tenantId, userId, roleId, outlet],
     );
   });
 }
@@ -193,7 +188,7 @@ async function seedShift(employeeId: string, outlet: string) {
        VALUES ($1, $2, $3, $4, $5, $6, 0, 'published', 'user', $7, now(), $7)`,
       [
         randomUUID(),
-        tenant.id,
+        tenant.tenantId,
         outlet,
         employeeId,
         new Date(now + 7 * HOUR).toISOString().slice(0, 10),
@@ -220,7 +215,7 @@ async function onDutyStaff(outlets: string[]) {
        VALUES ($1, $2, $3, $4, 'Karyawan Darurat', $5, 'pkwtt', '2025-03-01', 'active')`,
       [
         employeeId,
-        tenant.id,
+        tenant.tenantId,
         userId,
         `RB-${employeeId.slice(0, 8).toUpperCase()}`,
         outlets[0],
@@ -270,7 +265,7 @@ async function sessionsOf(userId: string) {
   }>(
     `SELECT device_id::text, revoked_at, revoke_reason FROM panic_receiver_sessions
       WHERE tenant_id = $1 AND user_id::text = $2 ORDER BY issued_at`,
-    [tenant.id, userId],
+    [tenant.tenantId, userId],
   );
   return rows;
 }
@@ -280,6 +275,14 @@ beforeAll(async () => {
     throw new Error("Requires the disposable test database");
   setAuditWriter(coreAuditWriter);
   setDeviceOutletResolver(createDeviceOutletResolver());
+  tenant = await createIsolatedTenant(
+    `prev-b-${randomBytes(3).toString("hex")}`,
+  );
+  tenantContext = establishTenantContext({
+    tenantId: tenant.tenantId,
+    brandId: null,
+    source: "session",
+  });
   outletA = await seedOutlet("Outlet review B-A");
   outletB = await seedOutlet("Outlet review B-B");
   holdPeppers(outletA);
@@ -290,7 +293,30 @@ afterAll(async () => {
   resetEdgeStaffPinPeppers();
   setAuditWriter(null);
   setDeviceOutletResolver(null);
-  await owner.end();
+  const { rows } = await owner.query<{ table_name: string }>(
+    `SELECT DISTINCT c.table_name FROM information_schema.columns c
+       JOIN information_schema.tables t
+         ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+      WHERE c.table_schema = 'public' AND c.column_name = 'tenant_id'
+        AND t.table_type = 'BASE TABLE'`,
+  );
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role = replica");
+    for (const { table_name } of rows)
+      await client.query(`DELETE FROM "${table_name}" WHERE tenant_id = $1`, [
+        tenant.tenantId,
+      ]);
+    await client.query("DELETE FROM tenants WHERE id = $1", [tenant.tenantId]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+    await owner.end();
+  }
 });
 
 describe("F-B (2): a session follows its device", () => {

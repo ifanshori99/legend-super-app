@@ -75,10 +75,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import {
-  DEVICE_TOKEN_HEADER,
-  cafeLegendPlatformFixtures,
-} from "@starter/shared/platform";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { guardEdgeUpgrades } from "../edge/mode.ts";
 import {
@@ -96,6 +93,11 @@ import {
 } from "../services/device-pin.service.ts";
 import { enrollDevice, revokeDevice } from "../services/device.service.ts";
 import { withEdgeModeEnv } from "./edge-mode-env.ts";
+import {
+  createIsolatedTenant,
+  owner,
+  type IsolatedTenant,
+} from "./floor-test-helpers.ts";
 import { agent, WEB_ORIGIN } from "./helpers.ts";
 import {
   PANIC_COOKIE_NAME,
@@ -149,16 +151,9 @@ const edgeLogged = createApp({
 // From here on the process is a cloud-style process unless wrapped.
 delete process.env.EDGE_MODE;
 
-const tenant = cafeLegendPlatformFixtures.tenant;
-const owner = new Pool({
-  connectionString: process.env.STARTER_TEST_DATABASE_URL,
-  max: 3,
-});
-const tenantContext = establishTenantContext({
-  tenantId: tenant.id,
-  brandId: null,
-  source: "session",
-});
+// A tenant of its own (not the shared seeded one), created in beforeAll.
+let tenant: IsolatedTenant;
+let tenantContext: ReturnType<typeof establishTenantContext>;
 const outletScope = (id: string) =>
   establishScopedTenantContext(tenantContext, {
     kind: "outlets",
@@ -166,11 +161,6 @@ const outletScope = (id: string) =>
   });
 const actor = randomUUID();
 
-const createdUsers: string[] = [];
-const createdRoles: string[] = [];
-const createdEmployees: string[] = [];
-const createdOutlets: string[] = [];
-const createdDevices: string[] = [];
 const outletPeppers = new Map<string, Buffer>();
 let outletA: string;
 let outletB: string;
@@ -188,7 +178,7 @@ async function asTenant<T>(
     await client.query("BEGIN");
     await client.query(
       "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
-      [tenant.id],
+      [tenant.tenantId],
     );
     const result = await run(client);
     await client.query("COMMIT");
@@ -215,7 +205,7 @@ function holdPeppers(outlet: string) {
     pepper = randomBytes(32);
     outletPeppers.set(outlet, pepper);
   }
-  installEdgeStaffPinPeppers(tenant.id, outlet, [{ version: 2, pepper }]);
+  installEdgeStaffPinPeppers(tenant.tenantId, outlet, [{ version: 2, pepper }]);
   edgeOutlet = outlet;
 }
 const ensurePeppers = (outlet: string) => {
@@ -224,16 +214,15 @@ const ensurePeppers = (outlet: string) => {
 
 async function seedOutlet(label: string) {
   const id = randomUUID();
-  createdOutlets.push(id);
   await asTenant(async (client) => {
     await client.query(
       `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
        VALUES ($1, $2, $3, $4, $5, $6, 'Jl. Darurat', 'Asia/Jakarta', '{"mon":null,"tue":null,"wed":null,"thu":null,"fri":null,"sat":null,"sun":null}', 'active')`,
       [
         id,
-        tenant.id,
-        cafeLegendPlatformFixtures.brand.id,
-        cafeLegendPlatformFixtures.legalEntity.id,
+        tenant.tenantId,
+        tenant.brandId,
+        tenant.legalEntityId,
         `EM-${id.slice(0, 8)}`.toUpperCase(),
         label,
       ],
@@ -254,7 +243,6 @@ async function enrollAt(
     stationId: null,
     idempotencyKey: randomUUID(),
   });
-  createdDevices.push(enrolled.device.id);
   tokenOutlet.set(enrolled.token, outlet);
   return { token: enrolled.token, id: enrolled.device.id, outlet };
 }
@@ -268,7 +256,7 @@ async function newButton(outlet: string) {
   return button;
 }
 
-function forgedToken(deviceId: string, tenantId: string = tenant.id) {
+function forgedToken(deviceId: string, tenantId: string = tenant.tenantId) {
   return signDeviceToken({
     version: 1,
     issuedAt: Math.floor(Date.now() / 1000),
@@ -284,14 +272,13 @@ async function grantRole(
   outlet: string,
 ) {
   const roleId = randomUUID();
-  createdRoles.push(roleId);
   await asTenant(async (client) => {
     await client.query(
       `INSERT INTO roles (id, tenant_id, name, is_template, permissions, mfa_required, allowed_scope_types)
        VALUES ($1, $2, $3, false, $4, false, '["outlet"]')`,
       [
         roleId,
-        tenant.id,
+        tenant.tenantId,
         `Darurat ${roleId.slice(0, 8)}`,
         JSON.stringify(permissions),
       ],
@@ -300,7 +287,7 @@ async function grantRole(
       `INSERT INTO role_assignments
          (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
        VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
-      [tenant.id, userId, roleId, outlet],
+      [tenant.tenantId, userId, roleId, outlet],
     );
   });
 }
@@ -311,7 +298,6 @@ async function insertUser(label: string) {
     `INSERT INTO "user" (id, name, email) VALUES ($1, $2, $3)`,
     [id, label, `${id}@example.test`],
   );
-  createdUsers.push(id);
   return id;
 }
 
@@ -331,7 +317,6 @@ async function newStaff(name: string, options: StaffOptions = {}) {
     outlet,
   );
   const employeeId = randomUUID();
-  createdEmployees.push(employeeId);
   await asTenant(async (c) => {
     await c.query(
       `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
@@ -339,7 +324,7 @@ async function newStaff(name: string, options: StaffOptions = {}) {
        VALUES ($1, $2, $3, $4, 'Karyawan Darurat', $5, 'pkwtt', '2025-03-01', $6)`,
       [
         employeeId,
-        tenant.id,
+        tenant.tenantId,
         userId,
         `EM-${employeeId.slice(0, 8).toUpperCase()}`,
         outlet,
@@ -378,7 +363,7 @@ async function seedShift(
        VALUES ($1, $2, $3, $4, $5, $6, 0, 'published', 'user', $7, now(), $7)`,
       [
         id,
-        tenant.id,
+        tenant.tenantId,
         options.outlet ?? staff.outlet,
         staff.employeeId,
         options.businessDate ?? wibDate(now + startOffsetMs),
@@ -405,7 +390,7 @@ async function moveShift(
     client.query(
       "UPDATE shift_assignments SET segments = $3 WHERE tenant_id = $1 AND id = $2",
       [
-        tenant.id,
+        tenant.tenantId,
         shiftId,
         JSON.stringify([
           {
@@ -434,7 +419,7 @@ async function seedClock(
        VALUES ($1, $2, $3, $4, $5, 'outlet_device', $6, $6, 'valid', $7, $8)`,
       [
         ulidToUuid(createUlid()),
-        tenant.id,
+        tenant.tenantId,
         outlet,
         staff.employeeId,
         type,
@@ -562,7 +547,7 @@ async function sessionRows(userId: string) {
             encode(token_hash, 'hex') AS token_hash_hex
        FROM panic_receiver_sessions
       WHERE tenant_id = $1 AND user_id::text = $2 ORDER BY issued_at`,
-    [tenant.id, userId],
+    [tenant.tenantId, userId],
   );
   return rows;
 }
@@ -573,7 +558,7 @@ const liveRows = async (userId: string) =>
 async function alertIdOf(eventId: string) {
   const { rows } = await owner.query<{ id: string }>(
     "SELECT id::text FROM panic_alerts WHERE tenant_id = $1 AND first_device_event_id = $2",
-    [tenant.id, eventId],
+    [tenant.tenantId, eventId],
   );
   expect(rows, `no panic_alerts row for event ${eventId}`).toHaveLength(1);
   return rows[0]!.id;
@@ -582,7 +567,7 @@ async function alertIdOf(eventId: string) {
 async function ackedAt(alertId: string) {
   const { rows } = await owner.query<{ acknowledged_at: Date | null }>(
     "SELECT acknowledged_at FROM panic_alerts WHERE tenant_id = $1 AND id::text = $2",
-    [tenant.id, alertId],
+    [tenant.tenantId, alertId],
   );
   return rows[0]?.acknowledged_at ?? null;
 }
@@ -593,7 +578,7 @@ async function pinRow(userId: string) {
     locked_until: Date | null;
   }>(
     "SELECT failed_attempts, locked_until FROM staff_pins WHERE tenant_id = $1 AND user_id::text = $2",
-    [tenant.id, userId],
+    [tenant.tenantId, userId],
   );
   return rows[0];
 }
@@ -601,7 +586,7 @@ async function pinRow(userId: string) {
 async function proofRows(userId: string) {
   const { rows } = await owner.query(
     "SELECT 1 FROM staff_pin_proofs WHERE tenant_id = $1 AND user_id::text = $2",
-    [tenant.id, userId],
+    [tenant.tenantId, userId],
   );
   return rows.length;
 }
@@ -609,7 +594,7 @@ async function proofRows(userId: string) {
 async function attendanceRows(employeeId: string) {
   const { rows } = await owner.query(
     "SELECT 1 FROM attendance_logs WHERE tenant_id = $1 AND employee_id = $2",
-    [tenant.id, employeeId],
+    [tenant.tenantId, employeeId],
   );
   return rows.length;
 }
@@ -733,11 +718,46 @@ const expectClosed4401 = async (sock: Sock) => {
   expect(sock.closeCode()).toBe(PANIC_REVOKED_CLOSE_CODE);
 };
 
+/** Drops the file's own tenant and every row under it (append-only triggers off). */
+async function purgeTenant() {
+  const { rows } = await owner.query<{ table_name: string }>(
+    `SELECT DISTINCT c.table_name FROM information_schema.columns c
+       JOIN information_schema.tables t
+         ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+      WHERE c.table_schema = 'public' AND c.column_name = 'tenant_id'
+        AND t.table_type = 'BASE TABLE'`,
+  );
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role = replica");
+    for (const { table_name } of rows)
+      await client.query(`DELETE FROM "${table_name}" WHERE tenant_id = $1`, [
+        tenant.tenantId,
+      ]);
+    await client.query("DELETE FROM tenants WHERE id = $1", [tenant.tenantId]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   setAuditWriter(coreAuditWriter);
   setDeviceOutletResolver(createDeviceOutletResolver());
+  tenant = await createIsolatedTenant(
+    `em-sess-${randomBytes(3).toString("hex")}`,
+  );
+  tenantContext = establishTenantContext({
+    tenantId: tenant.tenantId,
+    brandId: null,
+    source: "session",
+  });
   outletA = await seedOutlet("Outlet darurat A");
   outletB = await seedOutlet("Outlet darurat B");
   holdPeppers(outletA);
@@ -764,39 +784,7 @@ afterAll(async () => {
   resetEdgeStaffPinPeppers();
   setAuditWriter(null);
   setDeviceOutletResolver(null);
-  await asTenant(async (client) => {
-    await client.query(
-      "DELETE FROM device_pin_throttle WHERE tenant_id = $1 AND device_id = ANY($2::uuid[])",
-      [tenant.id, createdDevices],
-    );
-    await client.query(
-      "DELETE FROM staff_pin_proofs WHERE tenant_id = $1 AND outlet_id = ANY($2::uuid[])",
-      [tenant.id, createdOutlets],
-    );
-    await client.query(
-      "DELETE FROM staff_pins WHERE tenant_id = $1 AND user_id::text = ANY($2::text[])",
-      [tenant.id, createdUsers],
-    );
-    for (const table of ["attendance_logs", "shift_assignments"])
-      await client.query(
-        `DELETE FROM ${table} WHERE tenant_id = $1 AND outlet_id = ANY($2::uuid[])`,
-        [tenant.id, createdOutlets],
-      );
-    await client.query(
-      "DELETE FROM employees WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
-      [tenant.id, createdEmployees],
-    );
-    await client.query(
-      "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id::text = ANY($2::text[])",
-      [tenant.id, createdUsers],
-    );
-    await client.query(
-      "DELETE FROM roles WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
-      [tenant.id, createdRoles],
-    );
-    // Panic alerts (no DELETE by trigger), sessions, outlets, devices and
-    // users stay: disposable DB, append-only audit and alert records.
-  });
+  await purgeTenant();
   if (ownerB && tenantB)
     await removeSecondTenant(ownerB, tenantB).catch(() => undefined);
   await ownerB?.end();
@@ -1015,20 +1003,40 @@ const kitchenCovered = (PANIC_NON_RECEIVER_ROLES as readonly string[]).includes(
 /** The tenant's own seeded template role (as the real role grant gives it). */
 async function assignTemplateRole(
   userId: string,
-  templateKey: string,
+  templateKey: RoleTemplateKey,
   outlet: string,
 ) {
   const { rows } = await owner.query<{ id: string }>(
     "SELECT id FROM roles WHERE tenant_id = $1 AND template_key = $2",
-    [tenant.id, templateKey],
+    [tenant.tenantId, templateKey],
   );
-  expect(rows, `no seeded role template ${templateKey}`).toHaveLength(1);
+  if (rows.length === 0) {
+    // The isolated tenant has no seeded templates: create the one asked for,
+    // from the same shared template the real role grant uses.
+    const template = roleTemplate(templateKey);
+    const inserted = await owner.query<{ id: string }>(
+      `INSERT INTO roles
+         (tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, true, $3, $4::jsonb, $5, $6::jsonb)
+       RETURNING id`,
+      [
+        tenant.tenantId,
+        template.defaultName,
+        templateKey,
+        JSON.stringify(template.permissions),
+        template.mfaRequired,
+        JSON.stringify(template.allowedScopeTypes),
+      ],
+    );
+    rows.push(inserted.rows[0]!);
+  }
+  expect(rows, `no role template ${templateKey}`).toHaveLength(1);
   await asTenant((client) =>
     client.query(
       `INSERT INTO role_assignments
          (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
        VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
-      [tenant.id, userId, rows[0]!.id, outlet],
+      [tenant.tenantId, userId, rows[0]!.id, outlet],
     ),
   );
 }
@@ -1279,7 +1287,7 @@ describe("EM-05 unregistered device, device throttle, staff lock", () => {
     // The lock ends (moved into the past): the right PIN works again.
     await owner.query(
       "UPDATE staff_pins SET locked_until = now() - interval '1 second', failed_attempts = 0 WHERE tenant_id = $1 AND user_id::text = $2",
-      [tenant.id, staff.userId],
+      [tenant.tenantId, staff.userId],
     );
     await loginOk(deviceTwo, staff);
   });
@@ -1324,7 +1332,7 @@ describe("EM-06 revocation: session revoked, socket closed 4401, nothing deliver
         await asTenant((client) =>
           client.query(
             "UPDATE employees SET status = 'suspended' WHERE tenant_id = $1 AND id = $2",
-            [tenant.id, staff.employeeId],
+            [tenant.tenantId, staff.employeeId],
           ),
         );
       },
@@ -1336,7 +1344,7 @@ describe("EM-06 revocation: session revoked, socket closed 4401, nothing deliver
         await asTenant((client) =>
           client.query(
             "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id::text = $2",
-            [tenant.id, staff.userId],
+            [tenant.tenantId, staff.userId],
           ),
         );
       },
@@ -1408,7 +1416,7 @@ describe("D-03 receiver session cookie and lifetime", () => {
     );
     const cookie = cookieOf(response);
     expect(cookie).not.toBeNull();
-    expect(cookie!.value.startsWith(`${tenant.id}.`)).toBe(true);
+    expect(cookie!.value.startsWith(`${tenant.tenantId}.`)).toBe(true);
     expect(cookie!.random).toMatch(/^[A-Za-z0-9_-]{43}$/); // 32 bytes, base64url
     expect(Buffer.from(cookie!.random, "base64url")).toHaveLength(32);
     expect(cookie!.raw).toMatch(/;\s*HttpOnly/i);
@@ -1425,7 +1433,7 @@ describe("D-03 receiver session cookie and lifetime", () => {
     ]).toContain(row!.token_hash_hex);
     const dump = await owner.query(
       "SELECT row_to_json(s)::text AS j FROM panic_receiver_sessions s WHERE tenant_id = $1 AND user_id::text = $2",
-      [tenant.id, staff.userId],
+      [tenant.tenantId, staff.userId],
     );
     expect(dump.rows[0]!.j).not.toContain(cookie!.random);
   });
@@ -1453,7 +1461,7 @@ describe("D-03 receiver session cookie and lifetime", () => {
     expect(firstRows[0]!.revoke_reason).toBe("replaced");
     const live = await owner.query(
       "SELECT 1 FROM panic_receiver_sessions WHERE tenant_id = $1 AND device_id::text = $2 AND revoked_at IS NULL",
-      [tenant.id, device.id],
+      [tenant.tenantId, device.id],
     );
     expect(live.rows).toHaveLength(1);
     await expectClosed4401(sockFirst);
@@ -1603,7 +1611,7 @@ describe("EM-16 an emergency login is not a PIN proof", () => {
     expect(proofResponse.status, JSON.stringify(proofResponse.body)).toBe(200);
     const before = await owner.query(
       "SELECT id::text, expires_at, consumed_at FROM staff_pin_proofs WHERE tenant_id = $1 AND user_id::text = $2",
-      [tenant.id, clocker.userId],
+      [tenant.tenantId, clocker.userId],
     );
     expect(before.rows).toHaveLength(1);
 
@@ -1613,7 +1621,7 @@ describe("EM-16 an emergency login is not a PIN proof", () => {
     expect(await proofRows(responder.userId)).toBe(0);
     const after = await owner.query(
       "SELECT id::text, expires_at, consumed_at FROM staff_pin_proofs WHERE tenant_id = $1 AND user_id::text = $2",
-      [tenant.id, clocker.userId],
+      [tenant.tenantId, clocker.userId],
     );
     expect(after.rows).toEqual(before.rows);
     expect(after.rows[0]!.consumed_at).toBeNull();
@@ -1631,7 +1639,7 @@ describe("EM-16 an emergency login is not a PIN proof", () => {
       `INSERT INTO edge_people_sync_state (tenant_id, outlet_id, last_checked_at)
        VALUES ($1, $2, now())
        ON CONFLICT (tenant_id, outlet_id) DO UPDATE SET last_checked_at = now()`,
-      [tenant.id, outletA],
+      [tenant.tenantId, outletA],
     );
     const body = {
       type: "in",
@@ -1657,7 +1665,7 @@ describe("EM-16 an emergency login is not a PIN proof", () => {
     }
     await owner.query(
       "DELETE FROM edge_people_sync_state WHERE tenant_id = $1 AND outlet_id = $2",
-      [tenant.id, outletA],
+      [tenant.tenantId, outletA],
     );
     expect(await attendanceRows(staff.employeeId)).toBe(0);
     expect(await proofRows(staff.userId)).toBe(0);

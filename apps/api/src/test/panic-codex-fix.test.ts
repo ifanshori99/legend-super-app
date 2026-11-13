@@ -45,6 +45,11 @@ import {
   vi,
 } from "vitest";
 import { createUlid, outletIdSchema, ulidToUuid } from "@starter/shared/core";
+import type { EventEnvelope } from "@starter/shared/events";
+import {
+  PANIC_ALERT_AGGREGATE_TYPE,
+  panicAlertResolvedEvent,
+} from "@starter/shared/facility";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -80,6 +85,9 @@ vi.mock("../services/panic-receiver-session.ts", async (importOriginal) => {
 });
 
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { createDbLinkStore } from "../edge/db-link-store.ts";
+import { registerPanicAlertEdgeApplier } from "../edge/panic-alert-applier.ts";
 import { guardEdgeUpgrades } from "../edge/mode.ts";
 import { attachEmergencyRealtime } from "../edge/panic-relay-realtime.ts";
 import { subscribe, type HubSubscriber } from "../edge/panic-relay-hub.ts";
@@ -92,6 +100,7 @@ import {
   resetEdgeStaffPinPeppers,
 } from "../edge/staff-pin-pepper-registry.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
+import { logger } from "../lib/logger.ts";
 import { createDeviceOutletResolver } from "../services/device-outlet-resolver.ts";
 import {
   setDeviceOutletResolver,
@@ -700,6 +709,79 @@ describe("legend-w5u1a Codex fixes for the edge emergency alarm", () => {
         (row) => row.edge_node_id,
       ),
     ).toEqual([oldest]);
+  });
+
+  it("item 2b: a failover copy of panic_alert.resolved for an alert this edge never held is a logged no-op: applied, no conflict row", async () => {
+    const { outlet, nodeId } = await world("CX2b unknown resolve", true);
+    registerPanicAlertEdgeApplier();
+    const unknownAlertId = randomUUID();
+    const now = new Date();
+    const event = panicAlertResolvedEvent.envelopeSchema.parse({
+      id: createUlid(now.getTime()),
+      tenantId: tenant.id,
+      outletId: outlet,
+      name: panicAlertResolvedEvent.name,
+      version: panicAlertResolvedEvent.version,
+      aggregateType: PANIC_ALERT_AGGREGATE_TYPE,
+      aggregateId: unknownAlertId,
+      sequence: 1,
+      occurredAt: now.toISOString(),
+      actor: { type: "user", id: actor },
+      deviceId: null,
+      idempotencyKey: `${PANIC_ALERT_AGGREGATE_TYPE}:${unknownAlertId}:cloud:1`,
+      payloadSchemaRef: panicAlertResolvedEvent.payloadSchemaRef,
+      payload: {
+        alertId: unknownAlertId,
+        resolvedBy: actor,
+        resolvedAt: now.toISOString(),
+        resolutionNote: "Aman",
+      },
+    }) as EventEnvelope;
+    const info = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+    cleanups.push(() => info.mockRestore());
+
+    const link = createDbLinkStore({
+      database: db,
+      context: outletScope(outlet),
+      node: {
+        tenantId: tenant.id,
+        outletId: outletIdSchema.parse(outlet),
+        edgeNodeId: nodeId,
+      },
+      outboundDirection: "edge_to_cloud",
+    });
+    const from = await link.lastReceivedInbound();
+    await link.applyInbound({
+      fromSeq: from,
+      toSeq: from + 1,
+      events: [{ linkSeq: from + 1, event }],
+    });
+
+    expect(
+      info.mock.calls.some(
+        ([fields]) =>
+          (fields as { alertId?: string } | undefined)?.alertId ===
+          unknownAlertId,
+      ),
+    ).toBe(true);
+    const conflicts = await owner.query(
+      "SELECT 1 FROM edge_sync_conflicts WHERE tenant_id = $1 AND aggregate_type = 'panic_alert' AND aggregate_id = $2",
+      [tenant.id, unknownAlertId],
+    );
+    expect(conflicts.rows).toHaveLength(0);
+    const receipts = await owner.query<{ outcome: string }>(
+      "SELECT outcome FROM edge_inbound_events WHERE tenant_id = $1 AND aggregate_type = 'panic_alert' AND aggregate_id = $2",
+      [tenant.id, unknownAlertId],
+    );
+    expect(receipts.rows.map((row) => row.outcome)).toEqual(["applied"]);
+    expect(
+      (
+        await owner.query(
+          "SELECT 1 FROM panic_alerts WHERE tenant_id = $1 AND id = $2",
+          [tenant.id, unknownAlertId],
+        )
+      ).rows,
+    ).toHaveLength(0);
   });
 
   it(

@@ -43,7 +43,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { Pool, type PoolClient } from "pg";
+import type { PoolClient } from "pg";
 import request from "supertest";
 import WebSocket from "ws";
 import {
@@ -61,10 +61,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import {
-  DEVICE_TOKEN_HEADER,
-  cafeLegendPlatformFixtures,
-} from "@starter/shared/platform";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { guardEdgeUpgrades } from "../edge/mode.ts";
 import {
@@ -82,7 +79,13 @@ import {
   setStaffPin,
 } from "../services/device-pin.service.ts";
 import { enrollDevice } from "../services/device.service.ts";
+import { readPanicFallback } from "../services/panic-relay.service.ts";
 import { withEdgeModeEnv } from "./edge-mode-env.ts";
+import {
+  createIsolatedTenant,
+  owner,
+  type IsolatedTenant,
+} from "./floor-test-helpers.ts";
 import {
   agent,
   originHeader,
@@ -113,22 +116,16 @@ import {
   sessionBody,
 } from "./panic-test-helpers.ts";
 const PIN = "582914";
-const tenant = cafeLegendPlatformFixtures.tenant;
 const SLOW_MS = 45_000;
 
-const owner = new Pool({
-  connectionString: process.env.STARTER_TEST_DATABASE_URL,
-  max: 3,
-});
+// One isolated tenant for the whole file (created in beforeAll, removed in
+// afterAll): no shared fixture tenant, so no other file sees or touches it.
+let tenant: IsolatedTenant;
 const edgeApp = createApp({ edgeMode: true });
 const cloudApp = createApp({ edgeMode: false });
 const cloudState = getEdgeRuntimeState();
 
-const tenantContext = establishTenantContext({
-  tenantId: tenant.id,
-  brandId: null,
-  source: "session",
-});
+let tenantContext: ReturnType<typeof establishTenantContext>;
 const outletScope = (id: string) =>
   establishScopedTenantContext(tenantContext, {
     kind: "outlets",
@@ -152,7 +149,7 @@ async function asTenantOwner<T>(run: (client: PoolClient) => Promise<T>) {
     await client.query("BEGIN");
     await client.query(
       "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
-      [tenant.id],
+      [tenant.tenantId],
     );
     const result = await run(client);
     await client.query("COMMIT");
@@ -174,7 +171,7 @@ function actAsEdge(outletId: string) {
     identity: {
       context: outletScope(outletId),
       scope: {
-        tenantId: tenant.id,
+        tenantId: tenant.tenantId,
         outletId: outletIdSchema.parse(outletId),
         edgeNodeId: randomUUID(),
       },
@@ -191,7 +188,7 @@ function holdEdgePepper(outlet: string) {
     outletPeppers.set(outlet, pepper);
   }
   resetEdgeStaffPinPeppers();
-  installEdgeStaffPinPeppers(tenant.id, outlet, [{ version: 2, pepper }]);
+  installEdgeStaffPinPeppers(tenant.tenantId, outlet, [{ version: 2, pepper }]);
 }
 
 async function seedOutlet(label: string) {
@@ -203,9 +200,9 @@ async function seedOutlet(label: string) {
        VALUES ($1, $2, $3, $4, $5, $6, 'Jl. Darurat', 'Asia/Jakarta', '{"mon":null,"tue":null,"wed":null,"thu":null,"fri":null,"sat":null,"sun":null}', 'active')`,
       [
         id,
-        tenant.id,
-        cafeLegendPlatformFixtures.brand.id,
-        cafeLegendPlatformFixtures.legalEntity.id,
+        tenant.tenantId,
+        tenant.brandId,
+        tenant.legalEntityId,
         `EM-${id.slice(0, 8)}`.toUpperCase(),
         label,
       ],
@@ -231,14 +228,14 @@ async function registerPanicButton(outlet: string, label = "Tombol Kamar") {
     client.query(
       `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
        VALUES ($1, $2, $3, 'panic_button', $4, $5)`,
-      [deviceId, tenant.id, outlet, label, new Date(issuedAt * 1000)],
+      [deviceId, tenant.tenantId, outlet, label, new Date(issuedAt * 1000)],
     ),
   );
   deviceIds.push(deviceId);
   const token = signDeviceToken({
     version: 1,
     issuedAt,
-    tenantId: tenant.id,
+    tenantId: tenant.tenantId,
     brandId: null,
     deviceId,
   });
@@ -270,7 +267,7 @@ async function seedUnit(outlet: string, panicDeviceId: string) {
        VALUES ($1, $2, $3, 'Panic Relay', 'shower', 20, 10, 10, $4, $5, $6)`,
       [
         facilityId,
-        tenant.id,
+        tenant.tenantId,
         outlet,
         JSON.stringify([
           {
@@ -295,12 +292,12 @@ async function seedUnit(outlet: string, panicDeviceId: string) {
     await client.query(
       `INSERT INTO facility_areas (id, tenant_id, outlet_id, facility_id, name, sort_order)
        VALUES ($1, $2, $3, $4, 'Area Panic', 0)`,
-      [areaId, tenant.id, outlet, facilityId],
+      [areaId, tenant.tenantId, outlet, facilityId],
     );
     await client.query(
       `INSERT INTO facility_units (id, tenant_id, outlet_id, facility_id, area_id, code, status, sort_order, panic_device_id)
        VALUES ($1, $2, $3, $4, $5, 'P1', 'available', 0, $6)`,
-      [unitId, tenant.id, outlet, facilityId, areaId, panicDeviceId],
+      [unitId, tenant.tenantId, outlet, facilityId, areaId, panicDeviceId],
     );
   });
   return { facilityId, unitId };
@@ -331,7 +328,7 @@ async function grantRole(
          SELECT $1, $2, r.id, $3, $4, now() - interval '1 hour', $2
            FROM roles r WHERE r.tenant_id = $1 AND r.template_key = $5`,
         [
-          tenant.id,
+          tenant.tenantId,
           userId,
           scopeType,
           scopeType === "outlet" ? outlet : null,
@@ -349,7 +346,7 @@ async function grantRole(
        VALUES ($1, $2, $3, false, $4, false, '["outlet"]')`,
       [
         roleId,
-        tenant.id,
+        tenant.tenantId,
         `Darurat ${roleId.slice(0, 8)}`,
         JSON.stringify(permissions),
       ],
@@ -358,7 +355,7 @@ async function grantRole(
       `INSERT INTO role_assignments
          (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
        VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
-      [tenant.id, userId, roleId, outlet],
+      [tenant.tenantId, userId, roleId, outlet],
     );
   });
 }
@@ -406,7 +403,7 @@ async function newStaff(
        VALUES ($1, $2, $3, $4, $5, $6, 'pkwtt', '2025-03-01', 'active')`,
       [
         employeeId,
-        tenant.id,
+        tenant.tenantId,
         userId,
         `EM-${employeeId.slice(0, 8).toUpperCase()}`,
         label,
@@ -423,7 +420,7 @@ async function newStaff(
                  now() - make_interval(hours => $5::int), 'valid', '[]', $6, $7, 'none')`,
         [
           ulidToUuid(createUlid()),
-          tenant.id,
+          tenant.tenantId,
           outlet,
           employeeId,
           agoHours,
@@ -635,7 +632,7 @@ const alertsOf = async (deviceId: string) =>
     await asTenantOwner((c) =>
       c.query<AlertRow>(
         "SELECT * FROM panic_alerts WHERE tenant_id = $1 AND device_id = $2 ORDER BY received_at, id",
-        [tenant.id, deviceId],
+        [tenant.tenantId, deviceId],
       ),
     )
   ).rows;
@@ -645,7 +642,7 @@ const alertById = async (alertId: string) =>
     await asTenantOwner((c) =>
       c.query<AlertRow>(
         "SELECT * FROM panic_alerts WHERE tenant_id = $1 AND id = $2",
-        [tenant.id, alertId],
+        [tenant.tenantId, alertId],
       ),
     )
   ).rows[0];
@@ -655,7 +652,7 @@ const pressRows = async (deviceId: string) =>
     await asTenantOwner((c) =>
       c.query<{ device_event_id: string; alert_id: string }>(
         "SELECT device_event_id, alert_id FROM panic_press_events WHERE tenant_id = $1 AND device_id = $2 ORDER BY received_at, device_event_id",
-        [tenant.id, deviceId],
+        [tenant.tenantId, deviceId],
       ),
     )
   ).rows;
@@ -670,7 +667,7 @@ const deliveriesOf = async (alertId: string) =>
         received_at: Date | null;
       }>(
         "SELECT session_id, user_id, sent_count, received_at FROM panic_alert_deliveries WHERE tenant_id = $1 AND alert_id = $2",
-        [tenant.id, alertId],
+        [tenant.tenantId, alertId],
       ),
     )
   ).rows;
@@ -696,10 +693,46 @@ async function raise(
 
 const resolveBody = (note: string) => ({ note });
 
+// Cloud routes resolve the tenant from the Host header; the isolated tenant's
+// hostname is not the default one, so cloud requests must send it.
+const cloudHeaders = () => ({ ...originHeader, Host: tenant.hostname });
+
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   setDeviceOutletResolver(createDeviceOutletResolver());
+  tenant = await createIsolatedTenant(
+    `prelay-${randomBytes(3).toString("hex")}`,
+  );
+  tenantContext = establishTenantContext({
+    tenantId: tenant.tenantId,
+    brandId: null,
+    source: "session",
+  });
+  // The isolated tenant has no seeded role templates; grantRole picks them by
+  // template_key, so seed the ones the Q95 cases use.
+  const templateKeys = new Set<RoleTemplateKey>([
+    ...PANIC_RECEIVER_ROLES,
+    ...PANIC_NON_RECEIVER_TEMPLATES,
+    ...PANIC_RESOLVER_ROLES,
+    "facility_attendant",
+    "supervisor",
+  ]);
+  for (const key of templateKeys) {
+    const template = roleTemplate(key);
+    await owner.query(
+      `INSERT INTO roles (tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, true, $3, $4::jsonb, $5, $6::jsonb)`,
+      [
+        tenant.tenantId,
+        template.defaultName,
+        key,
+        JSON.stringify(template.permissions),
+        template.mfaRequired,
+        JSON.stringify(template.allowedScopeTypes),
+      ],
+    );
+  }
 });
 
 afterEach(async () => {
@@ -708,23 +741,36 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  // panic_alerts may refuse DELETE by trigger (D-08) and audit_logs is
+  // append-only, so the owner deletes the whole tenant with triggers off.
+  const { rows } = await owner.query<{ table_name: string }>(
+    `SELECT c.table_name
+       FROM information_schema.columns c
+       JOIN information_schema.tables t
+         ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+      WHERE c.table_schema = 'public' AND c.column_name = 'tenant_id'
+        AND t.table_type = 'BASE TABLE'`,
+  );
+  const client = await owner.connect();
   try {
-    // panic_alerts may refuse DELETE by trigger (D-08); the database is disposable.
-    await owner.query(
-      "DELETE FROM devices WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
-      [tenant.id, deviceIds],
-    );
-    await owner.query(
-      "DELETE FROM attendance_logs WHERE tenant_id = $1 AND employee_id = ANY($2::uuid[])",
-      [tenant.id, employeeIds],
-    );
-    await owner.query("SELECT set_config('app.tenant_id', $1, false)", [
-      tenant.id,
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role = replica");
+    for (const { table_name } of rows)
+      await client.query(`DELETE FROM "${table_name}" WHERE tenant_id = $1`, [
+        tenant.tenantId,
+      ]);
+    await client.query("DELETE FROM tenants WHERE id = $1", [tenant.tenantId]);
+    await client.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [
+      userIds,
     ]);
-  } catch {
-    // Best effort: every row uses random ids that no other file touches.
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+    await owner.end();
   }
-  await owner.end();
 });
 
 // ===========================================================================
@@ -875,7 +921,7 @@ describe("EM-01 press with the cloud link down reaches the on-duty receiver", ()
       { ...good, triggeredAt: "yesterday-ish" },
       { ...good, kind: "alarm" },
       { ...good, outletId: outlet },
-      { ...good, tenantId: tenant.id },
+      { ...good, tenantId: tenant.tenantId },
       { ...good, deviceId: button.deviceId },
     ]) {
       const res = await press(button.token, bad);
@@ -1272,7 +1318,7 @@ describe("EM-10 two acknowledgements: first wins, second gets 409", () => {
     const rows = await asTenantOwner((c) =>
       c.query<{ id: string }>(
         "SELECT id FROM panic_alerts WHERE tenant_id = $1 AND device_id = $2",
-        [tenant.id, stranger.deviceId],
+        [tenant.tenantId, stranger.deviceId],
       ),
     );
     expect(rows.rows).toHaveLength(0);
@@ -1297,7 +1343,7 @@ describe("EM-10 two acknowledgements: first wins, second gets 409", () => {
     setEdgeRuntimeStateForTests(cloudState);
     const cloud = await manager.client
       .post(PANIC_ROUTES.cloudAck(outlet, alert.id))
-      .set(originHeader)
+      .set(cloudHeaders())
       .send({});
     expect(cloud.status, JSON.stringify(cloud.body)).toBe(200);
     expect((await alertById(alert.id)).acknowledged_by).toBe(manager.userId);
@@ -1408,12 +1454,19 @@ describe("EM-14 nobody connected: unrouted_since is set, the fallback fires afte
 });
 
 describe("EM-19 a socket that never sends received triggers the fallback at 15 s", () => {
+  // No wall-clock wait: readPanicFallback takes a `now` (the same hook the
+  // route leaves at "now"), so the 15 s deadline is crossed by passing a later
+  // clock. A POS read stamps fallback_shown_at with that `now`.
+  const readFallbackAt = (deviceId: string, now: Date) =>
+    readPanicFallback(tenantContext, deviceId, now);
+
   it(
     "EM-19 (QE1 yes) a connected but silent socket is not unrouted, and the fallback still fires at 15 s",
     async () => {
       const outlet = await world("EM-19 silent");
       const button = await registerPanicButton(outlet);
       const rcv = await receiverFor(outlet, "EM19 Silent");
+      const pos = await enrollAt(outlet);
       const sock = await connect(rcv.cookie, { autoReceive: false });
       const { alert } = await raise(button);
 
@@ -1426,16 +1479,27 @@ describe("EM-19 a socket that never sends received triggers the fallback at 15 s
       expect(alert.unrouted_since).toBeNull();
       expect((await alertById(alert.id)).fallback_shown_at).toBeNull();
 
-      await vi.waitFor(
-        async () =>
-          expect((await alertById(alert.id)).fallback_shown_at).not.toBeNull(),
-        { timeout: PANIC_FALLBACK_AFTER_MS + 5_000, interval: 500 },
+      // Just before the deadline: nothing shows.
+      const beforeDeadline = new Date(
+        alert.received_at.getTime() + PANIC_FALLBACK_AFTER_MS - 1_000,
       );
+      expect(await readFallbackAt(pos.deviceId, beforeDeadline)).toHaveLength(
+        0,
+      );
+      expect((await alertById(alert.id)).fallback_shown_at).toBeNull();
+
+      // At the deadline the silent socket did not stop the fallback.
+      const atDeadline = new Date(
+        alert.received_at.getTime() + PANIC_FALLBACK_AFTER_MS,
+      );
+      const items = await readFallbackAt(pos.deviceId, atDeadline);
+      expect(items.map((item) => item.alertId)).toEqual([alert.id]);
       const stored = await alertById(alert.id);
-      const after =
+      expect(stored.fallback_shown_at).not.toBeNull();
+      expect(
         (stored.fallback_shown_at as Date).getTime() -
-        stored.received_at.getTime();
-      expect(after).toBeGreaterThanOrEqual(PANIC_FALLBACK_AFTER_MS - 1_000);
+          stored.received_at.getTime(),
+      ).toBe(PANIC_FALLBACK_AFTER_MS);
       expect(stored.first_delivered_at).toBeNull();
     },
     SLOW_MS,
@@ -1447,6 +1511,7 @@ describe("EM-19 a socket that never sends received triggers the fallback at 15 s
       const outlet = await world("EM-19 received");
       const button = await registerPanicButton(outlet);
       const rcv = await receiverFor(outlet, "EM19 Received");
+      const pos = await enrollAt(outlet);
       const sock = await connect(rcv.cookie, { autoReceive: true });
       const { alert } = await raise(button);
       await vi.waitFor(
@@ -1456,11 +1521,13 @@ describe("EM-19 a socket that never sends received triggers the fallback at 15 s
       );
       expect(sock.alertFrames(alert.id).length).toBeGreaterThan(0);
 
-      await new Promise<void>((resolve) =>
-        setTimeout(resolve, PANIC_FALLBACK_AFTER_MS + 2_000),
-      );
       // Q94: the phone's automatic receipt is not a human ack; no ack in 15 s
       // means the alarm shows on the POS screens anyway.
+      const atDeadline = new Date(
+        alert.received_at.getTime() + PANIC_FALLBACK_AFTER_MS,
+      );
+      const items = await readFallbackAt(pos.deviceId, atDeadline);
+      expect(items.map((item) => item.alertId)).toEqual([alert.id]);
       expect((await alertById(alert.id)).fallback_shown_at).not.toBeNull();
     },
     SLOW_MS,
@@ -1501,7 +1568,9 @@ describe("EM-15 a test press rings with UJI and stays out of the incident report
     });
 
     setEdgeRuntimeStateForTests(cloudState);
-    const list = await reader.client.get(PANIC_ROUTES.cloudList(outlet));
+    const list = await reader.client
+      .get(PANIC_ROUTES.cloudList(outlet))
+      .set("Host", tenant.hostname);
     expect(list.status, JSON.stringify(list.body)).toBe(200);
     const text = JSON.stringify(list.body);
     expect(text).toContain(live.alert.id);
@@ -1560,30 +1629,30 @@ describe("EM-20 resolve is not available on the edge; in the cloud it needs faci
 
     const anonymous = await request(cloudApp)
       .post(path)
-      .set(originHeader)
+      .set(cloudHeaders())
       .send(resolveBody("selesai"));
     expect(anonymous.status).toBe(401);
     const denied = await respondOnly.client
       .post(path)
-      .set(originHeader)
+      .set(cloudHeaders())
       .send(resolveBody("selesai"));
     expect(denied.status).toBe(403);
     expect((await alertById(alert.id)).resolved_at).toBeNull();
 
     const tooLong = await manager.client
       .post(path)
-      .set(originHeader)
+      .set(cloudHeaders())
       .send(resolveBody("x".repeat(501)));
     expect([400, 422]).toContain(tooLong.status);
     const missing = await manager.client
       .post(PANIC_ROUTES.cloudResolve(outlet, randomUUID()))
-      .set(originHeader)
+      .set(cloudHeaders())
       .send(resolveBody("selesai"));
     expect(missing.status).toBe(404);
 
     const ok = await manager.client
       .post(path)
-      .set(originHeader)
+      .set(cloudHeaders())
       .send(resolveBody("Tamu aman, kamar dicek"));
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     const stored = await alertById(alert.id);
@@ -1616,7 +1685,7 @@ describe("EM-20 resolve is not available on the edge; in the cloud it needs faci
       setEdgeRuntimeStateForTests(cloudState);
       const res = await staff.client
         .post(PANIC_ROUTES.cloudResolve(outlet, alertRow.id))
-        .set(originHeader)
+        .set(cloudHeaders())
         .send(resolveBody(`ditutup oleh ${key}`));
       expect(res.status, `${key}: ${JSON.stringify(res.body)}`).toBe(
         ok ? 200 : 403,
@@ -1629,7 +1698,7 @@ describe("EM-20 resolve is not available on the edge; in the cloud it needs faci
       await asTenantOwner((c) =>
         c.query(
           "UPDATE panic_alerts SET acknowledged_at = COALESCE(acknowledged_at, now()), acknowledged_by = COALESCE(acknowledged_by, $3) WHERE tenant_id = $1 AND id = $2",
-          [tenant.id, alertRow.id, staff.userId],
+          [tenant.tenantId, alertRow.id, staff.userId],
         ),
       );
     }

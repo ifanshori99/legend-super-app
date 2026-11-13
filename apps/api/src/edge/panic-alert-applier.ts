@@ -50,6 +50,7 @@ import {
   registerEdgeEventHandler,
   type EdgeLastSequenceHook,
 } from "./applier-registry.ts";
+import { logger } from "../lib/logger.ts";
 import { redactEdgeEnvelopeSecrets } from "./envelope-secrets.ts";
 import type { EdgeApplyMeta } from "./ports.ts";
 
@@ -440,9 +441,11 @@ async function applyAcknowledged(
  * the resolve as the acknowledgement when nobody acknowledged (D-07; no ack
  * device). An acknowledged alert leaves the open-alert reads, so the resend
  * loop stops, the POS fallback drops it and a socket that connects later never
- * gets it. A replay changes nothing. An alert the edge does not know is
- * ignored with an `edge_sync_conflicts` row (the edge is the only writer of
- * alerts, so this only happens when its database was lost).
+ * gets it. A replay changes nothing. An alert the edge does not know is a
+ * logged no-op, not a conflict: the cloud also queues a failover copy of the
+ * resolve for a node that never held the alert, and there is nothing to close.
+ * The event counts as applied (no `edge_sync_conflicts` row, no supervisor
+ * alarm).
  */
 async function applyResolved(
   tx: EdgeTx,
@@ -485,12 +488,10 @@ async function applyResolved(
       ),
     );
   if (!alert) {
-    await recordUnknownRef(
-      tx,
-      event,
-      meta,
-      outletId,
-      "The resolved alert is not known on the edge",
+    // Ids only (ports.ts rule: no payload in logs).
+    logger.info(
+      { alertId: payload.alertId, outletId },
+      "Ignored panic_alert.resolved for an alert this edge does not hold",
     );
     return;
   }
