@@ -547,6 +547,31 @@ describe("legend-0mn8 duplicates, atomicity and cross-tenant isolation", () => {
     }
   });
 
+  // Assumption: a suspended tenant is still managed by the platform admin
+  // (onboarding / fixing data), so create is allowed (201). The outlet quota
+  // still applies but is not exercised here (default limits are not reached).
+  it("TEN-06 suspended tenant still accepts POST brands/legal-entities/outlets (201) with one audit row each", async () => {
+    const tenantId = await tenant("Suspended Target");
+    const parents = await seedParents(tenantId, "Suspended");
+    await owner.query("UPDATE tenants SET status = 'suspended' WHERE id = $1", [
+      tenantId,
+    ]);
+    for (const resource of resources) {
+      const before = await count(tenantId, resource);
+      const auditBefore = await auditCount(tenantId, resource);
+      const res = await admin.client
+        .post(path(tenantId, resource))
+        .set(originHeader)
+        .send(bodyFor(resource, parents.brandId, parents.legalEntityId));
+      expect(res.status, `${resource} ${JSON.stringify(res.body)}`).toBe(201);
+      expect(res.body.data.tenantId, resource).toBe(tenantId);
+      expect(await count(tenantId, resource), resource).toBe(before + 1);
+      expect(await auditCount(tenantId, resource), resource).toBe(
+        auditBefore + 1,
+      );
+    }
+  });
+
   it("TEN-06 creating in tenant A never changes tenant B and the audit stays on the path tenant", async () => {
     const tenantId = await tenant("Isolation A");
     const otherBefore = {
@@ -576,5 +601,65 @@ describe("legend-0mn8 duplicates, atomicity and cross-tenant isolation", () => {
       audit: await auditCount(other),
     }).toEqual(otherBefore);
     expect(await auditCount(tenantId)).toBe(2);
+  });
+});
+
+describe("legend-0mn8 concurrency", () => {
+  // Assumption: a deterministic deadlock (loyalty journal lock vs. tenant row
+  // lock) cannot be reproduced from the HTTP contract alone, so this fires
+  // overlapping creates (different outlet codes + a brand + a legal entity in
+  // the same tenant, repeated in rounds). Expectation: every request is 201,
+  // none is 5xx (no 40P01 deadlock), and every row + audit event is written.
+  it("TEN-06 parallel outlet, brand and legal-entity creates in one tenant all return 201, never 5xx", async () => {
+    const tenantId = await tenant("Parallel Create");
+    const parents = await seedParents(tenantId, "Parallel");
+    const rounds = 1; // default plan allows 5 outlets
+    const outletsPerRound = 4;
+    const all: Array<{ resource: Resource; status: number; body: unknown }> =
+      [];
+    for (let round = 0; round < rounds; round++) {
+      const requests: Array<
+        Promise<{ resource: Resource; res: { status: number; body: unknown } }>
+      > = [];
+      for (let i = 0; i < outletsPerRound; i++) {
+        requests.push(
+          admin.client
+            .post(path(tenantId, "outlets"))
+            .set(originHeader)
+            .send(
+              outletBody(parents.brandId, parents.legalEntityId, {
+                code: `P-${round}${i}-${suffix().toUpperCase()}`,
+              }),
+            )
+            .then((res) => ({ resource: "outlets" as Resource, res })),
+        );
+      }
+      requests.push(
+        admin.client
+          .post(path(tenantId, "brands"))
+          .set(originHeader)
+          .send(brandBody())
+          .then((res) => ({ resource: "brands" as Resource, res })),
+        admin.client
+          .post(path(tenantId, "legal-entities"))
+          .set(originHeader)
+          .send(entityBody({ npwp: null }))
+          .then((res) => ({ resource: "legal-entities" as Resource, res })),
+      );
+      for (const { resource, res } of await Promise.all(requests))
+        all.push({ resource, status: res.status, body: res.body });
+    }
+    for (const r of all) {
+      expect(r.status, `${r.resource} ${JSON.stringify(r.body)}`).toBe(201);
+    }
+    expect(all.filter((r) => r.status >= 500)).toEqual([]);
+    expect(await count(tenantId, "outlets")).toBe(rounds * outletsPerRound);
+    expect(await count(tenantId, "brands")).toBe(1 + rounds);
+    expect(await count(tenantId, "legal-entities")).toBe(1 + rounds);
+    expect(await auditCount(tenantId, "outlets")).toBe(
+      rounds * outletsPerRound,
+    );
+    expect(await auditCount(tenantId, "brands")).toBe(rounds);
+    expect(await auditCount(tenantId, "legal-entities")).toBe(rounds);
   });
 });
