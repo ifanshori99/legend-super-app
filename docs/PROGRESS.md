@@ -1437,3 +1437,4 @@ Langkah berikut CTO baru:
 - 18:55 Founder Q5 (R1 permanen) + Q6 (UI Kas & Bank disetujui).
 - 18:56 Founder Q4: folder proyek dikeluarkan dari Spotlight.
 - 18:58 Founder Q3: gaji lewat disbursement Duitku/DOIT atau transfer manual per bank (config tenant). Mulai G435k desain (brief 637, Opus xhigh, dokumen saja).
+- 18:58 G9mgc panic relay: akar deadlock 40P01 (KEY SHARE vs FOR UPDATE) -> receipt alarm hilang permanen; fix FOR NO KEY UPDATE + retry + received setelah commit (fix/panic-relay-load b6ae4faa7, 7/8 test gagal di base). Review ulang architect diminta.
