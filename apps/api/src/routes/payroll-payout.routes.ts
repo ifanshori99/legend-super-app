@@ -8,6 +8,7 @@
 // the file leaves the server (a second download answers 409).
 
 import { Router, type Request } from "express";
+import { z } from "zod";
 import {
   approveDisbursementBatchInputSchema,
   cancelDisbursementBatchInputSchema,
@@ -34,6 +35,10 @@ import {
   requireTenantPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
+import {
+  listSkippedFees,
+  repostSkippedFees,
+} from "../services/payroll-payout-gl.service.ts";
 import {
   getPayoutConfig,
   upsertPayoutConfig,
@@ -294,6 +299,41 @@ payrollPayoutRouter.post(
     const { context, actor } = actorOf(req);
     const data = await withTenant(db, context, (tx) =>
       confirmCashHandover(tx, actor, id, input),
+    );
+    res.json({ data });
+  },
+);
+
+// Bank fee of a settled group that was not journaled (legend-8codi): finance
+// sees the list and re-posts it once the bank charges mapping is back. It only
+// books the fee already stored as expense, so no second factor.
+payrollPayoutRouter.get(
+  "/payout-fee-reposts",
+  requireAuth,
+  requireTenantContext,
+  requireTenantPermission("payroll.view"),
+  async (req, res) => {
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      listSkippedFees(tx, actor.tenantId),
+    );
+    res.json({ data });
+  },
+);
+
+payrollPayoutRouter.post(
+  "/disbursement-batches/:id/repost-fees",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.disburse.approve"),
+  jsonBody,
+  async (req, res) => {
+    const { id } = payoutBatchParamsSchema.parse(req.params);
+    z.strictObject({}).parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      repostSkippedFees(tx, actor, id),
     );
     res.json({ data });
   },

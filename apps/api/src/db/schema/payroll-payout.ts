@@ -341,6 +341,12 @@ export const payrollPayoutGlPostings = pgTable(
     postedAt: timestamp("posted_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    /**
+     * False when the bank fee of the group was not journaled (bank charges
+     * mapping or source account missing at settle). Finance re-posts it once
+     * (`repostSkippedFees`); the fee journal key is `payroll-payout-fee:<hash>`.
+     */
+    feePosted: boolean("fee_posted").notNull().default(true),
   },
   (table) => [
     unique("payroll_payout_gl_postings_tenant_id_key").on(

@@ -575,6 +575,20 @@ beforeAll(async () => {
         [tenant.id, entityId, "b".repeat(64), gl],
       )
     ).rows[0].id as string;
+
+    // Bank charges role (legend-8codi): approve and export are refused without it.
+    await c.query(
+      `INSERT INTO chart_of_accounts
+         (tenant_id, legal_entity_id, code, name, type, report_group, parent_id, is_active)
+       VALUES ($1, $2, '8101', 'Beban Administrasi Bank', 'expense', 'other_expense', NULL, true)`,
+      [tenant.id, entityId],
+    );
+    await c.query(
+      `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+       SELECT $1, $2, 'bank_charges', id FROM chart_of_accounts
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = '8101'`,
+      [tenant.id, entityId],
+    );
     for (const p of ALL_PEOPLE) {
       createdEmployees.push(p.id);
       await c.query(
@@ -655,6 +669,10 @@ afterAll(async () => {
     );
     await del(
       "DELETE FROM bank_accounts WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [tenant.id, entityId],
+    );
+    await del(
+      "DELETE FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2",
       [tenant.id, entityId],
     );
     await del(

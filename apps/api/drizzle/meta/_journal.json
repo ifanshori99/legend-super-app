@@ -2353,6 +2353,20 @@
       "when": 1794586500000,
       "tag": "0536_session_mfa_challenge",
       "breakpoints": true
+    },
+    {
+      "idx": 350,
+      "version": "7",
+      "when": 1794587000000,
+      "tag": "0542_payout_fee_posted",
+      "breakpoints": true
+    },
+    {
+      "idx": 351,
+      "version": "7",
+      "when": 1794587500000,
+      "tag": "0543_payout_return_two_person_guard",
+      "breakpoints": true
     }
   ]
 }

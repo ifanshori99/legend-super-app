@@ -5279,3 +5279,12 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Review: architect K xhigh 2 ronde; 5 temuan diperbaiki dengan test.
 - Gerbang: tsc api + web hijau, 10 berkas test terarah (402 test) hijau, `db:generate` kosong, text-contract 11/11, prettier+eslint hijau.
 - Belum: rute HTTP `returnManualItems`; jurnal `overpaid`; fee yang dilewati karena mapping hilang (settle_skipped) hanya dilog; cek awal mapping `bank_charges` di approve/export.
+
+## 2026-11-14: 661 pengerasan payout gaji (ws/payroll-payout-hardening, dari ws/payroll-payout-gl, legend-8codi, legend-qxkm6)
+
+- legend-8codi: approve dan unduh ekspor manual gagal tertutup 409 (`PAYOUT_BANK_CHARGES_MAPPING_MISSING`, `PAYOUT_SOURCE_ACCOUNT_MISSING`) sebelum status berubah. Fee yang dilewati menyimpan `fee_posted=false` (0542); `repostSkippedFees` memposting tepat sekali; GET `/payout-fee-reposts`, POST `/disbursement-batches/:id/repost-fees`.
+- legend-qxkm6: POST `/disbursement-batches/:id/return` (izin `payroll.disburse.approve`, step-up MFA + password, dua orang bukan pembuat, bukti langkah kedua harus sama). `recordOverpaidItem` (hanya `manual_bank`, kredit akun settle asli, Dr 1204; slip overpaid tidak terbuka lagi). Trigger 0543: `succeeded -> returned` wajib dua orang berbeda; `failed -> overpaid` wajib GUC + posting overpaid milik item + attempt sukses lain. Test lama `l4-succeeded-frozen` diperbaiki, trigger tidak dilonggarkan.
+- Review: architect xhigh 2 ronde. Ronde 1: akun kredit overpaid, bukti return langkah kedua, guard 0543 (dibetulkan). Ronde 2: slip overpaid bisa dibayar ulang, guard posting, pesan error (dibetulkan, bukti gagal-dulu).
+- Verifikasi: hardening + core + manual + gl + migrasi/akses/jurnal terkait lulus, typecheck api+web, `db:generate` kosong, prettier+eslint bersih.
+- Follow-up (belum dibuat bead): satu helper rekening sumber aktif untuk settle/repost/overpaid; repost terlalu ketat bila rekening sumber nonaktif; biaya transfer terlambat (overpaid) belum dijurnal (beban bank kurang); urutan `when` journal 0542/0543 vs 0537-0541 saat merge train.
+- Biaya sesi: 4072k (utama 632k, subagent 3439k).

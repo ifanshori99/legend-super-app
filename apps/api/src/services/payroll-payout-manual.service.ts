@@ -67,6 +67,7 @@ import {
   assertEvidenceKeyForBatch,
   assertOptionalEvidenceKeyForBatch,
 } from "./payroll-payout-evidence.ts";
+import { assertManualPayoutSetup } from "./payroll-payout-setup.ts";
 import {
   computeBatchContentHash,
   loadBatchRunFirst,
@@ -194,6 +195,9 @@ export async function exportManualBatch(
       "PAYOUT_CONFIG_DISABLED",
       "Pembayaran gaji manual untuk PT ini sedang dimatikan.",
     );
+  // Fail closed (legend-8codi): the one download is not spent while the fee or
+  // the source account cannot be journaled.
+  await assertManualPayoutSetup(tx, tenantId, batch.legalEntityId);
 
   const [run] = await tx
     .select({
@@ -961,6 +965,13 @@ export async function returnManualItems(
   let proposed = 0;
   for (const row of rows) {
     const secondStep = row.returnedBy !== null;
+    // The second person confirms the same evidence the first one recorded.
+    if (secondStep && row.returnEvidenceKey !== evidence)
+      throw refuse(
+        409,
+        "PAYOUT_RETURN_EVIDENCE_MISMATCH",
+        "Bukti pengembalian harus sama dengan bukti yang dicatat orang pertama.",
+      );
     const updated = secondStep
       ? await tx
           .update(payrollDisbursementItems)
