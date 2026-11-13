@@ -117,6 +117,9 @@ import {
 } from "./panic-test-helpers.ts";
 const PIN = "582914";
 const SLOW_MS = 45_000;
+// Precondition waits in tests that do not assert the 5 s budget (EM-19): the
+// delivery latency is asserted by EM-01; here a loaded machine must not fail it.
+const LOAD_WAIT_MS = 30_000;
 
 // One isolated tenant for the whole file (created in beforeAll, removed in
 // afterAll): no shared fixture tenant, so no other file sees or touches it.
@@ -1472,9 +1475,7 @@ describe("EM-19 a socket that never sends received triggers the fallback at 15 s
 
       await vi.waitFor(
         () => expect(sock.alertFrames(alert.id).length).toBeGreaterThan(0),
-        {
-          timeout: PANIC_DELIVERY_BUDGET_MS,
-        },
+        { timeout: LOAD_WAIT_MS },
       );
       expect(alert.unrouted_since).toBeNull();
       expect((await alertById(alert.id)).fallback_shown_at).toBeNull();
@@ -1517,7 +1518,7 @@ describe("EM-19 a socket that never sends received triggers the fallback at 15 s
       await vi.waitFor(
         async () =>
           expect((await alertById(alert.id)).first_delivered_at).not.toBeNull(),
-        { timeout: PANIC_DELIVERY_BUDGET_MS },
+        { timeout: LOAD_WAIT_MS },
       );
       expect(sock.alertFrames(alert.id).length).toBeGreaterThan(0);
 
