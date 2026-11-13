@@ -74,6 +74,7 @@ import {
   startWifiQuotaQueueWorker,
   type WifiQuotaWorkerHandle,
 } from "./wifi-quota-queue-worker.ts";
+import { registerOrderEdgeApplier } from "./order-edge-applier.ts";
 import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
 import { registerPanicAlertEdgeApplier } from "./panic-alert-applier.ts";
@@ -1352,6 +1353,14 @@ export async function registerEdgeLink(
   registerAttendanceLoggedEdgeApplier();
   // legend-9fhs: POS (WS-04) events parked in edge_deferred_events (no stall).
   registerPosDeferredEdgeApplier();
+  // legend-pd9t: order.paid cost snapshot from the order's edge stock rows.
+  registerOrderEdgeApplier();
+  // legend-zy43: registerReceiptRunEdgeApplier() is intentionally NOT wired.
+  // The merge refuses every edge receipt until the cloud ingests edge orders
+  // and voids (docs/DECISIONS.md "Pesanan lewat edge"), and a refusal is
+  // recorded as received (lost). Wiring it also needs receipt_run excluded
+  // from posDeferredAggregates (duplicate handler crash). Until then the event
+  // stays parked like other POS events.
   // legend-kyie: pos_override.* / staff_pin.* applied (and parked ones drained).
   registerAccessEdgeApplier();
   // legend-bod.5: emergency button alerts (panic_alert.*) mirrored idempotently.

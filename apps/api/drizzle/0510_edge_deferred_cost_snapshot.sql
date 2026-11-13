@@ -1,0 +1,2 @@
+ALTER TABLE "edge_deferred_events" ADD COLUMN "cost_snapshot_idr" bigint;--> statement-breakpoint
+ALTER TABLE "edge_deferred_events" ADD CONSTRAINT "edge_deferred_events_cost_snapshot_check" CHECK ("edge_deferred_events"."cost_snapshot_idr" IS NULL OR "edge_deferred_events"."cost_snapshot_idr" >= 0);

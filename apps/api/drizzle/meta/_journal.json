@@ -2220,6 +2220,13 @@
       "when": 1794585693432,
       "tag": "0508_edge_deferred_events_aggregate_id_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 331,
+      "version": "7",
+      "when": 1794588365927,
+      "tag": "0510_edge_deferred_cost_snapshot",
+      "breakpoints": true
     }
   ]
 }

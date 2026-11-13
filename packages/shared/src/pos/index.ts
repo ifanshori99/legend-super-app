@@ -6,6 +6,7 @@ export * from "./schemas.ts";
 export * from "./calculations.ts";
 export * from "./receipts.ts";
 export * from "./receipt-writeoff.ts";
+export * from "./receipt-run-event.ts";
 export * from "./events.ts";
 export * from "./endpoints.ts";
 export * from "./parked.ts";
