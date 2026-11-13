@@ -1515,3 +1515,4 @@ Langkah berikut CTO baru:
 - Brief 679 G0l6u (hcqs + audit m0k, Opus #1, migr 0565-0567). Ditutup: bod, tct6, 8qri, 7mlf (sudah di m1). sonf/uqfu/vnvg: mockup ada, gerbang founder belum.
 - Brief 681 alovk mockup panik (Codex #7) menunggu slot. RAM kuning 38% free: 680/681 ditahan.
 - 07:0x G0jin mockup payout+finance-exceptions (design/payout-finance fc6848ff9) -> W6 Q1 founder. G4zrq Pengaturan AI (design/ai-settings 08defdc48) -> W5 Q2. vnvg -> W11 Q3. KDS sonf/uqfu mockup perlu perbaikan tampilan HP dulu (W12). G0jin, G4zrq resolved. Mulai G4xr4 (680) dan G8vgc (681).
+- 07:1x G2md5 referral followups selesai ws/loyalty-referral-followups 15ccf6e86 (bijqd, sbxr0, nkp77; 24 test, architect xhigh 3 ronde, 7 bug uang dibetulkan). Kebijakan pemulihan ketat + btdxg -> founder W4 Q4. vqft5 naik P1, dikerjakan G2md5 (ws/loyalty-earn-replay-fix, migr 0571-0572). Mulai G2yv8 (682 mockup KDS, Codex #8).
