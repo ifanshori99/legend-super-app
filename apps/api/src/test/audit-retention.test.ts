@@ -133,7 +133,13 @@ async function seed(
   return ids;
 }
 
-const EXPIRED = "2 years";
+// "Expired" rows sit a full minute past the two-year cutoff. A row exactly two
+// years old is only older than the purge cutoff by the milliseconds between the
+// seed and the purge, so a clock step or a slow pooled connection under full
+// suite load (legend-x778h) made it fall on the wrong side: purge returned 1
+// instead of 3. The cutoff comes from CURRENT_TIMESTAMP inside the function, so
+// the exact boundary cannot be pinned from a test.
+const EXPIRED = "2 years 1 minute";
 const EXPIRED_OLDER = "2 years 1 day";
 const YOUNG = "2 years - 1 day";
 

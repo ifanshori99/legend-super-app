@@ -158,21 +158,6 @@ try {
       : undefined;
     const rootFiles = selected?.filter((file) => file.endsWith(".test.mjs"));
     const apiFiles = selected?.filter((file) => !file.endsWith(".test.mjs"));
-    if (!selected || apiFiles.length) {
-      await runTestStep(
-        "vitest",
-        pnpmCommand(),
-        [
-          "--filter",
-          "@starter/api",
-          "run",
-          "test",
-          ...(coverage ? ["--coverage"] : []),
-          ...(apiFiles ?? []),
-        ],
-        testEnv,
-      );
-    }
     const files = selected
       ? rootFiles
       : readdirSync(resolve(root, "tests"))
@@ -191,6 +176,23 @@ try {
         ["--test", ...concurrencyArgs, ...files],
         testEnv,
       );
+    // Root tests run first (they take minutes); the long API vitest run goes
+    // last, so a root failure stops the run early instead of after an hour.
+    if (!selected || apiFiles.length) {
+      await runTestStep(
+        "vitest",
+        pnpmCommand(),
+        [
+          "--filter",
+          "@starter/api",
+          "run",
+          "test",
+          ...(coverage ? ["--coverage"] : []),
+          ...(apiFiles ?? []),
+        ],
+        testEnv,
+      );
+    }
   } else {
     // The Playwright servers run these builds with NODE_ENV=production, so
     // build them the same way. Vite inlines NODE_ENV: a test-env build would
