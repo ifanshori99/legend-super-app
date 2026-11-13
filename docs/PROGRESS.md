@@ -1476,3 +1476,4 @@ Langkah berikut CTO baru:
 - 00:24 mulai 650 API bank_code (G5by7, Sonnet, akun 2, base ws/payroll-disbursement-manual).
 - 00:31 647 G95ca: sweep cloud-only (approval/cuti/exit/support) jalan di edge tanpa gate -> CONFLICT tiap tick. CTO setuju gate edgeMode di worker-main.ts (slot holds hanya bila pasti cloud-only).
 - 00:32 647 selesai: ws/edge-sync-appliers 456b4dff1 (gate sweepsCloudOwnedData, 10/10). G95ca di-resolve. Antre batch59: cash-antisplit, edge-sync-appliers, payroll-disbursement-manual (+ bank_code bila selesai).
+- 00:33 mulai 651 ingest order edge (thread S30:P6b2j:G0az4, Sonnet, akun 2, migr 0522-0525).
