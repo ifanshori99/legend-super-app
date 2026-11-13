@@ -4728,3 +4728,11 @@ Native Codex subagents: 10 total, peak 6 concurrent; heavy commands assigned to 
 - Kedua worktree sumber bersih dan sudah tergabung beserta cabang lokal `fix/web-root-500` dan `ws/edge-catalog-fresh` sudah dihapus. Worktree detached pembanding m1 milik sesi ini juga dihapus dan worktree prune selesai. Dheu dan loyalty tetap dipertahankan untuk batch53.
 - Subagent: total sesi 5 unik, puncak 4 bersamaan dan 3 pada gelombang terakhir. Token heavy tunggal dipegang test_runner, seluruh pekerjaan selesai tanpa job latar. Alat usage/parallel tidak menyediakan atribusi transkrip Codex; biaya/token/rata-rata konkurensi tidak tersedia.
 - Snapshot kuota 21:25 → 22:27 WIB (akun global, bukan biaya thread): Claude #1 0%/93%, #2 0%/99%, #3 0%/96% tetap; Codex #2 100%/68%, #3 0%/92%, #4 100%/81%, #5 100%/82% tetap; #6 hanya 7d75% → 76% (5h tidak tersedia).
+
+## 2026-11-13: Backend QRIS ber-DP (legend-yhia9.2-.4) di cabang ws/qris-dp-hold
+
+- Sudah: C1 (tabel `pos_qris_holds`, trigger kunci tagihan, satu QR aktif per tagihan, hold untuk QR split tamu), C2 (pembayaran masuk saat hold aktif diterapkan, uang terlambat ke dana tak teralokasi, job cek penyedia di cloud dan edge, buka kunci manajer `qris_release`), C3 (pairing 6 digit, pilihan tagihan, state layar pelanggan dibangun server). Migrasi 0419-0421, tanpa nomor lain.
+- Bukti: 12 berkas test hold/display/old-QRIS lulus (141/141 pada run terarah), typecheck api dan web lulus, eslint dan prettier hijau pada 39 berkas TS, `db:generate` kosong. Review architect xhigh: tanpa penghalang, 7 temuan should-fix sudah dibetulkan. Reviewer sonnet atas perubahan test lama: tidak ada assertion uang yang melemah.
+- Keputusan: pembayaran nominal salah tidak menutup hold (QH-13), uang diparkir sekali, tagihan terkunci sampai buka kunci manajer. 18 test lama (bill-split-pay, pos-order-qris-lifecycle, round2) disesuaikan karena aturan hold mewajibkan (QR tidak bisa dibatalkan lokal), bukan dilonggarkan.
+- Langkah berikut: gerbang S1 (legend-1yig6, sandbox) sebelum C2 digabung; merge train merechain nomor migrasi (journal loncat 308 ke 419); UI (legend-astv2) tetap ditahan; second opinion Codex area pembayaran sebelum rilis.
+- Belum diverifikasi: `QRIS_NEEDS_CLOUD` di edge asli (kredensial gateway di edge tidak terbukti ada), replay `/pair` tanpa test, pesan kasir saat QR sudah dibayar tapi belum dibukukan.
