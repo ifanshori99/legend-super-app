@@ -1037,3 +1037,258 @@ describe("[549-Q44] rapel ledger survives PII key rotation", () => {
     }
   });
 });
+
+// legend-m6zdl (sub-brief 644 O3): the re-seal job also moves the sealed
+// per-employee simulation result (`payroll_run_results.result_encrypted`).
+// Assumptions: the seal binding is { tenantId, table: "payroll_run_results",
+// rowId: payslipId, field: "result" } (docs/briefs/sub-payroll-followups-design.md);
+// the exact counter name the job returns for this table is not specified, so the
+// test asserts stored state (key version, plaintext, ciphertext) instead.
+describe("[legend-m6zdl] payroll_run_results survive PII key rotation", () => {
+  type ResultRow = {
+    tenant: string;
+    runId: string;
+    employeeId: string;
+    payslipId: string;
+    plain: string;
+  };
+  const policyOf: Record<string, string> = {
+    [tenantA]: randomUUID(),
+    [tenantB]: randomUUID(),
+  };
+  const runs: { tenant: string; id: string; locked: boolean }[] = [];
+  const rows: ResultRow[] = [];
+  const bindingOf = (row: ResultRow) =>
+    ({
+      tenantId: row.tenant,
+      table: "payroll_run_results",
+      rowId: row.payslipId,
+      field: "result",
+    }) as const;
+
+  async function seedRun(tenant: string, locked: boolean, month: string) {
+    const id = randomUUID();
+    runs.push({ tenant, id, locked });
+    await asOwner(tenant, async (client) => {
+      await client.query(
+        `INSERT INTO payroll_runs (id, tenant_id, legal_entity_id, payroll_policy_id,
+           run_type, period_start, period_end, pay_date, created_by)
+         VALUES ($1, $2, $3, $4, 'regular', $5, $6, $6, $7)`,
+        [
+          id,
+          tenant,
+          entity[tenant],
+          policyOf[tenant],
+          `${month}-01`,
+          `${month}-28`,
+          hr[tenant]!,
+        ],
+      );
+      await client.query(
+        "UPDATE payroll_runs SET status = 'simulated', simulation_count = 1 WHERE id = $1",
+        [id],
+      );
+    });
+    return id;
+  }
+
+  async function seedResult(
+    tenant: string,
+    runId: string,
+    employeeId: string,
+    net: number,
+  ) {
+    const row: ResultRow = {
+      tenant,
+      runId,
+      employeeId,
+      payslipId: randomUUID(),
+      plain: JSON.stringify({ netPayIdr: net, marker: randomUUID() }),
+    };
+    await asOwner(tenant, (client) =>
+      client.query(
+        `INSERT INTO payroll_run_results (tenant_id, payroll_run_id, employee_id,
+           payslip_id, simulation_no, payment_method, result_encrypted, pii_key_version)
+         VALUES ($1, $2, $3, $4, 1, 'bank_transfer', $5, 1)`,
+        [
+          tenant,
+          runId,
+          employeeId,
+          row.payslipId,
+          sealPayrollValue(row.plain, bindingOf(row), 1),
+        ],
+      ),
+    );
+    rows.push(row);
+    return row;
+  }
+
+  async function lockRun(tenant: string, runId: string) {
+    await asOwner(tenant, async (client) => {
+      for (const step of [
+        "status = 'hr_approved', approved_by_hr = 'results-reseal-hr', approved_by_hr_at = now()",
+        "status = 'approved', approved_by_finance = 'results-reseal-fin', approved_by_finance_at = now()",
+        "status = 'locked', config_snapshot = '{\"v\":1}', totals = '{\"t\":1}', locked_by = 'results-reseal-fin', locked_at = now()",
+      ])
+        await client.query(`UPDATE payroll_runs SET ${step} WHERE id = $1`, [
+          runId,
+        ]);
+    });
+  }
+
+  const stored = (tenant: string) =>
+    asOwner(tenant, async (client) => {
+      const { rows: found } = await client.query<{
+        payslip_id: string;
+        sealed: Buffer;
+        version: number;
+        metadata: unknown;
+      }>(
+        `SELECT payslip_id, result_encrypted AS sealed, pii_key_version::int AS version,
+           to_jsonb(r) - 'result_encrypted' - 'pii_key_version' AS metadata
+         FROM payroll_run_results r WHERE tenant_id = $1 ORDER BY payslip_id`,
+        [tenant],
+      );
+      return found;
+    });
+
+  const plainOf = (tenant: string, found: Awaited<ReturnType<typeof stored>>) =>
+    found.map((row) => {
+      const source = rows.find((r) => r.payslipId === row.payslip_id)!;
+      return {
+        payslipId: row.payslip_id,
+        plain: openPayrollValue(row.sealed, bindingOf(source), row.version),
+        tenant,
+      };
+    });
+
+  beforeAll(async () => {
+    for (const tenant of tenants)
+      await asOwner(tenant, (client) =>
+        client.query(
+          `INSERT INTO payroll_policies (id, tenant_id, legal_entity_id, name,
+             employee_group_code, employee_group, cycle, pay_date_adjustment,
+             jkk_risk_class, bpjs_programmes)
+           VALUES ($1, $2, $3, 'Results reseal policy', 'RSRES', '{"code":"RSRES"}',
+             '{"kind":"monthly"}', 'none', 'low', '[]')`,
+          [policyOf[tenant], tenant, entity[tenant]],
+        ),
+      );
+    const [a1, a2] = employeesOf[tenantA]!;
+    const b1 = employeesOf[tenantB]![0]!;
+    const runA1 = await seedRun(tenantA, false, "2026-03");
+    await seedResult(tenantA, runA1, a1!.id, 4_321_000);
+    await seedResult(tenantA, runA1, a2!.id, 5_432_000);
+    const runA2 = await seedRun(tenantA, true, "2026-04");
+    await seedResult(tenantA, runA2, a1!.id, 4_400_000);
+    await lockRun(tenantA, runA2);
+    const runB = await seedRun(tenantB, false, "2026-03");
+    await seedResult(tenantB, runB, b1.id, 3_210_000);
+  });
+
+  afterAll(async () => {
+    for (const tenant of tenants)
+      await asOwner(tenant, async (client) => {
+        await client.query("SET LOCAL session_replication_role = replica");
+        await client.query(
+          "DELETE FROM payroll_run_results WHERE tenant_id = $1",
+          [tenant],
+        );
+        await client.query(
+          "DELETE FROM payroll_runs WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+          [tenant, runs.filter((r) => r.tenant === tenant).map((r) => r.id)],
+        );
+        await client.query(
+          "DELETE FROM payroll_policies WHERE tenant_id = $1 AND id = $2",
+          [tenant, policyOf[tenant]],
+        );
+      });
+  });
+
+  it("re-seals every result of a tenant (draft/simulated and locked runs) to the new key, same plaintext, bound to the tenant", async () => {
+    const before = await stored(tenantA);
+    expect(before).toHaveLength(3);
+    expect(before.map((row) => row.version)).toEqual([1, 1, 1]);
+    const expected = plainOf(tenantA, before);
+
+    const errors: string[] = [];
+    const result = await reseal(
+      { log: { error: (...args: unknown[]) => errors.push(args.join(" ")) } },
+      [tenantA],
+    );
+    expect(result).toMatchObject({ failedTenants: 0, aborted: false });
+
+    const after = await stored(tenantA);
+    expect(after.map((row) => row.version)).toEqual([2, 2, 2]);
+    expect(plainOf(tenantA, after)).toEqual(expected);
+    // Nothing but the ciphertext and key version moves.
+    expect(after.map((row) => row.metadata)).toEqual(
+      before.map((row) => row.metadata),
+    );
+    for (let index = 0; index < after.length; index += 1)
+      expect(after[index]!.sealed).not.toEqual(before[index]!.sealed);
+    // AAD stays bound to the tenant after the move.
+    for (const row of after) {
+      const source = rows.find((r) => r.payslipId === row.payslip_id)!;
+      expect(() =>
+        openPayrollValue(
+          row.sealed,
+          { ...bindingOf(source), tenantId: tenantB },
+          2,
+        ),
+      ).toThrow();
+    }
+    // The job never prints a result value.
+    for (const line of errors)
+      for (const { plain } of expected) expect(line).not.toContain(plain);
+  });
+
+  it("leaves another tenant's results untouched on a single-tenant run, then re-seals them on their own run", async () => {
+    const untouched = await stored(tenantB);
+    expect(untouched.map((row) => row.version)).toEqual([1]);
+    const expected = plainOf(tenantB, untouched);
+
+    await reseal({}, [tenantB]);
+    const after = await stored(tenantB);
+    expect(after.map((row) => row.version)).toEqual([2]);
+    expect(plainOf(tenantB, after)).toEqual(expected);
+  });
+
+  it("is idempotent: a second run changes no result row", async () => {
+    const first = await stored(tenantA);
+    expect(first.every((row) => row.version === 2)).toBe(true);
+    expect(await reseal({}, [tenantA])).toMatchObject({
+      failedTenants: 0,
+      aborted: false,
+    });
+    expect(await stored(tenantA)).toEqual(first);
+  });
+
+  it("does not print result values in the job's finished log", async () => {
+    const lines: string[] = [];
+    const spy = {
+      error: (...args: unknown[]) => lines.push(args.join(" ")),
+      info: (...args: unknown[]) => lines.push(args.join(" ")),
+    };
+    // A fresh version-1 result (the trigger refuses to lower a key version).
+    const freshRun = await seedRun(tenantA, false, "2026-05");
+    await seedResult(
+      tenantA,
+      freshRun,
+      employeesOf[tenantA]![0]!.id,
+      6_543_000,
+    );
+    const expected = plainOf(tenantA, await stored(tenantA));
+    expect(expected).toHaveLength(4);
+    await runHrisPiiReseal({
+      batchSize: 2,
+      log: spy,
+      listTenantIds: async () => [tenantA],
+    });
+    const after = await stored(tenantA);
+    expect(after.every((row) => row.version === 2)).toBe(true);
+    expect(plainOf(tenantA, after)).toEqual(expected);
+    for (const line of lines)
+      for (const { plain } of expected) expect(line).not.toContain(plain);
+  });
+});

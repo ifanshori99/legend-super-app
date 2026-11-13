@@ -33,7 +33,6 @@ import {
   inArray,
   isNull,
   lte,
-  ne,
   or,
   sql,
 } from "drizzle-orm";
@@ -62,7 +61,6 @@ import {
   payslipCalculationSchema,
   payslipIdSchema,
   payslipLineSchema,
-  pph21ReceivableBalance,
   statutoryTableVersionSchema,
   statutoryVersionsForRun,
   sumPayrollRunTotals,
@@ -90,7 +88,6 @@ import {
   payrollPolicies,
   payrollRunResults,
   payrollRuns,
-  payslips,
   statutoryRates,
   thrSchedules,
 } from "../db/schema/payroll.ts";
@@ -111,6 +108,7 @@ import {
 } from "./payroll-run-compose.ts";
 import {
   calculatePayrollRunTax,
+  loadOpenPph21Receivables,
   loadTaxYearPriors,
   lockPayrollRunMonth,
   type PayrollRunTaxEmployee,
@@ -336,80 +334,6 @@ function monthsWorkedIn(joinDate: string, payDate: string): number {
   const payMonth = Number(payDate.slice(5, 7));
   const months = joinYear < payYear ? payMonth : payMonth - joinMonth + 1;
   return Math.min(12, Math.max(1, months));
-}
-
-/**
- * Refuses (422 PAYROLL_RUN_SIMULATE_UNSUPPORTED) when any employee has an open
- * PPh 21 receivable (raised minus collected over the payslips of all other
- * locked/paid runs). An unreadable payslip or an inconsistent balance refuses
- * too. Never echoes a value.
- */
-async function assertNoOpenPph21Receivable(
-  tx: Tx,
-  tenantId: TenantId,
-  runId: PayrollRunId,
-  employeeIds: readonly string[],
-): Promise<void> {
-  const rows = await tx
-    .select({
-      id: payslips.id,
-      tenantId: payslips.tenantId,
-      employeeId: payslips.employeeId,
-      calculationEncrypted: payslips.calculationEncrypted,
-      piiKeyVersion: payslips.piiKeyVersion,
-    })
-    .from(payslips)
-    .innerJoin(
-      payrollRuns,
-      and(
-        eq(payrollRuns.tenantId, payslips.tenantId),
-        eq(payrollRuns.id, payslips.payrollRunId),
-      ),
-    )
-    .where(
-      and(
-        eq(payslips.tenantId, tenantId),
-        ne(payrollRuns.id, runId),
-        inArray(payrollRuns.status, ["locked", "paid"]),
-        inArray(payslips.employeeId, [...employeeIds]),
-      ),
-    );
-  const byEmployee = new Map<string, PayslipCalculation[]>();
-  for (const row of rows) {
-    let calc: PayslipCalculation;
-    try {
-      calc = payslipCalculationSchema.parse(
-        JSON.parse(
-          openPayrollValue(
-            row.calculationEncrypted,
-            {
-              tenantId: row.tenantId,
-              table: "payslips",
-              rowId: row.id,
-              field: "calculation",
-            },
-            row.piiKeyVersion,
-          ),
-        ),
-      );
-    } catch {
-      throw simulateUnsupported();
-    }
-    if (calc.employeeId !== row.employeeId) throw simulateUnsupported();
-    byEmployee.set(row.employeeId, [
-      ...(byEmployee.get(row.employeeId) ?? []),
-      calc,
-    ]);
-  }
-  for (const slips of byEmployee.values()) {
-    let open: number;
-    try {
-      open = pph21ReceivableBalance(slips);
-    } catch {
-      throw simulateUnsupported();
-    }
-    if (open > 0) throw simulateUnsupported();
-  }
 }
 
 /** True when the period is exactly the 1st to the last day of one month. */
@@ -777,12 +701,18 @@ export async function simulatePayrollRunInTransaction(
     if (mismatched.length > 0) throw taxSchemeMismatch(mismatched);
   }
 
-  // Fail closed (OPEN O2): an open PPh 21 receivable is never collected here.
-  await assertNoOpenPph21Receivable(
+  // Open PPh 21 receivable to collect on this run's payslips (fail closed on
+  // unreadable or inconsistent earlier payslips).
+  const openReceivableById = await loadOpenPph21Receivables(
     tx,
-    tenantId,
-    runId,
-    population.map((m) => m.id),
+    {
+      tenantId,
+      legalEntityId: run.legalEntityId,
+      runId,
+      payDate: run.payDate,
+      employeeIds: population.map((m) => m.id),
+    },
+    simulateUnsupported,
   );
 
   const lastTaxPeriodOf = (endDate: string | null) =>
@@ -928,6 +858,7 @@ export async function simulatePayrollRunInTransaction(
       bpjs: entry.bpjs,
       tax: computed.tax,
       paymentMethod: entry.paymentMethod,
+      openReceivableIdr: openReceivableById.get(entry.member.id) ?? 0,
     });
     results.push({
       entry,

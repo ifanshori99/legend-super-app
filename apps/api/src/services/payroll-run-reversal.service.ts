@@ -13,8 +13,13 @@
 // `payroll_runs_reversal_dependency_trg` enforces the same rule. Runs whose
 // side effects the lock step does not perform (loans, reimbursements, service
 // charge, rapel) are not reversed here either: refusing never pays anyone more.
+//
+// A run that raised an employee receivable (`pph21ReceivableIdr` > 0) is also
+// refused while another live run collected a receivable (`pph21_receivable`
+// line) from the same employee: the collection would be left without its
+// receivable. The collecting run has to be reversed first.
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import {
   createUlid,
   type ScopedTenantContext,
@@ -24,6 +29,8 @@ import {
   applyPayrollRunCommand,
   payrollReversed,
   payrollRunSchema,
+  payslipCalculationSchema,
+  type PayslipCalculation,
   type PayrollRun,
   type PayrollRunId,
 } from "@starter/shared/hris/payroll";
@@ -35,13 +42,18 @@ import {
   bankTransferFiles,
   payrollRunMonthPriors,
   payrollRuns,
+  payslips,
 } from "../db/schema/payroll.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { openPayrollValue } from "../lib/payroll-sealed.ts";
 import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./hris-access.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
-import { lockPayrollRunMonth } from "./payroll-run-pph21.service.ts";
+import {
+  lockPayrollRunMonth,
+  lockPph21ReceivableScope,
+} from "./payroll-run-pph21.service.ts";
 
 type RunRow = typeof payrollRuns.$inferSelect;
 
@@ -214,6 +226,107 @@ async function assertNoLiveDependents(
     );
 }
 
+/** Opens and parses one stored payslip calculation; never echoes a value. */
+function openCalculation(row: {
+  id: string;
+  tenantId: string;
+  employeeId: string;
+  calculationEncrypted: (typeof payslips.$inferSelect)["calculationEncrypted"];
+  piiKeyVersion: number;
+}): PayslipCalculation {
+  let calc: PayslipCalculation;
+  try {
+    calc = payslipCalculationSchema.parse(
+      JSON.parse(
+        openPayrollValue(
+          row.calculationEncrypted,
+          {
+            tenantId: row.tenantId,
+            table: "payslips",
+            rowId: row.id,
+            field: "calculation",
+          },
+          row.piiKeyVersion,
+        ),
+      ),
+    );
+  } catch {
+    throw reversalBlocked(
+      "Slip gaji payroll ini tidak bisa dibaca, jadi tidak bisa dibatalkan.",
+    );
+  }
+  if (calc.employeeId !== row.employeeId)
+    throw reversalBlocked(
+      "Slip gaji payroll ini tidak bisa dibaca, jadi tidak bisa dibatalkan.",
+    );
+  return calc;
+}
+
+function reversalBlocked(message: string): HttpError {
+  return new HttpError(409, "PAYROLL_RUN_REVERSAL_BLOCKED", message);
+}
+
+const PAYSLIP_COLUMNS = {
+  id: payslips.id,
+  tenantId: payslips.tenantId,
+  employeeId: payslips.employeeId,
+  calculationEncrypted: payslips.calculationEncrypted,
+  piiKeyVersion: payslips.piiKeyVersion,
+} as const;
+
+/**
+ * Refuse while this run raised a receivable for an employee that another live
+ * (locked or paid) run collected from: reversing would leave that collection
+ * without its receivable and the employee short-paid.
+ */
+async function assertNoCollectedReceivable(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: PayrollRunId,
+): Promise<void> {
+  const mine = await tx
+    .select(PAYSLIP_COLUMNS)
+    .from(payslips)
+    .where(
+      and(eq(payslips.tenantId, tenantId), eq(payslips.payrollRunId, runId)),
+    );
+  const raised = [
+    ...new Set(
+      mine
+        .filter((row) => (openCalculation(row).tax.pph21ReceivableIdr ?? 0) > 0)
+        .map((row) => row.employeeId),
+    ),
+  ];
+  if (raised.length === 0) return;
+  const others = await tx
+    .select(PAYSLIP_COLUMNS)
+    .from(payslips)
+    .innerJoin(
+      payrollRuns,
+      and(
+        eq(payrollRuns.tenantId, payslips.tenantId),
+        eq(payrollRuns.id, payslips.payrollRunId),
+      ),
+    )
+    .where(
+      and(
+        eq(payslips.tenantId, tenantId),
+        ne(payrollRuns.id, runId),
+        inArray(payrollRuns.status, ["locked", "paid"]),
+        inArray(payslips.employeeId, raised),
+      ),
+    );
+  for (const row of others) {
+    const collected = openCalculation(row).lines.some(
+      (line) => line.category === "pph21_receivable" && line.amountIdr > 0,
+    );
+    if (collected)
+      throw reversalBlocked(
+        "Kekurangan PPh 21 dari payroll ini sudah ditagih di payroll lain. Batalkan payroll yang menagihnya dulu.",
+      );
+  }
+}
+
 async function writeRun(
   tx: Tx,
   tenantId: TenantId,
@@ -313,6 +426,7 @@ export async function requestPayrollRunReversalInTransaction(
   // Fast fail only; the decision re-checks under the month lock.
   await assertNoBankFile(tx, tenantId, payrollRunId);
   await assertNoLiveDependents(tx, tenantId, payrollRunId);
+  await assertNoCollectedReceivable(tx, tenantId, payrollRunId);
   await writeRun(tx, tenantId, payrollRunId, next);
   await audit(
     tx,
@@ -342,8 +456,9 @@ export async function decidePayrollRunReversalInTransaction(
     actorUserId,
     "payroll.cancel.approve",
   );
-  // LOCK 1: tax month. LOCK 2: run row.
+  // LOCK 1: tax month. LOCK 2: receivable scope. LOCK 3: run row.
   const month = await lockPayrollRunMonth(tx, tenantId, payrollRunId);
+  await lockPph21ReceivableScope(tx, tenantId, month.legalEntityId);
   const row = await lockRunRow(tx, tenantId, payrollRunId);
   if (
     row.legalEntityId !== month.legalEntityId ||
@@ -377,6 +492,7 @@ export async function decidePayrollRunReversalInTransaction(
   await assertNoRapelSideEffects(tx, tenantId, payrollRunId);
   await assertNoBankFile(tx, tenantId, payrollRunId);
   await assertNoLiveDependents(tx, tenantId, payrollRunId);
+  await assertNoCollectedReceivable(tx, tenantId, payrollRunId);
   const { totals, reversal } = next;
   if (totals === null || reversal === null)
     throw new HttpError(

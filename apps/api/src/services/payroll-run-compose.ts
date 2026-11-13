@@ -12,10 +12,15 @@
 // withheld is capped by `payslipWithholdingCap` over the same pay, so net is
 // never below zero. `payslipCalculationSchema` re-checks every total.
 //
-// OPEN O2: collecting an open PPh 21 receivable (PPH21_RECEIVABLE) and loan
-// installments are not composed here; the simulate service refuses runs with
-// loans, reimbursements or service charge, and employees with an open
-// receivable (422 PAYROLL_RUN_SIMULATE_UNSUPPORTED).
+// An open PPh 21 receivable of earlier payslips is collected on a PPH21_RECEIVABLE
+// line after the gross engine's deductions (fixtures.ts order: BPJS_EMP, PPH21,
+// gross deductions, PPH21_RECEIVABLE): min(open, max(0, room)), room = gross - BPJS
+// - PPh 21 - gross deductions, so net is never negative and the collection never
+// exceeds the open balance (`planPph21ReceivableCollection`, founder B8).
+//
+// OPEN O2: loan installments are not composed here; the simulate service
+// refuses runs with loans, reimbursements or service charge (422
+// PAYROLL_RUN_SIMULATE_UNSUPPORTED).
 
 import { idr, sumIdr, type Idr, type OutletId } from "@starter/shared/core";
 import type { EmployeeId } from "@starter/shared/hris";
@@ -24,6 +29,7 @@ import {
   payslipCalculationSchema,
   payslipLineSchema,
   payslipWithholdingCap,
+  planPph21ReceivableCollection,
   type BpjsContribution,
   type PayComponentCategory,
   type PayslipBpjsLine,
@@ -41,6 +47,10 @@ const SYSTEM_LINES = {
   PPH21_REFUND: { name: "Pengembalian PPh 21", category: "custom_earning" },
   BPJS_EMP: { name: "Iuran BPJS Karyawan", category: "bpjs_employee" },
   PPH21: { name: "PPh 21", category: "pph21" },
+  PPH21_RECEIVABLE: {
+    name: "Penagihan Kekurangan PPh 21",
+    category: "pph21_receivable",
+  },
 } as const satisfies Record<
   string,
   { name: string; category: PayComponentCategory }
@@ -56,7 +66,9 @@ function systemLine(
     name,
     category,
     kind:
-      category === "bpjs_employee" || category === "pph21"
+      category === "bpjs_employee" ||
+      category === "pph21" ||
+      category === "pph21_receivable"
         ? "deduction"
         : "earning",
     amountIdr,
@@ -146,6 +158,12 @@ export type ComposePayslipInput = {
   bpjs: readonly PayslipBpjsLine[];
   tax: PayslipTax;
   paymentMethod: PayslipPaymentMethod;
+  /**
+   * Open PPh 21 receivable from earlier payslips (0 or absent = none). Only the
+   * balance of earlier payslips: a receivable raised on this payslip is never
+   * collected on it.
+   */
+  openReceivableIdr?: Idr | number;
 };
 
 /** The full payslip body of one employee (see the header). */
@@ -166,9 +184,19 @@ export function composePayslipCalculation(
     systemLine("PPH21", tax.pph21WithheldIdr),
     ...input.grossDeductions,
   ];
+  const grossIdr = sumIdr(earnings.map((l) => l.amountIdr));
+  // Room = pay left after BPJS, PPh 21 and the other deductions; never negative
+  // net, never more than the open receivable.
+  const receivableCollection = planPph21ReceivableCollection({
+    openIdr: input.openReceivableIdr ?? 0,
+    roomIdr: grossIdr - sumIdr(deductions.map((l) => l.amountIdr)),
+  });
+  if (receivableCollection.collectedIdr > 0)
+    deductions.push(
+      systemLine("PPH21_RECEIVABLE", receivableCollection.collectedIdr),
+    );
 
   const lines = [...earnings, ...deductions];
-  const grossIdr = sumIdr(earnings.map((l) => l.amountIdr));
   const deductionsIdr = sumIdr(deductions.map((l) => l.amountIdr));
   const sumOf = (category: PayslipLine["category"]) =>
     sumIdr(

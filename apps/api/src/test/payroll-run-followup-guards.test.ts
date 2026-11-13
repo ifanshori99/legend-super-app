@@ -5,10 +5,17 @@
 // wrong, and nobody is under-taxed. Fail-first: written before the fixes.
 //
 // RULES UNDER TEST
-//  1. [receivable-open] simulate refuses a run when an employee still owes an
-//     open PPh 21 receivable from earlier payslips (collecting it is follow-up
-//     O2): 422 PAYROLL_RUN_SIMULATE_UNSUPPORTED, nothing stored, run stays
-//     draft. A run of employees without a receivable simulates as before.
+//  1. [receivable-open] (O2, bead legend-bypw2, founder decision B8) simulate
+//     no longer refuses an employee with an open PPh 21 receivable from earlier
+//     payslips: it adds a collection line equal to
+//     planPph21ReceivableCollection({ openIdr, roomIdr }) where room is the net
+//     pay left before the collection. Collected <= open, collected <= room, net
+//     never negative, no employee without a receivable is touched, simulating
+//     again collects the same amount (no double collection), the lock seals
+//     exactly what simulate stored, and the balance after the lock is
+//     open - collected. Inconsistent or unreadable earlier payslip data is
+//     still refused, nothing stored, run stays draft (fail closed). A run of
+//     employees without a receivable simulates as before.
 //  2. [lock-year-serialized] a November run and a December run of the same
 //     legal entity locked at the same time are serialized by the tax-year
 //     lock: exactly one locks; the loser is a 409 and writes nothing (either
@@ -28,6 +35,18 @@
 //    the identity pph21Idr = W + borne + receivable holds. No collected line
 //    exists, so the open balance is r > 0. The balance is read across years
 //    (brief of the receivable card: "lintas tahun").
+//  - The collection is the deduction line of category "pph21_receivable"
+//    (shared Pph21ReceivableSlip shape) inside the stored `calculation.lines`.
+//    Room is read from a control employee of the same run with the same
+//    salary and no receivable: his net is the room (no loans, no late
+//    deductions in this world). A large receivable (40.000.000) exceeds the
+//    room, so the employee nets 0 and the rest stays open (B8: no percentage
+//    limit, no negative net).
+//  - For the fail-closed cases the exact error code is not fixed by the
+//    design, so only "refused (not resolved), run draft, nothing stored" is
+//    asserted. Inconsistent data = a pph21_receivable collection line larger
+//    than the receivable raised; unreadable = the sealed calculation of the
+//    earlier payslip is garbage.
 //  - In 2 the loser's code is one of PAYROLL_PPH21_LATER_PERIOD_LOCKED,
 //    PAYROLL_PPH21_MONTH_STALE or PAYROLL_RUN_RESULT_STALE (design 2/3 do not
 //    fix which stale check fires first). Which run wins is not fixed. The race
@@ -51,6 +70,8 @@ import {
   buildPph21Prior,
   computePayslipTax,
   payrollRunIdSchema,
+  pph21ReceivableBalance,
+  planPph21ReceivableCollection,
   type Pph21PriorPeriod,
 } from "@starter/shared/hris/payroll";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
@@ -390,7 +411,12 @@ const slipsOf = (runIds: readonly string[]) =>
  * calculation of the employee's payslip in `runId` (replica role: the
  * immutability triggers are off for this test fixture only). Returns r.
  */
-async function seedOpenReceivable(runId: string, emp: Emp): Promise<number> {
+async function seedOpenReceivable(
+  runId: string,
+  emp: Emp,
+  /** Larger than the tax: PPh 21 stays withheld in full, identity kept. */
+  amount?: number,
+): Promise<number> {
   return asTenant(async (conn) => {
     const row = (
       await conn.query(
@@ -399,18 +425,43 @@ async function seedOpenReceivable(runId: string, emp: Emp): Promise<number> {
         [tenant.id, runId, emp.id],
       )
     ).rows[0];
-    const calc = openSlip(row);
+    const calc = openSlip(row) as FullCalc & {
+      deductionsIdr: number;
+      pph21Idr: number;
+    };
     const withheld = calc.tax.pph21WithheldIdr;
     expect(withheld, "the seed slip withheld tax").toBeGreaterThan(0);
-    const receivable = Math.min(50_000, withheld);
-    const tampered = {
-      ...calc,
-      tax: {
-        ...calc.tax,
-        pph21WithheldIdr: withheld - receivable,
-        pph21ReceivableIdr: receivable,
-      },
-    };
+    const receivable = amount ?? Math.min(50_000, withheld);
+    // Both variants must still satisfy payslipTotalsIssues (the loader parses
+    // the slip with the same schema).
+    const tampered =
+      amount === undefined
+        ? {
+            ...calc,
+            // Part of the tax was not withheld: pph21 line, deductions and
+            // net follow, the owed tax stays the same.
+            lines: calc.lines.map((l) =>
+              l.category === "pph21"
+                ? { ...l, amountIdr: l.amountIdr - receivable }
+                : l,
+            ),
+            deductionsIdr: calc.deductionsIdr - receivable,
+            netIdr: calc.netIdr + receivable,
+            tax: {
+              ...calc.tax,
+              pph21WithheldIdr: withheld - receivable,
+              pph21ReceivableIdr: receivable,
+            },
+          }
+        : {
+            ...calc,
+            pph21Idr: calc.pph21Idr + receivable,
+            tax: {
+              ...calc.tax,
+              pph21Idr: calc.tax.pph21Idr + receivable,
+              pph21ReceivableIdr: receivable,
+            },
+          };
     await conn.query(
       `UPDATE payslips SET calculation_encrypted = $3, pii_key_version = $4
         WHERE tenant_id = $1 AND id = $2`,
@@ -427,6 +478,39 @@ async function seedOpenReceivable(runId: string, emp: Emp): Promise<number> {
       ],
     );
     return receivable;
+  }, true);
+}
+
+/** Rewrites the sealed calculation of one earlier payslip (fixture only). */
+async function tamperEarlierSlip(
+  runId: string,
+  emp: Emp,
+  change: (calc: FullCalc) => unknown,
+) {
+  await asTenant(async (conn) => {
+    const row = (
+      await conn.query(
+        `SELECT id, calculation_encrypted, pii_key_version FROM payslips
+          WHERE tenant_id = $1 AND payroll_run_id = $2 AND employee_id = $3`,
+        [tenant.id, runId, emp.id],
+      )
+    ).rows[0];
+    const next = change(openSlip(row) as FullCalc);
+    await conn.query(
+      `UPDATE payslips SET calculation_encrypted = $3, pii_key_version = $4
+        WHERE tenant_id = $1 AND id = $2`,
+      [
+        tenant.id,
+        row.id,
+        sealPayrollValue(JSON.stringify(next), {
+          tenantId: tenant.id,
+          table: "payslips",
+          rowId: row.id,
+          field: "calculation",
+        }),
+        PAYROLL_SEAL_KEY_VERSION,
+      ],
+    );
   }, true);
 }
 
@@ -572,19 +656,164 @@ afterAll(async () => {
 
 // ---- 1. [receivable-open] ----------------------------------------------------------
 
-describe("[receivable-open] an open PPh 21 receivable blocks simulate", () => {
-  it("422 PAYROLL_RUN_SIMULATE_UNSUPPORTED, nothing stored, run stays draft", async () => {
+type CollectLine = { category: string; amountIdr: number };
+type FullCalc = Calc & { netIdr: number; lines: CollectLine[] };
+
+const collectedOf = (calc: FullCalc) =>
+  calc.lines
+    .filter((l) => l.category === "pph21_receivable")
+    .reduce((total, l) => total + l.amountIdr, 0);
+const collectionLines = (calc: FullCalc) =>
+  calc.lines.filter((l) => l.category === "pph21_receivable");
+
+const storedResults = (runId: string) =>
+  asTenant(async (conn) =>
+    (
+      await conn.query(
+        `SELECT employee_id, payslip_id, result_encrypted, pii_key_version
+           FROM payroll_run_results WHERE tenant_id = $1 AND payroll_run_id = $2`,
+        [tenant.id, runId],
+      )
+    ).rows.map((row) => ({
+      employeeId: row.employee_id as string,
+      calc: (
+        JSON.parse(
+          openPayrollValue(
+            row.result_encrypted,
+            {
+              tenantId: tenant.id,
+              table: "payroll_run_results",
+              rowId: row.payslip_id,
+              field: "result",
+            } as never,
+            row.pii_key_version,
+          ),
+        ) as { calculation: FullCalc }
+      ).calculation,
+    })),
+  );
+
+describe("[receivable-open] an open PPh 21 receivable is collected by simulate", () => {
+  for (const open of [50_000, 40_000_000]) {
+    const label =
+      open === 50_000
+        ? "room covers it: collected in full"
+        : "receivable above the room: collects the room, net 0, rest stays open";
+    it(`${label}; simulate = what the lock seals`, async () => {
+      const world = await makeWorld();
+      const emp = await makeEmployee(world);
+      const control = await makeEmployee(world);
+      const earlier = await lockedRun(world, monthDates(6, 2025));
+      expect(await seedOpenReceivable(earlier, emp, open)).toBe(open);
+
+      const run = await draftRun(world, monthDates(11));
+      const simulated = await simulateRun(run);
+      expect(simulated.status).toBe("simulated");
+      const results = await storedResults(run);
+      expect(results).toHaveLength(2);
+      const mine = results.find((r) => r.employeeId === emp.id)!.calc;
+      const other = results.find((r) => r.employeeId === control.id)!.calc;
+
+      // The control employee owes nothing: untouched.
+      expect(collectionLines(other)).toHaveLength(0);
+      const room = other.netIdr;
+      expect(room).toBeGreaterThan(0);
+
+      // Same collection as the shared B8 planner; one line only.
+      const plan = planPph21ReceivableCollection({
+        openIdr: open,
+        roomIdr: room,
+      });
+      expect(collectionLines(mine)).toHaveLength(1);
+      expect(collectedOf(mine)).toBe(plan.collectedIdr);
+      // Money invariants: never more than owed, never more than the room,
+      // never a negative net, the rest of the pay is unchanged.
+      expect(collectedOf(mine)).toBeLessThanOrEqual(open);
+      expect(collectedOf(mine)).toBeLessThanOrEqual(room);
+      expect(mine.netIdr).toBeGreaterThanOrEqual(0);
+      expect(mine.netIdr).toBe(room - collectedOf(mine));
+      if (open <= room) expect(collectedOf(mine)).toBe(open);
+      else expect(mine.netIdr).toBe(0);
+      // Run totals follow the results (bank transfer = what is paid out).
+      expect(Number(simulated.totals?.netIdr)).toBe(mine.netIdr + other.netIdr);
+
+      // Simulating again collects the same, not twice.
+      await simulateRun(run);
+      const again = await storedResults(run);
+      expect(
+        collectedOf(again.find((r) => r.employeeId === emp.id)!.calc),
+      ).toBe(plan.collectedIdr);
+
+      // The lock seals exactly the simulated numbers.
+      await asTenant((conn) => approveSimulatedRun(conn, run));
+      await lockRun(run);
+      expect(await runStatus(run)).toBe("locked");
+      const slips = (await slipsOf([earlier, run])) as unknown as {
+        runId: string;
+        employeeId: string;
+        calc: FullCalc;
+      }[];
+      const sealedMine = slips.find(
+        (s) => s.runId === run && s.employeeId === emp.id,
+      )!.calc;
+      const sealedOther = slips.find(
+        (s) => s.runId === run && s.employeeId === control.id,
+      )!.calc;
+      expect(collectedOf(sealedMine)).toBe(plan.collectedIdr);
+      expect(sealedMine.netIdr).toBe(mine.netIdr);
+      expect(sealedOther.netIdr).toBe(other.netIdr);
+      expect(collectedOf(sealedOther)).toBe(0);
+
+      // Open balance after the lock = open - collected (never negative).
+      const balance = pph21ReceivableBalance(
+        slips.filter((s) => s.employeeId === emp.id).map((s) => s.calc),
+      );
+      expect(balance).toBe(open - plan.collectedIdr);
+    }, 600_000);
+  }
+
+  it("inconsistent history (collected more than raised): refused, nothing stored, run stays draft", async () => {
     const world = await makeWorld();
     const emp = await makeEmployee(world);
     const earlier = await lockedRun(world, monthDates(6, 2025));
-    const receivable = await seedOpenReceivable(earlier, emp);
-    expect(receivable).toBeGreaterThan(0);
+    await tamperEarlierSlip(earlier, emp, (calc) => ({
+      ...calc,
+      lines: [
+        ...calc.lines,
+        {
+          category: "pph21_receivable",
+          componentCode: "PPH21_RECEIVABLE",
+          kind: "deduction",
+          amountIdr: 10_000,
+        },
+      ],
+    }));
 
     const run = await draftRun(world, monthDates(11));
     const refused = await failureOf(simulateRun(run));
-    expect(refused, "simulate must refuse an open receivable").not.toBeNull();
-    expect(refused!.status).toBe(422);
-    expect(refused!.code).toBe("PAYROLL_RUN_SIMULATE_UNSUPPORTED");
+    expect(refused, "simulate must refuse inconsistent history").not.toBeNull();
+    expect(await runStatus(run)).toBe("draft");
+    expect(await countOf("payroll_run_results", run)).toBe(0);
+    expect(await countOf("payslips", run)).toBe(0);
+  }, 300_000);
+
+  it("unreadable earlier payslip: refused, nothing stored, run stays draft", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const earlier = await lockedRun(world, monthDates(6, 2025));
+    await asTenant(
+      (conn) =>
+        conn.query(
+          `UPDATE payslips SET calculation_encrypted = $3
+            WHERE tenant_id = $1 AND payroll_run_id = $2 AND employee_id = $4`,
+          [tenant.id, earlier, Buffer.from("not a sealed value"), emp.id],
+        ),
+      true,
+    );
+
+    const run = await draftRun(world, monthDates(11));
+    const refused = await failureOf(simulateRun(run));
+    expect(refused, "simulate must refuse unreadable history").not.toBeNull();
     expect(await runStatus(run)).toBe("draft");
     expect(await countOf("payroll_run_results", run)).toBe(0);
     expect(await countOf("payslips", run)).toBe(0);
@@ -599,6 +828,8 @@ describe("[receivable-open] an open PPh 21 receivable blocks simulate", () => {
     await simulateRun(run);
     expect(await runStatus(run)).toBe("simulated");
     expect(await countOf("payroll_run_results", run)).toBe(1);
+    const [only] = await storedResults(run);
+    expect(collectionLines(only!.calc)).toHaveLength(0);
   }, 300_000);
 });
 
@@ -740,4 +971,383 @@ describe("[lock-employee-dates] employee dates changed after approval", () => {
     expect(await runStatus(run)).toBe("locked");
     expect(await countOf("payslips", run)).toBe(1);
   }, 300_000);
+});
+
+// ---- 5. [receivable-no-double-collection] (architect round 1, findings 1-3) --------
+//
+// RULES UNDER TEST (founder rule "jangan sampai rugi": nobody is collected
+// more than once, a receivable of entity A is never collected by entity B, a
+// run whose receivable was already collected cannot be reversed)
+//  5a. Two runs of one legal entity are both simulated while receivable X is
+//      open, so both collect X. Whichever locks second is refused 409
+//      PAYROLL_RUN_RESULT_STALE (its stored collection is out of date) and
+//      writes nothing. Total collected over the locked runs never exceeds X,
+//      and pph21ReceivableBalance does not throw afterwards. Dec 2025 + Jan
+//      2026 (different tax years, so the tax-year prior check cannot see
+//      each other), both lock orders.
+//  5b. Mar 2026 locked, then Feb 2026 (same entity, both collecting X): the
+//      second lock is refused 409 (code not fixed: the existing "later period
+//      locked" guard or the new stale check). May already pass today.
+//  5c. Receivable raised under legal entity A is NOT collected by a run of
+//      legal entity B (employee transferred to B): no collection line, and
+//      A's balance stays open after B's run locks.
+//  5d. A run that raised a receivable cannot be reversed once another live run
+//      collected it: 409 PAYROLL_RUN_REVERSAL_BLOCKED (at the request or at
+//      the approval; both are accepted). Control: with nobody collecting, the
+//      same run reverses.
+//
+// ASSUMPTIONS
+//  - X = 50.000 on the June 2025 payslip (seedOpenReceivable default variant,
+//    which keeps payslipTotalsIssues valid).
+//  - Reversal = request by the locker, decision by a second user with
+//    payroll.cancel.approve (service functions, like lockRun above).
+//  - Moving an employee between legal entities is a plain update of
+//    employees.legal_entity_id.
+describe("[receivable-no-double-collection] one receivable is collected once, by its own legal entity", () => {
+  const X = 50_000;
+
+  const collectedTotal = async (runIds: readonly string[], emp: Emp) =>
+    (
+      (await slipsOf(runIds)) as unknown as {
+        employeeId: string;
+        calc: FullCalc;
+      }[]
+    )
+      .filter((s) => s.employeeId === emp.id)
+      .reduce((total, s) => total + collectedOf(s.calc), 0);
+
+  const lockedWithCollection = async (runIds: readonly string[], emp: Emp) =>
+    (
+      (await slipsOf(runIds)) as unknown as {
+        employeeId: string;
+        calc: FullCalc;
+      }[]
+    ).filter((s) => s.employeeId === emp.id && collectedOf(s.calc) > 0).length;
+
+  /** Both runs simulated while X is open: both collect X (precondition). */
+  async function twoCollectingRuns(a: RunDates, b: RunDates) {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const earlier = await lockedRun(world, monthDates(6, 2025));
+    expect(await seedOpenReceivable(earlier, emp)).toBe(X);
+    const first = await draftRun(world, a);
+    const second = await draftRun(world, b);
+    await simulateRun(first);
+    await simulateRun(second);
+    for (const run of [first, second]) {
+      const mine = (await storedResults(run)).find(
+        (r) => r.employeeId === emp.id,
+      )!.calc;
+      expect(collectedOf(mine), "simulate collects the open X").toBe(X);
+      await asTenant((conn) => approveSimulatedRun(conn, run));
+    }
+    return { emp, earlier, first, second };
+  }
+
+  for (const order of ["december first", "january first"] as const)
+    it(`5a. Dec 2025 + Jan 2026 both simulated, ${order}: the second lock is 409 PAYROLL_RUN_RESULT_STALE, X collected once`, async () => {
+      const {
+        emp,
+        earlier,
+        first: dec,
+        second: jan,
+      } = await twoCollectingRuns(monthDates(12, 2025), monthDates(1, 2026));
+      const [winner, loser] =
+        order === "december first" ? [dec, jan] : [jan, dec];
+
+      await lockRun(winner);
+      expect(await runStatus(winner)).toBe("locked");
+      const refused = await failureOf(lockRun(loser));
+      expect(
+        refused,
+        "the second run would collect the same receivable again",
+      ).not.toBeNull();
+      expect(refused!.status).toBe(409);
+      expect(refused!.code).toBe("PAYROLL_RUN_RESULT_STALE");
+      expect(await runStatus(loser)).toBe("approved");
+      expect(await countOf("payslips", loser)).toBe(0);
+
+      // Never collected twice; the balance is still computable (no throw).
+      expect(await collectedTotal([earlier, winner, loser], emp)).toBe(X);
+      const slips = (await slipsOf([earlier, winner, loser])) as unknown as {
+        employeeId: string;
+        calc: FullCalc;
+      }[];
+      expect(
+        pph21ReceivableBalance(
+          slips.filter((s) => s.employeeId === emp.id).map((s) => s.calc),
+        ),
+      ).toBe(0);
+    }, 600_000);
+
+  it("5a'. the loser, simulated again, locks and collects nothing more", async () => {
+    const {
+      emp,
+      earlier,
+      first: dec,
+      second: jan,
+    } = await twoCollectingRuns(monthDates(12, 2025), monthDates(1, 2026));
+    await lockRun(dec);
+    expect((await failureOf(lockRun(jan)))?.code).toBe(
+      "PAYROLL_RUN_RESULT_STALE",
+    );
+    await asTenant((conn) => returnRunToDraft(conn, jan));
+    await simulateRun(jan);
+    await asTenant((conn) => approveSimulatedRun(conn, jan));
+    await lockRun(jan);
+    expect(await runStatus(jan)).toBe("locked");
+    expect(await lockedWithCollection([earlier, dec, jan], emp)).toBe(1);
+    expect(await collectedTotal([earlier, dec, jan], emp)).toBe(X);
+  }, 600_000);
+
+  it("5b. Mar 2026 locked, then Feb 2026 (both collecting X): Feb is refused 409, X collected once", async () => {
+    const {
+      emp,
+      earlier,
+      first: mar,
+      second: feb,
+    } = await twoCollectingRuns(monthDates(3, 2026), monthDates(2, 2026));
+    await lockRun(mar);
+    const refused = await failureOf(lockRun(feb));
+    expect(refused, "Feb would collect X a second time").not.toBeNull();
+    expect(refused!.status).toBe(409);
+    expect(await runStatus(feb)).toBe("approved");
+    expect(await collectedTotal([earlier, mar, feb], emp)).toBe(X);
+  }, 600_000);
+
+  it("5c. a receivable raised under entity A is not collected by a run of entity B", async () => {
+    const worldA = await makeWorld();
+    const worldB = await makeWorld();
+    const emp = await makeEmployee(worldA);
+    const earlier = await lockedRun(worldA, monthDates(6, 2025));
+    expect(await seedOpenReceivable(earlier, emp)).toBe(X);
+    await asTenant((conn) =>
+      conn.query(
+        `UPDATE employees SET legal_entity_id = $3 WHERE tenant_id = $1 AND id = $2`,
+        [tenant.id, emp.id, worldB.entityId],
+      ),
+    );
+
+    const run = await draftRun(worldB, monthDates(11));
+    await simulateRun(run);
+    expect(await runStatus(run)).toBe("simulated");
+    const mine = (await storedResults(run)).find(
+      (r) => r.employeeId === emp.id,
+    )!.calc;
+    expect(
+      collectionLines(mine),
+      "entity B must not collect entity A's receivable",
+    ).toHaveLength(0);
+
+    await asTenant((conn) => approveSimulatedRun(conn, run));
+    await lockRun(run);
+    expect(await runStatus(run)).toBe("locked");
+    const slips = (await slipsOf([earlier, run])) as unknown as {
+      employeeId: string;
+      calc: FullCalc;
+    }[];
+    expect(
+      pph21ReceivableBalance(
+        slips.filter((s) => s.employeeId === emp.id).map((s) => s.calc),
+      ),
+    ).toBe(X);
+  }, 600_000);
+
+  describe("5d. reversal of the run that raised the receivable", () => {
+    let approverUserId: string;
+    beforeAll(async () => {
+      const approver = await signedInClient("Guards reversal approver");
+      await grantRole(approver.userId, [
+        "payroll.view",
+        "payroll.cancel.approve",
+      ]);
+      approverUserId = approver.userId;
+    });
+
+    async function reverse(runId: string) {
+      const {
+        requestPayrollRunReversalInTransaction,
+        decidePayrollRunReversalInTransaction,
+      } = await import("../services/payroll-run-reversal.service.ts");
+      const id = payrollRunIdSchema.parse(runId);
+      await withTenant(db, tenantScope(), (tx) =>
+        requestPayrollRunReversalInTransaction(
+          tx,
+          tenantScope(),
+          exporterUserId,
+          id,
+          "Salah hitung, dibatalkan",
+        ),
+      );
+      await withTenant(db, tenantScope(), (tx) =>
+        decidePayrollRunReversalInTransaction(
+          tx,
+          tenantScope(),
+          approverUserId,
+          id,
+          "approve",
+        ),
+      );
+    }
+
+    it("control: nobody collected the receivable, the run reverses", async () => {
+      const world = await makeWorld();
+      const emp = await makeEmployee(world);
+      const earlier = await lockedRun(world, monthDates(6, 2025));
+      expect(await seedOpenReceivable(earlier, emp)).toBe(X);
+      await reverse(earlier);
+      expect(await runStatus(earlier)).toBe("reversed");
+    }, 600_000);
+
+    it("a later run (other month, other year) collected X: the reversal is 409 PAYROLL_RUN_REVERSAL_BLOCKED and the run stays locked", async () => {
+      const world = await makeWorld();
+      const emp = await makeEmployee(world);
+      const earlier = await lockedRun(world, monthDates(6, 2025));
+      expect(await seedOpenReceivable(earlier, emp)).toBe(X);
+      const later = await draftRun(world, monthDates(11));
+      await simulateRun(later);
+      await asTenant((conn) => approveSimulatedRun(conn, later));
+      await lockRun(later);
+      expect(await collectedTotal([later], emp)).toBe(X);
+
+      const refused = await failureOf(reverse(earlier));
+      expect(
+        refused,
+        "reversing would leave a collection without its receivable",
+      ).not.toBeNull();
+      expect(refused!.status).toBe(409);
+      expect(refused!.code).toBe("PAYROLL_RUN_REVERSAL_BLOCKED");
+      expect(await runStatus(earlier)).toBe("locked");
+    }, 600_000);
+  });
+});
+
+// ---- 6. [receivable-no-backward-collection] ------------------------------------------
+// CTO decision (brief 644, round 3): a run only collects a PPh 21 receivable
+// raised by a run whose pay_date is <= its own pay_date (equal is allowed).
+// The rest stays open for later runs. Assumptions:
+//  - X = 50.000, raised on a locked run's payslip via seedOpenReceivable.
+//  - "Feb off-cycle" is a regular run with a February period and pay date;
+//    the fixture has no separate off-cycle run type.
+//  - Case 3 cannot be reached by simulate once the rule exists (Feb never
+//    sees a receivable raised by a later-paid run), so the fixture moves the
+//    raising run's pay_date to March after Feb was simulated: it is the same
+//    state as "a Mar run raised X and Feb's stored result collects it".
+describe("[receivable-no-backward-collection] a run never collects a receivable raised by a later-paid run", () => {
+  const X = 50_000;
+  type SlipCalc = { employeeId: string; calc: FullCalc };
+
+  const slipsFor = async (runIds: readonly string[], emp: Emp) =>
+    ((await slipsOf(runIds)) as unknown as SlipCalc[]).filter(
+      (s) => s.employeeId === emp.id,
+    );
+  const myResult = async (runId: string, emp: Emp) =>
+    (await storedResults(runId)).find((r) => r.employeeId === emp.id)!.calc;
+
+  it("1. Mar raises X and is locked; Feb (pay date Feb) simulates with no collection and X stays open", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const mar = await lockedRun(world, monthDates(3, 2026));
+    expect(await seedOpenReceivable(mar, emp)).toBe(X);
+
+    const feb = await draftRun(world, monthDates(2, 2026));
+    await simulateRun(feb);
+    expect(await runStatus(feb)).toBe("simulated");
+    expect(
+      collectionLines(await myResult(feb, emp)),
+      "Feb (paid before Mar) must not collect a receivable raised by Mar",
+    ).toHaveLength(0);
+    expect(
+      pph21ReceivableBalance((await slipsFor([mar], emp)).map((s) => s.calc)),
+      "X is still open on the Mar run",
+    ).toBe(X);
+  }, 600_000);
+
+  it("2. Jan raises X, Mar collects it (locked); Feb then collects nothing (no double collection)", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const jan = await lockedRun(world, monthDates(1, 2026));
+    expect(await seedOpenReceivable(jan, emp)).toBe(X);
+    const mar = await draftRun(world, monthDates(3, 2026));
+    await simulateRun(mar);
+    expect(collectedOf(await myResult(mar, emp)), "Mar collects X").toBe(X);
+    await asTenant((conn) => approveSimulatedRun(conn, mar));
+    await lockRun(mar);
+    expect(await runStatus(mar)).toBe("locked");
+
+    const feb = await draftRun(world, monthDates(2, 2026));
+    await simulateRun(feb);
+    expect(
+      collectionLines(await myResult(feb, emp)),
+      "X was already collected by Mar: Feb must not collect it again",
+    ).toHaveLength(0);
+    expect(
+      pph21ReceivableBalance(
+        (await slipsFor([jan, mar], emp)).map((s) => s.calc),
+      ),
+    ).toBe(0);
+  }, 600_000);
+
+  it("3. Feb collected X at simulate, but the run that raised X is paid after Feb: lock Feb is 409 PAYROLL_RUN_RESULT_STALE", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const raiser = await lockedRun(world, monthDates(6, 2025));
+    expect(await seedOpenReceivable(raiser, emp)).toBe(X);
+    const feb = await draftRun(world, monthDates(2, 2026));
+    await simulateRun(feb);
+    expect(collectedOf(await myResult(feb, emp)), "Feb collects X").toBe(X);
+    await asTenant((conn) => approveSimulatedRun(conn, feb));
+
+    // The raising run is now one paid in March 2026 (after Feb's pay date).
+    await asTenant(
+      (conn) =>
+        conn.query(
+          `UPDATE payroll_runs SET pay_date = $3 WHERE tenant_id = $1 AND id = $2`,
+          [tenant.id, raiser, "2026-03-28"],
+        ),
+      true,
+    );
+
+    const refused = await failureOf(lockRun(feb));
+    expect(
+      refused,
+      "Feb would collect a receivable raised by a later-paid run",
+    ).not.toBeNull();
+    expect(refused!.status).toBe(409);
+    expect(refused!.code).toBe("PAYROLL_RUN_RESULT_STALE");
+    expect(await runStatus(feb)).toBe("approved");
+    expect(await countOf("payslips", feb)).toBe(0);
+  }, 600_000);
+
+  it("4. control: Jan raises X, Feb (later pay date) collects it as usual; same pay date collects too", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const jan = await lockedRun(world, monthDates(1, 2026));
+    expect(await seedOpenReceivable(jan, emp)).toBe(X);
+    const feb = await draftRun(world, monthDates(2, 2026));
+    await simulateRun(feb);
+    expect(collectedOf(await myResult(feb, emp))).toBe(X);
+    await asTenant((conn) => approveSimulatedRun(conn, feb));
+    await lockRun(feb);
+    expect(await runStatus(feb)).toBe("locked");
+
+    // Same pay date (2026-04-10): the raising run and the collecting run.
+    const world2 = await makeWorld();
+    const emp2 = await makeEmployee(world2);
+    const sameDay = "2026-04-10";
+    const raiser = await lockedRun(world2, {
+      ...monthDates(3, 2026),
+      payDate: sameDay,
+    });
+    expect(await seedOpenReceivable(raiser, emp2)).toBe(X);
+    const collector = await draftRun(world2, {
+      ...monthDates(4, 2026),
+      payDate: sameDay,
+    });
+    await simulateRun(collector);
+    expect(
+      collectedOf(await myResult(collector, emp2)),
+      "equal pay date may collect",
+    ).toBe(X);
+  }, 600_000);
 });
