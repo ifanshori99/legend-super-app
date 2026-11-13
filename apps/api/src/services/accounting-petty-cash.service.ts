@@ -21,13 +21,15 @@
 //   are narrowed to the caller's outlets.
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gte, inArray, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, max, sql, type SQL } from "drizzle-orm";
 import {
   AccountingError,
   pettyCashMovementInputSchema,
   type PettyCashEntry,
   type PettyCashFund,
   type PettyCashMovementInput,
+  periodOf,
+  resolveAutoJournalDate,
 } from "@starter/shared/accounting";
 import {
   assertTrustedScopedContext,
@@ -49,6 +51,7 @@ import {
   type PettyCashEntryRow,
   type PettyCashFundRow,
 } from "../db/schema/accounting-cash-bank-entries.ts";
+import { fiscalPeriods } from "../db/schema/accounting.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -61,6 +64,7 @@ import {
 import { entityLock } from "./accounting-bank-matching.ts";
 import { loadBankAccount, notFound } from "./accounting-cash-bank-shared.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
+import { wouldPostingBeBlockedByClosedPeriod } from "./accounting-period.service.ts";
 import { requireLegalEntity } from "./accounting-shared.ts";
 import { loadOutletClock } from "./inventory-ops.shared.ts";
 
@@ -301,6 +305,8 @@ async function postMovementJournal(
     legalEntityId: string;
     outletId: string;
     entryDate: string;
+    /** Natural date of a retried entry whose period closed; null otherwise. */
+    lateAdjustmentFrom?: string | null;
     amountIdr: number;
     description: string;
     bankGlAccountId: string;
@@ -315,6 +321,7 @@ async function postMovementJournal(
       legalEntityId: input.legalEntityId,
       outletId: input.outletId,
       entryDate: input.entryDate as BusinessDate,
+      lateAdjustmentFrom: input.lateAdjustmentFrom ?? null,
       sourceId: input.entryId,
       description: input.description,
       postedBy: input.actorId,
@@ -463,10 +470,32 @@ export async function createPettyCashMovement(
   });
 }
 
+/** Latest closed month of the entity, or null (read under the entity lock). */
+async function latestClosedPeriod(
+  tx: TenantTransaction,
+  tenantId: string,
+  legalEntityId: string,
+): Promise<string | null> {
+  const [row] = await tx
+    .select({ period: max(fiscalPeriods.period) })
+    .from(fiscalPeriods)
+    .where(
+      and(
+        eq(fiscalPeriods.tenantId, tenantId),
+        eq(fiscalPeriods.legalEntityId, legalEntityId),
+        eq(fiscalPeriods.status, "closed"),
+      ),
+    );
+  return row?.period ?? null;
+}
+
 /**
  * Posts the journal of a parked top-up/return once the account map is fixed
  * (contract `postPettyCashEntry`). Locks the entry row, posts under the same
- * `pc:<entryId>` key; a posted entry is returned as it is.
+ * `pc:<entryId>` key; a posted entry is returned as it is. When the entry's
+ * month was closed while it was parked, the journal goes to the first open
+ * period with `lateAdjustmentFrom` = the entry date (like the auto-journal);
+ * the ledger row keeps its natural date.
  */
 export async function postPettyCashEntry(
   context: ScopedTenantContext,
@@ -485,6 +514,19 @@ export async function postPettyCashEntry(
     )
       return pettyCashEntryDto(row);
     const bank = await loadBankAccount(tx, tenantId, row.bankAccountId);
+    // Takes the entity FOR SHARE lock: close/reopen cannot race this post.
+    const blocked = await wouldPostingBeBlockedByClosedPeriod(
+      tx,
+      tenantId,
+      row.legalEntityId,
+      periodOf(row.entryDate),
+    );
+    const { entryDate, lateAdjustmentFrom } = resolveAutoJournalDate(
+      row.entryDate,
+      blocked
+        ? await latestClosedPeriod(tx, tenantId, row.legalEntityId)
+        : null,
+    );
     const posted = await postMovementJournal(
       tx,
       context,
@@ -493,7 +535,8 @@ export async function postPettyCashEntry(
         kind: row.kind,
         legalEntityId: row.legalEntityId,
         outletId: row.outletId,
-        entryDate: row.entryDate,
+        entryDate,
+        lateAdjustmentFrom,
         amountIdr: row.amountIdr,
         description: row.description,
         bankGlAccountId: bank.glAccountId,

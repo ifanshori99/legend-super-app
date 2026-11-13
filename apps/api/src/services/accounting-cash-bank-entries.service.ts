@@ -12,15 +12,19 @@
 // - Idempotent per client key (`idempotentCommand`): a replay returns the same
 //   entry, the same key with another body is IDEMPOTENCY_KEY_REUSED (409).
 // - The counter account of cash in/out is chosen by the caller and must not be
-//   a cash or bank account (use a transfer); the bank leg is always the GL
-//   account of the chosen bank account. Nothing is guessed.
+//   a cash or bank account (use a transfer), the GL account of any bank account
+//   of the entity, or an account mapped to a role a subledger owns (receivable,
+//   payable, salaries, tax, deposit, clearing, inventory, cash roles); the
+//   bank leg is always the GL account of the chosen bank account. Nothing is
+//   guessed.
 // - Reads are narrowed to the caller's outlets: an outlet-scoped caller sees
 //   only entries tagged to one of its outlets (entity-level rows are hidden).
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 import {
   AccountingError,
+  type PostingAccountRole,
   cashBankJournalLines,
   createCashBankEntryInputSchema,
   type CashBankEntry,
@@ -38,11 +42,13 @@ import {
   type UserId,
 } from "@starter/shared/core";
 import { db } from "../db";
-import { chartOfAccounts } from "../db/schema/accounting.ts";
+import { accountMappings, chartOfAccounts } from "../db/schema/accounting.ts";
+import { bankAccounts } from "../db/schema/accounting-cash-bank.ts";
 import {
   cashBankEntries,
   type CashBankEntryRow,
 } from "../db/schema/accounting-cash-bank-entries.ts";
+import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
@@ -205,7 +211,42 @@ export async function getCashBankEntry(
   });
 }
 
-/** The counter account of cash in/out: same entity, never a cash or bank account. */
+/**
+ * Posting roles whose balance a subledger or a dedicated flow owns: a free
+ * cash in/out line on them would drift the control account from its subledger.
+ * Local list: no shared const names these roles (every role verified in
+ * `POSTING_ACCOUNT_ROLES`); restrictive by design, add a role when unsure.
+ */
+const COUNTER_ACCOUNT_DENIED_ROLES: readonly PostingAccountRole[] = [
+  "accounts_receivable",
+  "accounts_payable",
+  "salaries_payable",
+  "tax_payable_pbjt",
+  "tax_payable_ppn",
+  "tax_payable_other",
+  "customer_deposit",
+  "pph21_payable",
+  "pph23_payable",
+  "dividend_tax_payable",
+  "bpjs_payable",
+  "loyalty_liability",
+  "gateway_clearing",
+  "employee_receivable",
+  "grni",
+  "edc_clearing",
+  "inventory",
+  "inventory_semi_finished",
+  "inventory_adjustment",
+  "petty_cash",
+  "cash_on_hand",
+  "bank",
+];
+
+/**
+ * The counter account of cash in/out: same entity, never a cash or bank
+ * account, the GL account of any bank account of the entity, or an account
+ * mapped to a subledger-owned role (one denylist query per entity).
+ */
 async function assertCounterAccount(
   tx: TenantTransaction,
   tenantId: string,
@@ -230,6 +271,31 @@ async function assertCounterAccount(
     throw new AccountingError("ACCOUNT_ENTITY_MISMATCH");
   if (account.reportGroup === "cash_and_equivalents")
     throw new AccountingError("CASH_BANK_COUNTER_ACCOUNT_INVALID");
+  const [denied] = await tx
+    .select({ id: accountMappings.accountId })
+    .from(accountMappings)
+    .where(
+      and(
+        eq(accountMappings.tenantId, tenantId),
+        eq(accountMappings.legalEntityId, legalEntityId),
+        eq(accountMappings.accountId, accountId),
+        inArray(accountMappings.role, [...COUNTER_ACCOUNT_DENIED_ROLES]),
+      ),
+    )
+    .union(
+      tx
+        .select({ id: bankAccounts.glAccountId })
+        .from(bankAccounts)
+        .where(
+          and(
+            eq(bankAccounts.tenantId, tenantId),
+            eq(bankAccounts.legalEntityId, legalEntityId),
+            eq(bankAccounts.glAccountId, accountId),
+          ),
+        ),
+    )
+    .limit(1);
+  if (denied) throw new AccountingError("CASH_BANK_COUNTER_ACCOUNT_INVALID");
 }
 
 /** A bank account that can take part in a document of this legal entity. */
@@ -244,6 +310,23 @@ async function loadUsableBankAccount(
     throw invalid("Rekening bank harus milik badan usaha dokumen ini.");
   if (!account.isActive) throw invalid("Rekening bank ini tidak aktif.");
   return account;
+}
+
+/** The cost-tag outlet must belong to the legal entity of the document. */
+async function assertOutletOfEntity(
+  tx: TenantTransaction,
+  tenantId: string,
+  legalEntityId: string,
+  outletId: string,
+): Promise<void> {
+  const [outlet] = await tx
+    .select({ legalEntityId: outlets.legalEntityId })
+    .from(outlets)
+    .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)))
+    .limit(1);
+  if (!outlet) throw notFound("Outlet");
+  if (outlet.legalEntityId !== legalEntityId)
+    throw invalid("Outlet harus milik badan usaha dokumen ini.");
 }
 
 /**
@@ -300,11 +383,16 @@ export async function createCashBankEntry(
             input.legalEntityId,
             input.counterAccountId,
           );
-          if (input.counterAccountId === bank.glAccountId)
-            throw new AccountingError("CASH_BANK_COUNTER_ACCOUNT_INVALID");
         }
         const outletId =
           input.kind === "transfer" ? null : (input.outletId ?? null);
+        if (outletId)
+          await assertOutletOfEntity(
+            tx,
+            tenantId,
+            input.legalEntityId,
+            outletId,
+          );
         await entityLock(tx, tenantId, input.legalEntityId);
 
         const entryId = randomUUID();
