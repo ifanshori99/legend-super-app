@@ -42,6 +42,11 @@ import { Writable } from "node:stream";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { bankTransferFileSchema } from "@starter/shared/hris/payroll";
+import { tenantIdSchema } from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import type {
   ObjectStorage,
@@ -49,6 +54,9 @@ import type {
   StorageSignedLookup,
 } from "@starter/shared/adapters";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { snapshotPayeeBankForLock } from "../services/payroll-bank-snapshot.service.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import { createLogger } from "../lib/logger.ts";
@@ -345,6 +353,9 @@ async function seedRun(tenantId: string, input: SeedRun): Promise<string> {
   createdRuns.push(runId);
   const start = ++counter * 3;
   const runDays: [string, string] = [day(start), day(start + 1)];
+  // bank_transfer payslips that carry a transfer (net > 0): the payees whose
+  // bank details the lock freezes in payslip_bank_snapshots.
+  const payees: { payslipId: string; employeeId: string }[] = [];
   await asTenant(tenantId, async (db) => {
     await db.query(
       `INSERT INTO payroll_runs (id, tenant_id, legal_entity_id, payroll_policy_id, run_type,
@@ -370,6 +381,8 @@ async function seedRun(tenantId: string, input: SeedRun): Promise<string> {
       );
     for (const slip of input.slips ?? []) {
       const id = randomUUID();
+      if (slip.method === "bank_transfer" && slip.net > 0)
+        payees.push({ payslipId: id, employeeId: slip.person.id });
       const body = calculation(
         { ...slip.person, method: slip.method, net: slip.net },
         runDays,
@@ -395,6 +408,22 @@ async function seedRun(tenantId: string, input: SeedRun): Promise<string> {
       );
     }
   });
+  // As the lock transaction does it (payroll-bank-snapshot.service.ts): after
+  // the payslips exist, freeze each payee's bank details. The bank export
+  // reads only this snapshot.
+  if (input.status === "locked" && payees.length > 0)
+    await withTenant(
+      db,
+      establishScopedTenantContext(
+        establishTenantContext({
+          tenantId: tenantIdSchema.parse(tenantId),
+          brandId: null,
+          source: "domain",
+        }),
+        { kind: "tenant" },
+      ),
+      (tx) => snapshotPayeeBankForLock(tx, tenantId, runId, payees),
+    );
   return runId;
 }
 
@@ -590,6 +619,10 @@ afterAll(async () => {
       );
       await db.query(
         "DELETE FROM bank_transfer_files WHERE tenant_id = $1 AND payroll_run_id = ANY($2)",
+        [tenant.id, createdRuns],
+      );
+      await db.query(
+        "DELETE FROM payslip_bank_snapshots WHERE tenant_id = $1 AND payroll_run_id = ANY($2)",
         [tenant.id, createdRuns],
       );
       await db.query(

@@ -14,6 +14,9 @@
 // `assertBankFileMatchesRun` (PAYR-04) runs before anything is rendered or
 // stored; a mismatch with the run totals refuses (409). An empty file is
 // refused (422). The layout comes from `getBankFormatter` (generic_csv only).
+// Payee accounts come only from the snapshot sealed at lock
+// (`payslip_bank_snapshots`, payroll-bank-snapshot.service.ts, legend-89cl7);
+// a run without one is 422 PAYROLL_BANK_SNAPSHOT_MISSING, never the current account.
 //
 // Coretax: one BPMP row per permanent employee (employment type `pkwtt` or `pkwt`) per
 // tax month, from payslips of locked/paid runs of the legal entity whose pay
@@ -67,6 +70,7 @@ import {
   bankTransferFiles,
   payrollRuns,
   payrollTaxExports,
+  payslipBankSnapshots,
   payslips,
   statutoryRates,
 } from "../db/schema/payroll.ts";
@@ -83,6 +87,10 @@ import {
 } from "../lib/payroll-export/coretax-bpmp.ts";
 import { openSecret } from "../lib/secrets.ts";
 import { recordAudit } from "./core-audit.ts";
+import {
+  openPayeeBankSnapshot,
+  type PayeeBankSnapshot,
+} from "./payroll-bank-snapshot.service.ts";
 import { loadPph21PolicyVersionsForRun } from "./payroll-pph21-policy.service.ts";
 import type { StorageRuntime } from "./core-storage-runtime.ts";
 import { cursorPair, notFound } from "./hris-access.ts";
@@ -362,49 +370,46 @@ export async function createBankTransferFile(
             "Tidak ada gaji transfer bank untuk diekspor pada payroll ini.",
           );
 
-        const people = await tx
+        // legend-89cl7: payees come ONLY from the snapshot sealed at lock,
+        // never from the employee's current account. No snapshot (a run
+        // locked before snapshots existed) refuses; nothing falls back.
+        const snapshotRows = await tx
           .select({
-            id: employees.id,
-            employeeNo: employees.employeeNo,
-            fullName: employees.fullName,
-            bankAccountEncrypted: employees.bankAccountEncrypted,
-            piiKeyVersion: employees.piiKeyVersion,
+            id: payslipBankSnapshots.id,
+            tenantId: payslipBankSnapshots.tenantId,
+            payslipId: payslipBankSnapshots.payslipId,
+            employeeId: payslipBankSnapshots.employeeId,
+            snapshotEncrypted: payslipBankSnapshots.snapshotEncrypted,
+            piiKeyVersion: payslipBankSnapshots.piiKeyVersion,
           })
-          .from(employees)
+          .from(payslipBankSnapshots)
           .where(
             and(
-              eq(employees.tenantId, tenantId),
-              inArray(
-                employees.id,
-                bankSlips.map((calc) => calc.employeeId),
-              ),
+              eq(payslipBankSnapshots.tenantId, tenantId),
+              eq(payslipBankSnapshots.payrollRunId, payrollRunId),
             ),
           );
-        const personById = new Map(people.map((person) => [person.id, person]));
+        const snapshotByEmployee = new Map(
+          snapshotRows.map((row) => [row.employeeId, row]),
+        );
+        const slipIdByEmployee = new Map(
+          slipRows.map((row) => [row.employeeId, row.id]),
+        );
         const missing: string[] = [];
         const unreadable: string[] = [];
         const rows: BankFileRow[] = [];
         for (const calc of bankSlips) {
-          const person = personById.get(calc.employeeId);
-          if (!person?.bankAccountEncrypted) {
+          const snapshot = snapshotByEmployee.get(calc.employeeId);
+          if (!snapshot) {
             missing.push(calc.employeeId);
             continue;
           }
-          let accountNumber: string;
+          let payee: PayeeBankSnapshot;
           try {
-            accountNumber = normalizeHrisPii(
-              "bankAccount",
-              openHrisPii(
-                person.bankAccountEncrypted,
-                {
-                  tenantId,
-                  table: "employees",
-                  rowId: person.id,
-                  field: "bankAccount",
-                },
-                person.piiKeyVersion,
-              ),
-            );
+            // The snapshot must belong to this employee's payslip of this run.
+            if (snapshot.payslipId !== slipIdByEmployee.get(calc.employeeId))
+              throw new Error("snapshot payslip mismatch");
+            payee = openPayeeBankSnapshot(snapshot);
           } catch {
             // The error may carry the account number: record the id only.
             unreadable.push(calc.employeeId);
@@ -412,18 +417,18 @@ export async function createBankTransferFile(
           }
           rows.push({
             employeeId: calc.employeeId,
-            employeeCode: person.employeeNo,
-            employeeName: person.fullName,
-            bankName: null,
-            accountNumber,
-            accountHolder: person.fullName,
+            employeeCode: payee.employeeCode,
+            employeeName: payee.employeeName,
+            bankName: payee.bankName,
+            accountNumber: payee.accountNumber,
+            accountHolder: payee.accountHolder,
             amountIdr: calc.netIdr,
           });
         }
         if (missing.length > 0)
           throw refuse(
-            "PAYROLL_BANK_ACCOUNT_MISSING",
-            `Rekening bank karyawan belum diisi (ID karyawan: ${idList(missing)}).`,
+            "PAYROLL_BANK_SNAPSHOT_MISSING",
+            `Rekening tujuan gaji belum dibekukan saat payroll dikunci, sehingga berkas transfer tidak bisa dibuat. Rekening karyawan saat ini tidak dipakai (ID karyawan: ${idList(missing)}).`,
           );
         if (unreadable.length > 0)
           throw refuse(
@@ -991,7 +996,14 @@ export async function createPayrollTaxExport(
                 // The no-tax-id surcharge changes the engine's tax: not verifiable here, so refused.
                 !slip.calc.tax.noTaxIdSurchargeApplied &&
                 slip.calc.tax.ptkpStatus === ptkpStatus &&
-                slip.calc.tax.terRateBp === derivedRate.rateBp,
+                // Runs of one month: each slip carries the TER rate of the
+                // month total up to its run (never above the total's rate);
+                // the run that completed the total carries the total's rate.
+                slip.calc.tax.terRateBp !== null &&
+                slip.calc.tax.terRateBp <= derivedRate.rateBp,
+            ) &&
+            group.slips.some(
+              (slip) => slip.calc.tax.terRateBp === derivedRate.rateBp,
             ) &&
             derivedTax === slipTax;
           if (!consistent) {

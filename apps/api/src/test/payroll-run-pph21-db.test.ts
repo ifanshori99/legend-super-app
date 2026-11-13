@@ -187,8 +187,22 @@ const DECEMBER_PAY_DATE = date("2026-12-28");
 /** Policies are published on this day, before both effective dates. */
 const NOW = new Date("2026-11-08T03:00:00Z");
 
+// Month totals read payslips by employee id (a uuid column), so each label
+// (E1..E6) maps to a real uuid; results are compared by label.
+const EMPLOYEE_IDS = new Map<string, string>();
+const idOf = (label: string): string => {
+  let id = EMPLOYEE_IDS.get(label);
+  if (id === undefined) {
+    id = randomUUID();
+    EMPLOYEE_IDS.set(label, id);
+  }
+  return id;
+};
+const labelOf = (id: string): string =>
+  [...EMPLOYEE_IDS].find(([, value]) => value === id)?.[0] ?? id;
+
 const employee = (
-  employeeId: string,
+  label: string,
   fields: Omit<
     PayrollRunTaxEmployee,
     "employeeId" | "lastTaxPeriod" | "monthsWorked" | "priorPeriods"
@@ -200,7 +214,7 @@ const employee = (
       >
     >,
 ): PayrollRunTaxEmployee => ({
-  employeeId,
+  employeeId: idOf(label),
   lastTaxPeriod: false,
   monthsWorked: 11,
   priorPeriods: [],
@@ -367,7 +381,10 @@ const EXPECTED_V2: Record<string, PlainTax> = {
 
 const taxesOf = (result: {
   payslips: { employeeId: string; tax: PayslipTax }[];
-}) => Object.fromEntries(result.payslips.map((p) => [p.employeeId, p.tax]));
+}) =>
+  Object.fromEntries(
+    result.payslips.map((p) => [labelOf(p.employeeId), p.tax]),
+  );
 
 let admin: string;
 let v1Ref: Pph21PolicyRef;
@@ -385,10 +402,14 @@ beforeAll(async () => {
   );
   await clearPolicies();
   admin = await actor(["payroll.view", "payroll.run"]);
+  await seedRunRows(tenantId);
+  await seedRunRows(otherTenant);
 });
 
 afterAll(async () => {
   await clearPolicies();
+  await dropRunRows(tenantId);
+  await dropRunRows(otherTenant);
   await asOwner(tenantId, async (client) => {
     await client.query(
       "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2)",
@@ -416,16 +437,94 @@ const draftRun = (payDate = PAY_DATE): PayrollRunTaxRun => ({
   payDate,
   configSnapshot: null,
 });
+// `monthScope` ({ runId }) is required: the service reads the legal entity and
+// the pay date of the run from its row, so every pay date used below has a draft run row in
+// each tenant (periods differ so no two runs of a tenant share one).
+type Seeded = { entityId: string; runs: Map<string, string> };
+const seeded = new Map<string, Seeded>();
+const RUN_ROWS: [string, string, string][] = [
+  // pay date, period start, period end
+  ["2026-11-28", "2026-11-01", "2026-11-30"],
+  ["2026-11-09", "2026-10-01", "2026-10-31"],
+  ["2026-12-28", "2026-12-01", "2026-12-31"],
+];
+
+async function seedRunRows(tenant: string): Promise<void> {
+  const entityId = randomUUID();
+  const policyId = randomUUID();
+  const runs = new Map<string, string>();
+  await asOwner(tenant, async (client) => {
+    await client.query(
+      `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT PPh21 Run DB', false)`,
+      [entityId, tenant],
+    );
+    const code = `RD${policyId.slice(0, 8)}`;
+    await client.query(
+      `INSERT INTO payroll_policies (id, tenant_id, legal_entity_id, name, employee_group_code,
+                                     employee_group, cycle, pay_date_adjustment, jkk_risk_class, bpjs_programmes)
+       VALUES ($1, $2, $3, 'Kebijakan PPh21 run', $4, $5, '{"kind":"monthly"}', 'none', 'low', '[]')`,
+      [policyId, tenant, entityId, code, JSON.stringify({ code })],
+    );
+    for (const [payDate, start, end] of RUN_ROWS) {
+      const runId = randomUUID();
+      runs.set(payDate, runId);
+      await client.query(
+        `INSERT INTO payroll_runs (id, tenant_id, legal_entity_id, payroll_policy_id, run_type,
+                                   period_start, period_end, pay_date, created_by)
+         VALUES ($1, $2, $3, $4, 'regular', $5, $6, $7, 'pph21-run-db-test')`,
+        [runId, tenant, entityId, policyId, start, end, payDate],
+      );
+    }
+  });
+  seeded.set(tenant, { entityId, runs });
+}
+
+async function dropRunRows(tenant: string): Promise<void> {
+  const rows = seeded.get(tenant);
+  if (!rows) return;
+  await asOwner(tenant, async (client) => {
+    await client.query("DELETE FROM payroll_runs WHERE id = ANY($1)", [
+      [...rows.runs.values()],
+    ]);
+    await client.query(
+      "DELETE FROM payroll_policies WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [tenant, rows.entityId],
+    );
+    await client.query("DELETE FROM legal_entities WHERE id = $1", [
+      rows.entityId,
+    ]);
+  });
+}
+
+const scopeOf = (run: PayrollRunTaxRun, tenant: string) => {
+  const rows = seeded.get(tenant)!;
+  const runId = rows.runs.get(run.payDate);
+  if (runId === undefined) throw new Error(`no run row for ${run.payDate}`);
+  return { runId: runId as never };
+};
+const inputOf = (
+  run: PayrollRunTaxRun,
+  employees: PayrollRunTaxEmployee[],
+  tenant: string,
+) => ({
+  run,
+  tables: REFERENCE_TABLES,
+  employees,
+  monthScope: scopeOf(run, tenant),
+});
+
 const calculate = (
   run: PayrollRunTaxRun,
   employees: PayrollRunTaxEmployee[] = EMPLOYEES,
   tenant: string = tenantId,
 ) =>
-  calculatePayrollRunTax(tenantScope(tenant), {
-    run,
-    tables: REFERENCE_TABLES,
-    employees,
-  });
+  withTenant(db, tenantScope(tenant), (tx) =>
+    calculatePayrollRunTax(
+      tenantScope(tenant),
+      inputOf(run, employees, tenant),
+      tx,
+    ),
+  );
 
 describe("payroll run PPh 21: one run from draft to lock to a newer policy", () => {
   it("prices a draft run with the default policy while the tenant has no version", async () => {
@@ -626,7 +725,12 @@ describe("payroll run PPh 21: one run from draft to lock to a newer policy", () 
     const result = await calculate(draftRun(DECEMBER_PAY_DATE), [december]);
     // v2 is in force on 2026-12-28.
     expect(result.pph21Policy).toEqual(v2Ref);
-    expect(result.payslips).toEqual([
+    expect(
+      result.payslips.map(({ employeeId, tax }) => ({
+        employeeId: labelOf(employeeId),
+        tax,
+      })),
+    ).toEqual([
       {
         employeeId: "E6",
         tax: {
@@ -672,15 +776,25 @@ describe("payroll run PPh 21: one run from draft to lock to a newer policy", () 
     payDate: PAY_DATE,
     configSnapshot: null,
   });
+  // The lock step approved with the month basis a simulation of the same run
+  // just stored (nothing locks between them here, so it is never stale).
   const lockIn = (approved: Pph21PolicyRef | null, tenant: string = tenantId) =>
-    withTenant(db, tenantScope(tenant), (tx) =>
-      lockPayrollRunTax(
+    withTenant(db, tenantScope(tenant), async (tx) => {
+      const input = inputOf(approvedRun(), EMPLOYEES, tenant);
+      const simulated = await calculatePayrollRunTax(
         tenantScope(tenant),
-        { run: approvedRun(), tables: REFERENCE_TABLES, employees: EMPLOYEES },
-        approved,
+        input,
         tx,
-      ),
-    );
+      );
+      const basis = new Map(
+        simulated.payslips.flatMap((p) =>
+          p.monthBasis === undefined
+            ? []
+            : [[p.employeeId, p.monthBasis] as const],
+        ),
+      );
+      return lockPayrollRunTax(tenantScope(tenant), input, approved, tx, basis);
+    });
 
   it("locks with the ref the run was approved with, pinned from the same computation as the payslips", async () => {
     // v2 is in force on the pay date and was shown at approval.

@@ -31,6 +31,12 @@ import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
+  HRIS_PII_KEY_VERSION,
+  hrisBlindIndex,
+  normalizeHrisPii,
+  sealHrisPii,
+} from "../lib/hris-pii.ts";
+import {
   PAYROLL_SEAL_KEY_VERSION,
   openPayrollValue,
   sealPayrollAmount,
@@ -170,10 +176,17 @@ async function seed(
        VALUES ($1, $2, 'PT Rapel 549', false)`,
       [s.entityId, tenantId],
     );
+    // Locking a run now freezes the payee bank account (legend-89cl7, fail
+    // closed when it is missing): every bank_transfer employee has one.
+    const bankAccount = normalizeHrisPii(
+      "bankAccount",
+      `${Math.floor(1e11 + Math.random() * 9e11)}`,
+    );
     await db.query(
       `INSERT INTO employees (id, tenant_id, employee_no, full_name, home_outlet_id,
-         legal_entity_id, employment_type, join_date, status)
-       VALUES ($1, $2, $3, 'Karyawan Rapel', $4, $5, 'pkwtt', $6, 'active')`,
+         legal_entity_id, employment_type, join_date, status,
+         bank_account_encrypted, bank_account_hmac, pii_key_version)
+       VALUES ($1, $2, $3, 'Karyawan Rapel', $4, $5, 'pkwtt', $6, 'active', $7, $8, $9)`,
       [
         s.employeeId,
         tenantId,
@@ -181,6 +194,18 @@ async function seed(
         outletId,
         s.entityId,
         joinDate,
+        sealHrisPii(
+          bankAccount,
+          {
+            tenantId,
+            table: "employees",
+            rowId: s.employeeId,
+            field: "bankAccount",
+          },
+          HRIS_PII_KEY_VERSION,
+        ),
+        hrisBlindIndex("bankAccount", tenantId, bankAccount),
+        HRIS_PII_KEY_VERSION,
       ],
     );
     await db.query(
@@ -717,6 +742,10 @@ afterAll(async () => {
       );
     }
     for (const s of seeds) {
+      await db.query(
+        "DELETE FROM payslip_bank_snapshots WHERE tenant_id = $1 AND employee_id = $2",
+        [tenantId, s.employeeId],
+      );
       await db.query(
         "DELETE FROM payslips WHERE tenant_id = $1 AND employee_id = $2",
         [tenantId, s.employeeId],
@@ -2365,6 +2394,7 @@ describe("legend-svqew rapel Q43/Q44", () => {
           "payroll_rapel_finalizations",
           "payroll_rapel_items",
           "payroll_rapels",
+          "payslip_bank_snapshots",
           "payslips",
           "employee_pay_components",
           "pay_components",

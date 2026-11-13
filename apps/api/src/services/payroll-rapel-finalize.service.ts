@@ -33,6 +33,7 @@ import { openPayrollValue } from "../lib/payroll-sealed.ts";
 import { recordAudit } from "./core-audit.ts";
 import { notFound, type Tx } from "./hris-access.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
+import { snapshotPayeeBankForLock } from "./payroll-bank-snapshot.service.ts";
 import {
   computeEmployeeGrossInTransaction,
   type EmployeeGross,
@@ -425,6 +426,23 @@ export async function finalizePayrollRapelRunInTransaction(
       createdAt: now,
     });
   }
+  // legend-89cl7: freeze the payee bank details of every bank transfer that
+  // carries money, in this same lock transaction (the bank export reads only
+  // this snapshot). A payee without a readable account refuses the batch.
+  await snapshotPayeeBankForLock(
+    tx,
+    tenantId,
+    run.id,
+    calculated
+      .filter(
+        ({ plan: entry, gross }) =>
+          entry.paymentMethod === "bank_transfer" && gross.netIdr > 0,
+      )
+      .map(({ plan: entry }) => ({
+        payslipId: entry.payslipId,
+        employeeId: entry.employeeId,
+      })),
+  );
   await recordAudit(
     tx,
     context,

@@ -45,6 +45,8 @@ export type PayslipTaxInput = {
   employeeDeductibleIdr: Idr | number;
   /** Authoritative cap on the employee's PPh 21 (see pph21.ts `employeeWithholdingCapIdr`). */
   employeeWithholdingCapIdr?: Idr | number;
+  /** TER month total of the earlier payslips of the same tax month (see pph21.ts). */
+  monthPrior?: Pph21PeriodInput["monthPrior"];
   prior: Pph21PeriodInput["prior"];
 };
 
@@ -97,6 +99,7 @@ export function computePayslipTax(input: PayslipTaxInput): PayslipTaxResult {
     ...(input.employeeWithholdingCapIdr === undefined
       ? {}
       : { employeeWithholdingCapIdr: input.employeeWithholdingCapIdr }),
+    ...(input.monthPrior === undefined ? {} : { monthPrior: input.monthPrior }),
     prior: input.prior,
   });
   const grossSchemeBaseIdr = pph21GrossSchemeBase(

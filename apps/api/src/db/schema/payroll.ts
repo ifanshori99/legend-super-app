@@ -563,6 +563,57 @@ export const payslips = pgTable(
   ],
 );
 
+/**
+ * legend-89cl7: the payee bank details frozen when the run locks, one row per
+ * bank_transfer payslip, written in the lock transaction and read by the bank
+ * export instead of the employee's current account. Sealed (HR-03 key ring,
+ * lib/payroll-sealed.ts, field `bankSnapshot`): JSON of account number, holder
+ * and bank name. Only the ciphertext + key version may move, by the reseal job.
+ */
+export const payslipBankSnapshots = pgTable(
+  "payslip_bank_snapshots",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    payrollRunId: uuid("payroll_run_id").$type<PayrollRunId>().notNull(),
+    payslipId: uuid("payslip_id").$type<PayslipId>().notNull(),
+    employeeId: uuid("employee_id").notNull(),
+    snapshotEncrypted: bytea("snapshot_encrypted").notNull(),
+    piiKeyVersion: smallint("pii_key_version").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    unique("payslip_bank_snapshots_tenant_id_key").on(table.tenantId, table.id),
+    unique("payslip_bank_snapshots_tenant_payslip_key").on(
+      table.tenantId,
+      table.payslipId,
+    ),
+    index("payslip_bank_snapshots_tenant_run_idx").on(
+      table.tenantId,
+      table.payrollRunId,
+    ),
+    foreignKey({
+      name: "payslip_bank_snapshots_payslip_fk",
+      columns: [table.tenantId, table.payslipId],
+      foreignColumns: [payslips.tenantId, payslips.id],
+    }),
+    foreignKey({
+      name: "payslip_bank_snapshots_run_fk",
+      columns: [table.tenantId, table.payrollRunId],
+      foreignColumns: [payrollRuns.tenantId, payrollRuns.id],
+    }),
+    foreignKey({
+      name: "payslip_bank_snapshots_employee_fk",
+      columns: [table.tenantId, table.employeeId],
+      foreignColumns: [employees.tenantId, employees.id],
+    }),
+    check(
+      "payslip_bank_snapshots_key_version_check",
+      sql`${table.piiKeyVersion} >= 1`,
+    ),
+  ],
+);
+
 export const bankTransferFiles = pgTable(
   "bank_transfer_files",
   {

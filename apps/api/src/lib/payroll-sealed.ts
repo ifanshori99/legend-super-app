@@ -28,9 +28,10 @@ export type PayrollSealBinding = {
     | "employee_pay_components"
     | "payslips"
     | "payroll_rapels"
-    | "payroll_rapel_items";
+    | "payroll_rapel_items"
+    | "payslip_bank_snapshots";
   readonly rowId: string;
-  readonly field: "amount" | "calculation";
+  readonly field: "amount" | "calculation" | "bankSnapshot";
 };
 
 function aadOf(binding: PayrollSealBinding, keyVersion: number): string {

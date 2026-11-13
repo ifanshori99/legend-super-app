@@ -47,7 +47,11 @@ import {
 import { db } from "../db/index.ts";
 import type * as schema from "../db/schema/index.ts";
 import { employees, employmentContracts } from "../db/schema/hris.ts";
-import { employeePayComponents, payslips } from "../db/schema/payroll.ts";
+import {
+  employeePayComponents,
+  payslipBankSnapshots,
+  payslips,
+} from "../db/schema/payroll.ts";
 import {
   payrollRapels,
   payrollRapelItems,
@@ -79,6 +83,7 @@ type ResealTable =
   | "employment_contracts"
   | "employee_pay_components"
   | "payslips"
+  | "payslip_bank_snapshots"
   | "payroll_rapels"
   | "payroll_rapel_items";
 
@@ -88,6 +93,7 @@ export type HrisPiiResealResult = {
   contracts: number;
   payComponents: number;
   payslips: number;
+  bankSnapshots: number;
   rapels: number;
   rapelItems: number;
   failedTenants: number;
@@ -185,6 +191,15 @@ async function countStale(
           ne(payslips.piiKeyVersion, active),
         ),
       );
+    const [staleBankSnapshots] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(payslipBankSnapshots)
+      .where(
+        and(
+          eq(payslipBankSnapshots.tenantId, tenantId),
+          ne(payslipBankSnapshots.piiKeyVersion, active),
+        ),
+      );
     const [staleRapels] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(payrollRapels)
@@ -208,6 +223,7 @@ async function countStale(
       Number(staleContracts?.n ?? 0) +
       Number(stalePayComponents?.n ?? 0) +
       Number(stalePayslips?.n ?? 0) +
+      Number(staleBankSnapshots?.n ?? 0) +
       Number(staleRapels?.n ?? 0) +
       Number(staleRapelItems?.n ?? 0)
     );
@@ -438,6 +454,58 @@ async function resealPayslipBatch(
   });
 }
 
+/** legend-89cl7: frozen payee bank snapshots ride the same key ring. */
+async function resealBankSnapshotBatch(
+  database: Database,
+  context: ScopedTenantContext,
+  batchSize: number,
+  active: number,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  return withTenant(database, context, async (tx) => {
+    await tx.execute(sql`SELECT set_config('app.payroll_reseal', 'on', true)`);
+    await tx.execute(
+      sql`SELECT set_config('app.payroll_reseal_target_version', ${String(active)}, true)`,
+    );
+    const rows = await tx
+      .select()
+      .from(payslipBankSnapshots)
+      .where(
+        and(
+          eq(payslipBankSnapshots.tenantId, tenantId),
+          lt(payslipBankSnapshots.piiKeyVersion, active),
+        ),
+      )
+      .orderBy(asc(payslipBankSnapshots.id))
+      .limit(batchSize)
+      .for("update", { skipLocked: true });
+    for (const row of rows) {
+      const binding = {
+        tenantId,
+        table: "payslip_bank_snapshots",
+        rowId: row.id,
+        field: "bankSnapshot",
+      } as const;
+      const snapshotEncrypted = sealPayrollValue(
+        openPayrollValue(row.snapshotEncrypted, binding, row.piiKeyVersion),
+        binding,
+        active,
+      );
+      await tx
+        .update(payslipBankSnapshots)
+        .set({ snapshotEncrypted, piiKeyVersion: active })
+        .where(
+          and(
+            eq(payslipBankSnapshots.tenantId, tenantId),
+            eq(payslipBankSnapshots.id, row.id),
+            lt(payslipBankSnapshots.piiKeyVersion, active),
+          ),
+        );
+    }
+    return rows.length;
+  });
+}
+
 /** Rapel targets and deltas are salary data on the same rotating key ring. */
 async function resealRapelBatch(
   database: Database,
@@ -561,6 +629,7 @@ export async function runHrisPiiReseal(
     contracts: 0,
     payComponents: 0,
     payslips: 0,
+    bankSnapshots: 0,
     rapels: 0,
     rapelItems: 0,
     failedTenants: 0,
@@ -573,6 +642,7 @@ export async function runHrisPiiReseal(
     ["employment_contracts", resealContractBatch],
     ["employee_pay_components", resealPayComponentBatch],
     ["payslips", resealPayslipBatch],
+    ["payslip_bank_snapshots", resealBankSnapshotBatch],
     ["payroll_rapels", resealRapelBatch],
     ["payroll_rapel_items", resealRapelItemBatch],
   ];
@@ -597,6 +667,8 @@ export async function runHrisPiiReseal(
           else if (table === "employee_pay_components")
             result.payComponents += count;
           else if (table === "payslips") result.payslips += count;
+          else if (table === "payslip_bank_snapshots")
+            result.bankSnapshots += count;
           else if (table === "payroll_rapels") result.rapels += count;
           else result.rapelItems += count;
           await options.afterBatch?.({ tenantId, table, count });

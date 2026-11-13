@@ -2101,6 +2101,13 @@
       "when": 1794480358396,
       "tag": "0313_deposit_refund_remainders",
       "breakpoints": true
+    },
+    {
+      "idx": 472,
+      "version": "7",
+      "when": 1794551150826,
+      "tag": "0472_payslip_bank_snapshots",
+      "breakpoints": true
     }
   ]
 }
