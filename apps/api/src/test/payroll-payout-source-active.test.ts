@@ -509,7 +509,7 @@ describe("overpaid uses the active source account and books its fee once", () =>
     expect(overpaidPostings, "no overpaid posting").toHaveLength(0);
   });
 
-  it("[overpaid-fee-no-locked-journal] an overpaid item of a run without a locked journal but with accounting on: the fee is booked exactly once (Dr 8101 / Cr source bank), fee_posted is true, the receivable stays the net pay", async () => {
+  it("[overpaid-fee-no-locked-journal] an overpaid item of a run without a locked journal but with accounting on: the fee is booked exactly once (Dr 8101 / Cr source bank), fee_posted is true, no receivable without a salary journal", async () => {
     // Assumption: same rule as settle (a run without a locked journal still
     // books the fee when accounting is on), so overpaid must not lose the fee.
     const { batchId, budiFirst } = await lateDoublePayment({
@@ -525,8 +525,8 @@ describe("overpaid uses the active source account and books its fee once", () =>
       credit: 0,
     });
     expect(feeEntries, "one fee entry").toBe(1);
-    // No locked journal: the salary side was never booked, so there is no
-    // employee receivable either (a one-sided entry); only the bank's fee is.
+    // No locked journal: payroll is not in the GL, so no employee receivable
+    // is booked; only the bank's fee is.
     expect(byCode["1204"], "no receivable without a salary journal").toBe(
       undefined,
     );
