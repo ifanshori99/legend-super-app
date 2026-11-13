@@ -105,7 +105,7 @@ async function lockAlert(
         eq(panicAlerts.id, alertId),
       ),
     )
-    .for("update");
+    .for("no key update");
   if (!row) throw new HttpError(404, "NOT_FOUND", "Alert not found.");
   return row;
 }

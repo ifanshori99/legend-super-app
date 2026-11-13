@@ -137,7 +137,7 @@ export async function queuePanicAlertEvent(
         eq(panicAlerts.id, input.alertId),
       ),
     )
-    .for("update");
+    .for("no key update");
   if (!alert) throw new CoreError("NOT_FOUND", "Panic alert not found");
   const last = await tx.execute(
     sql`SELECT MAX(aggregate_sequence) AS last FROM edge_outbound_queue WHERE edge_node_id = ${edgeNodeId}::uuid AND direction = 'edge_to_cloud' AND aggregate_type = ${PANIC_ALERT_AGGREGATE_TYPE} AND aggregate_id = ${input.alertId}`,
