@@ -1477,3 +1477,4 @@ Langkah berikut CTO baru:
 - 00:31 647 G95ca: sweep cloud-only (approval/cuti/exit/support) jalan di edge tanpa gate -> CONFLICT tiap tick. CTO setuju gate edgeMode di worker-main.ts (slot holds hanya bila pasti cloud-only).
 - 00:32 647 selesai: ws/edge-sync-appliers 456b4dff1 (gate sweepsCloudOwnedData, 10/10). G95ca di-resolve. Antre batch59: cash-antisplit, edge-sync-appliers, payroll-disbursement-manual (+ bank_code bila selesai).
 - 00:33 mulai 651 ingest order edge (thread S30:P6b2j:G0az4, Sonnet, akun 2, migr 0522-0525).
+- 00:33 650 selesai: fix/employee-bank-code ee6e5e38a, architect 2 temuan dibetulkan (rekening baru kosongkan kode lama). G5by7 di-resolve. Kartu UI input kode bank dibuat.
