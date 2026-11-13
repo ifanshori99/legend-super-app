@@ -666,8 +666,8 @@ async function expectYearEqualsAnnualTax(
     // `taxableGrossIdr` already holds any gross-up allowance (re-grossing it
     // would tax the allowance twice) and leaves out a lebih potong refund paid
     // on the slip (in `grossIdr`, but not income). Each line's own scheme (a
-    // THR line follows the THR component, not the employee) was applied when
-    // the slip was sealed; the annual tax depends only on the total.
+    // THR run follows the employee's contract scheme: gross_up = borne by the
+    // company; otherwise withheld) was applied when the slip was sealed; the annual tax depends only on the total.
     earnings: [
       {
         amountIdr: december.reduce(

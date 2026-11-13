@@ -245,6 +245,14 @@ const inputMissing = (
     `${what} untuk karyawan: ${employeeIds.join(", ")}.`,
   );
 
+/** Employee ids only: never a name or an amount. */
+const taxSchemeMismatch = (employeeIds: readonly string[]) =>
+  new HttpError(
+    422,
+    "PAYROLL_TAX_SCHEME_MISMATCH",
+    `Skema pajak kontrak kerja tidak sama dengan skema pajak komponen gaji untuk karyawan: ${employeeIds.join(", ")}. Samakan skema pajak di kontrak kerja karyawan dengan skema pajak komponen gajinya (Pengaturan payroll, komponen), lalu simulasikan ulang.`,
+  );
+
 // ---- Helpers ----------------------------------------------------------------
 
 const PPH21_TABLE_TYPES = ["ptkp", "pph21_ter", "pph21_annual"] as const;
@@ -748,6 +756,27 @@ export async function simulatePayrollRunInTransaction(
   if (noContract.length > 0)
     throw inputMissing(noContract, "Kontrak kerja belum ada");
 
+  // Fail closed (founder Q9 + CTO, 13 Nov 2026): a THR run follows the contract
+  // scheme, the monthly pay follows the component scheme. When they differ the
+  // company would bear the THR tax but not the salary tax (or the reverse), so
+  // the run is refused instead of guessing. Ids only: never a name or amount.
+  if (isThr) {
+    const mismatched = population
+      .filter((m) => {
+        const contractScheme = contractSchemeById.get(m.id)!;
+        return grossById
+          .get(m.id)!
+          .earnings.some(
+            (l) =>
+              l.taxable &&
+              components.get(l.componentCode)?.thrBase === true &&
+              taxSchemeOf(l) !== contractScheme,
+          );
+      })
+      .map((m) => m.id);
+    if (mismatched.length > 0) throw taxSchemeMismatch(mismatched);
+  }
+
   // Fail closed (OPEN O2): an open PPh 21 receivable is never collected here.
   await assertNoOpenPph21Receivable(
     tx,
@@ -813,7 +842,18 @@ export async function simulatePayrollRunInTransaction(
       earnings,
       grossDeductions: deductions,
       bpjs,
-      taxSchemeOf,
+      // THR runs only (a THR-category line in a regular run keeps its
+      // component scheme). Founder Q9 (13 Nov 2026, legend-x7jas): the THR tax follows the
+      // employee's contract scheme. Only a gross_up employee gets the company
+      // paid tax allowance; every other scheme (net, gross, or a tenant THR
+      // component set to gross_up/net) is withheld from the THR (never pays
+      // more than the rule, the outlet bears no tax of a non-gross-up employee).
+      taxSchemeOf: (line) =>
+        isThr && line.category === "thr"
+          ? contractSchemeById.get(member.id) === "gross_up"
+            ? "gross_up"
+            : "gross"
+          : taxSchemeOf(line),
     });
     const taxInput = storedTaxInputSchema.parse({
       ptkpStatus: member.ptkpStatus,
