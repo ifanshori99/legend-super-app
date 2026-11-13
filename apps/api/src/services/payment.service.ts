@@ -1285,6 +1285,9 @@ async function amountMismatchHeld(
  * payment lock order (see `payment-late-settlement.ts`): bill owner, link,
  * intent. Funds are recorded even when the intent is already paid or settled
  * (the money did arrive); only an unpaid intent is failed and held.
+ * legend-baz8i: when the money is newly parked and the intent has an unpaid
+ * POS QRIS hold, the cashier and manager are alerted (the hold stays open
+ * until a manager releases it); a replay parks and alerts nothing.
  */
 export async function holdGatewayAmountMismatch(
   context: ScopedTenantContext,
@@ -1377,7 +1380,7 @@ export async function holdGatewayAmountMismatch(
         },
         ["status", "paidIdr", "dueIdr", "source"],
       );
-    await recordUnsettledGatewayFundsInTx(
+    const inserted = await recordUnsettledGatewayFundsInTx(
       tx,
       context,
       { ...current, status },
@@ -1391,6 +1394,46 @@ export async function holdGatewayAmountMismatch(
       },
       now,
     );
+    // legend-baz8i: newly parked money for a POS QRIS hold alerts the cashier
+    // and the manager. The hold stays as is (the manager releases it); a
+    // replay (not inserted) parks and alerts nothing more.
+    if (inserted) {
+      const [hold] = await tx
+        .select({
+          id: posQrisHolds.id,
+          state: posQrisHolds.state,
+          openedBy: posQrisHolds.openedBy,
+        })
+        .from(posQrisHolds)
+        .where(
+          and(
+            eq(posQrisHolds.tenantId, context.tenant.tenantId),
+            eq(posQrisHolds.paymentIntentId, current.id),
+          ),
+        );
+      if (hold && hold.state !== "paid") {
+        // The unlock wording only fits a hold that is still locked; a closed
+        // hold keeps the helper's default text. A callback amount that
+        // disagrees with the provider's status answer is not "different from
+        // the bill", so it gets its own wording.
+        const dueIdr = Number(current.amountIdr);
+        const body =
+          hold.state === "closed"
+            ? undefined
+            : input.paidAmountIdr === dueIdr
+              ? `Nominal callback QRIS dan status penyedia tidak cocok (Rp${input.paidAmountIdr}). Uang ditahan di dana belum teralokasi; minta manajer membuka kunci QR dan mengembalikan uang ke pembayar.`
+              : `QR QRIS dibayar dengan nominal Rp${input.paidAmountIdr}, berbeda dari tagihan Rp${dueIdr}. Uang ditahan di dana belum teralokasi; minta manajer membuka kunci QR dan mengembalikan uang ke pembayar.`;
+        await alertQrisFundsParked(
+          tx,
+          context,
+          current,
+          hold,
+          input.paidAmountIdr,
+          now,
+          body,
+        );
+      }
+    }
     return { held, intentStatus: status };
   });
 }
@@ -1691,6 +1734,53 @@ export async function refreshIntent(
 // ---------------------------------------------------------- confirmation
 
 /**
+ * legend-baz8i: after money was newly parked for a POS QRIS that has a hold
+ * (the caller saw `recordUnsettledGatewayFundsInTx` insert), slow the hold
+ * check to once a day (nothing more to learn from the provider; the hold
+ * itself stays until a manager releases it) and alert the outlet supervisors,
+ * owners and the cashier who issued the QR (guests have no opener). Runs in
+ * the caller's transaction; never changes the hold's state.
+ */
+async function alertQrisFundsParked(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  hold: { id: string; openedBy: string | null },
+  paidAmountIdr: number,
+  now: Date,
+  body = `Pembayaran QRIS Rp${paidAmountIdr} masuk untuk QR yang sudah ditutup atau nominalnya berbeda. Uang ditahan di dana belum teralokasi; kembalikan ke pembayar.`,
+): Promise<void> {
+  await tx
+    .update(posQrisHolds)
+    .set({ nextCheckAt: new Date(now.getTime() + 24 * 3_600_000) })
+    .where(
+      and(
+        eq(posQrisHolds.tenantId, context.tenant.tenantId),
+        eq(posQrisHolds.id, hold.id),
+        inArray(posQrisHolds.state, ["open", "cancelling"]),
+      ),
+    );
+  await notifyOutletSupervisors(
+    tx,
+    context,
+    {
+      tenantId: context.tenant.tenantId,
+      outletId: intent.outletId as OutletId,
+      alsoOwners: true,
+      alsoUserIds: hold.openedBy ? [hold.openedBy] : [],
+      id: createUlid(now.getTime()),
+      eventName: "payment_qris_funds.parked",
+      aggregateType: "payment_qris_funds",
+      aggregateId: intent.id,
+      payload: { intentId: intent.id, holdId: hold.id },
+      title: "Uang QRIS perlu dikembalikan",
+      body,
+    },
+    now,
+  );
+}
+
+/**
  * legend-yhia9 D-05/D-07: money for a POS QRIS that has a hold is applied only
  * when the hold is still active and the amount is exactly the hold's. A closed
  * hold (provider proof or manager release) or a different amount never settles
@@ -1756,37 +1846,7 @@ async function parkWhenQrisHoldRefusesInTx(
     );
     // A replay of the same provider transaction records and alerts nothing.
     if (!inserted) return { kind: "replay" };
-    // Parked: nothing more to learn from the provider; the hold check slows
-    // down to once a day (the hold itself stays until a manager releases it).
-    await tx
-      .update(posQrisHolds)
-      .set({ nextCheckAt: new Date(now.getTime() + 24 * 3_600_000) })
-      .where(
-        and(
-          eq(posQrisHolds.tenantId, context.tenant.tenantId),
-          eq(posQrisHolds.id, hold.id),
-          inArray(posQrisHolds.state, ["open", "cancelling"]),
-        ),
-      );
-    await notifyOutletSupervisors(
-      tx,
-      context,
-      {
-        tenantId: context.tenant.tenantId,
-        outletId: intent.outletId as OutletId,
-        alsoOwners: true,
-        // The cashier who issued the QR hears it too; guests have no opener.
-        alsoUserIds: hold.openedBy ? [hold.openedBy] : [],
-        id: createUlid(now.getTime()),
-        eventName: "payment_qris_funds.parked",
-        aggregateType: "payment_qris_funds",
-        aggregateId: intent.id,
-        payload: { intentId: intent.id, holdId: hold.id },
-        title: "Uang QRIS perlu dikembalikan",
-        body: `Pembayaran QRIS Rp${paid.amountIdr} masuk untuk QR yang sudah ditutup atau nominalnya berbeda. Uang ditahan di dana belum teralokasi; kembalikan ke pembayar.`,
-      },
-      now,
-    );
+    await alertQrisFundsParked(tx, context, intent, hold, paid.amountIdr, now);
     return {
       kind: "reject",
       code: mismatch ? "AMOUNT_MISMATCH" : "BILL_CLOSED",
