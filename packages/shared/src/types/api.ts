@@ -1,6 +1,7 @@
 // The JSON contract between the API and the web app. Timestamps cross the wire
 // as ISO strings, so these are the shapes the browser actually receives.
 
+import type { FinanceExceptionKind } from "../validators/finance-exceptions";
 import type {
   PayoutBankFormat,
   PayoutBatchStatus,
@@ -106,4 +107,30 @@ export type PayrollDisbursementBatchDto = {
   createdAt: string;
   updatedAt: string;
   items: PayrollDisbursementItemDto[];
+};
+
+/** One row finance must look at (GET /api/accounting/finance-exceptions). */
+export type FinanceExceptionItemDto = {
+  kind: FinanceExceptionKind;
+  outletId: string | null;
+  /** ISO datetime of the source row. */
+  occurredAt: string;
+  refType: string;
+  refId: string;
+  /** Whole rupiah; null when the row has no amount or it is unreadable. */
+  amountIdr: number | null;
+  detail: string | null;
+};
+
+export type FinanceExceptionSummaryDto = {
+  kind: FinanceExceptionKind;
+  count: number;
+  amountIdr: number;
+};
+
+/** `summary` counts every row; `items` is cut to the newest 500. */
+export type FinanceExceptionsDto = {
+  summary: FinanceExceptionSummaryDto[];
+  items: FinanceExceptionItemDto[];
+  truncated: boolean;
 };

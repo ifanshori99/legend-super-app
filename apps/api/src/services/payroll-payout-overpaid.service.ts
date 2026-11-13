@@ -10,6 +10,11 @@
 // - The PT is owed the money back: one journal Dr employee_receivable /
 //   Cr the source account, key `payroll-payout-overpaid:<itemId>`, one
 //   `overpaid` posting row, and the item linked to it, all in one transaction.
+// - The transfer fee of the late transfer is borne by the PT (Q15): its own
+//   journal Dr bank_charges / Cr the source account, key
+//   `payroll-payout-overpaid-fee:<itemId>`, in the same transaction, from the
+//   fee stored with the item. Net pay and the receivable stay whole. A
+//   deactivated source account or an unmapped bank charges role refuses 409.
 // - Without another paid attempt the item stays `failed`: this is the other
 //   incident (late success of the only attempt), which is not recorded here.
 // - Exactly once: the run and batch are locked first (same order as every
@@ -22,11 +27,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, ne, sql } from "drizzle-orm";
 import type { TenantId } from "@starter/shared/core";
-import { bankAccounts } from "../db/schema/accounting-cash-bank.ts";
 import { journalEntries } from "../db/schema/index.ts";
 import {
   payrollDisbursementItems,
-  payrollPayoutConfigs,
   payrollPayoutGlPostings,
 } from "../db/schema/payroll-payout.ts";
 import {
@@ -37,10 +40,16 @@ import { postJournalFromRuleInTransaction } from "./accounting-journal.service.t
 import type { Tx } from "./hris-access.ts";
 import { payrollEntryDateOf, payrollGlKeys } from "./payroll-gl-consumer.ts";
 import { assertEvidenceKeyForBatch } from "./payroll-payout-evidence.ts";
-import { settledSourceAccount } from "./payroll-payout-setup.ts";
+import {
+  PAYOUT_BANK_CHARGES_MAPPING_MISSING,
+  activeSourceGlAccount,
+  bankChargesMapped,
+  settledSourceAccount,
+} from "./payroll-payout-setup.ts";
 import {
   loadBatchRunFirst,
   openItemAmount,
+  openItemFee,
   payoutRefuse,
   payoutScope,
   recordPayoutAudit,
@@ -51,6 +60,21 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const overpaidJournalKey = (itemId: string) =>
   `payroll-payout-overpaid:${itemId}`;
+
+export const overpaidFeeJournalKey = (itemId: string) =>
+  `payroll-payout-overpaid-fee:${itemId}`;
+
+/** Whole-rupiah fee stored with the item at export; a tampered value throws. */
+function safeFee(item: Parameters<typeof openItemFee>[0]): number {
+  const fee = Number(openItemFee(item));
+  if (!Number.isSafeInteger(fee) || fee < 0)
+    throw payoutRefuse(
+      422,
+      "PAYROLL_BANK_ACCOUNT_UNREADABLE",
+      "Data pembayaran tidak bisa dibaca, jurnal tidak diposting.",
+    );
+  return fee;
+}
 
 export type OverpaidInput = { evidenceKey: string; note: string };
 
@@ -147,6 +171,8 @@ export async function recordOverpaidItem(
       "Data pembayaran tidak bisa dibaca, jurnal tidak diposting.",
     );
   const journalKey = overpaidJournalKey(item.id);
+  // The fee actually journaled (0 when the run has no ledger side).
+  let feeIdr = 0;
 
   // Like the settle: a run without a locked journal has no ledger side, the
   // item is still recorded.
@@ -178,51 +204,45 @@ export async function recordOverpaidItem(
       )
       .orderBy(payrollPayoutGlPostings.postedAt)
       .limit(1);
-    let sourceAccountId: string | undefined;
-    if (settled) {
-      sourceAccountId = await settledSourceAccount(
-        tx,
-        tenantId,
-        batch.legalEntityId,
-        settled.journalKey,
+    // The one active-source rule, also when the batch was settled from an
+    // account since replaced: a deactivated source refuses the report.
+    const configuredAccountId = await activeSourceGlAccount(
+      tx,
+      tenantId,
+      batch.legalEntityId,
+    );
+    const sourceAccountId = settled
+      ? await settledSourceAccount(
+          tx,
+          tenantId,
+          batch.legalEntityId,
+          settled.journalKey,
+        )
+      : configuredAccountId;
+    // The transfer fee is real money the PT paid for the second transfer (Q15,
+    // same stored value as the settle). Unmapped bank charges fail closed.
+    feeIdr = safeFee(item);
+    if (
+      feeIdr > 0 &&
+      !(await bankChargesMapped(tx, tenantId, batch.legalEntityId))
+    )
+      throw payoutRefuse(
+        409,
+        PAYOUT_BANK_CHARGES_MAPPING_MISSING.code,
+        PAYOUT_BANK_CHARGES_MAPPING_MISSING.message,
       );
-    } else {
-      const [source] = await tx
-        .select({ glAccountId: bankAccounts.glAccountId })
-        .from(payrollPayoutConfigs)
-        .innerJoin(
-          bankAccounts,
-          and(
-            eq(bankAccounts.tenantId, payrollPayoutConfigs.tenantId),
-            eq(bankAccounts.legalEntityId, payrollPayoutConfigs.legalEntityId),
-            eq(bankAccounts.id, payrollPayoutConfigs.manualSourceBankAccountId),
-          ),
-        )
-        .where(
-          and(
-            eq(payrollPayoutConfigs.tenantId, tenantId),
-            eq(payrollPayoutConfigs.legalEntityId, batch.legalEntityId),
-          ),
-        )
-        .limit(1);
-      if (!source)
-        throw payoutRefuse(
-          409,
-          "PAYOUT_SOURCE_ACCOUNT_MISSING",
-          "Rekening sumber pembayaran gaji PT ini tidak ditemukan, pembayaran ganda belum bisa dijurnal.",
-        );
-      sourceAccountId = source.glAccountId;
-    }
+    const context = payoutScope(actor.tenantId);
+    const entryDate = payrollEntryDateOf(now.toISOString());
     await postJournalFromRuleInTransaction(
       tx,
-      payoutScope(actor.tenantId),
+      context,
       {
         eventName: "payroll.paid",
         variant: "payout_overpaid",
         amounts: { netIdr },
         legalEntityId: batch.legalEntityId,
         outletId: null,
-        entryDate: payrollEntryDateOf(now.toISOString()),
+        entryDate,
         sourceId: batch.payrollRunId,
         postedBy: null,
         idempotencyKey: journalKey,
@@ -230,6 +250,24 @@ export async function recordOverpaidItem(
       },
       now,
     );
+    if (feeIdr > 0)
+      await postJournalFromRuleInTransaction(
+        tx,
+        context,
+        {
+          eventName: "payroll.paid",
+          variant: "payout_fee",
+          amounts: { feeIdr },
+          legalEntityId: batch.legalEntityId,
+          outletId: null,
+          entryDate,
+          sourceId: batch.payrollRunId,
+          postedBy: null,
+          idempotencyKey: overpaidFeeJournalKey(item.id),
+          accountOverrides: { bank: sourceAccountId },
+        },
+        now,
+      );
   }
 
   const postingId = randomUUID();
@@ -241,7 +279,7 @@ export async function recordOverpaidItem(
     itemSetHash: createHash("sha256").update(item.id).digest("hex"),
     journalKey,
     totalEncrypted: sealPayrollValue(
-      JSON.stringify({ netIdr, feeIdr: 0, itemCount: 1 }),
+      JSON.stringify({ netIdr, feeIdr, itemCount: 1 }),
       {
         tenantId,
         table: "payroll_payout_gl_postings",

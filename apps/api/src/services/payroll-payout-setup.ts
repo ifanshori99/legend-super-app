@@ -54,14 +54,46 @@ export async function bankChargesMapped(
   return row !== undefined;
 }
 
-/** The configured source bank account exists and is active. */
-export async function sourceAccountUsable(
+export const PAYOUT_SOURCE_ACCOUNT_MISSING = {
+  code: "PAYOUT_SOURCE_ACCOUNT_MISSING",
+  message:
+    "Rekening bank sumber pembayaran gaji tidak ditemukan atau sudah dinonaktifkan. Pilih rekening sumber yang aktif di pengaturan, lalu coba lagi.",
+} as const;
+
+/**
+ * The one rule for the payout source account (bead legend-s7roi): the GL
+ * account of the configured source bank account, and only while that bank
+ * account exists in the same tenant and legal entity and is active. Every path
+ * (approve, export, settle, fee re-post, overpaid) resolves it here. Fails
+ * closed with 409 `PAYOUT_SOURCE_ACCOUNT_MISSING`; `optional` answers null
+ * instead, for callers that can go on without the account.
+ */
+export async function activeSourceGlAccount(
   tx: Tx,
   tenantId: TenantId,
   legalEntityId: string,
-): Promise<boolean> {
+  options: { optional: true },
+): Promise<string | null>;
+export async function activeSourceGlAccount(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+  options?: { optional?: false },
+): Promise<string>;
+export async function activeSourceGlAccount(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+  options?: { optional?: boolean },
+): Promise<string | null>;
+export async function activeSourceGlAccount(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+  options: { optional?: boolean } = {},
+): Promise<string | null> {
   const [row] = await tx
-    .select({ id: bankAccounts.id })
+    .select({ glAccountId: bankAccounts.glAccountId })
     .from(payrollPayoutConfigs)
     .innerJoin(
       bankAccounts,
@@ -79,7 +111,26 @@ export async function sourceAccountUsable(
       ),
     )
     .limit(1);
-  return row !== undefined;
+  if (row) return row.glAccountId;
+  if (options.optional) return null;
+  throw new HttpError(
+    409,
+    PAYOUT_SOURCE_ACCOUNT_MISSING.code,
+    PAYOUT_SOURCE_ACCOUNT_MISSING.message,
+  );
+}
+
+/** The configured source bank account exists and is active. */
+export async function sourceAccountUsable(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<boolean> {
+  return (
+    (await activeSourceGlAccount(tx, tenantId, legalEntityId, {
+      optional: true,
+    })) !== null
+  );
 }
 
 export const PAYOUT_BANK_CHARGES_MAPPING_MISSING = {
@@ -102,8 +153,8 @@ export async function assertManualPayoutSetup(
   if (!(await sourceAccountUsable(tx, tenantId, legalEntityId)))
     throw new HttpError(
       409,
-      "PAYOUT_SOURCE_ACCOUNT_MISSING",
-      "Rekening bank sumber pembayaran gaji tidak ditemukan atau sudah dinonaktifkan. Pilih rekening sumber yang aktif di pengaturan, lalu coba lagi.",
+      PAYOUT_SOURCE_ACCOUNT_MISSING.code,
+      PAYOUT_SOURCE_ACCOUNT_MISSING.message,
     );
   if (!(await bankChargesMapped(tx, tenantId, legalEntityId)))
     throw new HttpError(

@@ -36,12 +36,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { TenantId } from "@starter/shared/core";
 import { payrollPaid, type PayrollRunType } from "@starter/shared/hris/payroll";
-import { bankAccounts } from "../db/schema/accounting-cash-bank.ts";
 import { journalEntries } from "../db/schema/index.ts";
 import { payrollRuns } from "../db/schema/payroll.ts";
 import {
   payrollDisbursementItems,
-  payrollPayoutConfigs,
   payrollPayoutGlPostings,
   type PayoutPostingKind,
 } from "../db/schema/payroll-payout.ts";
@@ -68,6 +66,7 @@ import {
 import {
   PAYOUT_BANK_CHARGES_MAPPING_MISSING,
   accountingEnabled,
+  activeSourceGlAccount,
   assertManualPayoutSetup,
   bankChargesMapped,
   settledSourceAccount,
@@ -117,33 +116,14 @@ async function sourceBankOverride(
   options: { optional?: boolean } = {},
 ): Promise<Partial<Record<"bank", string>> | undefined | null> {
   if (batch.channel === "cash") return undefined;
-  const [row] = await tx
-    .select({ glAccountId: bankAccounts.glAccountId })
-    .from(payrollPayoutConfigs)
-    .innerJoin(
-      bankAccounts,
-      and(
-        eq(bankAccounts.tenantId, payrollPayoutConfigs.tenantId),
-        eq(bankAccounts.legalEntityId, payrollPayoutConfigs.legalEntityId),
-        eq(bankAccounts.id, payrollPayoutConfigs.manualSourceBankAccountId),
-      ),
-    )
-    .where(
-      and(
-        eq(payrollPayoutConfigs.tenantId, tenantId),
-        eq(payrollPayoutConfigs.legalEntityId, batch.legalEntityId),
-      ),
-    )
-    .limit(1);
   // `optional`: the caller can go on without the account (answered with null).
-  if (!row && options.optional) return null;
-  if (!row)
-    throw payoutRefuse(
-      409,
-      "PAYOUT_CONFIG_DISABLED",
-      "Rekening sumber pembayaran gaji PT ini tidak ditemukan.",
-    );
-  return { bank: row.glAccountId };
+  const glAccountId = await activeSourceGlAccount(
+    tx,
+    tenantId,
+    batch.legalEntityId,
+    options.optional ? { optional: true } : undefined,
+  );
+  return glAccountId === null ? null : { bank: glAccountId };
 }
 
 async function runHasLockedJournal(
