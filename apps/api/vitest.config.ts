@@ -1,5 +1,13 @@
 import { defineConfig } from "vitest/config";
 
+// These suites share one PostgreSQL database and many files end with an
+// unscoped `DELETE FROM platform_admins`, so they must run one file at a time
+// (`fileParallelism: false` below). Vitest applies VITEST_MAX_WORKERS AFTER that
+// option, and the `heavy` wrapper sets it to 2, which silently ran two files
+// concurrently and produced random 403 FORBIDDEN in platform tests (legend-2187v).
+// Force it to 1 here (also lighter on RAM than the 2 that heavy asks for).
+if (process.env.VITEST_MAX_WORKERS) process.env.VITEST_MAX_WORKERS = "1";
+
 // Integration tests run the real Express app, Better Auth, and services
 // against a disposable PostgreSQL server. Start them with pnpm test from the
 // repository root, which creates that server and supplies its URL.
