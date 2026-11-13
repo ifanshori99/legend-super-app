@@ -5054,3 +5054,9 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gate penuh diulang tidak sampai hijau utuh pada satu run; kegagalan terakhir dibuktikan flake atau test-bug per berkas (aturan batch54). Build `heavy pnpm build` EXIT=0 (18:20).
 - Biaya sesi (batch54+55): utama sonnet-5-5 221 req, subagent 100 req (haiku 34, opus 9, sonnet 57); 15 spawn subagent, puncak 2 bersamaan.
 
+
+## Panic relay di bawah beban (legend-a43bt, legend-gyqdh) — 13 Nov 2026
+- Akar (bug produk, bukan host): `sendFrame` mengirim frame lalu `recordSent` menyisipkan baris `panic_alert_deliveries`; FK ke `panic_alerts` mengambil KEY SHARE yang bentrok dengan `FOR UPDATE` di `recordReceipt` → deadlock 40P01, receipt hilang permanen karena `state.received` sudah true sebelum commit dan error ditelan (resend dan recovery melewati alarm itu). Itu juga sebab EM-19 Q94 dan EM-01.
+- Perbaikan: `FOR NO KEY UPDATE` di 5 titik (panic-relay.service, panic-alert-outbox, panic-alert-cloud.service; first-ack-wins D-07 tetap serial); `recordReceipt` set `received` hanya setelah commit + retry sekali pada 40P01/40001; `sendFrame` berbagi promise kirim yang sedang jalan per socket (cegah frame ganda tanpa salah menandai alarm tak terarah). SLO 5 detik tidak diubah.
+- legend-gyqdh: `panicClock` + `setPanicClockForTest` (jam dan timer injectable) di panic-relay.service; timer fallback POS 15 detik diuji.
+- Test: `apps/api/src/test/panic-relay-load.test.ts` (8 test; 7 gagal di base 4d299ba5e, hijau setelah perbaikan). 3 ronde × 2 proses paralel (panic-relay, panic-relay-load, panic-codex-fix, panic-review-e): hijau semua. api typecheck, eslint, prettier hijau. Review architect: 1 temuan nyata (boolean-skip), sudah diperbaiki.

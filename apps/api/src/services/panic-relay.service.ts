@@ -251,7 +251,7 @@ export async function ingestPanicPress(
         )
         .orderBy(desc(panicAlerts.receivedAt))
         .limit(1)
-        .for("update");
+        .for("no key update");
       if (open) {
         await tx.insert(panicPressEvents).values({
           tenantId,
@@ -435,21 +435,49 @@ async function sessionStillLive(sub: HubSubscriber): Promise<boolean> {
   return false;
 }
 
-async function sendFrame(
+// Alerts a socket is being sent right now (check, send, record). A second send
+// of the same alert to the same socket awaits the running one and returns its
+// result, instead of racing it or being counted as unsent.
+const sendsInFlight = new WeakMap<
+  HubSubscriber,
+  Map<string, Promise<boolean>>
+>();
+
+function sendFrame(
   sub: HubSubscriber,
   frame: PanicRealtimeFrame,
   alertReceivedAt: number,
   options: { force: boolean },
 ): Promise<boolean> {
-  const state = sub.alerts.get(frame.alertId);
-  if (!options.force && state?.received) return false;
+  if (!options.force && sub.alerts.get(frame.alertId)?.received)
+    return Promise.resolve(false);
+  let inFlight = sendsInFlight.get(sub);
+  if (!inFlight) {
+    inFlight = new Map();
+    sendsInFlight.set(sub, inFlight);
+  }
+  const running = inFlight.get(frame.alertId);
+  if (running) return running;
+  const attempt = doSendFrame(sub, frame, alertReceivedAt).finally(() => {
+    if (inFlight.get(frame.alertId) === attempt) inFlight.delete(frame.alertId);
+  });
+  inFlight.set(frame.alertId, attempt);
+  return attempt;
+}
+
+async function doSendFrame(
+  sub: HubSubscriber,
+  frame: PanicRealtimeFrame,
+  alertReceivedAt: number,
+): Promise<boolean> {
   if (!(await sessionStillLive(sub))) return false;
   if (!sub.send(frame)) return false;
+  // Read `received` again: a receipt can land while the check was running.
   sub.alerts.set(frame.alertId, {
     frame,
     alertReceivedAt,
     lastSentAt: Date.now(),
-    received: state?.received ?? false,
+    received: sub.alerts.get(frame.alertId)?.received ?? false,
   });
   try {
     await recordSent(sub.session, frame);
@@ -737,9 +765,34 @@ export async function recordReceipt(
   now = new Date(),
 ): Promise<void> {
   const { session } = sub;
+  const context = outletContext(tenantOf(session), session.outletId);
+  // Stored first, flagged after: a receipt that fails to commit must not stop
+  // the resend and the recovery. One retry on a deadlock or serialization abort.
+  try {
+    await storeReceipt(session, context, alertId, now);
+  } catch (error) {
+    if (!isRetryableTxError(error)) throw error;
+    await storeReceipt(session, context, alertId, now);
+  }
   const state = sub.alerts.get(alertId);
   if (state) state.received = true;
-  const context = outletContext(tenantOf(session), session.outletId);
+}
+
+function isRetryableTxError(error: unknown): boolean {
+  for (let cause = error; cause && typeof cause === "object";) {
+    const code = (cause as { code?: unknown }).code;
+    if (code === "40P01" || code === "40001") return true;
+    cause = (cause as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+async function storeReceipt(
+  session: ReceiverSession,
+  context: ScopedTenantContext,
+  alertId: string,
+  now: Date,
+): Promise<void> {
   await withTenant(db, context, async (tx) => {
     const [alert] = await tx
       .select({ id: panicAlerts.id })
@@ -752,7 +805,7 @@ export async function recordReceipt(
         ),
       )
       .limit(1)
-      .for("update");
+      .for("no key update");
     if (!alert) return;
     const [delivery] = await tx
       .select({ receivedAt: panicAlertDeliveries.receivedAt })
@@ -885,15 +938,43 @@ async function markFallbackShown(
   });
 }
 
+/**
+ * Clock of the server fallback timer (Q94). Tests replace it through
+ * `setPanicClockForTest`; production keeps the real clock and `setTimeout`.
+ */
+export const panicClock = {
+  now: (): Date => new Date(),
+  setTimer: (fn: () => void, ms: number): { unref(): void } =>
+    setTimeout(fn, ms),
+};
+
+/** Replaces parts of `panicClock`; returns a function that restores them. */
+export function setPanicClockForTest(
+  patch: Partial<typeof panicClock>,
+): () => void {
+  const previous = { ...panicClock };
+  Object.assign(panicClock, patch);
+  return () => {
+    Object.assign(panicClock, previous);
+  };
+}
+
 function scheduleFallback(tenant: TenantContext, alert: AlertRow) {
   const wait = Math.max(
     0,
-    alert.receivedAt.getTime() + PANIC_FALLBACK_AFTER_MS - Date.now(),
+    alert.receivedAt.getTime() +
+      PANIC_FALLBACK_AFTER_MS -
+      panicClock.now().getTime(),
   );
   const context = outletContext(tenant, alert.outletId);
-  const timer = setTimeout(() => {
-    void markFallbackShown(context, alert.tenantId, alert.id).catch(
-      (error: unknown) => logFailure("panic fallback stamp failed", error),
+  const timer = panicClock.setTimer(() => {
+    void markFallbackShown(
+      context,
+      alert.tenantId,
+      alert.id,
+      panicClock.now(),
+    ).catch((error: unknown) =>
+      logFailure("panic fallback stamp failed", error),
     );
   }, wait);
   timer.unref();
@@ -998,7 +1079,7 @@ export async function acknowledgePanicAlert(
         ),
       )
       .limit(1)
-      .for("update");
+      .for("no key update");
     if (!locked)
       throw new HttpError(404, "NOT_FOUND", "Peringatan tidak ditemukan.");
     if (locked.acknowledgedAt !== null) {
