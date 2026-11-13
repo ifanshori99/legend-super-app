@@ -1491,3 +1491,4 @@ Langkah berikut CTO baru:
 - 03:06 Autopilot: prune volume Docker = keputusan founder, jangan hapus. Pertanyaan terbuka founder (teks biasa). Disk 32 GB (> 30), cleanup-ssd belum perlu; bila < 30 GB: cleanup-ssd tanpa volume Docker.
 - 03:10 656 selesai: ws/edge-sales-gl 51d67b182 (uctlr, 132mw, vje21; tanpa migrasi), 368/368, architect xhigh 1 ronde 5 temuan dibetulkan. CTO setujui tax_missing -> tetap masuk + PBJT fallback; kartu peringatan finance + customerAttachedBy dibuat. G0xmk di-resolve.
 - 03:27 founder: volume Docker jangan dihapus, tanya tiap kali (dicatat di coordinator memory).
+- 03:38 mulai 657 lanjutan kontrak edge (cqehx, yu8z0, zy43; thread S30:P6b2j:G17kp, base ws/edge-sales-gl, migr 0530-0533).
