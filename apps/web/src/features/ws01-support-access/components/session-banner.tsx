@@ -186,9 +186,15 @@ export function SupportSessionBar({
   className,
 }: SupportSessionBarProps) {
   const grants = useOrgGrants();
-  const nowMs = useSecondClock();
+  const clockMs = useSecondClock();
   const queryClient = useQueryClient();
   const rows: readonly SupportAccessGrant[] | undefined = grants.data?.data;
+  // Shift the device clock by its offset from the API clock at fetch time, so
+  // a device running ahead does not hide the banner early.
+  const serverNow = grants.data?.serverNow;
+  const skewMs =
+    serverNow === undefined ? 0 : Date.parse(serverNow) - grants.dataUpdatedAt;
+  const nowMs = clockMs === null ? null : clockMs + skewMs;
   const grant = rows && nowMs !== null ? findActiveGrant(rows, nowMs) : null;
   const impersonating = supportSession != null;
   const shownKey = grant?.id ?? (impersonating ? "session" : null);

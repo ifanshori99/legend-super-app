@@ -28,6 +28,7 @@ import {
   configTemplateSummarySchema,
   createConfigTemplateInputSchema,
   importConfigInputSchema,
+  orgImportConfigInputSchema,
 } from "./config.ts";
 import {
   listOutboxGapsQuerySchema,
@@ -96,6 +97,7 @@ import {
   decideSupportAccessRequestInputSchema,
   requestSupportAccessInputSchema,
   requestSupportWriteAccessInputSchema,
+  supportAccessGrantPageSchema,
   supportAccessGrantSchema,
   supportAccessRequestSchema,
 } from "./support-access.ts";
@@ -321,7 +323,7 @@ export const platformEndpoints = {
     query: cursorPageQuerySchema.extend({
       tenantId: tenantIdSchema.optional(),
     }),
-    response: cursorPageSchema(supportAccessGrantSchema),
+    response: supportAccessGrantPageSchema,
   }),
   endSupportAccess: defineEndpoint({
     method: "POST",
@@ -533,7 +535,7 @@ export const orgEndpoints = {
     method: "GET",
     path: "/api/org/support-access",
     query: cursorPageQuerySchema,
-    response: cursorPageSchema(supportAccessGrantSchema),
+    response: supportAccessGrantPageSchema,
   }),
   listSupportAccessRequests: defineEndpoint({
     method: "GET",
@@ -573,5 +575,16 @@ export const orgEndpoints = {
     path: "/api/org/config/export",
     body: createConfigTemplateInputSchema.pick({ sections: true }),
     response: dataResponseSchema(configBundleSchema),
+  }),
+  /**
+   * Import an uploaded bundle into the caller's own tenant (no tenant id in the
+   * path, TEN-02). Stored platform templates are not importable here: they are
+   * shared across tenants, so only a bundle is accepted.
+   */
+  importConfig: defineEndpoint({
+    method: "POST",
+    path: "/api/org/config/import",
+    body: orgImportConfigInputSchema,
+    response: dataResponseSchema(configImportSchema),
   }),
 } as const;

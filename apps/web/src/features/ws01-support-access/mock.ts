@@ -112,8 +112,8 @@ function sorted(rows: readonly SupportAccessGrant[]) {
 
 // platformEndpoints.listTenants is served by ws01-platform-tenants/mock.ts.
 
-registerMock(platformEndpoints.listSupportAccess, ({ query, scenario }) =>
-  paginateFixture(
+registerMock(platformEndpoints.listSupportAccess, ({ query, scenario }) => ({
+  ...paginateFixture(
     sorted(
       grants
         .get()
@@ -123,16 +123,18 @@ registerMock(platformEndpoints.listSupportAccess, ({ query, scenario }) =>
     (row) => row.id,
     scenario,
   ),
-);
+  serverNow: new Date().toISOString(),
+}));
 
-registerMock(orgEndpoints.listSupportAccess, ({ query, scenario }) =>
-  paginateFixture(
+registerMock(orgEndpoints.listSupportAccess, ({ query, scenario }) => ({
+  ...paginateFixture(
     sorted(grants.get().filter((row) => row.tenantId === fixtures.tenant.id)),
     query,
     (row) => row.id,
     scenario,
   ),
-);
+  serverNow: new Date().toISOString(),
+}));
 
 registerMock(platformEndpoints.requestSupportAccess, ({ params, body }) => {
   const tenant = tenants.find((row) => row.id === params.tenantId);

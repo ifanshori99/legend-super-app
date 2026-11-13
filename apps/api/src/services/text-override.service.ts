@@ -27,6 +27,7 @@ import {
 import { db } from "../db/index.ts";
 import { textOverrides } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 
 type Row = typeof textOverrides.$inferSelect;
@@ -180,5 +181,57 @@ export async function putTextOverride(
       ["key", "value", "version"],
     );
     return toRecord(row);
+  });
+}
+
+/**
+ * Clears a term: deletes the row (never stores an empty value). The id is
+ * matched together with the tenant in SQL, so another tenant's override is
+ * answered 404 exactly like a missing one.
+ */
+export async function deleteTextOverride(
+  context: ScopedTenantContext,
+  overrideId: string,
+  actorUserId: string,
+): Promise<void> {
+  assertTenantWide(context);
+  const tenantId = context.tenant.tenantId;
+  await withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .delete(textOverrides)
+      .where(
+        and(
+          eq(textOverrides.tenantId, tenantId),
+          eq(textOverrides.id, overrideId),
+        ),
+      )
+      .returning();
+    if (!row) throw new HttpError(404, "NOT_FOUND", "Text override not found.");
+
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(),
+        tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "text_override.deleted",
+        objectType: "text_override",
+        objectId: row.id,
+        reason: null,
+        maskedChanges: {
+          before: { key: row.key, value: row.value, version: row.version },
+          after: null,
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: new Date().toISOString(),
+      },
+      ["key", "value", "version"],
+    );
   });
 }

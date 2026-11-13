@@ -90,6 +90,8 @@ type Tx = AuditTransaction;
 type Page = {
   data: SupportAccessGrant[];
   meta: { limit: number; nextCursor: string | null };
+  /** API clock at read time (ISO), so the banner does not trust the device. */
+  serverNow: string;
 };
 type EndCause = "expired" | "ended_by_super_admin" | "revoked_by_tenant_admin";
 
@@ -108,11 +110,12 @@ const AGGREGATE_TYPE = "support_access";
 const OBJECT_TYPE = "support_access_grant";
 const SWEEP_BATCH = 100;
 
-function toGrant(row: GrantRow): SupportAccessGrant {
+function toGrant(row: GrantRow, actorName?: string | null): SupportAccessGrant {
   return supportAccessGrantSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
     superAdminUserId: row.superAdminUserId,
+    ...(actorName === undefined ? {} : { actorName }),
     reason: row.reason,
     accessMode: row.accessMode,
     durationMinutes: row.durationMinutes,
@@ -518,7 +521,7 @@ export async function requestSupportAccess(input: {
       await lockAdminTenant(tx, input.tenantId, input.actorUserId);
       const live = await liveOpenGrants(tx, context, input.actorUserId, now);
       assertCanOpenSupportAccess(
-        live.map(toGrant),
+        live.map((row) => toGrant(row)),
         { tenantId: input.tenantId, superAdminUserId: input.actorUserId },
         now,
       );
@@ -1164,11 +1167,35 @@ async function listTenantPage(
   });
 }
 
-function toPage(rows: GrantRow[], limit: number): Page {
+/** Super Admin display names for a page of grants. A name that looks like an
+ * email address is dropped: the list must never leak the email. */
+async function actorNames(rows: GrantRow[]): Promise<Map<string, string>> {
+  const ids = [...new Set(rows.map((row) => row.superAdminUserId))];
+  if (ids.length === 0) return new Map();
+  const people = await db
+    .select({ id: user.id, name: user.name })
+    .from(user)
+    .where(inArray(user.id, ids));
+  return new Map(
+    people.flatMap((person) => {
+      const name = person.name.trim();
+      return name === "" || name.includes("@") ? [] : [[person.id, name]];
+    }),
+  );
+}
+
+async function toPage(
+  rows: GrantRow[],
+  limit: number,
+  now: Date = new Date(),
+): Promise<Page> {
   const page = rows.slice(0, limit);
   const last = page.at(-1);
+  const names = await actorNames(page);
   return {
-    data: page.map(toGrant),
+    data: page.map((row) =>
+      toGrant(row, names.get(row.superAdminUserId) ?? null),
+    ),
     meta: {
       limit,
       nextCursor:
@@ -1176,6 +1203,7 @@ function toPage(rows: GrantRow[], limit: number): Page {
           ? encodeCursor([last.startedAt.toISOString(), last.id])
           : null,
     },
+    serverNow: now.toISOString(),
   };
 }
 
@@ -1486,13 +1514,16 @@ export async function assertSupportAccess(input: {
           gt(supportAccessGrants.expiresAt, now),
         ),
       );
-    return assertSupportAccessPolicy(rows.map(toGrant), {
-      tenantId: input.tenantId,
-      superAdminUserId: input.actorUserId,
-      dataClass: input.dataClass,
-      intent: input.intent,
-      now,
-    });
+    return assertSupportAccessPolicy(
+      rows.map((row) => toGrant(row)),
+      {
+        tenantId: input.tenantId,
+        superAdminUserId: input.actorUserId,
+        dataClass: input.dataClass,
+        intent: input.intent,
+        now,
+      },
+    );
   };
   const grant = input.tx
     ? await decide(input.tx)

@@ -9,6 +9,7 @@ import {
   listConsentsQuerySchema,
   listTextOverridesQuerySchema,
   recordConsentInputSchema,
+  textOverrideEndpoints,
 } from "@starter/shared/platform";
 import { textOverrideInputSchema } from "@starter/shared/text";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
@@ -23,6 +24,7 @@ import {
 import { requireTenantContext } from "../middleware/tenant.ts";
 import { listConsents, recordConsent } from "../services/consent.service.ts";
 import {
+  deleteTextOverride,
   listTextOverrides,
   putTextOverride,
 } from "../services/text-override.service.ts";
@@ -58,6 +60,22 @@ textOverridesRouter.put(
         getAuth(req).user.id,
       ),
     });
+  },
+);
+
+textOverridesRouter.delete(
+  "/:overrideId",
+  ...base,
+  manageSettings,
+  async (req, res) => {
+    const { overrideId } =
+      textOverrideEndpoints.deleteTextOverride.params.parse(req.params);
+    await deleteTextOverride(
+      getScopedTenantContext(req),
+      overrideId,
+      getAuth(req).user.id,
+    );
+    res.status(204).end();
   },
 );
 
