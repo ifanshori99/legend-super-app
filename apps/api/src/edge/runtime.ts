@@ -129,6 +129,7 @@ import {
 } from "../services/edge-sync-conflict-alert.ts";
 import { parseEdgeRuntimeConfig } from "./config.ts";
 import { createDbLinkStore } from "./db-link-store.ts";
+import type { DeadLetterEntry } from "./link-peer.ts";
 import {
   createEdgeLinkClient,
   type EdgeLinkClientState,
@@ -155,6 +156,55 @@ import {
 
 /** Episodes already alerted by this process; the notification tables dedupe too. */
 const catalogStaleAlerted = new Set<string>();
+
+/**
+ * legend-btx4d: an event above the link frame cap was moved to the dead-letter
+ * store (cloud side, cloud_to_edge). Ops and owners hear it once: the id is
+ * derived from the node and the event, so a replay never alerts twice, and
+ * the queue behind the event keeps flowing. The event itself stays whole in
+ * edge_link_dead_letters. A failure here is logged by the caller, never
+ * thrown into the link.
+ */
+export async function reportEdgeLinkDeadLetter(
+  identity: { context: ScopedTenantContext; scope: LinkScope },
+  entry: DeadLetterEntry,
+  now: Date = new Date(),
+): Promise<void> {
+  const hex = createHash("sha256")
+    .update(
+      `edge_link.dead_letter\0${identity.scope.edgeNodeId}\0${entry.event.id}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  const id = uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+  await withTenant(db, identity.context, (tx) =>
+    notifyOutletSupervisors(
+      tx,
+      identity.context,
+      {
+        tenantId: identity.context.tenant.tenantId,
+        outletId: outletIdSchema.parse(identity.scope.outletId),
+        alsoOwners: true,
+        id,
+        eventName: "edge_link.dead_letter",
+        aggregateType: "edge_link_dead_letter",
+        aggregateId: uuidToUlid(identity.scope.edgeNodeId),
+        payload: {
+          edgeNodeId: identity.scope.edgeNodeId,
+          eventId: entry.event.id,
+          linkSeq: entry.linkSeq,
+          bytes: entry.bytes,
+          reason: entry.reason,
+        },
+        title: "Satu data sinkron terlalu besar",
+        body: "Satu data ke server lokal melebihi batas kirim dan disimpan terpisah. Data lain tetap terkirim. Hubungi teknisi untuk memeriksanya.",
+      },
+      now,
+    ),
+  );
+}
 
 export async function reportEdgeAuditRetentionStatus(
   identity: { context: ScopedTenantContext; scope: LinkScope },
@@ -897,6 +947,20 @@ export async function startEdgeRuntime(
         );
     },
     onError: (error) => logger.warn(safeError(error), "Edge link error"),
+    // legend-btx4d: the edge has no staff to notify; the dead letter is kept
+    // whole in edge_link_dead_letters and this one error line (a fixed code,
+    // ids and sizes only, no payload) is the ops alarm.
+    onDeadLetter: (entry) =>
+      logger.error(
+        {
+          code: "EDGE_LINK_DEAD_LETTER",
+          eventId: entry.event.id,
+          linkSeq: entry.linkSeq,
+          bytes: entry.bytes,
+          reason: entry.reason,
+        },
+        "Edge event above the link frame limit moved to the dead-letter store",
+      ),
     onServerTime: recordServerTime,
     // legend-10nex: stale prices/product status reach the owner through the
     // cloud, which only hears the edge while this link is up.
@@ -1424,6 +1488,22 @@ export async function registerEdgeLink(
             "Edge audit retention owner alert failed",
           ),
         );
+    },
+    onDeadLetter: (identity, entry) => {
+      logger.error(
+        {
+          code: "EDGE_LINK_DEAD_LETTER",
+          edgeNodeId: identity.scope.edgeNodeId,
+          eventId: entry.event.id,
+          linkSeq: entry.linkSeq,
+          bytes: entry.bytes,
+          reason: entry.reason,
+        },
+        "Cloud event above the link frame limit moved to the dead-letter store",
+      );
+      void reportEdgeLinkDeadLetter(identity, entry).catch((error) =>
+        logger.warn(safeError(error), "Edge link dead-letter alert failed"),
+      );
     },
     onConnectionChange: (identity, connected) =>
       logger.info(

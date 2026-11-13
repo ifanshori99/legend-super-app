@@ -11,6 +11,7 @@ import WebSocket from "ws";
 import type { CloudLink } from "@starter/shared/edge";
 import {
   createLinkPeer,
+  type DeadLetterEntry,
   type LinkPeer,
   type LinkScope,
   type LinkStore,
@@ -59,6 +60,8 @@ export type EdgeLinkClientOptions = {
   version: string;
   onState?: (state: EdgeLinkClientState) => void;
   onError?: (error: unknown) => void;
+  /** An outbound event above the frame cap moved to the dead-letter store (legend-btx4d). */
+  onDeadLetter?: (entry: DeadLetterEntry) => void;
   /**
    * The link closed with this code and reason (legend-a9iby): the reason of a
    * 1008 refusal is the only place an operator learns why the cloud refuses
@@ -140,6 +143,7 @@ export function createEdgeLinkClient(
       version: options.version,
       ackTimeoutMs: options.ackTimeoutMs,
       onError: options.onError,
+      onDeadLetter: options.onDeadLetter,
       transport: {
         send: (data) => {
           if (ws.readyState === WebSocket.OPEN) ws.send(data);

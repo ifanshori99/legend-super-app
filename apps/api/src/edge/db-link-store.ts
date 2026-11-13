@@ -43,6 +43,7 @@ import { decideInbound, type EdgeConflictReason } from "./conflict.ts";
 import { redactEdgeEnvelopeSecrets } from "./envelope-secrets.ts";
 import {
   LinkProtocolError,
+  type DeadLetterEntry,
   type LinkStore,
   type QueuedEdgeEvent,
 } from "./link-peer.ts";
@@ -146,7 +147,19 @@ async function applyOrRefuse(
   }
 }
 
-export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
+/** Dead-letter record as read back (legend-btx4d). */
+export type StoredDeadLetter = DeadLetterEntry & { readonly createdAt: Date };
+
+/** Parked above any real link_seq while the queue behind a dead letter is renumbered. */
+const RENUMBER_PARK = 1_000_000_000_000;
+
+export type DbLinkStore = LinkStore &
+  Required<Pick<LinkStore, "deadLetterOutbound">> & {
+    /** Dead letters of this node and outbound direction, oldest first. */
+    listDeadLetters(): Promise<StoredDeadLetter[]>;
+  };
+
+export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
   const { database, context, node } = options;
   assertTrustedScopedContext(context);
   const outbound = options.outboundDirection;
@@ -348,6 +361,71 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
         return result.rows.map((row): QueuedEdgeEvent => ({
           linkSeq: Number(row.link_seq) - offset,
           event: eventEnvelopeSchema.parse(row.event),
+        }));
+      });
+    },
+
+    // legend-btx4d: ONE transaction under the cursor lock (the relay that
+    // enqueues takes the same lock). The head event is copied whole into the
+    // dead-letter table, removed from the queue, and the pending rows behind
+    // it (never sent: pump only meets an oversized event at the head) move
+    // down by one together with next_out_seq, so the receiver's contiguous
+    // cursor never sees a hole. The queue key is not deferrable, so the rows
+    // are parked far above any sequence first and then brought down.
+    async deadLetterOutbound(entry) {
+      await run(async (tx) => {
+        const cursor = await lockSyncCursor(tx, node, outbound);
+        const { offset } = await peerNumbering(tx, outbound);
+        const eventUuid = ulidToUuid(entry.event.id);
+        const queued = await tx.execute(
+          sql`SELECT link_seq, status, aggregate_type, aggregate_id, aggregate_sequence, kind, event FROM edge_outbound_queue WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND event_id = ${eventUuid}::uuid`,
+        );
+        const row = queued.rows[0];
+        // Replay (redelivery, restart): already dead-lettered and gone.
+        if (!row) return;
+        const storedSeq = Number(row.link_seq);
+        if (
+          row.status !== "pending" ||
+          storedSeq !== entry.linkSeq + offset ||
+          storedSeq <= cursor.acked_out_seq
+        )
+          throw new Error("Dead letter is not the unsent head of the queue");
+        await tx.execute(
+          sql`INSERT INTO edge_link_dead_letters (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, bytes, reason, event) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${outbound}, ${eventUuid}::uuid, ${storedSeq}, ${row.aggregate_type}, ${row.aggregate_id}, ${row.aggregate_sequence}, ${entry.bytes}, ${entry.reason}, ${JSON.stringify(row.event)}::jsonb) ON CONFLICT DO NOTHING`,
+        );
+        await tx.execute(
+          sql`SELECT set_config('app.edge_dead_letter', 'on', true)`,
+        );
+        await tx.execute(
+          sql`DELETE FROM edge_outbound_queue WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq = ${storedSeq}`,
+        );
+        await tx.execute(
+          sql`UPDATE edge_outbound_queue SET link_seq = link_seq + ${RENUMBER_PARK} WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${storedSeq}`,
+        );
+        await tx.execute(
+          sql`UPDATE edge_outbound_queue SET link_seq = link_seq - ${RENUMBER_PARK + 1} WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${RENUMBER_PARK}`,
+        );
+        await tx.execute(
+          sql`UPDATE sync_cursors SET next_out_seq = next_out_seq - 1, updated_at = now() WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound}`,
+        );
+        await tx.execute(
+          sql`SELECT set_config('app.edge_dead_letter', '', true)`,
+        );
+      });
+    },
+
+    async listDeadLetters() {
+      return run(async (tx) => {
+        const { offset } = await peerNumbering(tx, outbound);
+        const result = await tx.execute(
+          sql`SELECT link_seq, bytes, reason, event, created_at FROM edge_link_dead_letters WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} ORDER BY created_at, link_seq`,
+        );
+        return result.rows.map((row): StoredDeadLetter => ({
+          linkSeq: Number(row.link_seq) - offset,
+          event: eventEnvelopeSchema.parse(row.event),
+          bytes: Number(row.bytes),
+          reason: row.reason as DeadLetterEntry["reason"],
+          createdAt: row.created_at as Date,
         }));
       });
     },

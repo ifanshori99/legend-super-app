@@ -15,7 +15,26 @@
 // provisioning is fixed. Anything else (database failure) aborts the batch so
 // the sender keeps it queued. The cloud apply writes no outbox event (it would
 // echo back to the edge). Never logs payloads.
-import { CoreError } from "@starter/shared/core";
+//
+// legend-n1fzg: a receipt of an order the cloud permanently refused to ingest
+// (edge_order_ingests state 'refused', reason `order_exists` / `legacy_payload`)
+// can never merge: there is no cloud order for it. Left in the run it would
+// refuse every chunk holding it and leave a hole that holds every later chunk.
+// The applier SKIPS it before the merge (no revenue, no receipt row), records
+// it once per (tenant, order) as an `edge_sync_conflicts` row finance sees
+// (number, order, reason) and lets the merge treat its number as accounted for,
+// also in later chunks (the conflict rows are the memory). Other refusals
+// (transient `db_error:*`, ...) are never skipped. A chunk with more skips than
+// fit one conflict detail (500 chars) is refused whole (fail closed, visible).
+import { and, eq, inArray, sql } from "drizzle-orm";
+import {
+  CoreError,
+  createUlid,
+  outletIdSchema,
+  tenantIdSchema,
+  ulidToUuid,
+} from "@starter/shared/core";
+import { conflictResolution } from "@starter/shared/edge";
 import type { EventEnvelope } from "@starter/shared/events";
 import {
   PosError,
@@ -23,6 +42,9 @@ import {
   RECEIPT_RUN_REPORTED_EVENT,
   receiptRunReportedPayloadSchema,
 } from "@starter/shared/pos";
+import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
+import { edgeSyncConflicts } from "../db/schema/edge-node.ts";
+import { notifyEdgeSyncConflictRecorded } from "../services/edge-sync-conflict-alert.ts";
 import { mergeDeviceReceiptRun } from "../services/pos-receipt.service.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
 import {
@@ -35,7 +57,19 @@ import type {
   EdgeLastSequenceHook,
 } from "./applier-registry.ts";
 import { assertEdgeEventScope } from "./deferred-event-applier.ts";
+import { redactEdgeEnvelopeSecrets } from "./envelope-secrets.ts";
 import type { EdgeApplyMeta } from "./ports.ts";
+
+/** Conflict reason of a receipt skipped for a permanently refused order. */
+export const RECEIPT_SKIPPED_REFUSED_ORDER_REASON =
+  "receipt_skipped_refused_order";
+/** Ingest refusals that never heal: the cloud will never hold the order. */
+const PERMANENT_INGEST_REFUSALS: ReadonlySet<string> = new Set([
+  "order_exists",
+  "legacy_payload",
+]);
+const CONFLICT_DETAIL_MAX = 500;
+const SKIP_DETAIL = /skipped receipt (\S+) order (\S+) reason (\S+)/g;
 
 /**
  * Each report is a self-contained run (the device resends the full range), so
@@ -52,6 +86,110 @@ function refuseMerge(error: unknown): never {
       error.message,
     );
   throw error;
+}
+
+/** order id -> permanent refusal reason, for the given orders of this tenant. */
+async function permanentlyRefusedOrders(
+  tx: EdgeTx,
+  tenantId: string,
+  orderIds: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (orderIds.length === 0) return out;
+  const rows = await tx
+    .select({
+      orderId: edgeOrderIngests.orderId,
+      reason: edgeOrderIngests.reason,
+    })
+    .from(edgeOrderIngests)
+    .where(
+      and(
+        eq(edgeOrderIngests.tenantId, tenantId),
+        eq(edgeOrderIngests.state, "refused"),
+        inArray(edgeOrderIngests.orderId, orderIds),
+      ),
+    );
+  for (const row of rows)
+    if (row.reason !== null && PERMANENT_INGEST_REFUSALS.has(row.reason))
+      out.set(row.orderId, row.reason);
+  return out;
+}
+
+/** Skips already recorded for the outlet: the receipt numbers and the orders. */
+async function recordedSkips(
+  tx: EdgeTx,
+  tenantId: string,
+  outletId: string,
+): Promise<{ numbers: Set<string>; orders: Set<string> }> {
+  const rows = await tx
+    .select({ detail: edgeSyncConflicts.detail })
+    .from(edgeSyncConflicts)
+    .where(
+      and(
+        eq(edgeSyncConflicts.tenantId, tenantId),
+        eq(edgeSyncConflicts.outletId, outletId),
+        eq(edgeSyncConflicts.reason, RECEIPT_SKIPPED_REFUSED_ORDER_REASON),
+      ),
+    );
+  const numbers = new Set<string>();
+  const orders = new Set<string>();
+  for (const { detail } of rows)
+    for (const match of (detail ?? "").matchAll(SKIP_DETAIL)) {
+      numbers.add(match[1]!);
+      orders.add(match[2]!);
+    }
+  return { numbers, orders };
+}
+
+function ordinalOf(number: string, prefix: string): number | null {
+  const match = /^(.+)-(\d+)$/.exec(number);
+  return match && match[1] === prefix ? Number(match[2]) : null;
+}
+
+/**
+ * Records the new skips of one event as ONE conflict row (the row is unique
+ * per event). Idempotent: a conflict already held for the event is kept.
+ */
+async function recordSkips(
+  tx: EdgeTx,
+  event: EventEnvelope,
+  meta: EdgeApplyMeta,
+  outletId: string,
+  skips: { number: string; orderId: string; reason: string }[],
+): Promise<void> {
+  if (skips.length === 0) return;
+  const detail = skips
+    .map(
+      (skip) =>
+        `skipped receipt ${skip.number} order ${skip.orderId} reason ${skip.reason}`,
+    )
+    .join("; ");
+  if (detail.length > CONFLICT_DETAIL_MAX)
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Too many receipts of refused orders in one run to record",
+    );
+  const conflictId = createUlid();
+  const inserted = await tx.execute(
+    sql`INSERT INTO edge_sync_conflicts (id, tenant_id, outlet_id, edge_node_id, direction, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, reason, resolution, existing_sequence, detail, event) VALUES (${ulidToUuid(conflictId)}::uuid, ${meta.context.tenant.tenantId}::uuid, ${outletId}::uuid, ${meta.edgeNodeId}::uuid, ${meta.direction}, ${ulidToUuid(event.id)}::uuid, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${meta.kind}, ${RECEIPT_SKIPPED_REFUSED_ORDER_REASON}, ${conflictResolution(meta.kind)}, ${Math.max(0, event.sequence - 1)}, ${detail}, ${JSON.stringify(redactEdgeEnvelopeSecrets(event))}::jsonb) ON CONFLICT DO NOTHING RETURNING id`,
+  );
+  if (inserted.rows.length === 0) return;
+  // Supervisor alert in a savepoint: never fails the batch (the row is the
+  // durable evidence), as in db-link-store.ts.
+  try {
+    await tx.transaction((savepoint) =>
+      notifyEdgeSyncConflictRecorded(savepoint, meta.context, {
+        id: conflictId,
+        tenantId: tenantIdSchema.parse(meta.context.tenant.tenantId),
+        outletId: outletIdSchema.parse(outletId),
+        edgeNodeId: meta.edgeNodeId,
+        aggregateType: event.aggregateType,
+        reason: RECEIPT_SKIPPED_REFUSED_ORDER_REASON,
+      }),
+    );
+  } catch {
+    // Intentionally silent: no payload or ids in logs (ports.ts rule).
+  }
 }
 
 async function applyReceiptRunReported(
@@ -83,6 +221,38 @@ async function applyReceiptRunReported(
       "VALIDATION_ERROR",
       "Receipt run does not match its event scope",
     );
+  const permanent = await permanentlyRefusedOrders(
+    tx,
+    tenantId,
+    receipts.map(({ receipt }) => receipt.orderId),
+  );
+  const skipped = receipts.filter(({ receipt }) =>
+    permanent.has(receipt.orderId),
+  );
+  const kept = receipts.filter(
+    ({ receipt }) => !permanent.has(receipt.orderId),
+  );
+  const skippedOrdinals = new Set<number>(
+    skipped.map(({ receipt }) => receipt.sequenceNumber),
+  );
+  const recorded = await recordedSkips(tx, tenantId, outletId);
+  for (const number of recorded.numbers) {
+    const ordinal = ordinalOf(number, sequence.prefix);
+    if (ordinal !== null) skippedOrdinals.add(ordinal);
+  }
+  await recordSkips(
+    tx,
+    event,
+    meta,
+    outletId,
+    skipped
+      .filter(({ receipt }) => !recorded.orders.has(receipt.orderId))
+      .map(({ receipt }) => ({
+        number: receipt.number,
+        orderId: receipt.orderId,
+        reason: permanent.get(receipt.orderId) ?? "",
+      })),
+  );
   try {
     await mergeDeviceReceiptRun(tx, meta.context, {
       sequence: {
@@ -91,10 +261,11 @@ async function applyReceiptRunReported(
         prefix: sequence.prefix,
         lastNumber: sequence.lastNumber,
       },
-      receipts: receipts.map(({ receipt, outletSnapshot }) => ({
+      receipts: kept.map(({ receipt, outletSnapshot }) => ({
         ...receipt,
         outletSnapshot,
       })),
+      skippedOrdinals,
     });
   } catch (error) {
     refuseMerge(error);

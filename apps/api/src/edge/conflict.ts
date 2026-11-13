@@ -32,7 +32,9 @@ export type EdgeConflictReason =
   | "sequence_collision"
   | "sequence_gap"
   /** The domain applier refused the event (CoreError / 4xx), legend-wqc6. */
-  | "applier_refused";
+  | "applier_refused"
+  /** A receipt of a permanently refused edge order was skipped, legend-n1fzg. */
+  | "receipt_skipped_refused_order";
 
 export type InboundDecision =
   | { action: "apply" }

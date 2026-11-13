@@ -35,6 +35,7 @@ import type { Duplex } from "node:stream";
 import WebSocket, { WebSocketServer } from "ws";
 import {
   createLinkPeer,
+  type DeadLetterEntry,
   type LinkPeer,
   type LinkScope,
   type LinkStore,
@@ -101,6 +102,8 @@ export type EdgeLinkServerDeps<Identity extends EdgeLinkIdentity> = {
   ): Promise<void>;
   onConnectionChange?(identity: Identity, connected: boolean): void;
   onError?(error: unknown): void;
+  /** An outbound event above the frame cap moved to the dead-letter store (legend-btx4d). */
+  onDeadLetter?(identity: Identity, entry: DeadLetterEntry): void;
   version: string;
   reverifyIntervalMs?: number;
   ackTimeoutMs?: number;
@@ -239,6 +242,7 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
       version: deps.version,
       ackTimeoutMs: deps.ackTimeoutMs,
       onError: deps.onError,
+      onDeadLetter: (entry) => deps.onDeadLetter?.(identity, entry),
       onHeartbeat: (frame) => {
         const at = now();
         if (at - lastHeartbeatWrite < heartbeatWriteIntervalMs) return;
