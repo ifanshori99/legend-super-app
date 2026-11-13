@@ -98,6 +98,7 @@ import {
   stockLedger,
   stockLocations,
 } from "../db/schema/inventory.ts";
+import { edgeDeferredEvents } from "../db/schema/edge-deferred-event.ts";
 import { orderIssues } from "../db/schema/kds-issues.ts";
 import { roleAssignments } from "../db/schema/platform-access.ts";
 import { posOrderItems } from "../db/schema/pos-order.ts";
@@ -1550,6 +1551,33 @@ async function saleDeductionExists(
   return row !== undefined;
 }
 
+/**
+ * legend-078n guard B: an order parked from an edge was already deducted on
+ * the edge (`stock.moved` carries it), so a cloud outbox event of that order
+ * must not deduct again. The edge itself has no parked rows. Only a parked
+ * `order.paid` counts (only an edge-paid order was deducted on the edge), and
+ * a legacy edge parks the UUID form of the id, so match both forms.
+ */
+async function isEdgeParkedOrder(
+  tx: Tx,
+  tenantId: TenantId,
+  orderId: string,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ eventId: edgeDeferredEvents.eventId })
+    .from(edgeDeferredEvents)
+    .where(
+      and(
+        eq(edgeDeferredEvents.tenantId, tenantId),
+        eq(edgeDeferredEvents.aggregateType, "order"),
+        eq(edgeDeferredEvents.eventName, "order.paid"),
+        inArray(edgeDeferredEvents.aggregateId, [orderId, ulidToUuid(orderId)]),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
 async function consumeInTransaction(
   tx: Tx,
   context: ScopedTenantContext,
@@ -1559,6 +1587,8 @@ async function consumeInTransaction(
     const parsed = orderPaidPayloadSchema.safeParse(event.payload);
     if (!parsed.success) return;
     const payload = parsed.data;
+    if (await isEdgeParkedOrder(tx, context.tenant.tenantId, payload.orderId))
+      return;
     // legend-13avp (founder Q63): a training order never deducts stock.
     if (await isTrainingOrder(tx, context.tenant.tenantId, payload.orderId))
       return;
@@ -1598,6 +1628,8 @@ async function consumeInTransaction(
     const parsed = orderIssueRecordedPayloadSchema.safeParse(event.payload);
     if (!parsed.success) return;
     const payload = parsed.data;
+    if (await isEdgeParkedOrder(tx, context.tenant.tenantId, payload.orderId))
+      return;
     if (await isTrainingOrder(tx, context.tenant.tenantId, payload.orderId))
       return;
     await recordRecipeDeduction(tx, context, {
@@ -1626,6 +1658,14 @@ async function consumeInTransaction(
     const payload = parsed.data;
     // A void before payment never drew stock; only a final-order void reverses.
     if (!payload.voidedFinalOrder || payload.voidId === null) return;
+    // legend-078n: an edge-parked order was deducted (and its void reversed)
+    // on the edge; only skip when the cloud has no sale deduction of its own,
+    // otherwise the void must still reverse it.
+    if (
+      (await isEdgeParkedOrder(tx, context.tenant.tenantId, payload.orderId)) &&
+      !(await saleDeductionExists(tx, context.tenant.tenantId, payload.orderId))
+    )
+      return;
     // legend-13avp: a training order drew no stock, so its void has nothing to
     // reverse (and must not leave a tombstone). A sale deduction made before
     // this rule existed is still reversed.

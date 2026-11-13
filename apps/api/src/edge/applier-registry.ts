@@ -25,6 +25,7 @@
 import type { EventEnvelope, SyncDirection } from "@starter/shared/events";
 import type { EdgeEventKind } from "../db/schema/edge-node.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
+import { runInEdgeApplyScope } from "./apply-scope.ts";
 import {
   EdgeApplierUnavailableError,
   edgeEventApplier,
@@ -78,11 +79,20 @@ function entryFor(direction: SyncDirection): DirectionEntry {
     dispatcher: {
       async apply(tx, event, meta) {
         const handler = handlers.get(event.name);
-        if (handler) return handler(tx as EdgeTx, event, meta);
-        if (entry.unhandled) return entry.unhandled(tx as EdgeTx, event, meta);
+        // legend-078n guard A: edge -> cloud handlers run in the edge-apply
+        // scope, where appendOutbox refuses order/deduction events.
+        const scoped = (run: EdgeEventHandler) =>
+          direction === "edge_to_cloud"
+            ? runInEdgeApplyScope(() => run(tx as EdgeTx, event, meta))
+            : run(tx as EdgeTx, event, meta);
+        if (handler) return scoped(handler);
+        if (entry.unhandled) return scoped(entry.unhandled);
         // Fallback is the refusing default unless another applier was there.
         if (!entry.fallback) throw new EdgeApplierUnavailableError(direction);
-        return entry.fallback.apply(tx, event, meta);
+        const fallback = entry.fallback;
+        return direction === "edge_to_cloud"
+          ? runInEdgeApplyScope(() => fallback.apply(tx, event, meta))
+          : fallback.apply(tx, event, meta);
       },
       async lastSequence(tx, aggregate, meta) {
         const hook = lastSequences.get(aggregate.aggregateType);

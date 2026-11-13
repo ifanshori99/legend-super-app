@@ -2276,6 +2276,13 @@
       "when": 1794573500000,
       "tag": "0338_edge_printer_retired_at",
       "breakpoints": true
+    },
+    {
+      "idx": 339,
+      "version": "7",
+      "when": 1794574500000,
+      "tag": "0339_edge_deferred_events_aggregate_id_idx",
+      "breakpoints": true
     }
   ]
 }

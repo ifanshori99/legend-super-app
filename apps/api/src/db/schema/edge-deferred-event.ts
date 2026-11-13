@@ -3,8 +3,12 @@
 // have no classifier, so the whole edge -> cloud batch rolled back forever and
 // stalled `stock.moved` behind them. They are now parked here, verbatim and
 // idempotent by (tenant_id, event_id), until a POS-order applier backfills
-// from this table (bead legend-078n). Nothing reads this table to change
-// money or stock.
+// from this table (bead legend-078n). Only the recipe-deduction guard below
+// reads it, and only to SKIP a deduction.
+//
+// Parked rows must never be deleted or purged: the recipe-deduction consume
+// guard (isEdgeParkedOrder, legend-078n) reads the parked `order.paid` row to
+// avoid deducting an edge-paid order a second time on the cloud.
 //
 // Tenant + outlet owned: the migration must call `app.enforce_tenant_rls(...)`
 // and then `app.enforce_outlet_rls(...)` for this table
@@ -75,6 +79,12 @@ export const edgeDeferredEvents = pgTable(
       table.tenantId,
       table.aggregateType,
       table.receivedAt,
+    ),
+    // legend-078n guard B: "was this order parked from an edge?" per order event.
+    index("edge_deferred_events_aggregate_id_idx").on(
+      table.tenantId,
+      table.aggregateType,
+      table.aggregateId,
     ),
     check(
       "edge_deferred_events_apply_outcome_check",
