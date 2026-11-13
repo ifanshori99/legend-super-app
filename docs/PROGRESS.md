@@ -1455,3 +1455,4 @@ Langkah berikut CTO baru:
 - 22:16 Mulai G8o3b (brief 642, Sonnet, 5b7uf P1 + 7e0q4 cutover, base ws/purchasing-posting, migr 0504-0505). Kuota #2: 5h 8%, 7d 43% (cadangan sampai 20 Nov; #1/#3 reset 17 Nov) -> maks ~3-4 thread.
 - 22:45 G8o3b: 5b7uf+7e0q4 di fix/purchase-return-variance f27baf989 (migr 0504, GR-11..18 + CUT-01..10, 114 test, architect xhigh lolos). purchase-return.test.ts RT-2..10 sudah merah di ws/purchasing-posting -> G8o3b buat fix/purchase-return-test-setup untuk gerbang batch57; G4twu diberi tahu. Slot ditahan di 3 thread (kuota).
 - 23:05 G8o3b selesai: fix/purchase-return-test-setup f569baa10 (RT-2..10 + PRE-1/3 test-only) -> dikirim ke G4twu untuk batch57; fix/purchase-return-variance e09eb217e (127 test, GR-18 fail-first terbukti) -> batch58. Bead efdx6 (UI journalize), eestb (cek retur lama sebelum flag).
+- 23:08 Mulai G7o31 (brief 643, Sonnet, wjyps P1 UI + e61s5, base fix/petty-fund-required).
