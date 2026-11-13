@@ -186,3 +186,6 @@ export * from "./reservation-deposit-remainder";
 
 // WS-12 opt-in ChatGPT device-code connection.
 export * from "./ai-chatgpt";
+
+// legend-bod emergency (panic) button tables.
+export * from "./panic-alert";

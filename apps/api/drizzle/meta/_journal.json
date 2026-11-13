@@ -2115,6 +2115,27 @@
       "when": 1794527747105,
       "tag": "0315_ai_chatgpt_connections",
       "breakpoints": true
+    },
+    {
+      "idx": 316,
+      "version": "7",
+      "when": 1794530970052,
+      "tag": "0316_panic_alerts",
+      "breakpoints": true
+    },
+    {
+      "idx": 317,
+      "version": "7",
+      "when": 1794530983017,
+      "tag": "0317_panic_receiver_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 318,
+      "version": "7",
+      "when": 1794530992288,
+      "tag": "0318_panic_alert_deliveries",
+      "breakpoints": true
     }
   ]
 }

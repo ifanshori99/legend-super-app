@@ -56,6 +56,9 @@ import { publicSiteRouter } from "./public-site.routes";
 import { websiteAdminRouter } from "./website-admin.routes";
 import { openBillRouter } from "./open-bill.routes";
 import { salesTargetsRouter } from "./sales-targets.routes";
+import { emergencyCloudRouter } from "./emergency-cloud.routes";
+import { emergencySessionRouter } from "./emergency.routes";
+import { emergencyPressRouter } from "./emergency-press.routes";
 import { menuRecommendationRouter } from "./menu-recommendation.routes.ts";
 import { tableLinksRouter } from "./table-links.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
@@ -269,6 +272,12 @@ apiRouter.use(
 );
 // WS-11 sales targets per outlet and day (legend-ne81z).
 apiRouter.use("/outlets/:outletId/sales-targets", salesTargetsRouter);
+// Emergency button manager routes (legend-bod.5): list, cloud acknowledge, resolve.
+apiRouter.use("/outlets/:outletId/emergency-alerts", emergencyCloudRouter);
+// Emergency receiver sessions: registered device + staff PIN, no Better Auth.
+apiRouter.use("/emergency/sessions", emergencySessionRouter);
+// Emergency button press, acknowledge and POS fallback (legend-bod.4).
+apiRouter.use("/emergency", emergencyPressRouter);
 apiRouter.use("/outlets", outletFloorRouter);
 // Before /table-sessions: guest + staff service-request paths span prefixes.
 apiRouter.use(serviceRequestRouter);

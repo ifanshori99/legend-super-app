@@ -1,0 +1,985 @@
+// Emergency button relay (bead legend-bod.4; PRD v1.7 §3 F25 "Keselamatan",
+// FAC-08; design docs/design/edge-emergency.md D-05, D-06, D-07, D-09).
+// Runs on the outlet edge, and in the cloud API for a cloud-only outlet.
+//
+// - `ingestPanicPress`: a registered `panic_button` posts a press. One alert per
+//   press burst (deterministic id, D-06): the same (device, eventId) returns the
+//   stored alert, another press within 60 s of an open alert folds into it. The
+//   alert, the press row and the `panic_alert.*` outbox event commit together.
+// - Fan-out (D-05): after commit the frame goes to every socket of the outlet
+//   whose receiver session still qualifies (re-checked at every send), is resent
+//   every 3 s until the phone confirms (`received`), and is sent at once to a
+//   socket that connects later.
+// - Fallback (Q94): no receipt within 15 s -> the alert shows on every POS
+//   screen of the outlet (room and time only, `GET /api/emergency/fallback`).
+// - `acknowledgePanicAlert`: first receiver wins under a row lock (D-07).
+//
+// Every query runs inside `withTenant` under the outlet of the device or the
+// session; the tenant and the outlet never come from a request body.
+import { and, asc, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
+import {
+  CoreError,
+  outletIdSchema,
+  toIsoDateTime,
+  userIdSchema,
+  type OutletId,
+  type ScopedTenantContext,
+  type TenantContext,
+  type TenantId,
+  type UserId,
+} from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import {
+  EMERGENCY_REVOKED_CLOSE_CODE,
+  type PanicFallbackItem,
+  type PanicPressBody,
+  type PanicRealtimeFrame,
+} from "@starter/shared/facility";
+import { db } from "../db/index.ts";
+import { devices } from "../db/schema/device.ts";
+import { facilities, facilityUnits } from "../db/schema/facility.ts";
+import { employees } from "../db/schema/hris.ts";
+import {
+  panicAlertDeliveries,
+  panicAlerts,
+  panicPressEvents,
+} from "../db/schema/panic-alert.ts";
+import { withTenant } from "../db/tenant.ts";
+import {
+  allSubscribers,
+  closeSessionSockets,
+  hasSubscribers,
+  subscribersOf,
+  type HubSubscriber,
+} from "../edge/panic-relay-hub.ts";
+import { getEdgeRuntimeState } from "../edge/runtime.ts";
+import { HttpError } from "../lib/http-error.ts";
+import { createFixedWindowCounter } from "../lib/fixed-window-counter.ts";
+import { logger } from "../lib/logger.ts";
+import { toLoggableError } from "../lib/safe-error.ts";
+import { outletContext } from "./device-pin-support.ts";
+import type { EdgeTx } from "./edge-queue.service.ts";
+import { panicAlertIdFor, queuePanicAlertEvent } from "./panic-alert-outbox.ts";
+import { refuseWhenEdgeServesOutlet } from "./panic-edge-ownership.ts";
+import {
+  recheckReceiverSession,
+  type ReceiverSession,
+} from "./panic-receiver-session.ts";
+
+/** A later press of the same button within this window folds into the open alert (D-06). */
+export const PANIC_FOLD_WINDOW_MS = 60_000;
+/** More presses than this per minute from one device answer 429 (D-06). */
+export const PANIC_PRESS_RATE_LIMIT_PER_MIN = 30;
+/** An unconfirmed frame is sent again this often (D-05). */
+export const PANIC_RESEND_INTERVAL_MS = 3_000;
+/** No receipt for this long: the POS fallback shows the alarm (Q94, D-05). */
+export const PANIC_FALLBACK_AFTER_MS = 15_000;
+/** Resending stops this long after the alert (D-05). */
+export const PANIC_RESEND_UNTIL_MS = 10 * 60_000;
+/** Receipt totals reach the cloud at most this often per alert (D-09). */
+export const PANIC_DELIVERED_BATCH_MS = 5_000;
+/** An open alert older than this is not sent to a socket that connects later. */
+const CONNECT_LOOKBACK_MS = 24 * 60 * 60_000;
+
+const pressLimiter = createFixedWindowCounter({
+  limit: PANIC_PRESS_RATE_LIMIT_PER_MIN,
+  windowMs: 60_000,
+  capacity: 10_000,
+});
+
+/** Counts one request of a device; throws 429 past the limit (D-06). */
+export function takePanicPressSlot(
+  tenantId: string,
+  deviceId: string,
+  now = Date.now(),
+): void {
+  const retryAfter = pressLimiter.take(`${tenantId}:${deviceId}`, now);
+  if (retryAfter !== null)
+    throw new HttpError(
+      429,
+      "RATE_LIMITED",
+      `Terlalu banyak penekanan. Coba lagi dalam ${retryAfter} detik.`,
+    );
+}
+
+type AlertRow = typeof panicAlerts.$inferSelect;
+
+const logFailure = (message: string, error: unknown) =>
+  logger.error({ err: toLoggableError(error) }, message);
+
+const tenantWide = (tenant: TenantContext): ScopedTenantContext =>
+  establishScopedTenantContext(tenant, { kind: "tenant" });
+
+function frameOf(alert: AlertRow): PanicRealtimeFrame {
+  return {
+    type: "panic",
+    alertId: alert.id,
+    outletId: outletIdSchema.parse(alert.outletId),
+    unitId: alert.unitId,
+    receivedAt: toIsoDateTime(alert.receivedAt),
+    kind: alert.kind === "test" ? "test" : "press",
+  };
+}
+
+// ------------------------------------------------------------------- ingest
+
+export type PressResult = {
+  alertId: string;
+  /** The same (device, eventId) was stored before. */
+  replayed: boolean;
+  /** A new press folded into the open alert of the device. */
+  folded: boolean;
+  pressCount: number;
+  acknowledged: boolean;
+};
+
+type Outcome = {
+  alert: AlertRow;
+  replayed: boolean;
+  folded: boolean;
+  created: boolean;
+};
+
+/**
+ * One press of a panic button. `tenant` is the server-minted context of the
+ * device token; the device must be an active `panic_button`. The outlet is the
+ * device's own.
+ */
+export async function ingestPanicPress(
+  tenant: TenantContext,
+  input: { deviceId: string; body: PanicPressBody; now?: Date },
+): Promise<PressResult> {
+  const now = input.now ?? new Date();
+  const tenantId = tenant.tenantId;
+  const [device] = await withTenant(db, tenantWide(tenant), (tx) =>
+    tx
+      .select()
+      .from(devices)
+      .where(
+        and(eq(devices.tenantId, tenantId), eq(devices.id, input.deviceId)),
+      )
+      .limit(1),
+  );
+  if (!device || device.status !== "active" || device.revokedAt !== null)
+    throw new CoreError("UNAUTHORIZED", "Tombol darurat tidak terdaftar.");
+  if (device.type !== "panic_button")
+    throw new HttpError(
+      403,
+      "NOT_A_PANIC_BUTTON",
+      "Perangkat ini bukan tombol darurat.",
+    );
+  const outletId = device.outletId as OutletId;
+  await refuseWhenEdgeServesOutlet(tenant, outletId);
+  const context = outletContext(tenant, outletId);
+  const runtime = getEdgeRuntimeState();
+  const linkOffline =
+    runtime.edgeMode && runtime.link.cloudLink !== "connected";
+  const originEdgeNodeId = runtime.edgeMode
+    ? (runtime.identity?.scope.edgeNodeId ?? null)
+    : null;
+  const nobodyConnected = !hasSubscribers({ tenantId, outletId });
+  const { body } = input;
+
+  const outcome = await withTenant(
+    db,
+    context,
+    async (tx): Promise<Outcome> => {
+      // One press of a device at a time: replay, fold and create stay exact.
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${`panic:${tenantId}:${device.id}`}, 0))`,
+      );
+      const alertOf = async (id: string) => {
+        const [row] = await tx
+          .select()
+          .from(panicAlerts)
+          .where(
+            and(eq(panicAlerts.tenantId, tenantId), eq(panicAlerts.id, id)),
+          )
+          .limit(1);
+        if (!row) throw new CoreError("NOT_FOUND", "Panic alert not found");
+        return row;
+      };
+      const [prior] = await tx
+        .select({ alertId: panicPressEvents.alertId })
+        .from(panicPressEvents)
+        .where(
+          and(
+            eq(panicPressEvents.tenantId, tenantId),
+            eq(panicPressEvents.deviceId, device.id),
+            eq(panicPressEvents.deviceEventId, body.eventId),
+          ),
+        )
+        .limit(1);
+      if (prior)
+        return {
+          alert: await alertOf(prior.alertId),
+          replayed: true,
+          folded: false,
+          created: false,
+        };
+
+      const [open] = await tx
+        .select()
+        .from(panicAlerts)
+        .where(
+          and(
+            eq(panicAlerts.tenantId, tenantId),
+            eq(panicAlerts.deviceId, device.id),
+            eq(panicAlerts.kind, body.kind),
+            isNull(panicAlerts.acknowledgedAt),
+            gt(
+              panicAlerts.receivedAt,
+              new Date(now.getTime() - PANIC_FOLD_WINDOW_MS),
+            ),
+          ),
+        )
+        .orderBy(desc(panicAlerts.receivedAt))
+        .limit(1)
+        .for("update");
+      if (open) {
+        await tx.insert(panicPressEvents).values({
+          tenantId,
+          outletId,
+          deviceId: device.id,
+          deviceEventId: body.eventId,
+          alertId: open.id,
+          receivedAt: now,
+        });
+        const [folded] = await tx
+          .update(panicAlerts)
+          .set({ pressCount: sql`${panicAlerts.pressCount} + 1` })
+          .where(
+            and(
+              eq(panicAlerts.tenantId, tenantId),
+              eq(panicAlerts.id, open.id),
+            ),
+          )
+          .returning();
+        if (!folded) throw new CoreError("NOT_FOUND", "Panic alert not found");
+        await queuePanicAlertEvent(tx, context, {
+          outletId,
+          alertId: folded.id,
+          now,
+          event: {
+            key: "pressed",
+            payload: {
+              alertId: folded.id,
+              deviceId: device.id,
+              deviceEventId: body.eventId,
+              receivedAt: toIsoDateTime(now),
+              pressCount: folded.pressCount,
+            },
+          },
+        });
+        return { alert: folded, replayed: false, folded: true, created: false };
+      }
+
+      // The room of the button; a button without a room still raises an alert.
+      const [unit] = await tx
+        .select({
+          id: facilityUnits.id,
+          code: facilityUnits.code,
+          facilityName: facilities.name,
+        })
+        .from(facilityUnits)
+        .innerJoin(
+          facilities,
+          and(
+            eq(facilities.tenantId, facilityUnits.tenantId),
+            eq(facilities.id, facilityUnits.facilityId),
+          ),
+        )
+        .where(
+          and(
+            eq(facilityUnits.tenantId, tenantId),
+            eq(facilityUnits.outletId, outletId),
+            eq(facilityUnits.panicDeviceId, device.id),
+          ),
+        )
+        .limit(1);
+      const alertId = panicAlertIdFor(tenantId, device.id, body.eventId);
+      const triggeredAt = body.triggeredAt ? new Date(body.triggeredAt) : null;
+      const [created] = await tx
+        .insert(panicAlerts)
+        .values({
+          id: alertId,
+          tenantId,
+          outletId,
+          deviceId: device.id,
+          unitId: unit?.id ?? null,
+          firstDeviceEventId: body.eventId,
+          unitCodeSnapshot: unit?.code ?? "",
+          facilityNameSnapshot: unit?.facilityName ?? "",
+          deviceLabelSnapshot: device.label,
+          kind: body.kind,
+          triggeredAt,
+          receivedAt: now,
+          pressCount: 1,
+          origin: runtime.edgeMode ? "edge" : "cloud",
+          originEdgeNodeId,
+          linkOffline,
+          unroutedSince: nobodyConnected ? now : null,
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (!created)
+        return {
+          alert: await alertOf(alertId),
+          replayed: true,
+          folded: false,
+          created: false,
+        };
+      await tx
+        .insert(panicPressEvents)
+        .values({
+          tenantId,
+          outletId,
+          deviceId: device.id,
+          deviceEventId: body.eventId,
+          alertId,
+          receivedAt: now,
+        })
+        .onConflictDoNothing();
+      await queuePanicAlertEvent(tx, context, {
+        outletId,
+        alertId,
+        now,
+        event: {
+          key: "raised",
+          payload: {
+            alertId,
+            outletId: outletIdSchema.parse(created.outletId),
+            deviceId: device.id,
+            unitId: created.unitId,
+            firstDeviceEventId: body.eventId,
+            kind: created.kind === "test" ? "test" : "press",
+            triggeredAt: triggeredAt ? toIsoDateTime(triggeredAt) : null,
+            receivedAt: toIsoDateTime(created.receivedAt),
+            unitCodeSnapshot: created.unitCodeSnapshot,
+            facilityNameSnapshot: created.facilityNameSnapshot,
+            deviceLabelSnapshot: created.deviceLabelSnapshot,
+            linkOffline,
+          },
+        },
+      });
+      return { alert: created, replayed: false, folded: false, created: true };
+    },
+  );
+
+  const { alert } = outcome;
+  if (alert.acknowledgedAt === null) {
+    // After commit: a rolled back press never reaches a screen. A replay or a
+    // folded press shows the open alert again (a lost answer must not go silent).
+    try {
+      const sent = await fanOutAlert(alert, { force: !outcome.created });
+      if (outcome.created && sent === 0 && alert.unroutedSince === null)
+        await markUnrouted(context, alert);
+    } catch (error) {
+      logFailure("panic alert fan-out failed", error);
+    }
+    if (outcome.created && alert.kind === "press")
+      scheduleFallback(tenant, alert);
+  }
+  return {
+    alertId: alert.id,
+    replayed: outcome.replayed,
+    folded: outcome.folded,
+    pressCount: alert.pressCount,
+    acknowledged: alert.acknowledgedAt !== null,
+  };
+}
+
+async function markUnrouted(context: ScopedTenantContext, alert: AlertRow) {
+  await withTenant(db, context, (tx) =>
+    tx
+      .update(panicAlerts)
+      .set({ unroutedSince: new Date() })
+      .where(
+        and(
+          eq(panicAlerts.tenantId, alert.tenantId),
+          eq(panicAlerts.id, alert.id),
+          isNull(panicAlerts.unroutedSince),
+        ),
+      ),
+  );
+}
+
+// ------------------------------------------------------------------ fan-out
+
+/** Re-checks the socket's session; a failed check closes it (4401). */
+async function sessionStillLive(sub: HubSubscriber): Promise<boolean> {
+  const check = await recheckReceiverSession(sub.session);
+  if (check.ok) return true;
+  closeSessionSockets(
+    sub.session.tenantId,
+    sub.session.id,
+    EMERGENCY_REVOKED_CLOSE_CODE,
+  );
+  sub.close(EMERGENCY_REVOKED_CLOSE_CODE);
+  return false;
+}
+
+async function sendFrame(
+  sub: HubSubscriber,
+  frame: PanicRealtimeFrame,
+  alertReceivedAt: number,
+  options: { force: boolean },
+): Promise<boolean> {
+  const state = sub.alerts.get(frame.alertId);
+  if (!options.force && state?.received) return false;
+  if (!(await sessionStillLive(sub))) return false;
+  if (!sub.send(frame)) return false;
+  sub.alerts.set(frame.alertId, {
+    frame,
+    alertReceivedAt,
+    lastSentAt: Date.now(),
+    received: state?.received ?? false,
+  });
+  try {
+    await recordSent(sub.session, frame);
+  } catch (error) {
+    logFailure("panic delivery record failed", error);
+  }
+  return true;
+}
+
+/**
+ * Sends the alert to every socket of its outlet and returns how many sockets
+ * got it. `force` also sends to sockets that already confirmed it (a replayed
+ * press shows the alert again).
+ */
+export async function fanOutAlert(
+  alert: AlertRow,
+  options: { force: boolean },
+): Promise<number> {
+  const frame = frameOf(alert);
+  const subs = subscribersOf({
+    tenantId: alert.tenantId,
+    outletId: alert.outletId,
+  });
+  const results = await Promise.all(
+    subs.map((sub) =>
+      sendFrame(sub, frame, alert.receivedAt.getTime(), options).catch(
+        (error: unknown) => {
+          logFailure("panic frame send failed", error);
+          return false;
+        },
+      ),
+    ),
+  );
+  return results.filter(Boolean).length;
+}
+
+async function recordSent(session: ReceiverSession, frame: PanicRealtimeFrame) {
+  const context = outletContext(tenantOf(session), session.outletId);
+  await withTenant(db, context, (tx) =>
+    tx
+      .insert(panicAlertDeliveries)
+      .values({
+        tenantId: session.tenantId as TenantId,
+        outletId: session.outletId as OutletId,
+        alertId: frame.alertId,
+        sessionId: session.id,
+        userId: session.userId,
+      })
+      .onConflictDoUpdate({
+        target: [
+          panicAlertDeliveries.tenantId,
+          panicAlertDeliveries.alertId,
+          panicAlertDeliveries.sessionId,
+        ],
+        set: { sentCount: sql`${panicAlertDeliveries.sentCount} + 1` },
+      }),
+  );
+}
+
+function tenantOf(session: ReceiverSession): TenantContext {
+  return establishTenantContext({
+    tenantId: session.tenantId,
+    brandId: null,
+    source: "device",
+  });
+}
+
+/** A socket that just connected: every open alert of its outlet at once (D-05). */
+export async function sendOpenAlertsTo(sub: HubSubscriber): Promise<void> {
+  const { session } = sub;
+  const context = outletContext(tenantOf(session), session.outletId);
+  const rows = await withTenant(db, context, (tx) =>
+    tx
+      .select()
+      .from(panicAlerts)
+      .where(
+        and(
+          eq(panicAlerts.tenantId, session.tenantId as TenantId),
+          eq(panicAlerts.outletId, session.outletId as OutletId),
+          isNull(panicAlerts.acknowledgedAt),
+          gt(
+            panicAlerts.receivedAt,
+            new Date(Date.now() - CONNECT_LOOKBACK_MS),
+          ),
+        ),
+      )
+      .orderBy(asc(panicAlerts.receivedAt)),
+  );
+  for (const row of rows)
+    await sendFrame(sub, frameOf(row), row.receivedAt.getTime(), {
+      force: false,
+    });
+}
+
+/** Forgets an acknowledged alert on every socket of its outlet: no more resends. */
+function dropAlert(tenantId: string, outletId: string, alertId: string) {
+  for (const sub of subscribersOf({ tenantId, outletId }))
+    sub.alerts.delete(alertId);
+}
+
+let lastRefreshAt = 0;
+
+/**
+ * One tick of the resend loop (the realtime module calls it every 500 ms):
+ * every unconfirmed alert of a socket that was last sent 3 s ago is sent again,
+ * until 10 minutes after the alert. Every 3 s the open alerts of the outlets
+ * with sockets are re-read, so an acknowledgement made elsewhere (the cloud)
+ * stops the resend.
+ */
+export async function resendDue(now = Date.now()): Promise<void> {
+  const subs = allSubscribers();
+  if (subs.length === 0) return;
+  if (now - lastRefreshAt >= PANIC_RESEND_INTERVAL_MS) {
+    lastRefreshAt = now;
+    await forgetClosedAlerts(subs).catch((error: unknown) =>
+      logFailure("panic open-alert refresh failed", error),
+    );
+  }
+  await Promise.all(
+    subs.flatMap((sub) =>
+      [...sub.alerts.entries()].map(async ([alertId, state]) => {
+        if (state.received) return;
+        if (now - state.alertReceivedAt > PANIC_RESEND_UNTIL_MS) {
+          sub.alerts.delete(alertId);
+          return;
+        }
+        if (now - state.lastSentAt < PANIC_RESEND_INTERVAL_MS) return;
+        // Claim the slot first: a slow check must not queue a second resend.
+        state.lastSentAt = now;
+        await sendFrame(sub, state.frame, state.alertReceivedAt, {
+          force: false,
+        }).catch((error: unknown) =>
+          logFailure("panic frame resend failed", error),
+        );
+      }),
+    ),
+  );
+}
+
+async function forgetClosedAlerts(subs: readonly HubSubscriber[]) {
+  const outlets = new Map<string, HubSubscriber>();
+  for (const sub of subs)
+    outlets.set(`${sub.session.tenantId}:${sub.session.outletId}`, sub);
+  for (const sub of outlets.values()) {
+    const { tenantId, outletId } = sub.session;
+    const tracked = new Set(
+      subscribersOf({ tenantId, outletId }).flatMap((s) => [
+        ...s.alerts.keys(),
+      ]),
+    );
+    if (tracked.size === 0) continue;
+    const context = outletContext(tenantOf(sub.session), outletId);
+    const open = await withTenant(db, context, (tx) =>
+      tx
+        .select({ id: panicAlerts.id })
+        .from(panicAlerts)
+        .where(
+          and(
+            eq(panicAlerts.tenantId, tenantId as TenantId),
+            eq(panicAlerts.outletId, outletId as OutletId),
+            isNull(panicAlerts.acknowledgedAt),
+          ),
+        ),
+    );
+    const openIds = new Set(open.map((row) => row.id));
+    for (const alertId of tracked)
+      if (!openIds.has(alertId)) dropAlert(tenantId, outletId, alertId);
+  }
+}
+
+// ------------------------------------------------------------------ receipts
+
+/**
+ * The phone showed the alert (`received` frame): stored per recipient, and the
+ * alert keeps the count and the first time (the FAC-08 proof, edge clock).
+ */
+export async function recordReceipt(
+  sub: HubSubscriber,
+  alertId: string,
+  now = new Date(),
+): Promise<void> {
+  const { session } = sub;
+  const state = sub.alerts.get(alertId);
+  if (state) state.received = true;
+  const context = outletContext(tenantOf(session), session.outletId);
+  const counted = await withTenant(db, context, async (tx) => {
+    const [alert] = await tx
+      .select({ id: panicAlerts.id })
+      .from(panicAlerts)
+      .where(
+        and(
+          eq(panicAlerts.tenantId, session.tenantId as TenantId),
+          eq(panicAlerts.outletId, session.outletId as OutletId),
+          eq(panicAlerts.id, alertId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!alert) return false;
+    const [delivery] = await tx
+      .select({ receivedAt: panicAlertDeliveries.receivedAt })
+      .from(panicAlertDeliveries)
+      .where(
+        and(
+          eq(panicAlertDeliveries.tenantId, session.tenantId as TenantId),
+          eq(panicAlertDeliveries.alertId, alertId),
+          eq(panicAlertDeliveries.sessionId, session.id),
+        ),
+      )
+      .limit(1);
+    if (delivery?.receivedAt) return false;
+    if (delivery)
+      await tx
+        .update(panicAlertDeliveries)
+        .set({ receivedAt: now })
+        .where(
+          and(
+            eq(panicAlertDeliveries.tenantId, session.tenantId as TenantId),
+            eq(panicAlertDeliveries.alertId, alertId),
+            eq(panicAlertDeliveries.sessionId, session.id),
+          ),
+        );
+    else
+      // Upsert, not a plain insert: `sendFrame` sends the frame before it
+      // records the send, so the receipt can race that insert. A plain insert
+      // then hit the unique key, the receipt was lost and delivered_count
+      // stayed one short (flake EM-01 Q95).
+      await tx
+        .insert(panicAlertDeliveries)
+        .values({
+          tenantId: session.tenantId as TenantId,
+          outletId: session.outletId as OutletId,
+          alertId,
+          sessionId: session.id,
+          userId: session.userId,
+          receivedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [
+            panicAlertDeliveries.tenantId,
+            panicAlertDeliveries.alertId,
+            panicAlertDeliveries.sessionId,
+          ],
+          set: {
+            receivedAt: sql`COALESCE(${panicAlertDeliveries.receivedAt}, ${now.toISOString()}::timestamptz)`,
+          },
+        });
+    await tx
+      .update(panicAlerts)
+      .set({
+        // Counted from the receipt rows (same transaction, alert row locked):
+        // a blind +1 could drift from the rows if a receipt were ever skipped.
+        deliveredCount: sql`(SELECT count(*)::int FROM panic_alert_deliveries WHERE tenant_id = ${session.tenantId}::uuid AND alert_id = ${alertId}::uuid AND received_at IS NOT NULL)`,
+        firstDeliveredAt: sql`COALESCE(${panicAlerts.firstDeliveredAt}, ${now.toISOString()}::timestamptz)`,
+      })
+      .where(
+        and(
+          eq(panicAlerts.tenantId, session.tenantId as TenantId),
+          eq(panicAlerts.id, alertId),
+        ),
+      );
+    return true;
+  });
+  if (counted)
+    scheduleDeliveredFlush(session.tenantId, session.outletId, alertId);
+}
+
+const flushTimers = new Map<string, NodeJS.Timeout>();
+
+/** Receipt totals go to the cloud in one `delivered` event per 5 s window (D-09). */
+function scheduleDeliveredFlush(
+  tenantId: string,
+  outletId: string,
+  alertId: string,
+) {
+  const key = `${tenantId}:${alertId}`;
+  if (flushTimers.has(key)) return;
+  const timer = setTimeout(() => {
+    flushTimers.delete(key);
+    void flushDelivered(tenantId, outletId, alertId).catch((error: unknown) =>
+      logFailure("panic delivered event failed", error),
+    );
+  }, PANIC_DELIVERED_BATCH_MS);
+  timer.unref();
+  flushTimers.set(key, timer);
+}
+
+async function flushDelivered(
+  tenantId: string,
+  outletId: string,
+  alertId: string,
+) {
+  const tenant = establishTenantContext({
+    tenantId,
+    brandId: null,
+    source: "device",
+  });
+  const context = outletContext(tenant, outletId);
+  await withTenant(db, context, async (tx) => {
+    const [alert] = await tx
+      .select()
+      .from(panicAlerts)
+      .where(
+        and(
+          eq(panicAlerts.tenantId, tenantId as TenantId),
+          eq(panicAlerts.id, alertId),
+        ),
+      )
+      .limit(1);
+    if (!alert) return;
+    await queueDelivered(tx, context, alert);
+  });
+}
+
+function queueDelivered(
+  tx: EdgeTx,
+  context: ScopedTenantContext,
+  alert: AlertRow,
+) {
+  return queuePanicAlertEvent(tx, context, {
+    outletId: alert.outletId,
+    alertId: alert.id,
+    event: {
+      key: "delivered",
+      payload: {
+        alertId: alert.id,
+        deliveredCount: alert.deliveredCount,
+        firstDeliveredAt: alert.firstDeliveredAt
+          ? toIsoDateTime(alert.firstDeliveredAt)
+          : null,
+        fallbackShownAt: alert.fallbackShownAt
+          ? toIsoDateTime(alert.fallbackShownAt)
+          : null,
+      },
+    },
+  });
+}
+
+// ----------------------------------------------------------------- fallback
+
+/**
+ * Stamps `fallback_shown_at` when nobody confirmed the alert and nobody took
+ * it (Q94): the POS screens of the outlet now show it. Set once; queues a
+ * `delivered` event so the cloud learns it.
+ */
+async function markFallbackShown(
+  context: ScopedTenantContext,
+  tenantId: string,
+  alertId: string,
+  now = new Date(),
+): Promise<boolean> {
+  return withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .update(panicAlerts)
+      .set({ fallbackShownAt: now })
+      .where(
+        and(
+          eq(panicAlerts.tenantId, tenantId as TenantId),
+          eq(panicAlerts.id, alertId),
+          eq(panicAlerts.kind, "press"),
+          isNull(panicAlerts.fallbackShownAt),
+          isNull(panicAlerts.acknowledgedAt),
+          isNull(panicAlerts.firstDeliveredAt),
+        ),
+      )
+      .returning();
+    if (!row) return false;
+    await queueDelivered(tx, context, row);
+    return true;
+  });
+}
+
+function scheduleFallback(tenant: TenantContext, alert: AlertRow) {
+  const wait = Math.max(
+    0,
+    alert.receivedAt.getTime() + PANIC_FALLBACK_AFTER_MS - Date.now(),
+  );
+  const context = outletContext(tenant, alert.outletId);
+  const timer = setTimeout(() => {
+    void markFallbackShown(context, alert.tenantId, alert.id).catch(
+      (error: unknown) => logFailure("panic fallback stamp failed", error),
+    );
+  }, wait);
+  timer.unref();
+}
+
+/**
+ * The alarms a POS screen of the outlet shows (Q94): open press alerts of the
+ * last 24 hours (CONNECT_LOOKBACK_MS, as for a socket that connects later) that
+ * nobody confirmed within 15 s, or that the fallback already showed. Room name
+ * and time only. The device is read from the token by the route; it must be a
+ * `pos` (403 otherwise).
+ */
+export async function readPanicFallback(
+  tenant: TenantContext,
+  deviceId: string,
+  now = new Date(),
+): Promise<PanicFallbackItem[]> {
+  const tenantId = tenant.tenantId;
+  const [device] = await withTenant(db, tenantWide(tenant), (tx) =>
+    tx
+      .select({ outletId: devices.outletId, type: devices.type })
+      .from(devices)
+      .where(and(eq(devices.tenantId, tenantId), eq(devices.id, deviceId)))
+      .limit(1),
+  );
+  if (!device)
+    throw new CoreError("UNAUTHORIZED", "Perangkat tidak terdaftar.");
+  // Only a POS screen shows the fallback (Q94); a phone or a button never does.
+  if (device.type !== "pos")
+    throw new HttpError(
+      403,
+      "NOT_A_POS_DEVICE",
+      "Hanya layar POS yang menampilkan alarm cadangan.",
+    );
+  const outletId = device.outletId as OutletId;
+  await refuseWhenEdgeServesOutlet(tenant, outletId);
+  const context = outletContext(tenant, outletId);
+  const rows = await withTenant(db, context, (tx) =>
+    tx
+      .select()
+      .from(panicAlerts)
+      .where(
+        and(
+          eq(panicAlerts.tenantId, tenantId),
+          eq(panicAlerts.outletId, outletId),
+          eq(panicAlerts.kind, "press"),
+          isNull(panicAlerts.acknowledgedAt),
+          // Same window as a socket that connects later: older open alerts stay out.
+          gt(
+            panicAlerts.receivedAt,
+            new Date(now.getTime() - CONNECT_LOOKBACK_MS),
+          ),
+          or(
+            sql`${panicAlerts.fallbackShownAt} IS NOT NULL`,
+            and(
+              isNull(panicAlerts.firstDeliveredAt),
+              lte(
+                panicAlerts.receivedAt,
+                new Date(now.getTime() - PANIC_FALLBACK_AFTER_MS),
+              ),
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(panicAlerts.receivedAt)),
+  );
+  for (const row of rows)
+    if (row.fallbackShownAt === null)
+      await markFallbackShown(context, tenantId, row.id, now).catch(
+        (error: unknown) => logFailure("panic fallback stamp failed", error),
+      );
+  return rows.map((row) => ({
+    alertId: row.id,
+    unitCode: row.unitCodeSnapshot === "" ? null : row.unitCodeSnapshot,
+    receivedAt: toIsoDateTime(row.receivedAt),
+  }));
+}
+
+// ---------------------------------------------------------------------- ack
+
+export type AckResult = { alertId: string; acknowledgedAt: string };
+
+/**
+ * First acknowledgement wins (D-07). The row is locked, so two receivers cannot
+ * both win: the second gets 409 naming who took it. The same staff member
+ * repeating gets the stored result. The alert of another outlet is 404 (the
+ * session is scoped to one outlet).
+ */
+export async function acknowledgePanicAlert(
+  session: ReceiverSession,
+  alertId: string,
+  now = new Date(),
+): Promise<AckResult> {
+  const context = outletContext(tenantOf(session), session.outletId);
+  const result = await withTenant(db, context, async (tx) => {
+    const [locked] = await tx
+      .select()
+      .from(panicAlerts)
+      .where(
+        and(
+          eq(panicAlerts.tenantId, session.tenantId as TenantId),
+          eq(panicAlerts.outletId, session.outletId as OutletId),
+          eq(panicAlerts.id, alertId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!locked)
+      throw new HttpError(404, "NOT_FOUND", "Peringatan tidak ditemukan.");
+    if (locked.acknowledgedAt !== null) {
+      if (locked.acknowledgedBy === session.userId)
+        return { alert: locked, taken: false };
+      const [who] = await tx
+        .select({ fullName: employees.fullName })
+        .from(employees)
+        .where(
+          and(
+            eq(employees.tenantId, session.tenantId as TenantId),
+            eq(employees.userId, (locked.acknowledgedBy ?? "") as UserId),
+          ),
+        )
+        .limit(1);
+      throw new HttpError(
+        409,
+        "PANIC_ALREADY_ACKNOWLEDGED",
+        `Peringatan ini sudah ditangani oleh ${who?.fullName ?? "rekan lain"} (${locked.acknowledgedBy}).`,
+      );
+    }
+    const [row] = await tx
+      .update(panicAlerts)
+      .set({
+        acknowledgedAt: now,
+        acknowledgedBy: session.userId,
+        ackDeviceId: session.deviceId,
+      })
+      .where(
+        and(
+          eq(panicAlerts.tenantId, session.tenantId as TenantId),
+          eq(panicAlerts.id, alertId),
+        ),
+      )
+      .returning();
+    if (!row) throw new CoreError("NOT_FOUND", "Panic alert not found");
+    await queuePanicAlertEvent(tx, context, {
+      outletId: session.outletId,
+      alertId,
+      now,
+      event: {
+        key: "acknowledged",
+        payload: {
+          alertId,
+          acknowledgedBy: userIdSchema.parse(session.userId),
+          ackDeviceId: session.deviceId,
+          acknowledgedAt: toIsoDateTime(now),
+        },
+      },
+    });
+    return { alert: row, taken: true };
+  });
+  dropAlert(session.tenantId, session.outletId, alertId);
+  return {
+    alertId,
+    acknowledgedAt: toIsoDateTime(result.alert.acknowledgedAt ?? now),
+  };
+}
