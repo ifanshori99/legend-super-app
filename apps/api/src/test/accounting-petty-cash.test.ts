@@ -41,6 +41,7 @@ import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { deliverAutoJournalEvent } from "../services/accounting-auto-journal-consumer.ts";
 import { agent, originHeader } from "./helpers.ts";
+import { withLimitSharedLock } from "./helpers/cash-limit-lock.ts";
 import {
   asRuntime,
   auditActionsFor,
@@ -1295,5 +1296,55 @@ describe("legend-4961 reading funds and entries (empty and filled states)", () =
     expect(empty.body.data).toEqual([]);
     expect(empty.body.meta.nextCursor).toBeNull();
     await expectLedgerConsistent(outletId);
+  });
+});
+
+describe("legend-e61s5 top-up held for approval needs the petty_cash mapping", () => {
+  // The amounts assume the default cash limit (Rp5.000.000).
+  withLimitSharedLock();
+  const ABOVE_LIMIT_IDR = 5_000_001;
+
+  const pendingRows = async (outletId: string) =>
+    (
+      await owner.query<{ id: string }>(
+        "SELECT id FROM cash_bank_entries WHERE tenant_id = $1 AND outlet_id = $2 AND kind = 'petty_topup'",
+        [tenantId, outletId],
+      )
+    ).rows;
+
+  it("[legend-e61s5-PC-1] above the limit with no petty_cash mapping: 422 ACCOUNT_MAPPING_MISSING, no pending document, no fund", async () => {
+    // Own legal entity: dropping the mapping must not disturb the shared `world`.
+    const w = await makeWorld();
+    const outletId = await makeOutlet(w.entityId);
+    await owner.query(
+      "DELETE FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'petty_cash'",
+      [tenantId, w.entityId],
+    );
+    const res = await move(
+      finance,
+      movementBody(outletId, "topup", ABOVE_LIMIT_IDR, {
+        bankAccountId: w.bankAccountA,
+      }),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error.code).toBe("ACCOUNT_MAPPING_MISSING");
+    expect(await pendingRows(outletId)).toHaveLength(0);
+    expect(await fundRow(outletId)).toBeNull();
+  });
+
+  it("[legend-e61s5-PC-2] above the limit with the petty_cash mapping present: 202 pending_approval, still held", async () => {
+    const outletId = await freshOutlet();
+    const res = await move(
+      finance,
+      movementBody(outletId, "topup", ABOVE_LIMIT_IDR),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(res.body.data).toMatchObject({
+      kind: "petty_topup",
+      status: "pending_approval",
+      journalEntryId: null,
+    });
+    expect(await pendingRows(outletId)).toHaveLength(1);
+    expect(await fundRow(outletId)).toBeNull();
   });
 });
