@@ -1,15 +1,17 @@
+-- Define FKs while this new table is empty. Later ADD CONSTRAINT validation
+-- would scan FORCE-RLS parents as a plain owner without a tenant context.
 CREATE TABLE "payroll_run_month_priors" (
 	"tenant_id" uuid NOT NULL,
 	"payroll_run_id" uuid NOT NULL,
 	"prior_payroll_run_id" uuid NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "payroll_run_month_priors_pkey" PRIMARY KEY("tenant_id","payroll_run_id","prior_payroll_run_id"),
-	CONSTRAINT "payroll_run_month_priors_distinct_check" CHECK ("payroll_run_month_priors"."payroll_run_id" <> "payroll_run_month_priors"."prior_payroll_run_id")
+	CONSTRAINT "payroll_run_month_priors_distinct_check" CHECK ("payroll_run_month_priors"."payroll_run_id" <> "payroll_run_month_priors"."prior_payroll_run_id"),
+	CONSTRAINT "payroll_run_month_priors_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "payroll_run_month_priors_run_fk" FOREIGN KEY ("tenant_id","payroll_run_id") REFERENCES "public"."payroll_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "payroll_run_month_priors_prior_fk" FOREIGN KEY ("tenant_id","prior_payroll_run_id") REFERENCES "public"."payroll_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
-ALTER TABLE "payroll_run_month_priors" ADD CONSTRAINT "payroll_run_month_priors_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payroll_run_month_priors" ADD CONSTRAINT "payroll_run_month_priors_run_fk" FOREIGN KEY ("tenant_id","payroll_run_id") REFERENCES "public"."payroll_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payroll_run_month_priors" ADD CONSTRAINT "payroll_run_month_priors_prior_fk" FOREIGN KEY ("tenant_id","prior_payroll_run_id") REFERENCES "public"."payroll_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "payroll_run_month_priors_prior_idx" ON "payroll_run_month_priors" USING btree ("tenant_id","prior_payroll_run_id");
 --> statement-breakpoint
 -- legend-ihjan: month-dependency edges written once in the lock transaction

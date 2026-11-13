@@ -1,3 +1,5 @@
+-- Define FKs while this new table is empty. Later ADD CONSTRAINT validation
+-- would scan FORCE-RLS parents as a plain owner without a tenant context.
 CREATE TABLE "payslip_bank_snapshots" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -9,13 +11,13 @@ CREATE TABLE "payslip_bank_snapshots" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "payslip_bank_snapshots_tenant_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "payslip_bank_snapshots_tenant_payslip_key" UNIQUE("tenant_id","payslip_id"),
-	CONSTRAINT "payslip_bank_snapshots_key_version_check" CHECK ("payslip_bank_snapshots"."pii_key_version" >= 1)
+	CONSTRAINT "payslip_bank_snapshots_key_version_check" CHECK ("payslip_bank_snapshots"."pii_key_version" >= 1),
+	CONSTRAINT "payslip_bank_snapshots_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "payslip_bank_snapshots_payslip_fk" FOREIGN KEY ("tenant_id","payslip_id") REFERENCES "public"."payslips"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "payslip_bank_snapshots_run_fk" FOREIGN KEY ("tenant_id","payroll_run_id") REFERENCES "public"."payroll_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "payslip_bank_snapshots_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
-ALTER TABLE "payslip_bank_snapshots" ADD CONSTRAINT "payslip_bank_snapshots_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payslip_bank_snapshots" ADD CONSTRAINT "payslip_bank_snapshots_payslip_fk" FOREIGN KEY ("tenant_id","payslip_id") REFERENCES "public"."payslips"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payslip_bank_snapshots" ADD CONSTRAINT "payslip_bank_snapshots_run_fk" FOREIGN KEY ("tenant_id","payroll_run_id") REFERENCES "public"."payroll_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payslip_bank_snapshots" ADD CONSTRAINT "payslip_bank_snapshots_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "payslip_bank_snapshots_tenant_run_idx" ON "payslip_bank_snapshots" USING btree ("tenant_id","payroll_run_id");
 --> statement-breakpoint
 -- legend-89cl7: payee bank snapshot per bank_transfer payslip, written once in

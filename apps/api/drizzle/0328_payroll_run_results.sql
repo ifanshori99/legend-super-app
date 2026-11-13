@@ -1,3 +1,5 @@
+-- Define FKs while this new table is empty. Later ADD CONSTRAINT validation
+-- would scan FORCE-RLS parents as a plain owner without a tenant context.
 CREATE TABLE "payroll_run_results" (
 	"tenant_id" uuid NOT NULL,
 	"payroll_run_id" uuid NOT NULL,
@@ -12,12 +14,11 @@ CREATE TABLE "payroll_run_results" (
 	CONSTRAINT "payroll_run_results_payslip_key" UNIQUE("tenant_id","payslip_id"),
 	CONSTRAINT "payroll_run_results_simulation_no_check" CHECK ("payroll_run_results"."simulation_no" >= 1),
 	CONSTRAINT "payroll_run_results_payment_method_check" CHECK ("payroll_run_results"."payment_method" IN ('bank_transfer', 'cash')),
-	CONSTRAINT "payroll_run_results_key_version_check" CHECK ("payroll_run_results"."pii_key_version" >= 1)
+	CONSTRAINT "payroll_run_results_key_version_check" CHECK ("payroll_run_results"."pii_key_version" >= 1),
+	CONSTRAINT "payroll_run_results_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "payroll_run_results_run_fk" FOREIGN KEY ("tenant_id","payroll_run_id") REFERENCES "public"."payroll_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "payroll_run_results_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
---> statement-breakpoint
-ALTER TABLE "payroll_run_results" ADD CONSTRAINT "payroll_run_results_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payroll_run_results" ADD CONSTRAINT "payroll_run_results_run_fk" FOREIGN KEY ("tenant_id","payroll_run_id") REFERENCES "public"."payroll_runs"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payroll_run_results" ADD CONSTRAINT "payroll_run_results_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;
 --> statement-breakpoint
 -- legend-c2yca: sealed per-employee simulation results of a payroll run. The
 -- simulation writes them (delete + insert) while the run is draft/simulated;
