@@ -5135,3 +5135,12 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - legend-7h5s: guard di `appendOutbox`: edge + tanpa outlet + tujuan cloud-sync ditolak di produsen (`isEdgeNode`, `setEdgeNodeForTests` di edge/mode.ts). Sapuan worker (approval, cuti) belum terverifikasi tidak jalan di edge.
 - Gerbang: tsc api+shared hijau, `db:generate` kosong, 13 berkas test edge 225/225 x3 run, tes root edge/events/text-contract 33/33, prettier+eslint hijau. Architect K 1 ronde: boot crash + struk hilang dibetulkan (receipt tidak dipasang).
 - 2026-11-14 legend-7h5s lanjutan: worker-main.ts `sweepsCloudOwnedData` (pola sweepsRefunds) menggerbang sweep approval deadline, cuti, exit clearance, support grant di edge. `releaseExpiredSlotHolds` sengaja TIDAK digerbang: /api/facility dilayani edge (smart lock offline). Tes: edge-worker-cloud-sweeps-gate (7), refund-gate (3) hijau.
+
+## 2026-11-14: Brief 651 cloud ingest order dan void edge (ws/edge-order-ingest, dari ws/edge-sync-appliers)
+
+- legend-771dl: `edge/order-ingest.ts` meng-ingest `order.paid` (orders, pos_orders, order_items, pos_order_items, pos_order_tenders) dan `order.voided` (pos_order_voids) dari event edge yang diparkir. Tabel `edge_order_ingests` + migrasi 0522 (idempotensi, state, alasan penolakan). Desain: `docs/design/edge-order-ingest.md`.
+- Aturan: ingest tidak pernah throw setelah parking (penolakan dicatat), semua uang dari payload, tanpa outbox/deduksi/jurnal/loyalty/struk, `shift_id` tender selalu NULL. Kontrak `order.paid`/`order.voided` ditambah key opsional (lines, subtotalIdr, orderNumber, dst); producer mengisinya hanya bila Σ baris non-void == subtotal.
+- Guard uang: void/refund cloud atas order hasil ingest ditolak 409 `EDGE_ORDER_CORRECTION_BLOCKED` (keputusan akhir founder menunggu).
+- legend-zy43 TIDAK selesai: tidak ada producer `receipt_run.reported` di edge pada cabang dasar; `receipt_run` tetap di `posDeferredAggregates`.
+- Gerbang: tsc api+shared hijau, 118 berkas test terarah (1922 test) hijau, edge-order-ingest + guard 46/46, `db:generate` kosong, tes root database/db-role/text-contract 52/52, prettier+eslint hijau. Architect K: ronde 1 (4 Medium + 1 risiko uang, dibetulkan), ronde 2 APPROVE.
+- Rilis: deploy cloud dulu, baru edge (skema cloud strict menolak key baru).
