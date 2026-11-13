@@ -2213,6 +2213,20 @@
       "when": 1794563151211,
       "tag": "0329_payroll_followup_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 500,
+      "version": "7",
+      "when": 1794580829852,
+      "tag": "0500_edge_printer_sync",
+      "breakpoints": true
+    },
+    {
+      "idx": 501,
+      "version": "7",
+      "when": 1794580830852,
+      "tag": "0501_edge_printer_sync_guards",
+      "breakpoints": true
     }
   ]
 }

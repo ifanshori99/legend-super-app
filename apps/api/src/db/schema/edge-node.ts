@@ -456,6 +456,8 @@ export const edgePullCheckpoints = pgTable(
         | `catalog:${CatalogSyncStream}`
         // Pending menu_categories parent links of the catalog pull (legend-24318).
         | "catalog:menu_categories:parents"
+        // Pending printers fallback links of the catalog pull (legend-fbf4v).
+        | "catalog:printers:fallbacks"
       >()
       .notNull(),
     watermark: text("watermark"),

@@ -274,9 +274,11 @@ describe("24318 the master-sync loop pulls the catalog", () => {
     startLoop();
     await tick();
     expect(await firstRound(spy)).toEqual([...CATALOG_SYNC_STREAMS]);
-    // Stations first, inventory items second (the design's order).
-    expect(catalogStreams(spy).slice(0, 2)).toEqual([
+    // Stations first, printers second, inventory items third (the order of
+    // CATALOG_SYNC_STREAMS).
+    expect(catalogStreams(spy).slice(0, 3)).toEqual([
       "stations",
+      "printers",
       "inventory_items",
     ]);
     // Masters before catalog: the uoms must arrive before inventory items.

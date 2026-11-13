@@ -23,6 +23,9 @@
 // - The edge writes the cloud's `sync_txid`, so every apply (and the parent
 //   repair) first runs `set_config('legend.skip_sync_txid', 'on', true)`, local
 //   to the transaction, which makes the stamp trigger leave the value alone.
+// - printers (legend-fbf4v) are the exception to the tombstone rule below: the
+//   cloud deletes them for good, so a deletion record removes the local row
+//   (see applyPrinters).
 // - Tombstones: a record with `deletedAt` is stored as such (the edge reads
 //   filter `deleted_at IS NULL`), also when the row was not local yet. In a
 //   page the tombstones are applied before the live rows, and before a live row
@@ -36,7 +39,8 @@
 //   edge never got) is stored null and counted in `nulledRefs`;
 //   menu_categories `parent_id` (a parent that is neither local nor on the page
 //   yet) is written null and reported in `deferredParents`, so the puller can
-//   persist it and run `repairCategoryParents` later.
+//   persist it and run `repairCategoryParents` later. The same holds for a
+//   printers `fallback_printer_id` (`deferredFallbacks`, `repairPrinterFallbacks`).
 //   Required references (brand, category, price list, item, variant, recipe,
 //   uom, ...) are never nulled: the foreign key refuses the page and the
 //   checkpoint does not move. A price list item never loses its variant.
@@ -75,12 +79,14 @@ import {
   eq,
   inArray,
   isNull,
+  lt,
   notInArray,
   sql,
   type SQL,
 } from "drizzle-orm";
 import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 import { inventoryItems, uoms } from "../db/schema/inventory.ts";
+import { edgePrintJobs, edgePrinters } from "../db/schema/edge-print.ts";
 import { user } from "../db/schema/user.ts";
 import {
   itemVariants,
@@ -107,12 +113,14 @@ export type CatalogApplyResult = {
   readonly applied: number;
   /** Records left alone: the local row is as new or newer. */
   readonly skipped: number;
-  /** recipes / price_lists: local children removed because the cloud dropped them. */
+  /** recipes / price_lists: local children removed because the cloud dropped them; printers: rows removed by a deletion record. */
   readonly deleted: number;
   /** Optional references stored as null because the edge lacks the target. */
   readonly nulledRefs: number;
   /** menu_categories: parent links written null, to repair after the stream. */
   readonly deferredParents: readonly DeferredCategoryParent[];
+  /** printers: fallback links written null, to repair after the stream. */
+  readonly deferredFallbacks: readonly DeferredPrinterFallback[];
 };
 
 export type DeferredCategoryParent = {
@@ -121,6 +129,9 @@ export type DeferredCategoryParent = {
   /** The record's `syncTxid`: the repair only completes that very write. */
   readonly syncTxid: string;
 };
+
+/** A printer whose fallback is not on this edge yet (`parentId` = the fallback printer). */
+export type DeferredPrinterFallback = DeferredCategoryParent;
 
 /** A required-later reference is not on this edge yet; retry on a later pull. */
 export class CatalogMissingRefError extends Error {
@@ -330,6 +341,7 @@ function tally(
     deleted?: number;
     nulledRefs?: number;
     deferredParents?: readonly DeferredCategoryParent[];
+    deferredFallbacks?: readonly DeferredPrinterFallback[];
   } = {},
 ): CatalogApplyResult {
   return {
@@ -338,6 +350,7 @@ function tally(
     deleted: extra.deleted ?? 0,
     nulledRefs: extra.nulledRefs ?? 0,
     deferredParents: extra.deferredParents ?? [],
+    deferredFallbacks: extra.deferredFallbacks ?? [],
   };
 }
 
@@ -363,6 +376,7 @@ async function requirePromotionOutlet(tx: Tx, outletId: string): Promise<void> {
 
 const STREAM_TABLES: Readonly<Record<CatalogSyncStream, PgTable>> = {
   stations,
+  printers: edgePrinters,
   inventory_items: inventoryItems,
   menu_categories: menuCategories,
   modifier_groups: modifierGroups,
@@ -489,6 +503,83 @@ export async function repairCategoryParents(
           eq(t.id, pair.id),
           isNull(t.parentId),
           eq(t.syncTxid, pair.syncTxid),
+        ),
+      )
+      .returning({ id: t.id });
+    repaired += rows.length;
+  }
+  return repaired;
+}
+
+/** Pairs whose fallback printer is still missing locally, for the printer still at that version. */
+export async function unresolvedPrinterFallbacks(
+  tx: Tx,
+  input: {
+    readonly tenantId: TenantId;
+    readonly pairs: readonly DeferredPrinterFallback[];
+  },
+): Promise<DeferredPrinterFallback[]> {
+  const t = edgePrinters;
+  const known = await localIds(tx, t, input.tenantId, [
+    ...new Set(input.pairs.map((pair) => pair.parentId)),
+  ]);
+  const open = input.pairs.filter(
+    (pair) => !known.has(pair.parentId) && pair.parentId !== pair.id,
+  );
+  if (open.length === 0) return [];
+  const rows = await tx
+    .select({
+      id: t.id,
+      syncTxid: t.syncTxid,
+      fallbackPrinterId: t.fallbackPrinterId,
+    })
+    .from(t)
+    .where(
+      and(
+        eq(t.tenantId, input.tenantId),
+        inArray(t.id, [...new Set(open.map((pair) => pair.id))]),
+      ),
+    );
+  const current = new Map(rows.map((row) => [row.id, row]));
+  return open.filter((pair) => {
+    const row = current.get(pair.id);
+    return (
+      row !== undefined &&
+      row.fallbackPrinterId === null &&
+      BigInt(row.syncTxid) === BigInt(pair.syncTxid)
+    );
+  });
+}
+
+/**
+ * Pass after the printers stream was read: sets the fallback that was written
+ * null while its target was missing, now that the target exists locally (same
+ * outlet). Only a printer still at the version (`sync_txid`) of the deferred
+ * record and still without fallback is touched (a newer record wins). Returns
+ * rows repaired.
+ */
+export async function repairPrinterFallbacks(
+  tx: Tx,
+  input: {
+    readonly tenantId: TenantId;
+    readonly pairs: readonly DeferredPrinterFallback[];
+  },
+): Promise<number> {
+  await lockCatalogStream(tx, input.tenantId, "printers");
+  const t = edgePrinters;
+  let repaired = 0;
+  for (const pair of input.pairs) {
+    if (pair.parentId === pair.id) continue;
+    const rows = await tx
+      .update(t)
+      .set({ fallbackPrinterId: pair.parentId })
+      .where(
+        and(
+          eq(t.tenantId, input.tenantId),
+          eq(t.id, pair.id),
+          isNull(t.fallbackPrinterId),
+          eq(t.syncTxid, pair.syncTxid),
+          sql`EXISTS (SELECT 1 FROM edge_printers fb WHERE fb.tenant_id = ${t.tenantId} AND fb.outlet_id = ${t.outletId} AND fb.id = ${pair.parentId}::uuid)`,
         ),
       )
       .returning({ id: t.id });
@@ -738,6 +829,16 @@ export async function applyCatalogRecords(
         },
       );
       return tally(applied, parsed.length);
+    }
+
+    case "printers": {
+      const parsed = parseRecords(
+        "printers",
+        tenantId,
+        input.records,
+        (r) => r.id,
+      );
+      return applyPrinters(tx, tenantId, parsed);
     }
 
     case "inventory_items": {
@@ -1109,6 +1210,147 @@ export async function applyCatalogRecords(
       return applyRecipes(tx, tenantId, parsed);
     }
   }
+}
+
+/**
+ * `printers` (legend-fbf4v). Live records are upserted first (oldest first),
+ * deletion records last, so a printer that stops being another's fallback in
+ * the same page is released before it is removed. The edge-measured runtime
+ * state (`status`, `last_seen_at`, `offline_since`) is never written: a cloud
+ * update keeps what the print agent measured. The fallback link is written in a
+ * second pass, once every printer of the page exists; a fallback this edge does
+ * not have yet is stored as null (counted in `nulledRefs`: a printer without
+ * fallback still prints) and reported in `deferredFallbacks`, so the puller
+ * can persist it and run `repairPrinterFallbacks` once the target arrives. A deletion removes the printer, but not one that has
+ * print jobs here (the jobs are evidence and point at it): it stays, and the
+ * cloud's own guard already refuses such a delete on the cloud side.
+ */
+async function applyPrinters(
+  tx: Tx,
+  tenantId: TenantId,
+  parsed: Parsed<"printers">,
+): Promise<CatalogApplyResult> {
+  const t = edgePrinters;
+  const live = inApplyOrder(
+    parsed.filter((r) => r.deletedAt === null),
+    (x) => x.id,
+  );
+  const gone = inApplyOrder(
+    parsed.filter((r) => r.deletedAt !== null),
+    (x) => x.id,
+  );
+  const written: { id: string; fallback: string; syncTxid: string }[] = [];
+  let deleted = 0;
+  let applied = await applyOrdered(tx, t, tenantId, live, {
+    write: async (r) => {
+      if (!("label" in r)) return false;
+      const values = {
+        tenantId: r.tenantId,
+        outletId: r.outletId,
+        label: r.label,
+        role: r.role,
+        stationId: r.stationId,
+        transport: r.transport,
+        host: r.host,
+        port: r.port,
+        devicePath: r.devicePath,
+        paperWidth: r.paperWidth,
+        // Second pass (below): the target may be later in this page.
+        fallbackPrinterId: null,
+        createdAt: date(r.createdAt),
+        updatedAt: date(r.updatedAt),
+        syncTxid: r.syncTxid,
+      };
+      const rows = await tx
+        .insert(t)
+        .values({ id: r.id, ...values })
+        .onConflictDoUpdate({
+          target: t.id,
+          set: values,
+          setWhere: and(eq(t.tenantId, tenantId), olderThanExcluded(t)),
+        })
+        .returning({ id: t.id });
+      if (rows.length === 0) return false;
+      if (r.fallbackPrinterId !== null)
+        written.push({
+          id: r.id,
+          fallback: r.fallbackPrinterId,
+          syncTxid: r.syncTxid,
+        });
+      return true;
+    },
+  });
+  let nulledRefs = 0;
+  const deferredFallbacks: DeferredPrinterFallback[] = [];
+  for (const link of written) {
+    const linked = await tx
+      .update(t)
+      .set({ fallbackPrinterId: link.fallback })
+      .where(
+        and(
+          eq(t.tenantId, tenantId),
+          eq(t.id, link.id),
+          // Only the write that put this record there (a newer one wins).
+          sql`${t.syncTxid} = ${link.syncTxid}::bigint`,
+          sql`EXISTS (SELECT 1 FROM edge_printers fb WHERE fb.tenant_id = ${t.tenantId} AND fb.outlet_id = ${t.outletId} AND fb.id = ${link.fallback}::uuid)`,
+        ),
+      )
+      .returning({ id: t.id });
+    if (linked.length === 0) {
+      nulledRefs += 1;
+      // Whether the target is missing or a newer write won, the repair only
+      // completes this very version and only when the target exists.
+      deferredFallbacks.push({
+        id: link.id,
+        parentId: link.fallback,
+        syncTxid: link.syncTxid,
+      });
+    }
+  }
+  applied += await applyOrdered(tx, t, tenantId, gone, {
+    write: async (r) => {
+      const hasJobs = sql`EXISTS (SELECT 1 FROM ${edgePrintJobs} j WHERE j.tenant_id = ${t.tenantId} AND j.outlet_id = ${t.outletId} AND (j.printer_id = ${t.id} OR j.original_printer_id = ${t.id}))`;
+      const removable = await tx
+        .select({ id: t.id })
+        .from(t)
+        .where(
+          and(
+            eq(t.tenantId, tenantId),
+            eq(t.outletId, r.outletId),
+            eq(t.id, r.id),
+            lt(t.syncTxid, sql`${r.syncTxid}::bigint`),
+            sql`NOT ${hasJobs}`,
+          ),
+        );
+      if (removable.length === 0) return false;
+      await tx
+        .update(t)
+        .set({ fallbackPrinterId: null })
+        .where(
+          and(
+            eq(t.tenantId, tenantId),
+            eq(t.outletId, r.outletId),
+            eq(t.fallbackPrinterId, r.id),
+          ),
+        );
+      await tx
+        .delete(t)
+        .where(
+          and(
+            eq(t.tenantId, tenantId),
+            eq(t.outletId, r.outletId),
+            eq(t.id, r.id),
+          ),
+        );
+      deleted += 1;
+      return true;
+    },
+  });
+  return tally(applied, parsed.length, {
+    deleted,
+    nulledRefs,
+    deferredFallbacks,
+  });
 }
 
 async function applyPriceLists(

@@ -63,8 +63,10 @@ import {
   CatalogMissingRefError,
   lockCatalogStream,
   repairCategoryParents,
+  repairPrinterFallbacks,
   resetCatalogSyncTxid,
   unresolvedCategoryParents,
+  unresolvedPrinterFallbacks,
   type CatalogApplyResult,
   type DeferredCategoryParent,
 } from "../services/edge-catalog-apply.ts";
@@ -82,6 +84,12 @@ const CATALOG_CURSOR_TAG = "cat2";
 
 /** Pending category parents live in a checkpoint row of their own. */
 const PARENTS_CHECKPOINT = "catalog:menu_categories:parents";
+
+/** Pending printers fallback links (same format) live in a row of their own. */
+const FALLBACKS_CHECKPOINT = "catalog:printers:fallbacks";
+
+type PendingCheckpoint =
+  typeof PARENTS_CHECKPOINT | typeof FALLBACKS_CHECKPOINT;
 
 /** Streams that must have pulled cleanly before the listed ones run. */
 const PARENT_STREAMS: Readonly<
@@ -135,7 +143,7 @@ export type CatalogStreamError = {
 
 export type CatalogStreamPullResult = Omit<
   CatalogApplyResult,
-  "deferredParents"
+  "deferredParents" | "deferredFallbacks"
 > & {
   readonly pages: number;
   /** Checkpoint after this stream (null = the cloud had no record yet). */
@@ -353,10 +361,11 @@ function saveCatalogCheckpoint(
   );
 }
 
-/** Pending category parents (JSON in the watermark); unreadable = none. */
+/** Pending category parents / printer fallbacks (JSON in the watermark); unreadable = none. */
 async function loadPendingParents(
   tx: Tx,
   edgeNodeId: string,
+  checkpoint: PendingCheckpoint = PARENTS_CHECKPOINT,
 ): Promise<DeferredCategoryParent[]> {
   const [row] = await tx
     .select({ watermark: edgePullCheckpoints.watermark })
@@ -364,7 +373,7 @@ async function loadPendingParents(
     .where(
       and(
         eq(edgePullCheckpoints.edgeNodeId, edgeNodeId),
-        eq(edgePullCheckpoints.stream, PARENTS_CHECKPOINT),
+        eq(edgePullCheckpoints.stream, checkpoint),
       ),
     )
     .limit(1);
@@ -392,11 +401,12 @@ function savePendingParents(
   edgeNodeId: string,
   pairs: readonly DeferredCategoryParent[],
   at: Date,
+  checkpoint: PendingCheckpoint = PARENTS_CHECKPOINT,
 ): Promise<void> {
   return saveCheckpointRow(
     tx,
     edgeNodeId,
-    PARENTS_CHECKPOINT,
+    checkpoint,
     pairs.length === 0
       ? null
       : JSON.stringify(pairs.map((p) => [p.id, p.parentId, p.syncTxid])),
@@ -581,6 +591,22 @@ async function pullStream(
           succeededAt,
         );
       }
+      // Same for printers whose fallback is not on this edge yet.
+      if (stream === "printers" && outcome.deferredFallbacks.length > 0) {
+        const kept = (
+          await loadPendingParents(tx, options.edgeNodeId, FALLBACKS_CHECKPOINT)
+        ).filter(
+          (pair) =>
+            !outcome.deferredFallbacks.some((fresh) => fresh.id === pair.id),
+        );
+        await savePendingParents(
+          tx,
+          options.edgeNodeId,
+          [...kept, ...outcome.deferredFallbacks],
+          succeededAt,
+          FALLBACKS_CHECKPOINT,
+        );
+      }
       await saveCatalogCheckpoint(
         tx,
         options.edgeNodeId,
@@ -632,6 +658,30 @@ async function pullStream(
         return repaired;
       },
     );
+
+  // Same for printer fallbacks: the target may have come on a later page or pull.
+  if (stream === "printers")
+    await withTenant(database, options.context, async (tx) => {
+      const pending = await loadPendingParents(
+        tx,
+        options.edgeNodeId,
+        FALLBACKS_CHECKPOINT,
+      );
+      if (pending.length === 0) return;
+      await repairPrinterFallbacks(tx, { tenantId, pairs: pending });
+      const remaining = await unresolvedPrinterFallbacks(tx, {
+        tenantId,
+        pairs: pending,
+      });
+      if (remaining.length !== pending.length)
+        await savePendingParents(
+          tx,
+          options.edgeNodeId,
+          remaining,
+          now(),
+          FALLBACKS_CHECKPOINT,
+        );
+    });
 }
 
 /** The stream this one depends on failed in the same pull. */
