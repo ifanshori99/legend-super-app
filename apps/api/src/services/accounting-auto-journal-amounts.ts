@@ -366,6 +366,9 @@ const purchaseReturnRecordedSchema = z.object({
   valueIdr: idr.nonnegative(),
   uninvoicedValueIdr: idr.nonnegative(),
   invoicedValueIdr: idr.nonnegative(),
+  // Signed: billed value minus order-price value of the invoiced part. Events
+  // recorded before legend-5b7uf lack it and replay as 0.
+  returnPriceVarianceIdr: idr.default(0),
   ppnIdr: idr.nonnegative(),
   returnedAt: time,
 });
@@ -1894,7 +1897,7 @@ export async function autoJournalFactOf(
     case "goods_receipt.recorded":
       return goodsReceiptFactOf(tx, tenantId, stored);
     // The posting rule reads debitNoteIdr (accounts payable cleared by the
-    // return: the invoiced value plus its PPN), the emitter sends the parts.
+    // return: the billed value plus its PPN), the emitter sends the parts.
     // Nothing returned books nothing (ignored). The journal date is the
     // outlet business date of returnedAt.
     case "purchase_return.recorded": {
@@ -1908,13 +1911,26 @@ export async function autoJournalFactOf(
         throw new AutoJournalPayloadInvalid(
           "purchase_return ppnIdr without an invoiced value",
         );
-      const debitNoteIdr = p.invoicedValueIdr + p.ppnIdr;
+      if (p.returnPriceVarianceIdr !== 0 && p.invoicedValueIdr === 0)
+        throw new AutoJournalPayloadInvalid(
+          "purchase_return returnPriceVarianceIdr without an invoiced value",
+        );
+      // Debit note = billed value + PPN; billed value = order-price value of
+      // the invoiced part + the signed price variance (credited to 5105, which
+      // reverses what the invoice booked there).
+      const debitNoteIdr =
+        p.invoicedValueIdr + p.returnPriceVarianceIdr + p.ppnIdr;
+      if (debitNoteIdr < 0)
+        throw new AutoJournalPayloadInvalid(
+          "purchase_return debit note would be negative",
+        );
       return {
         ruleEvent: "purchase_return.recorded",
         amounts: {
           uninvoicedValueIdr: p.uninvoicedValueIdr,
           debitNoteIdr,
           valueIdr: p.valueIdr,
+          returnPriceVarianceIdr: p.returnPriceVarianceIdr,
           ppnIdr: p.ppnIdr,
         },
         ...(debitNoteIdr > 0

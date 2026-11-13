@@ -356,6 +356,23 @@ export const decideSupplierInvoiceInputSchema = clientInputSchema({
 });
 
 /**
+ * Finance command "jurnalkan penerimaan" (legend-7e0q4): no input, the server
+ * rebuilds the receipt fact from the stored receipt. The journal key is the
+ * receipt, so a repeat never books twice.
+ */
+export const journalizeGoodsReceiptInputSchema = clientInputSchema({});
+
+export const goodsReceiptJournalizedSchema = z.strictObject({
+  goodsReceiptId: goodsReceiptIdSchema,
+  /** `posted`: journal booked now; `already_posted`: it existed, nothing booked. */
+  status: z.enum(["posted", "already_posted"]),
+  journalEntryId: uuidSchema,
+});
+export type GoodsReceiptJournalized = z.infer<
+  typeof goodsReceiptJournalizedSchema
+>;
+
+/**
  * Tenant tolerance update. `expectedUpdatedAt` is the `updatedAt` the caller
  * last read (null while the tenant still runs on the default); a stale value
  * is a 412.
@@ -671,6 +688,14 @@ export const createGoodsReceipt = defineEndpoint({
   response: dataResponseSchema(goodsReceiptDetailSchema),
 });
 
+export const journalizeGoodsReceipt = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/goods-receipts/:goodsReceiptId/journalize",
+  params: z.strictObject({ goodsReceiptId: goodsReceiptIdSchema }),
+  body: journalizeGoodsReceiptInputSchema,
+  response: dataResponseSchema(goodsReceiptJournalizedSchema),
+});
+
 export const createSupplierInvoice = defineEndpoint({
   method: "POST",
   path: "/api/inventory/supplier-invoices",
@@ -785,6 +810,7 @@ export const purchasingEndpoints = [
   sendPurchaseOrder,
   revokePurchaseOrderShareLinks,
   createGoodsReceipt,
+  journalizeGoodsReceipt,
   createSupplierInvoice,
   postSupplierInvoiceMatch,
   releaseSupplierInvoice,

@@ -2283,6 +2283,13 @@
       "when": 1794574500000,
       "tag": "0339_edge_deferred_events_aggregate_id_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 340,
+      "version": "7",
+      "when": 1794575500000,
+      "tag": "0340_purchase_return_price_variance",
+      "breakpoints": true
     }
   ]
 }

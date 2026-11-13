@@ -203,7 +203,10 @@ async function loadMediaIds(
   return byReceipt;
 }
 
-async function detailOf(tx: Tx, row: ReceiptRow): Promise<GoodsReceiptDetail> {
+export async function detailOf(
+  tx: Tx,
+  row: ReceiptRow,
+): Promise<GoodsReceiptDetail> {
   const lines = await tx
     .select()
     .from(goodsReceiptLines)
@@ -435,18 +438,22 @@ export async function postGoodsReceiptStockInTransaction(
   }
 }
 
-async function appendReceiptRecordedEvent(
-  tx: Tx,
-  context: ScopedTenantContext,
+/**
+ * The `goods_receipt.recorded` envelope of a stored receipt. Shared by the
+ * outbox append at receipt time and the finance "journalize receipt" command
+ * (legend-7e0q4), so both build the same fact.
+ */
+export function buildReceiptRecordedEvent(
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
   receipt: GoodsReceipt,
   lineCount: number,
   receivedValueIdr: number,
-): Promise<void> {
+) {
   const name = "goods_receipt.recorded";
   const occurredAt = new Date(receipt.receivedAt);
-  const event = purchasingEvents[name].envelopeSchema.parse({
+  return purchasingEvents[name].envelopeSchema.parse({
     id: createUlid(occurredAt.getTime()),
-    tenantId: context.tenant.tenantId,
+    tenantId,
     outletId: receipt.outletId,
     name,
     version: 1,
@@ -469,6 +476,21 @@ async function appendReceiptRecordedEvent(
       receivedAt: receipt.receivedAt,
     },
   });
+}
+
+async function appendReceiptRecordedEvent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  receipt: GoodsReceipt,
+  lineCount: number,
+  receivedValueIdr: number,
+): Promise<void> {
+  const event = buildReceiptRecordedEvent(
+    context.tenant.tenantId,
+    receipt,
+    lineCount,
+    receivedValueIdr,
+  );
   await appendOutbox(tx, context, {
     id: createUlid(),
     event,
