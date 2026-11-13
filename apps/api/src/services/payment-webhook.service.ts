@@ -1862,47 +1862,56 @@ export async function receiveDoitWebhook(input: {
 }
 
 /**
- * Worker retry path: stored, verified events that stayed `received` or
- * `failed` (the request died or processing failed) whose backoff is due, for
- * 24 h after receipt. Per-event failures are skipped; the next run retries.
+ * Retry-due predicate shared by the select and the per-row claim. `failed`
+ * rows follow the backoff for 24 h after receipt. `received` rows are never on
+ * the backoff (attempts=0 would make them due after 1 minute, while the
+ * request may still be processing): they are due only once stuck for
+ * WEBHOOK_STUCK_RECEIVED_MS, even past the 24 h window, so a recurring invoice
+ * event is never stranded. Idempotent via the dedupe.
+ */
+function webhookRetryDue(context: ScopedTenantContext, now: Date) {
+  const windowStart = new Date(now.getTime() - WEBHOOK_RETRY_WINDOW_MS);
+  // Next attempt is due `min(2^attempts, 60)` minutes after the last one.
+  const backoff = sql`least(power(2, least(${gatewayWebhookEvents.attempts}, 6)), ${WEBHOOK_RETRY_MAX_BACKOFF_MINUTES}) * interval '1 minute'`;
+  return and(
+    eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
+    eq(gatewayWebhookEvents.provider, PROVIDER),
+    eq(gatewayWebhookEvents.signatureValid, true),
+    isNotNull(gatewayWebhookEvents.payload),
+    or(
+      and(
+        eq(gatewayWebhookEvents.status, "failed"),
+        gt(gatewayWebhookEvents.receivedAt, windowStart),
+        sql`${gatewayWebhookEvents.updatedAt} + ${backoff} <= ${now.toISOString()}::timestamptz`,
+      ),
+      and(
+        eq(gatewayWebhookEvents.status, "received"),
+        lt(
+          gatewayWebhookEvents.updatedAt,
+          new Date(now.getTime() - WEBHOOK_STUCK_RECEIVED_MS),
+        ),
+      ),
+    ),
+  );
+}
+
+/**
+ * Worker retry path: stored, verified events that stayed `received` (stuck
+ * past WEBHOOK_STUCK_RECEIVED_MS) or `failed` (backoff due, 24 h after
+ * receipt). Each row is claimed atomically before processing so two workers
+ * never process the same event. Per-event failures are skipped; the next run
+ * retries.
  */
 export async function reprocessStoredWebhookEvents(
   context: ScopedTenantContext,
   now = new Date(),
   limit = 100,
 ): Promise<{ checked: number; processed: number }> {
-  const windowStart = new Date(now.getTime() - WEBHOOK_RETRY_WINDOW_MS);
-  // Next attempt is due `min(2^attempts, 60)` minutes after the last one.
-  const backoff = sql`least(power(2, least(${gatewayWebhookEvents.attempts}, 6)), ${WEBHOOK_RETRY_MAX_BACKOFF_MINUTES}) * interval '1 minute'`;
   const rows = await withTenant(db, context, async (tx) =>
     tx
       .select()
       .from(gatewayWebhookEvents)
-      .where(
-        and(
-          eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
-          eq(gatewayWebhookEvents.provider, PROVIDER),
-          eq(gatewayWebhookEvents.signatureValid, true),
-          isNotNull(gatewayWebhookEvents.payload),
-          or(
-            and(
-              inArray(gatewayWebhookEvents.status, ["received", "failed"]),
-              gt(gatewayWebhookEvents.receivedAt, windowStart),
-              sql`${gatewayWebhookEvents.updatedAt} + ${backoff} <= ${now.toISOString()}::timestamptz`,
-            ),
-            // Stuck `received` (the request died mid-processing): retried
-            // after a short wait even past the 24 h window, so a recurring
-            // invoice event is never stranded. Idempotent via the dedupe.
-            and(
-              eq(gatewayWebhookEvents.status, "received"),
-              lt(
-                gatewayWebhookEvents.updatedAt,
-                new Date(now.getTime() - WEBHOOK_STUCK_RECEIVED_MS),
-              ),
-            ),
-          ),
-        ),
-      )
+      .where(webhookRetryDue(context, now))
       .orderBy(asc(gatewayWebhookEvents.receivedAt))
       .limit(limit),
   );
@@ -1910,6 +1919,21 @@ export async function reprocessStoredWebhookEvents(
   const secrets =
     rows.length > 0 ? await cachedWebhookSecrets(context, now) : [];
   for (const row of rows) {
+    // Atomic claim: bump updated_at only while the row is still due, so the
+    // due predicate turns false for every other worker. Attempts stay as is.
+    const claimed = await withTenant(db, context, async (tx) =>
+      tx
+        .update(gatewayWebhookEvents)
+        .set({ updatedAt: now })
+        .where(
+          and(
+            webhookRetryDue(context, now),
+            eq(gatewayWebhookEvents.id, row.id),
+          ),
+        )
+        .returning({ id: gatewayWebhookEvents.id }),
+    );
+    if (claimed.length === 0) continue;
     const parsed = parseStoredEvent(row.payload);
     if (!parsed) {
       await markRow(

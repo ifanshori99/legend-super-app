@@ -829,19 +829,33 @@ describe("legend-kyie staff_pin.set from an edge", () => {
 
   it("clamps a setAt in the future to the cloud clock", async () => {
     const userId = await newUser();
+    // The clamp is LEAST(setAt, now()) on the database clock, so every time
+    // here comes from the database clock, never the host clock: a host/VM
+    // clock drift under load made the old Date.now() bounds flake.
+    const {
+      rows: [{ db_now: dbBefore }],
+    } = await owner.query<{ db_now: Date }>("SELECT now() AS db_now");
     // Inside the 5 min skew window (round 3 R1 refuses anything further).
-    const future = await pinMaterial(userId, "482916", Date.now() + 3 * MINUTE);
+    const futureAtMs = dbBefore.getTime() + 3 * MINUTE;
+    const future = await pinMaterial(userId, "482916", futureAtMs);
 
     await deliver([pinSetEvent({ userId, material: future })]);
 
     const [row] = await pinRows(userId);
     expect(row!.pin_hash).toBe(future.pinHash);
     expect(row!.set_in_past).toBe(true);
-    expect(row!.pin_set_at.getTime()).toBeGreaterThan(Date.now() - MINUTE);
+    expect(row!.pin_set_at.getTime()).toBeLessThan(futureAtMs);
+    expect(row!.pin_set_at.getTime()).toBeGreaterThanOrEqual(
+      dbBefore.getTime() - 1_000,
+    );
 
     // The clamp keeps a skewed edge clock from freezing the PIN: an honest
     // earlier set no longer wins over it.
-    const honest = await pinMaterial(userId, "246801", Date.now() - HOUR);
+    const honest = await pinMaterial(
+      userId,
+      "246801",
+      dbBefore.getTime() - HOUR,
+    );
     await deliver([pinSetEvent({ userId, material: honest })]);
     const [after] = await pinRows(userId);
     expect(after!.pin_hash).toBe(future.pinHash);

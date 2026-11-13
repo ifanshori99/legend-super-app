@@ -668,3 +668,266 @@ describe("PAY-03 a retried event id stays bound to the integration that stored i
     expect(integrationBId).not.toBe(integrationAId);
   });
 });
+
+// ---------------------------------------------------------------------------
+// legend-okrmg: the retry worker must not race the request that is still
+// processing an event (money rule: never record a payment twice).
+//
+// ASSUMPTIONS (brief docs/briefs/webhook-retry-guard.md, Kartu 1, CTO decision):
+// - A `received` row is held back until `updated_at` is 5 minutes old (the
+//   existing "stuck" guard), whatever its attempts count. A `failed` row keeps
+//   the normal back-off min(2^attempts, 60) minutes.
+// - Time margins are wide (2 and 4 minutes vs 5; 10 minutes vs 5) so host and
+//   database clock skew cannot decide a result.
+// ---------------------------------------------------------------------------
+
+/** A stored row of integration A with explicit `attempts` and idle time. */
+async function storeAged(
+  eventId: string,
+  status: "received" | "failed",
+  payload: object,
+  attempts: number,
+  idleSeconds: number,
+) {
+  eventIds.push(eventId);
+  const updatedAt = new Date(Date.now() - idleSeconds * 1000);
+  await owner.query(
+    `INSERT INTO gateway_webhook_events
+       (tenant_id, provider, event_id, event_type, signature_valid, payload_hash,
+        payload, provider_ref, status, attempts, received_at, updated_at,
+        integration_id)
+     VALUES ($1, 'doit', $2, 'payment.paid', true, $3, $4::jsonb, $5, $6, $7, $8, $8, $9)`,
+    [
+      tenantA,
+      eventId,
+      randomBytes(32).toString("hex"),
+      JSON.stringify(payload),
+      (payload as { data: { id: string } }).data.id,
+      status,
+      attempts,
+      updatedAt,
+      integrationAId,
+    ],
+  );
+}
+
+async function evidenceCount(intentId: string): Promise<number> {
+  const { rows } = await owner.query<{ n: string }>(
+    "SELECT count(*)::text AS n FROM payment_evidence WHERE tenant_id = $1 AND payment_intent_id = $2",
+    [tenantA, intentId],
+  );
+  return Number(rows[0]!.n);
+}
+
+describe("PAY-03 the retry worker leaves a recently stored received event alone", () => {
+  it("PAY-03 a received event 2 minutes old (attempts 0) is not reprocessed by the worker", async () => {
+    const bill = await openIntent();
+    const eventId = newEventId();
+    await storeAged(
+      eventId,
+      "received",
+      doit.eventFor(bill.providerRef, "paid", eventId),
+      0,
+      120,
+    );
+    const before = await eventRow(eventId);
+
+    await reprocessStoredWebhookEvents(contextFor("webhook"), new Date(), 100);
+
+    await expectPending(bill);
+    expect(await evidenceCount(bill.intentId)).toBe(0);
+    const after = await eventRow(eventId);
+    expect(after.status).toBe("received");
+    expect(after.attempts).toBe(before.attempts);
+    expect(after.updated_at).toEqual(before.updated_at);
+  });
+
+  it("PAY-03 a received event 4 minutes old is still held back, with any attempts count", async () => {
+    const bill = await openIntent();
+    const eventId = newEventId();
+    await storeAged(
+      eventId,
+      "received",
+      doit.eventFor(bill.providerRef, "paid", eventId),
+      2,
+      240,
+    );
+
+    await reprocessStoredWebhookEvents(contextFor("webhook"), new Date(), 100);
+
+    await expectPending(bill);
+    expect((await eventRow(eventId)).status).toBe("received");
+  });
+
+  it("PAY-03 a failed event 2 minutes idle (attempts 0) keeps the normal back-off and is retried", async () => {
+    const bill = await openIntent();
+    const eventId = newEventId();
+    await storeAged(
+      eventId,
+      "failed",
+      doit.eventFor(bill.providerRef, "paid", eventId),
+      0,
+      120,
+    );
+
+    await reprocessStoredWebhookEvents(contextFor("webhook"), new Date(), 100);
+
+    await expectPaidOnce(bill);
+    expect((await eventRow(eventId)).status).toBe("processed");
+  });
+
+  it("PAY-03 a received event stuck for more than 5 minutes is still retried and settles once", async () => {
+    const bill = await openIntent();
+    const eventId = newEventId();
+    await storeAged(
+      eventId,
+      "received",
+      doit.eventFor(bill.providerRef, "paid", eventId),
+      0,
+      600,
+    );
+
+    await reprocessStoredWebhookEvents(contextFor("webhook"), new Date(), 100);
+
+    await expectPaidOnce(bill);
+    expect(await evidenceCount(bill.intentId)).toBe(1);
+    const row = await eventRow(eventId);
+    expect(row.status).toBe("processed");
+    expect(row.payment_intent_id).toBe(bill.intentId);
+
+    // A second sweep is a no-op: no second payment.
+    await reprocessStoredWebhookEvents(contextFor("webhook"), new Date(), 100);
+    await expectPaidOnce(bill);
+    expect(await evidenceCount(bill.intentId)).toBe(1);
+  });
+
+  it("PAY-03 two workers on the same stuck event record the payment once", async () => {
+    const bill = await openIntent();
+    const eventId = newEventId();
+    await storeAged(
+      eventId,
+      "received",
+      doit.eventFor(bill.providerRef, "paid", eventId),
+      0,
+      600,
+    );
+
+    const results = await Promise.all([
+      reprocessStoredWebhookEvents(contextFor("webhook"), new Date(), 100),
+      reprocessStoredWebhookEvents(contextFor("webhook"), new Date(), 100),
+    ]);
+
+    await expectPaidOnce(bill);
+    expect(await evidenceCount(bill.intentId)).toBe(1);
+    const row = await eventRow(eventId);
+    expect(row.status).toBe("processed");
+    // The payment-evidence filter alone would hide a double run, so also
+    // prove the event was claimed by exactly one worker: one attempt, and the
+    // two sweeps together processed it once.
+    expect(row.attempts).toBe(1);
+    expect(results.reduce((sum, r) => sum + r.processed, 0)).toBe(1);
+  });
+
+  it("PAY-03 a worker sweep racing a live delivery of a fresh received event records the payment once", async () => {
+    const bill = await openIntent();
+    const eventId = newEventId();
+    const body = doit.eventFor(bill.providerRef, "paid", eventId);
+    // Fresh row, as the request would have stored it before processing.
+    await storeAged(eventId, "received", body, 0, 90);
+
+    const [delivery, sweep] = await Promise.all([
+      deliver(body, secretA),
+      reprocessStoredWebhookEvents(contextFor("webhook"), new Date(), 100),
+    ]);
+
+    expect(delivery.status).toBe(200);
+    await expectPaidOnce(bill);
+    expect(await evidenceCount(bill.intentId)).toBe(1);
+    const row = await eventRow(eventId);
+    expect(row.status).toBe("processed");
+    // Processed once in total: the sweep leaves a 90 second old received row
+    // to the live request, and the row records a single attempt.
+    expect(sweep.processed).toBe(0);
+    expect(row.attempts).toBe(1);
+  });
+
+  // Deterministic claim proof (no timing): a competing transaction holds the
+  // row lock on a stuck event, the worker reads it as eligible and blocks on
+  // it; the competitor then touches updated_at (as another worker's claim
+  // would) and commits. The blocked worker must re-check eligibility and skip.
+  it("PAY-03 a worker that loses the claim to a concurrent worker does not process the event", async () => {
+    const bill = await openIntent();
+    const eventId = newEventId();
+    await storeAged(
+      eventId,
+      "received",
+      doit.eventFor(bill.providerRef, "paid", eventId),
+      0,
+      600,
+    );
+
+    const holder = await owner.connect();
+    let worker: Promise<{ checked: number; processed: number }> | undefined;
+    try {
+      await holder.query("BEGIN");
+      const { rows: pid } = await holder.query<{ pid: number }>(
+        "SELECT pg_backend_pid() AS pid",
+      );
+      await holder.query(
+        `SELECT id FROM gateway_webhook_events
+          WHERE tenant_id = $1 AND event_id = $2 FOR UPDATE`,
+        [tenantA, eventId],
+      );
+
+      worker = reprocessStoredWebhookEvents(
+        contextFor("webhook"),
+        new Date(),
+        100,
+      );
+      // Surface a worker rejection without leaving it unhandled while we poll.
+      worker.catch(() => undefined);
+
+      // Wait until some other session is queued behind the holder's lock.
+      const deadline = Date.now() + 15_000;
+      let waiting = 0;
+      while (Date.now() < deadline) {
+        const { rows } = await owner.query<{ n: string }>(
+          `SELECT count(*)::text AS n
+             FROM pg_locks w
+             JOIN pg_locks h
+               ON h.locktype = 'transactionid'
+              AND h.granted
+              AND h.pid = $1
+              AND w.transactionid = h.transactionid
+            WHERE w.locktype = 'transactionid' AND NOT w.granted`,
+          [pid[0]!.pid],
+        );
+        waiting = Number(rows[0]!.n);
+        if (waiting > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(waiting).toBeGreaterThan(0);
+
+      // Mimic the competing worker's claim, then release the lock.
+      await holder.query(
+        `UPDATE gateway_webhook_events SET updated_at = now()
+          WHERE tenant_id = $1 AND event_id = $2`,
+        [tenantA, eventId],
+      );
+      await holder.query("COMMIT");
+    } catch (error) {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      holder.release();
+    }
+
+    const result = await worker!;
+    expect(result.processed).toBe(0);
+    await expectPending(bill);
+    expect(await evidenceCount(bill.intentId)).toBe(0);
+    const row = await eventRow(eventId);
+    expect(row.status).toBe("received");
+    expect(row.attempts).toBe(0);
+  });
+});

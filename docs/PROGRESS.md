@@ -5054,3 +5054,9 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gate penuh diulang tidak sampai hijau utuh pada satu run; kegagalan terakhir dibuktikan flake atau test-bug per berkas (aturan batch54). Build `heavy pnpm build` EXIT=0 (18:20).
 - Biaya sesi (batch54+55): utama sonnet-5-5 221 req, subagent 100 req (haiku 34, opus 9, sonnet 57); 15 spawn subagent, puncak 2 bersamaan.
 
+
+### fix/webhook-retry-guard (13 Nov 2026, legend-okrmg + legend-gcdq0)
+
+- legend-okrmg (tingkat K, uang): `reprocessStoredWebhookEvents` kini hanya mengambil `failed` lewat backoff; `received` hanya setelah macet 5 menit (`WEBHOOK_STUCK_RECEIVED_MS`). Tiap baris di-claim atomik (`UPDATE ... WHERE <due> AND id` sebelum diproses) supaya dua worker tidak memproses event yang sama. Test gagal-dulu di HEAD (5 gagal tanpa perbaikan, termasuk claim deterministik lewat lock `FOR UPDATE` + `pg_locks`). Review architect xhigh: kode benar; celah test ditutup. Sisa (bead baru): jalur kirim ulang DOIT dan sweep recurring tanpa claim, uang tetap aman.
+- legend-gcdq0: `edge-access-applier` clamp setAt kini memakai jam DB (bukan Date.now host). `panic-relay`: batas tunggu test dipisah dari SLO 5 s (`PANIC_TEST_WAIT_MS`), SLO tidak dilemahkan. panic-relay sendirian 32/32 hijau; akar flake di bawah beban penuh belum terbukti pasti.
+- Bukti: typecheck api EXIT 0, prettier+eslint file berubah hijau, 4 berkas test terarah 163/163.
