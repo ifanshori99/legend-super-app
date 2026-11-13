@@ -51,7 +51,7 @@ const namesByWorkstream = {
   "WS-08":
     "customer.created reservation.created reservation.confirmed reservation.seated reservation.completed reservation.cancelled reservation.no_show reservation_preorder.placed waitlist_entry.called waitlist_entry.seated waitlist_entry.left delivery_order.received delivery_order.status_changed delivery_order.updated delivery_order.settled points.earned points.reversed points.redeemed points.expired tier.changed promotion.updated promo_application.redeemed promo_application.released voucher.issued promotion_outlet.changed promo_application.adjusted points.adjusted",
   "WS-09":
-    "facility_entitlement.issued facility_entitlement.expired facility_entitlement.revoked access_ticket.issued access_ticket.redeemed access_event.recorded facility_session.started facility_session.ended cleaning_task.created subscription.billed wifi_quota.updated facility_incident.raised",
+    "facility_entitlement.issued facility_entitlement.expired facility_entitlement.revoked access_ticket.issued access_ticket.redeemed access_event.recorded facility_session.started facility_session.ended cleaning_task.created subscription.billed wifi_quota.updated facility_incident.raised panic_alert.raised panic_alert.pressed panic_alert.delivered panic_alert.acknowledged",
   "WS-10":
     "employee.updated attendance.logged shift.published shift.cancelled leave.approved leave.changed payslip.created payroll.locked payroll.paid payroll.reversed employee_loan.disbursed reimbursement.paid",
   "WS-11": "metrics.aggregated report.generated",

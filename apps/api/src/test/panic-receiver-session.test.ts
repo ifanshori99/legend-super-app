@@ -1624,6 +1624,15 @@ describe("EM-16 an emergency login is not a PIN proof", () => {
     const device = await enrollAt(outletA, "pos", "Layar");
     const staff = await onDutyStaff("Staf Tak Bisa Absen");
     const cookie = await loginOk(device, staff);
+    // Fixture only (assertions unchanged): the outlet needs an edge roster copy,
+    // else outlet-clock answers 403 at the device check before it looks at the
+    // proof header, and the test would not reach the proof path it names.
+    await owner.query(
+      `INSERT INTO edge_people_sync_state (tenant_id, outlet_id, last_checked_at)
+       VALUES ($1, $2, now())
+       ON CONFLICT (tenant_id, outlet_id) DO UPDATE SET last_checked_at = now()`,
+      [tenant.id, outletA],
+    );
     const body = {
       type: "in",
       occurredAt: new Date().toISOString(),
@@ -1646,6 +1655,10 @@ describe("EM-16 an emergency login is not a PIN proof", () => {
       );
       expect(response.status, JSON.stringify(response.body)).toBe(401);
     }
+    await owner.query(
+      "DELETE FROM edge_people_sync_state WHERE tenant_id = $1 AND outlet_id = $2",
+      [tenant.id, outletA],
+    );
     expect(await attendanceRows(staff.employeeId)).toBe(0);
     expect(await proofRows(staff.userId)).toBe(0);
   });

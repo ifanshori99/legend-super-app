@@ -158,8 +158,11 @@ const scope = (): ScopedTenantContext =>
 
 type Device = { id: string; token: string; label: string };
 
-async function enrollPanicDevice(label: string): Promise<Device> {
-  const full = `${label} ${randomUUID().slice(0, 6)}`;
+async function enrollPanicDevice(
+  label: string,
+  exactLabel = false,
+): Promise<Device> {
+  const full = exactLabel ? label : `${label} ${randomUUID().slice(0, 6)}`;
   const enrolled = await enrollDevice(scope(), actor, {
     outletId,
     type: "panic_button",
@@ -342,7 +345,7 @@ type AlertState = Record<string, unknown> & {
 async function alertRows(): Promise<AlertState[]> {
   if (!(await tableExists("panic_alerts"))) return [];
   const { rows } = await owner.query<AlertState>(
-    "SELECT *, id::text AS id FROM panic_alerts WHERE tenant_id = $1 ORDER BY id",
+    "SELECT *, id::text AS id FROM panic_alerts WHERE tenant_id = $1 ORDER BY panic_alerts.id",
     [tenant.tenantId],
   );
   return rows;
@@ -908,6 +911,72 @@ describe("EM-12 cloud changed while the edge was offline", () => {
       await deliverToCloud(queuedEvents(queue));
       expect(await countRows("panic_alerts")).toBe(1);
       expect(await conflictReasons()).toContain("panic_alert_unknown_ref");
+    },
+    T,
+  );
+});
+
+describe("F-A review findings", () => {
+  it(
+    "F-A a 255-char button label (the devices.label maximum) is raised on the edge and applied in the cloud",
+    async () => {
+      const label = "L".repeat(255);
+      const device = await enrollPanicDevice(label, true);
+      expectOk(await press(device, `ev-${randomUUID()}`));
+      const queue = await panicQueue();
+      expect(queue.map(nameOf)).toEqual(["panic_alert.raised"]);
+      await wipeCloudSide();
+      await deliverToCloud(queuedEvents(queue));
+      expect(await conflictReasons()).not.toContain("applier_refused");
+      const cloud = await alertRows();
+      expect(cloud).toHaveLength(1);
+      expect(cloud[0]!.device_label_snapshot).toBe(label);
+    },
+    T,
+  );
+
+  it(
+    "F-A a press already linked to another alert is kept on the first alert and a panic_press_alert_conflict row is written",
+    async () => {
+      const first = await enrollPanicDevice("Tombol konflik 1");
+      const second = await enrollPanicDevice("Tombol konflik 2");
+      expectOk(await press(first, `ev-${randomUUID()}`));
+      const foldedEventId = `ev-${randomUUID()}`;
+      expectOk(await press(first, foldedEventId));
+      expectOk(await press(second, `ev-${randomUUID()}`));
+      const queue = await panicQueue();
+      const pressed = queue.find((r) => nameOf(r) === "panic_alert.pressed")!;
+      const otherAlertId = (await alertRows()).find(
+        (a) => a.id !== pressed.aggregate_id,
+      )!.id;
+      await wipeCloudSide();
+      await deliverToCloud(queuedEvents(queue));
+      expect(await conflictReasons()).toEqual([]);
+      const linkedTo = await alertIdOf(first, foldedEventId);
+      expect(linkedTo).toBe(pressed.aggregate_id);
+
+      // The same press now arrives for a different alert.
+      const stray = cloneEvent(
+        pressed.event,
+        maxSequenceOf(queue, otherAlertId) + 1,
+        "stray",
+      );
+      const strayEvent = {
+        ...stray,
+        aggregateId: otherAlertId,
+        payload: {
+          ...(stray.payload as Record<string, unknown>),
+          alertId: otherAlertId,
+        },
+      } as EventEnvelope;
+      await deliverToCloud([strayEvent]);
+      expect(await conflictReasons()).toEqual(["panic_press_alert_conflict"]);
+      // Both alerts stay; the press stays on the first one.
+      expect(await countRows("panic_alerts")).toBe(2);
+      expect(await alertIdOf(first, foldedEventId)).toBe(linkedTo);
+      // A re-delivery adds no second conflict row.
+      await deliverToCloud([strayEvent]);
+      expect(await conflictReasons()).toEqual(["panic_press_alert_conflict"]);
     },
     T,
   );

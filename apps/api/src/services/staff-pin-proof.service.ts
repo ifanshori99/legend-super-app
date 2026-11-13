@@ -46,6 +46,7 @@ import {
   PinNewlyLockedError,
   resolveDeviceOutlet,
   verifyStaffPinOnDevice,
+  verifyStaffPinOnDeviceVersioned,
   type PinAttemptOutcome,
 } from "./device-pin.service";
 import { outletContext } from "./device-pin-support";
@@ -387,6 +388,34 @@ async function alertDeviceThrottled(
   }
 }
 
+/**
+ * After a failed verify: a guess that itself locked the staff PIN is still a
+ * wrong guess, so keep its slot and alert (legend-sp9vq). A pin locked before
+ * never looked at the guess, so that one (and any other error) gives the slot
+ * back.
+ */
+async function settleFailedDeviceSlot(
+  error: unknown,
+  context: ScopedTenantContext,
+  outletId: string,
+  deviceId: string,
+  windowStartedAt: Date,
+  now: Date,
+): Promise<void> {
+  if (
+    (error instanceof IdentityError && error.code === "PIN_INVALID") ||
+    error instanceof PinNewlyLockedError
+  )
+    await alertDeviceThrottled(
+      context,
+      outletId,
+      deviceId,
+      windowStartedAt,
+      now,
+    );
+  else await releaseDeviceSlot(context, deviceId, windowStartedAt);
+}
+
 // ------------------------------------------------------------------ verify
 
 export type VerifyWithProofInput = {
@@ -432,21 +461,14 @@ export async function verifyStaffPinWithProof(
       );
     result = await verifyStaffPinOnDevice(tenant, verifyInput);
   } catch (error) {
-    // A guess that itself locked the staff PIN is still a wrong guess: keep
-    // its slot and alert (legend-sp9vq). A pin locked before never looked at
-    // the guess, so that one gives the slot back.
-    if (
-      (error instanceof IdentityError && error.code === "PIN_INVALID") ||
-      error instanceof PinNewlyLockedError
-    )
-      await alertDeviceThrottled(
-        context,
-        outletId,
-        input.deviceId,
-        windowStartedAt,
-        now,
-      );
-    else await releaseDeviceSlot(context, input.deviceId, windowStartedAt);
+    await settleFailedDeviceSlot(
+      error,
+      context,
+      outletId,
+      input.deviceId,
+      windowStartedAt,
+      now,
+    );
     throw error;
   }
   await releaseDeviceSlot(context, input.deviceId, windowStartedAt);
@@ -463,6 +485,62 @@ export async function verifyStaffPinWithProof(
   return {
     ...result,
     proof: { token: proof.token, expiresAt: proof.expiresAt.toISOString() },
+  };
+}
+
+export type ReceiverPinVerification = {
+  readonly user: StaffPinSwitch["user"];
+  /** The PIN generation the correct guess was checked against. */
+  readonly pinGenerationAt: Date;
+};
+
+/**
+ * The PIN check of an emergency receiver session (design edge-emergency D-03):
+ * the same throttle slot, hash, pepper and staff lock as
+ * `verifyStaffPinWithProof`, but it NEVER writes a `staff_pin_proofs` row: a
+ * proof of any purpose would end the device's live attendance proof and could
+ * clock attendance. The caller resolved the device's outlet and type first (an
+ * unknown device never reaches a PIN check) and decides duty and permission
+ * after a correct PIN. Returns the user and the PIN generation checked, so the
+ * session can end when the PIN changes.
+ */
+export async function verifyStaffPinForReceiverSession(
+  tenant: TenantContext,
+  input: {
+    readonly deviceId: string;
+    readonly outletId: string;
+    readonly userId: string;
+    readonly pin: string;
+    readonly now?: Date;
+  },
+): Promise<ReceiverPinVerification> {
+  const now = input.now ?? new Date();
+  const outletId = outletIdSchema.parse(input.outletId);
+  const context = outletContext(tenant, outletId);
+  const windowStartedAt = await reserveDeviceSlot(context, input.deviceId, now);
+  let verified: Awaited<ReturnType<typeof verifyStaffPinOnDeviceVersioned>>;
+  try {
+    verified = await verifyStaffPinOnDeviceVersioned(tenant, {
+      deviceId: input.deviceId,
+      userId: input.userId,
+      pin: input.pin,
+      ...(input.now ? { now: input.now } : {}),
+    });
+  } catch (error) {
+    await settleFailedDeviceSlot(
+      error,
+      context,
+      outletId,
+      input.deviceId,
+      windowStartedAt,
+      now,
+    );
+    throw error;
+  }
+  await releaseDeviceSlot(context, input.deviceId, windowStartedAt);
+  return {
+    user: verified.switch.user,
+    pinGenerationAt: verified.pinVersion.pinGenerationAt,
   };
 }
 

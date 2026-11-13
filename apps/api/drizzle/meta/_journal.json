@@ -2066,6 +2066,27 @@
       "when": 1794465896647,
       "tag": "0308_hris_u4",
       "breakpoints": true
+    },
+    {
+      "idx": 400,
+      "version": "7",
+      "when": 1794530970052,
+      "tag": "0400_panic_alerts",
+      "breakpoints": true
+    },
+    {
+      "idx": 401,
+      "version": "7",
+      "when": 1794530983017,
+      "tag": "0401_panic_receiver_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 402,
+      "version": "7",
+      "when": 1794530992288,
+      "tag": "0402_panic_alert_deliveries",
+      "breakpoints": true
     }
   ]
 }
