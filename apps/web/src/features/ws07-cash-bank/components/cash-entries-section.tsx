@@ -45,6 +45,7 @@ import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { useAccounts } from "@/features/ws07-accounting/hooks";
 import { useCurrentAuth } from "@/features/ws01-approvals/hooks";
+import { useSupportReadOnly } from "@/features/ws01-support-access/read-only";
 import { useCanApproveCashBank, useCanManageCashApprovalLimit } from "../guard";
 import { moneyErrorKey } from "../lib";
 import { CashApprovalLimitCard } from "./cash-approval-limit-card";
@@ -66,6 +67,7 @@ export function CashEntriesSection({
   const t = useT();
   const toast = useToast();
   const canApprove = useCanApproveCashBank();
+  const supportReadOnly = useSupportReadOnly();
   const canManageLimit = useCanManageCashApprovalLimit();
   const userId = useCurrentAuth().data?.data.user.id ?? null;
   const approve = useApproveCashBankEntry();
@@ -151,7 +153,7 @@ export function CashEntriesSection({
               description: entry.description,
             })}
             loading={approve.isPending && approve.variables === entry.id}
-            disabled={approve.isPending}
+            disabled={approve.isPending || supportReadOnly}
             onClick={() => approveEntry(entry)}
           >
             {t("accounting.cash.entries.approval.approve")}
@@ -165,7 +167,7 @@ export function CashEntriesSection({
               action: t("accounting.cash.entries.approval.reject"),
               description: entry.description,
             })}
-            disabled={approve.isPending}
+            disabled={approve.isPending || supportReadOnly}
             onClick={() => setRejectTarget(entry)}
           >
             {t("accounting.cash.entries.approval.reject")}
@@ -378,7 +380,7 @@ export function CashEntriesSection({
                     <Money amount={entry.amountIdr} />
                   </div>
                   <p className="text-sm break-words">{entry.description}</p>
-                  <dl className="grid gap-1 text-xs text-muted-foreground">
+                  <dl className="grid gap-1 text-sm text-muted-foreground">
                     <div className="flex justify-between gap-3">
                       <dt>{t("accounting.cash.entries.columns.date")}</dt>
                       <dd className="tabular">
