@@ -1514,3 +1514,4 @@ Langkah berikut CTO baru:
 - 06:5x G7b5z SO payout gaji: 3 P2 (sumber beku per batch, validasi sumber sebelum cabang jurnal, mapping biaya harus akun aktif; nonaktif setelah export -> biaya tertunda marker 8codi). Brief 680 (Sonnet, base ws/finance-exceptions, migr 0568-0570) menggantikan finance-exceptions di batch62. G7b5z resolved.
 - Brief 679 G0l6u (hcqs + audit m0k, Opus #1, migr 0565-0567). Ditutup: bod, tct6, 8qri, 7mlf (sudah di m1). sonf/uqfu/vnvg: mockup ada, gerbang founder belum.
 - Brief 681 alovk mockup panik (Codex #7) menunggu slot. RAM kuning 38% free: 680/681 ditahan.
+- 07:0x G0jin mockup payout+finance-exceptions (design/payout-finance fc6848ff9) -> W6 Q1 founder. G4zrq Pengaturan AI (design/ai-settings 08defdc48) -> W5 Q2. vnvg -> W11 Q3. KDS sonf/uqfu mockup perlu perbaikan tampilan HP dulu (W12). G0jin, G4zrq resolved. Mulai G4xr4 (680) dan G8vgc (681).
