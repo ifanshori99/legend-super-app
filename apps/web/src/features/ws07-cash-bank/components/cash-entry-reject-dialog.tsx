@@ -1,7 +1,8 @@
-// Reject a cash out that waits for approval (Q7). A rejected entry never gets
+// Reject an entry that waits for approval (Q7). A rejected entry never gets
 // a journal and cannot be approved again, so the dialog says so and asks for a
 // reason (1 to 500 characters), which the list then shows.
 import * as React from "react";
+import type { CashBankEntry } from "@starter/shared/accounting";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,47 +13,47 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Money } from "@/components/ui/money";
 import { FormField } from "@/components/ui/form-field";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { useRejectCashBankEntry } from "../hooks";
-import { CASH_REASON_MAX, moneyErrorKey } from "../lib";
+import { CASH_ENTRY_KIND_KEYS, CASH_REASON_MAX, moneyErrorKey } from "../lib";
 import { ServerError } from "./server-error";
 
 export function CashEntryRejectDialog({
-  entryId,
+  entry,
   onClose,
 }: {
   /** The entry being rejected; null keeps the dialog closed. */
-  entryId: string | null;
+  entry: CashBankEntry | null;
   onClose: () => void;
 }) {
   return (
     <Dialog
-      open={entryId !== null}
+      open={entry !== null}
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
     >
       <DialogContent>
-        {entryId !== null ? (
-          <RejectForm entryId={entryId} onClose={onClose} />
-        ) : null}
+        {entry !== null ? <RejectForm entry={entry} onClose={onClose} /> : null}
       </DialogContent>
     </Dialog>
   );
 }
 
 function RejectForm({
-  entryId,
+  entry,
   onClose,
 }: {
-  entryId: string;
+  entry: CashBankEntry;
   onClose: () => void;
 }) {
   const t = useT();
   const toast = useToast();
+  const kindLabel = t(CASH_ENTRY_KIND_KEYS[entry.kind]);
   const reject = useRejectCashBankEntry();
   const [reason, setReason] = React.useState("");
   const [submitted, setSubmitted] = React.useState(false);
@@ -68,12 +69,22 @@ function RejectForm({
     <>
       <DialogHeader>
         <DialogTitle>
-          {t("accounting.cash.entries.approval.rejectTitle")}
+          {t("accounting.cash.entries.approval.rejectTitle", {
+            kind: kindLabel.toLocaleLowerCase("id"),
+          })}
         </DialogTitle>
         <DialogDescription>
-          {t("accounting.cash.entries.approval.rejectDescription")}
+          {t("accounting.cash.entries.approval.rejectDescription", {
+            kind: kindLabel,
+          })}
         </DialogDescription>
       </DialogHeader>
+      <p className="text-sm leading-5">
+        {t("accounting.cash.entries.approval.rejectTarget", {
+          description: entry.description,
+        })}{" "}
+        <Money amount={entry.amountIdr} />
+      </p>
       <form
         className="grid gap-4"
         onSubmit={(event) => {
@@ -81,11 +92,13 @@ function RejectForm({
           setSubmitted(true);
           if (reject.isPending || error !== undefined) return;
           reject.mutate(
-            { entryId, reason: trimmed },
+            { entryId: entry.id, reason: trimmed },
             {
               onSuccess: () => {
                 toast({
-                  title: t("accounting.cash.entries.approval.rejected"),
+                  title: t("accounting.cash.entries.approval.rejected", {
+                    kind: kindLabel,
+                  }),
                   tone: "success",
                 });
                 onClose();
@@ -129,7 +142,9 @@ function RejectForm({
             variant="destructive"
             loading={reject.isPending}
           >
-            {t("accounting.cash.entries.approval.rejectSubmit")}
+            {t("accounting.cash.entries.approval.rejectSubmit", {
+              kind: kindLabel.toLocaleLowerCase("id"),
+            })}
           </Button>
         </DialogFooter>
       </form>

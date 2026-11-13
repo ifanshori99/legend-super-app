@@ -34,6 +34,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  CASH_ENTRY_KIND_KEYS,
   businessDateToday,
   formatBusinessDate,
   formatMonthLabel,
@@ -68,7 +69,9 @@ export function CashEntriesSection({
   const canManageLimit = useCanManageCashApprovalLimit();
   const userId = useCurrentAuth().data?.data.user.id ?? null;
   const approve = useApproveCashBankEntry();
-  const [rejectId, setRejectId] = React.useState<string | null>(null);
+  const [rejectTarget, setRejectTarget] = React.useState<CashBankEntry | null>(
+    null,
+  );
   const today = businessDateToday();
   const range = monthRange(today);
   const entries = useCashBankEntries(legalEntityId, range.from, range.to);
@@ -107,11 +110,13 @@ export function CashEntriesSection({
     entry.status === "pending_approval" &&
     userId !== null &&
     entry.createdBy !== userId;
-  const approveEntry = (entryId: string) =>
-    approve.mutate(entryId, {
+  const approveEntry = (entry: CashBankEntry) =>
+    approve.mutate(entry.id, {
       onSuccess: () =>
         toast({
-          title: t("accounting.cash.entries.approval.approved"),
+          title: t("accounting.cash.entries.approval.approved", {
+            kind: t(CASH_ENTRY_KIND_KEYS[entry.kind]),
+          }),
           tone: "success",
         }),
       onError: (error) => {
@@ -127,6 +132,70 @@ export function CashEntriesSection({
         });
       },
     });
+  // Setujui/Tolak for someone else's pending entry; the hint for your own.
+  // Table and card share it, so both honor canDecide.
+  const decisionControls = (
+    entry: CashBankEntry,
+    size: "sm" | "default" = "sm",
+  ) => {
+    if (!canApprove) return null;
+    if (canDecide(entry)) {
+      return (
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            size={size}
+            className={size === "default" ? "min-h-11" : undefined}
+            aria-label={t("accounting.cash.entries.approval.actionLabel", {
+              action: t("accounting.cash.entries.approval.approve"),
+              description: entry.description,
+            })}
+            loading={approve.isPending && approve.variables === entry.id}
+            disabled={approve.isPending}
+            onClick={() => approveEntry(entry)}
+          >
+            {t("accounting.cash.entries.approval.approve")}
+          </Button>
+          <Button
+            type="button"
+            size={size}
+            className={size === "default" ? "min-h-11" : undefined}
+            variant="outline"
+            aria-label={t("accounting.cash.entries.approval.actionLabel", {
+              action: t("accounting.cash.entries.approval.reject"),
+              description: entry.description,
+            })}
+            disabled={approve.isPending}
+            onClick={() => setRejectTarget(entry)}
+          >
+            {t("accounting.cash.entries.approval.reject")}
+          </Button>
+        </div>
+      );
+    }
+    if (
+      entry.status === "pending_approval" &&
+      userId !== null &&
+      entry.createdBy === userId
+    ) {
+      return (
+        <span className="text-xs leading-5 text-muted-foreground">
+          {t("accounting.cash.entries.approval.ownEntry", {
+            kind: t(CASH_ENTRY_KIND_KEYS[entry.kind]).toLocaleLowerCase("id"),
+          })}
+        </span>
+      );
+    }
+    return null;
+  };
+  const decisionReason = (entry: CashBankEntry) =>
+    entry.status === "rejected" && entry.decisionReason !== null ? (
+      <p className="mt-1 text-xs leading-5 text-muted-foreground">
+        {t("accounting.cash.entries.approval.decisionReason", {
+          reason: entry.decisionReason,
+        })}
+      </p>
+    ) : null;
   const accountCell = (entry: CashBankEntry) =>
     entry.kind === "transfer" && entry.toBankAccountId !== null
       ? t("accounting.cash.entries.transferArrow", {
@@ -198,107 +267,161 @@ export function CashEntriesSection({
           action: addMenu,
         }}
       >
-        <Table className="min-w-[64rem]">
-          <TableHeader>
-            <TableRow>
-              <TableHead>{t("accounting.cash.entries.columns.date")}</TableHead>
-              <TableHead>{t("accounting.cash.entries.columns.kind")}</TableHead>
-              <TableHead>
-                {t("accounting.cash.entries.columns.description")}
-              </TableHead>
-              <TableHead>
-                {t("accounting.cash.entries.columns.account")}
-              </TableHead>
-              <TableHead>
-                {t("accounting.cash.entries.columns.counter")}
-              </TableHead>
-              <TableHead numeric>
-                {t("accounting.cash.entries.columns.amount")}
-              </TableHead>
-              <TableHead>
-                {t("accounting.cash.entries.columns.reference")}
-              </TableHead>
-              <TableHead>
-                {t("accounting.cash.entries.columns.status")}
-              </TableHead>
-              {canApprove ? (
-                <TableHead>
-                  {t("accounting.cash.entries.columns.actions")}
-                </TableHead>
-              ) : null}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((entry) => (
-              <TableRow key={entry.id}>
-                <TableCell className="whitespace-nowrap tabular">
-                  {formatBusinessDate(entry.entryDate)}
-                </TableCell>
-                <TableCell>
-                  <CashEntryKindBadge kind={entry.kind} />
-                </TableCell>
-                <TableCell className="text-sm">{entry.description}</TableCell>
-                <TableCell className="text-sm">{accountCell(entry)}</TableCell>
-                <TableCell className="text-sm">{counterLabel(entry)}</TableCell>
-                <TableCell numeric>
-                  <Money amount={entry.amountIdr} />
-                </TableCell>
-                <TableCell className="text-sm tabular">
-                  {entry.reference ?? "—"}
-                </TableCell>
-                <TableCell className="text-sm">
-                  <CashEntryStatusBadge status={entry.status} />
-                  {entry.status === "rejected" &&
-                  entry.decisionReason !== null ? (
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                      {t("accounting.cash.entries.approval.decisionReason", {
-                        reason: entry.decisionReason,
-                      })}
-                    </p>
+        <div className="@container">
+          <div className="hidden @[58rem]:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="px-2">
+                    {t("accounting.cash.entries.columns.kindDate")}
+                  </TableHead>
+                  <TableHead className="px-2">
+                    {t("accounting.cash.entries.columns.description")}
+                  </TableHead>
+                  <TableHead className="px-2">
+                    {t("accounting.cash.entries.columns.account")}
+                  </TableHead>
+                  <TableHead numeric className="px-2">
+                    {t("accounting.cash.entries.columns.amount")}
+                  </TableHead>
+                  <TableHead className="px-2">
+                    {t("accounting.cash.entries.columns.status")}
+                  </TableHead>
+                  {canApprove ? (
+                    <TableHead className="px-2">
+                      {t("accounting.cash.entries.columns.actions")}
+                    </TableHead>
                   ) : null}
-                </TableCell>
-                {canApprove ? (
-                  <TableCell>
-                    {canDecide(entry) ? (
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          type="button"
-                          size="sm"
-                          loading={
-                            approve.isPending && approve.variables === entry.id
-                          }
-                          disabled={approve.isPending}
-                          onClick={() => approveEntry(entry.id)}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((entry) => (
+                  <TableRow key={entry.id}>
+                    <TableCell className="px-2">
+                      <CashEntryKindBadge kind={entry.kind} />
+                      <p className="mt-0.5 text-xs whitespace-nowrap tabular text-muted-foreground">
+                        {formatBusinessDate(entry.entryDate)}
+                      </p>
+                    </TableCell>
+                    <TableCell className="px-2 text-sm">
+                      <p
+                        className="line-clamp-2 max-w-[9.5rem]"
+                        title={entry.description}
+                      >
+                        {entry.description}
+                      </p>
+                      {entry.reference !== null ? (
+                        <p className="mt-0.5 max-w-[9.5rem] truncate text-xs tabular text-muted-foreground">
+                          {entry.reference}
+                        </p>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="px-2 text-sm">
+                      {entry.kind === "transfer" &&
+                      entry.toBankAccountId !== null ? (
+                        <>
+                          <p className="max-w-[9.5rem] break-words">
+                            {t("accounting.cash.entries.transferFrom", {
+                              account: bankLabel(entry.bankAccountId),
+                            })}
+                          </p>
+                          <p className="max-w-[9.5rem] break-words">
+                            {t("accounting.cash.entries.transferTo", {
+                              account: bankLabel(entry.toBankAccountId),
+                            })}
+                          </p>
+                        </>
+                      ) : (
+                        <p
+                          className="max-w-[9.5rem] truncate"
+                          title={accountCell(entry)}
                         >
-                          {t("accounting.cash.entries.approval.approve")}
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          disabled={approve.isPending}
-                          onClick={() => setRejectId(entry.id)}
+                          {accountCell(entry)}
+                        </p>
+                      )}
+                      {entry.counterAccountId !== null ? (
+                        <p
+                          className="mt-0.5 max-w-[9.5rem] truncate text-xs text-muted-foreground"
+                          title={counterLabel(entry)}
                         >
-                          {t("accounting.cash.entries.approval.reject")}
-                        </Button>
-                      </div>
-                    ) : entry.status === "pending_approval" &&
-                      userId !== null &&
-                      entry.createdBy === userId ? (
-                      <span className="text-xs leading-5 text-muted-foreground">
-                        {t("accounting.cash.entries.approval.ownEntry")}
-                      </span>
+                          {counterLabel(entry)}
+                        </p>
+                      ) : null}
+                    </TableCell>
+                    <TableCell numeric className="px-2">
+                      <Money amount={entry.amountIdr} />
+                    </TableCell>
+                    <TableCell className="px-2 text-sm">
+                      <CashEntryStatusBadge status={entry.status} />
+                      {decisionReason(entry)}
+                    </TableCell>
+                    {canApprove ? (
+                      <TableCell className="px-2">
+                        {decisionControls(entry)}
+                      </TableCell>
                     ) : null}
-                  </TableCell>
-                ) : null}
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <ul className="grid gap-3 p-card @[58rem]:hidden">
+            {rows.map((entry) => {
+              const controls = decisionControls(entry, "default");
+              return (
+                <li
+                  key={entry.id}
+                  className="grid gap-2 rounded-lg border bg-card p-3"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <CashEntryKindBadge kind={entry.kind} />
+                    <Money amount={entry.amountIdr} />
+                  </div>
+                  <p className="text-sm break-words">{entry.description}</p>
+                  <dl className="grid gap-1 text-xs text-muted-foreground">
+                    <div className="flex justify-between gap-3">
+                      <dt>{t("accounting.cash.entries.columns.date")}</dt>
+                      <dd className="tabular">
+                        {formatBusinessDate(entry.entryDate)}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt>{t("accounting.cash.entries.columns.account")}</dt>
+                      <dd className="min-w-0 text-right break-words">
+                        {accountCell(entry)}
+                      </dd>
+                    </div>
+                    {entry.counterAccountId !== null ? (
+                      <div className="flex justify-between gap-3">
+                        <dt>{t("accounting.cash.entries.columns.counter")}</dt>
+                        <dd className="min-w-0 text-right break-words">
+                          {counterLabel(entry)}
+                        </dd>
+                      </div>
+                    ) : null}
+                    {entry.reference !== null ? (
+                      <div className="flex justify-between gap-3">
+                        <dt>
+                          {t("accounting.cash.entries.columns.reference")}
+                        </dt>
+                        <dd className="tabular">{entry.reference}</dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                  <div>
+                    <CashEntryStatusBadge status={entry.status} />
+                    {decisionReason(entry)}
+                  </div>
+                  {controls !== null ? <div>{controls}</div> : null}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       </DataTableShell>
       <CashEntryRejectDialog
-        entryId={rejectId}
-        onClose={() => setRejectId(null)}
+        entry={rejectTarget}
+        onClose={() => setRejectTarget(null)}
       />
     </div>
   );

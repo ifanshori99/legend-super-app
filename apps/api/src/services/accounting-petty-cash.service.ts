@@ -63,7 +63,7 @@ import {
   type PettyCashEntryRow,
   type PettyCashFundRow,
 } from "../db/schema/accounting-cash-bank-entries.ts";
-import { fiscalPeriods } from "../db/schema/accounting.ts";
+import { accountMappings, fiscalPeriods } from "../db/schema/accounting.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -587,6 +587,24 @@ export async function createPettyCashMovement(
             legalEntityId: outlet.legalEntityId,
             entryDate,
           });
+          // Approval later posts Dr petty cash: refuse now when that role has
+          // no account, or the document would sit pending and fail on approve.
+          const [pettyCashMapping] = await tx
+            .select({ accountId: accountMappings.accountId })
+            .from(accountMappings)
+            .where(
+              and(
+                eq(accountMappings.tenantId, tenantId),
+                eq(accountMappings.legalEntityId, outlet.legalEntityId),
+                eq(accountMappings.role, "petty_cash"),
+              ),
+            )
+            .limit(1);
+          if (!pettyCashMapping)
+            throw new AccountingError(
+              "ACCOUNT_MAPPING_MISSING",
+              "No account mapped for petty_cash",
+            );
           const documentId = randomUUID();
           await tx.insert(cashBankEntries).values({
             id: documentId,
