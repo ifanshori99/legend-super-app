@@ -1,7 +1,6 @@
 // The settled state after a session exists: the profile home (customer) or the
 // dashboard (staff), with the AUTH-05 note when the role still needs its second
 // factor. Shared by /masuk and /masuk/tautan so both flows end the same way.
-import { Link } from "@tanstack/react-router";
 import { ShieldCheck } from "lucide-react";
 import type { Session } from "@starter/shared/identity";
 import { useT } from "@/components/i18n";
@@ -33,11 +32,11 @@ export function SignedIn({
         }
         action={
           <Button asChild size="lg">
-            {/* A runtime path cannot be checked against the route union. */}
-            <Link to={href as "/"}>
+            {/* `href` keeps the query of `/wifi?zone=...`; `to` would read it as path. */}
+            <a href={href}>
               <ShieldCheck aria-hidden="true" />
               {staff ? t("login.toDashboard") : t("login.toMember")}
-            </Link>
+            </a>
           </Button>
         }
       />

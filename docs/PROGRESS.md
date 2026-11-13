@@ -4992,3 +4992,8 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gate: satu `heavy pnpm check` penuh hijau (EXIT=0; 1000 berkas lulus/1 skip; 16140 test lulus/40 skip/3 todo, 0 gagal; ~68 menit) + `heavy pnpm build` hijau (EXIT=0). `git status` bersih setelah build (routeTree.gen.ts konsisten). Log `~/.claude/state/batch54b-{check,build}.log`.
 - Flake dicatat (bukan dari batch ini): run penuh sebelumnya yang memuat test panic gagal di berkas hris-db, hris-leave-jobs, hris-overtime-db, hris-overtime-collective-db, hris-master-writes (QUOTA_EXCEEDED: karyawan test panic mengisi kuota tenant fixture bersama) serta hris-leave-carry-expiry-db, hris-leave-collective-db, hris-leave-collective-reversal, hris-leave-release-event-db; dua yang terakhir juga gagal bila dijalankan bersama di m1 1202164d. Semuanya hijau bila dijalankan per berkas. Untuk batch55: test panic perlu tenant sendiri.
 - Subagent: total 7 (1 Explore, 6 test-runner, 2 dihentikan), puncak 1 bersamaan, token heavy dipegang test-runner.
+
+## ws/infra-security-small (13 Nov 2026)
+- legend-moe5 dan legend-3sbl sudah ada di m1 (ce080d9d dan seterusnya, dengan test): ditutup dengan bukti. Sisa deploy moe5: SSR_SHARED_SECRET/WEB_TRUST_PROXY_HOPS belum di deploy/single-vm/*.example; origin hanya terima IP Cloudflare. Scanner malware 3sbl masih NoopMalwareScanner.
+- legend-2mey: safeReturnPath di 3 rute masuk, query /wifi?zone= utuh (signed-in, verify-link). legend-bj5m: resolver pelanggan facility default (active saja, fail-closed). Commit 7c04d6e7, status review.
+- Bukti: test 2mey 30/30, resolver 8/8 + facility-api, tsc web dan api hijau, eslint+prettier hijau.

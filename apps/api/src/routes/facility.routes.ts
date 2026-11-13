@@ -50,6 +50,8 @@ import {
   requireMenuPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { facilityIncidentsRouter } from "./facility-incidents.routes.ts";
 import * as config from "../services/facility-config.service.ts";
@@ -58,24 +60,36 @@ import * as products from "../services/facility-products.service.ts";
 import * as queue from "../services/facility-queue.service.ts";
 import * as slots from "../services/facility-slots.service.ts";
 import * as units from "../services/facility-units.service.ts";
+import { findProfileByUser } from "../services/member-profile.service.ts";
 
 /**
  * Port: the customer profile of the signed-in guest (WS-08 profile bead). The
- * queue routes act for "the caller", so they need it; until the customer
- * surface exists the default is fail-closed (403) and nothing is guessed.
+ * queue routes act for "the caller", so they need it. The default looks up the
+ * caller's own profile by (tenant, session user) and only an `active` one
+ * counts; no profile or any other status is null, so the route answers 403.
  */
 export type FacilityCustomerResolver = (
   req: Request,
   context: ScopedTenantContext,
 ) => Promise<string | null>;
 
-let resolveCustomer: FacilityCustomerResolver = async () => null;
+const defaultCustomerResolver: FacilityCustomerResolver = async (
+  req,
+  context,
+) => {
+  const profile = await withTenant(db, context, (tx) =>
+    findProfileByUser(tx, context.tenant.tenantId, getAuth(req).user.id),
+  );
+  return profile?.membershipStatus === "active" ? profile.id : null;
+};
 
-/** Wiring point for the customer-profile bead; tests inject a double. */
+let resolveCustomer: FacilityCustomerResolver = defaultCustomerResolver;
+
+/** Tests inject a double; null restores the default profile lookup. */
 export function setFacilityCustomerResolver(
   resolver: FacilityCustomerResolver | null,
 ): void {
-  resolveCustomer = resolver ?? (async () => null);
+  resolveCustomer = resolver ?? defaultCustomerResolver;
 }
 
 async function customerOf(

@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createTranslator } from "@starter/shared/i18n";
-import { returnPathSchema } from "@starter/shared/identity";
 import { z } from "zod";
+import { safeReturnPath } from "@/features/ws01-login/flow";
 import { EmailLoginScreen } from "@/features/ws01-login/components/email-login";
 
 // "/masuk/email" — magic-link request (PRD v1.7 §5; §3 F3). The answer never
@@ -9,7 +9,10 @@ import { EmailLoginScreen } from "@/features/ws01-login/components/email-login";
 const t = createTranslator();
 
 const searchSchema = z.object({
-  lanjut: returnPathSchema.optional().catch(undefined),
+  lanjut: z
+    .unknown()
+    .optional()
+    .transform((v) => (typeof v === "string" ? safeReturnPath(v) : undefined)),
 });
 
 export const Route = createFileRoute("/_public/masuk/email")({
