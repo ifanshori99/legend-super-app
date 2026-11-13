@@ -1,0 +1,38 @@
+○ legend-wnkep.6 · WS-10 UI: payout config screen per legal entity (mockup first)   [P2 · OPEN]
+Created by: Ilham fadillah Anshori · Type: task
+Created: 2026-11-13 · Updated: 2026-11-13
+
+DESCRIPTION
+
+  Design docs/design/payroll-disbursement.md section 7.1 and 11, slice UI-1.  
+  Method (Duitku/manual bank), connect Duitku credentials (write-only), source
+  bank account, manual bank format, per-transfer cap. Fixture data until BE-1 
+  lands. Follow ~/.agents/team/ui-standard.md.                                
+
+
+
+LABELS: money, payroll, ui, ws-10
+
+PARENT
+  ↑ ○ legend-wnkep: (EPIC) WS-10: Payroll disbursement (Duitku auto + manual bank transfer) P2
+
+
+○ legend-wnkep.7 · WS-10 UI: disbursement batch screen (prepare, approve, send, status, export)   [P2 · OPEN]
+Created by: Ilham fadillah Anshori · Type: task
+Created: 2026-11-13 · Updated: 2026-11-13
+
+DESCRIPTION
+
+  Design docs/design/payroll-disbursement.md sections 7.2-7.7, slice UI-2.    
+  Prepare from locked run, inquiry names + mismatch, approve with MFA         
+  (different person), send, live per-item status, retry failed, resolve       
+  unknown, manual export + confirm. Fixture data first; wire after BE-1/BE-   
+  2/BE-3.                                                                     
+
+
+
+LABELS: money, payroll, ui, ws-10
+
+PARENT
+  ↑ ○ legend-wnkep: (EPIC) WS-10: Payroll disbursement (Duitku auto + manual bank transfer) P2
+
