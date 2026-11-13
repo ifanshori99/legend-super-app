@@ -109,7 +109,11 @@ describe("legend-wqorb Coretax XML leaves out warnings", () => {
 
   it("never writes a warning into the XML and keeps the real references", () => {
     const xml = xmlOf([
-      { ...baseLine(), references: ["INV-001", "INV-002"], warnings: [WARNING] },
+      {
+        ...baseLine(),
+        references: ["INV-001", "INV-002"],
+        warnings: [WARNING],
+      },
     ]);
     expect(xml).not.toContain("Peringatan");
     expect(xml).not.toContain("non-PBJT");
@@ -270,11 +274,7 @@ async function seedSnapshot(
   );
 }
 
-async function postSale(
-  world: World,
-  orderId: string,
-  creditTotal: number,
-) {
+async function postSale(world: World, orderId: string, creditTotal: number) {
   const client: PoolClient = await owner.connect();
   try {
     await client.query("BEGIN");

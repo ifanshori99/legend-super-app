@@ -27,6 +27,7 @@ import { tenantIdSchema } from "@starter/shared/core";
 import {
   dashboardValuesQuerySchema,
   dashboardValuesSchema,
+  reportMetricByCode,
 } from "@starter/shared/dashboard";
 import {
   admittedTiles,
@@ -81,7 +82,7 @@ async function world(outlets: OutletSpec[]) {
     }),
     { kind: "tenant" },
   );
-  return { context, ids };
+  return { context, ids, tenantId: tenant.tenantId };
 }
 
 async function run(
@@ -218,19 +219,45 @@ describe("a period is open until the outlet's own day has passed (legend-nipn7)"
 
   it("tile finality follows the outlet's today, consistent with period.status", async () => {
     const w = await world([{ timeZone: "Asia/Jayapura", cutoff: "00:00" }]);
+    // A stored final day of 5 transactions on 10 Jun: without data a value is
+    // null and never final, so the day needs a row to prove finality.
+    const definition = reportMetricByCode.get("transaction_count")!;
+    await owner.query(
+      `INSERT INTO metrics_daily (tenant_id, outlet_id, metric_date, metric_code, definition_id, definition_version,
+         dimension_key, dimension_value, unit, value_int, finality, computed_at)
+       VALUES ($1, $2, '2025-06-10', 'transaction_count', $3, $4, NULL, NULL, $5, 5, 'final', now())`,
+      [
+        w.tenantId,
+        w.ids[0],
+        definition.id,
+        definition.version,
+        definition.unit,
+      ],
+    );
+    const countOf = (result: Awaited<ReturnType<typeof run>>) => {
+      const tile = result.tiles.find(
+        (t) => t.tileKey === "owner.transactions_today",
+      )!;
+      return {
+        period: tile.period,
+        entry: tile.values.find((v) => v.metricCode === "transaction_count")!,
+      };
+    };
     // 22:00 WIB on 10 Jun = 00:00 on 11 Jun in Jayapura: 10 Jun is over there
     // while the default (WIB) clock is still on 10 Jun.
-    const result = await run(
-      w,
-      "2025-06-10T15:00:00.000Z",
-      custom("2025-06-10"),
+    const over = countOf(
+      await run(w, "2025-06-10T15:00:00.000Z", custom("2025-06-10")),
     );
-    const tile = result.tiles.find(
-      (t) => t.tileKey === "owner.transactions_today",
-    )!;
-    expect(tile.period.status).toBe("closed");
-    const counted = tile.values.filter((entry) => entry.value !== null);
-    expect(counted.length).toBeGreaterThan(0);
-    for (const entry of counted) expect(entry.finality).toBe("final");
+    expect(over.period.status).toBe("closed");
+    expect(over.entry.value).not.toBeNull();
+    expect(over.entry.finality).toBe("final");
+    // At 21:00 WIB (23:00 Jayapura) the day is still running: same stored
+    // row, but only an estimate.
+    const running = countOf(
+      await run(w, "2025-06-10T14:00:00.000Z", custom("2025-06-10")),
+    );
+    expect(running.period.status).toBe("open");
+    expect(running.entry.value).not.toBeNull();
+    expect(running.entry.finality).toBe("estimate");
   });
 });

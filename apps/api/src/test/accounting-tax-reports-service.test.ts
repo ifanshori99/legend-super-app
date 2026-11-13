@@ -1013,14 +1013,31 @@ describe("legend-5nhkp finalize: no-change guard", () => {
     const newShape = withWarning();
     const rev0 = await finalize(await generate(fx, newShape));
     // Rewrite the stored row the way an old report looked.
-    const legacy = newShape.map(({ warnings: _w, ...row }) => ({
-      ...row,
-      references: ["INV-001", `Peringatan: ${warning}`],
-    }));
-    await owner.query(
-      "UPDATE tax_reports SET lines = $2::jsonb WHERE id = $1",
-      [rev0.id, JSON.stringify(legacy)],
-    );
+    const legacy = newShape.map((row) => {
+      const legacyRow = { ...row } as Record<string, unknown>;
+      delete legacyRow.warnings;
+      return {
+        ...legacyRow,
+        references: ["INV-001", `Peringatan: ${warning}`],
+      };
+    });
+    // The filed-report guard blocks edits to a final row; seed the legacy
+    // shape with triggers off, in one transaction.
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        "UPDATE tax_reports SET lines = $2::jsonb WHERE id = $1",
+        [rev0.id, JSON.stringify(legacy)],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
     const draft = await generate(fx, newShape);
     await expectCode(finalize(draft, "Cek"), "TAX_REPORT_NO_CHANGE", 409);
     // The stored row is left as it was.
