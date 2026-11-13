@@ -28,7 +28,7 @@
 //       resolveManualItems: two different non-requesters with the same outcome
 //       and evidence; the second call moves the item `succeeded -> returned`
 //       and posts the return journal.
-//   table payroll_payout_gl_postings (migration 0534), columns: id, tenant_id,
+//   table payroll_payout_gl_postings (migration 0348), columns: id, tenant_id,
 //     batch_id, kind ('settle' | 'settle_skipped' | 'return' | 'overpaid'),
 //     item_set_hash, journal_key, total_encrypted, posted_at;
 //     payroll_disbursement_items.gl_posting_id.
