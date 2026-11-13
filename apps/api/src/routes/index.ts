@@ -48,6 +48,7 @@ import { platformTenantDirectoryRouter } from "./platform-tenant-directory.route
 import { platformTenantResourcesRouter } from "./platform-tenant-resources.routes";
 import { platformConfigRouter } from "./platform-config.routes";
 import { platformPaymentGatewaysRouter } from "./platform-payment-gateways.routes";
+import { platformKirimdevSendersRouter } from "./platform-kirimdev-senders.routes";
 import { createNotificationRouter } from "./notification.routes";
 import { taxRouter } from "./tax.routes";
 import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
@@ -175,6 +176,7 @@ apiRouter.use("/platform", platformRouter);
 apiRouter.use("/platform", platformTenantDirectoryRouter);
 apiRouter.use("/platform", platformTenantResourcesRouter);
 apiRouter.use("/platform", platformConfigRouter);
+apiRouter.use("/platform", platformKirimdevSendersRouter);
 apiRouter.use("/org", orgIntegrationsRouter);
 apiRouter.use("/org", orgRouter);
 apiRouter.use("/org", orgThemesRouter);

@@ -14,6 +14,7 @@ export * from "./platform-domains";
 export * from "./platform-packages";
 export * from "./platform-payment-gateways";
 export * from "./platform-integrations";
+export * from "./kirimdev-sender-mappings";
 export * from "./platform-themes";
 export * from "./platform-support";
 export * from "./platform-access";

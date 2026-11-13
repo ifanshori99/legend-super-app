@@ -22,27 +22,7 @@ import {
   KirimdevSendError,
   createKirimdevMessagingProvider,
   getKirimdevMessaging,
-  kirimdevSenderFromIntegrations,
 } from "../services/messaging-kirimdev";
-
-// kirimdevSenderFromIntegrations reads through withTenant; a stub transaction
-// hands back queued rows, one per select, so the tenant and integration checks
-// can be exercised without a database.
-const selectRows = vi.hoisted(() => ({ queue: [] as unknown[][] }));
-vi.mock("../db/tenant", () => ({
-  withTenant: async (
-    _database: unknown,
-    _context: unknown,
-    run: (tx: unknown) => Promise<unknown>,
-  ) => {
-    const chain = {
-      from: () => chain,
-      where: () => chain,
-      limit: async () => selectRows.queue.shift() ?? [],
-    };
-    return run({ select: () => chain });
-  },
-}));
 
 const API_KEY = "kdv_live_" + "abcDEF123_-abcDEF123_-xy".slice(0, 24);
 const SENDER_ID = "pn_test_0001";
@@ -139,9 +119,12 @@ function setup(
     },
   );
   const sleeps: number[] = [];
-  const resolveSender = vi.fn(async () =>
-    options.sender === undefined ? SENDER_ID : options.sender,
-  );
+  const resolveSender = vi.fn<
+    (
+      context: unknown,
+      scope: { outletId: string | null },
+    ) => Promise<string | null>
+  >(async () => (options.sender === undefined ? SENDER_ID : options.sender));
   const provider = createKirimdevMessagingProvider({
     apiKey: API_KEY,
     fetch: fetchMock as unknown as typeof fetch,
@@ -327,7 +310,29 @@ describe("send: request shape", () => {
   it("resolves the sender per call for the caller's context", async () => {
     const { provider, resolveSender } = setup([json(202, okBody())]);
     await provider.send(cashierA, message());
-    expect(resolveSender).toHaveBeenCalledWith(cashierA);
+    // legend-nqxtb: the resolver also gets the accepted message's outlet, so
+    // a per-outlet sender mapping can be looked up.
+    expect(resolveSender).toHaveBeenCalledWith(cashierA, {
+      outletId: OUTLET_A,
+    });
+  });
+
+  it("passes each message's own outlet to the resolver", async () => {
+    const { provider, resolveSender } = setup([
+      json(202, okBody()),
+      json(202, okBody()),
+    ]);
+    await provider.send(tenantWide, message({ outletId: OUTLET_A! }));
+    await provider.send(
+      tenantWide,
+      message({ outletId: OUTLET_B!, reference: "order-1002" }),
+    );
+    expect(resolveSender).toHaveBeenNthCalledWith(1, tenantWide, {
+      outletId: OUTLET_A,
+    });
+    expect(resolveSender).toHaveBeenNthCalledWith(2, tenantWide, {
+      outletId: OUTLET_B,
+    });
   });
 });
 
@@ -757,41 +762,5 @@ describe("verifyWebhook", () => {
   });
 });
 
-describe("kirimdevSenderFromIntegrations", () => {
-  const resolve = () => kirimdevSenderFromIntegrations({} as never)(tenantWide);
-
-  it("returns the phone number id of an active tenant", async () => {
-    selectRows.queue = [
-      [{ status: "active" }],
-      [{ config: { phoneNumberId: " pn_live_1 " } }],
-    ];
-    expect(await resolve()).toBe("pn_live_1");
-  });
-
-  it.each(["suspended", "archived"])(
-    "returns null when the tenant is %s, without reading the integration",
-    async (status) => {
-      selectRows.queue = [
-        [{ status }],
-        [{ config: { phoneNumberId: "pn_live_1" } }],
-      ];
-      expect(await resolve()).toBeNull();
-      expect(selectRows.queue).toHaveLength(1);
-    },
-  );
-
-  it("returns null when the tenant row is missing", async () => {
-    selectRows.queue = [[], [{ config: { phoneNumberId: "pn_live_1" } }]];
-    expect(await resolve()).toBeNull();
-  });
-
-  it("returns null when there is no active integration or the id is blank", async () => {
-    selectRows.queue = [[{ status: "active" }], []];
-    expect(await resolve()).toBeNull();
-    selectRows.queue = [
-      [{ status: "active" }],
-      [{ config: { phoneNumberId: "  " } }],
-    ];
-    expect(await resolve()).toBeNull();
-  });
-});
+// The platform-mapping resolver (kirimdevSenderFromPlatformMapping) is tested
+// against a real database in kirimdev-sender-mapping.test.ts.

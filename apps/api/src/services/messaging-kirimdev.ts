@@ -6,7 +6,8 @@
 // `send` yet; it is wired by whichever feature turns outbound on.
 //
 // Rules this file keeps:
-// - Fail closed: no sender number for the tenant means no HTTP call.
+// - Fail closed: no platform-mapped sender number for the tenant (or outlet)
+//   means no HTTP call.
 // - One Idempotency-Key per (tenant, outlet, reference), identical on every
 //   retry, so a retry or a crash never produces a second WhatsApp message.
 // - Errors carry only status, code and request id. Never the recipient, the
@@ -27,7 +28,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { env } from "../config/env";
-import { tenantIntegrations, tenants } from "../db/schema";
+import { kirimdevSenderMappings, tenants } from "../db/schema";
 import { withTenant } from "../db/tenant";
 
 export type KirimdevMessagingOptions = {
@@ -37,8 +38,11 @@ export type KirimdevMessagingOptions = {
   baseUrl?: string;
   /** Test seam. */
   fetch?: typeof fetch;
-  /** The tenant's `phone_number_id`; null fails closed. */
-  resolveSender: (context: ScopedTenantContext) => Promise<string | null>;
+  /** The platform-mapped `phone_number_id` for the tenant/outlet; null fails closed. */
+  resolveSender: (
+    context: ScopedTenantContext,
+    message: { outletId: string | null },
+  ) => Promise<string | null>;
   webhookSecrets: readonly string[];
   /** Default 10000. */
   timeoutMs?: number;
@@ -254,7 +258,9 @@ export function createKirimdevMessagingProvider(
 
     async send(context, input) {
       const message = acceptMessage(context, input);
-      const sender = (await options.resolveSender(context))?.trim();
+      const sender = (
+        await options.resolveSender(context, { outletId: message.outletId })
+      )?.trim();
       if (!sender || !SENDER_PATTERN.test(sender))
         throw new KirimdevSendError({
           code: "no_sender",
@@ -312,37 +318,46 @@ export function getKirimdevMessaging(deps: {
 }
 
 /**
- * Reads the tenant's tenant-wide, active `whatsapp` integration and returns its
- * `config.phoneNumberId` (Kirimdev's sender id). Same row the inbound webhook
- * routes on. Missing row, inactive integration or tenant, or blank value: null (fail closed).
+ * Reads the sender mapping a platform admin wrote for the tenant: the outlet's
+ * own mapping first (when the message names an outlet), else the tenant-wide
+ * one. The tenant must be `active`. `tenant_integrations.config.phoneNumberId`
+ * is a tenant-written value and is ignored here. No mapping: null (fail closed).
  */
-export function kirimdevSenderFromIntegrations(
+export function kirimdevSenderFromPlatformMapping(
   database: Parameters<typeof withTenant>[0],
 ): KirimdevMessagingOptions["resolveSender"] {
-  return (context) =>
+  return (context, { outletId }) =>
     withTenant(database, context, async (tx) => {
+      const tenantId = context.tenant.tenantId;
       const [tenantRow] = await tx
         .select({ status: tenants.status })
         .from(tenants)
-        .where(eq(tenants.id, context.tenant.tenantId))
+        .where(eq(tenants.id, tenantId))
         .limit(1);
       if (tenantRow?.status !== "active") return null;
-      const [row] = await tx
-        .select({ config: tenantIntegrations.config })
-        .from(tenantIntegrations)
+      if (outletId !== null) {
+        const [outletRow] = await tx
+          .select({ phoneNumberId: kirimdevSenderMappings.phoneNumberId })
+          .from(kirimdevSenderMappings)
+          .where(
+            and(
+              eq(kirimdevSenderMappings.tenantId, tenantId),
+              eq(kirimdevSenderMappings.outletId, outletId),
+            ),
+          )
+          .limit(1);
+        if (outletRow) return outletRow.phoneNumberId;
+      }
+      const [tenantWide] = await tx
+        .select({ phoneNumberId: kirimdevSenderMappings.phoneNumberId })
+        .from(kirimdevSenderMappings)
         .where(
           and(
-            eq(tenantIntegrations.tenantId, context.tenant.tenantId),
-            eq(tenantIntegrations.provider, "whatsapp"),
-            eq(tenantIntegrations.status, "active"),
-            isNull(tenantIntegrations.outletId),
+            eq(kirimdevSenderMappings.tenantId, tenantId),
+            isNull(kirimdevSenderMappings.outletId),
           ),
         )
         .limit(1);
-      const value = row?.config.phoneNumberId;
-      if (typeof value === "string" && value.trim() !== "") return value.trim();
-      if (typeof value === "number" && Number.isFinite(value))
-        return String(value);
-      return null;
+      return tenantWide?.phoneNumberId ?? null;
     });
 }

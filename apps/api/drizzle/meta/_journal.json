@@ -2101,6 +2101,13 @@
       "when": 1794480358396,
       "tag": "0313_deposit_refund_remainders",
       "breakpoints": true
+    },
+    {
+      "idx": 470,
+      "version": "7",
+      "when": 1794550700737,
+      "tag": "0470_kirimdev_sender_mappings",
+      "breakpoints": true
     }
   ]
 }
