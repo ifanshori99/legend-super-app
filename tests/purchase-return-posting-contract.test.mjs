@@ -308,6 +308,7 @@ describe("posting rules (Potongan A.3 to A.5)", () => {
     const lines = build("purchase_return.recorded", {
       uninvoicedValueIdr: 185_000,
       debitNoteIdr: 0,
+      returnPriceVarianceIdr: 0,
       valueIdr: 185_000,
       ppnIdr: 0,
     });
@@ -323,6 +324,7 @@ describe("posting rules (Potongan A.3 to A.5)", () => {
     const lines = build("purchase_return.recorded", {
       uninvoicedValueIdr: 0,
       debitNoteIdr: 111_000,
+      returnPriceVarianceIdr: 0,
       valueIdr: 100_000,
       ppnIdr: 11_000,
     });
@@ -338,6 +340,7 @@ describe("posting rules (Potongan A.3 to A.5)", () => {
     const lines = build("purchase_return.recorded", {
       uninvoicedValueIdr: 0,
       debitNoteIdr: 100_000,
+      returnPriceVarianceIdr: 0,
       valueIdr: 100_000,
       ppnIdr: 0,
     });
@@ -353,6 +356,7 @@ describe("posting rules (Potongan A.3 to A.5)", () => {
     const lines = build("purchase_return.recorded", {
       uninvoicedValueIdr: 60_000,
       debitNoteIdr: 44_400,
+      returnPriceVarianceIdr: 0,
       valueIdr: 100_000,
       ppnIdr: 4_400,
     });
@@ -379,7 +383,13 @@ describe("posting rules (Potongan A.3 to A.5)", () => {
   test("PRP-RULE-07 the rules expect exactly the amount keys the fact builder sends", () => {
     assert.deepEqual(
       acc.postingRuleAmountKeys(ruleOf("purchase_return.recorded")),
-      ["debitNoteIdr", "ppnIdr", "uninvoicedValueIdr", "valueIdr"],
+      [
+        "debitNoteIdr",
+        "ppnIdr",
+        "returnPriceVarianceIdr",
+        "uninvoicedValueIdr",
+        "valueIdr",
+      ],
     );
     assert.deepEqual(
       acc.postingRuleAmountKeys(ruleOf("petty_purchase.recorded")),
