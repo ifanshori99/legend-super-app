@@ -76,6 +76,19 @@ const seededTenantId = cafeLegendPlatformFixtures.tenant.id;
 const KEY2 = randomBytes(32).toString("base64");
 const createdTenants: string[] = [];
 
+// runDataKeyRotation walks EVERY tenant of the shared test database one after
+// the other (rotate integrations, rotate AI keys and a stale count, each in its
+// own transaction, then a second count pass over all tenants). Other test files
+// create tenants and never delete them, so in the full run the cost grows with
+// the number of earlier files: the default 20 s testTimeout was hit while the
+// same tests pass alone. The work is the production rotation itself, so the
+// budget is raised for this file instead of scoping the runs to one tenant
+// (that would stop testing "rotates every tenant"). Measured (bead
+// legend-1jxh8): alone ~0.3-0.6 s per test; after 10 accounting files that
+// create tenants ~1.3 s per test, so the cost grows with the tenants in the
+// database, not with a hang.
+vi.setConfig({ testTimeout: 180_000 });
+
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 2,
