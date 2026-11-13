@@ -30,6 +30,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   smallint,
   text,
   timestamp,
@@ -39,6 +40,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import type { UserId } from "@starter/shared/core";
+import type { EmployeeId } from "@starter/shared/hris";
 import type {
   BankTransferFileId,
   EmployeeGroup,
@@ -560,6 +562,156 @@ export const payslips = pgTable(
       sql`${table.paymentMethod} IN ('bank_transfer', 'cash')`,
     ),
     check("payslips_key_version_check", sql`${table.piiKeyVersion} >= 1`),
+  ],
+);
+
+/**
+ * legend-c2yca: the sealed per-employee result of the latest simulation (HR-03
+ * key ring, lib/payroll-sealed.ts, table `payroll_run_results`, field
+ * `result`). The lock reads these rows, never caller numbers. `payslip_id` is
+ * the id the lock inserts (a rapel employee's reserved payslip id). Writable
+ * only while the run is draft/simulated (payroll-run-results.custom.sql);
+ * afterwards only the reseal job may move the ciphertext + key version.
+ */
+export const payrollRunResults = pgTable(
+  "payroll_run_results",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    payrollRunId: uuid("payroll_run_id").$type<PayrollRunId>().notNull(),
+    employeeId: uuid("employee_id").$type<EmployeeId>().notNull(),
+    payslipId: uuid("payslip_id").$type<PayslipId>().notNull(),
+    simulationNo: integer("simulation_no").notNull(),
+    paymentMethod: varchar("payment_method", { length: 20 }).notNull(),
+    resultEncrypted: bytea("result_encrypted").notNull(),
+    piiKeyVersion: smallint("pii_key_version").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    primaryKey({
+      name: "payroll_run_results_pkey",
+      columns: [table.tenantId, table.payrollRunId, table.employeeId],
+    }),
+    unique("payroll_run_results_payslip_key").on(
+      table.tenantId,
+      table.payslipId,
+    ),
+    foreignKey({
+      name: "payroll_run_results_run_fk",
+      columns: [table.tenantId, table.payrollRunId],
+      foreignColumns: [payrollRuns.tenantId, payrollRuns.id],
+    }),
+    foreignKey({
+      name: "payroll_run_results_employee_fk",
+      columns: [table.tenantId, table.employeeId],
+      foreignColumns: [employees.tenantId, employees.id],
+    }),
+    check(
+      "payroll_run_results_simulation_no_check",
+      sql`${table.simulationNo} >= 1`,
+    ),
+    check(
+      "payroll_run_results_payment_method_check",
+      sql`${table.paymentMethod} IN ('bank_transfer', 'cash')`,
+    ),
+    check(
+      "payroll_run_results_key_version_check",
+      sql`${table.piiKeyVersion} >= 1`,
+    ),
+  ],
+);
+
+/**
+ * legend-89cl7: the payee bank details frozen when the run locks, one row per
+ * bank_transfer payslip, written in the lock transaction and read by the bank
+ * export instead of the employee's current account. Sealed (HR-03 key ring,
+ * lib/payroll-sealed.ts, field `bankSnapshot`): JSON of account number, holder
+ * and bank name. Only the ciphertext + key version may move, by the reseal job.
+ */
+export const payslipBankSnapshots = pgTable(
+  "payslip_bank_snapshots",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    payrollRunId: uuid("payroll_run_id").$type<PayrollRunId>().notNull(),
+    payslipId: uuid("payslip_id").$type<PayslipId>().notNull(),
+    employeeId: uuid("employee_id").notNull(),
+    snapshotEncrypted: bytea("snapshot_encrypted").notNull(),
+    piiKeyVersion: smallint("pii_key_version").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    unique("payslip_bank_snapshots_tenant_id_key").on(table.tenantId, table.id),
+    unique("payslip_bank_snapshots_tenant_payslip_key").on(
+      table.tenantId,
+      table.payslipId,
+    ),
+    index("payslip_bank_snapshots_tenant_run_idx").on(
+      table.tenantId,
+      table.payrollRunId,
+    ),
+    foreignKey({
+      name: "payslip_bank_snapshots_payslip_fk",
+      columns: [table.tenantId, table.payslipId],
+      foreignColumns: [payslips.tenantId, payslips.id],
+    }),
+    foreignKey({
+      name: "payslip_bank_snapshots_run_fk",
+      columns: [table.tenantId, table.payrollRunId],
+      foreignColumns: [payrollRuns.tenantId, payrollRuns.id],
+    }),
+    foreignKey({
+      name: "payslip_bank_snapshots_employee_fk",
+      columns: [table.tenantId, table.employeeId],
+      foreignColumns: [employees.tenantId, employees.id],
+    }),
+    check(
+      "payslip_bank_snapshots_key_version_check",
+      sql`${table.piiKeyVersion} >= 1`,
+    ),
+  ],
+);
+
+/**
+ * Month-dependency edges written once at lock (PAYR-05): the later run of a
+ * tax month was computed on the earlier locked/paid run. Reversal of the
+ * earlier run is refused while a live (locked/paid) dependent exists. Append
+ * only (UPDATE/DELETE revoked from the app role).
+ */
+export const payrollRunMonthPriors = pgTable(
+  "payroll_run_month_priors",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    /** The later run, the one that was locked. */
+    payrollRunId: uuid("payroll_run_id").$type<PayrollRunId>().notNull(),
+    /** The earlier locked/paid run it was computed against. */
+    priorPayrollRunId: uuid("prior_payroll_run_id")
+      .$type<PayrollRunId>()
+      .notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    primaryKey({
+      name: "payroll_run_month_priors_pkey",
+      columns: [table.tenantId, table.payrollRunId, table.priorPayrollRunId],
+    }),
+    foreignKey({
+      name: "payroll_run_month_priors_run_fk",
+      columns: [table.tenantId, table.payrollRunId],
+      foreignColumns: [payrollRuns.tenantId, payrollRuns.id],
+    }),
+    foreignKey({
+      name: "payroll_run_month_priors_prior_fk",
+      columns: [table.tenantId, table.priorPayrollRunId],
+      foreignColumns: [payrollRuns.tenantId, payrollRuns.id],
+    }),
+    index("payroll_run_month_priors_prior_idx").on(
+      table.tenantId,
+      table.priorPayrollRunId,
+    ),
+    check(
+      "payroll_run_month_priors_distinct_check",
+      sql`${table.payrollRunId} <> ${table.priorPayrollRunId}`,
+    ),
   ],
 );
 

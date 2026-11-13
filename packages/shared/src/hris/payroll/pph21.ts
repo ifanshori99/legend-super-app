@@ -120,6 +120,35 @@ export type Pph21PeriodInput = {
    * `pph21ReceivableIdr` (beads legend-4ndx, legend-kn3n). Fill it with `payslipWithholdingCap` (payslip-tax.ts).
    */
   employeeWithholdingCapIdr?: Idr | number;
+  /**
+   * TER month only: the same employee's earlier payslips of this tax month at
+   * this legal entity (a regular run followed by THR or off-cycle). The TER
+   * rate is looked up on the month's total X (earlier + this period) and the
+   * tax of this period is the tax of that total minus `pph21Idr` already
+   * owed by the earlier payslips (withheld + borne + receivable), floored at 0
+   * (an earlier over-withholding is never refunded in a TER month; the last
+   * tax period recalculation settles it). When the earlier payslips withheld
+   * less than the rate of the total asks, this period catches up the shortfall
+   * as the employee's tax (withheld up to the pay left, the rest an employee
+   * receivable), never as the employer's. Refused in the last tax period.
+   * The rate step-up the total adds on the earlier gross (the earlier gross
+   * at the rate of the total minus at its own rate) is shared like the
+   * earlier payslips' tax: the employee's part is `pph21EmployeeIdr /
+   * pph21Idr` of it, rounded up (all of it when the earlier payslips owe no
+   * tax), so the employer never carries the step-up on the employee's own
+   * earlier pay (bead legend-ihjan, review R1).
+   */
+  monthPrior?: {
+    /** Sum of X (taxableGrossIdr) of the earlier payslips of the month. */
+    taxableGrossIdr: Idr | number;
+    /** Sum of their pph21Idr. */
+    pph21Idr: Idr | number;
+    /**
+     * Employee-funded part of `pph21Idr`: sum of their pph21WithheldIdr -
+     * taxAllowanceIdr + pph21ReceivableIdr. 0 <= it <= `pph21Idr`.
+     */
+    pph21EmployeeIdr: Idr | number;
+  };
   /** Earlier periods of the tax year at this employer (last period only). */
   prior: {
     /** Sum of X (taxableGrossIdr) of earlier periods. */
@@ -363,6 +392,24 @@ export function computePph21Period(
     input.monthsWorked > 12
   )
     throw new RangeError("monthsWorked must be 1..12");
+  if (input.monthPrior !== undefined && input.lastTaxPeriod)
+    throw new RangeError("monthPrior applies to TER months only");
+  const monthGross = nonNegativeInt(
+    input.monthPrior?.taxableGrossIdr ?? 0,
+    "monthPrior.taxableGrossIdr",
+  );
+  const monthTax = nonNegativeInt(
+    input.monthPrior?.pph21Idr ?? 0,
+    "monthPrior.pph21Idr",
+  );
+  const monthEmployeeTax = nonNegativeInt(
+    input.monthPrior?.pph21EmployeeIdr ?? 0,
+    "monthPrior.pph21EmployeeIdr",
+  );
+  if (monthEmployeeTax > monthTax)
+    throw new RangeError(
+      "monthPrior.pph21EmployeeIdr exceeds monthPrior.pph21Idr",
+    );
   const partialYear = input.partialYearTaxSubject === true;
   if (partialYear && !input.lastTaxPeriod)
     throw new RangeError("partialYearTaxSubject applies to the last period");
@@ -477,9 +524,18 @@ export function computePph21Period(
 
   const taxOf = (x: bigint): PeriodTax => {
     if (!input.lastTaxPeriod) {
-      const rateBp = terRateBp(tables.ter.bracketsByCategory[category], x);
+      // The rate follows the month's total (earlier payslips of the month
+      // included); this period owes the tax of that total minus what the
+      // earlier payslips already owe, never below 0.
+      const total = monthGross + x;
+      const rateBp = terRateBp(tables.ter.bracketsByCategory[category], total);
+      const totalTax = divideRounded(
+        total * BigInt(rateBp) * factor,
+        BP * BP,
+        mode,
+      );
       return {
-        tax: divideRounded(x * BigInt(rateBp) * factor, BP * BP, mode),
+        tax: totalTax > monthTax ? totalTax - monthTax : 0n,
         terRateBp: rateBp,
         annual: null,
       };
@@ -507,7 +563,13 @@ export function computePph21Period(
   // Last period only: the history balance H = annual tax on the prior income
   // alone minus what was already paid (0 in a TER month): > 0 a shortfall
   // (kurang bayar), < 0 a credit (lebih potong Jan-Nov).
-  const history = input.lastTaxPeriod ? taxOf(0n).tax : 0n;
+  // TER month with earlier payslips of the month (`monthPrior`): the catch-up
+  // H = tax of the month's earlier gross at its own rate minus what they owe,
+  // >= 0 (an earlier payslip that withheld less than the rate of the total
+  // asks). It is the employee's, never the employer's (below), and nothing
+  // beside `monthPrior` moves it: 0 for a TER month alone.
+  const history =
+    input.lastTaxPeriod || input.monthPrior !== undefined ? taxOf(0n).tax : 0n;
   // Each payer's own balance of the prior year, unclamped (beads legend-6q7o,
   // legend-u1xq, legend-mmgd): employee + employer = H, each > 0 when that
   // payer underpaid its share and < 0 when it overpaid. With the earlier
@@ -528,12 +590,12 @@ export function computePph21Period(
       employerBalance =
         ((priorTax + history) * priorEmployerScheme) / priorMix -
         priorEmployerTax;
-  } else if (history !== 0n && priorTax > 0n)
+  } else if (input.lastTaxPeriod && history !== 0n && priorTax > 0n)
     // BigInt division truncates toward 0, so the employer's balance is the
     // smaller in size: the odd rupiah is the employee's, charged on a
     // shortfall (H > 0), refunded on a credit (H < 0).
     employerBalance = (history * priorEmployerTax) / priorTax;
-  else if (history > 0n && lineBase > 0n)
+  else if (input.lastTaxPeriod && history > 0n && lineBase > 0n)
     employerBalance = (history * (lineBase - employeeG)) / lineBase;
   const employeeBalance = history - employerBalance;
 
@@ -558,12 +620,53 @@ export function computePph21Period(
       ? annualOf(priorGrossScheme + employeeG).annualTax -
         annualOf(priorGrossScheme).annualTax
       : taxOf(employeeG).tax - history;
+  // TER month with `monthPrior` (bead legend-ihjan, review R1): part of D is
+  // the rate step-up the total puts on the month's earlier gross M,
+  // round(M x rate(M + at) x factor) - round(M x rate(M) x factor) >= 0. It is
+  // not this period's pay, so this period's scheme mix does not split it: the
+  // employee carries pph21EmployeeIdr / pph21Idr of it (the earlier payslips'
+  // own split), rounded up, all of it when they owe no tax. A net-scheme THR
+  // after a gross-scheme salary never makes the employer pay the step-up on
+  // the employee's own salary. The rest of D keeps the split above
+  // (`gross_first`: the employee-alone tax minus its own step-up, floor 0).
+  // Without `monthPrior` the step-up is 0 and the split is unchanged. The
+  // step-up never falls as `at` rises (the TER rate never does), so the
+  // fixed point below keeps its monotone map, up to the rupiah the floors
+  // already allow.
+  const monthStepOf = (at: bigint): bigint => {
+    if (monthGross === 0n) return 0n;
+    const brackets = tables.ter.bracketsByCategory[category];
+    const earlierTaxAt = (total: bigint) =>
+      divideRounded(
+        monthGross * BigInt(terRateBp(brackets, total)) * factor,
+        BP * BP,
+        mode,
+      );
+    const step = earlierTaxAt(monthGross + at) - earlierTaxAt(monthGross);
+    return step > 0n ? step : 0n;
+  };
+  const employeeAloneStep = monthStepOf(employeeG);
+  const employeeAloneRest =
+    employeeAloneStep === 0n
+      ? employeeAloneAdded
+      : employeeAloneAdded > employeeAloneStep
+        ? employeeAloneAdded - employeeAloneStep
+        : 0n;
   const addedSplit = (at: bigint) => {
     const added = taxOf(at).tax - history;
+    const rawStep = monthStepOf(at);
+    const step = rawStep < added ? rawStep : added;
+    const rest = added - step;
+    const stepEmployee =
+      monthTax === 0n
+        ? step
+        : divideRounded(step * monthEmployeeTax, monthTax, "ceil");
     let employeePart: bigint;
     if (policy.mixedSchemeAllocation === "gross_first")
-      employeePart = employeeAloneAdded < added ? employeeAloneAdded : added;
-    else employeePart = at === 0n ? 0n : (added * employeeG) / at;
+      employeePart = employeeAloneRest < rest ? employeeAloneRest : rest;
+    else employeePart = at === 0n ? 0n : (rest * employeeG) / at;
+    employeePart += stepEmployee;
+    if (employeePart > added) employeePart = added;
     return { employeePart, employerPart: added - employeePart };
   };
 

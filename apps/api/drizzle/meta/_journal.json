@@ -2185,6 +2185,34 @@
       "when": 1794555926898,
       "tag": "0325_cash_bank_entries_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 326,
+      "version": "7",
+      "when": 1794556000000,
+      "tag": "0326_payslip_bank_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 327,
+      "version": "7",
+      "when": 1794556100000,
+      "tag": "0327_payroll_run_month_priors",
+      "breakpoints": true
+    },
+    {
+      "idx": 328,
+      "version": "7",
+      "when": 1794563132790,
+      "tag": "0328_payroll_run_results",
+      "breakpoints": true
+    },
+    {
+      "idx": 329,
+      "version": "7",
+      "when": 1794563151211,
+      "tag": "0329_payroll_followup_guards",
+      "breakpoints": true
     }
   ]
 }

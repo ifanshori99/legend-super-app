@@ -699,5 +699,24 @@ export const payrollTaxExportSchema = z.strictObject({
   fileUrl: z.url().nullable(),
   createdBy: userIdSchema,
   createdAt: isoDateTimeSchema,
+  /**
+   * What the export holds and what it left out (counts only, no personal
+   * data). Present on the response of the export call, absent when only the
+   * stored row is known.
+   */
+  summary: z
+    .strictObject({
+      rowCount: z.number().int().min(0).max(100_000),
+      /** Payslips left out, by reason. */
+      excluded: z.strictObject({
+        /** Daily or intern staff (not pegawai tetap): other bukti potong, out of scope. */
+        nonPermanentEmployee: z.number().int().min(0),
+        /** Last tax period (annual recalculation): belongs to the A1. */
+        annualRecalculation: z.number().int().min(0),
+        /** Combined monthly gross is zero: nothing to report. */
+        zeroGross: z.number().int().min(0),
+      }),
+    })
+    .optional(),
 });
 export type PayrollTaxExport = z.infer<typeof payrollTaxExportSchema>;
