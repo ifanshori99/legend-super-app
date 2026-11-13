@@ -37,6 +37,11 @@ import {
 } from "../core/index.ts";
 import { posOverrideIdSchema } from "../access/override.ts";
 import { orderIdSchema } from "../kitchen/schemas.ts";
+import {
+  fireStatusSchema,
+  orderItemStatusSchema,
+  paymentModeSchema,
+} from "../qr-order/schemas.ts";
 import { defineDomainEvent, eventEnvelopeSchema } from "../events/index.ts";
 import type { EventCatalogEntry, EventEnvelope } from "../events/index.ts";
 import { tenderBucket } from "./calculations.ts";
@@ -66,6 +71,13 @@ const positiveIdr = idrSchema.refine(
 const tenderLineSchema = z.strictObject({
   method: posTenderMethodSchema,
   amountIdr: positiveIdr,
+  /**
+   * Edge order ingest (docs/design/edge-order-ingest.md): the cash handed
+   * over, and the points redeemed. Optional: events written before the edge
+   * contract change do not carry them.
+   */
+  receivedIdr: nonnegativeIdr.optional(),
+  pointsUsed: z.number().int().positive().max(1_000_000).optional(),
 });
 type TenderLine = z.infer<typeof tenderLineSchema>;
 
@@ -99,6 +111,23 @@ export const orderSubmittedPayloadSchema = z.strictObject({
 export type OrderSubmittedPayload = z.infer<typeof orderSubmittedPayloadSchema>;
 
 // ---- order.paid -----------------------------------------------------------
+
+/**
+ * Edge order ingest: one `order_items` row as it stood when the sale was
+ * settled (voided lines included, `status` says which). Optional on the
+ * payload; see `lines` below.
+ */
+const orderPaidLineSchema = z.strictObject({
+  menuItemId: uuidSchema,
+  name: z.string().min(1).max(150),
+  quantity: z.number().int().min(1).max(99),
+  unitPriceIdr: nonnegativeIdr,
+  modifiersTotalIdr: nonnegativeIdr,
+  lineTotalIdr: nonnegativeIdr,
+  fireStatus: fireStatusSchema,
+  reservedBusinessDate: businessDateSchema,
+  status: orderItemStatusSchema,
+});
 
 export const orderPaidPayloadSchema = z
   .strictObject({
@@ -138,8 +167,29 @@ export const orderPaidPayloadSchema = z
     cashierId: userIdSchema.nullable(),
     deviceId: deviceIdSchema.nullable(),
     paidAt: isoDateTimeSchema,
+    // Edge order ingest (docs/design/edge-order-ingest.md "Contract change").
+    // All optional and additive: an event without them is a legacy payload
+    // the cloud cannot rebuild the order from.
+    orderNumber: z.string().min(1).max(30).optional(),
+    /**
+     * The order's `subtotal_idr`. NOT `grossSalesIdr`: with tax-inclusive
+     * prices gross = subtotal - service - tax.
+     */
+    subtotalIdr: nonnegativeIdr.optional(),
+    pricesIncludeTax: z.boolean().optional(),
+    paymentMode: paymentModeSchema.optional(),
+    isTraining: z.boolean().optional(),
+    lines: z.array(orderPaidLineSchema).max(999).optional(),
   })
   .superRefine((payload, ctx) => {
+    // Σ non-void lines == subtotalIdr is NOT a schema rule: the cloud checks it
+    // at ingest (`lines_mismatch`) so the event is still parked when it fails.
+    if (payload.lines !== undefined && payload.subtotalIdr === undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["subtotalIdr"],
+        message: "subtotalIdr is required when lines are present",
+      });
     const total =
       Number(payload.grossSalesIdr) -
       Number(payload.discountIdr) +
@@ -215,6 +265,12 @@ export const orderVoidedPayloadSchema = z
     voidId: posVoidIdSchema.nullable(),
     receiptNumber: z.string().min(1).max(20).nullable(),
     voidedAt: isoDateTimeSchema,
+    /**
+     * Edge order ingest: the user who requested the void (the approver is
+     * `approvedBy`). Optional: absent on a system void and on events written
+     * before the edge contract change.
+     */
+    requestedBy: userIdSchema.optional(),
   })
   .superRefine((payload, ctx) => {
     if (payload.voidedFinalOrder) {
