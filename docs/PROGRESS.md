@@ -5271,3 +5271,9 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gerbang: lint hijau (0 error, 2 warning lama); typecheck 49 dtk hijau; tes root `node --test tests/*.test.mjs` terarah 2851/2855 (4 gagal hanya "isolated database", lingkungan); `heavy pnpm run test` penuh 02:33-03:45 (72 mnt) exit 0: vitest 1082 berkas/17477 lulus/41 skip/16 todo, root 2884/2884; build hijau; e2e `legend-zueb.mock.spec.ts` 18/18 hijau.
 - Flake 654: `rotate-data-key`, `hris-leave-changed-event`, `platform-org-api` TEN-03/06 tidak muncul di run penuh (0 gagal). Bukti fix 654.
 - Belum: `legend-zy43` (tidak ada producer `receipt_run.reported` di edge). Rilis edge order ingest: deploy cloud dulu, baru edge.
+
+## ws/hris-leave-flakes (14 Nov 2026)
+
+- Kartu `legend-8ldhb`, `legend-l0qbr`, `legend-4mpqc`: tidak bisa direproduksi di tip m1 (b17554cb9). 3 suite cuti bersama 3x hijau (59/59), 5 suite 1x hijau, 40 file HRIS (hris-holiday/attendance/overtime/leave) bersama 2x hijau (602/602). Tidak ada hitungan global akrual atau QUOTA_EXCEEDED di 5 suite itu; isolasi sebelumnya sudah masuk lewat 44d6876d2. Tidak ada fixture diubah menebak.
+- Kartu `legend-agn0i`: tidak direproduksi. Tes balapan baru `hris-holiday-approve-race.test.ts` (8 POST holiday serentak; POST holiday vs approve cuti 15 putaran; PATCH/DELETE holiday collective vs approve 8 putaran) hijau 3x, nol status 5xx, nol 40P01. Kode produksi tidak diubah.
+- Hipotesis tersisa (belum terbukti): `reverseCollectiveLeaveDeductions` (hris-leave-collective.service.ts ~1237) membaca ledger tanpa ORDER BY lalu mengunci saldo satu per satu; dua pembalikan tanggal berbeda atas karyawan yang sama bisa mengunci dalam urutan berlawanan (40P01). Jalur ini hanya jalan untuk tanggal lampau, jadi tes 2037 tidak menyentuhnya.
