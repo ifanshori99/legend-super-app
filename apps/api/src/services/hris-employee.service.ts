@@ -298,6 +298,11 @@ function maskedPiiFor(
 ): { pii: EmployeePii; opened: HrisEmployeePiiField[] } {
   const opened: HrisEmployeePiiField[] = [];
   const pii = {} as Record<HrisEmployeePiiField, EmployeePii["nik"]>;
+  // bank_code is a plain column that travels with the bank account's visibility.
+  const bankCode =
+    hrisFieldVisibility(viewer, row.id, "bankAccount") === "hidden"
+      ? null
+      : ((row.bankCode ?? null) as EmployeePii["bankCode"]);
   for (const field of HRIS_EMPLOYEE_PII_FIELDS) {
     if (
       sealedOf(row, field) === null ||
@@ -313,7 +318,7 @@ function maskedPiiFor(
         ? null
         : maskHrisPii(field, plaintext, row.piiKeyVersion);
   }
-  return { pii: pii as EmployeePii, opened };
+  return { pii: { ...pii, bankCode } as EmployeePii, opened };
 }
 
 /**
@@ -654,6 +659,14 @@ export async function updateEmployeePii(
             .update(employees)
             .set({
               ...sealed.values,
+              // A new account without an explicit code clears the old code: a
+              // stale code on a different bank's account must never reach the
+              // transfer file (payout then stays bank_code_missing).
+              ...(values.bankCode !== undefined
+                ? { bankCode: values.bankCode }
+                : values.bankAccount !== undefined
+                  ? { bankCode: null }
+                  : {}),
               piiKeyVersion: HRIS_PII_KEY_VERSION,
               updatedAt: now,
             })
@@ -676,7 +689,13 @@ export async function updateEmployeePii(
             action: "hris.employee_pii.updated",
             objectType: "employee",
             objectId: row.id,
-            after: { changedFields: sealed.fields },
+            after: {
+              changedFields:
+                values.bankCode !== undefined ||
+                values.bankAccount !== undefined
+                  ? [...sealed.fields, "bankCode"]
+                  : sealed.fields,
+            },
           }),
           HRIS_AUDIT_SAFE_FIELDS,
         );
@@ -918,6 +937,7 @@ export async function createEmployee(
             ptkpStatus: candidate.ptkpStatus,
             status: candidate.status,
             ...sealed.values,
+            bankCode: piiInput.bankCode ?? null,
             blindIndexVersion: BLIND_INDEX_ACTIVE_VERSION,
             piiKeyVersion: HRIS_PII_KEY_VERSION,
             createdBy: access.actorUserId,
@@ -949,7 +969,10 @@ export async function createEmployee(
             employeeNo: row.employeeNo,
             status: row.status,
             employmentType: row.employmentType,
-            changedFields: sealed.fields,
+            changedFields:
+              piiInput.bankCode != null
+                ? [...sealed.fields, "bankCode"]
+                : sealed.fields,
           },
         }),
         HRIS_AUDIT_SAFE_FIELDS,

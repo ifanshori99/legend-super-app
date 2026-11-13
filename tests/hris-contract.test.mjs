@@ -212,8 +212,9 @@ test("HRIS fixtures parse and cover 30+ employees with unique identities", () =>
     assert.ok(statuses.has(status), `missing status ${status}`);
   assert.equal(fixtures.employeePii.length, fixtures.employees.length);
   for (const row of fixtures.employeePii)
-    for (const value of Object.values(row.pii))
-      if (value !== null) {
+    for (const [field, value] of Object.entries(row.pii))
+      // bankCode is a plain 3-digit bank code, not a masked secret.
+      if (value !== null && field !== "bankCode") {
         assert.equal(typeof value.masked, "string");
         assert.ok(!/^\d{16}$/.test(value.masked));
       }

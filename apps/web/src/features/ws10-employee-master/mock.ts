@@ -28,7 +28,10 @@ import { createMockStore } from "@/lib/mock/store";
 import { resetMockPayslipPin } from "../ws10-payslip/mock";
 
 /** Mask rule per field, matching `HRIS_PII_FIELDS` in the PII contract. */
-const PII_MASK_RULE: Record<keyof EmployeePii, PiiMaskRule> = {
+const PII_MASK_RULE: Record<
+  Exclude<keyof EmployeePii, "bankCode">,
+  PiiMaskRule
+> = {
   nik: "last4",
   npwp: "last4",
   bpjsKesNo: "last4",
@@ -83,7 +86,11 @@ registerMock(updateEmployeePii, ({ params, body }) => {
     throw new ApiError(404, "NOT_FOUND", "Karyawan tidak ditemukan.");
 
   const patch: Partial<EmployeePii> = {};
-  for (const field of Object.keys(PII_MASK_RULE) as (keyof EmployeePii)[]) {
+  // `bankCode` is a plain column (not sealed): copied as-is, `null` clears it.
+  if (values.bankCode !== undefined) patch.bankCode = values.bankCode;
+  for (const field of Object.keys(
+    PII_MASK_RULE,
+  ) as (keyof typeof PII_MASK_RULE)[]) {
     const value = values[field];
     if (value === undefined) continue;
     patch[field] = {

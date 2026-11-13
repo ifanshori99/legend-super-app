@@ -30,6 +30,7 @@ import {
   employeeDocumentIdSchema,
 } from "./ids.ts";
 import type { EmployeeId } from "./ids.ts";
+import { HRIS_BANK_CODES } from "./bank-codes.ts";
 import { maskedPiiValueSchema } from "./pii.ts";
 import { taxSchemeSchema } from "./payroll/components.ts";
 
@@ -223,6 +224,8 @@ export const employeePiiSchema = z
     bpjsKesNo: maskedPiiValueSchema.nullable(),
     bpjsTkNo: maskedPiiValueSchema.nullable(),
     bankAccount: maskedPiiValueSchema.nullable(),
+    /** BI bank code of `bankAccount`; not a secret, shown with the account. */
+    bankCode: z.enum(HRIS_BANK_CODES).nullable().default(null),
     emergencyContactName: maskedPiiValueSchema.nullable(),
     emergencyContactPhone: maskedPiiValueSchema.nullable(),
   })
@@ -245,6 +248,8 @@ export const updateEmployeePiiInputSchema = clientInputSchema({
   bpjsKesNo: z.string().min(8).max(20).optional(),
   bpjsTkNo: z.string().min(8).max(20).optional(),
   bankAccount: z.string().min(6).max(34).optional(),
+  /** Plain column (not sealed); `null` clears it. A bank account without a code is allowed (cash fallback). */
+  bankCode: z.enum(HRIS_BANK_CODES).nullable().optional(),
   emergencyContactName: z.string().min(1).max(150).optional(),
   emergencyContactPhone: z.string().min(6).max(20).optional(),
 });

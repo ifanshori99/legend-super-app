@@ -585,7 +585,8 @@ describe("HR-03 encrypted PII at rest, masked reads, role-gated decrypt", () => 
     expect(updated[0].raw).not.toContain(newBank);
     expect(updated[0].event.maskedChanges).toEqual({
       before: null,
-      after: { changedFields: ["bankAccount"] },
+      // A new account clears the old bank code (legend-86he4), so it is listed.
+      after: { changedFields: ["bankAccount", "bankCode"] },
     });
   });
 
