@@ -12,14 +12,17 @@
 // or QrFooter), so a screen never stacks more than two blur regions. From lg
 // up the frame shows one glass header with the table sections; pages then
 // render plain titles.
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { CircleHelp } from "lucide-react";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { RouterShellLink } from "@/components/layout/router-link";
 import { ThemeScope } from "@/components/theme-scope";
 import { TenantThemeStyle } from "@/lib/theme";
-import type { TenantThemeConfig } from "@starter/shared/theme";
+import {
+  buildTenantThemeCss,
+  type TenantThemeConfig,
+} from "@starter/shared/theme";
 import { TableJourneyProvider, useTableJourney } from "../context";
 import { QrPhotoBand, QrSampleBadge } from "./glass/qr-primitives";
 import { CallWaiterSheet } from "./orders/call-waiter-sheet";
@@ -125,17 +128,22 @@ function Frame({
   const base = `/t/${encodeURIComponent(qrToken)}`;
   const onMenu = pathname.slice(base.length).replace(/\/$/, "") === "";
   const theme = menu?.theme;
-  const tenantTheme: TenantThemeConfig | null =
-    menu && theme
-      ? {
-          id: QR_TENANT_ID,
-          name: menu.brand.name,
-          colors: theme.tokens,
-          font: theme.fontFamily,
-          corners: theme.corners,
-          logoUrl: theme.logoUrl,
-        }
-      : null;
+  const brandName = menu?.brand.name;
+  // A theme that fails the contrast check renders no CSS (TenantThemeStyle), so
+  // data-tenant must stay off too: tokens.css derives the QR chrome from
+  // --primary under [data-tenant], and would otherwise follow the base primary.
+  const tenantTheme = useMemo<TenantThemeConfig | null>(() => {
+    if (!brandName || !theme) return null;
+    const config: TenantThemeConfig = {
+      id: QR_TENANT_ID,
+      name: brandName,
+      colors: theme.tokens,
+      font: theme.fontFamily,
+      corners: theme.corners,
+      logoUrl: theme.logoUrl,
+    };
+    return buildTenantThemeCss(config).ok ? config : null;
+  }, [brandName, theme]);
   return (
     <ThemeScope
       density="hangat"

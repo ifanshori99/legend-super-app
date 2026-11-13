@@ -164,8 +164,11 @@ function isActive(session: TableSession): boolean {
 /**
  * Sample active Tenant Theme (blue, not the rust Base Theme) so the mock QR menu
  * shows the brand colors, font and corners of `menu.theme`.
+ *
+ * "Demo tema tenant": only the demo table below gets it. Every other mock menu
+ * carries no theme, so the QR journey keeps its default brown look.
  */
-const mockTenantTheme: QrMenuTheme = {
+export const mockTenantTheme: QrMenuTheme = {
   tokens: {
     light: {
       primary: "#1d4ed8",
@@ -187,6 +190,9 @@ const mockTenantTheme: QrMenuTheme = {
   logoUrl: null,
 };
 
+/** Demo tema tenant: the one mock table (A01, token `freeTable`) with the blue theme. */
+export const MOCK_TENANT_THEME_DEMO_TABLE_CODE = "A01";
+
 /**
  * legend-qf0i (owner Q23): the guest copy of the menu hides every active item
  * without a photo, the same rule the API read applies in SQL. With
@@ -200,7 +206,10 @@ function guestMenu(table: Table, zone: FloorZone): QrMenu {
     getScenario() === "photo-missing"
       ? { ...menu, items: [...menu.items, legacyGuestItem(menu)] }
       : menu;
-  return { ...hidePhotoLessMenuItems(withLegacy), theme: mockTenantTheme };
+  const guest = hidePhotoLessMenuItems(withLegacy);
+  return table.code === MOCK_TENANT_THEME_DEMO_TABLE_CODE
+    ? { ...guest, theme: mockTenantTheme }
+    : guest;
 }
 
 /** The legacy row as a guest menu item: active, priced, and without a photo. */

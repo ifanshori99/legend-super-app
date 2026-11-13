@@ -600,3 +600,14 @@ test("ORD-01 a browser reload restores the joined session, cart and placed order
   );
   assert.throws(() => reloaded.restore({ ...saved, version: 999 }), RangeError);
 });
+
+test("demo tema tenant: only table A01 gets the blue theme, other menus carry none", () => {
+  const engine = createEngine();
+  assert.equal(
+    engine.menuFor(T.freeTable).theme?.tokens.light.primary,
+    "#1d4ed8",
+  );
+  for (const token of [T.indoor, T.privateRoom, T.wfc]) {
+    assert.ok(!engine.menuFor(token).theme, `no theme for ${token}`);
+  }
+});
