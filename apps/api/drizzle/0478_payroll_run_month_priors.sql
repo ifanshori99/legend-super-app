@@ -70,6 +70,15 @@ BEGIN
     RAISE EXCEPTION 'PAYR-05: payroll run % has later runs of its tax month computed on it', NEW.id
       USING ERRCODE = '23514';
   END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM public.bank_transfer_files f
+      WHERE f.tenant_id = NEW.tenant_id
+        AND f.payroll_run_id = NEW.id
+  ) THEN
+    RAISE EXCEPTION 'PAYR-05: payroll run % has a bank transfer file', NEW.id
+      USING ERRCODE = '23514';
+  END IF;
   RETURN NEW;
 END $$;
 --> statement-breakpoint

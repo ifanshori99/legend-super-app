@@ -95,8 +95,6 @@ const storageRuntime: StorageRuntime = {
   fileSigner: async () => null,
   hrisDocumentSigner: async () => null,
 };
-const storedKeysOf = (runId: string) =>
-  [...stored.keys()].filter((storedKey) => storedKey.includes(runId));
 
 const app = createApp({
   logger: createLogger({ level: "debug", destination: logStream }),
@@ -792,72 +790,43 @@ describe("bank transfer export of a rapel-finalized run", () => {
     expect(data).toHaveLength(1);
     expect(data[0]).toContain(p.account);
     expect(text).not.toContain(newAccount);
-    expect(data[0]!.filter((cell) => cell === String(seeded.gross))).toHaveLength(
-      1,
-    );
+    expect(
+      data[0]!.filter((cell) => cell === String(seeded.gross)),
+    ).toHaveLength(1);
     const total = data.reduce(
-      (sum, row) => sum + Number(row.find((cell) => cell === String(seeded.gross)) ?? 0),
+      (sum, row) =>
+        sum + Number(row.find((cell) => cell === String(seeded.gross)) ?? 0),
       0,
     );
     expect(total).toBe(await runBankTotal(seeded.runId));
   });
 
-  // Design §6 test 4 negative case. ASSUMPTIONS: the run is locked via
-  // seedRapelTarget and never finalized, so it has no payroll_rapel_finalizations
-  // receipt. The envelope is shaped like a rapel envelope (gross fields, the
-  // run id and an allocation revision) and sealed under the payslip's own
-  // binding, so it is readable but nothing authorizes paying it: 409
+  // Design §6 test 4 negative case. ASSUMPTIONS: the run is finalized normally
+  // (the DB insert guard refuses an envelope slip without a receipt), then the
+  // receipt row is removed with the owner connection (triggers bypassed). The
+  // slip is readable but nothing authorizes paying it: 409
   // PAYROLL_BANK_FILE_MISMATCH (not 422 unreadable), and no file row.
   it("[rapel-export-no-receipt-refused] a readable envelope payslip in a locked run with no finalization receipt is refused with 409 PAYROLL_BANK_FILE_MISMATCH and creates no file", async () => {
     const p = person("Rapel no receipt", 6_000_000);
     await makeEmployee(p);
     const seeded = await seedRapelTarget(p);
-    const envelope = {
-      payrollRunId: seeded.runId,
-      rapelAllocationRevision: 1,
-      grossIdr: seeded.gross,
-      deductionsIdr: 0,
-      netIdr: seeded.gross,
-      overtimeIdr: 0,
-      lines: [
-        {
-          componentCode: "BS_RAPEL_FORGED",
-          name: "Gaji pokok snapshot",
-          category: "base_salary",
-          kind: "earning",
-          amountIdr: seeded.gross,
-          taxable: true,
-          quantity: null,
-          sourceId: null,
-        },
-      ],
-    };
-    await asTenant(tenant.id, async (conn) => {
-      await conn.query(
-        `INSERT INTO payslips (id, tenant_id, payroll_run_id, employee_id,
-           payment_method, calculation_encrypted, pii_key_version)
-         VALUES ($1, $2, $3, $4, 'bank_transfer', $5, $6)`,
-        [
-          seeded.payslipId,
-          tenant.id,
-          seeded.runId,
-          p.id,
-          sealPayrollValue(JSON.stringify(envelope), {
-            tenantId: tenant.id,
-            table: "payslips",
-            rowId: seeded.payslipId,
-            field: "calculation",
-          }),
-          PAYROLL_SEAL_KEY_VERSION,
-        ],
-      );
-    });
+    // The DB guard (app.payroll_rapel_payslip_insert_guard) refuses an envelope
+    // slip without a receipt, so finalize normally and then remove the receipt
+    // with the owner connection (triggers bypassed), as a tampering would.
+    await finalizeRapelRun(p, seeded);
+    await asTenant(
+      tenant.id,
+      (conn) =>
+        conn.query(
+          "DELETE FROM payroll_rapel_finalizations WHERE tenant_id = $1 AND payroll_run_id = $2",
+          [tenant.id, seeded.runId],
+        ),
+      true,
+    );
 
     const response = await exportRun(seeded.runId);
     expect(response.status, JSON.stringify(response.body)).toBe(409);
-    expect(response.body.error.code).toBe(
-      "PAYROLL_BANK_FILE_MISMATCH",
-    );
+    expect(response.body.error.code).toBe("PAYROLL_BANK_FILE_MISMATCH");
     expect(await bankFileCount(seeded.runId)).toBe(0);
   });
 });

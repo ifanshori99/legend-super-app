@@ -382,8 +382,8 @@ export async function lockPayrollRunInTransaction(
       },
       tables,
       employees: plan.map((entry) => ({
-        employeeId: entry.calculation.employeeId,
         ...entry.taxInput,
+        employeeId: entry.calculation.employeeId,
       })),
       monthScope: { runId },
     },
@@ -410,6 +410,30 @@ export async function lockPayrollRunInTransaction(
     if (!isDeepStrictEqual(expected, engineEarningKeys(entry.calculation)))
       throw resultStale();
   }
+
+  // Last-tax-period employees carry no month basis, so the stale check above
+  // cannot see a second run of the month (e.g. December regular + THR): both
+  // would lock blind and the annual withholding would double or go missing.
+  // Fail closed: a payslip of theirs in another locked/paid run of this legal
+  // entity and month refuses the lock.
+  const lastPeriodIds = plan
+    .filter((entry) => entry.taxInput.lastTaxPeriod)
+    .map((entry) => entry.calculation.employeeId);
+  if (
+    (
+      await loadMonthPriorRunIds(
+        tx,
+        tenantId,
+        { runId, legalEntityId: month.legalEntityId, month: month.month },
+        lastPeriodIds,
+      )
+    ).length > 0
+  )
+    throw new HttpError(
+      409,
+      "PAYROLL_PPH21_MONTH_STALE",
+      "Payroll kedua pada masa pajak terakhir karyawan di bulan ini belum didukung. Selesaikan payroll yang sudah terkunci pada bulan ini terlebih dahulu.",
+    );
 
   const monthPriorRunIds = await loadMonthPriorRunIds(
     tx,
@@ -530,7 +554,12 @@ export async function lockPayrollRunInTransaction(
 
   return {
     payrollRunId: runId,
-    payslips: slips.map(({ sealed: _sealed, ...slip }) => slip),
+    payslips: slips.map((slip) => ({
+      payslipId: slip.payslipId,
+      employeeId: slip.employeeId,
+      paymentMethod: slip.paymentMethod,
+      netIdr: slip.netIdr,
+    })),
     bankSnapshotCount,
     monthPriorRunIds,
   };

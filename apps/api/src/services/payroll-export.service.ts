@@ -346,12 +346,21 @@ async function storeFile(
 const bankFileName = (periodLabel: string, runId: string, extension: string) =>
   `bank-transfer-${periodLabel}-${runId.slice(0, 8)}.${extension}`;
 
-async function loadRun(tx: Tx, tenantId: TenantId, runId: PayrollRunId) {
-  const [run] = await tx
+async function loadRun(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: PayrollRunId,
+  options: { shareLock?: boolean } = {},
+) {
+  const query = tx
     .select()
     .from(payrollRuns)
     .where(and(eq(payrollRuns.tenantId, tenantId), eq(payrollRuns.id, runId)))
     .limit(1);
+  // `shareLock` is for the bank-file write only: a concurrent reversal approve
+  // holds the row, so this waits for its commit and then sees `reversed`
+  // (READ COMMITTED re-reads the locked row). Other exports stay lock-free.
+  const [run] = options.shareLock ? await query.for("share") : await query;
   if (!run) throw notFound("Payroll");
   return run;
 }
@@ -409,7 +418,9 @@ export async function createBankTransferFile(
       { actor, payrollRunId, format: input.format },
       async () => {
         fresh = true;
-        const run = await loadRun(tx, tenantId, payrollRunId);
+        const run = await loadRun(tx, tenantId, payrollRunId, {
+          shareLock: true,
+        });
         assertExportable(run);
         const totals = payrollRunTotalsSchema.safeParse(run.totals);
         if (!totals.success)

@@ -31,7 +31,11 @@ import {
   payrollRapelFinalizations,
   payrollRapels,
 } from "../db/schema/payroll-rapel.ts";
-import { payrollRunMonthPriors, payrollRuns } from "../db/schema/payroll.ts";
+import {
+  bankTransferFiles,
+  payrollRunMonthPriors,
+  payrollRuns,
+} from "../db/schema/payroll.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./hris-access.ts";
@@ -169,6 +173,33 @@ async function loadLiveDependentRunIds(
   return [...new Set(rows.map((row) => row.id))].sort();
 }
 
+/**
+ * A bank file means money may already be on its way; freeing the period
+ * would let a rerun pay the same people twice. Fail closed.
+ */
+async function assertNoBankFile(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: PayrollRunId,
+): Promise<void> {
+  const [file] = await tx
+    .select({ id: bankTransferFiles.id })
+    .from(bankTransferFiles)
+    .where(
+      and(
+        eq(bankTransferFiles.tenantId, tenantId),
+        eq(bankTransferFiles.payrollRunId, runId),
+      ),
+    )
+    .limit(1);
+  if (file)
+    throw new HttpError(
+      409,
+      "PAYROLL_RUN_REVERSAL_BLOCKED",
+      "File transfer bank sudah dibuat untuk payroll ini, jadi tidak bisa dibatalkan.",
+    );
+}
+
 async function assertNoLiveDependents(
   tx: Tx,
   tenantId: TenantId,
@@ -280,6 +311,7 @@ export async function requestPayrollRunReversalInTransaction(
     at: now.toISOString(),
   });
   // Fast fail only; the decision re-checks under the month lock.
+  await assertNoBankFile(tx, tenantId, payrollRunId);
   await assertNoLiveDependents(tx, tenantId, payrollRunId);
   await writeRun(tx, tenantId, payrollRunId, next);
   await audit(
@@ -343,6 +375,7 @@ export async function decidePayrollRunReversalInTransaction(
   }
   if (hasUnsupportedTotals(run)) throw unsupported();
   await assertNoRapelSideEffects(tx, tenantId, payrollRunId);
+  await assertNoBankFile(tx, tenantId, payrollRunId);
   await assertNoLiveDependents(tx, tenantId, payrollRunId);
   const { totals, reversal } = next;
   if (totals === null || reversal === null)
