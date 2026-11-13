@@ -3,14 +3,14 @@
 -- decision columns may change, and only while the entry waits: approve sets
 -- status/approver/decided_at/journal link, reject sets status/approver/
 -- decided_at/reason. Which transitions are legal is the service's job
--- (row lock, status = 'pending_approval'); the CHECK constraints from 0496
+-- (row lock, status = 'pending_approval'); the CHECK constraints from 0330
 -- keep the combinations valid. RLS was enabled in 0485.
 GRANT UPDATE (status, approver_id, decided_at, decision_reason, journal_entry_id) ON TABLE public.cash_bank_entries TO legend_app;
 --> statement-breakpoint
 -- Backfill for existing tenants. Template roles are copied into a tenant once
 -- (seedTenantRoleTemplates, onConflictDoNothing) and never refreshed, so add
 -- the cash/bank permissions to the owner and finance rows that already exist
--- (0484 missed `record`; 0496 adds `approve` and `limit.manage`). Tenant admin
+-- (0324 missed `record`; 0330 adds `approve` and `limit.manage`). Tenant admin
 -- does not receive them. Precedent: 0090_pos_day_close_permission.sql.
 -- `roles` has FORCE RLS, so each tenant is named before its rows are touched.
 -- Idempotent: a code the row already holds is not added twice.

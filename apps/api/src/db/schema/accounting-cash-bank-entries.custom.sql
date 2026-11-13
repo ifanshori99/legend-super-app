@@ -30,5 +30,5 @@ REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public.petty_cash_entries FROM legend_a
 --> statement-breakpoint
 GRANT UPDATE (journal_status, journal_entry_id, park_code, park_attempts) ON TABLE public.petty_cash_entries TO legend_app;
 --> statement-breakpoint
--- Cash-out approval (0497): a pending entry may only gain its decision.
+-- Cash-out approval (0331): a pending entry may only gain its decision.
 GRANT UPDATE (status, approver_id, decided_at, decision_reason, journal_entry_id) ON TABLE public.cash_bank_entries TO legend_app;

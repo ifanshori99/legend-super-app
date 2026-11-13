@@ -1,8 +1,8 @@
 // Cash-out approval (founder Q7, tier K money), review finding H1 + M1:
 // - H1: the role templates are copied into each tenant once, so a tenant that
 //   existed before the new codes has stored owner/finance rows without them.
-//   Migration 0497 must append `accounting.cash_bank.approve`,
-//   `accounting.cash_bank.limit.manage` and `accounting.cash_bank.record` (0484
+//   Migration 0331 must append `accounting.cash_bank.approve`,
+//   `accounting.cash_bank.limit.manage` and `accounting.cash_bank.record` (0324
 //   forgot it) to those stored `owner` and `finance` template rows: idempotent,
 //   no duplicates. `tenant_admin`, every other template and custom roles do
 //   NOT get them. Written from docs/briefs/sub-cash-out-approval.md and the
@@ -12,8 +12,8 @@
 // - M1: the application role may update only the decision columns of
 //   cash_bank_entries (append-only otherwise), and never DELETE.
 //
-// Assumption: the backfill lives in drizzle/0497_cash_out_approval_grants.sql
-// (the brief names 0497), and the whole file is safe to run again as the
+// Assumption: the backfill lives in drizzle/0331_cash_out_approval_grants.sql
+// (the brief names 0497, now 0331), and the whole file is safe to run again as the
 // migration owner (GRANT and the idempotent DO block).
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -37,7 +37,7 @@ const unique = () => randomBytes(6).toString("hex");
 const migration = readFileSync(
   resolve(
     import.meta.dirname,
-    "../../drizzle/0497_cash_out_approval_grants.sql",
+    "../../drizzle/0331_cash_out_approval_grants.sql",
   ),
   "utf8",
 );
@@ -86,7 +86,7 @@ const permissionsOf = async (id: string): Promise<string[]> =>
     )
   ).rows[0]!.permissions;
 
-/** Strips the new codes from every stored template, as a pre-0497 tenant has it. */
+/** Strips the new codes from every stored template, as a pre-0331 tenant has it. */
 async function legacyTemplates(): Promise<Map<string, string>> {
   const { rows } = await owner.query<{ id: string; template_key: string }>(
     `UPDATE roles SET permissions = (
@@ -111,7 +111,7 @@ async function customRole(permissions: string[]): Promise<string> {
   return id;
 }
 
-describe("cash-out approval grants migration 0497", () => {
+describe("cash-out approval grants migration 0331", () => {
   it("[cash-out-approval-MIG-1] existing owner and finance templates gain the 3 codes exactly once, also when run twice; tenant_admin and others do not", async () => {
     try {
       const ids = await legacyTemplates();
