@@ -1492,3 +1492,4 @@ Langkah berikut CTO baru:
 - 03:10 656 selesai: ws/edge-sales-gl 51d67b182 (uctlr, 132mw, vje21; tanpa migrasi), 368/368, architect xhigh 1 ronde 5 temuan dibetulkan. CTO setujui tax_missing -> tetap masuk + PBJT fallback; kartu peringatan finance + customerAttachedBy dibuat. G0xmk di-resolve.
 - 03:27 founder: volume Docker jangan dihapus, tanya tiap kali (dicatat di coordinator memory).
 - 03:38 mulai 657 lanjutan kontrak edge (cqehx, yu8z0, zy43; thread S30:P6b2j:G17kp, base ws/edge-sales-gl, migr 0530-0533).
+- 03:48 batch60 masuk m1 b17554cb9 (flaky-654 + edge-order-ingest, 0522->0347), test penuh 72 mnt 0 gagal, flake 654 tidak muncul, e2e zueb 18/18. 4 bead ditutup. G02r0 di-resolve. Batch61 menunggu ws/edge-sales-gl + ws/edge-contract-followups.
