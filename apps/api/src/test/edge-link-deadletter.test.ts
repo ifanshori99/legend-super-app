@@ -504,7 +504,7 @@ async function buildCloudSide() {
       const receipts = await tx.execute(
         sql`SELECT event_id, aggregate_id, outcome FROM edge_inbound_events WHERE edge_node_id = ${cloudNodeId}::uuid ORDER BY link_seq`,
       );
-      const inScope = (row: { aggregate_id: unknown }) =>
+      const inScope = (row: Record<string, unknown>) =>
         aggregateIds.includes(String(row.aggregate_id));
       return {
         conflicts: conflicts.rows.filter(inScope),
