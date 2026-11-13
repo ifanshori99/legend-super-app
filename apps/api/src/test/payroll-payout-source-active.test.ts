@@ -165,6 +165,58 @@ async function deactivateSource() {
 }
 
 /**
+ * Settled from account A, then the config moves to account B (active) and A is
+ * deactivated. Runs `work` in that state and always restores (A active, config
+ * back on A). B has its own GL account (1101) so a posting to A would be visible.
+ */
+async function withSettledSourceDeactivated<T>(work: () => Promise<T>) {
+  const [config] = await W.rowsOf(
+    `SELECT manual_source_bank_account_id AS id FROM payroll_payout_configs
+      WHERE tenant_id = $1 AND legal_entity_id = $2`,
+    [W.tenantId, W.entityId()],
+  );
+  const a = config!.id as string;
+  const [existing] = await W.rowsOf(
+    `SELECT id FROM bank_accounts
+      WHERE tenant_id = $1 AND legal_entity_id = $2 AND account_number_hmac = $3`,
+    [W.tenantId, W.entityId(), "e".repeat(64)],
+  );
+  const b =
+    (existing?.id as string | undefined) ??
+    ((
+      await W.rowsOf(
+        `INSERT INTO bank_accounts
+           (tenant_id, legal_entity_id, bank, account_name, account_number_encrypted,
+            account_number_hmac, account_number_last4, account_number_key_version,
+            gl_account_id, created_by)
+         SELECT $1, $2, 'BCA', 'Rekening Baru', '\\x00', $3, '1111', 1, id, 'payout-source-active-test'
+           FROM chart_of_accounts
+          WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = '1101'
+         RETURNING id`,
+        [W.tenantId, W.entityId(), "e".repeat(64)],
+      )
+    )[0]!.id as string);
+  const apply = (sourceId: string, aActive: boolean) =>
+    W.asTenant(async (c) => {
+      await c.query(
+        `UPDATE payroll_payout_configs SET manual_source_bank_account_id = $3
+          WHERE tenant_id = $1 AND legal_entity_id = $2`,
+        [W.tenantId, W.entityId(), sourceId],
+      );
+      await c.query(`UPDATE bank_accounts SET is_active = $2 WHERE id = $1`, [
+        a,
+        aActive,
+      ]);
+    }, true);
+  await apply(b, false);
+  try {
+    return await work();
+  } finally {
+    await apply(a, true);
+  }
+}
+
+/**
  * Journal lines booked under any idempotency key that carries this item id,
  * summed by GL code, plus how many distinct entries touch 8101.
  */
@@ -319,6 +371,28 @@ describe("fee re-post refuses an inactive source account", () => {
     expect(await W.countJournals(feeKey)).toBe(1);
     expect((await W.postingsOf(batchId))[0]!.fee_posted).toBe(true);
   });
+
+  it("[fee-repost-settled-account-inactive] fee skipped at settle from account A, config moved to B, A deactivated: re-posting the fee is refused 409 (it would credit the inactive A): no fee journal, fee_posted stays false", async () => {
+    const { batchId, items } = await exportedRun();
+    const restoreMapping = await breakMapping();
+    try {
+      await W.confirm(batchId, W.succeedItems(batchId, items));
+    } finally {
+      await restoreMapping();
+    }
+    const [posting] = await W.postingsOf(batchId);
+    expect(posting!.fee_posted, "premise: the fee was skipped").toBe(false);
+    const feeKey = `payroll-payout-fee:${posting!.item_set_hash}`;
+
+    await withSettledSourceDeactivated(async () => {
+      const error = await failureOf(repostSkippedFees(batchId));
+      expect(error, "the re-post must be refused").not.toBeNull();
+      expect(error!.status).toBe(409);
+      expect(error!.code).toBe(CODE);
+    });
+    expect(await W.journalByKey(feeKey)).toBe(undefined);
+    expect((await W.postingsOf(batchId))[0]!.fee_posted).toBe(false);
+  });
 });
 
 // =========================================================================
@@ -331,8 +405,8 @@ describe("overpaid uses the active source account and books its fee once", () =>
    * paid, a follow-up batch pays Budi. Then the first transfer turns out to
    * have reached Budi after all (same fixture shape as payout-hardening).
    */
-  async function lateDoublePayment() {
-    const { runId, batchId, items } = await exportedRun();
+  async function lateDoublePayment(options: { lockedJournal?: boolean } = {}) {
+    const { runId, batchId, items } = await exportedRun(options);
     const budiFirst = items.find((i) => i.employee_id === BUDI.id)!;
     await W.confirm(
       batchId,
@@ -414,6 +488,63 @@ describe("overpaid uses the active source account and books its fee once", () =>
     expect(byCode).toEqual(await ledger());
     expect(byCode["8101"]!.debit).toBe(FEE);
     expect(feeEntries).toBe(1);
+  });
+
+  it("[overpaid-settled-account-inactive] settled from account A, config moved to B, A deactivated: recording an overpaid item is refused 409 (the journal would credit the inactive A): the item stays failed, no journal at all", async () => {
+    const { batchId, budiFirst } = await lateDoublePayment();
+    const itemId = idOf(budiFirst);
+    await withSettledSourceDeactivated(async () => {
+      await W.expectRefused(recordOverpaidItem(itemId, batchId), {
+        status: 409,
+        code: CODE,
+      });
+    });
+    expect((await W.itemOfPerson(batchId, BUDI)).status).toBe("failed");
+    expect(await W.countJournals(`%${itemId}%`), "no journal").toBe(0);
+    const overpaidPostings = await W.rowsOf(
+      `SELECT id FROM payroll_payout_gl_postings
+        WHERE tenant_id = $1 AND batch_id = $2 AND kind = 'overpaid'`,
+      [W.tenantId, batchId],
+    );
+    expect(overpaidPostings, "no overpaid posting").toHaveLength(0);
+  });
+
+  it("[overpaid-fee-no-locked-journal] an overpaid item of a run without a locked journal but with accounting on: the fee is booked exactly once (Dr 8101 / Cr source bank), fee_posted is true, the receivable stays the net pay", async () => {
+    // Assumption: same rule as settle (a run without a locked journal still
+    // books the fee when accounting is on), so overpaid must not lose the fee.
+    const { batchId, budiFirst } = await lateDoublePayment({
+      lockedJournal: false,
+    });
+    const itemId = idOf(budiFirst);
+    await recordOverpaidItem(itemId, batchId);
+
+    expect((await W.itemOfPerson(batchId, BUDI)).status).toBe("overpaid");
+    const { byCode, feeEntries } = await ledgerOfItem(itemId);
+    expect(byCode["8101"], "bank charges expense = Rp5.000").toEqual({
+      debit: FEE,
+      credit: 0,
+    });
+    expect(feeEntries, "one fee entry").toBe(1);
+    // No locked journal: the salary side was never booked, so there is no
+    // employee receivable either (a one-sided entry); only the bank's fee is.
+    expect(byCode["1204"], "no receivable without a salary journal").toBe(
+      undefined,
+    );
+    expect(byCode["1103"], "source credited the fee only").toEqual({
+      debit: 0,
+      credit: FEE,
+    });
+    const [posting] = await W.rowsOf(
+      `SELECT fee_posted FROM payroll_payout_gl_postings
+        WHERE tenant_id = $1 AND batch_id = $2 AND kind = 'overpaid'`,
+      [W.tenantId, batchId],
+    );
+    expect(posting, "an overpaid posting row").toBeDefined();
+    expect(posting!.fee_posted).toBe(true);
+
+    // Replays post nothing more.
+    await W.expectRefused(recordOverpaidItem(itemId, batchId));
+    expect((await ledgerOfItem(itemId)).feeEntries).toBe(1);
   });
 
   it("[overpaid-fee-concurrent] two simultaneous first reports book the fee once", async () => {

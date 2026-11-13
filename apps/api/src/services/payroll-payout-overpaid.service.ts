@@ -42,7 +42,9 @@ import { payrollEntryDateOf, payrollGlKeys } from "./payroll-gl-consumer.ts";
 import { assertEvidenceKeyForBatch } from "./payroll-payout-evidence.ts";
 import {
   PAYOUT_BANK_CHARGES_MAPPING_MISSING,
+  accountingEnabled,
   activeSourceGlAccount,
+  assertActiveBankGlAccount,
   bankChargesMapped,
   settledSourceAccount,
 } from "./payroll-payout-setup.ts";
@@ -171,11 +173,12 @@ export async function recordOverpaidItem(
       "Data pembayaran tidak bisa dibaca, jurnal tidak diposting.",
     );
   const journalKey = overpaidJournalKey(item.id);
-  // The fee actually journaled (0 when the run has no ledger side).
+  // The fee actually journaled (0 when nothing is journaled).
   let feeIdr = 0;
 
-  // Like the settle: a run without a locked journal has no ledger side, the
-  // item is still recorded.
+  // Like the settle: a run without a locked journal has no salary side, the
+  // item is still recorded. The fee is journaled when the run has a locked
+  // journal or accounting is on, exactly like the settle, so it never vanishes.
   const [locked] = await tx
     .select({ id: journalEntries.id })
     .from(journalEntries)
@@ -189,7 +192,9 @@ export async function recordOverpaidItem(
       ),
     )
     .limit(1);
-  if (locked) {
+  const feeOnly =
+    !locked && safeFee(item) > 0 && (await accountingEnabled(tx, tenantId));
+  if (locked || feeOnly) {
     // Credit the account the settle journal of this batch used; the config is
     // only the fallback when the batch has no settle journal.
     const [settled] = await tx
@@ -204,8 +209,9 @@ export async function recordOverpaidItem(
       )
       .orderBy(payrollPayoutGlPostings.postedAt)
       .limit(1);
-    // The one active-source rule, also when the batch was settled from an
-    // account since replaced: a deactivated source refuses the report.
+    // The configured account must be active. A settled account is not the
+    // config, so it is checked on its own: a batch settled from an account
+    // since replaced and deactivated refuses the report (409).
     const configuredAccountId = await activeSourceGlAccount(
       tx,
       tenantId,
@@ -219,6 +225,12 @@ export async function recordOverpaidItem(
           settled.journalKey,
         )
       : configuredAccountId;
+    await assertActiveBankGlAccount(
+      tx,
+      tenantId,
+      batch.legalEntityId,
+      sourceAccountId,
+    );
     // The transfer fee is real money the PT paid for the second transfer (Q15,
     // same stored value as the settle). Unmapped bank charges fail closed.
     feeIdr = safeFee(item);
@@ -233,23 +245,24 @@ export async function recordOverpaidItem(
       );
     const context = payoutScope(actor.tenantId);
     const entryDate = payrollEntryDateOf(now.toISOString());
-    await postJournalFromRuleInTransaction(
-      tx,
-      context,
-      {
-        eventName: "payroll.paid",
-        variant: "payout_overpaid",
-        amounts: { netIdr },
-        legalEntityId: batch.legalEntityId,
-        outletId: null,
-        entryDate,
-        sourceId: batch.payrollRunId,
-        postedBy: null,
-        idempotencyKey: journalKey,
-        accountOverrides: { bank: sourceAccountId },
-      },
-      now,
-    );
+    if (locked)
+      await postJournalFromRuleInTransaction(
+        tx,
+        context,
+        {
+          eventName: "payroll.paid",
+          variant: "payout_overpaid",
+          amounts: { netIdr },
+          legalEntityId: batch.legalEntityId,
+          outletId: null,
+          entryDate,
+          sourceId: batch.payrollRunId,
+          postedBy: null,
+          idempotencyKey: journalKey,
+          accountOverrides: { bank: sourceAccountId },
+        },
+        now,
+      );
     if (feeIdr > 0)
       await postJournalFromRuleInTransaction(
         tx,

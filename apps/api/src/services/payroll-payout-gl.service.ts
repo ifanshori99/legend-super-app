@@ -66,6 +66,7 @@ import {
 import {
   PAYOUT_BANK_CHARGES_MAPPING_MISSING,
   accountingEnabled,
+  assertActiveBankGlAccount,
   activeSourceGlAccount,
   assertManualPayoutSetup,
   bankChargesMapped,
@@ -504,17 +505,26 @@ export async function repostSkippedFees(
     if (feeIdr > 0) {
       // A settled group gives to the account its own salary journal used; a
       // group settled without a journal uses the configured source account.
-      const accountOverrides =
-        posting.kind === "settle"
-          ? {
-              bank: await settledSourceAccount(
-                tx,
-                tenantId,
-                batch.legalEntityId,
-                posting.journalKey,
-              ),
-            }
-          : ((await sourceBankOverride(tx, tenantId, batch)) ?? undefined);
+      // Either way the account must still belong to an active bank account:
+      // the settled one may have been deactivated since the settle.
+      let accountOverrides: Partial<Record<"bank", string>> | undefined;
+      if (posting.kind === "settle") {
+        const settledBank = await settledSourceAccount(
+          tx,
+          tenantId,
+          batch.legalEntityId,
+          posting.journalKey,
+        );
+        await assertActiveBankGlAccount(
+          tx,
+          tenantId,
+          batch.legalEntityId,
+          settledBank,
+        );
+        accountOverrides = { bank: settledBank };
+      } else
+        accountOverrides =
+          (await sourceBankOverride(tx, tenantId, batch)) ?? undefined;
       await postJournalFromRuleInTransaction(
         tx,
         context,

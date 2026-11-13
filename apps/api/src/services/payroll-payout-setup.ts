@@ -110,9 +110,44 @@ export async function activeSourceGlAccount(
         eq(payrollPayoutConfigs.legalEntityId, legalEntityId),
       ),
     )
-    .limit(1);
+    .limit(1)
+    .for("share", { of: bankAccounts });
   if (row) return row.glAccountId;
   if (options.optional) return null;
+  throw new HttpError(
+    409,
+    PAYOUT_SOURCE_ACCOUNT_MISSING.code,
+    PAYOUT_SOURCE_ACCOUNT_MISSING.message,
+  );
+}
+
+/**
+ * A journal may credit a GL account only while it belongs to an active bank
+ * account of the same tenant and legal entity. Used for accounts that did not
+ * come from the config (the account a batch was settled from): that bank
+ * account may have been deactivated since. 409 `PAYOUT_SOURCE_ACCOUNT_MISSING`
+ * otherwise.
+ */
+export async function assertActiveBankGlAccount(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+  glAccountId: string,
+): Promise<void> {
+  const [row] = await tx
+    .select({ id: bankAccounts.id })
+    .from(bankAccounts)
+    .where(
+      and(
+        eq(bankAccounts.tenantId, tenantId),
+        eq(bankAccounts.legalEntityId, legalEntityId),
+        eq(bankAccounts.glAccountId, glAccountId),
+        eq(bankAccounts.isActive, true),
+      ),
+    )
+    .limit(1)
+    .for("share", { of: bankAccounts });
+  if (row) return;
   throw new HttpError(
     409,
     PAYOUT_SOURCE_ACCOUNT_MISSING.code,
