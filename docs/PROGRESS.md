@@ -1490,3 +1490,4 @@ Langkah berikut CTO baru:
 - 02:29 654 selesai (fix/flaky-654 cf6f01195), G5fvd di-resolve, fixture opening_hours -> legend-9zuo5. Mulai batch60 (S30:P6b2j:G02r0: flaky-654 + edge-order-ingest, migr dari 0347) dan 656 GL/PBJT edge (S30:P6b2j:G0xmk, migr 0526-0529).
 - 03:06 Autopilot: prune volume Docker = keputusan founder, jangan hapus. Pertanyaan terbuka founder (teks biasa). Disk 32 GB (> 30), cleanup-ssd belum perlu; bila < 30 GB: cleanup-ssd tanpa volume Docker.
 - 03:10 656 selesai: ws/edge-sales-gl 51d67b182 (uctlr, 132mw, vje21; tanpa migrasi), 368/368, architect xhigh 1 ronde 5 temuan dibetulkan. CTO setujui tax_missing -> tetap masuk + PBJT fallback; kartu peringatan finance + customerAttachedBy dibuat. G0xmk di-resolve.
+- 03:27 founder: volume Docker jangan dihapus, tanya tiap kali (dicatat di coordinator memory).
