@@ -103,6 +103,38 @@
     "s31-submit-success-390": {
       "status": "pass",
       "violations": []
+    },
+    "s35-disconnected-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s35-disconnected-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "s35-alert-dark-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s35-alert-dark-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-unbalanced-dark-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-unbalanced-dark-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-submit-success-dark-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "s31-submit-success-dark-390": {
+      "status": "pass",
+      "violations": []
     }
   }
 }

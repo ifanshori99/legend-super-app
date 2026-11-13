@@ -25,9 +25,14 @@
 // cookie `legend-mock-role` picks the role (default "all"). Each state gets a
 // fresh browser context, so the in-browser mock store starts clean.
 //
+// Dark theme: s35-alert, s31-unbalanced and s31-submit-success also run as
+// <state>-dark (theme = localStorage["legend-theme"], set before load; see
+// scripts/ui-check-pos-u2.mjs). Files: <card>-<state>-dark-<1280|390>.png.
+//
 // S35 states come from `?demo=` (ws02-edge/nodes-mock.ts): none = receipt-run
-// alert, normal = no alert, kosong = no node, gagal = read fails, memuat = read
-// never finishes.
+// alert, normal = no alert, terputus = disconnected node and a node without
+// update time, kosong = no node, gagal = read fails, memuat = read never
+// finishes.
 //
 // axe: uses `@axe-core/playwright` when installed, else injects the `axe-core`
 // bundle from node_modules/.pnpm. Exit code 1 when a state fails to render or
@@ -47,6 +52,7 @@ const VIEWPORTS = [
   { label: "390", width: 390, height: 844 },
 ];
 const ROLE_COOKIE = "legend-mock-role";
+const THEME_KEY = "legend-theme"; // THEME_STORAGE_KEY in packages/shared/src/theme
 const COLD = 60_000; // Vite compiles a route on its first request.
 
 const visible = (locator, timeout = COLD) =>
@@ -59,6 +65,8 @@ const receiptAlert = (page) =>
   page.getByRole("alert").filter({ hasText: "Rotasi nomor struk berulang" });
 // The node list card is aria-busy while loading: real content = its heading.
 const nodeList = (page) => heading(page, "Node outlet");
+// Mock mode marks the screen with the sample-data pill.
+const samplePill = (page) => visible(page.getByText("Contoh data").first());
 
 // ---- Manual journal (S31) --------------------------------------------------
 const JOURNAL_PATH = "/kelola/akuntansi/jurnal-manual/baru";
@@ -103,6 +111,7 @@ const STATES = [
     prepare: async (page) => {
       await visible(nodeList(page));
       await visible(receiptAlert(page));
+      await samplePill(page);
     },
   },
   {
@@ -112,6 +121,19 @@ const STATES = [
     prepare: async (page) => {
       await visible(nodeList(page));
       await visible(page.getByText("Terhubung", { exact: true }).first());
+      await samplePill(page);
+    },
+  },
+  {
+    // One disconnected node and one node without an update time.
+    card: "s35",
+    name: "disconnected",
+    path: `${EDGE_PATH}?demo=terputus`,
+    prepare: async (page) => {
+      await visible(nodeList(page));
+      await visible(page.getByText("Terputus", { exact: true }).first());
+      await visible(page.getByText("Belum ada pembaruan").first());
+      await samplePill(page);
     },
   },
   {
@@ -228,10 +250,30 @@ const STATES = [
       await page.waitForURL(/jurnal-manual\/[0-9a-f-]{36}/, {
         timeout: COLD,
       });
+      // The green banner on the detail page (no toast over the cards).
+      await visible(
+        page
+          .getByText("Jurnal berhasil diajukan untuk persetujuan.", {
+            exact: true,
+          })
+          .first(),
+      );
       await page.waitForLoadState("networkidle").catch(() => {});
     },
   },
 ];
+
+// Dark-theme pass for the states the audit named.
+const DARK_STATES = new Set([
+  "s35-alert",
+  "s31-unbalanced",
+  "s31-submit-success",
+]);
+STATES.push(
+  ...STATES.filter((state) =>
+    DARK_STATES.has(`${state.card}-${state.name}`),
+  ).map((state) => ({ ...state, name: `${state.name}-dark`, theme: "dark" })),
+);
 
 async function loadAxe() {
   const require = createRequire(import.meta.url);
@@ -390,6 +432,11 @@ async function main() {
           await context.addCookies([
             { name: ROLE_COOKIE, value: state.role, url: baseUrl },
           ]);
+        if (state.theme)
+          await context.addInitScript(
+            ({ key, value }) => window.localStorage.setItem(key, value),
+            { key: THEME_KEY, value: state.theme },
+          );
         const page = await context.newPage();
         try {
           await page.goto(`${baseUrl}${state.path}`, {

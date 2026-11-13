@@ -1,14 +1,16 @@
 // Back-office "Status edge" (legend-ph62j, mockup receipt-run-s7szu): the edge
 // nodes of the tenant's outlets plus the repeated receipt-number rotation
 // alert (legend-s7szu). The POS keeps its own screen at /operasional/koneksi.
-import { useState } from "react";
-import { HardDrive, Link2Off } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Link } from "@tanstack/react-router";
+import { CircleCheck, HardDrive, Link2Off } from "lucide-react";
 import { useT } from "@/components/i18n";
-import { StatusPill } from "@/components/ui/badge";
+import { Badge, StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardShell } from "@/components/ui/card";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { API_MOCK } from "@/lib/api/mock-flag";
 import { isEdgeContractPending, useEdgeNodes } from "../hooks.ts";
 import { formatAlertTime } from "../logic.ts";
 import type { EdgeNodeRow } from "../types.ts";
@@ -29,7 +31,7 @@ function NodeSection({ node }: { node: EdgeNodeRow }) {
   return (
     <section
       aria-label={node.name}
-      className="grid gap-4 border-t-(length:--border-w) pt-4 first:border-t-0 first:pt-0"
+      className="grid gap-4 border-t-(length:--border-w) pt-4 first-of-type:border-t-0 first-of-type:pt-0"
     >
       <div>
         <StatusPill status={connected ? "success" : "danger"}>
@@ -59,19 +61,26 @@ export function EdgeNodesPage() {
   const nodes = useEdgeNodes();
   const data = nodes.data;
   const alert = data?.receiptRunAlert ?? null;
-  // Confirms a manual refresh that found no receipt-run alert.
-  const [refreshed, setRefreshed] = useState(false);
+  // Confirms a manual refresh that found no receipt-run alert. It remembers the
+  // fetch it confirmed and goes away after 5 s or when the next fetch lands.
+  const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
+  const refreshed = refreshedAt !== null && refreshedAt === nodes.dataUpdatedAt;
+  useEffect(() => {
+    if (refreshedAt === null) return;
+    const timer = setTimeout(() => setRefreshedAt(null), 5_000);
+    return () => clearTimeout(timer);
+  }, [refreshedAt]);
   // Spinner only for a manual refresh: a background fetch on mount would make
   // the client markup differ from the server HTML (hydration mismatch).
   const [refreshing, setRefreshing] = useState(false);
   const refresh = () => {
-    setRefreshed(false);
+    setRefreshedAt(null);
     setRefreshing(true);
     void nodes
       .refetch()
       .then((result) => {
         if (result.isSuccess && result.data.receiptRunAlert === null)
-          setRefreshed(true);
+          setRefreshedAt(result.dataUpdatedAt);
       })
       .finally(() => setRefreshing(false));
   };
@@ -81,7 +90,10 @@ export function EdgeNodesPage() {
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="grid min-w-0 gap-1">
-          <h1 className="type-display">{t("edgeNodes.title")}</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="type-display">{t("edgeNodes.title")}</h1>
+            {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
+          </div>
           <p className="text-sm leading-5 text-muted-foreground">
             {t("edgeNodes.hint")}
           </p>
@@ -99,14 +111,26 @@ export function EdgeNodesPage() {
       {refreshed && !alert && !refreshing && (
         <p
           role="status"
-          className="rounded-container border-(length:--border-w) border-success bg-success-subtle p-4 text-sm leading-5 font-semibold text-foreground"
+          className="flex items-start gap-2 rounded-container border-(length:--border-w) border-success bg-success-subtle p-4 text-sm leading-5 font-semibold text-foreground"
         >
+          <CircleCheck
+            className="mt-0.5 size-5 shrink-0 text-success"
+            aria-hidden="true"
+          />
           {t("edgeNodes.refreshed")}
         </p>
       )}
 
       {alert && (
-        <ReceiptRunAlert edgeNodeId={alert.nodeName} alertAt={alert.alertAt} />
+        <ReceiptRunAlert
+          edgeNodeId={alert.nodeName}
+          alertAt={alert.alertAt}
+          guideOpen
+        />
+      )}
+
+      {nodes.isPending && (
+        <Skeleton className="h-72 rounded-container" aria-hidden="true" />
       )}
 
       <CardShell>
@@ -137,6 +161,15 @@ export function EdgeNodesPage() {
                 pending ? "edgeNodes.pendingHint" : "edgeNodes.errorHint",
               )}
               onRetry={pending ? undefined : () => void nodes.refetch()}
+              action={
+                pending ? (
+                  <Button asChild variant="outline" size="sm">
+                    <Link to="/operasional/koneksi">
+                      {t("edgeNodes.connectivityLink")}
+                    </Link>
+                  </Button>
+                ) : undefined
+              }
             />
           )}
 
@@ -145,6 +178,13 @@ export function EdgeNodesPage() {
               icon={HardDrive}
               title={t("edgeNodes.emptyTitle")}
               description={t("edgeNodes.emptyHint")}
+              action={
+                <Button asChild variant="outline" size="sm">
+                  <Link to="/operasional/koneksi">
+                    {t("edgeNodes.connectivityLink")}
+                  </Link>
+                </Button>
+              }
             />
           )}
 

@@ -36,3 +36,12 @@ Sumber layar: `legend/design/mockups/review-q29.html` (Q29-Q40, disetujui founde
 - UI ikut `~/.agents/team/ui-standard.md`; komponen dari `apps/web/src/components/ui`.
 - Jangan sentuh `apps/api` uang/auth. Jangan jalankan tsc/e2e/build (token heavy dipegang agent). Boleh `npx eslint <file>` dan `npx prettier --check <file>`.
 - Laporan: file berubah, state yang dibangun, penyimpangan dari mockup.
+
+## Hasil (13 Nov 2026)
+
+Dibangun: S35 `/kelola/status-edge` (ws02-edge), S31 panel total + "Ajukan untuk persetujuan" (ws07-accounting). Screenshot `design/screens/ui-u5b/` (1280/390, + gelap untuk 3 state), skrip `scripts/ui-check-u5b.mjs`.
+
+Sengaja berbeda dari mockup:
+- S35: ikon alert segitiga (set lucide); tanpa garis tepi kiri tebal (dilarang craft floor); badge status pil + ikon; tanpa daftar "Tinjau kondisi" (alat mockup) diganti `?demo=` di mode mock; menu hanya tampil di mode mock sampai API cloud daftar node ada (lihat `ws02-edge/CONTRACT-GAPS.md`).
+- S31: sukses ajukan pindah ke halaman detail dengan banner hijau (jurnal yang sudah diajukan tidak bisa disunting di form); "Simpan draf" tetap ada; baris jurnal tetap tabel/kartu form lama (bukan blok "Baris N"); banner galat tanpa garis kiri merah muda (craft floor).
+- S31 tambahan: tombol "Setujui dan bukukan" disembunyikan bagi pemohon (tampilan saja, API tetap menolak).

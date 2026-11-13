@@ -255,10 +255,11 @@ export const accountingMessages = {
       totalDebit: "Total debit",
       totalCredit: "Total kredit",
       differenceLabel: "Selisih",
+      debitOver: "Debit lebih besar",
+      creditOver: "Kredit lebih besar",
       approvalNote:
         "Jurnal harus seimbang dan memerlukan persetujuan sebelum dibukukan.",
       submitForApproval: "Ajukan untuk persetujuan",
-      submittedForApproval: "Jurnal berhasil diajukan untuk persetujuan.",
       savedNotSubmitted:
         "Draf tersimpan, tetapi belum terkirim untuk persetujuan. Kirim dari halaman ini.",
       unbalancedTitle: "Jurnal belum seimbang",
@@ -282,6 +283,9 @@ export const accountingMessages = {
       openPosted: "Buka jurnal",
       approverHint:
         "Penyetuju harus orang yang berbeda dari pemohon. Tombol persetujuan hanya berhasil untuk akun penyetuju.",
+      requesterHint:
+        "Anda pemohon jurnal ini. Persetujuan harus dari orang lain.",
+      submittedBanner: "Jurnal berhasil diajukan untuk persetujuan.",
       permissionHint:
         "Menyetujui jurnal butuh izin posting akuntansi. Minta akun penyetuju bila tombol tidak muncul.",
       template: "Dari templat berulang",

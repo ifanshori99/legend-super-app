@@ -17,11 +17,10 @@ export function JournalTotalPanel({
 }) {
   const t = useT();
   const difference = Math.abs(evaluation.differenceIdr);
+  const showDirection =
+    evaluation.differenceIdr !== 0 && !hasAmountIssue && evaluation.filled >= 2;
   return (
-    <div
-      aria-live="polite"
-      className="grid gap-3 rounded-lg border-(length:--border-w) border-border bg-muted p-card sm:grid-cols-3"
-    >
+    <div className="grid gap-3 rounded-lg border-(length:--border-w) border-border bg-muted p-card sm:grid-cols-3">
       <div className="grid gap-1">
         <span className="text-sm leading-5 text-muted-foreground">
           {t("accounting.manual.form.totalDebit")}
@@ -41,24 +40,36 @@ export function JournalTotalPanel({
           {t("accounting.manual.form.differenceLabel")}
         </span>
         <strong className="tabular">{formatRupiah(difference)}</strong>
-        {evaluation.balanced ? (
-          <Badge tone="success">
-            <CircleCheck aria-hidden="true" />
-            {t("accounting.manual.form.balanced")}
-          </Badge>
-        ) : evaluation.filled < 2 ? (
-          // Nothing entered yet: a hint, not an error.
-          <span className="text-sm text-muted-foreground">
-            {t("accounting.manual.form.linesRequired")}
-          </span>
-        ) : (
-          <span className="flex items-center gap-2 text-sm font-medium text-danger">
-            <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
-            {evaluation.differenceIdr !== 0 && !hasAmountIssue
-              ? t("accounting.manual.form.unbalanced")
-              : t("form.invalid")}
-          </span>
-        )}
+        {/* Only the status is announced; the numbers change on every key. */}
+        <div aria-live="polite" className="grid gap-1 sm:justify-items-end">
+          {showDirection && (
+            <span className="text-sm leading-5 text-muted-foreground">
+              {t(
+                evaluation.differenceIdr > 0
+                  ? "accounting.manual.form.debitOver"
+                  : "accounting.manual.form.creditOver",
+              )}
+            </span>
+          )}
+          {evaluation.balanced ? (
+            <Badge tone="success">
+              <CircleCheck aria-hidden="true" />
+              {t("accounting.manual.form.balanced")}
+            </Badge>
+          ) : evaluation.filled < 2 ? (
+            // Nothing entered yet: a hint, not an error.
+            <span className="text-sm text-muted-foreground">
+              {t("accounting.manual.form.linesRequired")}
+            </span>
+          ) : (
+            <span className="flex items-center gap-2 text-sm font-medium text-danger">
+              <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
+              {evaluation.differenceIdr !== 0 && !hasAmountIssue
+                ? t("accounting.manual.form.unbalanced")
+                : t("form.invalid")}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

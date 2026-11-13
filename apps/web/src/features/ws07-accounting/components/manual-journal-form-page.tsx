@@ -141,10 +141,10 @@ export function ManualJournalFormPage({
                 },
               },
         );
-        toast({ title: t("accounting.manual.form.submittedForApproval") });
         void navigate({
           to: "/kelola/akuntansi/jurnal-manual/$manualJournalId",
           params: { manualJournalId: next.id },
+          search: { diajukan: 1 },
         });
         return;
       }
@@ -321,16 +321,20 @@ export function ManualJournalFormPage({
         <p className="text-sm leading-5 text-muted-foreground">
           {t("accounting.manual.form.approvalNote")}
         </p>
-        <div className="flex flex-col-reverse gap-2 border-t border-border pt-4 sm:flex-row sm:justify-end">
+        {/* DOM order = focus order = mobile order (Ajukan, Simpan draf, Batal). Desktop
+            reverses the row, so it still reads Batal, Simpan draf, Ajukan.
+            Simpan draf stays the first submit button, so Enter saves a draft. */}
+        <div className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row-reverse sm:justify-start">
           <Button
-            asChild
-            variant="outline"
             type="button"
+            loading={saveAndSubmit.isPending}
+            disabled={!canSubmit}
+            onClick={() => {
+              void submit("approval");
+            }}
             className="w-full sm:w-auto"
           >
-            <Link to="/kelola/akuntansi/jurnal-manual">
-              {t("common.cancel")}
-            </Link>
+            {t("accounting.manual.form.submitForApproval")}
           </Button>
           <Button
             type="submit"
@@ -344,15 +348,14 @@ export function ManualJournalFormPage({
               : t("accounting.manual.form.saveDraft")}
           </Button>
           <Button
+            asChild
+            variant="outline"
             type="button"
-            loading={saveAndSubmit.isPending}
-            disabled={!canSubmit}
-            onClick={() => {
-              void submit("approval");
-            }}
             className="w-full sm:w-auto"
           >
-            {t("accounting.manual.form.submitForApproval")}
+            <Link to="/kelola/akuntansi/jurnal-manual">
+              {t("common.cancel")}
+            </Link>
           </Button>
         </div>
       </form>

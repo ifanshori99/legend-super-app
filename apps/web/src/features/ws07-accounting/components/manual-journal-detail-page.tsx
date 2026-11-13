@@ -4,7 +4,7 @@
 // posts the entry in the same operation. The API re-checks the actor.
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, ExternalLink, Pencil } from "lucide-react";
+import { ArrowLeft, CircleCheck, ExternalLink, Pencil } from "lucide-react";
 import { ApiError } from "@/lib/api/errors";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,8 @@ import {
 } from "../hooks";
 import {
   MANUAL_KIND_KEYS,
+  canApproveManualJournal,
+  isManualJournalRequester,
   formatBusinessDate,
   formatDateTime,
   manualJournalActions,
@@ -34,10 +36,16 @@ import { ManualJournalStatusBadge } from "./status-badge";
 export function ManualJournalDetailPage({
   manualJournalId,
   canPost,
+  currentUserId,
+  justSubmitted = false,
 }: {
   manualJournalId: string;
   /** Holds `accounting.journal.post`: approval/rejection is theirs (AUTH-06). */
   canPost: boolean;
+  /** The signed-in user; hides "Setujui" on their own request (display only). */
+  currentUserId?: string;
+  /** Arrived from the form's "Ajukan untuk persetujuan". */
+  justSubmitted?: boolean;
 }) {
   const t = useT();
   const toast = useToast();
@@ -51,20 +59,27 @@ export function ManualJournalDetailPage({
   const [rejectOpen, setRejectOpen] = React.useState(false);
   const [cancelOpen, setCancelOpen] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
+  // Green banner in the page, not a toast over the card; the next action clears
+  // it, and it only shows while the journal is still waiting for approval (a
+  // stale ?diajukan=1 after "Tarik kembali" and a reload shows nothing).
+  const [submittedBanner, setSubmittedBanner] = React.useState(justSubmitted);
 
   const run = async (next: "submit" | "withdraw" | "approve" | "cancel") => {
     setActionError(null);
+    setSubmittedBanner(false);
     try {
       await command.mutateAsync({ command: next });
+      if (next === "submit") {
+        setSubmittedBanner(true);
+        return;
+      }
       toast({
         title:
-          next === "submit"
-            ? t("accounting.manual.submitted")
-            : next === "withdraw"
-              ? t("accounting.manual.withdrawn")
-              : next === "approve"
-                ? t("accounting.manual.approved")
-                : t("accounting.manual.cancelled"),
+          next === "withdraw"
+            ? t("accounting.manual.withdrawn")
+            : next === "approve"
+              ? t("accounting.manual.approved")
+              : t("accounting.manual.cancelled"),
       });
     } catch (error) {
       setActionError(
@@ -138,10 +153,22 @@ export function ManualJournalDetailPage({
   // View-only users see the status and lines but no write action.
   const actions = canPost ? manualJournalActions(row.status) : [];
   const canDecide = actions.includes("approve") && canPost;
+  // AUTH-06 in the UI only: the API still decides.
+  const isRequester = isManualJournalRequester(row, currentUserId);
+  const canApprove = canDecide && canApproveManualJournal(row, currentUserId);
 
   return (
     <AccountingPage active="manual">
       <div className="grid gap-4">
+        {submittedBanner && row.status === "pending_approval" && (
+          <p
+            role="status"
+            className="flex items-center gap-2 rounded-lg border-(length:--border-w) border-success bg-success-subtle p-3 text-sm text-success"
+          >
+            <CircleCheck className="size-4 shrink-0" aria-hidden="true" />
+            {t("accounting.manual.detail.submittedBanner")}
+          </p>
+        )}
         <div>
           <Button asChild variant="ghost" size="sm">
             <Link to="/kelola/akuntansi/jurnal-manual">
@@ -241,7 +268,9 @@ export function ManualJournalDetailPage({
           {row.status === "pending_approval" && (
             <p className="text-sm leading-5 text-muted-foreground">
               {canPost
-                ? t("accounting.manual.detail.approverHint")
+                ? isRequester
+                  ? t("accounting.manual.detail.requesterHint")
+                  : t("accounting.manual.detail.approverHint")
                 : t("accounting.manual.detail.permissionHint")}
             </p>
           )}
@@ -290,7 +319,7 @@ export function ManualJournalDetailPage({
                 {t("accounting.manual.actions.withdraw")}
               </Button>
             )}
-            {canDecide && (
+            {canApprove && (
               <Button
                 type="button"
                 size="sm"

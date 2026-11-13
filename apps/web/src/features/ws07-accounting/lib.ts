@@ -404,6 +404,29 @@ export function manualJournalActions(
   }
 }
 
+/** The signed-in user raised this journal (AUTH-06: then someone else decides). */
+export function isManualJournalRequester(
+  row: { requestedBy: string },
+  currentUserId: string | undefined,
+): boolean {
+  return currentUserId !== undefined && currentUserId === row.requestedBy;
+}
+
+/**
+ * Whether to offer "Setujui dan bukukan": the status allows it and the viewer
+ * is not the requester. Display only; the API enforces AUTH-06 on its own, and
+ * an unknown viewer (no session id) is not hidden from.
+ */
+export function canApproveManualJournal(
+  row: { status: ManualJournalStatus; requestedBy: string },
+  currentUserId: string | undefined,
+): boolean {
+  return (
+    manualJournalActions(row.status).includes("approve") &&
+    !isManualJournalRequester(row, currentUserId)
+  );
+}
+
 export type RecurringJournalAction =
   "submit" | "approve" | "reject" | "pause" | "resume" | "end";
 

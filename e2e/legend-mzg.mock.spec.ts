@@ -64,7 +64,9 @@ test.describe("accounting back office", () => {
     await page.getByLabel("Kredit baris 2").fill("50000");
 
     // ACC-01: the imbalance is shown and saving is blocked.
-    await expect(page.getByText(/Selisih Rp/)).toBeVisible();
+    await expect(
+      page.locator("form").getByText("Selisih", { exact: true }).locator(".."),
+    ).toContainText(/Rp\s*50\.000/);
     await expect(
       page.getByRole("button", { name: "Simpan draf" }),
     ).toBeDisabled();

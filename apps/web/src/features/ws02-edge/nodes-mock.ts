@@ -4,6 +4,7 @@
 // and `?demo=`:
 //   normal  node connected, no alert    kosong  no node registered
 //   gagal   the read fails              memuat  the read never finishes
+//   terputus  two nodes with no link: one with an old status, one with none
 // Without `?demo=` the screen shows the mockup's alert state.
 import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api/errors";
 import { getLatencyMs, getScenario } from "@/lib/mock/control";
@@ -39,6 +40,26 @@ export async function mockEdgeNodes(): Promise<EdgeNodesOverview> {
   if (seed === "memuat") return new Promise(() => {});
   if (scenario === "empty" || seed === "kosong")
     return { nodes: [], receiptRunAlert: null };
+  if (seed === "terputus")
+    return {
+      nodes: [
+        {
+          id: "01ARZ3NDEKTSV4RRFFQ69G5FC1",
+          name: "edge-jakarta-01",
+          outletName: "Jakarta Pusat",
+          link: "disconnected",
+          lastUpdatedAt: isoAgo(3 * 60 * 60_000),
+        },
+        {
+          id: "01ARZ3NDEKTSV4RRFFQ69G5FC2",
+          name: "edge-bandung-01",
+          outletName: "Bandung Dago",
+          link: "disconnected",
+          lastUpdatedAt: null,
+        },
+      ],
+      receiptRunAlert: null,
+    };
   const updatedAt = isoAgo(60_000);
   return {
     nodes: [

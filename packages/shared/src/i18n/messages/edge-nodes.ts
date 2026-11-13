@@ -17,11 +17,13 @@ export const edgeNodesMessages = {
   updatedUnknown: "Belum ada pembaruan",
   loading: "Memuat status edge…",
   emptyTitle: "Belum ada node edge",
-  emptyHint: "Node yang terdaftar untuk outlet ini akan muncul di sini.",
+  emptyHint:
+    "Node yang terdaftar untuk outlet Anda akan muncul di sini. Perangkat edge dipasang dari layar Koneksi & Cetak di kasir.",
+  connectivityLink: "Buka Koneksi & Cetak",
   errorTitle: "Status edge belum bisa dimuat",
   errorHint:
     "Periksa koneksi, lalu coba lagi. Peringatan terkini belum dapat dipastikan.",
   pendingTitle: "Fitur ini belum tersambung ke server",
   pendingHint:
-    "Daftar node edge di back-office menunggu API cloud. Status koneksi tetap bisa dipantau di layar Koneksi & Cetak kasir.",
+    "Daftar node edge di back-office menunggu API cloud. Sementara itu, status koneksi outlet tetap bisa dipantau di layar Koneksi & Cetak.",
 };
