@@ -71,9 +71,14 @@ import {
 } from "./reservation-plan.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { cancelPaymentLinkInTx } from "./payment.service.ts";
+import { confirmLinkUnpaidAtProvider } from "./payment-provider-proof.ts";
 import { sessionDepositCredit } from "./reservation-deposit-credit.ts";
 import { requestDepositRefund } from "./reservation-refunds.ts";
-import { openStaffSeatedSession } from "./table-session.service.ts";
+import {
+  activeSessionForTable,
+  openStaffSeatedSession,
+} from "./table-session.service.ts";
+import { confirmChargeLinksUnpaid } from "./order-recovery-charge.ts";
 
 type Page<T> = {
   data: T[];
@@ -290,6 +295,24 @@ export async function seatReservation(
     tableIds: [...tableIds].sort(),
   });
   try {
+    // legend-ukbq3: seating can expire a stale session on these tables and its
+    // open charges. Their payment links are confirmed unpaid at the provider
+    // before the transaction (network I/O stays outside it); an unconfirmed
+    // answer (409 PAYMENT_PROVIDER_UNCONFIRMED) propagates and nothing is seated.
+    const activeSessionIds = await withTenant(db, context, async (tx) => {
+      const ids = new Set<string>();
+      for (const tableId of [...tableIds].sort()) {
+        const active = await activeSessionForTable(
+          tx,
+          context.tenant.tenantId,
+          tableId,
+        );
+        if (active) ids.add(active.id);
+      }
+      return [...ids];
+    });
+    for (const sessionId of activeSessionIds)
+      await confirmChargeLinksUnpaid(context, { sessionId }, now);
     return await withTenant(db, context, async (tx) => {
       await assertPermission(
         tx,
@@ -430,6 +453,37 @@ async function closeReservation(
     reservationId,
     reason,
   });
+  // legend-ukbq3: ask the payment provider before closing the DP link locally
+  // (network I/O, so outside the transaction and the reservation/link locks).
+  // Authorization runs first so an unauthorized caller never reaches the
+  // provider. Money already at the provider is applied once by the helper; the
+  // transaction below then re-reads it (reconcileDeposit / paid-deposit path).
+  // An unconfirmed provider answer throws 409 PAYMENT_PROVIDER_UNCONFIRMED and
+  // nothing is cancelled.
+  const depositLinkId = await withTenant(db, context, async (tx) => {
+    await assertPermission(
+      tx,
+      context,
+      actorUserId,
+      MANAGE_PERMISSION,
+      outletTarget(outletId),
+    );
+    assertOutletInScope(context.outletScope, outletId);
+    const [found] = await tx
+      .select({ linkId: reservations.depositPaymentLinkId })
+      .from(reservations)
+      .where(
+        and(
+          eq(reservations.tenantId, context.tenant.tenantId),
+          eq(reservations.outletId, outletId),
+          eq(reservations.id, reservationId),
+        ),
+      )
+      .limit(1);
+    return found?.linkId ?? null;
+  });
+  if (depositLinkId !== null)
+    await confirmLinkUnpaidAtProvider(context, depositLinkId, now);
   const done = await withTenant(db, context, async (tx) => {
     await assertPermission(
       tx,

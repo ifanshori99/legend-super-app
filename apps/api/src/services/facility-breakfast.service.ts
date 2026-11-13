@@ -56,8 +56,10 @@ import {
   type Tx,
 } from "./facility-shared.ts";
 import {
+  assertBreakfastLinkHoldsNoMoney,
   breakfastLines,
   cancelBreakfastOrderTx,
+  confirmBreakfastLinkUnpaid,
   DEAD_TICKET_STATUSES,
   fireBreakfastOrderTx,
   lockBreakfastOrder,
@@ -614,84 +616,101 @@ export async function payBreakfastOrderForMember(
   _body: { idempotencyKey: string },
   now = new Date(),
 ): Promise<BreakfastPayment> {
-  const result = await withTenant(db, context, async (tx) => {
-    const tenantId = context.tenant.tenantId;
-    const { order, linked, ticket } = await lockOwnOrder(
-      tx,
-      context,
-      member,
-      ticketId,
-      orderId,
-    );
-    const dto = await toBreakfastOrder(tx, context, linked);
-    if (linked.status === "cancelled")
-      throw new FacilityError("BREAKFAST_ORDER_CANCELLED");
-    // Paid or fired: nothing left to pay, no token.
-    if (linked.status !== "awaiting_payment")
-      return breakfastPaymentSchema.parse({ order: dto, paymentToken: null });
-    // No new code or link for a dead ticket or an ended session: a payment
-    // made then would only be refunded. The sweep would cancel this order for
-    // the same reason, so cancel now: that closes the pay link the guest may
-    // already hold. Refused after the commit, or the cancel would roll back.
-    if (
-      DEAD_TICKET_STATUSES.includes(ticket.status) ||
-      now.getTime() >= ticket.endsAt.getTime()
-    ) {
-      // Link before intent (the cancel updates both).
-      if (order.paymentLinkId !== null)
-        await lockBreakfastPayLink(tx, context, order.paymentLinkId);
-      await cancelBreakfastOrderTx(
+  // `confirmed`: the provider was asked about the pay link (outside any lock)
+  // before this run may cancel; the first run only reports that it must.
+  const attempt = (confirmed: boolean) =>
+    withTenant(db, context, async (tx) => {
+      const tenantId = context.tenant.tenantId;
+      const { order, linked, ticket } = await lockOwnOrder(
         tx,
         context,
-        { order, linked },
-        { reason: "payment_window_closed", actorUserId: null, now },
+        member,
+        ticketId,
+        orderId,
       );
-      return null;
-    }
-    if (order.status !== "awaiting_payment")
-      throw new CoreError("CONFLICT", "Pesanan ini tidak menunggu pembayaran.");
-    const aad = linkSealAad(tenantId, order.id);
-    if (order.paymentLinkId !== null) {
-      if (order.paymentLinkTokenSealed === null)
-        throw new Error("Payment link token missing");
+      const dto = await toBreakfastOrder(tx, context, linked);
+      if (linked.status === "cancelled")
+        throw new FacilityError("BREAKFAST_ORDER_CANCELLED");
+      // Paid or fired: nothing left to pay, no token.
+      if (linked.status !== "awaiting_payment")
+        return breakfastPaymentSchema.parse({ order: dto, paymentToken: null });
+      // No new code or link for a dead ticket or an ended session: a payment
+      // made then would only be refunded. The sweep would cancel this order for
+      // the same reason, so cancel now: that closes the pay link the guest may
+      // already hold. Refused after the commit, or the cancel would roll back.
+      if (
+        DEAD_TICKET_STATUSES.includes(ticket.status) ||
+        now.getTime() >= ticket.endsAt.getTime()
+      ) {
+        // A pay link the guest may hold is proven unpaid at the provider first,
+        // outside this lock: stop here, nothing written, and run again.
+        if (order.paymentLinkId !== null && !confirmed)
+          return "confirm" as const;
+        // Link before intent (the cancel updates both).
+        if (order.paymentLinkId !== null)
+          await lockBreakfastPayLink(tx, context, order.paymentLinkId);
+        await assertBreakfastLinkHoldsNoMoney(tx, context, { order, linked });
+        await cancelBreakfastOrderTx(
+          tx,
+          context,
+          { order, linked },
+          { reason: "payment_window_closed", actorUserId: null, now },
+        );
+        return null;
+      }
+      if (order.status !== "awaiting_payment")
+        throw new CoreError(
+          "CONFLICT",
+          "Pesanan ini tidak menunggu pembayaran.",
+        );
+      const aad = linkSealAad(tenantId, order.id);
+      if (order.paymentLinkId !== null) {
+        if (order.paymentLinkTokenSealed === null)
+          throw new Error("Payment link token missing");
+        return breakfastPaymentSchema.parse({
+          order: dto,
+          paymentToken: openSecret(order.paymentLinkTokenSealed, aad),
+        });
+      }
+      // The link is opened once, while this transaction holds the order row, so
+      // concurrent payers never open two bills (same pattern as QR).
+      const opened = await createPaymentLink(
+        context,
+        {
+          outletId: order.outletId,
+          reference: order.number,
+          tableLabel: null,
+          pax: null,
+          subtotalIdr: orderNetSubtotalIdr(order),
+          discountIdr: order.discountIdr + order.depositAppliedIdr,
+          serviceChargeIdr: order.serviceChargeIdr,
+          taxIdr: order.taxIdr,
+          roundingIdr: order.roundingIdr,
+          totalIdr: order.totalIdr - order.depositAppliedIdr,
+          returnPath: null,
+        },
+        LINK_CREATED_BY,
+        now,
+      );
+      await tx
+        .update(orders)
+        .set({
+          paymentLinkId: opened.linkId,
+          paymentLinkTokenSealed: sealSecret(opened.token, aad),
+          updatedAt: now,
+        })
+        .where(and(eq(orders.tenantId, tenantId), eq(orders.id, order.id)));
       return breakfastPaymentSchema.parse({
         order: dto,
-        paymentToken: openSecret(order.paymentLinkTokenSealed, aad),
+        paymentToken: opened.token,
       });
-    }
-    // The link is opened once, while this transaction holds the order row, so
-    // concurrent payers never open two bills (same pattern as QR).
-    const opened = await createPaymentLink(
-      context,
-      {
-        outletId: order.outletId,
-        reference: order.number,
-        tableLabel: null,
-        pax: null,
-        subtotalIdr: orderNetSubtotalIdr(order),
-        discountIdr: order.discountIdr + order.depositAppliedIdr,
-        serviceChargeIdr: order.serviceChargeIdr,
-        taxIdr: order.taxIdr,
-        roundingIdr: order.roundingIdr,
-        totalIdr: order.totalIdr - order.depositAppliedIdr,
-        returnPath: null,
-      },
-      LINK_CREATED_BY,
-      now,
-    );
-    await tx
-      .update(orders)
-      .set({
-        paymentLinkId: opened.linkId,
-        paymentLinkTokenSealed: sealSecret(opened.token, aad),
-        updatedAt: now,
-      })
-      .where(and(eq(orders.tenantId, tenantId), eq(orders.id, order.id)));
-    return breakfastPaymentSchema.parse({
-      order: dto,
-      paymentToken: opened.token,
     });
-  });
+  let result = await attempt(false);
+  if (result === "confirm") {
+    await confirmBreakfastLinkUnpaid(context, orderId, now);
+    result = await attempt(true);
+  }
+  if (result === "confirm") throw new FacilityError("BREAKFAST_UNAVAILABLE");
   if (result === null) throw new FacilityError("BREAKFAST_UNAVAILABLE");
   return result;
 }
@@ -706,8 +725,20 @@ export async function cancelBreakfastOrderForMember(
   _body: { idempotencyKey: string },
   now = new Date(),
 ): Promise<BreakfastCancelResult> {
+  // Own order first (a stranger's order is never touched at the provider), then
+  // the provider proof outside any lock; the cancel below re-reads under lock:
+  // an order the proof found paid takes the paid (refund) path.
+  await withTenant(db, context, (tx) =>
+    lockOwnOrder(tx, context, member, ticketId, orderId),
+  );
+  await confirmBreakfastLinkUnpaid(context, orderId, now);
   return withTenant(db, context, async (tx) => {
     const locked = await lockOwnOrder(tx, context, member, ticketId, orderId);
+    // Link before intent; refuse while an intent of the link holds money the
+    // order does not show as paid yet (the next try takes the refund path).
+    if (locked.order.paymentLinkId !== null)
+      await lockBreakfastPayLink(tx, context, locked.order.paymentLinkId);
+    await assertBreakfastLinkHoldsNoMoney(tx, context, locked);
     const { linked, refundIdr } = await cancelBreakfastOrderTx(
       tx,
       context,

@@ -28,7 +28,11 @@ import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
-import { lockChargeChain } from "./order-recovery-charge.ts";
+import {
+  assertNoPaidIntentOnChargeLink,
+  confirmChargeLinksUnpaid,
+  lockChargeChain,
+} from "./order-recovery-charge.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import { cancelPaymentLinkInTx } from "./payment.service.ts";
 import { notifyQrOrderChange } from "./qr-order-realtime-signal.ts";
@@ -108,6 +112,9 @@ export async function closeIssueCharge(
 ): Promise<IssueChargeView> {
   const target = TARGET[action];
   const tenantId = context.tenant.tenantId;
+  // legend-ukbq3: ask the provider first (outside the transaction). Money the
+  // provider already holds is applied to the charge, never cancelled locally.
+  const settled = await confirmChargeLinksUnpaid(context, { chargeId }, now);
   return withTenant(db, context, async (tx) => {
     const snapshot = await accessSnapshotInTransaction(
       tx,
@@ -135,6 +142,17 @@ export async function closeIssueCharge(
         "CONFLICT",
         "Hanya tagihan selisih yang masih terbuka yang dapat ditutup.",
       );
+    // The provider holds money for this charge but it is still open: wait for
+    // the payment to be applied, do not close it. `settled` covers a payment
+    // just applied by the call above; the guard covers a retry, where the
+    // intent is already paid and the call above answers `unpaid`.
+    if (settled)
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "QRIS sudah dibayar; tunggu konfirmasi.",
+      );
+    await assertNoPaidIntentOnChargeLink(tx, tenantId, charge.paymentLinkId);
 
     const [updated] = await tx
       .update(orderIssueCharges)

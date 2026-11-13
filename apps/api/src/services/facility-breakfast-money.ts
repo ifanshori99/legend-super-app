@@ -25,6 +25,7 @@
 //   order counts as "sale in use" in `refundableBalance` like a fired QR one).
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
+  CoreError,
   createUlid,
   idr,
   ulidToUuid,
@@ -38,14 +39,17 @@ import {
   paymentLinks,
   paymentRefunds,
 } from "../db/schema/index.ts";
+import { db } from "../db/index.ts";
 import { accessTickets, facilityLinkedOrders } from "../db/schema/facility.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
+import { withTenant } from "../db/tenant.ts";
 import { recordAudit } from "./core-audit.ts";
 import { auditFacility } from "./facility-shared.ts";
 import { routeFiredItemsToKitchen } from "./kds.service.ts";
 import type { Tx } from "./menu-internals.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
+import { confirmLinkUnpaidAtProvider } from "./payment-provider-proof.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { openRefundChainSafely } from "./payment-refund.service.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
@@ -136,6 +140,43 @@ export async function lockBreakfastPayLink(
       ),
     )
     .for("update");
+}
+
+/**
+ * Guard for the callers that cancel an UNPAID order (pay on a dead ticket, member
+ * cancel, sweep; legend-ukbq3). Call it in the transaction that holds the order
+ * rows, AFTER `lockBreakfastPayLink`, before `cancelBreakfastOrderTx`. Money can
+ * reach an intent of the link before the worker records the order `paid`
+ * (`payment.paid` goes through the outbox): cancelling then would close the link
+ * and the consumer would refund the whole payment as late. Refuses with 409 so
+ * the caller retries once the paid mark is recorded and takes the paid (refund)
+ * path. Not part of `cancelBreakfastOrderTx`: the consumer cancels there too, to
+ * refund a late payment.
+ */
+export async function assertBreakfastLinkHoldsNoMoney(
+  tx: Tx,
+  context: ScopedTenantContext,
+  locked: LockedBreakfast,
+): Promise<void> {
+  const { order, linked } = locked;
+  if (order.paymentLinkId === null || linked.status !== "awaiting_payment")
+    return;
+  const [taken] = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.paymentLinkId, order.paymentLinkId),
+        inArray(paymentIntents.status, [...BREAKFAST_PAID_INTENT_STATUSES]),
+      ),
+    )
+    .limit(1);
+  if (taken)
+    throw new CoreError(
+      "CONFLICT",
+      "Pembayaran sudah diterima; tunggu konfirmasi.",
+    );
 }
 
 /**
@@ -373,6 +414,44 @@ export async function refileBreakfastRefundAfterFailure(
     keySuffix: refund.id,
     now,
   });
+}
+
+/**
+ * Provider proof before a breakfast cancel (legend-ukbq3). Call it OUTSIDE any
+ * transaction and lock, before the transaction that runs `cancelBreakfastOrderTx`
+ * (it does network I/O). Asks the provider about the pay link of the order: money
+ * already there is applied once through the normal settlement path, so the
+ * caller's own locked re-read finds the order `paid` and takes the existing paid
+ * (refund) path instead of a local cancel; an unclear answer throws 409
+ * `PAYMENT_PROVIDER_UNCONFIRMED` and nothing is cancelled. An order without a
+ * link, or already cancelled or fired, needs no proof.
+ */
+export async function confirmBreakfastLinkUnpaid(
+  context: ScopedTenantContext,
+  orderId: string,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const found = await withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select({
+        linkId: orders.paymentLinkId,
+        status: facilityLinkedOrders.status,
+      })
+      .from(orders)
+      .innerJoin(
+        facilityLinkedOrders,
+        and(
+          eq(facilityLinkedOrders.tenantId, orders.tenantId),
+          eq(facilityLinkedOrders.orderId, orders.id),
+        ),
+      )
+      .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
+    return row ?? null;
+  });
+  if (!found || found.linkId === null) return;
+  if (found.status === "cancelled" || found.status === "fired") return;
+  await confirmLinkUnpaidAtProvider(context, found.linkId, now);
 }
 
 /**

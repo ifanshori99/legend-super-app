@@ -29,7 +29,7 @@
 //   event. They leave an audit row on the issue. Technical errors throw.
 // Events of another tenant or outlet, and every other event, are ignored.
 
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import {
   createUlid,
   idr,
@@ -40,6 +40,7 @@ import {
 } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
 import { qrOrderEvents } from "@starter/shared/qr-order";
+import { db } from "../db/index.ts";
 import { auditLogs } from "../db/schema/core-audit.ts";
 import { domainEventOutbox } from "../db/schema/core-events.ts";
 import { tableSessions } from "../db/schema/floor.ts";
@@ -47,10 +48,13 @@ import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues.ts";
 import { paymentIntents, paymentLinks } from "../db/schema/index.ts";
 import { posOrders } from "../db/schema/pos-order.ts";
 import { orders } from "../db/schema/qr-order.ts";
+import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { OrderRevenueMismatch } from "./order-revenue.ts";
 import { recoveryChargeSplit } from "./order-recovery-refund-amount.ts";
+import { confirmLinkUnpaidAtProvider } from "./payment-provider-proof.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { cancelPaymentLinkInTx } from "./payment.service.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -334,6 +338,97 @@ async function sessionIsClosed(
   return session?.status === "closed" || session?.status === "voided";
 }
 
+/**
+ * legend-ukbq3: asks the payment provider about the link of every still-taking
+ * charge (`open`, `routed_pos`) of `scope` BEFORE the caller's transaction
+ * cancels the link locally. Runs outside any transaction and lock (network
+ * I/O); the charges are read in a short transaction of their own. A charge the
+ * provider already holds money for is settled (`confirmLinkUnpaidAtProvider`
+ * applies the payment once), so the caller's transaction finds it no longer
+ * `open`. Returns true when any link was settled. A provider that cannot be
+ * reached or answers unclearly throws 409 `PAYMENT_PROVIDER_UNCONFIRMED`: the
+ * caller must not cancel anything then.
+ */
+export async function confirmChargeLinksUnpaid(
+  context: ScopedTenantContext,
+  scope: { chargeId: string } | { sessionId: string },
+  now: Date,
+): Promise<boolean> {
+  const tenantId = context.tenant.tenantId;
+  const rows = await withTenant(db, context, (tx) =>
+    tx
+      .select({ paymentLinkId: orderIssueCharges.paymentLinkId })
+      .from(orderIssueCharges)
+      .where(
+        and(
+          eq(orderIssueCharges.tenantId, tenantId),
+          "chargeId" in scope
+            ? eq(orderIssueCharges.id, scope.chargeId)
+            : eq(orderIssueCharges.tableSessionId, scope.sessionId),
+          inArray(orderIssueCharges.status, ["open", "routed_pos"]),
+          isNotNull(orderIssueCharges.paymentLinkId),
+        ),
+      )
+      .orderBy(orderIssueCharges.id),
+  );
+  let settled = false;
+  for (const { paymentLinkId } of rows) {
+    if (paymentLinkId === null) continue;
+    const verdict = await confirmLinkUnpaidAtProvider(
+      context,
+      paymentLinkId,
+      now,
+    );
+    if (verdict === "settled") settled = true;
+  }
+  return settled;
+}
+
+/**
+ * legend-ukbq3: inside the caller's transaction, after `lockChargeChain`, throws
+ * 409 when a `paid` intent of the charge's link exists while the charge is
+ * still `open`. `payment.paid` is applied by the worker through the outbox, so
+ * the charge row lags behind the intent: closing now would make the consumer
+ * refund the customer in full (`late_payment_on_closed_charge`). The link is
+ * locked first (link, then intent: the confirmation order), so a confirmation
+ * cannot commit `paid` between this check and the cancel that follows. Same
+ * guard as the POS route (`order-recovery-charge-pos.ts`).
+ */
+export async function assertNoPaidIntentOnChargeLink(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  paymentLinkId: string | null,
+): Promise<void> {
+  if (paymentLinkId === null) return;
+  await tx
+    .select({ id: paymentLinks.id })
+    .from(paymentLinks)
+    .where(
+      and(
+        eq(paymentLinks.tenantId, tenantId),
+        eq(paymentLinks.id, paymentLinkId),
+      ),
+    )
+    .for("update");
+  const [taken] = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.paymentLinkId, paymentLinkId),
+        eq(paymentIntents.status, "paid"),
+      ),
+    )
+    .limit(1);
+  if (taken)
+    throw new HttpError(
+      409,
+      "CONFLICT",
+      "QRIS sudah dibayar; tunggu konfirmasi.",
+    );
+}
+
 type OpenChargeClosing = {
   closeReason: string;
   closedBy: string | null;
@@ -373,6 +468,8 @@ async function closeOpenChargesOfSession(
     const locked = await lockChargeChain(tx, tenantId, { chargeId: id });
     if (!locked || locked.charge.status !== "open") continue;
     const { charge, issue } = locked;
+    // A paid intent the worker has not applied yet: 409, the close retries.
+    await assertNoPaidIntentOnChargeLink(tx, tenantId, charge.paymentLinkId);
     await tx
       .update(orderIssueCharges)
       .set({
@@ -410,7 +507,10 @@ async function closeOpenChargesOfSession(
 
 /**
  * Expires every `open` charge of a table session that is ending (forced close
- * by a waiter, session expiry), in the closing transaction `tx`: status
+ * by a waiter, session expiry), in the closing transaction `tx`. The caller
+ * must run `confirmChargeLinksUnpaid(context, { sessionId }, now)` BEFORE
+ * opening that transaction (legend-ukbq3): this function does no provider I/O,
+ * and a charge settled by that call is no longer `open` here. Per charge: status
  * `expired`, reason `session_closed`, no closer, the payment link cancelled and
  * one `order_issue.charge_expired` audit row (actor system) per charge. Returns
  * the number of charges expired. No journal: revenue is only recognised when
