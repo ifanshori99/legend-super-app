@@ -9,7 +9,13 @@
 //   for platform roles (§6 B role_assignments are tenant rows), so the factor
 //   check is the gate itself.
 //
-// Both use the same session policy: a guarded surface makes the session
+// - requireTenantStepUpMfa: a tenant action that moves money (payroll payout).
+//   Needs a second factor verified recently in this session (re-verifying a
+//   code or passkey refreshes `mfa_verified_at`). No password-only sign-in
+//   rule and no platform session policy: a tenant approver may sign in by any
+//   method, but must hold a factor.
+//
+// The first two use the same session policy: a guarded surface makes the session
 // management, so it ends after 30 idle minutes (§3 F6 "Sesi & Perangkat").
 
 import type { RequestHandler } from "express";
@@ -111,6 +117,41 @@ export function requireSessionMfa(
       throw unauthorized();
     if (row.mfaVerifiedAt === null) throw new AccessError("MFA_REQUIRED");
     await touchSession({ row, management: true, now });
+    next();
+  };
+}
+
+/**
+ * Step-up for tenant money actions (payroll payout config, approve, export,
+ * confirm). No verified second factor is MFA_REQUIRED (403); a stamp older
+ * than `maxAgeMinutes` or one in the future is REAUTH_REQUIRED (401). A
+ * revoked or expired session never counts, even with a fresh stamp.
+ */
+export function requireTenantStepUpMfa(
+  options: {
+    readonly maxAgeMinutes?: number;
+    readonly now?: Clock;
+  } = {},
+): RequestHandler {
+  const maxAgeMs = (options.maxAgeMinutes ?? 15) * 60_000;
+  const clock = options.now ?? (() => new Date());
+  return async (req, _res, next) => {
+    const auth = getAuth(req);
+    const now = clock();
+    const row = await loadSessionRow(auth.session.id);
+    if (!row) throw unauthorized();
+    const policy = sessionPolicy({
+      row,
+      management: false,
+      mfaRequired: false,
+      now,
+    });
+    if (policy.gate === "revoked" || policy.gate === "expired")
+      throw unauthorized();
+    if (row.mfaVerifiedAt === null) throw new AccessError("MFA_REQUIRED");
+    const age = now.getTime() - row.mfaVerifiedAt.getTime();
+    if (!(age >= 0 && age <= maxAgeMs))
+      throw new AccessError("REAUTH_REQUIRED");
     next();
   };
 }

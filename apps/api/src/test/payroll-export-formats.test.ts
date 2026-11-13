@@ -103,8 +103,8 @@ describe("bank formatter registry", () => {
     expect(typeof formatter.render).toBe("function");
   });
 
-  it("[bank-format-unsupported] bca, mandiri, bni and bjb throw HttpError 422 PAYROLL_BANK_FORMAT_NOT_SUPPORTED (no guessed layout)", () => {
-    for (const format of ["bca", "mandiri", "bni", "bjb"] as const) {
+  it("[bank-format-unsupported] mandiri, bni and bjb throw HttpError 422 PAYROLL_BANK_FORMAT_NOT_SUPPORTED (no guessed layout; bca is supported since legend-648)", () => {
+    for (const format of ["mandiri", "bni", "bjb"] as const) {
       let error: unknown;
       try {
         getBankFormatter(format);

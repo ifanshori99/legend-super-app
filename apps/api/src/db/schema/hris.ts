@@ -206,6 +206,9 @@ export const employees = pgTable(
     bpjsTkNoHmac: varchar("bpjs_tk_no_hmac", { length: 64 }),
     bankAccountEncrypted: bytea("bank_account_encrypted"),
     bankAccountHmac: varchar("bank_account_hmac", { length: 64 }),
+    /** Bank Indonesia bank code (3 digits, not secret) of the account above;
+     * null for data entered before 0516 (payroll disbursement). */
+    bankCode: text("bank_code"),
     emergencyContactNameEncrypted: bytea("emergency_contact_name_encrypted"),
     emergencyContactPhoneEncrypted: bytea("emergency_contact_phone_encrypted"),
     /** Key version every sealed column of this row was written with. */
@@ -322,6 +325,10 @@ export const employees = pgTable(
     check(
       "employees_bank_account_pair_check",
       sql`(${table.bankAccountEncrypted} IS NULL) = (${table.bankAccountHmac} IS NULL) AND (${table.bankAccountHmac} IS NULL OR ${table.bankAccountHmac} ~ ${sql.raw(HMAC_FORMAT)})`,
+    ),
+    check(
+      "employees_bank_code_check",
+      sql`${table.bankCode} IS NULL OR ${table.bankCode} ~ '^[0-9]{3}$'`,
     ),
   ],
 );

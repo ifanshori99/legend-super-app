@@ -56,6 +56,10 @@ import {
   payrollRapels,
   payrollRapelItems,
 } from "../db/schema/payroll-rapel.ts";
+import {
+  payrollDisbursementBatches,
+  payrollDisbursementItems,
+} from "../db/schema/payroll-payout.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   HRIS_PII_KEY_VERSION,
@@ -85,7 +89,9 @@ type ResealTable =
   | "payslips"
   | "payslip_bank_snapshots"
   | "payroll_rapels"
-  | "payroll_rapel_items";
+  | "payroll_rapel_items"
+  | "payroll_disbursement_batches"
+  | "payroll_disbursement_items";
 
 export type HrisPiiResealResult = {
   tenants: number;
@@ -96,6 +102,8 @@ export type HrisPiiResealResult = {
   bankSnapshots: number;
   rapels: number;
   rapelItems: number;
+  disbursementBatches: number;
+  disbursementItems: number;
   failedTenants: number;
   /** Tenants that still hold stale rows after the run (locked by others). */
   incompleteTenants: number;
@@ -218,6 +226,24 @@ async function countStale(
           ne(payrollRapelItems.piiKeyVersion, active),
         ),
       );
+    const [staleDisbursementBatches] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(payrollDisbursementBatches)
+      .where(
+        and(
+          eq(payrollDisbursementBatches.tenantId, tenantId),
+          ne(payrollDisbursementBatches.piiKeyVersion, active),
+        ),
+      );
+    const [staleDisbursementItems] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(payrollDisbursementItems)
+      .where(
+        and(
+          eq(payrollDisbursementItems.tenantId, tenantId),
+          ne(payrollDisbursementItems.piiKeyVersion, active),
+        ),
+      );
     return (
       Number(staleEmployees?.n ?? 0) +
       Number(staleContracts?.n ?? 0) +
@@ -225,7 +251,9 @@ async function countStale(
       Number(stalePayslips?.n ?? 0) +
       Number(staleBankSnapshots?.n ?? 0) +
       Number(staleRapels?.n ?? 0) +
-      Number(staleRapelItems?.n ?? 0)
+      Number(staleRapelItems?.n ?? 0) +
+      Number(staleDisbursementBatches?.n ?? 0) +
+      Number(staleDisbursementItems?.n ?? 0)
     );
   });
 }
@@ -607,6 +635,138 @@ async function resealRapelItemBatch(
   });
 }
 
+/** Sealed batch totals ride the same rotating key ring. */
+async function resealDisbursementBatchBatch(
+  database: Database,
+  context: ScopedTenantContext,
+  batchSize: number,
+  active: number,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  return withTenant(database, context, async (tx) => {
+    await tx.execute(
+      sql`SELECT set_config('app.payroll_reseal', 'on', true), set_config('app.payroll_reseal_target_version', ${String(active)}, true)`,
+    );
+    const rows = await tx
+      .select()
+      .from(payrollDisbursementBatches)
+      .where(
+        and(
+          eq(payrollDisbursementBatches.tenantId, tenantId),
+          lt(payrollDisbursementBatches.piiKeyVersion, active),
+        ),
+      )
+      .orderBy(asc(payrollDisbursementBatches.id))
+      .limit(batchSize)
+      .for("update", { skipLocked: true });
+    for (const row of rows) {
+      const binding = {
+        tenantId,
+        table: "payroll_disbursement_batches",
+        rowId: row.id,
+        field: "totals",
+      } as const;
+      const totalsEncrypted = sealPayrollValue(
+        openPayrollValue(row.totalsEncrypted, binding, row.piiKeyVersion),
+        binding,
+        active,
+      );
+      await tx
+        .update(payrollDisbursementBatches)
+        .set({ totalsEncrypted, piiKeyVersion: active })
+        .where(
+          and(
+            eq(payrollDisbursementBatches.tenantId, tenantId),
+            eq(payrollDisbursementBatches.id, row.id),
+            lt(payrollDisbursementBatches.piiKeyVersion, active),
+          ),
+        );
+    }
+    return rows.length;
+  });
+}
+
+/** Item amount, fee and inquiry name share one key version: move them together. */
+async function resealDisbursementItemBatch(
+  database: Database,
+  context: ScopedTenantContext,
+  batchSize: number,
+  active: number,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  return withTenant(database, context, async (tx) => {
+    await tx.execute(
+      sql`SELECT set_config('app.payroll_reseal', 'on', true), set_config('app.payroll_reseal_target_version', ${String(active)}, true)`,
+    );
+    const rows = await tx
+      .select()
+      .from(payrollDisbursementItems)
+      .where(
+        and(
+          eq(payrollDisbursementItems.tenantId, tenantId),
+          lt(payrollDisbursementItems.piiKeyVersion, active),
+        ),
+      )
+      .orderBy(asc(payrollDisbursementItems.id))
+      .limit(batchSize)
+      .for("update", { skipLocked: true });
+    for (const row of rows) {
+      const binding = (field: "amount" | "fee" | "inquiryName") =>
+        ({
+          tenantId,
+          table: "payroll_disbursement_items",
+          rowId: row.id,
+          field,
+        }) as const;
+      const amountBinding = binding("amount");
+      const feeBinding = binding("fee");
+      const nameBinding = binding("inquiryName");
+      const amountEncrypted = sealPayrollAmount(
+        openPayrollAmount(
+          row.amountEncrypted,
+          amountBinding,
+          row.piiKeyVersion,
+        ),
+        amountBinding,
+        active,
+      );
+      const feeIdrEncrypted = sealPayrollAmount(
+        openPayrollAmount(row.feeIdrEncrypted, feeBinding, row.piiKeyVersion),
+        feeBinding,
+        active,
+      );
+      const inquiryAccountNameEncrypted =
+        row.inquiryAccountNameEncrypted === null
+          ? null
+          : sealPayrollValue(
+              openPayrollValue(
+                row.inquiryAccountNameEncrypted,
+                nameBinding,
+                row.piiKeyVersion,
+              ),
+              nameBinding,
+              active,
+            );
+      await tx
+        .update(payrollDisbursementItems)
+        .set({
+          amountEncrypted,
+          feeIdrEncrypted,
+          inquiryAccountNameEncrypted,
+          piiKeyVersion: active,
+        })
+        .where(
+          and(
+            eq(payrollDisbursementItems.tenantId, tenantId),
+            eq(payrollDisbursementItems.id, row.id),
+            lt(payrollDisbursementItems.piiKeyVersion, active),
+          ),
+        );
+    }
+    return rows.length;
+  });
+}
+
 /** Re-seal every stale row of every tenant. */
 export async function runHrisPiiReseal(
   options: HrisPiiResealOptions = {},
@@ -632,6 +792,8 @@ export async function runHrisPiiReseal(
     bankSnapshots: 0,
     rapels: 0,
     rapelItems: 0,
+    disbursementBatches: 0,
+    disbursementItems: 0,
     failedTenants: 0,
     incompleteTenants: 0,
     aborted: false,
@@ -645,6 +807,8 @@ export async function runHrisPiiReseal(
     ["payslip_bank_snapshots", resealBankSnapshotBatch],
     ["payroll_rapels", resealRapelBatch],
     ["payroll_rapel_items", resealRapelItemBatch],
+    ["payroll_disbursement_batches", resealDisbursementBatchBatch],
+    ["payroll_disbursement_items", resealDisbursementItemBatch],
   ];
   for (const tenantId of tenantIds) {
     if (options.signal?.aborted) {
@@ -670,7 +834,10 @@ export async function runHrisPiiReseal(
           else if (table === "payslip_bank_snapshots")
             result.bankSnapshots += count;
           else if (table === "payroll_rapels") result.rapels += count;
-          else result.rapelItems += count;
+          else if (table === "payroll_rapel_items") result.rapelItems += count;
+          else if (table === "payroll_disbursement_batches")
+            result.disbursementBatches += count;
+          else result.disbursementItems += count;
           await options.afterBatch?.({ tenantId, table, count });
         }
         if (result.aborted) break;

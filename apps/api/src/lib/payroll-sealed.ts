@@ -30,9 +30,18 @@ export type PayrollSealBinding = {
     | "payroll_rapels"
     | "payroll_rapel_items"
     | "payslip_bank_snapshots"
-    | "payroll_run_results";
+    | "payroll_run_results"
+    | "payroll_disbursement_items"
+    | "payroll_disbursement_batches";
   readonly rowId: string;
-  readonly field: "amount" | "calculation" | "bankSnapshot" | "result";
+  readonly field:
+    | "amount"
+    | "calculation"
+    | "bankSnapshot"
+    | "result"
+    | "fee"
+    | "totals"
+    | "inquiryName";
 };
 
 function aadOf(binding: PayrollSealBinding, keyVersion: number): string {

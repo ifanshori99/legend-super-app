@@ -2255,6 +2255,34 @@
       "when": 1794570500000,
       "tag": "0335_purchase_price_variance",
       "breakpoints": true
+    },
+    {
+      "idx": 514,
+      "version": "7",
+      "when": 1794570600000,
+      "tag": "0514_payroll_payout_configs",
+      "breakpoints": true
+    },
+    {
+      "idx": 515,
+      "version": "7",
+      "when": 1794570700000,
+      "tag": "0515_payroll_disbursement_batches_items",
+      "breakpoints": true
+    },
+    {
+      "idx": 516,
+      "version": "7",
+      "when": 1794570800000,
+      "tag": "0516_payout_bank_codes",
+      "breakpoints": true
+    },
+    {
+      "idx": 517,
+      "version": "7",
+      "when": 1794570900000,
+      "tag": "0517_payroll_disbursement_grants",
+      "breakpoints": true
     }
   ]
 }

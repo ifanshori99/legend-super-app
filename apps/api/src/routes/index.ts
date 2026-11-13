@@ -98,6 +98,7 @@ import {
 import { payrollPolicyRouter, payrollThrRouter } from "./payroll-policy.routes";
 import { payrollServiceChargeRouter } from "./payroll-service-charge.routes";
 import { payrollRapelRouter } from "./payroll-rapel.routes";
+import { payrollPayoutRouter } from "./payroll-payout.routes";
 import { payrollRunsRouter } from "./payroll-runs.routes";
 import {
   payrollMyReimbursementsRouter,
@@ -400,6 +401,9 @@ apiRouter.use("/hris/payroll/rapel", payrollRapelRouter);
 // Payroll run simulate + lock (legend-c2yca). Guards per route, so the bank
 // transfer file paths under /runs fall through to the storage export router.
 apiRouter.use("/hris/payroll/runs", payrollRunsRouter);
+// Payroll payout / disbursement (legend-648). Guards per route; paths
+// `/payout-configs`, `/runs/:id/disbursement-batches`, `/disbursement-batches`.
+apiRouter.use("/hris/payroll", payrollPayoutRouter);
 apiRouter.use(
   "/hris/payroll/reimbursement-categories",
   payrollReimbursementCategoriesRouter,

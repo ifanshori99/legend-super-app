@@ -245,6 +245,11 @@ const entries = [
   ["payroll.approve", ["payroll", "approve"]],
   ["payroll.lock", ["payroll"]],
   ["payroll.cancel.approve", ["payroll", "approve"]],
+  // Payroll payout (disbursement): per-PT method and limits, request a batch,
+  // approve a batch (a second person, MFA step-up).
+  ["payroll.payout.configure", ["payroll"]],
+  ["payroll.disburse.request", ["payroll", "employee_pii"]],
+  ["payroll.disburse.approve", ["payroll", "approve"]],
 
   // HRIS self-service (F30)
   ["self.profile.view", ["self"]],

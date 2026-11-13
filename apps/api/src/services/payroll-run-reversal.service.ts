@@ -14,7 +14,7 @@
 // side effects the lock step does not perform (loans, reimbursements, service
 // charge, rapel) are not reversed here either: refusing never pays anyone more.
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, notInArray } from "drizzle-orm";
 import {
   createUlid,
   type ScopedTenantContext,
@@ -27,6 +27,10 @@ import {
   type PayrollRun,
   type PayrollRunId,
 } from "@starter/shared/hris/payroll";
+import {
+  payrollDisbursementBatches,
+  payrollDisbursementItems,
+} from "../db/schema/payroll-payout.ts";
 import {
   payrollRapelFinalizations,
   payrollRapels,
@@ -200,6 +204,56 @@ async function assertNoBankFile(
     );
 }
 
+/**
+ * A disbursement batch in progress, or any item that is on its way or paid,
+ * means money may have left: freeing the period would let a rerun pay the same
+ * people twice (legend-wnkep.1 R11). The database trigger
+ * `payroll_runs_payout_guard_trg` is the net; this gives the clear message.
+ */
+async function assertNoPayoutBatch(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: PayrollRunId,
+): Promise<void> {
+  const [openBatch] = await tx
+    .select({ id: payrollDisbursementBatches.id })
+    .from(payrollDisbursementBatches)
+    .where(
+      and(
+        eq(payrollDisbursementBatches.tenantId, tenantId),
+        eq(payrollDisbursementBatches.payrollRunId, runId),
+        notInArray(payrollDisbursementBatches.status, [
+          "completed",
+          "partially_failed",
+          "cancelled",
+        ]),
+      ),
+    )
+    .limit(1);
+  const [movedItem] = await tx
+    .select({ id: payrollDisbursementItems.id })
+    .from(payrollDisbursementItems)
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, tenantId),
+        eq(payrollDisbursementItems.payrollRunId, runId),
+        inArray(payrollDisbursementItems.status, [
+          "sending",
+          "exported",
+          "unknown",
+          "succeeded",
+        ]),
+      ),
+    )
+    .limit(1);
+  if (openBatch || movedItem)
+    throw new HttpError(
+      409,
+      "PAYOUT_RUN_REVERSAL_BLOCKED",
+      "Pembayaran gaji untuk payroll ini sedang berjalan atau sudah ada yang dibayar, jadi tidak bisa dibatalkan.",
+    );
+}
+
 async function assertNoLiveDependents(
   tx: Tx,
   tenantId: TenantId,
@@ -312,6 +366,7 @@ export async function requestPayrollRunReversalInTransaction(
   });
   // Fast fail only; the decision re-checks under the month lock.
   await assertNoBankFile(tx, tenantId, payrollRunId);
+  await assertNoPayoutBatch(tx, tenantId, payrollRunId);
   await assertNoLiveDependents(tx, tenantId, payrollRunId);
   await writeRun(tx, tenantId, payrollRunId, next);
   await audit(
@@ -376,6 +431,7 @@ export async function decidePayrollRunReversalInTransaction(
   if (hasUnsupportedTotals(run)) throw unsupported();
   await assertNoRapelSideEffects(tx, tenantId, payrollRunId);
   await assertNoBankFile(tx, tenantId, payrollRunId);
+  await assertNoPayoutBatch(tx, tenantId, payrollRunId);
   await assertNoLiveDependents(tx, tenantId, payrollRunId);
   const { totals, reversal } = next;
   if (totals === null || reversal === null)
