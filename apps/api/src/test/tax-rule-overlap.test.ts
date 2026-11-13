@@ -129,12 +129,19 @@ afterAll(async () => {
     throw error;
   } finally {
     client.release();
-    await owner.query("DELETE FROM platform_admins");
+    if (platformAdminIds.length > 0)
+      await owner.query(
+        "DELETE FROM platform_admins WHERE user_id = ANY($1::text[])",
+        [platformAdminIds],
+      );
     await owner.end();
   }
 });
 
 // ------------------------------------------------------- HTTP tenant helpers
+
+// Platform admin user ids this file inserted; cleanup deletes only these.
+const platformAdminIds: string[] = [];
 
 async function adminClient() {
   const client = agent(app);
@@ -146,6 +153,7 @@ async function adminClient() {
     "INSERT INTO platform_admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
     [userId],
   );
+  platformAdminIds.push(userId);
   await owner.query(
     `INSERT INTO role_assignments
        (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)

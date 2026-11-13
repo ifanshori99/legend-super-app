@@ -59,6 +59,9 @@ async function restoreSeed() {
   resetPlatformGatewayCache();
 }
 
+// platform_admins rows this file inserted; cleanup deletes only these.
+const adminUserIds: string[] = [];
+
 async function admin(mfa = true) {
   const client = agent(app);
   const email = await signUp(client, "Platform Admin");
@@ -68,6 +71,7 @@ async function admin(mfa = true) {
     "INSERT INTO platform_admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
     [session.body.user.id],
   );
+  adminUserIds.push(session.body.user.id as string);
   if (mfa) await verifySessionMfa(email);
   return { client, userId: session.body.user.id as string };
 }
@@ -85,7 +89,11 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  await owner.query("DELETE FROM platform_admins");
+  if (adminUserIds.length > 0)
+    await owner.query(
+      "DELETE FROM platform_admins WHERE user_id = ANY($1::text[])",
+      [adminUserIds],
+    );
   await owner.end();
 });
 

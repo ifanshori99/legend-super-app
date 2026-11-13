@@ -77,6 +77,9 @@ function tenantBody(slug: string) {
   };
 }
 
+// Platform admin user ids this file inserted; cleanup deletes only these.
+const platformAdminIds: string[] = [];
+
 // Same setup as platform-org-api.test.ts: platform admin + Owner template in
 // the seeded tenant + verified MFA session.
 async function adminClient() {
@@ -89,6 +92,7 @@ async function adminClient() {
     "INSERT INTO platform_admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
     [userId],
   );
+  platformAdminIds.push(userId);
   await owner.query(
     `INSERT INTO role_assignments
        (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
@@ -343,7 +347,11 @@ async function closedOutlet(from: "preopening" | "active"): Promise<string> {
 }
 
 afterAll(async () => {
-  await owner.query("DELETE FROM platform_admins");
+  if (platformAdminIds.length > 0)
+    await owner.query(
+      "DELETE FROM platform_admins WHERE user_id = ANY($1::text[])",
+      [platformAdminIds],
+    );
   await owner.end();
 });
 

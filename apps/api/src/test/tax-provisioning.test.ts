@@ -80,6 +80,8 @@ const limits = {
 };
 
 const unique = () => randomBytes(4).toString("hex");
+// platform_admins rows this file inserted; cleanup deletes only these.
+const adminUserIds: string[] = [];
 
 beforeAll(() => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
@@ -87,7 +89,11 @@ beforeAll(() => {
 });
 
 afterAll(async () => {
-  await owner.query("DELETE FROM platform_admins");
+  if (adminUserIds.length > 0)
+    await owner.query(
+      "DELETE FROM platform_admins WHERE user_id = ANY($1::text[])",
+      [adminUserIds],
+    );
   await owner.end();
 });
 
@@ -111,6 +117,7 @@ async function adminClient() {
     "INSERT INTO platform_admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
     [userId],
   );
+  adminUserIds.push(userId);
   await owner.query(
     `INSERT INTO role_assignments
        (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)

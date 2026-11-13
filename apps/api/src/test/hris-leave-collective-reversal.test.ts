@@ -26,14 +26,21 @@
 //    the log row they end up writing (method manual_correction / outlet_device,
 //    validity valid) followed by the idempotent daily collective run
 //    (applyCollectiveLeaveDeductions); the run must reconcile such a log.
-//  - Everything is dated 2049 (no other test file uses that year) and `now` is
-//    injected (2049-06-15 12:00 WIB). Run this file alone (shared tenant).
+//  - Everything is dated 2049 and `now` is injected (2049-06-15 12:00 WIB).
+//    The file runs in its own private tenant (copied from the fixture tenant
+//    row, own brand, legal entity and outlet), so it may run beside other
+//    files. The leave type code stays `ANNUAL`: the collective service
+//    resolves the deduction type by that code, which is unique per tenant.
 //  - The settlement lists a leave entry for the annual type of the year of the
 //    injected `now`; remainingDays = entitled + carried - used - pending.
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { outletIdSchema, uuidToUlid } from "@starter/shared/core";
+import {
+  outletIdSchema,
+  tenantIdSchema,
+  uuidToUlid,
+} from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -61,8 +68,12 @@ import { createOffboarding } from "../services/hris-offboarding.service.ts";
 import { getFinalSettlement } from "../services/hris-settlement.service.ts";
 
 const REVERSAL_KIND = "collective_leave_reversal";
-const tenantId = cafeLegendPlatformFixtures.tenant.id;
-const outletA = outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[0].id);
+// Private fixtures: this file never touches the shared fixture tenant rows.
+const templateTenantId = cafeLegendPlatformFixtures.tenant.id;
+const tenantId = tenantIdSchema.parse(randomUUID());
+const outletA = outletIdSchema.parse(randomUUID());
+const brandId = randomUUID();
+const legalEntityId = randomUUID();
 const SYSTEM = { type: "system" } as const;
 const YEAR = 2049;
 // 2049-06-15 05:00Z = 12:00 WIB.
@@ -331,6 +342,31 @@ beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   setAuditWriter(coreAuditWriter);
+  await owner.query(
+    `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+     SELECT $1, $2, 'Cuti bersama reversal tenant', plan, status, deployment_mode, feature_flags, limits, created_by
+       FROM tenants WHERE id = $3`,
+    [tenantId, `cbrev-${tenantId.slice(0, 8)}`, templateTenantId],
+  );
+  await owner.query(
+    "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'cbrev', 'CBREV')",
+    [brandId, tenantId],
+  );
+  await owner.query(
+    "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'Entity CBREV', false)",
+    [legalEntityId, tenantId],
+  );
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
+     VALUES ($1, $2, $3, $4, $5, 'Outlet CBREV', 'Jl. CBREV', 'Asia/Jakarta', '04:00', '{}', 'active')`,
+    [
+      outletA,
+      tenantId,
+      brandId,
+      legalEntityId,
+      `CBREV-${tenantId.slice(0, 8)}`.toUpperCase(),
+    ],
+  );
   hr = await customUser(["hr.employee.manage", "hr.employee.view"]);
   reviewer = await customUser([
     "hr.attendance.manage",
@@ -370,13 +406,13 @@ afterAll(async () => {
     );
     await client.query(
       `DELETE FROM leave_accruals WHERE tenant_id = $1
-         AND (period LIKE '2049%' OR leave_type_id = ANY($2::uuid[]))`,
+         AND leave_type_id = ANY($2::uuid[])`,
       [tenantId, createdTypes],
     );
     await client.query(
       `DELETE FROM leave_balances WHERE tenant_id = $1
-         AND (period_year = $3 OR leave_type_id = ANY($2::uuid[]))`,
-      [tenantId, createdTypes, YEAR],
+         AND leave_type_id = ANY($2::uuid[])`,
+      [tenantId, createdTypes],
     );
     await client.query(
       "DELETE FROM hris_idempotency WHERE tenant_id = $1 AND key LIKE 'cbrev-%'",
@@ -409,6 +445,20 @@ afterAll(async () => {
   } finally {
     client.release();
   }
+  // Private tenant rows (children first); the tenant itself last. Best effort,
+  // like the other private-tenant tests.
+  await owner
+    .query("DELETE FROM outlets WHERE tenant_id = $1", [tenantId])
+    .catch(() => undefined);
+  await owner
+    .query("DELETE FROM legal_entities WHERE tenant_id = $1", [tenantId])
+    .catch(() => undefined);
+  await owner
+    .query("DELETE FROM brands WHERE tenant_id = $1", [tenantId])
+    .catch(() => undefined);
+  await owner
+    .query("DELETE FROM tenants WHERE id = $1", [tenantId])
+    .catch(() => undefined);
   await owner
     .query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers])
     .catch(() => undefined);
@@ -1129,6 +1179,10 @@ describe("F3: the review refuses a log that changed employee between the read an
         "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
         [tenantId],
       );
+      const { rows: pidRows } = await a.query<{ pid: number }>(
+        "SELECT pg_backend_pid() AS pid",
+      );
+      const aPid = pidRows[0]!.pid;
       // A holds the log row; B reads the log, takes the employee lock, then
       // waits for the row lock.
       await a.query(
@@ -1142,7 +1196,9 @@ describe("F3: the review refuses a log that changed employee between the read an
         const { rows } = await owner.query<{ n: number }>(
           `SELECT count(*)::int AS n FROM pg_stat_activity
             WHERE wait_event_type = 'Lock' AND wait_event = 'transactionid'
+              AND $1::int = ANY(pg_blocking_pids(pid))
               AND query ILIKE '%attendance_logs%'`,
+          [aPid],
         );
         if (rows[0]!.n > 0 || Date.now() > deadline) break;
         await new Promise((resolve) => setTimeout(resolve, 25));
