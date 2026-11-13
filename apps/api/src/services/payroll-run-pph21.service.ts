@@ -711,7 +711,10 @@ export async function lockPph21ReceivableScope(
  * Open PPh 21 receivable per employee (raised minus collected over the
  * payslips of the OTHER locked/paid runs of the same legal entity); employees
  * with none are absent. Another legal entity's receivable is never collected
- * here. Calls `invalid()` and throws its error on an unreadable payslip, a
+ * here. A run never collects backwards: only a receivable raised by a run with
+ * `pay_date <= payDate` counts, so open = min(raisedAll - collectedAll,
+ * max(0, raisedEligible - collectedAll)) (collections of ANY date are
+ * subtracted, so nothing is collected twice). Calls `invalid()` and throws its error on an unreadable payslip, a
  * payslip of another employee or an inconsistent balance (fail closed). Never
  * echoes a value.
  */
@@ -721,6 +724,7 @@ export async function loadOpenPph21Receivables(
     tenantId: TenantId;
     legalEntityId: string;
     runId: PayrollRunId;
+    payDate: BusinessDate;
     employeeIds: readonly string[];
   },
   invalid: () => Error,
@@ -734,6 +738,7 @@ export async function loadOpenPph21Receivables(
       employeeId: payslips.employeeId,
       calculationEncrypted: payslips.calculationEncrypted,
       piiKeyVersion: payslips.piiKeyVersion,
+      runPayDate: payrollRuns.payDate,
     })
     .from(payslips)
     .innerJoin(
@@ -752,7 +757,10 @@ export async function loadOpenPph21Receivables(
         inArray(payslips.employeeId, [...input.employeeIds]),
       ),
     );
-  const byEmployee = new Map<string, PayslipCalculation[]>();
+  const byEmployee = new Map<
+    string,
+    { calc: PayslipCalculation; eligible: boolean }[]
+  >();
   for (const row of rows) {
     let calc: PayslipCalculation;
     try {
@@ -776,17 +784,27 @@ export async function loadOpenPph21Receivables(
     if (calc.employeeId !== row.employeeId) throw invalid();
     byEmployee.set(row.employeeId, [
       ...(byEmployee.get(row.employeeId) ?? []),
-      calc,
+      { calc, eligible: row.runPayDate <= input.payDate },
     ]);
   }
   const openByEmployee = new Map<string, number>();
   for (const [employeeId, slips] of byEmployee) {
-    let open: number;
+    let fullOpen: number;
     try {
-      open = pph21ReceivableBalance(slips);
+      // Integrity over ALL slips stays fail closed.
+      fullOpen = pph21ReceivableBalance(slips.map((slip) => slip.calc));
     } catch {
       throw invalid();
     }
+    let raisedEligible = 0;
+    let collectedAll = 0;
+    for (const { calc, eligible } of slips) {
+      if (eligible) raisedEligible += calc.tax.pph21ReceivableIdr ?? 0;
+      for (const line of calc.lines)
+        if (line.category === "pph21_receivable")
+          collectedAll += line.amountIdr;
+    }
+    const open = Math.min(fullOpen, Math.max(0, raisedEligible - collectedAll));
     if (open > 0) openByEmployee.set(employeeId, open);
   }
   return openByEmployee;

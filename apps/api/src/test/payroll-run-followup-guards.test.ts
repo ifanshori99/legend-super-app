@@ -1221,3 +1221,133 @@ describe("[receivable-no-double-collection] one receivable is collected once, by
     }, 600_000);
   });
 });
+
+// ---- 6. [receivable-no-backward-collection] ------------------------------------------
+// CTO decision (brief 644, round 3): a run only collects a PPh 21 receivable
+// raised by a run whose pay_date is <= its own pay_date (equal is allowed).
+// The rest stays open for later runs. Assumptions:
+//  - X = 50.000, raised on a locked run's payslip via seedOpenReceivable.
+//  - "Feb off-cycle" is a regular run with a February period and pay date;
+//    the fixture has no separate off-cycle run type.
+//  - Case 3 cannot be reached by simulate once the rule exists (Feb never
+//    sees a receivable raised by a later-paid run), so the fixture moves the
+//    raising run's pay_date to March after Feb was simulated: it is the same
+//    state as "a Mar run raised X and Feb's stored result collects it".
+describe("[receivable-no-backward-collection] a run never collects a receivable raised by a later-paid run", () => {
+  const X = 50_000;
+  type SlipCalc = { employeeId: string; calc: FullCalc };
+
+  const slipsFor = async (runIds: readonly string[], emp: Emp) =>
+    ((await slipsOf(runIds)) as unknown as SlipCalc[]).filter(
+      (s) => s.employeeId === emp.id,
+    );
+  const myResult = async (runId: string, emp: Emp) =>
+    (await storedResults(runId)).find((r) => r.employeeId === emp.id)!.calc;
+
+  it("1. Mar raises X and is locked; Feb (pay date Feb) simulates with no collection and X stays open", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const mar = await lockedRun(world, monthDates(3, 2026));
+    expect(await seedOpenReceivable(mar, emp)).toBe(X);
+
+    const feb = await draftRun(world, monthDates(2, 2026));
+    await simulateRun(feb);
+    expect(await runStatus(feb)).toBe("simulated");
+    expect(
+      collectionLines(await myResult(feb, emp)),
+      "Feb (paid before Mar) must not collect a receivable raised by Mar",
+    ).toHaveLength(0);
+    expect(
+      pph21ReceivableBalance((await slipsFor([mar], emp)).map((s) => s.calc)),
+      "X is still open on the Mar run",
+    ).toBe(X);
+  }, 600_000);
+
+  it("2. Jan raises X, Mar collects it (locked); Feb then collects nothing (no double collection)", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const jan = await lockedRun(world, monthDates(1, 2026));
+    expect(await seedOpenReceivable(jan, emp)).toBe(X);
+    const mar = await draftRun(world, monthDates(3, 2026));
+    await simulateRun(mar);
+    expect(collectedOf(await myResult(mar, emp)), "Mar collects X").toBe(X);
+    await asTenant((conn) => approveSimulatedRun(conn, mar));
+    await lockRun(mar);
+    expect(await runStatus(mar)).toBe("locked");
+
+    const feb = await draftRun(world, monthDates(2, 2026));
+    await simulateRun(feb);
+    expect(
+      collectionLines(await myResult(feb, emp)),
+      "X was already collected by Mar: Feb must not collect it again",
+    ).toHaveLength(0);
+    expect(
+      pph21ReceivableBalance(
+        (await slipsFor([jan, mar], emp)).map((s) => s.calc),
+      ),
+    ).toBe(0);
+  }, 600_000);
+
+  it("3. Feb collected X at simulate, but the run that raised X is paid after Feb: lock Feb is 409 PAYROLL_RUN_RESULT_STALE", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const raiser = await lockedRun(world, monthDates(6, 2025));
+    expect(await seedOpenReceivable(raiser, emp)).toBe(X);
+    const feb = await draftRun(world, monthDates(2, 2026));
+    await simulateRun(feb);
+    expect(collectedOf(await myResult(feb, emp)), "Feb collects X").toBe(X);
+    await asTenant((conn) => approveSimulatedRun(conn, feb));
+
+    // The raising run is now one paid in March 2026 (after Feb's pay date).
+    await asTenant(
+      (conn) =>
+        conn.query(
+          `UPDATE payroll_runs SET pay_date = $3 WHERE tenant_id = $1 AND id = $2`,
+          [tenant.id, raiser, "2026-03-28"],
+        ),
+      true,
+    );
+
+    const refused = await failureOf(lockRun(feb));
+    expect(
+      refused,
+      "Feb would collect a receivable raised by a later-paid run",
+    ).not.toBeNull();
+    expect(refused!.status).toBe(409);
+    expect(refused!.code).toBe("PAYROLL_RUN_RESULT_STALE");
+    expect(await runStatus(feb)).toBe("approved");
+    expect(await countOf("payslips", feb)).toBe(0);
+  }, 600_000);
+
+  it("4. control: Jan raises X, Feb (later pay date) collects it as usual; same pay date collects too", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const jan = await lockedRun(world, monthDates(1, 2026));
+    expect(await seedOpenReceivable(jan, emp)).toBe(X);
+    const feb = await draftRun(world, monthDates(2, 2026));
+    await simulateRun(feb);
+    expect(collectedOf(await myResult(feb, emp))).toBe(X);
+    await asTenant((conn) => approveSimulatedRun(conn, feb));
+    await lockRun(feb);
+    expect(await runStatus(feb)).toBe("locked");
+
+    // Same pay date (2026-04-10): the raising run and the collecting run.
+    const world2 = await makeWorld();
+    const emp2 = await makeEmployee(world2);
+    const sameDay = "2026-04-10";
+    const raiser = await lockedRun(world2, {
+      ...monthDates(3, 2026),
+      payDate: sameDay,
+    });
+    expect(await seedOpenReceivable(raiser, emp2)).toBe(X);
+    const collector = await draftRun(world2, {
+      ...monthDates(4, 2026),
+      payDate: sameDay,
+    });
+    await simulateRun(collector);
+    expect(
+      collectedOf(await myResult(collector, emp2)),
+      "equal pay date may collect",
+    ).toBe(X);
+  }, 600_000);
+});

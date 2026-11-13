@@ -680,6 +680,7 @@ export async function simulatePayrollRunInTransaction(
       tenantId,
       legalEntityId: run.legalEntityId,
       runId,
+      payDate: run.payDate,
       employeeIds: population.map((m) => m.id),
     },
     simulateUnsupported,

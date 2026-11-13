@@ -528,6 +528,7 @@ export async function lockPayrollRunInTransaction(
       tenantId,
       legalEntityId: month.legalEntityId,
       runId,
+      payDate: run.payDate,
       employeeIds: plan.map((entry) => entry.employeeId),
     },
     resultStale,
