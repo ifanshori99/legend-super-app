@@ -1449,3 +1449,4 @@ Langkah berikut CTO baru:
 - 20:05 G2zip posting faktur selesai (ws/purchasing-posting 9baef7315; 29vw GRNI saja, gzeya/3fi5v/ct27s ditutup, smrwb dilewati; 451 test). Flag posting OFF sampai legend-5b7uf (P1 retur selisih harga) + legend-7e0q4 (cutover). Founder Q19-Q22 (F1-F6). Masuk batch57.
 - 20:10 Founder Q19-Q22: semua usulan F1-F6 posting faktur disetujui (bd memory founder-q19-22-13-nov), kode sudah sesuai.
 - 21:26 Founder Q23: besok tambah akun Codex; akun Claude #1 akan di-reset manual oleh founder (21:25 masih 7d 93%). Evaluasi workflow: hambatan = kuota token (~6,6M/kartu), bukan RAM; prioritas hemat token, kerja berurutan saat kuota sempit, thread flaky+percepat test, rapikan 54 kartu terbuka.
+- 21:36 Mulai (semua akun #2, Sonnet): G4y4l retro, G4twu batch57 (brief 639), G0coa 3hb1n+fbf4v+65i3t (brief 640, migr 0500-0503), G3kpa flaky gcdq0+x778h + rapikan kartu (brief 641). Slot sisanya tidak diisi: hemat kuota (satu-satunya akun 7d <90%).
