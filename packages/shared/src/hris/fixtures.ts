@@ -625,6 +625,7 @@ const employeePiiRows = employees.map((employee, index) => {
       bpjsKesNo: masked(`00012${String(n).padStart(7, "0")}`),
       bpjsTkNo: masked(`2100${String(n).padStart(8, "0")}`),
       bankAccount: masked(`12300${String(n).padStart(6, "0")}`),
+      bankCode: "014",
       emergencyContactName: masked(
         index % 2 === 0 ? "Sri Wahyuni" : "Bambang Sutrisno",
         "name",

@@ -190,6 +190,7 @@ const EMPLOYEE_PII_CLASS: Record<keyof EmployeePii, HrisPiiClass> = {
   bpjsKesNo: "social_security",
   bpjsTkNo: "social_security",
   bankAccount: "bank",
+  bankCode: "bank",
   emergencyContactName: "emergency_contact",
   emergencyContactPhone: "emergency_contact",
 };
@@ -213,7 +214,9 @@ export function redactEmployeePii(
   employeeId: string,
   pii: EmployeePii,
 ): EmployeePii {
-  const out = { ...pii };
+  // Masked fields are `{ masked, keyVersion }`, `bankCode` is a plain string;
+  // each field is only ever copied or nulled, so the union write is safe.
+  const out: Record<keyof EmployeePii, unknown> = { ...pii };
   for (const field of Object.keys(EMPLOYEE_PII_CLASS) as (keyof EmployeePii)[])
     out[field] = visibleFor(
       viewer,
@@ -221,7 +224,7 @@ export function redactEmployeePii(
       EMPLOYEE_PII_CLASS[field],
       pii[field],
     );
-  return out;
+  return out as EmployeePii;
 }
 
 /** HR-03: salary snapshot and contract file follow the salary/document classes. */
