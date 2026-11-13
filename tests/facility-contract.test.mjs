@@ -805,10 +805,19 @@ test("PRD F22 operating hours bound the session, and the wait estimate uses the 
 });
 
 test("WS-09 events are exactly the catalogued WS-09 names and every envelope validates", () => {
-  const catalogued = events.eventCatalog
+  const ws09 = events.eventCatalog
     .filter((entry) => entry.workstream === "WS-09")
     .map((entry) => entry.name)
     .sort();
+  // Panic alarm events live in emergency.ts (panicAlertEvents), not in the facility event list.
+  const panicNames = Object.values(facility.panicAlertEvents)
+    .map((definition) => definition.name)
+    .sort();
+  assert.deepEqual(
+    ws09.filter((name) => name.startsWith("panic_alert.")),
+    panicNames,
+  );
+  const catalogued = ws09.filter((name) => !name.startsWith("panic_alert."));
   assert.deepEqual(catalogued, [...facility.FACILITY_EVENT_NAMES].sort());
   assert.deepEqual(catalogued, [
     "access_event.recorded",

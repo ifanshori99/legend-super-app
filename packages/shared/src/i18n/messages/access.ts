@@ -497,6 +497,10 @@ const accessBaseMessages = {
     facility: {
       booth: { operate: "Operasikan bilik fasilitas" },
       access: { assist: "Bantu akses fasilitas" },
+      emergency: {
+        respond: "Menanggapi alarm darurat",
+        resolve: "Menutup insiden alarm darurat",
+      },
       config: { manage: "Kelola konfigurasi fasilitas" },
     },
     wfc: { policy: { manage: "Kelola kebijakan WFC" } },
