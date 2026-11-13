@@ -266,11 +266,14 @@ const schema = z
       .optional()
       .transform((value) => value === "true" || value === "1"),
     // Gate for supplier invoice posting (ws/purchasing-apar, K5). Off by
-    // default: an invoice that matches clears GRNI, which holds no balance
-    // until the goods receipt journal (legend-29vw) runs. While off, a match
-    // that would book the payable (create, re-match, release) answers 409
-    // SUPPLIER_INVOICE_POSTING_DISABLED and writes nothing; a held invoice is
-    // still stored. Turn it on together with legend-29vw.
+    // default. One switch for the whole chain (legend-29vw): ON also journals
+    // every goods receipt (Dr inventory / Cr GRNI, auto-journal consumer), and
+    // an invoice or a return of the uninvoiced part is refused 409
+    // GOODS_RECEIPT_NOT_JOURNALED until its receipt journal exists. While off,
+    // a match that would book the payable (create, re-match, release) answers
+    // 409 SUPPLIER_INVOICE_POSTING_DISABLED and writes nothing; a held invoice
+    // is still stored, and goods receipt events are ignored. Turn it on only
+    // after the money tests are green and finance made the cutover journals.
     SUPPLIER_INVOICE_POSTING_ENABLED: z
       .enum(["true", "false", "1", "0"])
       .optional()

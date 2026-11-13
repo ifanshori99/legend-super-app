@@ -131,6 +131,17 @@ const RETRYABLE_CODES = [
 
 const PAYLOAD_INVALID = "AUTO_JOURNAL_PAYLOAD_INVALID";
 const DEAD_LETTERED_CODE = "AUTO_JOURNAL_RECEIPT_DEAD_LETTERED";
+const DEBIT_NOTE_SHORT_CODE = "AUTO_JOURNAL_DEBIT_NOTE_SHORT";
+
+/**
+ * legend-3fi5v: the supplier's payable no longer covers a debit note (a payment
+ * landed after the return). Parked, not retryable at the 10 minute pace, but
+ * rechecked daily: a new invoice of the same supplier can absorb the credit.
+ * The return journal and its settlement post together or not at all.
+ */
+class AutoJournalDebitNoteShort extends Error {
+  readonly code = DEBIT_NOTE_SHORT_CODE;
+}
 
 /** The outlet has no legal entity yet: parked until finance assigns one. */
 class OutletLegalEntityMissing extends Error {
@@ -142,6 +153,8 @@ const RETRY_BATCH = 100;
 export const AUTO_JOURNAL_RETRY_AFTER_MS = 10 * 60 * 1000;
 /** legend-3r6r: recheck pace of a row parked RECEIPT_DEAD_LETTERED. */
 export const AUTO_JOURNAL_DEAD_LETTER_RECHECK_MS = 24 * 60 * 60 * 1000;
+/** legend-3fi5v: recheck pace of a row parked DEBIT_NOTE_SHORT. */
+export const AUTO_JOURNAL_DEBIT_NOTE_SHORT_RECHECK_MS = 24 * 60 * 60 * 1000;
 const LATE_AUDIT_FIELDS = [
   "journalId",
   "trigger",
@@ -156,6 +169,7 @@ function parkCodeOf(error: unknown): string | null {
   if (error instanceof OutletLegalEntityMissing) return error.code;
   if (error instanceof AccountingError) return error.code;
   if (error instanceof AutoJournalPayloadInvalid) return error.code;
+  if (error instanceof AutoJournalDebitNoteShort) return error.code;
   if (error instanceof AutoJournalReceiptPending) return error.code;
   if (error instanceof AutoJournalReceiptMissing) return error.code;
   if (error instanceof AutoJournalReceiptDeadLettered) return error.code;
@@ -277,7 +291,9 @@ async function park(
     ? new Date(now.getTime() + AUTO_JOURNAL_RETRY_AFTER_MS)
     : code === DEAD_LETTERED_CODE
       ? new Date(now.getTime() + AUTO_JOURNAL_DEAD_LETTER_RECHECK_MS)
-      : null;
+      : code === DEBIT_NOTE_SHORT_CODE
+        ? new Date(now.getTime() + AUTO_JOURNAL_DEBIT_NOTE_SHORT_RECHECK_MS)
+        : null;
   await tx
     .insert(autoJournalParked)
     .values({
@@ -724,7 +740,7 @@ async function postAutoJournal(
           error instanceof HttpError &&
           error.code === "PURCHASE_RETURN_EXCEEDS_PAYABLE"
         )
-          throw new AutoJournalPayloadInvalid(error.message);
+          throw new AutoJournalDebitNoteShort(error.message);
         throw error;
       }
     }
@@ -794,6 +810,7 @@ export async function retryParkedAutoJournals(
           or(
             eq(autoJournalParked.retryable, true),
             eq(autoJournalParked.errorCode, DEAD_LETTERED_CODE),
+            eq(autoJournalParked.errorCode, DEBIT_NOTE_SHORT_CODE),
           ),
           lte(autoJournalParked.nextRetryAt, now),
         ),

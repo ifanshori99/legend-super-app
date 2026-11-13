@@ -19,8 +19,12 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { eventEnvelopeSchema } from "@starter/shared/events";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { deliverAutoJournalEvent } from "../services/accounting-auto-journal-consumer.ts";
 import { agent, signUp } from "./helpers.ts";
 import {
   createGoodsReceipt,
@@ -76,6 +80,7 @@ type Role =
   | "ppn_input"
   | "service_expense"
   | "pph23_payable"
+  | "purchase_price_variance"
   | "fixed_assets";
 
 // [role, code, name, type, report_group]
@@ -93,6 +98,13 @@ const CHART: [Role, string, string, string, string][] = [
   ],
   ["pph23_payable", "2103", "Utang PPh 23", "liability", "current_liability"],
   ["service_expense", "6201", "Beban Jasa", "expense", "operating_expense"],
+  [
+    "purchase_price_variance",
+    "5105",
+    "Selisih Harga Pembelian",
+    "expense",
+    "cogs",
+  ],
 ];
 
 export type ApWorld = {
@@ -225,6 +237,28 @@ export type ReceivedPo = {
   unitPriceIdr: number;
 };
 
+/**
+ * Delivers the `goods_receipt.recorded` outbox event of a receipt to the
+ * auto-journal consumer, as the outbox worker would (legend-29vw): the receipt
+ * journal (Dr inventory / Cr GRNI) is what lets an invoice or a return of the
+ * uninvoiced part be booked. A no-op (ignored) while the posting flag is off.
+ */
+export async function deliverGoodsReceiptJournal(
+  receiptId: string,
+): Promise<void> {
+  const { rows } = await owner.query<{ event: unknown }>(
+    `SELECT event FROM domain_event_outbox
+      WHERE tenant_id = $1 AND aggregate_id = $2 AND event->>'name' = 'goods_receipt.recorded'`,
+    [tenantId, receiptId],
+  );
+  for (const row of rows) {
+    const event = eventEnvelopeSchema.parse(row.event);
+    await withTenant(db, tenantScope(), (tx) =>
+      deliverAutoJournalEvent(tenantScope(), event, tx, new Date()),
+    );
+  }
+}
+
 /** A sent PO of one line (flour) fully received into a new warehouse location. */
 export async function seedReceivedPo(
   world: ApWorld,
@@ -292,6 +326,7 @@ export async function seedReceivedPo(
       idempotencyKey: key(),
     } as unknown as CreateGoodsReceiptInput,
   );
+  await deliverGoodsReceiptJournal(receipt.receipt.id);
   return {
     poId,
     poLineId: line[0]!.id,

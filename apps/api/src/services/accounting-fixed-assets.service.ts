@@ -40,6 +40,7 @@ import {
   inArray,
   isNull,
   lte,
+  ne,
   sql,
 } from "drizzle-orm";
 import {
@@ -78,6 +79,7 @@ import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { db } from "../db";
 import { journalEntries } from "../db/schema/accounting.ts";
 import {
+  accountingOpenItems,
   assetCategories,
   depreciationRuns,
   fixedAssetDepreciationReversals,
@@ -87,13 +89,20 @@ import {
   type DepreciationRunRow,
   type FixedAssetRow,
 } from "../db/schema/accounting-ap-fa.ts";
-import { purchaseInvoices, supplierInvoices } from "../db/schema/purchasing.ts";
+import { goodsReceipts } from "../db/schema/inventory-receiving.ts";
+import {
+  purchaseInvoices,
+  purchaseOrders,
+  supplierInvoices,
+  suppliers,
+} from "../db/schema/purchasing.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
   postJournalFromRuleInTransaction,
   postJournalInTransaction,
 } from "./accounting-journal.service.ts";
+import { recordSupplierInvoicePayableInTransaction } from "./accounting-ap.service.ts";
 import { assertPeriodOpenForPosting } from "./accounting-period.service.ts";
 import {
   advisoryLock,
@@ -109,6 +118,10 @@ import {
 } from "./accounting-ap-fa-shared.ts";
 import { requireAssetCategory } from "./accounting-asset-categories.service.ts";
 import { requireLegalEntity, requireOutlet } from "./accounting-shared.ts";
+import {
+  lockPayableDocument,
+  lockPayableSource,
+} from "./payable-source-lock.ts";
 import { appendOutbox } from "./core-outbox.ts";
 
 /** Consumers receive accounting events through the cloud sync stream. */
@@ -1157,6 +1170,12 @@ export async function listDepreciationRuns(
  * Held invoices count too: releasing one posts the payable later. Refused
  * before anything is posted (design ws-purchasing-apar section 5).
  *
+ * The caller holds `lockPayableSource` for this id (taken in its own
+ * transaction before this check), so an invoice with that id that is being
+ * created at the same moment has committed before this read, or has not
+ * started (bead legend-ct27s). The open item lookup also catches a payable
+ * recorded for the id by any other path.
+ *
  * The lookup runs under tenant-wide RLS (pattern of `findDeviceOutletId`): the
  * caller's outlet-scoped transaction would hide an invoice of another outlet
  * and let the double payable through. Every read still filters `tenantId`.
@@ -1181,6 +1200,18 @@ async function assertSourceIsNotSupplierInvoice(
         )
         .limit(1);
       if (booked) return true;
+      const [openItem] = await tx
+        .select({ id: accountingOpenItems.id })
+        .from(accountingOpenItems)
+        .where(
+          and(
+            eq(accountingOpenItems.tenantId, tenantId),
+            eq(accountingOpenItems.kind, "payable"),
+            eq(accountingOpenItems.id, sourceDocumentId),
+          ),
+        )
+        .limit(1);
+      if (openItem) return true;
       const [held] = await tx
         .select({ id: purchaseInvoices.id })
         .from(purchaseInvoices)
@@ -1203,9 +1234,112 @@ async function assertSourceIsNotSupplierInvoice(
 }
 
 /**
+ * Payment-limiting rules for a credit asset purchase (taken after
+ * `lockPayableSource`, then `lockPayableDocument`):
+ * a. the source id must not be a purchase order or goods receipt of the
+ *    tenant: purchases through a PO are booked by the supplier invoice;
+ * b. one supplier document = one asset: no purchase invoice (any status but
+ *    rejected, so a held one counts), no supplier invoice and no payable
+ *    open item of the same supplier may carry the same document number
+ *    (case-insensitive, trimmed). A restriction the founder may relax later.
+ * Reads run under tenant-wide RLS, like `assertSourceIsNotSupplierInvoice`.
+ */
+async function assertPurchaseSourceAndDocumentFree(
+  context: ScopedTenantContext,
+  sourceDocumentId: string,
+  supplierId: string,
+  documentNumber: string,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const normalized = documentNumber.trim().toUpperCase();
+  const result = await withTenant(
+    db,
+    establishScopedTenantContext(context.tenant, { kind: "tenant" }),
+    async (tx) => {
+      const [po] = await tx
+        .select({ id: purchaseOrders.id })
+        .from(purchaseOrders)
+        .where(
+          and(
+            eq(purchaseOrders.tenantId, tenantId),
+            eq(purchaseOrders.id, sourceDocumentId),
+          ),
+        )
+        .limit(1);
+      if (po) return "po" as const;
+      const [gr] = await tx
+        .select({ id: goodsReceipts.id })
+        .from(goodsReceipts)
+        .where(
+          and(
+            eq(goodsReceipts.tenantId, tenantId),
+            eq(goodsReceipts.id, sourceDocumentId),
+          ),
+        )
+        .limit(1);
+      if (gr) return "po" as const;
+      const [invoice] = await tx
+        .select({ id: supplierInvoices.id })
+        .from(supplierInvoices)
+        .where(
+          and(
+            eq(supplierInvoices.tenantId, tenantId),
+            eq(supplierInvoices.supplierId, supplierId),
+            sql`upper(trim(${supplierInvoices.invoiceNumber})) = ${normalized}`,
+          ),
+        )
+        .limit(1);
+      if (invoice) return "document" as const;
+      // A held invoice has a purchase_invoices row but no supplier invoice or
+      // open item yet; its release would book a second payable.
+      const [purchaseInvoice] = await tx
+        .select({ id: purchaseInvoices.id })
+        .from(purchaseInvoices)
+        .where(
+          and(
+            eq(purchaseInvoices.tenantId, tenantId),
+            eq(purchaseInvoices.supplierId, supplierId),
+            sql`lower(btrim(${purchaseInvoices.number})) = ${normalized.toLowerCase()}`,
+            ne(purchaseInvoices.status, "rejected"),
+          ),
+        )
+        .limit(1);
+      if (purchaseInvoice) return "document" as const;
+      const [openItem] = await tx
+        .select({ id: accountingOpenItems.id })
+        .from(accountingOpenItems)
+        .where(
+          and(
+            eq(accountingOpenItems.tenantId, tenantId),
+            eq(accountingOpenItems.kind, "payable"),
+            eq(accountingOpenItems.counterpartyType, "supplier"),
+            eq(accountingOpenItems.counterpartyId, supplierId),
+            sql`upper(trim(${accountingOpenItems.documentNumber})) = ${normalized}`,
+          ),
+        )
+        .limit(1);
+      return openItem ? ("document" as const) : null;
+    },
+  );
+  if (result === "po")
+    throw new HttpError(
+      409,
+      "CONFLICT",
+      "A purchase order or goods receipt is booked by its supplier invoice; register the asset without it as the source document.",
+    );
+  if (result === "document")
+    throw new HttpError(
+      409,
+      "CONFLICT",
+      "This supplier document number already has a payable; one document can register only one asset.",
+    );
+}
+
+/**
  * Registers an asset (§3.19 "Registrasi aset dari pembelian"). From a
  * purchase (sourceDocumentId set) it posts `document:asset_acquisition`
- * (debit fixed assets / credit accounts payable) dated `acquiredOn`; an asset
+ * (debit fixed assets / credit accounts payable) dated `acquiredOn` and books
+ * the matching supplier payable open item in the same transaction; an asset
  * without a source document (opening balance) posts nothing here — its
  * opening balance is a manual journal (decision, bead report).
  */
@@ -1246,9 +1380,27 @@ export async function createFixedAsset(
         const id = newId();
         let acquisitionJournalEntryId: string | null = null;
         if (input.sourceDocumentId !== null) {
+          await lockPayableSource(tx, tenantId, input.sourceDocumentId);
           await assertSourceIsNotSupplierInvoice(
             context,
             input.sourceDocumentId,
+          );
+          const purchasePayable = input.payable;
+          if (!purchasePayable)
+            throw invalid(
+              "A purchase source document needs the supplier payable.",
+            );
+          await lockPayableDocument(
+            tx,
+            tenantId,
+            purchasePayable.supplierId,
+            purchasePayable.documentNumber,
+          );
+          await assertPurchaseSourceAndDocumentFree(
+            context,
+            input.sourceDocumentId,
+            purchasePayable.supplierId,
+            purchasePayable.documentNumber,
           );
           const entry = await postJournalFromRuleInTransaction(
             tx,
@@ -1266,6 +1418,43 @@ export async function createFixedAsset(
             now,
           );
           acquisitionJournalEntryId = entry.id;
+          // The journal credits accounts payable for the full cost: book the
+          // same amount as one payable open item so the ledger and the aging
+          // agree (bead legend-gzeya). The schema guarantees `payable` here.
+          const payable = input.payable;
+          if (!payable)
+            throw invalid(
+              "A purchase source document needs the supplier payable.",
+            );
+          const [supplier] = await tx
+            .select({ name: suppliers.name })
+            .from(suppliers)
+            .where(
+              and(
+                eq(suppliers.tenantId, tenantId),
+                eq(suppliers.id, payable.supplierId),
+              ),
+            )
+            .limit(1);
+          if (!supplier) throw invalid("Supplier not found.");
+          await recordSupplierInvoicePayableInTransaction(
+            tx,
+            context,
+            {
+              supplierInvoiceId: id,
+              legalEntityId: input.legalEntityId,
+              outletId: input.outletId,
+              supplierId: payable.supplierId,
+              supplierName: supplier.name,
+              invoiceNumber: payable.documentNumber,
+              invoiceDate: payable.documentDate,
+              dueOn: payable.dueOn,
+              payableIdr: input.costIdr,
+              journalEntryId: entry.id,
+              idempotencyKey: `fa-ap:${id}`,
+            },
+            actorId,
+          );
         }
         const [row] = await tx
           .insert(fixedAssets)

@@ -398,7 +398,7 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     `${AUTO} (pembelian); §3.19 Pajak (PPh 23, PPN masukan)`,
     [
       ["grni", "debit", "goodsIdr"],
-      ["inventory", "debit", "priceVarianceIdr"],
+      ["purchase_price_variance", "debit", "priceVarianceIdr"],
       ["service_expense", "debit", "servicesIdr"],
       ["ppn_input", "debit", "ppnIdr"],
       ["pph23_payable", "credit", "pph23Idr"],

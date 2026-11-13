@@ -63,6 +63,7 @@ import {
   type PostingAccountRole,
 } from "@starter/shared/accounting";
 import type { ScopedTenantContext } from "@starter/shared/core";
+import { goodsReceiptValueIdr } from "@starter/shared/inventory";
 import { tenderBucket } from "@starter/shared/pos";
 import {
   edcTransactionSettledPayloadSchema,
@@ -72,6 +73,7 @@ import {
   accountMappings,
   cashMovements,
   domainEventOutbox,
+  goodsReceiptLines,
   journalEntries,
   loyaltyPrograms,
   orderIssueCharges,
@@ -107,7 +109,8 @@ import {
   AutoJournalSalePending,
 } from "./accounting-auto-journal-void.ts";
 import { isTrainingOrder } from "./device-training.ts";
-import type { Tx } from "./inventory-ops.shared.ts";
+import { ROUNDING_MODE, type Tx } from "./inventory-ops.shared.ts";
+import { purchasingPostingEnabled } from "./purchasing-posting-gate.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
 import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
 import {
@@ -153,6 +156,7 @@ export const AUTO_JOURNAL_EVENTS = [
   "cashier_shift.closed",
   "settlement.reconciled",
   "edc_transaction.settled",
+  "goods_receipt.recorded",
   "purchase_return.recorded",
   "petty_purchase.recorded",
   // legend-msqvi
@@ -338,7 +342,21 @@ const shiftClosedSchema = z.object({
 
 // Purchasing (legend-1xbs, legend-v3lh). The payload is the whole fact, there
 // is no backing guard: the emitting transaction already split the value.
-// goods_receipt.recorded is not journaled here (legend-29vw).
+// supplier_invoice.recorded is NOT journaled here: its journal is posted in the
+// invoice's own transaction (purchasing-invoice.service.ts).
+// goods_receipt.recorded (legend-29vw) is journaled here, but only while the
+// purchasing posting flag is on, and its value is re-read from the receipt
+// lines (see goodsReceiptFactOf).
+const goodsReceiptRecordedSchema = z.object({
+  goodsReceiptId: z.string().uuid(),
+  purchaseOrderId: z.string().uuid(),
+  supplierId: z.string().uuid(),
+  // Not in the emitted payload: taken from the envelope outlet and stored here
+  // so the sweep can rebuild the fact without the outbox row.
+  outletId: z.string().uuid(),
+  receivedValueIdr: idr.nonnegative(),
+  receivedAt: time,
+});
 const purchaseReturnRecordedSchema = z.object({
   purchaseReturnId: z.string().uuid(),
   // The debit note against the supplier's open items needs the supplier. Older
@@ -505,6 +523,19 @@ export function storedEventOf(event: {
     case "edc_transaction.settled": {
       const payload = edcTransactionSettledPayloadSchema.parse(event.payload);
       assertEnvelopeOutlet(event, payload.outletId);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
+    case "goods_receipt.recorded": {
+      if (event.outletId === null)
+        throw new AutoJournalPayloadInvalid(
+          `${event.name} event has no outlet`,
+        );
+      const payload = goodsReceiptRecordedSchema.parse({
+        ...(typeof event.payload === "object" && event.payload !== null
+          ? event.payload
+          : {}),
+        outletId: event.outletId,
+      });
       return { ...base, outletId: payload.outletId, occurredAt, payload };
     }
     case "purchase_return.recorded": {
@@ -676,6 +707,8 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
       return boundedKey(`aj:settlement:${String(p.settlementId)}`);
     case "edc_transaction.settled":
       return boundedKey(`aj:edc-settlement:${String(p.settlementBatchId)}`);
+    case "goods_receipt.recorded":
+      return boundedKey(`aj:goods-receipt:${String(p.goodsReceiptId)}`);
     case "purchase_return.recorded":
       return boundedKey(`aj:purchase-return:${String(p.purchaseReturnId)}`);
     case "petty_purchase.recorded":
@@ -1277,6 +1310,41 @@ async function chargePaidFactOf(
   };
 }
 
+async function goodsReceiptFactOf(
+  tx: Tx,
+  tenantId: TenantId,
+  stored: StoredAutoJournalEvent,
+): Promise<AutoJournalFact | null> {
+  const p = goodsReceiptRecordedSchema.parse(stored.payload);
+  if (!purchasingPostingEnabled()) return null;
+  const lines = await tx
+    .select({
+      quantityReceived: goodsReceiptLines.quantityReceived,
+      quantityRejected: goodsReceiptLines.quantityRejected,
+      unitCostIdr: goodsReceiptLines.unitCostIdr,
+    })
+    .from(goodsReceiptLines)
+    .where(
+      and(
+        eq(goodsReceiptLines.tenantId, tenantId),
+        eq(goodsReceiptLines.goodsReceiptId, p.goodsReceiptId),
+      ),
+    );
+  const valueIdr = goodsReceiptValueIdr(lines, ROUNDING_MODE);
+  if (valueIdr !== p.receivedValueIdr)
+    throw new AutoJournalPayloadInvalid(
+      "goods_receipt receivedValueIdr differs from its receipt lines",
+    );
+  if (valueIdr === 0) return null;
+  return {
+    ruleEvent: "goods_receipt.recorded",
+    amounts: { receivedValueIdr: valueIdr },
+    sourceId: p.goodsReceiptId,
+    outletId: p.outletId,
+    moneyTime: new Date(p.receivedAt),
+  };
+}
+
 /**
  * Rule input of one stored event, or null when the event books nothing
  * (EDC-linked intent on a payment event, zero receipt, zero forfeit, zero
@@ -1820,6 +1888,11 @@ export async function autoJournalFactOf(
         entryDate: p.settledOn,
       };
     }
+    // Dr inventory / Cr GRNI at the received value. The value is re-read from
+    // the immutable receipt lines: a payload that disagrees is invalid, never
+    // posted. Off while the purchasing posting flag is off (ignored, not parked).
+    case "goods_receipt.recorded":
+      return goodsReceiptFactOf(tx, tenantId, stored);
     // The posting rule reads debitNoteIdr (accounts payable cleared by the
     // return: the invoiced value plus its PPN), the emitter sends the parts.
     // Nothing returned books nothing (ignored). The journal date is the

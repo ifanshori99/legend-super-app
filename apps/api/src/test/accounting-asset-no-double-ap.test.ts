@@ -101,6 +101,15 @@ const assetInput = (
   usefulLifeMonths: 12,
   depreciationStartPeriod: receivedOn.slice(0, 7),
   sourceDocumentId: sourceId,
+  payable:
+    sourceId === null
+      ? null
+      : {
+          supplierId: world.supplierId,
+          documentNumber: `AST-${key()}`.slice(0, 60),
+          documentDate: receivedOn,
+          dueOn: receivedOn,
+        },
   idempotencyKey: key(),
 });
 

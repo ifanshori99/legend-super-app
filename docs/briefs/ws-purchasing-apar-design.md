@@ -245,6 +245,7 @@ Satu pemegang token heavy sekaligus (diumumkan engineer).
 
 ## 12. Keputusan engineer (13 Nov, berlaku sampai founder menjawab; semua membatasi pembayaran)
 
+- Founder Q13 (13 Nov 2026): K1, K2, K3 disetujui permanen.
 - K1: default 0 bp, batas atas 1000 bp. K2: tolak 409. K3: baris jasa selalu held. K4: harga PO. K6: PPN <= 12% DPP, PPh 23 hanya jasa. K7: kartu lanjutan (bukan cabang ini).
 - K5: gate env `SUPPLIER_INVOICE_POSTING_ENABLED` default MATI (validasi di `config/env.ts`, pola gate retur `PURCHASE_RETURN_POSTING_ENABLED`). Gate mati: create yang hasilnya `matched`, re-match ke matched, dan release ditolak 409 `SUPPLIER_INVOICE_POSTING_DISABLED` dan TIDAK menulis apa pun (rollback penuh). Faktur yang hasilnya `held` tetap boleh disimpan (tanpa AP). Test menyalakan gate lewat seam `setSupplierInvoicePostingEnabled(true)`.
 - Migrasi: 0490 hasil `pnpm db:generate` lalu rename berkas + tag journal ke `0490_<nama>`; 0491 custom SQL (pola cabang batch54 `fix/ai-login-review`: lihat `git log --all --oneline -- apps/api/drizzle/meta/_journal.json`).

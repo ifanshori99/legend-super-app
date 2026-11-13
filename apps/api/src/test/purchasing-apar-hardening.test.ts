@@ -444,6 +444,16 @@ describe("R3 the asset guard sees invoices of every outlet", () => {
     usefulLifeMonths: 12,
     depreciationStartPeriod: today().slice(0, 7),
     sourceDocumentId: sourceId,
+    // The guard refuses before the supplier is read, so any id does.
+    payable:
+      sourceId === null
+        ? null
+        : {
+            supplierId: randomUUID(),
+            documentNumber: "AST-R3",
+            documentDate: today(),
+            dueOn: today(),
+          },
     idempotencyKey: key(),
   });
 

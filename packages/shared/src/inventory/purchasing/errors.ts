@@ -49,6 +49,8 @@ export const PURCHASING_ERROR_CODES = [
   "PURCHASE_RETURN_EXCEEDS_RECEIPT",
   /** A return that was invoiced exceeds what is still owed on the invoice. */
   "PURCHASE_RETURN_EXCEEDS_PAYABLE",
+  /** The goods receipt behind this invoice or return has no posted receipt journal yet (GRNI, legend-29vw). */
+  "GOODS_RECEIPT_NOT_JOURNALED",
   /** PRD §3.18 "Pembelian Sederhana ... batas nominal": over the outlet limit. */
   "PETTY_PURCHASE_LIMIT_EXCEEDED",
   /** The three-way match input does not describe one order (unknown line). */
@@ -104,6 +106,7 @@ export const purchasingErrorHttpStatus = {
   SUPPLIER_PAYMENT_SELF_APPROVAL: 409,
   PURCHASE_RETURN_EXCEEDS_RECEIPT: 409,
   PURCHASE_RETURN_EXCEEDS_PAYABLE: 409,
+  GOODS_RECEIPT_NOT_JOURNALED: 409,
   PETTY_PURCHASE_LIMIT_EXCEEDED: 409,
   THREE_WAY_MATCH_INVALID_INPUT: 422,
   SUPPLIER_INACTIVE: 409,
@@ -157,6 +160,8 @@ export const purchasingErrorMessages: Record<PurchasingErrorCode, string> = {
     "Jumlah retur melebihi jumlah yang sudah diterima.",
   PURCHASE_RETURN_EXCEEDS_PAYABLE:
     "Nilai retur melebihi sisa utang faktur pemasok.",
+  GOODS_RECEIPT_NOT_JOURNALED:
+    "Jurnal penerimaan barang belum terposting; faktur/retur belum bisa dibukukan.",
   PETTY_PURCHASE_LIMIT_EXCEEDED:
     "Pembelian sederhana melebihi batas nominal outlet.",
   THREE_WAY_MATCH_INVALID_INPUT:

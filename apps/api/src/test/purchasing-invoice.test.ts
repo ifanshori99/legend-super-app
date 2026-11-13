@@ -275,7 +275,7 @@ describe("ws-purchasing-apar PI invoice posting and match", () => {
     const entry = await journalOf(A, matched.id);
     expect(await journalLines(A, entry!)).toEqual({
       grni: { debit: 100_000, credit: 0 },
-      inventory: { debit: 2_000, credit: 0 },
+      purchase_price_variance: { debit: 2_000, credit: 0 },
       accounts_payable: { debit: 0, credit: 102_000 },
     });
     expect((await invoiceRow(A, matched.id))?.tolerance_bp).toBe(200);
@@ -515,7 +515,7 @@ describe("ws-purchasing-apar PI hold, release, reject, rematch", () => {
     expect(await taxRecordExists(A, id)).toBe(true);
     expect(await journalLines(A, (await journalOf(A, id))!)).toEqual({
       grni: { debit: 100_000, credit: 0 },
-      inventory: { debit: 5_000, credit: 0 },
+      purchase_price_variance: { debit: 5_000, credit: 0 },
       accounts_payable: { debit: 0, credit: 105_000 },
     });
     expect(await apCard(A)).toBe(await apLedger(A));

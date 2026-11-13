@@ -67,6 +67,7 @@ import {
   threeWayMatchSchema,
   type createSupplierInvoiceInputSchema,
   type decideSupplierInvoiceInputSchema,
+  goodsReceiptValueIdr,
   type PurchaseOrderLine,
   type PurchaseOrderLineId,
   type recordSupplierInvoiceMatchInputSchema,
@@ -80,9 +81,9 @@ import {
 } from "@starter/shared/inventory";
 import { isModuleEnabled } from "@starter/shared/platform";
 import type { z } from "zod";
-import { env } from "../config/env.ts";
 import { db } from "../db/index.ts";
 import { accountingOpenItems } from "../db/schema/accounting-ap-fa.ts";
+import { journalEntries } from "../db/schema/accounting.ts";
 import { domainEventOutbox } from "../db/schema/core-events.ts";
 import {
   goodsReceiptLines,
@@ -127,7 +128,15 @@ import {
   guardMoneyMath,
   translatePurchasingError,
 } from "./purchasing-flow.shared.ts";
+import {
+  lockPayableDocument,
+  lockPayableSource,
+} from "./payable-source-lock.ts";
 import { loadMatchToleranceBpInTransaction } from "./purchasing-policy.service.ts";
+import {
+  purchasingPostingEnabled,
+  setPurchasingPostingEnabled,
+} from "./purchasing-posting-gate.ts";
 
 export type CreateSupplierInvoiceInput = z.infer<
   typeof createSupplierInvoiceInputSchema
@@ -189,14 +198,8 @@ const INVOICE_AUDIT_FIELDS = [
 export const SUPPLIER_INVOICE_POSTING_DISABLED_MESSAGE =
   "Faktur pemasok belum bisa dibukukan sampai jurnal penerimaan barang (legend-29vw) berjalan";
 
-let postingEnabledOverride: boolean | null = null;
-
-/** Test seam: `null` goes back to the env flag. */
-export function setSupplierInvoicePostingEnabled(
-  enabled: boolean | null,
-): void {
-  postingEnabledOverride = enabled;
-}
+/** Test seam: `null` goes back to the env flag. Re-exported from the gate. */
+export const setSupplierInvoicePostingEnabled = setPurchasingPostingEnabled;
 
 /**
  * Posting needs the env flag AND the accounting module of the tenant, read in
@@ -207,8 +210,7 @@ async function postingEnabled(
   tx: Tx,
   context: ScopedTenantContext,
 ): Promise<boolean> {
-  if (!(postingEnabledOverride ?? env.SUPPLIER_INVOICE_POSTING_ENABLED))
-    return false;
+  if (!purchasingPostingEnabled()) return false;
   const [row] = await tx
     .select({ featureFlags: tenants.featureFlags })
     .from(tenants)
@@ -608,6 +610,7 @@ function evaluate(input: {
 
 type PayableInput = {
   invoiceId: string;
+  purchaseOrderId: string;
   legalEntityId: string;
   outletId: string;
   supplierId: string;
@@ -624,6 +627,72 @@ type PayableInput = {
 };
 
 /**
+ * Cutover guard (legend-29vw): the invoice debits GRNI, so every valued goods
+ * receipt of the order must already have credited it (`aj:goods-receipt:<id>`,
+ * the auto-journal consumer). Otherwise GRNI would go negative and the payable
+ * would be booked against goods the GL never recorded: 409
+ * GOODS_RECEIPT_NOT_JOURNALED, the caller's transaction rolls back.
+ */
+async function assertGoodsReceiptsJournaled(
+  tx: Tx,
+  tenantId: TenantId,
+  purchaseOrderId: string,
+): Promise<void> {
+  const rows = await tx
+    .select({
+      goodsReceiptId: goodsReceipts.id,
+      quantityReceived: goodsReceiptLines.quantityReceived,
+      quantityRejected: goodsReceiptLines.quantityRejected,
+      unitCostIdr: goodsReceiptLines.unitCostIdr,
+    })
+    .from(goodsReceiptLines)
+    .innerJoin(
+      goodsReceipts,
+      and(
+        eq(goodsReceipts.tenantId, goodsReceiptLines.tenantId),
+        eq(goodsReceipts.id, goodsReceiptLines.goodsReceiptId),
+      ),
+    )
+    .where(
+      and(
+        eq(goodsReceipts.tenantId, tenantId),
+        eq(goodsReceipts.purchaseOrderId, purchaseOrderId),
+      ),
+    );
+  const linesByReceipt = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const lines = linesByReceipt.get(row.goodsReceiptId) ?? [];
+    lines.push(row);
+    linesByReceipt.set(row.goodsReceiptId, lines);
+  }
+  // Same value rule as the receipt fact: a receipt worth 0 books no journal.
+  const valued = [...linesByReceipt.entries()]
+    .filter(
+      ([, lines]) =>
+        guardMoneyMath(() => goodsReceiptValueIdr(lines, ROUNDING_MODE)) > 0,
+    )
+    .map(([goodsReceiptId]) => goodsReceiptId);
+  if (valued.length === 0) return;
+  const journaled = await tx
+    .select({ key: journalEntries.idempotencyKey })
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, tenantId),
+        inArray(
+          journalEntries.idempotencyKey,
+          valued.map((id) => `aj:goods-receipt:${id}`),
+        ),
+      ),
+    );
+  if (journaled.length < valued.length)
+    throw new PurchasingError(
+      "GOODS_RECEIPT_NOT_JOURNALED",
+      "The goods receipt journal is not posted yet; the invoice cannot be booked.",
+    );
+}
+
+/**
  * Books the invoice in the caller's transaction: the `supplier_invoice.recorded`
  * journal, then the payable open item (id = invoice id) with the tax record.
  * Returns the journal entry id. Fails closed (mapping, period, NPWP): the
@@ -637,6 +706,11 @@ async function postSupplierInvoicePayableInTransaction(
   now: Date,
 ): Promise<string> {
   await assertPostingEnabled(tx, context);
+  await assertGoodsReceiptsJournaled(
+    tx,
+    context.tenant.tenantId,
+    invoice.purchaseOrderId,
+  );
   const actorId = userIdSchema.parse(actorUserId);
   const entry = await postJournalFromRuleInTransaction(
     tx,
@@ -687,6 +761,7 @@ async function postSupplierInvoicePayableInTransaction(
 function payableInputOf(row: InvoiceRow, supplierName: string): PayableInput {
   return {
     invoiceId: row.id,
+    purchaseOrderId: row.purchaseOrderId,
     legalEntityId: row.legalEntityId,
     outletId: row.outletId,
     supplierId: row.supplierId,
@@ -1035,6 +1110,15 @@ export async function createSupplierInvoice(
           "The purchase order cannot be invoiced in its current status.",
         );
 
+      // Lock order: PO row (above) -> payable-src -> payable-doc. A fixed
+      // asset bought on credit takes payable-src on its own source id (not
+      // this new invoice uuid), so payable-src does not serialize the two.
+      // The lock that does is payable-doc (supplier + document number): the
+      // payable check below runs after a concurrent asset has committed.
+      const invoiceId = randomUUID();
+      await lockPayableSource(tx, tenantId, invoiceId);
+      await lockPayableDocument(tx, tenantId, input.supplierId, input.number);
+
       const [duplicate] = await tx
         .select({ id: purchaseInvoices.id })
         .from(purchaseInvoices)
@@ -1047,7 +1131,25 @@ export async function createSupplierInvoice(
           ),
         )
         .limit(1);
-      if (duplicate)
+      // A payable open item of the same supplier and document number that
+      // no supplier invoice booked came from a credit fixed asset purchase.
+      const [assetPayable] = duplicate
+        ? []
+        : await tx
+            .select({ id: accountingOpenItems.id })
+            .from(accountingOpenItems)
+            .where(
+              and(
+                eq(accountingOpenItems.tenantId, tenantId),
+                eq(accountingOpenItems.kind, "payable"),
+                eq(accountingOpenItems.counterpartyType, "supplier"),
+                eq(accountingOpenItems.counterpartyId, input.supplierId),
+                sql`upper(trim(${accountingOpenItems.documentNumber})) = ${input.number.trim().toUpperCase()}`,
+                sql`NOT EXISTS (SELECT 1 FROM ${purchaseInvoices} WHERE ${purchaseInvoices.tenantId} = ${accountingOpenItems.tenantId} AND ${purchaseInvoices.id} = ${accountingOpenItems.id})`,
+              ),
+            )
+            .limit(1);
+      if (duplicate || assetPayable)
         throw new PurchasingError(
           "SUPPLIER_INVOICE_DUPLICATE",
           "Duplicate supplier invoice number.",
@@ -1066,7 +1168,6 @@ export async function createSupplierInvoice(
         input.supplierId,
       );
 
-      const invoiceId = randomUUID();
       const data = await loadMatchData(
         tx,
         tenantId,
@@ -1168,6 +1269,7 @@ export async function createSupplierInvoice(
           context,
           {
             invoiceId,
+            purchaseOrderId: input.purchaseOrderId,
             legalEntityId: outlet.legalEntityId,
             outletId: input.outletId,
             supplierId: input.supplierId,
@@ -1324,6 +1426,7 @@ export async function rematchSupplierInvoice(
 
       await lockOrder(tx, tenantId, found.purchaseOrderId);
       const row = await findInvoice(tx, tenantId, supplierInvoiceId, true);
+      await lockPayableSource(tx, tenantId, row.id);
       requireHeld(row);
       const { evaluation, toleranceBp, supplierName } =
         await evaluateHeldInvoice(tx, tenantId, row, now);
@@ -1420,6 +1523,7 @@ export async function releaseSupplierInvoice(
 
       await lockOrder(tx, tenantId, found.purchaseOrderId);
       const row = await findInvoice(tx, tenantId, supplierInvoiceId, true);
+      await lockPayableSource(tx, tenantId, row.id);
       requireHeld(row);
       if (row.recordedBy.toLowerCase() === actorUserId.toLowerCase())
         throw new PurchasingError(

@@ -118,7 +118,23 @@ export const fixedAssetSchema = z
   });
 export type FixedAsset = z.infer<typeof fixedAssetSchema>;
 
-export const createFixedAssetInputSchema = z.strictObject({
+/**
+ * Payable of a credit purchase (bead legend-gzeya): the supplier, the document
+ * the supplier issued and when it falls due. The server books one payable open
+ * item for the asset cost with the acquisition journal, in the same transaction.
+ */
+export const fixedAssetPayableInputSchema = z.strictObject({
+  supplierId: uuidSchema,
+  documentNumber: z.string().trim().min(1).max(60),
+  documentDate: businessDateSchema,
+  dueOn: businessDateSchema,
+});
+export type FixedAssetPayableInput = z.infer<
+  typeof fixedAssetPayableInputSchema
+>;
+
+/** Field set without the cross-field rules (object schemas with refinements cannot be `.omit`ted). */
+export const createFixedAssetBaseSchema = z.strictObject({
   legalEntityId: legalEntityIdSchema,
   outletId: outletIdSchema.nullable(),
   /** Empty or omitted: the server assigns the next `FA-nnnnn` of the entity. */
@@ -131,8 +147,33 @@ export const createFixedAssetInputSchema = z.strictObject({
   usefulLifeMonths: z.number().int().min(1).max(600),
   depreciationStartPeriod: periodKeySchema,
   sourceDocumentId: uuidSchema.nullable(),
+  /** Required exactly when `sourceDocumentId` is set (a purchase on credit). */
+  payable: fixedAssetPayableInputSchema.nullable().optional(),
   idempotencyKey: idempotencyKeySchema,
 });
+
+export const createFixedAssetInputSchema =
+  createFixedAssetBaseSchema.superRefine((input, ctx) => {
+    const payable = input.payable ?? null;
+    if (input.sourceDocumentId !== null && payable === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["payable"],
+        message: "A purchase source document needs the supplier payable.",
+      });
+    if (input.sourceDocumentId === null && payable !== null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["payable"],
+        message: "A payable needs the purchase source document.",
+      });
+    if (payable !== null && payable.dueOn < payable.documentDate)
+      ctx.addIssue({
+        code: "custom",
+        path: ["payable", "dueOn"],
+        message: "Due date cannot be before the document date.",
+      });
+  });
 
 export type DepreciationScheduleRow = { period: string; amountIdr: Idr };
 

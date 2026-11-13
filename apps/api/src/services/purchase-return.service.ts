@@ -73,6 +73,8 @@ import {
   accountingOpenItemSettlements,
   accountingOpenItems,
 } from "../db/schema/accounting-ap-fa.ts";
+import { autoJournalParked } from "../db/schema/accounting-auto-journal.ts";
+import { journalEntries } from "../db/schema/accounting.ts";
 import { tenants } from "../db/schema/index.ts";
 import {
   goodsReceiptLines,
@@ -592,31 +594,55 @@ async function splitReturnAgainstInvoices(
         ),
       ),
     );
-  const priorDebit = priorReturns.reduce(
-    (sum, row) => sum + row.invoicedValueIdr + row.ppnIdr,
-    0,
+  // legend-3fi5v: only a debit note that will still land on the payable keeps
+  // room reserved. Settled ones are already inside the open item outstanding;
+  // one parked non-retryable (`retryable = false`) has reduced nothing and is
+  // not counted. Pending and retryable-parked ones (mapping missing, period
+  // closed) post on their own later, so they stay reserved: else two quick
+  // returns could both pass and the supplier be paid for goods already returned.
+  const debitReturns = priorReturns.filter(
+    (row) => row.invoicedValueIdr + row.ppnIdr > 0,
   );
-  let bookedDebit = 0;
-  if (priorDebit > 0) {
-    const booked = await tx
-      .select({ amountIdr: accountingOpenItemSettlements.amountIdr })
+  let reservedDebit = 0;
+  if (debitReturns.length > 0) {
+    const returnIds = debitReturns.map((row) => row.id);
+    const settled = await tx
+      .select({ sourceId: accountingOpenItemSettlements.sourceId })
       .from(accountingOpenItemSettlements)
       .where(
         and(
           eq(accountingOpenItemSettlements.tenantId, tenantId),
           eq(accountingOpenItemSettlements.kind, "payable"),
           eq(accountingOpenItemSettlements.method, "debit_note"),
+          inArray(accountingOpenItemSettlements.sourceId, returnIds),
+        ),
+      );
+    const failed = await tx
+      .select({ idempotencyKey: autoJournalParked.idempotencyKey })
+      .from(autoJournalParked)
+      .where(
+        and(
+          eq(autoJournalParked.tenantId, tenantId),
+          eq(autoJournalParked.retryable, false),
           inArray(
-            accountingOpenItemSettlements.sourceId,
-            priorReturns.map((row) => row.id),
+            autoJournalParked.idempotencyKey,
+            returnIds.map((id) => `aj:purchase-return:${id}`),
           ),
         ),
       );
-    bookedDebit = booked.reduce((sum, row) => sum + row.amountIdr, 0);
+    const settledIds = new Set(settled.map((row) => row.sourceId));
+    const failedKeys = new Set(failed.map((row) => row.idempotencyKey));
+    reservedDebit = debitReturns
+      .filter(
+        (row) =>
+          !settledIds.has(row.id) &&
+          !failedKeys.has(`aj:purchase-return:${row.id}`),
+      )
+      .reduce((sum, row) => sum + row.invoicedValueIdr + row.ppnIdr, 0);
   }
   const owed =
     openItems.reduce((sum, row) => sum + row.originalIdr - row.settledIdr, 0) -
-    Math.max(0, priorDebit - bookedDebit);
+    reservedDebit;
   if (split.invoicedValueIdr + ppnIdr > owed)
     throw new PurchasingError(
       "PURCHASE_RETURN_EXCEEDS_PAYABLE",
@@ -926,6 +952,29 @@ export async function createPurchaseReturn(
           lineValueIdr: line.lineValueIdr,
         })),
       );
+      // Cutover guard (design §2.3): the not-invoiced part debits GRNI, which
+      // only exists once the receipt's own journal is posted. No Dr GRNI
+      // without a Cr GRNI; nothing has been written yet, so the refusal is clean.
+      if (split.uninvoicedValueIdr > 0) {
+        const [receiptJournal] = await tx
+          .select({ id: journalEntries.id })
+          .from(journalEntries)
+          .where(
+            and(
+              eq(journalEntries.tenantId, context.tenant.tenantId),
+              eq(
+                journalEntries.idempotencyKey,
+                `aj:goods-receipt:${receipt.id}`,
+              ),
+            ),
+          )
+          .limit(1);
+        if (!receiptJournal)
+          throw new PurchasingError(
+            "GOODS_RECEIPT_NOT_JOURNALED",
+            "The goods receipt journal is not posted yet; the return cannot be booked.",
+          );
+      }
 
       const [row] = await tx
         .insert(purchaseReturns)

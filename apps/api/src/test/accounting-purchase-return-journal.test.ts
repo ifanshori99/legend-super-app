@@ -646,7 +646,7 @@ describe("purchase_return.recorded posts the return of goods", () => {
 
   it("PRP-JOURNAL-05 an invoiced return of a supplier with no AP open item is parked and posts no journal", async () => {
     // Design §6/§12: a debit note needs a supplier payable to reduce; the
-    // shortage parks the event (AutoJournalPayloadInvalid), nothing is
+    // shortage parks the event (AutoJournalDebitNoteShort), nothing is
     // recorded half-way. Same shape as the other parked payloads.
     const tenant = await makeTenant();
     const world = await makeWorld(tenant);
@@ -659,7 +659,7 @@ describe("purchase_return.recorded posts the return of goods", () => {
 
     expect(await deliver(tenant, event)).toEqual({
       status: "parked",
-      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      code: "AUTO_JOURNAL_DEBIT_NOTE_SHORT",
       retryable: false,
     });
     expect(await journalCount(world)).toBe(0);

@@ -235,6 +235,12 @@ async function asset(
     usefulLifeMonths: number;
     depreciationStartPeriod: string;
     sourceDocumentId: string | null;
+    payable: {
+      supplierId: string;
+      documentNumber: string;
+      documentDate: string;
+      dueOn: string;
+    } | null;
   }> = {},
   context = tenantScope(),
 ) {
@@ -273,6 +279,25 @@ async function signedIn(name = "AP/FA user") {
   const userId = session.body.user.id as string;
   createdUserIds.push(userId);
   return { client, userId };
+}
+
+/** Purchase source + supplier payable for an asset registered on credit. */
+async function purchaseSource() {
+  const { userId } = await signedIn("AP/FA supplier");
+  const { rows } = await owner.query<{ id: string }>(
+    `INSERT INTO suppliers (tenant_id, name, payment_terms_days, is_active, created_by)
+     VALUES ($1, $2, 30, true, $3) RETURNING id`,
+    [tenantId, `Pemasok aset ${unique()}`, userId],
+  );
+  return {
+    sourceDocumentId: randomUUID(),
+    payable: {
+      supplierId: rows[0]!.id,
+      documentNumber: `INV-${unique()}`,
+      documentDate: "2026-06-10",
+      dueOn: "2026-07-10",
+    },
+  };
 }
 
 async function financeUser() {
@@ -325,6 +350,10 @@ afterAll(async () => {
   if (createdUserIds.length > 0) {
     await owner.query(
       "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
+      [tenantId, createdUserIds],
+    );
+    await owner.query(
+      "DELETE FROM suppliers WHERE tenant_id = $1 AND created_by = ANY($2::text[])",
       [tenantId, createdUserIds],
     );
     await owner.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [
@@ -492,7 +521,7 @@ describe("legend-hpgo fixed assets and depreciation (§3.19 Aset Tetap)", () => 
     const purchased = await asset(entity, {
       acquiredOn: "2026-06-10",
       depreciationStartPeriod: "2026-07",
-      sourceDocumentId: randomUUID(),
+      ...(await purchaseSource()),
     });
     const { rows } = await owner.query<{ id: string }>(
       `SELECT id FROM journal_entries
@@ -512,7 +541,7 @@ describe("legend-hpgo fixed assets and depreciation (§3.19 Aset Tetap)", () => 
       asset(entity, {
         acquiredOn: "2026-08-03",
         depreciationStartPeriod: "2026-09",
-        sourceDocumentId: randomUUID(),
+        ...(await purchaseSource()),
       }),
     ).rejects.toMatchObject({ code: "PERIOD_CLOSED" });
     const { rows: assets } = await owner.query(

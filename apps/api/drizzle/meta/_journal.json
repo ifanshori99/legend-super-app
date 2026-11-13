@@ -2129,6 +2129,13 @@
       "when": 1794567292431,
       "tag": "0491_purchase_invoices_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 494,
+      "version": "7",
+      "when": 1794653692431,
+      "tag": "0494_purchase_price_variance",
+      "breakpoints": true
     }
   ]
 }

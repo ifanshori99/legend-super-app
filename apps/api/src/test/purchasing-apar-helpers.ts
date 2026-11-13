@@ -22,8 +22,12 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { ROLE_TEMPLATES } from "@starter/shared/access";
+import { eventEnvelopeSchema } from "@starter/shared/events";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { deliverAutoJournalEvent } from "../services/accounting-auto-journal-consumer.ts";
 import {
   createGoodsReceipt,
   type CreateGoodsReceiptInput,
@@ -75,6 +79,7 @@ export type AccountRole =
   | "ppn_input"
   | "service_expense"
   | "pph23_payable"
+  | "purchase_price_variance"
   | "accounts_payable";
 
 const CHART: [AccountRole, string, string, string, string][] = [
@@ -90,6 +95,13 @@ const CHART: [AccountRole, string, string, string, string][] = [
   ],
   ["pph23_payable", "2201", "Utang PPh 23", "liability", "current_liability"],
   ["service_expense", "6301", "Beban Jasa", "expense", "operating_expense"],
+  [
+    "purchase_price_variance",
+    "5105",
+    "Selisih Harga Pembelian",
+    "expense",
+    "cogs",
+  ],
 ];
 
 export type RoleKey = "purchasing" | "finance" | "warehouse";
@@ -410,6 +422,30 @@ export async function seedPo(
   };
 }
 
+/**
+ * Delivers the `goods_receipt.recorded` outbox event of a receipt to the
+ * auto-journal consumer, as the outbox worker would (legend-29vw): the receipt
+ * journal (Dr inventory / Cr GRNI) is what lets an invoice or a return of the
+ * uninvoiced part be booked. A no-op (ignored) while the posting flag is off.
+ */
+export async function deliverGoodsReceiptJournal(
+  world: World,
+  receiptId: string,
+): Promise<void> {
+  const { rows } = await owner.query<{ event: unknown }>(
+    `SELECT event FROM domain_event_outbox
+      WHERE tenant_id = $1 AND aggregate_id = $2 AND event->>'name' = 'goods_receipt.recorded'`,
+    [world.tenantId, receiptId],
+  );
+  const context = contextFor(world, null);
+  for (const row of rows) {
+    const event = eventEnvelopeSchema.parse(row.event);
+    await withTenant(db, context, (tx) =>
+      deliverAutoJournalEvent(context, event, tx, new Date()),
+    );
+  }
+}
+
 /** Receives `received` (and `rejected`) kg of the PO line through the service. */
 export async function receive(
   world: World,
@@ -436,6 +472,7 @@ export async function receive(
       idempotencyKey: key(),
     } as unknown as CreateGoodsReceiptInput,
   );
+  await deliverGoodsReceiptJournal(world, receipt.receipt.id);
   return {
     ...po,
     receiptId: receipt.receipt.id,
