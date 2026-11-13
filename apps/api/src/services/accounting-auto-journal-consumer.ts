@@ -54,7 +54,10 @@ import {
   outlets,
   tenants,
 } from "../db/schema/index.ts";
+import { purchaseReturns } from "../db/schema/purchase-returns.ts";
 import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
+import { applySupplierDebitNoteInTransaction } from "./accounting-ap.service.ts";
 import {
   AutoJournalDepositCutoverMixed,
   AutoJournalLoyaltyEntityAmbiguous,
@@ -675,6 +678,56 @@ async function postAutoJournal(
       },
       now,
     );
+    // A return with an invoiced part is a debit note: the supplier's open
+    // items fall in this same savepoint, so the card and the ledger move
+    // together or not at all. A replay never gets here (the journal key above
+    // returns `already_posted` first).
+    if (fact.debitNote) {
+      const [purchaseReturn] = await tx
+        .select({
+          purchaseOrderId: purchaseReturns.purchaseOrderId,
+          supplierId: purchaseReturns.supplierId,
+        })
+        .from(purchaseReturns)
+        .where(
+          and(
+            eq(purchaseReturns.tenantId, tenantId),
+            eq(purchaseReturns.id, fact.debitNote.purchaseReturnId),
+          ),
+        )
+        .limit(1);
+      // Events from before the payload carried the supplier: read it from the
+      // return row; park only when neither knows the supplier.
+      const supplierId =
+        purchaseReturn?.supplierId ?? fact.debitNote.supplierId;
+      if (!supplierId)
+        throw new AutoJournalPayloadInvalid(
+          "purchase_return with an invoiced value has no supplier for its debit note",
+        );
+      try {
+        await applySupplierDebitNoteInTransaction(
+          tx,
+          context,
+          {
+            purchaseReturnId: fact.debitNote.purchaseReturnId,
+            amountIdr: fact.debitNote.amountIdr,
+            supplierId,
+            legalEntityId,
+            purchaseOrderId: purchaseReturn?.purchaseOrderId ?? null,
+            settledOn: entryDate,
+            journalEntryId: journal.id,
+          },
+          null,
+        );
+      } catch (error) {
+        if (
+          error instanceof HttpError &&
+          error.code === "PURCHASE_RETURN_EXCEEDS_PAYABLE"
+        )
+          throw new AutoJournalPayloadInvalid(error.message);
+        throw error;
+      }
+    }
   } else return { status: "ignored" };
   if (lateAdjustmentFrom !== null)
     await recordAudit(

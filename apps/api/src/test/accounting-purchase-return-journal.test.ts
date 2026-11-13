@@ -26,7 +26,7 @@
 //   `purchase_return`) is the inventory bridge's to ignore: the return journal
 //   comes from `purchase_return.recorded` alone, never twice.
 
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -34,6 +34,7 @@ import {
   decimal4,
   isoDateTimeSchema,
   tenantIdSchema,
+  userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -49,6 +50,7 @@ import { withTenant } from "../db/tenant.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { recordStockMovement } from "../services/inventory.service.ts";
+import { recordSupplierInvoicePayableInTransaction } from "../services/accounting-ap.service.ts";
 import {
   deliverAutoJournalEvent,
   type AutoJournalResult,
@@ -220,6 +222,96 @@ async function makeOutlet(world: World): Promise<string> {
   return outletId;
 }
 
+// ---- supplier payable (setup) -----------------------------------------------
+// Docs/briefs/ws-purchasing-apar-design.md §6/§12: a debit note (the invoiced
+// part of a return) needs an AP open item of the supplier to reduce; without
+// one the event is parked. Tests that return invoiced goods therefore seed a
+// supplier invoice with enough debt first. The seed journal has source type
+// `supplier_invoice`, so `journalCount` below ignores it (it counts returns
+// and petty purchases only).
+
+const creator = randomUUID();
+const actor = userIdSchema.parse(creator);
+
+/** Seeds a supplier whose AP card holds `payableIdr` (ledger credit + open item). */
+async function seedSupplierPayable(
+  world: World,
+  payableIdr: number,
+): Promise<string> {
+  const supplierId = randomUUID();
+  await owner.query(
+    `INSERT INTO suppliers (id, tenant_id, name, payment_terms_days, created_by)
+     VALUES ($1, $2, $3, 30, $4)`,
+    [supplierId, world.tenant.id, `Pemasok ${short()}`, creator],
+  );
+  const { rows: period } = await owner.query<{ id: string }>(
+    "SELECT id FROM fiscal_periods WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = '2026-10'",
+    [world.tenant.id, world.entity],
+  );
+  const client = await owner.connect();
+  let journalEntryId: string;
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query<{ id: string }>(
+      `INSERT INTO journal_entries
+         (tenant_id, legal_entity_id, outlet_id, entry_date, fiscal_period_id, source_type,
+          source_id, description, idempotency_key, request_fingerprint)
+       VALUES ($1, $2, NULL, '2026-10-01', $3, 'supplier_invoice', $4, 'Faktur pemasok uji', $5, $6)
+       RETURNING id`,
+      [
+        world.tenant.id,
+        world.entity,
+        period[0]!.id,
+        randomUUID(),
+        `prj-inv-${randomUUID()}`,
+        randomBytes(32).toString("hex"),
+      ],
+    );
+    journalEntryId = rows[0]!.id;
+    const lines: [string, number, number][] = [
+      [world.accounts.inventory, payableIdr, 0],
+      [world.accounts.accounts_payable, 0, payableIdr],
+    ];
+    for (const [index, [accountId, debit, credit]] of lines.entries())
+      await client.query(
+        `INSERT INTO journal_lines (tenant_id, entry_id, account_id, outlet_id, line_no, debit_idr, credit_idr)
+         VALUES ($1, $2, $3, NULL, $4, $5, $6)`,
+        [world.tenant.id, journalEntryId, accountId, index + 1, debit, credit],
+      );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+  const context = contextOf(world.tenant);
+  await withTenant(db, context, (tx) =>
+    recordSupplierInvoicePayableInTransaction(
+      tx,
+      context,
+      {
+        supplierInvoiceId: randomUUID(),
+        legalEntityId: world.entity,
+        outletId: world.outletId,
+        supplierId,
+        supplierName: "Pemasok Uji",
+        invoiceNumber: `INV-${short()}`,
+        invoiceDate: "2026-10-01",
+        dueOn: "2026-10-31",
+        dppIdr: payableIdr,
+        ppnIdr: 0,
+        pph23Idr: 0,
+        payableIdr,
+        journalEntryId,
+        idempotencyKey: `prj-ap-${randomUUID()}`,
+      },
+      actor,
+    ),
+  );
+  return supplierId;
+}
+
 // ---- synthetic events -------------------------------------------------------
 
 function envelope(
@@ -367,7 +459,7 @@ async function entryOf(world: World, entryId: string): Promise<Entry> {
 
 async function journalCount(world: World): Promise<number> {
   const { rows } = await owner.query<{ n: string }>(
-    "SELECT count(*)::text AS n FROM journal_entries WHERE tenant_id = $1 AND legal_entity_id = $2",
+    "SELECT count(*)::text AS n FROM journal_entries WHERE tenant_id = $1 AND legal_entity_id = $2 AND source_type <> 'supplier_invoice'",
     [world.tenant.id, world.entity],
   );
   return Number(rows[0]!.n);
@@ -428,6 +520,10 @@ beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   setAuditWriter(coreAuditWriter);
+  await owner.query(
+    'INSERT INTO "user" (id, name, email) VALUES ($1, $2, $3)',
+    [creator, "Purchase return journal test", `${creator}@example.com`],
+  );
 });
 
 afterAll(async () => {
@@ -469,13 +565,20 @@ describe("purchase_return.recorded posts the return of goods", () => {
   it("PRP-JOURNAL-02 a return after invoicing posts Dr accounts_payable (value + PPN) / Cr inventory, Cr ppn_input, balanced", async () => {
     const tenant = await makeTenant();
     const world = await makeWorld(tenant);
+    const supplierId = await seedSupplierPayable(world, 500_000);
     const result = await post(
       world,
-      purchaseReturnRecorded(world, randomUUID(), {
-        uninvoicedValueIdr: 0,
-        invoicedValueIdr: 100_000,
-        ppnIdr: 11_000,
-      }),
+      purchaseReturnRecorded(
+        world,
+        randomUUID(),
+        {
+          uninvoicedValueIdr: 0,
+          invoicedValueIdr: 100_000,
+          ppnIdr: 11_000,
+        },
+        undefined,
+        { payload: { supplierId } },
+      ),
     );
 
     expect(await linesOf(world, result.journalEntryId)).toEqual([
@@ -489,13 +592,20 @@ describe("purchase_return.recorded posts the return of goods", () => {
   it("PRP-JOURNAL-03 an invoiced return without PPN posts no ppn_input line", async () => {
     const tenant = await makeTenant();
     const world = await makeWorld(tenant);
+    const supplierId = await seedSupplierPayable(world, 500_000);
     const result = await post(
       world,
-      purchaseReturnRecorded(world, randomUUID(), {
-        uninvoicedValueIdr: 0,
-        invoicedValueIdr: 100_000,
-        ppnIdr: 0,
-      }),
+      purchaseReturnRecorded(
+        world,
+        randomUUID(),
+        {
+          uninvoicedValueIdr: 0,
+          invoicedValueIdr: 100_000,
+          ppnIdr: 0,
+        },
+        undefined,
+        { payload: { supplierId } },
+      ),
     );
 
     expect(await linesOf(world, result.journalEntryId)).toEqual([
@@ -508,13 +618,20 @@ describe("purchase_return.recorded posts the return of goods", () => {
   it("PRP-JOURNAL-04 a mixed return splits Dr grni and Dr accounts_payable, one balanced journal", async () => {
     const tenant = await makeTenant();
     const world = await makeWorld(tenant);
+    const supplierId = await seedSupplierPayable(world, 500_000);
     const result = await post(
       world,
-      purchaseReturnRecorded(world, randomUUID(), {
-        uninvoicedValueIdr: 60_000,
-        invoicedValueIdr: 40_000,
-        ppnIdr: 4_400,
-      }),
+      purchaseReturnRecorded(
+        world,
+        randomUUID(),
+        {
+          uninvoicedValueIdr: 60_000,
+          invoicedValueIdr: 40_000,
+          ppnIdr: 4_400,
+        },
+        undefined,
+        { payload: { supplierId } },
+      ),
     );
 
     expect(await linesOf(world, result.journalEntryId)).toEqual([
@@ -525,6 +642,27 @@ describe("purchase_return.recorded posts the return of goods", () => {
     ]);
     await expectBalanced(world, result.journalEntryId);
     expect(await journalCount(world)).toBe(1);
+  });
+
+  it("PRP-JOURNAL-05 an invoiced return of a supplier with no AP open item is parked and posts no journal", async () => {
+    // Design §6/§12: a debit note needs a supplier payable to reduce; the
+    // shortage parks the event (AutoJournalPayloadInvalid), nothing is
+    // recorded half-way. Same shape as the other parked payloads.
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const returnId = randomUUID();
+    const event = purchaseReturnRecorded(world, returnId, {
+      uninvoicedValueIdr: 0,
+      invoicedValueIdr: 100_000,
+      ppnIdr: 11_000,
+    });
+
+    expect(await deliver(tenant, event)).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(0);
   });
 });
 
@@ -558,12 +696,20 @@ describe("delivery is idempotent", () => {
     const tenant = await makeTenant();
     const world = await makeWorld(tenant);
     const returnId = randomUUID();
+    const supplierId = await seedSupplierPayable(world, 500_000);
     const amounts = {
       uninvoicedValueIdr: 60_000,
       invoicedValueIdr: 40_000,
       ppnIdr: 4_400,
     };
-    const event = purchaseReturnRecorded(world, returnId, amounts);
+    const overrides = { payload: { supplierId } };
+    const event = purchaseReturnRecorded(
+      world,
+      returnId,
+      amounts,
+      undefined,
+      overrides,
+    );
 
     const first = await post(world, event);
     expect(await deliver(tenant, event)).toEqual({
@@ -572,7 +718,10 @@ describe("delivery is idempotent", () => {
     });
     // A re-sent envelope of the same return (new event id) is the same fact.
     expect(
-      await deliver(tenant, purchaseReturnRecorded(world, returnId, amounts)),
+      await deliver(
+        tenant,
+        purchaseReturnRecorded(world, returnId, amounts, undefined, overrides),
+      ),
     ).toEqual({
       status: "already_posted",
       journalEntryId: first.journalEntryId,
@@ -604,12 +753,15 @@ describe("delivery is idempotent", () => {
     const tenant = await makeTenant();
     const world = await makeWorld(tenant);
     const returnId = randomUUID();
+    const supplierId = await seedSupplierPayable(world, 500_000);
     const amounts = {
       uninvoicedValueIdr: 60_000,
       invoicedValueIdr: 40_000,
       ppnIdr: 4_400,
     };
-    const event = purchaseReturnRecorded(world, returnId, amounts);
+    const event = purchaseReturnRecorded(world, returnId, amounts, undefined, {
+      payload: { supplierId },
+    });
 
     const results = await Promise.all([
       deliver(tenant, event),

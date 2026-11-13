@@ -55134,7 +55134,7 @@
         },
         "purchase_invoices_decider_check": {
           "name": "purchase_invoices_decider_check",
-          "value": "\"purchase_invoices\".\"decided_by\" IS NULL OR \"purchase_invoices\".\"decided_by\" <> \"purchase_invoices\".\"recorded_by\""
+          "value": "\"purchase_invoices\".\"status\" <> 'released' OR \"purchase_invoices\".\"decided_by\" <> \"purchase_invoices\".\"recorded_by\""
         }
       },
       "isRLSEnabled": false

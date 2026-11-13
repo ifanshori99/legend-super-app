@@ -74,6 +74,7 @@ import {
   type ScopedTenantContext,
   type UserId,
 } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { db } from "../db";
 import { journalEntries } from "../db/schema/accounting.ts";
 import {
@@ -86,6 +87,7 @@ import {
   type DepreciationRunRow,
   type FixedAssetRow,
 } from "../db/schema/accounting-ap-fa.ts";
+import { purchaseInvoices, supplierInvoices } from "../db/schema/purchasing.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
@@ -1149,6 +1151,58 @@ export async function listDepreciationRuns(
 // ----------------------------------------------------------------- writes
 
 /**
+ * One purchase, one payable: a supplier invoice already booked its Cr
+ * accounts_payable (and its open item) in the purchasing transaction, so an
+ * asset acquisition naming that invoice would credit the same payable twice.
+ * Held invoices count too: releasing one posts the payable later. Refused
+ * before anything is posted (design ws-purchasing-apar section 5).
+ *
+ * The lookup runs under tenant-wide RLS (pattern of `findDeviceOutletId`): the
+ * caller's outlet-scoped transaction would hide an invoice of another outlet
+ * and let the double payable through. Every read still filters `tenantId`.
+ */
+async function assertSourceIsNotSupplierInvoice(
+  context: ScopedTenantContext,
+  sourceDocumentId: string,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const found = await withTenant(
+    db,
+    establishScopedTenantContext(context.tenant, { kind: "tenant" }),
+    async (tx) => {
+      const [booked] = await tx
+        .select({ id: supplierInvoices.id })
+        .from(supplierInvoices)
+        .where(
+          and(
+            eq(supplierInvoices.tenantId, tenantId),
+            eq(supplierInvoices.id, sourceDocumentId),
+          ),
+        )
+        .limit(1);
+      if (booked) return true;
+      const [held] = await tx
+        .select({ id: purchaseInvoices.id })
+        .from(purchaseInvoices)
+        .where(
+          and(
+            eq(purchaseInvoices.tenantId, tenantId),
+            eq(purchaseInvoices.id, sourceDocumentId),
+          ),
+        )
+        .limit(1);
+      return held !== undefined;
+    },
+  );
+  if (found)
+    throw new HttpError(
+      409,
+      "CONFLICT",
+      "This supplier invoice already booked its payable; register the asset without it as the source document.",
+    );
+}
+
+/**
  * Registers an asset (§3.19 "Registrasi aset dari pembelian"). From a
  * purchase (sourceDocumentId set) it posts `document:asset_acquisition`
  * (debit fixed assets / credit accounts payable) dated `acquiredOn`; an asset
@@ -1192,6 +1246,10 @@ export async function createFixedAsset(
         const id = newId();
         let acquisitionJournalEntryId: string | null = null;
         if (input.sourceDocumentId !== null) {
+          await assertSourceIsNotSupplierInvoice(
+            context,
+            input.sourceDocumentId,
+          );
           const entry = await postJournalFromRuleInTransaction(
             tx,
             context,

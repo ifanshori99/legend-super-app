@@ -1,3 +1,14 @@
+## WS-06/07 purchasing, AP/AR, akuntansi (engineer, cabang `ws/purchasing-apar` dari `origin/milestone/m1` d56eafb4, 13 Nov 2026 17:41-18:45 WIB)
+
+- Selesai: legend-xysyi (XML Coretax NPWP asli, gagal tertutup), legend-a5wl (registry deep-link jurnal + guard tujuan), legend-lspfy + legend-nz13 (faktur pemasok, 3-way match, toleransi tenant, hold/release/reject), legend-uyk2 (AP di tx purchasing; anti dobel buku aset; bagian AR tanpa pemanggil = tidak dikerjakan), legend-179bw (debit note retur -> settlement `debit_note` tepat sekali).
+- Migrasi 0490 (`purchase_invoices`, lines, `purchasing_policies`, settlement `debit_note` + unique index) dan 0491 (RLS, GRANT kolom, trigger transisi status).
+- Desain: `docs/briefs/ws-purchasing-apar-design.md` (§12 keputusan engineer, §13 temuan architect R1-R4 dibetulkan).
+- Gate `SUPPLIER_INVOICE_POSTING_ENABLED` default mati (GRNI legend-29vw belum ada). Posting juga butuh modul `accounting` tenant.
+- Keputusan sementara yang membatasi bayar (K1-K7) menunggu founder: toleransi default 0 bp, retur melebihi utang ditolak, baris jasa selalu held, PPN <= 12% DPP.
+- Sisa: XSD Coretax resmi belum ada di repo; aset dari pembelian kredit tanpa open item AP (K7); debit note retur yang diparkir menahan retur berikutnya pada PO (runbook finance).
+- Verifikasi: 18 file test terarah 261 lulus/1 skip, test root `.mjs` 40 lulus, typecheck api+web lulus, `db:generate` kosong, eslint+prettier bersih. Cleanup test bersama diperbaiki (helper `purchasing-document-counters.ts`, `purchasing-flow` tidak menghapus PO milik suite lain).
+- Follow-up: legend-gzeya (K7), legend-igclp (XSD), legend-3fi5v (debit note diparkir), legend-ct27s (race guard aset), legend-smrwb (sisi AR).
+
 ## 539-U5b 12 layar konfigurasi (ui-engineer, cabang `ui/tenant-config` dari `origin/milestone/m1` 5cbe2a1e, 13 Nov 2026 06:35-08:00 WIB)
 
 - Kartu legend-y1jll. Pencocokan 12 layar Q29-Q40 vs m1: `docs/briefs/sub-u5b-gap.md`. 10 sudah ada (brief 505 `ws/ui-bo-config` dan `ws/ui-mixed-q36` sudah di m1); 2 dibangun di cabang ini.

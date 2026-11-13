@@ -250,3 +250,11 @@ Satu pemegang token heavy sekaligus (diumumkan engineer).
 - Migrasi: 0490 hasil `pnpm db:generate` lalu rename berkas + tag journal ke `0490_<nama>`; 0491 custom SQL (pola cabang batch54 `fix/ai-login-review`: lihat `git log --all --oneline -- apps/api/drizzle/meta/_journal.json`).
 - Pemilik file test: test-writer menulis `purchasing-invoice.test.ts`, `purchasing-policy.test.ts`, `purchase-return-invoiced-split.test.ts`, `accounting-asset-no-double-ap.test.ts`; implementer tidak mengubah assert, hanya melapor bila test terasa salah.
 - Token heavy: hanya yang diumumkan engineer.
+
+## 13. Temuan architect review akhir (wajib dibetulkan)
+
+- R1 (berat): posting AP faktur dan debit note harus sama-sama hidup. `postingEnabled()` di purchasing-invoice.service.ts mewajibkan juga `isModuleEnabled(featureFlags,"accounting")` dibaca di tx; bila mati: 409 `SUPPLIER_INVOICE_POSTING_DISABLED`, tidak menulis apa pun. `splitReturnAgainstInvoices` (purchase-return.service.ts): bila bagian ditagih > 0 dan modul akuntansi mati, tolak 409 (kode yang ada: `PURCHASE_RETURN_EXCEEDS_PAYABLE` atau kode baru di shared errors bila perlu; diskusikan lewat laporan).
+- R2 (sedang): trigger BEFORE UPDATE di `purchasing.custom.sql` + `0491_purchase_invoices_rls.sql`: transisi status hanya `held` -> `matched`/`released`/`rejected` (atau tetap sama); `journal_entry_id` tidak bisa diubah setelah terisi; baris `matched`/`released`/`rejected` beku (selain `updated_at`).
+- R3 (rendah): penjaga aset (`accounting-fixed-assets.service.ts` ~1182) cek `purchase_invoices`/`supplier_invoices` seluruh tenant, tidak terhalang RLS outlet (pakai pola lookup tenant-wide yang sudah ada).
+- R4 (rendah): `outstandingIdr` = 0 untuk faktur held/rejected (purchasing-invoice.service.ts ~249).
+- Test baru (test-writer): `apps/api/src/test/purchasing-apar-hardening.test.ts` untuk R1 (tenant tanpa modul accounting: faktur matched 409 tanpa jejak; retur bagian ditagih 409), R2 (UPDATE langsung sebagai legend_app ditolak trigger), R3 (finance outlet terbatas, faktur outlet lain → 409), R4.

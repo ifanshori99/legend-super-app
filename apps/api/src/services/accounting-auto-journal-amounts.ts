@@ -341,6 +341,9 @@ const shiftClosedSchema = z.object({
 // goods_receipt.recorded is not journaled here (legend-29vw).
 const purchaseReturnRecordedSchema = z.object({
   purchaseReturnId: z.string().uuid(),
+  // The debit note against the supplier's open items needs the supplier. Older
+  // events lack it: the consumer then reads it from the purchase_returns row.
+  supplierId: z.string().uuid().optional(),
   outletId: z.string().uuid(),
   valueIdr: idr.nonnegative(),
   uninvoicedValueIdr: idr.nonnegative(),
@@ -407,6 +410,16 @@ export type AutoJournalFact = {
    * date from `moneyTime` (timezone and business-day cutoff would shift it).
    */
   readonly entryDate?: string;
+  /**
+   * Purchase return with an invoiced part: after its journal posts, the
+   * consumer lowers the supplier's payable open items by `amountIdr` in the
+   * same transaction (accounting-ap.service applySupplierDebitNoteInTransaction).
+   */
+  readonly debitNote?: {
+    readonly purchaseReturnId: string;
+    readonly supplierId: string | null;
+    readonly amountIdr: number;
+  };
   /**
    * legend-msqvi: outlet of the journal and its lines when it differs from
    * `outletId` (which then only gives the legal entity and the business-day
@@ -1822,14 +1835,24 @@ export async function autoJournalFactOf(
         throw new AutoJournalPayloadInvalid(
           "purchase_return ppnIdr without an invoiced value",
         );
+      const debitNoteIdr = p.invoicedValueIdr + p.ppnIdr;
       return {
         ruleEvent: "purchase_return.recorded",
         amounts: {
           uninvoicedValueIdr: p.uninvoicedValueIdr,
-          debitNoteIdr: p.invoicedValueIdr + p.ppnIdr,
+          debitNoteIdr,
           valueIdr: p.valueIdr,
           ppnIdr: p.ppnIdr,
         },
+        ...(debitNoteIdr > 0
+          ? {
+              debitNote: {
+                purchaseReturnId: p.purchaseReturnId,
+                supplierId: p.supplierId ?? null,
+                amountIdr: debitNoteIdr,
+              },
+            }
+          : {}),
         sourceId: p.purchaseReturnId,
         outletId: p.outletId,
         moneyTime: new Date(p.returnedAt),

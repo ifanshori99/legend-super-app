@@ -265,6 +265,16 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
+    // Gate for supplier invoice posting (ws/purchasing-apar, K5). Off by
+    // default: an invoice that matches clears GRNI, which holds no balance
+    // until the goods receipt journal (legend-29vw) runs. While off, a match
+    // that would book the payable (create, re-match, release) answers 409
+    // SUPPLIER_INVOICE_POSTING_DISABLED and writes nothing; a held invoice is
+    // still stored. Turn it on together with legend-29vw.
+    SUPPLIER_INVOICE_POSTING_ENABLED: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
     // Keyed-digest secret for contact values (WhatsApp numbers, emails) that
     // must link across modules — identity rows, reservations, CRM (AUTH-01/07).
     // Optional so existing deployments start; it falls back to

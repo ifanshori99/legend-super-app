@@ -1133,14 +1133,17 @@ export const supplierInvoiceSchema = z
         path: ["payableIdr"],
         message: "payable = total - pph23",
       });
-    if (
-      subtractIdr(invoice.payableIdr, invoice.paidIdr) !==
-      invoice.outstandingIdr
-    )
+    // A held or rejected invoice is not a payable: nothing is outstanding.
+    const expectedOutstanding =
+      invoice.status === "held" || invoice.status === "rejected"
+        ? 0
+        : subtractIdr(invoice.payableIdr, invoice.paidIdr);
+    if (expectedOutstanding !== invoice.outstandingIdr)
       context.addIssue({
         code: "custom",
         path: ["outstandingIdr"],
-        message: "outstanding = payable - paid",
+        message:
+          "outstanding = 0 for held or rejected, otherwise payable - paid",
       });
     if (invoice.dueDate < invoice.invoiceDate)
       context.addIssue({

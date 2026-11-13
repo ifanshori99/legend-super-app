@@ -45,7 +45,7 @@ CREATE TABLE "purchase_invoices" (
         AND ("purchase_invoices"."decided_by" IS NULL) = ("purchase_invoices"."decided_at" IS NULL)),
 	CONSTRAINT "purchase_invoices_match_state_check" CHECK (("purchase_invoices"."status" <> 'matched' OR "purchase_invoices"."match_result" = 'matched')
         AND ("purchase_invoices"."status" NOT IN ('held', 'released') OR "purchase_invoices"."match_result" = 'discrepancy')),
-	CONSTRAINT "purchase_invoices_decider_check" CHECK ("purchase_invoices"."decided_by" IS NULL OR "purchase_invoices"."decided_by" <> "purchase_invoices"."recorded_by"),
+	CONSTRAINT "purchase_invoices_decider_check" CHECK ("purchase_invoices"."status" <> 'released' OR "purchase_invoices"."decided_by" <> "purchase_invoices"."recorded_by"),
 	CONSTRAINT "purchase_invoices_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "purchase_invoices_recorded_by_user_id_fk" FOREIGN KEY ("recorded_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action,
 	CONSTRAINT "purchase_invoices_decided_by_user_id_fk" FOREIGN KEY ("decided_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action,

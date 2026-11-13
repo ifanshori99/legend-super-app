@@ -990,7 +990,7 @@ const invoiceDrafts = invoiceSeeds.map((seed) => {
     totalIdr,
     payableIdr,
     paidIdr: seed.paidIdr,
-    outstandingIdr: payableIdr - seed.paidIdr,
+    outstandingIdr: match.status === "matched" ? payableIdr - seed.paidIdr : 0,
     // A discrepant fixture invoice is held: nothing is booked or payable.
     status: match.status === "matched" ? "matched" : "held",
     matchStatus: match.status,

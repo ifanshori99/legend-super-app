@@ -398,10 +398,24 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // The tenant is shared with other purchasing suites (receiving, returns,
+  // supplier invoices) that may still hold goods receipts or invoices on their
+  // own orders while this file cleans up. Leave those orders to their owners.
+  const inUse = `(SELECT purchase_order_id FROM goods_receipts WHERE tenant_id = $1
+    UNION SELECT purchase_order_id FROM purchase_invoices WHERE tenant_id = $1)`;
+  await owner.query(
+    `DELETE FROM purchase_order_share_links WHERE tenant_id = $1 AND purchase_order_id NOT IN ${inUse}`,
+    [tenantA],
+  );
+  await owner.query(
+    `DELETE FROM purchase_order_lines WHERE tenant_id = $1 AND purchase_order_id NOT IN ${inUse}`,
+    [tenantA],
+  );
+  await owner.query(
+    `DELETE FROM purchase_orders WHERE tenant_id = $1 AND id NOT IN ${inUse}`,
+    [tenantA],
+  );
   const tables = [
-    "purchase_order_share_links",
-    "purchase_order_lines",
-    "purchase_orders",
     "purchase_request_lines",
     "purchase_requests",
     "purchasing_idempotency",

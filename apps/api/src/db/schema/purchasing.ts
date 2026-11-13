@@ -315,7 +315,7 @@ export const purchaseInvoices = pgTable(
     // Separation of duties: whoever recorded the invoice never decides it.
     check(
       "purchase_invoices_decider_check",
-      sql`${table.decidedBy} IS NULL OR ${table.decidedBy} <> ${table.recordedBy}`,
+      sql`${table.status} <> 'released' OR ${table.decidedBy} <> ${table.recordedBy}`,
     ),
   ],
 );

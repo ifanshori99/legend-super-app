@@ -108,7 +108,7 @@ export const settleOpenItemInputSchema = z
   .strictObject({
     kind: openItemKindSchema,
     openItemId: uuidSchema,
-    method: z.enum(["payment", "write_off"]),
+    method: z.enum(["payment", "write_off", "debit_note"]),
     sourceId: uuidSchema.nullable(),
     settledOn: businessDateSchema,
     amountIdr: positiveIdr,
@@ -121,6 +121,13 @@ export const settleOpenItemInputSchema = z
         code: "custom",
         path: ["reason"],
         message: "A write-off needs a reason",
+      });
+    // A debit note is the supplier-return credit: it names its return document.
+    if (input.method === "debit_note" && input.sourceId === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["sourceId"],
+        message: "A debit note needs its purchase return",
       });
   });
 export type SettleOpenItemInput = z.input<typeof settleOpenItemInputSchema>;
@@ -333,6 +340,23 @@ export async function settleOpenItemInTransaction(
           objectId: input.openItemId,
           outletId: item.outletId,
           reason: input.reason,
+          before: { outstandingIdr: outstanding },
+          after: {
+            outstandingIdr: outstanding - input.amountIdr,
+            amountIdr: input.amountIdr,
+            journalEntryId,
+          },
+        });
+      // A debit note forgives nothing but moves the debt without cash: it is
+      // audited (the return is the settlement's source_id).
+      if (input.method === "debit_note")
+        await auditApFa(tx, context, {
+          actorId,
+          action: `accounting.${input.kind}.debit_noted`,
+          objectType: "open_item",
+          objectId: input.openItemId,
+          outletId: item.outletId,
+          reason: null,
           before: { outstandingIdr: outstanding },
           after: {
             outstandingIdr: outstanding - input.amountIdr,
