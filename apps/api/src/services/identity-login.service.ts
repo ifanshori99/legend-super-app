@@ -55,6 +55,7 @@ import type { ScopedTenantContext } from "@starter/shared/core";
 import { env } from "../config/env";
 import { db } from "../db";
 import {
+  kirimdevSenderMappings,
   loginChallenges,
   tenants,
   tenantIntegrations,
@@ -135,10 +136,28 @@ export async function resolveWhatsAppChannel(
       "SERVICE_UNAVAILABLE",
       "Nomor WhatsApp tenant belum diatur.",
     );
-  // Meta's phone_number_id is not the MSISDN. Match it when configured, and
-  // otherwise compare against the receiving number (adapted AUTH-02: KirimDev's
-  // delivery carries `phone_number_id`).
-  const routingNumber = configText(config, "phoneNumberId") ?? receivingNumber;
+  // Meta's phone_number_id is not the MSISDN. Inbound routing trusts only the
+  // platform-written tenant-wide Kirimdev sender mapping (adapted AUTH-02:
+  // KirimDev's delivery carries `phone_number_id`). The tenant-written
+  // `config.phoneNumberId` is ignored, with no fallback to `receivingNumber`:
+  // otherwise a tenant could claim a number it does not own. No mapping fails
+  // closed.
+  const [mapping] = await tx
+    .select({ phoneNumberId: kirimdevSenderMappings.phoneNumberId })
+    .from(kirimdevSenderMappings)
+    .where(
+      and(
+        eq(kirimdevSenderMappings.tenantId, context.tenant.tenantId),
+        isNull(kirimdevSenderMappings.outletId),
+      ),
+    )
+    .limit(1);
+  if (!mapping)
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Masuk dengan WhatsApp belum tersedia untuk tenant ini.",
+    );
+  const routingNumber = mapping.phoneNumberId;
   const rawKeyword = configText(config, "loginKeyword")?.toUpperCase();
   const keyword =
     rawKeyword && /^MASUK(\s+\S+)*$/.test(rawKeyword)

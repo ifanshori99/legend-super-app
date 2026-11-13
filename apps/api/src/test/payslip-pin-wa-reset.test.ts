@@ -39,6 +39,10 @@ import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { sealSecret } from "../lib/secrets.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
+import {
+  ensureSharedKirimdevSender,
+  holdSeededTenantWhatsappLock,
+} from "./helpers/kirimdev-sender.ts";
 
 // Founder decision (supersedes design D-WA3's 7 days): a linked WhatsApp number
 // must be at least this many days old before it can prove a PIN reset. The
@@ -55,7 +59,10 @@ const outletId = fixtures.outlets[0].id;
 const PASSWORD = "Test-password-123!";
 const RESET_BASE = "/api/hris/me/payslip-pin/reset-wa";
 const STATUS = "/api/hris/me/payslip-pin";
-const RECEIVING_NUMBER = `62811${Array.from(randomBytes(8), (b) => b % 10).join("")}`;
+// A `let`: the seeded tenant has one tenant-wide integration and sender mapping,
+// shared with identity-merge.test.ts when files run in parallel, so the number is
+// the one the integration ends up with (see seedIntegration).
+let RECEIVING_NUMBER = `62811${Array.from(randomBytes(8), (b) => b % 10).join("")}`;
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
@@ -84,7 +91,6 @@ const createdUsers: string[] = [];
 const createdRoles: string[] = [];
 const createdEmployees: string[] = [];
 const createdIdentities: string[] = [];
-let previousIntegration: { config: unknown; status: string } | null = null;
 let hr: { client: Client; userId: string };
 
 // ------------------------------------------------------------ database
@@ -118,15 +124,12 @@ async function sql<R extends Record<string, unknown> = Record<string, unknown>>(
 }
 
 async function seedIntegration() {
-  await owner.query(
-    `INSERT INTO tenant_integrations (tenant_id, provider, config, credentials_encrypted, status)
-     VALUES ($1, 'whatsapp', $2, 'c2VhbGVkLXRlc3Q=', 'active')
-     ON CONFLICT (tenant_id, provider) WHERE outlet_id IS NULL
-     DO UPDATE SET config = EXCLUDED.config, status = EXCLUDED.status`,
-    [
-      tenant.id,
-      JSON.stringify({ vendor: "kirimdev", receivingNumber: RECEIVING_NUMBER }),
-    ],
+  // Adopts the integration's existing number if another file seeded it, and
+  // maps that number: inbound routes only via kirimdev_sender_mappings
+  // (legend-52tdq) and the webhook sends RECEIVING_NUMBER as phone_number_id.
+  RECEIVING_NUMBER = await ensureSharedKirimdevSender(
+    tenant.id,
+    RECEIVING_NUMBER,
   );
 }
 
@@ -411,14 +414,13 @@ const cookieNamed = (setCookie: string[], name: string) =>
 
 // ------------------------------------------------------------ lifecycle
 
+// Held for the whole file: identity-merge.test.ts cleanup would otherwise wipe
+// this file's challenges and identities, and the 503 test deletes the shared
+// integration.
+let releaseSeededTenantLock: (() => Promise<void>) | undefined;
+
 beforeAll(async () => {
-  const existing = await owner.query(
-    `SELECT config, status FROM tenant_integrations
-      WHERE tenant_id = $1 AND provider = 'whatsapp' AND outlet_id IS NULL`,
-    [tenant.id],
-  );
-  previousIntegration =
-    (existing.rows[0] as typeof previousIntegration) ?? null;
+  releaseSeededTenantLock = await holdSeededTenantWhatsappLock();
   await seedIntegration();
 
   const client = agent(app);
@@ -453,7 +455,7 @@ beforeAll(async () => {
     [tenant.id, userId, roleId],
   );
   hr = { client, userId };
-});
+}, 180_000);
 
 afterAll(async () => {
   vi.unstubAllEnvs();
@@ -464,21 +466,9 @@ afterAll(async () => {
       [createdUsers],
     )
     .catch(() => undefined);
-  if (previousIntegration)
-    await owner
-      .query(
-        `UPDATE tenant_integrations SET config = $2, status = $3
-          WHERE tenant_id = $1 AND provider = 'whatsapp' AND outlet_id IS NULL`,
-        [tenant.id, previousIntegration.config, previousIntegration.status],
-      )
-      .catch(() => undefined);
-  else
-    await owner
-      .query(
-        `DELETE FROM tenant_integrations WHERE tenant_id = $1 AND provider = 'whatsapp' AND outlet_id IS NULL`,
-        [tenant.id],
-      )
-      .catch(() => undefined);
+  // The integration and sender mapping of the seeded tenant are shared with
+  // identity-merge.test.ts, which may still be running: leave both in place
+  // (neither is restored, deleted nor unmapped here).
   const client = await owner.connect();
   try {
     await client.query("BEGIN");
@@ -523,7 +513,8 @@ afterAll(async () => {
     .query('DELETE FROM "user" WHERE id = ANY($1::text[])', [createdUsers])
     .catch(() => undefined);
   await owner.end();
-});
+  await releaseSeededTenantLock?.();
+}, 180_000);
 
 // ------------------------------------------------------------ tests
 
@@ -672,6 +663,15 @@ describe("PIN reset by WhatsApp: issuing a proof (POST reset-wa)", () => {
 
   it("503 SERVICE_UNAVAILABLE when the tenant has no active WhatsApp integration", async () => {
     const staff = await seedStaff("Staf WA Tanpa Integrasi");
+    // Remember the shared integration row and put it back unchanged: the sender
+    // mapping is a separate table and stays, so the other file's number holds.
+    const saved = (
+      await owner.query(
+        `SELECT config, credentials_encrypted, status FROM tenant_integrations
+          WHERE tenant_id = $1 AND provider = 'whatsapp' AND outlet_id IS NULL`,
+        [tenant.id],
+      )
+    ).rows[0];
     await owner.query(
       `DELETE FROM tenant_integrations WHERE tenant_id = $1 AND provider = 'whatsapp' AND outlet_id IS NULL`,
       [tenant.id],
@@ -681,7 +681,16 @@ describe("PIN reset by WhatsApp: issuing a proof (POST reset-wa)", () => {
       expect(response.status, JSON.stringify(response.body)).toBe(503);
       expect(response.body.error.code).toBe("SERVICE_UNAVAILABLE");
     } finally {
-      await seedIntegration();
+      await owner.query(
+        `INSERT INTO tenant_integrations (tenant_id, provider, config, credentials_encrypted, status)
+         VALUES ($1, 'whatsapp', $2, $3, $4)`,
+        [
+          tenant.id,
+          JSON.stringify(saved.config),
+          saved.credentials_encrypted,
+          saved.status,
+        ],
+      );
     }
   });
 });

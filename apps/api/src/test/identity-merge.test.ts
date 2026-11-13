@@ -41,6 +41,10 @@ import {
 } from "../services/identity-merge.service";
 import { agent, originHeader, signUp } from "./helpers";
 import {
+  ensureSharedKirimdevSender,
+  holdSeededTenantWhatsappLock,
+} from "./helpers/kirimdev-sender.ts";
+import {
   createIdentityScope,
   uniqueDigits,
 } from "./helpers/identity-isolation";
@@ -61,7 +65,11 @@ const SECRET = "test-kirim-webhook-secret";
 const fixtures = cafeLegendPlatformFixtures;
 const HOST = fixtures.domains[0]!.hostname;
 const TENANT_A = fixtures.tenant.id;
-const NUMBER_A = "628111000001";
+// The seeded tenant has one tenant-wide WhatsApp integration and sender mapping,
+// shared with payslip-pin-wa-reset.test.ts when files run in parallel. The
+// number is the one the integration ends up with (see beforeAll), so it is a
+// `let`; this value is only the preferred one when this file seeds it first.
+let NUMBER_A = "628111000001";
 // Unique per file so identity rows never collide with the other identity files
 // (legend-5opkl). This file stays on the seeded tenant: it needs its roles and
 // member programme, so it owns NUMBER_A and the rows below, not the whole tables.
@@ -385,19 +393,18 @@ async function auditRows(tenantId: string, action: string) {
   });
 }
 
+// Held for the whole file: this file's cleanup wipes everything in scope for the
+// seeded tenant, which would break payslip-pin-wa-reset.test.ts if it overlapped.
+let releaseSeededTenantLock: (() => Promise<void>) | undefined;
+
 beforeAll(async () => {
-  await owner.query(
-    `INSERT INTO tenant_integrations (tenant_id, provider, config, credentials_encrypted, status)
-     VALUES ($1, 'whatsapp', $2, 'c2VhbGVkLXRlc3Q=', 'active')
-     ON CONFLICT (tenant_id, provider) WHERE outlet_id IS NULL
-     DO UPDATE SET config = EXCLUDED.config, status = EXCLUDED.status`,
-    [
-      TENANT_A,
-      JSON.stringify({ vendor: "kirimdev", receivingNumber: NUMBER_A }),
-    ],
-  );
+  releaseSeededTenantLock = await holdSeededTenantWhatsappLock();
+  // Adopt the number the tenant's integration already has (the other file may
+  // have seeded it) and map it; never overwrite or unmap what that file uses.
+  NUMBER_A = await ensureSharedKirimdevSender(TENANT_A, NUMBER_A);
+  isolation.scope.receivingNumbers.push(NUMBER_A);
   await resetState();
-});
+}, 180_000);
 
 beforeEach(resetState);
 
@@ -405,7 +412,8 @@ afterAll(async () => {
   releaseTrustedProxy();
   await resetState();
   await owner.end();
-});
+  await releaseSeededTenantLock?.();
+}, 180_000);
 
 describe("AUTH-07 merge of a WhatsApp-only account into the signed-in account", () => {
   it("U older: moves the WhatsApp identity to U, bans V and writes identity_merges", async () => {

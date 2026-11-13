@@ -22,6 +22,10 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { resolveWhatsAppChannel } from "../services/identity-login.service.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
+import {
+  mapKirimdevSender,
+  unmapKirimdevSender,
+} from "./helpers/kirimdev-sender.ts";
 
 const app = createApp();
 const seededTenantId = cafeLegendPlatformFixtures.tenant.id;
@@ -166,6 +170,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   const ids = [tenantA.tenantId, tenantB.tenantId];
+  for (const id of ids) await unmapKirimdevSender(id);
   for (const table of [
     "tenant_integrations",
     "role_assignments",
@@ -454,9 +459,6 @@ describe("SQL number functions match the TypeScript they mirror", () => {
          VALUES ($1, 'whatsapp', $2, 'c2VhbGVkLXRlc3Q=', 'active')`,
         [tenantA.tenantId, JSON.stringify(config)],
       );
-      const channel = await withTenant(db, context, (tx) =>
-        resolveWhatsAppChannel(tx, context),
-      );
       const { rows } = await owner.query<{
         routing: string | null;
         receiving: string | null;
@@ -465,6 +467,14 @@ describe("SQL number functions match the TypeScript they mirror", () => {
                 app.whatsapp_receiving_number(config) AS receiving
            FROM tenant_integrations WHERE tenant_id = $1`,
         [tenantA.tenantId],
+      );
+      // legend-52tdq: the channel's routing number now comes only from the
+      // platform-written sender mapping, never from config.phoneNumberId. The
+      // claim index key (config based) is what the platform maps for the tenant,
+      // so mapping it must make both sides agree; receivingNumber stays config.
+      await mapKirimdevSender(tenantA.tenantId, rows[0]!.routing!);
+      const channel = await withTenant(db, context, (tx) =>
+        resolveWhatsAppChannel(tx, context),
       );
       expect(rows[0]?.routing, JSON.stringify(config)).toBe(
         channel.routingNumber,

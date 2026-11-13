@@ -38,6 +38,7 @@ import {
 import type { db } from "../db";
 import { loginChallenges, tenants, userIdentities } from "../db/schema";
 import { loginCodeDigest, whatsAppDigest } from "../lib/identity-digest";
+import { logger } from "../lib/logger";
 import { openSecret } from "../lib/secrets";
 import { recordAudit } from "./core-audit.ts";
 import {
@@ -508,6 +509,17 @@ export async function completeProof(
         })
       : null;
   if (!channel || channel.routingNumber !== input.receivingNumber) {
+    logger.warn(
+      {
+        tenantId: context.tenant.tenantId,
+        reason: channel
+          ? "routing_mismatch"
+          : tenantRow?.status !== "active"
+            ? "tenant_inactive"
+            : "channel_unavailable",
+      },
+      "whatsapp proof unrouted",
+    );
     await reject("unrouted");
     return "unrouted";
   }

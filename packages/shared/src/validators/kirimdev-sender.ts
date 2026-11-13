@@ -2,10 +2,13 @@
 // tenant (or one of its outlets) sends from. Written by the platform only.
 import { z } from "zod";
 
-/** The number goes into a URL path: a plain token only. */
+/**
+ * The number goes into a URL path: a plain token only. Capped at 32 because
+ * the receiving_number columns are varchar(32).
+ */
 export const kirimdevPhoneNumberIdSchema = z
   .string()
-  .regex(/^[A-Za-z0-9_-]{1,64}$/, "Use letters, digits, _ or - (max 64).");
+  .regex(/^[A-Za-z0-9_-]{1,32}$/, "Use letters, digits, _ or - (max 32).");
 
 export const kirimdevSenderMappingIdSchema = z.uuid();
 

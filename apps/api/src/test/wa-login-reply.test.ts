@@ -32,6 +32,10 @@ import {
 } from "../services/wa-login-reply.service.ts";
 import { agent, signUp } from "./helpers.ts";
 import { deleteMergesOf } from "./helpers/identity-isolation.ts";
+import {
+  mapKirimdevSender,
+  unmapKirimdevSender,
+} from "./helpers/kirimdev-sender.ts";
 
 const app = createApp();
 const owner = new Pool({
@@ -77,6 +81,9 @@ async function createTenant(label: string): Promise<Tenant> {
      VALUES ($1, 'whatsapp', $2, 'c2VhbGVkLXRlc3Q=', 'active')`,
     [id, JSON.stringify({ vendor: "kirimdev", receivingNumber })],
   );
+  // Inbound routing comes only from the platform-written sender mapping
+  // (legend-52tdq); the webhook sends the receiving-number digits as phone_number_id.
+  await mapKirimdevSender(id, receivingNumber);
   return { id, receivingNumber };
 }
 
@@ -243,6 +250,7 @@ afterAll(async () => {
     "DELETE FROM wa_login_reply_policies WHERE tenant_id = ANY($1)",
     [ids],
   );
+  for (const id of ids) await unmapKirimdevSender(id);
   await owner.query(
     "DELETE FROM tenant_integrations WHERE tenant_id = ANY($1)",
     [ids],
@@ -466,12 +474,15 @@ describe("opt-in: replies go out and use the monthly quota", () => {
     const plainCode = await issue(tenantA);
     const linkCode = await issue(tenantA, user);
     const moved = `62811${digits(8)}`;
-    const setNumber = (tenantId: string, receivingNumber: string) =>
-      owner.query(
+    const setNumber = async (tenantId: string, receivingNumber: string) => {
+      await owner.query(
         `UPDATE tenant_integrations SET config = $2
           WHERE tenant_id = $1 AND provider = 'whatsapp'`,
         [tenantId, JSON.stringify({ vendor: "kirimdev", receivingNumber })],
       );
+      // Routing follows the sender mapping, not config (legend-52tdq).
+      await mapKirimdevSender(tenantId, receivingNumber);
+    };
     // A's number moves to B; A is left with a number of its own.
     await setNumber(tenantB.id, moved);
     await setNumber(tenantA.id, tenantB.receivingNumber);
