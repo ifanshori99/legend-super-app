@@ -55,6 +55,7 @@ import {
   verifyDomain,
 } from "../services/org.service";
 import { HttpError } from "../lib/http-error";
+import { reserveDomainVerificationAttempt } from "../services/domain-verification-limit.service";
 import {
   approveSupportAccessRequest,
   endTenantSupportAccess,
@@ -201,7 +202,18 @@ orgRouter.post("/domains", manage, jsonBody, async (req, res) => {
 
 orgRouter.post("/domains/:domainId/verify", manage, async (req, res) => {
   const domainId = tenantDomainIdSchema.parse(req.params.domainId);
-  res.json({ data: await verifyDomain(getScopedTenantContext(req), domainId) });
+  const context = getScopedTenantContext(req);
+  const retryAfter = await reserveDomainVerificationAttempt(context, domainId);
+  if (retryAfter !== null) {
+    res.setHeader("Retry-After", String(retryAfter));
+    res.setHeader("Cache-Control", "no-store");
+    throw new HttpError(
+      429,
+      "DOMAIN_VERIFICATION_RATE_LIMITED",
+      "Terlalu banyak percobaan verifikasi domain. Coba lagi nanti.",
+    );
+  }
+  res.json({ data: await verifyDomain(context, domainId) });
 });
 
 orgRouter.delete("/domains/:domainId", manage, async (req, res) => {

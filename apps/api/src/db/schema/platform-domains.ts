@@ -16,6 +16,7 @@ import {
   check,
   foreignKey,
   index,
+  integer,
   pgTable,
   timestamp,
   unique,
@@ -46,6 +47,11 @@ export const tenantDomains = pgTable(
     /** Random value the tenant publishes as a DNS TXT record to prove it
      * controls a custom domain. Null for platform subdomains. */
     verificationToken: varchar("verification_token", { length: 64 }),
+    /** Shared DNS attempt budget; survives API restart (legend-8y5fc). */
+    verificationAttempts: integer("verification_attempts").notNull().default(0),
+    verificationWindowStartedAt: timestamp("verification_window_started_at", {
+      withTimezone: true,
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -69,6 +75,10 @@ export const tenantDomains = pgTable(
     ),
     // Host resolution reads every row for a host (verified first).
     index("tenant_domains_hostname_idx").on(table.hostname),
+    check(
+      "tenant_domains_verification_attempts_check",
+      sql`${table.verificationAttempts} BETWEEN 0 AND 5`,
+    ),
     check(
       "tenant_domains_kind_check",
       sql`${table.kind} IN ('platform_subdomain', 'custom')`,
