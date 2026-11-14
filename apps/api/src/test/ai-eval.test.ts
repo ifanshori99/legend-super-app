@@ -680,6 +680,7 @@ beforeAll(async () => {
       brandId: tenantX.brandId,
       outletId: outletA,
       creatorId: ids[0]!,
+      approverId: ids[1]!,
     }),
   );
   await asOwner(tenantX.id, (client) =>

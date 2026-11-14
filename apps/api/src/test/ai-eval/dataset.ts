@@ -868,8 +868,8 @@ const manager = buildGroup("manager", {
       num(anomalies(MAR, ["refund"]), "anomalies.0.observedValue"),
     ],
     [
-      "Berapa nilai diskon paling janggal minggu pertama Maret 2031?",
-      num(anomalies(W1, ["discount"]), "anomalies.0.observedValue"),
+      "Berapa selisih kas paling janggal di outlet saya Maret 2031?",
+      num(anomalies(MAR, ["cash_variance"]), "anomalies.0.observedValue"),
     ],
     [
       "Berapa sesi fasilitas teratas di outlet saya Maret 2031?",

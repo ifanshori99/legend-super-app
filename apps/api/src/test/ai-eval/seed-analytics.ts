@@ -7,10 +7,11 @@ type AnalyticsSeed = {
   brandId: string;
   outletId: string;
   creatorId: string;
+  approverId: string;
 };
 
 export async function seedAnalytics(client: PoolClient, seed: AnalyticsSeed) {
-  const { tenantId, brandId, outletId, creatorId } = seed;
+  const { tenantId, brandId, outletId, creatorId, approverId } = seed;
   const categoryId = randomUUID();
   const menuItemId = randomUUID();
   await client.query(
@@ -138,6 +139,67 @@ export async function seedAnalytics(client: PoolClient, seed: AnalyticsSeed) {
         );
       }
     }
+  }
+
+  // Closed shifts with persisted cash variances, for the March anomaly eval.
+  for (let index = 0; index < 4; index++) {
+    const shiftId = randomUUID();
+    const countId = randomUUID();
+    const timestamp = "2031-03-03T06:00:00Z";
+    await client.query(
+      `INSERT INTO pos_shifts
+         (id, tenant_id, outlet_id, device_id, cashier_id, business_date, status,
+          opened_at, opening_float_idr, open_key, open_fingerprint)
+       VALUES ($1, $2, $3, $4, $5, '2031-03-03', 'open', $6, 100000, $7, $8)`,
+      [
+        shiftId,
+        tenantId,
+        outletId,
+        randomUUID(),
+        creatorId,
+        timestamp,
+        randomUUID(),
+        "a".repeat(64),
+      ],
+    );
+    await client.query(
+      `INSERT INTO pos_shift_counts
+         (id, tenant_id, outlet_id, shift_id, sequence, counts, counts_fingerprint,
+          counted_idr, expected_idr, variance_idr, submitted_by, submitted_at, forced,
+          idempotency_key, request_fingerprint)
+       VALUES ($1, $2, $3, $4, 1, '[]'::jsonb, $5, 90000, 100000, -10000,
+               $6, $7, false, $8, $5)`,
+      [
+        countId,
+        tenantId,
+        outletId,
+        shiftId,
+        "b".repeat(64),
+        creatorId,
+        timestamp,
+        randomUUID(),
+      ],
+    );
+    await client.query(
+      `UPDATE pos_shifts SET status = 'closed', expected_idr = 100000, counted_idr = 90000,
+          variance_idr = -10000, variance_note = 'Eval variance', counts = '[]'::jsonb,
+          count_id = $3, approved_by = $4, approval_request_id = $5, approval_override_id = $6,
+          approved_at = $7, closed_at = $7, closed_by = $8, close_key = $9,
+          close_fingerprint = $10, version = version + 1
+        WHERE tenant_id = $1 AND id = $2`,
+      [
+        tenantId,
+        shiftId,
+        countId,
+        approverId,
+        randomUUID(),
+        randomUUID(),
+        timestamp,
+        creatorId,
+        randomUUID(),
+        "c".repeat(64),
+      ],
+    );
   }
 
   const uomId = randomUUID();

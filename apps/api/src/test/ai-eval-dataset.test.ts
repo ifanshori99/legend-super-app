@@ -156,7 +156,7 @@ describe("AI eval dataset: tools", () => {
     for (const [id, type] of [
       ["manager-num-023", "void"],
       ["manager-num-024", "refund"],
-      ["manager-num-025", "discount"],
+      ["manager-num-025", "cash_variance"],
     ]) {
       const item = evalCases.find((entry) => entry.id === id);
       expect(item?.expectTool?.name, id).toBe("get_anomalies");

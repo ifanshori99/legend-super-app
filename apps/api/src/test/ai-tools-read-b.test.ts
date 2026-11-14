@@ -1082,6 +1082,77 @@ async function cleanupBehavior() {
 let facilityA: SeededFacility;
 const PERIOD = { from: "2026-10-05", to: "2026-10-05" };
 const ANOMALY_PERIOD = { from: "2026-09-15", to: "2026-09-21" };
+const cashShiftIds: string[] = [];
+
+async function seedCashVariance(tenant: string, outlet: string) {
+  await asOwner(tenant, async (client) => {
+    for (const [at, variance] of [
+      ["2026-09-10T05:00:00Z", 10000],
+      ["2026-09-17T05:00:00Z", -10000],
+      ["2026-09-18T05:00:00Z", 20000],
+      ["2026-09-19T05:00:00Z", -30000],
+    ] as const) {
+      const shift = randomUUID();
+      cashShiftIds.push(shift);
+      const count = randomUUID();
+      const cashier = fx.users.employee.id;
+      await client.query(
+        `INSERT INTO pos_shifts (id, tenant_id, outlet_id, device_id, cashier_id,
+          business_date, status, opened_at, opening_float_idr, open_key, open_fingerprint)
+         VALUES ($1, $2, $3, $4, $5, $6::timestamptz::date, 'open', $6, 100000, $7, $8)`,
+        [
+          shift,
+          tenant,
+          outlet,
+          randomUUID(),
+          cashier,
+          at,
+          randomUUID(),
+          "a".repeat(64),
+        ],
+      );
+      await client.query(
+        `INSERT INTO pos_shift_counts (id, tenant_id, outlet_id, shift_id, sequence,
+          counts, counts_fingerprint, counted_idr, expected_idr, variance_idr,
+          submitted_by, submitted_at, forced, idempotency_key, request_fingerprint)
+         VALUES ($1, $2, $3, $4, 1, '[]', $5, $6, 100000, $7, $8, $9, false, $10, $5)`,
+        [
+          count,
+          tenant,
+          outlet,
+          shift,
+          "b".repeat(64),
+          100000 + variance,
+          variance,
+          cashier,
+          at,
+          randomUUID(),
+        ],
+      );
+      await client.query(
+        `UPDATE pos_shifts SET status='closed', expected_idr=100000, counted_idr=$3,
+          variance_idr=$4, variance_note='Selisih', counts='[]', count_id=$5,
+          approved_by=$6, approval_request_id=$7, approval_override_id=$8,
+          approved_at=$9, closed_at=$9, closed_by=$10, close_key=$11, close_fingerprint=$12
+         WHERE tenant_id=$1 AND id=$2`,
+        [
+          tenant,
+          shift,
+          100000 + variance,
+          variance,
+          count,
+          publisher,
+          randomUUID(),
+          randomUUID(),
+          at,
+          cashier,
+          randomUUID(),
+          "c".repeat(64),
+        ],
+      );
+    }
+  });
+}
 
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
@@ -1238,6 +1309,9 @@ beforeAll(async () => {
   await seedWaste(tenantId, outletA, inPeriod.slice(0, 3), 100_000);
   await seedWaste(tenantId, outletA, ["2026-09-10T05:00:00Z"], 100_000);
   await seedDiscounts(tenantId, outletA, inPeriod.slice(0, 3), 20_000);
+  await seedCashVariance(tenantId, outletA);
+  await seedCashVariance(tenantId, outletB);
+  await seedCashVariance(otherTenant, otherOutlet);
   // Below the minimum event count: never reported.
   await seedVoids(tenantId, outletB, ["2026-09-10T05:00:00Z"]);
 
@@ -1246,6 +1320,21 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await cleanupBehavior();
+  for (const tenant of [tenantId, otherTenant])
+    await asOwner(
+      tenant,
+      async (client) => {
+        await client.query(
+          "DELETE FROM pos_shift_counts WHERE tenant_id = $1 AND shift_id = ANY($2)",
+          [tenant, cashShiftIds],
+        );
+        await client.query(
+          "DELETE FROM pos_shifts WHERE tenant_id = $1 AND id = ANY($2)",
+          [tenant, cashShiftIds],
+        );
+      },
+      true,
+    );
   await asOwner(
     tenantId,
     async (client) => {
@@ -1704,14 +1793,28 @@ describe("TL-11 get_anomalies", () => {
     ).rejects.toMatchObject(forbidden);
   });
 
-  it("never reports another tenant's events and ignores types it cannot measure", async () => {
+  it("reports saved cash variance and respects tenant and outlet reach", async () => {
     const out = await call("TL-11", "owner", { period: ANOMALY_PERIOD });
     expect(out.anomalies.some((a) => a.outletId === otherOutlet)).toBe(false);
     const cash = await call("TL-11", "owner", {
       period: ANOMALY_PERIOD,
       types: ["cash_variance"],
     });
-    expect(cash.anomalies).toEqual([]);
+    expect(
+      cash.anomalies
+        .map((a) => [a.outletId, a.observedValue, a.baselineValue])
+        .sort(),
+    ).toEqual(
+      [
+        [outletA, "60000.0000", "10000.0000"],
+        [outletB, "60000.0000", "10000.0000"],
+      ].sort(),
+    );
+    const own = await call("TL-11", "outletManager", {
+      period: ANOMALY_PERIOD,
+      types: ["cash_variance"],
+    });
+    expect(own.anomalies.map((a) => a.outletId)).toEqual([outletA]);
   });
 
   it("does not report a quiet outlet or period", async () => {
