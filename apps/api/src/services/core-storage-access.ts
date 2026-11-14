@@ -2,10 +2,12 @@
 // legend-pszrm). The storage router takes a `resolveRequest`; this builds it
 // from the caller's verified tenant membership and role assignments
 // (loadRequestAccess). Upload is decided per purpose, source kind and outlet.
-// Read of a private object is decided per object id: the owner always reads
-// it; anyone else needs a review code for the object's source kind over its
-// outlet; an object with no source kind (legacy or unclassified upload) is
-// readable only by the strict manager codes of its purpose. Not mounted yet:
+// Read of a private object is decided per object id: the owner reads it only
+// while they still hold a code of the kind's feature over the object's current
+// outlet (a revoked owner gets no signed URL); anyone else needs a review code
+// for the object's source kind over its outlet; an object with no source kind
+// (legacy or unclassified upload) is readable only by the strict manager codes
+// of its purpose. Not mounted yet:
 // there is no object storage provider (legend-7nv1 mounts
 // createCoreStorageRouterWithAccess).
 //
@@ -44,7 +46,8 @@ type StorageAction = "upload" | "read";
  * the listed codes over the object's outlet (a tenant or brand grant covers
  * it). Read is the review side of that kind only: purchasing invoice matching
  * does not read a reimbursement receipt, and the people who upload a file
- * cannot read it back unless they also review (the owner always can).
+ * cannot read it back unless they also review (the owner can, while they
+ * still hold an upload or review code of the kind over the outlet).
  */
 export const storageSourcePermissionMap = {
   purchase_invoice: {
@@ -95,17 +98,23 @@ export const storageSourcePermissionMap = {
     upload: ["purchasing.petty.record"],
     read: ["accounting.reconcile", "purchasing.petty_policy.manage"],
   },
+  // Cleaning photos: only the uploader (while entitled) and the facility
+  // manager read them back; a colleague with the operate code does not.
   cleaning_task: {
     upload: ["facility.booth.operate"],
-    read: ["facility.booth.operate", "facility.config.manage"],
+    read: ["facility.config.manage"],
   },
+  // The maintenance team has to see the damage photo, so the staff code reads;
+  // facility.config.manage is the facility manager.
   maintenance_ticket: {
     upload: ["ops.equipment.maintain"],
-    read: ["ops.equipment.maintain"],
+    read: ["ops.equipment.maintain", "facility.config.manage"],
   },
+  // Checklist evidence includes signatures (personal data): the uploader (while
+  // entitled) and the checklist manager only.
   checklist_evidence: {
     upload: ["ops.checklist.complete"],
-    read: ["ops.checklist.complete", "ops.checklist.manage"],
+    read: ["ops.checklist.manage"],
   },
 } as const satisfies Record<
   StorageSourceKind,
@@ -207,15 +216,30 @@ export function createStorageRequestResolver(): ResolveRequest {
       if (storageSourceKindPurpose[sourceKind] !== purpose) return false;
       return allowsAny(storageSourcePermissionMap[sourceKind].upload, outletId);
     };
-    // Read: owner, else the review codes of the object's kind, else (no kind)
-    // the strict legacy manager codes.
+    // Read: the owner while still entitled (an upload or review code of the
+    // kind over the object's outlet now), else the review codes of the kind,
+    // else (no kind) the strict legacy manager codes.
     const canRead = (object: ReadableObject, outletId: OutletId) => {
-      if (object.ownerUserId !== null && object.ownerUserId === actorUserId)
-        return true;
+      if (
+        object.sourceKind !== null &&
+        storageSourceKindPurpose[object.sourceKind] !== object.purpose
+      )
+        return false;
+      if (object.ownerUserId !== null && object.ownerUserId === actorUserId) {
+        const ownerCodes =
+          object.sourceKind === null
+            ? [
+                ...storageLegacyUploadMap[object.purpose],
+                ...storageLegacyReadMap[object.purpose],
+              ]
+            : [
+                ...storageSourcePermissionMap[object.sourceKind].upload,
+                ...storageSourcePermissionMap[object.sourceKind].read,
+              ];
+        if (allowsAny(ownerCodes, outletId)) return true;
+      }
       if (object.sourceKind === null)
         return allowsAny(storageLegacyReadMap[object.purpose], outletId);
-      if (storageSourceKindPurpose[object.sourceKind] !== object.purpose)
-        return false;
       return allowsAny(
         storageSourcePermissionMap[object.sourceKind].read,
         outletId,

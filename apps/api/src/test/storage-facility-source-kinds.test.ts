@@ -33,16 +33,19 @@ const kinds = [
     kind: "cleaning_task",
     upload: "facility.booth.operate",
     review: "facility.config.manage",
+    peerReads: false,
   },
   {
     kind: "maintenance_ticket",
     upload: "ops.equipment.maintain",
-    review: "ops.equipment.maintain",
+    review: "facility.config.manage",
+    peerReads: true,
   },
   {
     kind: "checklist_evidence",
     upload: "ops.checklist.complete",
     review: "ops.checklist.manage",
+    peerReads: false,
   },
 ] as const;
 
@@ -163,7 +166,7 @@ describe("facility evidence source kinds", () => {
 
   it.each(kinds)(
     "lets crew upload $kind and read it back, and lets a reviewer read it",
-    async ({ kind, review }) => {
+    async ({ kind, peerReads }) => {
       const created = await upload(crew, kind);
       expect(created.status).toBe(201);
       expect(created.body.data.publicUrl).toBeNull();
@@ -176,13 +179,14 @@ describe("facility evidence source kinds", () => {
         purpose: "receipt",
       });
       expect((await signed(crew, created.body.data.id)).status).toBe(200);
-      const reviewerReads = await signed(manager, created.body.data.id);
-      expect(reviewerReads.status).toBe(
-        review === "ops.equipment.maintain" ? 403 : 200,
-      );
+      expect((await signed(manager, created.body.data.id)).status).toBe(200);
       expect((await signed(nobody, created.body.data.id)).status).toBe(403);
-      // Same code, same outlet: a second crew member reads via the code, not ownership.
-      expect((await signed(crewPeer, created.body.data.id)).status).toBe(200);
+      // Same code, same outlet: only the maintenance team reads a colleague's
+      // photo; cleaning and checklist evidence (signatures) stays with the
+      // owner and the manager.
+      expect((await signed(crewPeer, created.body.data.id)).status).toBe(
+        peerReads ? 200 : 403,
+      );
       // Same code, other outlet: scope blocks the read.
       expect((await signed(crewOtherOutlet, created.body.data.id)).status).toBe(
         403,
