@@ -100,9 +100,12 @@ test("payout runs tab lists payable runs and explains Duitku is off", async ({
 
 test("payout runs tab empty state offers a way forward", async ({ page }) => {
   await open(page, "runs", "empty");
-  await expect(
-    page.getByRole("heading", { name: /Belum ada run siap bayar/i }),
-  ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
+  // The empty title is a paragraph in the UI, so match text, not a heading.
+  await expect(page.getByText("Belum ada periode gaji siap bayar")).toBeVisible(
+    {
+      timeout: COLD_START_TIMEOUT_MS,
+    },
+  );
 });
 
 test("payout runs tab error state offers retry and never shows a success", async ({
@@ -199,8 +202,9 @@ test("payout approval empty state sends the user back to runs", async ({
   page,
 }) => {
   await open(page, "approval", "empty");
+  // Real copy: "Belum ada pengajuan untuk diperiksa" (the mockup said otherwise).
   await expect(
-    page.getByRole("heading", { name: /Tidak ada persetujuan menunggu/i }),
+    page.getByText("Belum ada pengajuan untuk diperiksa"),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
 });
 
@@ -236,9 +240,7 @@ test("payout status unknown outcome has no pay-again button", async ({
 test("payout status empty and error states", async ({ page }) => {
   await open(page, "status", "empty");
   await expect(
-    page.getByRole("heading", {
-      name: /Belum ada pencairan untuk ditampilkan/i,
-    }),
+    page.getByText("Belum ada pencairan untuk ditampilkan"),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
   await open(page, "status", "error");
   await expect(
@@ -250,33 +252,43 @@ test("payout settings turns Duitku off and offers manual bank transfer", async (
   page,
 }) => {
   await open(page, "settings");
+  const method = page.getByRole("combobox", { name: "Metode pembayaran" });
+  await expect(method).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
+  await expect(method).toContainText("Transfer manual");
+  await method.click();
+  // Duitku is listed but cannot be chosen; manual transfer can.
+  await expect(page.getByRole("option", { name: /Duitku/ })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
   await expect(
-    page.getByRole("heading", { name: /Pengaturan pencairan/i }).first(),
-  ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
-  const duitku = page
-    .getByRole("option", { name: /Duitku/i })
-    .or(page.getByRole("radio", { name: /Duitku/i }));
-  await expect(duitku.first()).toBeDisabled();
-  await expect(page.getByText(/transfer manual/i).first()).toBeVisible();
+    page.getByRole("option", { name: "Transfer manual" }),
+  ).not.toHaveAttribute("aria-disabled", "true");
+  await page.keyboard.press("Escape");
+  await expect(page.getByText(/Belum aktif/).first()).toBeVisible();
 });
 
 test("payout settings rejects an inactive source account with the server message", async ({
   page,
 }) => {
   await open(page, "settings");
-  const save = page.getByRole("button", { name: /Simpan/i }).first();
-  await expect(save).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
+  const fee = page.getByRole("textbox", { name: "Biaya per transfer (Rp)" });
+  await expect(fee).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
+  // Save stays disabled until something changes ("Belum ada perubahan").
+  const save = page.getByRole("button", { name: "Simpan pengaturan" });
+  await expect(save).toBeDisabled();
+  await fee.fill("6000");
+  await expect(save).toBeEnabled();
   await failNext(page, {
     status: 422,
     code: "PAYOUT_SOURCE_ACCOUNT_INVALID",
-    message: "Rekening sumber tidak aktif. Pilih rekening aktif milik PT ini.",
+    message: "Rekening sumber ditolak server.",
   });
   await save.click();
-  await expect(
-    page.getByText(/Rekening sumber tidak aktif/i).first(),
-  ).toBeVisible();
+  const alert = page.getByRole("alert").filter({ hasText: /Rekening sumber/ });
+  await expect(alert.first()).toBeVisible();
   // The rejected change is not reported as saved.
-  await expect(page.getByText(/tersimpan/i)).toHaveCount(0);
+  await expect(page.getByText(/Pengaturan pencairan tersimpan/)).toHaveCount(0);
 });
 
 test("payout settings error state offers retry", async ({ page }) => {

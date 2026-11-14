@@ -98,7 +98,7 @@ export function PayoutPage({
     );
 
   return (
-    <div className="grid min-w-0 gap-5">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
       <header className="grid gap-1">
         <div className="flex flex-wrap items-center gap-2">
           <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
@@ -108,33 +108,7 @@ export function PayoutPage({
         </div>
       </header>
 
-      <div className="grid gap-1 sm:max-w-sm">
-        <FormField
-          label={t("payrollPayout.page.entity")}
-          hint={t("payrollPayout.page.entityHint")}
-        >
-          <Select
-            value={entityId}
-            onValueChange={(entity) =>
-              onSearchChange({ tab: search.tab, entity })
-            }
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(entities.data ?? []).map((entity) => (
-                <SelectItem key={entity.id} value={entity.id}>
-                  {entity.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </FormField>
-      </div>
-
       <PayoutTabs
-        key={entityId}
         access={access}
         currentUserId={currentUserId}
         legalEntityId={entityId}
@@ -147,6 +121,33 @@ export function PayoutPage({
           settings: t(TAB_LABEL.settings),
         }}
         ariaLabel={t("payrollPayout.tabs.label")}
+        picker={
+          <div className="grid min-w-0 gap-1 sm:max-w-sm">
+            <FormField
+              required
+              label={t("payrollPayout.page.entity")}
+              hint={t("payrollPayout.page.entityHint")}
+            >
+              <Select
+                value={entityId}
+                onValueChange={(entity) =>
+                  onSearchChange({ tab: search.tab, entity })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(entities.data ?? []).map((entity) => (
+                    <SelectItem key={entity.id} value={entity.id}>
+                      {entity.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
+          </div>
+        }
       />
     </div>
   );
@@ -160,6 +161,7 @@ function PayoutTabs({
   onSearchChange,
   labels,
   ariaLabel,
+  picker,
 }: {
   access: PayoutAccess;
   currentUserId: string;
@@ -168,6 +170,8 @@ function PayoutTabs({
   onSearchChange: (next: PayoutSearch) => void;
   labels: Record<PayoutTab, string>;
   ariaLabel: string;
+  /** The PT picker, shown between the tab list and the tab content. */
+  picker: React.ReactNode;
 }) {
   const batches = useEntityBatches(legalEntityId, {
     includePaid: search.tab === "status",
@@ -211,6 +215,7 @@ function PayoutTabs({
 
   return (
     <Tabs
+      className="min-w-0"
       value={search.tab}
       onValueChange={(tab) =>
         onSearchChange({
@@ -222,25 +227,29 @@ function PayoutTabs({
         })
       }
     >
-      <TabsList aria-label={ariaLabel}>
+      <TabsList aria-label={ariaLabel} className="max-w-full overflow-x-auto">
         {PAYOUT_TABS.map((tab) => (
           <TabsTrigger key={tab} value={tab} className="px-2.5 sm:px-3.5">
             {labels[tab]}
           </TabsTrigger>
         ))}
       </TabsList>
-      <TabsContent value="runs">
-        <RunsTab {...tabProps} />
-      </TabsContent>
-      <TabsContent value="approval">
-        <ApprovalTab {...tabProps} />
-      </TabsContent>
-      <TabsContent value="status">
-        <StatusTab {...tabProps} />
-      </TabsContent>
-      <TabsContent value="settings">
-        <SettingsTab {...tabProps} />
-      </TabsContent>
+      <div className="mt-4">{picker}</div>
+      {/* The key resets tab state (selected run, open panels) per PT. */}
+      <div key={legalEntityId} className="min-w-0">
+        <TabsContent value="runs">
+          <RunsTab {...tabProps} />
+        </TabsContent>
+        <TabsContent value="approval">
+          <ApprovalTab {...tabProps} />
+        </TabsContent>
+        <TabsContent value="status">
+          <StatusTab {...tabProps} />
+        </TabsContent>
+        <TabsContent value="settings">
+          <SettingsTab {...tabProps} />
+        </TabsContent>
+      </div>
     </Tabs>
   );
 }
@@ -254,8 +263,8 @@ function PageSkeleton() {
       className="grid gap-4"
     >
       <Skeleton className="h-5 w-80 max-w-full" />
-      <Skeleton className="h-11 w-full sm:max-w-sm" />
       <Skeleton className="h-10 w-full sm:w-[28rem]" />
+      <Skeleton className="h-11 w-full sm:max-w-sm" />
       <Skeleton className="h-64 w-full" />
     </div>
   );

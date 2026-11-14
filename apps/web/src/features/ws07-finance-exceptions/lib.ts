@@ -79,9 +79,13 @@ export function detailKey(detail: string): MessageKey | undefined {
   return DETAIL_KEYS[detail];
 }
 
-/** A long id reads badly in a row: show its head, keep the full id in details. */
+/**
+ * A long id reads badly in a row: show "…" and its last 6 characters (the tail
+ * tells ids apart; the head of generated ids is often alike) and keep the full
+ * id in details.
+ */
 export function shortRef(refId: string): string {
-  return refId.length > 14 ? refId.slice(0, 8).toUpperCase() : refId;
+  return refId.length > 14 ? `…${refId.slice(-6).toUpperCase()}` : refId;
 }
 
 // ---- Dates ---------------------------------------------------------------
@@ -180,16 +184,30 @@ export type KindSummary = {
   amountIdr: number;
   /** True when the sum is not a real figure (no known amount at all). */
   unavailable: boolean;
-  /** True when some, not all, rows of the kind have no amount. */
+  /** True when the sum is only the available values, not an exact total. */
   partial: boolean;
 };
 
 /**
+ * Kinds whose rows can lack an amount (the source row has none, or it cannot
+ * be read). The server sums with COALESCE, so a row without an amount counts as
+ * 0 in the sum: for these kinds the figure is "from the available values",
+ * never an exact total. The tax kind always has an amount (tax > 0); the
+ * dead-letter kind never has one.
+ */
+const AMOUNT_MAY_BE_UNKNOWN: ReadonlySet<FinanceExceptionKind> = new Set([
+  "edge_receipt_skipped",
+  "edge_void_unsupported",
+  "payout_fee_not_posted",
+]);
+
+/**
  * One block per kind, always all five. The API leaves out kinds with no rows
  * and sends 0 for a kind whose rows carry no amount, so count > 0 with a 0
- * sum reads "Tidak tersedia", never Rp0. `partial` is only derived from
- * `items` when the list is not cut (`truncated` false): a cut list cannot say
- * how many rows of a kind lack an amount.
+ * sum reads "Tidak tersedia", never Rp0; the dead-letter kind always does.
+ * For a kind that may have unknown amounts the sum is `partial` unless the
+ * list is complete (`truncated` false) and every row of the kind has an
+ * amount: a cut list cannot say how many rows lack one, so it stays partial.
  */
 export function summarizeByKind(
   summary: readonly FinanceExceptionSummaryDto[],
@@ -200,16 +218,16 @@ export function summarizeByKind(
     const row = summary.find((entry) => entry.kind === kind);
     const count = row?.count ?? 0;
     const amountIdr = row?.amountIdr ?? 0;
-    const unavailable = count > 0 && amountIdr === 0;
-    const ofKind = truncated ? [] : items.filter((item) => item.kind === kind);
-    const missing = ofKind.filter((item) => item.amountIdr === null).length;
-    return {
-      kind,
-      count,
-      amountIdr,
-      unavailable,
-      partial: !unavailable && missing > 0,
-    };
+    const unavailable =
+      count > 0 && (amountIdr === 0 || kind === "edge_link_dead_letter");
+    const missing = items.filter(
+      (item) => item.kind === kind && item.amountIdr === null,
+    ).length;
+    const partial =
+      !unavailable &&
+      AMOUNT_MAY_BE_UNKNOWN.has(kind) &&
+      (truncated || missing > 0);
+    return { kind, count, amountIdr, unavailable, partial };
   });
 }
 

@@ -32,6 +32,7 @@ import type {
 } from "./api";
 import { maskedAccountDisplay } from "./lib";
 import {
+  bankLabelQuery,
   batchQuery,
   configQuery,
   employeesQuery,
@@ -133,19 +134,56 @@ export function useEntityBatches(
 const EMPTY_EMPLOYEES = new Map<string, PayoutEmployeeView>();
 export type PayoutEmployeeView = Omit<PayoutEmployee, "id" | "userId">;
 
-/** Employee id → name, subtitle and bank label. Empty until loaded. */
-export function usePayoutEmployees(): Map<string, PayoutEmployeeView> {
+/** Most payees whose masked account is read in one screen. */
+const MAX_BANK_LABEL_LOOKUPS = 50;
+
+/**
+ * Employee id → name, subtitle and bank label. Empty until loaded. Pass the
+ * batch's employee ids to fill `bankLabel` ("BCA ●●●● 4821") from the masked
+ * HR-03 profile (one request per payee, at most 50); a payee whose profile
+ * cannot be read keeps `bankLabel: null`, and the screen shows the item's bank
+ * code and says the number is not shown.
+ */
+export function usePayoutEmployees(
+  employeeIds: readonly string[] = [],
+): Map<string, PayoutEmployeeView> {
+  const query = useQuery(employeesQuery());
+  const ids = [...new Set(employeeIds)].slice(0, MAX_BANK_LABEL_LOOKUPS);
+  const labels = useQueries({ queries: ids.map((id) => bankLabelQuery(id)) });
+  const labelKey = labels.map((result) => result.data ?? "").join("|");
+  const idsKey = ids.join(",");
+  return React.useMemo(() => {
+    if (!query.data) return EMPTY_EMPLOYEES;
+    const fetched = new Map(ids.map((id, index) => [id, labels[index]?.data]));
+    return new Map(
+      query.data.map(
+        ({ id, name, subtitle, bankLabel }) =>
+          [
+            id,
+            { name, subtitle, bankLabel: fetched.get(id) ?? bankLabel },
+          ] as const,
+      ),
+    );
+    // `labelKey` stands for the label results; `labels` itself is a new array
+    // on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query.data, idsKey, labelKey]);
+}
+
+const EMPTY_NAMES = new Map<string, string>();
+
+/** Login user id → employee name (who requested or approved a batch). */
+export function usePayoutUserNames(): Map<string, string> {
   const query = useQuery(employeesQuery());
   return React.useMemo(
     () =>
       query.data
         ? new Map(
-            query.data.map(
-              ({ id, name, subtitle, bankLabel }) =>
-                [id, { name, subtitle, bankLabel }] as const,
-            ),
+            query.data
+              .filter((row) => row.userId !== null)
+              .map((row) => [row.userId as string, row.name] as const),
           )
-        : EMPTY_EMPLOYEES,
+        : EMPTY_NAMES,
     [query.data],
   );
 }
@@ -279,21 +317,3 @@ export function useConfirmCash() {
 }
 
 export type { PayableRun };
-
-const EMPTY_NAMES = new Map<string, string>();
-
-/** Login user id → employee name (who requested or approved a batch). */
-export function usePayoutUserNames(): Map<string, string> {
-  const query = useQuery(employeesQuery());
-  return React.useMemo(
-    () =>
-      query.data
-        ? new Map(
-            query.data
-              .filter((row) => row.userId !== null)
-              .map((row) => [row.userId as string, row.name] as const),
-          )
-        : EMPTY_NAMES,
-    [query.data],
-  );
-}

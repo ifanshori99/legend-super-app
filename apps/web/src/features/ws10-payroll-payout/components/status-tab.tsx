@@ -8,12 +8,11 @@ import { CircleAlert, Download } from "lucide-react";
 import type { PayrollDisbursementItemDto } from "@starter/shared/types";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatTile } from "@/components/ui/stat-tile";
 import { useToast } from "@/components/ui/toast";
-import { cn } from "cn";
 import { formatDateTime } from "../../ws10-payroll-run/lib";
 import { payoutErrorMessage } from "../errors";
 import { useBatch, useExportBatch } from "../hooks";
@@ -27,6 +26,7 @@ import { CashDialog, DetailDialog, ResultDialog } from "./status-dialogs";
 import { VerifyPanel, useStepUp } from "./approval-verify";
 import { StatusList, type RowAction } from "./status-items";
 import { summarizeGroups } from "./status-groups";
+import { StatusSummary } from "./status-summary";
 
 export type StatusTabProps = PayoutTabProps & {
   /** Optional: sends the user to the Siap bayar tab from the empty state. */
@@ -91,7 +91,7 @@ function StatusBatch({
   const toast = useToast();
   const query = useBatch(batchId);
   const exportFile = useExportBatch();
-  const line = useEmployeeLine();
+  const line = useEmployeeLine(query.data?.items ?? []);
   const [dialog, setDialog] = React.useState<ActiveDialog>(null);
   const [exportError, setExportError] = React.useState<string | null>(null);
   const exportStepUp = useStepUp();
@@ -118,6 +118,7 @@ function StatusBatch({
     groups.unknown.amountIdr +
     groups.failed.amountIdr;
   const showUnknown = groups.unknown.count > 0;
+  const showOverpaid = groups.overpaid.count > 0;
   const isCreator = batch.requestedBy === currentUserId;
   const canRecord = (access.canApprove || access.canRequest) && !isCreator;
   const blockKey = isCreator ? "creator" : !canRecord ? "access" : null;
@@ -159,17 +160,19 @@ function StatusBatch({
     );
   };
 
-  const tiles: {
-    key: "waiting" | "unknown" | "succeeded" | "failed" | "manual";
-    show: boolean;
-  }[] = [
-    { key: "waiting", show: true },
-    { key: "unknown", show: showUnknown },
-    { key: "succeeded", show: true },
-    { key: "failed", show: true },
-    { key: "manual", show: true },
-  ];
-  const visibleTiles = tiles.filter((tile) => tile.show);
+  const visibleTiles = (
+    [
+      ["waiting", true],
+      ["unknown", showUnknown],
+      ["succeeded", true],
+      ["failed", true],
+      ["manual", true],
+      ["returned", groups.returned.count > 0],
+      ["overpaid", showOverpaid],
+    ] as const
+  )
+    .filter(([, show]) => show)
+    .map(([key]) => key);
   const closeDialog = () => setDialog(null);
 
   return (
@@ -193,10 +196,30 @@ function StatusBatch({
               })}
           </p>
         </div>
-        <p className="rounded-full bg-warning-subtle px-2.5 py-0.5 text-xs font-semibold text-warning">
+        <Badge tone={batchStatusMeta(batch.status).kind}>
           {t(batchStatusMeta(batch.status).labelKey)}
-        </p>
+        </Badge>
       </header>
+
+      {showOverpaid && (
+        <div
+          role="alert"
+          data-testid="status-overpaid-banner"
+          className="flex gap-3 rounded-container bg-danger p-4 text-danger-foreground"
+        >
+          <CircleAlert className="mt-0.5 size-5 shrink-0" aria-hidden="true" />
+          <div className="grid gap-1">
+            <p className="font-semibold">
+              {t("payrollPayoutReview.status.overpaidBanner.title")}
+            </p>
+            <p className="text-sm">
+              {t("payrollPayoutReview.status.overpaidBanner.description", {
+                count: groups.overpaid.count,
+              })}
+            </p>
+          </div>
+        </div>
+      )}
 
       {showUnknown && (
         <div
@@ -247,6 +270,10 @@ function StatusBatch({
               busy={exportFile.isPending}
               error={exportError}
               onVerified={download}
+              onCancel={() => {
+                exportStepUp.reset();
+                setExportError(null);
+              }}
             />
           )}
           {exportError && !exportStepUp.active && (
@@ -257,24 +284,16 @@ function StatusBatch({
         </section>
       )}
 
-      <div
-        className={cn(
-          "grid gap-3 sm:grid-cols-2",
-          visibleTiles.length > 4 ? "lg:grid-cols-5" : "lg:grid-cols-4",
-        )}
-      >
-        {visibleTiles.map(({ key }) => (
-          <StatTile
-            key={key}
-            label={t(`payrollPayoutReview.status.tile.${key}`)}
-            value={groups[key].count}
-            context={`${formatRupiah(groups[key].amountIdr)} · ${t(
-              "payrollPayoutReview.status.tile.people",
-              { count: groups[key].count },
-            )}`}
-          />
-        ))}
-      </div>
+      <StatusSummary
+        label={t("payrollPayoutReview.status.summaryLabel")}
+        tiles={visibleTiles.map((key) => ({
+          key,
+          label: t(`payrollPayoutReview.status.tile.${key}`),
+          count: groups[key].count,
+          amountIdr: groups[key].amountIdr,
+        }))}
+        unit={t("payrollPayoutReview.status.tile.unit")}
+      />
 
       <section
         aria-label={t("payrollPayoutReview.status.results.title")}
@@ -332,7 +351,7 @@ function StatusBatch({
         <ResultDialog
           batchId={batch.id}
           item={dialog.item}
-          person={line(dialog.item.employeeId)}
+          person={line(dialog.item)}
           onClose={closeDialog}
         />
       )}
@@ -340,14 +359,14 @@ function StatusBatch({
         <CashDialog
           batchId={batch.id}
           item={dialog.item}
-          person={line(dialog.item.employeeId)}
+          person={line(dialog.item)}
           onClose={closeDialog}
         />
       )}
       {dialog?.kind === "detail" && (
         <DetailDialog
           item={dialog.item}
-          person={line(dialog.item.employeeId)}
+          person={line(dialog.item)}
           onClose={closeDialog}
         />
       )}

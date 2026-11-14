@@ -1,6 +1,9 @@
 // The newest-first list: a table from 700px up, one card per row below it.
+// Only the layout that fits is rendered (up to 500 rows would otherwise be
+// built twice); the server render and first paint assume desktop.
 // Each row's reference opens a native <details> with the source, the full
 // reference and a plain sentence about the kind (no raw payload, no PII).
+import * as React from "react";
 import { useT } from "@/components/i18n";
 import { Money } from "@/components/ui/money";
 import {
@@ -26,6 +29,23 @@ type Props = {
   /** Outlet name by id; undefined when the outlet list does not know the id. */
   outletName: (outletId: string) => string | undefined;
 };
+
+const WIDE_QUERY = "(min-width: 700px)";
+
+function subscribeWide(onChange: () => void) {
+  const media = window.matchMedia(WIDE_QUERY);
+  media.addEventListener("change", onChange);
+  return () => media.removeEventListener("change", onChange);
+}
+
+/** True from 700px up; true on the server and while hydrating. */
+function useWideLayout() {
+  return React.useSyncExternalStore(
+    subscribeWide,
+    () => window.matchMedia(WIDE_QUERY).matches,
+    () => true,
+  );
+}
 
 function useRowText(outletName: Props["outletName"]) {
   const t = useT();
@@ -114,10 +134,11 @@ const rowKey = (item: FinanceExceptionItemDto) =>
 export function ExceptionsList({ items, outletName }: Props) {
   const t = useT();
   const text = useRowText(outletName);
-  return (
-    <>
-      {/* Phones: one card per exception, amount and outlet stay readable. */}
-      <ul className="divide-y divide-border min-[700px]:hidden">
+  const wide = useWideLayout();
+  if (!wide) {
+    // Phones: one card per exception, amount and outlet stay readable.
+    return (
+      <ul className="divide-y divide-border">
         {items.map((item) => {
           const row = text(item);
           return (
@@ -135,45 +156,41 @@ export function ExceptionsList({ items, outletName }: Props) {
           );
         })}
       </ul>
-      <div className="hidden min-[700px]:block">
-        <Table className="min-w-[40rem]">
-          <TableHeader>
-            <TableRow>
-              <TableHead>{t("financeExceptions.list.columns.time")}</TableHead>
-              <TableHead>{t("financeExceptions.list.columns.kind")}</TableHead>
-              <TableHead>
-                {t("financeExceptions.list.columns.outlet")}
-              </TableHead>
-              <TableHead numeric>
-                {t("financeExceptions.list.columns.amount")}
-              </TableHead>
+    );
+  }
+  return (
+    <Table className="min-w-[40rem]">
+      <TableHeader>
+        <TableRow className="bg-surface-2">
+          <TableHead>{t("financeExceptions.list.columns.time")}</TableHead>
+          <TableHead>{t("financeExceptions.list.columns.kind")}</TableHead>
+          <TableHead>{t("financeExceptions.list.columns.outlet")}</TableHead>
+          <TableHead numeric>
+            {t("financeExceptions.list.columns.amount")}
+          </TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {items.map((item) => {
+          const row = text(item);
+          return (
+            <TableRow key={rowKey(item)} className="align-top">
+              <TableCell className="py-4 whitespace-nowrap tabular">
+                <span className="block">{row.date}</span>
+                <span className="block text-muted-foreground">{row.time}</span>
+              </TableCell>
+              <TableCell className="py-4">
+                <span className="block font-semibold">{row.kind}</span>
+                <Reference item={item} />
+              </TableCell>
+              <TableCell className="py-4">{row.outlet}</TableCell>
+              <TableCell numeric className="py-4">
+                <Amount value={item.amountIdr} />
+              </TableCell>
             </TableRow>
-          </TableHeader>
-          <TableBody>
-            {items.map((item) => {
-              const row = text(item);
-              return (
-                <TableRow key={rowKey(item)} className="align-top">
-                  <TableCell className="whitespace-nowrap tabular">
-                    <span className="block">{row.date}</span>
-                    <span className="block text-muted-foreground">
-                      {row.time}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <span className="block font-semibold">{row.kind}</span>
-                    <Reference item={item} />
-                  </TableCell>
-                  <TableCell>{row.outlet}</TableCell>
-                  <TableCell numeric>
-                    <Amount value={item.amountIdr} />
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </div>
-    </>
+          );
+        })}
+      </TableBody>
+    </Table>
   );
 }

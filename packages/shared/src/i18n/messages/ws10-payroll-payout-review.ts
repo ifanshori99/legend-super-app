@@ -20,8 +20,8 @@ export const payrollPayoutReviewMessages = {
     empty: {
       title: "Belum ada pengajuan untuk diperiksa",
       description:
-        "Pilih run gaji di tab Siap bayar dan ajukan pencairan. Pengajuan yang menunggu persetujuan muncul di sini.",
-      action: "Lihat run siap bayar",
+        "Pilih periode gaji di tab Siap bayar dan ajukan pencairan. Pengajuan yang menunggu persetujuan muncul di sini.",
+      action: "Lihat periode siap bayar",
     },
     error: {
       title: "Pengajuan tidak bisa dimuat",
@@ -56,7 +56,7 @@ export const payrollPayoutReviewMessages = {
     note: {
       checkName: "Periksa nama penerima di internet banking.",
       checkNameHint:
-        "Jalur manual tidak memeriksa nama pemilik rekening otomatis. Gunakan rekening yang telah dikunci bersama run.",
+        "Jalur manual tidak memeriksa nama pemilik rekening otomatis. Gunakan rekening yang telah dikunci bersama periode gaji.",
       afterTransfer:
         "Setelah transfer, hasil dan bukti per karyawan harus dikonfirmasi oleh orang selain pembuat.",
     },
@@ -117,19 +117,19 @@ export const payrollPayoutReviewMessages = {
     code: "Kode 6 digit",
     password: "Kata sandi akun",
     codeInvalid: "Kode harus 6 digit angka.",
-    passwordRequired: "Kata sandi wajib diisi.",
     noFactor:
       "Akun ini belum punya autentikator. Aktifkan MFA di menu Keamanan lalu ulangi.",
     loadingFactor: "Memeriksa autentikator…",
     submit: "Verifikasi dan lanjutkan",
     codeRejected: "Kode tidak cocok atau sudah kedaluwarsa. Coba kode terbaru.",
+    cancel: "Batal",
   },
   status: {
     empty: {
       title: "Belum ada pencairan untuk ditampilkan",
       description:
-        "Siapkan pencairan dari run gaji yang sudah dikunci. Status karyawan akan muncul setelah pengajuan dibuat.",
-      action: "Lihat run siap bayar",
+        "Siapkan pencairan dari periode gaji yang sudah dikunci. Status karyawan akan muncul setelah pengajuan dibuat.",
+      action: "Lihat periode siap bayar",
     },
     error: {
       title: "Status pencairan tidak bisa dimuat",
@@ -144,13 +144,21 @@ export const payrollPayoutReviewMessages = {
       description:
         "Jangan bayar ulang atau tandai gagal. Periksa status dan bukti bank terlebih dahulu. Penyelesaian manual memerlukan dua orang berbeda.",
     },
+    overpaidBanner: {
+      title: "Ada pembayaran lebih",
+      description:
+        "{count} karyawan menerima lebih dari gaji yang seharusnya. Jangan bayar ulang. Finance perlu meminta dana kembali dan mencatat penyelesaiannya.",
+    },
+    summaryLabel: "Ringkasan status pencairan",
     tile: {
       waiting: "Menunggu",
       unknown: "Belum pasti",
       succeeded: "Berhasil",
       failed: "Gagal",
       manual: "Dibayar manual",
-      people: "{count} karyawan",
+      returned: "Dikembalikan",
+      overpaid: "Terbayar lebih",
+      unit: "karyawan",
     },
     results: {
       title: "Hasil pencairan",
@@ -201,7 +209,6 @@ export const payrollPayoutReviewMessages = {
     },
     success: {
       confirmed: "Hasil transfer dicatat.",
-      resolved: "Hasil dicatat. Menunggu orang kedua bila diminta.",
       cash: "Penerimaan tunai dicatat.",
     },
   },
@@ -213,24 +220,22 @@ export const payrollPayoutReviewMessages = {
     succeeded: "Berhasil dibayar",
     failed: "Gagal",
     not_sent: "Tidak terkirim",
-    outcomeHint:
-      "Pilih gagal atau tidak terkirim hanya bila sudah dipastikan di rekening bank. Ragu: jangan tandai.",
     bankRef: "Nomor referensi bank",
     bankRefHint: "Salin dari bukti transfer internet banking.",
     bankRefRequired: "Nomor referensi bank wajib diisi.",
-    evidence: "Kode bukti",
-    evidenceHint: "Nomor atau nama berkas bukti dari bank.",
-    evidenceRequired: "Kode bukti wajib diisi.",
-    note: "Catatan",
-    noteHint: "Jelaskan apa yang Anda periksa di bank.",
-    noteRequired: "Catatan wajib diisi.",
+    evidenceUnavailableTitle: "Gagal dan Tidak terkirim belum bisa dipilih",
+    evidenceUnavailable:
+      "Unggah bukti belum tersedia: menandai gagal atau tidak terkirim memerlukan berkas bukti dari bank. Jangan bayar ulang. Hubungi tim teknis untuk penyelesaian manual.",
     submit: "Simpan hasil",
     cancel: "Batal",
     cashTitle: "Konfirmasi tunai diterima",
     cashDescription:
       "{name} · {amount}. Catat bahwa karyawan sudah menerima uang tunai.",
-    cashEvidence: "Kode bukti serah terima (opsional)",
     cashSubmit: "Konfirmasi diterima",
+  },
+  error: {
+    evidenceInvalid:
+      "Berkas bukti tidak dikenali untuk pencairan ini. Tidak ada hasil yang dicatat.",
   },
   detail: {
     title: "Rincian pembayaran",

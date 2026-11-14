@@ -5,7 +5,7 @@
 // is always shown (docs/briefs/sub-payout-finance-ui.md "Aturan keras").
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
-import { CircleAlert, ClipboardList } from "lucide-react";
+import { Check, CircleAlert, ClipboardList } from "lucide-react";
 import type { MessageKey } from "@starter/shared/i18n";
 import type { PayrollDisbursementBatchDto } from "@starter/shared/types";
 import { useT } from "@/components/i18n";
@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "cn";
 import { useToast } from "@/components/ui/toast";
 import { formatNumber } from "@starter/shared/i18n";
 import type { PayableRun } from "../api";
@@ -30,20 +31,46 @@ import {
   batchFeeTotal,
   batchFundsNeeded,
   batchStatusMeta,
+  isFinalBatch,
   isOpenBatch,
   periodMonthLabel,
   type PayoutTabProps,
 } from "../lib";
 import { formatDateTime } from "../../ws10-payroll-run/lib";
 
-type RunRow = { run: PayableRun; batch: PayrollDisbursementBatchDto | null };
+type RunRow = {
+  run: PayableRun;
+  /** The batch that blocks a new one (draft to halted); null when none. */
+  batch: PayrollDisbursementBatchDto | null;
+  /** Newest finished batch (partially failed or completed), if any. */
+  lastFinal: PayrollDisbursementBatchDto | null;
+};
 
-/** The newest batch that is still alive; a cancelled one lets the run restart. */
-function activeBatch(batches: readonly PayrollDisbursementBatchDto[]) {
+const newestFirst = (
+  a: PayrollDisbursementBatchDto,
+  b: PayrollDisbursementBatchDto,
+) => b.createdAt.localeCompare(a.createdAt);
+
+/**
+ * The newest batch that still blocks a new one for the run. Like the API, a
+ * finished batch (completed, partially failed, cancelled) does not: after a
+ * partial failure the unpaid slips can be prepared again.
+ */
+function openBatchOf(batches: readonly PayrollDisbursementBatchDto[]) {
   return (
     [...batches]
       .filter((batch) => isOpenBatch(batch.status))
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null
+      .sort(newestFirst)[0] ?? null
+  );
+}
+
+function lastFinalOf(batches: readonly PayrollDisbursementBatchDto[]) {
+  return (
+    [...batches]
+      .filter(
+        (batch) => isFinalBatch(batch.status) && batch.status !== "cancelled",
+      )
+      .sort(newestFirst)[0] ?? null
   );
 }
 
@@ -65,10 +92,29 @@ export function RunsTab({
   const config = usePayoutConfig(legalEntityId);
   const accounts = usePayoutSourceAccounts(legalEntityId);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const panelRef = React.useRef<HTMLElement | null>(null);
+
+  // Below lg the panel sits under the list: after choosing a run, bring it
+  // into view and move focus there so the next step is not off screen.
+  const selectRun = (id: string) => {
+    setSelectedId(id);
+    if (window.matchMedia("(min-width: 1024px)").matches) return;
+    requestAnimationFrame(() => {
+      const panel = panelRef.current;
+      if (!panel) return;
+      const calm = window.matchMedia("(prefers-reduced-motion: reduce)");
+      panel.scrollIntoView({
+        block: "start",
+        behavior: calm.matches ? "auto" : "smooth",
+      });
+      panel.focus({ preventScroll: true });
+    });
+  };
 
   const rows: RunRow[] = entries.entries.map(({ run, batches }) => ({
     run,
-    batch: activeBatch(batches),
+    batch: openBatchOf(batches),
+    lastFinal: lastFinalOf(batches),
   }));
   const selected =
     rows.find((row) => row.run.id === selectedId) ?? rows[0] ?? null;
@@ -162,17 +208,13 @@ export function RunsTab({
                 {t("payrollPayout.runs.count", { count: rows.length })}
               </Badge>
             </div>
-            <ul className="mt-4 divide-y divide-border">
+            <ul className="mt-4 grid grid-cols-1 gap-2">
               {rows.map((row) => (
                 <RunItem
                   key={row.run.id}
                   row={row}
                   selected={selected?.run.id === row.run.id}
-                  onFocusRun={() => setSelectedId(row.run.id)}
-                  blocked={blocked}
-                  canRequest={access.canRequest}
-                  legalEntityId={legalEntityId}
-                  onSelectBatch={onSelectBatch}
+                  onSelectRun={() => selectRun(row.run.id)}
                 />
               ))}
             </ul>
@@ -185,6 +227,7 @@ export function RunsTab({
           </section>
           {selected && (
             <SelectedPanel
+              panelRef={panelRef}
               row={selected}
               duitkuActive={duitkuActive}
               sourceLabel={
@@ -210,29 +253,28 @@ export function RunsTab({
 function RunItem({
   row,
   selected,
-  onFocusRun,
-  blocked,
-  canRequest,
-  legalEntityId,
-  onSelectBatch,
+  onSelectRun,
 }: {
   row: RunRow;
   selected: boolean;
-  onFocusRun: () => void;
-  blocked: MessageKey | null;
-  canRequest: boolean;
-  legalEntityId: string;
-  onSelectBatch: PayoutTabProps["onSelectBatch"];
+  onSelectRun: () => void;
 }) {
   const t = useT();
   const names = usePayoutUserNames();
-  const { run, batch } = row;
-  const meta = batch ? batchStatusMeta(batch.status) : null;
+  const { run, batch, lastFinal } = row;
+  const shown = batch ?? lastFinal;
+  const meta = shown ? batchStatusMeta(shown.status) : null;
   const asker = batch ? (names.get(batch.requestedBy) ?? null) : null;
+  const title = t(runTitleKey(run.runType), {
+    period: periodMonthLabel(run.periodStart),
+  });
   return (
     <li
-      aria-current={selected || undefined}
-      className="grid gap-3 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+      aria-current={selected ? "true" : undefined}
+      className={cn(
+        "grid grid-cols-1 gap-3 rounded-field border-(length:--border-w) p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:p-4",
+        selected ? "border-foreground bg-surface-2" : "border-border bg-card",
+      )}
     >
       <div className="grid min-w-0 gap-1">
         <div className="flex flex-wrap items-center gap-2">
@@ -243,18 +285,13 @@ function RunItem({
             {run.code}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={onFocusRun}
-          className="w-fit rounded-field text-left text-lg leading-6 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2"
-        >
-          {t(runTitleKey(run.runType), {
-            period: periodMonthLabel(run.periodStart),
-          })}
-        </button>
+        <p className="text-lg leading-6 font-semibold">{title}</p>
         <p className="text-sm leading-5 text-muted-foreground">
           {t("payrollPayout.runs.employeeCount", {
-            count: formatNumber(run.employeeCount),
+            count:
+              run.employeeCount === null
+                ? t("payrollPayout.common.unavailable")
+                : formatNumber(run.employeeCount),
           })}
         </p>
         <p className="text-sm leading-5 text-muted-foreground">
@@ -274,21 +311,33 @@ function RunItem({
               : null}
         </p>
       </div>
-      <div className="flex items-center justify-between gap-4 sm:justify-end">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 sm:justify-end">
         <div className="grid sm:text-right">
-          <Money amount={run.netIdr} size="lg" />
+          {run.netIdr === null ? (
+            <span className="text-sm text-muted-foreground">
+              {t("payrollPayout.common.unavailable")}
+            </span>
+          ) : (
+            <Money amount={run.netIdr} size="lg" />
+          )}
           <span className="text-xs leading-4 text-muted-foreground">
             {t("payrollPayout.runs.netLabel")}
           </span>
         </div>
-        <RunAction
-          row={row}
-          blocked={blocked}
-          canRequest={canRequest}
-          legalEntityId={legalEntityId}
-          onSelectBatch={onSelectBatch}
-          compact
-        />
+        <Button
+          type="button"
+          variant={selected ? "default" : "outline"}
+          className="min-h-11 min-w-28"
+          onClick={onSelectRun}
+        >
+          {selected && <Check aria-hidden="true" />}
+          {t(
+            selected
+              ? "payrollPayout.runs.selectedState"
+              : "payrollPayout.runs.select",
+          )}
+          <span className="sr-only"> {title}</span>
+        </Button>
       </div>
     </li>
   );
@@ -301,37 +350,32 @@ function RunAction({
   canRequest,
   legalEntityId,
   onSelectBatch,
-  compact = false,
 }: {
   row: RunRow;
   blocked: MessageKey | null;
   canRequest: boolean;
   legalEntityId: string;
   onSelectBatch: PayoutTabProps["onSelectBatch"];
-  compact?: boolean;
 }) {
   const t = useT();
   const toast = useToast();
   const create = useCreateBatch(row.run.id);
   const submit = useSubmitBatch();
-  const { batch } = row;
-  const size = compact ? "sm" : "default";
-  const touch = "min-h-11 sm:min-h-0";
+  const { batch, lastFinal } = row;
+  const touch = "min-h-11 w-full";
   const pending = create.isPending || submit.isPending;
   const failure = create.error ?? submit.error;
 
   let action: React.ReactNode;
-  if (batch === null || batch.status === "cancelled") {
+  if (batch === null) {
     action = !canRequest ? (
-      <p className="max-w-48 text-xs leading-4 text-muted-foreground">
+      <p className="text-sm leading-5 text-muted-foreground">
         {t("payrollPayout.runs.needRequestPermission")}
       </p>
     ) : blocked ? (
       <>
-        <p className="max-w-56 text-right text-xs leading-4 text-muted-foreground">
-          {t(blocked)}
-        </p>
-        <Button asChild variant="outline" size={size} className={touch}>
+        <p className="text-sm leading-5 text-muted-foreground">{t(blocked)}</p>
+        <Button asChild variant="outline" className={touch}>
           <Link
             to="/kelola/payroll/pencairan"
             search={{ tab: "settings", entity: legalEntityId }}
@@ -343,8 +387,6 @@ function RunAction({
     ) : (
       <Button
         type="button"
-        variant="outline"
-        size={size}
         className={touch}
         loading={create.isPending}
         disabled={pending}
@@ -361,14 +403,17 @@ function RunAction({
           )
         }
       >
-        {t("payrollPayout.runs.prepare")}
+        {t(
+          lastFinal?.status === "partially_failed"
+            ? "payrollPayout.runs.prepareAgain"
+            : "payrollPayout.runs.prepare",
+        )}
       </Button>
     );
   } else if (batch.status === "draft") {
     action = canRequest ? (
       <Button
         type="button"
-        size={size}
         className={touch}
         loading={submit.isPending}
         disabled={pending}
@@ -400,7 +445,6 @@ function RunAction({
       <Button
         type="button"
         variant={review ? "default" : "outline"}
-        size={size}
         className={touch}
         onClick={() => onSelectBatch(batch.id, batch.status)}
       >
@@ -412,13 +456,20 @@ function RunAction({
   }
 
   return (
-    <div className="grid justify-items-end gap-2">
+    <div className="grid gap-2">
       {action}
-      {failure && (
-        <p
-          role="alert"
-          className="max-w-64 text-right text-xs leading-4 text-danger"
+      {batch === null && lastFinal && (
+        <Button
+          type="button"
+          variant="outline"
+          className={touch}
+          onClick={() => onSelectBatch(lastFinal.id, lastFinal.status)}
         >
+          {t("payrollPayout.runs.seeStatus")}
+        </Button>
+      )}
+      {failure && (
+        <p role="alert" className="text-sm leading-5 text-danger">
           {payoutErrorMessage(failure, t)}
         </p>
       )}
@@ -429,6 +480,7 @@ function RunAction({
 // ---- Side panel -----------------------------------------------------------------
 
 function SelectedPanel({
+  panelRef,
   row,
   duitkuActive,
   sourceLabel,
@@ -438,6 +490,7 @@ function SelectedPanel({
   legalEntityId,
   onSelectBatch,
 }: {
+  panelRef: React.RefObject<HTMLElement | null>;
   row: RunRow;
   duitkuActive: boolean;
   sourceLabel: string | null;
@@ -448,17 +501,17 @@ function SelectedPanel({
   onSelectBatch: PayoutTabProps["onSelectBatch"];
 }) {
   const t = useT();
-  const { run, batch } = row;
+  const { run, batch, lastFinal } = row;
   // The fee is the PT's cost and never comes out of the salary received.
-  const live = batch !== null && batch.status !== "cancelled";
-  const fee = live ? batchFeeTotal(batch) : run.employeeCount * feePerTransfer;
-  const funds = live ? batchFundsNeeded(batch) : run.netIdr + fee;
-  const salary = live ? batch.totalIdr : run.netIdr;
-  const count = live ? batch.itemCount : run.employeeCount;
+  // Unknown figures stay null and read "Tidak tersedia", never Rp0.
+  const figures = panelFigures(run, batch, lastFinal, feePerTransfer);
+  const live = batch !== null;
   return (
     <aside
+      ref={panelRef}
+      tabIndex={-1}
       aria-labelledby="payout-selected-title"
-      className="grid min-w-0 gap-4 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline"
+      className="grid min-w-0 gap-4 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline outline-none"
     >
       <div className="grid gap-1">
         <p
@@ -470,9 +523,19 @@ function SelectedPanel({
           })}
         </p>
         <p className="text-sm text-muted-foreground">
-          {t("payrollPayout.runs.receivedBy", { count: formatNumber(count) })}
+          {figures.count === null
+            ? t("payrollPayout.runs.receivedByUnknown")
+            : t("payrollPayout.runs.receivedBy", {
+                count: formatNumber(figures.count),
+              })}
         </p>
-        <Money amount={salary} size="stat" />
+        {figures.salary === null ? (
+          <p className="text-lg font-semibold">
+            {t("payrollPayout.common.unavailable")}
+          </p>
+        ) : (
+          <Money amount={figures.salary} size="stat" />
+        )}
       </div>
       <dl className="grid divide-y divide-border text-sm">
         <PanelRow
@@ -493,15 +556,24 @@ function SelectedPanel({
               ? "payrollPayout.runs.feeActual"
               : "payrollPayout.runs.feeEstimate",
           )}
-          money={fee}
+          money={figures.fee}
         />
-        <PanelRow label={t("payrollPayout.runs.funds")} money={funds} strong />
+        <PanelRow
+          label={t("payrollPayout.runs.funds")}
+          money={figures.funds}
+          strong
+        />
       </dl>
       <p className="text-sm leading-5 text-muted-foreground">
         {t("payrollPayout.runs.feeNote", {
           fee: formatNumber(feePerTransfer),
         })}
       </p>
+      {!live && lastFinal?.status === "partially_failed" && (
+        <p className="text-sm leading-5 text-muted-foreground">
+          {t("payrollPayout.runs.remainingNote")}
+        </p>
+      )}
       <RunAction
         row={row}
         blocked={blocked}
@@ -521,14 +593,20 @@ function PanelRow({
 }: {
   label: string;
   value?: string;
-  money?: number;
+  money?: number | null;
   strong?: boolean;
 }) {
   return (
     <div className="flex items-baseline justify-between gap-3 py-2.5">
       <dt className="text-muted-foreground">{label}</dt>
       <dd className={strong ? "font-semibold" : "font-medium"}>
-        {money === undefined ? value : <Money amount={money} size="sm" />}
+        {money === undefined ? (
+          value
+        ) : money === null ? (
+          <UnavailableText />
+        ) : (
+          <Money amount={money} size="sm" />
+        )}
       </dd>
     </div>
   );
@@ -554,4 +632,54 @@ function RunsSkeleton() {
       </div>
     </div>
   );
+}
+
+function UnavailableText() {
+  const t = useT();
+  return <>{t("payrollPayout.common.unavailable")}</>;
+}
+
+type PanelFigures = {
+  count: number | null;
+  salary: number | null;
+  fee: number | null;
+  funds: number | null;
+};
+
+/**
+ * What the side panel shows. A live batch is exact. Without one, the preview
+ * covers only what a bank batch pays: the run's bank-transfer part, not its
+ * whole net (cash-paid staff are not in it); after a partial failure it is the
+ * failed items. Anything the data does not carry stays null.
+ */
+function panelFigures(
+  run: PayableRun,
+  batch: PayrollDisbursementBatchDto | null,
+  lastFinal: PayrollDisbursementBatchDto | null,
+  feePerTransfer: number,
+): PanelFigures {
+  if (batch !== null)
+    return {
+      count: batch.itemCount,
+      salary: batch.totalIdr,
+      fee: batchFeeTotal(batch),
+      funds: batchFundsNeeded(batch),
+    };
+  if (lastFinal?.status === "partially_failed") {
+    const left = lastFinal.items.filter(
+      (item) => item.status === "failed" || item.status === "not_sent",
+    );
+    const salary = left.reduce((sum, item) => sum + item.amountIdr, 0);
+    const fee = left.length * feePerTransfer;
+    return { count: left.length, salary, fee, funds: salary + fee };
+  }
+  const count = run.bankEmployeeCount;
+  const salary = run.bankTransferIdr;
+  const fee = count === null ? null : count * feePerTransfer;
+  return {
+    count,
+    salary,
+    fee,
+    funds: salary === null || fee === null ? null : salary + fee,
+  };
 }

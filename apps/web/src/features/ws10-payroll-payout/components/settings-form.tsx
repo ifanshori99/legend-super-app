@@ -58,12 +58,18 @@ function RupiahField({
   onChange: (digits: string) => void;
 }) {
   return (
-    <FormField label={label} hint={hint} error={error} required={required}>
+    <FormField
+      label={label}
+      hint={hint}
+      error={error}
+      required={required}
+      className="sm:row-span-4 sm:grid-rows-subgrid sm:gap-y-1.5"
+    >
       <Input
         inputMode="numeric"
         autoComplete="off"
         disabled={disabled}
-        className="tabular"
+        className="tabular min-h-11"
         value={value === "" ? "" : formatNumber(Number(value))}
         onChange={(event) => onChange(digitsOnly(event.target.value))}
       />
@@ -371,6 +377,9 @@ export function SettingsForm({
             </div>
             <p className="text-sm text-muted-foreground">
               {t("payrollPayoutSettings.duitku.body")}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {t("payrollPayoutSettings.duitku.credentialsNote")}
             </p>
           </section>
 

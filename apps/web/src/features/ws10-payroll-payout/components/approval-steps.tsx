@@ -34,7 +34,7 @@ function StepCard({
       {time && <p className="text-sm text-muted-foreground">{time}</p>}
       <p
         className={cn(
-          "mt-1 inline-flex w-fit items-center gap-1.5 rounded-control px-3 py-1.5 text-sm font-semibold",
+          "mt-2 flex min-h-10 w-full items-center gap-2 rounded-control px-3 py-2 text-sm font-semibold",
           done
             ? "bg-success-subtle text-success"
             : "bg-warning-subtle text-warning",

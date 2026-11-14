@@ -18,6 +18,8 @@ export const payoutKeys = {
     [...payoutKeys.all, "payable-runs", legalEntityId] as const,
   paidRuns: (legalEntityId: string) =>
     [...payoutKeys.all, "paid-runs", legalEntityId] as const,
+  bankLabel: (employeeId: string) =>
+    [...payoutKeys.all, "bank-label", employeeId] as const,
   employees: () => [...payoutKeys.all, "employees"] as const,
 };
 
@@ -78,4 +80,13 @@ export const employeesQuery = () =>
     queryKey: payoutKeys.employees(),
     queryFn: ({ signal }) => api.fetchPayoutEmployees(signal),
     staleTime: 60_000,
+  });
+
+/** Masked bank account of one payee; a refusal (403) is not retried. */
+export const bankLabelQuery = (employeeId: string) =>
+  queryOptions({
+    queryKey: payoutKeys.bankLabel(employeeId),
+    queryFn: ({ signal }) => api.fetchPayeeBankLabel(employeeId, signal),
+    staleTime: 5 * 60_000,
+    retry: false,
   });

@@ -1,8 +1,10 @@
 // Dialogs of the Status tab: record a manual transfer result (success with
-// bank reference, or failed / not sent with evidence), confirm a cash
-// hand-over, and read one item's detail. Money results ask for a step-up when
+// bank reference; failed / not sent needs a proof file the app cannot upload
+// yet, so that choice only explains), confirm a cash hand-over, and read one
+// item's detail. Money results ask for a step-up when
 // the server says so; the server's refusal is always shown in the dialog.
 import * as React from "react";
+import { RadioGroup } from "radix-ui";
 import { formatRupiah } from "@starter/shared/i18n";
 import type { PayrollDisbursementItemDto } from "@starter/shared/types";
 import { useT } from "@/components/i18n";
@@ -18,18 +20,72 @@ import {
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import { Money } from "@/components/ui/money";
-import { SegmentedControl } from "@/components/ui/segmented-control";
-import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { cn } from "cn";
 import { formatDateTime } from "../../ws10-payroll-run/lib";
-import { payoutErrorMessage } from "../errors";
-import { useConfirmBatch, useConfirmCash, useResolveBatch } from "../hooks";
+import { useConfirmBatch, useConfirmCash } from "../hooks";
 import { itemStatusMeta } from "../lib";
 import { VerifyPanel, useStepUp } from "./approval-verify";
-
-type Outcome = "succeeded" | "failed" | "not_sent";
+import { reviewErrorMessage } from "./status-errors";
 
 type Person = { name: string; bank: string };
+
+/**
+ * The three outcomes of a manual transfer. Only "paid" can be recorded: failed
+ * and not sent need a bank proof file the app cannot upload yet, so those two
+ * stay visible but off, with the reason right below.
+ */
+function OutcomeChoice({ reasonId }: { reasonId: string }) {
+  const t = useT();
+  const options = [
+    { value: "succeeded", label: t("payrollPayoutReview.result.succeeded") },
+    { value: "failed", label: t("payrollPayoutReview.result.failed") },
+    { value: "not_sent", label: t("payrollPayoutReview.result.not_sent") },
+  ] as const;
+  return (
+    <div className="grid gap-2">
+      <RadioGroup.Root
+        value="succeeded"
+        aria-label={t("payrollPayoutReview.result.outcome")}
+        orientation="horizontal"
+        className="inline-flex w-fit max-w-full gap-0.5 overflow-x-auto rounded-control border-(length:--border-w) bg-surface-2 p-1"
+      >
+        {options.map((option) => {
+          const off = option.value !== "succeeded";
+          return (
+            <RadioGroup.Item
+              key={option.value}
+              value={option.value}
+              disabled={off}
+              aria-describedby={off ? reasonId : undefined}
+              className={cn(
+                "inline-flex min-h-[calc(var(--control-h-sm)-0.5rem)] shrink-0 items-center rounded-[max(calc(var(--control-radius)-0.25rem),0.25rem)] px-3 text-sm font-medium whitespace-nowrap",
+                off
+                  ? "cursor-not-allowed text-muted-foreground opacity-60"
+                  : "bg-card font-semibold text-foreground shadow-[inset_0_0_0_1px_var(--border),var(--elevation-hairline)]",
+              )}
+            >
+              {option.label}
+            </RadioGroup.Item>
+          );
+        })}
+      </RadioGroup.Root>
+      <div
+        id={reasonId}
+        role="status"
+        data-testid="payout-evidence-unavailable"
+        className="grid gap-1 rounded-container bg-warning-subtle p-3 text-sm"
+      >
+        <p className="font-semibold text-warning">
+          {t("payrollPayoutReview.result.evidenceUnavailableTitle")}
+        </p>
+        <p className="text-foreground">
+          {t("payrollPayoutReview.result.evidenceUnavailable")}
+        </p>
+      </div>
+    </div>
+  );
+}
 
 export function ResultDialog({
   batchId,
@@ -45,76 +101,82 @@ export function ResultDialog({
   const t = useT();
   const toast = useToast();
   const confirm = useConfirmBatch();
-  const resolve = useResolveBatch();
   const stepUp = useStepUp({ acceptsPassword: true });
-  const [outcome, setOutcome] = React.useState<Outcome>("succeeded");
+  const reasonId = React.useId();
+  const refInput = React.useRef<HTMLInputElement>(null);
   const [bankRef, setBankRef] = React.useState("");
-  const [evidence, setEvidence] = React.useState("");
-  const [note, setNote] = React.useState("");
-  const [problems, setProblems] = React.useState<Record<string, string>>({});
+  const [problem, setProblem] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
-  const busy = confirm.isPending || resolve.isPending;
+  const busy = confirm.isPending;
 
   const onFailure = (failure: unknown) => {
     if (stepUp.capture(failure)) return;
-    setError(payoutErrorMessage(failure, t));
+    setError(reviewErrorMessage(failure, t));
   };
-  const onDone = (messageKey: "confirmed" | "resolved") => {
-    toast({
-      title: t(`payrollPayoutReview.status.success.${messageKey}`),
-      tone: "success",
-    });
-    onClose();
-  };
-
   const submit = (password?: string) => {
     if (busy) return;
-    const next: Record<string, string> = {};
-    if (outcome === "succeeded") {
-      if (bankRef.trim() === "")
-        next.bankRef = t("payrollPayoutReview.result.bankRefRequired");
-    } else {
-      if (evidence.trim() === "")
-        next.evidence = t("payrollPayoutReview.result.evidenceRequired");
-      if (note.trim() === "")
-        next.note = t("payrollPayoutReview.result.noteRequired");
-    }
-    setProblems(next);
     setError(null);
-    if (Object.keys(next).length > 0) return;
-    if (outcome === "succeeded") {
-      confirm.mutate(
-        {
-          batchId,
-          results: [
-            {
-              itemId: item.id,
-              result: "succeeded" as const,
-              bankRef: bankRef.trim(),
-            },
-          ],
-          password,
-        },
-        { onSuccess: () => onDone("confirmed"), onError: onFailure },
-      );
+    if (bankRef.trim() === "") {
+      setProblem(t("payrollPayoutReview.result.bankRefRequired"));
       return;
     }
-    resolve.mutate(
+    setProblem(null);
+    confirm.mutate(
       {
         batchId,
-        itemIds: [item.id],
-        outcome,
-        evidenceKey: evidence.trim(),
-        note: note.trim(),
+        results: [
+          {
+            itemId: item.id,
+            result: "succeeded" as const,
+            bankRef: bankRef.trim(),
+          },
+        ],
         password,
       },
-      { onSuccess: () => onDone("resolved"), onError: onFailure },
+      {
+        onSuccess: () => {
+          toast({
+            title: t("payrollPayoutReview.status.success.confirmed"),
+            tone: "success",
+          });
+          onClose();
+        },
+        onError: onFailure,
+      },
     );
   };
 
+  const fields = (
+    <div className="grid gap-3">
+      <OutcomeChoice reasonId={reasonId} />
+      <FormField
+        label={t("payrollPayoutReview.result.bankRef")}
+        hint={t("payrollPayoutReview.result.bankRefHint")}
+        error={problem ?? undefined}
+        required
+      >
+        <Input
+          ref={refInput}
+          value={bankRef}
+          maxLength={64}
+          spellCheck={false}
+          autoComplete="off"
+          className="min-h-11"
+          onChange={(event) => setBankRef(event.target.value)}
+        />
+      </FormField>
+    </div>
+  );
+
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent data-testid="payout-result-dialog">
+      <DialogContent
+        data-testid="payout-result-dialog"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          refInput.current?.focus();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{t("payrollPayoutReview.result.title")}</DialogTitle>
           <DialogDescription>
@@ -124,85 +186,28 @@ export function ResultDialog({
             })}
           </DialogDescription>
         </DialogHeader>
-        <div className="grid gap-3">
-          <SegmentedControl<Outcome>
-            label={t("payrollPayoutReview.result.outcome")}
-            value={outcome}
-            onValueChange={setOutcome}
-            options={[
-              {
-                value: "succeeded",
-                label: t("payrollPayoutReview.result.succeeded"),
-              },
-              {
-                value: "failed",
-                label: t("payrollPayoutReview.result.failed"),
-              },
-              {
-                value: "not_sent",
-                label: t("payrollPayoutReview.result.not_sent"),
-              },
-            ]}
-          />
-          {outcome !== "succeeded" && (
-            <p className="text-sm text-muted-foreground">
-              {t("payrollPayoutReview.result.outcomeHint")}
-            </p>
-          )}
-          {outcome === "succeeded" ? (
-            <FormField
-              label={t("payrollPayoutReview.result.bankRef")}
-              hint={t("payrollPayoutReview.result.bankRefHint")}
-              error={problems.bankRef}
-              required
-            >
-              <Input
-                value={bankRef}
-                maxLength={64}
-                className="min-h-11"
-                onChange={(event) => setBankRef(event.target.value)}
-              />
-            </FormField>
-          ) : (
-            <>
-              <FormField
-                label={t("payrollPayoutReview.result.evidence")}
-                hint={t("payrollPayoutReview.result.evidenceHint")}
-                error={problems.evidence}
-                required
-              >
-                <Input
-                  value={evidence}
-                  maxLength={200}
-                  className="min-h-11"
-                  onChange={(event) => setEvidence(event.target.value)}
-                />
-              </FormField>
-              <FormField
-                label={t("payrollPayoutReview.result.note")}
-                hint={t("payrollPayoutReview.result.noteHint")}
-                error={problems.note}
-                required
-              >
-                <Textarea
-                  value={note}
-                  maxLength={500}
-                  onChange={(event) => setNote(event.target.value)}
-                />
-              </FormField>
-            </>
-          )}
-        </div>
         {stepUp.active ? (
-          <VerifyPanel
-            key={stepUp.round}
-            needs={stepUp.needs}
-            busy={busy}
-            error={error}
-            onVerified={submit}
-          />
-        ) : (
           <>
+            {fields}
+            <VerifyPanel
+              key={stepUp.round}
+              needs={stepUp.needs}
+              busy={busy}
+              error={error}
+              onVerified={submit}
+              onCancel={onClose}
+            />
+          </>
+        ) : (
+          <form
+            noValidate
+            className="grid gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submit();
+            }}
+          >
+            {fields}
             {error && (
               <p role="alert" className="text-sm font-medium text-danger">
                 {error}
@@ -217,16 +222,11 @@ export function ResultDialog({
               >
                 {t("payrollPayoutReview.result.cancel")}
               </Button>
-              <Button
-                type="button"
-                className="min-h-11"
-                loading={busy}
-                onClick={() => submit()}
-              >
+              <Button type="submit" className="min-h-11" loading={busy}>
                 {t("payrollPayoutReview.result.submit")}
               </Button>
             </DialogFooter>
-          </>
+          </form>
         )}
       </DialogContent>
     </Dialog>
@@ -248,7 +248,6 @@ export function CashDialog({
   const toast = useToast();
   const cash = useConfirmCash();
   const stepUp = useStepUp({ acceptsPassword: true });
-  const [evidence, setEvidence] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
 
   const submit = (password?: string) => {
@@ -258,7 +257,6 @@ export function CashDialog({
       {
         batchId,
         itemIds: [item.id],
-        evidenceKey: evidence.trim() === "" ? undefined : evidence.trim(),
         password,
       },
       {
@@ -271,7 +269,7 @@ export function CashDialog({
         },
         onError: (failure) => {
           if (stepUp.capture(failure)) return;
-          setError(payoutErrorMessage(failure, t));
+          setError(reviewErrorMessage(failure, t));
         },
       },
     );
@@ -289,14 +287,6 @@ export function CashDialog({
             })}
           </DialogDescription>
         </DialogHeader>
-        <FormField label={t("payrollPayoutReview.result.cashEvidence")}>
-          <Input
-            value={evidence}
-            maxLength={200}
-            className="min-h-11"
-            onChange={(event) => setEvidence(event.target.value)}
-          />
-        </FormField>
         {stepUp.active ? (
           <VerifyPanel
             key={stepUp.round}
@@ -304,9 +294,17 @@ export function CashDialog({
             busy={cash.isPending}
             error={error}
             onVerified={submit}
+            onCancel={onClose}
           />
         ) : (
-          <>
+          <form
+            noValidate
+            className="grid gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submit();
+            }}
+          >
             {error && (
               <p role="alert" className="text-sm font-medium text-danger">
                 {error}
@@ -322,15 +320,14 @@ export function CashDialog({
                 {t("payrollPayoutReview.result.cancel")}
               </Button>
               <Button
-                type="button"
+                type="submit"
                 className="min-h-11"
                 loading={cash.isPending}
-                onClick={() => submit()}
               >
                 {t("payrollPayoutReview.result.cashSubmit")}
               </Button>
             </DialogFooter>
-          </>
+          </form>
         )}
       </DialogContent>
     </Dialog>

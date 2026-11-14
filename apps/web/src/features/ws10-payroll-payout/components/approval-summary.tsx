@@ -11,15 +11,27 @@ import { Money } from "@/components/ui/money";
 
 function Row({
   label,
+  title,
   children,
 }: {
   label: string;
+  /** Full text for a long value that is cut to one line. */
+  title?: string;
   children: React.ReactNode;
 }) {
   return (
     <div className="flex items-baseline justify-between gap-4 border-b-(length:--border-w) py-2.5 text-sm">
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="text-right font-semibold">{children}</dd>
+      <dt className="shrink-0 text-muted-foreground">{label}</dt>
+      <dd
+        title={title}
+        className={
+          title
+            ? "min-w-0 truncate text-right font-semibold"
+            : "min-w-0 text-right font-semibold break-words"
+        }
+      >
+        {children}
+      </dd>
     </div>
   );
 }
@@ -64,7 +76,7 @@ export function ApprovalSummary({
   return (
     <aside
       aria-label={t("payrollPayoutReview.approval.summary.title")}
-      className="grid content-start gap-3 rounded-shell border-(length:--border-w) bg-card p-card shadow-hairline"
+      className="grid min-w-0 grid-cols-1 content-start gap-3 rounded-shell border-(length:--border-w) bg-card p-card shadow-hairline"
     >
       <p className="type-eyebrow text-muted-foreground">
         {t("payrollPayoutReview.approval.summary.title")}
@@ -73,14 +85,21 @@ export function ApprovalSummary({
         <p className="text-sm text-muted-foreground">
           {t("payrollPayoutReview.approval.summary.netLabel", { count })}
         </p>
-        <Money amount={netIdr} size="hero" />
+        <Money
+          amount={netIdr}
+          size="hero"
+          className="max-[420px]:text-3xl max-[420px]:leading-9"
+        />
       </div>
-      <dl className="grid border-t-(length:--border-w)">
+      <dl className="grid grid-cols-1 border-t-(length:--border-w)">
         <Row label={t("payrollPayoutReview.approval.summary.method")}>
           {methodLabel}
         </Row>
         {sourceLabel !== null && (
-          <Row label={t("payrollPayoutReview.approval.summary.source")}>
+          <Row
+            label={t("payrollPayoutReview.approval.summary.source")}
+            title={sourceLabel}
+          >
             {sourceLabel}
           </Row>
         )}

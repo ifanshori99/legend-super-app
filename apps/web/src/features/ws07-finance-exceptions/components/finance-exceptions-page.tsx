@@ -21,7 +21,7 @@ import {
   type FinanceExceptionFilters,
   type FinanceExceptionKind,
 } from "../lib";
-import { ExceptionsFilters } from "./exceptions-filters";
+import { ExceptionsFilters, type FilterDraft } from "./exceptions-filters";
 import { ExceptionsList } from "./exceptions-list";
 import { ExceptionsSummary, SummarySkeleton } from "./exceptions-summary";
 
@@ -77,13 +77,20 @@ export function FinanceExceptionsPage({
     [outlets],
   );
 
-  const selectKind = (kind: FinanceExceptionKind | undefined) =>
-    onApply({
-      ...(kind ? { kind } : {}),
-      ...(filters.outletId ? { outletId: filters.outletId } : {}),
-      from: filters.from,
-      to: filters.to,
-    });
+  // Unapplied edits in the filter form: a card click keeps them when valid.
+  const draftRef = React.useRef<FilterDraft | null>(null);
+  const selectKind = (kind: FinanceExceptionKind | undefined) => {
+    const draft = draftRef.current;
+    const next =
+      draft && validateRange(draft.from, draft.to) === null
+        ? draft
+        : {
+            ...(filters.outletId ? { outletId: filters.outletId } : {}),
+            from: filters.from,
+            to: filters.to,
+          };
+    onApply({ ...(kind ? { kind } : {}), ...next });
+  };
 
   return (
     <div className="grid min-w-0 gap-5">
@@ -104,6 +111,7 @@ export function FinanceExceptionsPage({
         applied={filters}
         outlets={outlets}
         outletsLoading={outletsQuery.isPending}
+        draftRef={draftRef}
         onApply={onApply}
         onReset={onReset}
       />
@@ -145,6 +153,7 @@ export function FinanceExceptionsPage({
       )}
 
       <DataTableShell
+        bare
         title={t("financeExceptions.list.title")}
         description={t("financeExceptions.list.hint")}
         state={state}
@@ -183,11 +192,14 @@ export function FinanceExceptionsPage({
           ),
         }}
         actions={
-          data ? (
-            <Badge tone="neutral">
-              {t("financeExceptions.list.count", { count: total })}
-            </Badge>
-          ) : undefined
+          // The live region stays mounted so a changed count is announced.
+          <span aria-live="polite" aria-atomic="true">
+            {data && (
+              <Badge tone="neutral">
+                {t("financeExceptions.list.count", { count: total })}
+              </Badge>
+            )}
+          </span>
         }
       >
         {data && <ExceptionsList items={data.items} outletName={outletName} />}

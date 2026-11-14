@@ -86,7 +86,6 @@ function ApprovalSkeleton() {
 }
 
 function ApprovalBatch({
-  legalEntityId,
   batchId,
   access,
   currentUserId,
@@ -94,8 +93,11 @@ function ApprovalBatch({
   const t = useT();
   const toast = useToast();
   const query = useBatch(batchId);
-  const config = usePayoutConfig(legalEntityId).data;
-  const accounts = usePayoutSourceAccounts(legalEntityId).data ?? [];
+  // Settings and source accounts belong to the batch's own PT, which may not
+  // be the PT selected on the page.
+  const batchEntityId = query.data?.legalEntityId;
+  const config = usePayoutConfig(batchEntityId).data;
+  const accounts = usePayoutSourceAccounts(batchEntityId).data ?? [];
   const approve = useApproveBatch();
   const userNames = usePayoutUserNames();
   const stepUp = useStepUp();
@@ -171,7 +173,7 @@ function ApprovalBatch({
   };
 
   return (
-    <div className="grid gap-4">
+    <div className="grid min-w-0 grid-cols-1 gap-4">
       {sourceInactive && source && (
         <div
           role="alert"
@@ -191,7 +193,7 @@ function ApprovalBatch({
           </div>
         </div>
       )}
-      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <section
           aria-label={t("payrollPayoutReview.approval.title")}
           className="grid gap-4 rounded-shell border-(length:--border-w) bg-card p-card shadow-hairline"
@@ -266,6 +268,10 @@ function ApprovalBatch({
               busy={approve.isPending}
               error={error}
               onVerified={submit}
+              onCancel={() => {
+                stepUp.reset();
+                setError(null);
+              }}
             />
           )}
           {error && !stepUp.active && (

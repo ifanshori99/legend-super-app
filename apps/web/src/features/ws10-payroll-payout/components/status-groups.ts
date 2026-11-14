@@ -7,7 +7,14 @@ import type {
 } from "@starter/shared/types";
 
 export type StatusGroup =
-  "waiting" | "unknown" | "succeeded" | "manual" | "failed" | "other";
+  | "waiting"
+  | "unknown"
+  | "succeeded"
+  | "manual"
+  | "failed"
+  | "returned"
+  | "overpaid"
+  | "other";
 
 export function itemGroup(
   item: PayrollDisbursementItemDto,
@@ -26,6 +33,10 @@ export function itemGroup(
     case "failed":
     case "not_sent":
       return "failed";
+    case "returned":
+      return "returned";
+    case "overpaid":
+      return "overpaid";
     default:
       return "other";
   }
@@ -43,6 +54,8 @@ export function summarizeGroups(
     succeeded: { count: 0, amountIdr: 0 },
     manual: { count: 0, amountIdr: 0 },
     failed: { count: 0, amountIdr: 0 },
+    returned: { count: 0, amountIdr: 0 },
+    overpaid: { count: 0, amountIdr: 0 },
     other: { count: 0, amountIdr: 0 },
   };
   for (const item of items) {

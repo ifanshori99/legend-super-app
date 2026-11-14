@@ -73,7 +73,7 @@ export function StatusList({
   onAction: (action: RowAction, item: PayrollDisbursementItemDto) => void;
 }) {
   const t = useT();
-  const line = useEmployeeLine();
+  const line = useEmployeeLine(items);
   const blockText = useBlockText(recordBlockKey).text;
 
   const subText = (item: PayrollDisbursementItemDto): string => {
@@ -135,18 +135,22 @@ export function StatusList({
     );
   };
 
-  const action = (item: PayrollDisbursementItemDto) => {
+  const action = (
+    item: PayrollDisbursementItemDto,
+    layout: "table" | "card",
+  ) => {
     const kind = rowAction(item, batch);
     if (!kind) return null;
     const moneyAction = kind === "record" || kind === "cash";
     const blocked = moneyAction && !canRecord;
-    const reasonId = `status-block-${item.id}`;
+    // The table and the cards both render: one DOM id per layout.
+    const reasonId = `status-block-${layout}-${item.id}`;
     return (
-      <div className="grid gap-1">
+      <div className="grid justify-items-start gap-1">
         <Button
           type="button"
           variant="outline"
-          className="min-h-11 w-full min-[700px]:w-auto"
+          className="min-h-11 w-fit"
           disabled={blocked}
           aria-describedby={blocked ? reasonId : undefined}
           onClick={() => onAction(kind, item)}
@@ -184,7 +188,7 @@ export function StatusList({
           </TableHeader>
           <TableBody>
             {items.map((item) => {
-              const who = line(item.employeeId);
+              const who = line(item);
               return (
                 <TableRow key={item.id} data-status={item.status}>
                   <TableCell>
@@ -204,7 +208,7 @@ export function StatusList({
                       </p>
                     </div>
                   </TableCell>
-                  <TableCell>{action(item)}</TableCell>
+                  <TableCell>{action(item, "table")}</TableCell>
                 </TableRow>
               );
             })}
@@ -213,7 +217,7 @@ export function StatusList({
       </div>
       <ul className="grid min-[700px]:hidden">
         {items.map((item) => {
-          const who = line(item.employeeId);
+          const who = line(item);
           return (
             <li
               key={item.id}
@@ -233,7 +237,7 @@ export function StatusList({
                 {badge(item)}
                 <p className="text-sm text-muted-foreground">{subText(item)}</p>
               </div>
-              {action(item)}
+              {action(item, "card")}
             </li>
           );
         })}

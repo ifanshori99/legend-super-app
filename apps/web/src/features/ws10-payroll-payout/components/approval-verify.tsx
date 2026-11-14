@@ -62,6 +62,7 @@ export function VerifyPanel({
   busy,
   error,
   onVerified,
+  onCancel,
 }: {
   needs: StepUpNeeds;
   busy: boolean;
@@ -69,6 +70,8 @@ export function VerifyPanel({
   error?: string | null;
   /** The proof is ready: retry the action (password only when asked). */
   onVerified: (password?: string) => void;
+  /** Leave the step-up without sending anything. */
+  onCancel?: () => void;
 }) {
   const t = useT();
   const factor = useTotpFactor(needs.mfa);
@@ -83,7 +86,9 @@ export function VerifyPanel({
   const noFactor =
     needs.mfa && !needs.password && !factor.isPending && !factor.totp;
 
+  const working = busy || verify.isPending;
   const submit = () => {
+    if (working || noFactor) return;
     setCodeError(null);
     setPasswordError(null);
     const finish = (withPassword: boolean) =>
@@ -121,11 +126,17 @@ export function VerifyPanel({
     setCodeError(t("payrollPayoutReview.verify.codeInvalid"));
   };
 
+  // The first field takes focus when it appears: the code, else the password.
+  const codeFirst = needsCode && Boolean(factor.totp);
   return (
-    <div
-      role="group"
+    <form
       aria-label={t("payrollPayoutReview.verify.title")}
       data-testid="payout-verify"
+      noValidate
+      onSubmit={(event) => {
+        event.preventDefault();
+        submit();
+      }}
       className="grid gap-3 rounded-container border-(length:--border-w) bg-surface-2 p-3"
     >
       <p className="flex items-center gap-2 text-sm font-semibold">
@@ -166,6 +177,8 @@ export function VerifyPanel({
             inputMode="numeric"
             autoComplete="one-time-code"
             maxLength={6}
+            autoFocus
+            spellCheck={false}
             value={code}
             onChange={(event) =>
               setCode(event.target.value.replace(/\D/g, "").slice(0, 6))
@@ -183,6 +196,7 @@ export function VerifyPanel({
           <Input
             type="password"
             autoComplete="current-password"
+            autoFocus={!codeFirst}
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             className="min-h-11"
@@ -194,15 +208,27 @@ export function VerifyPanel({
           {error}
         </p>
       )}
-      <Button
-        type="button"
-        className="min-h-11"
-        loading={busy || verify.isPending}
-        disabled={noFactor}
-        onClick={submit}
-      >
-        {t("payrollPayoutReview.verify.submit")}
-      </Button>
-    </div>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="submit"
+          className="min-h-11"
+          loading={working}
+          disabled={noFactor}
+        >
+          {t("payrollPayoutReview.verify.submit")}
+        </Button>
+        {onCancel && (
+          <Button
+            type="button"
+            variant="outline"
+            className="min-h-11"
+            disabled={working}
+            onClick={onCancel}
+          >
+            {t("payrollPayoutReview.verify.cancel")}
+          </Button>
+        )}
+      </div>
+    </form>
   );
 }

@@ -73,6 +73,7 @@ export const payrollPayoutSettingsMessages = {
     title: "Duitku disbursement",
     status: "Belum aktif",
     body: "Kredensial khusus pencairan dipisah dari penerimaan pembayaran dan diatur setelah Duitku diaktifkan. Sampai saat itu, semua pencairan memakai transfer manual.",
+    credentialsNote: "Kredensial Duitku diisi saat akun Duitku siap dipakai.",
   },
   save: {
     action: "Simpan pengaturan",

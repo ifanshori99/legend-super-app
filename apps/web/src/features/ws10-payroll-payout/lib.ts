@@ -145,9 +145,63 @@ export function batchFundsNeeded(
   return batch.totalIdr + batchFeeTotal(batch);
 }
 
-/** Batches that are finished and no longer need attention on the runs tab. */
+/** Statuses the API treats as final: a new batch may start for the run. */
+const FINAL_BATCH_STATUSES: readonly PayoutBatchStatus[] = [
+  "completed",
+  "partially_failed",
+  "cancelled",
+];
+
+export function isFinalBatch(status: PayoutBatchStatus): boolean {
+  return FINAL_BATCH_STATUSES.includes(status);
+}
+
+/**
+ * A batch that still blocks a new one for the same run (mirrors the API's
+ * PAYOUT_BATCH_ALREADY_OPEN rule: draft to halted, not completed, partially
+ * failed or cancelled).
+ */
 export function isOpenBatch(status: PayoutBatchStatus): boolean {
-  return status !== "cancelled";
+  return !isFinalBatch(status);
+}
+
+/** Bank names of the BI codes the HR contract accepts. */
+const BANK_NAMES: Record<string, string> = {
+  "002": "BRI",
+  "008": "Mandiri",
+  "009": "BNI",
+  "011": "Danamon",
+  "013": "Permata",
+  "014": "BCA",
+  "016": "Maybank",
+  "019": "Panin",
+  "022": "CIMB Niaga",
+  "023": "UOB",
+  "028": "OCBC NISP",
+  "031": "Citibank",
+  "037": "Artha Graha",
+  "046": "DBS",
+  "050": "Standard Chartered",
+  "087": "HSBC",
+  "110": "BJB",
+  "111": "Bank DKI",
+  "114": "Bank Jatim",
+  "147": "Muamalat",
+  "153": "Sinarmas",
+  "200": "BTN",
+  "213": "BTPN",
+  "426": "Mega",
+  "451": "BSI",
+  "490": "Bank Neo Commerce",
+  "501": "Blu by BCA Digital",
+  "535": "SeaBank",
+  "542": "Jago",
+};
+
+/** "014" → "BCA"; an unknown code reads "Bank 999"; null stays null. */
+export function bankCodeLabel(code: string | null): string | null {
+  if (code === null) return null;
+  return BANK_NAMES[code] ?? `Bank ${code}`;
 }
 
 /** "2026-11-30" → "November 2026" (UTC, so SSR and the browser agree). */
@@ -160,10 +214,10 @@ export function periodMonthLabel(periodStart: string): string {
   }).format(new Date(Date.UTC(year, month - 1, 1)));
 }
 
-/** "****4821" → "●●●● 4821". */
+/** "****4821" → "•••• 4821". */
 export function maskedAccountDisplay(masked: string): string {
   const tail = masked.replace(/^[*•●\s]+/, "");
-  return tail === masked ? masked : `●●●● ${tail}`;
+  return tail === masked ? masked : `•••• ${tail}`;
 }
 
 /** Fallback name of the bank file when the response headers are not readable. */

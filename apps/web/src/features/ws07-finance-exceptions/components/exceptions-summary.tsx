@@ -79,25 +79,33 @@ export function ExceptionsSummary({
 }) {
   const t = useT();
   return (
-    <ul className={cn(CARD_GRID, "list-none")}>
+    // One merged strip: a single border, thin separators from the 1px gap
+    // showing the strip's own background through.
+    <ul className="grid list-none gap-px overflow-hidden rounded-container border-(length:--border-w) border-border bg-border shadow-hairline min-[700px]:grid-cols-2 lg:grid-cols-5">
       {entries.map((entry) => {
         const active = entry.kind === activeKind;
         const label = t(KIND_LABEL_KEYS[entry.kind]);
         return (
-          <li key={entry.kind} className="min-w-0">
+          <li
+            key={entry.kind}
+            className="min-w-0 bg-card min-[700px]:max-lg:last:col-span-2"
+          >
             <button
               type="button"
               aria-pressed={active}
               onClick={() => onSelectKind(active ? undefined : entry.kind)}
               className={cn(
-                "grid h-full min-h-11 w-full min-w-0 grid-cols-[1fr_auto] gap-x-3 gap-y-2 rounded-container border-(length:--border-w) bg-card p-card text-left shadow-hairline transition-colors duration-(--duration-fast) focus-visible:shadow-focus focus-visible:outline-none",
+                "grid h-full min-h-11 w-full min-w-0 grid-cols-[1fr_auto] content-start gap-x-3 gap-y-2 border-(length:--border-w) p-card text-left transition-colors duration-(--duration-fast) focus-visible:relative focus-visible:z-10 focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset",
                 active
                   ? "border-primary bg-brand-subtle"
-                  : "border-border hover:bg-surface-2",
-                "min-[700px]:grid-cols-1",
+                  : "border-transparent hover:bg-surface-2",
+                // Label, count and amount start on the same line in every card.
+                "min-[700px]:grid-cols-1 min-[700px]:grid-rows-[minmax(2.5rem,auto)_auto_auto]",
               )}
             >
-              <span className="min-w-0 text-sm font-semibold">{label}</span>
+              <span className="min-w-0 text-sm leading-5 font-semibold">
+                {label}
+              </span>
               <span className="flex items-baseline gap-1.5 max-[699px]:col-start-2 max-[699px]:row-span-2 max-[699px]:row-start-1 max-[699px]:flex-col max-[699px]:items-end max-[699px]:gap-0">
                 <NumberDisplay value={entry.count} size="xl" />
                 <span className="text-xs text-muted-foreground">

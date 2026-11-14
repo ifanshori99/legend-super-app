@@ -12,7 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { excludedReasonKey } from "../lib";
+import { bankCodeLabel, excludedReasonKey } from "../lib";
 import { usePayoutEmployees } from "../hooks";
 
 export type PayoutEmployeeMap = ReturnType<typeof usePayoutEmployees>;
@@ -30,18 +30,36 @@ export function isExcludedItem(item: PayrollDisbursementItemDto): boolean {
   return item.excludedReason !== null || item.status === "blocked";
 }
 
-export function useEmployeeLine() {
+/**
+ * Name, subtitle and bank line of an item's employee. The masked bank label is
+ * fetched for exactly these payees; when it is missing the item's own bank
+ * code is shown with a note that the number is hidden.
+ */
+export function useEmployeeLine(
+  items: readonly Pick<PayrollDisbursementItemDto, "employeeId">[],
+) {
   const t = useT();
-  const employees = usePayoutEmployees();
-  return (employeeId: string) => {
-    const found = employees.get(employeeId);
+  const employees = usePayoutEmployees(items.map((item) => item.employeeId));
+  return (
+    item: Pick<PayrollDisbursementItemDto, "employeeId" | "bankCode">,
+  ) => {
+    const found = employees.get(item.employeeId);
+    const bankName = bankCodeLabel(item.bankCode);
     return {
       name: found?.name ?? t("payrollPayoutReview.common.unknownEmployee"),
       subtitle: found?.subtitle ?? "",
-      bank: found?.bankLabel ?? t("payrollPayoutReview.common.noAccount"),
+      bank:
+        found?.bankLabel ??
+        (bankName
+          ? `${bankName} · ${t("payrollPayout.common.accountHidden")}`
+          : t("payrollPayoutReview.common.noAccount")),
     };
   };
 }
+
+// Grey band header, small caps (the mockup's recipient table).
+const HEAD_CLASS =
+  "h-10 bg-surface-2 text-xs font-semibold tracking-wide uppercase";
 
 export function PayeeTable({
   items,
@@ -49,39 +67,39 @@ export function PayeeTable({
   items: readonly PayrollDisbursementItemDto[];
 }) {
   const t = useT();
-  const line = useEmployeeLine();
+  const line = useEmployeeLine(items);
   return (
     <>
       <div className="hidden min-[700px]:block">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>
+              <TableHead className={HEAD_CLASS}>
                 {t("payrollPayoutReview.approval.table.employee")}
               </TableHead>
-              <TableHead>
+              <TableHead className={HEAD_CLASS}>
                 {t("payrollPayoutReview.approval.table.account")}
               </TableHead>
-              <TableHead className="text-right">
+              <TableHead className={`${HEAD_CLASS} text-right`}>
                 {t("payrollPayoutReview.approval.table.amount")}
               </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {items.map((item) => {
-              const who = line(item.employeeId);
+              const who = line(item);
               return (
-                <TableRow key={item.id}>
-                  <TableCell>
+                <TableRow key={item.id} className="h-[70px]">
+                  <TableCell className="py-4">
                     <p className="font-semibold">{who.name}</p>
                     {who.subtitle && (
-                      <p className="text-xs text-muted-foreground">
+                      <p className="text-sm text-muted-foreground">
                         {who.subtitle}
                       </p>
                     )}
                   </TableCell>
-                  <TableCell className="tabular">{who.bank}</TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="tabular py-4">{who.bank}</TableCell>
+                  <TableCell className="py-4 text-right">
                     <Money amount={item.amountIdr} />
                   </TableCell>
                 </TableRow>
@@ -92,7 +110,7 @@ export function PayeeTable({
       </div>
       <ul className="grid min-[700px]:hidden">
         {items.map((item) => {
-          const who = line(item.employeeId);
+          const who = line(item);
           return (
             <li
               key={item.id}
@@ -132,7 +150,7 @@ export function ExcludedList({
   hint: string;
 }) {
   const t = useT();
-  const line = useEmployeeLine();
+  const line = useEmployeeLine(items);
   if (items.length === 0) return null;
   return (
     <section
@@ -145,7 +163,7 @@ export function ExcludedList({
       <ul className="grid gap-1 text-sm">
         {items.map((item) => (
           <li key={item.id} className="flex flex-wrap justify-between gap-x-3">
-            <span className="font-medium">{line(item.employeeId).name}</span>
+            <span className="font-medium">{line(item).name}</span>
             <span className="text-foreground">
               {item.excludedReason
                 ? t(excludedReasonKey(item.excludedReason))

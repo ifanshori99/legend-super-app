@@ -48,8 +48,12 @@ test("finance-exceptions shows a summary card for each of the five kinds", async
   await expect(
     page.getByRole("heading", { name: /Pengecualian finance/i }).first(),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
+  // The kind <select> also holds these names (hidden options): pin the
+  // summary cards, which are buttons.
   for (const kind of KINDS) {
-    await expect(page.getByText(kind).first()).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: kind }).first(),
+    ).toBeVisible();
   }
   // Read-only screen: nothing offers to change a transaction.
   await expect(
@@ -71,22 +75,35 @@ test("finance-exceptions shows a missing outlet as Seluruh PT", async ({
   page,
 }) => {
   await open(page);
-  await expect(page.getByText(/Seluruh PT/).first()).toBeVisible({
+  await expect(
+    page
+      .getByText(/Seluruh PT/)
+      .filter({ visible: true })
+      .first(),
+  ).toBeVisible({
     timeout: COLD_START_TIMEOUT_MS,
   });
 });
 
 test("finance-exceptions lists the newest event first", async ({ page }) => {
   await open(page);
-  await expect(page.getByText(/Seluruh PT/).first()).toBeVisible({
+  await expect(
+    page
+      .getByText(/Seluruh PT/)
+      .filter({ visible: true })
+      .first(),
+  ).toBeVisible({
     timeout: COLD_START_TIMEOUT_MS,
   });
-  // Mockup fixture: payout fee row (14 Nov 14.20) precedes the oldest link row.
+  // Mock fixture: the payout fee row (today 14.20) precedes the oldest row
+  // (2 days ago). The UI shortens that row's long UUID ref to "…" plus its last
+  // 6 chars, upper-cased (shortRef); the full ref is in the collapsed <details>.
+  // innerText only holds the layout rendered at this width.
   const body = await page.locator("main").innerText();
   const newest = body.indexOf("PAY-202611-003");
-  const oldest = body.indexOf("LINK-MTG-1211-006");
-  test.skip(newest < 0 || oldest < 0, "Fixture refs differ from the mockup.");
-  expect(newest).toBeLessThan(oldest);
+  const oldest = body.indexOf("B6E7F8");
+  expect(newest).toBeGreaterThanOrEqual(0);
+  expect(oldest).toBeGreaterThan(newest);
 });
 
 test("finance-exceptions summary card filters the list by kind", async ({
@@ -101,18 +118,18 @@ test("finance-exceptions summary card filters the list by kind", async ({
   await expect(page).toHaveURL(/kind=edge_receipt_skipped/);
 });
 
-test("finance-exceptions outlet filter explains payout fees are PT-wide", async ({
+test("finance-exceptions outlet filter leaves payout fees out and says so", async ({
   page,
 }) => {
   await open(page);
-  const outlet = page.getByLabel("Outlet");
+  const outlet = page.getByRole("combobox", { name: "Outlet" });
   await expect(outlet).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
-  await outlet.selectOption({ index: 1 });
+  await outlet.click();
+  await page.getByRole("option").nth(1).click();
   await page.getByRole("button", { name: /Terapkan filter/i }).click();
   await expect(page).toHaveURL(/outletId=/);
-  await expect(page.getByText(/Biaya payout/i).first()).toBeVisible();
   await expect(
-    page.getByText(/seluruh PT|Semua outlet/i).first(),
+    page.getByText(/Tidak dihitung untuk filter outlet/i),
   ).toBeVisible();
 });
 
@@ -127,10 +144,13 @@ test("finance-exceptions rejects a range longer than 92 days", async ({
   const start = new Date(`${to}T00:00:00Z`);
   start.setUTCDate(start.getUTCDate() - 120);
   await from.fill(start.toISOString().slice(0, 10));
-  await page.getByRole("button", { name: /Terapkan filter/i }).click();
   await expect(
-    page.getByRole("alert").filter({ hasText: /92 hari/ }),
+    page.getByText(/Rentang tanggal paling lama 92 hari/),
   ).toBeVisible();
+  // The user cannot apply an invalid window.
+  await expect(
+    page.getByRole("button", { name: /Terapkan filter/i }),
+  ).toBeDisabled();
 });
 
 test("finance-exceptions accepts exactly 92 days inclusive", async ({
@@ -151,10 +171,10 @@ test("finance-exceptions requires both dates", async ({ page }) => {
   const from = page.getByLabel("Dari tanggal");
   await expect(from).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
   await from.fill("");
-  await page.getByRole("button", { name: /Terapkan filter/i }).click();
+  await expect(page.getByText(/Isi tanggal awal dan akhir/)).toBeVisible();
   await expect(
-    page.getByRole("alert").filter({ hasText: /tanggal/i }),
-  ).toBeVisible();
+    page.getByRole("button", { name: /Terapkan filter/i }),
+  ).toBeDisabled();
 });
 
 test("finance-exceptions empty state names the active filter and resets it", async ({
@@ -184,7 +204,12 @@ test("finance-exceptions has no horizontal scroll at 390px", async ({
 }) => {
   await page.setViewportSize({ width: 390, height: 900 });
   await open(page);
-  await expect(page.getByText(/Seluruh PT/).first()).toBeVisible({
+  await expect(
+    page
+      .getByText(/Seluruh PT/)
+      .filter({ visible: true })
+      .first(),
+  ).toBeVisible({
     timeout: COLD_START_TIMEOUT_MS,
   });
   const overflow = await page.evaluate(

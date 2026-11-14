@@ -24,7 +24,11 @@ export const payrollPayoutMessages = {
         "Pencairan gaji berlaku per PT. Tambahkan badan usaha di pengaturan organisasi dulu.",
     },
   },
-  common: { loading: "Memuat pencairan gaji" },
+  common: {
+    loading: "Memuat pencairan gaji",
+    unavailable: "Tidak tersedia",
+    accountHidden: "Nomor rekening tidak ditampilkan di layar ini",
+  },
   method: {
     manual: "Transfer manual",
     duitku: "Duitku",
@@ -64,27 +68,32 @@ export const payrollPayoutMessages = {
   },
   runs: {
     title: {
-      list: "Run siap bayar",
+      list: "Periode gaji siap bayar",
       regular: "Gaji {period}",
       offCycle: "Gaji tambahan {period}",
       thr: "THR {period}",
     },
-    subtitle: "Run terkunci dan belum selesai dibayar.",
-    count: "{count} run",
+    subtitle: "Periode gaji yang sudah dikunci dan belum selesai dibayar.",
+    count: "{count} periode gaji",
     readyToPrepare: "Siap disiapkan",
     employeeCount: "{count} karyawan",
     askedBy: "Diajukan {name} · {at}",
     askedAt: "Diajukan {at}",
-    lockedAt: "Run dikunci {at}",
+    lockedAt: "Dikunci {at}",
     netLabel: "Gaji bersih",
     prepare: "Siapkan",
+    prepareAgain: "Siapkan lagi",
+    remainingNote:
+      "Sebagian karyawan belum terbayar. Siapkan lagi hanya untuk slip yang belum dibayar; angka di samping adalah perkiraan dari item yang gagal.",
     prepared: "Pencairan disiapkan. Ajukan untuk persetujuan.",
     submit: "Ajukan persetujuan",
     submitted: "Pencairan diajukan untuk persetujuan.",
     submittedExcluded:
       "{count} karyawan tidak ikut karena datanya belum lengkap.",
-    review: "Tinjau",
+    review: "Tinjau persetujuan",
     seeStatus: "Lihat status",
+    select: "Pilih",
+    selectedState: "Terpilih",
     goSettings: "Buka pengaturan PT",
     needRequestPermission: "Anda tidak punya izin menyiapkan pencairan.",
     blocked: {
@@ -99,10 +108,11 @@ export const payrollPayoutMessages = {
     },
     twoPeople: {
       title: "Pembuat dan penyetuju harus berbeda.",
-      body: "Uang baru boleh keluar setelah pemeriksaan orang kedua. Run yang sudah lunas tidak masuk daftar ini.",
+      body: "Uang baru boleh keluar setelah pemeriksaan orang kedua. Periode gaji yang sudah lunas tidak masuk daftar ini.",
     },
-    selected: "Run terpilih · {period}",
+    selected: "Periode terpilih · {period}",
     receivedBy: "Gaji diterima {count} karyawan",
+    receivedByUnknown: "Gaji diterima karyawan lewat transfer bank",
     method: "Metode pembayaran",
     source: "Rekening sumber",
     sourceNone: "Belum dipilih",
@@ -112,12 +122,12 @@ export const payrollPayoutMessages = {
     feeNote:
       "Biaya Rp{fee} per transfer ditanggung PT. Gaji karyawan diterima utuh. Biaya manual aktual mengikuti bank dan dicatat terpisah.",
     empty: {
-      title: "Belum ada run siap bayar",
+      title: "Belum ada periode gaji siap bayar",
       description:
-        "Run muncul di sini setelah dikunci. Kunci run gaji di halaman Penggajian, lalu kembali ke sini.",
+        "Periode gaji muncul di sini setelah dikunci. Kunci periode gaji di halaman Penggajian, lalu kembali ke sini.",
     },
     error: {
-      title: "Daftar run belum bisa dimuat",
+      title: "Daftar periode gaji belum bisa dimuat",
       description:
         "Tidak ada pencairan yang berubah. Periksa koneksi lalu coba lagi.",
     },
@@ -151,9 +161,13 @@ export const payrollPayoutMessages = {
     exportAlreadyDownloaded:
       "Berkas transfer sudah diunduh dan tidak bisa diunduh lagi.",
     batchEmpty: "Tidak ada karyawan yang bisa dibayar di pencairan ini.",
-    nothingToPay: "Tidak ada gaji yang perlu dibayar di run ini.",
-    runNotPayable: "Run ini belum bisa dicairkan. Pastikan run sudah dikunci.",
-    runAlreadyPaid: "Run ini sudah lunas.",
-    batchAlreadyOpen: "Run ini sudah punya pencairan yang sedang berjalan.",
+    nothingToPay: "Tidak ada gaji yang perlu dibayar di periode gaji ini.",
+    runNotPayable:
+      "Periode gaji ini belum bisa dicairkan. Pastikan sudah dikunci.",
+    runAlreadyPaid: "Periode gaji ini sudah lunas.",
+    exportFileLost:
+      "Berkas sudah dibuat server tetapi gagal tersimpan di perangkat ini, dan hanya bisa diunduh sekali. Hubungi admin.",
+    batchAlreadyOpen:
+      "Periode gaji ini sudah punya pencairan yang sedang berjalan.",
   },
 } as const;

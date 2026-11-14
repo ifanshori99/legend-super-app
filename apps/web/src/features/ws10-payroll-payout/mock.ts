@@ -1,7 +1,7 @@
 // Mock mode for the payout screens (docs/frontend.md "Typed endpoints and mock
 // mode"). The `normal` fixture mirrors the approved mockup and is what
 // e2e/payout.mock.spec.ts assumes:
-// - PT with Duitku off, source account BCA ●●●● 4821 (manual transfer);
+// - PT with Duitku off, source account BCA •••• 4821 (manual transfer);
 // - run PAY-2026-11-01 "Gaji November" with batch 201 awaiting approval, asked
 //   by Rani Wulandari: Alya Putri, Bima Pratama, Citra Lestari, Dimas Saputra,
 //   gaji diterima Rp21.500.000, biaya PT Rp5.000 each (Rp20.000), dana
@@ -87,49 +87,49 @@ const PEOPLE: PayoutEmployee[] = [
     userId: null,
     name: "Alya Putri",
     subtitle: "Kasir · Kemang",
-    bankLabel: "BCA ●●●● 2210",
+    bankLabel: "BCA •••• 2210",
   },
   {
     id: uid(302),
     userId: null,
     name: "Bima Pratama",
     subtitle: "Barista · Kemang",
-    bankLabel: "Mandiri ●●●● 0873",
+    bankLabel: "Mandiri •••• 0873",
   },
   {
     id: uid(303),
     userId: null,
     name: "Citra Lestari",
     subtitle: "Dapur · Senopati",
-    bankLabel: "BNI ●●●● 5541",
+    bankLabel: "BNI •••• 5541",
   },
   {
     id: uid(304),
     userId: null,
     name: "Dimas Saputra",
     subtitle: "Pelayan · Senopati",
-    bankLabel: "BCA ●●●● 7712",
+    bankLabel: "BCA •••• 7712",
   },
   {
     id: uid(305),
     userId: null,
     name: "Eka Wijaya",
     subtitle: "Gudang · Kemang",
-    bankLabel: "BCA ●●●● 3308",
+    bankLabel: "BCA •••• 3308",
   },
   {
     id: uid(306),
     userId: null,
     name: "Gita Maharani",
     subtitle: "Kasir · Kemang",
-    bankLabel: "Mandiri ●●●● 6125",
+    bankLabel: "Mandiri •••• 6125",
   },
   {
     id: uid(307),
     userId: null,
     name: "Hadi Wibowo",
     subtitle: "Barista · Kemang",
-    bankLabel: "BCA ●●●● 9084",
+    bankLabel: "BCA •••• 9084",
   },
   {
     id: uid(308),
@@ -158,6 +158,8 @@ const RUNS: PayableRun[] = [
     lockedAt: "2026-11-14T01:30:00.000Z",
     employeeCount: 4,
     netIdr: 21_500_000,
+    bankTransferIdr: 21_500_000,
+    bankEmployeeCount: 4,
   },
   {
     id: MOCK_PAYOUT_IDS.runNew,
@@ -167,8 +169,11 @@ const RUNS: PayableRun[] = [
     periodStart: "2026-11-01",
     periodEnd: "2026-11-30",
     lockedAt: "2026-11-14T01:30:00.000Z",
-    employeeCount: 2,
+    employeeCount: 3,
     netIdr: 3_200_000,
+    // One employee is paid in cash: the bank batch covers the other two.
+    bankTransferIdr: 3_200_000,
+    bankEmployeeCount: 2,
   },
   {
     id: MOCK_PAYOUT_IDS.runStatus,
@@ -180,6 +185,8 @@ const RUNS: PayableRun[] = [
     lockedAt: "2026-10-30T02:00:00.000Z",
     employeeCount: 5,
     netIdr: 23_500_000,
+    bankTransferIdr: 23_500_000,
+    bankEmployeeCount: 5,
   },
 ];
 
@@ -529,7 +536,9 @@ registerMock(createDisbursementBatch, ({ params, body }) => {
     );
   if (
     state().batches.some(
-      (row) => row.payrollRunId === params.id && row.status !== "cancelled",
+      (row) =>
+        row.payrollRunId === params.id &&
+        !["completed", "partially_failed", "cancelled"].includes(row.status),
     )
   )
     throw refuse(

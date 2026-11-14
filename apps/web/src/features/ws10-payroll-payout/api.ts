@@ -9,7 +9,7 @@ import type {
   EndpointOutput,
 } from "@starter/shared/api";
 import { listBankAccounts } from "@starter/shared/accounting";
-import { listEmployees } from "@starter/shared/hris";
+import { getEmployeePii, listEmployees } from "@starter/shared/hris";
 import { listPayrollRuns, type PayrollRun } from "@starter/shared/hris/payroll";
 import {
   approveDisbursementBatch,
@@ -33,7 +33,11 @@ import { callEndpoint } from "@/lib/api/endpoint";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { API_URL } from "@/lib/env";
 import { collectAllPages, LIST_LIMIT } from "../ws10-payroll-run/lib";
-import { bankFileFallbackName } from "./lib";
+import {
+  bankCodeLabel,
+  bankFileFallbackName,
+  maskedAccountDisplay,
+} from "./lib";
 
 type Body<E extends AnyEndpoint> = EndpointInput<E>["body"];
 
@@ -58,9 +62,14 @@ export type PayableRun = {
   periodStart: string;
   periodEnd: string;
   lockedAt: string | null;
-  employeeCount: number;
-  /** Gaji bersih of the whole run, whole rupiah. */
-  netIdr: number;
+  /** Null when the run has no totals: show "Tidak tersedia", never Rp0. */
+  employeeCount: number | null;
+  /** Gaji bersih of the whole run (bank + cash), whole rupiah. */
+  netIdr: number | null;
+  /** Part of the net paid by bank transfer; the only part a bank batch pays. */
+  bankTransferIdr: number | null;
+  /** Head count of the bank-transfer part; the run totals do not carry it. */
+  bankEmployeeCount: number | null;
 };
 
 export type PayoutEmployee = {
@@ -111,6 +120,22 @@ export async function fetchSourceAccounts(
   }));
 }
 
+function toPayableRun(run: PayrollRun, code: string): PayableRun {
+  return {
+    id: run.id,
+    legalEntityId: run.legalEntityId,
+    code,
+    runType: run.runType,
+    periodStart: run.periodStart,
+    periodEnd: run.periodEnd,
+    lockedAt: run.lockedAt,
+    employeeCount: run.totals?.employeeCount ?? null,
+    netIdr: run.totals?.netIdr ?? null,
+    bankTransferIdr: run.totals?.bankTransferIdr ?? null,
+    bankEmployeeCount: null,
+  };
+}
+
 /** "PAY-2026-11-01": period month plus the order of the month's runs. */
 export function payableRunCodes(runs: readonly PayrollRun[]) {
   const seen = new Map<string, number>();
@@ -148,17 +173,7 @@ export async function fetchPayableRuns(
   );
   const codes = payableRunCodes(page.data);
   return page.data
-    .map((run) => ({
-      id: run.id,
-      legalEntityId: run.legalEntityId,
-      code: codes.get(run.id) ?? run.id,
-      runType: run.runType,
-      periodStart: run.periodStart,
-      periodEnd: run.periodEnd,
-      lockedAt: run.lockedAt,
-      employeeCount: run.totals?.employeeCount ?? 0,
-      netIdr: run.totals?.netIdr ?? 0,
-    }))
+    .map((run) => toPayableRun(run, codes.get(run.id) ?? run.id))
     .sort((a, b) => b.periodStart.localeCompare(a.periodStart));
 }
 
@@ -178,17 +193,7 @@ export async function fetchRecentPaidRuns(
   );
   const codes = payableRunCodes(page.data);
   return page.data
-    .map((run) => ({
-      id: run.id,
-      legalEntityId: run.legalEntityId,
-      code: codes.get(run.id) ?? run.id,
-      runType: run.runType,
-      periodStart: run.periodStart,
-      periodEnd: run.periodEnd,
-      lockedAt: run.lockedAt,
-      employeeCount: run.totals?.employeeCount ?? 0,
-      netIdr: run.totals?.netIdr ?? 0,
-    }))
+    .map((run) => toPayableRun(run, codes.get(run.id) ?? run.id))
     .sort((a, b) => b.periodStart.localeCompare(a.periodStart))
     .slice(0, RECENT_PAID_RUNS);
 }
@@ -234,6 +239,27 @@ export async function fetchPayoutEmployees(
   }));
 }
 
+/**
+ * "BCA ●●●● 4821" for one payee, from the masked HR-03 profile (readable with
+ * payroll.view). Null when the profile has no account or the caller may not
+ * read it; the screen then shows the bank code and says the number is hidden.
+ */
+export async function fetchPayeeBankLabel(
+  employeeId: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  if (API_MOCK) return null;
+  const { data } = await callEndpoint(
+    getEmployeePii,
+    { params: { employeeId } },
+    { signal },
+  );
+  if (data.bankAccount === null) return null;
+  const bank = bankCodeLabel(data.bankCode);
+  const number = maskedAccountDisplay(data.bankAccount.masked);
+  return bank === null ? number : `${bank} ${number}`;
+}
+
 // ---- Writes ----------------------------------------------------------------
 
 export const putConfig = (legalEntityId: string, body: UpsertConfigInput) =>
@@ -274,7 +300,8 @@ function saveBlob(blob: Blob, filename: string) {
   document.body.append(link);
   link.click();
   link.remove();
-  URL.revokeObjectURL(url);
+  // Not right after the click: some browsers start the download later.
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }
 
 /**
@@ -329,7 +356,16 @@ export async function postExportBatch(
   const filename =
     /filename="([^"]+)"/.exec(disposition)?.[1] ??
     bankFileFallbackName(batchId, bankFormat);
-  saveBlob(await response.blob(), filename);
+  try {
+    saveBlob(await response.blob(), filename);
+  } catch {
+    // The server already marked the batch exported and keeps no copy.
+    throw new ApiError(
+      500,
+      "PAYOUT_EXPORT_FILE_LOST",
+      "Berkas sudah dibuat server tetapi gagal tersimpan. Hubungi admin.",
+    );
+  }
   return {
     filename,
     checksumSha256: response.headers.get("x-content-checksum-sha256") ?? "",

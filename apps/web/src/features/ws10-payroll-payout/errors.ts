@@ -24,6 +24,7 @@ const CODE_KEYS: Record<string, MessageKey> = {
   PAYOUT_NOTHING_TO_PAY: "payrollPayout.error.nothingToPay",
   PAYOUT_RUN_NOT_PAYABLE: "payrollPayout.error.runNotPayable",
   PAYOUT_RUN_ALREADY_PAID: "payrollPayout.error.runAlreadyPaid",
+  PAYOUT_EXPORT_FILE_LOST: "payrollPayout.error.exportFileLost",
   PAYOUT_BATCH_ALREADY_OPEN: "payrollPayout.error.batchAlreadyOpen",
   NETWORK_ERROR: "payrollPayout.error.offline",
   FORBIDDEN: "payrollPayout.error.forbidden",

@@ -1,3 +1,11 @@
+## UI pencairan gaji + pengecualian finance (ui-engineer, cabang `ui/payout-finance-exceptions` dari `ws/finance-exceptions` 598cd9cb1, 14 Nov 2026 07:13-09:45 WIB)
+
+- legend-wnkep.6/.7: layar `/kelola/payroll/pencairan`, empat tab (Siap bayar, Persetujuan, Status karyawan, Pengaturan PT), terhubung API `/api/hris/payroll` (typed endpoint di `packages/shared/src/hris/payroll/payout-endpoints.ts`) + mock mode. Persetujuan dua orang (pembuat tidak bisa setuju, error server tetap tampil), gaji diterima dipisah dari biaya PT (biaya hanya item yang dibayar), item `unknown` tanpa tombol bayar ulang, rekening sumber nonaktif ditolak, Duitku nonaktif (jalur manual).
+- legend-4oclu (UI): `/kelola/akuntansi/pengecualian`, lima jenis, filter jenis/outlet/tanggal (maks 92 hari), nilai null = "Tidak tersedia", ringkasan per jenis tanpa dijumlah, `truncated`, kartu di < 700px.
+- Celah API dicatat (tidak diubah, thread brief-680 memegang service payout): legend-3lel2 (CORS exposedHeaders ekspor), legend-zoqh1 (unggah bukti; Gagal/Tidak terkirim dinonaktifkan di UI), legend-2bl54 (snapshot rekening di item batch), legend-396pf (daftar batch per PT), legend-j4xdb (jumlah nilai diketahui di ringkasan finance). Bug lama di luar lingkup: legend-1iyup (hydration PoliciesTab).
+- Verifikasi: tsc web + api lulus, spec mock `e2e/payout.mock.spec.ts` + `e2e/finance-exceptions.mock.spec.ts` 31/31, `scripts/ui-check-payout-finance.mjs` 44/44 (axe 0 serious, tanpa overflow 1280/390/320), screenshot di `docs/screenshots/payout-finance/`. Review architect xhigh + ui-auditor + finish-reviewer, temuan nyata dibetulkan.
+- Biaya (07:13-09:43): biaya* total 15115k (utama Opus 3455k; subagent Sonnet 10819k, Opus 720k, Haiku 120k). 21+ subagent, maks 5 bersamaan, rata-rata 0.4 berjalan.
+
 ## WS-06/07 posting faktur pemasok + lanjutan AP (engineer, cabang `ws/purchasing-posting` dari `ws/purchasing-apar` aefe28175, 13 Nov 2026 18:49-19:47 WIB)
 
 - Desain: `docs/briefs/ws-purchasing-posting-design.md` (architect xhigh), review K architect xhigh: H1 dibetulkan, H2/M1 jadi bead penghalang flag.
