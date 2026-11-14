@@ -46,6 +46,7 @@ import { routeFiredItemsToKitchen } from "./kds.service.ts";
 import type { Tx } from "./menu-internals.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
+import { systemRefundMayRefile } from "./system-refund-followup.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { openRefundChainSafely } from "./payment-refund.service.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
@@ -280,8 +281,12 @@ export async function requestBreakfastRefund(
  * Files the remaining obligation (paid less the refunds still live) under its
  * own key `fb-refile:cancel:<intentId>:<failedRefundId>`, with
  * the same intent lock and cap as the cancel refund, so live refunds never add
- * up to more than was paid. No loop: a failed breakfast refund (requested by
- * `system:facility`) and a fund refund are not filed again. The same holds for
+ * up to more than was paid. A fund refund is not filed again. A failed
+ * breakfast refund (requested by `system:facility`) is filed again only while
+ * `systemRefundMayRefile` allows (legend-weuo2: a failure a new request can
+ * fix, not a rejection, at most `MAX_SYSTEM_REFUND_REFILE_ATTEMPTS` failures
+ * per intent); otherwise it ends as a follow-up item for a person
+ * (`settleSystemRefundFailure`). The same holds for
  * the LATE refund of the intent (`facility-breakfast-refund:late:<intentId>`,
  * filed for a late, double or split payment, or a cancel that found the order
  * paid by another code): when a refund other than that one fails, the rest is
@@ -299,9 +304,10 @@ export async function refileBreakfastRefundAfterFailure(
   refund: typeof paymentRefunds.$inferSelect,
   now: Date,
 ): Promise<void> {
+  if (refund.unallocatedFundId !== null) return;
   if (
-    refund.unallocatedFundId !== null ||
-    refund.requestedBy === FACILITY_SYSTEM_ACTOR
+    refund.requestedBy === FACILITY_SYSTEM_ACTOR &&
+    !(await systemRefundMayRefile(tx, refund))
   )
     return;
   const tenantId = context.tenant.tenantId;
@@ -345,25 +351,32 @@ export async function refileBreakfastRefundAfterFailure(
       order: row.order,
       paymentLinkId: intent.paymentLinkId,
       intentId: refund.paymentIntentId,
-      maxIdr: Math.max(0, row.paidIdr - row.refundedIdr),
+      // `refunded_idr` still counts the cancel refund that just failed (and
+      // is never lowered), so a system refund re-files up to what the order
+      // paid; `cap - reserved` inside keeps live refunds within the payment.
+      maxIdr:
+        refund.requestedBy === FACILITY_SYSTEM_ACTOR
+          ? row.paidIdr
+          : Math.max(0, row.paidIdr - row.refundedIdr),
       kind: "cancel",
       keySuffix: refund.id,
       now,
     });
-  // Late path: the intent has a late refund request (once per intent) and the
-  // refund that failed is not it (a failed late refund stays failed: no loop).
+  // Late path: the intent has a late refund request (once per intent), or a
+  // re-file of one (`fb-refile:late:<intentId>:<failedRefundId>`, so a re-filed
+  // late refund that fails is filed again too, within the attempt limit).
   const lateKey = `facility-breakfast-refund:late:${refund.paymentIntentId}`;
+  const lateRefileKey = `fb-refile:late:${refund.paymentIntentId}:`;
   const keys = await tx.execute(sql`
-    SELECT response->>'refundId' AS refund_id
+    SELECT 1
       FROM payment_admin_idempotency
      WHERE tenant_id = ${tenantId}
-       AND (key = ${lateKey} OR key LIKE ${`${lateKey}:%`})
+       AND (key = ${lateKey}
+         OR key LIKE ${`${lateKey}:%`}
+         OR key LIKE ${`${lateRefileKey}%`})
+     LIMIT 1
   `);
-  if (
-    keys.rows.length === 0 ||
-    keys.rows.some((key) => key.refund_id === refund.id)
-  )
-    return;
+  if (keys.rows.length === 0) return;
   await requestBreakfastRefund(tx, context, {
     order: row.order,
     paymentLinkId: intent.paymentLinkId,

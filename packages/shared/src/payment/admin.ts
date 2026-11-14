@@ -256,6 +256,38 @@ export const refundViewSchema = z.strictObject({
 export type RefundView = z.infer<typeof refundViewSchema>;
 
 /**
+ * Why a failed system refund (`system:facility`, `system:qr`) is not filed
+ * again and waits for a person (legend-weuo2): `person_rejection` (an approver
+ * rejected it), `failure_needs_person` (a failure a new request would repeat),
+ * `refile_limit` (it already failed the allowed number of times) or
+ * `no_refile` (no rule files this one again).
+ */
+export const refundFollowupBlockedReasonSchema = z.enum([
+  "person_rejection",
+  "failure_needs_person",
+  "refile_limit",
+  "no_refile",
+]);
+export type RefundFollowupBlockedReason = z.infer<
+  typeof refundFollowupBlockedReasonSchema
+>;
+
+/**
+ * A failed system refund whose money the guest is still owed: nothing live
+ * (pending or approved) covers it. Derived, never stored: it leaves the list
+ * when a refund completes or a live one is filed again.
+ */
+export const refundFollowupViewSchema = z.strictObject({
+  ...refundViewSchema.shape,
+  /** Failed refunds of this payment by the same system requester. */
+  attempts: z.number().int().positive(),
+  /** Still owed to the guest on this payment (paid less the live refunds). */
+  remainingIdr: positiveIdr,
+  blockedReason: refundFollowupBlockedReasonSchema,
+});
+export type RefundFollowupView = z.infer<typeof refundFollowupViewSchema>;
+
+/**
  * Refund writes are idempotent by (tenant, idempotencyKey) (contracts.md
  * "Idempotent mutations"): a retry or double click returns the first result,
  * the same key with a different body fails IDEMPOTENCY_KEY_REUSED (409).
@@ -654,6 +686,13 @@ export const listRefunds = defineEndpoint({
     escalated: z.enum(["true", "false"]).optional(),
   }),
   response: cursorPageSchema(refundViewSchema),
+});
+/** Failed system refunds still owed to the guest (legend-weuo2), newest first. */
+export const listRefundFollowups = defineEndpoint({
+  method: "GET",
+  path: `${ADMIN}/refunds/follow-ups`,
+  query: cursorPageQuerySchema.extend(outletFilter),
+  response: cursorPageSchema(refundFollowupViewSchema),
 });
 /**
  * PRD "Refund": any refund above zero needs approval, so the new refund starts

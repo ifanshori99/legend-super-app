@@ -101,6 +101,7 @@ import {
 } from "../db/schema/pos-receipt.ts";
 import { receiptNumberWriteoffs } from "../db/schema/pos-receipt-writeoff.ts";
 import type { PosReceiptPort } from "./pos-order-ports.ts";
+import { reportReceiptsArrivedAfterWriteoff } from "./pos-receipt-writeoff-arrival.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 type ReceiptRow = typeof posReceipts.$inferSelect;
@@ -1591,6 +1592,11 @@ export async function mergeDeviceReceiptRun(
   // out is refused, so two devices can never pick the same one offline.
   // legend-zsdd (legend-ol6v): any run of the device, retired ones included,
   // so a late run of a replaced sequence still merges.
+  // legend-refx7: the rows are locked FOR UPDATE here, before any other read,
+  // the same lock the write-off takes first (pos-receipt-writeoff.service.ts).
+  // A write-off in flight finishes first, so the write-off read after the
+  // inserts below is final; ordered by id so two merges never lock in
+  // opposite order.
   const deviceRows = await tx
     .select()
     .from(receiptSequences)
@@ -1600,7 +1606,9 @@ export async function mergeDeviceReceiptRun(
         eq(receiptSequences.outletId, outletId),
         eq(receiptSequences.deviceId, deviceId),
       ),
-    );
+    )
+    .orderBy(asc(receiptSequences.id))
+    .for("update");
   if (deviceRows.length === 0)
     throw new PosError("RECEIPT_SEQUENCE_NOT_PROVISIONED");
   const cloudRow = deviceRows.find((row) => row.prefix === prefix);
@@ -1807,6 +1815,15 @@ export async function mergeDeviceReceiptRun(
       outletSnapshot: snapshot,
     });
   }
+  // legend-refx7: a stored receipt whose number was written off is kept; the
+  // owner is told (audit + alarm).
+  await reportReceiptsArrivedAfterWriteoff(tx, context, {
+    outletId,
+    sequenceId: sequenceRow.id,
+    prefix,
+    stored: toInsert,
+    now: new Date(),
+  });
   for (const { existing, receipt } of toVoid)
     await tx
       .update(posReceipts)

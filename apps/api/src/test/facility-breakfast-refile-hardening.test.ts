@@ -431,7 +431,7 @@ describe("BRK-REFILE-09 controls", () => {
     expect(liveSum(rows)).toBe(paid);
   });
 
-  it("BRK-REFILE-09 the re-filed late refund that fails is not filed again (no loop)", async () => {
+  it("BRK-REFILE-09 the re-filed late refund that fails at the provider is re-filed once more (bounded at 3, legend-weuo2)", async () => {
     const { order, lateIntentId } = await lateIntentWorld("after_cancel");
     const paid = order.totalIdr;
     const r = await approvedAdminRefund(lateIntentId);
@@ -457,8 +457,21 @@ describe("BRK-REFILE-09 controls", () => {
     }
     await settleRefundFromChain(world.context, refiled!.id);
 
+    // legend-weuo2 (brief 850): the "no loop" guard for system refunds was
+    // replaced by a bound of 3 failed system refunds per intent. A provider
+    // decline is not a person's rejection, so with 1 failed system refund the
+    // part R held is re-filed once more, still capped by what was paid.
     const after = await expectCapped(lateIntentId, paid);
-    expect(after).toHaveLength(before.length);
+    expect(after).toHaveLength(before.length + 1);
     expect(after.find((row) => row.id === refiled!.id)?.status).toBe("failed");
+    const third = after.filter(
+      (row) =>
+        row.requestedBy === SYSTEM &&
+        row.amount === R_IDR &&
+        isLive(row) &&
+        row.id !== refiled!.id,
+    );
+    expect(third, "the declined refund was not re-filed").toHaveLength(1);
+    expect(third[0]!.status).toBe("pending");
   });
 });

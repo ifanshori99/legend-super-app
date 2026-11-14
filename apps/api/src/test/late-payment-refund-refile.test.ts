@@ -818,19 +818,43 @@ describe.each(["rejected", "approval_expired"] as const)(
         failure_reason: how,
       });
 
-      const filed = await admin(staff, "/refunds", {
-        paymentIntentId: intentId,
-        amountIdr: totalIdr,
-        reason: "Refund ulang pembayaran terlambat",
-      });
-      expect(filed.status, JSON.stringify(filed.body)).toBe(201);
+      // legend-weuo2: an expired chain is a failure a new request can fix, so
+      // the system files the amount again by itself (bounded at 3); the staff
+      // refund is then refused by the cap (never paid twice). A person's
+      // rejection is not re-filed: staff files it by hand.
+      let toApprove: string;
+      if (how === "approval_expired") {
+        const manual = await admin(staff, "/refunds", {
+          paymentIntentId: intentId,
+          amountIdr: totalIdr,
+          reason: "Refund ulang pembayaran terlambat",
+        });
+        expect(manual.status, JSON.stringify(manual.body)).toBe(409);
+        const refiled = (await refundsOfIntent(intentId)).filter(
+          (row) =>
+            row.requested_by === "system:qr" &&
+            row.id !== late.id &&
+            row.status === "pending",
+        );
+        expect(refiled).toHaveLength(1);
+        expect(refiled[0]!.amount_idr).toBe(String(totalIdr));
+        toApprove = refiled[0]!.id;
+      } else {
+        const filed = await admin(staff, "/refunds", {
+          paymentIntentId: intentId,
+          amountIdr: totalIdr,
+          reason: "Refund ulang pembayaran terlambat",
+        });
+        expect(filed.status, JSON.stringify(filed.body)).toBe(201);
+        toApprove = filed.body.data.id;
+      }
 
       const fake = new FakeRefundGateway();
       setPaymentRefundGateway(fake);
       try {
         const approved = await admin(
           second,
-          `/refunds/${filed.body.data.id}/approve`,
+          `/refunds/${toApprove}/approve`,
           {},
         );
         expect(approved.status, JSON.stringify(approved.body)).toBe(200);
