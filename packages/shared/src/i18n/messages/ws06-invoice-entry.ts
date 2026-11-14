@@ -8,6 +8,9 @@ export const inventoryInvoiceEntryMessages = {
     "Salin isi faktur supplier apa adanya. Total, selisih, dan jumlah yang harus dibayar dihitung server setelah faktur disimpan.",
   newInvoice: "Catat faktur",
   back: "Kembali ke daftar faktur",
+  noOutlet: "Pilih outlet dulu",
+  noOutletHint:
+    "Faktur dicatat per outlet. Pilih outlet di bagian atas layar, lalu coba lagi.",
   noOrders: "Belum ada PO yang bisa difakturkan",
   noOrdersHint:
     "Faktur dicatat terhadap PO yang barangnya sudah diterima. Catat penerimaan dulu.",
@@ -23,21 +26,24 @@ export const inventoryInvoiceEntryMessages = {
   },
   lines: {
     title: "Isi faktur",
-    count: "{count} baris",
+    count: "{count} baris disertakan",
     reference: "Acuan dari PO dan penerimaan",
     ordered: "Dipesan",
     accepted: "Diterima baik",
     poPrice: "Harga PO",
-    poPriceValue: "Rp {value}",
     include: "Masukkan ke faktur",
     exclude: "Baris ini tidak ada di faktur",
     description: "Uraian",
     quantity: "Jumlah ditagih",
+    quantityHint:
+      "Titik untuk ribuan, koma untuk desimal: 1.000 berarti seribu, 1,5 berarti satu setengah.",
     unitPrice: "Harga satuan faktur (Rp)",
-    unitPriceHint: "Tulis angka seperti di faktur, mis. 12500 atau 12500,50.",
+    unitPriceHint:
+      "Tulis seperti di faktur. Titik untuk ribuan, koma untuk desimal: 12.500 atau 12.500,50.",
     serviceTitle: "Jasa",
     addService: "Tambah baris jasa",
     removeService: "Hapus baris jasa",
+    removeServiceLabel: "Hapus baris jasa {index}",
     serviceHint:
       "Baris jasa (mis. ongkos kirim, instalasi) tidak punya penerimaan barang; server membandingkannya sebagai jumlah.",
   },
@@ -51,11 +57,21 @@ export const inventoryInvoiceEntryMessages = {
   },
   summary: {
     title: "Yang akan disimpan",
-    lines: "{count} baris dipilih",
+    lines: "{count} baris disertakan",
     note: "Total dan jumlah yang harus dibayar muncul di pratinjau setelah faktur disimpan.",
   },
   submit: "Simpan faktur",
   created: "Faktur tersimpan.",
+  confirm: {
+    orderTitle: "Ganti purchase order?",
+    orderDescription:
+      "Isian baris, harga, dan baris jasa yang sudah Anda ubah akan dikembalikan ke acuan PO yang baru.",
+    orderAction: "Ganti PO",
+    serviceTitle: "Hapus baris jasa?",
+    serviceDescription:
+      "Uraian dan harga yang sudah diketik di baris jasa ini akan hilang.",
+    serviceAction: "Hapus baris",
+  },
   next: {
     title: "Faktur tersimpan sebagai menunggu match",
     description:
@@ -66,14 +82,17 @@ export const inventoryInvoiceEntryMessages = {
   errors: {
     required: "Wajib diisi.",
     numberRequired: "Nomor faktur wajib diisi.",
-    invalidQuantity: "Isi qty angka lebih dari 0, maksimal 4 desimal.",
-    invalidPrice: "Isi harga angka 0 atau lebih, maksimal 4 desimal.",
+    invalidQuantity:
+      "Isi qty angka lebih dari 0, maksimal 4 desimal. Pakai koma untuk desimal (1,5); titik hanya untuk ribuan (1.000).",
+    invalidPrice:
+      "Isi harga angka 0 atau lebih, maksimal 4 desimal. Pakai koma untuk desimal (12.500,50); titik hanya untuk ribuan (12.500).",
     invalidAmount: "Isi angka rupiah bulat, tanpa desimal.",
     dueBeforeInvoice: "Jatuh tempo tidak boleh sebelum tanggal faktur.",
     noLines: "Pilih minimal satu baris untuk faktur.",
     invalid: "Isian belum valid. Periksa kolom yang ditandai.",
     summary: "Faktur belum bisa disimpan. Periksa kolom yang ditandai.",
-    serverRejected:
-      "Server menolak faktur ini. Periksa nilai pajak: PPN maksimal 12% dari nilai barang dan jasa, dan PPh 23 hanya untuk baris jasa.",
+    serverRejected: "Server menolak faktur ini.",
+    serverRejectedTax:
+      "Server menolak pajak pada faktur ini. PPN maksimal 12% dari nilai barang dan jasa, dan PPh 23 hanya untuk baris jasa.",
   },
 } as const;

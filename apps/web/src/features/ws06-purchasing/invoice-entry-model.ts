@@ -88,50 +88,67 @@ export type BuildInvoiceResult =
 
 // ---- Input parsing ---------------------------------------------------------
 
-/** "1.5000" → "1.5", "12000.0000" → "12000": a plain, unambiguous default. */
-export function plainDecimal(value: Decimal4): string {
-  const text = String(value);
-  if (!text.includes(".")) return text;
-  return text.replace(/0+$/, "").replace(/\.$/, "");
+/**
+ * Indonesian number text for a Decimal4: dot = thousands, comma = decimal,
+ * trailing zeros dropped. "12500.5000" → "12.500,5", "1.0000" → "1". Pure
+ * string work (no float), and `decimalFromInput` reads it back to the same
+ * value, so defaults round-trip.
+ */
+export function formatDecimalText(value: Decimal4 | string): string {
+  const negative = value.startsWith("-");
+  const [whole = "0", fraction = ""] = (
+    negative ? value.slice(1) : value
+  ).split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  const decimals = fraction.replace(/0+$/, "");
+  return `${negative ? "\u2212" : ""}${grouped}${decimals === "" ? "" : `,${decimals}`}`;
 }
 
 /**
- * Positive quantity. "1,5" and "1.5" are 1.5; with a comma, dots are
- * thousands separators. At most four decimals (Decimal4).
+ * Unit price for display: "Rp 12.500,5" (no-break space, true minus). Keeps
+ * the sub-rupiah digits that `Money` would round away.
  */
-export function invoiceQuantityFromInput(value: string): Decimal4 | null {
-  const trimmed = value.trim();
-  if (trimmed === "") return null;
-  const prepared = trimmed.includes(",")
-    ? trimmed.replace(/\./g, "").replace(",", ".")
-    : trimmed;
-  if (!/^\d+(\.\d{1,4})?$/.test(prepared)) return null;
-  const parsed = formatDecimal4(parseDecimal4(prepared));
-  return parseDecimal4(parsed) > 0n ? parsed : null;
+export function formatIdrDecimalText(value: Decimal4 | string): string {
+  const text = formatDecimalText(value);
+  return text.startsWith("\u2212")
+    ? `\u2212Rp\u00a0${text.slice(1)}`
+    : `Rp\u00a0${text}`;
 }
 
+const GROUPED_INTEGER = /^(?:\d+|[1-9]\d{0,2}(?:\.\d{3})+)$/;
+
 /**
- * Non-negative unit price in rupiah. Indonesian grouping is understood: with a
- * comma, dots are thousands ("12.500,50"); without one, a dot followed by
- * exactly three digits after a 1-3 digit head ("12.500") is a thousands
- * separator, never a decimal. Anything else with a dot is a plain decimal
- * ("12500.5"). A price is money, so an ambiguous reading must not be silent:
- * defaults are written without grouping.
+ * One reader for quantity and price (Indonesian format). Dot = thousands,
+ * comma = decimal: "1.000" is 1000, "12,125" is 12.125, "1,500" is 1.5. A dot
+ * that is not a thousands separator ("12.5", "1.50") is rejected, never
+ * guessed. At most four decimals (Decimal4). "Rp" prefix and spaces ignored.
  */
-export function invoicePriceFromInput(value: string): Decimal4 | null {
+function decimalFromInput(value: string): Decimal4 | null {
   const trimmed = value
     .trim()
     .replace(/^rp\.?\s*/i, "")
     .replace(/\s+/g, "");
   if (trimmed === "") return null;
-  let prepared: string;
-  if (trimmed.includes(","))
-    prepared = trimmed.replace(/\./g, "").replace(",", ".");
-  else if (/^[1-9]\d{0,2}(\.\d{3})+$/.test(trimmed))
-    prepared = trimmed.replace(/\./g, "");
-  else prepared = trimmed;
-  if (!/^\d+(\.\d{1,4})?$/.test(prepared)) return null;
+  const [integerText = "", fractionText, ...rest] = trimmed.split(",");
+  if (rest.length > 0 || !GROUPED_INTEGER.test(integerText)) return null;
+  if (fractionText !== undefined && !/^\d{1,4}$/.test(fractionText))
+    return null;
+  const prepared = `${integerText.replace(/\./g, "")}${
+    fractionText === undefined ? "" : `.${fractionText}`
+  }`;
+  if (!/^\d{1,10}(\.\d{1,4})?$/.test(prepared)) return null;
   return formatDecimal4(parseDecimal4(prepared));
+}
+
+/** Positive quantity, Indonesian format (see `decimalFromInput`). */
+export function invoiceQuantityFromInput(value: string): Decimal4 | null {
+  const parsed = decimalFromInput(value);
+  return parsed !== null && parseDecimal4(parsed) > 0n ? parsed : null;
+}
+
+/** Non-negative unit price in rupiah, same format as the quantity. */
+export function invoicePriceFromInput(value: string): Decimal4 | null {
+  return decimalFromInput(value);
 }
 
 /**
@@ -176,8 +193,8 @@ export function goodsDraftsFromOrder(
       purchaseOrderLineId: line.id,
       included: parseDecimal4(accepted) > 0n,
       description: describe(line),
-      quantity: plainDecimal(accepted),
-      unitPrice: plainDecimal(line.unitPriceIdr),
+      quantity: formatDecimalText(accepted),
+      unitPrice: formatDecimalText(line.unitPriceIdr),
     };
   });
 }

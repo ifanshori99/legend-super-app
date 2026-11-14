@@ -8,13 +8,31 @@
 // appears in the preview, straight from the API.
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, FilePlus2, PackageCheck, Plus, Trash2 } from "lucide-react";
+import {
+  ArrowLeft,
+  CircleAlert,
+  CircleCheck,
+  FilePlus2,
+  PackageCheck,
+  Plus,
+  Store,
+  Trash2,
+} from "lucide-react";
+import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { useTenantContext } from "@/lib/tenant-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
@@ -54,11 +72,16 @@ import {
 import {
   addDaysToBusinessDate,
   buildInvoiceInput,
+  formatIdrDecimalText,
   goodsDraftsFromOrder,
+  invoiceAmountFromInput,
+  invoicePriceFromInput,
+  invoiceQuantityFromInput,
   newServiceDraft,
   type InvoiceEntryErrorCode,
   type InvoiceEntryErrors,
   type InvoiceLineDraft,
+  type InvoiceLineErrors,
 } from "../invoice-entry-model.ts";
 import { InvoiceMatchPreview } from "./invoice-match-preview.tsx";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
@@ -75,6 +98,33 @@ const ERROR_KEY: Record<InvoiceEntryErrorCode, MessageKey> = {
   noLines: "inventoryInvoiceEntry.errors.noLines",
   invalid: "inventoryInvoiceEntry.errors.invalid",
 };
+
+/** Keeps a focused field clear of the sticky summary bar. */
+const FIELD_CLASS = "scroll-mb-40";
+
+/** Server field names for the two tax inputs (`ppnIdr`, `pph23Idr`). */
+const TAX_FIELD = /(^|\.)(ppnIdr|pph23Idr)$/;
+
+type PendingConfirm =
+  { kind: "order"; value: string } | { kind: "service"; key: string };
+
+/** Input with the unit of measure beside it; FormField wires props onto it. */
+function UnitInput({
+  unit,
+  className,
+  ...props
+}: React.ComponentProps<typeof Input> & { unit?: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <Input className={cn("min-w-0 flex-1", className)} {...props} />
+      {unit && (
+        <span className="shrink-0 text-sm font-medium text-muted-foreground">
+          {unit}
+        </span>
+      )}
+    </div>
+  );
+}
 
 /**
  * Keyed by outlet and by a counter: switching outlet, or "Catat faktur lain",
@@ -136,6 +186,22 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
   const [errors, setErrors] = React.useState<InvoiceEntryErrors>({ lines: {} });
   const [formError, setFormError] = React.useState<string | undefined>();
   const [createdId, setCreatedId] = React.useState<string | null>(null);
+  const [confirm, setConfirm] = React.useState<PendingConfirm | null>(null);
+  const rootRef = React.useRef<HTMLDivElement>(null);
+  const savedHeadingRef = React.useRef<HTMLHeadingElement>(null);
+  // Bumped when a submit fails: the effect moves focus to the first problem.
+  const [focusTick, setFocusTick] = React.useState(0);
+
+  React.useEffect(() => {
+    if (focusTick === 0) return;
+    rootRef.current
+      ?.querySelector<HTMLElement>('[aria-invalid="true"], [data-form-error]')
+      ?.focus();
+  }, [focusTick]);
+
+  React.useEffect(() => {
+    if (createdId) savedHeadingRef.current?.focus();
+  }, [createdId]);
 
   const orderLines = React.useMemo(
     () => order.data?.data.lines ?? [],
@@ -166,6 +232,59 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
 
   function touch() {
     setFormError(undefined);
+  }
+
+  const hasEdits = Object.keys(overrides).length > 0 || serviceLines.length > 0;
+  const includedCount = lines.filter((line) => line.included).length;
+
+  function requestOrder(value: string) {
+    if (hasEdits) setConfirm({ kind: "order", value });
+    else chooseOrder(value);
+  }
+
+  function removeService(key: string) {
+    setServiceLines((current) =>
+      current.filter((candidate) => candidate.key !== key),
+    );
+    setErrors((current) => {
+      if (!(key in current.lines)) return current;
+      const next = { ...current.lines };
+      delete next[key];
+      return { ...current, lines: next };
+    });
+    touch();
+  }
+
+  function requestRemoveService(line: InvoiceLineDraft) {
+    if (line.description.trim() !== "" || line.unitPrice.trim() !== "")
+      setConfirm({ kind: "service", key: line.key });
+    else removeService(line.key);
+  }
+
+  function setFieldError(
+    field: keyof Omit<InvoiceEntryErrors, "lines">,
+    code: InvoiceEntryErrorCode | undefined,
+  ) {
+    setErrors((current) =>
+      current[field] === code ? current : { ...current, [field]: code },
+    );
+  }
+
+  function setLineFieldError(
+    key: string,
+    field: keyof InvoiceLineErrors,
+    code: InvoiceEntryErrorCode | undefined,
+  ) {
+    setErrors((current) => {
+      const line = current.lines[key] ?? {};
+      if (line[field] === code) return current;
+      const nextLine = { ...line, [field]: code };
+      if (code === undefined) delete nextLine[field];
+      const nextLines = { ...current.lines };
+      if (Object.keys(nextLine).length > 0) nextLines[key] = nextLine;
+      else delete nextLines[key];
+      return { ...current, lines: nextLines };
+    });
   }
 
   function chooseOrder(value: string) {
@@ -224,6 +343,7 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
     if (!built.ok) {
       setErrors(built.errors);
       setFormError(t("inventoryInvoiceEntry.errors.summary"));
+      setFocusTick((value) => value + 1);
       return;
     }
     setErrors({ lines: {} });
@@ -248,12 +368,35 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
           setCreatedId(response.data.invoice.id);
         },
         onError: (error) => {
-          const code = error instanceof ApiError ? error.code : undefined;
-          setFormError(
-            code === "VALIDATION_ERROR"
-              ? t("inventoryInvoiceEntry.errors.serverRejected")
-              : t(receivingErrorKey(code)),
-          );
+          if (error instanceof ApiError && error.code === "VALIDATION_ERROR") {
+            const details = error.details ?? [];
+            const detailText =
+              details.length > 0
+                ? details
+                    .map((detail) => `${detail.field}: ${detail.message}`)
+                    .join("; ")
+                : error.message;
+            setFormError(
+              [
+                t(
+                  details.some((detail) => TAX_FIELD.test(detail.field))
+                    ? "inventoryInvoiceEntry.errors.serverRejectedTax"
+                    : "inventoryInvoiceEntry.errors.serverRejected",
+                ),
+                detailText,
+              ]
+                .filter(Boolean)
+                .join(" "),
+            );
+          } else
+            setFormError(
+              t(
+                receivingErrorKey(
+                  error instanceof ApiError ? error.code : undefined,
+                ),
+              ),
+            );
+          setFocusTick((value) => value + 1);
         },
         onSettled: () => {
           inFlight.current = false;
@@ -292,9 +435,20 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
       <div className="grid min-w-0 gap-4 pb-2">
         <div className="grid gap-1">
           {backLink}
-          <h2 className="type-title">
+          <h2
+            ref={savedHeadingRef}
+            tabIndex={-1}
+            className="type-title flex items-center gap-2 outline-none"
+          >
+            <CircleCheck
+              className="size-5 shrink-0 text-success"
+              aria-hidden="true"
+            />
             {t("inventoryInvoiceEntry.next.title")}
           </h2>
+          <p role="status" className="sr-only">
+            {t("inventoryInvoiceEntry.created")}
+          </p>
           <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
             {t("inventoryInvoiceEntry.next.description")}
           </p>
@@ -311,6 +465,17 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
             {t("inventoryInvoiceEntry.next.another")}
           </Button>
         </div>
+      </div>
+    );
+
+  if (!outletId)
+    return (
+      <div className="rounded-container border bg-card">
+        <EmptyState
+          icon={Store}
+          title={t("inventoryInvoiceEntry.noOutlet")}
+          description={t("inventoryInvoiceEntry.noOutletHint")}
+        />
       </div>
     );
 
@@ -343,7 +508,7 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
     );
 
   return (
-    <div className="grid min-w-0 gap-4 pb-2">
+    <div ref={rootRef} className="grid min-w-0 gap-4 pb-2">
       <div className="grid gap-1">
         {backLink}
         <h2 className="type-title">{t("inventoryInvoiceEntry.title")}</h2>
@@ -371,7 +536,7 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
         <div className="grid min-w-0 gap-4">
           <Card className="gap-4">
             <FormField label={t("inventoryInvoiceEntry.header.order")} required>
-              <Select value={orderId} onValueChange={chooseOrder}>
+              <Select value={orderId} onValueChange={requestOrder}>
                 <SelectTrigger>
                   <SelectValue
                     placeholder={t("inventoryInvoiceEntry.header.order")}
@@ -414,11 +579,19 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
               required
             >
               <Input
+                name="invoiceNumber"
+                className={FIELD_CLASS}
                 value={number}
                 onChange={(event) => {
                   setNumber(event.target.value);
                   clearError("number");
                 }}
+                onBlur={(event) =>
+                  setFieldError(
+                    "number",
+                    event.target.value.trim() === "" ? "required" : undefined,
+                  )
+                }
                 maxLength={60}
                 autoComplete="off"
               />
@@ -435,11 +608,19 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
               >
                 <Input
                   type="date"
+                  name="invoiceDate"
+                  className={FIELD_CLASS}
                   value={invoiceDate}
                   onChange={(event) => {
                     setInvoiceDate(event.target.value);
                     clearError("invoiceDate");
                   }}
+                  onBlur={(event) =>
+                    setFieldError(
+                      "invoiceDate",
+                      event.target.value === "" ? "required" : undefined,
+                    )
+                  }
                 />
               </FormField>
               <FormField
@@ -452,11 +633,23 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
               >
                 <Input
                   type="date"
+                  name="dueDate"
+                  className={FIELD_CLASS}
                   value={dueDate}
                   onChange={(event) => {
                     setDueInput(event.target.value);
                     clearError("dueDate");
                   }}
+                  onBlur={(event) =>
+                    setFieldError(
+                      "dueDate",
+                      event.target.value === ""
+                        ? "required"
+                        : invoiceDate !== "" && event.target.value < invoiceDate
+                          ? "dueBeforeInvoice"
+                          : undefined,
+                    )
+                  }
                 />
               </FormField>
             </div>
@@ -469,12 +662,21 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
               </h3>
               <Badge tone="neutral">
                 {t("inventoryInvoiceEntry.lines.count", {
-                  count: lines.length,
+                  count: includedCount,
                 })}
               </Badge>
             </div>
             {errors.form && (
-              <p role="alert" className="text-sm font-medium text-danger">
+              <p
+                role="alert"
+                tabIndex={-1}
+                data-form-error
+                className="flex items-start gap-1.5 text-sm font-medium text-danger outline-none"
+              >
+                <CircleAlert
+                  className="mt-0.5 size-4 shrink-0"
+                  aria-hidden="true"
+                />
                 {t(ERROR_KEY[errors.form])}
               </p>
             )}
@@ -494,15 +696,22 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
                 >
                   {orderLine ? (
                     <>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Checkbox
-                          id={checkId}
-                          checked={line.included}
-                          onCheckedChange={(checked) =>
-                            updateLine(line.key, { included: checked === true })
-                          }
-                        />
-                        <Label htmlFor={checkId} className="font-semibold">
+                      <div className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1">
+                        <Label
+                          htmlFor={checkId}
+                          className="flex min-h-11 min-w-0 flex-1 cursor-pointer items-center gap-3 font-semibold"
+                        >
+                          <Checkbox
+                            id={checkId}
+                            name={`lines.${line.key}.included`}
+                            className={FIELD_CLASS}
+                            checked={line.included}
+                            onCheckedChange={(checked) =>
+                              updateLine(line.key, {
+                                included: checked === true,
+                              })
+                            }
+                          />
                           {itemNameOf(
                             items.data?.data ?? [],
                             orderLine.inventoryItemId,
@@ -541,9 +750,7 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
                             {t("inventoryInvoiceEntry.lines.poPrice")}
                           </p>
                           <p className="tabular">
-                            {t("inventoryInvoiceEntry.lines.poPriceValue", {
-                              value: formatQuantity(orderLine.unitPriceIdr),
-                            })}
+                            {formatIdrDecimalText(orderLine.unitPriceIdr)}
                           </p>
                         </div>
                       </div>
@@ -557,14 +764,16 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
                         type="button"
                         variant="ghost"
                         size="sm"
-                        onClick={() => {
-                          setServiceLines((current) =>
-                            current.filter(
-                              (candidate) => candidate.key !== line.key,
-                            ),
-                          );
-                          touch();
-                        }}
+                        aria-label={t(
+                          "inventoryInvoiceEntry.lines.removeServiceLabel",
+                          {
+                            index:
+                              serviceLines.findIndex(
+                                (candidate) => candidate.key === line.key,
+                              ) + 1,
+                          },
+                        )}
+                        onClick={() => requestRemoveService(line)}
                       >
                         <Trash2 aria-hidden="true" />
                         {t("inventoryInvoiceEntry.lines.removeService")}
@@ -583,11 +792,22 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
                         required
                       >
                         <Input
+                          name={`lines.${line.key}.description`}
+                          className={FIELD_CLASS}
                           value={line.description}
                           onChange={(event) =>
                             updateLine(line.key, {
                               description: event.target.value,
                             })
+                          }
+                          onBlur={(event) =>
+                            setLineFieldError(
+                              line.key,
+                              "description",
+                              event.target.value.trim() === ""
+                                ? "required"
+                                : undefined,
+                            )
                           }
                           maxLength={200}
                           autoComplete="off"
@@ -596,6 +816,7 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
                       <div className="grid gap-3 sm:grid-cols-2">
                         <FormField
                           label={t("inventoryInvoiceEntry.lines.quantity")}
+                          hint={t("inventoryInvoiceEntry.lines.quantityHint")}
                           error={
                             lineErrors.quantity
                               ? t(ERROR_KEY[lineErrors.quantity])
@@ -603,12 +824,25 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
                           }
                           required
                         >
-                          <Input
+                          <UnitInput
+                            name={`lines.${line.key}.quantity`}
+                            className={FIELD_CLASS}
+                            unit={unit}
                             value={line.quantity}
                             onChange={(event) =>
                               updateLine(line.key, {
                                 quantity: event.target.value,
                               })
+                            }
+                            onBlur={(event) =>
+                              setLineFieldError(
+                                line.key,
+                                "quantity",
+                                invoiceQuantityFromInput(event.target.value) ===
+                                  null
+                                  ? "invalidQuantity"
+                                  : undefined,
+                              )
                             }
                             inputMode="decimal"
                             autoComplete="off"
@@ -625,11 +859,23 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
                           required
                         >
                           <Input
+                            name={`lines.${line.key}.unitPrice`}
+                            className={FIELD_CLASS}
                             value={line.unitPrice}
                             onChange={(event) =>
                               updateLine(line.key, {
                                 unitPrice: event.target.value,
                               })
+                            }
+                            onBlur={(event) =>
+                              setLineFieldError(
+                                line.key,
+                                "unitPrice",
+                                invoicePriceFromInput(event.target.value) ===
+                                  null
+                                  ? "invalidPrice"
+                                  : undefined,
+                              )
                             }
                             inputMode="decimal"
                             autoComplete="off"
@@ -677,11 +923,21 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
                 error={errors.ppn ? t(ERROR_KEY[errors.ppn]) : undefined}
               >
                 <Input
+                  name="ppnIdr"
+                  className={FIELD_CLASS}
                   value={ppn}
                   onChange={(event) => {
                     setPpn(event.target.value);
                     clearError("ppn");
                   }}
+                  onBlur={(event) =>
+                    setFieldError(
+                      "ppn",
+                      invoiceAmountFromInput(event.target.value) === null
+                        ? "invalidAmount"
+                        : undefined,
+                    )
+                  }
                   inputMode="numeric"
                   autoComplete="off"
                 />
@@ -692,11 +948,21 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
                 error={errors.pph23 ? t(ERROR_KEY[errors.pph23]) : undefined}
               >
                 <Input
+                  name="pph23Idr"
+                  className={FIELD_CLASS}
                   value={pph23}
                   onChange={(event) => {
                     setPph23(event.target.value);
                     clearError("pph23");
                   }}
+                  onBlur={(event) =>
+                    setFieldError(
+                      "pph23",
+                      invoiceAmountFromInput(event.target.value) === null
+                        ? "invalidAmount"
+                        : undefined,
+                    )
+                  }
                   inputMode="numeric"
                   autoComplete="off"
                 />
@@ -705,19 +971,31 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
           </Card>
 
           {formError && (
-            <p role="alert" className="text-sm font-medium text-danger">
+            <p
+              role="alert"
+              tabIndex={-1}
+              data-form-error
+              className="flex items-start gap-1.5 text-sm font-medium text-danger outline-none"
+            >
+              <CircleAlert
+                className="mt-0.5 size-4 shrink-0"
+                aria-hidden="true"
+              />
               {formError}
             </p>
           )}
 
-          <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-container border bg-card p-card shadow-card">
+          <div
+            data-slot="invoice-summary-bar"
+            className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-container border bg-card p-card pb-[max(var(--card-pad),env(safe-area-inset-bottom))] shadow-card"
+          >
             <div className="min-w-0">
               <p className="type-eyebrow">
                 {t("inventoryInvoiceEntry.summary.title")}
               </p>
               <p className="text-sm text-muted-foreground">
                 {t("inventoryInvoiceEntry.summary.lines", {
-                  count: lines.filter((line) => line.included).length,
+                  count: includedCount,
                 })}
               </p>
               <p className="text-sm text-muted-foreground">
@@ -735,6 +1013,57 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
           </div>
         </div>
       )}
+
+      <Dialog
+        open={confirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirm(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {t(
+                confirm?.kind === "service"
+                  ? "inventoryInvoiceEntry.confirm.serviceTitle"
+                  : "inventoryInvoiceEntry.confirm.orderTitle",
+              )}
+            </DialogTitle>
+            <DialogDescription>
+              {t(
+                confirm?.kind === "service"
+                  ? "inventoryInvoiceEntry.confirm.serviceDescription"
+                  : "inventoryInvoiceEntry.confirm.orderDescription",
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setConfirm(null)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => {
+                if (confirm?.kind === "order") chooseOrder(confirm.value);
+                else if (confirm?.kind === "service")
+                  removeService(confirm.key);
+                setConfirm(null);
+              }}
+            >
+              {t(
+                confirm?.kind === "service"
+                  ? "inventoryInvoiceEntry.confirm.serviceAction"
+                  : "inventoryInvoiceEntry.confirm.orderAction",
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

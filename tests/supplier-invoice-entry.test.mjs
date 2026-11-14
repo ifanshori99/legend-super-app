@@ -46,8 +46,12 @@ const KOPI = "PO/BDG/2026/10/0042"; // received 12 + 5, nothing rejected
 const SAYUR = "PO/BDG/2026/11/0046"; // approved, nothing received yet
 
 const describe = (line) => `Bahan ${line.inventoryItemId.slice(-4)}`;
-const quantityOf = (draft) => Number(String(draft.quantity).replace(",", "."));
-const priceOf = (draft) => Number(String(draft.unitPrice).replace(",", "."));
+// Number convention (decided by the agent, applies to quantity AND price):
+// Indonesian format, "." groups thousands and "," is the decimal mark.
+const idNumber = (text) =>
+  Number(String(text).replace(/\./g, "").replace(",", "."));
+const quantityOf = (draft) => idNumber(draft.quantity);
+const priceOf = (draft) => idNumber(draft.unitPrice);
 
 async function draftsFor(number, receiptPatch = (lines) => lines) {
   const { goodsDraftsFromOrder } = await model();
@@ -275,6 +279,113 @@ test("legend-0xnm F18 a price typed with Indonesian grouping is read as whole ru
   assert.equal(result.ok, true, JSON.stringify(result.errors));
   assert.equal(result.payload.lines[0].unitPriceIdr, "185000.0000");
   assert.equal(result.payload.lines[0].quantity, "1.5000");
+});
+
+// ---- Number convention: "." thousands, "," decimal, same for qty and price ---
+
+async function buildWithLine(patch) {
+  const { buildInvoiceInput } = await model();
+  const values = await valuesFor(KOPI);
+  const lines = values.lines.map((line, index) =>
+    index === 0 ? { ...line, ...patch } : line,
+  );
+  const result = buildInvoiceInput({ ...values, lines }, KEY);
+  return { result, key: values.lines[0].key };
+}
+
+test("legend-0xnm F18 a quantity typed with Indonesian grouping or decimal comma is read the id-ID way", async () => {
+  for (const [typed, expected] of [
+    ["1.000", "1000.0000"],
+    ["12,125", "12.1250"],
+    ["1,500", "1.5000"],
+    ["1.234,5", "1234.5000"],
+  ]) {
+    const { result } = await buildWithLine({ quantity: typed });
+    assert.equal(result.ok, true, `quantity ${typed}`);
+    assert.equal(
+      result.payload.lines[0].quantity,
+      expected,
+      `quantity ${typed}`,
+    );
+  }
+});
+
+test("legend-0xnm F18 a price typed with Indonesian grouping or decimal comma is read the id-ID way", async () => {
+  for (const [typed, expected] of [
+    ["1.000", "1000.0000"],
+    ["185.000", "185000.0000"],
+    ["12.500,5", "12500.5000"],
+    ["12,125", "12.1250"],
+  ]) {
+    const { result } = await buildWithLine({ unitPrice: typed });
+    assert.equal(result.ok, true, `price ${typed}`);
+    assert.equal(
+      result.payload.lines[0].unitPriceIdr,
+      expected,
+      `price ${typed}`,
+    );
+  }
+});
+
+test("legend-0xnm F18 a dotted number that is not thousands grouping is refused, never read as a decimal", async () => {
+  for (const typed of ["12.5", "1.5", "12.50", "1234.5"]) {
+    const qty = await buildWithLine({ quantity: typed });
+    assert.equal(qty.result.ok, false, `quantity ${typed}`);
+    assert.equal(
+      qty.result.errors.lines[qty.key].quantity,
+      "invalidQuantity",
+      `quantity ${typed}`,
+    );
+    const price = await buildWithLine({ unitPrice: typed });
+    assert.equal(price.result.ok, false, `price ${typed}`);
+    assert.equal(
+      price.result.errors.lines[price.key].unitPrice,
+      "invalidPrice",
+      `price ${typed}`,
+    );
+  }
+});
+
+// The default text is what the user sees and may leave untouched: it has to
+// parse back to exactly the PO price / accepted quantity (no silent change).
+test("legend-0xnm F18 PO default price and quantity text re-parse to the same value", async () => {
+  const { goodsDraftsFromOrder, buildInvoiceInput } = await model();
+  const order = orderByNumber(KOPI);
+  const cases = [
+    {
+      price: "12.1250",
+      priceText: "12,125",
+      qty: "1000.0000",
+      qtyText: "1.000",
+    },
+    {
+      price: "185000.0000",
+      priceText: "185.000",
+      qty: "12.1250",
+      qtyText: "12,125",
+    },
+    { price: "12500.5000", priceText: "12.500,5", qty: "3.0000", qtyText: "3" },
+  ];
+  for (const c of cases) {
+    const lines = order.lines.map((line) => ({
+      ...line,
+      unitPriceIdr: c.price,
+    }));
+    const receipts = lines.map((line) => ({
+      purchaseOrderLineId: line.id,
+      quantityReceived: c.qty,
+      quantityRejected: "0.0000",
+    }));
+    const drafts = goodsDraftsFromOrder(lines, receipts, describe);
+    assert.equal(drafts[0].unitPrice, c.priceText, `price text for ${c.price}`);
+    assert.equal(drafts[0].quantity, c.qtyText, `quantity text for ${c.qty}`);
+
+    const values = await valuesFor(KOPI, { lines: drafts });
+    const result = buildInvoiceInput(values, KEY);
+    assert.equal(result.ok, true, JSON.stringify(result.errors));
+    assert.equal(result.payload.lines[0].unitPriceIdr, c.price);
+    assert.equal(result.payload.lines[0].quantity, c.qty);
+  }
 });
 
 // ---- Catalog / text-contract ----------------------------------------------

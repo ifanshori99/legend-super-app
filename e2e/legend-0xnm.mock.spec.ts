@@ -59,11 +59,15 @@ async function openForm(page: Page) {
 }
 
 async function choosePurchaseOrder(page: Page) {
+  const trigger = page.getByRole("combobox", { name: "Purchase order" });
+  const option = page.getByRole("option", {
+    name: new RegExp(PO_KOPI.replaceAll("/", "\\/")),
+  });
+  // Open the list only while it is closed: a click on an open trigger would
+  // close it again and make the retry flip-flop.
   await retry(async () => {
-    await page.getByRole("combobox", { name: "Purchase order" }).click();
-    await page
-      .getByRole("option", { name: new RegExp(PO_KOPI.replaceAll("/", "\\/")) })
-      .click({ timeout: 1000 });
+    if (!(await option.isVisible())) await trigger.click();
+    await option.click({ timeout: 1000 });
   });
   await expect(page.getByLabel("Jumlah ditagih").first()).toBeVisible();
 }
@@ -136,6 +140,7 @@ test("legend-0xnm F18 'Catat faktur lain' mulai form kosong", async ({
   page,
 }) => {
   await openForm(page);
+  await choosePurchaseOrder(page);
   await fillHeader(page, "FK-0XNM-002");
   await page.getByLabel("PPN masukan (Rp)").fill("0");
   await page.getByRole("button", { name: "Simpan faktur" }).click();

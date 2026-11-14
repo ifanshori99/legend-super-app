@@ -2,6 +2,7 @@
 // Every amount and quantity here is what the API returned for the saved
 // invoice; the web never recomputes totals, DPP, tax, payable or variance.
 // Rows are stacked cards (no horizontal scroll) so 390px stays readable.
+import { CircleAlert, CircleCheck } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -9,6 +10,7 @@ import { ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatQuantity } from "../../ws06-inventory/lib.ts";
+import { formatIdrDecimalText } from "../invoice-entry-model.ts";
 import { useInventoryItems, usePurchaseOrder, useUoms } from "../hooks.ts";
 import { useSupplierInvoice } from "../receiving-hooks.ts";
 import {
@@ -19,11 +21,24 @@ import {
 } from "../receiving-lib.ts";
 import { MatchStatusPill } from "./invoice-page.tsx";
 
-/** Explicit sign so over/under PO price reads without relying on color. */
-function signedBp(bp: number): string {
-  if (bp > 0) return `+${bp}`;
-  if (bp < 0) return `−${-bp}`;
-  return "0";
+const percentFormat = new Intl.NumberFormat("id-ID", {
+  maximumFractionDigits: 2,
+});
+
+/** Basis points as a signed percent ("+1,5%"); the sign keeps over/under PO
+ *  price readable without relying on color. */
+function signedPercent(bp: number): string {
+  if (bp === 0) return "0%";
+  return `${bp > 0 ? "+" : "−"}${percentFormat.format(Math.abs(bp) / 100)}%`;
+}
+
+/** Unit prices keep their decimals (never rounded to whole rupiah). */
+function UnitPrice({ value }: { value: string }) {
+  return (
+    <data value={value} className="tabular break-words">
+      {formatIdrDecimalText(value)}
+    </data>
+  );
 }
 
 export function InvoiceMatchPreview({ invoiceId }: { invoiceId: string }) {
@@ -141,7 +156,7 @@ export function InvoiceMatchPreview({ invoiceId }: { invoiceId: string }) {
             <p className="text-sm leading-5 text-muted-foreground">
               {match
                 ? t("invoiceMatchPreview.toleranceHint", {
-                    bp: match.toleranceBp,
+                    percent: `${percentFormat.format(match.toleranceBp / 100)}%`,
                   })
                 : t("invoiceMatchPreview.pendingHint")}
             </p>
@@ -149,13 +164,26 @@ export function InvoiceMatchPreview({ invoiceId }: { invoiceId: string }) {
               <p
                 className={
                   match.status === "matched"
-                    ? "text-sm leading-5 text-success"
-                    : "text-sm leading-5 font-medium text-danger"
+                    ? "flex items-start gap-2 text-sm leading-5 text-success"
+                    : "flex items-start gap-2 text-sm leading-5 font-medium text-danger"
                 }
               >
-                {match.status === "matched"
-                  ? t("invoiceMatchPreview.matchedHint")
-                  : t("invoiceMatchPreview.discrepancyHint")}
+                {match.status === "matched" ? (
+                  <CircleCheck
+                    aria-hidden="true"
+                    className="mt-0.5 size-4 shrink-0"
+                  />
+                ) : (
+                  <CircleAlert
+                    aria-hidden="true"
+                    className="mt-0.5 size-4 shrink-0"
+                  />
+                )}
+                <span className="min-w-0">
+                  {match.status === "matched"
+                    ? t("invoiceMatchPreview.matchedHint")
+                    : t("invoiceMatchPreview.discrepancyHint")}
+                </span>
               </p>
             )}
           </Card>
@@ -165,8 +193,14 @@ export function InvoiceMatchPreview({ invoiceId }: { invoiceId: string }) {
               role="alert"
               className="grid gap-2 rounded-container border border-danger/40 bg-danger-subtle p-card"
             >
-              <p className="text-sm font-semibold text-danger">
-                {t("inventoryReceiving.invoices.headerIssues")}
+              <p className="flex items-start gap-2 text-sm font-semibold text-danger">
+                <CircleAlert
+                  aria-hidden="true"
+                  className="mt-0.5 size-4 shrink-0"
+                />
+                <span className="min-w-0">
+                  {t("inventoryReceiving.invoices.headerIssues")}
+                </span>
               </p>
               <div className="flex flex-wrap gap-2">
                 {match.headerIssues.map((issue) => (
@@ -247,7 +281,7 @@ export function InvoiceMatchPreview({ invoiceId }: { invoiceId: string }) {
                         )}
                       </div>
                       <dl className="grid grid-cols-2 gap-3 text-sm">
-                        <div>
+                        <div className="min-w-0">
                           <dt className="type-eyebrow">
                             {t("invoiceMatchPreview.orderedLabel")}
                           </dt>
@@ -257,7 +291,7 @@ export function InvoiceMatchPreview({ invoiceId }: { invoiceId: string }) {
                               : qty(row.orderedQty)}
                           </dd>
                         </div>
-                        <div>
+                        <div className="min-w-0">
                           <dt className="type-eyebrow">
                             {t("invoiceMatchPreview.acceptedLabel")}
                           </dt>
@@ -267,13 +301,13 @@ export function InvoiceMatchPreview({ invoiceId }: { invoiceId: string }) {
                               : qty(row.acceptedQty)}
                           </dd>
                         </div>
-                        <div>
+                        <div className="min-w-0">
                           <dt className="type-eyebrow">
                             {t("invoiceMatchPreview.invoicedLabel")}
                           </dt>
                           <dd>{qty(row.invoicedQty)}</dd>
                         </div>
-                        <div>
+                        <div className="min-w-0">
                           <dt className="type-eyebrow">
                             {t("invoiceMatchPreview.orderedPrice")}
                           </dt>
@@ -281,19 +315,22 @@ export function InvoiceMatchPreview({ invoiceId }: { invoiceId: string }) {
                             {row.orderedUnitPriceIdr === null ? (
                               empty
                             ) : (
-                              <Money amount={Number(row.orderedUnitPriceIdr)} />
+                              <UnitPrice value={row.orderedUnitPriceIdr} />
                             )}
                           </dd>
                         </div>
-                        <div>
+                        <div className="min-w-0">
                           <dt className="type-eyebrow">
                             {t("invoiceMatchPreview.invoicedPrice")}
                           </dt>
                           <dd>
-                            <Money amount={Number(row.invoicedUnitPriceIdr)} />
+                            <UnitPrice value={row.invoicedUnitPriceIdr} />
                           </dd>
                         </div>
-                        <div data-testid="match-row-variance">
+                        <div
+                          data-testid="match-row-variance"
+                          className="min-w-0"
+                        >
                           <dt className="type-eyebrow">
                             {t("invoiceMatchPreview.varianceLabel")}
                           </dt>
@@ -301,9 +338,7 @@ export function InvoiceMatchPreview({ invoiceId }: { invoiceId: string }) {
                             <span className="block whitespace-nowrap">
                               {row.priceVarianceBp === null
                                 ? empty
-                                : t("invoiceMatchPreview.varianceBp", {
-                                    bp: signedBp(row.priceVarianceBp),
-                                  })}
+                                : signedPercent(row.priceVarianceBp)}
                             </span>
                             <Money amount={row.priceVarianceIdr} />
                           </dd>

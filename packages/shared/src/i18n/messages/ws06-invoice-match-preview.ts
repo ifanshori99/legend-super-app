@@ -9,7 +9,7 @@ export const invoiceMatchPreviewMessages = {
   pendingHint:
     "Faktur tersimpan, tetapi server belum menghitung match. Buka daftar faktur untuk menjalankan match.",
   toleranceHint:
-    "Toleransi harga {bp} basis poin dari konfigurasi tenant. Qty faktur tidak boleh melebihi penerimaan yang lolos QC.",
+    "Toleransi harga {percent} dari konfigurasi tenant. Qty faktur tidak boleh melebihi penerimaan yang lolos QC.",
   matchedHint: "Faktur cocok dengan PO dan penerimaan.",
   discrepancyHint:
     "Ada selisih pada faktur ini. Periksa baris bertanda sebelum faktur dibayar.",
@@ -24,7 +24,6 @@ export const invoiceMatchPreviewMessages = {
   orderedPrice: "Harga PO",
   invoicedPrice: "Harga faktur",
   varianceLabel: "Selisih harga",
-  varianceBp: "{bp} bp",
   rowOk: "Cocok",
   empty: "—",
 } as const;
