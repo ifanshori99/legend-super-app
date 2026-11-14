@@ -6,6 +6,7 @@ import {
   decidePosCashMovement,
   getPosShift,
   listPosShiftCounts,
+  posCashMovementDecisionSchema,
   type PosCashMovementDecision,
 } from "@starter/shared/pos";
 import { callEndpoint } from "@/lib/api/endpoint";
@@ -96,7 +97,9 @@ export async function decideHeldCashMovement(
   input: DecideHeldCashInput,
 ): Promise<PosCashMovementDecision> {
   if (API_MOCK)
-    return runPosKasirMock((engine) => engine.decideHeldCashMovement(input));
+    return posCashMovementDecisionSchema.parse(
+      await runPosKasirMock((engine) => engine.decideHeldCashMovement(input)),
+    );
   const { data } = await callEndpoint(decidePosCashMovement, {
     params: {
       outletId,

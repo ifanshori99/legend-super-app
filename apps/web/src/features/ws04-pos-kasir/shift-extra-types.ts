@@ -1,7 +1,6 @@
 // View-models for the extra shift screens: held cash outs (legend-pspy) and
 // recount limit / force close (legend-7mlf). Kept apart from ./types.ts, which
 // belongs to the payment work. Plain TypeScript: Node tests load it directly.
-import type { PosCashMovementDecision } from "@starter/shared/pos";
 import type { BlindCountLine } from "./types.ts";
 
 /** `?demo=<seed>` values the shift mock understands besides the base ones. */
@@ -51,6 +50,14 @@ export type HeldCashOut = {
 
 /** Supervisor verdict on a held cash out (route `.../cash-movements/:movementId/decision`). */
 export type HeldCashDecision = "approved" | "rejected";
+
+/** Mock-side verdict with plain string ids; the API layer brands it via the shared schema. */
+export interface MockCashMovementDecision {
+  movementId: string;
+  outcome: HeldCashDecision;
+  decidedBy: string;
+  decidedAt: string;
+}
 
 export type DecideHeldCashInput = {
   shiftId: string;
@@ -147,7 +154,7 @@ export type ShiftExtraState = {
     witnessOverrideId: string | null;
   } | null;
   /** Verdicts already given, by movement id: a repeat of the same one is a no-op. */
-  decisions?: Record<string, PosCashMovementDecision>;
+  decisions?: Record<string, MockCashMovementDecision>;
   /** Which extra demo seed was applied last. */
   appliedSeed: string | null;
 };

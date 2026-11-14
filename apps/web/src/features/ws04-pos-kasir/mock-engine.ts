@@ -10,7 +10,6 @@
 // `getPosKasirEngine`). `?demo=<seed>` (./demo-seed.ts) seeds a state for the
 // mockup screens; only this file reads it. Relative imports only: Node tests
 // load it directly.
-import type { PosCashMovementDecision } from "@starter/shared/pos";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "../../lib/api/errors.ts";
 import {
   SCENARIO_STORAGE_KEY,
@@ -74,6 +73,7 @@ import {
   type ForceCloseView,
   type HeldCashOut,
   type HeldCashOutReview,
+  type MockCashMovementDecision,
   type OwnCountSummary,
   type ShiftExtraState,
   type SubmitForcedCountInput,
@@ -1446,7 +1446,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
      */
     decideHeldCashMovement(
       input: DecideHeldCashInput,
-    ): PosCashMovementDecision {
+    ): MockCashMovementDecision {
       const shift = shiftOf(input.shiftId);
       if (ownShiftView())
         throw new ApiError(
@@ -1479,7 +1479,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
         else shift.cashOutIdr += movement.amountIdr;
       }
       extra().heldMovementIds = held.filter((id) => id !== movement.id);
-      const result: PosCashMovementDecision = {
+      const result: MockCashMovementDecision = {
         movementId: movement.id,
         outcome: input.decision,
         decidedBy: MOCK_SUPERVISOR_ID,
