@@ -252,6 +252,31 @@ expect_differ true --absent
 expect_differ --absent true
 expect_differ true ''
 expect_differ 0 true
+# Compose drops a trailing ` #comment` on an unquoted value; so does the check.
+expect_differ 'false # off' true
+expect_same 'false # off' ''
+expect_same 'true # on' 1
+expect_same '"false" # off' 0
+# env.ts accepts only lower case true/false/1/0, so anything else fails here too.
+expect_invalid() {
+  set_flag "$tmp/api.env" "$1"
+  set_flag "$tmp/worker.env" true
+  if "$check" --env-file "$tmp/compose.env" >/dev/null 2>"$tmp/err"; then
+    echo "legend-3gna: api=$1 was accepted but env.ts rejects it" >&2
+    exit 1
+  fi
+  grep -F 'DOIT_REFUNDS_ENABLED must be true, false, 1 or 0' "$tmp/err" >/dev/null || {
+    echo "legend-3gna: api=$1 did not fail with the allowed-values message" >&2
+    exit 1
+  }
+  if grep -F -e "$password" -e postgresql:// "$tmp/err" >/dev/null; then
+    echo 'legend-3gna: the check printed a database URL' >&2
+    exit 1
+  fi
+}
+expect_invalid TRUE
+expect_invalid yes
+expect_invalid garbage
 # The deploy stops before any docker work when the two files differ.
 set_flag "$tmp/api.env" true
 set_flag "$tmp/worker.env" false
