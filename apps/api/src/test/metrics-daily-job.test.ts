@@ -892,17 +892,34 @@ describe("runMetricsDailyJob", () => {
     resetMetricsDailyJobThrottle();
     const ctx = context(world.tenantId);
     const now = new Date("2025-12-20T05:00:00Z");
-    expect(await runMetricsDailyJob(ctx, now)).not.toBeNull();
-    expect(await runMetricsDailyJob(ctx, now)).toBeNull();
+    // Throttle is the subject, not the readers: a cheap injected reader keeps
+    // the four sweeps (8 dates x 2 outlets each) off the full registry, which
+    // timed out at 20 s when the whole suite loaded the DB.
+    const options = {
+      readers: [
+        {
+          family: "sales",
+          reader: makeReader({
+            metricCodes: ["delivery_orders"],
+            rows: () => [],
+          }),
+        },
+      ],
+    };
+    expect(await runMetricsDailyJob(ctx, now, options)).not.toBeNull();
+    expect(await runMetricsDailyJob(ctx, now, options)).toBeNull();
     expect(
       await runMetricsDailyJob(
         ctx,
         new Date(now.getTime() + METRICS_DAILY_INTERVAL_MS + 1),
+        options,
       ),
     ).not.toBeNull();
-    expect(await runMetricsDailyJob(ctx, now, { force: true })).not.toBeNull();
+    expect(
+      await runMetricsDailyJob(ctx, now, { ...options, force: true }),
+    ).not.toBeNull();
     resetMetricsDailyJobThrottle();
-  });
+  }, 60_000);
 
   it("refreshes today and the last 7 days for every open outlet without error", async () => {
     resetMetricsDailyJobThrottle();

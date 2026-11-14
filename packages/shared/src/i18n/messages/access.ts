@@ -358,6 +358,7 @@ const accessBaseMessages = {
       package: { manage: "Kelola paket langganan" },
       integration: { manage: "Kelola integrasi platform" },
       health: { view: "Lihat kesehatan platform" },
+      audit: { view: "Lihat audit lintas tenant" },
       support_access: { request: "Minta akses dukungan ke tenant" },
       config_template: { manage: "Kelola template konfigurasi tenant" },
       event_gap: { manage: "Periksa dan lewati celah urutan event" },
@@ -600,7 +601,10 @@ const accessBaseMessages = {
     },
     mcp: { client: { manage: "Kelola klien MCP" } },
     ops: {
-      checklist: { complete: "Selesaikan checklist" },
+      checklist: {
+        complete: "Selesaikan checklist",
+        manage: "Kelola template checklist",
+      },
       food_safety: { log: "Catat keamanan pangan" },
       prep: { manage: "Kelola persiapan" },
       equipment: { maintain: "Perawatan peralatan" },

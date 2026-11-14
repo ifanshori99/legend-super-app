@@ -174,7 +174,7 @@ Indeks unik parsial `(tenant_id, provider, provider_ref, response_code)` `WHERE 
 - `payslip_bank_snapshots` ditambah `bank_code` dan `account_hmac` (HMAC nomor rekening dengan kunci yang sama dengan `employees.bank_account_hmac`), dan JSON tersegelnya ditambah `legal_name` (nama resmi karyawan saat run dikunci). Semua diisi saat kunci run; snapshot tetap tidak bisa diubah.
 - Slip tanpa `bank_code` tidak masuk batch Duitku (`excluded_reason = bank_code_missing`) dan jatuh ke manual `generic_csv`.
 
-### 4.6 `payroll_payout_gl_postings` (0534)
+### 4.6 `payroll_payout_gl_postings` (0348)
 
 Satu baris per jurnal kelompok: `batch_id`, `kind` (`settle`, `settle_skipped`, `return`, `overpaid`), `item_set_hash`, `journal_key`, `total_encrypted`, `posted_at`. UNIQUE `(tenant_id, journal_key)`. Item ditautkan lewat `items.gl_posting_id`. Bila tabel pemetaan akun punya CHECK kunci, 0534 juga menambah kunci `payout_deposit` dan `bank_charges`.
 
@@ -365,7 +365,7 @@ Urutan mengikuti alur tim: mockup dan UI dengan data contoh, review founder, kon
 | 3 | `legend-wnkep.2` BE-1 | Inti: konfigurasi, batch, item, mesin status, izin, MFA step-up tenant, adapter palsu, `bank_code` + snapshot, penolakan "tandai dibayar" lama, penjaga pembalikan run | `legend-89cl7` (merge `ws/payroll-followups`), `.1` | 0530–0533 | K |
 | 4 | `legend-wnkep.3` BE-2 | Adapter Duitku, rekonsiliator, rute callback | `.2` | - | K |
 | 4 | `legend-wnkep.4` BE-3 | Kanal manual dan tunai: ekspor sekali, konfirmasi hasil per item | `.2`; layout bank `legend-1gtfm` | - | K |
-| 4 | `legend-wnkep.5` BE-4 | Jurnal kelompok, biaya, kembali, bayar ganda; `settledPerItem` | `.2` | 0534 | K |
+| 4 | `legend-wnkep.5` BE-4 | Jurnal kelompok, biaya, kembali, bayar ganda; `settledPerItem` | `.2` | 0348 | K |
 | 5 | `legend-wnkep.6`/`.7` | Sambung UI ke API | `.2`–`.5` | - | S |
 | - | `legend-wnkep.9` EXT | Akun Duitku disbursement per PT, kredensial sandbox, IP keluar tetap, SOP isi deposit, konfirmasi batas cek status | Founder, saat go-live | - | - |
 | - | `legend-wnkep.8` | Adapter DOIT (diparkir) | Konfirmasi tertulis DOIT | - | K |

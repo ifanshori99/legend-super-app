@@ -1244,6 +1244,11 @@ export async function reverseCollectiveLeaveDeductions(
         eq(leaveAccruals.kind, "collective_leave"),
         eq(leaveAccruals.period, date),
       ),
+    )
+    .orderBy(
+      leaveAccruals.employeeId,
+      leaveAccruals.leaveTypeId,
+      leaveAccruals.id,
     );
   const uncovered = ledger.filter(
     (row) => !coveredOutlets.has(row.homeOutletId.toLowerCase()),
@@ -1322,6 +1327,26 @@ export async function reverseCollectiveLeaveDeductions(
     )
     .returning({ employeeId: leaveAccruals.employeeId }))
     alreadyReversed.delete(gone.employeeId);
+  // Lock every affected balance in one statement ordered by id, the order the
+  // carry-over and expiry jobs use, so two reversals of different dates (or a
+  // reversal and such a job) queue up instead of deadlocking (40P01,
+  // legend-agn0i). The per-row lock below then finds the row already ours.
+  if (removed.length > 0)
+    await tx
+      .select({ id: leaveBalances.id })
+      .from(leaveBalances)
+      .where(
+        and(
+          eq(leaveBalances.tenantId, tenantId),
+          eq(leaveBalances.periodYear, year),
+          inArray(
+            leaveBalances.employeeId,
+            removed.map((row) => row.employeeId),
+          ),
+        ),
+      )
+      .orderBy(asc(leaveBalances.id))
+      .for("update");
   for (const row of removed) {
     if (alreadyReversed.has(row.employeeId)) continue;
     // Lock the balance first: a concurrent request or job serializes behind us.

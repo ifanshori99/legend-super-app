@@ -129,9 +129,14 @@ const confirmResultSchema = z.strictObject({
   evidenceKey: text(200).optional(),
 });
 
+// The current account password, asked again when the session's second factor
+// only comes from the first MFA enrollment (legend-658, L5). Never logged.
+const reauthPasswordSchema = z.string().min(1).max(128).optional();
+
 export const confirmManualItemsInputSchema = z
   .strictObject({
     results: z.array(confirmResultSchema).min(1).max(1000),
+    password: reauthPasswordSchema,
   })
   .superRefine((value, ctx) => {
     const seen = new Set<string>();
@@ -158,6 +163,21 @@ export const resolveManualItemsSchema = z
     outcome: z.enum(PAYOUT_RESOLVE_OUTCOMES),
     evidenceKey: text(200),
     note: text(500),
+    password: reauthPasswordSchema,
+  })
+  .refine((value) => new Set(value.itemIds).size === value.itemIds.length, {
+    path: ["itemIds"],
+    message: "Each item may appear once.",
+  });
+
+// Funds came back after a paid transfer: two different non-requesters each
+// call this with the same evidence; the second one moves the item to `returned`.
+export const returnManualItemsSchema = z
+  .strictObject({
+    itemIds: z.array(z.uuid()).min(1).max(1000),
+    evidenceKey: text(200),
+    note: text(500),
+    password: reauthPasswordSchema,
   })
   .refine((value) => new Set(value.itemIds).size === value.itemIds.length, {
     path: ["itemIds"],
@@ -168,6 +188,7 @@ export const confirmCashHandoverInputSchema = z
   .strictObject({
     itemIds: z.array(z.uuid()).min(1).max(1000),
     evidenceKey: text(200).optional(),
+    password: reauthPasswordSchema,
   })
   .refine((value) => new Set(value.itemIds).size === value.itemIds.length, {
     path: ["itemIds"],
@@ -190,6 +211,7 @@ export type ConfirmManualItemsInput = z.infer<
   typeof confirmManualItemsInputSchema
 >;
 export type ResolveManualItemsInput = z.infer<typeof resolveManualItemsSchema>;
+export type ReturnManualItemsInput = z.infer<typeof returnManualItemsSchema>;
 export type ConfirmCashHandoverInput = z.infer<
   typeof confirmCashHandoverInputSchema
 >;

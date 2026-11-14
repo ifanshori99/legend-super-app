@@ -58,7 +58,9 @@ import type {
   EarnStepContext,
 } from "./loyalty-earn-step-context.ts";
 import { tierMultiplierBp } from "./loyalty-earn-tier-step.ts";
+import { loadGrantStates } from "./loyalty-expiry.service.ts";
 import { loyaltyConsentActive } from "./member-profile.service.ts";
+import { reverseReferralForOrder } from "./referral.service.ts";
 import { postLedgerEntry } from "./point-ledger.service.ts";
 import { lockOrderForClaimReversal } from "./table-claim-lock.ts";
 import { checkLoyaltyOutletEntity } from "./loyalty-entity-guard.ts";
@@ -257,7 +259,7 @@ async function handleEvent(
     const parsed = orderRefundedSchema.safeParse(payload);
     if (!parsed.success) return;
     const data = parsed.data;
-    await reverseForOrder(tx, scope, {
+    const input: ReverseInput = {
       orderId: data.orderId,
       outletId: data.outletId,
       businessDate: data.businessDate,
@@ -267,7 +269,9 @@ async function handleEvent(
         0,
         data.grossSalesIdr - data.discountIdr - data.refundPointsIdr,
       ),
-    });
+    };
+    await reverseForOrder(tx, scope, input);
+    await reverseReferralBonus(tx, scope, input);
     return;
   }
   if (name === "order.voided") {
@@ -275,14 +279,16 @@ async function handleEvent(
     if (!parsed.success) return;
     const data = parsed.data;
     if (!data.voidedFinalOrder || data.voidId === null) return;
-    await reverseForOrder(tx, scope, {
+    const input: ReverseInput = {
       orderId: data.orderId,
       outletId: data.outletId,
       businessDate: data.businessDate,
       sourceType: "void",
       sourceId: data.voidId,
       refundEligibleIdr: null,
-    });
+    };
+    await reverseForOrder(tx, scope, input);
+    await reverseReferralBonus(tx, scope, input);
     return;
   }
   if (name === REFUND_REVERSAL_EVENT) {
@@ -622,6 +628,29 @@ type ReverseInput = {
 };
 
 /**
+ * legend-4frkf: how much of one earn grant a reverse may still take back.
+ * A grant that has expire rows is limited to its points minus what expired
+ * minus what earlier reverses already took (0 when gone): the member lost the
+ * expired points once and a reverse must not cut other live grants a second
+ * time, while points a redeem used are still taken back. A grant without an
+ * expire row (spent by a redeem or not) and one without `expires_at` are
+ * limited only by the balance, as before. Call under the profile lock.
+ */
+async function reversibleOfGrant(
+  tx: Tx,
+  tenantId: string,
+  profileId: string,
+  grantId: string,
+  grantPoints: number,
+  reversedPoints: number,
+): Promise<number> {
+  const grants = await loadGrantStates(tx, tenantId, profileId);
+  const grant = grants.find((state) => state.id === grantId);
+  if (!grant || grant.expireRowCount === 0) return Number.POSITIVE_INFINITY;
+  return Math.max(0, grantPoints - grant.expiredPoints - reversedPoints);
+}
+
+/**
  * The reverse row of one claim row needs its own dedupe key (one refund or
  * void can reverse several claim rows) and the points event wants a UUID:
  * a name-based (v5-shaped) UUID of both ids, stable across replays.
@@ -754,7 +783,20 @@ async function reverseTableClaims(
             ),
           );
     if (share <= 0) continue;
-    const posted = Math.min(share, profile.pointsBalance);
+    // legend-4frkf: never above the balance or the claim grant's live points;
+    // the rest is the shortfall anomaly below (its sourceId keeps a retry a no-op).
+    const posted = Math.min(
+      share,
+      profile.pointsBalance,
+      await reversibleOfGrant(
+        tx,
+        tenantId,
+        profile.id,
+        claim.id,
+        claim.points,
+        Number(taken?.total ?? 0),
+      ),
+    );
     if (posted > 0)
       await postLedgerEntry(
         tx,
@@ -789,6 +831,55 @@ async function reverseTableClaims(
         },
       });
   }
+}
+
+// legend-st2i1: the referral bonus of a first order that is voided or refunded
+// in full is given back (a partial refund keeps it). Runs after
+// reverseForOrder so the earn record holds the cumulative refunded amount.
+async function reverseReferralBonus(
+  tx: Tx,
+  scope: Scope,
+  input: ReverseInput,
+): Promise<void> {
+  let refundEligibleIdr = input.refundEligibleIdr;
+  let fullRefund = false;
+  if (refundEligibleIdr !== null) {
+    // Cumulative eligible spend refunded so far: the earn record's running
+    // total, already updated by reverseForOrder (replay-safe, no double add).
+    const [record] = await tx
+      .select({
+        refunded: pointEarnRecords.refundedEligibleIdr,
+        eligible: pointEarnRecords.eligibleSpendIdr,
+      })
+      .from(pointEarnRecords)
+      .where(
+        and(
+          eq(pointEarnRecords.tenantId, scope.tenantId as never),
+          eq(pointEarnRecords.orderId, input.orderId),
+        ),
+      )
+      .limit(1);
+    if (record) {
+      refundEligibleIdr = Number(record.refunded);
+      // The earn record's eligible spend excludes the part paid with points,
+      // so a full refund of it is a full refund of the order for the referral.
+      if (refundEligibleIdr >= Number(record.eligible)) fullRefund = true;
+    }
+  }
+  await reverseReferralForOrder(
+    tx,
+    {
+      tenantId: scope.tenantId,
+      orderId: input.orderId,
+      outletId: input.outletId,
+      businessDate: input.businessDate,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      refundEligibleIdr,
+      fullRefund,
+    },
+    scope.now,
+  );
 }
 
 async function reverseForOrder(
@@ -868,7 +959,24 @@ async function reverseForOrder(
           ),
         );
   const delta = reversePoints ? target - record.reversedPoints : 0;
-  const posted = Math.min(Math.max(0, delta), profile.pointsBalance);
+  // legend-4frkf: never above the balance or the earn grant's live points (an
+  // expired grant gives 0), so a reverse cannot cut points of other live grants.
+  const wanted = Math.max(0, delta);
+  const posted =
+    wanted > 0 && record.earnEntryId
+      ? Math.min(
+          wanted,
+          profile.pointsBalance,
+          await reversibleOfGrant(
+            tx,
+            tenantId,
+            profile.id,
+            record.earnEntryId,
+            booked,
+            record.reversedPoints,
+          ),
+        )
+      : Math.min(wanted, profile.pointsBalance);
 
   if (posted > 0 && record.earnEntryId) {
     const result = await postLedgerEntry(

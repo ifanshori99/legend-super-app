@@ -28,6 +28,7 @@ import {
 } from "@starter/shared/core";
 import { eventCatalog } from "@starter/shared/events";
 import type { EventEnvelope } from "@starter/shared/events";
+import { RECEIPT_RUN_AGGREGATE } from "@starter/shared/pos";
 import { logger } from "../lib/logger.ts";
 import { edgeDeferredEvents } from "../db/schema/edge-deferred-event.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
@@ -216,7 +217,9 @@ export function registerDeferredEdgeAggregate(
 /**
  * Aggregates the edge POS (WS-04) appends to the `cloud-sync` outbox. Any one
  * of them without a classifier stalls the link (`cashier_shift.opened` at the
- * start of every shift, `day.closed` every night), so all are parked.
+ * start of every shift, `day.closed` every night), so all are parked, except
+ * `receipt_run` (legend-zy43): it has its own applier (receipt-run-applier.ts)
+ * and a second handler for `receipt_run.reported` would crash the registry.
  */
 export function posDeferredAggregates(): string[] {
   return [
@@ -225,7 +228,7 @@ export function posDeferredAggregates(): string[] {
         .filter((entry) => entry.workstream === "WS-04")
         .map((entry) => entry.aggregateType),
     ),
-  ];
+  ].filter((aggregateType) => aggregateType !== RECEIPT_RUN_AGGREGATE);
 }
 
 /** Cloud boot (registerEdgeLink): parks POS events instead of stalling. */

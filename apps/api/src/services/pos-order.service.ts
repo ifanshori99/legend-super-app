@@ -1344,9 +1344,50 @@ export async function completePosOrder(
           item.status === "voided" ? sum : sum + Number(item.lineTotalIdr),
         0,
       );
+      // Edge sales GL (legend-uctlr): the tax rows behind `pbjtIdr`, copied
+      // from the calculation stored on the order (same grouping as
+      // recordTaxSnapshots above). Left out when they do not sum to the
+      // order's tax, so the payload stays valid and the sale is never blocked.
+      const taxRows = order.taxResult
+        ? order.taxResult.taxes.map((summary) => {
+            const ruleLines = order.taxResult!.lines.filter(
+              (line) => line.taxRuleId === summary.taxRuleId,
+            );
+            return {
+              taxRuleId: summary.taxRuleId,
+              code: summary.code,
+              version: summary.version,
+              taxType: summary.taxType,
+              rateBp: summary.rateBp,
+              priceIncludesTax: summary.priceIncludesTax,
+              grossIdr: idr(
+                ruleLines.reduce((sum, line) => sum + line.grossIdr, 0),
+              ),
+              taxBaseIdr: summary.taxBaseIdr,
+              serviceChargeIdr: idr(
+                ruleLines.reduce((sum, line) => sum + line.serviceChargeIdr, 0),
+              ),
+              taxIdr: summary.taxIdr,
+            };
+          })
+        : null;
+      const taxKeys =
+        taxRows !== null &&
+        taxRows.reduce((sum, row) => sum + Number(row.taxIdr), 0) ===
+          Number(order.taxIdr)
+          ? { taxes: taxRows }
+          : {};
       const edgeIngestKeys =
         liveLinesTotal === Number(order.subtotalIdr)
           ? {
+              customerProfileId: order.customerProfileId,
+              // legend-cqehx: with a customer the key is always sent: the staff
+              // user id, or null when nobody attached (the customer did). A
+              // missing key means "unknown" (an older producer) at ingest.
+              ...(order.customerProfileId !== null
+                ? { customerAttachedBy: order.customerAttachedBy }
+                : {}),
+              ...taxKeys,
               orderNumber: order.number,
               subtotalIdr: order.subtotalIdr,
               pricesIncludeTax: order.pricesIncludeTax,
@@ -1385,6 +1426,7 @@ export async function completePosOrder(
           method: tender.method,
           amountIdr: tender.amountIdr,
           // Edge order ingest: only the keys the tender actually has.
+          provider: tender.provider,
           ...(tender.receivedIdr !== null
             ? { receivedIdr: tender.receivedIdr }
             : {}),

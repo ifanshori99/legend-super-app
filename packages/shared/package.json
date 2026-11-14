@@ -8,6 +8,7 @@
     "./permissions": "./src/permissions.ts",
     "./types": "./src/types/api.ts",
     "./site": "./src/site.ts",
+    "./validators/finance-exceptions": "./src/validators/finance-exceptions.ts",
     "./validators/kirimdev-sender": "./src/validators/kirimdev-sender.ts",
     "./validators/payroll-payout": "./src/validators/payroll-payout.ts",
     "./theme": "./src/theme/index.ts",

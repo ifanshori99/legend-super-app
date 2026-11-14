@@ -109,6 +109,7 @@ async function outletClient(outletId: string): Promise<Session> {
       `Operations API test ${roleId.slice(0, 8)}`,
       JSON.stringify([
         "ops.checklist.complete",
+        "ops.checklist.manage",
         "ops.food_safety.log",
         "ops.prep.manage",
       ]),

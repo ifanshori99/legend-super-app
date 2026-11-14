@@ -15,8 +15,8 @@
 //   `markChecklistRunMissed` (alert delivery evidence) instead of a plain write.
 //
 // Every query runs inside `withTenant` (RLS scopes rows to the tenant and the
-// caller's outlets) and every write re-checks `ops.checklist.complete` on the
-// concrete outlet inside that transaction (TEN-03). Creates and mutations bind
+// caller's outlets) and every write re-checks `ops.checklist.complete` (template
+// writes: `ops.checklist.manage`) on the concrete outlet inside that transaction (TEN-03). Creates and mutations bind
 // their client idempotency key to the document they wrote (D-CORE-5).
 import { randomUUID } from "node:crypto";
 import {
@@ -94,8 +94,12 @@ import {
   storeIdempotentResult,
 } from "./operations-idempotency.ts";
 
-/** Every checklist route writes as this permission (shared/RBAC catalog). */
+/** Run and item writes use this permission (shared/RBAC catalog). */
 export const CHECKLIST_PERMISSION: PermissionCode = "ops.checklist.complete";
+
+/** Template writes (create, edit, retire) need the manage permission. */
+export const CHECKLIST_MANAGE_PERMISSION: PermissionCode =
+  "ops.checklist.manage";
 
 /** `operations_idempotency.result_table` values this service owns. */
 export const CHECKLIST_TEMPLATE_RESULT_TABLE = "checklist_template";
@@ -439,7 +443,7 @@ export async function createChecklistTemplate(
       tx,
       context,
       actor,
-      CHECKLIST_PERMISSION,
+      CHECKLIST_MANAGE_PERMISSION,
       input.outletId,
       now,
     );
@@ -507,7 +511,7 @@ export async function updateChecklistTemplate(
       tx,
       context,
       actor,
-      CHECKLIST_PERMISSION,
+      CHECKLIST_MANAGE_PERMISSION,
       locked.outletId,
       now,
     );

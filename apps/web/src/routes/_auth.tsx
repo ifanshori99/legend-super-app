@@ -1,12 +1,13 @@
 import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 import { Brand } from "@/components/brand";
-import { siteConfig } from "@/config/site";
 import { publicSiteQuery } from "@/features/ws08-website/queries";
+import { postLoginPath } from "@/lib/areas/post-login";
 
-// Pathless layout: /sign-in and /sign-up. Signed-in visitors go to the app.
+// Pathless layout: /sign-in and /sign-up. Signed-in visitors go to the app:
+// the back-office dashboard for management sessions, else the customer home.
 export const Route = createFileRoute("/_auth")({
   beforeLoad: ({ context }) => {
-    if (context.session) throw redirect({ to: siteConfig.appHomePath });
+    if (context.session) throw redirect({ to: postLoginPath(context.access) });
   },
   // Fill the cache so SSR already has the tenant brand; an unrecognized host
   // fails the call and the layout falls back to the catalog brand.

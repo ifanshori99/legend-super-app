@@ -260,6 +260,7 @@ export function RefundForm({ order, switcher }: Props) {
             {correctionErrorText(
               refund.error,
               t("posCorrection.state.submitErrorBody"),
+              t("posCorrection.state.edgeBlockedBody"),
             )}
           </Notice>
         )}
@@ -291,6 +292,7 @@ export function RefundForm({ order, switcher }: Props) {
               ? correctionErrorText(
                   refund.error,
                   t("posCorrection.approval.failed"),
+                  t("posCorrection.state.edgeBlockedBody"),
                 )
               : null
         }

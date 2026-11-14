@@ -41,6 +41,7 @@ import {
 } from "../lib/mfa-policy";
 import { openSecret, sealSecret } from "../lib/secrets";
 import { beginPasskeyEnrollment } from "./identity-passkey.service";
+import { challengeStampValue } from "./identity-step-up-stamp";
 import {
   assertFactorActivationAllowed,
   lockUserFactorActivation,
@@ -320,10 +321,26 @@ export async function verifyMfaFactor(input: {
     // Finishing the enrollment of a new factor only fills an empty stamp: it
     // must not refresh a proof the user did not just make with a code, or a
     // hijacked session could mint a fresh re-auth by adding its own factor.
+    //
+    // legend-658 (L5): only a code checked against an already verified factor
+    // is a challenge; it also stamps `mfa_challenge_verified_at`, which the
+    // payout step-up reads to skip the password prompt. The factor must also
+    // predate the session (see identity-step-up-stamp): enrolling and verifying
+    // inside the same session proves nothing about the person holding it.
     if (input.sessionId !== null)
       await tx
         .update(session)
-        .set({ mfaVerifiedAt: now })
+        .set({
+          mfaVerifiedAt: now,
+          ...(factor.verifiedAt !== null
+            ? {
+                mfaChallengeVerifiedAt: challengeStampValue(
+                  factor.verifiedAt,
+                  now,
+                ),
+              }
+            : {}),
+        })
         .where(
           and(
             eq(session.id, input.sessionId),

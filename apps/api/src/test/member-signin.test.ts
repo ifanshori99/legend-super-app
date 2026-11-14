@@ -232,7 +232,12 @@ async function whatsAppLogin(client: Client) {
       `MASUK LEGEND ${issued.body.data.codeFormatted}`,
     ),
   );
-  expect(delivered.body.data.completed).toBe(1);
+  // Print the whole response when `completed` is missing (webhook error body,
+  // shared limiter) so a flake shows its cause instead of "undefined".
+  expect(
+    delivered.body?.data?.completed,
+    `webhook answered ${delivered.status}: ${JSON.stringify(delivered.body)}`,
+  ).toBe(1);
   // The route always requires the person to confirm the masked number
   // (legend-lnbtp): no session is issued before the bound browser confirms.
   const confirmed = await client

@@ -484,6 +484,65 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["petty_cash", "credit", "cashIdr"],
     ],
   ),
+  // Per-item payout (bead legend-658, design payroll-disbursement.md 6 R9, R10,
+  // 8): each group of confirmed items settles the payable once. The source
+  // account of a manual bank file is the config's bank account, passed as an
+  // account override of the `bank` role; cash credits petty cash.
+  rule(
+    { event: "payroll.paid", variant: "payout_bank" },
+    "payroll",
+    "Gaji dibayar per item (transfer bank manual)",
+    `${AUTO} (payroll); PAYR-04; payout per item`,
+    [
+      ["salaries_payable", "debit", "netIdr"],
+      ["bank", "credit", "netIdr"],
+    ],
+  ),
+  rule(
+    { event: "payroll.paid", variant: "payout_cash" },
+    "payroll",
+    "Gaji dibayar per item (tunai)",
+    `${AUTO} (payroll); PAYR-04; payout per item`,
+    [
+      ["salaries_payable", "debit", "netIdr"],
+      ["petty_cash", "credit", "netIdr"],
+    ],
+  ),
+  // Q15: the bank fee is borne by the company. It is an expense of its own, it
+  // never reduces the salary payable or the net pay of anyone (R9).
+  rule(
+    { event: "payroll.paid", variant: "payout_fee" },
+    "payroll",
+    "Biaya transfer bank gaji ditanggung perusahaan",
+    `${AUTO} (payroll); PAYR-04; Q15 biaya transfer ditanggung PT`,
+    [
+      ["bank_charges", "debit", "feeIdr"],
+      ["bank", "credit", "feeIdr"],
+    ],
+  ),
+  // Funds came back after a succeeded transfer: the payable reopens.
+  rule(
+    { event: "payroll.paid", variant: "payout_return" },
+    "payroll",
+    "Dana gaji kembali dari bank (pembayaran dibalik)",
+    `${AUTO} (payroll); PAYR-04; payout per item`,
+    [
+      ["bank", "debit", "netIdr"],
+      ["salaries_payable", "credit", "netIdr"],
+    ],
+  ),
+  // A failed attempt turned out paid while the payslip was paid by another
+  // attempt (design 7.9): the employee owes the company the second transfer.
+  rule(
+    { event: "payroll.paid", variant: "payout_overpaid" },
+    "payroll",
+    "Pembayaran gaji ganda (piutang karyawan)",
+    `${AUTO} (payroll); PAYR-04; payout per item; pembayaran ganda`,
+    [
+      ["employee_receivable", "debit", "netIdr"],
+      ["bank", "credit", "netIdr"],
+    ],
+  ),
   // No variant: events emitted before legend-1coh (no disbursedVia), petty cash.
   rule(
     { event: "employee_loan.disbursed" },

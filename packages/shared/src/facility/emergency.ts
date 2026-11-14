@@ -140,11 +140,25 @@ export const panicRealtimeFrameSchema = z.strictObject({
   alertId: panicAlertIdSchema,
   outletId: outletIdSchema,
   unitId: uuidSchema.nullable(),
+  unitCode: z.string().nullable(),
+  areaName: z.string().nullable(),
   receivedAt: isoDateTimeSchema,
   /** `test` is shown with the "UJI" flag. */
   kind: panicAlertKindSchema,
 });
 export type PanicRealtimeFrame = z.infer<typeof panicRealtimeFrameSchema>;
+
+/** Server to client: a receiver has taken responsibility for the alert. */
+export const panicAcknowledgedFrameSchema = z.strictObject({
+  type: z.literal("acknowledged"),
+  alertId: panicAlertIdSchema,
+  acknowledgedAt: isoDateTimeSchema,
+  byName: z.string(),
+});
+export type PanicAcknowledgedFrame = z.infer<
+  typeof panicAcknowledgedFrameSchema
+>;
+export type PanicServerFrame = PanicRealtimeFrame | PanicAcknowledgedFrame;
 
 /** Client to server: this phone showed the alert (D-05 receipt). */
 export const panicReceivedFrameSchema = z.strictObject({

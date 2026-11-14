@@ -158,7 +158,7 @@ async function assertNotEdgeIngested(
     throw new HttpError(
       409,
       "EDGE_ORDER_CORRECTION_BLOCKED",
-      "Pesanan ini dibayar lewat node edge dan sudah diterima server pusat; void atau refund dari server pusat belum diizinkan untuk pesanan ini.",
+      "Pesanan ini dibayar di kasir edge dan sudah diterima server pusat. Void atau refund hanya bisa dilakukan di kasir edge tempat penjualan terjadi; hubungi kasir atau finance outlet tersebut.",
     );
 }
 

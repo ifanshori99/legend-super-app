@@ -475,8 +475,10 @@ describe("EDG-02 the edge pulls the cloud device registry", () => {
     });
     const spy = spyFetch(cloudAnswer);
     await boot();
-    await vi.waitFor(async () =>
-      expect((await checkpointRow())?.watermark).not.toBe("not-a-cursor"),
+    await vi.waitFor(
+      async () =>
+        expect((await checkpointRow())?.watermark).not.toBe("not-a-cursor"),
+      { timeout: 10_000 },
     );
     // The edge refused its own cursor before asking the cloud.
     const calls = registryCalls(spy);

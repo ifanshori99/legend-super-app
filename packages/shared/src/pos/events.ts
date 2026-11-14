@@ -28,6 +28,7 @@ import {
   z,
   idr,
   idrSchema,
+  basisPointsSchema,
   outletIdSchema,
   uuidIdSchema,
   userIdSchema,
@@ -43,6 +44,11 @@ import {
   paymentModeSchema,
 } from "../qr-order/schemas.ts";
 import { defineDomainEvent, eventEnvelopeSchema } from "../events/index.ts";
+import {
+  ruleCodeSchema,
+  taxRuleIdSchema,
+  taxTypeSchema,
+} from "../tax/schemas.ts";
 import type { EventCatalogEntry, EventEnvelope } from "../events/index.ts";
 import { tenderBucket } from "./calculations.ts";
 import {
@@ -78,6 +84,13 @@ const tenderLineSchema = z.strictObject({
    */
   receivedIdr: nonnegativeIdr.optional(),
   pointsUsed: z.number().int().positive().max(1_000_000).optional(),
+  /**
+   * legend-yu8z0: the `pos_order_tenders.provider` of the tender. Optional and
+   * deliberately a plain string: a value the cloud does not know is refused at
+   * ingest (recorded, parked), not by this schema. A gateway method (card, va,
+   * ewallet, qris) is ingested only with a gateway provider.
+   */
+  provider: z.string().max(20).optional(),
 });
 type TenderLine = z.infer<typeof tenderLineSchema>;
 
@@ -127,6 +140,25 @@ const orderPaidLineSchema = z.strictObject({
   fireStatus: fireStatusSchema,
   reservedBusinessDate: businessDateSchema,
   status: orderItemStatusSchema,
+});
+
+/**
+ * Edge sales GL (legend-uctlr): one `tax_snapshots` row of the sale, copied
+ * from the edge's `order.taxResult` as it stood (never recomputed). The cloud
+ * writes the same rows a cloud-paid order gets, so the sale journal splits
+ * PBJT from the revenue the same way.
+ */
+const orderPaidTaxSchema = z.strictObject({
+  taxRuleId: taxRuleIdSchema,
+  code: ruleCodeSchema,
+  version: z.number().int().positive(),
+  taxType: taxTypeSchema,
+  rateBp: basisPointsSchema,
+  priceIncludesTax: z.boolean(),
+  grossIdr: nonnegativeIdr,
+  taxBaseIdr: nonnegativeIdr,
+  serviceChargeIdr: nonnegativeIdr,
+  taxIdr: nonnegativeIdr,
 });
 
 export const orderPaidPayloadSchema = z
@@ -180,8 +212,22 @@ export const orderPaidPayloadSchema = z
     paymentMode: paymentModeSchema.optional(),
     isTraining: z.boolean().optional(),
     lines: z.array(orderPaidLineSchema).max(999).optional(),
+    // Edge sales GL (legend-uctlr), additive. The order's customer (points
+    // earn at ingest) and the tax rows behind `pbjtIdr` (tax_snapshots).
+    customerProfileId: uuidSchema.nullable().optional(),
+    /**
+     * legend-cqehx: the staff user who attached the customer
+     * (`orders.customer_attached_by`); null when the customer attached
+     * themselves. The LOY-02 guard needs it: staff earn no points on their own
+     * sale, whoever the cashier is.
+     */
+    customerAttachedBy: userIdSchema.nullable().optional(),
+    taxes: z.array(orderPaidTaxSchema).max(50).optional(),
   })
   .superRefine((payload, ctx) => {
+    // Σ taxes == pbjtIdr is NOT a schema rule either (same reason as the
+    // lines below): the cloud checks it at ingest (`tax_mismatch`) so the
+    // event is still parked and recorded when it fails.
     // Σ non-void lines == subtotalIdr is NOT a schema rule: the cloud checks it
     // at ingest (`lines_mismatch`) so the event is still parked when it fails.
     if (payload.lines !== undefined && payload.subtotalIdr === undefined)

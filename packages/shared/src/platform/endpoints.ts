@@ -18,6 +18,7 @@ import {
   z,
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/index.ts";
+import { auditEventSchema } from "../audit/index.ts";
 import { COLOR_TOKENS } from "../theme/types.ts";
 import { DERIVED_TOKENS } from "../theme/contrast.ts";
 import {
@@ -37,6 +38,10 @@ import {
   skipOutboxGapInputSchema,
 } from "./event-gaps.ts";
 import { brandContextSchema } from "./context.ts";
+import {
+  listPlatformAuditEventsQuerySchema,
+  platformHealthSchema,
+} from "./ops.ts";
 import { addDomainInputSchema, tenantDomainSchema } from "./domains.ts";
 import {
   configTemplateIdSchema,
@@ -168,6 +173,19 @@ export const listTenantsQuerySchema = cursorPageQuerySchema.extend({
 // ------------------------------------------------------------ Panel Platform
 
 export const platformEndpoints = {
+  // legend-bag1: cross-tenant audit list (platform.audit.view) and health report
+  // (platform.health.view).
+  listPlatformAuditEvents: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/audit-events",
+    query: listPlatformAuditEventsQuerySchema,
+    response: cursorPageSchema(auditEventSchema),
+  }),
+  getPlatformHealth: defineEndpoint({
+    method: "GET",
+    path: "/api/platform/health",
+    response: dataResponseSchema(platformHealthSchema),
+  }),
   listPackages: defineEndpoint({
     method: "GET",
     path: "/api/platform/packages",

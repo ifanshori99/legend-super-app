@@ -32,6 +32,7 @@ import { orders } from "../db/schema/qr-order";
 import { HttpError } from "../lib/http-error";
 import { hashPromoCode } from "./crm-promo-engine";
 import { isTrainingOrder } from "./device-training";
+import { expirePointsForProfile } from "./loyalty-expiry.service";
 import { postLedgerEntry } from "./point-ledger.service";
 import type { Tx } from "./permission-resolver";
 
@@ -284,7 +285,7 @@ export async function redeemReward(
   const profileId = scope.customerProfileId;
   if (profileId === null) throw crmError("CUSTOMER_NOT_FOUND", 404);
   const tenantId = tenantIdSchema.parse(scope.tenantId);
-  const profile = await withProfileLock(tx, tenantId, profileId);
+  await withProfileLock(tx, tenantId, profileId);
 
   const replay = await findRedemptionByKey(
     tx,
@@ -293,6 +294,12 @@ export async function redeemReward(
     idempotencyKey,
   );
   if (replay) return toRedemptionDto(replay);
+
+  // Expired points must not pay for a reward (legend-29shf). The profile lock
+  // is already held (the row lock is re-entrant in this transaction), and the
+  // balance is read again afterwards so the check sees the post-expiry value.
+  await expirePointsForProfile(tx, tenantId, profileId, now);
+  const profile = await withProfileLock(tx, tenantId, profileId);
 
   const reward = await lockReward(tx, tenantId, rewardId);
   if (!reward) throw notFound();

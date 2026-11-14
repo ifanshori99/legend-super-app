@@ -51,6 +51,7 @@ import {
   assertFactorActivationAllowed,
   lockUserFactorActivation,
 } from "./mfa-activation";
+import { challengeStampValue } from "./identity-step-up-stamp";
 
 const passkeyLog = logger.child({ module: "identity-passkey" });
 
@@ -540,7 +541,13 @@ export async function verifyPasskeyAssertion(input: {
     // be marked verified for someone else.
     await tx
       .update(session)
-      .set({ mfaVerifiedAt: now })
+      .set({
+        mfaVerifiedAt: now,
+        mfaChallengeVerifiedAt: challengeStampValue(
+          factor.verifiedAt ?? factor.createdAt,
+          now,
+        ),
+      })
       .where(
         and(eq(session.id, input.sessionId), eq(session.userId, input.userId)),
       );

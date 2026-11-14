@@ -15,6 +15,11 @@
 // Run just this file (from the repo root):
 //   LEGEND_TEST_FILES="src/test/edge-receipt-run-applier.test.ts" heavy pnpm test
 //
+// Producer (second half of the file): the edge reporter
+// (services/edge-receipt-run-reporter.ts) turns the receipts an edge database
+// numbered into `receipt_run.reported` outbox events, and the cloud merges
+// them exactly once.
+//
 // Assumptions (spec/brief ambiguous):
 //  - Every merge refusal (gap, not provisioned, validation, scope mismatch) is
 //    REFUSED, never retried: the apply throws a CoreError (4xx) and writes
@@ -28,6 +33,7 @@
 //    or aggregate id than the event's is refused.
 
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -64,8 +70,13 @@ import {
   edgeEventApplier,
   type EdgeApplyMeta,
 } from "../edge/ports.ts";
+import {
+  posDeferredAggregates,
+  registerPosDeferredEdgeApplier,
+} from "../edge/deferred-event-applier.ts";
 import { registerReceiptRunEdgeApplier } from "../edge/receipt-run-applier.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
+import { reportEdgeReceiptRuns } from "../services/edge-receipt-run-reporter.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import {
   authenticateEdgeCredential,
@@ -1127,5 +1138,716 @@ describe("legend-zy43 edge -> cloud receipt run: registration", () => {
         }),
       ),
     ).rejects.toBeInstanceOf(EdgeApplierUnavailableError);
+  });
+});
+
+// ---- Producer: edge reporter ---------------------------------------------------
+
+const EDGE_INSTANCE = randomUUID();
+
+/**
+ * Where an order event is in the edge pipeline (domain_event_outbox ->
+ * edge_outbound_queue -> cloud ack). Only `acked` means the cloud applied it.
+ */
+type Delivery = "acked" | "queued" | "outbox" | "none";
+
+type OrderEventName = "order.paid" | "order.voided";
+
+async function putOrderEvent(
+  run: { outletId: string; node: AuthenticatedEdgeNode },
+  orderId: string,
+  name: OrderEventName,
+  delivery: Delivery,
+): Promise<void> {
+  if (delivery === "none") return;
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query("SET LOCAL session_replication_role = replica");
+    const eventId = ulidToUuid(createUlid());
+    const aggregateId = ulidToUuid(orderId);
+    const aggregateSequence = name === "order.paid" ? 1 : 2;
+    // The table's check ties the stored event to its row columns.
+    const stored = JSON.stringify({
+      name,
+      tenantId: tenant.tenantId,
+      outletId: run.outletId,
+      aggregateType: "order",
+      sequence: aggregateSequence,
+    });
+    await client.query(
+      `INSERT INTO domain_event_outbox
+         (tenant_id, id, outlet_id, event_id, aggregate_type, aggregate_id, sequence, event, destination, status, delivered_at)
+       VALUES ($1, $2, $3, $4, 'order', $5, $6, $7::jsonb, 'cloud-sync', $8::varchar,
+               CASE WHEN $8::text = 'delivered' THEN now() END)`,
+      [
+        tenant.tenantId,
+        randomUUID(),
+        run.outletId,
+        eventId,
+        aggregateId,
+        aggregateSequence,
+        stored,
+        delivery === "outbox" ? "pending" : "delivered",
+      ],
+    );
+    if (delivery === "outbox") return;
+    const seq = await client.query(
+      `SELECT coalesce(max(link_seq), 0) + 1 AS next FROM edge_outbound_queue
+        WHERE tenant_id = $1 AND edge_node_id = $2 AND direction = 'edge_to_cloud'`,
+      [tenant.tenantId, run.node.scope.edgeNodeId],
+    );
+    await client.query(
+      `INSERT INTO edge_outbound_queue
+         (tenant_id, outlet_id, edge_node_id, direction, link_seq, event_id, aggregate_type, aggregate_id,
+          aggregate_sequence, kind, event, status, acked_at)
+       VALUES ($1, $2, $3, 'edge_to_cloud', $4, $5, 'order', $6, $7, 'transaction_event', $8::jsonb, $9::varchar,
+               CASE WHEN $9::text = 'acked' THEN now() END)`,
+      [
+        tenant.tenantId,
+        run.outletId,
+        run.node.scope.edgeNodeId,
+        seq.rows[0].next,
+        eventId,
+        aggregateId,
+        aggregateSequence,
+        stored,
+        delivery === "acked" ? "acked" : "pending",
+      ],
+    );
+  });
+}
+
+/** The cloud acknowledges a queued order event (link ack). */
+async function ackOrderEvent(
+  orderId: string,
+  name: OrderEventName,
+): Promise<void> {
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      `UPDATE edge_outbound_queue SET status = 'acked', acked_at = now()
+        WHERE tenant_id = $1 AND event_id IN (
+          SELECT event_id FROM domain_event_outbox
+           WHERE tenant_id = $1 AND aggregate_id = $2::uuid AND event ->> 'name' = $3)`,
+      [tenant.tenantId, ulidToUuid(orderId), name],
+    );
+    await client.query(
+      `UPDATE domain_event_outbox SET status = 'delivered', delivered_at = now()
+        WHERE tenant_id = $1 AND aggregate_id = $2::uuid AND event ->> 'name' = $3`,
+      [tenant.tenantId, ulidToUuid(orderId), name],
+    );
+  });
+}
+
+/**
+ * legend-btx4d: the queued order event was oversized and moved to the
+ * dead-letter store: its queue row is gone, the cloud never held it.
+ */
+async function deadLetterOrderEvent(
+  orderId: string,
+  name: OrderEventName,
+): Promise<void> {
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query("SET LOCAL session_replication_role = replica");
+    const moved = await client.query(
+      `DELETE FROM edge_outbound_queue WHERE tenant_id = $1 AND status = 'pending' AND event_id IN (
+         SELECT event_id FROM domain_event_outbox
+          WHERE tenant_id = $1 AND aggregate_id = $2::uuid AND event ->> 'name' = $3)
+       RETURNING outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, event`,
+      [tenant.tenantId, ulidToUuid(orderId), name],
+    );
+    expect(moved.rows).toHaveLength(1);
+    const row = moved.rows[0];
+    await client.query(
+      `INSERT INTO edge_link_dead_letters (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, bytes, reason, event)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 5000000, 'frame_too_large', $10::jsonb)`,
+      [
+        tenant.tenantId,
+        row.outlet_id,
+        row.edge_node_id,
+        row.direction,
+        row.event_id,
+        row.link_seq,
+        row.aggregate_type,
+        row.aggregate_id,
+        row.aggregate_sequence,
+        JSON.stringify(row.event),
+      ],
+    );
+  });
+}
+
+/**
+ * An edge database's device run: bound to the node and instance the reporter
+ * is given, `orders` already numbered locally from 1 under `prefix`. Written
+ * with owner SQL (triggers off, the way a restored edge state looks).
+ */
+async function bindEdgeRun(
+  run: { outletId: string; device: string; node: AuthenticatedEdgeNode },
+  prefix: string,
+  orders: string[],
+  options: { bound?: boolean; delivery?: Delivery[] } = {},
+): Promise<void> {
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query("SET LOCAL session_replication_role = replica");
+    const existing = await client.query(
+      "SELECT id FROM receipt_sequences WHERE tenant_id = $1 AND outlet_id = $2 AND device_id = $3 AND prefix = $4",
+      [tenant.tenantId, run.outletId, run.device, prefix],
+    );
+    let sequenceId: string;
+    if (existing.rows.length > 0) {
+      sequenceId = existing.rows[0].id;
+      await client.query(
+        `UPDATE receipt_sequences SET last_number = $2, edge_node_id = $3, edge_instance_id = $4 WHERE id = $1`,
+        options.bound === false
+          ? [sequenceId, orders.length, null, null]
+          : [
+              sequenceId,
+              orders.length,
+              run.node.scope.edgeNodeId,
+              EDGE_INSTANCE,
+            ],
+      );
+    } else {
+      const created = await client.query(
+        `INSERT INTO receipt_sequences (tenant_id, outlet_id, device_id, prefix, last_number, edge_node_id, edge_instance_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+        [
+          tenant.tenantId,
+          run.outletId,
+          run.device,
+          prefix,
+          orders.length,
+          options.bound === false ? null : run.node.scope.edgeNodeId,
+          options.bound === false ? null : EDGE_INSTANCE,
+        ],
+      );
+      sequenceId = created.rows[0].id;
+    }
+    for (const [index, orderId] of orders.entries())
+      await client.query(
+        `INSERT INTO pos_receipts
+           (tenant_id, outlet_id, order_id, sequence_id, device_id, number, sequence_number, status, issued_at, outlet_snapshot)
+         VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, 'issued', now(), $8::jsonb)`,
+        [
+          tenant.tenantId,
+          run.outletId,
+          ulidToUuid(orderId),
+          sequenceId,
+          run.device,
+          formatReceiptNumber(prefix, index + 1),
+          index + 1,
+          JSON.stringify(SNAPSHOT),
+        ],
+      );
+  });
+  for (const [index, orderId] of orders.entries())
+    await putOrderEvent(
+      run,
+      orderId,
+      "order.paid",
+      options.delivery?.[index] ?? "acked",
+    );
+}
+
+/** A fresh outlet whose device run OFF1 has `count` numbered receipts. */
+async function edgeRun(
+  count: number,
+  options: { bound?: boolean; delivery?: Delivery[] } = {},
+) {
+  const run = await scenario(count);
+  await bindEdgeRun(run, "OFF1", run.orders, options);
+  return run;
+}
+
+type EdgeRun = Awaited<ReturnType<typeof edgeRun>>;
+
+function report(
+  run: EdgeRun,
+  instanceId = EDGE_INSTANCE,
+  limits?: Parameters<typeof reportEdgeReceiptRuns>[2],
+) {
+  return reportEdgeReceiptRuns(
+    scopeOf(tenant.tenantId, [run.outletId]),
+    {
+      outletId: run.outletId,
+      edgeNodeId: run.node.scope.edgeNodeId,
+      edgeInstanceId: instanceId,
+    },
+    limits,
+  );
+}
+
+async function reportedEvents(deviceId: string): Promise<EventEnvelope[]> {
+  return asOwnerTenant(tenant.tenantId, async (client) => {
+    const result = await client.query(
+      `SELECT event FROM domain_event_outbox
+        WHERE tenant_id = $1 AND destination = 'cloud-sync' AND aggregate_type = $2 AND aggregate_id = $3::uuid
+        ORDER BY sequence`,
+      [tenant.tenantId, RECEIPT_RUN_AGGREGATE, deviceId],
+    );
+    return result.rows.map((row: { event: unknown }) =>
+      eventEnvelopeSchema.parse(row.event),
+    );
+  });
+}
+
+type RunPayload = {
+  sequence: { prefix: string; lastNumber: number };
+  receipts: { receipt: { sequenceNumber: number; status: string } }[];
+};
+
+/** `[prefix, lastNumber, [ordinal:status...]]` per event, for compact asserts. */
+function shapesOf(events: EventEnvelope[]) {
+  return events.map((event) => {
+    const payload = event.payload as RunPayload;
+    return [
+      payload.sequence.prefix,
+      payload.sequence.lastNumber,
+      payload.receipts.map(
+        (entry) =>
+          `${entry.receipt.sequenceNumber}${entry.receipt.status === "voided" ? "v" : ""}`,
+      ),
+    ];
+  });
+}
+
+async function addEdgeReceipt(
+  run: EdgeRun,
+  ordinal: number,
+  delivery: Delivery = "acked",
+): Promise<string> {
+  const [orderId] = await deviceOrders(run.outletId, run.device, 1);
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      `UPDATE receipt_sequences SET last_number = $4
+        WHERE tenant_id = $1 AND outlet_id = $2 AND device_id = $3 AND prefix = 'OFF1'`,
+      [tenant.tenantId, run.outletId, run.device, ordinal],
+    );
+    const seq = await client.query(
+      "SELECT id FROM receipt_sequences WHERE tenant_id = $1 AND outlet_id = $2 AND device_id = $3 AND prefix = 'OFF1'",
+      [tenant.tenantId, run.outletId, run.device],
+    );
+    await client.query(
+      `INSERT INTO pos_receipts
+         (tenant_id, outlet_id, order_id, sequence_id, device_id, number, sequence_number, status, issued_at, outlet_snapshot)
+       VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, 'issued', now(), $8::jsonb)`,
+      [
+        tenant.tenantId,
+        run.outletId,
+        ulidToUuid(orderId!),
+        seq.rows[0].id,
+        run.device,
+        formatReceiptNumber("OFF1", ordinal),
+        ordinal,
+        JSON.stringify(SNAPSHOT),
+      ],
+    );
+  });
+  await putOrderEvent(run, orderId!, "order.paid", delivery);
+  return orderId!;
+}
+
+async function voidEdgeReceipt(
+  run: EdgeRun,
+  ordinal: number,
+  delivery: Delivery = "acked",
+  prefix = "OFF1",
+): Promise<void> {
+  const orderId = await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query("SET LOCAL session_replication_role = replica");
+    const result = await client.query(
+      `UPDATE pos_receipts SET status = 'voided', voided_at = now(), void_reason = 'wrong_order', voided_by = $4
+        WHERE tenant_id = $1 AND outlet_id = $2 AND device_id = $3 AND number = $5
+        RETURNING order_id`,
+      [
+        tenant.tenantId,
+        run.outletId,
+        run.device,
+        cashier.userId,
+        formatReceiptNumber(prefix, ordinal),
+      ],
+    );
+    return uuidToUlid(result.rows[0].order_id as string);
+  });
+  await putOrderEvent(run, orderId, "order.voided", delivery);
+}
+
+/** What the cloud would look like before the report arrives: no receipt rows. */
+async function resetToCloudState(run: EdgeRun): Promise<void> {
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      "DELETE FROM pos_receipts WHERE tenant_id = $1 AND outlet_id = $2",
+      [tenant.tenantId, run.outletId],
+    );
+    await client.query(
+      `UPDATE receipt_sequences SET last_number = 0, edge_node_id = NULL, edge_instance_id = NULL
+        WHERE tenant_id = $1 AND outlet_id = $2 AND device_id = $3`,
+      [tenant.tenantId, run.outletId, run.device],
+    );
+  });
+}
+
+describe("legend-zy43 edge receipt run producer", () => {
+  it("legend-zy43 reports the local run as one valid receipt_run.reported outbox event", async () => {
+    const run = await edgeRun(3);
+    expect(await report(run)).toEqual({ reported: 1 });
+    const events = await reportedEvents(run.device);
+    expect(events).toHaveLength(1);
+    const [event] = events;
+    expect(event!.name).toBe(RECEIPT_RUN_REPORTED_EVENT);
+    expect(event!.aggregateId.toLowerCase()).toBe(run.device);
+    expect(event!.sequence).toBe(1);
+    expect(event!.outletId).toBe(run.outletId);
+    expect(shapesOf(events)).toEqual([["OFF1", 3, ["1", "2", "3"]]]);
+  });
+
+  it("legend-zy43 sends only what is new: the next chunk after a new receipt, one event per void", async () => {
+    const run = await edgeRun(2);
+    expect(await report(run)).toEqual({ reported: 1 });
+    expect(await report(run)).toEqual({ reported: 0 });
+
+    await addEdgeReceipt(run, 3);
+    expect(await report(run)).toEqual({ reported: 1 });
+    expect(await report(run)).toEqual({ reported: 0 });
+
+    await voidEdgeReceipt(run, 2);
+    expect(await report(run)).toEqual({ reported: 1 });
+    expect(await report(run)).toEqual({ reported: 0 });
+    const events = await reportedEvents(run.device);
+    expect(events.map((e) => e.sequence)).toEqual([1, 2, 3]);
+    expect(new Set(events.map((e) => e.idempotencyKey)).size).toBe(3);
+    expect(shapesOf(events)).toEqual([
+      ["OFF1", 2, ["1", "2"]],
+      ["OFF1", 3, ["3"]],
+      ["OFF1", 3, ["2v"]],
+    ]);
+  });
+
+  it("legend-zy43 a backlog goes out in bounded ascending chunks, a few per pass, and merges exactly once", async () => {
+    const run = await edgeRun(5);
+    const limits = { chunk: 2, maxChunks: 2 };
+    expect(await report(run, EDGE_INSTANCE, limits)).toEqual({ reported: 2 });
+    expect(await report(run, EDGE_INSTANCE, limits)).toEqual({ reported: 1 });
+    expect(await report(run, EDGE_INSTANCE, limits)).toEqual({ reported: 0 });
+    const events = await reportedEvents(run.device);
+    expect(shapesOf(events)).toEqual([
+      ["OFF1", 2, ["1", "2"]],
+      ["OFF1", 4, ["3", "4"]],
+      ["OFF1", 5, ["5"]],
+    ]);
+    expect(events.map((e) => e.sequence)).toEqual([1, 2, 3]);
+
+    await resetToCloudState(run);
+    for (const event of events) await applyEvent(event, run.node);
+    const merged = await receiptRows(run.outletId);
+    expect(merged.map((row) => row.number)).toEqual([
+      "OFF1-000001",
+      "OFF1-000002",
+      "OFF1-000003",
+      "OFF1-000004",
+      "OFF1-000005",
+    ]);
+    expect(
+      (await sequenceRows(run.outletId)).find((s) => s.prefix === "OFF1")
+        ?.last_number,
+    ).toBe(5);
+    // Redelivery of every chunk: nothing changes.
+    for (const event of events) await applyEvent(event, run.node);
+    expect(await receiptRows(run.outletId)).toEqual(merged);
+  });
+
+  it("legend-zy43 a chunk event stays far below the link frame cap", async () => {
+    const run = await edgeRun(3);
+    await report(run);
+    const [event] = await reportedEvents(run.device);
+    // 100 receipts per chunk at this size is about 55 KB, nowhere near 4 MB.
+    const perReceipt = Buffer.byteLength(JSON.stringify(event)) / 3;
+    expect(perReceipt * 100).toBeLessThan(1024 * 1024);
+  });
+
+  it("legend-zy43 reports nothing for an empty run, a run bound elsewhere, or the cloud-owned sequence", async () => {
+    const empty = await scenario(0);
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `UPDATE receipt_sequences SET edge_node_id = $4, edge_instance_id = $5
+          WHERE tenant_id = $1 AND outlet_id = $2 AND device_id = $3`,
+        [
+          tenant.tenantId,
+          empty.outletId,
+          empty.device,
+          empty.node.scope.edgeNodeId,
+          EDGE_INSTANCE,
+        ],
+      );
+    });
+    expect(await report(empty)).toEqual({ reported: 0 });
+    expect(await reportedEvents(empty.device)).toHaveLength(0);
+
+    const unbound = await edgeRun(2, { bound: false });
+    expect(await report(unbound)).toEqual({ reported: 0 });
+    // Same node, another database instance: not this edge's run.
+    const bound = await edgeRun(2);
+    expect(await report(bound, randomUUID())).toEqual({ reported: 0 });
+    expect(await reportedEvents(bound.device)).toHaveLength(0);
+
+    // The cloud-owned run (device id = outlet id) is never reported.
+    const cloudOwned = await scenario(1);
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query("SET LOCAL session_replication_role = replica");
+      const seq = await client.query(
+        `INSERT INTO receipt_sequences (tenant_id, outlet_id, device_id, prefix, last_number, edge_node_id, edge_instance_id)
+         VALUES ($1, $2, $2, 'C', 1, $3, $4) RETURNING id`,
+        [
+          tenant.tenantId,
+          cloudOwned.outletId,
+          cloudOwned.node.scope.edgeNodeId,
+          EDGE_INSTANCE,
+        ],
+      );
+      await client.query(
+        `INSERT INTO pos_receipts
+           (tenant_id, outlet_id, order_id, sequence_id, device_id, number, sequence_number, status, issued_at, outlet_snapshot)
+         VALUES ($1, $2, $3::uuid, $4, $2, 'C-000001', 1, 'issued', now(), $5::jsonb)`,
+        [
+          tenant.tenantId,
+          cloudOwned.outletId,
+          ulidToUuid(cloudOwned.orders[0]!),
+          seq.rows[0].id,
+          JSON.stringify(SNAPSHOT),
+        ],
+      );
+    });
+    expect(await report(cloudOwned)).toEqual({ reported: 0 });
+    expect(await reportedEvents(cloudOwned.outletId)).toHaveLength(0);
+  });
+
+  it("legend-zy43 an edge report merges into the cloud exactly once, replay and re-report safe", async () => {
+    const run = await edgeRun(3);
+    await report(run);
+    const [event] = await reportedEvents(run.device);
+    await resetToCloudState(run);
+    expect(await receiptRows(run.outletId)).toHaveLength(0);
+
+    await applyEvent(event!, run.node);
+    const first = await receiptRows(run.outletId);
+    expect(first.map((row) => row.number)).toEqual([
+      "OFF1-000001",
+      "OFF1-000002",
+      "OFF1-000003",
+    ]);
+    const idsOf = () =>
+      asOwnerTenant(tenant.tenantId, async (pg) => {
+        const result = await pg.query(
+          "SELECT id FROM pos_receipts WHERE tenant_id = $1 AND outlet_id = $2 ORDER BY number",
+          [tenant.tenantId, run.outletId],
+        );
+        return result.rows.map((row: { id: string }) => row.id);
+      });
+    const idsAfterFirst = await idsOf();
+    expect(
+      (await sequenceRows(run.outletId)).find((s) => s.prefix === "OFF1")
+        ?.last_number,
+    ).toBe(3);
+
+    // Redelivery of the same event: nothing new, same rows.
+    await applyEvent(event!, run.node);
+    expect(await receiptRows(run.outletId)).toEqual(first);
+    // Reporting again produces no second event, so nothing more to merge.
+    expect(await report(run)).toEqual({ reported: 0 });
+    expect(await reportedEvents(run.device)).toHaveLength(1);
+    expect(await idsOf()).toEqual(idsAfterFirst);
+  });
+
+  // legend-zy43 review round 2, F1: state is per PREFIX, not per device.
+  it("legend-zy43 a new run of the same device (new prefix) is reported from its own start, keys never collide with the old prefix", async () => {
+    const run = await edgeRun(3);
+    expect(await report(run)).toEqual({ reported: 1 });
+    // The first run is retired; the device now numbers under OFF2 (also a
+    // restore of the edge database under a new instance would look like this).
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `UPDATE receipt_sequences SET retired_at = now(), retired_reason = 'edge_replaced'
+          WHERE tenant_id = $1 AND outlet_id = $2 AND device_id = $3 AND prefix = 'OFF1'`,
+        [tenant.tenantId, run.outletId, run.device],
+      );
+    });
+    const second = await deviceOrders(run.outletId, run.device, 2);
+    await bindEdgeRun(run, "OFF2", second);
+    expect(await report(run)).toEqual({ reported: 1 });
+    await voidEdgeReceipt(run, 2, "acked", "OFF2");
+    expect(await report(run)).toEqual({ reported: 1 });
+    const events = await reportedEvents(run.device);
+    expect(shapesOf(events)).toEqual([
+      ["OFF1", 3, ["1", "2", "3"]],
+      ["OFF2", 2, ["1", "2"]],
+      ["OFF2", 2, ["2v"]],
+    ]);
+    expect(new Set(events.map((e) => e.idempotencyKey)).size).toBe(3);
+    // Nothing is resent for either prefix.
+    expect(await report(run)).toEqual({ reported: 0 });
+  });
+
+  // legend-zy43 review round 2, F2: outbox order is not link order; a receipt
+  // goes out only after the cloud ACKed the order event it depends on.
+  it("legend-zy43 a chunk ends before the first receipt whose order.paid is not yet acked, and resumes after the ack", async () => {
+    const run = await edgeRun(4, {
+      delivery: ["acked", "queued", "acked", "none"],
+    });
+    expect(await report(run)).toEqual({ reported: 1 });
+    expect(shapesOf(await reportedEvents(run.device))).toEqual([
+      ["OFF1", 1, ["1"]],
+    ]);
+    // Nothing more while receipt 2's order.paid is only queued.
+    expect(await report(run)).toEqual({ reported: 0 });
+    await ackOrderEvent(run.orders[1]!, "order.paid");
+    expect(await report(run)).toEqual({ reported: 1 });
+    expect(shapesOf(await reportedEvents(run.device)).at(-1)).toEqual([
+      "OFF1",
+      3,
+      ["2", "3"],
+    ]);
+    // Receipt 4's order has no order.paid event at all: never reported.
+    expect(await report(run)).toEqual({ reported: 0 });
+    // Appended but not yet relayed into the link queue: still not delivered.
+    await putOrderEvent(run, run.orders[3]!, "order.paid", "outbox");
+    expect(await report(run)).toEqual({ reported: 0 });
+    // Relayed and acknowledged by the cloud: now it goes out.
+    await ackOrderEvent(run.orders[3]!, "order.paid");
+    expect(await report(run)).toEqual({ reported: 1 });
+  });
+
+  it("legend-zy43 chunks held back and released merge into the cloud exactly once, no gap", async () => {
+    const run = await edgeRun(3, { delivery: ["acked", "queued", "acked"] });
+    await report(run);
+    await ackOrderEvent(run.orders[1]!, "order.paid");
+    await report(run);
+    const events = await reportedEvents(run.device);
+    expect(shapesOf(events)).toEqual([
+      ["OFF1", 1, ["1"]],
+      ["OFF1", 3, ["2", "3"]],
+    ]);
+    await resetToCloudState(run);
+    for (const event of events) await applyEvent(event, run.node);
+    expect((await receiptRows(run.outletId)).map((r) => r.number)).toEqual([
+      "OFF1-000001",
+      "OFF1-000002",
+      "OFF1-000003",
+    ]);
+  });
+
+  it("legend-zy43 no void event until order.voided is acked; a voided receipt is not chunked before that either", async () => {
+    const run = await edgeRun(2);
+    await report(run);
+    await voidEdgeReceipt(run, 1, "queued");
+    expect(await report(run)).toEqual({ reported: 0 });
+    await ackOrderEvent(
+      (await asOwnerTenant(tenant.tenantId, async (client) => {
+        const r = await client.query(
+          "SELECT order_id FROM pos_receipts WHERE tenant_id = $1 AND number = 'OFF1-000001' AND outlet_id = $2",
+          [tenant.tenantId, run.outletId],
+        );
+        return uuidToUlid(r.rows[0].order_id as string);
+      })) as string,
+      "order.voided",
+    );
+    expect(await report(run)).toEqual({ reported: 1 });
+    expect(shapesOf(await reportedEvents(run.device)).at(-1)).toEqual([
+      "OFF1",
+      2,
+      ["1v"],
+    ]);
+
+    // A not yet reported receipt that is already voided waits for its void.
+    await addEdgeReceipt(run, 3);
+    await voidEdgeReceipt(run, 3, "queued");
+    expect(await report(run)).toEqual({ reported: 0 });
+  });
+
+  // legend-btx4d review: a dead-lettered order.paid has no queue row, which
+  // used to read as "acknowledged" and sent the receipt of an order the cloud
+  // never got.
+  it("legend-btx4d a receipt whose order.paid was dead-lettered is not reported, and the run waits behind it", async () => {
+    const run = await edgeRun(3, { delivery: ["acked", "queued", "acked"] });
+    await deadLetterOrderEvent(run.orders[1]!, "order.paid");
+    expect(await report(run)).toEqual({ reported: 1 });
+    expect(shapesOf(await reportedEvents(run.device))).toEqual([
+      ["OFF1", 1, ["1"]],
+    ]);
+    expect(await report(run)).toEqual({ reported: 0 });
+  });
+
+  it("legend-btx4d no void event is reported while order.voided is dead-lettered", async () => {
+    const run = await edgeRun(2);
+    await report(run);
+    await voidEdgeReceipt(run, 1, "queued");
+    const orderId = await asOwnerTenant(tenant.tenantId, async (client) => {
+      const r = await client.query(
+        "SELECT order_id FROM pos_receipts WHERE tenant_id = $1 AND number = 'OFF1-000001' AND outlet_id = $2",
+        [tenant.tenantId, run.outletId],
+      );
+      return uuidToUlid(r.rows[0].order_id as string);
+    });
+    await deadLetterOrderEvent(orderId, "order.voided");
+    expect(await report(run)).toEqual({ reported: 0 });
+  });
+
+  it("legend-zy43 one failing device does not stop the other devices of the pass", async () => {
+    const bad = await edgeRun(1);
+    // A second device in the same outlet, healthy.
+    const device2 = randomUUID();
+    const orders2 = await deviceOrders(bad.outletId, device2, 2);
+    await provision(bad.outletId, device2, "OFF2");
+    const good = { outletId: bad.outletId, device: device2, node: bad.node };
+    await bindEdgeRun(good, "OFF2", orders2);
+    // OFF1's receipt holds a void reason the contract does not know: the
+    // event cannot be built for it.
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `UPDATE pos_receipts SET status = 'voided', voided_at = now(), void_reason = 'bogus', voided_by = $3
+          WHERE tenant_id = $1 AND outlet_id = $2 AND device_id = $4`,
+        [tenant.tenantId, bad.outletId, cashier.userId, bad.device],
+      );
+    });
+    await putOrderEvent(bad, bad.orders[0]!, "order.voided", "acked");
+    const result = await report(bad);
+    expect(result.reported).toBe(1);
+    expect(result.errors).toHaveLength(1);
+    expect(shapesOf(await reportedEvents(device2))).toEqual([
+      ["OFF2", 2, ["1", "2"]],
+    ]);
+    expect(await reportedEvents(bad.device)).toHaveLength(0);
+  });
+});
+
+describe("legend-zy43 receipt run cloud wiring", () => {
+  it("legend-zy43 receipt_run is not a deferred POS aggregate (no duplicate handler)", () => {
+    expect(posDeferredAggregates()).not.toContain(RECEIPT_RUN_AGGREGATE);
+  });
+
+  it("legend-zy43 cloud boot registrations never collide, in either order", () => {
+    resetEdgeApplierRegistryForTests();
+    expect(() => {
+      registerPosDeferredEdgeApplier();
+      registerReceiptRunEdgeApplier();
+    }).not.toThrow();
+    resetEdgeApplierRegistryForTests();
+    expect(() => {
+      registerReceiptRunEdgeApplier();
+      registerPosDeferredEdgeApplier();
+    }).not.toThrow();
+  });
+
+  it("legend-zy43 registerEdgeLink wires the receipt run applier and the edge runtime starts the reporter", () => {
+    const source = readFileSync(
+      new URL("../edge/runtime.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).toMatch(/registerReceiptRunEdgeApplier\(\);/);
+    expect(source).toMatch(/startEdgeReceiptRunReporter\(/);
+    expect(source).not.toContain("intentionally NOT wired");
   });
 });

@@ -22,5 +22,6 @@ export * from "./config-codecs.ts";
 export * from "./config-pii.ts";
 export * from "./events.ts";
 export * from "./event-gaps.ts";
+export * from "./ops.ts";
 export * from "./endpoints.ts";
 export * from "./fixtures.ts";

@@ -204,6 +204,12 @@ export const payrollDisbursementBatches = pgTable(
     piiKeyVersion: smallint("pii_key_version").notNull(),
     /** Format of the manual bank file (null for other channels). */
     bankFormat: varchar("bank_format", { length: 12 }),
+    /**
+     * The company bank account this batch pays from, frozen at approve (or at
+     * export for a batch approved before the column existed). A later change of
+     * the config never moves an old batch. Null: a legacy or cash batch.
+     */
+    sourceBankAccountId: uuid("source_bank_account_id"),
     exportChecksumSha256: varchar("export_checksum_sha256", { length: 64 }),
     exportedBy: actor("exported_by"),
     exportedAt: timestamp("exported_at", { withTimezone: true }),
@@ -251,6 +257,15 @@ export const payrollDisbursementBatches = pgTable(
       name: "payroll_disbursement_batches_run_fk",
       columns: [table.tenantId, table.payrollRunId],
       foreignColumns: [payrollRuns.tenantId, payrollRuns.id],
+    }),
+    foreignKey({
+      name: "payroll_disbursement_batches_source_account_fk",
+      columns: [table.tenantId, table.legalEntityId, table.sourceBankAccountId],
+      foreignColumns: [
+        bankAccounts.tenantId,
+        bankAccounts.legalEntityId,
+        bankAccounts.id,
+      ],
     }),
     check(
       "payroll_disbursement_batches_channel_check",
@@ -304,6 +319,87 @@ export const payrollDisbursementBatches = pgTable(
     check(
       "payroll_disbursement_batches_cancel_state_check",
       sql`(${table.status} = 'cancelled') = (${table.cancelledAt} IS NOT NULL) AND (${table.cancelledBy} IS NULL) = (${table.cancelledAt} IS NULL) AND (${table.cancelledReason} IS NULL OR ${table.cancelledAt} IS NOT NULL)`,
+    ),
+  ],
+);
+
+// ------------------------------------------------------------- GL postings
+
+export const PAYOUT_POSTING_KINDS = [
+  "settle",
+  "settle_skipped",
+  "return",
+  "overpaid",
+] as const;
+export type PayoutPostingKind = (typeof PAYOUT_POSTING_KINDS)[number];
+
+/**
+ * One row per group of items settled by one journal (design 4.6, legend-658).
+ * `journal_key` equals the idempotency key of the journal entry
+ * (`payroll-payout:<item_set_hash>`); a `settle_skipped` row has no journal
+ * (the run had no locked entry) and is kept so the same items never retry.
+ * Items point at their row through `payroll_disbursement_items.gl_posting_id`.
+ */
+export const payrollPayoutGlPostings = pgTable(
+  "payroll_payout_gl_postings",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    batchId: uuid("batch_id").notNull(),
+    kind: varchar("kind", { length: 14 }).$type<PayoutPostingKind>().notNull(),
+    /** SHA-256 of the sorted item ids of the group. */
+    itemSetHash: varchar("item_set_hash", { length: 64 }).notNull(),
+    journalKey: varchar("journal_key", { length: 100 }).notNull(),
+    /** Sealed `{ netIdr, feeIdr, itemCount }` of the group. */
+    totalEncrypted: bytea("total_encrypted").notNull(),
+    piiKeyVersion: smallint("pii_key_version").notNull(),
+    postedAt: timestamp("posted_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    /**
+     * False when the bank fee of the group was not journaled (bank charges
+     * mapping or source account missing at settle). Finance re-posts it once
+     * (`repostSkippedFees`); the fee journal key is `payroll-payout-fee:<hash>`.
+     */
+    feePosted: boolean("fee_posted").notNull().default(true),
+  },
+  (table) => [
+    unique("payroll_payout_gl_postings_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_gl_postings_tenant_batch_id_key").on(
+      table.tenantId,
+      table.batchId,
+      table.id,
+    ),
+    unique("payroll_payout_gl_postings_journal_key").on(
+      table.tenantId,
+      table.journalKey,
+    ),
+    index("payroll_payout_gl_postings_tenant_batch_idx").on(
+      table.tenantId,
+      table.batchId,
+    ),
+    foreignKey({
+      name: "payroll_payout_gl_postings_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    check(
+      "payroll_payout_gl_postings_kind_check",
+      sql`${table.kind} IN (${inList(PAYOUT_POSTING_KINDS)})`,
+    ),
+    check(
+      "payroll_payout_gl_postings_hash_check",
+      sql`${table.itemSetHash} ~ ${sql.raw(SHA256_FORMAT)}`,
+    ),
+    check(
+      "payroll_payout_gl_postings_key_version_check",
+      sql`${table.piiKeyVersion} >= 1`,
     ),
   ],
 );
@@ -398,8 +494,17 @@ export const payrollDisbursementItems = pgTable(
       "failed" | "not_sent"
     >(),
     resolutionEvidenceKey: varchar("resolution_evidence_key", { length: 500 }),
-    /** Group journal link; filled once by legend-wnkep.5 (no FK yet). */
+    /** Group journal link, set once when the item is settled (legend-658). */
     glPostingId: uuid("gl_posting_id"),
+    /**
+     * Two-person return of a paid item (funds came back, design 7.8): the
+     * first person records the proposal and the evidence, the second, a
+     * different non-requester, moves the item `succeeded -> returned`.
+     */
+    returnedBy: actor("returned_by"),
+    returnedBy2: actor("returned_by_2"),
+    returnEvidenceKey: varchar("return_evidence_key", { length: 500 }),
+    returnNote: varchar("return_note", { length: 500 }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -460,6 +565,15 @@ export const payrollDisbursementItems = pgTable(
       foreignColumns: [employees.tenantId, employees.id],
     }),
     foreignKey({
+      name: "payroll_disbursement_items_gl_posting_fk",
+      columns: [table.tenantId, table.batchId, table.glPostingId],
+      foreignColumns: [
+        payrollPayoutGlPostings.tenantId,
+        payrollPayoutGlPostings.batchId,
+        payrollPayoutGlPostings.id,
+      ],
+    }),
+    foreignKey({
       name: "payroll_disbursement_items_bank_snapshot_fk",
       columns: [table.tenantId, table.bankSnapshotId],
       foreignColumns: [payslipBankSnapshots.tenantId, payslipBankSnapshots.id],
@@ -513,6 +627,14 @@ export const payrollDisbursementItems = pgTable(
     check(
       "payroll_disbursement_items_resolvers_check",
       sql`${table.resolvedBy2} IS NULL OR (${table.resolvedBy} IS NOT NULL AND ${table.resolvedBy2} <> ${table.resolvedBy} AND ${table.resolutionOutcome} IS NOT NULL AND ${table.resolutionEvidenceKey} IS NOT NULL)`,
+    ),
+    check(
+      "payroll_disbursement_items_returners_check",
+      sql`(${table.returnedBy} IS NULL AND ${table.returnedBy2} IS NULL AND ${table.returnEvidenceKey} IS NULL AND ${table.returnNote} IS NULL) OR (${table.status} IN ('succeeded', 'returned') AND ${table.returnedBy} IS NOT NULL AND ${table.returnEvidenceKey} IS NOT NULL AND ${table.returnNote} IS NOT NULL AND (${table.returnedBy2} IS NULL OR ${table.returnedBy2} <> ${table.returnedBy}))`,
+    ),
+    check(
+      "payroll_disbursement_items_returned_check",
+      sql`${table.status} <> 'returned' OR ${table.returnedBy} IS NULL OR ${table.returnedBy2} IS NOT NULL`,
     ),
     check(
       "payroll_disbursement_items_resolution_outcome_check",

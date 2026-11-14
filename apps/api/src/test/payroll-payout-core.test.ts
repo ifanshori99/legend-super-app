@@ -589,6 +589,20 @@ beforeAll(async () => {
         [tenant.id, entityId, "b".repeat(64), gl],
       )
     ).rows[0].id as string;
+
+    // Bank charges role (legend-8codi): approve and export are refused without it.
+    await c.query(
+      `INSERT INTO chart_of_accounts
+         (tenant_id, legal_entity_id, code, name, type, report_group, parent_id, is_active)
+       VALUES ($1, $2, '8101', 'Beban Administrasi Bank', 'expense', 'other_expense', NULL, true)`,
+      [tenant.id, entityId],
+    );
+    await c.query(
+      `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+       SELECT $1, $2, 'bank_charges', id FROM chart_of_accounts
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = '8101'`,
+      [tenant.id, entityId],
+    );
     for (const p of ALL_PEOPLE) {
       createdEmployees.push(p.id);
       await c.query(
@@ -664,6 +678,10 @@ afterAll(async () => {
       [tenant.id, entityId],
     );
     await del(
+      "DELETE FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [tenant.id, entityId],
+    );
+    await del(
       "DELETE FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2",
       [tenant.id, entityId],
     );
@@ -685,6 +703,10 @@ afterAll(async () => {
     );
     await del(
       "DELETE FROM bank_accounts WHERE tenant_id = $1 AND legal_entity_id = ANY($2)",
+      [tenant.id, extraEntities],
+    );
+    await del(
+      "DELETE FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = ANY($2)",
       [tenant.id, extraEntities],
     );
     await del(
@@ -776,6 +798,19 @@ async function extraEntityWithBank() {
         [tenant.id, id, "c".repeat(64), gl],
       )
     ).rows[0].id as string;
+    // Bank charges role (legend-8codi): approve and export are refused without it.
+    await c.query(
+      `INSERT INTO chart_of_accounts
+         (tenant_id, legal_entity_id, code, name, type, report_group, parent_id, is_active)
+       VALUES ($1, $2, '8101', 'Beban Administrasi Bank', 'expense', 'other_expense', NULL, true)`,
+      [tenant.id, id],
+    );
+    await c.query(
+      `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+       SELECT $1, $2, 'bank_charges', id FROM chart_of_accounts
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = '8101'`,
+      [tenant.id, id],
+    );
     return { entityId: id, bankId };
   });
 }
@@ -1744,8 +1779,18 @@ describe("L4 a succeeded item is frozen", () => {
     expect(item.confirmation_ref).toBe("REF-1");
     expect(item.confirmed_by).toBe("x");
     expect(item.provider_ref).toBeNull();
-    // Control: the one allowed move out of succeeded.
-    expect(await update("status = 'returned', returned_at = now()")).toBeNull();
+    // Without two different returners the move is refused (legend-qxkm6).
+    expect(
+      await update("status = 'returned', returned_at = now()"),
+    ).not.toBeNull();
+    // Control: the one allowed move out of succeeded, with two returners.
+    expect(
+      await update(
+        `status = 'returned', returned_at = now(), returned_by = 'returner-1',
+         returned_by_2 = 'returner-2', return_evidence_key = 'bukti/kembali.pdf',
+         return_note = 'Dana kembali dari bank'`,
+      ),
+    ).toBeNull();
     expect((await itemsOf(batchId))[0]!.status).toBe("returned");
   });
 });

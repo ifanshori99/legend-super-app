@@ -141,6 +141,7 @@ export const EDGE_API_EXACT_ROUTES = [
   { method: "DELETE", path: "/api/emergency/sessions/current" },
   { method: "POST", path: "/api/emergency/alerts/:alertId/ack" },
   { method: "GET", path: "/api/emergency/fallback" },
+  { method: "GET", path: "/api/emergency/open-alerts" },
   { method: UPGRADE_METHOD, path: "/api/emergency/ws" },
 ] as const;
 

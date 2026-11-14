@@ -3,8 +3,9 @@
 // 648-brief.md). Rules: R14 the bank file comes out once, R15 the per-PT
 // `enabled` switch is checked at export, hash and approval expiry are checked
 // at export, the requester never confirms (R5), a run turns `paid` only when
-// every net > 0 slip has a succeeded item (R10), no `payroll.paid` event in
-// this slice (card .5), net pay is paid in full (R8/R9: the fee is borne by
+// every net > 0 slip has a succeeded item (R10) and then `payroll.paid` leaves
+// the outbox once with `settledPerItem` (card .5, bead legend-658), a payment
+// proof key lies in this tenant's folder of the batch (L5), net pay is paid in full (R8/R9: the fee is borne by
 // the PT, never subtracted), file rows come from the lock-time snapshot only.
 //
 // Interfaces under test (names from the brief; none exist yet):
@@ -126,6 +127,9 @@ const REQ = `payout-req-${randomUUID()}`;
 const APP = `payout-app-${randomUUID()}`;
 const APP2 = `payout-app2-${randomUUID()}`;
 const actor = (userId: string) => ({ tenantId: tenant.id as string, userId });
+/** The only evidence key shape accepted (legend-658 L5). */
+const evidenceKeyFor = (batchId: string, file: string) =>
+  `tenants/${tenant.id}/payroll-payout/${batchId}/${file}`;
 
 const scope = () =>
   establishScopedTenantContext(
@@ -571,6 +575,20 @@ beforeAll(async () => {
         [tenant.id, entityId, "b".repeat(64), gl],
       )
     ).rows[0].id as string;
+
+    // Bank charges role (legend-8codi): approve and export are refused without it.
+    await c.query(
+      `INSERT INTO chart_of_accounts
+         (tenant_id, legal_entity_id, code, name, type, report_group, parent_id, is_active)
+       VALUES ($1, $2, '8101', 'Beban Administrasi Bank', 'expense', 'other_expense', NULL, true)`,
+      [tenant.id, entityId],
+    );
+    await c.query(
+      `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+       SELECT $1, $2, 'bank_charges', id FROM chart_of_accounts
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = '8101'`,
+      [tenant.id, entityId],
+    );
     for (const p of ALL_PEOPLE) {
       createdEmployees.push(p.id);
       await c.query(
@@ -654,6 +672,10 @@ afterAll(async () => {
       [tenant.id, entityId],
     );
     await del(
+      "DELETE FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [tenant.id, entityId],
+    );
+    await del(
       "DELETE FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2",
       [tenant.id, entityId],
     );
@@ -712,7 +734,7 @@ const resolve = (
     resolveManualItems(tx, actor(by), batchId, {
       itemIds,
       outcome,
-      evidenceKey: extra.evidenceKey ?? `evidence/resolve-${batchId}.pdf`,
+      evidenceKey: extra.evidenceKey ?? evidenceKeyFor(batchId, "resolve.pdf"),
       note: extra.note ?? "Bank menolak transfer, tidak ada dana keluar",
     } as never),
   );
@@ -768,7 +790,7 @@ const handover = (batchId: string, itemIds: string[], by = APP) =>
   inTx((tx) =>
     confirmCashHandover(tx, actor(by), batchId, {
       itemIds,
-      evidenceKey: `evidence/cash-${batchId}.jpg`,
+      evidenceKey: evidenceKeyFor(batchId, "cash.jpg"),
     } as never),
   );
 const succeedAll = (items: Row[], batchId: string) =>
@@ -776,7 +798,7 @@ const succeedAll = (items: Row[], batchId: string) =>
     itemId: item.id as string,
     result: "succeeded" as const,
     bankRef: `BCA-REF-${batchId.slice(0, 8)}-${index}`,
-    evidenceKey: `evidence/${batchId}.pdf`,
+    evidenceKey: evidenceKeyFor(batchId, "laporan.pdf"),
   }));
 const liveItems = async (batchId: string) =>
   (await itemsOf(batchId)).filter((i) => i.status !== "cancelled");
@@ -1027,7 +1049,7 @@ describe("confirm manual results (R5, R10)", () => {
     expect((await itemsOf(batchId))[0]!.status).toBe("exported");
   });
 
-  it("[confirm-all-succeeded-run-paid] all items succeeded: reference and evidence stored, batch completed, run paid by the confirmer, no payroll.paid event", async () => {
+  it("[confirm-all-succeeded-run-paid] all items succeeded: reference and evidence stored, batch completed, run paid by the batch approver, one payroll.paid event", async () => {
     const runId = await seedRun([bank(BUDI, 4_000_000), bank(SITI, 3_000_000)]);
     const batchId = await approvedBatch(runId);
     await exportBatch(batchId);
@@ -1055,7 +1077,7 @@ describe("confirm manual results (R5, R10)", () => {
     expect(run.status).toBe("paid");
     expect(run.paid_by).toBe(APP);
     expect(run.paid_at).not.toBeNull();
-    expect(await paidEvents(runId), "payroll.paid belongs to card .5").toBe(0);
+    expect(await paidEvents(runId), "payroll.paid is emitted once").toBe(1);
   });
 
   it("[confirm-partial] one failed (two-person resolve): batch partially_failed, run stays locked, the failed slip returns in a follow-up batch and the paid one does not (R7)", async () => {
@@ -1069,7 +1091,7 @@ describe("confirm manual results (R5, R10)", () => {
         itemId: budi.id as string,
         result: "succeeded",
         bankRef: "BCA-OK-1",
-        evidenceKey: "evidence/ok.pdf",
+        evidenceKey: evidenceKeyFor(batchId, "ok.pdf"),
       },
     ]);
     // H2: one person alone can never free the slip. Two different people
@@ -1098,7 +1120,7 @@ describe("confirm manual results (R5, R10)", () => {
         itemId: budi.id as string,
         result: "succeeded" as const,
         bankRef: "BCA-ONE-1",
-        evidenceKey: "evidence/one.pdf",
+        evidenceKey: evidenceKeyFor(batchId, "one.pdf"),
       },
     ];
     await confirm(batchId, one);
@@ -1155,7 +1177,7 @@ describe("cash handover and the mixed run", () => {
     expect((await itemsOf(batchId))[0]!.status).toBe("prepared");
   });
 
-  it("[cash-only-run-paid] a run with only cash slips turns paid after the handover, no payroll.paid event", async () => {
+  it("[cash-only-run-paid] a run with only cash slips turns paid after the handover, one payroll.paid event", async () => {
     const runId = await seedRun([
       cash(CASHIER, 2_000_000),
       cash(SITI, 1_000_000),
@@ -1167,7 +1189,7 @@ describe("cash handover and the mixed run", () => {
       items.map((i) => i.id as string),
     );
     expect(await runStatus(runId)).toBe("paid");
-    expect(await paidEvents(runId)).toBe(0);
+    expect(await paidEvents(runId)).toBe(1);
   });
 
   it("[mixed-run-paid-after-both] bank + cash run: still locked after the bank batch completes, paid after the cash handover", async () => {
@@ -1227,7 +1249,7 @@ describe("H2 an exported item is freed only by two different people", () => {
     const { runId, batchId } = await exportedBatch();
     const siti = (await itemOfPerson(batchId, SITI))!;
     await resolve(batchId, [siti.id as string], "failed", APP, {
-      evidenceKey: "evidence/resolve-1.pdf",
+      evidenceKey: evidenceKeyFor(batchId, "resolve-1.pdf"),
       note: "Mutasi rekening tidak menunjukkan dana keluar",
     });
     const after = (await itemOfPerson(batchId, SITI))!;
@@ -1235,7 +1257,9 @@ describe("H2 an exported item is freed only by two different people", () => {
     expect(after.resolved_by).toBe(APP);
     expect(after.resolved_by_2).toBeNull();
     expect(after.resolution_outcome).toBe("failed");
-    expect(after.resolution_evidence_key).toBe("evidence/resolve-1.pdf");
+    expect(after.resolution_evidence_key).toBe(
+      evidenceKeyFor(batchId, "resolve-1.pdf"),
+    );
     expect(after.resolution_note).toBe(
       "Mutasi rekening tidak menunjukkan dana keluar",
     );
@@ -1248,7 +1272,7 @@ describe("H2 an exported item is freed only by two different people", () => {
         itemId: budi.id as string,
         result: "succeeded",
         bankRef: "BCA-OK-RS",
-        evidenceKey: "evidence/ok.pdf",
+        evidenceKey: evidenceKeyFor(batchId, "ok.pdf"),
       },
     ]);
     await expectRefused(createBatch(runId));
@@ -1338,7 +1362,7 @@ describe("H2 an exported item is freed only by two different people", () => {
         itemId: budi.id as string,
         result: "succeeded",
         bankRef: "BCA-OK-2",
-        evidenceKey: "evidence/ok.pdf",
+        evidenceKey: evidenceKeyFor(batchId, "ok.pdf"),
       },
     ]);
     await expectRefused(resolve(batchId, [budi.id as string], "failed", APP), {

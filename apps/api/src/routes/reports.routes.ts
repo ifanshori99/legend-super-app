@@ -14,13 +14,16 @@
 // Exported as a factory; app.ts mounts it at /api/reports.
 
 import { Router } from "express";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import {
   aggregateOnlyCaller,
   builderQueryPermittedFor,
   getReportEndpoint,
+  listReportScheduleRecipientsEndpoint,
   listReportsEndpoint,
   previewReportBuilderEndpoint,
   reportByCode,
+  reportCatalog,
   reportMetricByCode,
   reportPermittedFor,
   runReportEndpoint,
@@ -32,7 +35,8 @@ import { requireAuth } from "../middleware/auth";
 import { noStore } from "../middleware/no-store";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { loadRequestAccess } from "../middleware/permissions";
-import { requireTenantContext } from "../middleware/tenant";
+import { getTenantContext, requireTenantContext } from "../middleware/tenant";
+import { listReportScheduleRecipients } from "../services/report-schedule-recipients.service";
 import {
   getReportDefinition,
   listReportCatalog,
@@ -56,6 +60,25 @@ export function createReportsRouter() {
     const { permissions } = await loadRequestAccess(req);
     res.json(listReportCatalog({ permissions }, query));
   });
+
+  // A fixed path, registered before "/:reportCode". Only a caller who may open
+  // at least one report may list people to send one to; the list is the
+  // caller's own tenant, name and role only (the server resolves emails).
+  router.get(
+    route(listReportScheduleRecipientsEndpoint.path),
+    async (req, res) => {
+      const query = listReportScheduleRecipientsEndpoint.query.parse(req.query);
+      const { permissions } = await loadRequestAccess(req);
+      if (
+        !reportCatalog.some((report) => reportPermittedFor(report, permissions))
+      )
+        throw reportHttpError("REPORT_NOT_PERMITTED");
+      const context = establishScopedTenantContext(getTenantContext(req), {
+        kind: "tenant",
+      });
+      res.json(await listReportScheduleRecipients(context, query));
+    },
+  );
 
   router.post(route(runReportEndpoint.path), jsonBody, async (req, res) => {
     // An unknown code is a 404, not a schema error: look before parsing.

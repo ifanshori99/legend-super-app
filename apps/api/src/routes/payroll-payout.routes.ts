@@ -8,6 +8,7 @@
 // the file leaves the server (a second download answers 409).
 
 import { Router, type Request } from "express";
+import { z } from "zod";
 import {
   approveDisbursementBatchInputSchema,
   cancelDisbursementBatchInputSchema,
@@ -24,13 +25,20 @@ import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
-import { requireTenantStepUpMfa } from "../middleware/identity.ts";
+import {
+  requireTenantStepUpMfa,
+  requireTenantStepUpPassword,
+} from "../middleware/identity.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
   requireTenantPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
+import {
+  listSkippedFees,
+  repostSkippedFees,
+} from "../services/payroll-payout-gl.service.ts";
 import {
   getPayoutConfig,
   upsertPayoutConfig,
@@ -49,10 +57,16 @@ import {
   listDisbursementBatches,
   submitDisbursementBatch,
 } from "../services/payroll-payout.service.ts";
+import { PAYOUT_STEP_UP_MAX_AGE_MINUTES } from "../services/payroll-payout-evidence.ts";
 
 export const payrollPayoutRouter = Router();
 
-const stepUp = requireTenantStepUpMfa({ maxAgeMinutes: 15 });
+const stepUp = requireTenantStepUpMfa({
+  maxAgeMinutes: PAYOUT_STEP_UP_MAX_AGE_MINUTES,
+});
+// Confirm, resolve and cash handover: the account password again when the
+// second factor stamp comes from enrollment alone (legend-658, L5).
+const passwordStepUp = requireTenantStepUpPassword();
 
 function actorOf(req: Request) {
   const context = getScopedTenantContext(req);
@@ -236,6 +250,7 @@ payrollPayoutRouter.post(
   requireTenantPermission("payroll.disburse.approve"),
   stepUp,
   jsonBody,
+  passwordStepUp,
   async (req, res) => {
     const { id } = payoutBatchParamsSchema.parse(req.params);
     const input = confirmManualItemsInputSchema.parse(req.body);
@@ -257,6 +272,7 @@ payrollPayoutRouter.post(
   requireTenantPermission("payroll.disburse.approve"),
   stepUp,
   jsonBody,
+  passwordStepUp,
   async (req, res) => {
     const { id } = payoutBatchParamsSchema.parse(req.params);
     const input = resolveManualItemsSchema.parse(req.body);
@@ -276,12 +292,48 @@ payrollPayoutRouter.post(
   requireTenantPermission("payroll.disburse.approve"),
   stepUp,
   jsonBody,
+  passwordStepUp,
   async (req, res) => {
     const { id } = payoutBatchParamsSchema.parse(req.params);
     const input = confirmCashHandoverInputSchema.parse(req.body);
     const { context, actor } = actorOf(req);
     const data = await withTenant(db, context, (tx) =>
       confirmCashHandover(tx, actor, id, input),
+    );
+    res.json({ data });
+  },
+);
+
+// Bank fee of a settled group that was not journaled (legend-8codi): finance
+// sees the list and re-posts it once the bank charges mapping is back. It only
+// books the fee already stored as expense, so no second factor.
+payrollPayoutRouter.get(
+  "/payout-fee-reposts",
+  requireAuth,
+  requireTenantContext,
+  requireTenantPermission("payroll.view"),
+  async (req, res) => {
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      listSkippedFees(tx, actor.tenantId),
+    );
+    res.json({ data });
+  },
+);
+
+payrollPayoutRouter.post(
+  "/disbursement-batches/:id/repost-fees",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.disburse.approve"),
+  jsonBody,
+  async (req, res) => {
+    const { id } = payoutBatchParamsSchema.parse(req.params);
+    z.strictObject({}).parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      repostSkippedFees(tx, actor, id),
     );
     res.json({ data });
   },
