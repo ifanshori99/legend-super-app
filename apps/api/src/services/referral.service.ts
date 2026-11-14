@@ -574,9 +574,11 @@ export async function reverseReferralForOrder(
       expireRowCount > 0
         ? Math.max(0, bonus.points - expiredPoints - taken)
         : Number.POSITIVE_INFINITY;
+    // Points that expired are gone, not a shortfall: only what the grant still
+    // holds can fall short of the balance.
+    const cappedRemaining = Math.min(remaining, grantLeft);
     const posted = Math.min(
-      remaining,
-      grantLeft,
+      cappedRemaining,
       Math.max(0, Number(side.profile.pointsBalance)),
     );
     const reverseSourceId = referralReverseSourceId(input.sourceId, bonus.id);
@@ -597,7 +599,7 @@ export async function reverseReferralForOrder(
         },
         now,
       );
-    if (remaining > posted)
+    if (cappedRemaining > posted)
       await recordLoyaltyAnomaly(tx, {
         tenantId: tenant,
         kind: "refund_after_redeem",
@@ -608,9 +610,9 @@ export async function reverseReferralForOrder(
         details: {
           sourceType: input.sourceType,
           sourceId: reverseSourceId,
-          deltaPoints: remaining,
+          deltaPoints: cappedRemaining,
           postedPoints: posted,
-          shortfallPoints: remaining - posted,
+          shortfallPoints: cappedRemaining - posted,
         },
       });
   }

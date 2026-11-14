@@ -1229,43 +1229,50 @@ async function restoreRejectedRefund(
     return;
   }
 
-  // Replay the applied refunds in order with reverseForOrder's cumulative
-  // clamp (min(eligible, previous + refund)); an earlier rejection takes its
-  // applied amount back out. A refund with no stored event counts 0.
+  // Order-independent over the active refunds (reverseForOrder keeps
+  // refundedEligible == min(eligible, sum asked of the active refunds)): the
+  // order stays refunded by what the other active refunds ask, so a rejected
+  // refund only gives back the excess. An active refund with no stored event
+  // asks the full eligible amount (the limiting rule: it gives back less).
   const eligible = Number(record.eligibleSpendIdr);
-  const appliedById = new Map<string, number>();
-  let cumulative = 0;
+  const rejectedIds = new Set(
+    record.appliedReversalIds
+      .filter((sourceId) => sourceId.startsWith("reject:"))
+      .map((sourceId) => sourceId.slice("reject:".length)),
+  );
+  let activeAsked = 0;
   for (const sourceId of record.appliedReversalIds) {
-    if (sourceId.startsWith("reject:")) {
-      cumulative -= appliedById.get(sourceId.slice("reject:".length)) ?? 0;
+    if (
+      sourceId.startsWith("reject:") ||
+      sourceId === issueId ||
+      rejectedIds.has(sourceId)
+    )
       continue;
-    }
-    const asked = refundEligibleById.get(sourceId) ?? 0;
-    const next = Math.min(eligible, cumulative + asked);
-    appliedById.set(sourceId, next - cumulative);
-    cumulative = next;
+    activeAsked += refundEligibleById.get(sourceId) ?? eligible;
   }
   const previousRefunded = Number(record.refundedEligibleIdr);
-  const restored = Math.min(appliedById.get(issueId) ?? 0, previousRefunded);
-
-  // The points the refund reversed (none when it was clamped to 0).
-  const [reversal] = await tx
-    .select({ points: pointLedger.points })
-    .from(pointLedger)
-    .where(
-      and(
-        eq(pointLedger.tenantId, tenantId as never),
-        eq(pointLedger.customerProfileId, profile.id),
-        eq(pointLedger.type, "reverse"),
-        eq(pointLedger.sourceType, "refund"),
-        eq(pointLedger.sourceId, issueId),
-      ),
-    )
-    .limit(1);
-  const credited = Math.min(
-    reversal ? -Number(reversal.points) : 0,
-    record.reversedPoints,
+  const restored = Math.min(
+    refundEligibleById.get(issueId) ?? 0,
+    Math.max(0, previousRefunded - Math.min(eligible, activeAsked)),
   );
+
+  const booked = Number(record.bookedPoints);
+  const refundedAfter = previousRefunded - restored;
+  // Same cumulative target as reverseForOrder, rounded up against the member.
+  const target =
+    eligible === 0
+      ? 0
+      : Math.min(
+          booked,
+          Number(
+            (BigInt(booked) * BigInt(refundedAfter) + BigInt(eligible) - 1n) /
+              BigInt(eligible),
+          ),
+        );
+  // Give back only down to the target: never above reversedPoints - target.
+  // The rows of this issue's own `reverse` no longer bound it (it may return
+  // the share that now belongs to a later refund).
+  const credited = Math.max(0, record.reversedPoints - target);
   if (credited > 0) {
     let expiresAt: Date | null = null;
     if (record.earnEntryId) {
@@ -1301,21 +1308,8 @@ async function restoreRejectedRefund(
     );
   }
 
-  const booked = Number(record.bookedPoints);
-  const refundedAfter = previousRefunded - restored;
   const reversed = record.reversedPoints - credited;
   const hasPoints = record.state === "booked" || record.state === "reversed";
-  // Same cumulative target as reverseForOrder, rounded up against the member.
-  const target =
-    eligible === 0
-      ? 0
-      : Math.min(
-          booked,
-          Number(
-            (BigInt(booked) * BigInt(refundedAfter) + BigInt(eligible) - 1n) /
-              BigInt(eligible),
-          ),
-        );
   await settleRecord(
     tx,
     scope,
@@ -1341,21 +1335,6 @@ async function restoreRejectedRefund(
   // restores exactly what this refund reversed, once (dedupe key per issue).
   // Money rule: any other active refund of the order (asked amount above 0)
   // keeps the bonus taken back, since the order can still end fully refunded.
-  const rejectedIds = new Set(
-    record.appliedReversalIds
-      .filter((sourceId) => sourceId.startsWith("reject:"))
-      .map((sourceId) => sourceId.slice("reject:".length)),
-  );
-  let activeAsked = 0;
-  for (const sourceId of record.appliedReversalIds) {
-    if (
-      sourceId.startsWith("reject:") ||
-      sourceId === issueId ||
-      rejectedIds.has(sourceId)
-    )
-      continue;
-    activeAsked += refundEligibleById.get(sourceId) ?? 0;
-  }
   if (eligible > 0 && refundedAfter < eligible && activeAsked === 0) {
     await restoreReferralBonusForRejectedRefund(
       tx,
