@@ -535,7 +535,11 @@ async function voidTendersAndRefundPaidQris(
     pos: PosRow;
     paymentLinkId: string;
     intentId: string;
-    reason: "bill_below_tender" | "business_day_closed" | "refund_reserved";
+    reason:
+      | "bill_below_tender"
+      | "business_day_closed"
+      | "refund_reserved"
+      | "edc_request_open";
     now: Date;
     /** Wall-clock time the link closes at, when `now` is a fact time. */
     linkClosedAt?: Date;
