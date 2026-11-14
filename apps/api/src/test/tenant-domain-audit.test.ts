@@ -500,6 +500,19 @@ describe("legend-ix04y tenant domain audit (HTTP)", () => {
     return { client, userId };
   }
 
+  it("never consumes verification quota for an unknown domain", async () => {
+    const { client } = await adminClient();
+    const unknownDomainId = randomUUID();
+
+    for (let i = 0; i < 6; i++) {
+      const response = await client
+        .post(`/api/org/domains/${unknownDomainId}/verify`)
+        .set(originHeader);
+      expect(response.status).toBe(404);
+    }
+    expect(await auditOf(fixtures.tenant.id, unknownDomainId)).toEqual([]);
+  });
+
   it("limits verification per domain without auditing rejected attempts", async () => {
     const { client } = await adminClient();
     const brandId = (await client.get("/api/org/brands")).body.data[0]

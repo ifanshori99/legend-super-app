@@ -1144,6 +1144,7 @@ export async function verifyDomain(
   context: ScopedTenantContext,
   domainId: string,
   actorUserId: string,
+  beforeVerification?: () => void,
 ): Promise<TenantDomain> {
   // Reads through the caller's own transaction, so the race path below never
   // asks the pool for a second connection while holding one.
@@ -1179,6 +1180,8 @@ export async function verifyDomain(
       ),
     );
   const current = await withTenant(db, context, loadIn);
+  // Run the route's synchronous limit only after establishing tenant ownership.
+  beforeVerification?.();
   if (current.verifiedAt !== null) return toTenantDomain(current);
   const record = toTenantDomain(current).verification;
   // The lookup runs outside the transaction: DNS can be slow.

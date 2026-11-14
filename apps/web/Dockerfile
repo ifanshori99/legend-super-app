@@ -6,7 +6,7 @@
 # At runtime, set API_INTERNAL_URL when the web server reaches the API over a
 # private address (e.g. http://api:4000). See docs/deployment.md.
 
-ARG NODE_VERSION=22-slim
+ARG NODE_VERSION=22.18.0-slim
 
 FROM node:${NODE_VERSION} AS base
 ENV PNPM_HOME=/pnpm
