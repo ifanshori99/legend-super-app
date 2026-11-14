@@ -1,3 +1,13 @@
+## M6 pemindai bersama bukti payout + capabilities (engineer, cabang `ws/storage-scanner-pdf`, 14-15 Nov 2026 23:20-00:40 WIB)
+
+- Sudah: legend-egrrp (ba10ec7f4) `scanUploadBytes` dipakai `uploadStorage`, dokumen pemegang saham, dan `uploadPayoutEvidence`; `GET /api/storage/capabilities`; pemilih bukti payout web hanya menawarkan PDF bila `documentsAccepted`.
+- Perubahan perilaku sengaja: bukti payout saat pemindai mati sekarang 503 (dulu 422); deteksi tetap 422 PAYOUT_EVIDENCE_REJECTED.
+- Bukti gagal-dulu: 7 dari 12 test baru merah di basis f93f33660 (PDF ber-JS diterima, pemindai mati 422, gambar fail-open 422, route capabilities 404/503).
+- Uang: bukti ditolak tidak tersimpan; resolve/confirm/return/overpaid dengan kunci tak tersimpan 422, tanpa perubahan item atau posting.
+- Review architect xhigh: aman untuk uang; 3 celah test + 1 kosmetik dibetulkan.
+- Gate: 29 file test terarah (399 lulus), text-contract 11/11, prettier + eslint bersih, typecheck api/shared/web 0, build API 0.
+- Berikut: second opinion Codex area M4-M6; `CLAMD_HOST` boleh diisi setelah cabang ini masuk m1 dan VPS siap (Q-media-1). Tindak lanjut: form cuti HRIS masih menawarkan PDF tanpa cek capabilities.
+
 ## M4 ClamdMalwareScanner + M5 assertSafePdf (engineer, cabang `ws/storage-scanner-pdf` dari `origin/fix/storage-scanner-typed-error` d4c02fa0a, 14 Nov 2026 22:06-23:15 WIB, brief 801)
 
 - Sudah: M4 legend-w9hwh (adb1b107b) klien clamd INSTREAM, env `CLAMD_*`, pemilihan runtime, `scanner` di `/api/health`, bagian ClamAV di `docs/deployment.md`. M5 legend-851ef (ec1b06495) `assertSafePdf` di worker (5 dtk, 256 MB, batas dekode 64 MiB, 2 jalan + 16 antre), dipasang di `uploadStorage` dan jalur dokumen pemegang saham.
