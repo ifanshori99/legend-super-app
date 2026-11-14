@@ -500,6 +500,49 @@ describe("legend-ix04y tenant domain audit (HTTP)", () => {
     return { client, userId };
   }
 
+  it("limits verification per domain without auditing rejected attempts", async () => {
+    const { client } = await adminClient();
+    const brandId = (await client.get("/api/org/brands")).body.data[0]
+      .id as string;
+    const create = async () => {
+      const response = await client
+        .post("/api/org/domains")
+        .set(originHeader)
+        .send({ brandId, hostname: host() });
+      expect(response.status).toBe(201);
+      return response.body.data.id as string;
+    };
+    const domainId = await create();
+    const otherDomainId = await create();
+    const verify = (id: string) =>
+      client.post(`/api/org/domains/${id}/verify`).set(originHeader);
+    publish({});
+
+    for (let i = 0; i < 5; i++) {
+      const response = await verify(domainId);
+      expect(response.status).toBe(422);
+      expect(response.body.error.code).toBe("DOMAIN_VERIFICATION_FAILED");
+    }
+    const before = await auditOf(fixtures.tenant.id, domainId);
+    expect(actions(before)).toEqual([
+      "tenant_domain.added",
+      ...Array(5).fill("tenant_domain.verification_failed"),
+    ]);
+
+    const rejected = await verify(domainId);
+    expect(rejected.status).toBe(429);
+    expect(rejected.body.error.code).toBe("DOMAIN_VERIFICATION_RATE_LIMITED");
+    expect(await auditOf(fixtures.tenant.id, domainId)).toEqual(before);
+
+    const other = await verify(otherDomainId);
+    expect(other.status).toBe(422);
+    expect(other.body.error.code).toBe("DOMAIN_VERIFICATION_FAILED");
+    expect(actions(await auditOf(fixtures.tenant.id, otherDomainId))).toEqual([
+      "tenant_domain.added",
+      "tenant_domain.verification_failed",
+    ]);
+  });
+
   it("5. add, failed verify, verify and delete over the routes each audit the signed-in user", async () => {
     const { client, userId } = await adminClient();
     const brandId = (await client.get("/api/org/brands")).body.data[0]

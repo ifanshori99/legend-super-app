@@ -55,6 +55,7 @@ import {
   verifyDomain,
 } from "../services/org.service";
 import { HttpError } from "../lib/http-error";
+import { createFixedWindowCounter } from "../lib/fixed-window-counter";
 import {
   approveSupportAccessRequest,
   endTenantSupportAccess,
@@ -76,6 +77,14 @@ orgRouter.use(
 
 // TEN-03: role assignments determine both permission and service scope.
 const manage = requireTenantPermission("org.structure.manage");
+
+// Bound DNS checks and their audit rows per tenant and domain. Count before
+// the asynchronous lookup so concurrent requests cannot bypass the limit.
+const domainVerificationAttempts = createFixedWindowCounter({
+  limit: 5,
+  windowMs: 10 * 60 * 1000,
+  capacity: 20_000,
+});
 
 orgRouter.get("/modules", manage, async (req, res) => {
   res.json({ data: await getFeatureFlags(getScopedTenantContext(req)) });
@@ -205,12 +214,22 @@ orgRouter.post("/domains", manage, jsonBody, async (req, res) => {
 
 orgRouter.post("/domains/:domainId/verify", manage, async (req, res) => {
   const domainId = tenantDomainIdSchema.parse(req.params.domainId);
+  const context = getScopedTenantContext(req);
+  const retryAfter = domainVerificationAttempts.take(
+    `${context.tenant.tenantId}:${domainId}`,
+    Date.now(),
+  );
+  if (retryAfter !== null) {
+    res.setHeader("Retry-After", String(retryAfter));
+    res.setHeader("Cache-Control", "no-store");
+    throw new HttpError(
+      429,
+      "DOMAIN_VERIFICATION_RATE_LIMITED",
+      "Terlalu banyak percobaan verifikasi domain. Coba lagi nanti.",
+    );
+  }
   res.json({
-    data: await verifyDomain(
-      getScopedTenantContext(req),
-      domainId,
-      getAuth(req).user.id,
-    ),
+    data: await verifyDomain(context, domainId, getAuth(req).user.id),
   });
 });
 
