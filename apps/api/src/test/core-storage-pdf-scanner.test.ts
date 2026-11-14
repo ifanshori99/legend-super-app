@@ -17,6 +17,7 @@ import {
 import { uploadStorage } from "../services/core-storage";
 import { createStorageRuntimeFromEnv } from "../services/core-storage-runtime";
 import { HttpError } from "../lib/http-error";
+import { validPdfBytes } from "./helpers/pdf-fixtures";
 
 const pool = new Pool({ connectionString: process.env.APP_DATABASE_URL });
 const owner = new Pool({
@@ -96,7 +97,8 @@ const png = () =>
   sharp({ create: { width: 1, height: 1, channels: 3, background: "red" } })
     .png()
     .toBuffer();
-const pdf = () => new TextEncoder().encode("%PDF-1.4\n%%EOF\n");
+// A real PDF: document uploads are parsed before the scan (legend-851ef).
+const pdf = () => validPdfBytes();
 
 const upload = (
   purpose: "document" | "selfie",
@@ -126,7 +128,11 @@ const runtimeScanner = (nodeEnv: string) => {
 };
 
 it("production runtime refuses a document PDF with 503 and a clear message", async () => {
-  const error = await upload("document", pdf(), runtimeScanner("production"))
+  const error = await upload(
+    "document",
+    await pdf(),
+    runtimeScanner("production"),
+  )
     .then(() => null)
     .catch((e: unknown) => e);
   expect(error).toBeInstanceOf(HttpError);
@@ -147,14 +153,14 @@ it("production runtime still accepts an image", async () => {
 });
 
 it("test runtime accepts a document PDF", async () => {
-  const stored = await upload("document", pdf(), runtimeScanner("test"));
+  const stored = await upload("document", await pdf(), runtimeScanner("test"));
   expect(stored.id).toBeTruthy();
 });
 
 it("a scanner with acceptsDocuments true accepts a document PDF", async () => {
   const stored = await upload(
     "document",
-    pdf(),
+    await pdf(),
     new NoopMalwareScanner({ acceptsDocuments: true }),
   );
   expect(stored.id).toBeTruthy();
@@ -164,7 +170,7 @@ it("a scanner with acceptsDocuments false refuses a document PDF", async () => {
   await expect(
     upload(
       "document",
-      pdf(),
+      await pdf(),
       new NoopMalwareScanner({ acceptsDocuments: false }),
     ),
   ).rejects.toMatchObject({ status: 503 });
@@ -172,7 +178,7 @@ it("a scanner with acceptsDocuments false refuses a document PDF", async () => {
 
 it("a scanner outage refuses a PDF with a typed 503", async () => {
   await expect(
-    upload("document", pdf(), {
+    upload("document", await pdf(), {
       scan: async () => {
         throw new Error("internal scanner socket failure");
       },

@@ -29,6 +29,8 @@ import {
   type MalwareScanner,
 } from "./core-image";
 import { HttpError } from "../lib/http-error";
+import { logger } from "../lib/logger";
+import { assertSafePdf } from "./pdf-safety";
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -89,6 +91,12 @@ export async function uploadStorage(
     Buffer.from(bytes).subarray(0, 5).toString("ascii") === "%PDF-"
   ) {
     assertScannerAcceptsDocuments(deps.scanner);
+    // Structure first (malformed, encrypted, active content: 422), then the
+    // malware scan; nothing is stored until both pass (legend-851ef).
+    const { pageCount } = await assertSafePdf(bytes, {
+      maxBytes: policy.maxBytes,
+    });
+    logger.info({ pageCount }, "storage pdf checked");
     await scanUpload(deps.scanner, bytes);
     contentType = "application/pdf";
     full = bytes;

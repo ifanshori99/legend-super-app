@@ -13,6 +13,9 @@ export default defineConfig({
     "predeploy-check": "src/predeploy-check.ts",
     "reset-preswitch-refunds": "src/reset-preswitch-refunds.ts",
     worker: "src/worker-main.ts",
+    // Loaded by services/pdf-safety.ts as `new Worker(dist/pdf-safety.worker.js)`;
+    // it must sit beside the server chunks in dist/ (legend-851ef).
+    "pdf-safety.worker": "src/services/pdf-safety.worker.ts",
   },
   format: "esm",
   platform: "node",

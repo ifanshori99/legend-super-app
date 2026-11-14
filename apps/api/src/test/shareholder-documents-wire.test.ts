@@ -11,6 +11,7 @@ import { createApp } from "../app.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import { validPdfBytes } from "./helpers/pdf-fixtures.ts";
 import { owner, seededTenantId as tenantId } from "./floor-test-helpers.ts";
 
 const storage = new FakeObjectStorage();
@@ -146,17 +147,15 @@ async function shareVersion(
   }
 }
 
-const pdf = () =>
-  Buffer.from(
-    `%PDF-1.4\n1 0 obj<<>>endobj\n${randomBytes(8).toString("hex")}%%EOF\n`,
-  );
+const pdf = async () =>
+  Buffer.from(await validPdfBytes({ marker: randomBytes(8).toString("hex") }));
 
-const upload = (who: Person, entityId: string) =>
+const upload = async (who: Person, entityId: string) =>
   who.client
     .post(`${BASE}/files`)
     .set(originHeader)
     .field("profitEntityId", entityId)
-    .attach("file", pdf(), {
+    .attach("file", await pdf(), {
       filename: "laporan.pdf",
       contentType: "application/pdf",
     });

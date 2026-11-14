@@ -51,6 +51,7 @@ import {
   assertScannerAcceptsDocuments,
   type MalwareScanner,
 } from "./core-image";
+import { assertSafePdf } from "./pdf-safety";
 
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
 
@@ -186,6 +187,9 @@ export async function uploadShareholderDocumentFileService(
   // A scanner that cannot vet documents (production noop) refuses before any
   // blob is stored (legend-0w2wy).
   assertScannerAcceptsDocuments(deps.scanner);
+  // Structural check (malformed, encrypted, active content) before the scan
+  // and before any blob is stored (legend-851ef).
+  await assertSafePdf(bytes, { maxBytes: MAX_PDF_BYTES });
   // Rejects on detection or scanner failure: nothing is stored either way.
   await deps.scanner.scan(bytes);
   const id = randomUUID();
