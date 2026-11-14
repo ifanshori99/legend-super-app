@@ -344,6 +344,68 @@ export const id = {
       capacity: "Kapasitas",
       serving: "Waktu saji",
       remake: "Remake",
+      stations: "Stasiun",
+    },
+    // Station config editor (bead legend-sonf): KDS tab order, active toggle
+    // and the print fallback per station.
+    stations: {
+      title: "Pengaturan stasiun",
+      intro: "Atur urutan tab dan ketersediaan stasiun dapur.",
+      panelTitle: "Urutan dan status stasiun",
+      panelHint: "Pindahkan stasiun untuk mengubah urutan tab di KDS.",
+      columnStation: "Stasiun",
+      columnOrder: "Urutan",
+      columnStatus: "Status stasiun",
+      columnPrint: "Cetak cadangan",
+      orderLabel: "Urutan tab",
+      unknownStation: "Stasiun tanpa nama",
+      types: {
+        coffee_bar: "Stasiun minuman kopi",
+        beverage_bar: "Stasiun minuman nonkopi",
+        hot_kitchen: "Stasiun makanan panas",
+        cold_kitchen: "Stasiun makanan dingin",
+        pastry: "Stasiun pastry",
+      },
+      moveUp: "Naikkan {name}",
+      moveDown: "Turunkan {name}",
+      statusAria: "Status stasiun {name}",
+      printAria: "Cetak cadangan {name}",
+      on: "Aktif",
+      off: "Nonaktif",
+      noChanges: "Belum ada perubahan",
+      unsaved: "Perubahan belum disimpan",
+      saved: "Tidak ada perubahan yang belum disimpan",
+      save: "Simpan pengaturan",
+      retrySave: "Coba simpan lagi",
+      loading: "Memuat pengaturan stasiun…",
+      errorTitle: "Pengaturan tidak dapat dimuat",
+      errorHint: "Periksa koneksi ke perangkat outlet, lalu coba lagi.",
+      retry: "Coba lagi",
+      emptyTitle: "Belum ada stasiun",
+      emptyHint:
+        "Stasiun yang tersedia untuk outlet akan muncul di sini. Jika daftar masih kosong, minta manajer outlet memeriksa penugasan stasiun.",
+      reload: "Muat ulang daftar",
+      saveFailedTitle: "Pengaturan belum tersimpan",
+      saveFailedHint:
+        "Perubahan tetap di layar. Periksa koneksi lalu coba simpan lagi.",
+      successTitle: "Pengaturan tersimpan",
+      successHint: "Urutan dan status stasiun telah diperbarui.",
+      viewSettings: "Lihat pengaturan",
+      unavailableTitle: "Penyimpanan belum tersedia",
+      unavailableHint:
+        "Urutan dan status stasiun belum dapat diubah dari layar ini. Daftar di bawah hanya untuk dibaca.",
+      fallbackTitle: "Cetak cadangan",
+      fallbackIntro:
+        "Saat tablet KDS tidak merespons, tiket dapat dicetak otomatis di printer stasiun.",
+      fallbackCardTitle: "Per stasiun",
+      fallbackCardText:
+        "Aktifkan cetak cadangan pada baris stasiun yang memerlukannya.",
+      moved: "{name} dipindah ke urutan {n}.",
+      minOneActive:
+        "Minimal satu stasiun harus aktif agar KDS menampilkan tiket.",
+      leaveConfirm: "Perubahan belum disimpan. Tinggalkan halaman?",
+      fallbackNote:
+        "Pastikan printer stasiun tersedia untuk menjaga alur dapur.",
     },
     capacity: {
       title: "Kapasitas & pacing",

@@ -16,6 +16,7 @@ import type {
 } from "@starter/shared/kitchen";
 import { callEndpoint } from "@/lib/api/endpoint.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
+import { getKdsScannerStatus } from "./contract-gap.ts";
 
 export async function fetchStations(outletId: string, signal?: AbortSignal) {
   return (
@@ -121,4 +122,18 @@ export async function markUnavailable(outletId: string, menuItemId: string) {
     cursor = page.meta.nextCursor ?? undefined;
   } while (cursor);
   throw new Error("Availability record not found");
+}
+
+/** Scanner connection (contract gap, see contract-gap.ts). */
+export async function fetchScannerStatus(
+  outletId: string,
+  signal?: AbortSignal,
+) {
+  return (
+    await callEndpoint(
+      getKdsScannerStatus,
+      { params: { outletId } },
+      { signal },
+    )
+  ).data;
 }

@@ -6,12 +6,22 @@
 // page-fill selection would read as a hole instead of a raised choice.
 // v3 (Metoric tab group): the default selection is a card chip with a
 // hairline ring on the surface-2 track, the same look as Tabs.
+// v4 (v4ht): optional `count` renders a tabular-nums chip after the label.
+// The number is plain text inside the radio, so the accessible name reads
+// "label count". The chip fill flips with the selection so the foreground
+// number keeps 3:1+ in checked and unchecked, light and dark.
 import * as React from "react";
 import { cn } from "cn";
 import type { LucideIcon } from "lucide-react";
 import { RadioGroup } from "radix-ui";
 
-type Option<T extends string> = { value: T; label: string; icon?: LucideIcon };
+type Option<T extends string> = {
+  value: T;
+  label: string;
+  icon?: LucideIcon;
+  /** Optional count chip after the label. Undefined renders no chip. */
+  count?: number;
+};
 
 function SegmentedControl<T extends string>({
   value,
@@ -41,21 +51,35 @@ function SegmentedControl<T extends string>({
         className,
       )}
     >
-      {options.map(({ value: optionValue, label: optionLabel, icon: Icon }) => (
-        <RadioGroup.Item
-          key={optionValue}
-          value={optionValue}
-          className={cn(
-            "inline-flex min-h-[calc(var(--control-h-sm)-0.5rem)] shrink-0 items-center gap-1.5 rounded-[max(calc(var(--control-radius)-0.25rem),0.25rem)] px-3 text-sm font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground data-[state=checked]:font-semibold",
-            selection === "ink"
-              ? "data-[state=checked]:bg-foreground data-[state=checked]:text-background data-[state=checked]:shadow-raised"
-              : "data-[state=checked]:bg-card data-[state=checked]:text-foreground data-[state=checked]:shadow-[inset_0_0_0_1px_var(--border),var(--elevation-hairline)]",
-          )}
-        >
-          {Icon && <Icon className="size-4" aria-hidden="true" />}
-          {optionLabel}
-        </RadioGroup.Item>
-      ))}
+      {options.map(
+        ({ value: optionValue, label: optionLabel, icon: Icon, count }) => (
+          <RadioGroup.Item
+            key={optionValue}
+            value={optionValue}
+            className={cn(
+              "group/seg inline-flex min-h-[calc(var(--control-h-sm)-0.5rem)] shrink-0 items-center gap-1.5 rounded-[max(calc(var(--control-radius)-0.25rem),0.25rem)] px-3 text-sm font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground data-[state=checked]:font-semibold",
+              selection === "ink"
+                ? "data-[state=checked]:bg-foreground data-[state=checked]:text-background data-[state=checked]:shadow-raised"
+                : "data-[state=checked]:bg-card data-[state=checked]:text-foreground data-[state=checked]:shadow-[inset_0_0_0_1px_var(--border),var(--elevation-hairline)]",
+            )}
+          >
+            {Icon && <Icon className="size-4" aria-hidden="true" />}
+            {optionLabel}
+            {count !== undefined && (
+              <span
+                className={cn(
+                  "inline-flex min-w-5 items-center justify-center rounded-full px-1.5 text-xs leading-5 font-semibold text-foreground tabular-nums",
+                  selection === "ink"
+                    ? "bg-card group-data-[state=checked]/seg:bg-background"
+                    : "bg-card group-data-[state=checked]/seg:bg-surface-2",
+                )}
+              >
+                {count}
+              </span>
+            )}
+          </RadioGroup.Item>
+        ),
+      )}
     </RadioGroup.Root>
   );
 }

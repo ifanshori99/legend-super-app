@@ -1,0 +1,156 @@
+{
+  "baseUrl": "http://localhost:3247",
+  "axe": "axe-core bundle",
+  "tags": [
+    "wcag2a",
+    "wcag2aa",
+    "wcag21aa",
+    "wcag22aa"
+  ],
+  "results": {
+    "sonf-normal-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "sonf-normal-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "sonf-loading-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "sonf-loading-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "sonf-empty-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "sonf-empty-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "sonf-error-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "sonf-error-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "sonf-dirty-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "sonf-dirty-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "sonf-save-failed-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "sonf-save-failed-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "sonf-success-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "sonf-success-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-normal-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-normal-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-loading-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-loading-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-empty-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-empty-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-error-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-error-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-no-tickets-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-no-tickets-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-disconnected-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-disconnected-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-connected-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-connected-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-busy-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-busy-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-success-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-success-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-scan-error-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-scan-error-390": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-save-failed-1280": {
+      "status": "pass",
+      "violations": []
+    },
+    "uqfu-save-failed-390": {
+      "status": "pass",
+      "violations": []
+    }
+  }
+}
