@@ -541,8 +541,10 @@ async function reverseDeductedDay(
  * below zero (every payout clamps remaining at 0, so a negative balance only
  * restricts payment, and `used` keeps matching the ledger); that case is
  * audited. When the carry-over of the day's year
- * already ran, the next year's carried-over days lose the day too (clamped at
- * 0, audited) so it is not paid through the carry. Same locks as the reversal:
+ * already ran, the next year's carried-over days lose the day too, only when
+ * the day was inside the carried days (not when the cap kept it out), and the
+ * cut follows into later years whose carry ran (clamped at 0, audited) so it
+ * is not paid through the carry. Same locks as the reversal:
  * the caller's employee lock, the collective holiday rows FOR SHARE, the
  * balance FOR UPDATE, then the ledger. Returns the days taken back (0 or 1).
  */
@@ -655,44 +657,78 @@ export async function redeductCollectiveLeaveForRejectedDay(
       parseDecimal4(balance.pendingDays) <
     0n;
   // The day's year is closed (carry-over into the next year ran): the day was
-  // given back before that and may sit in the next year's carried days.
-  const [carryRow] = await tx
-    .select({ days: leaveAccruals.days })
-    .from(leaveAccruals)
-    .where(
-      and(
-        eq(leaveAccruals.tenantId, tenantId),
-        eq(leaveAccruals.employeeId, employeeId),
-        eq(leaveAccruals.leaveTypeId, deducted.leaveTypeId),
-        eq(leaveAccruals.kind, "carry_over"),
-        eq(leaveAccruals.period, String(year + 1)),
-      ),
-    )
-    .limit(1);
-  let carryReducedFrom: string | null = null; // next year's carry before the cut
-  if (carryRow && parseDecimal4(carryRow.days) > 0n) {
+  // given back before that and may sit in the next years' carried days. Carry
+  // of a year is min(remaining of the year before, the cap at that time) (see
+  // carryOverLeave). The cap at that time is the carry ledger row of the year
+  // (C), not the policy now: the policy may have changed since. A carry is cut
+  // only by the part of the day that was really inside it: nothing when C kept
+  // the day out. A year whose carry was cut passes the cut on to the following
+  // year's carry the same way.
+  const carriedFrom = (
+    from: typeof locked,
+    toYear: number,
+    ledgerCarry: bigint,
+  ) => {
+    const available =
+      parseDecimal4(from.entitledDays) +
+      usableCarriedOverDays(from, `${toYear}-01-01`) -
+      parseDecimal4(from.usedDays) -
+      parseDecimal4(from.pendingDays);
+    return available <= 0n
+      ? 0n
+      : available < ledgerCarry
+        ? available
+        : ledgerCarry;
+  };
+  let carryReduced = false;
+  let before = locked; // balance of the year before the carry, pre-cut
+  let after: typeof locked = balance; // the same balance, post-cut
+  for (let toYear = year + 1; ; toYear += 1) {
+    const [carryRow] = await tx
+      .select({ days: leaveAccruals.days })
+      .from(leaveAccruals)
+      .where(
+        and(
+          eq(leaveAccruals.tenantId, tenantId),
+          eq(leaveAccruals.employeeId, employeeId),
+          eq(leaveAccruals.leaveTypeId, deducted.leaveTypeId),
+          eq(leaveAccruals.kind, "carry_over"),
+          eq(leaveAccruals.period, String(toYear)),
+        ),
+      )
+      .limit(1);
+    if (!carryRow || parseDecimal4(carryRow.days) <= 0n) break;
+    const ledgerCarry = parseDecimal4(carryRow.days);
+    const cut =
+      carriedFrom(before, toYear, ledgerCarry) -
+      carriedFrom(after, toYear, ledgerCarry);
+    if (cut <= 0n) break;
     const next = await lockBalanceForUpdate(
       tx,
       tenantId,
       employeeId,
       deducted.leaveTypeId,
-      year + 1,
+      toYear,
     );
-    if (next && parseDecimal4(next.carriedOverDays) > 0n) {
-      carryReducedFrom = next.carriedOverDays;
-      await tx
-        .update(leaveBalances)
-        .set({
-          carriedOverDays: sql`GREATEST(${leaveBalances.carriedOverDays} - ${formatDecimal4(ONE_DAY)}::numeric, 0)`,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(leaveBalances.tenantId, tenantId),
-            eq(leaveBalances.id, next.id),
-          ),
-        );
-    }
+    if (!next || parseDecimal4(next.carriedOverDays) <= 0n) break;
+    const taken = parseDecimal4(next.carriedOverDays);
+    const [cutRow] = await tx
+      .update(leaveBalances)
+      .set({
+        carriedOverDays: sql`GREATEST(${leaveBalances.carriedOverDays} - ${formatDecimal4(cut < taken ? cut : taken)}::numeric, 0)`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(leaveBalances.tenantId, tenantId),
+          eq(leaveBalances.id, next.id),
+        ),
+      )
+      .returning();
+    if (!cutRow) throw new Error("Leave balance update returned no row");
+    carryReduced = true;
+    before = next;
+    after = cutRow;
   }
   await audit(tx, context, actor, now, {
     action: "hris.leave_collective.rededucted",
@@ -703,7 +739,7 @@ export async function redeductCollectiveLeaveForRejectedDay(
       periodYear: year,
       rededucted: 1,
       ...(negative ? { negative: 1 } : {}),
-      ...(carryReducedFrom !== null ? { carryReduced: 1 } : {}),
+      ...(carryReduced ? { carryReduced: 1 } : {}),
     },
   });
   return 1;

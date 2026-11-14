@@ -1128,6 +1128,16 @@ describe("F3: an accepted day whose log is later rejected or re-flagged is deduc
     await decide(logId, "accept");
     expect(await usedOf(e.id)).toBe(deducted - 1);
     // Carry-over of 2049 into 2050 ran after the day was given back: 3 days.
+    // The carry is min(remaining, cap): remaining was exactly 3 then, so the
+    // given-back day really sat inside the carry (legend-esjkw: a day the cap
+    // kept out of the carry is not cut again).
+    await sql(
+      `UPDATE leave_balances
+          SET entitled_days = used_days + pending_days + 3 - carried_over_days
+        WHERE tenant_id = $1 AND employee_id = $2 AND leave_type_id = $3
+          AND period_year = $4`,
+      [tenantId, e.id, annualTypeId, YEAR],
+    );
     await sql(
       `INSERT INTO leave_accruals (tenant_id, employee_id, leave_type_id, kind, period, days)
        VALUES ($1, $2, $3, 'carry_over', '2050', '3')`,
