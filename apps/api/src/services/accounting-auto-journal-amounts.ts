@@ -71,12 +71,14 @@ import {
 } from "@starter/shared/payment";
 import {
   accountMappings,
+  billSplits,
   cashMovements,
   domainEventOutbox,
   goodsReceiptLines,
   journalEntries,
   loyaltyPrograms,
   orderIssueCharges,
+  orderIssues,
   orders,
   outlets,
   paymentIntents,
@@ -183,6 +185,16 @@ export class AutoJournalPayloadInvalid extends Error {
  */
 export class AutoJournalReceiptPending extends Error {
   readonly code = "AUTO_JOURNAL_RECEIPT_PENDING";
+}
+
+/**
+ * legend-qte35: a recovery refund (order_issues.id) has no payment_refunds row
+ * and its gateway part cannot be tied to an intent through the order's tenders:
+ * parked retryable. The part is never guessed into gateway_clearing; the sweep
+ * retries once the payment refund is filed or the tender carries its intent.
+ */
+export class AutoJournalRefundSourcePending extends Error {
+  readonly code = "AUTO_JOURNAL_REFUND_SOURCE_PENDING";
 }
 
 /**
@@ -840,7 +852,9 @@ type RefundLine = {
  *   refunds of the order took; a tender without an intent goes to clearing.
  *   The deposit-refund part (pos_deposit_refunds) goes to its source intent;
  * - recovery refund (no POS row): the intent of the payment refund filed with
- *   order_issue_id = refundId;
+ *   order_issue_id = refundId; without that row (legend-qte35) the order's
+ *   gateway tenders give the intent, and a part no intent can be proven for
+ *   parks the refund retryable (never gateway_clearing);
  * - otherwise (payload only): the payload lines as legacy lines.
  * Per intent, receipt "posted" credits customer_deposit, "pending" parks the
  * refund retryable, "none" (money received before the wiring; its payout parks
@@ -901,6 +915,25 @@ async function refundGatewaySplitOf(
             ),
           )
       : [];
+  // legend-qte35: refundId names an issue of this order, with neither a POS
+  // refund nor a payment refund row yet.
+  const recoveryWithoutSource =
+    !current &&
+    !recovery[0] &&
+    UUID_RE.test(p.refundId) &&
+    (
+      await tx
+        .select({ id: orderIssues.id })
+        .from(orderIssues)
+        .where(
+          and(
+            eq(orderIssues.tenantId, tenantId),
+            eq(orderIssues.id, p.refundId),
+            eq(orderIssues.orderId, p.orderId),
+          ),
+        )
+        .limit(1)
+    ).length > 0;
   if (recovery[0]) {
     add(recovery[0].intentId, gatewayIdr);
   } else {
@@ -982,6 +1015,82 @@ async function refundGatewaySplitOf(
           ),
         );
       for (const row of deposits) add(row.intentId, Number(row.amountIdr));
+    }
+  }
+  if (recoveryWithoutSource) {
+    let attributedIdr = 0;
+    for (const amountIdr of byIntent.values()) attributedIdr += amountIdr;
+    if (byIntent.has(null) || attributedIdr < gatewayIdr) {
+      // A QR pay-first order has no tender rows: it is pinned to its one
+      // payment intent (orders.payment_intent_id). Only when no tender
+      // attributed anything (never a partial mix), and never more than the
+      // intent was worth; anything else waits, never gateway_clearing.
+      const untouched =
+        byIntent.size === 0 ||
+        (byIntent.size === 1 && byIntent.has(null) && attributedIdr > 0);
+      let pinnedIntentId: string | null = null;
+      if (untouched) {
+        const [pinned] = await tx
+          .select({
+            intentId: orders.paymentIntentId,
+            amountIdr: paymentIntents.amountIdr,
+            status: paymentIntents.status,
+            paidAt: paymentIntents.paidAt,
+            billSplitId: paymentIntents.billSplitId,
+          })
+          .from(orders)
+          .innerJoin(
+            paymentIntents,
+            and(
+              eq(paymentIntents.tenantId, orders.tenantId),
+              eq(paymentIntents.id, orders.paymentIntentId),
+            ),
+          )
+          .where(and(eq(orders.tenantId, tenantId), eq(orders.id, p.orderId)));
+        // Only a settled, whole-bill intent proves the payer; an unpaid or
+        // expired one reads as receipt "none" (= clearing) and a split bill
+        // has several payers (legend-qte35, architect review).
+        if (
+          pinned?.intentId &&
+          pinned.paidAt !== null &&
+          ["paid", "partially_refunded", "refunded"].includes(pinned.status) &&
+          pinned.billSplitId === null
+        ) {
+          const [splits] = await tx
+            .select({ n: sql<number>`count(*)::int` })
+            .from(billSplits)
+            .where(
+              and(
+                eq(billSplits.tenantId, tenantId),
+                eq(billSplits.orderId, p.orderId),
+              ),
+            );
+          // Refunds already filed on the intent count against what it took.
+          const [filed] = await tx
+            .select({
+              total: sql<string>`coalesce(sum(${paymentRefunds.amountIdr}), 0)::text`,
+            })
+            .from(paymentRefunds)
+            .where(
+              and(
+                eq(paymentRefunds.tenantId, tenantId),
+                eq(paymentRefunds.paymentIntentId, pinned.intentId),
+                ne(paymentRefunds.status, "failed"),
+              ),
+            );
+          if (
+            (splits?.n ?? 0) === 0 &&
+            gatewayIdr + Number(filed?.total ?? 0) <= Number(pinned.amountIdr)
+          )
+            pinnedIntentId = pinned.intentId;
+        }
+      }
+      if (pinnedIntentId === null)
+        throw new AutoJournalRefundSourcePending(
+          "Recovery refund has no payment refund and no provable gateway intent",
+        );
+      byIntent.clear();
+      byIntent.set(pinnedIntentId, gatewayIdr);
     }
   }
   const intentIds = [...byIntent.keys()].filter(

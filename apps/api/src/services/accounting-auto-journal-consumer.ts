@@ -65,6 +65,7 @@ import {
   AutoJournalReceiptDeadLettered,
   AutoJournalReceiptMissing,
   AutoJournalReceiptPending,
+  AutoJournalRefundSourcePending,
   autoJournalFactOf,
   autoJournalKeyOf,
   invalidEventKeyOf,
@@ -127,6 +128,7 @@ const RETRYABLE_CODES = [
   "AUTO_JOURNAL_RECEIPT_PENDING",
   "AUTO_JOURNAL_SALE_PENDING",
   "AUTO_JOURNAL_RECOVERY_REFUND_PENDING",
+  "AUTO_JOURNAL_REFUND_SOURCE_PENDING",
 ] as const;
 
 const PAYLOAD_INVALID = "AUTO_JOURNAL_PAYLOAD_INVALID";
@@ -171,6 +173,7 @@ function parkCodeOf(error: unknown): string | null {
   if (error instanceof AutoJournalPayloadInvalid) return error.code;
   if (error instanceof AutoJournalDebitNoteShort) return error.code;
   if (error instanceof AutoJournalReceiptPending) return error.code;
+  if (error instanceof AutoJournalRefundSourcePending) return error.code;
   if (error instanceof AutoJournalReceiptMissing) return error.code;
   if (error instanceof AutoJournalReceiptDeadLettered) return error.code;
   if (error instanceof AutoJournalSalePending) return error.code;
