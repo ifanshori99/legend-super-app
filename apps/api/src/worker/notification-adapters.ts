@@ -328,16 +328,22 @@ async function activeAssignees(
   return rows.map((row) => row.userId).sort();
 }
 
-async function audienceOf(tx: Tx, event: EventEnvelope): Promise<Audience> {
-  if (!event.outletId) return { kind: "tenant" };
+async function outletAudience(
+  tx: Tx,
+  tenantId: string,
+  outletId: string,
+): Promise<Audience> {
   const [outlet] = await tx
     .select({ brandId: outlets.brandId })
     .from(outlets)
-    .where(
-      and(eq(outlets.tenantId, event.tenantId), eq(outlets.id, event.outletId)),
-    );
+    .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)));
   if (!outlet) throw new Error("Notification outlet not found");
-  return { kind: "outlet", outletId: event.outletId, brandId: outlet.brandId };
+  return { kind: "outlet", outletId, brandId: outlet.brandId };
+}
+
+async function audienceOf(tx: Tx, event: EventEnvelope): Promise<Audience> {
+  if (!event.outletId) return { kind: "tenant" };
+  return outletAudience(tx, event.tenantId, event.outletId);
 }
 
 // ---- Event rules -------------------------------------------------------------
@@ -967,7 +973,7 @@ async function shiftCancelledRule(input: RuleInput): Promise<Rule> {
 
 /** legend-jitc3: a collective leave day was deducted again for an employee
  * whose offboarding is already settled. The snapshot is frozen, so HR (active
- * holders of `hr.employee.manage` covering the outlet, re-read here) bills the
+ * settlement-permission holders covering the employee's home outlet, re-read here) bills the
  * extra day by hand. The employee name is read from the DB, never the event. */
 async function leaveRedeductedAfterSettlementRule(
   input: RuleInput,
@@ -976,7 +982,10 @@ async function leaveRedeductedAfterSettlementRule(
     input.event.payload,
   );
   const [employee] = await input.tx
-    .select({ fullName: employees.fullName })
+    .select({
+      fullName: employees.fullName,
+      homeOutletId: employees.homeOutletId,
+    })
     .from(employees)
     .where(
       and(
@@ -984,12 +993,21 @@ async function leaveRedeductedAfterSettlementRule(
         eq(employees.id, payload.employeeId),
       ),
     );
-  const hr = await activeAssignees(
-    input.tx,
-    input.tenantId,
-    sql`${roles.permissions} @> ${JSON.stringify(["hr.employee.manage"])}::jsonb`,
-    await audienceOf(input.tx, input.event),
-  );
+  // The audience is the employee's CURRENT HOME outlet, not the outlet of the
+  // attendance log that triggered the re-deduction: HR of an old attendance
+  // outlet must not see settlement details. Holders are those who may read the
+  // settlement (`hr.employee.manage` or `payroll.view`). Employee not found:
+  // the home outlet is unknown, so nobody is notified. Falling back to the event
+  // outlet would leak settlement details to HR of an outlet that may not own
+  // the employee.
+  const hr = employee
+    ? await activeAssignees(
+        input.tx,
+        input.tenantId,
+        sql`${roles.permissions} ?| array['hr.employee.manage', 'payroll.view']`,
+        await outletAudience(input.tx, input.tenantId, employee.homeOutletId),
+      )
+    : [];
   const who = employee?.fullName ?? "Karyawan";
   return {
     userIds: hr,

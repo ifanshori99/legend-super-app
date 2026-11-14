@@ -977,7 +977,6 @@ export async function decideAttendanceReview(
         row.employeeId,
         row.businessDate,
         now,
-        row.outletId,
       );
     await recordAudit(
       tx,

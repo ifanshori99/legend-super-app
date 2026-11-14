@@ -44,7 +44,11 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
-import { leaveTypeInputSchema, type Employee } from "@starter/shared/hris";
+import {
+  finalSettlementSummarySchema,
+  leaveTypeInputSchema,
+  type Employee,
+} from "@starter/shared/hris";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { decideAttendanceReview } from "../services/hris-attendance-admin.service.ts";
@@ -246,11 +250,37 @@ async function seedOffboarding(
   lastWorkingDate: string = LAST_WORKING_DATE,
 ): Promise<{ id: string; snapshot: Record<string, unknown> | null }> {
   const id = randomUUID();
-  const snapshot = {
-    leaveBalanceDays: "8.0000",
-    leaveCashOutIdr: 0,
-    note: `settlement ${id}`,
-  };
+  // Real frozen shape (finalSettlementSummarySchema): the bill reads leave[].
+  const snapshot = finalSettlementSummarySchema.parse({
+    offboardingId: id,
+    employeeId,
+    exitType: "resignation",
+    joinDate: "2040-01-02",
+    lastWorkingDate,
+    runningSalary: {
+      lastPayrollRun: null,
+      unpaidFrom: null,
+      unpaidTo: lastWorkingDate,
+      unpaidCalendarDays: 0,
+    },
+    outstandingLoans: { count: 0, amountIdr: 0, loanIds: [] },
+    unpaidReimbursements: { count: 0, amountIdr: 0, pendingCount: 0 },
+    leave: [
+      {
+        leaveTypeId: annualTypeId,
+        name: "Cuti after settlement test",
+        periodYear: Number(lastWorkingDate.slice(0, 4)),
+        entitledDays: ENTITLED.toFixed(4),
+        carriedOverDays: "0.0000",
+        usedDays: "0.0000",
+        pendingDays: "0.0000",
+        remainingDays: ENTITLED.toFixed(4),
+      },
+    ],
+    pendingPayrollEngine: [],
+    computedAt: "2049-05-31T05:00:00.000Z",
+    frozen: true,
+  });
   if (status === "completed")
     await sql(
       `INSERT INTO hris_offboardings
