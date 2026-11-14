@@ -687,19 +687,23 @@ async function seedQrOrder(
   );
 }
 
-/** A completed gateway payment refund of an intent, mapped to a POS refund. */
+/**
+ * A gateway payment refund of an intent (default 'completed'), mapped to a POS
+ * refund. A 'failed' one has no completed_at and carries a failure reason.
+ */
 async function seedLinkedPaymentRefund(
   world: World,
   posRefundId: string,
   intentId: string,
   amountIdr: number,
+  status: "completed" | "failed" = "completed",
 ): Promise<void> {
   const paymentRefundId = randomUUID();
   await owner.query(
     `INSERT INTO payment_refunds
        (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
-        requested_by, approved_by, decided_at, completed_at)
-     VALUES ($1, $2, $3, $4, $5, 'Pengembalian dana', 'completed', 'requester', 'approver', $6, $6)`,
+        requested_by, approved_by, decided_at, completed_at, failure_reason)
+     VALUES ($1, $2, $3, $4, $5, 'Pengembalian dana', $7, 'requester', 'approver', $6, $8, $9)`,
     [
       paymentRefundId,
       world.tenant.id,
@@ -707,6 +711,9 @@ async function seedLinkedPaymentRefund(
       intentId,
       amountIdr,
       DAY,
+      status,
+      status === "completed" ? DAY : null,
+      status === "failed" ? "provider_declined" : null,
     ],
   );
   await owner.query(
@@ -1100,6 +1107,95 @@ describe("legend-ljs6i residual gateway part of a refund without source evidence
       await parkedOf(world.tenant, `aj:order-refund:${secondId}`),
     ).toHaveLength(0);
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("ARR-11 a legacy POS refund line pinned to the intent whose linked payment refund is 'failed' (money released, key spent) still counts as approved: after 30k, a second payload-only refund of 20k (30k + 20k > 40k intent, while the 55k order still has 25k left) parks, no journal", async () => {
+    errorSpy.mockImplementation(() => {});
+    const world = await makeWorld();
+    const { linkId, intentId } = await seedLinkedIntent(world, 40_000);
+    await post(world, paymentPaid(world, intentId, 40_000));
+    const orderUlid = createUlid();
+    const sale = {
+      ...SALE,
+      tenders: [{ method: "cash" as const, amountIdr: 55_000 }],
+    };
+    await seedPosOrder(world, orderUlid, sale, { linkId, intentId });
+    await post(world, orderPaid(world, orderUlid, sale));
+
+    const firstId = await seedPosRefund(world, orderUlid, [
+      {
+        method: "qris",
+        amountIdr: 30_000,
+        paymentIntentId: intentId,
+        tenderId: randomUUID(),
+      },
+    ]);
+    await seedLinkedPaymentRefund(world, firstId, intentId, 30_000, "failed");
+    const first = await post(
+      world,
+      orderRefunded(world, orderUlid, firstId, {
+        grossSalesIdr: 30_000,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: 30_000 }],
+      }),
+    );
+    expectBalancedLines(await linesOf(world, first.journalEntryId));
+
+    const secondId = randomUUID();
+    await expectParkedNoJournal(
+      world,
+      orderRefunded(world, orderUlid, secondId, {
+        grossSalesIdr: 20_000,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: 20_000 }],
+      }),
+      secondId,
+    );
+  });
+
+  it("ARR-12 a linked payment refund smaller than its POS refund line (30k line, 10k filed and completed) only covers 10k: after it, a second payload-only refund of 20k on the 40k intent (20k + 10k + 20k > 40k) parks, no journal", async () => {
+    errorSpy.mockImplementation(() => {});
+    const world = await makeWorld();
+    const { linkId, intentId } = await seedLinkedIntent(world, 40_000);
+    await post(world, paymentPaid(world, intentId, 40_000));
+    const orderUlid = createUlid();
+    const sale = {
+      ...SALE,
+      tenders: [{ method: "cash" as const, amountIdr: 55_000 }],
+    };
+    await seedPosOrder(world, orderUlid, sale, { linkId, intentId });
+    await post(world, orderPaid(world, orderUlid, sale));
+
+    const firstId = await seedPosRefund(world, orderUlid, [
+      {
+        method: "qris",
+        amountIdr: 30_000,
+        paymentIntentId: intentId,
+        tenderId: randomUUID(),
+      },
+    ]);
+    // The gateway refund was clamped to the remaining cap: only 10k was filed.
+    await seedLinkedPaymentRefund(world, firstId, intentId, 10_000);
+    const first = await post(
+      world,
+      orderRefunded(world, orderUlid, firstId, {
+        grossSalesIdr: 30_000,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: 30_000 }],
+      }),
+    );
+    expectBalancedLines(await linesOf(world, first.journalEntryId));
+
+    const secondId = randomUUID();
+    await expectParkedNoJournal(
+      world,
+      orderRefunded(world, orderUlid, secondId, {
+        grossSalesIdr: 20_000,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: 20_000 }],
+      }),
+      secondId,
+    );
   });
 
   it("ARR-10 an order with an intentless gateway tender (30k) pinned to a paid 55k intent: a refund claiming 55k gateway is not covered by the pin, it parks with no journal", async () => {

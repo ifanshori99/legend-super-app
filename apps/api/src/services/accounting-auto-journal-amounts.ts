@@ -81,6 +81,7 @@ import {
   orderIssues,
   orders,
   outlets,
+  paymentAdminIdempotency,
   paymentIntents,
   paymentRefunds,
   paymentUnallocatedFunds,
@@ -937,6 +938,10 @@ async function refundGatewaySplitOf(
   // Gateway part of earlier POS refunds of this order, and whether any part of
   // this refund has no tender/intent proving its payer (legend-ljs6i).
   let earlierGatewayIdr = 0;
+  // Earlier gateway lines with an intent, by their pos-refund-gateway key: one
+  // whose payment refund failed (or was never linked) is still owed
+  // (legend-0dgi1).
+  const earlierIntentWant = new Map<string, number>();
   let unprovenResidual = false;
   let tenderNullIdr = 0;
   if (recovery[0]) {
@@ -962,12 +967,24 @@ async function refundGatewaySplitOf(
     )
       .filter((tender) => isGateway(tender.method))
       .map((tender) => ({ ...tender, left: Number(tender.amountIdr) }));
-    const apply = (lines: readonly RefundLine[], collect: boolean) => {
+    const apply = (
+      lines: readonly RefundLine[],
+      collect: boolean,
+      posRefundId = "",
+    ) => {
       for (const line of lines) {
         if (line.method !== ANY_GATEWAY && !isGateway(line.method)) continue;
         let want = Number(line.amountIdr);
-        // A line with an intent is already filed in payment_refunds.
-        if (!collect && !line.paymentIntentId) earlierGatewayIdr += want;
+        if (!collect) {
+          if (!line.paymentIntentId) earlierGatewayIdr += want;
+          else {
+            const linkKey = `pos-refund-gateway:${posRefundId}:${line.paymentIntentId}`;
+            earlierIntentWant.set(
+              linkKey,
+              (earlierIntentWant.get(linkKey) ?? 0) + want,
+            );
+          }
+        }
         const named = line.tenderId
           ? tenders.find((tender) => tender.id === line.tenderId)
           : undefined;
@@ -1006,7 +1023,7 @@ async function refundGatewaySplitOf(
       .filter((row) => row.id !== p.refundId)
       .filter((row) => !current || key(row) < key(current))
       .sort((a, b) => (key(a) < key(b) ? -1 : 1));
-    for (const row of earlier) apply(row.lines, false);
+    for (const row of earlier) apply(row.lines, false, row.id);
     // A payload without lines (stored before they were kept): its gateway
     // part walks every gateway tender of the order.
     apply(
@@ -1097,11 +1114,52 @@ async function refundGatewaySplitOf(
                 ne(paymentRefunds.status, "failed"),
               ),
             );
+          // An earlier POS refund line with an intent counts unless a
+          // non-failed payment refund is linked to it (already in `filed`).
+          let earlierUnfiledIdr = 0;
+          if (!recoveryWithoutSource && earlierIntentWant.size > 0) {
+            const linked = await tx
+              .select({
+                key: paymentAdminIdempotency.key,
+                amountIdr: paymentRefunds.amountIdr,
+              })
+              .from(paymentAdminIdempotency)
+              .innerJoin(
+                paymentRefunds,
+                and(
+                  eq(paymentRefunds.tenantId, paymentAdminIdempotency.tenantId),
+                  sql`${paymentRefunds.id}::text = ${paymentAdminIdempotency.response}->>'refundId'`,
+                ),
+              )
+              .where(
+                and(
+                  eq(paymentAdminIdempotency.tenantId, tenantId),
+                  inArray(paymentAdminIdempotency.key, [
+                    ...earlierIntentWant.keys(),
+                  ]),
+                  ne(paymentRefunds.status, "failed"),
+                ),
+              );
+            // The linked refund may be smaller than the POS line (clamped to
+            // the intent's remaining limit): the rest is still owed.
+            const linkedIdr = new Map<string, number>();
+            for (const row of linked)
+              linkedIdr.set(
+                row.key,
+                (linkedIdr.get(row.key) ?? 0) + Number(row.amountIdr),
+              );
+            for (const [linkKey, want] of earlierIntentWant)
+              earlierUnfiledIdr += Math.max(
+                0,
+                want - (linkedIdr.get(linkKey) ?? 0),
+              );
+          }
           if (
             (splits?.n ?? 0) === 0 &&
             gatewayIdr +
               Number(filed?.total ?? 0) +
-              (recoveryWithoutSource ? 0 : earlierGatewayIdr) <=
+              (recoveryWithoutSource ? 0 : earlierGatewayIdr) +
+              earlierUnfiledIdr <=
               Number(pinned.amountIdr)
           )
             pinnedIntentId = pinned.intentId;
