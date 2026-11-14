@@ -1767,14 +1767,16 @@ describe("legend-zy43 edge receipt run producer", () => {
   });
 
   // legend-btx4d review: a dead-lettered order.paid has no queue row, which
-  // used to read as "acknowledged" and sent the receipt of an order the cloud
-  // never got.
-  it("legend-btx4d a receipt whose order.paid was dead-lettered is not reported, and the run waits behind it", async () => {
+  // never got. legend-n2d3g: once its dead-letter notice is settled (no pending
+  // notice row), the cloud skips that order's receipt, so the run moves on
+  // instead of waiting forever (pending-notice cases:
+  // edge-receipt-run-deadletter-861.test.ts).
+  it("legend-btx4d legend-n2d3g a receipt whose order.paid was dead-lettered with a settled notice goes out in the chunk so the cloud can skip it", async () => {
     const run = await edgeRun(3, { delivery: ["acked", "queued", "acked"] });
     await deadLetterOrderEvent(run.orders[1]!, "order.paid");
     expect(await report(run)).toEqual({ reported: 1 });
     expect(shapesOf(await reportedEvents(run.device))).toEqual([
-      ["OFF1", 1, ["1"]],
+      ["OFF1", 3, ["1", "2", "3"]],
     ]);
     expect(await report(run)).toEqual({ reported: 0 });
   });
@@ -1791,7 +1793,8 @@ describe("legend-zy43 edge receipt run producer", () => {
       return uuidToUlid(r.rows[0].order_id as string);
     });
     await deadLetterOrderEvent(orderId, "order.voided");
-    expect(await report(run)).toEqual({ reported: 0 });
+    // legend-n2d3g: nothing is sent, and the stuck void is counted.
+    expect(await report(run)).toEqual({ reported: 0, held: 1 });
   });
 
   it("legend-zy43 one failing device does not stop the other devices of the pass", async () => {
