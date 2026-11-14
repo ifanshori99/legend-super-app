@@ -9,6 +9,7 @@
 // database. Without LEGEND_MOCK_WEB_URL every test skips, so `pnpm test:e2e`
 // (production build, mock compiled out) never fails on it.
 import { expect, test, type Page } from "@playwright/test";
+import { cafeLegendAccountingFixtures } from "../packages/shared/src/accounting/fixtures.ts";
 
 const base = process.env.LEGEND_MOCK_WEB_URL;
 
@@ -20,9 +21,9 @@ test.skip(
   "Set LEGEND_MOCK_WEB_URL to a web server running VITE_API_MOCK.",
 );
 
-/** Fixture ids (cafeLegendAccountingFixtures; stable by construction). */
-const INTERNET_ENTRY = "e1000000-0000-4000-8000-00000000000c"; // manual source
-const CASH_SALE_ENTRY = "e1000000-0000-4000-8000-000000000005";
+/** Named fixture entries stay stable when another seed journal is inserted. */
+const INTERNET_ENTRY = cafeLegendAccountingFixtures.entries.internet.id;
+const CASH_SALE_ENTRY = cafeLegendAccountingFixtures.entries.cashSale.id;
 const PENDING_MANUAL = "e3000000-0000-4000-8000-000000000004";
 
 async function open(page: Page, path: string, heading: string) {
@@ -38,12 +39,10 @@ async function open(page: Page, path: string, heading: string) {
 }
 
 /** Picks an option in a Radix select trigger by accessible option name. */
-async function choose(
-  page: Page,
-  comboboxIndex: number,
-  optionPattern: RegExp,
-) {
-  await page.getByRole("combobox").nth(comboboxIndex).click();
+async function choose(page: Page, line: number, optionPattern: RegExp) {
+  await page
+    .getByRole("combobox", { name: `Akun baris ${line}`, exact: true })
+    .click();
   await page.getByRole("option", { name: optionPattern }).click();
 }
 
@@ -63,13 +62,24 @@ test.describe("accounting back office", () => {
     await choose(page, 2, /1103/);
     await page.getByLabel("Kredit baris 2").fill("50000");
 
-    // ACC-01: the imbalance is shown and saving is blocked.
+    // ACC-01: saving an unbalanced journal explains the problem without saving.
     await expect(
       page.locator("form").getByText("Selisih", { exact: true }).locator(".."),
     ).toContainText(/Rp\s*50\.000/);
+    await page.getByRole("button", { name: "Simpan draf" }).click();
+    await expect(page).toHaveURL(/\/jurnal-manual\/baru$/);
+    const imbalance = page
+      .getByRole("alert")
+      .filter({ hasText: "Jurnal belum seimbang" });
     await expect(
-      page.getByRole("button", { name: "Simpan draf" }),
-    ).toBeDisabled();
+      imbalance.getByText("Jurnal belum seimbang", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      imbalance.getByText(
+        /^Debit lebih besar Rp\s*50\.000\. Sesuaikan jumlah debit atau kredit sebelum mengajukan\.$/,
+      ),
+    ).toBeVisible();
+    await expect(imbalance).toBeFocused();
 
     await page.getByLabel("Kredit baris 2").fill("100000");
     await expect(
@@ -225,10 +235,9 @@ test.describe("accounting back office", () => {
 
     await page.getByRole("button", { name: "Tambah templat" }).click();
     await page.getByLabel("Keterangan").fill("Uji templat E2E");
-    // The dialog has only the two line-account selects (no kind field).
-    await choose(page, 0, /6105/);
+    await choose(page, 1, /6105/);
     await page.getByLabel("Debit baris 1").fill("1000000");
-    await choose(page, 1, /2101/);
+    await choose(page, 2, /2101/);
     await page.getByLabel("Kredit baris 2").fill("1000000");
     await page.getByRole("button", { name: "Simpan templat" }).click();
     await expect(
