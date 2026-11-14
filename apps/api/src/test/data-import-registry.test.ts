@@ -218,6 +218,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "numbers stations.display_order of existing stations per outlet (name, created_at, id) so the KDS tabs keep the order they had (legend-bopi2); idempotent, edits no other column, is_active and auto_print_fallback take their column defaults, no amount touched; FORCE RLS lifted for that one statement and restored",
   "0364_kitchen_ticket_no.sql":
     "fills kitchen_tickets.business_date (outlet business day of fired_at, from the outlet zone and cutoff) and numbers kitchen_tickets.ticket_no 1.. per tenant, outlet and business day by fired_at, id for every existing ticket (legend-tzyj2); idempotent for tickets without a number, edits no other column, no amount touched; FORCE RLS lifted on kitchen_tickets and outlets for that one statement and restored",
+  // founder Q6 (15 Nov 2026, 864)
+  "0451_ai_assistant_auto_enable.sql":
+    "switches on the ai_assistant module (feature_flags.modules) for active tenants whose plan is an active package that includes ai_assistant and that already used AI (an ok tanya_ai or mcp usage event, or a user message); idempotent, skips tenants that already have the module, touches no limits, plan or integration providers, writes one tenant.module_auto_enabled audit row per changed tenant; FORCE RLS lifted for the statements that read audit_logs, ai_usage_events and ai_messages and restored",
 };
 
 // Entrypoints that open a database pool but import no data.

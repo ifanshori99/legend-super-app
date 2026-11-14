@@ -2514,6 +2514,13 @@
       "when": 1794680677682,
       "tag": "0372_edc_sale_wire_open",
       "breakpoints": true
+    },
+    {
+      "idx": 451,
+      "version": "7",
+      "when": 1794700000000,
+      "tag": "0451_ai_assistant_auto_enable",
+      "breakpoints": true
     }
   ]
 }
