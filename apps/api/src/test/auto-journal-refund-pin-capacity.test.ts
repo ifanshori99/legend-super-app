@@ -882,6 +882,52 @@ describe("legend-zwaro refund pin capacity counts earlier refunds of any kind", 
     ).toBeLessThanOrEqual(PIN_IDR);
   });
 
+  // ZWARO-F: the pin intent's receipt is not booked yet (money received before
+  // wiring), so a payload-only refund 30k journals to gateway_clearing, not
+  // customer_deposit. After the receipt is booked, that clearing credit still
+  // counts against the 40k pin: 30k clearing + 20k > 40k parks, 30k + 10k posts.
+  async function refundBeforeReceipt(world: World) {
+    const { linkId, intentId } = await seedLinkedIntent(world, PIN_IDR);
+    const orderUlid = createUlid();
+    const sale = {
+      ...SALE,
+      tenders: [{ method: "cash" as const, amountIdr: 55_000 }],
+    };
+    await seedPosOrder(world, orderUlid, sale, { linkId, intentId });
+    await post(world, orderPaid(world, orderUlid, sale));
+    const first = await post(
+      world,
+      qrRefund(world, orderUlid, randomUUID(), 30_000),
+    );
+    const firstLines = await linesOf(world, first.journalEntryId);
+    expectBalancedLines(firstLines);
+    expect(creditOf(firstLines, "gateway_clearing")).toBe(30_000);
+    expect(creditOf(firstLines, "customer_deposit")).toBe(0);
+    await post(world, paymentPaid(world, intentId, PIN_IDR));
+    return { orderUlid };
+  }
+
+  it("ZWARO-F payload-only 20k parks after a 30k refund journaled to gateway_clearing before the receipt was booked (30+20 > 40k pin)", async () => {
+    const world = await makeWorld();
+    const { orderUlid } = await refundBeforeReceipt(world);
+    const secondId = randomUUID();
+    await expectParkedNoJournal(
+      world,
+      qrRefund(world, orderUlid, secondId, 20_000),
+      secondId,
+    );
+  });
+
+  it("ZWARO-F variant: payload-only 10k posts after that clearing 30k (30+10 = 40k pin), balanced", async () => {
+    const world = await makeWorld();
+    const { orderUlid } = await refundBeforeReceipt(world);
+    const second = await post(
+      world,
+      qrRefund(world, orderUlid, randomUUID(), 10_000),
+    );
+    expectBalancedLines(await linesOf(world, second.journalEntryId));
+  });
+
   it("ZWARO-C control: payload-only 30k then 10k (= 40k pin) both post, balanced, customer_deposit credited 40k", async () => {
     const world = await makeWorld();
     const { orderUlid } = await sellPinned(world);

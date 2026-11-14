@@ -840,8 +840,9 @@ type RefundLine = {
 };
 
 /**
- * legend-zwaro: customer_deposit an order's EARLIER refund journals took, net of
- * their reversals, for the refunds nothing else accounts for: not an earlier POS
+ * legend-zwaro: customer_deposit and gateway_clearing credits (the gateway part
+ * of the refund, whichever the receipt state chose) an order's EARLIER refund
+ * journals took, net of their reversals, for the refunds nothing else accounts for: not an earlier POS
  * refund row (its lines are counted from the row) and not an order issue with a
  * non-failed payment refund on the pinned intent (counted from that refund). What
  * is left (a payload-only refund, a recovery refund without source) has only its
@@ -871,11 +872,13 @@ async function earlierUnbackedRefundDepositIdr(
      WHERE je.tenant_id = ${tenantId}
        AND coalesce(re.source_type, je.source_type) = 'refund'
        AND coalesce(re.order_id, je.order_id) = ${orderUuid}::uuid
-       AND (jl.account_id::text =
-              (coalesce(re.posting_account_snapshot, je.posting_account_snapshot))->>'customer_deposit'
+       AND (jl.account_id::text IN (
+              (coalesce(re.posting_account_snapshot, je.posting_account_snapshot))->>'customer_deposit',
+              (coalesce(re.posting_account_snapshot, je.posting_account_snapshot))->>'gateway_clearing')
             OR jl.account_id IN (
               SELECT m.account_id FROM account_mappings m
-               WHERE m.tenant_id = je.tenant_id AND m.role = 'customer_deposit'))
+               WHERE m.tenant_id = je.tenant_id
+                 AND m.role IN ('customer_deposit', 'gateway_clearing')))
      GROUP BY 1`,
   );
   const posIds = new Set(p.posRefundIds.map((id) => id.toLowerCase()));
