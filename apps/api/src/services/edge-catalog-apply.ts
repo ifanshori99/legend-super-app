@@ -79,14 +79,17 @@ import {
   eq,
   inArray,
   isNull,
-  lt,
   notInArray,
   sql,
   type SQL,
 } from "drizzle-orm";
 import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 import { inventoryItems, uoms } from "../db/schema/inventory.ts";
-import { edgePrintJobs, edgePrinters } from "../db/schema/edge-print.ts";
+import {
+  edgePrintJobs,
+  edgePrinterDeleteVersions,
+  edgePrinters,
+} from "../db/schema/edge-print.ts";
 import { user } from "../db/schema/user.ts";
 import {
   itemVariants,
@@ -501,6 +504,18 @@ export async function resetCatalogSyncTxid(
   await tx.execute(
     sql`UPDATE ${STREAM_TABLES[stream]} AS target SET sync_txid = 0 WHERE target.tenant_id = ${tenantId}::uuid AND target.sync_txid <> 0 AND ${mayReset}`,
   );
+  if (stream === "printers") {
+    // Same rule for the deletion versions of removed printers.
+    const kept = await tx.execute(
+      sql`SELECT printer_id::text AS id FROM ${edgePrinterDeleteVersions} WHERE tenant_id = ${tenantId}::uuid`,
+    );
+    const heldIds = kept.rows
+      .map((row) => String(row.id))
+      .filter((id) => held.has(catalogRecordIdFromKeys(stream, [id])));
+    await tx.execute(
+      sql`UPDATE ${edgePrinterDeleteVersions} AS target SET version = 0 WHERE target.tenant_id = ${tenantId}::uuid AND target.version <> 0 AND NOT (target.printer_id = ANY(${`{${heldIds.join(",")}}`}::uuid[]))`,
+    );
+  }
   if (stream === "promotions" && protectedKeys.length === 0)
     await tx.execute(
       sql`UPDATE ${promoSettings} SET sync_txid = 0 WHERE tenant_id = ${tenantId}::uuid AND sync_txid <> 0`,
@@ -1336,6 +1351,10 @@ export async function applyCatalogRecords(
  * print jobs here (the jobs are evidence and point at it) stays with
  * `retired_at` set (edge-owned, never in the cloud record); the print store no
  * longer lists it. A live record with the same id clears `retired_at`.
+ * The deletion version is durable (legend-3k41y): a kept row takes it as its
+ * `sync_txid`, a removed one leaves it in `edge_printer_delete_versions`, so a
+ * live record with a version at or below it (HTTP or event) never brings the
+ * printer back; only a newer one does.
  */
 async function applyPrinters(
   tx: Tx,
@@ -1375,6 +1394,18 @@ async function applyPrinters(
         updatedAt: date(r.updatedAt),
         syncTxid: r.syncTxid,
       };
+      // A deleted printer stays deleted for a version at or below its deletion.
+      const barred = await tx
+        .select({ id: edgePrinterDeleteVersions.printerId })
+        .from(edgePrinterDeleteVersions)
+        .where(
+          and(
+            eq(edgePrinterDeleteVersions.tenantId, tenantId),
+            eq(edgePrinterDeleteVersions.printerId, r.id),
+            sql`${edgePrinterDeleteVersions.version} >= ${r.syncTxid}::bigint`,
+          ),
+        );
+      if (barred.length > 0) return false;
       const rows = await tx
         .insert(t)
         .values({ id: r.id, ...values })
@@ -1425,20 +1456,38 @@ async function applyPrinters(
     write: async (r) => {
       const outletId = outletIdSchema.parse(r.outletId);
       const hasJobs = sql`EXISTS (SELECT 1 FROM ${edgePrintJobs} j WHERE j.tenant_id = ${t.tenantId} AND j.outlet_id = ${t.outletId} AND (j.printer_id = ${t.id} OR j.original_printer_id = ${t.id}))`;
-      const known = await tx
-        .select({ id: t.id })
+      const version = BigInt(r.syncTxid);
+      // Whatever happens to the row, the deletion version outlives it.
+      const remember = () =>
+        tx
+          .insert(edgePrinterDeleteVersions)
+          .values({ tenantId, outletId, printerId: r.id, version })
+          .onConflictDoUpdate({
+            target: [
+              edgePrinterDeleteVersions.tenantId,
+              edgePrinterDeleteVersions.printerId,
+            ],
+            set: {
+              version: sql`GREATEST(${edgePrinterDeleteVersions.version}, excluded.version)`,
+            },
+          });
+      const [current] = await tx
+        .select({ syncTxid: t.syncTxid })
         .from(t)
         .where(
           and(
             eq(t.tenantId, tenantId),
             eq(t.outletId, outletId),
             eq(t.id, r.id),
-            // An already retired printer: replaying its tombstone is a no-op.
-            isNull(t.retiredAt),
-            lt(t.syncTxid, sql`${r.syncTxid}::bigint`),
           ),
         );
-      if (known.length === 0) return false;
+      if (current === undefined) {
+        // Nothing local to remove, but an older live record must not land later.
+        await remember();
+        return false;
+      }
+      // A row at the tombstone's version or newer wins (also a replayed tombstone).
+      if (BigInt(current.syncTxid) >= version) return false;
       await tx
         .update(t)
         .set({ fallbackPrinterId: null })
@@ -1465,7 +1514,11 @@ async function applyPrinters(
         // The jobs are evidence and point at it: keep the row, take it out of use.
         await tx
           .update(t)
-          .set({ retiredAt: sql`COALESCE(${t.retiredAt}, now())` })
+          .set({
+            retiredAt: sql`COALESCE(${t.retiredAt}, now())`,
+            // The deletion version, so an older live record stays refused.
+            syncTxid: r.syncTxid,
+          })
           .where(
             and(
               eq(t.tenantId, tenantId),
@@ -1484,6 +1537,7 @@ async function applyPrinters(
             eq(t.id, r.id),
           ),
         );
+      await remember();
       deleted += 1;
       return true;
     },

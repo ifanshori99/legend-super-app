@@ -4,6 +4,100 @@
   "version": "7",
   "dialect": "postgresql",
   "tables": {
+    "public.edge_printer_delete_versions": {
+      "name": "edge_printer_delete_versions",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "printer_id": {
+          "name": "printer_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "edge_printer_delete_versions_tenant_id_tenants_id_fk": {
+          "name": "edge_printer_delete_versions_tenant_id_tenants_id_fk",
+          "tableFrom": "edge_printer_delete_versions",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_printer_delete_versions_outlet_id_outlets_id_fk": {
+          "name": "edge_printer_delete_versions_outlet_id_outlets_id_fk",
+          "tableFrom": "edge_printer_delete_versions",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_printer_delete_versions_outlet_fk": {
+          "name": "edge_printer_delete_versions_outlet_fk",
+          "tableFrom": "edge_printer_delete_versions",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "edge_printer_delete_versions_tenant_id_printer_id_pk": {
+          "name": "edge_printer_delete_versions_tenant_id_printer_id_pk",
+          "columns": [
+            "tenant_id",
+            "printer_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.user": {
       "name": "user",
       "schema": "",

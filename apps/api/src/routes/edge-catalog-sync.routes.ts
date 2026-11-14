@@ -16,6 +16,7 @@ import { CoreError } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { findTenantContext } from "../middleware/tenant.ts";
+import { isCatalogDeliveryRefused } from "../services/edge-master-data-publisher.ts";
 import {
   catalogSyncQuerySchema,
   listCatalogRecordsSince,
@@ -46,6 +47,12 @@ catalogRecordSyncRouter.get("/", async (req, res) => {
       "Tenant does not match this domain.",
     );
   const query = catalogSyncQuerySchema.parse(req.query);
+  // legend-3k41y: a blocked node (outlet brand moved) is refused, fail closed.
+  if (await isCatalogDeliveryRefused(db, node))
+    throw new CoreError(
+      "FORBIDDEN",
+      "Edge node diblokir: brand outlet berubah, provisi ulang node.",
+    );
   res.setHeader("Cache-Control", "private, no-store");
   res.json(
     await listCatalogRecordsSince(db, {

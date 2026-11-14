@@ -375,8 +375,15 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
     async readOutbound(afterSeq, limit) {
       return run(async (tx) => {
         const { offset } = await peerNumbering(tx, outbound);
+        // legend-3k41y: fail closed. A node whose catalog publisher is blocked,
+        // or whose outlet brand no longer matches the brand its queue was
+        // published for, receives nothing from the cloud.
+        const guard =
+          outbound === "cloud_to_edge"
+            ? sql`AND NOT EXISTS (SELECT 1 FROM edge_catalog_publisher_cursors c JOIN outlets o ON o.tenant_id = c.tenant_id AND o.id = c.outlet_id WHERE c.edge_node_id = ${nodeId}::uuid AND (c.blocked_at IS NOT NULL OR c.brand_id <> o.brand_id))`
+            : sql``;
         const result = await tx.execute(
-          sql`SELECT link_seq, event FROM edge_outbound_queue WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${afterSeq + offset} ORDER BY link_seq LIMIT ${limit}`,
+          sql`SELECT link_seq, event FROM edge_outbound_queue WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${afterSeq + offset} ${guard} ORDER BY link_seq LIMIT ${limit}`,
         );
         return result.rows.map((row): QueuedEdgeEvent => ({
           linkSeq: Number(row.link_seq) - offset,

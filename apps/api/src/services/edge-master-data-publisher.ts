@@ -32,6 +32,31 @@ type PublisherNode = {
 
 class PublisherBrandChanged extends Error {}
 
+/**
+ * legend-3k41y: true when the node's catalog publisher is blocked, or when its
+ * outlet brand differs from the brand it was published for. Delivery paths
+ * (link queue read, HTTP pull) refuse such a node.
+ */
+export async function isCatalogDeliveryRefused(
+  database: Database,
+  input: Pick<PublisherNode, "tenantId" | "outletId" | "edgeNodeId">,
+): Promise<boolean> {
+  const context = outletContext(
+    establishTenantContext({
+      tenantId: input.tenantId,
+      brandId: null,
+      source: "job",
+    }),
+    input.outletId,
+  );
+  return withTenant(database, context, async (tx) => {
+    const refused = await tx.execute(
+      sql`SELECT 1 FROM edge_catalog_publisher_cursors c JOIN outlets o ON o.tenant_id = c.tenant_id AND o.id = c.outlet_id WHERE c.tenant_id = ${input.tenantId}::uuid AND c.edge_node_id = ${input.edgeNodeId}::uuid AND (c.blocked_at IS NOT NULL OR c.brand_id <> o.brand_id) LIMIT 1`,
+    );
+    return refused.rows.length > 0;
+  });
+}
+
 /** Publish a page; repeated calls progress through a stream without gaps. */
 export async function publishCatalogForNode(
   database: Database,
