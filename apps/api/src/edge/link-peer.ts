@@ -29,6 +29,7 @@ import { createUlid } from "@starter/shared/core";
 import type { EventEnvelope, SyncDirection } from "@starter/shared/events";
 import type { SyncAck, SyncBatch } from "@starter/shared/edge";
 import {
+  LINK_BATCH_MAX_BYTES,
   LINK_BATCH_SIZE,
   LINK_CLOSE,
   decodeFrame,
@@ -217,12 +218,33 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
 
   async function pump() {
     if (!ready || stopped || sentUpTo > ackedUpTo) return;
-    const queued = await store.readOutbound(sentUpTo, batchSize);
-    if (queued.length === 0) return;
-    queued.forEach((item, index) => {
+    const read = await store.readOutbound(sentUpTo, batchSize);
+    if (read.length === 0) return;
+    read.forEach((item, index) => {
       if (item.linkSeq !== sentUpTo + 1 + index)
         throw new LinkProtocolError("Outbound queue is not contiguous");
     });
+    // A batch frame must stay under the peer's frame cap, or the peer closes
+    // the link and the same batch is resent forever, blocking every later
+    // event. Take events while the encoded bytes fit, at least one.
+    const queued: QueuedEdgeEvent[] = [];
+    let bytes = 0;
+    for (const item of read) {
+      const size = Buffer.byteLength(JSON.stringify(item.event));
+      if (queued.length > 0 && bytes + size > LINK_BATCH_MAX_BYTES) break;
+      queued.push(item);
+      bytes += size;
+    }
+    // One event alone above the bound can never be delivered (the peer would
+    // close the link on every attempt). Fail loud, keep the link up, send
+    // nothing: the queue behind it waits, in order, for an operator. It is
+    // never skipped or dropped (that would lose a sale or a payment).
+    if (bytes > LINK_BATCH_MAX_BYTES) {
+      options.onError?.(
+        new LinkProtocolError("Outbound event exceeds the link frame limit"),
+      );
+      return;
+    }
     const toSeq = sentUpTo + queued.length;
     const batch: SyncBatch = {
       tenantId: scope.tenantId as SyncBatch["tenantId"],

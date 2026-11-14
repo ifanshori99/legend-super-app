@@ -55,6 +55,7 @@ import { deliverFacilityEntitlementEvent } from "./services/facility-entitlement
 import { deliverLoyaltyEarnEvent } from "./services/loyalty-earn-consumer.ts";
 import { deliverWifiQuotaEvent } from "./services/wifi-quota-consumer.ts";
 import { runLoyaltyBalanceCheckSweep } from "./worker/loyalty-balance-check.job.ts";
+import { redriveEdgeOrderRefusalsForTenant } from "./worker/edge-order-redrive.job.ts";
 import { runLoyaltyClaimRecoverySweep } from "./worker/loyalty-claim-recovery.job.ts";
 import { runRedemptionExpirySweep } from "./worker/redemption-expiry.job.ts";
 import { runSegmentMaterializeSweep } from "./worker/segment-materialize.job.ts"; // legend-ts50
@@ -484,6 +485,17 @@ const relay = createRelayRuntime({
         await expireDueSupportAccessGrants(context);
       } catch {
         console.error("Support access expiry sweep failed");
+      }
+    }
+    // legend-132mw: an edge sale or void refused for a transient reason (lock
+    // timeout, deadlock) is parked but never redelivered; run its ingest again.
+    // Idempotent, bounded per tick (200 per kind, 5 s lock timeout per order),
+    // tenant-scoped. Cloud only; a sweep error never blocks the relay.
+    if (sweepsCloudOwnedData) {
+      try {
+        await redriveEdgeOrderRefusalsForTenant(context);
+      } catch {
+        console.error("Edge order redrive sweep failed");
       }
     }
     // FAC-02 (legend-nm4f): cancel facility slot holds whose payment TTL

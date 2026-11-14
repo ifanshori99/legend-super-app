@@ -60,6 +60,7 @@ import {
 import {
   payrollDisbursementBatches,
   payrollDisbursementItems,
+  payrollPayoutGlPostings,
 } from "../db/schema/payroll-payout.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
@@ -93,7 +94,8 @@ type ResealTable =
   | "payroll_rapels"
   | "payroll_rapel_items"
   | "payroll_disbursement_batches"
-  | "payroll_disbursement_items";
+  | "payroll_disbursement_items"
+  | "payroll_payout_gl_postings";
 
 export type HrisPiiResealResult = {
   tenants: number;
@@ -107,6 +109,7 @@ export type HrisPiiResealResult = {
   rapelItems: number;
   disbursementBatches: number;
   disbursementItems: number;
+  payoutPostings: number;
   failedTenants: number;
   /** Tenants that still hold stale rows after the run (locked by others). */
   incompleteTenants: number;
@@ -256,6 +259,15 @@ async function countStale(
           ne(payrollDisbursementItems.piiKeyVersion, active),
         ),
       );
+    const [stalePayoutPostings] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(payrollPayoutGlPostings)
+      .where(
+        and(
+          eq(payrollPayoutGlPostings.tenantId, tenantId),
+          ne(payrollPayoutGlPostings.piiKeyVersion, active),
+        ),
+      );
     return (
       Number(staleEmployees?.n ?? 0) +
       Number(staleContracts?.n ?? 0) +
@@ -266,7 +278,8 @@ async function countStale(
       Number(staleRapels?.n ?? 0) +
       Number(staleRapelItems?.n ?? 0) +
       Number(staleDisbursementBatches?.n ?? 0) +
-      Number(staleDisbursementItems?.n ?? 0)
+      Number(staleDisbursementItems?.n ?? 0) +
+      Number(stalePayoutPostings?.n ?? 0)
     );
   });
 }
@@ -835,6 +848,57 @@ async function resealDisbursementItemBatch(
   });
 }
 
+/** The sealed total of a payout GL posting rides the same rotating key ring. */
+async function resealPayoutPostingBatch(
+  database: Database,
+  context: ScopedTenantContext,
+  batchSize: number,
+  active: number,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  return withTenant(database, context, async (tx) => {
+    await tx.execute(
+      sql`SELECT set_config('app.payroll_reseal', 'on', true), set_config('app.payroll_reseal_target_version', ${String(active)}, true)`,
+    );
+    const rows = await tx
+      .select()
+      .from(payrollPayoutGlPostings)
+      .where(
+        and(
+          eq(payrollPayoutGlPostings.tenantId, tenantId),
+          lt(payrollPayoutGlPostings.piiKeyVersion, active),
+        ),
+      )
+      .orderBy(asc(payrollPayoutGlPostings.id))
+      .limit(batchSize)
+      .for("update", { skipLocked: true });
+    for (const row of rows) {
+      const binding = {
+        tenantId,
+        table: "payroll_payout_gl_postings",
+        rowId: row.id,
+        field: "total",
+      } as const;
+      const totalEncrypted = sealPayrollValue(
+        openPayrollValue(row.totalEncrypted, binding, row.piiKeyVersion),
+        binding,
+        active,
+      );
+      await tx
+        .update(payrollPayoutGlPostings)
+        .set({ totalEncrypted, piiKeyVersion: active })
+        .where(
+          and(
+            eq(payrollPayoutGlPostings.tenantId, tenantId),
+            eq(payrollPayoutGlPostings.id, row.id),
+            lt(payrollPayoutGlPostings.piiKeyVersion, active),
+          ),
+        );
+    }
+    return rows.length;
+  });
+}
+
 /** Re-seal every stale row of every tenant. */
 export async function runHrisPiiReseal(
   options: HrisPiiResealOptions = {},
@@ -863,6 +927,7 @@ export async function runHrisPiiReseal(
     rapelItems: 0,
     disbursementBatches: 0,
     disbursementItems: 0,
+    payoutPostings: 0,
     failedTenants: 0,
     incompleteTenants: 0,
     aborted: false,
@@ -879,6 +944,7 @@ export async function runHrisPiiReseal(
     ["payroll_rapel_items", resealRapelItemBatch],
     ["payroll_disbursement_batches", resealDisbursementBatchBatch],
     ["payroll_disbursement_items", resealDisbursementItemBatch],
+    ["payroll_payout_gl_postings", resealPayoutPostingBatch],
   ];
   for (const tenantId of tenantIds) {
     if (options.signal?.aborted) {
@@ -908,7 +974,9 @@ export async function runHrisPiiReseal(
           else if (table === "payroll_rapel_items") result.rapelItems += count;
           else if (table === "payroll_disbursement_batches")
             result.disbursementBatches += count;
-          else result.disbursementItems += count;
+          else if (table === "payroll_disbursement_items")
+            result.disbursementItems += count;
+          else result.payoutPostings += count;
           await options.afterBatch?.({ tenantId, table, count });
         }
         if (result.aborted) break;

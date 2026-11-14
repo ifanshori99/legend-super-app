@@ -119,6 +119,7 @@ export const accountingMappingMessages = {
     pph21_borne_expense: "Beban PPh 21 ditanggung perusahaan",
     bpjs_expense: "Beban BPJS",
     gateway_fee_expense: "Beban payment gateway",
+    bank_charges: "Beban administrasi bank",
     depreciation_expense: "Beban penyusutan",
     service_expense: "Beban jasa",
     cash_over_short: "Selisih kas",

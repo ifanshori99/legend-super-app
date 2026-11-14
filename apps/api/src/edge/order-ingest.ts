@@ -11,18 +11,35 @@
 //     code, with a warning log (event id only, no payload).
 //  R2 Every amount comes from the payload: nothing is computed, rounded or
 //     priced here.
-//  R3 No side effects of a cloud sale: no outbox, deduction, journal, loyalty,
-//     receipt number or `pos_receipts` row.
+//  R3 No outbox, deduction, receipt number or `pos_receipts` row. Money side
+//     effects are written here, directly, in the ingest savepoint (legend-uctlr,
+//     same as a cloud sale): the PBJT `tax_snapshots` rows copied from the
+//     payload `taxes` (absent or inconsistent rows never refuse the sale), the
+//     sale journal and its void reversal (`deliverAutoJournalEvent`, keyed
+//     `aj:sale:` / `aj:sale-void:` so a replay posts once) and the loyalty
+//     earn / reversal (`deliverLoyaltyEarnEvent`, unique per order). The edge
+//     event itself is the replay key; no offline point redemption exists.
 //  R4 One lock key for order paid, void and cost recompute (`lockOrderSource`).
 import { and, eq, sql } from "drizzle-orm";
-import { createUlid, idr, type TenantId } from "@starter/shared/core";
+import {
+  createUlid,
+  idr,
+  ulidToUuid,
+  type TenantId,
+} from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import type { EventEnvelope } from "@starter/shared/events";
+import {
+  PAYMENT_GATEWAY_PROVIDERS,
+  type PaymentGatewayProvider,
+} from "@starter/shared/platform";
 import {
   orderPaidPayloadSchema,
   orderVoidedPayloadSchema,
   type OrderPaidPayload,
   type OrderVoidedPayload,
 } from "@starter/shared/pos";
+import { customerProfiles } from "../db/schema/crm-member.ts";
 import {
   edgeOrderIngests,
   type EdgeOrderIngestState,
@@ -37,7 +54,11 @@ import {
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { logger } from "../lib/logger.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
+import { deliverAutoJournalEvent } from "../services/accounting-auto-journal-consumer.ts";
 import { sourceIdToDb } from "../services/inventory.service.ts";
+import { lockLoyaltyJournalEntity } from "../services/accounting-auto-journal-amounts.ts";
+import { deliverLoyaltyEarnEvent } from "../services/loyalty-earn-consumer.ts";
+import { recordTaxSnapshotsFromPayload } from "../services/tax.service.ts";
 import type { EdgeApplyMeta } from "./ports.ts";
 
 /** Source type of the order advisory lock (shared with the cost recompute). */
@@ -123,12 +144,21 @@ async function lockOrThrow(
   }
 }
 
-/** Refusal reasons that a later delivery of the same event may retry. */
-function isTransientReason(reason: string | null): boolean {
-  return (
-    reason !== null &&
-    (reason === "lock_failed" || reason.startsWith("db_error:"))
-  );
+/**
+ * Refusal reasons that a later delivery of the same event may retry (legend-132mw):
+ * only lock trouble (`lock_failed`) and the SQLSTATEs deadlock_detected 40P01,
+ * lock_not_available 55P03 and serialization_failure 40001. Any other
+ * `db_error:*` (23505 unique clash, ...) is final: a retry would fail the same way.
+ */
+export const TRANSIENT_REFUSAL_REASONS: readonly string[] = [
+  "lock_failed",
+  "db_error:40P01",
+  "db_error:55P03",
+  "db_error:40001",
+];
+
+export function isTransientReason(reason: string | null): boolean {
+  return reason !== null && TRANSIENT_REFUSAL_REASONS.includes(reason);
 }
 
 /** Inserts the ledger row; false when a row for the order already exists. */
@@ -212,21 +242,36 @@ export async function ingestEdgeOrderPaid(
   }
   try {
     await tx.transaction((sp) =>
-      applyPaid(sp, tenantId, outletId, event, payload),
+      applyPaid(sp, tenantId, outletId, event, payload, meta),
     );
   } catch (error) {
     const reason = reasonOf(error);
     logger.warn({ eventId: event.id, reason }, "Edge order.paid refused");
-    await bestEffort(tx, event.id, reason, (sp) =>
-      insertLedger(sp, {
+    await bestEffort(tx, event.id, reason, async (sp) => {
+      const recorded = await insertLedger(sp, {
         tenantId,
         orderId: payload.orderId,
         outletId,
         paidEventId: event.id,
         state: "refused",
         reason,
-      }),
-    );
+      });
+      // A failed retry rolled back with its savepoint, so the old refused row
+      // is still there: note the new reason on it (legend-132mw), only for
+      // this very event.
+      if (!recorded)
+        await sp
+          .update(edgeOrderIngests)
+          .set({ reason, updatedAt: new Date() })
+          .where(
+            and(
+              eq(edgeOrderIngests.tenantId, tenantId),
+              eq(edgeOrderIngests.orderId, payload.orderId),
+              eq(edgeOrderIngests.state, "refused"),
+              eq(edgeOrderIngests.paidEventId, event.id),
+            ),
+          );
+    });
   }
 }
 
@@ -236,6 +281,7 @@ async function applyPaid(
   outletId: NonNullable<EventEnvelope["outletId"]>,
   event: EventEnvelope,
   payload: OrderPaidPayload,
+  meta: EdgeApplyMeta,
 ): Promise<void> {
   // 1. R4: one lock for paid, void and cost recompute of this order. Inside
   //    the savepoint so a failure is a recorded `lock_failed` refusal.
@@ -321,8 +367,25 @@ async function applyPaid(
   );
   if (tendered + Number(payload.paidDepositIdr) !== Number(payload.totalIdr))
     throw new IngestRefusal("money_mismatch");
+  // Tax rows (legend-uctlr) never refuse a sale: money already changed hands.
+  // Missing or inconsistent rows are not snapshotted; the journal then books
+  // all tax to PBJT (`saleTaxSplitOf` fallback). Log event id and code only.
+  const taxesUsable =
+    payload.taxes !== undefined &&
+    payload.taxes.reduce((sum, row) => sum + Number(row.taxIdr), 0) ===
+      Number(payload.pbjtIdr);
+  if (!taxesUsable) {
+    const code =
+      payload.taxes === undefined
+        ? Number(payload.pbjtIdr) > 0
+          ? "tax_missing"
+          : null
+        : "tax_mismatch";
+    if (code !== null)
+      logger.warn({ eventId: event.id, code }, "Edge order tax rows skipped");
+  }
   for (const tender of payload.tenders) {
-    if (providerOf(tender.method) === null)
+    if (providerOf(tender.method, tender.provider) === null)
       throw new IngestRefusal("tender_unsupported");
     if (tender.method === "points" && tender.pointsUsed === undefined)
       throw new IngestRefusal("tender_invalid");
@@ -333,6 +396,38 @@ async function applyPaid(
     )
       throw new IngestRefusal("tender_invalid");
   }
+
+  // A sale is never lost over a points link: a customer unknown to this
+  // tenant is stored as no customer (no points), not refused by the FK.
+  let customerProfileId = payload.customerProfileId ?? null;
+  if (customerProfileId !== null) {
+    const [profile] = await tx
+      .select({ id: customerProfiles.id })
+      .from(customerProfiles)
+      .where(
+        and(
+          eq(customerProfiles.tenantId, tenantId),
+          eq(customerProfiles.id, customerProfileId),
+        ),
+      );
+    if (!profile) {
+      logger.warn(
+        { eventId: event.id },
+        "Edge order.paid customer unknown, ingested without customer",
+      );
+      customerProfileId = null;
+    }
+  }
+  // legend-cqehx: who attached the customer, three cases. A user id: a staff
+  // user attached the member. null: nobody did (the member attached
+  // themselves). Missing key: an older producer, the attacher is unknown; it is
+  // stored as null like "nobody", so only the cashier check of the earn guard
+  // (LOY-02) applies. The id is stored verbatim, never turned into null, and
+  // only with the customer it belongs to.
+  const customerAttachedBy =
+    customerProfileId !== null && payload.customerAttachedBy !== undefined
+      ? payload.customerAttachedBy
+      : null;
 
   // 4. Writes.
   const paidAt = new Date(payload.paidAt);
@@ -351,6 +446,8 @@ async function applyPaid(
     roundingIdr: payload.roundingIdr,
     totalIdr: payload.totalIdr,
     pricesIncludeTax,
+    customerProfileId,
+    customerAttachedBy,
     depositAppliedIdr: payload.paidDepositIdr,
     status: "completed",
     businessDate: payload.businessDate,
@@ -405,7 +502,8 @@ async function applyPaid(
       orderId: payload.orderId,
       method: tender.method,
       // Non-null: unmappable methods were refused above.
-      provider: providerOf(tender.method) as "edc" | "manual",
+      provider: providerOf(tender.method, tender.provider) as
+        "edc" | "manual" | PaymentGatewayProvider,
       amountIdr: tender.amountIdr,
       receivedIdr: received === null ? null : idr(received),
       changeIdr:
@@ -419,16 +517,102 @@ async function applyPaid(
       shiftId: null,
     });
   }
+
+  // 5. Sale side effects, same as a cloud sale (legend-uctlr). Order matters:
+  //    the PBJT snapshots first (the journal's tax split reads them), then the
+  //    journal, then the points earn (reads `orders.customer_profile_id`).
+  if (taxesUsable && payload.taxes !== undefined)
+    await recordTaxSnapshotsFromPayload(tx, meta.context, {
+      sourceType: "order",
+      sourceId: ulidToUuid(payload.orderId),
+      outletId,
+      businessDate: payload.businessDate,
+      taxes: payload.taxes,
+    });
+  await deliverSaleEffects(tx, meta, event);
 }
 
 /**
- * `pos_order_tenders.provider` of a payload tender method, or null when it
- * cannot be mapped for certain: gateway methods (card, va, ewallet, qris, ...)
- * need the real provider, which the edge event does not carry.
+ * Posts the sale journal (or its void reversal) and the loyalty earn (or
+ * reversal) of an ingested edge event, in the ingest savepoint. The edge
+ * event id is the replay key. The journal consumer parks instead of throwing
+ * (as for a cloud sale): the ingest stays successful and the parked row is
+ * the retry record; log the event id and code only, never the payload.
  */
-function providerOf(method: string): "edc" | "manual" | null {
-  if (method === "cash" || method === "points") return "manual";
-  if (method === "edc_card" || method === "edc_qris") return "edc";
+async function deliverSaleEffects(
+  tx: EdgeTx,
+  meta: EdgeApplyMeta,
+  event: EventEnvelope,
+): Promise<void> {
+  const journal = await deliverAutoJournalEvent(meta.context, event, tx);
+  if (journal.status === "parked")
+    logger.warn(
+      { eventId: event.id, code: journal.code },
+      "Edge order journal parked",
+    );
+  // The points ledger appends tenant-wide events, which need tenant scope; the
+  // link's context is outlet-scoped. Same tenant, wider scope, as the cloud
+  // outbox delivers loyalty events.
+  // The consumer only try-locks the loyalty entity and throws a plain Error
+  // when busy, which would record a final `error` and lose the sale. Take the
+  // blocking lock first, bounded, so contention is a transient 55P03 refusal
+  // that is re-driven. The lock is re-entrant for the consumer's own try-lock.
+  await lockLoyaltyEntityBounded(tx, meta.context.tenant.tenantId);
+  await deliverLoyaltyEarnEvent(
+    establishScopedTenantContext(meta.context.tenant, { kind: "tenant" }),
+    event,
+    tx,
+  );
+}
+
+/** Longest the ingest waits for the loyalty entity lock before a transient refusal. */
+const LOYALTY_LOCK_TIMEOUT = "2s";
+
+/**
+ * Blocking loyalty entity lock under a bounded `lock_timeout`. The previous
+ * timeout is restored afterwards (`SET LOCAL` outlives a released savepoint),
+ * so later statements of the same transaction keep their own wait budget.
+ */
+async function lockLoyaltyEntityBounded(
+  tx: EdgeTx,
+  tenantId: TenantId,
+): Promise<void> {
+  const saved = await tx.execute(
+    sql`SELECT current_setting('lock_timeout') AS value`,
+  );
+  const previous = String(saved.rows[0]?.value ?? "0");
+  await tx.execute(
+    sql`SELECT set_config('lock_timeout', ${LOYALTY_LOCK_TIMEOUT}, true)`,
+  );
+  await lockLoyaltyJournalEntity(tx, tenantId);
+  await tx.execute(sql`SELECT set_config('lock_timeout', ${previous}, true)`);
+}
+
+/**
+ * `pos_order_tenders.provider` of a payload tender, or null when it cannot be
+ * mapped for certain. Cash, points and EDC methods map from the method; a
+ * stated provider must agree with it. Gateway methods (card, va, ewallet,
+ * qris) need the real gateway provider from the event (legend-yu8z0): without
+ * one, or with a code that is not a gateway adapter, they stay unsupported.
+ */
+function providerOf(
+  method: string,
+  provider: string | undefined,
+): "edc" | "manual" | PaymentGatewayProvider | null {
+  let expected: "edc" | "manual" | null = null;
+  if (method === "cash" || method === "points") expected = "manual";
+  else if (method === "edc_card" || method === "edc_qris") expected = "edc";
+  if (expected !== null)
+    return provider === undefined || provider === expected ? expected : null;
+  if (
+    method === "card" ||
+    method === "va" ||
+    method === "ewallet" ||
+    method === "qris"
+  ) {
+    const gateway = PAYMENT_GATEWAY_PROVIDERS.find((code) => code === provider);
+    return gateway ?? null;
+  }
   return null;
 }
 
@@ -461,7 +645,7 @@ export async function ingestEdgeOrderVoided(
   }
   try {
     await tx.transaction((sp) =>
-      applyVoided(sp, tenantId, outletId, event, payload),
+      applyVoided(sp, tenantId, outletId, event, payload, meta),
     );
   } catch (error) {
     const reason = reasonOf(error);
@@ -490,6 +674,7 @@ async function applyVoided(
   outletId: NonNullable<EventEnvelope["outletId"]>,
   event: EventEnvelope,
   payload: OrderVoidedPayload,
+  meta: EdgeApplyMeta,
 ): Promise<void> {
   await lockOrThrow(tx, tenantId, payload.orderId);
 
@@ -614,4 +799,7 @@ async function applyVoided(
         eq(edgeOrderIngests.orderId, payload.orderId),
       ),
     );
+  // legend-uctlr: reverse the sale journal exactly once (`aj:sale-void:`) and
+  // take back the points through the existing loyalty reversal.
+  await deliverSaleEffects(tx, meta, event);
 }

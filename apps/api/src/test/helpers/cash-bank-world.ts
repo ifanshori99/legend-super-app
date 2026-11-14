@@ -300,9 +300,18 @@ export async function makeOutlet(entityId: string): Promise<string> {
 
 // ---- reads (as the migration owner, bypassing RLS) -------------------------
 
-/** UTC calendar date `days` before today: never in the entity's future. */
+/**
+ * Asia/Jakarta (WIB) calendar date `days` before today. The service dates
+ * entries and bounds "today" in WIB (`entityToday`), so a UTC date is a day
+ * behind between 00:00 and 07:00 WIB and a `to: daysAgo(0)` list filter then
+ * misses today's entry (AS-2 flake). WIB is ahead of UTC, so this is never in
+ * the entity's future either.
+ */
 export function daysAgo(days: number): string {
-  const d = new Date();
+  const wibToday = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+  }).format(new Date());
+  const d = new Date(`${wibToday}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() - days);
   return d.toISOString().slice(0, 10);
 }

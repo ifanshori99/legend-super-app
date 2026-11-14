@@ -2339,6 +2339,20 @@
       "when": 1794582500000,
       "tag": "0347_edge_order_ingests",
       "breakpoints": true
+    },
+    {
+      "idx": 348,
+      "version": "7",
+      "when": 1794586000000,
+      "tag": "0348_payout_gl_postings",
+      "breakpoints": true
+    },
+    {
+      "idx": 349,
+      "version": "7",
+      "when": 1794586500000,
+      "tag": "0349_session_mfa_challenge",
+      "breakpoints": true
     }
   ]
 }

@@ -62,6 +62,7 @@ import {
   EDGE_QUEUE_PRUNE_INTERVAL_MS,
   pruneAckedEdgeQueue,
 } from "../services/edge-queue.service.ts";
+import { startEdgeReceiptRunReporter } from "../services/edge-receipt-run-reporter.ts";
 import { bootstrapEdgeNodeIfNeeded } from "./bootstrap.ts";
 import {
   registerEdgeDeferredFallback,
@@ -75,6 +76,7 @@ import {
   type WifiQuotaWorkerHandle,
 } from "./wifi-quota-queue-worker.ts";
 import { registerOrderEdgeApplier } from "./order-edge-applier.ts";
+import { registerReceiptRunEdgeApplier } from "./receipt-run-applier.ts";
 import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
 import { registerPanicAlertEdgeApplier } from "./panic-alert-applier.ts";
@@ -246,6 +248,8 @@ export const EDGE_REQUIRED_TABLES = [
 
 /** Missed-wakeup fallback: how often an idle link re-checks its queue. */
 const SWEEP_INTERVAL_MS = 5_000;
+/** legend-zy43: how often the edge looks for a changed receipt run. */
+const RECEIPT_RUN_REPORT_INTERVAL_MS = 60_000;
 
 /** The cloud answered 400 to the first request of a pull (its cursor). */
 class StoredCursorRefusedError extends Error {
@@ -1286,8 +1290,24 @@ export async function startEdgeRuntime(
     drain: config.role === "primary",
   });
   let auditRetention: EdgeAuditRetentionHandle | null = null;
+  // legend-zy43: reports the receipt runs this database numbered. Only the
+  // primary numbers receipts (a standby holds no bound run).
+  const stopReceiptRunReporter =
+    config.role === "primary"
+      ? startEdgeReceiptRunReporter({
+          context: local.context,
+          outletId: local.scope.outletId,
+          edgeNodeId: local.scope.edgeNodeId,
+          edgeInstanceId: local.instanceId,
+          intervalMs: RECEIPT_RUN_REPORT_INTERVAL_MS,
+          onReported: () => client.notify(),
+          onError: (error) =>
+            logger.warn(safeError(error), "Edge receipt run report failed"),
+        })
+      : () => undefined;
   const handle: EdgeRuntimeHandle = {
     async stop() {
+      stopReceiptRunReporter();
       clearInterval(sweep);
       clearInterval(catalogAlarmRetry);
       await wifiQuotaWorker.stop();
@@ -1355,12 +1375,9 @@ export async function registerEdgeLink(
   registerPosDeferredEdgeApplier();
   // legend-pd9t: order.paid cost snapshot from the order's edge stock rows.
   registerOrderEdgeApplier();
-  // legend-zy43: registerReceiptRunEdgeApplier() is intentionally NOT wired.
-  // The merge refuses every edge receipt until the cloud ingests edge orders
-  // and voids (docs/DECISIONS.md "Pesanan lewat edge"), and a refusal is
-  // recorded as received (lost). Wiring it also needs receipt_run excluded
-  // from posDeferredAggregates (duplicate handler crash). Until then the event
-  // stays parked like other POS events.
+  // legend-zy43: receipt_run.reported merged with mergeDeviceReceiptRun. Its
+  // aggregate is excluded from posDeferredAggregates (one handler per event).
+  registerReceiptRunEdgeApplier();
   // legend-kyie: pos_override.* / staff_pin.* applied (and parked ones drained).
   registerAccessEdgeApplier();
   // legend-bod.5: emergency button alerts (panic_alert.*) mirrored idempotently.
