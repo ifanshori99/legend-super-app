@@ -50,6 +50,7 @@ import {
   userIdSchema,
   z,
 } from "../core/index.ts";
+import { hasUnsafeSnapshotFields } from "./snapshot-safety.ts";
 
 import {
   promotionObjectSchema,
@@ -224,7 +225,7 @@ export const menuCategorySyncRecordSchema = z.object({
   ...stamps,
 });
 
-export const menuItemSyncRecordSchema = z.object({
+export const menuItemSyncRecordSchema = z.strictObject({
   id: uuidSchema,
   tenantId: uuidSchema,
   brandId: uuidSchema,
@@ -263,7 +264,7 @@ export const modifierGroupSyncRecordSchema = z.object({
   ...stamps,
 });
 
-export const modifierSyncRecordSchema = z.object({
+export const modifierSyncRecordSchema = z.strictObject({
   id: uuidSchema,
   tenantId: uuidSchema,
   groupId: uuidSchema,
@@ -288,7 +289,7 @@ export const menuItemModifierGroupSyncRecordSchema = z.object({
  * One live item of a price list. Only live (not soft-deleted) items travel, so
  * there is no `deletedAt`: an item missing from `items` is gone.
  */
-export const priceListItemRecordSchema = z.object({
+export const priceListItemRecordSchema = z.strictObject({
   id: uuidSchema,
   tenantId: uuidSchema,
   priceListId: uuidSchema,
@@ -305,7 +306,7 @@ export const priceListItemRecordSchema = z.object({
  * in the same statement as the header: the edge replaces its items with this
  * set (deletes the others) in the same transaction as the header upsert.
  */
-export const priceListSyncRecordSchema = z.object({
+export const priceListSyncRecordSchema = z.strictObject({
   id: uuidSchema,
   tenantId: uuidSchema,
   outletId: uuidSchema,
@@ -316,7 +317,7 @@ export const priceListSyncRecordSchema = z.object({
 });
 
 /** One line of a recipe; no `updated_at` / `deleted_at` in the cloud. */
-export const recipeLineRecordSchema = z.object({
+export const recipeLineRecordSchema = z.strictObject({
   id: uuidSchema,
   tenantId: uuidSchema,
   recipeId: uuidSchema,
@@ -335,7 +336,7 @@ export const recipeLineRecordSchema = z.object({
  * edge replaces its lines with this set (deletes the others) in the same
  * transaction as the recipe upsert.
  */
-export const recipeSyncRecordSchema = z.object({
+export const recipeSyncRecordSchema = z.strictObject({
   id: uuidSchema,
   tenantId: uuidSchema,
   brandId: uuidSchema,
@@ -462,21 +463,32 @@ function pageOf<S extends CatalogSyncStream>(stream: S) {
   });
 }
 
-export const catalogSyncPageSchema = z.discriminatedUnion("stream", [
-  pageOf("stations"),
-  pageOf("printers"),
-  pageOf("inventory_items"),
-  pageOf("menu_categories"),
-  pageOf("modifier_groups"),
-  pageOf("modifiers"),
-  pageOf("menu_items"),
-  pageOf("item_variants"),
-  pageOf("menu_item_modifier_groups"),
-  pageOf("price_lists"),
-  pageOf("recipes"),
-  pageOf("promotions"),
-  pageOf("vouchers"),
-]);
+const noUnsafeCatalogFields = z.unknown().superRefine((value, ctx) => {
+  if (hasUnsafeSnapshotFields(value)) {
+    ctx.addIssue({
+      code: "custom",
+      message: "Forbidden field or snapshot exceeds inspection limits",
+    });
+  }
+});
+
+export const catalogSyncPageSchema = noUnsafeCatalogFields.pipe(
+  z.discriminatedUnion("stream", [
+    pageOf("stations"),
+    pageOf("printers"),
+    pageOf("inventory_items"),
+    pageOf("menu_categories"),
+    pageOf("modifier_groups"),
+    pageOf("modifiers"),
+    pageOf("menu_items"),
+    pageOf("item_variants"),
+    pageOf("menu_item_modifier_groups"),
+    pageOf("price_lists"),
+    pageOf("recipes"),
+    pageOf("promotions"),
+    pageOf("vouchers"),
+  ]),
+);
 export type CatalogSyncPage = z.infer<typeof catalogSyncPageSchema>;
 
 /** Cloud output validation must detect accidental columns, including nested rows. */

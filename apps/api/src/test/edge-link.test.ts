@@ -107,6 +107,45 @@ describe("cloud-to-edge frame compatibility", () => {
       },
     });
     expect(decodeFrame(JSON.stringify(frame))).toBeNull();
+    const payloadEvent = {
+      ...original,
+      payload: { tokenIssuedAt: "valid domain field" },
+    };
+    expect(
+      decodeFrame(
+        JSON.stringify({
+          ...frame,
+          batch: { ...frame.batch, events: [payloadEvent] },
+        }),
+        true,
+      ),
+    ).not.toBeNull();
+    expect(
+      decodeFrame(
+        JSON.stringify({
+          ...frame,
+          batch: {
+            ...frame.batch,
+            events: [{ ...original, apiToken: "secret" }],
+          },
+        }),
+        true,
+      ),
+    ).toBeNull();
+    expect(
+      decodeFrame(
+        JSON.stringify({
+          ...frame,
+          batch: {
+            ...frame.batch,
+            events: [
+              { ...original, actor: { ...original.actor, apiToken: "secret" } },
+            ],
+          },
+        }),
+        true,
+      ),
+    ).toBeNull();
     expect(
       decodeFrame(
         JSON.stringify({

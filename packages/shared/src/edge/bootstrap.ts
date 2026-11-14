@@ -1,3 +1,4 @@
+import { hasUnsafeSnapshotFields } from "./snapshot-safety.ts";
 // Edge bootstrap bundle (bead legend-khu5; PRD v1.7 §3 F5 "Server Lokal",
 // TEN-02). A fresh edge node has an empty local database, but its own
 // edge_nodes row (and every link table) needs the tenant and outlet rows as
@@ -116,7 +117,7 @@ export const edgeBootstrapOutletSchema = z.object({
 export type EdgeBootstrapOutlet = z.infer<typeof edgeBootstrapOutletSchema>;
 
 /** FK-complete: every row is the tenant's, the outlet's parents are present. */
-export const edgeBootstrapBundleSchema = z
+const edgeBootstrapBundleObjectSchema = z
   .object({
     version: z.literal(EDGE_BOOTSTRAP_VERSION),
     issuedAt: isoDateTimeSchema,
@@ -152,7 +153,7 @@ export const edgeBootstrapBundleSchema = z
       });
   });
 /** Strict cloud output validation prevents accidentally sending extra columns. */
-export const edgeBootstrapBundleCloudSchema = edgeBootstrapBundleSchema
+export const edgeBootstrapBundleCloudSchema = edgeBootstrapBundleObjectSchema
   .safeExtend({
     tenant: edgeBootstrapTenantSchema.strict(),
     legalEntity: edgeBootstrapLegalEntitySchema.strict(),
@@ -161,13 +162,33 @@ export const edgeBootstrapBundleCloudSchema = edgeBootstrapBundleSchema
   })
   .strict();
 
+export const edgeBootstrapBundleSchema = z
+  .unknown()
+  .refine(
+    (value) => !hasUnsafeSnapshotFields(value),
+    "Forbidden field or snapshot exceeds inspection limits",
+  )
+  .pipe(edgeBootstrapBundleObjectSchema);
+
 export type EdgeBootstrapBundle = z.infer<typeof edgeBootstrapBundleSchema>;
 
-export const edgeBootstrapResponseSchema = z.object({
-  bundle: edgeBootstrapBundleSchema,
-  /** HMAC-SHA256 (lowercase hex) over canonicalJson(bundle). */
-  signature: z.string().regex(/^[0-9a-f]{64}$/),
-});
+export const edgeBootstrapResponseSchema = z
+  .unknown()
+  .refine((value) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value))
+      return !hasUnsafeSnapshotFields(value);
+    const envelope = Object.fromEntries(
+      Object.entries(value).filter(([key]) => key !== "bundle"),
+    );
+    return !hasUnsafeSnapshotFields(envelope);
+  })
+  .pipe(
+    z.object({
+      bundle: edgeBootstrapBundleSchema,
+      /** HMAC-SHA256 (lowercase hex) over canonicalJson(bundle). */
+      signature: z.string().regex(/^[0-9a-f]{64}$/),
+    }),
+  );
 export type EdgeBootstrapResponse = z.infer<typeof edgeBootstrapResponseSchema>;
 
 /**

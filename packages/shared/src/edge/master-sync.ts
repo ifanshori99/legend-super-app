@@ -1,3 +1,4 @@
+import { hasUnsafeSnapshotFields } from "./snapshot-safety.ts";
 // Edge master sync snapshot (bead legend-9ppw; PRD v1.7 §3 F5 "Server Lokal").
 // The edge node posts stock movements against stock locations, and journals
 // against accounts, that must exist in the cloud with the SAME ids. The cloud
@@ -121,7 +122,7 @@ export type KnownEdgeMasterAccountMapping = Omit<
 > & { role: PostingAccountRole };
 
 /** Scope-consistent: one tenant, one outlet, one legal entity, ids unique. */
-export const edgeMasterSnapshotSchema = z
+const edgeMasterSnapshotObjectSchema = z
   .object({
     version: z.literal(EDGE_MASTER_SNAPSHOT_VERSION),
     issuedAt: isoDateTimeSchema,
@@ -202,7 +203,7 @@ export const edgeMasterSnapshotSchema = z
     });
   });
 /** Strict cloud output validation prevents accidentally sending extra columns. */
-export const edgeMasterSnapshotCloudSchema = edgeMasterSnapshotSchema
+export const edgeMasterSnapshotCloudSchema = edgeMasterSnapshotObjectSchema
   .safeExtend({
     uoms: z.array(edgeMasterUomSchema.strict()).max(MAX_UOMS),
     stockLocations: z
@@ -217,13 +218,29 @@ export const edgeMasterSnapshotCloudSchema = edgeMasterSnapshotSchema
   })
   .strict();
 
+export const edgeMasterSnapshotSchema = z
+  .unknown()
+  .refine(
+    (value) => !hasUnsafeSnapshotFields(value),
+    "Forbidden field or snapshot exceeds inspection limits",
+  )
+  .pipe(edgeMasterSnapshotObjectSchema);
+
 export type EdgeMasterSnapshot = z.infer<typeof edgeMasterSnapshotSchema>;
 
-export const edgeMasterSnapshotResponseSchema = z.object({
-  snapshot: edgeMasterSnapshotSchema,
-  /** HMAC-SHA256 (lowercase hex) over canonicalJson(snapshot). */
-  signature: z.string().regex(/^[0-9a-f]{64}$/),
-});
+export const edgeMasterSnapshotResponseSchema = z
+  .unknown()
+  .refine(
+    (value) => !hasUnsafeSnapshotFields(value),
+    "Forbidden field or snapshot exceeds inspection limits",
+  )
+  .pipe(
+    z.object({
+      snapshot: edgeMasterSnapshotSchema,
+      /** HMAC-SHA256 (lowercase hex) over canonicalJson(snapshot). */
+      signature: z.string().regex(/^[0-9a-f]{64}$/),
+    }),
+  );
 export type EdgeMasterSnapshotResponse = z.infer<
   typeof edgeMasterSnapshotResponseSchema
 >;

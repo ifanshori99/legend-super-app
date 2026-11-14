@@ -7,6 +7,7 @@ import {
   edgeBootstrapBundleCloudSchema,
   edgeMasterSnapshotCloudSchema,
   catalogSyncQuerySchema,
+  CATALOG_SYNC_STREAMS,
   deviceReceiptSequenceSyncSchema,
 } from "@starter/shared/edge";
 
@@ -24,6 +25,20 @@ const snapshot = {
 };
 
 describe("cloud-to-edge snapshot compatibility", () => {
+  it("rejects hidden credentials before stripping any catalog stream", () => {
+    for (const stream of CATALOG_SYNC_STREAMS) {
+      const page = { stream, records: [], nextCursor: null, hasMore: false };
+      expect(catalogSyncPageSchema.safeParse(page).success, stream).toBe(true);
+      expect(
+        catalogSyncPageSchema.safeParse({
+          ...page,
+          future: { apiToken: "secret" },
+        }).success,
+        stream,
+      ).toBe(false);
+    }
+  });
+
   it("strips unknown fields at the snapshot and nested record levels", () => {
     const parsed = edgePeopleSnapshotSchema.parse({
       ...snapshot,
@@ -97,6 +112,136 @@ describe("cloud-to-edge snapshot compatibility", () => {
     expect(
       deviceReceiptSequenceSyncSchema.safeParse({ ...row, lastNumber: "0" })
         .success,
+    ).toBe(false);
+  });
+
+  it("rejects extra fields on money and recipe records and their children", () => {
+    const at = "2026-01-01T00:00:00.000Z";
+    const base = { id, tenantId: id };
+    const stamps = {
+      createdAt: at,
+      updatedAt: at,
+      deletedAt: null,
+      syncTxid: "1",
+    };
+    const item = {
+      ...base,
+      priceListId: id,
+      itemId: id,
+      variantId: null,
+      priceIdr: 1000,
+      createdAt: at,
+      updatedAt: at,
+    };
+    const line = {
+      ...base,
+      recipeId: id,
+      sortOrder: 0,
+      componentType: "item",
+      componentId: id,
+      quantity: "1.0000",
+      uomId: id,
+      wastePctBp: 0,
+    };
+    const rows = [
+      {
+        stream: "menu_items",
+        record: {
+          ...base,
+          brandId: id,
+          categoryId: id,
+          name: "Food",
+          description: "",
+          type: "single",
+          stationId: null,
+          stationType: null,
+          course: null,
+          recipeId: null,
+          taxRuleId: null,
+          labels: [],
+          allergens: [],
+          mediaId: null,
+          isActive: true,
+          sortOrder: 0,
+          ...stamps,
+        },
+      },
+      {
+        stream: "modifiers",
+        record: {
+          ...base,
+          groupId: id,
+          name: "Extra",
+          priceIdr: 1000,
+          recipeId: null,
+          stationId: null,
+          ...stamps,
+        },
+      },
+      {
+        stream: "price_lists",
+        record: {
+          ...base,
+          outletId: id,
+          channel: "dine_in",
+          effectiveFrom: "2026-01-01",
+          items: [item],
+          ...stamps,
+        },
+      },
+      {
+        stream: "recipes",
+        record: {
+          ...base,
+          brandId: id,
+          name: "Recipe",
+          outputItemId: null,
+          yieldQuantity: "1.0000",
+          yieldUomId: id,
+          version: 1,
+          isActive: true,
+          theoreticalCostIdr: "0.0000",
+          updatedBy: "user",
+          lines: [line],
+          createdAt: at,
+          updatedAt: at,
+          syncTxid: "1",
+        },
+      },
+    ];
+    for (const { stream, record } of rows) {
+      const page = {
+        stream,
+        records: [record],
+        nextCursor: null,
+        hasMore: false,
+      };
+      expect(catalogSyncPageSchema.safeParse(page).success, stream).toBe(true);
+      expect(
+        catalogSyncPageSchema.safeParse({
+          ...page,
+          records: [{ ...record, future: true }],
+        }).success,
+        stream,
+      ).toBe(false);
+    }
+    const priceList = rows[2]!.record;
+    const recipe = rows[3]!.record;
+    expect(
+      catalogSyncPageSchema.safeParse({
+        stream: "price_lists",
+        records: [{ ...priceList, items: [{ ...item, future: true }] }],
+        nextCursor: null,
+        hasMore: false,
+      }).success,
+    ).toBe(false);
+    expect(
+      catalogSyncPageSchema.safeParse({
+        stream: "recipes",
+        records: [{ ...recipe, lines: [{ ...line, future: true }] }],
+        nextCursor: null,
+        hasMore: false,
+      }).success,
     ).toBe(false);
   });
 });

@@ -18,6 +18,7 @@ import {
   type SyncDirection,
 } from "@starter/shared/events";
 import { syncAckSchema, syncBatchSchema } from "@starter/shared/edge";
+import { hasUnsafeSnapshotFields } from "@starter/shared/edge/snapshot-safety";
 
 /** Max events per batch frame; bounds frame size and apply transaction size. */
 export const LINK_BATCH_SIZE = 100;
@@ -121,6 +122,70 @@ const edgeInboundFrameSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+// Only unknown control-frame fields are stripped. Known event payloads are
+// domain data and may legitimately contain names such as tokenIssuedAt.
+function unsafeExtraFields(value: unknown, known: readonly string[]): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const extras = Object.fromEntries(
+    Object.entries(value).filter(([key]) => !known.includes(key)),
+  );
+  return hasUnsafeSnapshotFields(extras);
+}
+
+function unsafeInboundFrame(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const frame = value as Record<string, unknown>;
+  const schema = edgeInboundFrameSchema.options.find(
+    (option) => option.shape.type.value === frame.type,
+  );
+  if (!schema) return false;
+  if (unsafeExtraFields(frame, Object.keys(schema.shape))) return true;
+  if (
+    frame.type === "batch" &&
+    frame.batch &&
+    typeof frame.batch === "object" &&
+    !Array.isArray(frame.batch)
+  ) {
+    const batch = frame.batch as Record<string, unknown>;
+    if (unsafeExtraFields(batch, Object.keys(edgeInboundBatchSchema.shape)))
+      return true;
+    if (Array.isArray(batch.events)) {
+      for (const event of batch.events) {
+        if (unsafeExtraFields(event, Object.keys(edgeInboundEventSchema.shape)))
+          return true;
+        if (event && typeof event === "object" && !Array.isArray(event)) {
+          const actor = (event as Record<string, unknown>).actor;
+          if (actor && typeof actor === "object" && !Array.isArray(actor)) {
+            const actorType = (actor as Record<string, unknown>).type;
+            const actorSchema = edgeInboundActorSchema.options.find(
+              (option) => option.shape.type.value === actorType,
+            );
+            if (
+              actorSchema &&
+              unsafeExtraFields(actor, Object.keys(actorSchema.shape))
+            )
+              return true;
+          }
+        }
+      }
+    }
+  }
+  if (
+    frame.type === "ack" &&
+    unsafeExtraFields(frame.ack, Object.keys(syncAckSchema.shape))
+  )
+    return true;
+  if (frame.type === "heartbeat" && Array.isArray(frame.catalogStale)) {
+    for (const stale of frame.catalogStale) {
+      if (unsafeExtraFields(stale, ["stream", "staleSince", "reason"]))
+        return true;
+    }
+  }
+  return false;
+}
+
 export type LinkFrame = z.infer<typeof linkFrameSchema>;
 
 export function encodeFrame(frame: LinkFrame): string {
@@ -135,7 +200,9 @@ export function decodeFrame(
   if (raw.length > LINK_MAX_FRAME_BYTES) return null;
   try {
     const schema = inboundAtEdge ? edgeInboundFrameSchema : linkFrameSchema;
-    const parsed = schema.safeParse(JSON.parse(raw));
+    const value: unknown = JSON.parse(raw);
+    if (inboundAtEdge && unsafeInboundFrame(value)) return null;
+    const parsed = schema.safeParse(value);
     return parsed.success ? parsed.data : null;
   } catch {
     return null;

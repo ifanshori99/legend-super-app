@@ -200,7 +200,13 @@ async function handleEdgeBootstrap(req: Request, res: Response): Promise<void> {
 async function handleEdgeMasters(req: Request, res: Response): Promise<void> {
   const { node, credential } = await authenticateEdgeNode(req);
   res.setHeader("Cache-Control", "private, no-store");
-  res.json(await buildEdgeMasterSnapshot(node, credential));
+  res.json(
+    await buildEdgeMasterSnapshot(
+      node,
+      credential,
+      req.query.uomIsSystem === "1",
+    ),
+  );
 }
 
 export const edgeBootstrapRouter = createEdgeBootstrapRouter();

@@ -1,3 +1,4 @@
+import { hasUnsafeSnapshotFields } from "@starter/shared/edge/snapshot-safety";
 // Edge bootstrap, edge side (bead legend-khu5; PRD v1.7 §3 F5 "Server
 // Lokal", TEN-02). A freshly installed edge node has an empty local
 // database, so ensureLocalEdgeNode would fail on the tenant/outlet foreign
@@ -164,6 +165,12 @@ async function fetchVerifiedBundle(
   }
   if (body === null || typeof body !== "object")
     throw bootError("BAD_RESPONSE");
+  const extraFields = Object.fromEntries(
+    Object.entries(body).filter(
+      ([key]) => key !== "bundle" && key !== "signature",
+    ),
+  );
+  if (hasUnsafeSnapshotFields(extraFields)) throw bootError("BAD_RESPONSE");
   const { bundle, signature } = body as {
     bundle?: unknown;
     signature?: unknown;

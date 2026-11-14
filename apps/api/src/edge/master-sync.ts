@@ -61,6 +61,7 @@ import {
   type CatalogSyncStream,
 } from "@starter/shared/edge";
 import type { ScopedTenantContext } from "@starter/shared/core";
+import { hasUnsafeSnapshotFields } from "@starter/shared/edge/snapshot-safety";
 import {
   EDGE_MASTER_SNAPSHOT_PATH,
   edgeMasterSnapshotSchema,
@@ -213,7 +214,7 @@ export async function fetchVerifiedMasterSnapshot(
     body = await cloudGetJson({
       cloudUrl: config.cloudUrl,
       credential: config.credential,
-      path: EDGE_MASTER_SNAPSHOT_PATH,
+      path: `${EDGE_MASTER_SNAPSHOT_PATH}?uomIsSystem=1`,
       fetchImpl: options.fetchImpl,
       timeoutMs: options.timeoutMs,
       signal: options.signal,
@@ -226,6 +227,13 @@ export async function fetchVerifiedMasterSnapshot(
     );
   }
   if (body === null || typeof body !== "object")
+    throw new EdgeMasterSyncError("BAD_RESPONSE");
+  const extraFields = Object.fromEntries(
+    Object.entries(body).filter(
+      ([key]) => key !== "snapshot" && key !== "signature",
+    ),
+  );
+  if (hasUnsafeSnapshotFields(extraFields))
     throw new EdgeMasterSyncError("BAD_RESPONSE");
   const { snapshot, signature } = body as {
     snapshot?: unknown;

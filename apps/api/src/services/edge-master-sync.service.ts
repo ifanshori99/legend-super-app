@@ -20,7 +20,6 @@ import { establishTenantContext } from "@starter/shared/core/server";
 import {
   EDGE_MASTER_SNAPSHOT_VERSION,
   edgeMasterSnapshotCloudSchema,
-  type EdgeMasterSnapshotResponse,
 } from "@starter/shared/edge/master-sync";
 import { db } from "../db/index.ts";
 import { parseEdgeCredential } from "../edge/credential.ts";
@@ -81,7 +80,8 @@ const denied = () =>
 export async function buildEdgeMasterSnapshot(
   node: VerifiedEdgeNode,
   presentedCredential: string,
-): Promise<EdgeMasterSnapshotResponse> {
+  includeUomIsSystem = false,
+) {
   const verified = verifiedEdgeNodeSchema.parse(node);
   const { tenantId, outletId, edgeNodeId } = verified;
   const presented = parseEdgeCredential(presentedCredential);
@@ -97,7 +97,19 @@ export async function buildEdgeMasterSnapshot(
     outletId,
   );
 
-  const snapshot = await readSnapshot(context, verified);
+  const fullSnapshot = await readSnapshot(context, verified);
+  const snapshot = includeUomIsSystem
+    ? fullSnapshot
+    : {
+        ...fullSnapshot,
+        uoms: fullSnapshot.uoms.map((row) => ({
+          id: row.id,
+          tenantId: row.tenantId,
+          code: row.code,
+          name: row.name,
+          createdAt: row.createdAt,
+        })),
+      };
 
   return {
     snapshot,
