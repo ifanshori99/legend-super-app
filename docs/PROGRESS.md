@@ -5271,3 +5271,12 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gerbang: lint hijau (0 error, 2 warning lama); typecheck 49 dtk hijau; tes root `node --test tests/*.test.mjs` terarah 2851/2855 (4 gagal hanya "isolated database", lingkungan); `heavy pnpm run test` penuh 02:33-03:45 (72 mnt) exit 0: vitest 1082 berkas/17477 lulus/41 skip/16 todo, root 2884/2884; build hijau; e2e `legend-zueb.mock.spec.ts` 18/18 hijau.
 - Flake 654: `rotate-data-key`, `hris-leave-changed-event`, `platform-org-api` TEN-03/06 tidak muncul di run penuh (0 gagal). Bukti fix 654.
 - Belum: `legend-zy43` (tidak ada producer `receipt_run.reported` di edge). Rilis edge order ingest: deploy cloud dulu, baru edge.
+
+## 2026-11-14: Reservasi followups (cabang ws/reservation-followups, di atas ws/reservation-reschedule e73f0649e)
+
+- legend-hlud3: `approveRescheduleRequest` dan decline membaca waktu keputusan SETELAH lock, di dalam transaksi (approve yang mengantre melewati batas penalti kini 409 `RESERVATION_RESCHEDULE_LATE`). Aturan W3 tidak diubah.
+- legend-wmfip: link tamu otomatis tidak mencabut link sebelumnya (maks 5 aktif, link baru tidak pernah dicabut cap); jalur staf tetap mencabut semua. Migrasi 0575 (`reservation_guest_links_active_key` unique -> index biasa). Hanya hash token disimpan.
+- legend-q4sv2: `reservations.customer_profile_id` diisi saat booking dari profil member yang SUDAH ADA (hash WA sama, tenant sama, bukan closed/suspended/merged, punya user). Tidak pernah membuat profil. Respons booking publik selalu `customerProfileId: null` (tidak membocorkan keanggotaan).
+- Guard uang (temuan architect): sisa DP dari reservasi `source='website'` tidak memakai profil booking sebagai kandidat kredit (nomor tidak terverifikasi); hanya profil bill. Test di `reservation-deposit-remainder.test.ts`.
+- Risiko diterima (keputusan CTO): nomor salah ketik menerima pesan WA/konfirmasi booking orang lain.
+- Gerbang: 18 berkas test terarah (446 test) hijau, typecheck api hijau, `db:generate` kosong, check-journal ok, prettier+eslint hijau. Merah-dulu terbukti di base: T1 (200 vs 409), T2 (3 test), T3 (4 test), R1b (2 test).

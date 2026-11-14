@@ -2,7 +2,16 @@
 // Member services take the profile from the session (`MemberScope`), never from
 // a path, query or body. Callers run inside `withMemberScope`.
 
-import { and, desc, eq, isNotNull, lte, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  isNotNull,
+  isNull,
+  lte,
+  notInArray,
+  sql,
+} from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   customerProfileSchema,
@@ -33,6 +42,33 @@ export async function findProfileByUser(
     )
     .limit(1);
   return row ?? null;
+}
+
+/**
+ * Lookup only, never creates: a guest booking links to an existing member
+ * profile (has a user, not closed/suspended/merged) of the same tenant whose
+ * WhatsApp hash matches. An unverified number must not mint a phantom profile
+ * that would collide with the real owner's unique (tenant, whatsapp_hash).
+ */
+export async function findLinkableProfileIdByWhatsAppHash(
+  tx: Tx,
+  tenantId: string,
+  whatsappHash: string,
+): Promise<string | null> {
+  const [row] = await tx
+    .select({ id: customerProfiles.id })
+    .from(customerProfiles)
+    .where(
+      and(
+        eq(customerProfiles.tenantId, tenantId as TenantId),
+        eq(customerProfiles.whatsappHash, whatsappHash),
+        notInArray(customerProfiles.membershipStatus, ["closed", "suspended"]),
+        isNull(customerProfiles.mergedIntoProfileId),
+        isNotNull(customerProfiles.userId),
+      ),
+    )
+    .limit(1);
+  return row?.id ?? null;
 }
 
 /** The user's verified WhatsApp identity (global table), if any. */

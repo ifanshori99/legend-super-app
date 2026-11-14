@@ -840,7 +840,7 @@ describe("RSV-03 reminder timing and links (review)", () => {
     expect((await publicGet(manual)).status).toBe(200);
   });
 
-  it("RSV-03 a later automatic message replaces the earlier automatic link: the newest one works", async () => {
+  it("RSV-03 a later automatic message keeps the earlier automatic link valid (legend-wmfip): both work", async () => {
     const booked = await profiledConfirmed("Tamu Link Baru");
     const [first] = await kelolaLinksFor(booked.id);
     expect(first).toBeDefined();
@@ -849,7 +849,7 @@ describe("RSV-03 reminder timing and links (review)", () => {
     const [second] = await kelolaLinksFor(booked.id);
     expect(second).toBeDefined();
     expect(second!.token).not.toBe(first!.token);
-    expect((await publicGet(first!.token)).status).toBe(404);
+    expect((await publicGet(first!.token)).status).toBe(200);
     expect((await publicGet(second!.token)).status).toBe(200);
   });
 

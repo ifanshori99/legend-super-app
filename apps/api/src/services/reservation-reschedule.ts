@@ -163,7 +163,7 @@ export async function approveRescheduleRequest(
   actorUserId: string,
   outletId: OutletId,
   requestId: string,
-  now = new Date(),
+  now?: Date,
 ): Promise<ResolveRescheduleResult> {
   try {
     return await withTenant(db, context, async (tx) => {
@@ -180,16 +180,19 @@ export async function approveRescheduleRequest(
         outletId,
         request.reservationId,
       );
+      // Read the clock only after the locks: an approve that queued behind
+      // another transaction must be judged at the time it really decides.
+      const decidedAt = now ?? new Date();
       if (request.status === "approved")
         return resultOf(tx, context, request, row);
       if (request.status !== "pending")
         throw new ReservationError("RESERVATION_RESCHEDULE_RESOLVED");
-      row = await reconcileDeposit(tx, context, row, now);
+      row = await reconcileDeposit(tx, context, row, decidedAt);
       if (row.status !== "pending_deposit" && row.status !== "confirmed")
         throw new ReservationError("RESERVATION_TRANSITION_INVALID");
-      if (request.requestedFor <= now)
+      if (request.requestedFor <= decidedAt)
         throw new ReservationError("RESERVATION_RESCHEDULE_INVALID");
-      await assertFreeCancellationWindowOpen(tx, context, row, now);
+      await assertFreeCancellationWindowOpen(tx, context, row, decidedAt);
       const heldTableIds = [
         ...new Set(
           (await loadHolds(tx, context, [row.id]))
@@ -217,7 +220,7 @@ export async function approveRescheduleRequest(
         .set({
           reservedFor: request.requestedFor,
           pax: newPax,
-          updatedAt: now,
+          updatedAt: decidedAt,
         })
         .where(
           and(
@@ -252,7 +255,7 @@ export async function approveRescheduleRequest(
         request,
         "approved",
         actorUserId,
-        now,
+        decidedAt,
       );
       await appendEnvelope(
         tx,
@@ -271,7 +274,7 @@ export async function approveRescheduleRequest(
             pax: moved.pax,
             tableIds: heldTableIds,
           },
-          now,
+          now: decidedAt,
           idempotencyKey: `reservation.rescheduled:${request.id}`,
         },
       );
@@ -283,7 +286,7 @@ export async function approveRescheduleRequest(
         reason: null,
         before: { status: row.status },
         after: { status: moved.status },
-        now,
+        now: decidedAt,
       });
       return resultOf(tx, context, resolved, moved);
     });
@@ -299,7 +302,7 @@ export async function declineRescheduleRequest(
   outletId: OutletId,
   requestId: string,
   input: DeclineRescheduleInput,
-  now = new Date(),
+  now?: Date,
 ): Promise<ResolveRescheduleResult> {
   return withTenant(db, context, async (tx) => {
     await assertPermission(tx, context, actorUserId, MANAGE_PERMISSION, {
@@ -315,6 +318,7 @@ export async function declineRescheduleRequest(
       outletId,
       request.reservationId,
     );
+    const decidedAt = now ?? new Date();
     if (request.status === "declined")
       return resultOf(tx, context, request, row);
     if (request.status !== "pending")
@@ -325,7 +329,7 @@ export async function declineRescheduleRequest(
       request,
       "declined",
       actorUserId,
-      now,
+      decidedAt,
     );
     await auditReservation(tx, context, {
       actorUserId,
@@ -335,7 +339,7 @@ export async function declineRescheduleRequest(
       reason: input.reason ?? null,
       before: { status: row.status },
       after: { status: row.status },
-      now,
+      now: decidedAt,
     });
     return resultOf(tx, context, resolved, row);
   });

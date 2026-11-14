@@ -165,7 +165,12 @@ async function addOrder(
 }
 
 async function paidDeposit(
-  input: { profileId?: string | null; total?: number; deposit?: number } = {},
+  input: {
+    profileId?: string | null;
+    total?: number;
+    deposit?: number;
+    source?: string;
+  } = {},
 ) {
   const profileId =
     input.profileId === undefined ? await newProfile() : input.profileId;
@@ -184,7 +189,7 @@ async function paidDeposit(
         duration_minutes, pax, zone_id, deposit_idr, policy_snapshot, status,
         source, seated_at, table_session_id)
      VALUES ($1, $2, $3, $4, 'Q82 Payer', now(), 90, 2, $5, $6, $7,
-             'seated', 'staff', now(), $8)`,
+             'seated', $9, now(), $8)`,
     [
       reservationId,
       seededTenantId,
@@ -204,6 +209,7 @@ async function paidDeposit(
         capturedAt: new Date().toISOString(),
       }),
       session.sessionId,
+      input.source ?? "staff",
     ],
   );
   await owner.query(
@@ -504,6 +510,43 @@ describe("legend-fug4 founder Q82 reservation DP remainder", () => {
     expect(rows[0]?.kind).toBe("manual_refund");
     expect(rows[0]?.amount).toBe(40_000);
     expect(rows[0]?.remaining).toBe(40_000);
+  });
+
+  it("Q82 a website booking's unverified profile link never receives credit", async () => {
+    const d = await paidDeposit({ profileId: null, source: "website" });
+    const memberB = await newProfile();
+    await owner.query(
+      "UPDATE reservations SET customer_profile_id = $2 WHERE id = $1",
+      [d.reservationId, memberB],
+    );
+    await close(d.sessionId);
+    expect(await remainders(d.reservationId)).toEqual([
+      {
+        kind: "manual_refund",
+        amount: 40_000,
+        remaining: 40_000,
+        profileId: null,
+      },
+    ]);
+  });
+
+  it("Q82 a website booking credits the bill's own profile, not the booking's", async () => {
+    const d = await paidDeposit({ source: "website" });
+    const memberB = await newProfile();
+    await owner.query(
+      "UPDATE reservations SET customer_profile_id = $2 WHERE id = $1",
+      [d.reservationId, memberB],
+    );
+    await close(d.sessionId);
+    expect(await remainders(d.reservationId)).toEqual([
+      {
+        kind: "customer_credit",
+        amount: 40_000,
+        remaining: 40_000,
+        profileId: d.profileId,
+      },
+    ]);
+    expect(d.profileId).not.toBe(memberB);
   });
 
   it.each(["unverified", "unpaid"] as const)(
