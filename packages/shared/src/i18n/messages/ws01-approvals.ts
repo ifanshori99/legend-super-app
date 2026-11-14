@@ -34,6 +34,7 @@ export const approvalsMessages = {
     edc_standalone: "Pembayaran EDC standalone",
     apology_voucher: "Voucher permintaan maaf",
     unallocated_funds: "Dana belum teralokasi",
+    reconciliation_case: "Penutupan kasus rekonsiliasi",
     purchase_request: "Permintaan pembelian",
     supplier_payment: "Pembayaran supplier",
     manual_journal: "Jurnal manual",

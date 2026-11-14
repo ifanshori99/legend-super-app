@@ -192,6 +192,13 @@ export function RefundFollowupDialog({
                   {refund.requestedByName}
                 </Detail>
                 <Detail label={t(key("requestReason"))}>{refund.reason}</Detail>
+                {refund.approvalRequestId && (
+                  <Detail label={t(key("approvalRequestId"))}>
+                    <span className="tabular-nums">
+                      {refund.approvalRequestId}
+                    </span>
+                  </Detail>
+                )}
                 {refund.approvedByName && refund.decidedAt && (
                   <Detail label={t(key("decidedBy"))}>
                     {refund.approvedByName} · {formatMoment(refund.decidedAt)}

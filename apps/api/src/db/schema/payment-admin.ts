@@ -323,6 +323,12 @@ export const paymentReconciliationCases = pgTable(
     resolvedBy: text("resolved_by"),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     note: text("note"),
+    /** Approval-matrix chain that closes this case (`pending_approval`); null again if rejected or expired. */
+    approvalChainId: uuid("approval_chain_id"),
+    /** Who asked to close the case (becomes `resolved_by` once the chain is approved). */
+    requestedBy: text("requested_by"),
+    /** Final approver of the chain, read from the database when the case closes. */
+    approvedBy: text("approved_by"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -345,7 +351,7 @@ export const paymentReconciliationCases = pgTable(
     ),
     check(
       "payment_reconciliation_cases_status_check",
-      sql`${t.status} IN ('open','resolved')`,
+      sql`${t.status} IN ('open','pending_approval','resolved')`,
     ),
     check(
       "payment_reconciliation_cases_amount_check",

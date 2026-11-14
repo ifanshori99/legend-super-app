@@ -184,10 +184,13 @@ test("EDC-06 every settlement difference becomes a reconciliation case", async (
 
   await expect(
     page
-      .getByText(/Kasus BCA batch 2026-11-01 \/ TID-8841201 ditutup\./)
+      .getByText(
+        /Penutupan kasus BCA batch 2026-11-01 \/ TID-8841201 diajukan, menunggu persetujuan\./,
+      )
       .first(),
   ).toBeVisible();
-  await expect(openCase.getByText("Selesai")).toBeVisible();
+  // Closing needs another person's approval: the case is not resolved yet.
+  await expect(openCase.getByText("Menunggu persetujuan")).toBeVisible();
 });
 
 test("F13 payment admin screens have empty and error states", async ({
