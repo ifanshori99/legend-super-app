@@ -9,6 +9,7 @@
 // database. Without LEGEND_MOCK_WEB_URL every test skips, so `pnpm test:e2e`
 // (production build, mock compiled out) never fails on it.
 import { expect, test, type Page } from "@playwright/test";
+import { cafeLegendAccountingFixtures } from "../packages/shared/src/accounting/fixtures.ts";
 
 const base = process.env.LEGEND_MOCK_WEB_URL;
 
@@ -20,9 +21,9 @@ test.skip(
   "Set LEGEND_MOCK_WEB_URL to a web server running VITE_API_MOCK.",
 );
 
-/** Fixture ids (cafeLegendAccountingFixtures; stable by construction). */
-const INTERNET_ENTRY = "e1000000-0000-4000-8000-00000000000d"; // manual source
-const CASH_SALE_ENTRY = "e1000000-0000-4000-8000-000000000005";
+/** Named fixture entries stay stable when another seed journal is inserted. */
+const INTERNET_ENTRY = cafeLegendAccountingFixtures.entries.internet.id;
+const CASH_SALE_ENTRY = cafeLegendAccountingFixtures.entries.cashSale.id;
 const PENDING_MANUAL = "e3000000-0000-4000-8000-000000000004";
 
 async function open(page: Page, path: string, heading: string) {
@@ -59,7 +60,7 @@ test.describe("accounting back office", () => {
     await choose(page, 2, /1103/);
     await page.getByLabel("Kredit baris 2").fill("50000");
 
-    // ACC-01: the imbalance is shown and saving is blocked.
+    // ACC-01: saving an unbalanced journal explains the problem without saving.
     await expect(
       page.locator("form").getByText("Selisih", { exact: true }).locator(".."),
     ).toContainText(/Rp\s*50\.000/);
