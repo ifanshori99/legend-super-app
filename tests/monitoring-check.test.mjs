@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseXminAge, run } from "./check.mjs";
+import { parseXminAge, run } from "../deploy/monitoring/check.mjs";
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), "legend-monitor-"));
