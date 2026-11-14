@@ -1460,6 +1460,24 @@ async function decideRefund(
                     "PERMISSION_DENIED",
                     "Your account cannot perform this action.",
                   );
+                // A refund re-opened from quarantine lost its old chain and is
+                // decided again by one approver: that decision needs MFA
+                // (legend-tx8x). The throw rolls back the opened request, so the
+                // refund stays pending with no chain row.
+                if (!opts.mfaVerified) {
+                  const { rows: reopened } = await tx.execute<{
+                    one: number;
+                  }>(
+                    sql`SELECT 1 AS one FROM audit_logs
+                        WHERE tenant_id = ${refund.tenantId}
+                          AND created_at >= ${refund.createdAt.toISOString()}::timestamptz
+                          AND event->>'objectId' = ${refund.id}::text
+                          AND event->>'action' = 'payment.refund_quarantine_reopened'
+                        LIMIT 1`,
+                  );
+                  if (reopened.length > 0)
+                    throw new AccessError("MFA_REQUIRED");
+                }
                 const applied = await applyApproval(
                   tx,
                   context,
