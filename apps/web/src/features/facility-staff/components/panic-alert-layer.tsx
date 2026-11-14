@@ -698,14 +698,18 @@ function PanicDialog({
   const tone = VIEW_TONE[view];
   const waiting = view === "alert" || view === "queue";
   const firstPendingId = pending[0]?.alertId ?? "";
-  const firstPendingAck = pending[0]?.ack ?? "idle";
+  // Changes when any pending card changes state or goes away, so a focused
+  // button that unmounts (ack ok, 401) hands focus on.
+  const pendingSignature = pending
+    .map((item) => `${item.alertId}:${item.ack}`)
+    .join(",");
   const lastFocusKey = useRef("");
 
   // Modal from the first render and again whenever it is found closed: the
   // layer only mounts while there is something the staff member must see.
   // A new view or a new first alert puts focus on the main button so one
-  // keypress is enough; the ack state is a dependency so focus comes back to
-  // "Coba lagi" after a failed send if it was lost.
+  // keypress is enough. The pending signature is a dependency so focus comes
+  // back to the main button when the focused one disappears.
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
@@ -723,7 +727,7 @@ function PanicDialog({
       lastFocusKey.current = focusKey;
       dialog.querySelector<HTMLElement>("[data-panic-primary]")?.focus();
     }
-  }, [view, firstPendingId, firstPendingAck]);
+  }, [view, firstPendingId, pending.length, pendingSignature]);
 
   let title = t("facilityStaff.panic.title");
   let icon = <TriangleAlert className="size-6" aria-hidden="true" />;
@@ -760,7 +764,10 @@ function PanicDialog({
           return;
         }
         const dialog = dialogRef.current;
-        if (dialog && !dialog.open) dialog.showModal();
+        if (dialog && !dialog.open) {
+          dialog.showModal();
+          dialog.querySelector<HTMLElement>("[data-panic-primary]")?.focus();
+        }
       }}
       className={`fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none overflow-y-auto overscroll-contain border-t-8 bg-background pt-[env(safe-area-inset-top)] pe-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] ps-[env(safe-area-inset-left)] text-foreground ${TONE_RULE[tone]} contrast-more:border-foreground`}
     >
