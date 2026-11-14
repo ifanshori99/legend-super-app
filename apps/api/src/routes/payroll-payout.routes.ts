@@ -16,10 +16,12 @@ import {
   confirmManualItemsInputSchema,
   createDisbursementBatchInputSchema,
   payoutBatchParamsSchema,
+  listPayoutBatchesQuerySchema,
   payoutLegalEntityParamsSchema,
   payoutRunParamsSchema,
   resolveManualItemsSchema,
   upsertPayoutConfigInputSchema,
+  withdrawResolutionSchema,
 } from "@starter/shared/validators/payroll-payout";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -39,6 +41,7 @@ import {
   listSkippedFees,
   repostSkippedFees,
 } from "../services/payroll-payout-gl.service.ts";
+import { listPayoutBatches } from "../services/payroll-payout-batch-list.service.ts";
 import {
   getPayoutConfig,
   upsertPayoutConfig,
@@ -49,6 +52,7 @@ import {
   confirmManualItems,
   resolveManualItems,
 } from "../services/payroll-payout-manual.service.ts";
+import { withdrawResolutionProposal } from "../services/payroll-payout-withdraw.service.ts";
 import {
   approveDisbursementBatch,
   cancelDisbursementBatch,
@@ -57,7 +61,10 @@ import {
   listDisbursementBatches,
   submitDisbursementBatch,
 } from "../services/payroll-payout.service.ts";
-import { PAYOUT_STEP_UP_MAX_AGE_MINUTES } from "../services/payroll-payout-evidence.ts";
+import {
+  PAYOUT_STEP_UP_MAX_AGE_MINUTES,
+  payoutEvidenceStoreOf,
+} from "../services/payroll-payout-evidence.ts";
 
 export const payrollPayoutRouter = Router();
 
@@ -107,6 +114,24 @@ payrollPayoutRouter.put(
       upsertPayoutConfig(tx, actor, legalEntityId, input),
     );
     res.json({ data });
+  },
+);
+
+payrollPayoutRouter.get(
+  "/payout-batches",
+  requireAuth,
+  requireTenantContext,
+  requireTenantPermission("payroll.view"),
+  async (req, res) => {
+    const query = listPayoutBatchesQuerySchema.parse(req.query);
+    const { context, actor } = actorOf(req);
+    const page = await withTenant(db, context, (tx) =>
+      listPayoutBatches(tx, actor.tenantId, query),
+    );
+    res.json({
+      data: page.items,
+      meta: { limit: query.limit, nextCursor: page.nextCursor },
+    });
   },
 );
 
@@ -185,10 +210,14 @@ payrollPayoutRouter.post(
   jsonBody,
   async (req, res) => {
     const { id } = payoutBatchParamsSchema.parse(req.params);
-    const { contentHash } = approveDisbursementBatchInputSchema.parse(req.body);
+    const { contentHash, sourceBankAccountId } =
+      approveDisbursementBatchInputSchema.parse(req.body);
     const { context, actor } = actorOf(req);
     const data = await withTenant(db, context, (tx) =>
-      approveDisbursementBatch(tx, actor, id, { contentHash }),
+      approveDisbursementBatch(tx, actor, id, {
+        contentHash,
+        sourceBankAccountId,
+      }),
     );
     res.json({ data });
   },
@@ -256,7 +285,13 @@ payrollPayoutRouter.post(
     const input = confirmManualItemsInputSchema.parse(req.body);
     const { context, actor } = actorOf(req);
     const data = await withTenant(db, context, (tx) =>
-      confirmManualItems(tx, actor, id, input),
+      confirmManualItems(
+        tx,
+        actor,
+        id,
+        input,
+        payoutEvidenceStoreOf(req, context),
+      ),
     );
     res.json({ data });
   },
@@ -278,7 +313,35 @@ payrollPayoutRouter.post(
     const input = resolveManualItemsSchema.parse(req.body);
     const { context, actor } = actorOf(req);
     const data = await withTenant(db, context, (tx) =>
-      resolveManualItems(tx, actor, id, input),
+      resolveManualItems(
+        tx,
+        actor,
+        id,
+        input,
+        payoutEvidenceStoreOf(req, context),
+      ),
+    );
+    res.json({ data });
+  },
+);
+
+// Takes back a step-one resolve proposal (wrong proof). The item stays
+// `exported` and its slip stays blocked; only the proposal is cleared.
+payrollPayoutRouter.post(
+  "/disbursement-batches/:id/withdraw-resolution",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.disburse.approve"),
+  stepUp,
+  jsonBody,
+  passwordStepUp,
+  async (req, res) => {
+    const { id } = payoutBatchParamsSchema.parse(req.params);
+    const input = withdrawResolutionSchema.parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      withdrawResolutionProposal(tx, actor, id, input),
     );
     res.json({ data });
   },

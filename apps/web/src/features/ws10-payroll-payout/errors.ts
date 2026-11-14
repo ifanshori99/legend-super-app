@@ -26,6 +26,16 @@ const CODE_KEYS: Record<string, MessageKey> = {
   PAYOUT_RUN_ALREADY_PAID: "payrollPayout.error.runAlreadyPaid",
   PAYOUT_EXPORT_FILE_LOST: "payrollPayout.error.exportFileLost",
   PAYOUT_BATCH_ALREADY_OPEN: "payrollPayout.error.batchAlreadyOpen",
+  PAYOUT_SOURCE_MISMATCH: "payrollPayoutReview.error.sourceMismatch",
+  PAYOUT_EVIDENCE_REJECTED: "payrollPayoutReview.error.evidenceRejected",
+  PAYOUT_RESOLVE_SAME_PERSON: "payrollPayoutReview.error.resolveSamePerson",
+  PAYOUT_RESOLVE_OUTCOME_MISMATCH:
+    "payrollPayoutReview.error.resolveOutcomeMismatch",
+  PAYOUT_RESOLVE_EVIDENCE_MISMATCH:
+    "payrollPayoutReview.error.resolveEvidenceMismatch",
+  PAYOUT_RETURN_EVIDENCE_MISMATCH:
+    "payrollPayoutReview.error.returnEvidenceMismatch",
+  PAYOUT_RETURN_SAME_PERSON: "payrollPayoutReview.error.returnSamePerson",
   NETWORK_ERROR: "payrollPayout.error.offline",
   FORBIDDEN: "payrollPayout.error.forbidden",
 };
@@ -53,4 +63,32 @@ export function payoutErrorMessage(error: unknown, t: Translate): string {
 /** True when the failure is the network, not the request. */
 export function isPayoutOffline(error: unknown): boolean {
   return error instanceof ApiError && error.code === "NETWORK_ERROR";
+}
+
+/** A proof file the browser sees as a PDF (by type or by name). */
+export function isPdfFile(file: Pick<File, "name" | "type">): boolean {
+  return file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+}
+
+/**
+ * Refusal of a proof-file upload in words. A PDF that the server cannot scan
+ * yet (503) asks for a photo instead; other 503s say the upload is not there.
+ */
+export function evidenceUploadMessage(
+  error: unknown,
+  file: Pick<File, "name" | "type"> | null,
+  t: Translate,
+): string | null {
+  if (!(error instanceof ApiError)) return null;
+  if (error.status === 503 || error.code === "SERVICE_UNAVAILABLE")
+    return t(
+      file && isPdfFile(file)
+        ? "payrollPayoutReview.error.evidencePhotoOnly"
+        : "payrollPayoutReview.error.evidenceUnavailable",
+    );
+  if (error.status === 413)
+    return t("payrollPayoutReview.error.evidenceTooLarge");
+  if (error.status === 415 || error.code === "PAYOUT_EVIDENCE_REJECTED")
+    return t("payrollPayoutReview.error.evidenceRejected");
+  return null;
 }

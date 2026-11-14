@@ -11,6 +11,7 @@ import {
   PAYOUT_BANK_FORMATS,
   PAYOUT_BATCH_STATUSES,
   PAYOUT_CHANNELS,
+  PAYOUT_EVIDENCE_CONTENT_TYPES,
   PAYOUT_EXCLUDED_REASONS,
   PAYOUT_ITEM_STATUSES,
   PAYOUT_METHODS,
@@ -19,10 +20,13 @@ import {
   confirmCashHandoverInputSchema,
   confirmManualItemsInputSchema,
   createDisbursementBatchInputSchema,
+  listPayoutBatchesQuerySchema,
   payoutBatchParamsSchema,
+  payoutEvidenceReadQuerySchema,
   payoutLegalEntityParamsSchema,
   payoutRunParamsSchema,
   resolveManualItemsSchema,
+  returnManualItemsSchema,
   upsertPayoutConfigInputSchema,
 } from "../../validators/payroll-payout.ts";
 
@@ -59,6 +63,9 @@ export const payoutItemSchema = z.object({
   amountIdr: idr,
   feeIdr: idr,
   bankCode: z.string().nullable(),
+  // Locked when the batch was created; null for cash and for legacy items.
+  accountHolderName: z.string().nullable(),
+  maskedAccountNumber: z.string().nullable(),
   nameMatch: z.boolean().nullable(),
   providerRef: z.string().nullable(),
   confirmedBy: z.string().nullable(),
@@ -81,6 +88,8 @@ export const payoutBatchSchema = z.object({
   approvedAt: instant.nullable(),
   approvalExpiresAt: instant.nullable(),
   contentHash: z.string().nullable(),
+  // The source bank account frozen at approval (null before; legend-3j9yz).
+  sourceBankAccountId: z.string().nullable(),
   itemCount: z.number().int(),
   totalIdr: idr,
   bankFormat: z.enum(PAYOUT_BANK_FORMATS).nullable(),
@@ -124,6 +133,23 @@ export const listRunDisbursementBatches = defineEndpoint({
   path: `${BASE}/runs/:id/disbursement-batches`,
   params: payoutRunParamsSchema,
   response: z.object({ data: z.array(payoutBatchSchema) }),
+});
+
+/**
+ * Batches of the tenant across runs, newest first, cursor paged (max 20 per
+ * page). Each batch carries its items, like the per-run list.
+ */
+export const listPayoutBatches = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/payout-batches`,
+  query: listPayoutBatchesQuerySchema,
+  response: z.object({
+    data: z.array(payoutBatchSchema),
+    meta: z.object({
+      limit: z.number().int(),
+      nextCursor: z.string().nullable(),
+    }),
+  }),
 });
 
 export const createDisbursementBatch = defineEndpoint({
@@ -224,6 +250,86 @@ export const resolveDisbursementItems = defineEndpoint({
       resolved: z.number().int(),
       proposed: z.number().int(),
     }),
+  }),
+});
+
+/**
+ * Funds came back after a paid transfer (payroll.disburse.approve + step-up
+ * MFA). Two different non-requesters give the same evidence: the first only
+ * proposes (`proposed`), the second moves the item to `returned` (`returned`).
+ */
+export const returnDisbursementItems = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/disbursement-batches/:id/return`,
+  params: payoutBatchParamsSchema,
+  body: returnManualItemsSchema,
+  response: z.object({
+    data: z.object({
+      batchStatus: z.enum(PAYOUT_BATCH_STATUSES),
+      returned: z.number().int(),
+      proposed: z.number().int(),
+    }),
+  }),
+});
+
+/**
+ * Upload of a resolve/return proof: multipart with one `file` part (JPEG, PNG
+ * or PDF, 5 MiB; step-up MFA). The typed client cannot send multipart, so the
+ * web reads this path with a raw fetch; the answer is parsed with
+ * `payoutEvidenceUploadResponseSchema`. Pass `evidenceKey` to resolve or return.
+ */
+export const PAYOUT_EVIDENCE_UPLOAD_PATH = `${BASE}/disbursement-batches/:id/evidence`;
+export const payoutEvidenceUploadResponseSchema = z.object({
+  data: z.object({
+    evidenceKey: z.string(),
+    contentType: z.enum(PAYOUT_EVIDENCE_CONTENT_TYPES),
+    sizeBytes: z.number().int(),
+  }),
+});
+
+/**
+ * Short-lived (60 s) signed link to one stored proof of the batch
+ * (payroll.disburse.approve, no step-up). Ask for it when the person clicks;
+ * never cache the answer.
+ */
+export const readPayoutEvidence = defineEndpoint({
+  method: "GET",
+  path: PAYOUT_EVIDENCE_UPLOAD_PATH,
+  params: payoutBatchParamsSchema,
+  query: payoutEvidenceReadQuerySchema,
+  response: z.object({
+    data: z.object({
+      evidenceKey: z.string(),
+      url: z.string(),
+      expiresAt: instant,
+    }),
+  }),
+});
+
+/**
+ * First steps of resolve/return waiting for their second person. The second
+ * step must send the same `evidenceKey` (409 PAYOUT_RESOLVE_EVIDENCE_MISMATCH /
+ * PAYOUT_RETURN_EVIDENCE_MISMATCH otherwise). `outcome` is null for a return.
+ */
+export const listResolutionProposals = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/disbursement-batches/:id/resolution-proposals`,
+  params: payoutBatchParamsSchema,
+  response: z.object({
+    data: z.array(
+      z.object({
+        itemId: z.string(),
+        employeeId: z.string(),
+        kind: z.enum(["resolve", "return"]),
+        outcome: z.enum(["failed", "not_sent"]).nullable(),
+        evidenceKey: z.string().nullable(),
+        note: z.string().nullable(),
+        proposedBy: z.string(),
+        // Display name, only for a user of the same tenant (legend-eszso).
+        proposedByName: z.string().nullable(),
+        proposedAt: instant,
+      }),
+    ),
   }),
 });
 

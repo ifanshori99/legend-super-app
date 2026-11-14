@@ -461,6 +461,15 @@ export const payrollDisbursementItems = pgTable(
     feeIdrEncrypted: bytea("fee_idr_encrypted").notNull(),
     /** Frozen payee bank data; the account number is not copied. Null: cash. */
     bankSnapshotId: uuid("bank_snapshot_id"),
+    /**
+     * Payee name and masked account number (`****1234`) copied from the
+     * snapshot when the item is created, so a batch view can show who is paid
+     * without opening the sealed snapshot. The full number is never stored here.
+     * Null: cash, and items from before these columns existed. Frozen by a
+     * trigger after insert.
+     */
+    accountHolderName: varchar("account_holder_name", { length: 150 }),
+    maskedAccountNumber: varchar("masked_account_number", { length: 20 }),
     /** BI bank code (3 digits, not secret), copied from the snapshot. */
     bankCode: varchar("bank_code", { length: 3 }),
     inquiryAccountNameEncrypted: bytea("inquiry_account_name_encrypted"),
@@ -609,6 +618,11 @@ export const payrollDisbursementItems = pgTable(
     check(
       "payroll_disbursement_items_key_version_check",
       sql`${table.piiKeyVersion} >= 1`,
+    ),
+    // Cash carries neither field; a masked number is exactly `maskAccountNumber`.
+    check(
+      "payroll_disbursement_items_payee_display_check",
+      sql`(${table.channel} = 'cash' AND ${table.accountHolderName} IS NULL AND ${table.maskedAccountNumber} IS NULL) OR (${table.channel} <> 'cash' AND (${table.maskedAccountNumber} IS NULL OR ${table.maskedAccountNumber} ~ '^\\*{4}[0-9]{4}$'))`,
     ),
     check(
       "payroll_disbursement_items_bank_code_check",

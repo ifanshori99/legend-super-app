@@ -31,7 +31,9 @@
 //   two different non-requesters agree (`returnManualItems`); the return is
 //   journaled once.
 // - A payment-proof key must name an object of this tenant's batch folder
-//   (`assertEvidenceKeyForBatch`), checked before any row is written.
+//   (`assertEvidenceKeyForBatchStored`) and must exist in the storage, checked
+//   before any row is written. The second resolve step must carry the same key
+//   as the first.
 //
 // Lock order: the run row, then the batch row (`loadBatchRunFirst`), same as
 // create, submit and approve. Account numbers are never
@@ -64,8 +66,9 @@ import {
   settleBatchPayouts,
 } from "./payroll-payout-gl.service.ts";
 import {
-  assertEvidenceKeyForBatch,
-  assertOptionalEvidenceKeyForBatch,
+  assertEvidenceKeyForBatchStored,
+  assertOptionalEvidenceKeyForBatchStored,
+  type PayoutEvidenceStore,
 } from "./payroll-payout-evidence.ts";
 import {
   accountingEnabled,
@@ -658,6 +661,7 @@ export async function confirmManualItems(
   actor: Actor,
   batchId: string,
   input: ManualConfirmInput,
+  proofs: PayoutEvidenceStore,
   now = new Date(),
 ): Promise<{
   batchStatus: BatchRow["status"];
@@ -665,6 +669,27 @@ export async function confirmManualItems(
   confirmed: number;
 }> {
   const tenantId = actor.tenantId as TenantId;
+  // Proof checks run BEFORE the run and batch rows are locked: a storage read
+  // must not hold them. Safe because the key is bound to this batch id and no
+  // path deletes a stored proof; nothing is written before the check passes.
+  for (const result of input.results)
+    if ((result.evidenceKey ?? "").length > 500)
+      throw refuse(422, "PAYOUT_ITEMS_INVALID", "Kunci bukti terlalu panjang.");
+  // Each proof key must lie in this tenant's folder of this batch (L5) and name
+  // an object really stored for it (01gg8). One storage read per distinct key.
+  const storedKeys = new Map<string, string | null>();
+  for (const result of input.results) {
+    const raw = result.evidenceKey ?? "";
+    if (!storedKeys.has(raw))
+      storedKeys.set(
+        raw,
+        await assertOptionalEvidenceKeyForBatchStored(
+          proofs,
+          { tenantId: actor.tenantId, batchId },
+          raw,
+        ),
+      );
+  }
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
   if (batch.channel !== "manual_bank")
     throw refuse(
@@ -694,17 +719,11 @@ export async function confirmManualItems(
         "PAYOUT_BANK_REF_REQUIRED",
         "Pembayaran berhasil wajib memakai nomor referensi bank (maks 100 karakter).",
       );
-    if ((result.evidenceKey ?? "").length > 500)
-      throw refuse(422, "PAYOUT_ITEMS_INVALID", "Kunci bukti terlalu panjang.");
   }
-  // Each proof key must lie in this tenant's folder of this batch (L5).
   const evidenceByItem = new Map(
     input.results.map((result) => [
       result.itemId,
-      assertOptionalEvidenceKeyForBatch(
-        { tenantId: actor.tenantId, batchId: batch.id },
-        result.evidenceKey,
-      ),
+      storedKeys.get(result.evidenceKey ?? "") ?? null,
     ]),
   );
   await loadItemsForConfirm(
@@ -778,6 +797,7 @@ export async function resolveManualItems(
   actor: Actor,
   batchId: string,
   input: ManualResolveInput,
+  proofs: PayoutEvidenceStore,
   now = new Date(),
 ): Promise<{
   batchStatus: BatchRow["status"];
@@ -787,6 +807,30 @@ export async function resolveManualItems(
   proposed: number;
 }> {
   const tenantId = actor.tenantId as TenantId;
+  const evidenceInput = input.evidenceKey.trim();
+  const note = input.note.trim();
+  if (evidenceInput === "" || evidenceInput.length > 500)
+    throw refuse(
+      422,
+      "PAYOUT_EVIDENCE_REQUIRED",
+      "Bukti wajib diisi (maks 500 karakter).",
+    );
+  if (note === "" || note.length > 500)
+    throw refuse(
+      422,
+      "PAYOUT_NOTE_REQUIRED",
+      "Catatan wajib diisi (maks 500 karakter).",
+    );
+  // Both steps: the proof lies in this tenant's folder of this batch (L5) and
+  // the object really is in the storage (01gg8). Checked BEFORE the run and
+  // batch rows are locked, so a storage read never holds them (the key is
+  // bound to this batch id and no path deletes a stored proof; nothing is
+  // written before the check passes).
+  const evidence = await assertEvidenceKeyForBatchStored(
+    proofs,
+    { tenantId: actor.tenantId, batchId },
+    evidenceInput,
+  );
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
   if (batch.channel !== "manual_bank")
     throw refuse(
@@ -807,25 +851,6 @@ export async function resolveManualItems(
       "PAYOUT_ITEMS_INVALID",
       "Hasil penyelesaian tidak dikenal.",
     );
-  const evidenceInput = input.evidenceKey.trim();
-  const note = input.note.trim();
-  if (evidenceInput === "" || evidenceInput.length > 500)
-    throw refuse(
-      422,
-      "PAYOUT_EVIDENCE_REQUIRED",
-      "Bukti wajib diisi (maks 500 karakter).",
-    );
-  if (note === "" || note.length > 500)
-    throw refuse(
-      422,
-      "PAYOUT_NOTE_REQUIRED",
-      "Catatan wajib diisi (maks 500 karakter).",
-    );
-  // Both steps: the proof lies in this tenant's folder of this batch (L5).
-  const evidence = assertEvidenceKeyForBatch(
-    { tenantId: actor.tenantId, batchId: batch.id },
-    evidenceInput,
-  );
   const rows = await loadItemsForConfirm(
     tx,
     tenantId,
@@ -848,6 +873,13 @@ export async function resolveManualItems(
         409,
         "PAYOUT_RESOLVE_OUTCOME_MISMATCH",
         "Hasil yang diajukan berbeda dari penyelesaian pertama.",
+      );
+    // The second person confirms the same proof the first one recorded (bmlwf).
+    if (row.resolutionEvidenceKey !== evidence)
+      throw refuse(
+        409,
+        "PAYOUT_RESOLVE_EVIDENCE_MISMATCH",
+        "Bukti penyelesaian harus sama dengan bukti yang dicatat orang pertama.",
       );
   }
 
@@ -936,6 +968,7 @@ export async function returnManualItems(
   actor: Actor,
   batchId: string,
   input: ManualReturnInput,
+  proofs: PayoutEvidenceStore,
   now = new Date(),
 ): Promise<{
   batchStatus: BatchRow["status"];
@@ -945,6 +978,19 @@ export async function returnManualItems(
   proposed: number;
 }> {
   const tenantId = actor.tenantId as TenantId;
+  const note = input.note.trim();
+  if (note === "" || note.length > 500)
+    throw refuse(
+      422,
+      "PAYOUT_NOTE_REQUIRED",
+      "Catatan wajib diisi (maks 500 karakter).",
+    );
+  // Stored-proof check before the run and batch rows are locked (see resolve).
+  const evidence = await assertEvidenceKeyForBatchStored(
+    proofs,
+    { tenantId: actor.tenantId, batchId },
+    input.evidenceKey,
+  );
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
   if (batch.channel !== "manual_bank")
     throw refuse(
@@ -953,17 +999,6 @@ export async function returnManualItems(
       "Pengembalian dana hanya untuk transfer bank manual.",
     );
   assertNotRequester(batch, actor);
-  const note = input.note.trim();
-  if (note === "" || note.length > 500)
-    throw refuse(
-      422,
-      "PAYOUT_NOTE_REQUIRED",
-      "Catatan wajib diisi (maks 500 karakter).",
-    );
-  const evidence = assertEvidenceKeyForBatch(
-    { tenantId: actor.tenantId, batchId: batch.id },
-    input.evidenceKey,
-  );
   // Every succeeded item has its posting before it can come back.
   await settleBatchPayouts(tx, actor, batch.id, now);
   const rows = await loadItemsForConfirm(
@@ -1095,12 +1130,14 @@ export async function confirmCashHandover(
       "PAYOUT_APPROVAL_EXPIRED",
       "Persetujuan batch sudah lewat 24 jam. Batalkan batch dan buat yang baru.",
     );
-  if ((input.evidenceKey?.trim() ?? "").length > 500)
-    throw refuse(422, "PAYOUT_ITEMS_INVALID", "Kunci bukti terlalu panjang.");
-  const evidence = assertOptionalEvidenceKeyForBatch(
-    { tenantId: actor.tenantId, batchId: batch.id },
-    input.evidenceKey,
-  );
+  // Cash handover carries no evidence object: any non-null key is refused and
+  // the stored confirmation evidence stays NULL.
+  if (input.evidenceKey !== undefined && input.evidenceKey !== null)
+    throw refuse(
+      422,
+      "PAYOUT_ITEMS_INVALID",
+      "Serah terima tunai tidak memakai kunci bukti.",
+    );
   await loadItemsForConfirm(tx, tenantId, batch, input.itemIds, "approved");
 
   const updated = await tx
@@ -1109,7 +1146,7 @@ export async function confirmCashHandover(
       status: "succeeded",
       settledAt: now,
       confirmedBy: actor.userId as UserId,
-      confirmationEvidenceKey: evidence,
+      confirmationEvidenceKey: null,
       updatedAt: now,
     })
     .where(

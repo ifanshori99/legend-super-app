@@ -3,6 +3,8 @@
 // Design: docs/design/payroll-disbursement.md. There is no `doit` channel.
 import { z } from "zod";
 
+import { cursorPageQuerySchema } from "../core/pagination.ts";
+
 export const PAYOUT_METHODS = ["duitku", "manual_bank"] as const;
 export type PayoutMethod = (typeof PAYOUT_METHODS)[number];
 
@@ -69,6 +71,10 @@ export const payoutLegalEntityParamsSchema = z.strictObject({
 });
 export const payoutRunParamsSchema = z.strictObject({ id: z.uuid() });
 export const payoutBatchParamsSchema = z.strictObject({ id: z.uuid() });
+/** Query of the proof read path: the key an upload returned (shape is checked by the API). */
+export const payoutEvidenceReadQuerySchema = z.strictObject({
+  key: z.string().min(1).max(500),
+});
 
 export const payoutMethodSchema = z.enum(PAYOUT_METHODS);
 export const payoutChannelSchema = z.enum(PAYOUT_CHANNELS);
@@ -112,8 +118,11 @@ export const createDisbursementBatchInputSchema = z.strictObject({
   channel: payoutChannelSchema,
 });
 
+// `sourceBankAccountId` is the account the approver saw (legend-3j9yz); the key
+// is required, null for a batch that is not manual_bank.
 export const approveDisbursementBatchInputSchema = z.strictObject({
   contentHash: payoutContentHashSchema,
+  sourceBankAccountId: z.uuid().nullable(),
 });
 
 export const cancelDisbursementBatchInputSchema = z.strictObject({
@@ -170,6 +179,18 @@ export const resolveManualItemsSchema = z
     message: "Each item may appear once.",
   });
 
+// Takes back a step-one resolve proposal (wrong proof, wrong outcome) so a new
+// one can be recorded; a finished step two cannot be taken back.
+export const withdrawResolutionSchema = z
+  .strictObject({
+    itemIds: z.array(z.uuid()).min(1).max(1000),
+    password: reauthPasswordSchema,
+  })
+  .refine((value) => new Set(value.itemIds).size === value.itemIds.length, {
+    path: ["itemIds"],
+    message: "Each item may appear once.",
+  });
+
 // Funds came back after a paid transfer: two different non-requesters each
 // call this with the same evidence; the second one moves the item to `returned`.
 export const returnManualItemsSchema = z
@@ -195,6 +216,34 @@ export const confirmCashHandoverInputSchema = z
     message: "Each item may appear once.",
   });
 
+// Batch list across runs (legend-396pf): newest first, cursor paged, optional
+// legal entity and status filters. Tenant comes from the session.
+export const PAYOUT_BATCH_LIST_LIMIT_MAX = 20;
+export const listPayoutBatchesQuerySchema = cursorPageQuerySchema.extend({
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(PAYOUT_BATCH_LIST_LIMIT_MAX)
+    .default(PAYOUT_BATCH_LIST_LIMIT_MAX),
+  legalEntityId: z.uuid().optional(),
+  status: z.enum(PAYOUT_BATCH_STATUSES).optional(),
+});
+export type ListPayoutBatchesQuery = z.infer<
+  typeof listPayoutBatchesQuerySchema
+>;
+
+// Evidence upload for resolve and return (legend-zoqh1): one multipart `file`
+// part. The API sniffs the bytes; the declared type is not trusted.
+export const PAYOUT_EVIDENCE_CONTENT_TYPES = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+] as const;
+export type PayoutEvidenceContentType =
+  (typeof PAYOUT_EVIDENCE_CONTENT_TYPES)[number];
+export const PAYOUT_EVIDENCE_MAX_BYTES = 5 * 1024 * 1024;
+
 export type UpsertPayoutConfigInput = z.infer<
   typeof upsertPayoutConfigInputSchema
 >;
@@ -211,6 +260,7 @@ export type ConfirmManualItemsInput = z.infer<
   typeof confirmManualItemsInputSchema
 >;
 export type ResolveManualItemsInput = z.infer<typeof resolveManualItemsSchema>;
+export type WithdrawResolutionInput = z.infer<typeof withdrawResolutionSchema>;
 export type ReturnManualItemsInput = z.infer<typeof returnManualItemsSchema>;
 export type ConfirmCashHandoverInput = z.infer<
   typeof confirmCashHandoverInputSchema

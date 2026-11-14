@@ -19,7 +19,8 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, expect } from "vitest";
-import { createUlid, tenantIdSchema } from "@starter/shared/core";
+import type { ObjectStorage } from "@starter/shared/adapters";
+import { CoreError, createUlid, tenantIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -38,6 +39,8 @@ import {
   PAYROLL_SEAL_KEY_VERSION,
   sealPayrollValue,
 } from "../lib/payroll-sealed.ts";
+import type { PayoutEvidenceStore } from "../services/payroll-payout-evidence.ts";
+import { NoopMalwareScanner } from "../services/core-image.ts";
 import { provisionStandardChart } from "../services/accounting-provisioning.service.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
@@ -87,6 +90,30 @@ export const evidenceKeyFor = (
   batchId: string,
   fileName = "laporan-bank.pdf",
 ) => `tenants/${tenantId}/payroll-payout/${batchId}/${fileName}`;
+
+/**
+ * Payment-proof storage of the fixtures (legend-01gg8): resolve, return,
+ * confirm and the overpaid record accept a key only when its object is stored.
+ * `uploadEvidence` stages one, the way a real upload would; any other key is
+ * "not found". Only `get` is implemented (the existence probe).
+ */
+const stagedProofs = new Set<string>();
+const proofStorage = {
+  async get(_context, input) {
+    if (!stagedProofs.has(`${input.tenantId}/${input.key}`))
+      throw new CoreError("NOT_FOUND", "Objek tidak ditemukan.");
+    return { ...input, contentType: "application/pdf", content: "" };
+  },
+} as ObjectStorage;
+/** Stores a proof for the batch and returns its key (the fixture tenant). */
+export const uploadEvidence = (
+  batchId: string,
+  fileName = "laporan-bank.pdf",
+) => {
+  const key = evidenceKeyFor(tenant.id, batchId, fileName);
+  stagedProofs.add(`${tenant.id}/${key}`);
+  return key;
+};
 
 let counter = 0;
 const digits = (length: number) => {
@@ -217,7 +244,14 @@ export function installPayoutWorld(label: string) {
     connectionString: process.env.STARTER_TEST_DATABASE_URL,
     max: 3,
   });
-  const app = createApp();
+  const app = createApp({
+    storageRuntime: {
+      storage: proofStorage,
+      scanner: new NoopMalwareScanner(),
+      fileSigner: async () => "https://signed.example.test/x",
+      hrisDocumentSigner: async () => null,
+    },
+  });
   const entityId = randomUUID();
   const policyId = randomUUID();
   const createdRuns: string[] = [];
@@ -237,6 +271,8 @@ export function installPayoutWorld(label: string) {
       { kind: "tenant" },
     );
   const inTx = <T>(run: (tx: Tx) => Promise<T>) => withTenant(db, scope(), run);
+  /** The proof store the payout services check keys against. */
+  const proofs = () => ({ storage: proofStorage, context: scope() });
 
   async function asTenant<T>(
     run: (client: PoolClient) => Promise<T>,
@@ -612,8 +648,24 @@ export function installPayoutWorld(label: string) {
     const id = await createBatch(runId, channel);
     await inTx((tx) => submitDisbursementBatch(tx, actorOf(REQ), id));
     const hash = (await batchById(id)).content_hash as string;
+    // The account the approver saw (legend-3j9yz): the source configured NOW
+    // for manual_bank (tests may switch it mid-flow), null otherwise.
+    const sourceBankAccountId =
+      channel === "manual_bank"
+        ? (((
+            await rowsOf(
+              `SELECT manual_source_bank_account_id AS id
+                 FROM payroll_payout_configs
+                WHERE tenant_id = $1 AND legal_entity_id = $2`,
+              [tenant.id, entityId],
+            )
+          )[0]?.id as string | null | undefined) ?? null)
+        : null;
     await inTx((tx) =>
-      approveDisbursementBatch(tx, actorOf(APP), id, { contentHash: hash }),
+      approveDisbursementBatch(tx, actorOf(APP), id, {
+        contentHash: hash,
+        sourceBankAccountId,
+      } as never),
     );
     return id;
   }
@@ -628,7 +680,7 @@ export function installPayoutWorld(label: string) {
       itemId: item.id as string,
       result: "succeeded" as const,
       bankRef: `BCA-${batchId.slice(0, 8)}-${index}`,
-      evidenceKey: evidenceKeyFor(tenant.id, batchId),
+      evidenceKey: uploadEvidence(batchId),
     }));
   const confirm = (
     batchId: string,
@@ -641,22 +693,35 @@ export function installPayoutWorld(label: string) {
     by = APP2,
   ) =>
     inTx((tx) =>
-      confirmManualItems(tx, actorOf(by), batchId, { results } as never),
+      confirmManualItems(
+        tx,
+        actorOf(by),
+        batchId,
+        { results } as never,
+        proofs(),
+      ),
     );
   const resolve = (
     batchId: string,
     itemIds: string[],
     outcome: "failed" | "not_sent",
     by: string,
-    evidenceKey = evidenceKeyFor(tenant.id, batchId),
+    evidenceKey = uploadEvidence(batchId),
+    store: PayoutEvidenceStore = proofs(),
   ) =>
     inTx((tx) =>
-      resolveManualItems(tx, actorOf(by), batchId, {
-        itemIds,
-        outcome,
-        evidenceKey,
-        note: "Bank menolak transfer, tidak ada dana keluar",
-      } as never),
+      resolveManualItems(
+        tx,
+        actorOf(by),
+        batchId,
+        {
+          itemIds,
+          outcome,
+          evidenceKey,
+          note: "Bank menolak transfer, tidak ada dana keluar",
+        } as never,
+        store,
+      ),
     );
   const handover = (
     batchId: string,
@@ -876,6 +941,7 @@ export function installPayoutWorld(label: string) {
     entityId: () => entityId,
     scope,
     inTx,
+    proofs,
     asTenant,
     rowsOf,
     expectRefused,

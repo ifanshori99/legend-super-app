@@ -1,7 +1,8 @@
 // Status karyawan tab (legend-wnkep.7): the result of a payout employee by
 // employee. Manual transfer files download once, results are recorded by a
 // second person with MFA (and password when asked), an `unknown` result has
-// no pay-again button. Buttons are switched off for clarity only; the server
+// no pay-again button. A failed or unsent transfer, and funds that came back,
+// are recorded with an uploaded proof photo. Buttons are switched off for clarity only; the server
 // stays the checker and its refusals are always shown.
 import * as React from "react";
 import { CircleAlert, Download } from "lucide-react";
@@ -15,16 +16,21 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { formatDateTime } from "../../ws10-payroll-run/lib";
 import { payoutErrorMessage } from "../errors";
-import { useBatch, useExportBatch } from "../hooks";
+import { useBatch, useExportBatch, useResolutionProposals } from "../hooks";
 import { batchStatusMeta, type PayoutTabProps } from "../lib";
 import {
   ExcludedList,
   isExcludedItem,
   useEmployeeLine,
 } from "./approval-items";
-import { CashDialog, DetailDialog, ResultDialog } from "./status-dialogs";
+import {
+  CashDialog,
+  DetailDialog,
+  ResultDialog,
+  ReturnDialog,
+} from "./status-dialogs";
 import { VerifyPanel, useStepUp } from "./approval-verify";
-import { StatusList, type RowAction } from "./status-items";
+import { StatusList, proposalFor, type RowAction } from "./status-items";
 import { summarizeGroups } from "./status-groups";
 import { StatusSummary } from "./status-summary";
 
@@ -78,7 +84,7 @@ function StatusSkeleton() {
 }
 
 type ActiveDialog = {
-  kind: "record" | "cash" | "detail";
+  kind: "record" | "cash" | "detail" | "return";
   item: PayrollDisbursementItemDto;
 } | null;
 
@@ -91,7 +97,8 @@ function StatusBatch({
   const toast = useToast();
   const query = useBatch(batchId);
   const exportFile = useExportBatch();
-  const line = useEmployeeLine(query.data?.items ?? []);
+  const proposals = useResolutionProposals(batchId);
+  const line = useEmployeeLine();
   const [dialog, setDialog] = React.useState<ActiveDialog>(null);
   const [exportError, setExportError] = React.useState<string | null>(null);
   const exportStepUp = useStepUp();
@@ -122,6 +129,8 @@ function StatusBatch({
   const isCreator = batch.requestedBy === currentUserId;
   const canRecord = (access.canApprove || access.canRequest) && !isCreator;
   const blockKey = isCreator ? "creator" : !canRecord ? "access" : null;
+  // Funds that came back are recorded for a manual transfer that was paid.
+  const canReturn = batch.channel === "manual_bank" && access.canApprove;
   const canExport =
     batch.channel === "manual_bank" &&
     batch.status === "approved" &&
@@ -174,6 +183,16 @@ function StatusBatch({
     .filter(([, show]) => show)
     .map(([key]) => key);
   const closeDialog = () => setDialog(null);
+  // The first person's proposal for an item, only of the kind the dialog records.
+  const proposalOf = (
+    item: PayrollDisbursementItemDto,
+    kind: "resolve" | "return",
+  ) => {
+    const found = proposalFor(proposals, item.id);
+    return found?.kind === kind ? found : undefined;
+  };
+  const isMine = (item: PayrollDisbursementItemDto) =>
+    proposalFor(proposals, item.id)?.proposedBy === currentUserId;
 
   return (
     <div className="grid gap-4">
@@ -332,6 +351,7 @@ function StatusBatch({
             items={listed}
             canRecord={canRecord}
             recordBlockKey={blockKey}
+            proposals={proposals}
             onAction={onAction}
           />
         )}
@@ -352,6 +372,8 @@ function StatusBatch({
           batchId={batch.id}
           item={dialog.item}
           person={line(dialog.item)}
+          proposal={proposalOf(dialog.item, "resolve")}
+          mine={isMine(dialog.item)}
           onClose={closeDialog}
         />
       )}
@@ -367,6 +389,21 @@ function StatusBatch({
         <DetailDialog
           item={dialog.item}
           person={line(dialog.item)}
+          onClose={closeDialog}
+          onReturn={
+            canReturn && dialog.item.status === "succeeded"
+              ? () => setDialog({ kind: "return", item: dialog.item })
+              : undefined
+          }
+        />
+      )}
+      {dialog?.kind === "return" && (
+        <ReturnDialog
+          batchId={batch.id}
+          item={dialog.item}
+          person={line(dialog.item)}
+          proposal={proposalOf(dialog.item, "return")}
+          mine={isMine(dialog.item)}
           onClose={closeDialog}
         />
       )}

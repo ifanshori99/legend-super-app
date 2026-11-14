@@ -1,6 +1,7 @@
 // Payee list of one payout batch: a table from 700px, stacked cards below.
 // Shows the net salary the employee receives; the PT fee never appears here
 // as a deduction. Also holds the helpers the status tab reuses.
+import { CircleAlert } from "lucide-react";
 import type { PayrollDisbursementItemDto } from "@starter/shared/types";
 import { useT } from "@/components/i18n";
 import { Money } from "@/components/ui/money";
@@ -30,31 +31,72 @@ export function isExcludedItem(item: PayrollDisbursementItemDto): boolean {
   return item.excludedReason !== null || item.status === "blocked";
 }
 
+type SnapshotFields = Pick<
+  PayrollDisbursementItemDto,
+  "channel" | "accountHolderName" | "maskedAccountNumber"
+>;
+
 /**
- * Name, subtitle and bank line of an item's employee. The masked bank label is
- * fetched for exactly these payees; when it is missing the item's own bank
- * code is shown with a note that the number is hidden.
+ * A bank item whose payee account was not locked into the batch (a legacy
+ * batch). Cash items never carry an account, so they are not affected.
  */
-export function useEmployeeLine(
-  items: readonly Pick<PayrollDisbursementItemDto, "employeeId">[],
-) {
-  const t = useT();
-  const employees = usePayoutEmployees(items.map((item) => item.employeeId));
+export function lacksAccountSnapshot(item: SnapshotFields): boolean {
   return (
-    item: Pick<PayrollDisbursementItemDto, "employeeId" | "bankCode">,
+    item.channel !== "cash" &&
+    (item.accountHolderName === null || item.maskedAccountNumber === null)
+  );
+}
+
+/**
+ * Name, subtitle and bank line of an item's employee. The account line comes
+ * from the payee snapshot locked into the batch (never the live HR profile),
+ * so the approver sees exactly where the money goes. `missingSnapshot` marks a
+ * bank item without that snapshot.
+ */
+export function useEmployeeLine() {
+  const t = useT();
+  const employees = usePayoutEmployees();
+  return (
+    item: Pick<PayrollDisbursementItemDto, "employeeId" | "bankCode"> &
+      Partial<SnapshotFields>,
   ) => {
     const found = employees.get(item.employeeId);
     const bankName = bankCodeLabel(item.bankCode);
+    const missingSnapshot =
+      item.channel !== undefined &&
+      lacksAccountSnapshot({
+        channel: item.channel,
+        accountHolderName: item.accountHolderName ?? null,
+        maskedAccountNumber: item.maskedAccountNumber ?? null,
+      });
+    let bank: string;
+    if (missingSnapshot) bank = t("payrollPayoutReview.common.noSnapshot");
+    else if (item.accountHolderName && item.maskedAccountNumber)
+      bank = [item.accountHolderName, item.maskedAccountNumber, bankName]
+        .filter(Boolean)
+        .join(" · ");
+    else bank = t("payrollPayoutReview.common.noAccount");
     return {
       name: found?.name ?? t("payrollPayoutReview.common.unknownEmployee"),
       subtitle: found?.subtitle ?? "",
-      bank:
-        found?.bankLabel ??
-        (bankName
-          ? `${bankName} · ${t("payrollPayout.common.accountHidden")}`
-          : t("payrollPayoutReview.common.noAccount")),
+      bank,
+      missingSnapshot,
     };
   };
+}
+
+/** Account text; a missing snapshot gets a warning mark, not colour alone. */
+function AccountLine({ text, missing }: { text: string; missing: boolean }) {
+  if (!missing) return <>{text}</>;
+  return (
+    <span
+      data-testid="payout-no-snapshot"
+      className="inline-flex items-center gap-1.5 font-medium text-warning"
+    >
+      <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
+      {text}
+    </span>
+  );
 }
 
 // Grey band header, small caps (the mockup's recipient table).
@@ -67,7 +109,7 @@ export function PayeeTable({
   items: readonly PayrollDisbursementItemDto[];
 }) {
   const t = useT();
-  const line = useEmployeeLine(items);
+  const line = useEmployeeLine();
   return (
     <>
       <div className="hidden min-[700px]:block">
@@ -98,7 +140,12 @@ export function PayeeTable({
                       </p>
                     )}
                   </TableCell>
-                  <TableCell className="tabular py-4">{who.bank}</TableCell>
+                  <TableCell className="tabular py-4">
+                    <AccountLine
+                      text={who.bank}
+                      missing={who.missingSnapshot}
+                    />
+                  </TableCell>
                   <TableCell className="py-4 text-right">
                     <Money amount={item.amountIdr} />
                   </TableCell>
@@ -122,7 +169,9 @@ export function PayeeTable({
               )}
               <p className="text-sm text-muted-foreground">
                 {t("payrollPayoutReview.approval.table.accountInline")} ·{" "}
-                <span className="tabular text-foreground">{who.bank}</span>
+                <span className="tabular text-foreground">
+                  <AccountLine text={who.bank} missing={who.missingSnapshot} />
+                </span>
               </p>
               <p className="text-sm text-muted-foreground">
                 {t("payrollPayoutReview.approval.table.amountInline")} ·{" "}
@@ -150,7 +199,7 @@ export function ExcludedList({
   hint: string;
 }) {
   const t = useT();
-  const line = useEmployeeLine(items);
+  const line = useEmployeeLine();
   if (items.length === 0) return null;
   return (
     <section
@@ -163,7 +212,12 @@ export function ExcludedList({
       <ul className="grid gap-1 text-sm">
         {items.map((item) => (
           <li key={item.id} className="flex flex-wrap justify-between gap-x-3">
-            <span className="font-medium">{line(item).name}</span>
+            <span className="font-medium">
+              {
+                line({ employeeId: item.employeeId, bankCode: item.bankCode })
+                  .name
+              }
+            </span>
             <span className="text-foreground">
               {item.excludedReason
                 ? t(excludedReasonKey(item.excludedReason))

@@ -218,6 +218,32 @@ export function RunsTab({
                 />
               ))}
             </ul>
+            {entries.loadMoreError && (
+              <p
+                role="alert"
+                className="mt-2 text-sm font-medium text-danger"
+                data-testid="payout-runs-load-more-error"
+              >
+                {t("payrollPayout.runs.loadMoreError")}
+              </p>
+            )}
+            {entries.hasNextPage && (
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-2 min-h-11 w-full"
+                data-testid="payout-runs-load-more"
+                loading={entries.isFetchingNextPage}
+                disabled={entries.isFetchingNextPage}
+                onClick={() => void entries.fetchNextPage()}
+              >
+                {t(
+                  entries.isFetchingNextPage
+                    ? "payrollPayout.runs.loadingMore"
+                    : "payrollPayout.runs.loadMore",
+                )}
+              </Button>
+            )}
             <div className="mt-2 rounded-field bg-surface-2 p-3 text-sm leading-5 text-muted-foreground">
               <p className="font-semibold text-foreground">
                 {t("payrollPayout.runs.twoPeople.title")}

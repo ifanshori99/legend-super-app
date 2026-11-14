@@ -5,6 +5,7 @@ export const payrollPayoutReviewMessages = {
     refresh: "Segarkan",
     unknownEmployee: "Karyawan tidak dikenal",
     noAccount: "Rekening belum tercatat",
+    noSnapshot: "Rekening belum tercatat di batch",
     noReason: "Dikecualikan oleh sistem",
     loadingLabel: "Memuat data pencairan",
     close: "Tutup",
@@ -66,6 +67,9 @@ export const payrollPayoutReviewMessages = {
       method: "Metode pembayaran",
       source: "Rekening sumber",
       sourceMissing: "Belum dipilih",
+      sourceFrozenNote: "Dikunci saat disetujui.",
+      sourceWillFreezeNote:
+        "Akan dibekukan saat disetujui. Rekening ini yang dikirim bersama persetujuan Anda.",
       fee: "Biaya PT (perkiraan)",
       total: "Total dana disiapkan",
       feeNote:
@@ -85,6 +89,11 @@ export const payrollPayoutReviewMessages = {
       expires: "Persetujuan berlaku sampai {time}.",
     },
     blocked: {
+      noSnapshot:
+        "{count} karyawan transfer bank belum punya rekening tercatat di batch ini, jadi pengajuan ini tidak bisa disetujui. Batalkan pengajuan ini, lalu ajukan ulang dari tab Siap bayar. Pembatalan perlu izin mengajukan pencairan.",
+      sourceChecking: "Memeriksa rekening sumber terbaru…",
+      sourceUnknown:
+        "Rekening sumber belum bisa dipastikan. Segarkan halaman, atau pilih rekening aktif di Pengaturan PT lalu ajukan ulang.",
       selfApproval:
         "Anda yang mengajukan pencairan ini. Penyetuju harus orang lain.",
       noPermission: "Akun Anda tidak punya izin menyetujui pencairan.",
@@ -100,12 +109,26 @@ export const payrollPayoutReviewMessages = {
       cancelled: "Pengajuan ini dibatalkan. Tidak ada uang yang dikirim.",
       other: "Pengajuan ini sudah diproses.",
     },
+    cancel: {
+      action: "Batalkan pengajuan",
+      title: "Batalkan pengajuan pencairan",
+      description:
+        "Tidak ada uang yang dikirim. Setelah dibatalkan, ajukan ulang dari tab Siap bayar.",
+      reason: "Alasan pembatalan",
+      reasonHint: "Contoh: rekening karyawan belum tercatat di batch ini.",
+      reasonRequired: "Alasan wajib diisi.",
+      submit: "Batalkan pengajuan",
+      back: "Kembali",
+      success: "Pengajuan dibatalkan. Tidak ada uang yang dikirim.",
+    },
     sourceBanner: {
       title: "Rekening sumber tidak aktif — pencairan ditolak",
       description:
         "{account} tidak dapat digunakan. Pilih rekening aktif pada pengaturan PT, lalu ajukan ulang untuk persetujuan.",
     },
     success: "Pencairan disetujui. Lanjutkan di tab Status karyawan.",
+    sourceChanged:
+      "Rekening sumber berubah saat Anda memeriksa. Tidak ada yang disetujui. Periksa rekening yang baru, lalu centang dan setujui lagi.",
   },
   verify: {
     title: "Verifikasi identitas",
@@ -223,19 +246,82 @@ export const payrollPayoutReviewMessages = {
     bankRef: "Nomor referensi bank",
     bankRefHint: "Salin dari bukti transfer internet banking.",
     bankRefRequired: "Nomor referensi bank wajib diisi.",
-    evidenceUnavailableTitle: "Gagal dan Tidak terkirim belum bisa dipilih",
-    evidenceUnavailable:
-      "Unggah bukti belum tersedia: menandai gagal atau tidak terkirim memerlukan berkas bukti dari bank. Jangan bayar ulang. Hubungi tim teknis untuk penyelesaian manual.",
     submit: "Simpan hasil",
     cancel: "Batal",
     cashTitle: "Konfirmasi tunai diterima",
     cashDescription:
       "{name} · {amount}. Catat bahwa karyawan sudah menerima uang tunai.",
     cashSubmit: "Konfirmasi diterima",
+    evidenceFile: "Berkas bukti dari bank",
+    evidenceFileHint:
+      "Foto atau screenshot bukti (JPG atau PNG, maks 5 MB). Item ini tetap tercatat diekspor sampai dua orang berbeda menandai hasil yang sama.",
+    evidenceFileRequired: "Pilih berkas bukti dulu.",
+    pickFile: "Pilih foto",
+    changeFile: "Ganti foto",
+    noFile: "Belum ada foto dipilih",
+    note: "Catatan",
+    noteHint: "Tulis apa yang terjadi, misalnya pesan penolakan dari bank.",
+    noteRequired: "Catatan wajib diisi.",
+    resolveWarning:
+      "Jangan bayar ulang sebelum dua orang berbeda menandai hasil ini. Setelah itu slip gaji bisa dicairkan lagi.",
+    proposed:
+      "Usulan tercatat. Orang lain perlu menandai hasil yang sama dengan buktinya sendiri.",
+    resolved: "Hasil tercatat. Slip gaji ini bisa dicairkan ulang.",
+    uploading: "Mengunggah bukti…",
+    returnFileHint:
+      "Foto atau screenshot bukti dana masuk kembali dari bank (JPG atau PNG, maks 5 MB). Item tetap tercatat dibayar sampai dua orang berbeda mencatat dana kembali.",
+    returnWarning:
+      "Dana kembali membalik catatan pembayaran gaji ini. Jangan bayar ulang sebelum dua orang mencatatnya.",
+    returnTitle: "Catat dana kembali",
+    returnDescription:
+      "Untuk {name} · {amount}. Pakai ini bila transfer yang sudah berhasil dikembalikan bank. Perlu dua orang berbeda.",
+    returnAction: "Catat dana kembali",
+    returnSubmit: "Simpan dana kembali",
+    returnProposed:
+      "Usulan tercatat. Orang kedua perlu mengonfirmasi dengan bukti yang sama.",
+    returnDone: "Dana kembali tercatat.",
+    proposal: {
+      title: "Usulan orang pertama",
+      outcome: "Hasil",
+      outcomeFailed: "Gagal",
+      outcomeNotSent: "Tidak terkirim",
+      outcomeReturn: "Dana kembali",
+      by: "Diusulkan oleh",
+      you: "Anda",
+      other: "Orang lain",
+      at: "Waktu",
+      note: "Catatan",
+      viewEvidence: "Lihat bukti",
+      opening: "Membuka bukti…",
+      openFailed: "Bukti belum bisa dibuka. Coba lagi.",
+      badge: "Menunggu orang kedua",
+      locked:
+        "Hasil dan bukti mengikuti usulan orang pertama dan tidak bisa diubah. Tulis catatan Anda sendiri.",
+      waiting:
+        "Anda yang mengusulkan ini. Menunggu orang kedua untuk menyimpan hasil yang sama.",
+    },
   },
   error: {
+    sourceMismatch:
+      "Rekening sumber berubah sejak layar dibuka. Tidak ada yang disetujui. Periksa rekening sumber yang baru, lalu setujui lagi.",
     evidenceInvalid:
       "Berkas bukti tidak dikenali untuk pencairan ini. Tidak ada hasil yang dicatat.",
+    evidencePhotoOnly: "Unggah foto atau screenshot bukti.",
+    evidenceTooLarge: "Berkas lebih dari 5 MB. Kecilkan foto lalu coba lagi.",
+    evidenceRejected:
+      "Berkas bukti ditolak pemeriksaan keamanan. Pakai foto atau screenshot lain.",
+    evidenceUnavailable:
+      "Unggah bukti belum tersedia di server. Tidak ada hasil yang dicatat. Hubungi tim teknis.",
+    resolveSamePerson:
+      "Penandaan kedua harus dilakukan orang lain, bukan orang yang mengusulkan pertama.",
+    resolveOutcomeMismatch:
+      "Hasil ini berbeda dari usulan pertama. Periksa lagi bukti bank.",
+    resolveEvidenceMismatch:
+      "Bukti berbeda dari usulan orang pertama. Muat ulang lalu periksa usulan; tidak ada hasil yang dicatat.",
+    returnEvidenceMismatch:
+      "Bukti berbeda dari usulan orang pertama. Muat ulang lalu periksa usulan; tidak ada dana yang dicatat kembali.",
+    returnSamePerson:
+      "Konfirmasi kedua harus dilakukan orang lain, bukan orang yang mencatat pertama.",
   },
   detail: {
     title: "Rincian pembayaran",

@@ -43,10 +43,12 @@ export function ApprovalSummary({
   fundsIdr,
   methodLabel,
   sourceLabel,
+  sourceNote,
   feePerTransferIdr,
   checked,
   onCheckedChange,
   blockKey,
+  blockParams,
   busy,
   onApprove,
   showApprove,
@@ -59,11 +61,15 @@ export function ApprovalSummary({
   methodLabel: string;
   /** Null for channels without a source account line (Duitku, cash). */
   sourceLabel: string | null;
+  /** Under the list: whether the source account is already frozen or not yet. */
+  sourceNote?: string | null;
   feePerTransferIdr: number | undefined;
   checked: boolean;
   onCheckedChange: (value: boolean) => void;
   /** Why the approve button is off; null = ready. */
   blockKey: MessageKey | null;
+  /** Values for the reason text, e.g. {count} of the no-snapshot reason. */
+  blockParams?: Record<string, string | number>;
   busy: boolean;
   onApprove: () => void;
   showApprove: boolean;
@@ -110,6 +116,14 @@ export function ApprovalSummary({
           <Money amount={fundsIdr} size="sm" />
         </Row>
       </dl>
+      {sourceLabel !== null && sourceNote && (
+        <p
+          data-testid="approval-source-note"
+          className="text-sm text-muted-foreground"
+        >
+          {sourceNote}
+        </p>
+      )}
       <p className="text-sm text-muted-foreground">
         {feePerTransferIdr === undefined
           ? t("payrollPayoutReview.approval.summary.feeNoteGeneric")
@@ -142,7 +156,7 @@ export function ApprovalSummary({
           </Button>
           {blockKey ? (
             <p id={reasonId} className="text-sm text-muted-foreground">
-              {t(blockKey)}
+              {t(blockKey, blockParams)}
             </p>
           ) : (
             <p className="text-sm text-muted-foreground">

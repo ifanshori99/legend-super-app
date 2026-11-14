@@ -5,6 +5,7 @@ import * as React from "react";
 import type {
   PayrollDisbursementBatchDto,
   PayrollDisbursementItemDto,
+  PayrollPayoutProposalDto,
 } from "@starter/shared/types";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +38,16 @@ function toneOf(kind: string): Tone {
   }
 }
 
+/** First-person proposals by item id. */
+export type ProposalMap = ReadonlyMap<string, PayrollPayoutProposalDto>;
+
+export function proposalFor(
+  proposals: ProposalMap | undefined,
+  itemId: string,
+): PayrollPayoutProposalDto | undefined {
+  return proposals?.get(itemId);
+}
+
 export type RowAction =
   "record" | "cash" | "check" | "detail" | "evidence" | "review";
 
@@ -63,6 +74,7 @@ export function StatusList({
   items,
   canRecord,
   recordBlockKey,
+  proposals,
   onAction,
 }: {
   batch: PayrollDisbursementBatchDto;
@@ -70,10 +82,12 @@ export function StatusList({
   canRecord: boolean;
   /** Why record/cash buttons are off (creator, no access); null = on. */
   recordBlockKey: "creator" | "access" | null;
+  /** Items waiting for the second person get a small marker. */
+  proposals?: ProposalMap;
   onAction: (action: RowAction, item: PayrollDisbursementItemDto) => void;
 }) {
   const t = useT();
-  const line = useEmployeeLine(items);
+  const line = useEmployeeLine();
   const blockText = useBlockText(recordBlockKey).text;
 
   const subText = (item: PayrollDisbursementItemDto): string => {
@@ -127,11 +141,21 @@ export function StatusList({
     const meta = itemStatusMeta(item.status);
     const manual = itemGroup(item, batch) === "manual";
     return (
-      <Badge tone={manual ? "info" : toneOf(meta.kind)}>
-        {manual
-          ? t("payrollPayoutReview.status.tile.manual")
-          : t(meta.labelKey)}
-      </Badge>
+      <div className="flex flex-wrap items-center gap-1">
+        <Badge tone={manual ? "info" : toneOf(meta.kind)}>
+          {manual
+            ? t("payrollPayoutReview.status.tile.manual")
+            : t(meta.labelKey)}
+        </Badge>
+        {proposalFor(proposals, item.id) && (
+          <Badge
+            tone="warning"
+            data-testid={`payout-proposal-badge-${item.id}`}
+          >
+            {t("payrollPayoutReview.result.proposal.badge")}
+          </Badge>
+        )}
+      </div>
     );
   };
 

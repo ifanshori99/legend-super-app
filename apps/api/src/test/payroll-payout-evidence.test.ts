@@ -6,8 +6,9 @@
 // Rules proven here:
 // - A payment-proof (evidence) key is bound to the storage of the tenant that
 //   owns the batch. A key of another tenant, or one that climbs out of the
-//   batch folder with "..", is refused on manual confirm, on resolve and on
-//   the cash handover, and nothing changes (item status, resolver, GL).
+//   batch folder with "..", is refused on manual confirm and on resolve, and
+//   nothing changes (item status, resolver, GL). The cash handover takes no
+//   evidence key at all: any key is PAYOUT_ITEMS_INVALID.
 // - Step-up: confirm, resolve and cash handover over HTTP need a fresh second
 //   factor AND, when the session's `mfa_verified_at` only comes from the first
 //   MFA enrollment (the user just set up TOTP and never passed a challenge),
@@ -26,7 +27,7 @@
 //     POST /disbursement-batches/:id/confirm       { results, password? }
 //     POST /disbursement-batches/:id/resolve       { itemIds, outcome,
 //                                                    evidenceKey, note, password? }
-//     POST /disbursement-batches/:id/confirm-cash  { itemIds, evidenceKey?, password? }
+//     POST /disbursement-batches/:id/confirm-cash  { itemIds, password? }
 //   `password` is the current account password. Missing password on an
 //   enrollment-only session: 401 REAUTH_REQUIRED. Wrong password: 401 or 403
 //   (only the status class and "nothing changed" are asserted).
@@ -47,6 +48,7 @@ import {
   bank,
   cash,
   evidenceKeyFor,
+  uploadEvidence,
   installPayoutWorld,
   type Row,
 } from "./payroll-payout-fixtures.ts";
@@ -147,7 +149,7 @@ describe("payment proof must belong to the tenant (service level)", () => {
     expect(row.resolved_by_2, "no second step recorded").toBeNull();
   });
 
-  it("[evidence-cash] a proof key of another tenant is refused on the cash handover; nothing is paid or posted", async () => {
+  it("[evidence-cash] any proof key on the cash handover is refused, foreign or own; nothing is paid or posted", async () => {
     const slips = [cash(CASHIER, 1_200_000)];
     const runId = await W.seedRun(slips);
     await W.postLockedJournal(runId, slips);
@@ -155,7 +157,7 @@ describe("payment proof must belong to the tenant (service level)", () => {
     const items = await W.itemsOf(batchId);
     for (const [label, key] of Object.entries(foreignKeys(batchId))) {
       await W.expectRefused(W.handover(batchId, items.map(idOf), APP2, key), {
-        code: "PAYOUT_EVIDENCE_INVALID",
+        code: "PAYOUT_ITEMS_INVALID",
       }).catch((error: unknown) => {
         throw new Error(`${label}: ${(error as Error).message}`);
       });
@@ -165,12 +167,16 @@ describe("payment proof must belong to the tenant (service level)", () => {
     expect(await W.postingsOf(batchId)).toHaveLength(0);
     expect((await W.runRow(runId)).status).toBe("locked");
 
-    await W.handover(
-      batchId,
-      items.map(idOf),
-      APP2,
-      evidenceKeyFor(W.tenantId, batchId, "serah-terima.pdf"),
+    await W.expectRefused(
+      W.handover(
+        batchId,
+        items.map(idOf),
+        APP2,
+        evidenceKeyFor(W.tenantId, batchId, "serah-terima.pdf"),
+      ),
+      { code: "PAYOUT_ITEMS_INVALID" },
     );
+    await W.handover(batchId, items.map(idOf), APP2);
     expect((await W.runRow(runId)).status).toBe("paid");
   });
 });
@@ -286,7 +292,7 @@ describe("step-up: password again when MFA was only just enrolled", () => {
     const body = {
       itemIds: [idOf(siti)],
       outcome: "failed",
-      evidenceKey: evidenceKeyFor(W.tenantId, batchId, "bank-menolak.pdf"),
+      evidenceKey: uploadEvidence(batchId, "bank-menolak.pdf"),
       note: "Bank menolak transfer, tidak ada dana keluar",
     };
 
@@ -323,7 +329,6 @@ describe("step-up: password again when MFA was only just enrolled", () => {
     const { client } = await enrollmentOnlyApprover("Tunai");
     const body = {
       itemIds: items.map(idOf),
-      evidenceKey: evidenceKeyFor(W.tenantId, batchId, "serah-terima.pdf"),
     };
 
     const without = await client
