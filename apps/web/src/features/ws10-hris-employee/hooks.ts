@@ -69,7 +69,7 @@ export function useMyHrisProfile() {
 }
 
 /** The session employee's own id, once `/api/hris/me` answered (HR-01). */
-function useMyEmployeeId(): string | null {
+export function useMyEmployeeId(): string | null {
   return useMyHrisProfile().data?.employee.id ?? null;
 }
 
@@ -178,7 +178,20 @@ export function useSubmitCorrection() {
       const offline = typeof navigator !== "undefined" && !navigator.onLine;
       if (offline && employeeId !== null) return queueAttempt(employeeId);
       try {
+        // The session cookie is shared by every tab: POST only when the server
+        // proved this tab's employee still holds the session, or the request
+        // would be filed under whoever signed in last. No answer ("unknown")
+        // queues it: it is replayed once the identity can be proven.
+        if (employeeId !== null) {
+          const owner = await sessionOwnership(employeeId);
+          if (owner === "no") throw identityChangedError();
+          if (owner === "unknown") return queueAttempt(employeeId);
+        }
         const correction = await submitAttendanceCorrection(body);
+        // The response names its owner: a correction filed under someone else
+        // neither counts as sent nor discards the queued original.
+        if (employeeId !== null && correction.employeeId !== employeeId)
+          throw identityChangedError();
         // The server has the edit: only now does the refused original go.
         if (
           replaces !== undefined &&
@@ -209,6 +222,30 @@ async function sessionOwnership(employeeId: string): Promise<SessionOwnership> {
   } catch {
     return "unknown";
   }
+}
+
+/**
+ * Submit for a replay of `ownerId`'s queued entry: a response that names
+ * another owner is not a success, so the entry is neither removed nor marked
+ * refused (no status: the replay counts it as "retry later").
+ */
+function submitForOwner(
+  ownerId: string,
+): (body: AttendanceCorrectionInput) => Promise<AttendanceCorrection> {
+  return async (body) => {
+    const correction = await submitAttendanceCorrection(body);
+    if (correction.employeeId !== ownerId)
+      throw new Error("Correction was filed under another employee.");
+    return correction;
+  };
+}
+
+function identityChangedError(): ApiError {
+  return new ApiError(
+    409,
+    "IDENTITY_CHANGED",
+    "The signed-in account changed; reload and try again.",
+  );
 }
 
 const EMPTY_QUEUE: QueuedCorrection[] = [];
@@ -263,7 +300,7 @@ export function useFlushCorrectionQueue() {
       // marked refused, and does not block the entries behind it.
       const { sent, refused } = await replayCorrectionQueue(
         queue,
-        submitAttendanceCorrection,
+        submitForOwner(employeeId),
       );
       flushing.current = false;
       if (refused > 0)
@@ -302,7 +339,7 @@ export function useRetryCorrection() {
       if (owner === "unknown") return "retryLater";
       clearCorrectionRefusal(row.key);
       // Replay reads only `key` and `body`, so the stale flag on `row` is moot.
-      return replayQueuedCorrection(row, submitAttendanceCorrection);
+      return replayQueuedCorrection(row, submitForOwner(row.employeeId));
     },
     onSuccess: (outcome) => {
       if (outcome === "skipped") return undefined;
@@ -326,6 +363,9 @@ export function useDiscardCorrection() {
   return useMutation({
     mutationFn: async (row: QueuedCorrection) => {
       if (!canActOnQueued(row, employeeId)) return;
+      // Same server check as retry: a stale second tab must not discard the
+      // entry of the account that now holds the session.
+      if ((await sessionOwnership(row.employeeId)) !== "yes") return;
       removeQueuedCorrection(row.key);
     },
   });

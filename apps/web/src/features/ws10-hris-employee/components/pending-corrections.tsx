@@ -16,10 +16,12 @@ import {
 } from "@/components/ui/card";
 import {
   useDiscardCorrection,
+  useMyEmployeeId,
   usePendingCorrections,
   useQueuedCorrections,
   useRetryCorrection,
 } from "../hooks.ts";
+import { canActOnQueued } from "../identity.ts";
 import type { QueuedCorrection } from "../queue.ts";
 import {
   correctionStatusKey,
@@ -135,6 +137,7 @@ export function PendingCorrections({ timeZone }: { timeZone: string }) {
   // not flip back to the new-request wording mid-animation.
   const [editing, setEditing] = useState<QueuedCorrection | null>(null);
   const [editOpen, setEditOpen] = useState(false);
+  const employeeId = useMyEmployeeId();
 
   return (
     <Card>
@@ -205,7 +208,7 @@ export function PendingCorrections({ timeZone }: { timeZone: string }) {
           {t("hris.home.seeAll")}
         </Link>
       </Button>
-      {editing !== null && (
+      {editing !== null && canActOnQueued(editing, employeeId) && (
         <CorrectionDialog
           open={editOpen}
           onOpenChange={setEditOpen}

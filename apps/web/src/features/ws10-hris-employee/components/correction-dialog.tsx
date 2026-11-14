@@ -6,7 +6,7 @@
 // The form is its own component: Radix unmounts the dialog content when it
 // closes, so every opening starts from the row it was opened for (no reset
 // effect, no stale reason from the previous correction).
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,7 +31,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import type { AttendanceLog, AttendanceType } from "@starter/shared/hris";
 import { requestAttendanceCorrection } from "@starter/shared/hris";
-import { useSubmitCorrection } from "../hooks.ts";
+import { useMyEmployeeId, useSubmitCorrection } from "../hooks.ts";
+import { canActOnQueued } from "../identity.ts";
 import {
   fromDateTimeLocalValue,
   toDateTimeLocalValue,
@@ -73,9 +74,16 @@ export function CorrectionDialog({
 }) {
   const t = useT();
   const toast = useToast();
+  const employeeId = useMyEmployeeId();
+  // The session may now name someone else than the entry's owner (another tab
+  // signed in): the edit form closes instead of acting for the new account.
+  const foreign = editing !== undefined && !canActOnQueued(editing, employeeId);
+  useEffect(() => {
+    if (foreign && open) onOpenChange(false);
+  }, [foreign, open, onOpenChange]);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open && !foreign} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
