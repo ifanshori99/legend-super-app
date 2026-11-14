@@ -15,6 +15,8 @@ import type { Pool } from "pg";
 const FORCE_RLS_STATEMENT =
   /^\s*ALTER\s+TABLE\s+\S+\s+(?:NO\s+)?FORCE\s+ROW\s+LEVEL\s+SECURITY\s*;?\s*$/i;
 
+const LOCK_TIMEOUT = "30s";
+
 function runtimeRole(): string {
   const url = process.env.APP_DATABASE_URL;
   if (!url) throw new Error("APP_DATABASE_URL is required for a scoped replay");
@@ -38,6 +40,8 @@ export async function replayMigrationForTenant(
   let rollbackFailure: Error | undefined;
   try {
     await client.query("BEGIN");
+    // A stuck tenant deleter must fail the replay, not hang it.
+    await client.query(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`);
     // Keep concurrent tenant teardown from invalidating the replay.
     await client.query("LOCK TABLE public.tenants IN SHARE MODE");
     await client.query(`SET LOCAL ROLE ${role}`);

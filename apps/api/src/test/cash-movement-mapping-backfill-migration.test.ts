@@ -449,7 +449,7 @@ describe("legend-89pn migration 0360 cash movement accounts and mappings", () =>
     expect(await mappingsOf(entityId, "cash_in_clearing")).toHaveLength(0);
   });
 
-  it("MIG-06 every (tenant, legal entity) pair gets its own accounts; another tenant's rows are not touched; FORCE RLS is restored", async () => {
+  it("MIG-06 every (tenant, legal entity) pair gets its own accounts; an unprovisioned entity gets nothing; FORCE RLS stays on", async () => {
     const tenantA = await newTenant();
     const tenantB = await newTenant();
     const a1 = await entity(true, tenantA.id);
