@@ -25,7 +25,12 @@ export const edgeLinkDeadLetteredPayloadSchema = z.strictObject({
   /** Link sequence the event had on the edge when it was dead-lettered. */
   linkSeq: z.number().int().positive().safe(),
   bytes: z.number().int().min(0).safe(),
-  reason: z.literal("frame_too_large"),
+  /**
+   * frame_too_large: edge -> cloud notice, the event stays on the edge.
+   * brand_moved (legend-3k41y): cloud -> edge no-op placeholder that takes the
+   * link slot of a catalog row the cloud withheld; the edge only advances.
+   */
+  reason: z.enum(["frame_too_large", "brand_moved"]),
 });
 export type EdgeLinkDeadLetteredPayload = z.infer<
   typeof edgeLinkDeadLetteredPayloadSchema

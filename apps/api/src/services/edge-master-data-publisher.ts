@@ -20,9 +20,9 @@ import { logger } from "../lib/logger.ts";
 import { outletContext } from "./device-pin-support.ts";
 import { listCatalogRecordsSinceTx } from "./edge-catalog-sync.ts";
 import {
-  deadLetterPendingCatalogRows,
   enqueueEdgeEvent,
   lockSyncCursor,
+  neutralizeCatalogRows,
 } from "./edge-queue.service.ts";
 import type { VerifiedEdgeNode } from "./staff-pin-sync.ts";
 
@@ -180,8 +180,8 @@ export async function publishCatalogForNode(
         sql`UPDATE edge_catalog_publisher_cursors SET blocked_at = now(), updated_at = now() WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND blocked_at IS NULL RETURNING edge_node_id`,
       );
       // Same transaction and cursor lock as the block: stale brand catalog rows
-      // leave the queue and the rows behind them close the gap.
-      await deadLetterPendingCatalogRows(tx, {
+      // become no-op placeholders on their own link slot.
+      await neutralizeCatalogRows(tx, {
         tenantId: input.tenantId,
         outletId: input.outletId,
         edgeNodeId: input.edgeNodeId,

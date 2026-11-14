@@ -23,7 +23,6 @@ import {
 } from "@starter/shared/core";
 import {
   type CatalogSyncStream,
-  catalogRecordUpdatedEvent,
   conflictResolution,
   EDGE_LINK_AGGREGATE,
   EDGE_LINK_DEAD_LETTERED_EVENT,
@@ -47,9 +46,8 @@ import {
   type NewEdgeSyncConflict,
 } from "../services/edge-sync-conflict-alert.ts";
 import {
-  deadLetterPendingCatalogRows,
   lockSyncCursor,
-  RENUMBER_PARK,
+  neutralizeCatalogRows,
   type EdgeTx,
 } from "../services/edge-queue.service.ts";
 import { decideInbound, type EdgeConflictReason } from "./conflict.ts";
@@ -72,6 +70,9 @@ import {
 } from "./ports.ts";
 
 type Database = NodePgDatabase<typeof schema>;
+
+/** Parked above any real link_seq while the queue behind a dead letter is renumbered. */
+const RENUMBER_PARK = 1_000_000_000_000;
 
 export type DbLinkStoreOptions = {
   database: Database;
@@ -380,18 +381,14 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
         const { offset } = await peerNumbering(tx, outbound);
         // legend-3k41y: fail closed. A node whose catalog publisher is blocked,
         // or whose outlet brand no longer matches the brand its queue was
-        // published for, receives no catalog row. Stale rows are dead-lettered
-        // (re-checked under the cursor lock) and the queue behind them
-        // renumbered (no hole for the receiver); outlet-scoped events keep
-        // flowing. The SELECT below runs after that step in the same
-        // transaction and has no per-row refusal filter: filtering rows out of
-        // the page would itself leave a hole when the brand moves in between.
-        if (outbound === "cloud_to_edge") {
-          const stale = await tx.execute(
-            sql`SELECT 1 WHERE EXISTS (SELECT 1 FROM edge_catalog_publisher_cursors c JOIN outlets o ON o.tenant_id = c.tenant_id AND o.id = c.outlet_id WHERE c.edge_node_id = ${nodeId}::uuid AND (c.blocked_at IS NOT NULL OR c.brand_id <> o.brand_id)) AND EXISTS (SELECT 1 FROM edge_outbound_queue WHERE edge_node_id = ${nodeId}::uuid AND direction = 'cloud_to_edge' AND status = 'pending' AND aggregate_type = ${catalogRecordUpdatedEvent.entry.aggregateType})`,
-          );
-          if (stale.rows.length) await deadLetterPendingCatalogRows(tx, node);
-        }
+        // published for, receives no catalog row. Under the node's cursor lock
+        // (the publisher's enqueue takes the same one) the refusal is checked
+        // and every pending catalog row is replaced IN PLACE by a no-op
+        // placeholder on its own link slot (neutralizeCatalogRows); only then
+        // does the SELECT below run, in the same transaction. No row is
+        // renumbered or filtered out of the page, so the receiver's cursor
+        // never sees a hole; outlet-scoped events keep flowing.
+        if (outbound === "cloud_to_edge") await neutralizeCatalogRows(tx, node);
         const result = await tx.execute(
           sql`SELECT link_seq, event FROM edge_outbound_queue WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${afterSeq + offset} ORDER BY link_seq LIMIT ${limit}`,
         );
@@ -416,6 +413,8 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
     //   head) move down by one together with next_out_seq and the receiver's
     //   contiguous cursor never sees a hole. The queue key is not deferrable,
     //   so the rows are parked far above any sequence first, then brought down.
+    //   (A catalog row withheld after a brand move is different: it keeps its
+    //   slot and is replaced by a placeholder, neutralizeCatalogRows.)
     async deadLetterOutbound(entry) {
       await run(async (tx) => {
         const cursor = await lockSyncCursor(tx, node, outbound);

@@ -1,30 +1,35 @@
-// legend-3k41y, option C (CTO decision): stale `catalog_record` rows of a node
-// whose outlet brand moved are dead-lettered and the rows behind them are
-// renumbered down, so the cloud_to_edge queue stays gap-free (link_seq 1..n,
-// no hole). Hiding the rows at read time left a hole, and the link pump throws
-// "Outbound queue is not contiguous" on a hole. Written from the brief and the
-// queue/dead-letter table contract (migrations), not from the implementation.
+// legend-3k41y, placeholder semantics (CTO decision, replaces option C
+// "renumber"): stale `catalog_record` rows of a node whose outlet brand moved
+// are neutralised IN PLACE. The full original event goes to
+// edge_link_dead_letters (reason 'brand_moved', link_seq = its slot) and the
+// queue row keeps its link_seq but carries a no-op placeholder event. Nothing
+// is renumbered, next_out_seq does not move, and no hole appears, so the link
+// pump never throws "Outbound queue is not contiguous" and the edge's cursor
+// stays valid. Written from the brief and the queue/dead-letter table
+// contract (migrations), not from the implementation.
 //
 // Rules under test:
 //  - Node blocked by the publisher (brand moved): its pending catalog_record
-//    rows move to edge_link_dead_letters in the same transaction (no queue
-//    read needed), the rows behind them are renumbered down, and
-//    sync_cursors.next_out_seq follows.
+//    rows are replaced in place in the same transaction (no queue read
+//    needed); the dead letters hold the full original event at the same slot.
 //  - Brand changed with NO blocked_at (publisher never ran; raw UPDATE, no
-//    service hook): the read-time safety net still dead-letters + renumbers,
-//    it never just hides rows.
+//    service hook): the read-time safety net replaces the rows the same way,
+//    it never just hides them.
 //  - Outlet-scoped events (QR order, Wi-Fi quota, panic alert) are never
-//    dead-lettered, keep their order, and keep flowing.
-//  - Rows at or below the edge-acked seq never change number and are never
-//    dead-lettered.
-//  - A real cloud link peer on the db link store does not throw.
+//    replaced or dead-lettered, keep their order, their link_seq, and keep
+//    flowing.
+//  - Rows at or below the edge-acked seq are never replaced or dead-lettered.
+//  - A real cloud link peer on the db link store does not throw and delivers
+//    every slot at its own link_seq.
 //
 // Assumptions:
 //  - Queue before the move (the node is offline): qr_order (seq 1), the
 //    published catalog_record events (seq 2..1+c, c >= 1), wifi_quota, panic.
 //    c is read from the queue, not hard-coded.
-//  - The dead-letter `reason` text is not fixed by the brief ("e.g.
-//    brand_moved"): it only has to be a non-empty string.
+//  - The placeholder event type name is not fixed: tests assert that the slot
+//    no longer holds a catalog_record event (aggregateType) and does not leak
+//    the old record content, never the placeholder's name.
+//  - The dead-letter `reason` is 'brand_moved' (fixed by the brief).
 //  - Dead-letter rows are read with the owner pool (bypasses RLS).
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
@@ -171,11 +176,12 @@ type QueueRow = {
   event_id: string;
   aggregate_type: string;
   status: string;
+  event: EventEnvelope;
 };
 
 async function queueRows(nodeId: string): Promise<QueueRow[]> {
   const res = await owner.query<QueueRow>(
-    `SELECT link_seq::text, event_id, aggregate_type, status FROM edge_outbound_queue
+    `SELECT link_seq::text, event_id, aggregate_type, status, event FROM edge_outbound_queue
       WHERE edge_node_id = $1 AND direction = 'cloud_to_edge' ORDER BY link_seq`,
     [nodeId],
   );
@@ -188,7 +194,7 @@ async function deadLetterRows(nodeId: string) {
     link_seq: string;
     aggregate_type: string;
     reason: string;
-    event: { id: string; aggregateType: string };
+    event: EventEnvelope;
   }>(
     `SELECT event_id, link_seq::text, aggregate_type, reason, event FROM edge_link_dead_letters
       WHERE edge_node_id = $1 AND direction = 'cloud_to_edge' ORDER BY link_seq`,
@@ -222,10 +228,12 @@ async function offlineBrandMove(options: { block: boolean }) {
   const nodeId = node.scope.edgeNodeId;
 
   const qr = await enqueueForNode(world, node, "qr_order.placed", "qr_order");
-  await owner.query(
-    `INSERT INTO menu_categories (id, tenant_id, brand_id, name) VALUES ($1, $2, $3, 'Brand A before move')`,
-    [randomUUID(), world.tenantId, world.brandId],
-  );
+  // Three categories so that c >= 2 (the acked-prefix test needs a pending one).
+  for (let i = 0; i < 3; i += 1)
+    await owner.query(
+      `INSERT INTO menu_categories (id, tenant_id, brand_id, name) VALUES ($1, $2, $3, $4)`,
+      [randomUUID(), world.tenantId, world.brandId, `Brand A before move ${i}`],
+    );
   await settleCloud(owner);
   await publish(world, world.outletA, node);
   await publish(world, world.outletB, sibling);
@@ -241,7 +249,7 @@ async function offlineBrandMove(options: { block: boolean }) {
   // events and the queue starts gap-free at 1.
   const before = await queueRows(nodeId);
   const catalog = before.filter((r) => r.aggregate_type === "catalog_record");
-  expect(catalog.length).toBeGreaterThanOrEqual(1);
+  expect(catalog.length).toBeGreaterThanOrEqual(2);
   expect(before.map((r) => Number(r.link_seq))).toEqual(
     before.map((_, i) => i + 1),
   );
@@ -276,6 +284,8 @@ async function offlineBrandMove(options: { block: boolean }) {
     alertId,
     catalogIds: catalog.map((r) => r.event_id),
     outletEventCount: 3,
+    /** The queue exactly as it was before the move (events included). */
+    before,
   };
 }
 
@@ -285,80 +295,140 @@ async function readAll(node: Authenticated, afterSeq = 0) {
   return read.map((item) => ({ seq: item.linkSeq, id: uuidOf(item.event.id) }));
 }
 
-describe("legend-3k41y option C: stale catalog rows are dead-lettered and the queue renumbered", () => {
-  it("legend-3k41y a blocked node's queue read has no hole: outlet events keep their order at seq 1..n", async () => {
+const range = (from: number, to: number) =>
+  Array.from({ length: to - from + 1 }, (_, k) => from + k);
+
+/** A slot no longer carries a catalog event (placeholder or outlet event). */
+const isCatalog = (event: { aggregateType: string }) =>
+  event.aggregateType === "catalog_record";
+
+/** The first catalog slot is seq 2; the outlet events are qr (1), wifi, panic. */
+function slots(f: Awaited<ReturnType<typeof offlineBrandMove>>) {
+  const c = f.catalogIds.length;
+  return {
+    c,
+    catalog: range(2, 1 + c),
+    wifi: 2 + c,
+    panic: 3 + c,
+    n: c + 3,
+  };
+}
+
+/** Catalog slots hold a placeholder: same seq, same status, no old content. */
+function expectCatalogNeutralised(
+  f: Awaited<ReturnType<typeof offlineBrandMove>>,
+  rows: QueueRow[],
+  seqs: number[],
+) {
+  for (const seq of seqs) {
+    const row = rows.find((r) => Number(r.link_seq) === seq);
+    expect(row, `queue row ${seq}`).toBeDefined();
+    expect(row!.event.aggregateType).not.toBe("catalog_record");
+    expect(JSON.stringify(row!.event)).not.toContain("Brand A before move");
+    expect(row!.status).toBe(
+      f.before.find((b) => Number(b.link_seq) === seq)!.status,
+    );
+  }
+}
+
+/** The dead letters hold the full original event at the slot it had. */
+async function expectDeadLettersHoldOriginals(
+  f: Awaited<ReturnType<typeof offlineBrandMove>>,
+  seqs: number[],
+) {
+  const dead = await deadLetterRows(f.nodeId);
+  expect(dead.map((d) => Number(d.link_seq))).toEqual(seqs);
+  for (const row of dead) {
+    const original = f.before.find(
+      (b) => Number(b.link_seq) === Number(row.link_seq),
+    )!;
+    expect(row.reason).toBe("brand_moved");
+    expect(row.aggregate_type).toBe("catalog_record");
+    expect(row.event_id).toBe(original.event_id);
+    expect(row.event).toEqual(original.event);
+  }
+  // Outlet-scoped events are never dead-lettered.
+  const deadIds = dead.map((d) => d.event_id);
+  for (const id of [uuidOf(f.qr.id), uuidOf(f.wifi.id)])
+    expect(deadIds).not.toContain(id);
+}
+
+/** qr, wifi and panic rows are exactly as queued: same slot, same event. */
+function expectOutletEventsUntouched(
+  f: Awaited<ReturnType<typeof offlineBrandMove>>,
+  rows: QueueRow[],
+  options: { status: boolean } = { status: true },
+) {
+  const { wifi, panic } = slots(f);
+  for (const seq of [1, wifi, panic]) {
+    const row = rows.find((r) => Number(r.link_seq) === seq)!;
+    const original = f.before.find((b) => Number(b.link_seq) === seq)!;
+    expect(row.event_id).toBe(original.event_id);
+    expect(row.event).toEqual(original.event);
+    if (options.status) expect(row.status).toBe(original.status);
+  }
+}
+
+describe("legend-3k41y placeholder: stale catalog rows are neutralised in place, nothing is renumbered", () => {
+  it("legend-3k41y a blocked node's queue read keeps every slot: outlet events at their own seq, catalog slots are placeholders", async () => {
     const f = await offlineBrandMove({ block: true });
-    const read = await readAll(f.node);
-    expect(read.map((r) => r.id)).toEqual([
-      uuidOf(f.qr.id),
-      uuidOf(f.wifi.id),
-      expect.any(String),
-    ]);
-    expect(read.map((r) => r.seq)).toEqual([1, 2, 3]);
-    // The panic event is the last one and is the resolved alert.
-    const panic = (await cloudStore(f.node).readOutbound(2, 10))[0]!;
-    expect(panic.linkSeq).toBe(3);
+    const s = slots(f);
+    const read = await cloudStore(f.node).readOutbound(0, 1000);
+    // Same numbering as before the move: 1..n, no hole.
+    expect(read.map((q) => q.linkSeq)).toEqual(range(1, s.n));
+    expect(read.some((q) => isCatalog(q.event))).toBe(false);
+    // The outlet events sit where they always did.
+    expect(uuidOf(read[0]!.event.id)).toBe(uuidOf(f.qr.id));
+    expect(uuidOf(read[s.wifi - 1]!.event.id)).toBe(uuidOf(f.wifi.id));
+    const panic = read[s.panic - 1]!;
+    expect(panic.linkSeq).toBe(s.panic);
     expect(panic.event.aggregateId).toBe(f.alertId);
-    // Reading from the middle also lands on the renumbered seqs.
-    expect(await readAll(f.node, 1)).toEqual([
-      { seq: 2, id: uuidOf(f.wifi.id) },
-      { seq: 3, id: uuidOf(panic.event.id) },
-    ]);
+    // Reading from the middle lands on the same seqs.
+    const tail = await cloudStore(f.node).readOutbound(s.wifi - 1, 10);
+    expect(tail.map((q) => q.linkSeq)).toEqual([s.wifi, s.panic]);
+    expect(uuidOf(tail[0]!.event.id)).toBe(uuidOf(f.wifi.id));
   }, 60_000);
 
-  it("legend-3k41y blocking the node moves the catalog rows to the dead letters in the same transaction, before any queue read", async () => {
+  it("legend-3k41y blocking the node replaces the catalog rows in place in the same transaction, before any queue read", async () => {
     const f = await offlineBrandMove({ block: true });
+    const s = slots(f);
     // No readOutbound has run: the publisher's block did the work.
     const rows = await queueRows(f.nodeId);
-    expect(rows.some((r) => r.aggregate_type === "catalog_record")).toBe(false);
-    expect(rows.map((r) => Number(r.link_seq))).toEqual([1, 2, 3]);
-    expect(await nextOutSeq(f.nodeId)).toBe(3);
-
-    const dead = await deadLetterRows(f.nodeId);
-    expect(dead.map((d) => d.event_id).sort()).toEqual(
-      [...f.catalogIds].sort(),
-    );
-    for (const row of dead) {
-      expect(row.aggregate_type).toBe("catalog_record");
-      expect(uuidOf(row.event.id)).toBe(row.event_id);
-      expect(row.event.aggregateType).toBe("catalog_record");
-      expect(row.reason.length).toBeGreaterThan(0);
-    }
-    // Outlet-scoped events are never dead-lettered.
-    const deadIds = dead.map((d) => d.event_id);
-    for (const id of [uuidOf(f.qr.id), uuidOf(f.wifi.id)])
-      expect(deadIds).not.toContain(id);
+    expect(rows.map((r) => Number(r.link_seq))).toEqual(range(1, s.n));
+    expectCatalogNeutralised(f, rows, s.catalog);
+    expectOutletEventsUntouched(f, rows);
+    // No renumber: the queue cursor did not move.
+    expect(await nextOutSeq(f.nodeId)).toBe(s.n);
+    await expectDeadLettersHoldOriginals(f, s.catalog);
   }, 60_000);
 
-  it("legend-3k41y a brand change without blocked_at is caught lazily: dead-lettered and renumbered, not just hidden", async () => {
+  it("legend-3k41y a brand change without blocked_at is caught lazily by the queue read: replaced in place, not just hidden", async () => {
     const f = await offlineBrandMove({ block: false });
+    const s = slots(f);
     const state = await owner.query(
       `SELECT blocked_at FROM edge_catalog_publisher_cursors WHERE edge_node_id = $1`,
       [f.nodeId],
     );
     expect(state.rows.every((row) => row.blocked_at === null)).toBe(true);
 
-    const read = await readAll(f.node);
-    expect(read.map((r) => r.seq)).toEqual([1, 2, 3]);
-    expect(read.slice(0, 2).map((r) => r.id)).toEqual([
-      uuidOf(f.qr.id),
-      uuidOf(f.wifi.id),
-    ]);
-    for (const id of f.catalogIds)
-      expect(read.map((r) => r.id)).not.toContain(id);
+    const read = await cloudStore(f.node).readOutbound(0, 1000);
+    expect(read.map((q) => q.linkSeq)).toEqual(range(1, s.n));
+    expect(read.some((q) => isCatalog(q.event))).toBe(false);
+    expect(uuidOf(read[0]!.event.id)).toBe(uuidOf(f.qr.id));
+    expect(uuidOf(read[s.wifi - 1]!.event.id)).toBe(uuidOf(f.wifi.id));
 
-    // Not a hide: the rows left the queue and sit in the dead letters.
+    // Not a hide: the stored rows were replaced and the originals saved.
     const rows = await queueRows(f.nodeId);
-    expect(rows.map((r) => Number(r.link_seq))).toEqual([1, 2, 3]);
-    expect(await nextOutSeq(f.nodeId)).toBe(3);
-    const dead = await deadLetterRows(f.nodeId);
-    expect(dead.map((d) => d.event_id).sort()).toEqual(
-      [...f.catalogIds].sort(),
-    );
+    expect(rows.map((r) => Number(r.link_seq))).toEqual(range(1, s.n));
+    expectCatalogNeutralised(f, rows, s.catalog);
+    expectOutletEventsUntouched(f, rows);
+    expect(await nextOutSeq(f.nodeId)).toBe(s.n);
+    await expectDeadLettersHoldOriginals(f, s.catalog);
   }, 60_000);
 
-  it("legend-3k41y the real cloud link pump does not throw on the renumbered queue and delivers outlet events in order", async () => {
+  it("legend-3k41y the real cloud link pump does not throw and delivers every slot, outlet events in order", async () => {
     const f = await offlineBrandMove({ block: true });
+    const s = slots(f);
     const frames: string[] = [];
     const closes: number[] = [];
     const errors: unknown[] = [];
@@ -391,13 +461,12 @@ describe("legend-3k41y option C: stale catalog rows are dead-lettered and the qu
         );
       expect(errors).toEqual([]);
       expect(closes).toEqual([]);
-      expect(delivered.map((e) => uuidOf(e.id)).slice(0, 2)).toEqual([
-        uuidOf(f.qr.id),
-        uuidOf(f.wifi.id),
-      ]);
-      expect(delivered).toHaveLength(3);
-      for (const id of f.catalogIds)
-        expect(delivered.map((e) => uuidOf(e.id))).not.toContain(id);
+      // Every slot goes out, in slot order, none of them a catalog event.
+      expect(delivered).toHaveLength(s.n);
+      expect(delivered.some((e) => isCatalog(e))).toBe(false);
+      expect(uuidOf(delivered[0]!.id)).toBe(uuidOf(f.qr.id));
+      expect(uuidOf(delivered[s.wifi - 1]!.id)).toBe(uuidOf(f.wifi.id));
+      expect(delivered[s.panic - 1]!.aggregateId).toBe(f.alertId);
     } finally {
       peer.stop();
     }
@@ -405,6 +474,7 @@ describe("legend-3k41y option C: stale catalog rows are dead-lettered and the qu
 
   it("legend-3k41y the pump also does not throw when the brand changed without blocked_at", async () => {
     const f = await offlineBrandMove({ block: false });
+    const s = slots(f);
     const frames: string[] = [];
     const errors: unknown[] = [];
     const peer = createLinkPeer({
@@ -432,50 +502,58 @@ describe("legend-3k41y option C: stale catalog rows are dead-lettered and the qu
           frame?.type === "batch" ? frame.batch.events : [],
         );
       expect(errors).toEqual([]);
-      expect(delivered).toHaveLength(3);
-      for (const id of f.catalogIds)
-        expect(delivered.map((e) => uuidOf(e.id))).not.toContain(id);
+      expect(delivered).toHaveLength(s.n);
+      expect(delivered.some((e) => isCatalog(e))).toBe(false);
+      expect(delivered[s.panic - 1]!.aggregateId).toBe(f.alertId);
     } finally {
       peer.stop();
     }
   }, 60_000);
 
-  it("legend-3k41y acked events keep their number: only rows above the acked seq are dead-lettered or renumbered", async () => {
+  it("legend-3k41y acked events keep their event: only pending catalog rows above the acked seq are replaced or dead-lettered", async () => {
     const f = await offlineBrandMove({ block: false });
+    const s = slots(f);
     // The edge acked the QR order (seq 1) and the first catalog event (seq 2)
     // before the move was noticed.
     await cloudStore(f.node).ackOutbound(2);
 
-    const read = await readAll(f.node, 2);
-    // Rows behind the acked prefix: remaining catalog gone, outlet events
-    // renumbered down to start right after the acked seq.
-    expect(read.map((r) => r.seq)).toEqual([3, 4]);
-    expect(read[0]!.id).toBe(uuidOf(f.wifi.id));
+    const read = await cloudStore(f.node).readOutbound(2, 1000);
+    // Everything above the acked prefix keeps its own seq.
+    expect(read.map((q) => q.linkSeq)).toEqual(range(3, s.n));
+    expect(read.some((q) => isCatalog(q.event))).toBe(false);
+    expect(uuidOf(read[s.wifi - 3]!.event.id)).toBe(uuidOf(f.wifi.id));
 
     const rows = await queueRows(f.nodeId);
-    expect(rows.map((r) => Number(r.link_seq))).toEqual([1, 2, 3, 4]);
+    expect(rows.map((r) => Number(r.link_seq))).toEqual(range(1, s.n));
     expect(rows[0]!.event_id).toBe(uuidOf(f.qr.id));
-    expect(rows[1]!.event_id).toBe(f.catalogIds[0]);
-    expect(rows[1]!.aggregate_type).toBe("catalog_record");
-    expect(rows[2]!.event_id).toBe(uuidOf(f.wifi.id));
-    expect(await nextOutSeq(f.nodeId)).toBe(4);
+    // The acked catalog event is still the real one.
+    expect(rows[1]).toMatchObject({
+      event_id: f.catalogIds[0],
+      aggregate_type: "catalog_record",
+    });
+    expect(rows[1]!.event).toEqual(f.before[1]!.event);
+    expectCatalogNeutralised(f, rows, s.catalog.slice(1));
+    expectOutletEventsUntouched(f, rows, { status: false });
+    expect(await nextOutSeq(f.nodeId)).toBe(s.n);
 
-    // The acked catalog event is not dead-lettered; only the pending ones are.
-    const dead = await deadLetterRows(f.nodeId);
-    expect(dead.map((d) => d.event_id).sort()).toEqual(
-      f.catalogIds.slice(1).sort(),
-    );
+    // Only the pending ones are dead-lettered.
+    await expectDeadLettersHoldOriginals(f, s.catalog.slice(1));
   }, 60_000);
 
   it("legend-3k41y reading again after the move changes nothing (idempotent)", async () => {
     const f = await offlineBrandMove({ block: true });
+    const s = slots(f);
     const first = await readAll(f.node);
+    const rowsFirst = await queueRows(f.nodeId);
+    const deadFirst = await deadLetterRows(f.nodeId);
     await publish(f.world, f.world.outletA, f.node);
     const second = await readAll(f.node);
     expect(second).toEqual(first);
-    expect(await queueRows(f.nodeId)).toHaveLength(3);
-    const dead = await deadLetterRows(f.nodeId);
-    expect(dead).toHaveLength(f.catalogIds.length);
+    expect(await queueRows(f.nodeId)).toEqual(rowsFirst);
+    expect(await deadLetterRows(f.nodeId)).toEqual(deadFirst);
+    expect(deadFirst).toHaveLength(f.catalogIds.length);
+    expect(first.map((r) => r.seq)).toEqual(range(1, s.n));
+    expect(await nextOutSeq(f.nodeId)).toBe(s.n);
   }, 60_000);
 
   it("legend-3k41y control: a sibling node on the old brand keeps its catalog rows and numbering", async () => {
@@ -488,5 +566,7 @@ describe("legend-3k41y option C: stale catalog rows are dead-lettered and the qu
     expect(await deadLetterRows(f.sibling.scope.edgeNodeId)).toEqual([]);
     const read = await readAll(f.sibling);
     expect(read.length).toBe(rows.length);
+    const sent = await cloudStore(f.sibling).readOutbound(0, 1000);
+    expect(sent.every((q) => isCatalog(q.event))).toBe(true);
   }, 60_000);
 });

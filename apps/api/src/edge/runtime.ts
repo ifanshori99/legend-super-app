@@ -78,7 +78,10 @@ import {
 } from "./wifi-quota-queue-worker.ts";
 import { registerOrderEdgeApplier } from "./order-edge-applier.ts";
 import { registerReceiptRunEdgeApplier } from "./receipt-run-applier.ts";
-import { registerEdgeLinkDeadLetterApplier } from "./link-dead-letter-applier.ts";
+import {
+  registerEdgeLinkDeadLetterApplier,
+  registerEdgeLinkPlaceholderApplier,
+} from "./link-dead-letter-applier.ts";
 import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
 import { registerPanicAlertEdgeApplier } from "./panic-alert-applier.ts";
@@ -832,6 +835,8 @@ export async function startEdgeRuntime(
   registerQrOrderEdgeApplier();
   registerWifiQuotaEdgeApplier();
   registerMasterDataEdgeApplier();
+  // legend-3k41y: no-op placeholder of a catalog row the cloud withheld.
+  registerEdgeLinkPlaceholderApplier();
   // Section D (legend-khu5): first boot provisions the node from its bundle.
   await bootstrapEdgeNodeIfNeeded(config);
   let local: Awaited<ReturnType<typeof ensureLocalEdgeNode>>;
