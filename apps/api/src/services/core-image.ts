@@ -10,6 +10,23 @@ export interface MalwareScanner {
   readonly acceptsDocuments?: boolean;
 }
 
+/** Fail closed when the scanner cannot complete, without exposing its diagnostics. */
+export async function scanUpload(
+  scanner: MalwareScanner,
+  bytes: Uint8Array,
+): Promise<void> {
+  try {
+    await scanner.scan(bytes);
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 422) throw error;
+    throw new HttpError(
+      503,
+      "SCANNER_UNAVAILABLE",
+      "File scanning is temporarily unavailable.",
+    );
+  }
+}
+
 /**
  * Refuses a document (PDF) upload when the scanner cannot vet documents: the
  * production noop (legend-dzh9q). Call it BEFORE any blob is stored or any PDF
@@ -131,7 +148,7 @@ async function processImageVariants(
       "UNSUPPORTED_MEDIA_TYPE",
       "Unsupported image type.",
     );
-  await scanner.scan(bytes);
+  await scanUpload(scanner, bytes);
   try {
     const image = sharp(bytes, {
       limitInputPixels: 50_000_000,

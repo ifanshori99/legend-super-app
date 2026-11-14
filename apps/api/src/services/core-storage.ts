@@ -25,6 +25,7 @@ import { withTenant } from "../db/tenant";
 import {
   assertScannerAcceptsDocuments,
   processImage,
+  scanUpload,
   type MalwareScanner,
 } from "./core-image";
 import { HttpError } from "../lib/http-error";
@@ -88,7 +89,7 @@ export async function uploadStorage(
     Buffer.from(bytes).subarray(0, 5).toString("ascii") === "%PDF-"
   ) {
     assertScannerAcceptsDocuments(deps.scanner);
-    await deps.scanner.scan(bytes);
+    await scanUpload(deps.scanner, bytes);
     contentType = "application/pdf";
     full = bytes;
   } else {

@@ -10,7 +10,10 @@ import {
 import { FakeObjectStorage } from "@starter/shared/adapters";
 import { outletIdSchema } from "@starter/shared/core";
 import * as schema from "../db/schema";
-import { NoopMalwareScanner } from "../services/core-image";
+import {
+  NoopMalwareScanner,
+  type MalwareScanner,
+} from "../services/core-image";
 import { uploadStorage } from "../services/core-storage";
 import { createStorageRuntimeFromEnv } from "../services/core-storage-runtime";
 import { HttpError } from "../lib/http-error";
@@ -98,7 +101,7 @@ const pdf = () => new TextEncoder().encode("%PDF-1.4\n%%EOF\n");
 const upload = (
   purpose: "document" | "selfie",
   bytes: Uint8Array,
-  scanner: NoopMalwareScanner,
+  scanner: MalwareScanner,
 ) =>
   uploadStorage(
     db,
@@ -165,4 +168,14 @@ it("a scanner with acceptsDocuments false refuses a document PDF", async () => {
       new NoopMalwareScanner({ acceptsDocuments: false }),
     ),
   ).rejects.toMatchObject({ status: 503 });
+});
+
+it("a scanner outage refuses a PDF with a typed 503", async () => {
+  await expect(
+    upload("document", pdf(), {
+      scan: async () => {
+        throw new Error("internal scanner socket failure");
+      },
+    }),
+  ).rejects.toMatchObject({ status: 503, code: "SCANNER_UNAVAILABLE" });
 });
