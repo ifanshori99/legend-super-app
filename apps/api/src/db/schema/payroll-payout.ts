@@ -204,6 +204,12 @@ export const payrollDisbursementBatches = pgTable(
     piiKeyVersion: smallint("pii_key_version").notNull(),
     /** Format of the manual bank file (null for other channels). */
     bankFormat: varchar("bank_format", { length: 12 }),
+    /**
+     * The company bank account this batch pays from, frozen at approve (or at
+     * export for a batch approved before the column existed). A later change of
+     * the config never moves an old batch. Null: a legacy or cash batch.
+     */
+    sourceBankAccountId: uuid("source_bank_account_id"),
     exportChecksumSha256: varchar("export_checksum_sha256", { length: 64 }),
     exportedBy: actor("exported_by"),
     exportedAt: timestamp("exported_at", { withTimezone: true }),
@@ -251,6 +257,15 @@ export const payrollDisbursementBatches = pgTable(
       name: "payroll_disbursement_batches_run_fk",
       columns: [table.tenantId, table.payrollRunId],
       foreignColumns: [payrollRuns.tenantId, payrollRuns.id],
+    }),
+    foreignKey({
+      name: "payroll_disbursement_batches_source_account_fk",
+      columns: [table.tenantId, table.legalEntityId, table.sourceBankAccountId],
+      foreignColumns: [
+        bankAccounts.tenantId,
+        bankAccounts.legalEntityId,
+        bankAccounts.id,
+      ],
     }),
     check(
       "payroll_disbursement_batches_channel_check",

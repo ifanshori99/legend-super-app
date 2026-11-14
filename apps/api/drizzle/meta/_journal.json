@@ -2369,24 +2369,31 @@
       "breakpoints": true
     },
     {
-      "idx": 333,
+      "idx": 352,
       "version": "7",
       "when": 1794604460029,
       "tag": "0538_edge_link_dead_letters",
       "breakpoints": true
     },
     {
-      "idx": 334,
+      "idx": 353,
       "version": "7",
       "when": 1794604953079,
       "tag": "0539_edge_receipt_skips",
       "breakpoints": true
     },
     {
-      "idx": 352,
+      "idx": 354,
       "version": "7",
       "when": 1794605500000,
       "tag": "0546_edge_order_ingest_tax_flag",
+      "breakpoints": true
+    },
+    {
+      "idx": 355,
+      "version": "7",
+      "when": 1794614054586,
+      "tag": "0568_payout_source_bank_frozen",
       "breakpoints": true
     }
   ]
