@@ -869,6 +869,77 @@ describe("KDS-01 routing: an item reaches the right station", () => {
     expect(onKitchen.items.map((item) => item.name)).toEqual(["Mie Goreng"]);
   });
 
+  it("routes inactive station targets to the first active station of the same outlet", async () => {
+    const laterStation = randomUUID();
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `UPDATE stations SET is_active = false, display_order = 0 WHERE id = $1`,
+        [ids.barA],
+      );
+      await client.query(
+        `UPDATE stations SET display_order = 2 WHERE id = $1`,
+        [ids.kitchenA],
+      );
+      await client.query(
+        `INSERT INTO stations (id, tenant_id, outlet_id, name, type, is_active, display_order)
+         VALUES ($1, $2, $3, 'Later station', 'pastry', true, 3)`,
+        [laterStation, tenant.tenantId, tenant.outletId],
+      );
+    });
+    try {
+      // The explicit override and type-based target both name inactive bar A.
+      // Outlet B has active stations with a lower default display order.
+      const placed = await placeOrder([
+        { menuItemId: ids.kopi },
+        { menuItemId: ids.teh },
+      ]);
+      const tickets = await ticketsOfOrder(placed.orderId);
+      expect(tickets.map((ticket) => ticket.stationId)).toEqual([ids.kitchenA]);
+      const detail = await ticketDetail(tickets[0]!.id);
+      expect(detail.items.map((item) => item.menuItemId).sort()).toEqual(
+        [ids.kopi, ids.teh].sort(),
+      );
+      const misplaced = await rows<{ count: string }>(
+        `SELECT count(*)::text AS count FROM kitchen_tickets
+         WHERE order_id = $1::uuid AND (tenant_id <> $2 OR outlet_id <> $3)`,
+        [ulidToUuid(placed.orderId), tenant.tenantId, tenant.outletId],
+      );
+      expect(misplaced[0]?.count).toBe("0");
+    } finally {
+      await asOwnerTenant(tenant.tenantId, async (client) => {
+        await client.query(`DELETE FROM stations WHERE id = $1`, [
+          laterStation,
+        ]);
+        await client.query(
+          `UPDATE stations SET is_active = true, display_order = 0 WHERE id IN ($1, $2)`,
+          [ids.barA, ids.kitchenA],
+        );
+      });
+    }
+  });
+
+  it("preserves legacy routing when no station in the outlet is active", async () => {
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `UPDATE stations SET is_active = false WHERE outlet_id = $1`,
+        [tenant.outletId],
+      );
+    });
+    try {
+      const placed = await placeOrder([{ menuItemId: ids.kopi }]);
+      expect(
+        (await ticketsOfOrder(placed.orderId)).map((t) => t.stationId),
+      ).toEqual([ids.barA]);
+    } finally {
+      await asOwnerTenant(tenant.tenantId, async (client) => {
+        await client.query(
+          `UPDATE stations SET is_active = true WHERE outlet_id = $1`,
+          [tenant.outletId],
+        );
+      });
+    }
+  });
+
   it("KDS-01 a station override applies only in its own outlet", async () => {
     // Kopi Susu's override is bar A itself: used as-is in outlet A.
     const placed = await placeOrder([{ menuItemId: ids.kopi }], {

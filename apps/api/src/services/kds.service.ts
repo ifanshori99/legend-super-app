@@ -577,11 +577,13 @@ const stationRuleKey = (rule: StationRule) =>
 /**
  * Menu routing rule -> station that receives the ticket in `outletId`
  * (bead legend-s2dh). A menu item is brand level and names a station TYPE;
- * each outlet resolves it to its own active station of that type (first by
+ * each outlet resolves it to its own live station of that type (first by
  * name, id). The item's `station_id` is only an override inside that
  * station's outlet: elsewhere it is ignored (and usually invisible under
  * outlet RLS). A legacy row with an override but no type falls back to the
- * override's type when the caller can see it. Nothing resolves => CONFLICT,
+ * override's type when the caller can see it. An inactive target falls back to
+ * the first active station by display order, name, id (or itself if none exist).
+ * Nothing resolves => CONFLICT,
  * so the fire rolls back instead of losing the line.
  */
 async function resolveStations(
@@ -612,11 +614,24 @@ async function resolveStations(
             ),
           );
   const overrideById = new Map(overrides.map((row) => [row.id, row]));
-  const byType = new Map<string, string | null>();
+  const [fallback] = await tx
+    .select({ id: stations.id })
+    .from(stations)
+    .where(
+      and(
+        eq(stations.tenantId, tenantId),
+        eq(stations.outletId, outletId),
+        eq(stations.isActive, true),
+        isNull(stations.deletedAt),
+      ),
+    )
+    .orderBy(asc(stations.displayOrder), asc(stations.name), asc(stations.id))
+    .limit(1);
+  const byType = new Map<string, { id: string; isActive: boolean } | null>();
   const stationOfType = async (type: string) => {
     if (!byType.has(type)) {
       const [found] = await tx
-        .select({ id: stations.id })
+        .select({ id: stations.id, isActive: stations.isActive })
         .from(stations)
         .where(
           and(
@@ -628,7 +643,7 @@ async function resolveStations(
         )
         .orderBy(asc(stations.name), asc(stations.id))
         .limit(1);
-      byType.set(type, found?.id ?? null);
+      byType.set(type, found ?? null);
     }
     return byType.get(type) ?? null;
   };
@@ -645,7 +660,10 @@ async function resolveStations(
       override.outletId === outletId &&
       override.deletedAt === null
     ) {
-      result.set(key, override.id);
+      result.set(
+        key,
+        override.isActive ? override.id : (fallback?.id ?? override.id),
+      );
       continue;
     }
     const type = rule.stationType ?? override?.type ?? null;
@@ -654,7 +672,10 @@ async function resolveStations(
       if (skipUnresolved) continue;
       throw unresolvedStation();
     }
-    result.set(key, stationId);
+    result.set(
+      key,
+      stationId.isActive ? stationId.id : (fallback?.id ?? stationId.id),
+    );
   }
   return result;
 }
