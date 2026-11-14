@@ -1518,3 +1518,4 @@ Langkah berikut CTO baru:
 - 07:1x G2md5 referral followups selesai ws/loyalty-referral-followups 15ccf6e86 (bijqd, sbxr0, nkp77; 24 test, architect xhigh 3 ronde, 7 bug uang dibetulkan). Kebijakan pemulihan ketat + btdxg -> founder W4 Q4. vqft5 naik P1, dikerjakan G2md5 (ws/loyalty-earn-replay-fix, migr 0571-0572). Mulai G2yv8 (682 mockup KDS, Codex #8).
 - Founder W4 Q4: terima kebijakan pemulihan bonus ketat; btdxg ditunda setelah rilis.
 - 07:3x Founder setuju W5 Q2 (AI), W6 Q1 (payout+finance), W11 Q3 (vnvg). Brief UI 684/685/686 siap, menunggu slot Claude (W14-W16). Kunci platform AI ditanya ulang (tombol Q2 terpotong koma). G8vgc mockup panik design/panic-alert 96a4be040 -> W10 arah A/B. G8vgc resolved.
+- 07:5x Founder W16 Q7: kunci semua AI (brief 684 diperbarui, K). Batch61: run penuh 3x mati SIGTERM ~63 mnt -> sisa file terarah (pintas aturan run penuh; kartu bug P1 dibuat). Mulai G20nn SO loyalty xhigh (687, Codex #8).
