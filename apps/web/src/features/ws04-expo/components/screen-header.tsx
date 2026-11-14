@@ -2,11 +2,12 @@
 // and the intro. The screen title, when the board was last read, and the
 // manual refresh go to the OperationsShell status bar (useOperationsScreen);
 // the h1 stays for screen readers only.
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { RotateCw } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { useOperationsScreen } from "@/components/shells/operations-screen";
 import { Button } from "@/components/ui/button";
+import { useOutletClock } from "@/lib/tenant-context";
 import { formatOutletTime } from "../format.ts";
 import { KitchenScreenNav, type KitchenScreen } from "./screen-nav.tsx";
 
@@ -29,21 +30,36 @@ export function KitchenScreenHeader({
   actions?: ReactNode;
 }) {
   const t = useT();
+  // The same zone as the shell clock beside it, so the two never disagree.
+  const { timeZone } = useOutletClock();
+  // The board polls every 10-15 s; only a tap on Muat ulang shows the busy
+  // state, so the button is not disabled or resized on every background poll.
+  const [manual, setManual] = useState<"idle" | "tapped" | "busy">("idle");
+  if (manual === "tapped" && refreshPending) setManual("busy");
+  else if (manual === "busy" && !refreshPending) setManual("idle");
   // The shell status bar names the screen and carries the freshness + refresh.
   useOperationsScreen({
     title,
     actions: (
       <>
         {updatedAt && (
-          <p className="text-sm leading-5 text-muted-foreground tabular">
-            {t("expo.updatedAt", { time: formatOutletTime(updatedAt) })}
+          <p
+            role="status"
+            className="text-sm leading-5 whitespace-nowrap text-muted-foreground tabular"
+          >
+            {t("expo.updatedAt", {
+              time: formatOutletTime(updatedAt, timeZone),
+            })}
           </p>
         )}
         <Button
           variant="outline"
           size="sm"
-          onClick={onRefresh}
-          loading={refreshPending}
+          onClick={() => {
+            setManual("tapped");
+            onRefresh();
+          }}
+          loading={manual === "busy"}
         >
           <RotateCw aria-hidden="true" />
           {t("expo.refresh")}

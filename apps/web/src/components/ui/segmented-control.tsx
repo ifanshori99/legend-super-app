@@ -9,7 +9,7 @@
 // v4 (v4ht): optional `count` renders a tabular-nums chip after the label.
 // The number is plain text inside the radio, so the accessible name reads
 // "label count". The chip fill flips with the selection so the foreground
-// number keeps 3:1+ in checked and unchecked, light and dark.
+// number stays readable in checked and unchecked, light and dark.
 import * as React from "react";
 import { cn } from "cn";
 import type { LucideIcon } from "lucide-react";
@@ -68,7 +68,7 @@ function SegmentedControl<T extends string>({
             {count !== undefined && (
               <span
                 className={cn(
-                  "inline-flex min-w-5 items-center justify-center rounded-full px-1.5 text-xs leading-5 font-semibold text-foreground tabular-nums",
+                  "inline-flex min-w-6 items-center justify-center rounded-full px-1.5 text-sm leading-6 font-semibold text-foreground tabular-nums",
                   selection === "ink"
                     ? "bg-card group-data-[state=checked]/seg:bg-background"
                     : "bg-card group-data-[state=checked]/seg:bg-surface-2",
