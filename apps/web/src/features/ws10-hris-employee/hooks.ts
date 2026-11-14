@@ -31,13 +31,17 @@ import {
 } from "./queries.ts";
 import {
   correctionQueueSnapshot,
+  clearCorrectionRefusal,
   enqueueCorrection,
-  isRetryableReplayError,
+  isRefused,
   queuedFor,
   readCorrectionQueue,
   removeQueuedCorrection,
+  replayCorrectionQueue,
+  replayQueuedCorrection,
   subscribeCorrectionQueue,
   type QueuedCorrection,
+  type ReplayOutcome,
 } from "./queue.ts";
 import { useHydrated } from "./use-hydrated.ts";
 
@@ -193,35 +197,65 @@ export function useFlushCorrectionQueue() {
     // request waits for that employee to sign in on this device again.
     const queue = queuedFor(readCorrectionQueue(), employeeId);
     if (queue.length === 0) return;
+    // Entries the server already refused wait for the employee's decision
+    // (retry, edit or discard); they are not replayed automatically.
+    if (queue.every(isRefused)) return;
     flushing.current = true;
     void (async () => {
-      let settled = 0;
-      let dropped = 0;
-      for (const row of queue) {
-        try {
-          await submitAttendanceCorrection(row.body);
-          removeQueuedCorrection(row.key);
-          settled += 1;
-        } catch (error) {
-          const status = error instanceof ApiError ? error.status : undefined;
-          // Still offline or the server is down: keep it, retry next time.
-          if (isRetryableReplayError(status)) break;
-          // A final answer (validation, not found, key reused): replaying it
-          // can never succeed, and keeping it would block the rest forever.
-          removeQueuedCorrection(row.key);
-          settled += 1;
-          dropped += 1;
-        }
-      }
+      // A final answer (validation, not found, key reused) keeps the entry,
+      // marked refused, and does not block the entries behind it.
+      const { sent, refused } = await replayCorrectionQueue(
+        queue,
+        submitAttendanceCorrection,
+      );
       flushing.current = false;
-      if (dropped > 0)
+      if (refused > 0)
         toast({
           title: t("hris.correction.errorTitle"),
-          description: t("hris.correction.replayDropped", { count: dropped }),
+          description: t("hris.correction.replayDropped", { count: refused }),
           tone: "danger",
         });
-      if (settled > 0)
+      if (sent > 0)
         await queryClient.invalidateQueries({ queryKey: hrisKeys.all });
     })();
   }, [online, employeeId, queryClient, toast, t]);
+}
+
+/**
+ * "Coba lagi" on a refused entry: clears the flag, then replays it once. A
+ * new refusal marks it again with the fresh reason; a connection failure
+ * leaves it waiting for the automatic flush.
+ */
+export function useRetryCorrection() {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const t = useT();
+  return useMutation({
+    mutationFn: async (row: QueuedCorrection): Promise<ReplayOutcome> => {
+      clearCorrectionRefusal(row.key);
+      // Replay reads only `key` and `body`, so the stale flag on `row` is moot.
+      return replayQueuedCorrection(row, submitAttendanceCorrection);
+    },
+    onSuccess: (outcome) => {
+      // No connection or a server fault: the entry waits again, and the
+      // employee must hear it instead of seeing the buttons just vanish.
+      if (outcome === "retryLater")
+        toast({
+          title: t("hris.correction.retryLaterTitle"),
+          description: t("hris.correction.retryLater"),
+        });
+      return outcome === "sent"
+        ? queryClient.invalidateQueries({ queryKey: hrisKeys.all })
+        : undefined;
+    },
+  });
+}
+
+/** "Buang" on a queued entry: a local action, no server data is lost. */
+export function useDiscardCorrection() {
+  return useMutation({
+    mutationFn: async (row: QueuedCorrection) => {
+      removeQueuedCorrection(row.key);
+    },
+  });
 }

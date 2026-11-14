@@ -73,3 +73,9 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 ## Vendor (gelombang ini)
 
 - Claude: benchmark, engineer, reviewer (3 tugas). Codex: designer (2 putaran), second-opinion (3 tugas).
+
+## legend-nvc7 HRIS koreksi absen ditolak tetap terlihat (14 Nov)
+
+- Sudah: koreksi offline yang ditolak server (4xx final) tetap di antrean, bertanda "Ditolak" + alasan server, tombol Coba lagi / Ubah / Buang di Beranda karyawan. Antrean penuh membuang entri menunggu lebih dulu. Test node 46 lulus, prettier dan eslint hijau.
+- Belum jalan: typecheck apps/web dan e2e mock + screenshot (antre `heavy`, timeout 3x karena slot dipegang job lain).
+- Berikut: jalankan typecheck, e2e `e2e/legend-nv3y.mock.spec.ts` dengan `LEGEND_CAPTURE_SCREENSHOTS=1`, lalu lapor.

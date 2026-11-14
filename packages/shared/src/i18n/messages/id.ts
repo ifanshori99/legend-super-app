@@ -1176,7 +1176,18 @@ export const id = {
       errorHint: "Periksa koneksi lalu coba lagi. Tidak ada pengajuan ganda.",
       noLog: "Absen tidak tercatat",
       replayDropped:
-        "{count} pengajuan dari antrean ditolak server. Periksa riwayat koreksi lalu ajukan ulang bila perlu.",
+        "{count} pengajuan dari antrean ditolak server. Buka Beranda untuk coba lagi, ubah, atau buang.",
+      refused: "Ditolak",
+      refusedReason: "Alasan server: {reason}",
+      refusedNoReason: "Server tidak memberi alasan.",
+      retry: "Coba lagi",
+      retryLaterTitle: "Belum terkirim",
+      retryLater:
+        "Koneksi atau server bermasalah. Pengajuan tetap tersimpan dan dikirim otomatis saat siap.",
+      edit: "Ubah",
+      discard: "Buang",
+      editTitle: "Ubah pengajuan koreksi",
+      editHint: "Perbaiki isian lalu kirim ulang. Pengajuan lama diganti.",
       cancel: "Batal",
     },
     state: {

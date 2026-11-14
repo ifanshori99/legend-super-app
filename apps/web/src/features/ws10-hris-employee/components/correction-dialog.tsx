@@ -38,6 +38,7 @@ import {
   typeLabelKey,
 } from "../state.ts";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
+import { removeQueuedCorrection, type QueuedCorrection } from "../queue.ts";
 
 const TYPES: readonly AttendanceType[] = [
   "in",
@@ -54,6 +55,7 @@ export function CorrectionDialog({
   log,
   outletId,
   timeZone,
+  editing,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -62,6 +64,12 @@ export function CorrectionDialog({
   outletId: string;
   /** The outlet's zone: the form edits the same clock the history shows. */
   timeZone: string;
+  /**
+   * A queued correction the server refused, reopened to fix and resend: the
+   * form starts from its body and the old entry is dropped once the new
+   * request is sent or queued (legend-nvc7).
+   */
+  editing?: QueuedCorrection;
 }) {
   const t = useT();
   const toast = useToast();
@@ -70,15 +78,21 @@ export function CorrectionDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{t("hris.correction.title")}</DialogTitle>
-          <DialogDescription>{t("hris.correction.hint")}</DialogDescription>
+          <DialogTitle>
+            {t(editing ? "hris.correction.editTitle" : "hris.correction.title")}
+          </DialogTitle>
+          <DialogDescription>
+            {t(editing ? "hris.correction.editHint" : "hris.correction.hint")}
+          </DialogDescription>
         </DialogHeader>
         <CorrectionForm
-          key={log?.id ?? "unmatched"}
+          key={editing?.key ?? log?.id ?? "unmatched"}
           log={log}
           outletId={outletId}
           timeZone={timeZone}
+          editing={editing}
           onSent={(status) => {
+            if (editing) removeQueuedCorrection(editing.key);
             toast(
               status === "queued"
                 ? {
@@ -99,11 +113,13 @@ function CorrectionForm({
   log,
   outletId,
   timeZone,
+  editing,
   onSent,
 }: {
   log: AttendanceLog | null;
   outletId: string;
   timeZone: string;
+  editing?: QueuedCorrection;
   onSent: (status: "sent" | "queued") => void;
 }) {
   const t = useT();
@@ -113,11 +129,20 @@ function CorrectionForm({
   // a reused key with a different body is IDEMPOTENCY_KEY_REUSED (409).
   const attempt = useRef<{ fingerprint: string; key: string } | null>(null);
 
-  const [type, setType] = useState<AttendanceType>(log?.type ?? "in");
-  const [occurredAt, setOccurredAt] = useState(() =>
-    toDateTimeLocalValue(log ? new Date(log.occurredAt) : new Date(), timeZone),
+  const [type, setType] = useState<AttendanceType>(
+    editing?.body.requestedType ?? log?.type ?? "in",
   );
-  const [reason, setReason] = useState("");
+  const [occurredAt, setOccurredAt] = useState(() =>
+    toDateTimeLocalValue(
+      editing
+        ? new Date(editing.body.requestedOccurredAt)
+        : log
+          ? new Date(log.occurredAt)
+          : new Date(),
+      timeZone,
+    ),
+  );
+  const [reason, setReason] = useState(editing?.body.reason ?? "");
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -129,7 +154,9 @@ function CorrectionForm({
     }
     const request = {
       outletId,
-      attendanceLogId: log?.id ?? null,
+      attendanceLogId: editing
+        ? (editing.body.attendanceLogId ?? null)
+        : (log?.id ?? null),
       requestedType: type,
       requestedOccurredAt: occurredAtIso,
       reason: reason.trim(),
@@ -162,7 +189,7 @@ function CorrectionForm({
   return (
     <>
       <div className="grid gap-4">
-        {log === null && (
+        {log === null && !editing && (
           <p className="text-sm leading-5 text-muted-foreground">
             {t("hris.correction.noLog")}
           </p>
