@@ -20,7 +20,9 @@
 import {
   EMERGENCY_REVOKED_CLOSE_CODE,
   EMERGENCY_WS_PROTOCOL,
+  panicAcknowledgedFrameSchema,
   panicRealtimeFrameSchema,
+  type PanicAcknowledgedFrame,
   type PanicReceivedFrame,
   type PanicRealtimeFrame,
 } from "@starter/shared/facility";
@@ -53,6 +55,8 @@ export type PanicRealtimeOptions = {
   url: string;
   socketFactory: (url: string, protocols: string[]) => PanicSocket;
   onAlert: (frame: PanicRealtimeFrame) => void;
+  /** A colleague answered an alert (no reply is sent for this frame). */
+  onAcknowledged?: (frame: PanicAcknowledgedFrame) => void;
   onStatus?: (status: PanicRealtimeStatus) => void;
   /** Called once when the server closes with 4401. */
   onRevoked?: () => void;
@@ -60,6 +64,7 @@ export type PanicRealtimeOptions = {
     path: string,
     init: { method: "POST"; body: Record<string, never> },
   ) => Promise<unknown>;
+  apiGet?: (path: string) => Promise<unknown>;
   scheduler?: PanicScheduler;
   /** delay = min(baseMs * 2^attempt, maxMs) */
   backoff?: { baseMs: number; maxMs: number };
@@ -70,6 +75,8 @@ export type PanicRealtimeClient = {
   stop(): void;
   /** Acknowledge an alert ("I am on my way"); rejects with the API error. */
   ack(alertId: string): Promise<void>;
+  /** Alerts still open on the server (catch-up after reload/reconnect). */
+  openAlerts(): Promise<PanicRealtimeFrame[]>;
 };
 
 /** Consecutive closes without an open before the client reports "unreachable". */
@@ -90,6 +97,10 @@ const defaultApiFetch: NonNullable<PanicRealtimeOptions["apiFetch"]> = async (
   init,
 ) => (await import("@/lib/api/client")).apiFetch(path, init);
 
+const defaultApiGet: NonNullable<PanicRealtimeOptions["apiGet"]> = async (
+  path,
+) => (await import("@/lib/api/client")).apiFetch(path);
+
 export function createPanicRealtimeClient(
   options: PanicRealtimeOptions,
 ): PanicRealtimeClient {
@@ -97,9 +108,11 @@ export function createPanicRealtimeClient(
     url,
     socketFactory,
     onAlert,
+    onAcknowledged,
     onStatus,
     onRevoked,
     apiFetch = defaultApiFetch,
+    apiGet = defaultApiGet,
     scheduler = defaultScheduler,
     backoff = DEFAULT_BACKOFF,
   } = options;
@@ -149,7 +162,17 @@ export function createPanicRealtimeClient(
       return;
     }
     const parsed = panicRealtimeFrameSchema.safeParse(json);
-    if (!parsed.success) return;
+    if (!parsed.success) {
+      const acknowledged = panicAcknowledgedFrameSchema.safeParse(json);
+      if (acknowledged.success) {
+        try {
+          onAcknowledged?.(acknowledged.data);
+        } catch {
+          // A failing listener must not break the stream.
+        }
+      }
+      return;
+    }
     const frame = parsed.data;
     if (!shown.has(frame.alertId)) {
       try {
@@ -238,6 +261,19 @@ export function createPanicRealtimeClient(
           body: {},
         },
       );
+    },
+    async openAlerts() {
+      const body = (await apiGet("/api/emergency/open-alerts")) as {
+        data?: { alerts?: unknown };
+      } | null;
+      const alerts = body?.data?.alerts;
+      if (!Array.isArray(alerts)) return [];
+      const frames: PanicRealtimeFrame[] = [];
+      for (const raw of alerts) {
+        const parsed = panicRealtimeFrameSchema.safeParse(raw);
+        if (parsed.success) frames.push(parsed.data);
+      }
+      return frames;
     },
   };
 }

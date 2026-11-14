@@ -39,6 +39,7 @@ const OUTLET = "6f1c2f64-5a0e-4c0e-9d2b-1b7c6a0f1b01";
 const A = "6f1c2f64-5a0e-4c0e-9d2b-1b7c6a0f1a01";
 const B = "6f1c2f64-5a0e-4c0e-9d2b-1b7c6a0f1a02";
 const C = "6f1c2f64-5a0e-4c0e-9d2b-1b7c6a0f1a03";
+const UNIT_ID = "6f1c2f64-5a0e-4c0e-9d2b-1b7c6a0f1c01";
 const UNIT = {
   [A]: "Ruang 07",
   [B]: "Ruang 12",
@@ -61,10 +62,20 @@ registerHooks({
           shortCircuit: true,
         };
       }
-      if (/use-panic-alerts(\.ts)?$/.test(specifier)) {
+      if (specifier === "@/lib/tenant-context") {
         return {
           url: stub(
-            "export const usePanicAlerts = () => { throw new Error('hook not used by PanicAlertScreen'); };",
+            "export const useOutletClock = () => ({ timeZone: 'Asia/Jakarta' });",
+          ),
+          shortCircuit: true,
+        };
+      }
+      if (/use-panic-alerts(\.ts)?$/.test(specifier)) {
+        // PanicAlertScreen never calls the hook; PanicAlertLayer tests set
+        // globalThis.__panicLayerHooks.usePanicAlerts().
+        return {
+          url: stub(
+            "export const usePanicAlerts = () => { const h = globalThis.__panicLayerHooks?.usePanicAlerts; if (!h) throw new Error('hook not used by PanicAlertScreen'); return h(); };",
           ),
           shortCircuit: true,
         };
@@ -72,7 +83,10 @@ registerHooks({
       if (/(^|\/)hooks(\.ts)?$/.test(specifier)) {
         return {
           url: stub(
-            "export const useUnitBoard = () => ({ data: undefined, isPending: true });\nexport const useStaffFacility = () => ({ facility: undefined, config: { data: undefined } });",
+            [
+              "export const useUnitBoard = () => globalThis.__panicLayerHooks?.useUnitBoard?.() ?? ({ data: undefined, isPending: true });",
+              "export const useStaffFacility = () => globalThis.__panicLayerHooks?.useStaffFacility?.() ?? ({ facility: undefined, config: { data: undefined } });",
+            ].join("\n"),
           ),
           shortCircuit: true,
         };
@@ -102,7 +116,7 @@ registerHooks({
   },
 });
 
-const { PanicAlertScreen } = await import(layerUrl);
+const { PanicAlertScreen, PanicAlertLayer } = await import(layerUrl);
 const queue = await import(
   new URL("features/facility-staff/panic-queue.ts", webRoot).href
 );
@@ -113,6 +127,8 @@ function frame(alertId, extra = {}) {
     alertId,
     outletId: OUTLET,
     unitId: alertId,
+    unitCode: null,
+    areaName: null,
     receivedAt: "2026-11-14T03:00:00.000Z",
     kind: "press",
     ...extra,
@@ -504,4 +520,138 @@ test("motion is only enabled behind motion-safe and nothing blinks", () => {
       }
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// legend-jztb7: the alert frame now carries unitCode / areaName, and a colleague
+// who took the alert is named. Written from docs/briefs/sub-panic-alert-wiring.md
+// section F, not from the implementation.
+//
+// Assumptions: `resolveLocation` lives inside PanicAlertLayer (not exported), so
+// the location rule is tested through PanicAlertLayer with its hooks stubbed
+// (globalThis.__panicLayerHooks); the wording "Sudah ditangani {name}" is the
+// brief's own text.
+
+function renderLayer({ state, board } = {}) {
+  globalThis.__panicLayerHooks = {
+    usePanicAlerts: () => ({ state, ack: async () => {}, dismiss() {} }),
+    useUnitBoard: () => ({
+      data: board ? { rows: board.rows } : undefined,
+      isPending: false,
+    }),
+    useStaffFacility: () => ({
+      facility: board ? { id: "facility-1" } : undefined,
+      config: { data: board ? { areas: board.areas } : undefined },
+    }),
+  };
+  try {
+    return renderToStaticMarkup(React.createElement(PanicAlertLayer, {}));
+  } finally {
+    delete globalThis.__panicLayerHooks;
+  }
+}
+
+test("location: unitCode and areaName from the frame are shown without the unit board", () => {
+  const markup = renderLayer({
+    state: build([
+      status("open"),
+      alert(A, { unitId: UNIT_ID, unitCode: "P2", areaName: "Area Pria" }),
+    ]),
+  });
+  const t = text(markup);
+  assert.ok(t.includes("P2"), t);
+  assert.ok(t.includes("Area Pria"), t);
+  assert.ok(!t.includes("Lokasi belum diketahui"), t);
+});
+
+test("location: the frame wins over the unit board mapping", () => {
+  const markup = renderLayer({
+    state: build([
+      status("open"),
+      alert(A, { unitId: UNIT_ID, unitCode: "P2", areaName: "Area Pria" }),
+    ]),
+    board: {
+      rows: [{ unit: { id: UNIT_ID, code: "W9", areaId: "area-w" } }],
+      areas: [{ id: "area-w", name: "Area Wanita" }],
+    },
+  });
+  const t = text(markup);
+  assert.ok(t.includes("P2"), t);
+  assert.ok(!t.includes("W9"), t);
+  assert.ok(!t.includes("Area Wanita"), t);
+});
+
+test("location: without unitCode the unit board mapping is the fallback", () => {
+  const markup = renderLayer({
+    state: build([status("open"), alert(A, { unitId: UNIT_ID })]),
+    board: {
+      rows: [{ unit: { id: UNIT_ID, code: "W9", areaId: "area-w" } }],
+      areas: [{ id: "area-w", name: "Area Wanita" }],
+    },
+  });
+  const t = text(markup);
+  assert.ok(t.includes("W9"), t);
+  assert.ok(t.includes("Area Wanita"), t);
+});
+
+test("location: no unitCode and no board row still says the location is unknown", () => {
+  const markup = renderLayer({
+    state: build([status("open"), alert(A, { unitId: UNIT_ID })]),
+  });
+  assert.ok(text(markup).includes("Lokasi belum diketahui"));
+});
+
+test("taken by a named colleague (realtime frame): 'Sudah ditangani Rina' with the close button", () => {
+  const markup = render(
+    build([
+      status("open"),
+      alert(A),
+      {
+        type: "acknowledged",
+        frame: {
+          type: "acknowledged",
+          alertId: A,
+          acknowledgedAt: "2026-11-14T03:00:05.000Z",
+          byName: "Rina",
+        },
+      },
+    ]),
+  );
+  const t = text(markup);
+  assert.ok(t.includes("Sudah ditangani Rina"), t);
+  assert.ok(!t.includes("Sudah ditangani rekan lain"), t);
+  assert.ok(!t.includes("Anda menuju Ruang 07"));
+  assert.equal(buttons(markup).filter((b) => b.label === CLOSE).length, 1);
+});
+
+test("taken by a named colleague (409 with acknowledgedBy): the name is shown", () => {
+  const markup = render(
+    build([
+      status("open"),
+      alert(A),
+      { type: "ack-start", alertId: A },
+      {
+        type: "ack-taken",
+        alertId: A,
+        byName: "Dewi",
+        at: "2026-11-14T03:00:07.000Z",
+      },
+    ]),
+  );
+  const t = text(markup);
+  assert.ok(t.includes("Sudah ditangani Dewi"), t);
+  assert.ok(!t.includes("Sudah ditangani rekan lain"), t);
+});
+
+test("taken without a known name keeps the 'rekan lain' wording", () => {
+  const markup = render(
+    build([
+      status("open"),
+      alert(A),
+      { type: "sync", alerts: [], knownBefore: [A] },
+    ]),
+  );
+  const t = text(markup);
+  assert.ok(t.includes("Sudah ditangani rekan lain"), t);
+  assert.equal(buttons(markup).filter((b) => b.label === CLOSE).length, 1);
 });

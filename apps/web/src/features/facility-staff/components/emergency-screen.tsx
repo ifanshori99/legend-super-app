@@ -41,7 +41,6 @@ import {
   StaffPageHeader,
   StaffSubNav,
 } from "./staff-chrome.tsx";
-import { PanicAlertLayer } from "./panic-alert-layer.tsx";
 
 function unitOf(
   incident: FacilityIncident,
@@ -261,7 +260,6 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
 
       <StaffSubNav current="emergency" facilityId={facility?.id} />
       <OfflineNotice hintKey="facilityStaff.emergency.offlineHint" />
-      <PanicAlertLayer facilityId={facility?.id ?? facilityId} />
 
       {loading && (
         <Card aria-busy="true" data-slot="facility-staff-loading">

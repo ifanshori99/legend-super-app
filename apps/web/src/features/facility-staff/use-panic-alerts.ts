@@ -19,6 +19,8 @@ import {
 } from "./panic-realtime.ts";
 
 const EMERGENCY_WS_PATH = "/api/emergency/ws";
+/** Open-alerts catch-up interval while the socket is not open. */
+const OPEN_ALERTS_POLL_MS = 15_000;
 
 function panicWebSocketUrl(): string {
   const url = new URL(EMERGENCY_WS_PATH, API_URL);
@@ -27,7 +29,7 @@ function panicWebSocketUrl(): string {
 }
 
 async function createMockOptions(): Promise<
-  Pick<PanicRealtimeOptions, "socketFactory" | "apiFetch">
+  Pick<PanicRealtimeOptions, "socketFactory" | "apiFetch" | "apiGet">
 > {
   const { createMockPanicSocket } = await import("./panic-mock-socket.ts");
   return {
@@ -35,6 +37,10 @@ async function createMockOptions(): Promise<
     apiFetch: async (path) => {
       const { mockPanicAck } = await import("./mock.ts");
       return mockPanicAck(path);
+    },
+    apiGet: async () => {
+      const { mockPanicOpenAlerts } = await import("./mock.ts");
+      return mockPanicOpenAlerts();
     },
   };
 }
@@ -46,10 +52,37 @@ export function usePanicAlerts(): {
 } {
   const [state, dispatch] = useReducer(panicQueueReducer, initialPanicQueue);
   const clientRef = useRef<PanicRealtimeClient | null>(null);
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   useEffect(() => {
     let cancelled = false;
+    // Catch-up with the server's open alerts (reload, reconnect). The socket
+    // stays the main path, so a failed request is silent.
+    const sync = () => {
+      const current = client;
+      if (!current || cancelled) return;
+      const knownBefore = stateRef.current.items
+        .filter(
+          (item) =>
+            item.ack === "idle" ||
+            item.ack === "failed" ||
+            item.ack === "session",
+        )
+        .map((item) => item.alertId);
+      current.openAlerts().then(
+        (alerts) => {
+          if (cancelled) return;
+          dispatch({ type: "sync", alerts, knownBefore });
+        },
+        () => {},
+      );
+    };
     let client: PanicRealtimeClient | null = null;
+    let socketOpen = false;
+    let poll: ReturnType<typeof setInterval> | null = null;
     void (async () => {
       const transport = API_MOCK
         ? await createMockOptions()
@@ -64,13 +97,26 @@ export function usePanicAlerts(): {
         url: panicWebSocketUrl(),
         ...transport,
         onAlert: (frame) => dispatch({ type: "alert", frame }),
-        onStatus: (status) => dispatch({ type: "status", status }),
+        onAcknowledged: (frame) => dispatch({ type: "acknowledged", frame }),
+        onStatus: (status) => {
+          socketOpen = status === "open";
+          if (status === "revoked" && poll !== null) clearInterval(poll);
+          dispatch({ type: "status", status });
+          if (status === "open") sync();
+        },
       });
       clientRef.current = client;
       client.start();
+      sync();
+      // While the socket is down, plain HTTP may still work: keep asking for
+      // open alerts so none waits for the socket to come back.
+      poll = setInterval(() => {
+        if (!socketOpen) sync();
+      }, OPEN_ALERTS_POLL_MS);
     })();
     return () => {
       cancelled = true;
+      if (poll !== null) clearInterval(poll);
       client?.stop();
       clientRef.current = null;
     };
@@ -88,7 +134,12 @@ export function usePanicAlerts(): {
       dispatch({ type: "ack-ok", alertId });
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
-        dispatch({ type: "ack-taken", alertId });
+        dispatch({
+          type: "ack-taken",
+          alertId,
+          byName: error.acknowledgedBy?.displayName ?? null,
+          at: error.acknowledgedAt ?? null,
+        });
       } else if (error instanceof ApiError && error.status === 401) {
         dispatch({ type: "ack-session", alertId });
       } else {

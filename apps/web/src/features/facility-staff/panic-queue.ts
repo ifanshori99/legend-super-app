@@ -1,7 +1,10 @@
 // Pure state of the staff panic alert screen (bead legend-alovk, Arah A).
 // No React: the reducer keeps alerts in arrival order (FIFO by `order`, not by
 // `receivedAt`), de-duplicates by alertId and tracks the ack of each alert.
-import type { PanicRealtimeFrame } from "@starter/shared/facility";
+import type {
+  PanicAcknowledgedFrame,
+  PanicRealtimeFrame,
+} from "@starter/shared/facility";
 
 export type PanicAckState =
   "idle" | "sending" | "mine" | "taken" | "failed" | "session";
@@ -10,12 +13,17 @@ export type PanicQueueItem = {
   alertId: string;
   outletId: string;
   unitId: string | null;
+  unitCode: string | null;
+  areaName: string | null;
   receivedAt: string;
   kind: "press" | "test";
   /** Arrival order, starts at 1. */
   order: number;
   ack: PanicAckState;
   dismissed: boolean;
+  /** Colleague who answered first (null: unknown, shown as "rekan lain"). */
+  takenBy: string | null;
+  takenAt: string | null;
 };
 
 export type PanicConnection =
@@ -30,19 +38,23 @@ export type PanicQueueState = {
   items: PanicQueueItem[];
   connection: PanicConnection;
   nextOrder: number;
+  /** Alerts known to be handled by a colleague before they showed up here. */
+  closedIds: string[];
 };
 
 export type PanicQueueAction =
   | { type: "alert"; frame: PanicRealtimeFrame }
+  | { type: "acknowledged"; frame: PanicAcknowledgedFrame }
+  | { type: "sync"; alerts: PanicRealtimeFrame[]; knownBefore: string[] }
   | { type: "status"; status: PanicConnection }
   | {
-      type:
-        | "ack-start"
-        | "ack-ok"
-        | "ack-taken"
-        | "ack-failed"
-        | "ack-session"
-        | "dismiss";
+      type: "ack-taken";
+      alertId: string;
+      byName?: string | null;
+      at?: string | null;
+    }
+  | {
+      type: "ack-start" | "ack-ok" | "ack-failed" | "ack-session" | "dismiss";
       alertId: string;
     };
 
@@ -50,6 +62,7 @@ export const initialPanicQueue: PanicQueueState = {
   items: [],
   connection: "connecting",
   nextOrder: 1,
+  closedIds: [],
 };
 
 function updateItem(
@@ -68,30 +81,85 @@ function updateItem(
   return changed ? { ...state, items } : state;
 }
 
+function addAlert(
+  state: PanicQueueState,
+  frame: PanicRealtimeFrame,
+): PanicQueueState {
+  if (
+    state.items.some((item) => item.alertId === frame.alertId) ||
+    state.closedIds.includes(frame.alertId)
+  )
+    return state;
+  const item: PanicQueueItem = {
+    alertId: frame.alertId,
+    outletId: frame.outletId,
+    unitId: frame.unitId,
+    unitCode: frame.unitCode,
+    areaName: frame.areaName,
+    receivedAt: frame.receivedAt,
+    kind: frame.kind,
+    order: state.nextOrder,
+    ack: "idle",
+    dismissed: false,
+    takenBy: null,
+    takenAt: null,
+  };
+  return {
+    ...state,
+    items: [...state.items, item],
+    nextOrder: state.nextOrder + 1,
+  };
+}
+
 export function panicQueueReducer(
   state: PanicQueueState,
   action: PanicQueueAction,
 ): PanicQueueState {
   switch (action.type) {
-    case "alert": {
+    case "alert":
+      return addAlert(state, action.frame);
+    case "acknowledged": {
       const { frame } = action;
-      if (state.items.some((item) => item.alertId === frame.alertId))
-        return state;
-      const item: PanicQueueItem = {
-        alertId: frame.alertId,
-        outletId: frame.outletId,
-        unitId: frame.unitId,
-        receivedAt: frame.receivedAt,
-        kind: frame.kind,
-        order: state.nextOrder,
-        ack: "idle",
-        dismissed: false,
-      };
-      return {
-        ...state,
-        items: [...state.items, item],
-        nextOrder: state.nextOrder + 1,
-      };
+      const existing = state.items.find(
+        (item) => item.alertId === frame.alertId,
+      );
+      if (!existing) {
+        if (state.closedIds.includes(frame.alertId)) return state;
+        return { ...state, closedIds: [...state.closedIds, frame.alertId] };
+      }
+      if (
+        existing.ack === "idle" ||
+        existing.ack === "failed" ||
+        existing.ack === "session"
+      )
+        return updateItem(state, frame.alertId, null, (item) => ({
+          ...item,
+          ack: "taken",
+          takenBy: frame.byName,
+          takenAt: frame.acknowledgedAt,
+        }));
+      if (existing.ack === "taken" && existing.takenBy === null)
+        return updateItem(state, frame.alertId, ["taken"], (item) => ({
+          ...item,
+          takenBy: frame.byName,
+          takenAt: frame.acknowledgedAt,
+        }));
+      return state;
+    }
+    case "sync": {
+      let next = state;
+      for (const frame of action.alerts) next = addAlert(next, frame);
+      const open = new Set(action.alerts.map((frame) => frame.alertId));
+      for (const alertId of action.knownBefore) {
+        if (open.has(alertId)) continue;
+        next = updateItem(
+          next,
+          alertId,
+          ["idle", "failed", "session"],
+          (item) => ({ ...item, ack: "taken" }),
+        );
+      }
+      return next;
     }
     case "status": {
       if (state.connection === "revoked") return state;
@@ -117,6 +185,8 @@ export function panicQueueReducer(
       return updateItem(state, action.alertId, null, (item) => ({
         ...item,
         ack: "taken",
+        takenBy: action.byName ?? item.takenBy,
+        takenAt: action.at ?? item.takenAt,
       }));
     case "ack-failed":
       return updateItem(state, action.alertId, null, (item) => ({

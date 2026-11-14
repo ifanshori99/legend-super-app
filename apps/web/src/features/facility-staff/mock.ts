@@ -39,7 +39,11 @@ import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { businessDateInOutletZone } from "../facility/flow.ts";
-import { readPanicMockScenario } from "./panic-mock-socket.ts";
+import {
+  closeMockOpenAlert,
+  listMockOpenAlerts,
+  readPanicMockScenario,
+} from "./panic-mock-socket.ts";
 // The facility feature owns GET /api/facility/config for every screen; import
 // its registration instead of registering the same endpoint twice.
 import "../facility/mock.ts";
@@ -371,10 +375,25 @@ export async function mockPanicAck(path: string): Promise<void> {
   if (!match) throw new ApiError(404, "NOT_FOUND", "Alert tidak ditemukan.");
   // Long enough to see the "Mengirim…" state.
   await new Promise((resolve) => setTimeout(resolve, 600));
-  if (readPanicMockScenario() === "acknowledged")
+  if (readPanicMockScenario() === "acknowledged") {
+    closeMockOpenAlert(decodeURIComponent(match[1]));
     throw new ApiError(
       409,
       "PANIC_ALREADY_ACKNOWLEDGED",
       "Alert sudah ditangani rekan lain.",
+      undefined,
+      {
+        acknowledgedBy: { displayName: "Rina" },
+        acknowledgedAt: new Date().toISOString(),
+      },
     );
+  }
+  closeMockOpenAlert(decodeURIComponent(match[1]));
+}
+
+/** Stand-in for GET /api/emergency/open-alerts (the hook's mock `apiGet`). */
+export async function mockPanicOpenAlerts(): Promise<{
+  data: { alerts: ReturnType<typeof listMockOpenAlerts> };
+}> {
+  return { data: { alerts: listMockOpenAlerts() } };
 }

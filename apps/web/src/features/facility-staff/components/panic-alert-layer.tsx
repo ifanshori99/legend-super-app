@@ -97,6 +97,15 @@ const BUTTON = "min-h-14 w-full rounded-xl! text-lg";
 const OUTLINE_BUTTON = `${BUTTON} border-2! border-foreground`;
 const LINK = "inline-flex min-h-11 items-center";
 
+/** Status text; a colleague's name replaces "rekan lain" once it is known. */
+function useStatusText() {
+  const t = useT();
+  return (item: PanicQueueItem) =>
+    item.ack === "taken" && item.takenBy
+      ? t("facilityStaff.panic.status.takenBy", { name: item.takenBy })
+      : t(STATUS_KEYS[item.ack]);
+}
+
 function useLocationName(
   resolveLocation: PanicAlertScreenProps["resolveLocation"],
 ) {
@@ -331,6 +340,7 @@ function SingleAlert({
 }) {
   const t = useT();
   const locate = useLocationName(props.resolveLocation);
+  const statusText = useStatusText();
   const { name, area } = locate(item);
   const test = item.kind === "test";
   return (
@@ -379,7 +389,7 @@ function SingleAlert({
             <dt className="text-base text-muted-foreground">
               {t("facilityStaff.panic.statusLabel")}
             </dt>
-            <dd className="text-lg font-bold">{t(STATUS_KEYS[item.ack])}</dd>
+            <dd className="text-lg font-bold">{statusText(item)}</dd>
           </div>
         </dl>
         <div className="grid content-start gap-3">
@@ -407,6 +417,7 @@ function AlertQueue({
 }) {
   const t = useT();
   const locate = useLocationName(props.resolveLocation);
+  const statusText = useStatusText();
   return (
     <div data-slot="panic-queue" className="grid gap-6">
       <div aria-live="assertive" aria-atomic="true" className="grid gap-3">
@@ -438,7 +449,7 @@ function AlertQueue({
                   <span className="tabular">{number}</span>
                   <span aria-hidden="true">·</span>
                   {item.kind === "test" && <TestBadge />}
-                  <span>{t(STATUS_KEYS[item.ack])}</span>
+                  <span>{statusText(item)}</span>
                 </p>
                 <p
                   id={nameId(item.alertId)}
@@ -533,7 +544,11 @@ function SettledList({
                     : t("facilityStaff.panic.settled.mineHeadingAlert", {
                         number,
                       })
-                  : t("facilityStaff.panic.settled.takenHeading")}
+                  : item.takenBy
+                    ? t("facilityStaff.panic.settled.takenHeadingBy", {
+                        name: item.takenBy,
+                      })
+                    : t("facilityStaff.panic.settled.takenHeading")}
               </Heading>
               {!mine && (
                 <p className="text-lg">
@@ -876,8 +891,10 @@ export function PanicAlertLayer({ facilityId }: { facilityId?: string }) {
     const row = item.unitId
       ? rows.find((candidate) => candidate.unit.id === item.unitId)
       : undefined;
-    if (!row) return { code: null, area: "" };
-    return { code: row.unit.code, area: areaName(areas, row.unit.areaId) };
+    return {
+      code: item.unitCode ?? row?.unit.code ?? null,
+      area: item.areaName ?? (row ? areaName(areas, row.unit.areaId) : ""),
+    };
   };
 
   return (

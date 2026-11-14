@@ -57,6 +57,8 @@ function frame(alertId = ALERT_A, extra = {}) {
     alertId,
     outletId: OUTLET,
     unitId: UNIT,
+    unitCode: null,
+    areaName: null,
     receivedAt: "2026-11-14T10:00:00.000Z",
     kind: "press",
     ...extra,
@@ -125,6 +127,7 @@ function harness(options = {}) {
   const alerts = [];
   const statuses = [];
   const acks = [];
+  const acknowledged = [];
   const scheduler = fakeScheduler();
   let revoked = 0;
   const client = createPanicRealtimeClient({
@@ -135,6 +138,7 @@ function harness(options = {}) {
       return socket;
     },
     onAlert: (f) => alerts.push(f),
+    onAcknowledged: (f) => acknowledged.push(f),
     onStatus: (s) => statuses.push(s),
     onRevoked: () => {
       revoked += 1;
@@ -153,6 +157,7 @@ function harness(options = {}) {
     alerts,
     statuses,
     acks,
+    acknowledged,
     scheduler,
     revoked: () => revoked,
     last: () => sockets[sockets.length - 1],
@@ -506,5 +511,221 @@ describe("panic realtime client: acknowledge", () => {
     const h = harness();
     await h.client.ack(ALERT_A);
     assert.equal(h.sockets.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// legend-jztb7, written from docs/briefs/sub-panic-alert-wiring.md section B and
+// packages/shared/src/facility/emergency.ts (not from the implementation).
+// Assumptions: apiGet is called with the path only; a frame whose type is
+// "acknowledged" never reaches onAlert; the strict schemas drop anything else.
+
+const ACKED_AT = "2026-11-14T10:00:05.000Z";
+const ackFrame = (alertId = ALERT_A, extra = {}) => ({
+  type: "acknowledged",
+  alertId,
+  acknowledgedAt: ACKED_AT,
+  byName: "Rina",
+  ...extra,
+});
+
+describe("panic realtime client: panic frame carries the location", () => {
+  test("unitCode and areaName reach onAlert and the frame is answered", () => {
+    const h = harness();
+    h.client.start();
+    h.last().open();
+    h.last().push(frame(ALERT_A, { unitCode: "P2", areaName: "Area Pria" }));
+    assert.equal(h.alerts.length, 1);
+    assert.equal(h.alerts[0].unitCode, "P2");
+    assert.equal(h.alerts[0].areaName, "Area Pria");
+    assert.deepEqual(h.last().sent, [{ type: "received", alertId: ALERT_A }]);
+  });
+
+  test("null unitCode and areaName are valid", () => {
+    const h = harness();
+    h.client.start();
+    h.last().open();
+    h.last().push(frame(ALERT_A, { unitId: null }));
+    assert.equal(h.alerts.length, 1);
+    assert.equal(h.alerts[0].unitCode, null);
+    assert.equal(h.alerts[0].areaName, null);
+  });
+
+  test("a frame without unitCode is ignored (strict contract)", () => {
+    const h = harness();
+    h.client.start();
+    h.last().open();
+    const rest = frame(ALERT_A);
+    delete rest.unitCode;
+    h.last().push(rest);
+    assert.equal(h.alerts.length, 0);
+    assert.deepEqual(h.last().sent, []);
+  });
+});
+
+describe("panic realtime client: acknowledged frames", () => {
+  test("an acknowledged frame reaches onAcknowledged and gets no reply", () => {
+    const h = harness();
+    h.client.start();
+    h.last().open();
+    h.last().push(ackFrame(ALERT_A));
+    assert.equal(h.acknowledged.length, 1);
+    assert.equal(h.acknowledged[0].alertId, ALERT_A);
+    assert.equal(h.acknowledged[0].byName, "Rina");
+    assert.equal(h.acknowledged[0].acknowledgedAt, ACKED_AT);
+    assert.deepEqual(h.last().sent, []);
+    assert.equal(h.alerts.length, 0, "not an alert");
+  });
+
+  test("every acknowledged frame is delivered, not once per alertId", () => {
+    const h = harness();
+    h.client.start();
+    h.last().open();
+    h.last().push(ackFrame(ALERT_A));
+    h.last().push(ackFrame(ALERT_A));
+    h.last().push(ackFrame(ALERT_B, { byName: "Dewi" }));
+    assert.equal(h.acknowledged.length, 3);
+    assert.equal(h.acknowledged[2].byName, "Dewi");
+    assert.deepEqual(h.last().sent, []);
+  });
+
+  test("a panic frame still works alongside acknowledged frames", () => {
+    const h = harness();
+    h.client.start();
+    h.last().open();
+    h.last().push(ackFrame(ALERT_B));
+    h.last().push(frame(ALERT_A));
+    assert.equal(h.alerts.length, 1);
+    assert.equal(h.acknowledged.length, 1);
+    assert.deepEqual(h.last().sent, [{ type: "received", alertId: ALERT_A }]);
+  });
+
+  test("no onAcknowledged option: the frame is ignored without error", () => {
+    const h = harness({ onAcknowledged: undefined });
+    h.client.start();
+    h.last().open();
+    h.last().push(ackFrame(ALERT_A));
+    assert.equal(h.last().closed, null);
+    assert.deepEqual(h.last().sent, []);
+    h.last().push(frame(ALERT_A));
+    assert.equal(h.alerts.length, 1);
+  });
+
+  const invalid = {
+    "alertId not a uuid": ackFrame("not-a-uuid"),
+    "missing byName": (() => {
+      const rest = ackFrame();
+      delete rest.byName;
+      return rest;
+    })(),
+    "acknowledgedAt not a date": ackFrame(ALERT_A, { acknowledgedAt: "soon" }),
+    "unknown extra key (strict)": ackFrame(ALERT_A, { userId: "x" }),
+  };
+  for (const [name, payload] of Object.entries(invalid)) {
+    test(`ignores an acknowledged frame with ${name}`, () => {
+      const h = harness();
+      h.client.start();
+      h.last().open();
+      h.last().push(payload);
+      assert.equal(h.acknowledged.length, 0);
+      assert.equal(h.alerts.length, 0);
+      assert.deepEqual(h.last().sent, []);
+      assert.equal(h.last().closed, null);
+    });
+  }
+
+  test("frames after stop are not delivered", () => {
+    const h = harness();
+    h.client.start();
+    h.last().open();
+    h.client.stop();
+    h.last().push(ackFrame(ALERT_A));
+    assert.equal(h.acknowledged.length, 0);
+  });
+});
+
+describe("panic realtime client: openAlerts", () => {
+  const OPEN_PATH = "/api/emergency/open-alerts";
+  const good = (alertId, extra = {}) =>
+    frame(alertId, { unitCode: "P2", areaName: "Area Pria", ...extra });
+
+  test("GETs the open-alerts path and returns the parsed alerts in order", async () => {
+    const gets = [];
+    const h = harness({
+      apiGet: async (path) => {
+        gets.push(path);
+        return { data: { alerts: [good(ALERT_A), good(ALERT_B)] } };
+      },
+    });
+    const result = await h.client.openAlerts();
+    assert.deepEqual(gets, [OPEN_PATH]);
+    assert.deepEqual(result, [good(ALERT_A), good(ALERT_B)]);
+  });
+
+  test("an empty list is an empty array", async () => {
+    const h = harness({ apiGet: async () => ({ data: { alerts: [] } }) });
+    assert.deepEqual(await h.client.openAlerts(), []);
+  });
+
+  test("invalid items are dropped, valid ones kept", async () => {
+    const noCode = good(ALERT_B);
+    delete noCode.unitCode;
+    const h = harness({
+      apiGet: async () => ({
+        data: {
+          alerts: [
+            good(ALERT_A),
+            noCode,
+            good("not-a-uuid"),
+            good(ALERT_B, { guestName: "x" }),
+            { type: "acknowledged", alertId: ALERT_B },
+            null,
+            "oops",
+            good(ALERT_B, { kind: "test" }),
+          ],
+        },
+      }),
+    });
+    const result = await h.client.openAlerts();
+    assert.deepEqual(
+      result.map((a) => [a.alertId, a.kind]),
+      [
+        [ALERT_A, "press"],
+        [ALERT_B, "test"],
+      ],
+    );
+  });
+
+  test("a request error is thrown to the caller", async () => {
+    const boom = new Error("Sesi darurat tidak berlaku.");
+    const h = harness({
+      apiGet: async () => {
+        throw boom;
+      },
+    });
+    await assert.rejects(() => h.client.openAlerts(), boom);
+  });
+
+  test("it does not touch the socket and does not call onAlert", async () => {
+    const h = harness({
+      apiGet: async () => ({ data: { alerts: [good(ALERT_A)] } }),
+    });
+    await h.client.openAlerts();
+    assert.equal(h.sockets.length, 0);
+    assert.equal(h.alerts.length, 0);
+  });
+
+  test("ack still rethrows a 409 untouched", async () => {
+    const conflict = Object.assign(new Error("Sudah ditangani."), {
+      status: 409,
+      acknowledgedBy: { displayName: "Rina" },
+      acknowledgedAt: ACKED_AT,
+    });
+    const h = harness({
+      apiFetch: async () => {
+        throw conflict;
+      },
+    });
+    await assert.rejects(() => h.client.ack(ALERT_A), conflict);
   });
 });

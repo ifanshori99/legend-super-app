@@ -28,6 +28,8 @@ function frame(alertId, extra = {}) {
     alertId,
     outletId: OUTLET,
     unitId: "6f1c2f64-5a0e-4c0e-9d2b-1b7c6a0f1c01",
+    unitCode: null,
+    areaName: null,
     receivedAt: "2026-11-14T10:00:00.000Z",
     kind: "press",
     ...extra,
@@ -391,6 +393,355 @@ describe("purity", () => {
     q.panicQueueReducer(before, alert(B));
     q.panicQueueReducer(before, { type: "ack-start", alertId: A });
     q.panicQueueReducer(before, { type: "status", status: "revoked" });
+    assert.equal(JSON.stringify(before), snapshot);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// legend-jztb7, written from docs/briefs/sub-panic-alert-wiring.md section A
+// (not from the implementation).
+//
+// Assumptions where the brief is silent:
+//  - An acknowledged frame for an item that is already taken with a name keeps
+//    the first name (not tested either way).
+//  - "sync" does not change the connection status.
+
+const ACKED_AT = "2026-11-14T10:00:09.000Z";
+const acked = (alertId, byName = "Rina", acknowledgedAt = ACKED_AT) => ({
+  type: "acknowledged",
+  frame: { type: "acknowledged", alertId, acknowledgedAt, byName },
+});
+const sync = (alerts, knownBefore = []) => ({
+  type: "sync",
+  alerts: alerts.map((a) => (typeof a === "string" ? frame(a) : a)),
+  knownBefore,
+});
+const item = (s, id) => s.items.find((i) => i.alertId === id);
+
+describe("jztb7: items carry location and taken-by fields", () => {
+  test("initial state has no closed ids", () => {
+    assert.deepEqual(q.initialPanicQueue.closedIds, []);
+  });
+
+  test("unitCode and areaName are copied from the frame; taken fields start null", () => {
+    const s = run([alert(A, { unitCode: "P2", areaName: "Area Pria" })]);
+    const [i] = q.pendingAlerts(s);
+    assert.equal(i.unitCode, "P2");
+    assert.equal(i.areaName, "Area Pria");
+    assert.equal(i.takenBy, null);
+    assert.equal(i.takenAt, null);
+  });
+
+  test("null unitCode and areaName stay null", () => {
+    const [i] = q.pendingAlerts(run([alert(A)]));
+    assert.equal(i.unitCode, null);
+    assert.equal(i.areaName, null);
+  });
+});
+
+describe("jztb7: acknowledged frame", () => {
+  test("idle item becomes taken with the colleague's name and time", () => {
+    const s = run([alert(A), acked(A, "Rina")]);
+    const i = item(s, A);
+    assert.equal(i.ack, "taken");
+    assert.equal(i.takenBy, "Rina");
+    assert.equal(i.takenAt, ACKED_AT);
+    assert.deepEqual(q.pendingAlerts(s), []);
+    assert.deepEqual(ids(q.settledAlerts(s)), [A]);
+    assert.equal(q.panicView(s), "settled");
+  });
+
+  test("a failed item becomes taken", () => {
+    const s = run([
+      alert(A),
+      { type: "ack-start", alertId: A },
+      { type: "ack-failed", alertId: A },
+      acked(A),
+    ]);
+    assert.equal(item(s, A).ack, "taken");
+    assert.equal(item(s, A).takenBy, "Rina");
+  });
+
+  test("a session-lost item becomes taken", () => {
+    const s = run([
+      alert(A),
+      { type: "ack-start", alertId: A },
+      { type: "ack-session", alertId: A },
+      acked(A),
+    ]);
+    assert.equal(item(s, A).ack, "taken");
+    assert.equal(item(s, A).takenBy, "Rina");
+    assert.equal(item(s, A).takenAt, ACKED_AT);
+  });
+
+  test("an item taken without a name (409 without body) gets the name filled in", () => {
+    const s = run([
+      alert(A),
+      { type: "ack-start", alertId: A },
+      { type: "ack-taken", alertId: A },
+      acked(A, "Rina"),
+    ]);
+    assert.equal(item(s, A).ack, "taken");
+    assert.equal(item(s, A).takenBy, "Rina");
+    assert.equal(item(s, A).takenAt, ACKED_AT);
+  });
+
+  test("a sending item is not changed (the POST result decides)", () => {
+    const base = run([alert(A), { type: "ack-start", alertId: A }]);
+    const s = run([acked(A)], base);
+    assert.equal(item(s, A).ack, "sending");
+    assert.equal(item(s, A).takenBy, null);
+    assert.equal(item(s, A).takenAt, null);
+  });
+
+  test("my own acknowledged item is not changed", () => {
+    const base = run([
+      alert(A),
+      { type: "ack-start", alertId: A },
+      { type: "ack-ok", alertId: A },
+    ]);
+    const s = run([acked(A, "Rina")], base);
+    assert.equal(item(s, A).ack, "mine");
+    assert.equal(item(s, A).takenBy, null);
+    assert.equal(item(s, A).takenAt, null);
+  });
+
+  test("only the targeted alert changes", () => {
+    const s = run([alert(A), alert(B), acked(B)]);
+    assert.equal(item(s, A).ack, "idle");
+    assert.equal(item(s, B).ack, "taken");
+    assert.deepEqual(ids(q.pendingAlerts(s)), [A]);
+    assert.equal(q.panicView(s), "alert");
+  });
+
+  test("a taken item can be closed", () => {
+    const s = run([alert(A), acked(A), { type: "dismiss", alertId: A }]);
+    assert.equal(item(s, A).dismissed, true);
+    assert.equal(q.panicView(s), "idle");
+  });
+
+  test("repeating the frame does not duplicate or change anything", () => {
+    const once = run([alert(A), acked(A)]);
+    const twice = run([acked(A)], once);
+    assert.deepEqual(twice.items, once.items);
+  });
+
+  test("it does not mutate the previous state", () => {
+    const before = run([alert(A)]);
+    const snapshot = JSON.stringify(before);
+    q.panicQueueReducer(before, acked(A));
+    q.panicQueueReducer(before, acked(B));
+    assert.equal(JSON.stringify(before), snapshot);
+  });
+});
+
+describe("jztb7: closedIds (handled by a colleague before it reached this phone)", () => {
+  test("an acknowledged frame for an unknown alert records its id once", () => {
+    const s = run([acked(A), acked(A)]);
+    assert.deepEqual(s.closedIds, [A]);
+    assert.deepEqual(s.items, []);
+    assert.equal(q.panicView(s), "idle");
+  });
+
+  test("a late alert frame for a closed id is ignored", () => {
+    const s = run([acked(A), alert(A), alert(B)]);
+    assert.deepEqual(ids(s.items), [B]);
+    assert.deepEqual(ids(q.pendingAlerts(s)), [B]);
+    assert.equal(item(s, B).order, 1, "the ignored alert took no order number");
+  });
+
+  test("closed ids of several alerts are all kept", () => {
+    const s = run([acked(A), acked(B)]);
+    assert.deepEqual([...s.closedIds].sort(), [A, B].sort());
+  });
+
+  test("an acknowledged frame for a known alert does not add to closedIds", () => {
+    const s = run([alert(A), acked(A)]);
+    assert.deepEqual(s.closedIds, []);
+  });
+
+  test("a closed id does not affect other alerts or the connection", () => {
+    const s = run([{ type: "status", status: "open" }, acked(A), alert(B)]);
+    assert.equal(s.connection, "open");
+    assert.deepEqual(ids(q.pendingAlerts(s)), [B]);
+  });
+});
+
+describe("jztb7: ack-taken with a name", () => {
+  test("byName and at are stored", () => {
+    const s = run([
+      alert(A),
+      { type: "ack-start", alertId: A },
+      {
+        type: "ack-taken",
+        alertId: A,
+        byName: "Dewi",
+        at: "2026-11-14T10:01:00.000Z",
+      },
+    ]);
+    assert.equal(item(s, A).ack, "taken");
+    assert.equal(item(s, A).takenBy, "Dewi");
+    assert.equal(item(s, A).takenAt, "2026-11-14T10:01:00.000Z");
+  });
+
+  test("without a name the item is taken and takenBy stays null", () => {
+    const s = run([
+      alert(A),
+      { type: "ack-start", alertId: A },
+      { type: "ack-taken", alertId: A },
+    ]);
+    assert.equal(item(s, A).takenBy, null);
+    assert.equal(item(s, A).takenAt, null);
+  });
+
+  test("null byName and at keep what was already known", () => {
+    const s = run([
+      alert(A),
+      acked(A, "Rina"),
+      { type: "ack-taken", alertId: A, byName: null, at: null },
+    ]);
+    assert.equal(item(s, A).takenBy, "Rina");
+    assert.equal(item(s, A).takenAt, ACKED_AT);
+  });
+
+  test("the 409 name settles a sending item that the frame left alone", () => {
+    const s = run([
+      alert(A),
+      { type: "ack-start", alertId: A },
+      acked(A, "Rina"),
+      { type: "ack-taken", alertId: A, byName: "Rina", at: ACKED_AT },
+    ]);
+    assert.equal(item(s, A).ack, "taken");
+    assert.equal(item(s, A).takenBy, "Rina");
+  });
+});
+
+describe("jztb7: sync (open alerts fetched from the server)", () => {
+  test("adds alerts in the array order after existing ones", () => {
+    const s = run([alert(A), sync([B, C])]);
+    assert.deepEqual(ids(q.pendingAlerts(s)), [A, B, C]);
+    assert.deepEqual(
+      q.pendingAlerts(s).map((i) => i.order),
+      [1, 2, 3],
+    );
+    assert.equal(q.panicView(s), "queue");
+  });
+
+  test("restores alerts after a reload (empty state)", () => {
+    const s = run([
+      { type: "status", status: "open" },
+      sync([
+        frame(B, { unitCode: "W1", areaName: "Area Wanita" }),
+        frame(A, { unitCode: "P2", areaName: "Area Pria" }),
+      ]),
+    ]);
+    assert.deepEqual(ids(q.pendingAlerts(s)), [B, A], "server order is kept");
+    assert.equal(item(s, B).unitCode, "W1");
+    assert.equal(item(s, A).areaName, "Area Pria");
+    assert.equal(q.panicView(s), "queue");
+  });
+
+  test("an alert already queued is not added twice and keeps its order", () => {
+    const s = run([alert(A), alert(B), sync([A, C], [A, B])]);
+    assert.deepEqual(ids(s.items), [A, B, C]);
+    assert.equal(item(s, A).order, 1);
+    assert.equal(item(s, B).order, 2);
+    assert.equal(item(s, C).order, 3);
+  });
+
+  test("the same sync applied twice changes nothing", () => {
+    const once = run([sync([A, B])]);
+    const twice = run([sync([A, B], [A, B])], once);
+    assert.deepEqual(twice.items, once.items);
+  });
+
+  test("alerts whose id is in closedIds are not added", () => {
+    const s = run([acked(A), sync([A, B])]);
+    assert.deepEqual(ids(s.items), [B]);
+  });
+
+  test("a known pending alert missing from the server list became taken by a colleague", () => {
+    const s = run([alert(A), alert(B), sync([B], [A, B])]);
+    assert.equal(item(s, A).ack, "taken");
+    assert.equal(
+      item(s, A).takenBy,
+      null,
+      "name unknown: shown as 'rekan lain'",
+    );
+    assert.equal(item(s, B).ack, "idle");
+    assert.deepEqual(ids(q.pendingAlerts(s)), [B]);
+    assert.deepEqual(ids(q.settledAlerts(s)), [A]);
+  });
+
+  test("failed and session items missing from the server list also become taken", () => {
+    const s = run([
+      alert(A),
+      alert(B),
+      { type: "ack-start", alertId: A },
+      { type: "ack-failed", alertId: A },
+      { type: "ack-start", alertId: B },
+      { type: "ack-session", alertId: B },
+      sync([], [A, B]),
+    ]);
+    assert.equal(item(s, A).ack, "taken");
+    assert.equal(item(s, B).ack, "taken");
+    assert.equal(q.panicView(s), "settled");
+  });
+
+  test("a known alert that the server still lists stays pending", () => {
+    const s = run([alert(A), sync([A], [A])]);
+    assert.equal(item(s, A).ack, "idle");
+  });
+
+  test("an alert that was not known before the request is not taken, even if absent", () => {
+    // It arrived by WebSocket while the request was in flight.
+    const s = run([alert(A), alert(B), sync([], [A])]);
+    assert.equal(item(s, A).ack, "taken");
+    assert.equal(item(s, B).ack, "idle");
+  });
+
+  test("sending, mine and dismissed items are not touched", () => {
+    const s = run([
+      alert(A),
+      alert(B),
+      alert(C),
+      { type: "ack-start", alertId: A },
+      { type: "ack-start", alertId: B },
+      { type: "ack-ok", alertId: B },
+      { type: "ack-start", alertId: C },
+      { type: "ack-ok", alertId: C },
+      { type: "dismiss", alertId: C },
+      sync([], [A, B, C]),
+    ]);
+    assert.equal(item(s, A).ack, "sending");
+    assert.equal(item(s, B).ack, "mine");
+    assert.equal(item(s, C).ack, "mine");
+    assert.equal(item(s, C).dismissed, true);
+  });
+
+  test("an already taken item keeps its name", () => {
+    const s = run([alert(A), acked(A, "Rina"), sync([], [A])]);
+    assert.equal(item(s, A).ack, "taken");
+    assert.equal(item(s, A).takenBy, "Rina");
+  });
+
+  test("knownBefore ids that are not in the queue change nothing", () => {
+    const base = run([alert(A)]);
+    const s = run([sync([], [B])], base);
+    assert.deepEqual(s.items, base.items);
+  });
+
+  test("an empty sync with nothing known is a no-op", () => {
+    const base = run([alert(A), { type: "status", status: "open" }]);
+    const s = run([sync([], [])], base);
+    assert.deepEqual(s.items, base.items);
+    assert.equal(s.connection, "open");
+  });
+
+  test("it does not mutate the previous state", () => {
+    const before = run([alert(A)]);
+    const snapshot = JSON.stringify(before);
+    q.panicQueueReducer(before, sync([B], [A]));
     assert.equal(JSON.stringify(before), snapshot);
   });
 });

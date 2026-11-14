@@ -228,6 +228,7 @@ export const facilityStaffMessages = {
       session: "Sesi habis",
       mine: "Anda menuju lokasi",
       taken: "Sudah ditangani rekan lain",
+      takenBy: "Sudah ditangani {name}",
     },
     alert: {
       eyebrow: "Tombol panik ditekan",
@@ -264,6 +265,7 @@ export const facilityStaffMessages = {
       mineHeadingAlert: "Anda menuju lokasi alert {number}",
       takenEyebrow: "Respons sudah diterima",
       takenHeading: "Sudah ditangani rekan lain",
+      takenHeadingBy: "Sudah ditangani {name}",
       takenHint: "Alert ini sudah diambil rekan lain.",
     },
     unreachable: {
