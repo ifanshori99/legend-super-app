@@ -358,7 +358,7 @@ function SingleAlert({
         </Eyebrow>
         <h1
           id={HEADING_ID}
-          className="text-3xl font-bold tracking-tight md:text-4xl"
+          className="text-3xl font-bold tracking-tight break-words md:text-4xl"
         >
           {test
             ? t("facilityStaff.panic.alert.headingTest")
@@ -389,7 +389,9 @@ function SingleAlert({
             <dt className="text-base text-muted-foreground">
               {t("facilityStaff.panic.statusLabel")}
             </dt>
-            <dd className="text-lg font-bold">{statusText(item)}</dd>
+            <dd className="text-lg font-bold break-words">
+              {statusText(item)}
+            </dd>
           </div>
         </dl>
         <div className="grid content-start gap-3">
@@ -449,7 +451,9 @@ function AlertQueue({
                   <span className="tabular">{number}</span>
                   <span aria-hidden="true">·</span>
                   {item.kind === "test" && <TestBadge />}
-                  <span>{statusText(item)}</span>
+                  <span className="min-w-0 break-words">
+                    {statusText(item)}
+                  </span>
                 </p>
                 <p
                   id={nameId(item.alertId)}

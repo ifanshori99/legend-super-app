@@ -29,10 +29,14 @@ function FacilityLayout() {
   );
   return (
     <>
-      <Outlet />
+      {/* Above the screen so the connection status stays in the first
+          viewport; the alert itself is a top-layer dialog either way. */}
       {gate.status === "allowed" && (
-        <PanicAlertLayer facilityId={search.facilityId} />
+        <div className="mx-auto mb-4 w-full max-w-6xl">
+          <PanicAlertLayer facilityId={search.facilityId} />
+        </div>
       )}
+      <Outlet />
     </>
   );
 }

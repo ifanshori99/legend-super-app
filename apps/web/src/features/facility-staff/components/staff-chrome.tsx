@@ -47,8 +47,8 @@ export function StaffPageHeader({
   );
 }
 
-// Four equal columns below `sm` so every tab, "Darurat" last, stays visible at
-// 390 px and 320 px; labels may wrap to two lines there (legend-jztb7).
+// A 2x2 grid below `sm` so every tab, "Darurat" last, stays whole at 390 px,
+// 320 px and 200% zoom ("Kebersihan" cannot wrap; legend-jztb7).
 const SUBNAV_TRIGGER = cn(
   tabsTriggerClass,
   "w-full justify-center px-1.5 text-center leading-tight whitespace-normal sm:w-auto sm:px-3.5 sm:whitespace-nowrap",
@@ -71,7 +71,7 @@ export function StaffSubNav({
         data-slot="facility-staff-subnav"
         className={cn(
           tabsListClass,
-          "grid w-full list-none grid-cols-4 sm:inline-flex sm:w-fit",
+          "grid w-full list-none grid-cols-2 sm:inline-flex sm:w-fit",
         )}
       >
         <li>
