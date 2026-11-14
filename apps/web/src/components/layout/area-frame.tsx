@@ -262,7 +262,7 @@ function AreaFrameBody({
           className="mb-4"
         />
       ) : null}
-      <OfflineBannerSlot />
+      {area !== "platform" ? <OfflineBannerSlot /> : null}
       {outletPicker ? (
         <div role="status" aria-live="polite" className="sr-only">
           {announcement}
