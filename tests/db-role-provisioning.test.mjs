@@ -19,6 +19,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Pool } from "pg";
 import { pnpmCommand, root } from "../scripts/lib.mjs";
+import { useRoleAuditLock } from "./helpers/role-audit-lock.mjs";
+
+useRoleAuditLock();
 
 const hex = (bytes) => randomBytes(bytes).toString("hex");
 const tenantA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
