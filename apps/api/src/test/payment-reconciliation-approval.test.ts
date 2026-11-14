@@ -6,8 +6,10 @@
 // brief's contract (section E) and packages/shared, not from the service code.
 //
 // Assumptions where the contract is not exact:
-// - The approving chain is fixture-built: `reconciliation_case`, one level,
-//   role Owner, distinct actor. Requester and approver are two Owners.
+// - The approving chain is fixture-built like the product default (founder
+//   W8 Q10/Q12): `reconciliation_case`, one level, two policy rows (Owner and
+//   Finance, either one is enough), distinct actor. The usual requester and
+//   approver are two Owners; Finance is tested as approver and as requester.
 // - The approver decides through the approval inbox service
 //   (`decideApprovalRequest`), then the worker consumer applies the outcome
 //   from the `approval.resolved` outbox event; the decision alone never
@@ -58,7 +60,10 @@ type Client = ReturnType<typeof agent>;
 let requester: Client; // Owner who asks to close cases
 let requesterId: string;
 let approverId: string; // another Owner: may decide
-let nonApprover: Client; // Finance: not in the policy
+let finance: Client; // Finance: in the policy, may ask and may decide
+let financeId: string;
+let financeApproverId: string; // another Finance: may decide a Finance request
+let nonApprover: Client; // Cashier: not in the policy
 let nonApproverId: string;
 
 const userIds: string[] = [];
@@ -81,7 +86,10 @@ async function roleIdOf(templateKey: string): Promise<string> {
   return rows[0].id;
 }
 
-async function signedIn(templateKey: "owner" | "finance", label: string) {
+async function signedIn(
+  templateKey: "owner" | "finance" | "cashier",
+  label: string,
+) {
   const client = agent(app).set("Host", scope.hostname);
   const email = await signUp(client, label);
   const session = await client.get("/api/auth/get-session");
@@ -101,11 +109,13 @@ async function installPolicy() {
     "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'reconciliation_case'",
     [tenantId],
   );
-  await owner.query(
-    `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
-     VALUES ($1, 'reconciliation_case', NULL, $2, 1, true)`,
-    [tenantId, await roleIdOf("owner")],
-  );
+  // Default matrix: level 1, Owner or Finance, from Rp0, distinct actor.
+  for (const templateKey of ["owner", "finance"])
+    await owner.query(
+      `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+       VALUES ($1, 'reconciliation_case', NULL, $2, 1, true)`,
+      [tenantId, await roleIdOf(templateKey)],
+    );
 }
 
 /** An open case: 10.000 less arrived than the settlement booked. */
@@ -231,9 +241,17 @@ beforeAll(async () => {
     "Recon requester",
   ));
   ({ userId: approverId } = await signedIn("owner", "Recon approver"));
-  ({ client: nonApprover, userId: nonApproverId } = await signedIn(
+  ({ client: finance, userId: financeId } = await signedIn(
     "finance",
     "Recon finance",
+  ));
+  ({ userId: financeApproverId } = await signedIn(
+    "finance",
+    "Recon finance approver",
+  ));
+  ({ client: nonApprover, userId: nonApproverId } = await signedIn(
+    "cashier",
+    "Recon cashier",
   ));
   await installPolicy();
 
@@ -393,7 +411,7 @@ describe("EDC-06 reconciliation case: approval decides", () => {
     expect((await caseRow(caseId)).status).toBe("pending_approval");
   });
 
-  it("EDC-06 a user outside the approval policy cannot decide", async () => {
+  it("EDC-06 a user outside the approval policy (cashier) cannot decide", async () => {
     const caseId = await seedCase();
     const { request } = await requestClose(caseId);
     await expect(
@@ -405,6 +423,71 @@ describe("EDC-06 reconciliation case: approval decides", () => {
     const direct = await resolveCase(nonApprover, caseId, "Tutup paksa");
     expect([403, 409]).toContain(direct.status);
     expect((await caseRow(caseId)).status).toBe("pending_approval");
+  });
+
+  it("EDC-06 a Finance user can approve a request filed by an Owner and the case closes once", async () => {
+    const caseId = await seedCase(-10_000);
+    const { request } = await requestClose(caseId);
+    const outboxBefore = await countOutboxEvents(
+      "reconciliation_case.resolved",
+    );
+
+    await inboxDecide(financeId, request.id, "approved");
+    const event = await resolvedEventOfChain(request.chain_id);
+    await handleReconciliationApprovalResolved(tenantWide, event, new Date());
+
+    expect(await caseRow(caseId)).toMatchObject({
+      status: "resolved",
+      requested_by: requesterId,
+      approved_by: financeId,
+      approval_chain_id: request.chain_id,
+    });
+    expect(await countOutboxEvents("reconciliation_case.resolved")).toBe(
+      outboxBefore + 1,
+    );
+    expect(await listedCase(requester, caseId)).toMatchObject({
+      status: "resolved",
+      approvedBy: financeId,
+    });
+  });
+
+  it("EDC-06 a Finance user can file the request and an Owner can approve it", async () => {
+    const caseId = await seedCase();
+    const response = await resolveCase(finance, caseId, "Dicek oleh finance");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.data).toMatchObject({
+      status: "pending_approval",
+      requestedBy: financeId,
+    });
+    const request = (await requestsOfCase(caseId))[0]!;
+    await inboxDecide(approverId, request.id, "approved");
+    const event = await resolvedEventOfChain(request.chain_id);
+    await handleReconciliationApprovalResolved(tenantWide, event, new Date());
+    expect(await caseRow(caseId)).toMatchObject({
+      status: "resolved",
+      requested_by: financeId,
+      approved_by: approverId,
+    });
+  });
+
+  it("EDC-06 a Finance requester cannot approve their own request, but another Finance can", async () => {
+    const caseId = await seedCase();
+    const response = await resolveCase(finance, caseId, "Dicek oleh finance");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const request = (await requestsOfCase(caseId))[0]!;
+    await expect(
+      inboxDecide(financeId, request.id, "approved"),
+    ).rejects.toMatchObject({ code: "APPROVER_IS_REQUESTER", status: 403 });
+    expect((await requestsOfCase(caseId))[0]!.status).toBe("pending");
+    expect((await caseRow(caseId)).status).toBe("pending_approval");
+
+    await inboxDecide(financeApproverId, request.id, "approved");
+    const event = await resolvedEventOfChain(request.chain_id);
+    await handleReconciliationApprovalResolved(tenantWide, event, new Date());
+    expect(await caseRow(caseId)).toMatchObject({
+      status: "resolved",
+      approved_by: financeApproverId,
+    });
   });
 
   it("EDC-06 approval by another person closes the case once and records who asked and who approved", async () => {

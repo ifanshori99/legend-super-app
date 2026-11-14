@@ -397,9 +397,10 @@ export async function seedTenantRoleTemplates(
     )
   `);
   // PAY recon (PRD §3.7): closing a reconciliation case needs one approval from
-  // another user; with no policy the approval service fails closed and the case
-  // stays open. Default matrix from Rp0 (same row as migration 0357); only when
-  // the tenant has no reconciliation_case row.
+  // another user, Owner or Finance (either is enough); with no policy the
+  // approval service fails closed and the case stays open. Default matrix from
+  // Rp0 (same rows as migration 0357); only when the tenant has no
+  // reconciliation_case row, and a tenant missing one template gets the other.
   const reconciliationValues = sql.join(
     DEFAULT_RECONCILIATION_CASE_APPROVAL_POLICIES.map(
       (row) =>

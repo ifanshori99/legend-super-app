@@ -313,6 +313,8 @@ export const paymentReconciliationCases = pgTable(
     source: varchar("source", { length: 20 }).notNull(),
     provider: varchar("provider", { length: 100 }).notNull(),
     reference: varchar("reference", { length: 100 }).notNull(),
+    /** edc_transactions.id or payment_intents.id; set only on "missing" cases (no settlement line). */
+    sourceTransactionId: uuid("source_transaction_id"),
     periodStart: businessDate("period_start").notNull(),
     periodEnd: businessDate("period_end").notNull(),
     expectedIdr: idrColumn("expected_idr").notNull(),
@@ -345,6 +347,12 @@ export const paymentReconciliationCases = pgTable(
       t.outletId,
       t.status,
     ),
+    // A "missing" case (no settlement line) is one per sale for life.
+    uniqueIndex("payment_reconciliation_cases_missing_sale_key")
+      .on(t.tenantId, t.outletId, t.source, t.sourceTransactionId)
+      .where(
+        sql`${t.settlementLineId} IS NULL AND ${t.sourceTransactionId} IS NOT NULL`,
+      ),
     check(
       "payment_reconciliation_cases_source_check",
       sql`${t.source} IN ('gateway','edc')`,
