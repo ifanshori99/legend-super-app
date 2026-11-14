@@ -39,6 +39,14 @@ See the [environment matrix and import policy](deployment.md#environment-and-dat
 provide the edge runtime by itself. Set environment values in your private local
 configuration, and do not commit secrets.
 
+For WhatsApp login on a local host, set `DEV_LOCAL_TENANT_HOSTS=true` in your
+private local configuration and restart `pnpm dev`. The development/test seed
+registers `localhost` and `127.0.0.1` idempotently. The opt-in resolver accepts
+only those verified seed domains, with an active tenant, in synthetic development
+and a non-production Node runtime. The flag defaults to `false`; production
+startup rejects `true`. Public domain resolution and the TLS ask route keep
+their existing rules.
+
 ## Origins and ports
 
 Three settings in `.env.local` must agree; setup writes consistent defaults and `pnpm run doctor` checks them:

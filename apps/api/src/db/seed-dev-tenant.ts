@@ -11,6 +11,7 @@ import { ROLE_TEMPLATES } from "@starter/shared/access";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { cafeLegendTaxFixtures } from "@starter/shared/tax";
 import { databaseUrl } from "./connection";
+import { DEV_LOCAL_TENANT_DOMAINS } from "./dev-local-tenant-domains";
 
 if (
   (process.env.DEPLOYMENT_MODE ?? "development") !== "development" ||
@@ -180,7 +181,13 @@ try {
     );
   }
 
-  for (const domain of fixtures.domains) {
+  const localDomains = DEV_LOCAL_TENANT_DOMAINS.map((domain) => ({
+    ...domain,
+    kind: "platform_subdomain",
+    tlsStatus: "active",
+    verifiedAt: fixtures.domains[0].verifiedAt,
+  }));
+  for (const domain of [...fixtures.domains, ...localDomains]) {
     await client.query(
       `INSERT INTO tenant_domains (id, tenant_id, brand_id, hostname, kind, tls_status, verified_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7)

@@ -24,4 +24,30 @@ describe("API environment", () => {
     expect(loadEnv({ TRUST_PROXY: "1" }).status).toBe(0);
     expect(loadEnv({ TRUST_PROXY: "loopback" }).status).toBe(0);
   });
+
+  it("refuses local tenant hosts in a production runtime", () => {
+    expect(
+      loadEnv({
+        NODE_ENV: "production",
+        STAFF_PIN_PEPPER: "test-staff-pin-pepper-with-at-least-32-characters",
+        DEV_LOCAL_TENANT_HOSTS: "false",
+      }).status,
+    ).toBe(0);
+    const result = loadEnv({
+      NODE_ENV: "production",
+      STAFF_PIN_PEPPER: "test-staff-pin-pepper-with-at-least-32-characters",
+      DEV_LOCAL_TENANT_HOSTS: "true",
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("DEV_LOCAL_TENANT_HOSTS");
+    expect(result.stderr).not.toContain("postgresql://");
+  });
+
+  it("validates the explicit local tenant hosts flag", () => {
+    expect(loadEnv({ DEV_LOCAL_TENANT_HOSTS: "false" }).status).toBe(0);
+    expect(loadEnv({ DEV_LOCAL_TENANT_HOSTS: "true" }).status).toBe(0);
+    const result = loadEnv({ DEV_LOCAL_TENANT_HOSTS: "yes" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("DEV_LOCAL_TENANT_HOSTS");
+  });
 });

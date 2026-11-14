@@ -73,3 +73,21 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 ## Vendor (gelombang ini)
 
 - Claude: benchmark, engineer, reviewer (3 tugas). Codex: designer (2 putaran), second-opinion (3 tugas).
+
+## legend-vq14 — Seed domain lokal dev (14 November 2026)
+
+- Cabang `fix/dev-seed-localhost-domains`, tanpa migrasi. CTO menyetujui perluasan dari seed saja ke wrapper khusus synthetic development dengan flag eksplisit `DEV_LOCAL_TENANT_HOSTS` (default mati). Startup production wajib menolak flag aktif; resolver domain publik dan TLS tidak diubah.
+- Dependensi worktree terpasang melalui `pnpm install`. Bukti gagal-dulu integrasi: `LEGEND_TEST_FILES='src/test/dev-seed-domains.test.ts src/test/env.test.ts' heavy pnpm test` menghasilkan 7 gagal dan 13 lulus karena baris seed belum ada, host lokal tidak ditemukan, serta validasi flag belum ada.
+- Seed dua alias ber-ID tetap, wrapper lookup domain terverifikasi milik tenant aktif, konfigurasi flag, dan test regresi sudah ditulis. Alias lokal dikecualikan dari daftar domain publik serta hostname utama brand agar schema DNS publik tetap utuh. Lookup mengunci ID domain, hostname, tenant, dan brand seed; salah brand dibuktikan dengan 2 test gagal sebelum perbaikan.
+- Verifikasi integrasi final pada 6 suite (`dev-seed-domains`, `env`, `tenant-routing-deploy`, `platform-tenant-api`, `platform-org-db`, `platform-org-api`) lulus 70/70; ESLint dan Prettier berkas berubah juga lulus. Antrean typecheck API pertama berakhir setelah 1800 detik (exit 75) tanpa menjalankan TypeScript; percobaan normal kedua masih mengantre `heavy`. Pemeriksaan migrasi dan build API menyusul secara serial. Checkpoint kode disimpan dengan status verifikasi ini.
+- Run gabungan sebelumnya turut menemukan kegagalan identitas WhatsApp duplikat dan proyeksi tenant. Pembandingan di checkout base `1f0b6d244` dengan `identity-login` + `platform-org-api`: 29 lulus, 1 gagal pada `platform-org-api.test.ts:148` (422, diharapkan 200), membuktikan masalah proyeksi tenant bawaan. Duplikat identitas tidak terulang pada base sehingga belum terkonfirmasi sebagai kegagalan bawaan. Tidak mengubah fixture di luar scope.
+- Subagent kumulatif: 5 Codex bawaan (2 Explore, test-writer, implementer, test-runner), puncak 4 bersamaan; 1 review Sonnet konteks segar atas hambatan awal. Token heavy pada test-runner. `parallel-report` tidak mengukur subagent Codex; biaya sesi Codex tidak tersedia melalui `session-usage.py` yang berbasis transkrip Claude.
+- Review architect area auth menjadi tanggung jawab CTO setelah handoff. Tidak merge atau deploy.
+
+Perintah verifikasi patch yang sudah lulus:
+
+```sh
+LEGEND_TEST_FILES='src/test/dev-seed-domains.test.ts src/test/env.test.ts src/test/tenant-routing-deploy.test.ts src/test/platform-tenant-api.test.ts src/test/platform-org-db.test.ts src/test/platform-org-api.test.ts' heavy pnpm test
+pnpm exec eslint apps/api/src/app.ts apps/api/src/config/env.ts apps/api/src/db/seed-dev-tenant.ts apps/api/src/db/dev-local-tenant-domains.ts apps/api/src/services/dev-local-tenant-resolve.service.ts apps/api/src/services/org.service.ts apps/api/src/test/env.test.ts apps/api/src/test/dev-seed-domains.test.ts
+pnpm exec prettier --check apps/api/src/app.ts apps/api/src/config/env.ts apps/api/src/db/seed-dev-tenant.ts apps/api/src/db/dev-local-tenant-domains.ts apps/api/src/services/dev-local-tenant-resolve.service.ts apps/api/src/services/org.service.ts apps/api/src/test/env.test.ts apps/api/src/test/dev-seed-domains.test.ts docs/local-development.md docs/PROGRESS.md
+```

@@ -10,7 +10,7 @@
 // panel/tenant-admin API writes rows, no deploy.
 
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, gt, inArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, ne, or, sql, type SQL } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type * as schema from "../db/schema";
 import {
@@ -56,6 +56,7 @@ import {
   tenants,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
+import { DEV_LOCAL_TENANT_DOMAINS } from "../db/dev-local-tenant-domains";
 import { recordAudit } from "./core-audit";
 import { HttpError } from "../lib/http-error";
 import { blindIndex, sealSecret } from "../lib/secrets";
@@ -159,7 +160,19 @@ async function domainsOfTenant(
   return tx
     .select()
     .from(tenantDomains)
-    .where(eq(tenantDomains.tenantId, tenantId));
+    .where(
+      and(
+        eq(tenantDomains.tenantId, tenantId),
+        // Loopback seed aliases serve the opt-in local resolver only. Public
+        // domain lists and brand primary hostnames retain their DNS contract.
+        ...DEV_LOCAL_TENANT_DOMAINS.map((domain) =>
+          or(
+            ne(tenantDomains.id, domain.id),
+            ne(tenantDomains.hostname, domain.hostname),
+          ),
+        ),
+      ),
+    );
 }
 
 async function tenantLimits(tx: Tx, tenantId: string): Promise<TenantLimits> {

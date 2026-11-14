@@ -32,6 +32,7 @@ import { setTableSessionSettlementLookup } from "./services/table-session.servic
 import { loginChallengeRouter as identityLoginChallengeRouter } from "./routes/identity-auth.routes";
 import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes";
 import { resolveHostname } from "./services/org-resolve.service";
+import { resolveDevLocalTenantHost } from "./services/dev-local-tenant-resolve.service";
 import { deviceTenantCredential } from "./services/platform-tenant.service";
 import { edgeRouteGuard } from "./edge/mode.ts";
 import { setPosOrderPromoPort } from "./services/pos-order-ports.ts";
@@ -171,6 +172,12 @@ export function createApp({
   // a registered, verified domain of an active tenant or a signed device
   // token. Never a client-supplied id.
   const resolveDomain = async (hostname: string) => {
+    // Explicit opt-in only; production resolution and the TLS ask route keep
+    // using the public-DNS resolver. Local aliases must exist in the dev seed.
+    if (developmentSyntheticTenant && env.DEV_LOCAL_TENANT_HOSTS) {
+      const local = await resolveDevLocalTenantHost(hostname);
+      if (local) return local;
+    }
     const resolution = await resolveHostname(hostname);
     return resolution.ok
       ? { tenantId: resolution.tenantId, brandId: resolution.brandId }

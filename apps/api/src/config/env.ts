@@ -42,6 +42,11 @@ const schema = z
     NODE_ENV: z
       .enum(["development", "production", "test"])
       .default("development"),
+    // Opt-in loopback tenant aliases for synthetic development/test only.
+    DEV_LOCAL_TENANT_HOSTS: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
     // Defaults to BETTER_AUTH_URL's port (4000 when it has none).
     PORT: z.coerce.number().int().min(1).max(65535).optional(),
     HOST: z.string().default("0.0.0.0"),
@@ -179,6 +184,14 @@ const schema = z
       .regex(/^[\w.+-]+$/)
       .default("dev"),
   })
+  .refine(
+    (values) =>
+      values.NODE_ENV !== "production" || !values.DEV_LOCAL_TENANT_HOSTS,
+    {
+      path: ["DEV_LOCAL_TENANT_HOSTS"],
+      message: "DEV_LOCAL_TENANT_HOSTS must be disabled in production.",
+    },
+  )
   .superRefine((values, ctx) => {
     // Same rule the edge runtime boots with (wss:// link URL, well-formed
     // credential), so a misconfigured edge node refuses to start here.
