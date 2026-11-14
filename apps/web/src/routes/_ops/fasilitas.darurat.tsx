@@ -17,7 +17,7 @@ export const Route = createFileRoute("/_ops/fasilitas/darurat")({
       {
         kind: "permission",
         surface: "pos",
-        anyOf: ["facility.access.assist"],
+        anyOf: ["facility.emergency.respond"],
       },
       context.access,
     );

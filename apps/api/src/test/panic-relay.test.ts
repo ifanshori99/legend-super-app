@@ -1861,3 +1861,88 @@ describe("EM-20 resolve is not available on the edge; in the cloud it needs faci
     }
   }, 30_000);
 });
+
+describe("legend-ewmfd cloud-only press queues one notification", () => {
+  it.each(["press", "test"] as const)(
+    "atomically enqueues %s once across replay and folding",
+    async (kind) => {
+      const outlet = await seedOutlet(`Cloud notification ${kind}`);
+      setEdgeRuntimeStateForTests(cloudState);
+      const button = await registerPanicButton(outlet);
+      const eventId = newEventId();
+      const cloudPress = (id: string) =>
+        request(cloudApp)
+          .post(PANIC_ROUTES.press)
+          .set(cloudHeaders())
+          .set(DEVICE_TOKEN_HEADER, button.token)
+          .send(pressBody(id, { kind }));
+      const first = await cloudPress(eventId);
+      expect([200, 201], JSON.stringify(first.body)).toContain(first.status);
+      const alerts = await alertsOf(button.deviceId);
+      expect(alerts).toHaveLength(1);
+      const alertId = alerts[0]!.id;
+      const queued = async () =>
+        (
+          await asTenantOwner((client) =>
+            client.query<{
+              event: {
+                name: string;
+                aggregateId: string;
+                payload: { outletId: string; kind: string };
+              };
+              outlet_id: string;
+            }>(
+              `SELECT event, outlet_id::text FROM domain_event_outbox WHERE tenant_id = $1 AND aggregate_type = $$panic_alert$$ AND aggregate_id = $2 AND destination = $$notification$$`,
+              [tenant.tenantId, alertId],
+            ),
+          )
+        ).rows;
+      expect(await queued()).toHaveLength(1);
+      expect((await queued())[0]).toMatchObject({
+        outlet_id: outlet,
+        event: {
+          name: "panic_alert.raised",
+          aggregateId: alertId,
+          payload: { outletId: outlet, kind },
+        },
+      });
+      expect((await cloudPress(eventId)).status).toBe(200);
+      expect([200, 201]).toContain((await cloudPress(newEventId())).status);
+      expect(await alertsOf(button.deviceId)).toHaveLength(1);
+      expect(await queued()).toHaveLength(1);
+    },
+  );
+});
+
+describe("legend-ewmfd edge boot cannot enqueue a second cloud notification", () => {
+  it("uses static EDGE_MODE before runtime identity is ready and queues only the edge event", async () => {
+    const outlet = await seedOutlet("Edge boot notification guard");
+    const edgeNodeId = randomUUID();
+    await asTenantOwner((client) =>
+      client.query(
+        `INSERT INTO edge_nodes (id,tenant_id,outlet_id,role,status,label,credential_hash) VALUES ($1,$2,$3,$$primary$$,$$active$$,$$Boot edge$$,$4)`,
+        [edgeNodeId, tenant.tenantId, outlet, "a".repeat(64)],
+      ),
+    );
+    setEdgeRuntimeStateForTests(cloudState);
+    const button = await registerPanicButton(outlet);
+    const response = await withEdgeModeEnv(() =>
+      request(edgeApp)
+        .post(PANIC_ROUTES.press)
+        .set(DEVICE_TOKEN_HEADER, button.token)
+        .send(pressBody(newEventId())),
+    );
+    expect([200, 201], JSON.stringify(response.body)).toContain(
+      response.status,
+    );
+    const alerts = await alertsOf(button.deviceId);
+    expect(alerts).toHaveLength(1);
+    const counts = await asTenantOwner((client) =>
+      client.query<{ notifications: number; edge_events: number }>(
+        `SELECT (SELECT count(*)::int FROM domain_event_outbox WHERE tenant_id=$1 AND aggregate_id::text=$2::text AND destination=$$notification$$) AS notifications, (SELECT count(*)::int FROM edge_outbound_queue WHERE tenant_id=$1 AND aggregate_id::text=$2::text AND direction=$$edge_to_cloud$$) AS edge_events`,
+        [tenant.tenantId, alerts[0]!.id],
+      ),
+    );
+    expect(counts.rows).toEqual([{ notifications: 0, edge_events: 1 }]);
+  });
+});

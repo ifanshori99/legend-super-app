@@ -6,7 +6,7 @@ import { evaluateGuard } from "@/lib/areas/guard";
 // Layout for every /fasilitas/* screen (bead legend-jztb7): the panic alert
 // layer lives here, mounted once, so an alert survives moving between the
 // board, cleaning, incidents and emergency screens. It only mounts for staff
-// who may assist; the child routes keep their own guards.
+// who may respond to emergencies; the child routes keep their own guards.
 const searchSchema = z.object({
   facilityId: z.uuid().optional().catch(undefined),
 });
@@ -23,7 +23,7 @@ function FacilityLayout() {
     {
       kind: "permission",
       surface: "pos",
-      anyOf: ["facility.access.assist"],
+      anyOf: ["facility.emergency.respond"],
     },
     access,
   );

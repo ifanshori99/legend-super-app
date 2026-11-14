@@ -551,6 +551,14 @@ function renderLayer({ state, board } = {}) {
   }
 }
 
+test("legend-mm029 layer recovery link requests the emergency PIN session flow", () => {
+  const markup = renderLayer({ state: build([status("unreachable")]) });
+  assert.ok(
+    markup.includes('href="/pos/ganti-pengguna?emergency=true"'),
+    markup,
+  );
+});
+
 test("location: unitCode and areaName from the frame are shown without the unit board", () => {
   const markup = renderLayer({
     state: build([

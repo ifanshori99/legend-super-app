@@ -907,7 +907,7 @@ export function PanicAlertLayer({ facilityId }: { facilityId?: string }) {
       resolveLocation={resolveLocation}
       onAck={(alertId) => void ack(alertId)}
       onDismiss={dismiss}
-      pinHref="/pos/ganti-pengguna"
+      pinHref="/pos/ganti-pengguna?emergency=true"
       formatTime={(instant) => clock(instant, timeZone)}
     />
   );

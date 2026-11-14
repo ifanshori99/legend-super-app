@@ -21,10 +21,10 @@
 //  - A mismatch between the envelope outlet and the payload outlet, or a
 //    foreign-tenant outlet, may reject or page nobody; the test only requires
 //    that the staff of the wrong outlet/tenant is never paged.
-import { randomUUID } from "node:crypto";
+import { createECDH, createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createUlid, type ScopedTenantContext } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
@@ -33,7 +33,19 @@ import {
 import { eventEnvelopeSchema, eventFixture } from "@starter/shared/events";
 import * as schema from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
-import { createNotificationRecipientResolver } from "../worker/notification-adapters.ts";
+import {
+  createNotificationRecipientResolver,
+  createWorkerNotificationHandlers,
+} from "../worker/notification-adapters.ts";
+import { sealSecret, sealedVersion } from "../lib/secrets.ts";
+import {
+  assertPushServiceEndpoint,
+  createPushSubscriptionProtector,
+  openPushSubscription,
+} from "../lib/push-subscription.ts";
+import { createNotificationConsumer } from "../services/notification-consumer.ts";
+import { deliverNotificationAttempt } from "../services/notification-delivery.ts";
+import { ulidToUuid, uuidToUlid } from "@starter/shared/core";
 import {
   createIsolatedTenant,
   owner,
@@ -518,5 +530,278 @@ describe("legend-kmjax panic_alert.raised isolation", () => {
     const victim = await onDuty("Outlet asli");
     const event = await raised({ outlet: outletA, envelopeOutlet: outletA2 });
     expect(ids(await resolveOrNobody(event))).not.toContain(victim.userId);
+  });
+});
+
+describe("legend-po3fe production factory panic delivery", () => {
+  const disabled = {
+    NOTIFICATION_EMAIL_PROVIDER: "disabled",
+    NOTIFICATION_PUSH_PROVIDER: "disabled",
+    NOTIFICATION_WHATSAPP_PROVIDER: "disabled",
+  };
+  async function queuedFactoryPush() {
+    const staff = await onDuty("Factory push receiver");
+    const context = contextOf(tenantA.tenantId);
+    const event = await raised();
+    const endpoint = `https://fcm.googleapis.com/fcm/send/${randomUUID()}`;
+    const key = createECDH("prime256v1");
+    key.generateKeys();
+    const subscription = {
+      endpoint,
+      keys: {
+        p256dh: key.getPublicKey().toString("base64url"),
+        auth: Buffer.alloc(16, 7).toString("base64url"),
+      },
+    };
+    const ciphertext = sealSecret(
+      JSON.stringify(subscription),
+      `push-subscription:${tenantA.tenantId}:${staff.userId}`,
+    );
+    await owner.query(
+      `INSERT INTO push_subscriptions (tenant_id,id,user_id,endpoint_hash,subscription_ciphertext,key_version) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [
+        tenantA.tenantId,
+        randomUUID(),
+        staff.userId,
+        createHash("sha256").update(endpoint).digest("hex"),
+        ciphertext,
+        `v${sealedVersion(ciphertext)}`,
+      ],
+    );
+    const sent: unknown[][] = [];
+    const options = {
+      fetch: globalThis.fetch,
+      webPushSend: async (...args: unknown[]) => {
+        sent.push(args);
+        return { statusCode: 201, headers: {}, body: "" };
+      },
+    };
+    const handlers = createWorkerNotificationHandlers(
+      database,
+      {
+        ...disabled,
+        NOTIFICATION_PUSH_PROVIDER: "web_push",
+        VAPID_PUBLIC_KEY: key.getPublicKey().toString("base64url"),
+        VAPID_PRIVATE_KEY: key.getPrivateKey().toString("base64url"),
+        VAPID_SUBJECT: "mailto:push@example.test",
+      },
+      options,
+    );
+    const consume = createNotificationConsumer(
+      context,
+      handlers.resolveNotificationRecipients,
+    );
+    await withTenant(database, context, (tx) => consume(event, event.id, tx));
+    await withTenant(database, context, (tx) => consume(event, event.id, tx));
+    const attempts = (
+      await owner.query<{ id: string; status: string }>(
+        `SELECT a.id::text,a.status FROM delivery_attempts a JOIN notifications n ON n.id=a.notification_id AND n.tenant_id=a.tenant_id WHERE n.tenant_id=$1 AND n.user_id=$2 AND n.source_event_id=$3 AND a.channel=$$web_push$$`,
+        [tenantA.tenantId, staff.userId, ulidToUuid(event.id)],
+      )
+    ).rows;
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]!.status).toBe("queued");
+    const id = uuidToUlid(attempts[0]!.id);
+    return {
+      staff,
+      event,
+      context,
+      id,
+      handlers,
+      sent,
+      endpoint,
+      subscription,
+    };
+  }
+  it("sends once through the production consumer and delivery factory, including event replay", async () => {
+    const { context, id, handlers, sent, endpoint, subscription, event } =
+      await queuedFactoryPush();
+    expect(
+      await deliverNotificationAttempt(
+        database,
+        context,
+        id,
+        handlers.notificationDelivery,
+      ),
+    ).toBe("sent");
+    expect(
+      await deliverNotificationAttempt(
+        database,
+        context,
+        id,
+        handlers.notificationDelivery,
+      ),
+    ).toBe("not_due");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]![0]).toMatchObject({ endpoint, keys: subscription.keys });
+    expect(JSON.parse(String(sent[0]![1]))).toMatchObject({
+      data: { url: expect.stringContaining("/fasilitas/darurat") },
+    });
+    expect(JSON.parse(String(sent[0]![1])).data.url).toContain(
+      event.aggregateId,
+    );
+  });
+  it.each([
+    "permission",
+    "outlet",
+    "duty",
+    "inactive",
+    "acknowledged",
+    "resolved",
+    "stale",
+  ] as const)(
+    "does not send a queued panic after its %s eligibility changes",
+    async (change) => {
+      const { staff, event, context, id, handlers, sent } =
+        await queuedFactoryPush();
+      const statements = {
+        permission: [
+          "DELETE FROM role_assignments WHERE tenant_id=$1 AND user_id=$2",
+          [tenantA.tenantId, staff.userId],
+        ],
+        outlet: [
+          "UPDATE role_assignments SET scope_id=$3 WHERE tenant_id=$1 AND user_id=$2",
+          [tenantA.tenantId, staff.userId, outletA2],
+        ],
+        duty: [
+          "DELETE FROM shift_assignments WHERE tenant_id=$1 AND employee_id=$2",
+          [tenantA.tenantId, staff.employeeId],
+        ],
+        inactive: [
+          "UPDATE employees SET status=$$suspended$$ WHERE tenant_id=$1 AND id=$2",
+          [tenantA.tenantId, staff.employeeId],
+        ],
+        acknowledged: [
+          "UPDATE panic_alerts SET acknowledged_at=now(),acknowledged_by=$3 WHERE tenant_id=$1 AND id=$2",
+          [tenantA.tenantId, event.aggregateId, staff.userId],
+        ],
+        resolved: [
+          "UPDATE panic_alerts SET resolved_at=now(),resolved_by=$3 WHERE tenant_id=$1 AND id=$2",
+          [tenantA.tenantId, event.aggregateId, staff.userId],
+        ],
+      };
+      try {
+        if (change === "stale") {
+          vi.useFakeTimers({ toFake: ["Date"] });
+          vi.setSystemTime(new Date(Date.now() + 25 * HOUR));
+          // Keep the receiver on duty: only the alert's 24 h age limit changes.
+          await seedShift(staff, -HOUR, 7 * HOUR);
+        } else {
+          const [statement, values] = statements[change] as [string, string[]];
+          await owner.query(statement, values);
+        }
+        const result = await deliverNotificationAttempt(
+          database,
+          context,
+          id,
+          handlers.notificationDelivery,
+        );
+        expect(result).not.toBe("sent");
+        expect(sent).toHaveLength(0);
+      } finally {
+        if (change === "stale") vi.useRealTimers();
+      }
+    },
+  );
+  it("preserves a non-emergency notifications validated internal destination", async () => {
+    const { staff, event, context, id, handlers, sent } =
+      await queuedFactoryPush();
+    const link = "/pos/pesanan?tab=siap";
+    await owner.query(
+      `UPDATE notifications SET category=$$order_ready$$,link=$4 WHERE tenant_id=$1 AND user_id=$2 AND source_event_id=$3`,
+      [tenantA.tenantId, staff.userId, ulidToUuid(event.id), link],
+    );
+    expect(
+      await deliverNotificationAttempt(
+        database,
+        context,
+        id,
+        handlers.notificationDelivery,
+      ),
+    ).toBe("sent");
+    expect(sent).toHaveLength(1);
+    expect(JSON.parse(String(sent[0]![1]))).toMatchObject({
+      data: { url: link },
+    });
+  });
+  it("reports disabled panic push as an operator-visible failure instead of silently skipping", async () => {
+    const event = await raised();
+    const context = contextOf(tenantA.tenantId);
+    const handlers = createWorkerNotificationHandlers(database, disabled);
+    await expect(
+      withTenant(database, context, (tx) =>
+        handlers.resolveNotificationRecipients(context, event, tx),
+      ),
+    ).rejects.toThrow(/push.*disabled|NOTIFICATION_PUSH_PROVIDER/i);
+  });
+});
+
+describe("legend-po3fe stored push subscription boundaries", () => {
+  it("opens only for its own tenant and user and rejects corrupted ciphertext", async () => {
+    const userId = randomUUID();
+    const key = createECDH("prime256v1");
+    key.generateKeys();
+    const subscription = {
+      endpoint: "https://fcm.googleapis.com/fcm/send/sealed-test",
+      keys: {
+        p256dh: key.getPublicKey().toString("base64url"),
+        auth: Buffer.alloc(16, 7).toString("base64url"),
+      },
+    };
+    const sealed = await createPushSubscriptionProtector().seal(
+      subscription,
+      tenantA.tenantId,
+      userId,
+    );
+    expect(
+      openPushSubscription(
+        sealed.ciphertext,
+        tenantA.tenantId,
+        userId,
+        sealed.endpointHash,
+      ),
+    ).toEqual(subscription);
+    expect(() =>
+      openPushSubscription(
+        sealed.ciphertext,
+        tenantB.tenantId,
+        userId,
+        sealed.endpointHash,
+      ),
+    ).toThrow();
+    expect(() =>
+      openPushSubscription(
+        sealed.ciphertext,
+        tenantA.tenantId,
+        randomUUID(),
+        sealed.endpointHash,
+      ),
+    ).toThrow();
+    expect(() =>
+      openPushSubscription(
+        `${sealed.ciphertext}corrupt`,
+        tenantA.tenantId,
+        userId,
+        sealed.endpointHash,
+      ),
+    ).toThrow();
+    expect(() =>
+      openPushSubscription(
+        sealed.ciphertext,
+        tenantA.tenantId,
+        userId,
+        "wrong-endpoint-hash",
+      ),
+    ).toThrow();
+  });
+  it.each([
+    "https://localhost/push",
+    "https://127.0.0.1/push",
+    "https://169.254.169.254/push",
+    "https://fcm.googleapis.com.evil.test/push",
+    "https://fcm.googleapis.com:8443/push",
+    "https://user:pass@fcm.googleapis.com/push",
+  ])("rejects an untrusted push service endpoint %s", (endpoint) => {
+    expect(() => assertPushServiceEndpoint(endpoint)).toThrow();
   });
 });

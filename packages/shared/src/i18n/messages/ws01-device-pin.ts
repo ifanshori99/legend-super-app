@@ -11,6 +11,19 @@ export const devicePinMessages = {
   activeNow: "Aktif sekarang: {name}",
   activeNone: "Belum ada petugas aktif di perangkat ini.",
 
+  emergency: {
+    title: "Terima alarm darurat",
+    subtitle:
+      "Pilih nama Anda lalu masukkan PIN pribadi 6 angka untuk menerima alarm selama bertugas di outlet ini.",
+    success: "Penerima alarm aktif untuk {name}",
+    deviceRequired:
+      "Perangkat belum dikenali. Minta manajer menyiapkan perangkat outlet, lalu coba lagi.",
+    notOnDuty:
+      "Anda belum tercatat bertugas di outlet ini. Mulai giliran kerja atau catat kehadiran, lalu coba lagi.",
+    notAllowed:
+      "Anda belum dapat menerima alarm di outlet ini. Minta manajer memeriksa akses Anda.",
+  },
+
   pad: {
     label: "PIN 6 angka",
     hint: "Ketik dengan keyboard atau ketuk tombol angka.",

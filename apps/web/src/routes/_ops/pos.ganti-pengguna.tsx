@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { z } from "zod";
 import { createTranslator } from "@starter/shared/i18n";
 import { SwitchUserScreen } from "@/features/ws01-device-pin/components/switch-user-screen";
 
@@ -6,6 +7,9 @@ import { SwitchUserScreen } from "@/features/ws01-device-pin/components/switch-u
 // 6-digit PIN (bead legend-6ew; PRD v1.7 §3 F6 "PIN Perangkat"). The area
 // layout already gates the shell; the API verifies the PIN.
 export const Route = createFileRoute("/_ops/pos/ganti-pengguna")({
+  validateSearch: z.object({
+    emergency: z.boolean().optional().catch(undefined),
+  }),
   head: () => {
     const t = createTranslator();
     return {
@@ -20,5 +24,10 @@ export const Route = createFileRoute("/_ops/pos/ganti-pengguna")({
       ],
     };
   },
-  component: () => <SwitchUserScreen shell="pos" />,
+  component: SwitchUserRoute,
 });
+
+function SwitchUserRoute() {
+  const { emergency } = Route.useSearch();
+  return <SwitchUserScreen shell="pos" emergency={emergency === true} />;
+}
