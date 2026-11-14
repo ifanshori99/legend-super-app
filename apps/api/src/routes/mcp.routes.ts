@@ -16,6 +16,8 @@ import { logger } from "../lib/logger.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { BODY_LIMIT_BYTES, jsonBody } from "../middleware/body.ts";
 import { findTenantContext } from "../middleware/tenant.ts";
+import { db } from "../db/index.ts";
+import { isAiPlatformLocked } from "../services/ai-platform-lock.ts";
 import { loadMcpSettings } from "../services/mcp-common.ts";
 import {
   exchangeAuthorizationCode,
@@ -226,6 +228,10 @@ mcpOAuthRouter.post("/oauth/register", jsonBody, async (req, res, next) => {
     const tenant = findTenantContext(req);
     if (!tenant)
       throw new HttpError(404, "TENANT_NOT_FOUND", "No tenant is available.");
+    // Platform lock: refuse before the rate budgets are spent or the body is
+    // read. The service re-checks under a row lock before it inserts.
+    if (await isAiPlatformLocked(db, tenant.tenantId))
+      throw new OAuthError("access_denied", "AI_PLATFORM_DISABLED", 403);
     const now = Date.now();
     const key = req.ip ?? "unknown";
     for (const [ip, times] of registrations) {

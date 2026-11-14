@@ -90,8 +90,9 @@ async function readTenantResourceAny<T extends { data: unknown[] }>(
  * match the loyalty/accounting paths (the other way round can deadlock with
  * them), and it serializes every platform org create (brand, outlet, legal
  * entity) with loyalty-entity changes. The FK inserts hold a KEY SHARE on the
- * tenant row until commit, which would otherwise make the first-outlet
- * loyalty guard (FOR UPDATE NOWAIT) fail with LOYALTY_ENTITY_BUSY.
+ * tenant row until commit, which would otherwise contend with the
+ * first-outlet loyalty guard's time-bounded FOR UPDATE lock and potentially
+ * cause LOYALTY_ENTITY_BUSY.
  * Advisory xact locks are re-entrant, so createOutletInTx may re-take it.
  */
 async function createTenantResourceAny<T>(

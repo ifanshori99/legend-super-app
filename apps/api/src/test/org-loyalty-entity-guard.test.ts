@@ -71,6 +71,74 @@ async function entityOf(tenantId: string, outletId: string) {
 }
 
 describe("outlet changes preserve the effective loyalty entity", () => {
+  it("waits for an in-flight AI tenant share lock before moving an outlet", async () => {
+    const { world, entityB } = await worldWithEntityB();
+    const holder = await owner.connect();
+    try {
+      await holder.query("BEGIN");
+      const holderPid = (
+        await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
+      ).rows[0]!.pid;
+      await holder.query("SELECT id FROM tenants WHERE id = $1 FOR SHARE", [
+        world.tenantId,
+      ]);
+      const pending = updateOutlet(
+        world.context,
+        world.outletB,
+        updateOutletInputSchema.parse({ legalEntityId: entityB }),
+        randomUUID(),
+      ).then(
+        (result) => ({ result, error: null }),
+        (error: unknown) => ({ result: null, error }),
+      );
+      let settled = false;
+      void pending.then(() => {
+        settled = true;
+      });
+      let blocked = false;
+      const deadline = Date.now() + 5_000;
+      while (!settled && !blocked && Date.now() < deadline) {
+        const observed = await owner.query<{ blocked: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS blocked",
+          [holderPid],
+        );
+        blocked = observed.rows[0]!.blocked;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      await holder.query("COMMIT");
+      const outcome = await pending;
+      expect(blocked, "outlet change should wait for the AI lock").toBe(true);
+      expect(outcome.error).toBeNull();
+      expect(outcome.result?.legalEntityId).toBe(entityB);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+    }
+  });
+
+  it("returns a retryable conflict if the tenant share lock stays held", async () => {
+    const { world, entityB } = await worldWithEntityB();
+    const holder = await owner.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT id FROM tenants WHERE id = $1 FOR SHARE", [
+        world.tenantId,
+      ]);
+      await expect(
+        updateOutlet(
+          world.context,
+          world.outletB,
+          updateOutletInputSchema.parse({ legalEntityId: entityB }),
+          randomUUID(),
+        ),
+      ).rejects.toMatchObject({ status: 409, code: "LOYALTY_ENTITY_BUSY" });
+      expect(await entityOf(world.tenantId, world.outletB)).not.toBe(entityB);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+    }
+  });
+
   it("refuses moving an outlet where a physical reward was fulfilled even when A remains the program entity", async () => {
     const { world, entityB } = await worldWithEntityB();
     const entityA = await entityOf(world.tenantId, world.outletA);
