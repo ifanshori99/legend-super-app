@@ -22,6 +22,8 @@ import {
   LINK_MAX_FRAME_BYTES,
   LINK_REFUSED_CREDENTIAL,
   LINK_REFUSED_HEADER,
+  LINK_RESTORE_PROOF_HEADER,
+  LINK_RESTORE_PROOF_REFUSAL,
   encodeFrame,
   type CatalogStale,
 } from "./protocol.ts";
@@ -123,13 +125,42 @@ export function createEdgeLinkClient(
     retry.unref?.();
   }
 
+  // Restore proof (legend-tmar2): the acked cursor is read from the store
+  // before every connect (a reconnect reads it again) and sent as an upgrade
+  // header, so the cloud can prove the events behind its hello cursor. Only
+  // when the store can verify that proof. A failed read retries with backoff:
+  // connecting without the header would skip the check.
   function connect() {
     if (stopped) return;
+    if (!options.store.outboundProof) {
+      open(null);
+      return;
+    }
+    options.store.lastAckedOutbound().then(
+      (acked) => {
+        if (!stopped) open(acked);
+      },
+      (error: unknown) => {
+        options.onError?.(error);
+        schedule();
+      },
+    );
+  }
+
+  function open(restoreProofAcked: number | null) {
+    if (stopped) return;
+    // A refused restore proof must not look like a healthy link: `attempt`
+    // resets when the socket opens, so it is put back when the peer refuses.
+    const attemptAtStart = attempt;
+    let proofRefused = false;
     const ws = new WebSocket(options.url, {
       headers: {
         authorization: `Bearer ${options.credential}`,
         ...(options.instanceId
           ? { [LINK_INSTANCE_HEADER]: options.instanceId }
+          : {}),
+        ...(restoreProofAcked !== null
+          ? { [LINK_RESTORE_PROOF_HEADER]: String(restoreProofAcked) }
           : {}),
       },
       maxPayload: LINK_MAX_FRAME_BYTES,
@@ -148,7 +179,11 @@ export function createEdgeLinkClient(
         send: (data) => {
           if (ws.readyState === WebSocket.OPEN) ws.send(data);
         },
-        close: (code, reason) => ws.close(code, reason.slice(0, 120)),
+        close: (code, reason) => {
+          if (reason.startsWith(LINK_RESTORE_PROOF_REFUSAL))
+            proofRefused = true;
+          ws.close(code, reason.slice(0, 120));
+        },
       },
     });
     // 533b: the Date of the upgrade response is kept and delivered only once
@@ -231,6 +266,7 @@ export function createEdgeLinkClient(
     ws.on("close", (code, reason) => {
       options.onClose?.(code, reason.toString("utf8"));
       linkPeer.stop();
+      if (proofRefused) attempt = Math.max(attempt, attemptAtStart);
       if (heartbeat) clearInterval(heartbeat);
       heartbeat = undefined;
       if (peer === linkPeer) peer = undefined;

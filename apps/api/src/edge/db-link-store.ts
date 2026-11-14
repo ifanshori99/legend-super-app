@@ -52,7 +52,7 @@ import {
   type LinkStore,
   type QueuedEdgeEvent,
 } from "./link-peer.ts";
-import { oppositeDirection } from "./protocol.ts";
+import { oppositeDirection, restoreProofOf } from "./protocol.ts";
 import {
   classifyEdgeEvent,
   EdgeEventUnclassifiedError,
@@ -157,6 +157,9 @@ export type StoredDeadLetter = DeadLetterEntry & { readonly createdAt: Date };
 
 /** Parked above any real link_seq while the queue behind a dead letter is renumbered. */
 const RENUMBER_PARK = 1_000_000_000_000;
+
+/** Widest range `inboundProof` hashes; a wider one is not proven (null). */
+const RESTORE_PROOF_MAX_SLOTS = 20_000;
 
 export type DbLinkStore = LinkStore &
   Required<Pick<LinkStore, "deadLetterOutbound">> & {
@@ -356,6 +359,54 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
     outboundHead: () => cursorValue("next_out_seq", outbound),
     lastAckedOutbound: () => cursorValue("acked_out_seq", outbound),
     lastReceivedInbound: () => cursorValue("received_in_seq", inbound),
+
+    // legend-tmar2: digest of the event ids in outbound slots (fromSeq, toSeq]
+    // in this side's numbering. Acked rows stay in the queue, so the range an
+    // acknowledgement would cover can be read back. A missing row (dead
+    // letter, wrong database) shows up as a smaller count.
+    async outboundProof(fromSeq, toSeq) {
+      return run(async (tx) => {
+        const { offset } = await peerNumbering(tx, outbound);
+        const result = await tx.execute(
+          sql`SELECT event_id FROM edge_outbound_queue WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${fromSeq + offset} AND link_seq <= ${toSeq + offset} ORDER BY link_seq`,
+        );
+        return restoreProofOf(
+          result.rows.map((row) => String(row.event_id).toLowerCase()),
+        );
+      });
+    },
+
+    // legend-tmar2: the same digest over the receipts this side holds for the
+    // peer's slots (fromSeq, toSeq] (peer numbering; the offset maps them to
+    // the stored link_seq). Receipts are append-only and never pruned.
+    // Returns null when the cloud cannot prove the range: it is wider than
+    // RESTORE_PROOF_MAX_SLOTS, or a slot has no countable receipt (a hole).
+    // The hello then goes out without a proof, so the link resumes as before
+    // for a history that is incomplete (deliberate fail-open, legend-tmar2).
+    // The digest is built in SQL (one aggregate row, light on memory). On
+    // edge_to_cloud only receipts whose event is in edge_received_events
+    // count: a dead-letter receipt (link-dead-letter-applier) is not an event
+    // the edge holds in that slot, so it must not be hashed.
+    async inboundProof(fromSeq, toSeq) {
+      if (toSeq < fromSeq || toSeq - fromSeq > RESTORE_PROOF_MAX_SLOTS)
+        return null;
+      return run(async (tx) => {
+        const { offset } = await peerNumbering(tx, inbound);
+        const registry =
+          inbound === "edge_to_cloud"
+            ? sql`JOIN edge_received_events rv ON rv.tenant_id = r.tenant_id AND rv.event_id = r.event_id`
+            : sql``;
+        const result = await tx.execute(
+          sql`SELECT count(*) AS count, count(DISTINCT r.link_seq) AS slots, encode(sha256(convert_to(COALESCE(string_agg(r.event_id::text || chr(10), '' ORDER BY r.link_seq), ''), 'UTF8')), 'hex') AS sha256 FROM edge_inbound_events r ${registry} WHERE r.tenant_id = ${node.tenantId}::uuid AND r.edge_node_id = ${nodeId}::uuid AND r.direction = ${inbound} AND r.link_seq > ${fromSeq + offset} AND r.link_seq <= ${toSeq + offset}`,
+        );
+        const row = result.rows[0];
+        const count = Number(row?.count ?? 0);
+        // Complete = exactly one countable receipt per slot of the range.
+        if (!row || count !== toSeq - fromSeq || Number(row.slots) !== count)
+          return null;
+        return { count, sha256: String(row.sha256) };
+      });
+    },
 
     async readOutbound(afterSeq, limit) {
       return run(async (tx) => {
@@ -568,8 +619,16 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
           if (
             decision.action === "skip" &&
             decision.reason === "already_received"
-          )
+          ) {
+            // Record the slot even though nothing is applied: the restore
+            // proof (inboundProof) hashes one receipt per link slot, so a
+            // standby re-sending the primary's event must not leave a hole
+            // that would make a legitimate edge look restored (legend-tmar2).
+            await tx.execute(
+              sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${linkSeq + offset}, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, 'superseded') ON CONFLICT DO NOTHING`,
+            );
             continue;
+          }
           let outcome: "applied" | "superseded" | "conflict";
           if (decision.action === "apply") {
             // Savepoint: a domain refusal (CoreError / 4xx) must not roll

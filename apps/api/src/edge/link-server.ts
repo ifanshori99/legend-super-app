@@ -49,6 +49,8 @@ import {
   LINK_PATH,
   LINK_REFUSED_CREDENTIAL,
   LINK_REFUSED_HEADER,
+  LINK_RESTORE_PROOF_HEADER,
+  restoreProofAckedFromHeader,
   type LinkFrame,
 } from "./protocol.ts";
 
@@ -78,6 +80,12 @@ export type EdgeLinkIdentity = {
   readonly scope: LinkScope;
   /** From the `x-edge-instance` upgrade header (valid uuid), else null. */
   readonly edgeInstanceId?: string | null;
+  /**
+   * From the `x-edge-restore-proof` upgrade header (legend-tmar2): the edge's
+   * acknowledged cursor, so the hello can prove the slots it would ack. Null
+   * = absent or malformed (old edge; hello carries no proof).
+   */
+  readonly restoreProofAcked?: number | null;
 };
 
 const INSTANCE_ID_PATTERN =
@@ -239,6 +247,9 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
       scope: identity.scope,
       outboundDirection: "cloud_to_edge",
       store: deps.storeFor(identity),
+      ...(identity.restoreProofAcked != null
+        ? { restoreProofAcked: identity.restoreProofAcked }
+        : {}),
       version: deps.version,
       ackTimeoutMs: deps.ackTimeoutMs,
       onError: deps.onError,
@@ -364,6 +375,9 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
           ...identity,
           edgeInstanceId: instanceIdFromHeader(
             request.headers[LINK_INSTANCE_HEADER],
+          ),
+          restoreProofAcked: restoreProofAckedFromHeader(
+            request.headers[LINK_RESTORE_PROOF_HEADER],
           ),
         };
         wss.handleUpgrade(request, socket, head, (ws) =>
