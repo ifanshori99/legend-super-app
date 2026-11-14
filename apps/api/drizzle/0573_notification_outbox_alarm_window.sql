@@ -1,0 +1,1 @@
+CREATE INDEX "notification_outbox_alarm_window_idx" ON "notification_outbox" USING btree ("tenant_id","event_type","outlet_id","created_at");

@@ -3,8 +3,8 @@
 // (`packages/shared/src/edge/catalog-sync.ts`), not from the implementation.
 // Fail-first: the version stamp does not exist yet.
 //
-// Setup mirrors src/test/edge-catalog-followups.test.ts: the main test database
-// is the CLOUD (it exports one real category record as a template and serves
+// A private database created before app imports is the CLOUD (it exports one
+// real category record as a template and serves
 // the cloud-side response), a second database (helpers/edge-database.ts) is the
 // EDGE, and the cloud HTTP layer is a scripted `fetchPage`.
 //
@@ -25,7 +25,15 @@
 //    through `errorText`, which includes `name`, `code` and `message`.
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
@@ -38,7 +46,7 @@ import {
 } from "@starter/shared/edge";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
-import { db } from "../db/index.ts";
+import { db, pool } from "../db/index.ts";
 import { pullCatalog } from "./catalog-puller.ts";
 import { EdgeCloudHttpError } from "./cloud-http.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
@@ -54,6 +62,12 @@ import {
   createEdgeDatabase,
   type EdgeDatabase,
 } from "../test/helpers/edge-database.ts";
+
+const cloud = await vi.hoisted(async () => {
+  const { createCatalogCloud } =
+    await import("../test/helpers/catalog-database.ts");
+  return createCatalogCloud();
+});
 
 type Rec = Record<string, unknown>;
 type PullResult = {
@@ -297,6 +311,16 @@ afterAll(async () => {
     // Best effort: private ids on a private outlet.
   }
   await mainOwner.end();
+  await pool.end();
+  await cloud.cleanup();
+});
+
+it("owns a separate cloud database for this catalog suite", async () => {
+  const result = await mainOwner.query("SELECT current_database() AS name");
+  const appResult = await pool.query("SELECT current_database() AS name");
+  expect(result.rows[0].name).toBe(cloud.name);
+  expect(appResult.rows[0].name).toBe(cloud.name);
+  expect(`/${cloud.name}`).not.toBe(cloud.parentDatabaseName);
 });
 
 describe("legend-2dlxq the shared contract names the protocol version", () => {

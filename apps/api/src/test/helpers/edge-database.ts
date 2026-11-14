@@ -37,6 +37,9 @@ export type Row = Record<string, unknown>;
 
 export type EdgeDatabase = {
   readonly name: string;
+  /** Private test-only URLs for configuring a separate cloud before imports. */
+  readonly ownerUrl: string;
+  readonly appUrl: string;
   readonly tenantId: string;
   readonly outletId: string;
   /** Drizzle on the restricted application login: pass as `database`. */
@@ -152,6 +155,7 @@ export async function createEdgeDatabase(input: {
   main.on("error", ignoreIdleError);
   owner.on("error", ignoreIdleError);
   let appPool: Pool | undefined;
+  const appUrl = urlFor(adminBase, name, login, password);
   let released = false;
 
   const cleanup = async () => {
@@ -173,7 +177,6 @@ export async function createEdgeDatabase(input: {
       lockTimeout: "10s",
       statementTimeout: "0",
     });
-    const appUrl = urlFor(adminBase, name, login, password);
     await provisionRoles({ adminUrl: ownerUrl, appUrl });
     appPool = createAppPool(appUrl, { max: 4 });
     appPool.on("error", ignoreIdleError);
@@ -204,6 +207,8 @@ export async function createEdgeDatabase(input: {
 
   return {
     name,
+    ownerUrl,
+    appUrl,
     tenantId: input.tenantId,
     outletId: input.outletId,
     database: drizzle(appPool, { schema }),

@@ -18,6 +18,11 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm run setup
+      - name: Deployment, backup and monitoring script tests
+        run: |
+          sh deploy/backup/test-scripts.sh
+          sh deploy/single-vm/test-deploy.sh
+          node --test deploy/monitoring/check.test.mjs
       - name: CI quality checks
         run: |
           pnpm exec node --test scripts/ci/*.test.mjs

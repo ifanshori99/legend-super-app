@@ -2339,6 +2339,13 @@
       "when": 1794582500000,
       "tag": "0347_edge_order_ingests",
       "breakpoints": true
+    },
+    {
+      "idx": 573,
+      "version": "7",
+      "when": 1794614777124,
+      "tag": "0573_notification_outbox_alarm_window",
+      "breakpoints": true
     }
   ]
 }

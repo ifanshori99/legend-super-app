@@ -54,6 +54,8 @@ const uomA = randomUUID();
 const uomB = randomUUID();
 const itemA = randomUUID();
 const itemB = randomUUID();
+// Keep the owned fixture beyond page one even when this file runs alone.
+const earlierItemIds = Array.from({ length: 101 }, () => randomUUID());
 const locationA = randomUUID();
 const locationB = randomUUID();
 
@@ -104,6 +106,29 @@ async function insertInventoryGraph(
     "INSERT INTO stock_locations (id, tenant_id, outlet_id, name, type) VALUES ($1, $2, $3, $4, 'warehouse')",
     [ids.location, tenantId, outletId, `Isolation location ${suffix}`],
   );
+}
+
+async function listAllInventoryItemIds(
+  context: Parameters<typeof listInventoryItems>[0],
+  actorUserId: string,
+): Promise<string[]> {
+  const ids: string[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const page = await listInventoryItems(context, actorUserId, {
+      limit: 100,
+      cursor,
+    });
+    ids.push(...page.data.map((row) => row.id));
+    cursor = page.meta.nextCursor ?? undefined;
+    if (cursor) {
+      expect(seenCursors.has(cursor)).toBe(false);
+      seenCursors.add(cursor);
+    }
+  } while (cursor);
+  expect(new Set(ids).size).toBe(ids.length);
+  return ids;
 }
 
 /** Asserts the promise rejects with the service's 404 NOT_FOUND (not a permission error). */
@@ -178,6 +203,12 @@ beforeAll(async () => {
     item: itemB,
     location: locationB,
   });
+  await owner.query(
+    `INSERT INTO inventory_items (id, tenant_id, name, category, type, base_uom_id)
+     SELECT fixture.id, $2, '000 TEN-01 item ' || fixture.id, 'Bahan Baku', 'raw_material', $3
+     FROM unnest($1::uuid[]) AS fixture(id)`,
+    [earlierItemIds, tenantAId, uomA],
+  );
 
   // Tenant A owner for the service and route checks.
   client = agent(app);
@@ -225,7 +256,7 @@ afterAll(async () => {
     () =>
       owner.query(
         "DELETE FROM inventory_items WHERE id = ANY($1::uuid[]) AND tenant_id = ANY($2::uuid[])",
-        [[itemA, itemB], tenants],
+        [[itemA, itemB, ...earlierItemIds], tenants],
       ),
     () =>
       owner.query("DELETE FROM uoms WHERE id = ANY($1::uuid[])", [
@@ -404,19 +435,18 @@ describe("TEN-01 payment and refund tenant isolation", () => {
 
 describe("TEN-01 inventory tenant isolation", () => {
   it("TEN-01 listInventoryItems returns each tenant only its own item", async () => {
-    const pageA = await listInventoryItems(tenantContext(tenantAId), actorId, {
-      limit: 100,
-    });
-    const idsA = pageA.data.map((row) => row.id);
+    const idsA = await listAllInventoryItemIds(
+      tenantContext(tenantAId),
+      actorId,
+    );
     expect(idsA).toContain(itemA);
+    expect(idsA).toEqual(expect.arrayContaining(earlierItemIds));
     expect(idsA).not.toContain(itemB);
 
-    const pageB = await listInventoryItems(
+    const idsB = await listAllInventoryItemIds(
       tenantContext(tenantB.tenantId),
       actorBId,
-      { limit: 100 },
     );
-    const idsB = pageB.data.map((row) => row.id);
     expect(idsB).toContain(itemB);
     expect(idsB).not.toContain(itemA);
   });
