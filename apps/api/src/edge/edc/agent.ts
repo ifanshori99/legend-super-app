@@ -27,6 +27,12 @@
 //   the sale is old enough that it cannot still be in transit, and only while
 //   the terminal's open batch equals the batch known at dispatch (a closed
 //   batch hides the sale from inquiry).
+// - Fail-stop: if the outlet lock is lost while this process still has an
+//   adapter call on the wire for that outlet, the process exits (`onFatal`,
+//   default `process.exit(1)`; the supervisor restarts it). Another process
+//   may take the outlet at once, and this one must not keep sending next to
+//   it. The wire marker is left alone: only a process past the late-response
+//   window clears it.
 //
 // No domain events here: whether approval or settlement marks a bill paid
 // belongs to the POS payment flow (legend-m0k) and settlement (legend-cs7).
@@ -117,6 +123,19 @@ export type EdcAgentDeps = {
    * old: `by_trace` sees the current batch only, so after settlement it
    * proves nothing. Older: `unknown` + `needs_reconciliation`. Default 15 min. */
   notFoundTrustWindowMs?: number;
+  /** How often an owned outlet is swept for wire markers left by a dead
+   * process once they are past the late-response window (see
+   * `clearStaleWireOpen`). Default 60s; 0 turns the sweep off. */
+  staleWireSweepMs?: number;
+  /** Called when the outlet lock is lost while this process still has an
+   * adapter call on the wire for that outlet (`liveCalls` > 0). Default:
+   * `logger.fatal` then `process.exit(1)`, so the supervisor restarts the
+   * process. Tests must pass a spy. */
+  onFatal?: (info: {
+    tenantId: string;
+    outletId: string;
+    liveCalls: number;
+  }) => void;
   now?: () => Date;
   newTrace?: () => string;
 };
@@ -514,6 +533,16 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   const notFoundGraceMs = deps.notFoundGraceMs ?? 30_000;
   const notFoundTrustWindowMs =
     deps.notFoundTrustWindowMs ?? DEFAULT_NOT_FOUND_TRUST_WINDOW_MS;
+  const staleWireSweepMs = deps.staleWireSweepMs ?? 60_000;
+  const onFatal =
+    deps.onFatal ??
+    ((info: { tenantId: string; outletId: string; liveCalls: number }) => {
+      logger.fatal(
+        info,
+        "EDC agent lost its outlet lock with adapter calls still on the wire: exiting",
+      );
+      process.exit(1);
+    });
   const now = deps.now ?? (() => new Date());
   const newTrace = deps.newTrace ?? defaultTrace;
 
@@ -521,10 +550,13 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
    * the write-ahead commit so no reader sees `pending` without it. */
   const inFlight = new Set<string>();
   /** Rows whose adapter call outlived its timeout and is still running in
-   * this process (their `sale_wire_open_at` is live, not stale). Added before
-   * the marker write; removed once the call settles and the marker is
-   * cleared. `clearStaleWireOpen` skips them. */
+   * this process (their `sale_wire_open_at` is live, not stale; the dispatch
+   * claim already wrote it). Added when the timeout leaves the call running;
+   * removed once the call settles and the marker is cleared.
+   * `clearStaleWireOpen` skips them. */
   const wireOpen = new Set<string>();
+  /** Stale-marker sweep timer per owned outlet, by tenant+outlet. */
+  const sweeps = new Map<string, ReturnType<typeof setInterval>>();
   /** FIFO tail per terminal: one ECR exchange at a time. */
   const tails = new Map<string, Promise<void>>();
   /** Terminals whose adapter call outlived the agent's timeout and has not
@@ -542,6 +574,13 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   const bypassWire = new Map<string, Promise<void>>();
   /** Outlets this instance owns (advisory lock), by tenant+outlet. */
   const owned = new Map<
+    string,
+    { client: PoolClient; lockName: string; lost: () => void }
+  >();
+  /** Outlets whose advisory lock this instance really holds, by tenant+outlet.
+   * Unlike `owned`, an entry stays while `releaseOutlet` drains the calls on
+   * the wire, so a lock lost during that drain is still noticed. */
+  const locks = new Map<
     string,
     { client: PoolClient; lockName: string; lost: () => void }
   >();
@@ -596,7 +635,44 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     return ctx.outletScope.outletIds;
   }
 
+  function stopSweep(key: string): void {
+    const timer = sweeps.get(key);
+    if (timer === undefined) return;
+    clearInterval(timer);
+    sweeps.delete(key);
+  }
+
+  /** Marks of a process that died inside the late-response window are only
+   * stale later, and nothing else in production re-runs the check, so an
+   * owned outlet is swept on a timer. Errors are logged, never thrown. */
+  function startSweep(
+    ctx: ScopedTenantContext,
+    key: string,
+    outletId: EdcRow["outletId"],
+  ): void {
+    stopSweep(key);
+    if (staleWireSweepMs <= 0) return;
+    let running = false;
+    const timer = setInterval(() => {
+      if (running || !owned.has(key)) return;
+      running = true;
+      clearStaleWireOpen(ctx, [outletId])
+        .catch((error: unknown) => {
+          logger.error(
+            { outletId, kind: errorKind(error) },
+            "EDC stale wire marker sweep failed",
+          );
+        })
+        .finally(() => {
+          running = false;
+        });
+    }, staleWireSweepMs);
+    timer.unref();
+    sweeps.set(key, timer);
+  }
+
   async function releaseOutlet(key: string): Promise<void> {
+    stopSweep(key);
     const entry = owned.get(key);
     if (!entry) return;
     // Out of `owned` first: a sale still queued sees the lost ownership and
@@ -611,6 +687,9 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       if (pending.length === 0) break;
       await Promise.allSettled(pending);
     }
+    // The lock was lost during the drain: `lost` already released the client.
+    if (locks.get(key) !== entry) return;
+    locks.delete(key);
     let broken: Error | undefined;
     try {
       await entry.client.query(
@@ -641,12 +720,21 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     if (!pool) throw new EdcError("EDC_AGENT_NOT_READY");
     const client = await pool.connect();
     const lost = () => {
-      if (owned.get(key)?.client !== client) return;
-      owned.delete(key);
+      if (locks.get(key)?.client !== client) return;
+      locks.delete(key);
+      if (owned.get(key)?.client === client) owned.delete(key);
+      stopSweep(key);
       logger.error(
         { tenantId, outletId },
         "EDC agent lost its database connection: outlet is no longer ready",
       );
+      // Give the pool slot back. The listeners stay, so a later 'error' on the
+      // dead connection is never unhandled.
+      client.release(new Error("EDC outlet lock connection lost"));
+      // Another process can take the outlet now; a call of ours still on the
+      // wire would run next to it. Stop the process instead of going on.
+      const liveCalls = wires.get(key)?.size ?? 0;
+      if (liveCalls > 0) onFatal({ tenantId, outletId, liveCalls });
     };
     client.on("error", lost);
     client.on("end", lost);
@@ -669,7 +757,9 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       client.release();
       throw new EdcError("EDC_AGENT_NOT_READY");
     }
-    owned.set(key, { client, lockName, lost });
+    const entry = { client, lockName, lost };
+    owned.set(key, entry);
+    locks.set(key, entry);
   }
 
   /** Runs `run` as the only ECR exchange on the terminal. `hold` runs the
@@ -1177,10 +1267,15 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           )
           .orderBy(sql`${edcTransactions.completedAt} DESC NULLS LAST`)
           .limit(1);
+        // The wire marker is set in the same write as the claim (fail
+        // closed): if it cannot be stored the claim fails and no sale goes
+        // out. It is cleared only when the adapter call has really ended.
+        const claimedAt = now();
         const [updated] = await tx
           .update(edcTransactions)
           .set({
-            dispatchedAt: now(),
+            dispatchedAt: claimedAt,
+            saleWireOpenAt: claimedAt,
             dispatchBatchNo: lastBatch?.batchNo ?? null,
           })
           .where(
@@ -1196,6 +1291,8 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       });
       if (!claimed) return (await reload(ctx, row.id)) ?? row;
       let patch: Patch;
+      /** The answer is final for the wire: the settling write clears the marker. */
+      let clearWire = true;
       const signal = AbortSignal.timeout(saleTimeoutMs);
       /** The adapter's own promise: it may still settle after the timeout. */
       const wire: { call?: Promise<unknown>; settled?: true } = {};
@@ -1234,7 +1331,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
             ctx,
             claimed,
             { status: "failed", details: { message: MESSAGE_NEVER_SENT } },
-            { revokeDispatch: claimed.dispatchedAt },
+            { revokeDispatch: claimed.dispatchedAt, clearWireOpen: true },
           );
           throw error;
         }
@@ -1250,53 +1347,52 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
         // Timed out on our side only: the terminal may still answer the sale
         // later. That answer decides the row while it is open (`applyPatch`
         // writes only an open row; a late approval after final keeps its
-        // evidence and is flagged). `sale_wire_open_at` tells reconciliation
-        // the terminal is still busy; the late write (or an adapter error)
+        // evidence and is flagged). `sale_wire_open_at` (set by the dispatch
+        // claim) tells reconciliation the terminal is still busy; it stays
+        // until the call settles: the late write (or an adapter error)
         // clears it. Tracked at once so `stop` waits for the late write.
         // Never throws: a failed late write is logged.
         const call = wire.call;
+        /** The timeout left the adapter call running: keep the marker. */
+        const wireStillOpen = signal.aborted && call && !wire.settled;
         if (signal.aborted && call) {
-          const marked = wire.settled
-            ? Promise.resolve()
-            : setSaleWireOpen(ctx, claimed, true);
-          const late = marked
-            .then(() =>
-              call.then(
-                async (raw) => {
-                  let answer: EcrResult | undefined;
-                  try {
-                    answer = ecrResultSchema.parse(raw);
-                    await applyPatch(
-                      ctx,
-                      claimed,
-                      patchFromAnswer(claimed, answer, answerContext(provider)),
-                      { clearWireOpen: true },
-                    );
-                  } catch (lateError) {
-                    logger.error(
-                      {
-                        edcTransactionId: claimed.id,
-                        trace: claimed.trace,
-                        kind: errorKind(lateError),
-                        outcome: answer?.outcome,
-                        approvalCode: answer?.approvalCode,
-                        rrn: answer?.rrn,
-                        amountIdr: claimed.amountIdr,
-                      },
-                      "EDC late sale answer could not be recorded",
-                    );
-                    await setSaleWireOpen(ctx, claimed, false);
-                  }
-                },
-                () => setSaleWireOpen(ctx, claimed, false),
-              ),
+          wireOpen.add(claimed.id);
+          const late = call
+            .then(
+              async (raw) => {
+                let answer: EcrResult | undefined;
+                try {
+                  answer = ecrResultSchema.parse(raw);
+                  await applyPatch(
+                    ctx,
+                    claimed,
+                    patchFromAnswer(claimed, answer, answerContext(provider)),
+                    { clearWireOpen: true },
+                  );
+                } catch (lateError) {
+                  logger.error(
+                    {
+                      edcTransactionId: claimed.id,
+                      trace: claimed.trace,
+                      kind: errorKind(lateError),
+                      outcome: answer?.outcome,
+                      approvalCode: answer?.approvalCode,
+                      rrn: answer?.rrn,
+                      amountIdr: claimed.amountIdr,
+                    },
+                    "EDC late sale answer could not be recorded",
+                  );
+                  await clearSaleWireOpen(ctx, claimed);
+                }
+              },
+              () => clearSaleWireOpen(ctx, claimed),
             )
             .finally(() => wireOpen.delete(claimed.id));
           trackWire(key, late);
-          await marked;
         }
+        clearWire = !wireStillOpen;
       }
-      return applyPatch(ctx, claimed, patch);
+      return applyPatch(ctx, claimed, patch, { clearWireOpen: clearWire });
     });
   }
 
@@ -1478,21 +1574,20 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     }
   }
 
-  /** Marks (or clears) "the adapter call of this sale is still running". Set
-   * when the agent gives up waiting; cleared when the call settles. A plain
-   * update by id, any status. Never throws: the 10-minute dispatch window
-   * still guards the row if this write fails. */
-  async function setSaleWireOpen(
+  /** Clears "the adapter call of this sale is still running" once the call
+   * has settled (the dispatch claim set it). A plain update by id, any
+   * status. Never throws: if this write fails the marker stays (blocks
+   * reconciliation) until the periodic stale sweep (`startSweep`) clears it
+   * past the late-response window. */
+  async function clearSaleWireOpen(
     ctx: ScopedTenantContext,
     row: EdcRow,
-    open: boolean,
   ): Promise<void> {
-    if (open) wireOpen.add(row.id);
     try {
       await withTenant(db, ctx, (tx) =>
         tx
           .update(edcTransactions)
-          .set({ saleWireOpenAt: open ? now() : null })
+          .set({ saleWireOpenAt: null })
           .where(
             and(
               eq(edcTransactions.tenantId, ctx.tenant.tenantId),
@@ -1505,16 +1600,17 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
         {
           edcTransactionId: row.id,
           trace: row.trace,
-          open,
           kind: errorKind(error),
         },
-        "EDC sale wire marker could not be written",
+        "EDC sale wire marker could not be cleared",
       );
     }
   }
 
-  /** An outlet this instance just acquired: a `saleWireOpenAt` left by the
-   * previous process is stale (its adapter call died with it). */
+  /** Owned outlets: a `saleWireOpenAt` left by a previous process is stale
+   * (its adapter call died with it) once the sale is older than the
+   * late-response window. Inside the window another process may still hold
+   * the call, so the marker stays. */
   async function clearStaleWireOpen(
     ctx: ScopedTenantContext,
     outletIds: readonly EdcRow["outletId"][],
@@ -1524,6 +1620,9 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       // `wireOpen` is read here, in the same tick that issues the UPDATE: a
       // call of this process that is still running keeps its marker.
       const live = [...wireOpen];
+      const staleBefore = new Date(
+        now().getTime() - EDC_LATE_RESPONSE_WINDOW_MS,
+      );
       await tx
         .update(edcTransactions)
         .set({ saleWireOpenAt: null })
@@ -1532,6 +1631,10 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
             eq(edcTransactions.tenantId, ctx.tenant.tenantId),
             inArray(edcTransactions.outletId, [...outletIds]),
             isNotNull(edcTransactions.saleWireOpenAt),
+            or(
+              isNull(edcTransactions.dispatchedAt),
+              lt(edcTransactions.dispatchedAt, staleBefore),
+            ),
             live.length > 0 ? notInArray(edcTransactions.id, live) : undefined,
           ),
         );
@@ -1895,6 +1998,9 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
         for (const key of acquired) await releaseOutlet(key);
         throw error;
       }
+      acquired.forEach((key, index) =>
+        startSweep(ctx, key, acquiredOutletIds[index]!),
+      );
     },
 
     async stop(ctx) {
@@ -1909,7 +2015,12 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
 
     async recoverInFlight(ctx) {
       assertTrustedScopedContext(ctx);
-      return recoverPending(ctx);
+      const outletIds = scopeOutletIds(ctx);
+      const recovered = await recoverPending(ctx, outletIds);
+      // Owned (recoverPending refuses otherwise): markers of a dead process
+      // that are past the late-response window go without a restart.
+      await clearStaleWireOpen(ctx, outletIds);
+      return recovered;
     },
   };
 }
