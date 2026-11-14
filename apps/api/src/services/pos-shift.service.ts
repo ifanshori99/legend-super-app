@@ -839,7 +839,11 @@ export async function submitPosShiftCount(
       .orderBy(desc(posShiftCounts.sequence))
       .limit(1);
     // The limit counts the cashier's own counts only: a supervisor's forced
-    // count must not use up the cashier's recounts.
+    // count must not use up the cashier's recounts. A count made before a
+    // supervisor's approved/rejected decision on a held cash out of this shift
+    // no longer uses a recount (legend-9me96): the decision changed the drawer
+    // figures it was made against. 'expired' (no decider) never credits, and
+    // each count is credited at most once (NOT EXISTS, not a join).
     if (!forced) {
       const [own] = await tx
         .select({ n: sql<number>`count(*)::int` })
@@ -849,6 +853,18 @@ export async function submitPosShiftCount(
             eq(posShiftCounts.tenantId, tenantId),
             eq(posShiftCounts.shiftId, shift.id),
             eq(posShiftCounts.forced, false),
+            sql`NOT EXISTS (
+              SELECT 1
+              FROM ${cashMovementOutcomes}
+              INNER JOIN ${cashMovements}
+                ON ${cashMovements.tenantId} = ${cashMovementOutcomes.tenantId}
+                AND ${cashMovements.id} = ${cashMovementOutcomes.movementId}
+              WHERE ${cashMovementOutcomes.tenantId} = ${posShiftCounts.tenantId}
+                AND ${cashMovements.shiftId} = ${posShiftCounts.shiftId}
+                AND ${cashMovementOutcomes.decidedBy} IS NOT NULL
+                AND ${cashMovementOutcomes.outcome} IN ('approved', 'rejected')
+                AND ${cashMovementOutcomes.decidedAt} > ${posShiftCounts.submittedAt}
+            )`,
           ),
         );
       if ((own?.n ?? 0) >= MAX_CASHIER_COUNTS)
