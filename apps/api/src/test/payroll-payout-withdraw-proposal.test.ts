@@ -25,7 +25,7 @@
 //   requested_by, the fixture's REQ) cannot withdraw someone else's proposal;
 //   the exact code is not fixed (PAYOUT-18 style or PAYOUT_REQUESTER_CANNOT_
 //   WITHDRAW 403), so the test only requires a 4xx refusal and unchanged state.
-// - round 2, migration 0608: the database guard lets exactly one rewrite
+// - round 2, migration 0367: the database guard lets exactly one rewrite
 //   through (all four proposal columns NULL at once, exported, no step 2,
 //   nothing else changed). Every other rewrite stays a 23514 check_violation.
 //   The refusal cases pass before 0608 too; the control that clears all four
@@ -470,7 +470,7 @@ describe("legend-5rh26 withdraw a step-1 resolve proposal", () => {
   });
 });
 
-// ---- Database guard (migration 0608) ---------------------------------------
+// ---- Database guard (migration 0367) ---------------------------------------
 // Direct UPDATEs on the item row with the triggers on (the pool owner is a
 // superuser; triggers still fire). Only the one withdraw shape may pass.
 
@@ -512,7 +512,7 @@ async function proposedItem() {
   return { batchId, itemId: idOf(siti), before: JSON.stringify(item) };
 }
 
-describe("migration 0608 database guard on the withdraw", () => {
+describe("migration 0367 database guard on the withdraw", () => {
   it("[0608-db-clear-all-passes] control: clearing all four proposal columns on an exported item with no step 2 passes; status and the rest stay; clearing again is a no-op", async () => {
     const { batchId, itemId, before } = await proposedItem();
     const error = await dbUpdate(itemId, CLEAR_ALL);
