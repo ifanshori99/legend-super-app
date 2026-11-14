@@ -2167,8 +2167,10 @@ describe("i78o6 station KDS config travels cloud -> edge", () => {
 
     // A second change (different on every column) replaces the first one.
     const again = { displayOrder: 2, isActive: true, autoPrintFallback: false };
+    // (the scripted cloud's cursors are positional, so a second pull from the
+    // same position would be empty: apply the fresh export directly instead)
     await setCloudStation(again, 62);
-    await pullOk(scriptedCloud(await exportMine(), 100));
+    await edgeApplyAll(await exportMine());
     expect(await edgeStation()).toEqual(again);
     await expectEdgeEqualsCloud();
   });
@@ -2847,7 +2849,11 @@ describe("97p HTTP: GET /api/edge-sync/catalog", () => {
     const stations = await request(app)
       .get(PATH)
       .set("Authorization", bearer(node.credential))
-      .query({ stream: "stations", limit: 100 });
+      .query({
+        stream: "stations",
+        limit: 100,
+        protocolVersion: CATALOG_PROTOCOL_VERSION,
+      });
     expect(stations.status).toBe(200);
     expect(catalogSyncPageSchema.parse(stations.body).stream).toBe("stations");
     const stationIds = (stations.body.records as Rec[]).map((r) => r.id);
