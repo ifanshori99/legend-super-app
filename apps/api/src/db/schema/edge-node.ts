@@ -312,7 +312,7 @@ export const edgeInboundEvents = pgTable(
     }).notNull(),
     kind: varchar("kind", { length: 20 }).$type<EdgeEventKind>().notNull(),
     outcome: varchar("outcome", { length: 20 })
-      .$type<"applied" | "superseded" | "conflict">()
+      .$type<"applied" | "superseded" | "conflict" | "deferred">()
       .notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true })
       .notNull()
@@ -346,7 +346,7 @@ export const edgeInboundEvents = pgTable(
     check("edge_inbound_events_kind_check", kindCheck(table.kind)),
     check(
       "edge_inbound_events_outcome_check",
-      sql`${table.outcome} IN ('applied', 'superseded', 'conflict')`,
+      sql`${table.outcome} IN ('applied', 'superseded', 'conflict', 'deferred')`,
     ),
   ],
 );
@@ -498,6 +498,10 @@ export const edgeCatalogPublisherCursors = pgTable(
       .$type<CatalogSyncStream>()
       .notNull(),
     watermark: text("watermark"),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    blockedAt: timestamp("blocked_at", { withTimezone: true }),
   },
   (table) => [
     primaryKey({ columns: [table.tenantId, table.edgeNodeId, table.stream] }),

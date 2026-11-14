@@ -22,6 +22,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
+  type CatalogSyncStream,
   conflictResolution,
   EDGE_LINK_AGGREGATE,
   EDGE_LINK_DEAD_LETTERED_EVENT,
@@ -38,6 +39,7 @@ import type {
   EdgeEventKind,
 } from "../db/schema/edge-node.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { logger } from "../lib/logger.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   notifyEdgeSyncConflictRecorded,
@@ -55,6 +57,7 @@ import {
 import { oppositeDirection } from "./protocol.ts";
 import {
   classifyEdgeEvent,
+  EdgeApplyDeferredError,
   EdgeEventUnclassifiedError,
   edgeEventApplier,
   type EdgeApplyMeta,
@@ -76,6 +79,8 @@ export type DbLinkStoreOptions = {
   applier?: EdgeEventApplier<EdgeTx>;
   /** Must return a kind; null/throw refuses the batch (ports.ts, fail closed). */
   classify?: EdgeEventClassifier;
+  /** Called once after commit when catalog references need HTTP recovery. */
+  onDeferred?: (streams: CatalogSyncStream[]) => void;
 };
 
 /**
@@ -134,21 +139,31 @@ export function isDomainRefusal(error: unknown): boolean {
 }
 
 /**
- * Runs the applier in a savepoint. Returns null when it applied, or the
- * refusal text (max 500 characters) after rolling the savepoint back.
+ * Runs the applier in a savepoint. A domain refusal or a missing catalog
+ * reference rolls back only that event's writes.
  */
 async function applyOrRefuse(
   tx: EdgeTx,
   applier: EdgeEventApplier<EdgeTx>,
   event: EventEnvelope,
   meta: EdgeApplyMeta,
-): Promise<string | null> {
+): Promise<
+  | { type: "applied" }
+  | { type: "deferred"; stream: CatalogSyncStream }
+  | { type: "refused"; detail: string }
+> {
   try {
     await tx.transaction((savepoint) => applier.apply(savepoint, event, meta));
-    return null;
+    return { type: "applied" };
   } catch (error) {
+    if (
+      error instanceof EdgeApplyDeferredError &&
+      meta.kind === "master_data" &&
+      meta.direction === "cloud_to_edge"
+    )
+      return { type: "deferred", stream: error.stream };
     if (!isDomainRefusal(error)) throw error;
-    return (error as Error).message.slice(0, 500);
+    return { type: "refused", detail: (error as Error).message.slice(0, 500) };
   }
 }
 
@@ -497,6 +512,7 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
     },
 
     async applyInbound({ fromSeq, toSeq, events }) {
+      const deferredStreams = new Set<CatalogSyncStream>();
       const applier: EdgeEventApplier<EdgeTx> =
         options.applier ?? edgeEventApplier(inbound);
       const classifyOption = options.classify;
@@ -570,16 +586,19 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
             decision.reason === "already_received"
           )
             continue;
-          let outcome: "applied" | "superseded" | "conflict";
+          let outcome: "applied" | "superseded" | "conflict" | "deferred";
           if (decision.action === "apply") {
             // Savepoint: a domain refusal (CoreError / 4xx) must not roll
             // back the whole batch and stall the node's sync forever
             // (legend-wqc6). It becomes a conflict a supervisor can review;
             // anything else (unwired applier, unclassified event, database
             // failure) still aborts the batch so the sender keeps it queued.
-            const refusal = await applyOrRefuse(tx, applier, event, meta);
-            if (refusal === null) {
+            const result = await applyOrRefuse(tx, applier, event, meta);
+            if (result.type === "applied") {
               outcome = "applied";
+            } else if (result.type === "deferred") {
+              outcome = "deferred";
+              deferredStreams.add(result.stream);
             } else {
               outcome = "conflict";
               await recordConflict(tx, {
@@ -589,7 +608,7 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
                 reason: "applier_refused",
                 resolution: conflictResolution(kind),
                 lastSequence,
-                detail: refusal,
+                detail: result.detail,
               });
             }
           } else if (decision.action === "skip") {
@@ -622,6 +641,15 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
             sql`UPDATE edge_nodes SET last_sync_cursor = ${String(toSeq + offset)}, updated_at = now() WHERE id = ${nodeId}::uuid`,
           );
       });
+      if (deferredStreams.size > 0 && options.onDeferred) {
+        try {
+          options.onDeferred([...deferredStreams]);
+        } catch {
+          // The transaction already committed; the periodic HTTP pull remains
+          // the recovery path. Never make a committed batch look unacknowledged.
+          logger.warn("Unable to wake catalog recovery after a deferred event");
+        }
+      }
     },
   };
 }

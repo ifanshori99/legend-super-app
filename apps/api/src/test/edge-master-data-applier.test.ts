@@ -2,7 +2,16 @@
 // versions are safe. Exercise the installed ports through the real receive
 // transaction: catalog writes, receipts and the inbound cursor commit together.
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { sql } from "drizzle-orm";
 import {
   createUlid,
   encodeCursor,
@@ -23,6 +32,7 @@ import {
   type EventEnvelope,
 } from "@starter/shared/events";
 import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
 import { resetEdgeApplierRegistryForTests } from "../edge/applier-registry.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
 import { EdgeCloudHttpError } from "../edge/cloud-http.ts";
@@ -187,6 +197,230 @@ async function receipts() {
 }
 
 describe("legend-3x9l full-state master-data down-sync", () => {
+  it("defers a missing item without blocking later records and wakes after commit", async () => {
+    const record = {
+      id: randomUUID(),
+      tenantId: world.tenantId,
+      menuItemId: randomUUID(),
+      name: "Variant",
+      recipeId: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      deletedAt: null,
+      syncTxid: "1",
+    };
+    const deferred = catalogEvent(record, {}, "item_variants");
+    const next = station();
+    const afterCommit = vi.fn(async () => {
+      expect(await receipts()).toMatchObject([
+        { outcome: "deferred" },
+        { outcome: "applied" },
+      ]);
+    });
+    const options = {
+      database: db,
+      context: node.context,
+      node: node.scope,
+      outboundDirection: "edge_to_cloud" as const,
+      onDeferred: afterCommit,
+    };
+    const link = createDbLinkStore(options);
+    await link.applyInbound({
+      fromSeq: 0,
+      toSeq: 2,
+      events: [
+        { linkSeq: 1, event: deferred },
+        { linkSeq: 2, event: catalogEvent(next) },
+      ],
+    });
+    expect(await link.lastReceivedInbound()).toBe(2);
+    expect(await storedStation(next.id)).toMatchObject({ name: "Coffee bar" });
+    expect(await receipts()).toMatchObject([
+      { outcome: "deferred" },
+      { outcome: "applied" },
+    ]);
+    expect(afterCommit).toHaveBeenCalledOnce();
+    expect(afterCommit).toHaveBeenCalledWith(["item_variants"]);
+  });
+
+  it("defers a real missing category foreign key without blocking the next event", async () => {
+    const parent = category();
+    const item = {
+      id: randomUUID(),
+      tenantId: world.tenantId,
+      brandId: world.brandId,
+      categoryId: parent.id,
+      name: "Drink",
+      description: "",
+      type: "single",
+      stationId: null,
+      stationType: null,
+      course: null,
+      recipeId: null,
+      taxRuleId: null,
+      labels: [],
+      allergens: [],
+      mediaId: null,
+      isActive: true,
+      sortOrder: 0,
+      createdAt: NOW,
+      updatedAt: NOW,
+      deletedAt: null,
+      syncTxid: "1",
+    };
+    await deliver(
+      catalogEvent(item, {}, "menu_items"),
+      catalogEvent(parent, {}, "menu_categories"),
+    );
+    expect(await store().lastReceivedInbound()).toBe(2);
+    expect(await receipts()).toMatchObject([
+      { outcome: "deferred" },
+      { outcome: "applied" },
+    ]);
+    const rows = await owner.query(
+      `SELECT id FROM menu_categories WHERE id = $1`,
+      [parent.id],
+    );
+    expect(rows.rows).toHaveLength(1);
+  });
+
+  it("does not hold a newer event after a deferred version or allow an older HTTP version to overwrite it", async () => {
+    const itemId = randomUUID();
+    const record = {
+      id: randomUUID(),
+      tenantId: world.tenantId,
+      menuItemId: itemId,
+      name: "Deferred",
+      recipeId: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      deletedAt: null,
+      syncTxid: "1",
+    };
+    await deliver(catalogEvent(record, {}, "item_variants"));
+    const categoryId = randomUUID();
+    await owner.query(
+      `INSERT INTO menu_categories (id, tenant_id, brand_id, name) VALUES ($1, $2, $3, 'Category')`,
+      [categoryId, world.tenantId, world.brandId],
+    );
+    await owner.query(
+      `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name) VALUES ($1, $2, $3, $4, 'Item')`,
+      [itemId, world.tenantId, world.brandId, categoryId],
+    );
+    await deliver(
+      catalogEvent(
+        { ...record, name: "Newer", syncTxid: "9" },
+        {},
+        "item_variants",
+      ),
+    );
+    const result = await pullCatalog({
+      database: db,
+      context: node.context,
+      edgeNodeId: node.scope.edgeNodeId,
+      streams: ["item_variants"],
+      fetchPage: async (stream) => ({
+        protocolVersion: CATALOG_PROTOCOL_VERSION,
+        stream,
+        records: [record],
+        nextCursor: encodeCursor(["cat2", "1", record.id]),
+        hasMore: false,
+      }),
+    });
+    expect(result.streams.item_variants?.error).toBeUndefined();
+    const stored = await owner.query(
+      `SELECT name, sync_txid::text FROM item_variants WHERE id = $1`,
+      [record.id],
+    );
+    expect(stored.rows).toEqual([{ name: "Newer", sync_txid: "9" }]);
+    expect(await receipts()).toMatchObject([
+      { outcome: "deferred" },
+      { outcome: "applied" },
+    ]);
+  });
+
+  it("applies a deferred tombstone during catalog pull after its missing parent arrives", async () => {
+    const itemId = randomUUID();
+    const record = {
+      id: randomUUID(),
+      tenantId: world.tenantId,
+      menuItemId: itemId,
+      name: "Deleted variant",
+      recipeId: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      deletedAt: NOW,
+      syncTxid: "7",
+    };
+    await deliver(catalogEvent(record, {}, "item_variants"));
+    expect(await receipts()).toMatchObject([{ outcome: "deferred" }]);
+    const categoryId = randomUUID();
+    await owner.query(
+      `INSERT INTO menu_categories (id, tenant_id, brand_id, name) VALUES ($1, $2, $3, 'Category')`,
+      [categoryId, world.tenantId, world.brandId],
+    );
+    await owner.query(
+      `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name) VALUES ($1, $2, $3, $4, 'Item')`,
+      [itemId, world.tenantId, world.brandId, categoryId],
+    );
+    const result = await pullCatalog({
+      database: db,
+      context: node.context,
+      edgeNodeId: node.scope.edgeNodeId,
+      streams: ["item_variants"],
+      fetchPage: async (stream) => ({
+        protocolVersion: CATALOG_PROTOCOL_VERSION,
+        stream,
+        records: [record],
+        nextCursor: encodeCursor(["cat2", "7", record.id]),
+        hasMore: false,
+      }),
+    });
+    expect(result.streams.item_variants?.error).toBeUndefined();
+    const stored = await owner.query(
+      `SELECT deleted_at FROM item_variants WHERE id = $1`,
+      [record.id],
+    );
+    expect(stored.rows).toHaveLength(1);
+    expect(stored.rows[0].deleted_at).not.toBeNull();
+  });
+
+  it("restricts deferred receipts to the correct tenant and outlet", async () => {
+    const record = {
+      id: randomUUID(),
+      tenantId: world.tenantId,
+      menuItemId: randomUUID(),
+      name: "Variant",
+      recipeId: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      deletedAt: null,
+      syncTxid: "1",
+    };
+    await deliver(catalogEvent(record, {}, "item_variants"));
+    const otherWorld = await createWorld();
+    const scoped = (tenant: string, outlet: string) =>
+      establishScopedTenantContext(
+        establishTenantContext({
+          tenantId: tenantIdSchema.parse(tenant),
+          brandId: null,
+          source: "session",
+        }),
+        { kind: "outlets", outletIds: [outletIdSchema.parse(outlet)] },
+      );
+    const visible = async (tenant: string, outlet: string) =>
+      withTenant(db, scoped(tenant, outlet), async (tx) => {
+        const rows = await tx.execute(
+          sql`SELECT event_id FROM edge_inbound_events WHERE edge_node_id = ${node.scope.edgeNodeId}::uuid AND outcome = 'deferred'`,
+        );
+        return rows.rows;
+      });
+    expect(await visible(world.tenantId, world.outletA)).toHaveLength(1);
+    expect(await visible(world.tenantId, world.outletB)).toHaveLength(0);
+    expect(await visible(otherWorld.tenantId, otherWorld.outletA)).toHaveLength(
+      0,
+    );
+  });
   it("classifies the dedicated catalog aggregate as master_data", () => {
     expect(classifyEdgeEvent(catalogEvent(station()), "cloud_to_edge")).toBe(
       "master_data",
@@ -478,6 +712,69 @@ describe("legend-3x9l full-state master-data down-sync", () => {
     ]);
   });
 
+  it("rolls back a printer deletion blocked by a foreign key instead of treating it as a missing reference", async () => {
+    const printer = {
+      id: randomUUID(),
+      tenantId: world.tenantId,
+      outletId: world.outletA,
+      label: "Fallback",
+      role: "receipt",
+      stationId: null,
+      transport: "network",
+      host: "192.168.1.50",
+      port: 9100,
+      devicePath: null,
+      paperWidth: 48,
+      fallbackPrinterId: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      deletedAt: null,
+      syncTxid: "1",
+    };
+    const dependent = {
+      ...printer,
+      id: randomUUID(),
+      label: "Main",
+      host: "192.168.1.51",
+      fallbackPrinterId: printer.id,
+    };
+    await deliver(
+      catalogEvent(printer, {}, "printers"),
+      catalogEvent(dependent, {}, "printers"),
+    );
+    const tombstone = {
+      id: printer.id,
+      tenantId: world.tenantId,
+      outletId: world.outletA,
+      deletedAt: NOW,
+      syncTxid: "9",
+    };
+    await owner.query(
+      `CREATE TABLE edge_test_delete_ref (printer_id uuid REFERENCES edge_printers(id))`,
+    );
+    try {
+      await owner.query(
+        `INSERT INTO edge_test_delete_ref (printer_id) VALUES ($1)`,
+        [printer.id],
+      );
+      await expect(
+        deliver(catalogEvent(tombstone, {}, "printers")),
+      ).rejects.toThrow();
+      expect(await store().lastReceivedInbound()).toBe(2);
+      expect(await receipts()).toMatchObject([
+        { outcome: "applied" },
+        { outcome: "applied" },
+      ]);
+      const remaining = await owner.query(
+        `SELECT id FROM edge_printers WHERE tenant_id = $1 AND id = $2`,
+        [world.tenantId, printer.id],
+      );
+      expect(remaining.rows).toHaveLength(1);
+    } finally {
+      await owner.query(`DROP TABLE edge_test_delete_ref`);
+    }
+  });
+
   it("rejects an envelope for a sibling outlet without moving the cursor", async () => {
     const record = station({ outletId: world.outletB });
     await expect(
@@ -600,7 +897,7 @@ describe("legend-3x9l full-state master-data down-sync", () => {
     expect(await receipts()).toMatchObject([{ outcome: "conflict" }]);
   });
 
-  it("repairs a category parent arriving after its child's full-state event", async () => {
+  it("defers a child until its parent arrives and HTTP pull restores the child", async () => {
     const parent = category({ name: "Parent", syncTxid: "9" });
     const child = category({ name: "Child", parentId: parent.id });
     const readChild = async () => {
@@ -615,11 +912,25 @@ describe("legend-3x9l full-state master-data down-sync", () => {
       return result.rows[0];
     };
     await deliver(catalogEvent(child, {}, "menu_categories"));
-    expect(await readChild()).toEqual({ parent_id: null, sync_txid: "1" });
+    expect(await readChild()).toBeUndefined();
     await deliver(catalogEvent(parent, {}, "menu_categories"));
+    const result = await pullCatalog({
+      database: db,
+      context: node.context,
+      edgeNodeId: node.scope.edgeNodeId,
+      streams: ["menu_categories"],
+      fetchPage: async (stream) => ({
+        protocolVersion: CATALOG_PROTOCOL_VERSION,
+        stream,
+        records: [child],
+        nextCursor: encodeCursor(["cat2", "1", String(child.id)]),
+        hasMore: false,
+      }),
+    });
+    expect(result.streams.menu_categories?.error).toBeUndefined();
     expect(await readChild()).toEqual({ parent_id: parent.id, sync_txid: "1" });
     expect(await receipts()).toMatchObject([
-      { outcome: "applied" },
+      { outcome: "deferred" },
       { outcome: "applied" },
     ]);
   });
@@ -627,16 +938,19 @@ describe("legend-3x9l full-state master-data down-sync", () => {
   it("refuses a partial record instead of treating a change hint as full state", async () => {
     const record = station();
     const event = catalogEvent(record);
-    await deliver(
-      eventEnvelopeSchema.parse({
-        ...event,
-        payload: {
-          stream: "stations",
-          record: { id: record.id, tenantId: world.tenantId, syncTxid: "1" },
-        },
-      }),
-    );
+    await expect(
+      deliver(
+        eventEnvelopeSchema.parse({
+          ...event,
+          payload: {
+            stream: "stations",
+            record: { id: record.id, tenantId: world.tenantId, syncTxid: "1" },
+          },
+        }),
+      ),
+    ).rejects.toThrow();
     expect(await storedStation(record.id)).toBeUndefined();
-    expect(await receipts()).toMatchObject([{ outcome: "conflict" }]);
+    expect(await receipts()).toEqual([]);
+    expect(await store().lastReceivedInbound()).toBe(0);
   });
 });

@@ -375,7 +375,7 @@ async function requirePromotionOutlet(tx: Tx, outletId: string): Promise<void> {
     refuse("Catalog promotion belongs to another outlet.");
 }
 
-const STREAM_TABLES: Readonly<Record<CatalogSyncStream, PgTable>> = {
+export const STREAM_TABLES: Readonly<Record<CatalogSyncStream, PgTable>> = {
   stations,
   printers: edgePrinters,
   inventory_items: inventoryItems,

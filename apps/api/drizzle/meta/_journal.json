@@ -2467,9 +2467,9 @@
       "breakpoints": true
     },
     {
-      "idx": 366,
+      "idx": 373,
       "version": "7",
-      "when": 1794660807275,
+      "when": 1794661468925,
       "tag": "0373_edge_catalog_publisher",
       "breakpoints": true
     }

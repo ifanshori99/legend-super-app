@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { outletIdSchema, tenantIdSchema } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import { db } from "../db/index.ts";
+import { logger } from "../lib/logger.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
 import {
   publishCatalogForNode,
@@ -74,6 +75,81 @@ beforeAll(async () => {
 afterAll(async () => owner.end());
 
 describe("legend-3k41y master-data publication", () => {
+  it("blocks a changed brand once while allowing another node and a reprovisioned node", async () => {
+    const local = await createWorld();
+    const oldNode = await node(local, local.outletA);
+    const otherNode = await node(local, local.outletB);
+    const newBrand = randomUUID();
+    await owner.query(
+      `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, $3, 'New brand')`,
+      [newBrand, local.tenantId, `brand-${newBrand}`],
+    );
+    await publish(local, local.outletA, oldNode, "menu_categories");
+    await owner.query(`UPDATE outlets SET brand_id = $1 WHERE id = $2`, [
+      newBrand,
+      local.outletA,
+    ]);
+    const category = randomUUID();
+    await owner.query(
+      `INSERT INTO menu_categories (id, tenant_id, brand_id, name) VALUES ($1, $2, $3, 'New brand category')`,
+      [category, local.tenantId, newBrand],
+    );
+    await settleCloud(owner);
+    const warning = vi.spyOn(logger, "warn");
+    try {
+      await publish(local, local.outletA, oldNode, "menu_categories");
+      await publish(local, local.outletA, oldNode, "menu_categories");
+      const state = await owner.query(
+        `SELECT blocked_at FROM edge_catalog_publisher_cursors WHERE edge_node_id = $1`,
+        [oldNode],
+      );
+      expect(state.rows.length).toBeGreaterThan(0);
+      expect(state.rows.every((row) => row.blocked_at !== null)).toBe(true);
+      expect(
+        warning.mock.calls.filter((args) =>
+          String(args[1]).includes("Catalog publisher blocked"),
+        ),
+      ).toHaveLength(1);
+      expect(JSON.stringify(await events(oldNode))).not.toContain(category);
+      await expect(
+        publish(local, local.outletB, otherNode, "menu_categories"),
+      ).resolves.toBeDefined();
+      await owner.query(
+        `UPDATE edge_nodes SET status = 'revoked', revoked_at = now() WHERE id = $1`,
+        [oldNode],
+      );
+      const replacement = await node(local, local.outletA);
+      await publish(local, local.outletA, replacement, "menu_categories");
+      expect(JSON.stringify(await events(replacement))).toContain(category);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+  it("can rescan after a cursor reset without enqueueing old versions", async () => {
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO menu_categories (id, tenant_id, brand_id, name) VALUES ($1, $2, $3, 'Reset cursor')`,
+      [id, world.tenantId, world.brandId],
+    );
+    await settleCloud(owner);
+    await publish(world, world.outletA, nodeA, "menu_categories");
+    const before = (await events(nodeA)).filter((event) =>
+      JSON.stringify(event.payload).includes(id),
+    );
+    expect(before).toHaveLength(1);
+    await owner.query(
+      `UPDATE edge_catalog_publisher_cursors SET watermark = NULL WHERE edge_node_id = $1 AND stream = 'menu_categories'`,
+      [nodeA],
+    );
+    await expect(
+      publish(world, world.outletA, nodeA, "menu_categories"),
+    ).resolves.toBeDefined();
+    expect(
+      (await events(nodeA)).filter((event) =>
+        JSON.stringify(event.payload).includes(id),
+      ),
+    ).toHaveLength(1);
+  });
   it("does not stack overlapping sweeps and waits for the active sweep on stop", async () => {
     vi.useFakeTimers();
     let finish!: () => void;

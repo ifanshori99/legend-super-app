@@ -541,10 +541,11 @@ export async function applyEdgeMasterSnapshotInTransaction(
 export async function applyEdgeMasterSnapshot(
   claims: Claims,
   snapshot: EdgeMasterSnapshot,
+  database: typeof db = db,
 ): Promise<EdgeMasterSyncCounts> {
   assertScope(claims, snapshot);
   try {
-    return await withTenant(db, edgeNodeContext(claims), (tx) =>
+    return await withTenant(database, edgeNodeContext(claims), (tx) =>
       applyEdgeMasterSnapshotInTransaction(tx, claims, snapshot),
     );
   } catch (error) {
@@ -558,12 +559,13 @@ export async function applyEdgeMasterSnapshot(
 export async function syncEdgeMasters(
   config: EdgeBootstrapConfig,
   options: EdgeBootstrapOptions = {},
+  database: typeof db = db,
 ): Promise<EdgeMasterSyncCounts> {
   const claims = parseEdgeCredential(config.credential);
   if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
   guardMasterImport();
   const snapshot = await fetchVerifiedMasterSnapshot(config, options);
-  return applyEdgeMasterSnapshot(claims, snapshot);
+  return applyEdgeMasterSnapshot(claims, snapshot, database);
 }
 
 /** A catalog stream stopped early (legend-24318); code only, never record data. */
@@ -596,6 +598,8 @@ export function startEdgeMasterSyncLoop(input: {
   intervalMs: number;
   onError?: (error: unknown) => void;
   options?: EdgeBootstrapOptions;
+  /** Default: local pool; tests can exercise a separate edge database. */
+  database?: typeof db;
   /**
    * Optional overrides of the catalog pull. By default the node's scope and
    * `edge_nodes.id` come from the credential, like the masters apply.
@@ -619,7 +623,7 @@ export function startEdgeMasterSyncLoop(input: {
     onServerTime?: (serverTime: Date) => void;
   };
   catalogOnStart?: boolean;
-}): { stop(): Promise<void> } {
+}): { requestRun(): void; stop(): Promise<void> } {
   if (
     !Number.isFinite(input.intervalMs) ||
     input.intervalMs < MIN_SYNC_INTERVAL_MS
@@ -630,6 +634,8 @@ export function startEdgeMasterSyncLoop(input: {
   const abort = new AbortController();
   let inFlight: Promise<void> | null = null;
   let stopped = false;
+  let wakeTimer: ReturnType<typeof setTimeout> | null = null;
+  let wakePending = false;
 
   const report = (error: unknown) => {
     // stop() aborts an in-flight fetch: a normal shutdown, not an error.
@@ -666,6 +672,7 @@ export function startEdgeMasterSyncLoop(input: {
         context,
         edgeNodeId,
         fetchPage: fetchCatalogPage,
+        database: input.database,
         // The persisted success stamp must use the same clock as the live
         // freshness tracker; a rolled-back wall clock must not age a fresh
         // catalog immediately, including after the next restart.
@@ -727,10 +734,11 @@ export function startEdgeMasterSyncLoop(input: {
     const run = (async () => {
       if (withMasters)
         try {
-          const counts = await syncEdgeMasters(input.config, {
-            ...input.options,
-            signal: abort.signal,
-          });
+          const counts = await syncEdgeMasters(
+            input.config,
+            { ...input.options, signal: abort.signal },
+            input.database,
+          );
           logger.debug({ ...counts }, "Edge master sync applied");
         } catch (error) {
           report(error);
@@ -743,6 +751,10 @@ export function startEdgeMasterSyncLoop(input: {
       }
     })().finally(() => {
       if (inFlight === run) inFlight = null;
+      if (!stopped && wakePending) {
+        wakePending = false;
+        tick();
+      }
     });
     inFlight = run;
   };
@@ -752,10 +764,23 @@ export function startEdgeMasterSyncLoop(input: {
   if (input.catalogOnStart === true) tick(false);
 
   return {
+    requestRun() {
+      if (stopped || wakeTimer || wakePending) return;
+      wakeTimer = setTimeout(() => {
+        wakeTimer = null;
+        if (stopped) return;
+        if (inFlight) wakePending = true;
+        else tick();
+      }, 30_000);
+      wakeTimer.unref();
+    },
     async stop() {
       stopped = true;
       abort.abort();
       clearInterval(timer);
+      if (wakeTimer) clearTimeout(wakeTimer);
+      wakeTimer = null;
+      wakePending = false;
       if (inFlight) await inFlight;
     },
   };

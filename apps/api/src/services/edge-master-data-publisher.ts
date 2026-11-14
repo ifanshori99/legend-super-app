@@ -13,13 +13,13 @@ import {
 } from "@starter/shared/edge";
 import { db } from "../db/index.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
-import { outlets, tenants } from "../db/schema/platform-org.ts";
+import { tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { catalogRecordIdFromKeys } from "../lib/edge-catalog-identity.ts";
 import { logger } from "../lib/logger.ts";
 import { outletContext } from "./device-pin-support.ts";
 import { listCatalogRecordsSinceTx } from "./edge-catalog-sync.ts";
-import { enqueueEdgeEvent } from "./edge-queue.service.ts";
+import { enqueueEdgeEvent, lockSyncCursor } from "./edge-queue.service.ts";
 import type { VerifiedEdgeNode } from "./staff-pin-sync.ts";
 
 type Database = typeof db;
@@ -29,6 +29,8 @@ type PublisherNode = {
   edgeNodeId: string;
   stream: CatalogSyncStream;
 };
+
+class PublisherBrandChanged extends Error {}
 
 /** Publish a page; repeated calls progress through a stream without gaps. */
 export async function publishCatalogForNode(
@@ -44,79 +46,104 @@ export async function publishCatalogForNode(
     input.outletId,
   );
   return withTenant(database, context, async (tx) => {
-    const [node] = await tx
-      .select({ brandId: outlets.brandId })
-      .from(edgeNodes)
-      .innerJoin(
-        outlets,
-        and(
-          eq(outlets.tenantId, edgeNodes.tenantId),
-          eq(outlets.id, edgeNodes.outletId),
-        ),
-      )
-      .where(
-        and(
-          eq(edgeNodes.id, input.edgeNodeId),
-          eq(edgeNodes.tenantId, input.tenantId),
-          eq(edgeNodes.outletId, input.outletId),
-          eq(edgeNodes.status, "active"),
-        ),
-      )
-      .limit(1);
+    // A node lock serializes all streams, including a brand-change block.
+    const nodes = await tx.execute(
+      sql`SELECT o.brand_id FROM edge_nodes n JOIN outlets o ON o.tenant_id = n.tenant_id AND o.id = n.outlet_id WHERE n.id = ${input.edgeNodeId}::uuid AND n.tenant_id = ${input.tenantId}::uuid AND n.outlet_id = ${input.outletId}::uuid AND n.status = 'active' FOR NO KEY UPDATE OF n`,
+    );
+    const node = nodes.rows[0];
     if (!node)
       throw new CoreError("FORBIDDEN", "Catalog publisher node is unavailable");
+    const brandId = String(node.brand_id);
+    const blocked = await tx.execute(
+      sql`SELECT 1 FROM edge_catalog_publisher_cursors WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND blocked_at IS NOT NULL LIMIT 1`,
+    );
+    if (blocked.rows.length) return 0;
     await tx.execute(
-      sql`INSERT INTO edge_catalog_publisher_cursors (tenant_id, outlet_id, edge_node_id, brand_id, stream) VALUES (${input.tenantId}::uuid, ${input.outletId}::uuid, ${input.edgeNodeId}::uuid, ${node.brandId}::uuid, ${input.stream}) ON CONFLICT DO NOTHING`,
+      sql`INSERT INTO edge_catalog_publisher_cursors (tenant_id, outlet_id, edge_node_id, brand_id, stream) VALUES (${input.tenantId}::uuid, ${input.outletId}::uuid, ${input.edgeNodeId}::uuid, ${brandId}::uuid, ${input.stream}) ON CONFLICT DO NOTHING`,
     );
     const locked = await tx.execute(
       sql`SELECT brand_id, watermark FROM edge_catalog_publisher_cursors WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND stream = ${input.stream} FOR UPDATE`,
     );
     const cursor = locked.rows[0];
-    if (!cursor || String(cursor.brand_id) !== node.brandId)
-      throw new CoreError(
-        "CONFLICT",
-        "Catalog publisher requires reprovisioning after outlet brand changes",
-      );
-    const page = await listCatalogRecordsSinceTx(tx, {
-      tenantId: input.tenantId,
-      outletId: input.outletId,
-      query: {
-        stream: input.stream,
-        limit: 100,
-        ...(cursor.watermark ? { since: String(cursor.watermark) } : {}),
-      },
-    });
-    for (const record of page.records) {
-      const keys =
-        "id" in record ? [record.id] : [record.menuItemId, record.groupId];
-      const aggregateId = catalogRecordIdFromKeys(input.stream, keys);
-      const event = catalogRecordUpdatedEvent.envelopeSchema.parse({
-        id: createUlid(),
-        tenantId: input.tenantId,
-        outletId: input.outletId,
-        name: catalogRecordUpdatedEvent.name,
-        version: catalogRecordUpdatedEvent.version,
-        aggregateType: catalogRecordUpdatedEvent.entry.aggregateType,
-        aggregateId,
-        sequence: Number(record.syncTxid),
-        occurredAt: new Date().toISOString(),
-        actor: { type: "system" },
-        deviceId: null,
-        idempotencyKey: `catalog:${aggregateId}:${record.syncTxid}`,
-        payloadSchemaRef: catalogRecordUpdatedEvent.payloadSchemaRef,
-        payload: { stream: input.stream, record },
-      });
-      await enqueueEdgeEvent(tx, context, {
-        edgeNodeId: input.edgeNodeId,
-        direction: "cloud_to_edge",
-        kind: "master_data",
-        event,
-      });
-    }
-    await tx.execute(
-      sql`UPDATE edge_catalog_publisher_cursors SET watermark = ${page.nextCursor} WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND stream = ${input.stream}`,
+    if (!cursor) throw new Error("Catalog publisher cursor is unavailable");
+    const priorBrands = await tx.execute(
+      sql`SELECT 1 FROM edge_catalog_publisher_cursors WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND brand_id <> ${brandId}::uuid LIMIT 1`,
     );
-    return page.records.length;
+    try {
+      if (priorBrands.rows.length) throw new PublisherBrandChanged();
+      return await tx.transaction(async (scanTx) => {
+        // Hold the outlet stable through serialization and queue insertion.
+        // Comparing only the two reads permits A -> B -> A during the scan.
+        const before = await scanTx.execute(
+          sql`SELECT brand_id FROM outlets WHERE tenant_id = ${input.tenantId}::uuid AND id = ${input.outletId}::uuid FOR SHARE`,
+        );
+        if (!before.rows[0] || String(before.rows[0].brand_id) !== brandId)
+          throw new PublisherBrandChanged();
+        const page = await listCatalogRecordsSinceTx(scanTx, {
+          tenantId: input.tenantId,
+          outletId: input.outletId,
+          query: {
+            stream: input.stream,
+            limit: 100,
+            ...(cursor.watermark ? { since: String(cursor.watermark) } : {}),
+          },
+        });
+        // Recheck the brand after the scan; the held lock protects it through commit.
+        const after = await scanTx.execute(
+          sql`SELECT brand_id FROM outlets WHERE tenant_id = ${input.tenantId}::uuid AND id = ${input.outletId}::uuid FOR SHARE`,
+        );
+        if (!after.rows[0] || String(after.rows[0].brand_id) !== brandId)
+          throw new PublisherBrandChanged();
+        await lockSyncCursor(scanTx, input, "cloud_to_edge");
+        for (const record of page.records) {
+          const keys =
+            "id" in record ? [record.id] : [record.menuItemId, record.groupId];
+          const aggregateId = catalogRecordIdFromKeys(input.stream, keys);
+          const last = await scanTx.execute(
+            sql`SELECT GREATEST((SELECT MAX(aggregate_sequence) FROM edge_outbound_queue WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND direction = 'cloud_to_edge' AND aggregate_type = ${catalogRecordUpdatedEvent.entry.aggregateType} AND aggregate_id = ${aggregateId}), (SELECT MAX(aggregate_sequence) FROM edge_link_dead_letters WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND direction = 'cloud_to_edge' AND aggregate_type = ${catalogRecordUpdatedEvent.entry.aggregateType} AND aggregate_id = ${aggregateId})) AS last`,
+          );
+          if (Number(last.rows[0]?.last ?? 0) >= Number(record.syncTxid))
+            continue;
+          const event = catalogRecordUpdatedEvent.envelopeSchema.parse({
+            id: createUlid(),
+            tenantId: input.tenantId,
+            outletId: input.outletId,
+            name: catalogRecordUpdatedEvent.name,
+            version: catalogRecordUpdatedEvent.version,
+            aggregateType: catalogRecordUpdatedEvent.entry.aggregateType,
+            aggregateId,
+            sequence: Number(record.syncTxid),
+            occurredAt: new Date().toISOString(),
+            actor: { type: "system" },
+            deviceId: null,
+            idempotencyKey: `catalog:${aggregateId}:${record.syncTxid}`,
+            payloadSchemaRef: catalogRecordUpdatedEvent.payloadSchemaRef,
+            payload: { stream: input.stream, record },
+          });
+          await enqueueEdgeEvent(scanTx, context, {
+            edgeNodeId: input.edgeNodeId,
+            direction: "cloud_to_edge",
+            kind: "master_data",
+            event,
+          });
+        }
+        await scanTx.execute(
+          sql`UPDATE edge_catalog_publisher_cursors SET watermark = ${page.nextCursor}, updated_at = now() WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND stream = ${input.stream} AND watermark IS DISTINCT FROM ${page.nextCursor}`,
+        );
+        return page.records.length;
+      });
+    } catch (error) {
+      if (!(error instanceof PublisherBrandChanged)) throw error;
+      const changed = await tx.execute(
+        sql`UPDATE edge_catalog_publisher_cursors SET blocked_at = now(), updated_at = now() WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND blocked_at IS NULL RETURNING edge_node_id`,
+      );
+      if (changed.rows.length)
+        logger.warn(
+          { tenantId: input.tenantId, edgeNodeId: input.edgeNodeId },
+          "Catalog publisher blocked: outlet brand changed; reprovision node",
+        );
+      return 0;
+    }
   });
 }
 
@@ -143,6 +170,7 @@ export async function sweepCatalogPublisher(database: Database): Promise<void> {
             and(
               eq(edgeNodes.tenantId, tenantId),
               eq(edgeNodes.status, "active"),
+              sql`NOT EXISTS (SELECT 1 FROM edge_catalog_publisher_cursors c WHERE c.tenant_id = ${edgeNodes.tenantId} AND c.edge_node_id = ${edgeNodes.id} AND c.blocked_at IS NOT NULL)`,
             ),
           ),
     ).catch((error: unknown) => {

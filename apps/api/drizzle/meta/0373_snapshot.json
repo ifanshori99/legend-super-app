@@ -1,5 +1,5 @@
 {
-  "id": "f82b37ca-822a-418f-9dda-b38967207e97",
+  "id": "af9aab35-8073-43f1-a6f6-9ecec780f920",
   "prevId": "d100dcd1-bbb9-483b-a6f3-1b2cdd4f9c50",
   "version": "7",
   "dialect": "postgresql",
@@ -46485,6 +46485,19 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "blocked_at": {
+          "name": "blocked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -46736,7 +46749,7 @@
         },
         "edge_inbound_events_outcome_check": {
           "name": "edge_inbound_events_outcome_check",
-          "value": "\"edge_inbound_events\".\"outcome\" IN ('applied', 'superseded', 'conflict')"
+          "value": "\"edge_inbound_events\".\"outcome\" IN ('applied', 'superseded', 'conflict', 'deferred')"
         }
       },
       "isRLSEnabled": false
