@@ -22,6 +22,9 @@
 //   861-E  the card is never charged twice: while the marker is open no second
 //          sale is dispatched, not by the same agent and not by the process
 //          that took the outlet over.
+//   861-G  fail-stop: an agent that loses its outlet lock while it still has a
+//          live adapter call reports it through `onFatal` (production default:
+//          log fatal and exit(1)); without a live call nothing is reported.
 //
 // Assumptions (the brief does not fix these; also in the report):
 // - Another process is simulated by a second `createEdcAgent`. The outlet
@@ -371,6 +374,16 @@ const started: Array<{
 const gates: Array<() => void> = [];
 const lockPools: Pool[] = [];
 
+type FatalInfo = { tenantId: string; outletId: string; liveCalls: number };
+/**
+ * Every agent gets a spy `onFatal` unless a test asks for the real default:
+ * the production default calls process.exit, which must never run in vitest.
+ */
+const fatalSpies = new WeakMap<object, ReturnType<typeof vi.fn>>();
+function fatalOf(a: ReturnType<typeof createEdcAgent>) {
+  return fatalSpies.get(a)!;
+}
+
 // A cleanup step may hang on a connection the test killed on purpose.
 const bounded = (work: Promise<unknown>) =>
   Promise.race([
@@ -412,10 +425,13 @@ function newAgent(
   saleTimeoutMs: number,
   pool?: Pool,
   extra: Partial<EdcAgentDeps> = {},
+  spyOnFatal = true,
 ): ReturnType<typeof createEdcAgent> {
+  const onFatal = vi.fn<(info: FatalInfo) => void>();
   const a = createEdcAgent({
     db,
     ...(pool ? { pool } : {}),
+    ...(spyOnFatal ? { onFatal } : {}),
     ...extra,
     registry: new EdcProviderRegistry().register(provider),
     saleTimeoutMs,
@@ -423,6 +439,7 @@ function newAgent(
     cancelTimeoutMs: 50,
   });
   started.push({ agent: a, ctx });
+  fatalSpies.set(a, extra.onFatal ? (extra.onFatal as never) : onFatal);
   return a;
 }
 
@@ -447,11 +464,13 @@ async function startAgent(
 async function startLockedAgent(
   provider: EdcProvider,
   saleTimeoutMs: number,
+  spyOnFatal = true,
 ): Promise<{
   agent: ReturnType<typeof createEdcAgent>;
   terminalId: string;
   loseLock: () => Promise<void>;
   appName: string;
+  lockPool: Pool;
 }> {
   const appName = `edc861-${randomUUID().slice(0, 8)}`;
   const lockPool = createAppPool(env.APP_DATABASE_URL ?? env.DATABASE_URL, {
@@ -470,7 +489,7 @@ async function startLockedAgent(
       return client;
     };
   const terminalId = await seedTerminal();
-  const a = newAgent(provider, saleTimeoutMs, lockPool);
+  const a = newAgent(provider, saleTimeoutMs, lockPool, {}, spyOnFatal);
   await a.start(ctx);
   const loseLock = async () => {
     await owner.query(
@@ -485,7 +504,7 @@ async function startLockedAgent(
       expect(rowCount).toBe(0);
     });
   };
-  return { agent: a, terminalId, loseLock, appName };
+  return { agent: a, terminalId, loseLock, appName, lockPool };
 }
 
 function saleRequest(bill: Bill, terminalId: string): EdcPaymentRequest {
@@ -1146,6 +1165,246 @@ describe("legend-r11em EDC failover wire marker", () => {
         await markerOf(left),
         "a released outlet is still being swept",
       ).not.toBeNull();
+    });
+  });
+
+  describe("861-G fail-stop when the outlet lock is lost with a sale call still alive", () => {
+    /** A first agent with a sale call that timed out but is still running. */
+    async function lockedAgentWithLiveCall() {
+      const saleGate = gate();
+      const sim = new EcrSimulator("bca");
+      const first = gatedProvider(sim, saleGate);
+      const locked = await startLockedAgent(first.provider, 100);
+      const bill = await newBill();
+      const selling = locked.agent.requestPayment(
+        ctx,
+        cashier.userId,
+        saleRequest(bill, locked.terminalId),
+      );
+      selling.catch(() => undefined);
+      await vi.waitFor(async () => {
+        const [row] = await ledgerRows(bill.number);
+        expect(first.state.saleCalls).toBe(1);
+        expect(row?.status).toBe("unknown");
+        expect(row?.sale_wire_open_at).not.toBeNull();
+      });
+      const rowId = (await ledgerRows(bill.number))[0]!.id;
+      return { ...locked, first, saleGate, bill, rowId, selling };
+    }
+
+    it("861-G1 lock lost while a sale call hangs: onFatal is called once with the live call count", async () => {
+      const { agent: edc1, loseLock } = await lockedAgentWithLiveCall();
+      expect(fatalOf(edc1)).not.toHaveBeenCalled();
+
+      await loseLock();
+
+      await vi.waitFor(
+        () => {
+          expect(
+            fatalOf(edc1),
+            "the process kept running after it lost the outlet lock with a sale call alive",
+          ).toHaveBeenCalled();
+        },
+        { timeout: 5_000 },
+      );
+      // Give a second event (error and end) time to show up: still one call.
+      await new Promise((done) => setTimeout(done, 300));
+      expect(fatalOf(edc1)).toHaveBeenCalledTimes(1);
+      const info = fatalOf(edc1).mock.calls[0]![0] as FatalInfo;
+      expect(info.liveCalls).toBeGreaterThanOrEqual(1);
+      expect(typeof info.tenantId).toBe("string");
+      expect(typeof info.outletId).toBe("string");
+    });
+
+    it("861-G2 lock lost with no sale call alive: onFatal is not called", async () => {
+      const sim = new EcrSimulator("bca");
+      const { agent: edc1, loseLock } = await startLockedAgent(
+        passThrough(sim),
+        5_000,
+      );
+      await loseLock();
+      await new Promise((done) => setTimeout(done, 500));
+      expect(
+        fatalOf(edc1),
+        "the process was stopped although no sale call was alive",
+      ).not.toHaveBeenCalled();
+    });
+
+    it("861-G3 after onFatal the marker stays, a process taking the outlet inside the window keeps it, and no second sale is sent", async () => {
+      const {
+        agent: edc1,
+        terminalId,
+        loseLock,
+        first,
+        saleGate,
+        bill,
+        rowId,
+      } = await lockedAgentWithLiveCall();
+      await loseLock();
+      await vi.waitFor(
+        () => {
+          expect(
+            fatalOf(edc1),
+            "the process did not stop after it lost the outlet lock with a sale call alive",
+          ).toHaveBeenCalled();
+        },
+        { timeout: 5_000 },
+      );
+      expect(
+        await markerOf(rowId),
+        "stopping the process cleared the marker of a sale that may still charge",
+      ).not.toBeNull();
+
+      const second = gatedProvider(new EcrSimulator("bca"), saleGate);
+      const edc2 = newAgent(second.provider, 100);
+      await edc2.start(ctx);
+      expect(
+        await markerOf(rowId),
+        "the process that took the outlet over cleared the marker inside the window",
+      ).not.toBeNull();
+
+      // Neither the old nor the new process may send the bill a second time.
+      await edc2
+        .requestPayment(ctx, cashier.userId, saleRequest(bill, terminalId))
+        .catch(() => undefined);
+      await edc1
+        .requestPayment(ctx, cashier.userId, saleRequest(bill, terminalId))
+        .catch(() => undefined);
+      expect(second.state.saleCalls, "the new process sent a second sale").toBe(
+        0,
+      );
+      expect(first.state.saleCalls, "the old process sent a second sale").toBe(
+        1,
+      );
+      const byHand = await resolve(rowId);
+      expect(
+        byHand.status,
+        `declined accepted while a sale call is still on the wire: ${JSON.stringify(byHand.body)}`,
+      ).toBe(409);
+    });
+
+    it("861-H1 lock lost while stop() is still draining a live sale call: onFatal is called once, and stop finishes once the call ends", async () => {
+      const {
+        agent: edc1,
+        loseLock,
+        saleGate,
+      } = await lockedAgentWithLiveCall();
+      const stopped: { done: boolean; error: unknown } = {
+        done: false,
+        error: undefined,
+      };
+      // Deliberately not awaited: stop() waits for the live call to finish.
+      const stopping = edc1.stop(ctx).then(
+        () => {
+          stopped.done = true;
+        },
+        (error: unknown) => {
+          stopped.done = true;
+          stopped.error = error;
+        },
+      );
+      await new Promise((done) => setTimeout(done, 200));
+      expect(
+        stopped.done,
+        "stop() returned while a sale call was still on the wire",
+      ).toBe(false);
+      expect(fatalOf(edc1)).not.toHaveBeenCalled();
+
+      await loseLock();
+
+      await vi.waitFor(
+        () => {
+          expect(
+            fatalOf(edc1),
+            "the process kept running after it lost the outlet lock while stop() was draining a live sale call",
+          ).toHaveBeenCalled();
+        },
+        { timeout: 5_000 },
+      );
+      await new Promise((done) => setTimeout(done, 300));
+      expect(fatalOf(edc1)).toHaveBeenCalledTimes(1);
+      const info = fatalOf(edc1).mock.calls[0]![0] as FatalInfo;
+      expect(info.liveCalls).toBeGreaterThanOrEqual(1);
+
+      saleGate.open();
+      await vi.waitFor(() => expect(stopped.done).toBe(true), {
+        timeout: 5_000,
+      });
+      await stopping;
+      expect(stopped.error, "stop() failed after the lock was lost").toBe(
+        undefined,
+      );
+    });
+
+    it("861-H3 lock lost with no sale call alive: the lock connection goes back to the pool and onFatal is not called", async () => {
+      const sim = new EcrSimulator("bca");
+      const {
+        agent: edc1,
+        loseLock,
+        lockPool,
+      } = await startLockedAgent(passThrough(sim), 5_000);
+      expect(
+        lockPool.totalCount,
+        "the agent does not hold the outlet lock on its own pool",
+      ).toBeGreaterThanOrEqual(1);
+
+      await loseLock();
+
+      await vi.waitFor(
+        () => {
+          expect(
+            lockPool.totalCount,
+            "the dead lock connection was never given back to the pool",
+          ).toBe(0);
+        },
+        { timeout: 5_000 },
+      );
+      expect(
+        fatalOf(edc1),
+        "the process was stopped although no sale call was alive",
+      ).not.toHaveBeenCalled();
+    });
+
+    it("861-G4 without a custom onFatal the default handler exits the process with code 1", async () => {
+      const exitSpy = vi
+        .spyOn(process, "exit")
+        .mockImplementation((() => undefined) as never);
+      try {
+        const saleGate = gate();
+        const first = gatedProvider(new EcrSimulator("bca"), saleGate);
+        const {
+          agent: edc1,
+          terminalId,
+          loseLock,
+        } = await startLockedAgent(first.provider, 100, false);
+        const bill = await newBill();
+        const selling = edc1.requestPayment(
+          ctx,
+          cashier.userId,
+          saleRequest(bill, terminalId),
+        );
+        selling.catch(() => undefined);
+        await vi.waitFor(async () => {
+          const [row] = await ledgerRows(bill.number);
+          expect(first.state.saleCalls).toBe(1);
+          expect(row?.status).toBe("unknown");
+        });
+        expect(exitSpy).not.toHaveBeenCalled();
+
+        await loseLock();
+
+        await vi.waitFor(
+          () => {
+            expect(
+              exitSpy,
+              "the default handler did not stop the process",
+            ).toHaveBeenCalledWith(1);
+          },
+          { timeout: 5_000 },
+        );
+      } finally {
+        exitSpy.mockRestore();
+      }
     });
   });
 });

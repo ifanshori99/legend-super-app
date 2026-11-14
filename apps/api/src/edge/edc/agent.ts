@@ -27,6 +27,12 @@
 //   the sale is old enough that it cannot still be in transit, and only while
 //   the terminal's open batch equals the batch known at dispatch (a closed
 //   batch hides the sale from inquiry).
+// - Fail-stop: if the outlet lock is lost while this process still has an
+//   adapter call on the wire for that outlet, the process exits (`onFatal`,
+//   default `process.exit(1)`; the supervisor restarts it). Another process
+//   may take the outlet at once, and this one must not keep sending next to
+//   it. The wire marker is left alone: only a process past the late-response
+//   window clears it.
 //
 // No domain events here: whether approval or settlement marks a bill paid
 // belongs to the POS payment flow (legend-m0k) and settlement (legend-cs7).
@@ -121,6 +127,15 @@ export type EdcAgentDeps = {
    * process once they are past the late-response window (see
    * `clearStaleWireOpen`). Default 60s; 0 turns the sweep off. */
   staleWireSweepMs?: number;
+  /** Called when the outlet lock is lost while this process still has an
+   * adapter call on the wire for that outlet (`liveCalls` > 0). Default:
+   * `logger.fatal` then `process.exit(1)`, so the supervisor restarts the
+   * process. Tests must pass a spy. */
+  onFatal?: (info: {
+    tenantId: string;
+    outletId: string;
+    liveCalls: number;
+  }) => void;
   now?: () => Date;
   newTrace?: () => string;
 };
@@ -519,6 +534,15 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   const notFoundTrustWindowMs =
     deps.notFoundTrustWindowMs ?? DEFAULT_NOT_FOUND_TRUST_WINDOW_MS;
   const staleWireSweepMs = deps.staleWireSweepMs ?? 60_000;
+  const onFatal =
+    deps.onFatal ??
+    ((info: { tenantId: string; outletId: string; liveCalls: number }) => {
+      logger.fatal(
+        info,
+        "EDC agent lost its outlet lock with adapter calls still on the wire: exiting",
+      );
+      process.exit(1);
+    });
   const now = deps.now ?? (() => new Date());
   const newTrace = deps.newTrace ?? defaultTrace;
 
@@ -550,6 +574,13 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   const bypassWire = new Map<string, Promise<void>>();
   /** Outlets this instance owns (advisory lock), by tenant+outlet. */
   const owned = new Map<
+    string,
+    { client: PoolClient; lockName: string; lost: () => void }
+  >();
+  /** Outlets whose advisory lock this instance really holds, by tenant+outlet.
+   * Unlike `owned`, an entry stays while `releaseOutlet` drains the calls on
+   * the wire, so a lock lost during that drain is still noticed. */
+  const locks = new Map<
     string,
     { client: PoolClient; lockName: string; lost: () => void }
   >();
@@ -656,6 +687,9 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       if (pending.length === 0) break;
       await Promise.allSettled(pending);
     }
+    // The lock was lost during the drain: `lost` already released the client.
+    if (locks.get(key) !== entry) return;
+    locks.delete(key);
     let broken: Error | undefined;
     try {
       await entry.client.query(
@@ -686,13 +720,21 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     if (!pool) throw new EdcError("EDC_AGENT_NOT_READY");
     const client = await pool.connect();
     const lost = () => {
-      if (owned.get(key)?.client !== client) return;
-      owned.delete(key);
+      if (locks.get(key)?.client !== client) return;
+      locks.delete(key);
+      if (owned.get(key)?.client === client) owned.delete(key);
       stopSweep(key);
       logger.error(
         { tenantId, outletId },
         "EDC agent lost its database connection: outlet is no longer ready",
       );
+      // Give the pool slot back. The listeners stay, so a later 'error' on the
+      // dead connection is never unhandled.
+      client.release(new Error("EDC outlet lock connection lost"));
+      // Another process can take the outlet now; a call of ours still on the
+      // wire would run next to it. Stop the process instead of going on.
+      const liveCalls = wires.get(key)?.size ?? 0;
+      if (liveCalls > 0) onFatal({ tenantId, outletId, liveCalls });
     };
     client.on("error", lost);
     client.on("end", lost);
@@ -715,7 +757,9 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       client.release();
       throw new EdcError("EDC_AGENT_NOT_READY");
     }
-    owned.set(key, { client, lockName, lost });
+    const entry = { client, lockName, lost };
+    owned.set(key, entry);
+    locks.set(key, entry);
   }
 
   /** Runs `run` as the only ECR exchange on the terminal. `hold` runs the
