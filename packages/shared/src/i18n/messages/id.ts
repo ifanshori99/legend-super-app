@@ -1477,6 +1477,7 @@ export const id = {
       payment_failover: "Gateway pembayaran",
       kitchen_alert: "Peringatan dapur",
       tenant_invitation: "Undangan admin",
+      hr_settlement: "Penyelesaian karyawan keluar",
     },
     inbox: {
       heading: "Kotak masuk",

@@ -19,6 +19,7 @@ import {
   Sun,
   Timer,
   TriangleAlert,
+  UserRoundMinus,
   type LucideIcon,
 } from "lucide-react";
 import type { MessageKey } from "@starter/shared/i18n";
@@ -57,6 +58,7 @@ export const NOTIFICATION_CATEGORY_ICONS: Record<
   payment_failover: TriangleAlert,
   kitchen_alert: ChefHat,
   tenant_invitation: MailCheck,
+  hr_settlement: UserRoundMinus,
 };
 
 export function categoryLabelKey(category: NotificationCategory): MessageKey {

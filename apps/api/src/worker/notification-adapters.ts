@@ -56,7 +56,11 @@ import {
   type NotificationPreference,
   type Reachability,
 } from "@starter/shared/notification";
-import { shiftCancelled, shiftPublished } from "@starter/shared/hris";
+import {
+  leaveRedeductedAfterSettlement,
+  shiftCancelled,
+  shiftPublished,
+} from "@starter/shared/hris";
 import { operationsEventPayloadSchemas } from "@starter/shared/operations";
 import { PLATFORM_EVENT_PAYLOADS } from "@starter/shared/platform";
 import { AI_EVENT_PAYLOAD_SCHEMAS } from "@starter/shared/ai";
@@ -961,6 +965,43 @@ async function shiftCancelledRule(input: RuleInput): Promise<Rule> {
   };
 }
 
+/** legend-jitc3: a collective leave day was deducted again for an employee
+ * whose offboarding is already settled. The snapshot is frozen, so HR (active
+ * holders of `hr.employee.manage` covering the outlet, re-read here) bills the
+ * extra day by hand. The employee name is read from the DB, never the event. */
+async function leaveRedeductedAfterSettlementRule(
+  input: RuleInput,
+): Promise<Rule> {
+  const payload = leaveRedeductedAfterSettlement.payloadSchema.parse(
+    input.event.payload,
+  );
+  const [employee] = await input.tx
+    .select({ fullName: employees.fullName })
+    .from(employees)
+    .where(
+      and(
+        eq(employees.tenantId, input.tenantId),
+        eq(employees.id, payload.employeeId),
+      ),
+    );
+  const hr = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    sql`${roles.permissions} @> ${JSON.stringify(["hr.employee.manage"])}::jsonb`,
+    await audienceOf(input.tx, input.event),
+  );
+  const who = employee?.fullName ?? "Karyawan";
+  return {
+    userIds: hr,
+    content: {
+      category: "hr_settlement",
+      title: "Potongan cuti setelah penyelesaian akhir",
+      body: `${who} sudah selesai offboarding, tetapi cuti bersama ${payload.date} dipotong lagi ${Number(payload.days)} hari karena absen masuk ditolak. Penyelesaian akhir tidak diubah. Tagih selisihnya secara manual.`,
+      link: null,
+    },
+  };
+}
+
 /** legend-fy5y: invites the first admin of a new tenant. The recipient is the
  * payload's `firstAdminUserId` ONLY when an open tenant-wide tenant_admin
  * assignment still exists for it in this tenant (re-read, never trusted).
@@ -1028,6 +1069,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return shiftPublishedRule(input);
     case "shift.cancelled":
       return shiftCancelledRule(input);
+    case "leave.rededucted_after_settlement":
+      return leaveRedeductedAfterSettlementRule(input);
     case "facility_incident.raised":
       return facilityIncidentRaisedRule(input);
     case "ai_insight.anomaly_detected":
