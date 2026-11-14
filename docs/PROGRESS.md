@@ -1,3 +1,11 @@
+## M4 ClamdMalwareScanner + M5 assertSafePdf (engineer, cabang `ws/storage-scanner-pdf` dari `origin/fix/storage-scanner-typed-error` d4c02fa0a, 14 Nov 2026 22:06-23:15 WIB, brief 801)
+
+- Sudah: M4 legend-w9hwh (adb1b107b) klien clamd INSTREAM, env `CLAMD_*`, pemilihan runtime, `scanner` di `/api/health`, bagian ClamAV di `docs/deployment.md`. M5 legend-851ef (ec1b06495) `assertSafePdf` di worker (5 dtk, 256 MB, batas dekode 64 MiB, 2 jalan + 16 antre), dipasang di `uploadStorage` dan jalur dokumen pemegang saham.
+- Review architect xhigh 3 putaran: bypass hex huruf kecil, objek ganda/xref, header tersembunyi, ObjStm tanpa Type, `/S` referensi, bom Flate, jalur shareholder, `AlertExceedsMax` semua dibetulkan dan diuji.
+- Gate: 15 file test terarah 245 lulus, prettier + eslint bersih, typecheck API 0, build API 0, smoke `dist/pdf-safety.worker.js` (sah, JS, bom 200 MB).
+- Berikut: M6 legend-egrrp (payout pakai pipa yang sama). Jangan isi `CLAMD_HOST` produksi sebelum M6 masuk.
+- Biaya sesi* 4849k; subagent 14 (puncak 6 bersamaan).
+
 ## Merge train batch64c (merge train, `int/batch64c` dari `origin/milestone/m1` 9b8433f69, 14 Nov 2026 18:50-20:50 WIB)
 
 - Sudah: payout masuk lewat 3 merge: `fix/finance-exceptions-known-count` (memuat `ui/payout-finance-exceptions`), `fix/payroll-policies-hydration`, `ws/payout-approval-followups` 172a26c77 (memuat `ws/payout-api-gaps`, `ws/payout-evidence-hardening`, `ws/payout-followups`, `ui/payout-wiring`; temuan architect sudah di dalamnya). Konflik hanya `docs/PROGRESS.md` (disimpan kedua sisi) dan journal/snapshot migrasi.
