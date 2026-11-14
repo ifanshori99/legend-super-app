@@ -1889,13 +1889,13 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
   async function seedDepositSource(
     sale: PosSale,
     source: "allocation" | "credit" | "refund",
-    state: "pending" | "dead" = "pending",
+    state: "pending" | "dead" | "missing" = "pending",
     options: { useAt?: string; indirect?: boolean } = {},
   ): Promise<string> {
     dpSales.add(sale.orderUuid);
     const intentId = await seedIntent(80_000);
     sale.intents.push({ id: intentId, amountIdr: 80_000 });
-    await seedOutbox(intentId, 80_000, state);
+    if (state !== "missing") await seedOutbox(intentId, 80_000, state);
     if (source === "refund") {
       const refundId = randomUUID();
       await owner.query(
@@ -2242,6 +2242,36 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
     expect(summaryOf(payload, KIND).count).toBe(8);
   });
   describe("legend-1get7 DP receipt sources", () => {
+    it("a missing DP receipt wins over the delivered QR tender receipt", async () => {
+      const sale = await seedPosSale([
+        { amountIdr: 20_000, withIntent: true, outbox: "pending" },
+      ]);
+      await owner.query(
+        "UPDATE domain_event_outbox SET status='delivered', delivered_at=now() WHERE tenant_id=$1 AND aggregate_id=$2",
+        [tenantId, sale.intents[0]!.id],
+      );
+      const intentId = await seedDepositSource(sale, "allocation", "missing");
+      const { receipt, item } = await receiptOf(sale);
+      expect(receipt.intentId).toBe(intentId);
+      expect(receipt.outboxState).toBe("missing");
+      expect(item.amountIdr).toBe(100_000);
+    });
+
+    it("a missing captured tender receipt wins over another delivered tender receipt", async () => {
+      const sale = await seedPosSale([
+        { amountIdr: 20_000, withIntent: true },
+        { amountIdr: 80_000, withIntent: true, outbox: "pending" },
+      ]);
+      await owner.query(
+        "UPDATE domain_event_outbox SET status='delivered', delivered_at=now() WHERE tenant_id=$1 AND aggregate_id=$2",
+        [tenantId, sale.intents[1]!.id],
+      );
+      const { receipt, item } = await receiptOf(sale);
+      expect(receipt.intentId).toBe(sale.intents[0]!.id);
+      expect(receipt.outboxState).toBe("missing");
+      expect(item.amountIdr).toBe(100_000);
+    });
+
     it("a pending DP receipt wins over the delivered QR tender receipt", async () => {
       const sale = await seedPosSale([
         { amountIdr: 20_000, withIntent: true, outbox: "pending" },

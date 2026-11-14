@@ -280,8 +280,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 type OutboxState = FinanceExceptionReceiptPendingDto["outboxState"];
 /** Worst state wins when an intent has more than one payment.paid row. */
 const OUTBOX_RANK: Record<OutboxState, number> = {
-  missing: 0,
-  delivered: 1,
+  delivered: 0,
+  missing: 1,
   pending: 2,
   dead_lettered: 3,
 };
@@ -576,7 +576,7 @@ async function receiptPendingStale(
   const items = resolved.map(
     ({ row, orderId, total, candidates, contributionCandidates }) => {
       // One item per parked sale: show the intent whose outbox row matters most
-      // (dead_lettered, then pending, then delivered, then missing); ties keep
+      // (dead_lettered, then pending, then missing, then delivered); ties keep
       // the candidate order (order, tenders, DP; a payload intent stands alone).
       let intentId: string | null = null;
       let outboxState: OutboxState = "missing";
