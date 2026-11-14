@@ -99,9 +99,15 @@ export const CATALOG_SYNC_LIMIT_DEFAULT = PAGE_LIMIT_MAX;
  * no parameter) gets pages without the field, as before. A newer edge asks for
  * the version; an older cloud rejects the unknown parameter (HTTP 400), which
  * the edge reports as CATALOG_CLOUD_OUTDATED.
+ *
+ * Version 3 (legend-2uqcd): the `recipes` stream carries every recipe of the
+ * tenant, not only the credential's brand. An edge that does not ask for 3
+ * (no parameter, or 2) cannot check the brand of such a recipe, so it keeps
+ * getting the brand-filtered stream. Page shape is unchanged from 2, so a v3
+ * edge still accepts a v2 cloud (it just sees fewer recipes).
  */
-export const CATALOG_PROTOCOL_VERSION = 2;
-/** Oldest cloud version the edge still accepts (first one with `syncTxid`). */
+export const CATALOG_PROTOCOL_VERSION = 3;
+/** Oldest cloud version the edge still accepts (first one with `syncTxid`). Unchanged by 3: the page shape is the same. */
 export const CATALOG_PROTOCOL_MIN_VERSION = 2;
 
 export const catalogSyncQuerySchema = z.strictObject({

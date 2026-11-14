@@ -2486,6 +2486,13 @@
       "when": 1794629277111,
       "tag": "0374_menu_recipe_fk",
       "breakpoints": true
+    },
+    {
+      "idx": 377,
+      "version": "7",
+      "when": 1794629278111,
+      "tag": "0377_recipes_resync_edges",
+      "breakpoints": true
     }
   ]
 }

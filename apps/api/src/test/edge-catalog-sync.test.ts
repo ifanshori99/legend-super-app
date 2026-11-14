@@ -1937,21 +1937,26 @@ describe("97p edge pull: resume and broken connection", () => {
     await expectEdgeEqualsCloud();
   });
 
-  it("legend-3kdd a modifier whose recipe belongs to another brand and is not delivered to this edge still syncs: row stored with its recipe_id, checkpoint stored, never CATALOG_PARENT_FAILED", async () => {
-    // Assumption: a modifier is tenant-wide, so its recipe may be a recipe of
-    // another brand (ids.recBr2, brand2) that the edge of O1 (brand A) never
-    // receives. The edge must not refuse the modifier for that.
+  it("legend-3kdd a modifier whose recipe belongs to another brand syncs: the recipe of that brand now reaches this edge too (legend-2uqcd), the modifier keeps its recipe_id, no CATALOG_PARENT_FAILED", async () => {
+    // Assumption (legend-2uqcd): every edge receives ALL recipes of the tenant,
+    // so the recipe of brand2 (ids.recBr2) IS delivered to the edge of O1
+    // (brand A) once its brand row exists on the edge (the master snapshot
+    // carries every brand of the tenant; here the brand row is copied).
     const data = await exportMine();
-    expect(idsOf(data.recipes)).not.toContain(ids.recBr2);
+    const allRecipes = (await walk("recipes", { outletId: O1 })).records;
+    expect(idsOf(allRecipes)).toContain(ids.recBr2);
+    data.recipes = allRecipes.filter(
+      (r) => MINE.recipes.includes(String(r.id)) || r.id === ids.recBr2,
+    );
     data.modifiers = [{ ...data.modifiers[0]!, recipeId: ids.recBr2 }];
+    await copyToEdge("brands", brand2);
     const cloud = scriptedCloud(data, 100);
     const result = await pullOk(cloud);
     expect(result.streams.recipes?.error).toBeFalsy();
     expect(result.streams.modifiers?.error).toBeFalsy();
-    // The foreign recipe is not on the edge, yet the modifier points at it.
     expect(
       await edge.rows("SELECT id FROM recipes WHERE id = $1", [ids.recBr2]),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
     const rows = await edge.rows(
       "SELECT id, recipe_id FROM modifiers WHERE id = $1",
       [ids.mod1],
@@ -1959,6 +1964,7 @@ describe("97p edge pull: resume and broken connection", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.recipe_id).toBe(ids.recBr2);
     expect(await checkpointStreams()).toContain("catalog:modifiers");
+    expect(await checkpointStreams()).toContain("catalog:recipes");
   });
 
   it("legend-3kdd the edge database is migrated in edge mode: no modifiers_recipe_fk, but menu_items and item_variants keep theirs", async () => {
@@ -2450,19 +2456,22 @@ describe("97p brand filter: an outlet only gets the catalog of its own brand", (
   const exportedIds = async (stream: Stream, outletId: string) =>
     (await walk(stream, { outletId })).records.map((r) => String(r.id));
 
-  it("97p an outlet of brand A never receives categories, items or recipes of brand B", async () => {
-    for (const stream of [
-      "menu_categories",
-      "menu_items",
-      "recipes",
-    ] as const) {
+  it("97p an outlet of brand A never receives categories or items of brand B", async () => {
+    // Recipes are the exception since legend-2uqcd: every edge receives all
+    // recipes of the tenant (see the next test).
+    for (const stream of ["menu_categories", "menu_items"] as const) {
       const { records } = await walk(stream, { outletId: O1 });
       expect(records.length).toBeGreaterThan(0);
       for (const rec of records) expect(rec.brandId).toBe(brandId);
     }
     expect(await exportedIds("menu_categories", O1)).not.toContain(ids.catBr2);
     expect(await exportedIds("menu_items", O1)).not.toContain(ids.itemBr2);
-    expect(await exportedIds("recipes", O1)).not.toContain(ids.recBr2);
+  });
+
+  it("legend-2uqcd an outlet of brand A receives the recipes of every brand of its tenant", async () => {
+    const recipes = await exportedIds("recipes", O1);
+    expect(recipes).toContain(ids.rec1);
+    expect(recipes).toContain(ids.recBr2);
   });
 
   it("97p child rows of another brand's items (variants, modifier-group links) do not come through either", async () => {
@@ -2484,10 +2493,10 @@ describe("97p brand filter: an outlet only gets the catalog of its own brand", (
     expect(items).not.toContain(ids.item1);
     const recipes = await exportedIds("recipes", O3);
     expect(recipes).toContain(ids.recBr2);
-    expect(recipes).not.toContain(ids.rec1);
+    expect(recipes).toContain(ids.rec1); // legend-2uqcd: all recipes of the tenant
     expect(await exportedIds("item_variants", O3)).toContain(ids.varBr2);
     expect(await exportedIds("item_variants", O3)).not.toContain(ids.var1);
-    for (const stream of ["menu_categories", "menu_items", "recipes"] as const)
+    for (const stream of ["menu_categories", "menu_items"] as const)
       for (const rec of (await walk(stream, { outletId: O3 })).records)
         expect(rec.brandId).toBe(brand2);
   });

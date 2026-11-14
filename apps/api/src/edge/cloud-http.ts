@@ -190,7 +190,12 @@ async function cloudGet(
  * returning the parsed JSON body. Errors are EdgeCloudHttpError only.
  */
 export async function cloudGetJson(
-  options: CloudGetOptions & { path: string; signal?: AbortSignal },
+  options: CloudGetOptions & {
+    path: string;
+    signal?: AbortSignal;
+    /** Extra request headers (never overrides Authorization or Accept). */
+    headers?: Record<string, string>;
+  },
 ): Promise<unknown> {
   const result = await cloudGet(options);
   return result.status === 200 ? result.body : undefined;

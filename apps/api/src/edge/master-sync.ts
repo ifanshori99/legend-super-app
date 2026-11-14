@@ -2,9 +2,16 @@
 // Lokal"). Edge `stock.moved` events name stock locations (and post to the
 // chart of accounts), and the cloud rejects ids it does not know. So the edge
 // copies these masters from the cloud with ids identical to the cloud's:
-// `uoms` (tenant-wide), `stock_locations` (its outlet only), and
-// `chart_of_accounts` + `account_mappings` (its outlet's legal entity only).
+// `brands` (every brand of the tenant, legend-2uqcd), `uoms` (tenant-wide),
+// `stock_locations` (its outlet only), and `chart_of_accounts` +
+// `account_mappings` (its outlet's legal entity only).
 //
+// - brands: bootstrap stores only the outlet's own brand, but the catalog sync
+//   delivers the recipes of every brand of the tenant (a recipe of another
+//   brand may feed an item or modifier here), and each recipe needs its brand
+//   row (FK (tenant_id, brand_id)). Brands are upserted first, by id, never
+//   deleted. A local brand with the same slug under another id is a
+//   LOCAL_CONFLICT, like uoms.
 // - Full snapshot, no cursor: uoms and stock_locations carry no updated_at.
 //   GET /api/edge-sync/bootstrap/masters returns `{ snapshot, signature }`.
 // - The signature is checked over the snapshot exactly as received (same
@@ -63,6 +70,8 @@ import {
 import type { ScopedTenantContext } from "@starter/shared/core";
 import {
   EDGE_MASTER_SNAPSHOT_PATH,
+  EDGE_MASTER_SNAPSHOT_VERSION,
+  EDGE_MASTER_SNAPSHOT_VERSION_HEADER,
   edgeMasterSnapshotSchema,
   partitionEdgeMasterMappings,
   type EdgeMasterSnapshot,
@@ -72,7 +81,7 @@ import { db } from "../db/index.ts";
 import { accountMappings, chartOfAccounts } from "../db/schema/accounting.ts";
 import { stockLocations, uoms } from "../db/schema/inventory.ts";
 import { edgePullCheckpoints } from "../db/schema/edge-node.ts";
-import { outlets } from "../db/schema/platform-org.ts";
+import { brands, outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   CRITICAL_CATALOG_STREAMS,
@@ -160,6 +169,7 @@ export async function seedCatalogFreshness(
 }
 
 export type EdgeMasterSyncCounts = {
+  brands: number;
   uoms: number;
   stockLocations: number;
   accounts: number;
@@ -214,6 +224,13 @@ export async function fetchVerifiedMasterSnapshot(
       cloudUrl: config.cloudUrl,
       credential: config.credential,
       path: EDGE_MASTER_SNAPSHOT_PATH,
+      // Asks for version 2 (brands); a cloud that predates it ignores the
+      // header and serves version 1, which this edge still applies.
+      headers: {
+        [EDGE_MASTER_SNAPSHOT_VERSION_HEADER]: String(
+          EDGE_MASTER_SNAPSHOT_VERSION,
+        ),
+      },
       fetchImpl: options.fetchImpl,
       timeoutMs: options.timeoutMs,
       signal: options.signal,
@@ -398,6 +415,28 @@ export async function applyEdgeMasterSnapshotInTransaction(
   }
 
   // Natural-key collisions under another id: refuse, never fork ids.
+  // Version 1 (an older cloud) carries no brands: nothing to write or delete.
+  const snapshotBrands = snapshot.brands ?? [];
+  if (snapshotBrands.length > 0) {
+    const local = await tx
+      .select({ id: brands.id, slug: brands.slug })
+      .from(brands)
+      .where(
+        and(
+          eq(brands.tenantId, tenantId),
+          inArray(
+            brands.slug,
+            snapshotBrands.map((row) => row.slug),
+          ),
+        ),
+      );
+    const bySlug = new Map(local.map((row) => [row.slug, row.id]));
+    for (const row of snapshotBrands) {
+      const existing = bySlug.get(row.slug);
+      if (existing !== undefined && !sameId(existing, row.id))
+        throw new EdgeMasterSyncError("LOCAL_CONFLICT");
+    }
+  }
   if (snapshot.uoms.length > 0) {
     const local = await tx
       .select({ id: uoms.id, code: uoms.code })
@@ -440,6 +479,24 @@ export async function applyEdgeMasterSnapshotInTransaction(
     }
   }
 
+  // Brands first: recipes of other brands (catalog stream) need them.
+  for (const row of snapshotBrands) {
+    const written = await tx
+      .insert(brands)
+      .values({ ...row, createdAt: new Date(row.createdAt) })
+      .onConflictDoUpdate({
+        target: brands.id,
+        set: {
+          slug: row.slug,
+          name: row.name,
+          logoMediaId: row.logoMediaId,
+          themeId: row.themeId,
+        },
+        setWhere: eq(brands.tenantId, tenantId),
+      })
+      .returning({ id: brands.id });
+    if (written.length === 0) throw new EdgeMasterSyncError("SCOPE_MISMATCH");
+  }
   for (const row of snapshot.uoms) {
     await tx
       .insert(uoms)
@@ -526,6 +583,7 @@ export async function applyEdgeMasterSnapshotInTransaction(
       "Edge master sync dropped mappings with roles this build does not know",
     );
   return {
+    brands: snapshotBrands.length,
     uoms: snapshot.uoms.length,
     stockLocations: snapshot.stockLocations.length,
     accounts: accounts.length,

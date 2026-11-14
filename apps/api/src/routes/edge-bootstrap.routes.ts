@@ -34,6 +34,7 @@ import {
   type Response,
 } from "express";
 import { CoreError } from "@starter/shared/core";
+import { EDGE_MASTER_SNAPSHOT_VERSION_HEADER } from "@starter/shared/edge/master-sync";
 import { parseEdgeCredential } from "../edge/credential.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
@@ -200,7 +201,16 @@ async function handleEdgeBootstrap(req: Request, res: Response): Promise<void> {
 async function handleEdgeMasters(req: Request, res: Response): Promise<void> {
   const { node, credential } = await authenticateEdgeNode(req);
   res.setHeader("Cache-Control", "private, no-store");
-  res.json(await buildEdgeMasterSnapshot(node, credential));
+  // Version 2 (brands) only when the edge asks; otherwise the old version 1.
+  const asked = Number.parseInt(
+    req.get(EDGE_MASTER_SNAPSHOT_VERSION_HEADER) ?? "",
+    10,
+  );
+  res.json(
+    await buildEdgeMasterSnapshot(node, credential, {
+      snapshotVersion: Number.isFinite(asked) ? asked : undefined,
+    }),
+  );
 }
 
 export const edgeBootstrapRouter = createEdgeBootstrapRouter();

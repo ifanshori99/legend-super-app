@@ -50,6 +50,9 @@
 //   master sync) refuses the page with `CatalogMissingRefError` (code
 //   CATALOG_MISSING_REF); the checkpoint stays and a later pull retries. The
 //   cloud only sends the credential outlet's station ids (null otherwise).
+//   A recipes `brand_id` that is not local yet (recipes are tenant-wide, but
+//   the other brands arrive with the master snapshot, legend-2uqcd) is
+//   transient too: `CatalogMissingRefError`, retried after the next master sync.
 // - A recipe record carries its full `lines`; a price list record its full
 //   `items` (a tombstoned list: none, its local items are removed). Header and
 //   children are replaced in one go: the header is upserted
@@ -87,6 +90,7 @@ import {
 import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 import { inventoryItems, uoms } from "../db/schema/inventory.ts";
 import { edgePrintJobs, edgePrinters } from "../db/schema/edge-print.ts";
+import { brands } from "../db/schema/platform-org.ts";
 import { user } from "../db/schema/user.ts";
 import {
   itemVariants,
@@ -1531,6 +1535,19 @@ async function applyRecipes(
       );
     for (const row of rows) knownOutputs.add(row.id);
     if (outputIds.some((id) => !knownOutputs.has(id)))
+      throw new CatalogMissingRefError();
+  }
+  // brand_id: recipes of every brand of the tenant arrive, but only the
+  // credential's brand is local from bootstrap; the others come with the master
+  // snapshot. A brand not local yet is transient, not a permanent refusal.
+  const brandIds = [...new Set(parsed.map((r) => r.brandId))];
+  if (brandIds.length > 0) {
+    const rows = await tx
+      .select({ id: brands.id })
+      .from(brands)
+      .where(and(eq(brands.tenantId, tenantId), inArray(brands.id, brandIds)));
+    const knownBrands = new Set(rows.map((row) => row.id));
+    if (brandIds.some((id) => !knownBrands.has(id)))
       throw new CatalogMissingRefError();
   }
 

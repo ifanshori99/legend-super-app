@@ -239,6 +239,28 @@ export async function createEdgeDatabase(input: {
 
 // ------------------------------------------------------------------ claims
 
+/**
+ * The shared test database is cloud-style, so it carries modifiers_recipe_fk
+ * (migration 0374). A real edge database does not, and startEdgeRuntime
+ * refuses to boot with it (assertNoModifierRecipeFk). Tests that boot the edge
+ * runtime on the shared database call this in beforeAll to simulate an edge
+ * database, and call the returned function in afterAll to put the constraint
+ * back for the files that run after them.
+ */
+export async function simulateEdgeModifierRecipeFk(db: {
+  query(text: string): Promise<unknown>;
+}): Promise<() => Promise<void>> {
+  await db.query(
+    "ALTER TABLE public.modifiers DROP CONSTRAINT IF EXISTS modifiers_recipe_fk",
+  );
+  return async () => {
+    await db.query(
+      `ALTER TABLE public.modifiers ADD CONSTRAINT modifiers_recipe_fk
+         FOREIGN KEY (tenant_id, recipe_id) REFERENCES public.recipes (tenant_id, id)`,
+    );
+  };
+}
+
 /** The edge credential claims `applyEdgePeopleSnapshot` takes. */
 export function edgeClaims(tenantId: string, outletId: string) {
   const { token } = mintEdgeCredential({

@@ -220,6 +220,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "fills kitchen_tickets.business_date (outlet business day of fired_at, from the outlet zone and cutoff) and numbers kitchen_tickets.ticket_no 1.. per tenant, outlet and business day by fired_at, id for every existing ticket (legend-tzyj2); idempotent for tickets without a number, edits no other column, no amount touched; FORCE RLS lifted on kitchen_tickets and outlets for that one statement and restored",
   "0374_menu_recipe_fk.sql":
     "sets menu_items, item_variants and modifiers recipe_id to NULL where it has no recipe of the same tenant, so the new composite foreign key (tenant_id, recipe_id) -> recipes can validate (legend-3kdd); idempotent, edits no other column, no price, tax or amount touched, the modifiers part is skipped on an edge database (session setting legend.edge_mode); FORCE RLS lifted on those tables and recipes for the migration transaction and restored",
+  "0377_recipes_resync_edges.sql":
+    "re-stamps recipes, menu_items and item_variants with UPDATE ... SET updated_at = updated_at so the sync_txid trigger (0262) gives every row a fresh stamp and each edge pulls them again (legend-2uqcd); idempotent, no value edited, no price, tax or amount touched, skipped on an edge database (session setting legend.edge_mode); FORCE RLS lifted on those tables for the migration transaction and restored",
 };
 
 // Entrypoints that open a database pool but import no data.

@@ -469,3 +469,177 @@ describe("legend-rg8yl registerDataKeyRotationJob", () => {
     expect(log.text()).not.toContain(seeded.aiKey);
   });
 });
+
+// Second opinion (docs/qa/second-opinion-pajak-fk-rotasi.md, P2, brief 800 part
+// 3). A stale AI key that cannot be opened is skipped by rotateAiProviderKeys
+// with only a warning. The job must not report that as success: the tenant is
+// counted as failed and the pg-boss handler rejects, so the failure is
+// recorded and retried. Secrets stay out of the logs.
+//
+// Assumptions:
+//   - The result carries `failedTenants`, the documented field (docs/
+//     deployment.md); it may be a number or a list of tenant ids, so both are
+//     accepted. When it is a list it must contain the broken tenant's id.
+//   - "Cannot be opened" is a version-1 ciphertext sealed with the wrong AAD:
+//     it is stale, well formed, but fails authentication under any key.
+//   - The broken row is deleted at the end of each test so later tests of this
+//     file (and the shared database) are not left with a permanent failure.
+describe("legend-rg8yl stale AI key that cannot be opened", () => {
+  const failedCount = (value: unknown): number =>
+    Array.isArray(value) ? value.length : Number(value ?? 0);
+
+  async function seedBrokenTenant() {
+    const seeded = await seedStaleTenant();
+    // Replace the good ciphertext with one sealed for another record.
+    const unreadable = sealSecret(
+      seeded.aiKey,
+      aiAad(seeded.tenantId, randomUUID()),
+    );
+    await asOwner(seeded.tenantId, (client) =>
+      client.query(
+        "UPDATE ai_provider_configs SET api_key_encrypted = $2 WHERE id = $1",
+        [seeded.aiId, unreadable],
+      ),
+    );
+    expect(sealedVersion(unreadable)).toBe(1);
+    return { ...seeded, unreadable };
+  }
+
+  async function dropBrokenRow(seeded: { tenantId: string; aiId: string }) {
+    await asOwner(seeded.tenantId, (client) =>
+      client.query("DELETE FROM ai_provider_configs WHERE id = $1", [
+        seeded.aiId,
+      ]),
+    );
+  }
+
+  it("legend-rg8yl counts the broken tenant as failed, still rotates the healthy tenant, leaves the broken row untouched, and logs no secrets", async () => {
+    const healthy = await seedStaleTenant();
+    const broken = await seedBrokenTenant();
+    const consoleCalls: unknown[][] = [];
+    for (const method of ["log", "info", "warn", "error", "debug"] as const)
+      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+        consoleCalls.push(args);
+      });
+    try {
+      const { job, db, secrets, ctxFor, service } = await loadPhase2();
+      const captured = captureLog();
+      const result = await job.runDataKeyRotation({
+        database: db,
+        log: captured.log,
+      });
+
+      // The broken tenant is counted as failed (and named when a list).
+      const failed = (result as { failedTenants?: unknown }).failedTenants;
+      expect(failedCount(failed)).toBeGreaterThanOrEqual(1);
+      if (Array.isArray(failed)) {
+        const ids = failed.map((entry) =>
+          typeof entry === "string"
+            ? entry
+            : String((entry as { tenantId?: unknown }).tenantId),
+        );
+        expect(ids).toContain(broken.tenantId);
+        expect(ids).not.toContain(healthy.tenantId);
+      }
+
+      // The healthy tenant still rotated in the same run.
+      expect(
+        (await integrationRow(healthy.integrationId)).credentials_key_version,
+      ).toBe(2);
+      const healthyAi = await aiRow(healthy);
+      expect(healthyAi.api_key_key_version).toBe(2);
+      expect(
+        secrets.openSecret(
+          healthyAi.api_key_encrypted,
+          aiAad(healthy.tenantId, healthy.aiId),
+        ),
+      ).toBe(healthy.aiKey);
+      expect(
+        (
+          await service.loadActiveIntegrationCredentials(
+            ctxFor(healthy.tenantId),
+            "doit",
+            null,
+          )
+        )?.credentials,
+      ).toEqual({ apiKey: healthy.apiKey });
+
+      // The broken row is not rewritten or lost.
+      const brokenAi = await aiRow(broken);
+      expect(brokenAi.api_key_key_version).toBe(1);
+      expect(brokenAi.api_key_encrypted).toBe(broken.unreadable);
+
+      // No key, plaintext, ciphertext or ring key in logs or console.
+      const output = captured.text() + JSON.stringify(consoleCalls);
+      for (const secret of [
+        broken.aiKey,
+        broken.apiKey,
+        broken.unreadable,
+        healthy.aiKey,
+        healthy.apiKey,
+        healthyAi.api_key_encrypted,
+        KEY2,
+      ])
+        expect(output).not.toContain(secret);
+    } finally {
+      await dropBrokenRow(broken);
+    }
+  });
+
+  it("legend-rg8yl the scheduled handler rejects (so pg-boss records the failure) without leaking secrets, while the healthy tenant rotated", async () => {
+    const healthy = await seedStaleTenant();
+    const broken = await seedBrokenTenant();
+    try {
+      const { job, db } = await loadPhase2();
+      const boss = {
+        createQueue: vi.fn(async () => undefined),
+        schedule: vi.fn(async () => undefined),
+        work: vi.fn(async () => undefined),
+      };
+      const log = captureLog();
+      await job.registerDataKeyRotationJob({
+        boss,
+        database: db,
+        log: log.log,
+      });
+      const handler = (
+        boss.work.mock.calls[0] as unknown as [
+          string,
+          (jobs: unknown[]) => Promise<void>,
+        ]
+      )[1];
+
+      const error = await handler([{ data: null }]).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(Error);
+
+      expect(
+        (await integrationRow(healthy.integrationId)).credentials_key_version,
+      ).toBe(2);
+      expect((await aiRow(healthy)).api_key_key_version).toBe(2);
+      expect((await aiRow(broken)).api_key_encrypted).toBe(broken.unreadable);
+
+      const output =
+        log.text() +
+        String((error as Error).message) +
+        String((error as Error).stack);
+      for (const secret of [
+        broken.aiKey,
+        broken.apiKey,
+        broken.unreadable,
+        healthy.aiKey,
+        healthy.apiKey,
+        KEY2,
+      ])
+        expect(output).not.toContain(secret);
+
+      // Retry is safe: the next run fails again for the same reason (the row
+      // is still unreadable) instead of silently succeeding.
+      await expect(handler([{ data: null }])).rejects.toBeInstanceOf(Error);
+    } finally {
+      await dropBrokenRow(broken);
+    }
+  });
+});

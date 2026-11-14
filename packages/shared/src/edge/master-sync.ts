@@ -3,12 +3,16 @@
 // against accounts, that must exist in the cloud with the SAME ids. The cloud
 // owns these masters; the edge pulls a full snapshot at first boot and again
 // when they change:
+//   - `brands`: every brand of the tenant (version 2, legend-2uqcd): recipes are
+//     tenant-wide on the edge, and a recipe of another brand needs its brand row
+//     (FK (tenant_id, brand_id)). The edge bootstrap stores its own brand only;
 //   - `uoms`: tenant-wide unit catalog;
 //   - `stock_locations`: the credential's outlet ONLY;
 //   - `chart_of_accounts` + `account_mappings`: the outlet's legal entity ONLY.
 // It is a full snapshot, not a cursor: `uoms` and `stock_locations` have no
-// `updated_at`, so changes cannot be listed. The edge upserts uoms, locations
-// and accounts by id and never deletes them (ledger rows reference them). The
+// `updated_at`, so changes cannot be listed. The edge upserts brands, uoms,
+// locations and accounts by id and never deletes them (ledger rows reference
+// them). The
 // mapping set is replaced: a role missing from the snapshot is deleted on the
 // edge, as the cloud replaces the whole set per legal entity.
 //
@@ -36,6 +40,7 @@
 // named by mappings are present, and every row carries the snapshot's scope.
 
 import {
+  brandIdSchema,
   isoDateTimeSchema,
   outletIdSchema,
   tenantIdSchema,
@@ -54,17 +59,33 @@ import {
   uomIdSchema,
 } from "../inventory/schemas.ts";
 import { legalEntityIdSchema } from "../platform/ids.ts";
+import { edgeBootstrapBrandSchema } from "./bootstrap.ts";
 
 export const EDGE_MASTER_SNAPSHOT_PATH = "/api/edge-sync/bootstrap/masters";
-export const EDGE_MASTER_SNAPSHOT_VERSION = 1;
+/** Newest snapshot version (2 adds `brandId` + `brands`, legend-2uqcd). */
+export const EDGE_MASTER_SNAPSHOT_VERSION = 2;
+/**
+ * Oldest version an edge still accepts: a cloud that predates version 2 keeps
+ * serving version 1 (no `brands`, no `brandId`), and an OLD edge only accepts
+ * the literal 1. So the cloud serves version 2 only to an edge that asks for it
+ * with this request header (an older cloud ignores a header it does not know);
+ * without it the snapshot is exactly version 1.
+ */
+export const EDGE_MASTER_SNAPSHOT_MIN_VERSION = 1;
+export const EDGE_MASTER_SNAPSHOT_VERSION_HEADER = "x-edge-snapshot-version";
 
 /** Caps keep a corrupt or hostile response from exhausting edge memory. */
+const MAX_BRANDS = 200;
 const MAX_UOMS = 1000;
 const MAX_LOCATIONS = 200;
 const MAX_ACCOUNTS = 5000;
 const MAX_MAPPINGS = 200;
 
 const name150 = z.string().min(1).max(150);
+
+/** Same row as the bootstrap bundle's brand (theme and logo have no FK). */
+export const edgeMasterBrandSchema = edgeBootstrapBrandSchema;
+export type EdgeMasterBrand = z.infer<typeof edgeMasterBrandSchema>;
 
 export const edgeMasterUomSchema = z.strictObject({
   id: uomIdSchema,
@@ -119,14 +140,24 @@ export type KnownEdgeMasterAccountMapping = Omit<
   "role"
 > & { role: PostingAccountRole };
 
-/** Scope-consistent: one tenant, one outlet, one legal entity, ids unique. */
+/**
+ * Scope-consistent: one tenant, one outlet, one legal entity, ids unique, and
+ * the outlet's own brand (`brandId`) is among `brands`.
+ */
 export const edgeMasterSnapshotSchema = z
   .strictObject({
-    version: z.literal(EDGE_MASTER_SNAPSHOT_VERSION),
+    version: z.union([
+      z.literal(EDGE_MASTER_SNAPSHOT_MIN_VERSION),
+      z.literal(EDGE_MASTER_SNAPSHOT_VERSION),
+    ]),
     issuedAt: isoDateTimeSchema,
     tenantId: tenantIdSchema,
     outletId: outletIdSchema,
     legalEntityId: legalEntityIdSchema,
+    /** Version 2 only: `outlets.brand_id` of the credential's outlet. */
+    brandId: brandIdSchema.optional(),
+    /** Version 2 only: every brand of the tenant. */
+    brands: z.array(edgeMasterBrandSchema).max(MAX_BRANDS).optional(),
     uoms: z.array(edgeMasterUomSchema).max(MAX_UOMS),
     stockLocations: z.array(edgeMasterStockLocationSchema).max(MAX_LOCATIONS),
     chartOfAccounts: z.array(edgeMasterAccountSchema).max(MAX_ACCOUNTS),
@@ -138,20 +169,43 @@ export const edgeMasterSnapshotSchema = z
     const { tenantId, outletId, legalEntityId } = snapshot;
 
     const checkUnique = (
-      key: "uoms" | "stockLocations" | "chartOfAccounts",
+      key: "brands" | "uoms" | "stockLocations" | "chartOfAccounts",
     ) => {
       const seen = new Set<string>();
-      snapshot[key].forEach((row, index) => {
+      (snapshot[key] ?? []).forEach((row, index) => {
         if (seen.has(row.id)) issue([key, index, "id"], "Duplicate id");
         seen.add(row.id);
       });
     };
+    checkUnique("brands");
     checkUnique("uoms");
     checkUnique("stockLocations");
     checkUnique("chartOfAccounts");
 
     const wrongTenant = (path: (string | number)[]) =>
       issue(path, "Row does not belong to the snapshot's tenant");
+    if (snapshot.version === 1) {
+      // Version 1 is the shape an older edge accepts: no brand fields at all.
+      if (snapshot.brands !== undefined)
+        issue(["brands"], "Version 1 snapshots carry no brands");
+      if (snapshot.brandId !== undefined)
+        issue(["brandId"], "Version 1 snapshots carry no brandId");
+    } else {
+      if (snapshot.brands === undefined)
+        issue(["brands"], "Version 2 snapshots list the tenant's brands");
+      if (snapshot.brandId === undefined)
+        issue(["brandId"], "Version 2 snapshots name the outlet's brand");
+      (snapshot.brands ?? []).forEach((row, index) => {
+        if (row.tenantId !== tenantId)
+          wrongTenant(["brands", index, "tenantId"]);
+      });
+      if (
+        snapshot.brands !== undefined &&
+        snapshot.brandId !== undefined &&
+        !snapshot.brands.some((row) => row.id === snapshot.brandId)
+      )
+        issue(["brandId"], "The outlet's brand is not in the snapshot");
+    }
     snapshot.uoms.forEach((row, index) => {
       if (row.tenantId !== tenantId) wrongTenant(["uoms", index, "tenantId"]);
     });

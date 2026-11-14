@@ -227,6 +227,77 @@ async function insertBundleRows(
 }
 
 /**
+ * Boot of a node that was already bootstrapped (legend-2uqcd): the stored
+ * masters may predate the all-tenant brands, and the catalog `recipes` stream
+ * needs those brands (FK (tenant_id, brand_id)); menu_items and item_variants
+ * wait for recipes. So the runtime syncs the masters once before the first
+ * catalog pull instead of leaving the menu stale until the next periodic tick.
+ * Best effort: never throws (an offline or failed sync is only logged, and the
+ * catalog pull then retries as before). Returns whether the masters synced.
+ */
+export async function syncEdgeMastersBeforeCatalog(
+  config: EdgeBootstrapConfig,
+  options: EdgeBootstrapOptions = {},
+): Promise<boolean> {
+  try {
+    await syncEdgeMasters(config, {
+      timeoutMs: PRESENT_SYNC_TIMEOUT_MS,
+      ...options,
+    });
+    return true;
+  } catch (error) {
+    const code = masterSyncCode(error);
+    if (code.startsWith("CLOUD_"))
+      logger.warn({ code }, "Edge master sync skipped before catalog start");
+    else logger.error({ code }, "Edge master sync failed before catalog start");
+    return false;
+  }
+}
+
+/**
+ * Starts `start` (the master sync loop with its first catalog pull) after the
+ * boot-time master sync, without blocking the caller. `syncMasters` false (a
+ * node bootstrapped in this very boot already applied the current snapshot)
+ * starts right away. `stop` aborts a master sync still in flight and prevents
+ * a start that has not happened yet.
+ */
+export function startAfterBootMasters(input: {
+  config: EdgeBootstrapConfig;
+  syncMasters: boolean;
+  options?: EdgeBootstrapOptions;
+  start: () => { stop(): Promise<void> };
+}): { stop(): Promise<void> } {
+  const abort = new AbortController();
+  let stopped = false;
+  let started: { stop(): Promise<void> } | null = null;
+  const ready = (
+    input.syncMasters
+      ? syncEdgeMastersBeforeCatalog(input.config, {
+          ...input.options,
+          signal: abort.signal,
+        })
+      : Promise.resolve(true)
+  )
+    .then(() => {
+      if (!stopped) started = input.start();
+    })
+    .catch((error) =>
+      logger.error(
+        { code: error instanceof Error ? error.name : "UNKNOWN" },
+        "Edge master sync loop did not start",
+      ),
+    );
+  return {
+    async stop() {
+      stopped = true;
+      abort.abort();
+      await ready;
+      await started?.stop();
+    },
+  };
+}
+
+/**
  * Edge boot, before ensureLocalEdgeNode: make sure the credential's tenant
  * and outlet rows exist locally. Throws EdgeBootError when they are missing
  * and cannot be fetched, verified or inserted.

@@ -698,12 +698,14 @@ export async function resolveTenantAiCapabilities(
  * Key rotation: re-seals the tenant's stored key when its envelope/key version
  * is not the current one (or always with `force`), with a fresh nonce. The key
  * itself, `updated_at`, and set-at/by stay. Pattern of
- * `rotateIntegrationCredentials`.
+ * `rotateIntegrationCredentials`. A stale key that will not open is skipped
+ * (the others still rotate) but counted in `unreadable`, so the caller can
+ * report the tenant as failed instead of silently leaving it on the old key.
  */
 export async function rotateAiProviderKeys(
   context: ScopedTenantContext,
   options: { actorUserId?: string | null; force?: boolean } = {},
-): Promise<{ rotated: number }> {
+): Promise<{ rotated: number; unreadable: number }> {
   assertTenantScope(context);
   const version = currentSealVersion();
   const tenantId = context.tenant.tenantId;
@@ -727,11 +729,13 @@ export async function rotateAiProviderKeys(
       .orderBy(asc(aiProviderConfigs.id))
       .for("update");
     let rotated = 0;
+    let unreadable = 0;
     for (const current of rows) {
       const apiKey = openKey(current);
       if (apiKey === null) {
         // One unreadable blob must not stop the others. Row id only, no key.
         logger.warn({ configId: current.id }, "ai provider key unreadable");
+        unreadable += 1;
         continue;
       }
       const sealed = sealSecret(apiKey, aadOf(tenantId, current.id));
@@ -759,7 +763,7 @@ export async function rotateAiProviderKeys(
       });
       rotated += 1;
     }
-    return { rotated };
+    return { rotated, unreadable };
   });
 }
 

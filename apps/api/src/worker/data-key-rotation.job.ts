@@ -23,7 +23,8 @@
 // lock; running it alongside the job is safe because each row is rotated under
 // FOR UPDATE and a row already on the active version is skipped.
 //
-// A tenant that fails (a value that will not open, a database error) is
+// A tenant that fails (a value that will not open, a database error, an AI key
+// that cannot be opened and so stays on the old version) is
 // logged by id and skipped; the others still run and the next day retries it.
 // Logs carry counts and tenant ids only: never keys, ciphertext, row contents
 // or error messages (a driver error can quote the query parameters).
@@ -145,6 +146,14 @@ export async function runDataKeyRotation(
           log.info(
             `Data key rotation: tenant ${tenantId} AI keys rotated ${ai.rotated}`,
           );
+        // A stale key that will not open is skipped by the service; it must
+        // not pass as a clean run. Counts and tenant id only.
+        if (ai.unreadable > 0) {
+          failed = true;
+          log.error(
+            `Data key rotation: tenant ${tenantId} has ${ai.unreadable} unreadable AI key(s) left on an old key version`,
+          );
+        }
       } catch {
         failed = true;
         log.error(

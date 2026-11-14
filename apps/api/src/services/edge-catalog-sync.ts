@@ -33,10 +33,16 @@
 //   as a record with `deletedAt`; live rows and markers are merged in
 //   (sync_txid, id) order. Edge-measured status never travels.
 // Scope: price_lists, stations and printers are outlet-owned (only the
-// credential's outlet). menu_categories, menu_items and recipes are limited to the brand of
-// the credential's outlet (`outlets.brand_id`); item_variants and
+// credential's outlet). menu_categories and menu_items are limited to the brand
+// of the credential's outlet (`outlets.brand_id`); item_variants and
 // menu_item_modifier_groups follow their menu item's brand. modifier_groups,
 // modifiers and inventory_items have no brand column: they are tenant-level.
+// recipes are tenant-level too (legend-2uqcd): a modifier or an item of this
+// brand may use a recipe of another brand, so every edge gets all recipes of
+// the tenant (the other brands arrive with the master snapshot). Only for an
+// edge that negotiated protocol 3: an older edge has no brand check for them
+// (FK failure, permanent CATALOG_PULL_FAILED), so it keeps the credential's
+// brand only.
 // Prices are read as the stored integer rupiah and passed through untouched.
 
 import {
@@ -240,6 +246,11 @@ type Scan = {
   readonly since: Mark | null;
   /** Fetch one more than the page to learn `hasMore`. */
   readonly take: number;
+  /**
+   * Negotiated protocol of the request: undefined for an edge that did not
+   * ask (it predates versioning). `recipes` is tenant-wide from 3 on.
+   */
+  readonly protocolVersion: number | undefined;
 };
 
 const scanners: Record<
@@ -738,7 +749,8 @@ const scanners: Record<
       },
     }));
   },
-  async recipes({ tx, tenantId, brandId, since, take }) {
+  async recipes({ tx, tenantId, brandId, since, take, protocolVersion }) {
+    const allTenant = protocolVersion !== undefined && protocolVersion >= 3;
     const t = recipes;
     const rows = await tx
       .select({
@@ -768,7 +780,7 @@ const scanners: Record<
       .where(
         and(
           eq(t.tenantId, tenantId),
-          eq(t.brandId, brandId),
+          allTenant ? undefined : eq(t.brandId, brandId),
           committed(t.syncTxid),
           after(t.syncTxid, [t.id], since),
         ),
@@ -802,9 +814,10 @@ const scanners: Record<
 /**
  * The page version for an edge that understands up to `requested`: the lower
  * of that and this cloud's own. A newer edge gets this cloud's version (it
- * decides whether it can read it); an older one gets its own. Only version 2
- * exists, so every page has the v2 shape whatever is stamped; when v3
- * changes the shape, serve the shape of the returned version here.
+ * decides whether it can read it); an older one gets its own. Versions 2 and 3
+ * share one page shape, so every page has it whatever is stamped; when v3
+ * changes the shape, serve the shape of the returned version here. Version 3
+ * only widens the `recipes` stream (all brands of the tenant); same shape.
  */
 export function negotiateCatalogProtocolVersion(requested: number): number {
   return Math.min(requested, CATALOG_PROTOCOL_VERSION);
@@ -863,6 +876,10 @@ export async function listCatalogRecordsSince(
       brandId: outletRow.brandId,
       since,
       take: limit + 1,
+      protocolVersion:
+        protocolVersion === undefined
+          ? undefined
+          : negotiateCatalogProtocolVersion(protocolVersion),
     });
   });
 

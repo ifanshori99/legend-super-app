@@ -1179,7 +1179,7 @@ describe("13.8 key rotation", () => {
     // Assumption: like rotateIntegrationCredentials it works per tenant and takes
     // a trusted scoped tenant context; the spec text shows no argument.
     const rotated = await rotateAiProviderKeys(contextFor(tenantA));
-    expect(rotated).toEqual({ rotated: 1 });
+    expect(rotated).toEqual({ rotated: 1, unreadable: 0 });
 
     const after = (await rowOf(tenantA))!;
     expect(after.api_key_key_version).toBe(currentSealVersion());
@@ -1196,6 +1196,7 @@ describe("13.8 key rotation", () => {
     // A row already on the current version is left alone.
     expect(await rotateAiProviderKeys(contextFor(tenantA))).toEqual({
       rotated: 0,
+      unreadable: 0,
     });
 
     const probed = await testCfg(adminA);

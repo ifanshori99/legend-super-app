@@ -1,7 +1,8 @@
 // Edge master sync snapshot, cloud side (bead legend-9ppw; PRD v1.7 §3 F5
 // "Server Lokal"). The edge node posts stock movements against stock
 // locations that must exist in the cloud with the same ids, so it pulls the
-// masters it needs: uoms (tenant-wide), stock locations (its outlet only),
+// masters it needs: brands (every brand of the tenant, so recipes of another
+// brand have their FK parent), uoms (tenant-wide), stock locations (its outlet only),
 // and the chart of accounts with its posting-role mappings (its outlet's
 // legal entity only). Contract: packages/shared/src/edge/master-sync.ts.
 //
@@ -18,6 +19,7 @@ import { DatabaseError } from "pg";
 import { CoreError } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import {
+  EDGE_MASTER_SNAPSHOT_MIN_VERSION,
   EDGE_MASTER_SNAPSHOT_VERSION,
   edgeMasterSnapshotSchema,
   type EdgeMasterSnapshotResponse,
@@ -27,7 +29,7 @@ import { parseEdgeCredential } from "../edge/credential.ts";
 import { accountMappings, chartOfAccounts } from "../db/schema/accounting.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
 import { stockLocations, uoms } from "../db/schema/inventory.ts";
-import { outlets, tenants } from "../db/schema/platform-org.ts";
+import { brands, outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import { outletContext } from "./device-pin-support.ts";
@@ -81,7 +83,14 @@ const denied = () =>
 export async function buildEdgeMasterSnapshot(
   node: VerifiedEdgeNode,
   presentedCredential: string,
+  options: { snapshotVersion?: number } = {},
 ): Promise<EdgeMasterSnapshotResponse> {
+  // Version 2 (brands) only for an edge that asked; an older edge accepts the
+  // literal version 1 only, so the default is exactly the old snapshot.
+  const version =
+    (options.snapshotVersion ?? 0) >= EDGE_MASTER_SNAPSHOT_VERSION
+      ? EDGE_MASTER_SNAPSHOT_VERSION
+      : EDGE_MASTER_SNAPSHOT_MIN_VERSION;
   const verified = verifiedEdgeNodeSchema.parse(node);
   const { tenantId, outletId, edgeNodeId } = verified;
   const presented = parseEdgeCredential(presentedCredential);
@@ -97,7 +106,7 @@ export async function buildEdgeMasterSnapshot(
     outletId,
   );
 
-  const snapshot = await readSnapshot(context, verified);
+  const snapshot = await readSnapshot(context, verified, version);
 
   return {
     snapshot,
@@ -113,9 +122,10 @@ type SnapshotScope = Pick<
 async function readSnapshot(
   context: ReturnType<typeof outletContext>,
   scope: SnapshotScope,
+  version: number,
 ) {
   try {
-    return await readSnapshotInTenant(context, scope);
+    return await readSnapshotInTenant(context, scope, version);
   } catch (error) {
     if (!isDatabaseError(error)) throw error;
     throw masterReadFailed(error);
@@ -125,6 +135,7 @@ async function readSnapshot(
 function readSnapshotInTenant(
   context: ReturnType<typeof outletContext>,
   { tenantId, outletId, edgeNodeId }: SnapshotScope,
+  version: number,
 ) {
   return withTenant(db, context, async (tx) => {
     const [tenant] = await tx
@@ -135,6 +146,7 @@ function readSnapshotInTenant(
     const [outlet] = await tx
       .select({
         legalEntityId: outlets.legalEntityId,
+        brandId: outlets.brandId,
         status: outlets.status,
       })
       .from(outlets)
@@ -157,6 +169,14 @@ function readSnapshotInTenant(
     if (!edgeNode) throw denied();
     const { legalEntityId } = outlet;
 
+    const brandRows =
+      version >= 2
+        ? await tx
+            .select()
+            .from(brands)
+            .where(eq(brands.tenantId, tenantId))
+            .orderBy(asc(brands.id))
+        : [];
     const uomRows = await tx
       .select()
       .from(uoms)
@@ -194,11 +214,25 @@ function readSnapshotInTenant(
       .orderBy(asc(accountMappings.role));
 
     const parsed = edgeMasterSnapshotSchema.safeParse({
-      version: EDGE_MASTER_SNAPSHOT_VERSION,
+      version,
       issuedAt: new Date().toISOString(),
       tenantId,
       outletId,
       legalEntityId,
+      ...(version >= 2
+        ? {
+            brandId: outlet.brandId,
+            brands: brandRows.map((row) => ({
+              id: row.id,
+              tenantId: row.tenantId,
+              slug: row.slug,
+              name: row.name,
+              logoMediaId: row.logoMediaId,
+              themeId: row.themeId,
+              createdAt: row.createdAt.toISOString(),
+            })),
+          }
+        : {}),
       uoms: uomRows.map((row) => ({
         id: row.id,
         tenantId: row.tenantId,
