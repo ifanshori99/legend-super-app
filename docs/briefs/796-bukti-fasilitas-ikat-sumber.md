@@ -1,0 +1,8 @@
+# 796 Bukti fasilitas: ikat media ke jenis sumber dan pengunggah (tingkat K, akses)
+Peran: engineer (baca ~/.agents/team/roles/engineer.md). Kartu legend-mg2bz (`bd show legend-mg2bz`, `bd update legend-mg2bz --claim`).
+Basis: worktree dari `origin/ghostex/upload-foto-fasilitas-sungguhan` (b961fdcc7; aturan baca 792 ada di sana, lihat `docs/briefs/792-foto-fasilitas-akses-baca.md`). Cabang `fix/facility-evidence-bind-source`.
+Masalah: `operations-checklist.service.ts:354`, `operations-equipment.service.ts:341`, dan service cleaning hanya mengecek tenant+outlet untuk storage id yang dilampirkan, tidak mengecek sourceKind (checklist_evidence / maintenance_ticket / cleaning_task) atau pengunggah. Crew bisa melampirkan foto orang lain dari outlet yang sama.
+Aturan: media yang dilampirkan harus sourceKind yang cocok, diunggah oleh aktor yang sama, belum terlampir ke sumber lain. Ditolak dengan error 4xx yang jelas.
+Paralel: Explore (tiga service + cara upload mencatat sourceKind/uploader), test-writer (test gagal-dulu per service: foto orang lain ditolak, kind salah ditolak, foto sendiri boleh), implementer per service (file terpisah).
+Thread lain sedang mengubah `canReadLeave` di storage (cabang fix/leave-attachment-active-permission); jangan sentuh fungsi itu. Tanpa migrasi kecuali perlu; bila perlu, nomor 0377 dan laporkan.
+Selesai: test terarah lewat `heavy`, pra-gate AGENTS.md (prettier, eslint, typecheck API), satu subagent architect effort xhigh atas diff, temuan nyata dibetulkan, commit, push, komentar SHA di kartu. Laporan: SHA, test, hasil architect, angka subagent (total, puncak, pemegang token heavy). Jangan merge ke m1.
