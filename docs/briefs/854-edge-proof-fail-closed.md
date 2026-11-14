@@ -40,3 +40,11 @@ e. Peer lama (tanpa header): onBatch dup ack lama persis; hello tanpa proof; edg
 f. Close dari cloud dengan reason refusal tidak mereset backoff (link-client).
 g. Hello strict: field tak dikenal tetap ditolak; `to` ditolak bila negatif.
 Helper test yang sudah ada: edge-link-restore-proof.test.ts (refProof, withFrom, event, helloFrame, lone, settle, connect), edge-link-restore-proof-db.test.ts (proofOfEvents, outboundProof), edge-link-restore-capability.test.ts.
+
+## Revisi 1 (review architect; CTO-lite: pilih b, saran architect)
+Edge 848 juga kirim header x-edge-restore-proof tapi tidak paham `to` dan tidak menahan backoff pada tolakan cloud -> loop cepat. Maka "peer modern" = edge 854 saja:
+R1. protocol.ts: `LINK_RESTORE_PROOF_V2_HEADER = "x-edge-restore-proof-v2"` (nilai "1"). link-client (edge) kirim keduanya bila store.outboundProof ada. link-server (cloud) parse: v2 ada -> `restoreProofStrict: true` ke createLinkPeer (opsi baru `LinkPeerOptions.restoreProofStrict?: boolean`; hanya valid bila restoreProofAcked ada).
+R2. Cloud tanpa strict (edge 848): perilaku 848 persis: sendHello hanya mengirim proof bila prefiks terbukti == seluruh rentang (to == cursor), selain itu hello tanpa proof (fail-open 848, diterima untuk edge lama); TIDAK ada reconcileReplay; tanpa `to` di kabel.
+R3. Strict (edge 854): butir 3,5 desain 854 (proof parsial/kosong, `to`, reconcileReplay) hanya di sini. Gate reconcileReplay = restoreProofStrict.
+R4. deployment.md: betulkan :289 dan :368 ("cloud first, then edge") menjadi konsisten: urutan bebas; edge 848 tetap jalan seperti 848 (fail-open proof tak lengkap); proteksi fail-closed aktif per edge setelah edge itu 854. Hapus klaim backoff yang salah di :371.
+R5. Opsional link-peer onHello: `sentUpTo = ackedUpTo = Math.max(ackTo, Math.min(acked, cursor))`? JANGAN (resend dari bawah acked dibutuhkan untuk heal receipt); biarkan sesuai desain.
