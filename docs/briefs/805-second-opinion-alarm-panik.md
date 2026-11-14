@@ -1,0 +1,7 @@
+# 805 Second opinion area alarm panik (web push, device token)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Akses dan keselamatan orang: effort xhigh. Read-only, tanpa edit kode produk.
+Cakupan: diff `origin/milestone/m1...origin/ws/panic-push-registration` (ujung e241e9476; rantai ui/panic-copy-subnav -> ghostex/157120a3 -> ws/panic-push-registration, migrasi 0375). Bukti thread: `docs/qa/ofq4f-push-registration.md` di cabang itu. Second opinion lama 779 hanya mencakup sebagian awal.
+Isi: VAPID public key per tenant, langganan push terikat user/tenant/sesi/perangkat/outlet, `X-Device-Token` dari web, push berhenti saat logout/sesi dicabut (trigger 0375), sesi idle 30 menit tetap dapat push, langganan > 30 hari dilewati, impersonasi tidak boleh daftar, alarm ke 5 langganan terbaru di outlet alarm secara paralel, langganan mati dihapus, retry, notifikasi in-app tetap jalan bila push tidak dikonfigurasi.
+Cari: alarm yang tidak sampai (P0: keselamatan orang), alarm sampai ke orang/outlet/tenant yang salah, langganan hidup lagi setelah dicabut, device token dicuri atau dipakai ulang, data pribadi di payload push, race logout vs alarm, batas 5 langganan menjatuhkan petugas yang sedang jaga.
+Tanpa heavy kecuali benar perlu satu test terarah (LEGEND_TEST_FILES=... heavy pnpm test).
+Hasil: tulis `docs/qa/second-opinion-alarm-panik.md` di worktree-mu (P0-P3, berkas:baris, skenario gagal konkret, usul test). Lapor ringkasannya.
