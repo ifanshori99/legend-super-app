@@ -12,6 +12,7 @@ import { DepositBreakdown } from "../deposit-breakdown";
 import { GuestActions } from "../guest-actions";
 import { GuestNote } from "../guest-note";
 import { StatusPill } from "../status-pill";
+import { guestHint, guestTitle } from "../typography";
 import { instantParts } from "./cancel-screen";
 import { clockLabel, useFocusHeading } from "./screen-helpers";
 
@@ -58,10 +59,14 @@ export function CancelledScreen({ view, timeZone }: CancelledScreenProps) {
             {t("reservationGuestCancel.cancelled.pill")}
           </StatusPill>
         </div>
-        <h1 ref={headingRef} tabIndex={-1} className="type-title outline-none">
+        <h1
+          ref={headingRef}
+          tabIndex={-1}
+          className={`${guestTitle} outline-none`}
+        >
           {t("reservationGuestCancel.cancelled.title")}
         </h1>
-        <p className="text-base leading-7 text-muted-foreground">
+        <p className={guestHint}>
           {t("reservationGuestCancel.cancelled.lead", {
             ...when,
             party: view.partySize,
@@ -107,14 +112,13 @@ export function CancelledScreen({ view, timeZone }: CancelledScreenProps) {
         </>
       )}
 
-      <p className="text-sm leading-6 text-muted-foreground">
-        {t("reservationGuestCancel.cancelled.help")}
-      </p>
+      <p className={guestHint}>{t("reservationGuestCancel.cancelled.help")}</p>
 
       {outcome && outcome.refundIdr > 0 && (
         <GuestActions>
           <Button
             type="button"
+            variant="secondary"
             className="w-full"
             loading={reservation.isFetching}
             onClick={() => void checkRefund()}
@@ -122,8 +126,8 @@ export function CancelledScreen({ view, timeZone }: CancelledScreenProps) {
             {t("reservationGuestCancel.cancelled.checkRefund")}
           </Button>
           <p
-            role="status"
-            className={checked ? "text-center text-sm leading-6" : "sr-only"}
+            role={checked === "error" ? "alert" : "status"}
+            className={checked ? `${guestHint} text-center` : "sr-only"}
           >
             {checked === "updated"
               ? t("reservationGuestCancel.cancelled.refundChecked", {
@@ -132,7 +136,7 @@ export function CancelledScreen({ view, timeZone }: CancelledScreenProps) {
               : checked === "unchanged"
                 ? t("reservationGuestCancel.cancelled.refundUnchanged")
                 : checked === "error"
-                  ? t("reservationGuestCancel.error.title")
+                  ? t("reservationGuestCancel.cancelled.refundCheckError")
                   : ""}
           </p>
         </GuestActions>

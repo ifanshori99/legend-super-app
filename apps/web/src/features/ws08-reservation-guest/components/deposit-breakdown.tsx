@@ -3,6 +3,7 @@
 import { useId } from "react";
 import { useT } from "@/components/i18n";
 import { Money } from "@/components/ui/money";
+import { guestHeading } from "./typography";
 
 function Row({ label, amount }: { label: string; amount: number }) {
   return (
@@ -36,9 +37,9 @@ export function DepositBreakdown({
   return (
     <section
       aria-labelledby={headingId}
-      className="rounded-container border-(length:--border-w) bg-card p-card shadow-hairline sm:p-6"
+      className="rounded-container border-(length:--border-w) bg-card p-6 shadow-hairline max-[760px]:p-5"
     >
-      <Heading id={headingId} className="text-lg font-bold">
+      <Heading id={headingId} className={guestHeading}>
         {heading}
       </Heading>
       <dl className="mt-4 grid gap-3">

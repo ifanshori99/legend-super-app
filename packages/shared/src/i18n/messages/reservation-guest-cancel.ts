@@ -80,6 +80,8 @@ export const reservationGuestCancelMessages = {
     checkRefund: "Periksa status pengembalian",
     refundChecked: "Status diperbarui pukul {time}",
     refundUnchanged: "Belum ada perubahan",
+    refundCheckError:
+      "Status pengembalian belum bisa diperiksa. Coba lagi sebentar lagi.",
   },
   closed: {
     seatedPill: "Sedang berlangsung",

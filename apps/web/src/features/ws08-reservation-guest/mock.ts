@@ -42,10 +42,10 @@ const POLICY_VERSION = "2026-11.1";
 const RESERVED_FOR = "2026-11-18T12:00:00.000Z";
 /** 17 Nov 2026 19.00 WIB: 24 hours before. */
 const FREE_UNTIL = "2026-11-17T12:00:00.000Z";
-/** 20 Nov 2026 20.00 WIB, the time the guest asked for. */
-const REQUESTED_FOR = "2026-11-20T13:00:00.000Z";
-/** 19 Nov 2026 20.00 WIB: 24 hours before the requested time. */
-const REQUESTED_FREE_UNTIL = "2026-11-19T13:00:00.000Z";
+/** Thu 19 Nov 2026 19.30 WIB, the time the guest asked for. */
+const REQUESTED_FOR = "2026-11-19T12:30:00.000Z";
+/** Wed 18 Nov 2026 19.30 WIB: 24 hours before the requested time. */
+const REQUESTED_FREE_UNTIL = "2026-11-18T12:30:00.000Z";
 
 function demo(): string {
   if (typeof window === "undefined") return "detail";

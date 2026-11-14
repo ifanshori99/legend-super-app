@@ -47,6 +47,10 @@ const COLD_TIMEOUT = 45_000; // Vite compiles a route on its first request.
 const TOKEN = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdE";
 const OUTLET_ZONE = "Asia/Jakarta";
 const DAY_MS = 86_400_000;
+// Mockup fixture for the reschedule screenshot.
+const RESCHEDULE_DATE = "2026-11-19";
+const RESCHEDULE_TIME = "19:30";
+const RESCHEDULE_NOTE = "Ada perubahan rencana, kami ingin datang besok malam.";
 
 // States. `demo` picks the mock scenario; `slow` adds `?mock=slow`. `prepare`
 // drives the state and must end on something visible that proves it.
@@ -61,7 +65,10 @@ const STATES = [
     demo: "detail",
     prepare: async (p) => {
       await openReschedule(p);
+      await fillSchedule(p, RESCHEDULE_DATE, RESCHEDULE_TIME);
+      await p.locator('textarea[name="request-note"]').fill(RESCHEDULE_NOTE);
       await heading(p, "Kapan ingin datang?");
+      await settle(p);
     },
   },
   {
@@ -72,7 +79,8 @@ const STATES = [
       // A date in the past with a time: the form must refuse it on submit.
       await fillSchedule(p, daysFromToday(-2));
       await clickButton(p, "Kirim permintaan");
-      await heading(p, "Periksa jadwal baru");
+      await heading(p, "Periksa tanggal baru");
+      await settle(p);
     },
   },
   {
@@ -80,7 +88,7 @@ const STATES = [
     demo: "detail",
     prepare: async (p) => {
       await openReschedule(p);
-      await fillSchedule(p, daysFromToday(3));
+      await fillSchedule(p, RESCHEDULE_DATE, RESCHEDULE_TIME);
       // Keep the request in flight so the screen stays on "sending".
       await p.evaluate(() => window.__legendMock.setLatencyMs(60_000));
       await clickButton(p, "Kirim permintaan");
@@ -217,15 +225,28 @@ async function openReschedule(page) {
 
 /**
  * Fills the date, then a time: a slot radio when the public availability
- * offers some, otherwise the plain time input.
+ * offers some (the one matching `time`, else the first), otherwise the plain
+ * time input.
  */
-async function fillSchedule(page, date) {
+async function fillSchedule(page, date, time = "19:00") {
   await page.locator('input[name="requested-date"]').fill(date);
-  const time = page.locator('input[name="requested-time"]').first();
-  await time.waitFor({ state: "attached", timeout: COLD_TIMEOUT });
-  const type = await time.getAttribute("type");
-  if (type === "radio") await time.check({ force: true });
-  else await time.fill("19:00");
+  const field = page.locator('input[name="requested-time"]').first();
+  await field.waitFor({ state: "attached", timeout: COLD_TIMEOUT });
+  const type = await field.getAttribute("type");
+  if (type === "radio") {
+    const chip = page.locator(`input[name="requested-time"][value="${time}"]`);
+    await ((await chip.count()) > 0 ? chip : field).first().check({
+      force: true,
+    });
+  } else await field.fill(time);
+}
+
+/** Drops focus and hover so no button is captured in its hover/focus style. */
+async function settle(page) {
+  await page.evaluate(() => {
+    document.activeElement?.blur?.();
+  });
+  await page.mouse.move(0, 0);
 }
 
 async function loadAxe() {
@@ -333,6 +354,7 @@ async function main() {
             BLOCKING_IMPACTS.has(v.impact ?? ""),
           );
           const overflow = await measureOverflow(page);
+          await settle(page);
           if (viewport.screenshot)
             await page.screenshot({
               path: join(OUT_DIR, `${id}.png`),

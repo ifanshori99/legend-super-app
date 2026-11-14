@@ -1,7 +1,7 @@
 // Guest manage-reservation page text (bead legend-g12il).
 // Request screens: detail, reschedule form, and the request status.
 export const reservationGuestRequestMessages = {
-  schedule: "{day} pukul {time} {zone}",
+  schedule: "{day}, {time} {zone}",
   guests: "{count} tamu",
   rows: {
     date: "Tanggal",
@@ -17,14 +17,17 @@ export const reservationGuestRequestMessages = {
     noteTitle: "Perlu mengubah rencana?",
     noteBody:
       "Permintaan jadwal baru perlu disetujui outlet. Jadwal saat ini tetap berlaku sampai permintaan disetujui.",
+    pendingNoteTitle: "Permintaan jadwal baru sedang diperiksa outlet",
+    pendingNoteBody:
+      "Jadwal saat ini tetap berlaku sampai permintaan disetujui. Anda tidak perlu mengirim permintaan yang sama lagi.",
     policyTitle: "Ketentuan DP Anda",
-    policyFree:
-      "DP kembali penuh jika pembatalan dilakukan paling lambat {deadline}.",
+    policyFree: "DP kembali penuh jika pembatalan dilakukan paling lambat",
     policyLate:
       "Setelah batas tersebut, ada potongan DP sesuai ketentuan saat Anda memesan. Rincian nominal ditampilkan sebelum pembatalan.",
     policyPassed:
       "Batas pembatalan dengan DP kembali penuh sudah lewat. Pembatalan sekarang dikenai potongan DP sesuai ketentuan saat Anda memesan. Rincian nominal ditampilkan sebelum Anda mengonfirmasi.",
     reschedule: "Ajukan jadwal baru",
+    viewRequest: "Kembali ke status permintaan",
     cancel: "Batalkan reservasi",
   },
   reschedule: {
@@ -53,6 +56,9 @@ export const reservationGuestRequestMessages = {
     pill: "Permintaan belum dikirim",
     title: "Periksa jadwal baru",
     lead: "Ganti tanggal atau jam sebelum mengirim permintaan.",
+    leadPast:
+      "Tanggal yang dipilih sudah lewat. Ganti tanggal sebelum mengirim permintaan.",
+    titlePast: "Periksa tanggal baru",
     keep: "Reservasi awal Anda tetap berlaku: {schedule}, untuk {count} tamu.",
     missing_date: "Pilih tanggal baru.",
     missing_time: "Pilih jam baru.",
@@ -113,7 +119,6 @@ export const reservationGuestRequestMessages = {
       noteTitle: "Jadwal dan DP tidak berubah",
       noteBody:
         "Anda masih bisa datang sesuai jadwal awal. Untuk membahas pilihan lain, balas pesan konfirmasi reservasi Anda.",
-      again: "Ajukan jadwal lain",
     },
   },
 } as const;

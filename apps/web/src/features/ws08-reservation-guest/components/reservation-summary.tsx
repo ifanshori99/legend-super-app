@@ -30,18 +30,18 @@ export function ReservationSummary({
   return (
     <section
       aria-label={t("reservationGuest.summary.label")}
-      className="rounded-container border-(length:--border-w) bg-card p-card shadow-hairline sm:p-6"
+      className="rounded-container border-(length:--border-w) bg-card p-6 shadow-hairline max-[760px]:p-5"
     >
       <div className="flex items-center gap-3">
         <span
           aria-hidden="true"
-          className="grid size-11 shrink-0 place-items-center rounded-lg border-(length:--border-w) border-primary text-primary"
+          className="grid size-10 shrink-0 place-items-center rounded-[12px] border-(length:--border-w) border-input text-primary"
         >
           <Store className="size-5" />
         </span>
         <strong className="min-w-0 text-base">{view.outletName}</strong>
       </div>
-      <div className="mt-5 flex items-center gap-4">
+      <div className="mt-5 flex items-center gap-5 max-[760px]:gap-4">
         <div
           aria-hidden="true"
           className="w-16 shrink-0 overflow-hidden rounded-lg border-(length:--border-w) border-border text-center"
@@ -52,7 +52,9 @@ export function ReservationSummary({
           <b className="block py-1 text-2xl tabular">{day}</b>
         </div>
         <div className="min-w-0">
-          <p className="text-lg font-bold">{formatDayLabel(date)}</p>
+          <p className="text-lg font-bold max-[760px]:text-[17px]">
+            {formatDayLabel(date)}
+          </p>
           <p className="text-sm text-muted-foreground tabular">
             {t("reservationGuest.summary.time", {
               time: formatClock(view.reservedFor, timeZone),

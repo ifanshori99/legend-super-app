@@ -70,7 +70,7 @@ function GuestManageBody({
   // Move focus to the new screen's heading after a step change, so a keyboard
   // or screen reader user lands on the new content. This effect is the only
   // focus mechanism (screens just expose the h1) and it never fires for the
-  // first content shown after loading.
+  // first reservation content shown after loading.
   const bodyRef = React.useRef<HTMLDivElement>(null);
   const screen = view ? deriveGuestScreen(view, new Date()) : null;
   // A server late answer wins over every screen that still offers a reschedule.
@@ -92,20 +92,33 @@ function GuestManageBody({
     (shown === "pending" && step === "reschedule")
       ? "main"
       : step;
-  const focusKey = `${current}:${shown ?? "none"}`;
-  const contentShown = view !== undefined && shown !== null && timeZoneReady;
+  // Error, rate-limit, and invalid-link screens replace the loading screen, so
+  // they take focus too. The error timestamp is in the key: "Coba lagi" that
+  // fails again is a new error and the guest hears it again.
+  const errorKind = query.isError ? guestErrorKind(query.error) : null;
+  let recoveryKey: string | null = null;
+  if (token === null || (token !== undefined && errorKind === "invalid")) {
+    recoveryKey = "invalid";
+  } else if (token !== undefined && (!view || !shown) && query.isError) {
+    recoveryKey = `${errorKind === "rate_limited" ? "rate_limited" : "error"}:${query.errorUpdatedAt}`;
+  }
+  const focusKey = recoveryKey ?? `${current}:${shown ?? "none"}`;
+  const contentShown =
+    recoveryKey !== null ||
+    (view !== undefined && shown !== null && timeZoneReady);
   const lastKey = React.useRef<string | null>(null);
   React.useEffect(() => {
     if (!contentShown) return;
     const previous = lastKey.current;
     lastKey.current = focusKey;
-    if (previous === null || previous === focusKey) return;
+    if (previous === focusKey) return;
+    if (previous === null && recoveryKey === null) return;
     const heading = bodyRef.current?.querySelector("h1");
     if (heading instanceof HTMLElement) {
       heading.tabIndex = -1;
       heading.focus({ preventScroll: true });
     }
-  }, [focusKey, contentShown]);
+  }, [focusKey, contentShown, recoveryKey]);
 
   let body: React.ReactNode;
   if (token === undefined) {
@@ -176,6 +189,7 @@ function GuestManageBody({
             shown === "pending" || shown === "late" ? "main" : "reschedule",
           )
         }
+        onViewRequest={() => setStep("main")}
         onCancel={() => setStep("cancel")}
       />
     );
@@ -199,7 +213,6 @@ function GuestManageBody({
         view={view}
         timeZone={timeZone}
         onViewDetail={() => setStep("detail")}
-        onRescheduleAgain={() => setStep("reschedule")}
       />
     );
   }

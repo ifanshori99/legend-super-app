@@ -10,20 +10,28 @@ import { GuestActions } from "../guest-actions";
 import { GuestNote } from "../guest-note";
 import { ReservationSummary } from "../reservation-summary";
 import { StatusPill } from "../status-pill";
+import { guestHeading, guestHint, guestTitle } from "../typography";
 import { useFocusHeading } from "./screen-helpers";
+
+// Light skeleton for this page only (mockup #e9dfd4): the warm paper theme
+// reads better than the global dark --skeleton, and the loading text carries
+// the state for readers.
+const SKELETON_LIGHT = "[--skeleton:#e9dfd4]";
 
 function Heading({ children }: { children: string }) {
   const headingRef = useFocusHeading();
   return (
-    <h1 ref={headingRef} tabIndex={-1} className="type-title outline-none">
+    <h1 ref={headingRef} tabIndex={-1} className={`${guestTitle} outline-none`}>
       {children}
     </h1>
   );
 }
 
-function Lead({ children }: { children: string }) {
+function Lead({ children, alert }: { children: string; alert?: boolean }) {
   return (
-    <p className="text-base leading-7 text-muted-foreground">{children}</p>
+    <p role={alert ? "alert" : undefined} className={guestHint}>
+      {children}
+    </p>
   );
 }
 
@@ -38,24 +46,22 @@ export function InvalidLinkScreen() {
           </StatusPill>
         </div>
         <Heading>{t("reservationGuestCancel.invalid.title")}</Heading>
-        <Lead>{t("reservationGuestCancel.invalid.lead")}</Lead>
+        <Lead alert>{t("reservationGuestCancel.invalid.lead")}</Lead>
       </header>
       <section
         className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline"
         aria-labelledby="invalid-help"
       >
-        <h2 id="invalid-help" className="text-xl font-bold">
+        <h2 id="invalid-help" className={guestHeading}>
           {t("reservationGuestCancel.invalid.howHeading")}
         </h2>
-        <ol className="grid list-decimal gap-2 pl-5 text-base leading-7">
+        <ol className="grid list-decimal gap-1 pl-5 text-base leading-6">
           <li>{t("reservationGuestCancel.invalid.step1")}</li>
           <li>{t("reservationGuestCancel.invalid.step2")}</li>
           <li>{t("reservationGuestCancel.invalid.step3")}</li>
         </ol>
       </section>
-      <p className="text-sm leading-6 text-muted-foreground">
-        {t("reservationGuestCancel.invalid.privacy")}
-      </p>
+      <p className={guestHint}>{t("reservationGuestCancel.invalid.privacy")}</p>
     </div>
   );
 }
@@ -66,11 +72,11 @@ export function GuestLoadingScreen() {
     <div className="grid gap-6">
       <header className="grid gap-3">
         <Heading>{t("reservationGuestCancel.loading.title")}</Heading>
-        <p role="status" className="text-base leading-7 text-muted-foreground">
+        <p role="status" className={guestHint}>
           {t("reservationGuestCancel.loading.lead")}
         </p>
       </header>
-      <div className="grid gap-6" aria-busy="true">
+      <div className={`grid gap-6 ${SKELETON_LIGHT}`} aria-busy="true">
         <div className="grid gap-4 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline">
           <Skeleton className="h-6 w-3/5" />
           <Skeleton className="h-6" />
@@ -94,7 +100,7 @@ export function GuestLoadErrorScreen({ onRetry }: { onRetry: () => void }) {
           </StatusPill>
         </div>
         <Heading>{t("reservationGuestCancel.error.title")}</Heading>
-        <Lead>{t("reservationGuestCancel.error.lead")}</Lead>
+        <Lead alert>{t("reservationGuestCancel.error.lead")}</Lead>
       </header>
       <GuestNote
         tone="warning"
@@ -107,7 +113,7 @@ export function GuestLoadErrorScreen({ onRetry }: { onRetry: () => void }) {
           {t("reservationGuestCancel.error.retry")}
         </Button>
       </GuestActions>
-      <p className="text-sm leading-6 text-muted-foreground">
+      <p className={`${guestHint} -mt-2`}>
         {t("reservationGuestCancel.error.help")}
       </p>
     </div>
@@ -125,7 +131,7 @@ export function GuestRateLimitedScreen({ onRetry }: { onRetry: () => void }) {
           </StatusPill>
         </div>
         <Heading>{t("reservationGuestCancel.rateLimit.title")}</Heading>
-        <Lead>{t("reservationGuestCancel.rateLimit.lead")}</Lead>
+        <Lead alert>{t("reservationGuestCancel.rateLimit.lead")}</Lead>
       </header>
       <GuestNote
         tone="info"
@@ -138,7 +144,7 @@ export function GuestRateLimitedScreen({ onRetry }: { onRetry: () => void }) {
           {t("reservationGuestCancel.rateLimit.retry")}
         </Button>
       </GuestActions>
-      <p className="text-sm leading-6 text-muted-foreground">
+      <p className={`${guestHint} -mt-2`}>
         {t("reservationGuestCancel.rateLimit.help")}
       </p>
     </div>
@@ -188,9 +194,7 @@ export function ClosedScreen({
         <Lead>{copy.lead}</Lead>
       </header>
       <ReservationSummary view={view} timeZone={timeZone} />
-      <p className="text-sm leading-6 text-muted-foreground">
-        {t("reservationGuestCancel.closed.help")}
-      </p>
+      <p className={guestHint}>{t("reservationGuestCancel.closed.help")}</p>
     </div>
   );
 }

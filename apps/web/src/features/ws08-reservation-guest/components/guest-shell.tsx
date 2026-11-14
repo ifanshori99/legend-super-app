@@ -4,6 +4,7 @@
 import * as React from "react";
 import { useT } from "@/components/i18n";
 import { ThemeScope } from "@/components/theme-scope";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export function GuestShell({
   brand,
@@ -21,27 +22,28 @@ export function GuestShell({
       data-surface="qr"
       className="min-h-dvh bg-background"
     >
-      <div className="mx-auto flex min-h-dvh w-full max-w-[42.5rem] flex-col px-gutter pt-5 pb-10 sm:pt-12">
+      <div className="mx-auto flex min-h-dvh w-full max-w-[46rem] flex-col px-6 pt-8 pb-10 max-[760px]:px-5 min-[900px]:pt-12">
         {/* Fixed min height: the header does not shift when the brand arrives. */}
-        <header className="flex min-h-12 items-center justify-between gap-4 border-b border-border pb-4">
-          {brand ? (
-            <span className="inline-flex items-center gap-2 text-xl font-bold">
-              <span
+        <header className="flex min-h-12 items-center justify-between gap-4 border-b border-border pb-5">
+          <span className="inline-flex items-center gap-2 text-xl font-extrabold tracking-[-0.035em]">
+            <span
+              aria-hidden="true"
+              className="size-2 shrink-0 rounded-full bg-primary"
+            />
+            {brand ?? (
+              <Skeleton
                 aria-hidden="true"
-                className="size-2 shrink-0 rounded-full bg-primary"
+                className="h-5 w-32 rounded-sm [--skeleton:#e9dfd4]"
               />
-              {brand}
-            </span>
-          ) : (
-            <span />
-          )}
+            )}
+          </span>
           <span className="text-sm text-muted-foreground">
             {t("reservationGuest.shell.section")}
           </span>
         </header>
         <main
           id="main-content"
-          className="flex flex-1 flex-col gap-6 py-6 outline-none"
+          className="flex flex-1 flex-col gap-6 pt-8 pb-6 outline-none"
         >
           {children}
         </main>

@@ -9,6 +9,7 @@ import { GuestActions } from "../guest-actions";
 import { GuestNote } from "../guest-note";
 import { ReservationSummary } from "../reservation-summary";
 import { StatusPill } from "../status-pill";
+import { guestBody, guestHeading, guestHint, guestTitle } from "../typography";
 import { instantParts } from "./cancel-screen";
 import { useFocusHeading } from "./screen-helpers";
 
@@ -39,12 +40,14 @@ export function LateScreen({
             {t("reservationGuestCancel.late.pill")}
           </StatusPill>
         </div>
-        <h1 ref={headingRef} tabIndex={-1} className="type-title outline-none">
+        <h1
+          ref={headingRef}
+          tabIndex={-1}
+          className={`${guestTitle} outline-none`}
+        >
           {t("reservationGuestCancel.late.title")}
         </h1>
-        <p className="text-base leading-7 text-muted-foreground">
-          {t("reservationGuestCancel.late.lead")}
-        </p>
+        <p className={guestHint}>{t("reservationGuestCancel.late.lead")}</p>
       </header>
 
       <GuestNote
@@ -68,10 +71,10 @@ export function LateScreen({
 
       {preview && (
         <section className="grid gap-3" aria-labelledby="late-cancellation">
-          <h2 id="late-cancellation" className="text-xl font-bold">
+          <h2 id="late-cancellation" className={guestHeading}>
             {t("reservationGuestCancel.late.cancelHeading")}
           </h2>
-          <p className="text-base leading-7">
+          <p className={guestBody}>
             {t("reservationGuestCancel.late.cancelBody")}
           </p>
           <DepositBreakdown
@@ -80,7 +83,7 @@ export function LateScreen({
             forfeitedIdr={preview.forfeitedIdr}
             refundIdr={preview.refundIdr}
           />
-          <p className="text-sm leading-6 text-muted-foreground">
+          <p className={guestHint}>
             {t("reservationGuestCancel.late.cancelHint")}
           </p>
         </section>

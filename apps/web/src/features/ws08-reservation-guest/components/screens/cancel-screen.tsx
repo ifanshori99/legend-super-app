@@ -19,6 +19,7 @@ import { GuestActions } from "../guest-actions";
 import { GuestNote } from "../guest-note";
 import { ReservationSummary } from "../reservation-summary";
 import { StatusPill } from "../status-pill";
+import { guestBody, guestHint, guestTitle } from "../typography";
 import { InvalidLinkScreen } from "./recovery-screens";
 import { clockLabel, dayLabel, useFocusHeading } from "./screen-helpers";
 
@@ -107,10 +108,14 @@ export function CancelScreen({
               : t("reservationGuestCancel.cancel.pillFree")}
           </StatusPill>
         </div>
-        <h1 ref={headingRef} tabIndex={-1} className="type-title outline-none">
+        <h1
+          ref={headingRef}
+          tabIndex={-1}
+          className={`${guestTitle} outline-none`}
+        >
           {t("reservationGuestCancel.cancel.title")}
         </h1>
-        <p className="text-base leading-7 text-muted-foreground">
+        <p className={guestHint}>
           {late
             ? t("reservationGuestCancel.cancel.leadLate")
             : t("reservationGuestCancel.cancel.leadFree")}
@@ -171,6 +176,7 @@ export function CancelScreen({
       {preview && (
         <>
           <FormField
+            className="[&_label]:text-base [&_label]:font-bold [&_label_span]:font-bold [&_label_span]:text-muted-foreground"
             label={t("reservationGuestCancel.cancel.reasonLabel")}
             hint={t("reservationGuestCancel.cancel.reasonHint", {
               max: MAX_NOTE,
@@ -186,7 +192,7 @@ export function CancelScreen({
               onChange={(event) => setReason(event.target.value)}
             />
           </FormField>
-          <p className="text-base leading-7">
+          <p className={guestBody}>
             {t("reservationGuestCancel.cancel.irreversible")}
           </p>
         </>
@@ -203,12 +209,7 @@ export function CancelScreen({
         </div>
       )}
 
-      <p
-        role="status"
-        className={
-          submitting ? "text-base leading-7 text-muted-foreground" : "sr-only"
-        }
-      >
+      <p role="status" className={submitting ? guestHint : "sr-only"}>
         {submitting ? t("reservationGuestCancel.cancel.submitting") : ""}
       </p>
 
@@ -216,8 +217,7 @@ export function CancelScreen({
         {preview && (
           <Button
             type="button"
-            variant="destructive"
-            className="w-full"
+            className="h-auto min-h-12 w-full min-w-0 py-3 text-center text-balance whitespace-normal"
             loading={submitting}
             onClick={submit}
           >
@@ -233,7 +233,7 @@ export function CancelScreen({
         <Button
           type="button"
           variant="outline"
-          className="w-full"
+          className="h-auto min-h-12 w-full min-w-0 py-3 text-center text-balance whitespace-normal"
           disabled={submitting}
           onClick={onBack}
         >

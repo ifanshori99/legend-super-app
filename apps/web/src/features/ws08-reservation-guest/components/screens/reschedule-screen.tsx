@@ -32,6 +32,7 @@ import { GuestActions } from "../guest-actions";
 import { GuestNote } from "../guest-note";
 import { ReservationSummary } from "../reservation-summary";
 import { StatusPill } from "../status-pill";
+import { guestBody, guestHeading, guestHint, guestTitle } from "../typography";
 import {
   clockLabel,
   dayLabel,
@@ -40,6 +41,9 @@ import {
 } from "./screen-helpers";
 
 const TIME_ERROR_ID = "requested-time-error";
+// Labels on this form: bold 16px, "(opsional)" bold muted (mockup).
+const FIELD_LABEL =
+  "[&_label]:text-base [&_label]:font-bold [&_label_span]:font-bold";
 
 export function RescheduleScreen({
   view,
@@ -98,7 +102,13 @@ export function RescheduleScreen({
   // back, and it names the problem after a rejection: refocus it on each
   // pending change and each rejected submit (validation or server).
   const isPending = reschedule.isPending;
+  const mountedRef = React.useRef(false);
   React.useEffect(() => {
+    // The page effect focuses the heading on mount; only refocus on changes.
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      return;
+    }
     headingRef.current?.focus({ preventScroll: true });
   }, [isPending, attempt, headingRef]);
 
@@ -143,7 +153,7 @@ export function RescheduleScreen({
 
   if (reschedule.isPending && requestedFor) {
     return (
-      <div className="grid gap-5" aria-busy="true">
+      <div className="grid gap-5">
         <div className="grid gap-3">
           <StatusPill tone="neutral">
             {t("reservationGuestRequest.submitting.pill")}
@@ -151,11 +161,11 @@ export function RescheduleScreen({
           <h1
             ref={headingRef}
             tabIndex={-1}
-            className="type-title outline-none"
+            className={`${guestTitle} outline-none`}
           >
             {t("reservationGuestRequest.submitting.title")}
           </h1>
-          <p className="text-muted-foreground">
+          <p className={guestHint}>
             {t("reservationGuestRequest.submitting.lead")}
           </p>
         </div>
@@ -163,7 +173,7 @@ export function RescheduleScreen({
           aria-labelledby="sending-heading"
           className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline"
         >
-          <h2 id="sending-heading" className="type-heading">
+          <h2 id="sending-heading" className={guestHeading}>
             {t("reservationGuestRequest.submitting.panelTitle")}
           </h2>
           <dl className="grid gap-2">
@@ -182,7 +192,9 @@ export function RescheduleScreen({
               })}
             />
           </dl>
-          <p role="status">{t("reservationGuestRequest.submitting.status")}</p>
+          <p role="status" className={guestBody}>
+            {t("reservationGuestRequest.submitting.status")}
+          </p>
         </section>
         <GuestNote
           tone="info"
@@ -193,7 +205,12 @@ export function RescheduleScreen({
           })}
         </GuestNote>
         <GuestActions>
-          <Button type="button" disabled aria-disabled="true" loading>
+          <Button
+            type="button"
+            disabled
+            aria-disabled="true"
+            className="bg-muted text-muted-foreground opacity-100 shadow-none disabled:opacity-100"
+          >
             {t("reservationGuestRequest.submitting.button")}
           </Button>
         </GuestActions>
@@ -213,17 +230,25 @@ export function RescheduleScreen({
             {t("reservationGuestRequest.reschedule.pill")}
           </StatusPill>
         )}
-        <h1 ref={headingRef} tabIndex={-1} className="type-title outline-none">
-          {problem
-            ? t("reservationGuestRequest.validation.title")
-            : t("reservationGuestRequest.reschedule.title")}
+        <h1
+          ref={headingRef}
+          tabIndex={-1}
+          className={`${guestTitle} outline-none`}
+        >
+          {problem === "past"
+            ? t("reservationGuestRequest.validation.titlePast")
+            : problem
+              ? t("reservationGuestRequest.validation.title")
+              : t("reservationGuestRequest.reschedule.title")}
         </h1>
-        <p className="text-muted-foreground">
-          {problem
-            ? t("reservationGuestRequest.validation.lead")
-            : t("reservationGuestRequest.reschedule.lead", {
-                count: view.partySize,
-              })}
+        <p className={guestHint}>
+          {problem === "past"
+            ? t("reservationGuestRequest.validation.leadPast")
+            : problem
+              ? t("reservationGuestRequest.validation.lead")
+              : t("reservationGuestRequest.reschedule.lead", {
+                  count: view.partySize,
+                })}
         </p>
       </div>
       {!problem && <ReservationSummary view={view} timeZone={timeZone} />}
@@ -232,10 +257,11 @@ export function RescheduleScreen({
         aria-labelledby="new-time-heading"
         className="grid gap-5 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline"
       >
-        <h2 id="new-time-heading" className="type-heading">
+        <h2 id="new-time-heading" className={guestHeading}>
           {t("reservationGuestRequest.reschedule.panelTitle")}
         </h2>
         <FormField
+          className={FIELD_LABEL}
           label={t("reservationGuestRequest.reschedule.dateLabel")}
           required
           hint={t("reservationGuestRequest.reschedule.dateHint")}
@@ -265,7 +291,7 @@ export function RescheduleScreen({
             aria-invalid={timeProblem ? true : undefined}
             aria-describedby={timeProblem ? TIME_ERROR_ID : undefined}
           >
-            <legend className="mb-1 text-sm font-medium">
+            <legend className="mb-1 text-base font-bold">
               {t("reservationGuestRequest.reschedule.timeLegend", { zone })}
             </legend>
             <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
@@ -281,9 +307,13 @@ export function RescheduleScreen({
                       setTime(slot);
                     }}
                   />
-                  <span className="flex h-12 cursor-pointer items-center justify-center rounded-control border-(length:--border-w) border-input bg-background font-semibold tabular-nums peer-checked:border-primary peer-checked:bg-accent peer-focus-visible:shadow-focus peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring">
+                  <span className="flex h-12 cursor-pointer items-center justify-center rounded-control border-(length:--border-w) border-border bg-background pl-6 font-semibold tabular-nums peer-checked:border-2 peer-checked:border-primary peer-checked:bg-accent peer-checked:font-bold peer-checked:text-primary peer-focus-visible:shadow-focus peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring">
                     {slot.replace(":", ".")}
                   </span>
+                  <span
+                    aria-hidden="true"
+                    className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 rounded-full border-2 border-input bg-background peer-checked:border-primary peer-checked:bg-primary peer-checked:shadow-[inset_0_0_0_2px_var(--color-background)]"
+                  />
                 </label>
               ))}
             </div>
@@ -296,17 +326,17 @@ export function RescheduleScreen({
                 {t("reservationGuestRequest.validation.missing_time")}
               </p>
             ) : (
-              <p className="text-sm text-muted-foreground">
+              <p className={guestHint}>
                 {t("reservationGuestRequest.reschedule.timeHint")}
               </p>
             )}
           </fieldset>
         ) : date === "" ? (
-          <p className="text-sm text-muted-foreground">
+          <p className={guestHint}>
             {t("reservationGuestRequest.reschedule.timeDatePrompt")}
           </p>
         ) : availability.isPending ? (
-          <div aria-busy="true">
+          <div>
             <span role="status" className="sr-only">
               {t("reservationGuestRequest.reschedule.timeLoading")}
             </span>
@@ -314,6 +344,7 @@ export function RescheduleScreen({
           </div>
         ) : (
           <FormField
+            className={FIELD_LABEL}
             label={t("reservationGuestRequest.reschedule.timeLegend", { zone })}
             required
             hint={t("reservationGuestRequest.reschedule.timeFallbackHint")}
@@ -337,6 +368,7 @@ export function RescheduleScreen({
         )}
 
         <FormField
+          className={FIELD_LABEL}
           label={t("reservationGuestRequest.reschedule.noteLabel")}
           hint={t("reservationGuestRequest.reschedule.noteHint")}
         >
@@ -351,7 +383,7 @@ export function RescheduleScreen({
       </section>
 
       {problem ? (
-        <p>
+        <p className={guestBody}>
           {t("reservationGuestRequest.validation.keep", {
             schedule: original,
             count: view.partySize,

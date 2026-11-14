@@ -13,6 +13,7 @@ import { GuestActions } from "../guest-actions";
 import { GuestNote } from "../guest-note";
 import { ReservationSummary } from "../reservation-summary";
 import { StatusPill } from "../status-pill";
+import { guestHeading, guestHint, guestTitle } from "../typography";
 import {
   clockLabel,
   dayLabel,
@@ -24,12 +25,10 @@ export function RequestStatusScreen({
   view,
   timeZone,
   onViewDetail,
-  onRescheduleAgain,
 }: {
   view: GuestReservationView;
   timeZone: string;
   onViewDetail: () => void;
-  onRescheduleAgain: () => void;
 }) {
   const t = useT();
   const headingRef = useFocusHeading();
@@ -53,13 +52,14 @@ export function RequestStatusScreen({
   ) => (
     <div className="grid gap-3">
       {pill}
-      <h1 ref={headingRef} tabIndex={-1} className="type-title outline-none">
+      <h1
+        ref={headingRef}
+        tabIndex={-1}
+        className={`${guestTitle} outline-none`}
+      >
         {title}
       </h1>
-      <p
-        className="text-muted-foreground"
-        role={pending ? "status" : undefined}
-      >
+      <p className={guestHint} role={pending ? "status" : undefined}>
         {lead}
       </p>
     </div>
@@ -79,7 +79,7 @@ export function RequestStatusScreen({
           aria-labelledby="requested-time"
           className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline"
         >
-          <h2 id="requested-time" className="type-heading">
+          <h2 id="requested-time" className={guestHeading}>
             {t("reservationGuestRequest.status.pending.panelTitle")}
           </h2>
           <dl className="grid gap-2">
@@ -108,7 +108,7 @@ export function RequestStatusScreen({
           })}
         </GuestNote>
         <ReservationSummary view={view} timeZone={timeZone} />
-        <p className="text-sm text-muted-foreground">
+        <p className={guestHint}>
           {t("reservationGuestRequest.status.pending.hint")}
         </p>
         <GuestActions>
@@ -173,9 +173,6 @@ export function RequestStatusScreen({
       <GuestActions>
         <Button type="button" onClick={onViewDetail}>
           {t("reservationGuestRequest.status.viewDetail")}
-        </Button>
-        <Button type="button" variant="link" onClick={onRescheduleAgain}>
-          {t("reservationGuestRequest.status.rejected.again")}
         </Button>
       </GuestActions>
     </div>
