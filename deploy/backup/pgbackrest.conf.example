@@ -33,3 +33,5 @@ log-level-console=info
 
 [legend]
 pg1-path=/var/lib/postgresql/data
+# Set this to the PostgreSQL POSTGRES_USER configured in compose.env.
+pg1-user=replace_me
