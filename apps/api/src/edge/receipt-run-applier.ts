@@ -30,12 +30,14 @@
 // conflict (skip count, no list). Other refusals (transient `db_error:*`, ...)
 // are never skipped.
 //
-// legend-n2d3g: an order whose `order.paid` or `order.placed` event the edge
-// dead-lettered (frame too large, legend-btx4d) never reaches the cloud either.
+// legend-n2d3g: an order whose `order.paid` event the edge dead-lettered (frame
+// too large, legend-btx4d) never reaches the cloud either (the cloud creates an
+// order only from `order.paid`, so a dead `order.placed` alone skips nothing).
 // The `edge_link.dead_lettered` notice arrives before any later event of the
 // link and records a `link_event_dead_lettered` conflict on the dead event's
 // order aggregate; its receipts are skipped the same way (reason
-// `link_dead_lettered`).
+// `link_dead_lettered`). Only for the notice's own outlet, and never for an
+// order the cloud already holds (ingested/voided/cancelled or a pos_orders row).
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   CoreError,
@@ -81,8 +83,8 @@ export const RECEIPT_SKIPPED_REFUSED_ORDER_REASON =
   "receipt_skipped_refused_order";
 /** Skip reason of a receipt whose order event the edge dead-lettered. */
 export const RECEIPT_SKIP_LINK_DEAD_LETTERED = "link_dead_lettered";
-/** Dead-lettered order events that leave the cloud without the order. */
-const ORDER_CREATING_EVENTS = ["order.paid", "order.placed"] as const;
+/** The dead-lettered order event that leaves the cloud without the order. */
+const ORDER_CREATING_EVENT = "order.paid";
 /** Ingest refusals that never heal: the cloud will never hold the order. */
 const PERMANENT_INGEST_REFUSALS: ReadonlySet<string> = new Set([
   "order_exists",
@@ -110,6 +112,7 @@ function refuseMerge(error: unknown): never {
 async function permanentlyRefusedOrders(
   tx: EdgeTx,
   tenantId: string,
+  outletId: string,
   orderIds: string[],
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
@@ -130,7 +133,7 @@ async function permanentlyRefusedOrders(
   for (const row of rows)
     if (row.reason !== null && PERMANENT_INGEST_REFUSALS.has(row.reason))
       out.set(row.orderId, row.reason);
-  // Second source: the order's paid/placed event is dead-lettered on the edge.
+  // Second source: the order's paid event is dead-lettered on the edge.
   // The conflict keeps the order aggregate id as the edge sent it (ULID or
   // UUID), so match both forms.
   const pending = orderIds.filter((id) => !out.has(id));
@@ -145,21 +148,44 @@ async function permanentlyRefusedOrders(
     sql`SELECT DISTINCT lower(aggregate_id) AS id FROM edge_sync_conflicts
         WHERE tenant_id = ${tenantIdSchema.parse(tenantId)}::uuid
           AND reason = ${LINK_EVENT_DEAD_LETTERED_REASON}
+          AND outlet_id = ${outletIdSchema.parse(outletId)}::uuid
           AND aggregate_type = ${ORDER_AGGREGATE}
           AND lower(aggregate_id) IN (${sql.join(
             [...byForm.keys()].map((form) => sql`${form}`),
             sql`, `,
           )})
-          AND event -> 'payload' ->> 'eventName' IN (${sql.join(
-            ORDER_CREATING_EVENTS.map((name) => sql`${name}`),
+          AND event -> 'payload' ->> 'eventName' = ${ORDER_CREATING_EVENT}`,
+  );
+  const deadOrders = new Map<string, string>();
+  for (const row of dead.rows as { id: string }[]) {
+    const orderId = byForm.get(row.id);
+    if (orderId !== undefined) deadOrders.set(orderId, sourceIdToDb(orderId));
+  }
+  if (deadOrders.size === 0) return out;
+  // Fail closed: an order the cloud already holds (a later or redelivered
+  // paid event got through) is never skipped; its receipt merges normally.
+  const held = await tx.execute(
+    sql`SELECT order_id::text AS id FROM edge_order_ingests
+        WHERE tenant_id = ${tenantIdSchema.parse(tenantId)}::uuid
+          AND state IN ('ingested', 'voided', 'cancelled')
+          AND order_id IN (${sql.join(
+            [...deadOrders.values()].map((uuid) => sql`${uuid}::uuid`),
+            sql`, `,
+          )})
+        UNION
+        SELECT order_id::text AS id FROM pos_orders
+        WHERE tenant_id = ${tenantIdSchema.parse(tenantId)}::uuid
+          AND order_id IN (${sql.join(
+            [...deadOrders.values()].map((uuid) => sql`${uuid}::uuid`),
             sql`, `,
           )})`,
   );
-  for (const row of dead.rows as { id: string }[]) {
-    const orderId = byForm.get(row.id);
-    if (orderId !== undefined)
+  const known = new Set(
+    (held.rows as { id: string }[]).map((row) => row.id.toLowerCase()),
+  );
+  for (const [orderId, uuid] of deadOrders)
+    if (!known.has(uuid.toLowerCase()))
       out.set(orderId, RECEIPT_SKIP_LINK_DEAD_LETTERED);
-  }
   return out;
 }
 
@@ -276,6 +302,7 @@ async function applyReceiptRunReported(
   const permanent = await permanentlyRefusedOrders(
     tx,
     tenantId,
+    outletId,
     receipts.map(({ receipt }) => receipt.orderId),
   );
   const skipped = receipts.filter(({ receipt }) =>

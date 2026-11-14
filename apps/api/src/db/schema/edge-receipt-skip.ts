@@ -27,7 +27,7 @@ export const edgeReceiptSkips = pgTable(
     receiptNumber: varchar("receipt_number", { length: 64 }).notNull(),
     /**
      * Permanent ingest refusal (`order_exists`, `legacy_payload`) or
-     * `link_dead_lettered` (the edge dead-lettered the order's paid/placed
+     * `link_dead_lettered` (the edge dead-lettered the order's paid
      * event, legend-n2d3g).
      */
     reason: varchar("reason", { length: 40 }).notNull(),

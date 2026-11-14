@@ -4,9 +4,9 @@
 // same prefix; on the edge the reporter never released a receipt whose
 // `order.paid` was dead-lettered. Target (docs/briefs/861-receipt-run-n2d3g.md):
 //
-//   1. Cloud: a receipt of an order whose `order.paid` or `order.placed` was
-//      recorded as a `link_event_dead_lettered` conflict (the notice reached the
-//      cloud) is SKIPPED with reason `link_dead_lettered` in edge_receipt_skips;
+//   1. Cloud: a receipt of an order whose `order.paid` was recorded as a
+//      `link_event_dead_lettered` conflict of the same outlet (the notice
+//      reached the cloud) and that the cloud does not hold is SKIPPED with reason `link_dead_lettered` in edge_receipt_skips;
 //      the other receipts of the run merge and later chunks of the prefix go
 //      through.
 //   2. Edge reporter: a receipt whose `order.paid` is dead-lettered is reported
@@ -914,32 +914,111 @@ describe("legend-n2d3g cloud skips receipts of orders whose event was dead-lette
     expect(await cloudOrderExists(dead)).toBe(false);
   });
 
-  it("legend-n2d3g a dead-lettered order.placed is skipped the same way", async () => {
+  it("legend-n2d3g a dead-lettered order.placed alone skips nothing: the cloud creates an order only from order.paid, so its receipt merges", async () => {
     const { outletId, orders, node, device } = await scenario(2);
-    const [o1, o3] = orders;
-    const dead = createUlid();
-    await deliverDeadLetterNotice(node, outletId, dead, "order.placed");
+    const [o1, o2] = orders;
+    // The cloud already holds o2 (paid got through); only its placed is dead.
+    await deliverDeadLetterNotice(node, outletId, o2!, "order.placed");
 
     await applyEvent(
       runEvent({
         outletId,
         deviceId: device,
         prefix: "OFF1",
-        lastNumber: 3,
+        lastNumber: 2,
         receipts: [
           [o1!, 1],
-          [dead, 2],
-          [o3!, 3],
+          [o2!, 2],
         ],
       }),
       node,
     );
 
     expect(await receiptRows(outletId)).toHaveLength(2);
-    expect(await lastNumber(outletId)).toBe(3);
-    const skips = await skipRows(outletId, dead);
-    expect(skips.map((s) => s.reason)).toEqual(["link_dead_lettered"]);
-    expect(await cloudOrderExists(dead)).toBe(false);
+    expect(await skipRowCount(outletId)).toBe(0);
+
+    // A dead placed for an order the cloud never got is not a skip either
+    // (fail closed: the receipt stays refused).
+    const {
+      outletId: outlet2,
+      orders: orders2,
+      node: node2,
+      device: device2,
+    } = await scenario(1);
+    const unknown = createUlid();
+    await deliverDeadLetterNotice(node2, outlet2, unknown, "order.placed");
+    await expect(
+      applyEvent(
+        runEvent({
+          outletId: outlet2,
+          deviceId: device2,
+          prefix: "OFF1",
+          lastNumber: 2,
+          receipts: [
+            [orders2[0]!, 1],
+            [unknown, 2],
+          ],
+        }),
+        node2,
+      ),
+    ).rejects.toBeDefined();
+    expect(await skipRowCount(outlet2)).toBe(0);
+  });
+
+  it("legend-n2d3g a dead-letter notice of another outlet does not skip this outlet's receipt", async () => {
+    const { outletId, orders, node, device } = await scenario(1);
+    const [o1] = orders;
+    const other = await freshOutlet();
+    const otherNode = await edgeNodeFor(other);
+    const foreign = createUlid();
+    // The notice belongs to the other outlet's link, not to this outlet.
+    await deliverDeadLetterNotice(otherNode, other, foreign, "order.paid");
+
+    await expect(
+      applyEvent(
+        runEvent({
+          outletId,
+          deviceId: device,
+          prefix: "OFF1",
+          lastNumber: 2,
+          receipts: [
+            [o1!, 1],
+            [foreign, 2],
+          ],
+        }),
+        node,
+      ),
+    ).rejects.toBeDefined();
+    expect(await skipRowCount(outletId)).toBe(0);
+    expect(await skipRows(outletId, foreign)).toHaveLength(0);
+    expect(await receiptRows(outletId)).toHaveLength(0);
+  });
+
+  it("legend-n2d3g an order the cloud already holds is never skipped, even with a dead-lettered order.paid conflict", async () => {
+    const { outletId, orders, node, device } = await scenario(2);
+    const [o1, o2] = orders;
+    // o2 exists in the cloud (pos_orders row); a conflict says its paid is dead.
+    await deliverDeadLetterNotice(node, outletId, o2!, "order.paid");
+    expect(await linkDeadLetterConflicts(o2!)).toBe(1);
+
+    await applyEvent(
+      runEvent({
+        outletId,
+        deviceId: device,
+        prefix: "OFF1",
+        lastNumber: 2,
+        receipts: [
+          [o1!, 1],
+          [o2!, 2],
+        ],
+      }),
+      node,
+    );
+
+    expect(await skipRowCount(outletId)).toBe(0);
+    expect(
+      (await receiptRows(outletId)).map((row) => row.order_id).sort(),
+    ).toEqual([ulidToUuid(o1!), ulidToUuid(o2!)].sort());
   });
 
   it("legend-n2d3g the skip is recorded once: a redelivery and a re-sent run add no second row", async () => {
