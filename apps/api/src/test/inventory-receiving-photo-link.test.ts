@@ -29,7 +29,8 @@
 //   Run with a FakeObjectStorage and `now` injected (like
 //   edge-selfie-orphan-sweep.test.ts); `listTenantIds` limits it to tenant A.
 //   It deletes the blob and then the core_storage_objects row of objects with
-//   purpose = 'receipt', source_id IS NULL and created_at older than 24 hours.
+//   purpose = 'receipt', source_kind = 'goods_receipt', source_id IS NULL and
+//   created_at older than 24 hours.
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -650,13 +651,23 @@ describe("legend-9h4qh M2 goods receipt photo link", () => {
   });
 
   it("[9h4qh-M2-8] the sweeper removes only receipt objects (row and blob) that are unlinked, older than 24 hours and of the swept tenant", async () => {
-    const oldOrphan = await insertPhoto({ age: "25 hours" });
+    const oldOrphan = await insertPhoto({
+      age: "25 hours",
+      sourceKind: "goods_receipt",
+    });
     const oldOrphanNoOwner = await insertPhoto({
       age: "30 hours",
       ownerUserId: null,
+      sourceKind: "goods_receipt",
     });
-    const freshOrphan = await insertPhoto({ age: "23 hours" });
-    const justUploaded = await insertPhoto({ age: "1 minute" });
+    const freshOrphan = await insertPhoto({
+      age: "23 hours",
+      sourceKind: "goods_receipt",
+    });
+    const justUploaded = await insertPhoto({
+      age: "1 minute",
+      sourceKind: "goods_receipt",
+    });
     const oldLinked = await insertPhoto({
       age: "48 hours",
       sourceKind: "goods_receipt",
@@ -666,13 +677,19 @@ describe("legend-9h4qh M2 goods receipt photo link", () => {
     const oldDocument = await insertPhoto({
       age: "48 hours",
       purpose: "document",
+      sourceKind: "goods_receipt",
     });
-    const oldSelfie = await insertPhoto({ age: "48 hours", purpose: "selfie" });
+    const oldSelfie = await insertPhoto({
+      age: "48 hours",
+      purpose: "selfie",
+      sourceKind: "goods_receipt",
+    });
     // Another tenant's old orphan must survive a sweep limited to tenant A.
     const otherTenantOrphan = await insertPhoto({
       tenantId: tenantB,
       age: "48 hours",
       ownerUserId: null,
+      sourceKind: "goods_receipt",
     });
 
     const storage = new FakeObjectStorage();
@@ -737,9 +754,15 @@ describe("legend-9h4qh M2 goods receipt photo link", () => {
     });
 
   it("[9h4qh-M2-9] an old photo without source_id that a goods_receipt_media row references is kept (row and blob)", async () => {
-    const referenced = await insertPhoto({ age: "72 hours" });
+    const referenced = await insertPhoto({
+      age: "72 hours",
+      sourceKind: "goods_receipt",
+    });
     await insertGoodsReceiptMediaRef(referenced);
-    const realOrphan = await insertPhoto({ age: "72 hours" });
+    const realOrphan = await insertPhoto({
+      age: "72 hours",
+      sourceKind: "goods_receipt",
+    });
     const storage = new FakeObjectStorage();
     await putBlob(storage, tenantA, referenced);
     await putBlob(storage, tenantA, realOrphan);
@@ -754,9 +777,15 @@ describe("legend-9h4qh M2 goods receipt photo link", () => {
   });
 
   it("[9h4qh-M2-10] an old photo without source_id that a reimbursement claim references (receipt_upload_ref) is kept (row and blob)", async () => {
-    const referenced = await insertPhoto({ age: "72 hours" });
+    const referenced = await insertPhoto({
+      age: "72 hours",
+      sourceKind: "goods_receipt",
+    });
     await insertReimbursementRef(referenced);
-    const realOrphan = await insertPhoto({ age: "72 hours" });
+    const realOrphan = await insertPhoto({
+      age: "72 hours",
+      sourceKind: "goods_receipt",
+    });
     const storage = new FakeObjectStorage();
     await putBlob(storage, tenantA, referenced);
     await putBlob(storage, tenantA, realOrphan);
@@ -775,7 +804,10 @@ describe("legend-9h4qh M2 goods receipt photo link", () => {
       age: "72 hours",
       sourceKind: "cash_deposit",
     });
-    const realOrphan = await insertPhoto({ age: "72 hours" });
+    const realOrphan = await insertPhoto({
+      age: "72 hours",
+      sourceKind: "goods_receipt",
+    });
     const storage = new FakeObjectStorage();
     await putBlob(storage, tenantA, cashDeposit);
     await putBlob(storage, tenantA, realOrphan);
@@ -788,7 +820,9 @@ describe("legend-9h4qh M2 goods receipt photo link", () => {
     expect(await objectExists(realOrphan)).toBe(false);
   });
 
-  it("[9h4qh-M2-12] genuine orphans (source_kind NULL or goods_receipt, source_id null, over 24 hours) are still removed, row and blob", async () => {
+  it("[9h4qh-M2-12] only a goods_receipt orphan (source_id null, over 24 hours) is removed; one with source_kind NULL is kept, row and blob", async () => {
+    // The general upload (SOP, checklist, repair ticket) stores source_kind NULL
+    // and never links it, so the sweeper must not touch it.
     const noKind = await insertPhoto({ age: "25 hours" });
     const receiptKindNoId = await insertPhoto({
       age: "25 hours",
@@ -801,10 +835,32 @@ describe("legend-9h4qh M2 goods receipt photo link", () => {
 
     const result = await sweepTenantA(storage);
 
-    expect(result).toEqual({ deleted: 2, failed: 0 });
-    for (const id of [noKind, receiptKindNoId]) {
-      expect(await objectExists(id)).toBe(false);
-      expect(await blobExists(storage, tenantA, id)).toBe(false);
+    expect(result).toEqual({ deleted: 1, failed: 0 });
+    expect(await objectExists(receiptKindNoId)).toBe(false);
+    expect(await blobExists(storage, tenantA, receiptKindNoId)).toBe(false);
+    expect(await objectExists(noKind)).toBe(true);
+    expect(await blobExists(storage, tenantA, noKind)).toBe(true);
+  });
+
+  it("[9h4qh-M2-14] an old unlinked photo of another source kind (petty_purchase, waste_log) is kept, row and blob", async () => {
+    const pettyPurchase = await insertPhoto({
+      age: "72 hours",
+      sourceKind: "petty_purchase",
+    });
+    const wasteLog = await insertPhoto({
+      age: "72 hours",
+      sourceKind: "waste_log",
+    });
+    const storage = new FakeObjectStorage();
+    await putBlob(storage, tenantA, pettyPurchase);
+    await putBlob(storage, tenantA, wasteLog);
+
+    const result = await sweepTenantA(storage);
+
+    expect(result).toEqual({ deleted: 0, failed: 0 });
+    for (const id of [pettyPurchase, wasteLog]) {
+      expect(await objectExists(id)).toBe(true);
+      expect(await blobExists(storage, tenantA, id)).toBe(true);
     }
   });
 
@@ -817,7 +873,10 @@ describe("legend-9h4qh M2 goods receipt photo link", () => {
         throw new Error("storage unavailable");
       }
     }
-    const orphan = await insertPhoto({ age: "72 hours" });
+    const orphan = await insertPhoto({
+      age: "72 hours",
+      sourceKind: "goods_receipt",
+    });
     const storage = new FailingDeleteStorage();
     await putBlob(storage, tenantA, orphan);
 

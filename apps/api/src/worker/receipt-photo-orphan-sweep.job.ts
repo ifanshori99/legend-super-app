@@ -6,9 +6,12 @@
 // after it was uploaded: the `core_storage_objects` row, then the S3 original
 // and thumbnail.
 //
-// An orphan is an unlinked receipt-purpose object whose source kind is null or
-// `goods_receipt` and that no other table references (`goods_receipt_media`,
-// `reimbursements.receipt_upload_ref`). Each object runs in its own tenant
+// An orphan is an unlinked receipt-purpose object whose source kind is
+// `goods_receipt` (uploaded through the receiving flow) and that no other table
+// references (`goods_receipt_media`, `reimbursements.receipt_upload_ref`). An
+// object with a null or any other source kind is never touched: the general
+// upload is also used by SOP, checklist and repair-ticket flows that do not
+// link the object, so the sweeper cannot tell those from an abandoned form. Each object runs in its own tenant
 // transaction that locks the row (`FOR UPDATE`) and repeats the orphan check
 // inside, so a link racing the sweep either wins (the object stays) or loses
 // cleanly (the link's UPDATE finds no row). The row is deleted and committed
@@ -31,7 +34,6 @@ import {
   isNull,
   lt,
   notExists,
-  or,
   sql,
   type SQL,
 } from "drizzle-orm";
@@ -64,6 +66,7 @@ export const RECEIPT_PHOTO_ORPHAN_SWEEP_MAX_BATCHES_PER_TENANT = 50;
 const MS_PER_HOUR = 3_600_000;
 const RECEIPT_PHOTO_ORPHAN_SWEEP_EXPIRE_SECONDS = 30 * 60;
 const RECEIPT_PURPOSE = "receipt";
+const GOODS_RECEIPT_SOURCE_KIND = "goods_receipt";
 
 export type ReceiptPhotoOrphanSweepDeps = {
   storage: Pick<ObjectStorage, "delete">;
@@ -102,10 +105,7 @@ function orphanConditions(
     eq(coreStorageObjects.tenantId, tenantId),
     eq(coreStorageObjects.purpose, RECEIPT_PURPOSE),
     isNull(coreStorageObjects.sourceId),
-    or(
-      isNull(coreStorageObjects.sourceKind),
-      eq(coreStorageObjects.sourceKind, "goods_receipt"),
-    ),
+    eq(coreStorageObjects.sourceKind, GOODS_RECEIPT_SOURCE_KIND),
     lt(coreStorageObjects.createdAt, cutoff),
     notExists(
       database
