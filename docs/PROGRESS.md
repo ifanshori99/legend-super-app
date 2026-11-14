@@ -5323,3 +5323,15 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - legend-qq4k: creator WS-06 terpasang (production order `draft` per baris prep beresep aktif tunggal, tanpa biaya/stok/GL, idempoten, di transaksi sama); service food-safety meneruskan actor. Default tanpa pemasangan tetap no-op.
 - legend-24nl: tidak ada kode; `metrics_daily` (0176, job, sumber non-uang) sudah di m1 lewat legend-5wzoc.
 - Gerbang: 8 berkas tes terarah (138 test) hijau, tes kontrak root 76/76, prettier+eslint hijau, tsc api+web hijau, `db:generate` kosong.
+## ws/hris-leave-flakes (14 Nov 2026)
+
+- Kartu `legend-8ldhb`, `legend-l0qbr`, `legend-4mpqc`: tidak bisa direproduksi di tip m1 (b17554cb9). 3 suite cuti bersama 3x hijau (59/59), 5 suite 1x hijau, 40 file HRIS (hris-holiday/attendance/overtime/leave) bersama 2x hijau (602/602). Tidak ada hitungan global akrual atau QUOTA_EXCEEDED di 5 suite itu; isolasi sebelumnya sudah masuk lewat 44d6876d2. Tidak ada fixture diubah menebak.
+- Kartu `legend-agn0i`: tidak direproduksi. Tes balapan baru `hris-holiday-approve-race.test.ts` (8 POST holiday serentak; POST holiday vs approve cuti 15 putaran; PATCH/DELETE holiday collective vs approve 8 putaran) hijau 3x, nol status 5xx, nol 40P01. Kode produksi tidak diubah.
+- Hipotesis tersisa (belum terbukti): `reverseCollectiveLeaveDeductions` (hris-leave-collective.service.ts ~1237) membaca ledger tanpa ORDER BY lalu mengunci saldo satu per satu; dua pembalikan tanggal berbeda atas karyawan yang sama bisa mengunci dalam urutan berlawanan (40P01). Jalur ini hanya jalan untuk tanggal lampau, jadi tes 2037 tidak menyentuhnya.
+
+### legend-agn0i: akar ditemukan dan diperbaiki (14 Nov 2026)
+
+- Akar: `reverseCollectiveLeaveDeductions` mengunci saldo cuti satu per satu dengan urutan sembarang (hasil `DELETE ... RETURNING`). Dua pembalikan tanggal lampau berbeda atas karyawan yang sama mengunci dalam urutan berlawanan, hasilnya `deadlock detected` (40P01), yang tampil sebagai 500.
+- Bukti gagal-dulu di base (e405af66b): tes baru `hris-leave-collective-reversal-race.test.ts` gagal 3 dari 3 run dengan 40P01 pada `select ... from leave_balances ... for update` (putaran 1-2).
+- Perbaikan: semua saldo karyawan terkait dikunci dulu dalam satu pernyataan `ORDER BY leave_balances.id ... FOR UPDATE`, urutan yang sama dengan job carry-over dan expiry; ledger juga diurutkan. Setelah fix: 3 run 6 file (79 tes) hijau, typecheck api hijau.
+- Belum ditutup: jalur lain yang mengunci banyak saldo (kunci per baris di loop) tidak diaudit satu per satu; carry-over dan expiry sudah memakai urutan id.
