@@ -431,7 +431,35 @@ async function unallocatedCount(intentId: string): Promise<number> {
   return Number(rows[0]?.n);
 }
 
+async function expectUnchangedBill(bill: Bill) {
+  const { rows } = await owner.query<{
+    total_idr: string;
+    amount_idr: string;
+  }>(
+    `SELECT links.total_idr::text, intents.amount_idr::text
+     FROM payment_links links
+     JOIN payment_intents intents ON intents.payment_link_id = links.id
+     WHERE links.id = $1 AND intents.id = $2 AND links.tenant_id = $3`,
+    [bill.linkId, bill.intentId, tenantA],
+  );
+  expect(rows).toEqual([
+    { total_idr: String(BILL_TOTAL), amount_idr: String(BILL_TOTAL) },
+  ]);
+}
+
+async function settlementEventCount(intentId: string): Promise<number> {
+  const { rows } = await owner.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM domain_event_outbox
+     WHERE tenant_id = $1 AND event->>'name' = 'payment.paid'
+       AND event->'payload'->>'intentId' = $2`,
+    [tenantA, intentId],
+  );
+  return Number(rows[0]?.n);
+}
+
 async function expectUntouched(bill: Bill) {
+  await expectUnchangedBill(bill);
+  expect(await settlementEventCount(bill.intentId)).toBe(0);
   expect((await intentRow(bill.intentId)).status).toMatch(
     /^(pending|expired|failed)$/,
   );
@@ -439,6 +467,8 @@ async function expectUntouched(bill: Bill) {
 }
 
 async function expectPaidOnce(bill: Bill) {
+  await expectUnchangedBill(bill);
+  expect(await settlementEventCount(bill.intentId)).toBe(1);
   expect((await intentRow(bill.intentId)).status).toBe("paid");
   expect(await linkPaidIdr(bill.linkId)).toBe(BILL_TOTAL);
   expect(await evidenceCount(bill.intentId)).toBe(1);
@@ -474,7 +504,7 @@ describe("D21-D22 a Duitku callback is verified, then confirmed with transaction
     ]);
   });
 
-  it("a bad signature answers 401 and moves nothing, with no status call", async () => {
+  it("PAY-03 a bad signature answers 401 and moves nothing, with no status call", async () => {
     const bill = await openIntent();
     setAnswer(bill.intentId, paid(bill.reference));
 
@@ -488,9 +518,11 @@ describe("D21-D22 a Duitku callback is verified, then confirmed with transaction
     expect(statusAsks).toHaveLength(0);
     // Rejected attempts leave a counter row, never a payload.
     expect(await rowsFor(bill.intentId)).toHaveLength(0);
+    expect(await evidenceCount(bill.intentId)).toBe(0);
+    expect(await unallocatedCount(bill.intentId)).toBe(0);
   });
 
-  it("a wrong merchant code answers 401 and moves nothing", async () => {
+  it("PAY-03 a wrong merchant code answers 401 and moves nothing", async () => {
     const bill = await openIntent();
     setAnswer(bill.intentId, paid(bill.reference));
     const response = await callback(bill.intentId, bill.reference, {
@@ -619,7 +651,7 @@ describe("D21-D22 a Duitku callback is verified, then confirmed with transaction
     });
   });
 
-  it("a duplicate callback settles once and the replay answers 200 without a second status call", async () => {
+  it("PAY-03 a duplicate callback settles once and the replay answers 200 without a second status call", async () => {
     const bill = await openIntent();
     setAnswer(bill.intentId, paid(bill.reference));
 
@@ -629,6 +661,30 @@ describe("D21-D22 a Duitku callback is verified, then confirmed with transaction
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     await expectPaidOnce(bill);
+    expect(await rowsFor(bill.intentId)).toHaveLength(1);
+    expect(statusAsks).toHaveLength(1);
+  });
+
+  it("PAY-03 a paid callback followed by a stale failure callback keeps exactly one settlement and the original bill", async () => {
+    const bill = await openIntent();
+    setAnswer(bill.intentId, paid(bill.reference));
+    expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+    await expectPaidOnce(bill);
+
+    // A delayed failure notification must not undo or duplicate the payment.
+    setAnswer(bill.intentId, {
+      statusCode: "02",
+      reference: bill.reference,
+      amount: String(BILL_TOTAL),
+    });
+    expect(
+      (await callback(bill.intentId, bill.reference, { resultCode: "02" }))
+        .status,
+    ).toBe(200);
+    expect((await callback(bill.intentId, bill.reference)).status).toBe(200);
+
+    await expectPaidOnce(bill);
+    expect(await unallocatedCount(bill.intentId)).toBe(0);
     expect(await rowsFor(bill.intentId)).toHaveLength(1);
     expect(statusAsks).toHaveLength(1);
   });
@@ -698,7 +754,7 @@ describe("D21-D22 a Duitku callback is verified, then confirmed with transaction
 });
 
 describe("D20 late payment goes through the provider-agnostic lifecycle", () => {
-  it("an expired intent then a verified paid callback settles the bill once, flagged late_payment", async () => {
+  it("PAY-03 an expired intent then a verified paid callback settles the bill once, flagged late_payment", async () => {
     const bill = await openIntent({
       status: "expired",
       expiresAt: new Date(Date.now() - 5 * 60_000),
@@ -715,7 +771,7 @@ describe("D20 late payment goes through the provider-agnostic lifecycle", () => 
     await expectPaidOnce(bill);
   });
 
-  it("a failed intent (status 02 first) then a paid callback settles once, flagged late_payment", async () => {
+  it("PAY-03 a failed intent (status 02 first) then a paid callback settles once, flagged late_payment", async () => {
     const bill = await openIntent();
     setAnswer(bill.intentId, {
       statusCode: "02",
@@ -727,6 +783,8 @@ describe("D20 late payment goes through the provider-agnostic lifecycle", () => 
         .status,
     ).toBe(200);
     expect((await intentRow(bill.intentId)).status).toBe("failed");
+    await expectUntouched(bill);
+    expect(await evidenceCount(bill.intentId)).toBe(0);
 
     // Same signed fields: the paid callback is a repeat of the stored event,
     // re-checked with Duitku once the repeat window passed.
@@ -966,7 +1024,7 @@ describe("Codex P1 a stored intent still reconciles after Duitku leaves the tena
 });
 
 describe("Codex P1 duplicates are keyed by signed fields only", () => {
-  it("a replayed failure callback with resultCode changed 02->00 does not swallow the real paid callback", async () => {
+  it("PAY-03 a replayed failure callback with resultCode changed 02->00 does not swallow the real paid callback", async () => {
     const bill = await openIntent();
     // The real failure callback, replayed with resultCode forged to 00
     // (resultCode is not signed). Duitku says failed at that moment.

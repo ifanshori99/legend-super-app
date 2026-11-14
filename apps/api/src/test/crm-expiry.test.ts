@@ -260,8 +260,8 @@ function runExpiry(
 const expireRows = async (tenantId: string, profileId: string) =>
   (await ledgerOf(tenantId, profileId)).filter((row) => row.type === "expire");
 
-describe("LOY-07 point expiry", () => {
-  it("LOY-07 nothing expires before expires_at; a grant expires exactly at expires_at", async () => {
+describe("point expiry", () => {
+  it("nothing expires before expires_at; a grant expires exactly at expires_at", async () => {
     const { world, member } = await expiryWorld();
     const grant = await earn(world, member.id, 100, D1);
 
@@ -283,7 +283,7 @@ describe("LOY-07 point expiry", () => {
     expect(rows[0]!.source_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
-  it("LOY-07 expiry is idempotent: a rerun with no new data writes nothing", async () => {
+  it("expiry is idempotent: a rerun with no new data writes nothing", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 100, D1);
     await earn(world, member.id, 40, D2);
@@ -300,7 +300,7 @@ describe("LOY-07 point expiry", () => {
     ).toHaveLength(1);
   });
 
-  it("LOY-07 each expire row emits points.expired with the points and the balance after", async () => {
+  it("each expire row emits points.expired with the points and the balance after", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 100, D1);
     await earn(world, member.id, 40, D2);
@@ -321,7 +321,7 @@ describe("LOY-07 point expiry", () => {
     });
   });
 
-  it("LOY-07 a partial refund reduces what expires: only the unreversed part expires", async () => {
+  it("a partial refund reduces what expires: only the unreversed part expires", async () => {
     const { world, member } = await expiryWorld();
     const orderUlid = await seedOrder(world.tenantId, {
       outletId: world.outletA,
@@ -357,7 +357,7 @@ describe("LOY-07 point expiry", () => {
     });
   });
 
-  it("LOY-07 a fully refunded grant expires nothing", async () => {
+  it("a fully refunded grant expires nothing", async () => {
     const { world, member } = await expiryWorld();
     const orderUlid = await seedOrder(world.tenantId, {
       outletId: world.outletA,
@@ -390,7 +390,7 @@ describe("LOY-07 point expiry", () => {
     expect(await expireRows(world.tenantId, member.id)).toHaveLength(0);
   });
 
-  it("LOY-07 a redeem is charged to the oldest-expiring grant first (FIFO), whatever the posting order", async () => {
+  it("a redeem is charged to the oldest-expiring grant first (FIFO), whatever the posting order", async () => {
     const { world, member } = await expiryWorld();
     // Posted in reverse: the later-expiring grant first.
     const later = await earn(world, member.id, 100, D2);
@@ -415,7 +415,7 @@ describe("LOY-07 point expiry", () => {
     );
   });
 
-  it("LOY-07 a redeem made after the grant was earned is counted: only the rest expires", async () => {
+  it("a redeem made after the grant was earned is counted: only the rest expires", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 100, D1);
     await redeem(world, member.id, 40);
@@ -424,7 +424,7 @@ describe("LOY-07 point expiry", () => {
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
 
-  it("LOY-07 a redeem after an earlier grant already expired does not make a later grant expire too much", async () => {
+  it("a redeem after an earlier grant already expired does not make a later grant expire too much", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 100, D1);
     await earn(world, member.id, 100, D2);
@@ -443,7 +443,7 @@ describe("LOY-07 point expiry", () => {
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
 
-  it("LOY-07 a refund after its grant already expired is taken from the later grants, so they do not expire too much", async () => {
+  it("a refund after its grant already expired is taken from the later grants, so they do not expire too much", async () => {
     const { world, member } = await expiryWorld();
     const a = await earn(world, member.id, 100, D1);
     await earn(world, member.id, 100, D2);
@@ -467,7 +467,7 @@ describe("LOY-07 point expiry", () => {
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
 
-  it("LOY-07 bonus rows and positive manual adjusts with expires_at are grants too: one expire row per grant", async () => {
+  it("bonus rows and positive manual adjusts with expires_at are grants too: one expire row per grant", async () => {
     const { world, member } = await expiryWorld();
     const a = await earn(world, member.id, 50, D1);
     const b = await missionBonus(world, member.id, 30, D1);
@@ -483,7 +483,7 @@ describe("LOY-07 point expiry", () => {
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
 
-  it("LOY-07 a negative manual adjust counts as used points", async () => {
+  it("a negative manual adjust counts as used points", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 100, D1);
     await negativeAdjust(world, member.id, 30);
@@ -492,7 +492,7 @@ describe("LOY-07 point expiry", () => {
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
 
-  it("LOY-07 points restored after their grant expired expire again, with the next n", async () => {
+  it("points restored after their grant expired expire again, with the next n", async () => {
     const { world, member } = await expiryWorld();
     const grant = await earn(world, member.id, 100, D1);
     const used = await redeem(world, member.id, 60);
@@ -521,7 +521,7 @@ describe("LOY-07 point expiry", () => {
     expect(await expireRows(world.tenantId, member.id)).toHaveLength(2);
   });
 
-  it("LOY-07 a restore before expiry keeps the original expiry: the points expire with their grant", async () => {
+  it("a restore before expiry keeps the original expiry: the points expire with their grant", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 100, D1);
     const used = await redeem(world, member.id, 100);
@@ -535,7 +535,7 @@ describe("LOY-07 point expiry", () => {
   // A (expires D1) is fully used by R1; B (expires D2) is partly used by R2.
   // Assumption: "A expired" means the sweep ran at T1 (it writes nothing, A has
   // no live points left). The restore of R1 is posted at T1, after D1.
-  it("LOY-07 a restore posted after the consumed grant expired does not take points off a later grant: the restored points expire at the next run, the later grant keeps its own", async () => {
+  it("a restore posted after the consumed grant expired does not take points off a later grant: the restored points expire at the next run, the later grant keeps its own", async () => {
     const { world, member } = await expiryWorld();
     const a = await earn(world, member.id, 100, D1); // A
     await earn(world, member.id, 100, D2); // B
@@ -563,7 +563,7 @@ describe("LOY-07 point expiry", () => {
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
 
-  it("LOY-07 a restore posted before the consumed grant expires still reallocates: the later redeem moves onto the refilled grant, the later grant stays whole", async () => {
+  it("a restore posted before the consumed grant expires still reallocates: the later redeem moves onto the refilled grant, the later grant stays whole", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 100, D1); // A
     await earn(world, member.id, 100, D2); // B
@@ -579,7 +579,7 @@ describe("LOY-07 point expiry", () => {
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
 
-  it("LOY-07 a positive manual adjust without expires_at is rejected and changes nothing", async () => {
+  it("a positive manual adjust without expires_at is rejected and changes nothing", async () => {
     const { world, member } = await expiryWorld();
     const message = await rejection(positiveAdjust(world, member.id, 5, null));
     expect(message).toMatch(/point_ledger_adjust_check|check|expires/i);
@@ -587,7 +587,7 @@ describe("LOY-07 point expiry", () => {
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
 
-  it("LOY-07 the balance never goes negative and always equals the ledger sum, over a random history", async () => {
+  it("the balance never goes negative and always equals the ledger sum, over a random history", async () => {
     const { world, member } = await expiryWorld();
     // Deterministic pseudo-random sequence (mulberry32), so a failure replays.
     let seed = 20261110;
@@ -637,8 +637,8 @@ describe("LOY-07 point expiry", () => {
 
 // A redeem / negative adjust consumes only grants posted before it (ledger replay by
 // posting order), not grants that arrive later, even when a later grant expires sooner.
-describe("LOY-07 expiry follows posting order (legend-w5by9)", () => {
-  it("LOY-07 a grant posted after a redeem is not charged for it: the early-expiring later grant expires whole", async () => {
+describe("expiry follows posting order (legend-w5by9)", () => {
+  it("a grant posted after a redeem is not charged for it: the early-expiring later grant expires whole", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 100, D2); // A
     await redeem(world, member.id, 100); // uses A
@@ -657,7 +657,7 @@ describe("LOY-07 expiry follows posting order (legend-w5by9)", () => {
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
 
-  it("LOY-07 a partial redeem uses up only the earlier grant: the later grant expires whole", async () => {
+  it("a partial redeem uses up only the earlier grant: the later grant expires whole", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 100, D2); // A
     await redeem(world, member.id, 60); // A has 40 left
@@ -669,7 +669,7 @@ describe("LOY-07 expiry follows posting order (legend-w5by9)", () => {
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
 
-  it("LOY-07 a restored redeem gives the points back to the grant it consumed, with that grant's expiry", async () => {
+  it("a restored redeem gives the points back to the grant it consumed, with that grant's expiry", async () => {
     const { world, member } = await expiryWorld();
     const a = await earn(world, member.id, 100, D2); // A
     const used = await redeem(world, member.id, 100);
@@ -687,7 +687,7 @@ describe("LOY-07 expiry follows posting order (legend-w5by9)", () => {
     expect(rows[1]!.reverses_entry_id).toBe(a.entry.id);
   });
 
-  it("LOY-07 a partial restore gives back only that many points to the consumed grant", async () => {
+  it("a partial restore gives back only that many points to the consumed grant", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 100, D2); // A
     const used = await redeem(world, member.id, 100);
@@ -701,7 +701,7 @@ describe("LOY-07 expiry follows posting order (legend-w5by9)", () => {
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
 
-  it("LOY-07 two grants with the same expiry: the redeem used the earlier-posted one, the later one expires", async () => {
+  it("two grants with the same expiry: the redeem used the earlier-posted one, the later one expires", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 100, D1); // A
     await redeem(world, member.id, 100);
@@ -714,7 +714,7 @@ describe("LOY-07 expiry follows posting order (legend-w5by9)", () => {
     expect(rows[0]!.reverses_entry_id).toBe(b.entry.id);
   });
 
-  it("LOY-07 a negative manual adjust before a later grant does not eat that grant", async () => {
+  it("a negative manual adjust before a later grant does not eat that grant", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 100, D2); // A
     await negativeAdjust(world, member.id, 100);
@@ -724,7 +724,7 @@ describe("LOY-07 expiry follows posting order (legend-w5by9)", () => {
     expect(await balanceOf(world.tenantId, member.id)).toBe(0);
   });
 
-  it("LOY-07 expiringSoon follows posting order too: the later early-expiring grant is the one reported", async () => {
+  it("expiringSoon follows posting order too: the later early-expiring grant is the one reported", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 100, inDays(20)); // A
     await redeem(world, member.id, 100); // uses A
@@ -735,7 +735,7 @@ describe("LOY-07 expiry follows posting order (legend-w5by9)", () => {
     expect(Date.parse(result.earliestExpiresAt!)).toBe(inDays(10).getTime());
   });
 
-  it("LOY-07 a full restore of a redeem that spanned two grants, with a later redeem in between: T1 expires 50 on A, T2 expires 100 on B", async () => {
+  it("a full restore of a redeem that spanned two grants, with a later redeem in between: T1 expires 50 on A, T2 expires 100 on B", async () => {
     const { world, member } = await expiryWorld();
     const a = await earn(world, member.id, 100, D1); // A
     const b = await earn(world, member.id, 100, D2); // B
@@ -761,7 +761,7 @@ describe("LOY-07 expiry follows posting order (legend-w5by9)", () => {
     });
   });
 
-  it("LOY-07 an order refund of the redeemed grant, then a restore: nothing expires at D2, the later grant expires whole at D3", async () => {
+  it("an order refund of the redeemed grant, then a restore: nothing expires at D2, the later grant expires whole at D3", async () => {
     const { world, member } = await expiryWorld();
     const a = await earn(world, member.id, 100, D2); // A
     const used = await redeem(world, member.id, 100); // R uses A
@@ -790,7 +790,7 @@ describe("LOY-07 expiry follows posting order (legend-w5by9)", () => {
     });
   });
 
-  it("LOY-07 an order refund of the redeemed grant, then a partial restore: nothing expires at D2, the later grant expires whole at D3", async () => {
+  it("an order refund of the redeemed grant, then a partial restore: nothing expires at D2, the later grant expires whole at D3", async () => {
     const { world, member } = await expiryWorld();
     const a = await earn(world, member.id, 100, D2); // A
     const used = await redeem(world, member.id, 60); // R uses 60 of A
@@ -888,8 +888,8 @@ const birthdayRows = async (tenantId: string, profileId: string) =>
 // 2026-11-08 10:00 in Jakarta.
 const BIRTHDAY_NOW = NOW;
 
-describe("LOY-05 birthday bonus", () => {
-  it("LOY-05 on the birthday a tier member gets the tier's birthday points, expiring after the program's expiry months", async () => {
+describe("birthday bonus", () => {
+  it("on the birthday a tier member gets the tier's birthday points, expiring after the program's expiry months", async () => {
     const { world } = await expiryWorld({ expiryMonths: 12 });
     const member = await birthdayMember(world, { birthdayPoints: 50 });
 
@@ -909,7 +909,7 @@ describe("LOY-05 birthday bonus", () => {
     ).toHaveLength(1);
   });
 
-  it("LOY-05 the bonus is booked once per year, however often the job runs", async () => {
+  it("the bonus is booked once per year, however often the job runs", async () => {
     const { world } = await expiryWorld();
     const member = await birthdayMember(world);
 
@@ -934,14 +934,14 @@ describe("LOY-05 birthday bonus", () => {
     expect(new Set(rows.map((row) => row.source_id)).size).toBe(2);
   });
 
-  it("LOY-05 no bonus on other days", async () => {
+  it("no bonus on other days", async () => {
     const { world } = await expiryWorld();
     const member = await birthdayMember(world, { birth: "11-09" });
     expect(await birthday(world, member.id, BIRTHDAY_NOW)).toBe(false);
     expect(await birthdayRows(world.tenantId, member.id)).toHaveLength(0);
   });
 
-  it("LOY-05 the day is the Asia/Jakarta date, not the UTC date", async () => {
+  it("the day is the Asia/Jakarta date, not the UTC date", async () => {
     const { world } = await expiryWorld();
     const member = await birthdayMember(world, { birth: "11-08" });
     // 2026-11-07 20:00 UTC is 2026-11-08 03:00 in Jakarta.
@@ -954,7 +954,7 @@ describe("LOY-05 birthday bonus", () => {
     ).toBe(false);
   });
 
-  it("LOY-05 a 29 February birthday is celebrated on 28 February in a year that is not a leap year", async () => {
+  it("a 29 February birthday is celebrated on 28 February in a year that is not a leap year", async () => {
     const { world } = await expiryWorld();
     const member = await birthdayMember(world, { birth: "02-29" });
 
@@ -971,7 +971,7 @@ describe("LOY-05 birthday bonus", () => {
     ).toBe(true);
   });
 
-  it("LOY-05 no tier, or a tier with 0 birthday points, writes nothing", async () => {
+  it("no tier, or a tier with 0 birthday points, writes nothing", async () => {
     const { world } = await expiryWorld();
     const noTier = await birthdayMember(world, { tier: false });
     const zero = await birthdayMember(world, { birthdayPoints: 0 });
@@ -982,7 +982,7 @@ describe("LOY-05 birthday bonus", () => {
     expect(await birthdayRows(world.tenantId, zero.id)).toHaveLength(0);
   });
 
-  it("LOY-05 a member whose tier is no longer active gets no bonus", async () => {
+  it("a member whose tier is no longer active gets no bonus", async () => {
     const { world } = await expiryWorld();
     const member = await birthdayMember(world);
     await asTenant(world.tenantId, (client) =>
@@ -998,7 +998,7 @@ describe("LOY-05 birthday bonus", () => {
     expect(await birthdayRows(world.tenantId, member.id)).toHaveLength(0);
   });
 
-  it("LOY-05 a suspended member, a member without loyalty consent and an inactive program get nothing", async () => {
+  it("a suspended member, a member without loyalty consent and an inactive program get nothing", async () => {
     const { world } = await expiryWorld();
     const suspended = await birthdayMember(world, { status: "suspended" });
     const noConsent = await birthdayMember(world, { consent: false });
@@ -1032,8 +1032,8 @@ function soon(world: World, profileId: string, days?: number) {
 
 const inDays = (days: number) => new Date(NOW.getTime() + days * DAY_MS);
 
-describe("LOY-07 expiringSoon", () => {
-  it("LOY-07 sums the unused points that expire within 30 days and names the earliest date", async () => {
+describe("expiringSoon", () => {
+  it("sums the unused points that expire within 30 days and names the earliest date", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 40, inDays(10));
     await earn(world, member.id, 60, inDays(20));
@@ -1044,7 +1044,7 @@ describe("LOY-07 expiringSoon", () => {
     expect(Date.parse(result.earliestExpiresAt!)).toBe(inDays(10).getTime());
   });
 
-  it("LOY-07 used points are taken from the earliest grants first", async () => {
+  it("used points are taken from the earliest grants first", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 40, inDays(10));
     await earn(world, member.id, 60, inDays(20));
@@ -1057,7 +1057,7 @@ describe("LOY-07 expiringSoon", () => {
     expect(Date.parse(result.earliestExpiresAt!)).toBe(inDays(20).getTime());
   });
 
-  it("LOY-07 the window is a parameter", async () => {
+  it("the window is a parameter", async () => {
     const { world, member } = await expiryWorld();
     await earn(world, member.id, 40, inDays(10));
     await earn(world, member.id, 100, inDays(45));
@@ -1066,7 +1066,7 @@ describe("LOY-07 expiringSoon", () => {
     expect((await soon(world, member.id, 5)).points).toBe(0);
   });
 
-  it("LOY-07 a member with no expiring points gets 0 and no date", async () => {
+  it("a member with no expiring points gets 0 and no date", async () => {
     const { world, member } = await expiryWorld();
     expect(await soon(world, member.id)).toEqual({
       points: 0,
@@ -1080,8 +1080,8 @@ describe("LOY-07 expiringSoon", () => {
   });
 });
 
-describe("LOY-07 GET /api/member/points meta.expiringSoon", () => {
-  it("LOY-07 carries the member's own points expiring within 30 days", async () => {
+describe("GET /api/member/points meta.expiringSoon", () => {
+  it("carries the member's own points expiring within 30 days", async () => {
     const member = await newMemberUser(app, {
       profile: "active",
       verifiedWhatsapp: true,
@@ -1116,7 +1116,7 @@ describe("LOY-07 GET /api/member/points meta.expiringSoon", () => {
     );
   });
 
-  it("LOY-07 is zero with no date for a member whose points do not expire soon", async () => {
+  it("is zero with no date for a member whose points do not expire soon", async () => {
     const member = await newMemberUser(app, {
       profile: "active",
       verifiedWhatsapp: true,
@@ -1148,8 +1148,8 @@ describe("LOY-07 GET /api/member/points meta.expiringSoon", () => {
 
 // ---- sweeps: cursor and retry of failed profiles --------------------------------------
 
-describe("LOY-07 expiry sweep", () => {
-  it("LOY-07 a tenant larger than one tick's batches is swept over several ticks from a saved cursor, then the day is done", async () => {
+describe("expiry sweep", () => {
+  it("a tenant larger than one tick's batches is swept over several ticks from a saved cursor, then the day is done", async () => {
     const { world } = await expiryWorld();
     const members = [];
     for (let index = 0; index < 5; index += 1) {
@@ -1172,7 +1172,7 @@ describe("LOY-07 expiry sweep", () => {
     expect(await runLoyaltyExpirySweep(world.context, T1, limits)).toBeNull();
   });
 
-  it("LOY-07 a new day starts the scan again from the beginning", async () => {
+  it("a new day starts the scan again from the beginning", async () => {
     const { world } = await expiryWorld();
     const member = await seedMember(world.tenantId);
     await earn(world, member.id, 100, D1);
@@ -1185,7 +1185,7 @@ describe("LOY-07 expiry sweep", () => {
     expect(day2?.expiredPoints).toBe(100);
   });
 
-  it("LOY-07 a profile that keeps failing is retried alone, three ticks, then left until tomorrow", async () => {
+  it("a profile that keeps failing is retried alone, three ticks, then left until tomorrow", async () => {
     const { world } = await expiryWorld();
     const good = await seedMember(world.tenantId);
     const bad = await seedMember(world.tenantId);
@@ -1213,7 +1213,7 @@ describe("LOY-07 expiry sweep", () => {
     }
   });
 
-  it("LOY-07 a failed profile that recovers on a retry ends the day", async () => {
+  it("a failed profile that recovers on a retry ends the day", async () => {
     const { world } = await expiryWorld();
     const good = await seedMember(world.tenantId);
     const bad = await seedMember(world.tenantId);
@@ -1234,8 +1234,8 @@ describe("LOY-07 expiry sweep", () => {
   });
 });
 
-describe("LOY-06 tier sweep", () => {
-  it("LOY-06 a tenant larger than one tick's batches is swept over several ticks from a saved cursor", async () => {
+describe("tier sweep", () => {
+  it("a tenant larger than one tick's batches is swept over several ticks from a saved cursor", async () => {
     const { world } = await expiryWorld();
     // `expiryWorld` already seeded one member: five in all.
     for (let index = 0; index < 4; index += 1) await seedMember(world.tenantId);
@@ -1251,7 +1251,7 @@ describe("LOY-06 tier sweep", () => {
     expect(await runLoyaltyTierSweep(world.context, T1, limits)).toBeNull();
   });
 
-  it("LOY-06 a profile that keeps failing is retried alone, three ticks, then left until tomorrow", async () => {
+  it("a profile that keeps failing is retried alone, three ticks, then left until tomorrow", async () => {
     const { world } = await expiryWorld();
     const good = await seedMember(world.tenantId);
     const bad = await seedMember(world.tenantId);

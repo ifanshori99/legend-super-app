@@ -87,7 +87,7 @@ const run = (
   } as Input);
 
 describe("PPh 21 annual recalculation (R19-R62)", () => {
-  it("R19 December, TK/0, flat 10 jt salary: biaya jabatan exactly at the 6 jt cap, PKP exactly 60 jt", () => {
+  it("[PAYR-03] R19 December, TK/0, flat 10 jt salary: biaya jabatan exactly at the 6 jt cap, PKP exactly 60 jt", () => {
     // Jan-Nov each month: X=10_000_000, TER A row 9 (s.d. 10_050_000) 2% => 200_000.
     //   prior withheld = 11 x 200_000 = 2_200_000; prior gross = 110_000_000.
     // December: gross = 110_000_000 + 10_000_000 = 120_000_000.
@@ -122,7 +122,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R20 December with employee JHT+JP deducted only in the annual computation", () => {
+  it("[PAYR-03] R20 December with employee JHT+JP deducted only in the annual computation", () => {
     // JHT 2% (200_000) + JP 1% (100_000) = 300_000 per month. TER months are on X=10_000_000
     // (deductions not applied to TER, assumption A1): 200_000 each => prior withheld 2_200_000.
     // prior gross 110_000_000; prior deductible = 11 x 300_000 = 3_300_000; Dec deductible 300_000.
@@ -153,7 +153,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R21 December, biaya jabatan below the cap (5% of bruto used)", () => {
+  it("[PAYR-03] R21 December, biaya jabatan below the cap (5% of bruto used)", () => {
     // Salary 8_000_000/month. Jan-Nov: TER A row 7 (s.d. 8_550_000) 1.5% => 8_000_000 x 150/10000 = 120_000.
     //   prior withheld = 11 x 120_000 = 1_320_000; prior gross = 88_000_000.
     // Dec: gross = 96_000_000; cost = min(5% x 96_000_000 = 4_800_000, 6_000_000) = 4_800_000.
@@ -182,7 +182,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R22 December, 20 jt salary: cap clearly binds and PKP crosses the 60 jt slice", () => {
+  it("[PAYR-03] R22 December, 20 jt salary: cap clearly binds and PKP crosses the 60 jt slice", () => {
     // Jan-Nov: X=20_000_000, TER A row 19 (s.d. 24_150_000) 9% => 1_800_000.
     //   prior withheld = 11 x 1_800_000 = 19_800_000; prior gross = 220_000_000.
     // Dec: gross 240_000_000; 5% = 12_000_000 > cap, so cost = 6_000_000; net 234_000_000.
@@ -211,7 +211,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R23 joiner starting July (6 months): biaya jabatan cap 3 jt, full PTKP, lebih potong refund", () => {
+  it("[PAYR-03] R23 joiner starting July (6 months): biaya jabatan cap 3 jt, full PTKP, lebih potong refund", () => {
     // Salary 15_000_000, months Jul-Dec (monthsWorked 6). Jul-Nov = 5 months:
     //   TER A: 15_000_000 is in row 16 (s.d. 15_100_000) 6% => 900_000 each.
     //   prior withheld = 5 x 900_000 = 4_500_000; prior gross = 75_000_000.
@@ -245,7 +245,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R24 leaver exiting in May (5 months): masa pajak terakhir in May, cap 2.5 jt, refund", () => {
+  it("[PAYR-03] R24 leaver exiting in May (5 months): masa pajak terakhir in May, cap 2.5 jt, refund", () => {
     // Salary 20_000_000, employment ends in May => lastTaxPeriod true, monthsWorked 5.
     // Jan-Apr: TER A row 19 9% => 1_800_000 each; prior withheld = 4 x 1_800_000 = 7_200_000; prior gross 80_000_000.
     // May: gross 100_000_000; cost = min(5_000_000, floor(6_000_000 x 5/12) = 2_500_000) = 2_500_000.
@@ -276,7 +276,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R25 THR in March and bonus in December flow into the annual gross", () => {
+  it("[PAYR-03] R25 THR in March and bonus in December flow into the annual gross", () => {
     // Salary 10_000_000. Jan, Feb: X=10_000_000, TER A 2% => 200_000 each = 400_000.
     // Mar: salary + THR 10_000_000 => X=20_000_000, TER A row 19 9% => 1_800_000.
     // Apr-Nov: 8 x 200_000 = 1_600_000. prior withheld = 400_000 + 1_800_000 + 1_600_000 = 3_800_000.
@@ -311,7 +311,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R26 December lebih potong: a big January bonus taxed at a high TER rate is refunded", () => {
+  it("[PAYR-03] R26 December lebih potong: a big January bonus taxed at a high TER rate is refunded", () => {
     // Jan: salary 10_000_000 + bonus 90_000_000 => X=100_000_000, TER A row 34 (s.d. 103_000_000) 24% => 24_000_000.
     // Feb-Nov: 10 x 200_000 = 2_000_000. prior withheld = 26_000_000 (all from the employee).
     // prior gross = 100_000_000 + 10 x 10_000_000 = 200_000_000.
@@ -369,7 +369,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R28 December pure gross-up: tunjangan pajak solved to a fixed point", () => {
+  it("[PAYR-03] R28 December pure gross-up: tunjangan pajak solved to a fixed point", () => {
     // Salary 10_000_000 on the gross_up scheme every month (pure gross-up: A = S = T, G = N = 0).
     // Jan-Nov, each month: smallest S with S = T(10_000_000 + S), T = X x rate (TER A, single rounding):
     //   S = 230_179: X = 10_230_179, row 10 (s.d. 10_350_000) 2.25% => 10_230_179 x 225/10000 = 230_179.0275
@@ -417,7 +417,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R29 December pure net scheme: the employer bears the whole December tax, which is itself taxable income", () => {
+  it("[PAYR-03] R29 December pure net scheme: the employer bears the whole December tax, which is itself taxable income", () => {
     // Salary 10_000_000 net every month (employer pays the tax). The borne tax is a taxable
     // benefit (FAQ DJP PMK-66 no. 40), so X = N + S, S = employer-borne tax.
     // Jan-Nov, each month: S = 230_179 is the fixed point (see R28):
@@ -453,7 +453,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R30 December, K/3 (PTKP 72 jt, TER category C)", () => {
+  it("[PAYR-03] R30 December, K/3 (PTKP 72 jt, TER category C)", () => {
     // Salary 20_000_000. Jan-Nov: K/3 => TER C; row 15 (s.d. 22_700_000) 8% => 1_600_000.
     //   prior withheld = 11 x 1_600_000 = 17_600_000; prior gross = 220_000_000.
     // Dec: gross 240_000_000; cost 6_000_000; net 234_000_000.
@@ -485,7 +485,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R31 December, income below PTKP: PKP clamps to 0, no tax, no refund", () => {
+  it("[PAYR-03] R31 December, income below PTKP: PKP clamps to 0, no tax, no refund", () => {
     // Salary 4_000_000. Jan-Nov: TER A row 1 (s.d. 5_400_000) 0% => 0; prior withheld 0; prior gross 44_000_000.
     // Dec: gross 48_000_000; cost = min(5% x 48_000_000 = 2_400_000, 6_000_000) = 2_400_000.
     //   net = 45_600_000; 45_600_000 - 54_000_000 = -8_400_000 => PKP = 0. tax 0. Dec = 0 - 0 = 0.
@@ -512,7 +512,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R32 December, PKP crosses the 250 jt boundary into the 25% slice", () => {
+  it("[PAYR-03] R32 December, PKP crosses the 250 jt boundary into the 25% slice", () => {
     // Salary 40_000_000. Jan-Nov: TER A row 26 (s.d. 43_850_000) 16% => 6_400_000.
     //   prior withheld = 11 x 6_400_000 = 70_400_000; prior gross 440_000_000.
     // Dec: gross 480_000_000; cost 6_000_000; net 474_000_000. PKP = 474_000_000 - 54_000_000 = 420_000_000.
@@ -540,7 +540,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R33 PKP is rounded DOWN to whole thousands before applying the slices", () => {
+  it("[PAYR-03] R33 PKP is rounded DOWN to whole thousands before applying the slices", () => {
     // Jan-Nov 10_000_000 => prior withheld 2_200_000, prior gross 110_000_000 (as R19).
     // Dec X=10_000_999: gross = 120_000_999; 5% = 6_000_049 > cap, cost = 6_000_000; net 114_000_999.
     //   raw = 114_000_999 - 54_000_000 = 60_000_999 => PKP = 60_000_000 (floor to 1000).
@@ -570,7 +570,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R34 December, PKP crosses 500 jt into the 30% slice (100 jt salary)", () => {
+  it("[PAYR-03] R34 December, PKP crosses 500 jt into the 30% slice (100 jt salary)", () => {
     // Salary 100_000_000. Jan-Nov: TER A row 34 (s.d. 103_000_000) 24% => 24_000_000.
     //   prior withheld = 11 x 24_000_000 = 264_000_000; prior gross = 1_100_000_000.
     // Dec: gross 1_200_000_000; cost 6_000_000; net 1_194_000_000.
@@ -600,7 +600,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R35 December with employer benefit (taxable) and employee JHT/JP deduction", () => {
+  it("[PAYR-03] R35 December with employer benefit (taxable) and employee JHT/JP deduction", () => {
     // Salary 10_000_000 + employer JKK/JKM/BPJS-Kes share 400_000 => X=10_400_000 each month.
     // Jan-Nov: TER A row 11 (s.d. 10_700_000) 2.5% => 10_400_000 x 250/10000 = 260_000.
     //   prior withheld = 11 x 260_000 = 2_860_000; prior gross = 11 x 10_400_000 = 114_400_000.
@@ -987,7 +987,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     expect(ok.pph21Idr).toBe(575_000);
   });
 
-  it("R56 partial-year tax subject, official example: TK/0, 17,5 jt a month Jan-Aug, annualised, December-style recalculation in August => 1.200.000", () => {
+  it("[PAYR-03] R56 partial-year tax subject, official example: TK/0, 17,5 jt a month Jan-Aug, annualised, December-style recalculation in August => 1.200.000", () => {
     // Kewajiban pajak subjektif ends in August (e.g. leaves Indonesia for good): monthsWorked 8,
     // partialYearTaxSubject true. PMK 168/2023 Pasal 15(3), Lampiran I.2.2.3; Buku Cermat PPh 21 p.53.
     // Jan-Jul: X=17_500_000, TER A row 18 (16_950_000 < X <= 19_750_000) 8% => 1_400_000.
@@ -1133,7 +1133,7 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     });
   });
 
-  it("R60 December with salary, THR and bonus paid in the same month", () => {
+  it("[PAYR-03] R60 December with salary, THR and bonus paid in the same month", () => {
     // Jan-Nov flat 10_000_000: prior withheld 2_200_000, prior gross 110_000_000.
     // Dec lines: salary 10_000_000 + THR 10_000_000 + bonus 15_000_000 => X = 35_000_000.
     //   gross = 145_000_000; cost = 6_000_000 (cap; 5% = 7_250_000); net 139_000_000.

@@ -122,7 +122,7 @@ afterAll(async () => {
 });
 
 describe("action requests (AIG-03)", () => {
-  it("proposes without mutating, stays pending, executes once after approval", async () => {
+  it("[AIG-03] proposes without mutating, stays pending, executes once after approval", async () => {
     const { menuItemId, requester, approver } = await requesterWithApprover();
     const before = await availabilityFingerprint(menuItemId);
     const ctx = await ctxOf(requester);
@@ -154,6 +154,10 @@ describe("action requests (AIG-03)", () => {
     expect(
       await settleActionRequest(workerContext, receipt.actionRequestId),
     ).toBe("pending");
+    expect(await availabilityFingerprint(menuItemId)).toBe(before);
+    expect(
+      await eventCount("action_request.executed", receipt.actionRequestId),
+    ).toBe(0);
 
     await decide(approver, receipt.approvalRequestId, "approved");
     const [a, b] = await Promise.all([
@@ -182,7 +186,39 @@ describe("action requests (AIG-03)", () => {
     approvalRequestIdSchema.parse(receipt.approvalRequestId);
   }, 60_000);
 
-  it("a rejected request never changes data", async () => {
+  it("[AIG-03] a requester without approval authority cannot approve or execute the draft", async () => {
+    const { menuItemId, requester, approver } = await requesterWithApprover();
+    const before = await availabilityFingerprint(menuItemId);
+    const receipt = (await writeTools["TL-18"]!(
+      await ctxOf(requester),
+      draft(menuItemId),
+    )) as { actionRequestId: string; approvalRequestId: string };
+
+    const denied = await requester.client
+      .post(`/api/approvals/${receipt.approvalRequestId}/decisions`)
+      .set(originHeader)
+      .send({
+        decision: "approved",
+        reason: "Attempt without approval authority",
+      });
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    expect(
+      await settleActionRequest(workerContext, receipt.actionRequestId),
+    ).toBe("pending");
+    expect(await availabilityFingerprint(menuItemId)).toBe(before);
+    expect(
+      await eventCount("action_request.executed", receipt.actionRequestId),
+    ).toBe(0);
+
+    // The same valid draft succeeds once the designated human approver decides.
+    await decide(approver, receipt.approvalRequestId, "approved");
+    expect(
+      await settleActionRequest(workerContext, receipt.actionRequestId),
+    ).toBe("executed");
+    expect(await availabilityFingerprint(menuItemId)).not.toBe(before);
+  }, 60_000);
+
+  it("[AIG-03] a rejected request never changes data", async () => {
     const { menuItemId, requester, approver } = await requesterWithApprover();
     const before = await availabilityFingerprint(menuItemId);
     const ctx = await ctxOf(requester);
@@ -200,7 +236,7 @@ describe("action requests (AIG-03)", () => {
     ).toBe("rejected");
   }, 60_000);
 
-  it("re-checks the requester at execution time: lost permission means failed, no change", async () => {
+  it("[AIG-03] re-checks the requester at execution time: lost permission means failed, no change", async () => {
     const { menuItemId, requester, approver } = await requesterWithApprover();
     const before = await availabilityFingerprint(menuItemId);
     const ctx = await ctxOf(requester);

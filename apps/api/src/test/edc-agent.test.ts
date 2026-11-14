@@ -428,6 +428,7 @@ describe("EDC agent (legend-apt)", () => {
     const tx = await pay(f, first);
     expect(tx.status).toBe("unknown");
     expect(tx.completedAt).toBeNull();
+    expect(tx.amountIdr).toBe(AMOUNT);
     expect(f.bca.chargedCount(f.terminalId)).toBe(1);
 
     // Cashier presses "pay" again: same bill, new idempotency key.
@@ -441,6 +442,10 @@ describe("EDC agent (legend-apt)", () => {
     // The unknown attempt was resolved to what really happened.
     const rows = await rowsFor(f.tenant, { reference: first.reference });
     expect(rows.map((r) => r.status)).toEqual(["approved"]);
+    const settled = await f.agent.get(f.ctx, f.actor, refTo(f, tx));
+    expect(settled.id).toBe(tx.id);
+    expect(settled.amountIdr).toBe(AMOUNT);
+    expect(settled.reference).toBe(first.reference);
   });
 
   it("EDC-03 a sale that never reached the terminal is failed by inquiry and the retry is charged once", async () => {

@@ -1,4 +1,4 @@
-// Service-charge pool calculation and distribution (bead legend-pf9u7; PAYR-06).
+// Service-charge pool calculation and distribution (bead legend-pf9u7).
 // Written fail-first from the shared contract (`@starter/shared/hris/payroll`
 // service-charge.ts: pool state machine, `distributeServiceChargePool`,
 // PAYROLL_INVALID_TRANSITION), the table definitions and the brief
@@ -508,7 +508,7 @@ async function approvedPoolWithAllocations(
 }
 
 describe("service-charge pool calculate", () => {
-  it("[PAYR-06] splits the pool across eligible participants and the shares add up to the pool", async () => {
+  it("splits the pool across eligible participants and the shares add up to the pool", async () => {
     const heavy = await seedParticipant("3.0000");
     const light = await seedParticipant("1.0000");
     // Not eligible: zero points, not active, other employment type, other outlet.
@@ -535,7 +535,7 @@ describe("service-charge pool calculate", () => {
     expect((await poolRow(poolId)).status).toBe("calculated");
   });
 
-  it("[PAYR-06] is idempotent: calculating again gives the same shares, no duplicates", async () => {
+  it("is idempotent: calculating again gives the same shares, no duplicates", async () => {
     await seedParticipant("2.0000");
     await seedParticipant("2.0000");
     await seedParticipant("1.0000");
@@ -552,7 +552,7 @@ describe("service-charge pool calculate", () => {
     expect((await poolRow(poolId)).status).toBe("calculated");
   });
 
-  it("[PAYR-06] a pool with money but no eligible participant is refused and nothing is written", async () => {
+  it("a pool with money but no eligible participant is refused and nothing is written", async () => {
     // Participants exist elsewhere but none qualify for this outlet's pool.
     const emptyOutlet = randomUUID();
     createdOutlets.push(emptyOutlet);
@@ -596,7 +596,7 @@ describe("service-charge pool calculate", () => {
     expect((await poolRow(poolId)).status).toBe("draft");
   });
 
-  it("[PAYR-06] a participant whose position has zero points never receives money", async () => {
+  it("a participant whose position has zero points never receives money", async () => {
     const zero = await seedParticipant("0.0000");
     const paid = await seedParticipant("1.0000");
     const poolId = await seedPool(100_000);
@@ -610,7 +610,7 @@ describe("service-charge pool calculate", () => {
     );
   });
 
-  it("[PAYR-06] refuses to calculate an approved, cancelled or distributed pool and keeps its shares", async () => {
+  it("refuses to calculate an approved, cancelled or distributed pool and keeps its shares", async () => {
     const approved = await approvedPoolWithAllocations();
     const before = await allocationsOf(approved);
     const approvedError = await failure(calculate(approved));
@@ -635,7 +635,7 @@ describe("service-charge pool calculate", () => {
     expect((await poolRow(distributedId)).status).toBe("distributed");
   });
 
-  it("[PAYR-06] refuses a pool of another tenant (403 or 404)", async () => {
+  it("refuses a pool of another tenant (403 or 404)", async () => {
     await seedParticipant("1.0000");
     const poolId = await seedPool(50_000);
     const error = await failure(
@@ -653,7 +653,7 @@ describe("service-charge pool calculate", () => {
 
 describe("service-charge pool distribute", () => {
   it.each(["draft", "simulated"] as const)(
-    "[PAYR-06] moves an approved pool to a %s run; allocations still equal the pool",
+    "moves an approved pool to a %s run; allocations still equal the pool",
     async (status) => {
       const poolId = await approvedPoolWithAllocations(1_000_001);
       const before = await allocationsOf(poolId);
@@ -670,7 +670,7 @@ describe("service-charge pool distribute", () => {
     },
   );
 
-  it("[PAYR-06] distributing twice is refused and changes nothing (idempotent, no double pay)", async () => {
+  it("distributing twice is refused and changes nothing (idempotent, no double pay)", async () => {
     const poolId = await approvedPoolWithAllocations();
     const runId = await seedRun(poolId, "draft");
     await distribute(poolId, runId);
@@ -689,7 +689,7 @@ describe("service-charge pool distribute", () => {
     expect(pool.payroll_run_id).toBe(runId);
   });
 
-  it("[PAYR-06] two simultaneous distributions: exactly one wins, money is paid once", async () => {
+  it("two simultaneous distributions: exactly one wins, money is paid once", async () => {
     const poolId = await approvedPoolWithAllocations(777_777);
     const runA = await seedRun(poolId, "draft");
     const runB = await seedRun(poolId, "draft");
@@ -705,7 +705,7 @@ describe("service-charge pool distribute", () => {
     expect(await allocatedTotal(poolId)).toBe(777_777n);
   });
 
-  it("[PAYR-06] refuses a pool that is not approved", async () => {
+  it("refuses a pool that is not approved", async () => {
     await seedParticipant("1.0000");
     const draft = await seedPool(100_000, "draft");
     const calculated = await seedPool(100_000, "draft");
@@ -746,7 +746,7 @@ describe("service-charge pool distribute", () => {
     },
   );
 
-  it("[PAYR-06] refuses to distribute into a locked, paid or reversed run (frozen period)", async () => {
+  it("refuses to distribute into a locked, paid or reversed run (frozen period)", async () => {
     const poolId = await approvedPoolWithAllocations();
     const before = await allocationsOf(poolId);
     for (const status of ["locked", "paid", "reversed"] as const) {
@@ -763,7 +763,7 @@ describe("service-charge pool distribute", () => {
     }
   });
 
-  it("[PAYR-06] refuses when the allocations do not add up to the pool, in either direction", async () => {
+  it("refuses when the allocations do not add up to the pool, in either direction", async () => {
     // One rupiah too little / too much, set while the pool is still editable.
     const under = await approvedPoolWithAllocations(500_000, -1);
     const over = await approvedPoolWithAllocations(500_000, 1);
@@ -778,7 +778,7 @@ describe("service-charge pool distribute", () => {
     }
   });
 
-  it("[PAYR-06] refuses an approved pool with money but no allocations", async () => {
+  it("refuses an approved pool with money but no allocations", async () => {
     const poolId = await seedPool(250_000, "approved");
     const error = await failure(
       distribute(poolId, await seedRun(poolId, "draft")),
@@ -789,7 +789,7 @@ describe("service-charge pool distribute", () => {
     expect(pool.payroll_run_id).toBeNull();
   });
 
-  it("[PAYR-06] refuses a pool of another tenant and 404 for an unknown run", async () => {
+  it("refuses a pool of another tenant and 404 for an unknown run", async () => {
     const poolId = await approvedPoolWithAllocations();
     const runId = await seedRun(poolId, "draft");
     const error = await failure(
@@ -811,7 +811,7 @@ describe("service-charge pool distribute", () => {
 });
 
 describe("service-charge pool: permission and run eligibility", () => {
-  it("[PAYR-06] calculate answers 403 without payroll.run and writes nothing", async () => {
+  it("calculate answers 403 without payroll.run and writes nothing", async () => {
     await seedParticipant("1.0000");
     const poolId = await seedPool(100_000);
     const error = await failure(
@@ -826,7 +826,7 @@ describe("service-charge pool: permission and run eligibility", () => {
     expect((await poolRow(poolId)).status).toBe("draft");
   });
 
-  it("[PAYR-06] distribute answers 403 without payroll.run and pays nothing", async () => {
+  it("distribute answers 403 without payroll.run and pays nothing", async () => {
     const poolId = await approvedPoolWithAllocations();
     const runId = await seedRun(poolId, "draft");
     const error = await failure(
@@ -843,7 +843,7 @@ describe("service-charge pool: permission and run eligibility", () => {
     expect(pool.payroll_run_id).toBeNull();
   });
 
-  it("[PAYR-06] refuses a run that is not a regular run (e.g. off-cycle)", async () => {
+  it("refuses a run that is not a regular run (e.g. off-cycle)", async () => {
     const poolId = await approvedPoolWithAllocations();
     const runId = await seedRun(poolId, "draft", { runType: "off_cycle" });
     const error = await failure(distribute(poolId, runId));
@@ -853,7 +853,7 @@ describe("service-charge pool: permission and run eligibility", () => {
     expect(pool.payroll_run_id).toBeNull();
   });
 
-  it("[PAYR-06] refuses a run of another legal entity than the pool's outlet", async () => {
+  it("refuses a run of another legal entity than the pool's outlet", async () => {
     const poolId = await approvedPoolWithAllocations();
     const runId = await seedRun(poolId, "draft", { otherEntity: true });
     const error = await failure(distribute(poolId, runId));
@@ -863,7 +863,7 @@ describe("service-charge pool: permission and run eligibility", () => {
     expect(pool.payroll_run_id).toBeNull();
   });
 
-  it("[PAYR-06] refuses a run whose period does not cover the pool's whole period", async () => {
+  it("refuses a run whose period does not cover the pool's whole period", async () => {
     const poolId = await approvedPoolWithAllocations();
     const cases = {
       "ends a day early": { endShiftDays: -1 },
@@ -880,7 +880,7 @@ describe("service-charge pool: permission and run eligibility", () => {
     }
   });
 
-  it("[PAYR-06] accepts a regular run of the same entity whose period is wider than the pool's", async () => {
+  it("accepts a regular run of the same entity whose period is wider than the pool's", async () => {
     const poolId = await approvedPoolWithAllocations();
     const runId = await seedRun(poolId, "draft", {
       startShiftDays: -1,

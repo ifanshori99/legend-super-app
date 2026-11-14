@@ -232,7 +232,7 @@ async function createPool(
 }
 
 describe("service-charge pool API: create and list", () => {
-  it("[PAYR-06] creates a draft pool, lists it with filters and pages", async () => {
+  it("creates a draft pool, lists it with filters and pages", async () => {
     const created = await createPool(outletA!.id, "2090-01-01", "2090-01-31");
     expect(created.status).toBe(201);
     expect(created.body.data).toMatchObject({
