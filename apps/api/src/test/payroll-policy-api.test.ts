@@ -574,7 +574,7 @@ describe("payroll policy API: tenant isolation", () => {
 });
 
 describe("payroll THR schedule API", () => {
-  it("[PAYR-06] creates a schedule for everyone and for named employees, then lists newest holiday first", async () => {
+  it("creates a schedule for everyone and for named employees, then lists newest holiday first", async () => {
     const all = await adminClient
       .post(THR)
       .set(originHeader)
