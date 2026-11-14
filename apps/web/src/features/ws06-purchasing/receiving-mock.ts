@@ -449,7 +449,8 @@ registerMock(createSupplierInvoice, ({ body, headers }) =>
           totalIdr: invoicedGoodsIdr + servicesIdr,
           payableIdr: invoicedGoodsIdr + servicesIdr,
           paidIdr: 0,
-          outstandingIdr: invoicedGoodsIdr + servicesIdr,
+          // A held invoice is not a payable yet (schema: outstanding = 0).
+          outstandingIdr: 0,
           status: "held",
           matchStatus: "pending",
           matchedAt: null,
@@ -483,7 +484,8 @@ registerMock(createSupplierInvoice, ({ body, headers }) =>
         totalIdr,
         payableIdr,
         paidIdr: 0,
-        outstandingIdr: payableIdr,
+        // A held invoice is not a payable yet (schema: outstanding = 0).
+        outstandingIdr: 0,
         status: "held",
         matchStatus: "pending",
         matchedAt: null,

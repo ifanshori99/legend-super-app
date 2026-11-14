@@ -1,3 +1,10 @@
+## 785 Layar input faktur pemasok (ui-engineer, legend-0xnm, cabang kerja dari `origin/milestone/m1` 9b8433f69, 14 Nov 2026 19:10-21:30 WIB)
+
+- Sudah: route `/kelola/pengadaan/faktur/baru` (`kelola.pengadaan_.faktur_.baru.tsx`, non-bersarang), `invoice-form-page.tsx`, `invoice-match-preview.tsx`, `invoice-entry-model.ts`, katalog `ws06-invoice-entry.ts` + `ws06-invoice-match-preview.ts`, tombol "Catat faktur" di daftar faktur. Mock `createSupplierInvoice` memperbaiki `outstandingIdr: 0` untuk faktur `held` (schema).
+- Keputusan uang: PPN/PPh 23 diketik persis dari faktur pajak (input kontrak); web tidak menghitung total/DPP/payable/selisih; pratinjau 3-way match = angka API apa adanya; satu idempotency key per percobaan (retry pakai key sama) + guard klik ganda. Angka format id-ID (titik ribuan, koma desimal) untuk qty dan harga; teks ambigu seperti `12.5` ditolak.
+- Bukti: unit `tests/supplier-invoice-entry.test.mjs` gagal-dulu (11/11 lalu 3/15 di model lama), sekarang 35/35 bersama `text-contract`; e2e mock `e2e/legend-0xnm.mock.spec.ts` 5/5; tsc web exit 0; prettier/eslint/color bersih. Screenshot `docs/design/screenshots/legend-0xnm/`.
+- Berikut: review founder (gerbang UI). Catatan: mock `postSupplierInvoiceMatch` kemungkinan menyimpan `outstandingIdr: 0` untuk faktur matched (belum diverifikasi, bawaan legend-xkk).
+
 ## Merge train batch64d (merge train, `int/batch64d` dari `origin/milestone/m1` 5dcc1cfd9, 14 Nov 2026 16:55-18:50 WIB)
 
 - Sudah: 6 cabang masuk berurutan: `fix/platform-offline-banner`, `fix/ssr-hydration`, `fix/test-orphan-guard`, `fix/edge-transport-no-outlet`, `fix/edge-dead-letter-alarm-cost` (memuat e37338e6d, legend-1opho dan legend-mciif), `fix/payout-cors-expose-headers`. `fix/flake-zdfsm` dilepas atas keputusan CTO: superseded oleh `fix/migration-replay-isolation` (legend-edxtt, sudah di m1; mekanisme replay bersaing, konflik di `cash-movement-mapping-backfill-migration.test.ts`); legend-zdfsm ditutup CTO.
