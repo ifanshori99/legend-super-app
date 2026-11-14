@@ -46,3 +46,9 @@ Referensi tertunda di PENERIMA, tanpa menyimpan payload. HTTP pull katalog menja
 - Deferral menambah HTTP pull, tetapi di-debounce 30 detik dan checkpoint sudah dekat head.
 - Event yang tertunda terlambat sampai satu HTTP round, maksimal sekitar 30 detik (online).
 - Pemulihan brand switch butuh tindakan operator (reprovision), disengaja.
+
+## Review architect atas a2538fc4d (14 Nov 20:4x): lolos dengan catatan
+- P1 (gerbang merge train, bukan untuk engineer): 0373 `when` 1794661468925 lebih besar dari 0366-0372 di cabang lain; migrator melewati migrasi yang `when`-nya lebih kecil. Jangan merge sebelum 0366-0372 masuk m1; saat rebase beri nomor bebas berikut, `when` = sebelumnya + 1000, regenerasi snapshot.
+- P2 `edge-master-data-publisher.ts:51`: `FOR NO KEY UPDATE OF n` pada edge_nodes bentrok dengan UPDATE edge_nodes di applyInbound (`db-link-store.ts:641`) dan `edge-node.service.ts`. Ganti dengan `pg_try_advisory_xact_lock` per node (atau kunci di tabel publisher sendiri) dan lewati node yang terkunci.
+- P2 `0373_edge_catalog_publisher.sql:18-20`: ADD CONSTRAINT CHECK memindai edge_inbound_events di bawah ACCESS EXCLUSIVE. Tambah `NOT VALID` (nilai lama tercakup).
+- P2 `edge-master-data-publisher.ts:149-171`: sweep tiap 5 detik membuka transaksi tulis per tenant x node x 13 stream walau tanpa perubahan. Lewati stream tanpa baris di atas watermark sebelum INSERT/FOR UPDATE, dan/atau satu instance via advisory lock leader.
