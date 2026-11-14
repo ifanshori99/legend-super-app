@@ -1,0 +1,6 @@
+# 767 Refund pin: batasi earlierIntentWant ke key intent yang di-pin (legend-xiz1p)
+Peran: engineer (Claude Sonnet high). Area uang: review architect effort xhigh. Base: fix/refund-deposit-parts-key (af0edffd2). Cabang: fix/refund-pin-earlier-intent. Tanpa migrasi.
+Masalah: di `apps/api/src/services/accounting-auto-journal-amounts.ts`, refund deposit/baris yang gagal di intent LAIN ikut dihitung ke batas intent yang di-pin (earlierIntentWant), jadi refund yang aman bisa di-park; admin yang mengajukan ulang deposit gagal dengan key lain bisa membuat park permanen sampai operator bertindak. Sekarang tidak membayar lebih, hanya terlalu ketat.
+Tujuan: batasi earlierIntentWant ke key intent yang di-pin, tanpa membuka celah bayar-lebih yang ditutup legend-0dgi1 dan legend-fpy9s. ARR-1..15 dan test penjaga 409 tetap hijau; ARR-15a mungkin berubah harapan: jelaskan di laporan kenapa aman.
+Jangan sampai rugi: test bukti tidak ada pihak dibayar lebih dan outlet tidak rugi (termasuk ajukan ulang dengan key lain, dan kombinasi deposit + baris). Bila ragu, biarkan aturan yang lebih ketat dan lapor.
+Aturan umum: baca ~/.agents/team/roles/engineer.md dan "Paralel dulu" di ~/.agents/team/TEAM.md. Kerja berat lewat `heavy`, satu job sekaligus. Pra-gate AGENTS.md. Commit, push cabang tanpa force, jangan merge. Lapor angka subagent.
