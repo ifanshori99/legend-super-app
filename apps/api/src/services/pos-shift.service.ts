@@ -619,7 +619,10 @@ export async function recordCashMovement(
     // the expected cash by being refused) but held for supervisor review
     // (legend-67dt): the row is flagged, left out of the drawer figures, and
     // audited without any expected figure. The shift row is locked, so the
-    // figures cannot move under this check.
+    // figures cannot move under this check. The cash of a held refund or void
+    // has already left the drawer though the figures leave it out, so it is
+    // taken off the limit too: the physical cash bounds the movement, the same
+    // bound the approval applies (pos-shift-cash-approval.service.ts).
     let needsApproval = false;
     if (input.type !== "cash_in") {
       // Every cash outflow of the shift, held or not and whichever writer
@@ -635,7 +638,8 @@ export async function recordCashMovement(
         live.cashInIdr -
         live.cashOutIdr -
         live.cashDropIdr;
-      needsApproval = input.amountIdr > expected;
+      needsApproval =
+        input.amountIdr > expected - (await heldCorrectionCashIdrOf(tx, shift));
     }
     const [row] = await tx
       .insert(cashMovements)
