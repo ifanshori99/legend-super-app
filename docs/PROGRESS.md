@@ -1559,3 +1559,4 @@ Langkah berikut CTO baru:
 - 09:20 r1ax selesai: ct/customer-display-promo-pairing 3dfaf1a01 review bersih, antre batch64; lanjutan legend-l344l (UI), legend-834cr (akses+mapper). Codex: G12il legend-z76q (brief 715), G021n legend-j5n1 (brief 716).
 - 09:25 j5n1 selesai: fix/backup-postgres-user 06eb57f9f, antre batch64 (test .sh di deploy/backup tidak ikut runner; cek orphan guard).
 - 09:26 Codex #2 kena batas 7 hari (100%, reset 18 Nov 17:43); G9u0b (legend-xar9p, brief 717) dipindah ke #7. Codex yang layak: #7 (10%), #8 (13%); #3-#6 7d 89-93%.
+- 09:28 nnufz/W16 selesai: ui/ai-settings-v2 29f52256a (kunci platform AI, architect xhigh, e2e 17/17), antre batch63. Second opinion area AI brief 718 menunggu slot Codex (#8). Gerbang rilis: legend-0m495 (tenant tanpa modul ai_assistant). Halaman review UI untuk founder sedang dibuat subagent.
