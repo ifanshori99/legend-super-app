@@ -15,6 +15,7 @@ import {
   createPanicRealtimeClient,
   type PanicRealtimeClient,
   type PanicRealtimeOptions,
+  type PanicSocket,
 } from "./panic-realtime.ts";
 
 const EMERGENCY_WS_PATH = "/api/emergency/ws";
@@ -53,8 +54,10 @@ export function usePanicAlerts(): {
       const transport = API_MOCK
         ? await createMockOptions()
         : {
+            // The browser WebSocket's handlers take typed events; PanicSocket
+            // takes unknown payloads, which the client narrows itself.
             socketFactory: (url: string, protocols: string[]) =>
-              new WebSocket(url, protocols),
+              new WebSocket(url, protocols) as unknown as PanicSocket,
           };
       if (cancelled) return;
       client = createPanicRealtimeClient({

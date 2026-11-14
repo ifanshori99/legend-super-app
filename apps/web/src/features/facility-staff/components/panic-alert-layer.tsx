@@ -17,6 +17,7 @@ import {
   Wifi,
   WifiOff,
 } from "lucide-react";
+import type { MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { useOutletClock } from "@/lib/tenant-context";
@@ -68,7 +69,7 @@ const TONE_PANEL: Record<Tone, string> = {
   neutral: "border-foreground bg-surface-2",
 };
 
-const CONNECTION_KEYS: Record<PanicConnection, string> = {
+const CONNECTION_KEYS: Record<PanicConnection, MessageKey> = {
   connecting: "facilityStaff.panic.connection.connecting",
   open: "facilityStaff.panic.connection.open",
   reconnecting: "facilityStaff.panic.connection.reconnecting",
@@ -77,7 +78,7 @@ const CONNECTION_KEYS: Record<PanicConnection, string> = {
   stopped: "facilityStaff.panic.connection.stopped",
 };
 
-const STATUS_KEYS: Record<PanicAckState, string> = {
+const STATUS_KEYS: Record<PanicAckState, MessageKey> = {
   idle: "facilityStaff.panic.status.idle",
   sending: "facilityStaff.panic.status.sending",
   failed: "facilityStaff.panic.status.failed",
