@@ -1,0 +1,9 @@
+# 816 Second opinion area edge (link, placeholder, katalog, resep)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Sinkron data outlet dan jalur alarm panik: effort high. Read-only, tanpa edit kode produk.
+Repo: /Users/ifanshori99/Projects/legend super app/legend. Jangan checkout di folder utama; baca lewat `git show`/`git diff` atau buat worktree sendiri dari ref di bawah.
+Cakupan:
+- `origin/milestone/m1...origin/ws/edge-master-data-publisher` (ujung eee030082; migrasi 0373): katalog yang terblokir saat brand outlet pindah diganti placeholder `edge_link.dead_lettered` di link_seq yang sama, applier no-op di edge, readOutbound cek tanpa kunci lalu kunci + cek ulang, peringatan versi edge di onHello (min 0.2.0), runbook urutan rilis. Second opinion lama: docs/qa/second-opinion-edge-64d.md.
+- `origin/milestone/m1...origin/ws/tax-menu-keyrotation` (ujung 87284cbb7; migrasi 0377 data saja): semua resep tenant ke tiap edge lewat protokol katalog 3 dan snapshot master v2 (header x-edge-snapshot-version), CatalogMissingRefError menunda, master sync sekali saat boot, 0377 restamp cloud + reset watermark edge, EdgeBootError bila modifiers_recipe_fk ada.
+Cari: event panic_alert/qr_order/wifi_quota yang bisa macet, hilang, terulang, atau tergeser; seq bolong atau dipakai ulang; data brand lain bocor ke edge outlet lain (lintas tenant P0); race brand move vs pump/ack/reconnect; edge lama vs cloud baru dan sebaliknya; 0377 di edge yang sudah menjalankan 0374; snapshot v1 + katalog v3 (proxy membuang header); tenant > 200 brand.
+Tanpa heavy kecuali benar perlu satu test terarah (LEGEND_TEST_FILES=... heavy pnpm test).
+Hasil: tulis `docs/qa/second-opinion-edge-placeholder-resep.md` di worktree-mu (P0-P3, berkas:baris, skenario gagal konkret, usul test). Lapor ringkasannya dan path laporannya.
