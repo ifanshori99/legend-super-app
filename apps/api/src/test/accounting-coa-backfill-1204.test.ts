@@ -27,9 +27,55 @@ afterAll(async () => {
   await owner.end();
 });
 
-const migrate = async () => {
-  for (const statement of migration.split("--> statement-breakpoint"))
-    if (statement.replace(/--.*$/gm, "").trim()) await owner.query(statement);
+const migrate = async (sql = migration) => {
+  const client = await owner.connect();
+  let replayFailed = false;
+  let replayError: unknown;
+  try {
+    await client.query("BEGIN");
+    // Keep concurrent tenant teardown from invalidating the backfill's scan.
+    await client.query("LOCK TABLE public.tenants IN SHARE MODE");
+    for (const statement of sql.split("--> statement-breakpoint"))
+      if (statement.replace(/--.*$/gm, "").trim())
+        await client.query(statement);
+    await client.query("COMMIT");
+  } catch (error) {
+    replayFailed = true;
+    replayError = error;
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      replayError = new AggregateError(
+        [error, rollbackError],
+        "Replay and rollback failed",
+      );
+    }
+  } finally {
+    try {
+      const results = await Promise.allSettled([
+        client.query(
+          "ALTER TABLE public.account_mappings FORCE ROW LEVEL SECURITY",
+        ),
+        client.query(
+          "ALTER TABLE public.chart_of_accounts FORCE ROW LEVEL SECURITY",
+        ),
+      ]);
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure?.status === "rejected") {
+        const errors = results
+          .filter((result) => result.status === "rejected")
+          .map((result) => result.reason);
+        replayFailed = true;
+        replayError = new AggregateError(
+          replayError !== undefined ? [replayError, ...errors] : errors,
+          "Failed to restore FORCE RLS",
+        );
+      }
+    } finally {
+      client.release();
+    }
+  }
+  if (replayFailed) throw replayError;
 };
 
 async function entity(): Promise<string> {
@@ -105,6 +151,30 @@ const mappingsOf = async (entityId: string, role: string) =>
   ).rows;
 
 describe("legend-s8a3 1204 / 6110 / 6111 backfill migration", () => {
+  it("restores FORCE RLS after a replay statement fails", async () => {
+    const failingMigration = `
+      ALTER TABLE public.chart_of_accounts NO FORCE ROW LEVEL SECURITY;
+      --> statement-breakpoint
+      ALTER TABLE public.account_mappings NO FORCE ROW LEVEL SECURITY;
+      --> statement-breakpoint
+      SELECT 1 / 0;
+    `;
+    await expect(migrate(failingMigration)).rejects.toThrow("division by zero");
+
+    const result = await owner.query<{
+      relname: string;
+      relforcerowsecurity: boolean;
+    }>(
+      `SELECT relname, relforcerowsecurity FROM pg_class
+       WHERE oid IN ('public.chart_of_accounts'::regclass, 'public.account_mappings'::regclass)
+       ORDER BY relname`,
+    );
+    expect(result.rows).toEqual([
+      { relname: "account_mappings", relforcerowsecurity: true },
+      { relname: "chart_of_accounts", relforcerowsecurity: true },
+    ]);
+  });
+
   it("adds one account and one mapping each, twice over, under 1200 / 6100", async () => {
     const id = await provisioned();
 
