@@ -1,3 +1,12 @@
+## Merge train batch64d (merge train, `int/batch64d` dari `origin/milestone/m1` 5dcc1cfd9, 14 Nov 2026 16:55-18:50 WIB)
+
+- Sudah: 6 cabang masuk berurutan: `fix/platform-offline-banner`, `fix/ssr-hydration`, `fix/test-orphan-guard`, `fix/edge-transport-no-outlet`, `fix/edge-dead-letter-alarm-cost` (memuat e37338e6d, legend-1opho dan legend-mciif), `fix/payout-cors-expose-headers`. `fix/flake-zdfsm` dilepas atas keputusan CTO: superseded oleh `fix/migration-replay-isolation` (legend-edxtt, sudah di m1; mekanisme replay bersaing, konflik di `cash-movement-mapping-backfill-migration.test.ts`); legend-zdfsm ditutup CTO.
+- Tanpa migrasi baru (tak ada cabang 64d menyentuh `apps/api/drizzle`). `aa88efaeb` sudah ada di m1 sebagai `0291_leave_flag_reset_review_case`, jadi tidak ada penomoran ulang setelah 0365.
+- Konflik diselesaikan dengan menyimpan kedua sisi: `packages/shared/src/events/catalog.ts` (WS-02 memuat `edge_link.dead_lettered` dan `edge_outbox.blocked`) dan `apps/api/src/test/edge-event-class.test.ts` (tes legend-tbl4 dan legend-1opho di blok `legend-eadm D`).
+- Gerbang: prettier+eslint berkas berubah hijau (20 berkas); tes root kontrak terarah 27/27; `check-workspace-links` hijau; `pnpm run lint` exit 0 (~25 mnt termasuk antre); `pnpm run typecheck` 3/3 hijau (1m36s); `heavy pnpm run test` run 1: node:test root 2986/2986, vitest API 1127 berkas lulus, 18129 tes lulus, 0 gagal (~1j18m). Satu run penuh, tanpa gagal.
+- Berikut: CTO memutuskan fast-forward `milestone/m1` ke `int/batch64d`; 64c (payout) menunggu thread approval followups; 64e dan 64f menyusul.
+- Biaya sesi (12:32-18:45, termasuk 64a dan 64b): biaya* total 4217k (utama Sonnet 5.5 4026k; subagent 192k). 3 subagent; parallel-report: rata-rata 0.23 subagent berjalan per agent (10 sesi). Waktu terbanyak menunggu antrean `heavy`.
+
 ## Merge train batch64b (merge train, `int/batch64b` dari `origin/milestone/m1` 13d726b02, 14 Nov 2026 15:20-17:00 WIB)
 
 - Sudah: 7 cabang antrean masuk berurutan (6 merge nyata; `ws/kds-station-save` sudah termuat di `fix/kds-routing-inactive`, `ws/reservation-followups` di `ws/reservation-guest-contract`): `ws/reservation-followups`, `ws/reservation-guest-contract`, `ui/reservation-guest-page`, `ui/kds-config-scanner`, `ws/kds-station-save`, `fix/kds-routing-inactive`, `ws/s-tier-flakes-ci`; plus `fix/migration-replay-isolation` (cabang ke-8, hanya test, izin CTO, legend-edxtt).
