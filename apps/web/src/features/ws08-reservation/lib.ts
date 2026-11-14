@@ -16,6 +16,7 @@ import {
   reservationTableSlotsOverlap,
 } from "@starter/shared/reservation";
 import type {
+  RescheduleRequestStatus,
   Reservation,
   ReservationStatus,
   ReservationTableSlot,
@@ -64,6 +65,21 @@ export function formatClock(instant: string, timeZone: string): string {
   if (Number.isNaN(date.getTime())) return "";
   return new Intl.DateTimeFormat("id-ID", {
     timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+/** Outlet date and clock, e.g. "Sab, 7 Nov 19.30". */
+export function formatDateTime(instant: string, timeZone: string): string {
+  const date = new Date(instant);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("id-ID", {
+    timeZone,
+    weekday: "short",
+    day: "numeric",
+    month: "short",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
@@ -364,6 +380,12 @@ export function reservationSourceKey(
   source: Reservation["source"],
 ): MessageKey {
   return `reservation.source.${source}` as MessageKey;
+}
+
+export function rescheduleStatusKey(
+  status: RescheduleRequestStatus,
+): MessageKey {
+  return `reservation.reschedule.status.${status}` as MessageKey;
 }
 
 export function waitlistStatusKey(status: WaitlistStatus): MessageKey {

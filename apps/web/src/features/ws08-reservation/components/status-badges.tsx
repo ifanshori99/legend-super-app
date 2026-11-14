@@ -17,6 +17,7 @@ import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import type {
   PreOrderStatus,
+  RescheduleRequestStatus,
   Reservation,
   ReservationStatus,
   WaitlistStatus,
@@ -24,6 +25,7 @@ import type {
 import type { PaymentStatus } from "@starter/shared/payment";
 import {
   depositLabelKey,
+  rescheduleStatusKey,
   reservationStatusKey,
   waitlistStatusKey,
 } from "../lib";
@@ -140,6 +142,33 @@ export function PreOrderStatusBadge({
   return (
     <Badge tone={PRE_ORDER_TONE[status]} className={className}>
       {t(`reservation.detail.preOrderStatus.${status}`)}
+    </Badge>
+  );
+}
+
+const RESCHEDULE_STYLE: Record<
+  RescheduleRequestStatus,
+  { tone: Tone; icon: LucideIcon }
+> = {
+  pending: { tone: "warning", icon: Clock },
+  approved: { tone: "success", icon: CircleCheck },
+  declined: { tone: "danger", icon: Ban },
+  withdrawn: { tone: "neutral", icon: Ban },
+};
+
+export function RescheduleStatusBadge({
+  status,
+  className,
+}: {
+  status: RescheduleRequestStatus;
+  className?: string;
+}) {
+  const t = useT();
+  const { tone, icon: Icon } = RESCHEDULE_STYLE[status];
+  return (
+    <Badge tone={tone} className={className}>
+      <Icon aria-hidden="true" />
+      {t(rescheduleStatusKey(status))}
     </Badge>
   );
 }

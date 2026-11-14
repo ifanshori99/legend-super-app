@@ -12,7 +12,7 @@
 //   (`requestDepositRefund`, WS-05), never paid here.
 // - A reschedule is only recorded as a request; staff decide later.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { and, asc, eq, gt, isNull, or } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, isNull, or } from "drizzle-orm";
 import {
   assertOutletInScope,
   decodeCursor,
@@ -150,8 +150,8 @@ export function hashReservationLinkToken(token: string): string {
 
 /**
  * Revokes the active link of the reservation and inserts a new one, in the
- * caller's transaction (also used by the reminder workstream). Returns the
- * plain token once; it cannot be recovered afterwards.
+ * caller's transaction (staff-issued links). Returns the plain token once; it
+ * cannot be recovered afterwards.
  */
 export async function issueReservationGuestLink(
   tx: Tx,
@@ -171,6 +171,60 @@ export async function issueReservationGuestLink(
     input.outletId,
     input.reservationId,
   );
+  return insertGuestLink(tx, context, input, reservation);
+}
+
+/**
+ * Link for an automatic guest message (confirmation, reminder; legend-lb3c).
+ * It replaces an earlier automatic link (the newest message always works) but
+ * NEVER revokes a link a staff member issued by hand and that is still valid:
+ * then it issues nothing and returns null, and the message goes out without a
+ * new link (the guest already holds a working one).
+ */
+export async function issueAutomaticReservationGuestLink(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { outletId: OutletId; reservationId: string; now: Date },
+): Promise<{ token: string; expiresAt: string } | null> {
+  const reservation = await lockReservation(
+    tx,
+    context,
+    input.outletId,
+    input.reservationId,
+  );
+  const [staffLink] = await tx
+    .select({ id: reservationGuestLinks.id })
+    .from(reservationGuestLinks)
+    .where(
+      and(
+        eq(reservationGuestLinks.tenantId, context.tenant.tenantId),
+        eq(reservationGuestLinks.reservationId, input.reservationId),
+        isNull(reservationGuestLinks.revokedAt),
+        isNotNull(reservationGuestLinks.createdBy),
+        gt(reservationGuestLinks.expiresAt, input.now),
+      ),
+    )
+    .limit(1);
+  if (staffLink) return null;
+  return insertGuestLink(
+    tx,
+    context,
+    { ...input, actorUserId: null },
+    reservation,
+  );
+}
+
+async function insertGuestLink(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    outletId: OutletId;
+    reservationId: string;
+    actorUserId: string | null;
+    now: Date;
+  },
+  reservation: ReservationRow,
+): Promise<{ token: string; expiresAt: string }> {
   const expiresAt = new Date(
     reservation.reservedFor.getTime() + GUEST_LINK_GRACE_HOURS * HOUR_MS,
   );
@@ -337,7 +391,9 @@ async function resolveGuestLink(
 
 // ------------------------------------------------------------------ view
 
-function toRescheduleRequest(row: RescheduleRow): ReservationRescheduleRequest {
+export function toRescheduleRequest(
+  row: RescheduleRow,
+): ReservationRescheduleRequest {
   return reservationRescheduleRequestSchema.parse({
     id: row.id,
     reservationId: row.reservationId,

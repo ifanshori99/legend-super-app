@@ -24,9 +24,11 @@ import { and, eq, isNull, or } from "drizzle-orm";
 import {
   idr,
   uuidSchema,
+  type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
+import { reservationConfirmedPayloadSchema } from "@starter/shared/reservation";
 import { z } from "zod";
 import { db } from "../db/index.ts";
 import { paymentIntents } from "../db/schema/index.ts";
@@ -37,6 +39,7 @@ import {
   loadHeldDeposit,
   lockReservation,
 } from "./reservation-core.ts";
+import { notifyReservationConfirmed } from "./reservation-guest-notify.ts";
 import { confirmReservationDeposit } from "./reservation-lifecycle.ts";
 import { requestDepositRefund } from "./reservation-refunds.ts";
 
@@ -196,4 +199,27 @@ export async function handlePaymentPaid(
   return (await refundLateDeposit(context, row, intentId, now))
     ? "late_refund_requested"
     : "unchanged";
+}
+
+/**
+ * `reservation.confirmed` consumer (legend-lb3c): the guest's confirmation
+ * message, written only if the booking is still confirmed when the event is
+ * consumed. Idempotent; ignores other events and other tenants.
+ */
+export async function handleReservationConfirmed(
+  context: ScopedTenantContext,
+  event: EventEnvelope,
+  now: Date = new Date(),
+): Promise<boolean> {
+  if (event.name !== "reservation.confirmed") return false;
+  if (event.tenantId !== context.tenant.tenantId || event.outletId === null)
+    return false;
+  const payload = reservationConfirmedPayloadSchema.safeParse(event.payload);
+  if (!payload.success) return false;
+  return notifyReservationConfirmed(
+    context,
+    event.outletId as OutletId,
+    payload.data.reservationId,
+    now,
+  );
 }

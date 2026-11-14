@@ -85,6 +85,7 @@ import { notifyBrevoAuthFailed } from "../services/edge-sync-conflict-alert.ts";
 import { issueInvitationLink } from "../services/identity-invitation.service.ts";
 import type { NotificationRecipientResolver } from "../services/notification-consumer.ts";
 import type { NotificationRecipient } from "../services/notification-core.ts";
+import { prepareReservationEmail } from "../services/reservation-guest-notify.ts";
 import type { deliverNotificationAttempt } from "../services/notification-delivery.ts";
 
 type Database = NodePgDatabase<typeof schema>;
@@ -1404,6 +1405,10 @@ export function createWorkerNotificationHandlers(
           origin: new URL(webUrl).origin,
         });
       },
+      // legend-lb3c: the kelola link of a reservation email is minted at send
+      // time (never stored in the notification); null skips the send.
+      reservationLink: (context, notification) =>
+        prepareReservationEmail(context, notification),
       // Left undefined while WhatsApp is disabled: worker-main only polls
       // WhatsApp attempts when this provider is present.
     },

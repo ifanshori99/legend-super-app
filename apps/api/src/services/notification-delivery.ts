@@ -62,6 +62,17 @@ type Dependencies = {
     context: ScopedTenantContext,
     notification: Notification,
   ) => Promise<string | null>;
+  /**
+   * legend-lb3c: send-time part of a reservation guest EMAIL (confirmation,
+   * reminder): text appended to the body, holding the kelola link minted now
+   * so no token is ever stored in `notifications.body`. Null: do not send (the
+   * booking is no longer confirmed or was moved); the attempt is recorded
+   * dead. Missing: same, fail closed.
+   */
+  reservationLink?: (
+    context: ScopedTenantContext,
+    notification: Notification,
+  ) => Promise<{ readonly text: string } | null>;
 };
 const whatsappTemplateRequestSchema = z.strictObject({
   tenantId: tenantIdSchema,
@@ -259,7 +270,7 @@ export async function deliverNotificationAttempt(
   // certainly not sent. A thrown error may hide a send, so it keeps the slot.
   let rejected = false;
   let providerRef: string | null = null;
-  // The invitation link could not be minted: nothing was sent and a retry
+  // The invitation or reservation link could not be prepared: nothing was sent and a retry
   // cannot help, so the attempt ends dead.
   let undeliverable = false;
   try {
@@ -278,6 +289,16 @@ export async function deliverNotificationAttempt(
         : null;
       emailBody =
         link === null ? null : `${claim.notification.body}\n\n${link}`;
+    } else if (
+      claim.channel === "email" &&
+      (claim.notification.category === "reservation_confirmation" ||
+        claim.notification.category === "reservation_reminder")
+    ) {
+      const prepared = deps.reservationLink
+        ? await deps.reservationLink(context, claim.notification)
+        : null;
+      emailBody =
+        prepared === null ? null : `${claim.notification.body}${prepared.text}`;
     }
     const result =
       emailBody === null

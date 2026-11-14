@@ -1,5 +1,6 @@
 import {
   BellRing,
+  CalendarCheck,
   CalendarClock,
   CalendarDays,
   ChefHat,
@@ -45,6 +46,7 @@ export const NOTIFICATION_CATEGORY_ICONS: Record<
   emergency: Siren,
   security: ShieldAlert,
   order_status: ReceiptText,
+  reservation_confirmation: CalendarCheck,
   reservation_reminder: CalendarClock,
   facility_session: Timer,
   subscription_billing: CreditCard,
