@@ -103,7 +103,7 @@ const NO_REFUND = {
 } as const;
 
 describe("PPh 21 TER monthly reference cases", () => {
-  it("R01 TK/0 gross at the exact upper bound of the 0% row is not taxed", () => {
+  it("[PAYR-03] R01 TK/0 gross at the exact upper bound of the 0% row is not taxed", () => {
     // X = 5_400_000; TER A row 1 (s.d. 5_400_000, bound inclusive) 0% => 0.
     // Src: PP 58/2023 Lampiran A.
     const r = terMonth("TK/0", [gross(5_400_000)]);
@@ -121,7 +121,7 @@ describe("PPh 21 TER monthly reference cases", () => {
     });
   });
 
-  it("R02 TK/0 gross one rupiah above the 0% row falls into the 0.25% row", () => {
+  it("[PAYR-03] R02 TK/0 gross one rupiah above the 0% row falls into the 0.25% row", () => {
     // X = 5_400_001; TER A row 2 (s.d. 5_650_000) 0.25% = 25 bp.
     // tax = R(5_400_001 * 25 / 10000) = R(13_500.0025) = 13_500 (half_up and down agree).
     // Src: PP 58/2023 Lampiran A.
@@ -140,7 +140,7 @@ describe("PPh 21 TER monthly reference cases", () => {
     });
   });
 
-  it("R03 TK/0 gross at the exact upper bound of a row uses that row's rate", () => {
+  it("[PAYR-03] R03 TK/0 gross at the exact upper bound of a row uses that row's rate", () => {
     // X = 10_050_000; TER A row 9 (s.d. 10_050_000, inclusive) 2% = 200 bp.
     // tax = 10_050_000 * 200 / 10000 = 201_000.
     // Src: PP 58/2023 Lampiran A.
@@ -159,7 +159,7 @@ describe("PPh 21 TER monthly reference cases", () => {
     });
   });
 
-  it("R04 TK/0 gross one rupiah above that bound moves to the next row", () => {
+  it("[PAYR-03] R04 TK/0 gross one rupiah above that bound moves to the next row", () => {
     // X = 10_050_001; TER A row 10 (s.d. 10_350_000) 2.25% = 225 bp.
     // tax = R(10_050_001 * 225 / 10000) = R(226_125.0225) = 226_125.
     // Src: PP 58/2023 Lampiran A.
@@ -184,7 +184,7 @@ describe("PPh 21 TER monthly reference cases", () => {
   //   B row 9  (s.d. 12_600_000) 3%    => 360_000
   //   C row 9  (s.d. 12_050_000) 2%    => 240_000
   // Src: PP 58/2023 Pasal 2 + Lampiran A/B/C.
-  describe("R05 category A statuses (TK/0 TK/1 K/0): 4% => 480_000", () => {
+  describe("[PAYR-03] R05 category A statuses (TK/0 TK/1 K/0): 4% => 480_000", () => {
     it.each<PtkpStatus>(["TK/1", "K/0"])("%s", (status) => {
       const r = terMonth(status, [gross(12_000_000)]);
       expect(r).toMatchObject({
@@ -212,7 +212,7 @@ describe("PPh 21 TER monthly reference cases", () => {
     });
   });
 
-  describe("R06 category B statuses (TK/2 TK/3 K/1 K/2): 3% => 360_000", () => {
+  describe("[PAYR-03] R06 category B statuses (TK/2 TK/3 K/1 K/2): 3% => 360_000", () => {
     it.each<PtkpStatus>(["TK/2", "TK/3", "K/1", "K/2"])("%s", (status) => {
       const r = terMonth(status, [gross(12_000_000)]);
       expect(r).toMatchObject({
@@ -231,7 +231,7 @@ describe("PPh 21 TER monthly reference cases", () => {
     });
   });
 
-  it("R07 K/3 is category C: 2% => 240_000", () => {
+  it("[PAYR-03] R07 K/3 is category C: 2% => 240_000", () => {
     // X = 12_000_000; TER C row 9 (s.d. 12_050_000) 2% = 200 bp => 240_000.
     // Src: PP 58/2023 Lampiran C (K/3 only).
     const r = terMonth("K/3", [gross(12_000_000)]);
@@ -274,7 +274,7 @@ describe("PPh 21 TER monthly reference cases", () => {
     });
   });
 
-  it("R09 top bracket is 34% above Rp1.4 billion (category A)", () => {
+  it("[PAYR-03] R09 top bracket is 34% above Rp1.4 billion (category A)", () => {
     // X = 1_500_000_000 > 1_400_000_000 (A row 43 bound) => row 44 34% = 3400 bp.
     // tax = 1_500_000_000 * 3400 / 10000 = 510_000_000.
     // Src: PP 58/2023 Lampiran A (lapisan terakhir).
@@ -293,7 +293,7 @@ describe("PPh 21 TER monthly reference cases", () => {
     });
   });
 
-  it("R10 THR month: THR is added to the month's TER base", () => {
+  it("[PAYR-03] R10 THR month: THR is added to the month's TER base", () => {
     // TK/0: salary 8_000_000 + THR 8_000_000 => X = 16_000_000.
     // TER A row 17 (s.d. 16_950_000; previous row ends 15_100_000) 7% = 700 bp.
     // tax = 16_000_000 * 700 / 10000 = 1_120_000. (Salary alone: 8M row 7 1.5%.)
@@ -313,7 +313,7 @@ describe("PPh 21 TER monthly reference cases", () => {
     });
   });
 
-  it("R11 bonus month: bonus is added to the month's TER base (category B)", () => {
+  it("[PAYR-03] R11 bonus month: bonus is added to the month's TER base (category B)", () => {
     // K/1: salary 12_000_000 + bonus 20_000_000 => X = 32_000_000.
     // TER B row 19 (s.d. 33_950_000; previous row ends 31_450_000) 13% = 1300 bp.
     // tax = 32_000_000 * 1300 / 10000 = 4_160_000.
@@ -333,7 +333,7 @@ describe("PPh 21 TER monthly reference cases", () => {
     });
   });
 
-  it("R12 employer benefit (JKK/JKM/BPJS Kesehatan) is taxable and can lift the bracket", () => {
+  it("[PAYR-03] R12 employer benefit (JKK/JKM/BPJS Kesehatan) is taxable and can lift the bracket", () => {
     // TK/0: salary 10_000_000 + employer benefit 454_000 => X = 10_454_000.
     // TER A row 11 (s.d. 10_700_000; previous row ends 10_350_000) 2.5% = 250 bp.
     // tax = 10_454_000 * 250 / 10000 = 261_350. (Salary alone: 2% = 200_000.)
@@ -396,13 +396,13 @@ describe("PPh 21 TER monthly reference cases", () => {
     });
   });
 
-  it("R15 pure gross-up: the tax allowance equals the tax", () => {
+  it("[PAYR-03] R15 pure gross-up: the tax allowance equals the tax", () => {
     // TK/0, one gross_up line U = 10_000_000 (G = N = 0). W = floor(T*0/X) = 0.
     // S_{k+1} = T(10_000_000 + S_k), stop when S_{k+1} <= S_k:
     //   S=0       X=10_000_000 2%    T=200_000
     //   S=200_000 X=10_200_000 2.25% T=229_500
     //   S=229_500 X=10_229_500       T=230_164  (R(230_163.75))
-    //   S=230_164 X=10_230_164       T=230_179  (R(230_179.0))
+    //   S=230_164 X=10_230_164       T=230_179  (R(230_178.69))
     //   S=230_179 X=10_230_179       T=230_179  -> stop, S = 230_179.
     // A = floor(S * U / (U + N)) = S = 230_179; B = T - W - A = 0.
     // X = 10_230_179 (A row 10, s.d. 10_350_000, 225 bp). The allowance is paid
@@ -542,7 +542,7 @@ describe("PPh 21 TER monthly reference cases", () => {
   // R37-R48: policy and boundary cases (engine v2).
   // ---------------------------------------------------------------------
 
-  it("R37 THR and bonus in the same month are both in that month's TER base", () => {
+  it("[PAYR-03] R37 THR and bonus in the same month are both in that month's TER base", () => {
     // K/2 (B): salary 9_000_000 + THR 9_000_000 + bonus 12_345_679
     // => X = 30_345_679. TER B row 18 (s.d. 31_450_000; previous row ends
     // 29_350_000) 12% = 1200 bp. tax = R(30_345_679 * 1200 / 10^4) =
@@ -573,7 +573,7 @@ describe("PPh 21 TER monthly reference cases", () => {
   //   1_405_000_000 row 39 3300 bp => 463_650_000
   //   1_405_000_001 row 40 3400 bp => R(477_700_000.34) = 477_700_000
   // Src: PP 58/2023 Lampiran B (bound "s.d." inclusive).
-  describe("R38 category B exact bounds and +1", () => {
+  describe("[PAYR-03] R38 category B exact bounds and +1", () => {
     it.each<[number, number, number]>([
       [6_200_000, 0, 0],
       [6_200_001, 25, 15_500],
@@ -602,7 +602,7 @@ describe("PPh 21 TER monthly reference cases", () => {
   //   1_419_000_000 row 40 3300 bp => 468_270_000
   //   1_419_000_001 row 41 3400 bp => R(482_460_000.34) = 482_460_000
   // Src: PP 58/2023 Lampiran C (bound "s.d." inclusive).
-  describe("R39 category C exact bounds and +1", () => {
+  describe("[PAYR-03] R39 category C exact bounds and +1", () => {
     it.each<[number, number, number]>([
       [6_600_000, 0, 0],
       [6_600_001, 25, 16_500],
