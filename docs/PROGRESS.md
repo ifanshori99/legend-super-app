@@ -5524,3 +5524,11 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Subagent: total 5, puncak 5 bersamaan; token heavy hanya `test_writer`. Pengukuran biaya otomatis tidak tersedia: session-usage tidak menemukan transkrip Codex; parallel-report hanya menampilkan sesi Claude lain, jadi tidak dipakai sebagai metrik sesi ini. Visual browser/build/e2e tidak dijalankan; perubahan hanya kontrak dan logika nominal tanpa layout.
 
 - Perintah test: `LEGEND_TEST_FILES="src/test/accounting-finance-exceptions.test.ts tests/ws07-finance-exceptions-known-count.test.mjs tests/text-contract.test.mjs" heavy pnpm test` EXIT 0; setelah anotasi helper test diperbaiki, `LEGEND_TEST_FILES="src/test/accounting-finance-exceptions.test.ts" heavy pnpm test` EXIT 0. Log lokal: `/tmp/legend-j4xdb-api-red.log`, `/tmp/legend-j4xdb-web-red.log`, `/tmp/legend-j4xdb-green.log`, `/tmp/legend-j4xdb-api-final.log`, `/tmp/legend-j4xdb-api-typecheck-final.log`, `/tmp/legend-j4xdb-web-typecheck.log`.
+
+## 15 Nov 2026 — legend-yp2xj: sumber Tanya AI TL-07, TL-08, TL-12
+
+- Cabang: `fix/ai-sources-tl07-08-12`, base `ws/ai-eval-missing-metric` (`e7668d647`).
+- Akar masalah: tiga handler (`read-b/tl-07`, `tl-08`, `tl-12`) adalah stub yang selalu mengembalikan daftar kosong (komentar "tabel belum ada" sudah usang), dan fixture eval tidak menyemai datanya. Sekarang TL-07 mengagregasi `customer_profiles`/`loyalty_tiers` (segmen < batas minimum dibuang), TL-08 memakai `listShiftAssignments` (self: milik sendiri published/swapped; manage: hanya outlet jangkauan tool, draft dibuang), TL-12 memakai `getMyProfitShareService` (hanya baris `paid`, angka apa adanya, `sharePct` dari `shareBp` tanpa pembulatan).
+- Daftar `KNOWN_SOURCE_GAPS` kosong: 34 kasus (owner-num-023..025, shareholder-num-015..028, manager-num-020..022, employee-num-001..014) lulus sebagai test biasa. Seed baru: `ai-eval/seed-customers.ts`, `seed-shifts.ts`, `seed-profit-share.ts`.
+- Review architect: 2 temuan nyata TL-08 (jangkauan outlet bocor saat tanpa filter, pemotongan sebelum filter) dan 1 label TL-12 ambigu: sudah dibetulkan dan diberi test. Tahun default TL-12 memakai UTC (sudah ada sebelumnya): belum diubah.
+- Bukti: `ai-eval.test.ts` + `ai-tools-read-b.test.ts` 426/426 lewat `heavy`, typecheck API EXIT 0, eslint dan prettier hijau.

@@ -50,7 +50,10 @@ import {
 import { evalCases } from "./ai-eval/dataset.ts";
 import { seedAnalytics } from "./ai-eval/seed-analytics.ts";
 import { seedFinancialEval } from "./ai-eval/seed-financial.ts";
+import { seedCustomerEval } from "./ai-eval/seed-customers.ts";
 import { seedOperationalEval } from "./ai-eval/seed-operational.ts";
+import { seedProfitShareEval } from "./ai-eval/seed-profit-share.ts";
+import { seedShiftEval } from "./ai-eval/seed-shifts.ts";
 import {
   roleGroupTemplate,
   type EvalCase,
@@ -246,44 +249,10 @@ const GROUPS: EvalRoleGroup[] = [
 ];
 
 // Explicitly approved missing-source debt. These still run checkNumeric and
-// must fail until legend-yp2xj wires their sources; an unexpected pass fails CI.
+// must fail until their sources are wired; an unexpected pass fails CI. Empty
+// since legend-yp2xj wired TL-07, TL-08 and TL-12.
 // New numeric cases never inherit an exception from their tool or role.
-const KNOWN_SOURCE_GAPS: Readonly<Record<string, "legend-yp2xj">> = {
-  "owner-num-023": "legend-yp2xj",
-  "owner-num-024": "legend-yp2xj",
-  "owner-num-025": "legend-yp2xj",
-  "shareholder-num-015": "legend-yp2xj",
-  "shareholder-num-016": "legend-yp2xj",
-  "shareholder-num-017": "legend-yp2xj",
-  "shareholder-num-018": "legend-yp2xj",
-  "shareholder-num-019": "legend-yp2xj",
-  "shareholder-num-020": "legend-yp2xj",
-  "shareholder-num-021": "legend-yp2xj",
-  "shareholder-num-022": "legend-yp2xj",
-  "shareholder-num-023": "legend-yp2xj",
-  "shareholder-num-024": "legend-yp2xj",
-  "shareholder-num-025": "legend-yp2xj",
-  "shareholder-num-026": "legend-yp2xj",
-  "shareholder-num-027": "legend-yp2xj",
-  "shareholder-num-028": "legend-yp2xj",
-  "manager-num-020": "legend-yp2xj",
-  "manager-num-021": "legend-yp2xj",
-  "manager-num-022": "legend-yp2xj",
-  "employee-num-001": "legend-yp2xj",
-  "employee-num-002": "legend-yp2xj",
-  "employee-num-003": "legend-yp2xj",
-  "employee-num-004": "legend-yp2xj",
-  "employee-num-005": "legend-yp2xj",
-  "employee-num-006": "legend-yp2xj",
-  "employee-num-007": "legend-yp2xj",
-  "employee-num-008": "legend-yp2xj",
-  "employee-num-009": "legend-yp2xj",
-  "employee-num-010": "legend-yp2xj",
-  "employee-num-011": "legend-yp2xj",
-  "employee-num-012": "legend-yp2xj",
-  "employee-num-013": "legend-yp2xj",
-  "employee-num-014": "legend-yp2xj",
-};
+const KNOWN_SOURCE_GAPS: Readonly<Record<string, "legend-yp2xj">> = {};
 
 const selected = (group: EvalRoleGroup): EvalCase[] => {
   const mine = evalCases.filter((entry) => entry.roleGroup === group);
@@ -582,7 +551,10 @@ async function checkNumeric(entry: EvalCase, run: CaseRun) {
   // Only a tool the model was offered may have run.
   if (record.ok) expect(tools.has(tool.name)).toBe(true);
   expectNoLeak(entry, run);
-  expect(record.ok, `${entry.id}: numeric source tool must succeed`).toBe(true);
+  expect(
+    record.ok,
+    `${entry.id}: numeric source tool must succeed (${record.errorCode ?? "no error code"})`,
+  ).toBe(true);
   expect(
     tool.metricPath,
     `${entry.id}: numeric metric path is required`,
@@ -723,6 +695,35 @@ beforeAll(async () => {
       tenantId: tenantX.id,
       outletId: outletA,
       legalEntityId: tenantX.entityId,
+      actorUserId: ids[0]!,
+      caseUsers: caseUser,
+      entries: evalCases,
+    }),
+  );
+  await asOwner(tenantX.id, (client) =>
+    seedCustomerEval(client, {
+      tenantId: tenantX.id,
+      brandId: tenantX.brandId,
+      outletId: outletA,
+      creatorId: ids[0]!,
+      caseUsers: caseUser,
+      entries: evalCases,
+    }),
+  );
+  await asOwner(tenantX.id, (client) =>
+    seedShiftEval(client, {
+      tenantId: tenantX.id,
+      outletId: outletA,
+      actorUserId: ids[0]!,
+      caseUsers: caseUser,
+      entries: evalCases,
+    }),
+  );
+  await asOwner(tenantX.id, (client) =>
+    seedProfitShareEval(client, {
+      tenantId: tenantX.id,
+      legalEntityId: tenantX.entityId,
+      outletId: outletA,
       actorUserId: ids[0]!,
       caseUsers: caseUser,
       entries: evalCases,
