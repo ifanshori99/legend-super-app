@@ -347,6 +347,11 @@ test("legend-nvc7 a waiting entry shows Menunggu koneksi without actions, and th
     queued(REFUSED_KEY, QUEUED_REASON, REFUSAL),
     queued(WAITING_KEY, "Sinyal hilang di dapur."),
   ]);
+  // Offline for the page: online, the flush would send the waiting entry
+  // straight away and it would leave the queue.
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "onLine", { get: () => false });
+  });
   await openEmployeeApp(page, "/karyawan");
 
   await expect(
