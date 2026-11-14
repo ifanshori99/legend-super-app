@@ -40,7 +40,11 @@ import {
 } from "@starter/shared/adapters";
 import type { EventEnvelope } from "@starter/shared/events";
 import { INVITATION_LINK_TTL_MINUTES } from "@starter/shared/identity";
-import { facilityIncidentRaisedEvent } from "@starter/shared/facility";
+import {
+  EMERGENCY_PERMISSION_RESPOND,
+  facilityIncidentRaisedEvent,
+  panicAlertRaisedEvent,
+} from "@starter/shared/facility";
 import {
   approvalRequestedEvent,
   approvalResolvedEvent,
@@ -74,6 +78,7 @@ import {
 } from "../db/schema/notification.ts";
 import { customerProfiles } from "../db/schema/crm-member.ts";
 import { facilityIncidents } from "../db/schema/facility.ts";
+import { panicAlerts } from "../db/schema/panic-alert.ts";
 import { employees } from "../db/schema/hris.ts";
 import { roleAssignments, roles } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
@@ -82,6 +87,10 @@ import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
 import { isReservedAddress } from "../services/identity-email-login.service.ts";
 import { notifyBrevoAuthFailed } from "../services/edge-sync-conflict-alert.ts";
+import {
+  dutyWindowEnd,
+  employeeOfStaff,
+} from "../services/panic-receiver-duty.ts";
 import { issueInvitationLink } from "../services/identity-invitation.service.ts";
 import type { NotificationRecipientResolver } from "../services/notification-consumer.ts";
 import type { NotificationRecipient } from "../services/notification-core.ts";
@@ -644,6 +653,89 @@ async function facilityIncidentRaisedRule(input: RuleInput): Promise<Rule> {
   return { userIds, content };
 }
 
+/** FAC-08 (legend-kmjax): web push fallback outside the LAN. The audience is
+ * the staff ON DUTY at the alert's outlet (same duty rule as the receiver
+ * session, D-04) who hold `facility.emergency.respond` in a scope that covers
+ * that outlet. Nobody on duty means nobody is paged: there is no owner
+ * fallback. The `emergency` category bypasses quiet hours. The link carries
+ * the alert reference (alertId, outletId, unitId, kind, receivedAt) so a push
+ * provider can open the emergency screen on it; the visible text names only
+ * the facility and unit labels. */
+/** Same 24 h window as the receiver's CONNECT_LOOKBACK_MS (panic-relay.service,
+ * not exported): an alert older than this is never paged. */
+const PANIC_PAGE_MAX_AGE_MS = 24 * 60 * 60_000;
+
+async function panicAlertRaisedRule(input: RuleInput): Promise<Rule> {
+  const payload = panicAlertRaisedEvent.payloadSchema.parse(
+    input.event.payload,
+  );
+  if (!input.event.outletId)
+    throw new Error("Panic alert notification requires an outlet");
+  if (payload.outletId !== input.event.outletId)
+    throw new Error("Panic alert outlet does not match the event");
+  const [row] = await input.tx
+    .select({
+      outletId: panicAlerts.outletId,
+      acknowledgedAt: panicAlerts.acknowledgedAt,
+      resolvedAt: panicAlerts.resolvedAt,
+      receivedAt: panicAlerts.receivedAt,
+      unitCodeSnapshot: panicAlerts.unitCodeSnapshot,
+      facilityNameSnapshot: panicAlerts.facilityNameSnapshot,
+    })
+    .from(panicAlerts)
+    .where(
+      and(
+        eq(panicAlerts.tenantId, input.tenantId),
+        eq(panicAlerts.id, payload.alertId),
+      ),
+    );
+  if (!row) throw new Error("Panic alert not found for notification");
+  if (row.outletId !== input.event.outletId)
+    throw new Error("Panic alert outlet does not match the stored alert");
+  const query = new URLSearchParams({
+    alertId: payload.alertId,
+    outletId: payload.outletId,
+    kind: payload.kind,
+    receivedAt: payload.receivedAt,
+  });
+  if (payload.unitId) query.set("unitId", payload.unitId);
+  const place = [row.facilityNameSnapshot, row.unitCodeSnapshot]
+    .filter((part) => part.length > 0)
+    .join(" ");
+  const isTest = payload.kind === "test";
+  const content: Content = {
+    category: "emergency",
+    title: isTest ? "UJI tombol darurat" : "Tombol darurat ditekan",
+    body: `${isTest ? "UJI: " : ""}Tombol darurat ditekan${place ? ` di ${place}` : ""}. Segera tanggapi.`,
+    link: `/fasilitas/darurat?${query.toString()}`,
+  };
+  // A delayed event for an alert someone already answered pages nobody.
+  if (row.acknowledgedAt !== null || row.resolvedAt !== null)
+    return { userIds: [], content };
+  const now = new Date();
+  // A long link outage can deliver the event hours late: never page "Segera
+  // tanggapi" for a stale alert.
+  if (now.getTime() - row.receivedAt.getTime() > PANIC_PAGE_MAX_AGE_MS)
+    return { userIds: [], content };
+  const holders = await permissionHolders(input, EMERGENCY_PERMISSION_RESPOND);
+  const userIds: string[] = [];
+  for (const userId of holders) {
+    const employee = await employeeOfStaff(input.tx, {
+      tenantId: input.tenantId,
+      userId,
+    });
+    if (!employee?.active) continue;
+    const end = await dutyWindowEnd(input.tx, {
+      tenantId: input.tenantId,
+      outletId: payload.outletId,
+      employeeId: employee.id,
+      now,
+    });
+    if (end !== null) userIds.push(userId);
+  }
+  return { userIds, content };
+}
+
 // ---- AI insights (WS-12 wave 3: AI-09 anomaly, AI-10 daily summary) --------
 
 const ANOMALY_LABELS: Record<string, string> = {
@@ -1030,6 +1122,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return shiftCancelledRule(input);
     case "facility_incident.raised":
       return facilityIncidentRaisedRule(input);
+    case "panic_alert.raised":
+      return panicAlertRaisedRule(input);
     case "ai_insight.anomaly_detected":
       return aiAnomalyRule(input);
     case "ai_insight.daily_summary_ready":

@@ -125,6 +125,7 @@ const LOAD_WAIT_MS = 30_000;
 // One isolated tenant for the whole file (created in beforeAll, removed in
 // afterAll): no shared fixture tenant, so no other file sees or touches it.
 let tenant: IsolatedTenant;
+const extraTenantIds: string[] = [];
 const edgeApp = createApp({ edgeMode: true });
 const cloudApp = createApp({ edgeMode: false });
 const cloudState = getEdgeRuntimeState();
@@ -759,11 +760,13 @@ afterAll(async () => {
   try {
     await client.query("BEGIN");
     await client.query("SET LOCAL session_replication_role = replica");
-    for (const { table_name } of rows)
-      await client.query(`DELETE FROM "${table_name}" WHERE tenant_id = $1`, [
-        tenant.tenantId,
-      ]);
-    await client.query("DELETE FROM tenants WHERE id = $1", [tenant.tenantId]);
+    for (const tenantId of [tenant.tenantId, ...extraTenantIds]) {
+      for (const { table_name } of rows)
+        await client.query(`DELETE FROM "${table_name}" WHERE tenant_id = $1`, [
+          tenantId,
+        ]);
+      await client.query("DELETE FROM tenants WHERE id = $1", [tenantId]);
+    }
     await client.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [
       userIds,
     ]);
@@ -811,6 +814,8 @@ describe("EM-01 press with the cloud link down reaches the on-duty receiver", ()
       alertId: alert.id,
       outletId: outlet,
       unitId,
+      unitCode: "P1",
+      areaName: "Area Panic",
       receivedAt: expect.any(String),
     });
     expect(alert).toMatchObject({
@@ -1017,6 +1022,7 @@ describe("EM-07 same device event twice makes one alert and re-publishes while o
     async () => {
       const outlet = await world("EM-07");
       const button = await registerPanicButton(outlet);
+      await seedUnit(outlet, button.deviceId);
       const barrier = await registerPanicButton(outlet, "Tombol Penanda");
       const rcv = await receiverFor(outlet, "EM07 Receiver");
       const sock = await connect(rcv.cookie);
@@ -1047,6 +1053,24 @@ describe("EM-07 same device event twice makes one alert and re-publishes while o
           ).toBeGreaterThanOrEqual(2),
         { timeout: PANIC_TEST_WAIT_MS },
       );
+
+      expect(sock.alertFrames(first.alert.id)[1].frame).toMatchObject({
+        unitCode: "P1",
+        areaName: "Area Panic",
+      });
+
+      expect([200, 201]).toContain(
+        (await press(button.token, pressBody(newEventId()))).status,
+      );
+      await vi.waitFor(() =>
+        expect(sock.alertFrames(first.alert.id).length).toBeGreaterThanOrEqual(
+          3,
+        ),
+      );
+      expect(sock.alertFrames(first.alert.id)[2].frame).toMatchObject({
+        unitCode: "P1",
+        areaName: "Area Panic",
+      });
 
       expect((await ackAs(rcv.cookie, first.alert.id)).status).toBe(200);
       const shownBefore = sock.alertFrames(first.alert.id).length;
@@ -1279,6 +1303,45 @@ describe("EM-09 resend until receipt, late sockets, heartbeat", () => {
 // ===========================================================================
 
 describe("EM-10 two acknowledgements: first wins, second gets 409", () => {
+  it("legend-5egl3 sends acknowledgement to another connected recipient", async () => {
+    const outlet = await world("EM-10 broadcast");
+    const button = await registerPanicButton(outlet);
+    const first = await receiverFor(outlet, "EM10 Broadcast First");
+    const second = await receiverFor(outlet, "EM10 Broadcast Second");
+    const sock = await connect(second.cookie);
+    const { alert } = await raise(button);
+    await vi.waitFor(() => expect(sock.alertFrames(alert.id)).toHaveLength(1));
+    expect((await ackAs(first.cookie, alert.id)).status).toBe(200);
+    await vi.waitFor(
+      () => {
+        expect(sock.frames.map(({ frame }) => frame)).toContainEqual({
+          type: "acknowledged",
+          alertId: alert.id,
+          acknowledgedAt: expect.any(String),
+          byName: first.staff.name,
+        });
+      },
+      { timeout: PANIC_TEST_WAIT_MS },
+    );
+  });
+
+  it("legend-td6pj returns the responder in structured 409 data without their user id", async () => {
+    const outlet = await world("EM-10 conflict details");
+    const button = await registerPanicButton(outlet);
+    const first = await receiverFor(outlet, "EM10 Conflict First");
+    const second = await receiverFor(outlet, "EM10 Conflict Second");
+    const { alert } = await raise(button);
+    expect((await ackAs(first.cookie, alert.id)).status).toBe(200);
+    const late = await ackAs(second.cookie, alert.id);
+    expect(late.status).toBe(409);
+    expect(late.body.error).toMatchObject({
+      code: "PANIC_ALREADY_ACKNOWLEDGED",
+      acknowledgedBy: { displayName: first.staff.name },
+      acknowledgedAt: expect.any(String),
+    });
+    expect(late.body.error.message).not.toContain(first.staff.userId);
+  });
+
   it("EM-10 the first receiver wins, a second gets 409 naming who acknowledged, the winner may repeat; response time stored", async () => {
     const outlet = await world("EM-10");
     const button = await registerPanicButton(outlet);
@@ -1359,6 +1422,87 @@ describe("EM-10 two acknowledgements: first wins, second gets 409", () => {
 
     actAsEdge(outlet);
     expect((await ackAs(rcv.cookie, alert.id)).status).toBe(409);
+  });
+});
+
+describe("legend-2sr38 receiver can restore open alerts", () => {
+  it("returns only unacknowledged alerts in the receiver outlet after reload", async () => {
+    const outlet = await world("restore A");
+    const receiver = await receiverFor(outlet, "Restore A Receiver");
+    const button = await registerPanicButton(outlet);
+    await seedUnit(outlet, button.deviceId);
+    const { alert } = await raise(button);
+    const closedButton = await registerPanicButton(outlet);
+    const closed = await raise(closedButton);
+    expect((await ackAs(receiver.cookie, closed.alert.id)).status).toBe(200);
+    const resolvedButton = await registerPanicButton(outlet);
+    const resolved = await raise(resolvedButton);
+    await asTenantOwner((client) =>
+      client.query(
+        "UPDATE panic_alerts SET resolved_at = now(), resolved_by = $3 WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, resolved.alert.id, receiver.staff.userId],
+      ),
+    );
+
+    const other = await world("restore B");
+    const otherButton = await registerPanicButton(other);
+    const otherAlert = await raise(otherButton);
+    actAsEdge(outlet);
+
+    const foreignTenant = await createIsolatedTenant(
+      `panic-foreign-${randomBytes(3).toString("hex")}`,
+    );
+    extraTenantIds.push(foreignTenant.tenantId);
+    const foreignOutlet = randomUUID();
+    const foreignAlert = randomUUID();
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       VALUES ($1, $2, $3, $4, 'FOREIGN', 'Foreign', 'Jl. Darurat', 'Asia/Jakarta', '{"mon":null,"tue":null,"wed":null,"thu":null,"fri":null,"sat":null,"sun":null}', 'active')`,
+      [
+        foreignOutlet,
+        foreignTenant.tenantId,
+        foreignTenant.brandId,
+        foreignTenant.legalEntityId,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO panic_alerts (tenant_id, id, outlet_id, device_id, first_device_event_id, unit_code_snapshot, facility_name_snapshot, device_label_snapshot)
+       VALUES ($1, $2, $3, $4, 'foreign-event', 'F1', 'Foreign', 'Foreign button')`,
+      [foreignTenant.tenantId, foreignAlert, foreignOutlet, randomUUID()],
+    );
+
+    const res = await request(edgeApp)
+      .get("/api/emergency/open-alerts")
+      .set("Cookie", receiver.cookie);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.alerts).toEqual([
+      expect.objectContaining({
+        type: "panic",
+        alertId: alert.id,
+        unitCode: "P1",
+        areaName: "Area Panic",
+      }),
+    ]);
+    expect(JSON.stringify(res.body)).not.toContain(closed.alert.id);
+    expect(JSON.stringify(res.body)).not.toContain(resolved.alert.id);
+    expect(JSON.stringify(res.body)).not.toContain(otherAlert.alert.id);
+    expect(JSON.stringify(res.body)).not.toContain(foreignAlert);
+    expect(
+      (await request(edgeApp).get("/api/emergency/open-alerts")).status,
+    ).toBe(401);
+    await asTenantOwner((client) =>
+      client.query(
+        "UPDATE panic_receiver_sessions SET revoked_at = now(), revoke_reason = 'logout' WHERE tenant_id = $1 AND user_id = $2",
+        [tenant.tenantId, receiver.staff.userId],
+      ),
+    );
+    expect(
+      (
+        await request(edgeApp)
+          .get("/api/emergency/open-alerts")
+          .set("Cookie", receiver.cookie)
+      ).status,
+    ).toBe(401);
   });
 });
 

@@ -32,6 +32,7 @@ import { Route as CustomerWifiRouteImport } from './routes/_customer/wifi'
 import { Route as KelolaAuditRouteImport } from './routes/_kelola/audit'
 import { Route as KitchenExpoRouteImport } from './routes/_kitchen/expo'
 import { Route as KitchenPickupRouteImport } from './routes/_kitchen/pickup'
+import { Route as OpsFasilitasRouteImport } from './routes/_ops/fasilitas'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
 import { Route as PublicMenuRouteImport } from './routes/_public/menu'
 import { Route as PublicReservasiRouteImport } from './routes/_public/reservasi'
@@ -497,6 +498,11 @@ const KitchenPickupRoute = KitchenPickupRouteImport.update({
   path: '/pickup',
   getParentRoute: () => KitchenRoute,
 } as any)
+const OpsFasilitasRoute = OpsFasilitasRouteImport.update({
+  id: '/fasilitas',
+  path: '/fasilitas',
+  getParentRoute: () => OpsRoute,
+} as any)
 const PublicIndexRoute = PublicIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -690,24 +696,24 @@ const KitchenKdsTanyaAiRoute = KitchenKdsTanyaAiRouteImport.update({
   getParentRoute: () => KitchenRoute,
 } as any)
 const OpsFasilitasIndexRoute = OpsFasilitasIndexRouteImport.update({
-  id: '/fasilitas/',
-  path: '/fasilitas/',
-  getParentRoute: () => OpsRoute,
+  id: '/',
+  path: '/',
+  getParentRoute: () => OpsFasilitasRoute,
 } as any)
 const OpsFasilitasDaruratRoute = OpsFasilitasDaruratRouteImport.update({
-  id: '/fasilitas/darurat',
-  path: '/fasilitas/darurat',
-  getParentRoute: () => OpsRoute,
+  id: '/darurat',
+  path: '/darurat',
+  getParentRoute: () => OpsFasilitasRoute,
 } as any)
 const OpsFasilitasInsidenRoute = OpsFasilitasInsidenRouteImport.update({
-  id: '/fasilitas/insiden',
-  path: '/fasilitas/insiden',
-  getParentRoute: () => OpsRoute,
+  id: '/insiden',
+  path: '/insiden',
+  getParentRoute: () => OpsFasilitasRoute,
 } as any)
 const OpsFasilitasKebersihanRoute = OpsFasilitasKebersihanRouteImport.update({
-  id: '/fasilitas/kebersihan',
-  path: '/fasilitas/kebersihan',
-  getParentRoute: () => OpsRoute,
+  id: '/kebersihan',
+  path: '/kebersihan',
+  getParentRoute: () => OpsFasilitasRoute,
 } as any)
 const OpsOperasionalKoneksiRoute = OpsOperasionalKoneksiRouteImport.update({
   id: '/operasional/koneksi',
@@ -2559,6 +2565,7 @@ export interface FileRoutesByFullPath {
   '/audit': typeof KelolaAuditRoute
   '/expo': typeof KitchenExpoRoute
   '/pickup': typeof KitchenPickupRoute
+  '/fasilitas': typeof OpsFasilitasRouteWithChildren
   '/menu': typeof PublicMenuRoute
   '/reservasi': typeof PublicReservasiRoute
   '/reservation': typeof PublicReservationRoute
@@ -3314,6 +3321,7 @@ export interface FileRoutesById {
   '/_kelola/audit': typeof KelolaAuditRoute
   '/_kitchen/expo': typeof KitchenExpoRoute
   '/_kitchen/pickup': typeof KitchenPickupRoute
+  '/_ops/fasilitas': typeof OpsFasilitasRouteWithChildren
   '/_public/menu': typeof PublicMenuRoute
   '/_public/reservasi': typeof PublicReservasiRoute
   '/_public/reservation': typeof PublicReservationRoute
@@ -3691,6 +3699,7 @@ export interface FileRouteTypes {
     | '/audit'
     | '/expo'
     | '/pickup'
+    | '/fasilitas'
     | '/menu'
     | '/reservasi'
     | '/reservation'
@@ -4445,6 +4454,7 @@ export interface FileRouteTypes {
     | '/_kelola/audit'
     | '/_kitchen/expo'
     | '/_kitchen/pickup'
+    | '/_ops/fasilitas'
     | '/_public/menu'
     | '/_public/reservasi'
     | '/_public/reservation'
@@ -4989,6 +4999,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KitchenPickupRouteImport
       parentRoute: typeof KitchenRoute
     }
+    '/_ops/fasilitas': {
+      id: '/_ops/fasilitas'
+      path: '/fasilitas'
+      fullPath: '/fasilitas'
+      preLoaderRoute: typeof OpsFasilitasRouteImport
+      parentRoute: typeof OpsRoute
+    }
     '/_public/': {
       id: '/_public/'
       path: '/'
@@ -5257,31 +5274,31 @@ declare module '@tanstack/react-router' {
     }
     '/_ops/fasilitas/': {
       id: '/_ops/fasilitas/'
-      path: '/fasilitas'
+      path: '/'
       fullPath: '/fasilitas/'
       preLoaderRoute: typeof OpsFasilitasIndexRouteImport
-      parentRoute: typeof OpsRoute
+      parentRoute: typeof OpsFasilitasRoute
     }
     '/_ops/fasilitas/darurat': {
       id: '/_ops/fasilitas/darurat'
-      path: '/fasilitas/darurat'
+      path: '/darurat'
       fullPath: '/fasilitas/darurat'
       preLoaderRoute: typeof OpsFasilitasDaruratRouteImport
-      parentRoute: typeof OpsRoute
+      parentRoute: typeof OpsFasilitasRoute
     }
     '/_ops/fasilitas/insiden': {
       id: '/_ops/fasilitas/insiden'
-      path: '/fasilitas/insiden'
+      path: '/insiden'
       fullPath: '/fasilitas/insiden'
       preLoaderRoute: typeof OpsFasilitasInsidenRouteImport
-      parentRoute: typeof OpsRoute
+      parentRoute: typeof OpsFasilitasRoute
     }
     '/_ops/fasilitas/kebersihan': {
       id: '/_ops/fasilitas/kebersihan'
-      path: '/fasilitas/kebersihan'
+      path: '/kebersihan'
       fullPath: '/fasilitas/kebersihan'
       preLoaderRoute: typeof OpsFasilitasKebersihanRouteImport
-      parentRoute: typeof OpsRoute
+      parentRoute: typeof OpsFasilitasRoute
     }
     '/_ops/operasional/koneksi': {
       id: '/_ops/operasional/koneksi'
@@ -8244,10 +8261,26 @@ const KitchenRouteChildren: KitchenRouteChildren = {
 const KitchenRouteWithChildren =
   KitchenRoute._addFileChildren(KitchenRouteChildren)
 
-interface OpsRouteChildren {
+interface OpsFasilitasRouteChildren {
   OpsFasilitasDaruratRoute: typeof OpsFasilitasDaruratRoute
   OpsFasilitasInsidenRoute: typeof OpsFasilitasInsidenRoute
   OpsFasilitasKebersihanRoute: typeof OpsFasilitasKebersihanRoute
+  OpsFasilitasIndexRoute: typeof OpsFasilitasIndexRoute
+}
+
+const OpsFasilitasRouteChildren: OpsFasilitasRouteChildren = {
+  OpsFasilitasDaruratRoute: OpsFasilitasDaruratRoute,
+  OpsFasilitasInsidenRoute: OpsFasilitasInsidenRoute,
+  OpsFasilitasKebersihanRoute: OpsFasilitasKebersihanRoute,
+  OpsFasilitasIndexRoute: OpsFasilitasIndexRoute,
+}
+
+const OpsFasilitasRouteWithChildren = OpsFasilitasRoute._addFileChildren(
+  OpsFasilitasRouteChildren,
+)
+
+interface OpsRouteChildren {
+  OpsFasilitasRoute: typeof OpsFasilitasRouteWithChildren
   OpsOperasionalKoneksiRoute: typeof OpsOperasionalKoneksiRoute
   OpsOperasionalLabelPrepRoute: typeof OpsOperasionalLabelPrepRoute
   OpsOperasionalPrepRoute: typeof OpsOperasionalPrepRoute
@@ -8259,7 +8292,6 @@ interface OpsRouteChildren {
   OpsPosKodeRoute: typeof OpsPosKodeRoute
   OpsPosReservasiRoute: typeof OpsPosReservasiRoute
   OpsPosTutupHariRoute: typeof OpsPosTutupHariRoute
-  OpsFasilitasIndexRoute: typeof OpsFasilitasIndexRoute
   OpsPosIndexRoute: typeof OpsPosIndexRoute
   OpsOperasionalChecklistRunIdRoute: typeof OpsOperasionalChecklistRunIdRoute
   OpsOperasionalPeralatanEquipmentIdRoute: typeof OpsOperasionalPeralatanEquipmentIdRoute
@@ -8283,9 +8315,7 @@ interface OpsRouteChildren {
 }
 
 const OpsRouteChildren: OpsRouteChildren = {
-  OpsFasilitasDaruratRoute: OpsFasilitasDaruratRoute,
-  OpsFasilitasInsidenRoute: OpsFasilitasInsidenRoute,
-  OpsFasilitasKebersihanRoute: OpsFasilitasKebersihanRoute,
+  OpsFasilitasRoute: OpsFasilitasRouteWithChildren,
   OpsOperasionalKoneksiRoute: OpsOperasionalKoneksiRoute,
   OpsOperasionalLabelPrepRoute: OpsOperasionalLabelPrepRoute,
   OpsOperasionalPrepRoute: OpsOperasionalPrepRoute,
@@ -8297,7 +8327,6 @@ const OpsRouteChildren: OpsRouteChildren = {
   OpsPosKodeRoute: OpsPosKodeRoute,
   OpsPosReservasiRoute: OpsPosReservasiRoute,
   OpsPosTutupHariRoute: OpsPosTutupHariRoute,
-  OpsFasilitasIndexRoute: OpsFasilitasIndexRoute,
   OpsPosIndexRoute: OpsPosIndexRoute,
   OpsOperasionalChecklistRunIdRoute: OpsOperasionalChecklistRunIdRoute,
   OpsOperasionalPeralatanEquipmentIdRoute:
