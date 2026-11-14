@@ -162,6 +162,9 @@ function route(relative, permissions) {
     "@/features/facility-staff/components/panic-alert-layer": {
       PanicAlertLayer: "panic-layer",
     },
+    "@/features/facility-staff/components/panic-push-control": {
+      PanicPushControl: "panic-push-control",
+    },
     "@/features/facility-staff/components/emergency-screen": {
       EmergencyScreen: "emergency-screen",
     },

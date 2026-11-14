@@ -883,6 +883,14 @@ export function PanicAlertScreen(props: PanicAlertScreenProps) {
   );
 }
 
+// PIN recovery returns to the same facility screen (architect 791 item 7).
+function pinHrefFor(facilityId: string | undefined): string {
+  const base = "/pos/ganti-pengguna?emergency=true";
+  return facilityId
+    ? `${base}&facilityId=${encodeURIComponent(facilityId)}`
+    : base;
+}
+
 export function PanicAlertLayer({ facilityId }: { facilityId?: string }) {
   const { timeZone } = useOutletClock();
   const { facility, config } = useStaffFacility(facilityId);
@@ -907,7 +915,7 @@ export function PanicAlertLayer({ facilityId }: { facilityId?: string }) {
       resolveLocation={resolveLocation}
       onAck={(alertId) => void ack(alertId)}
       onDismiss={dismiss}
-      pinHref="/pos/ganti-pengguna?emergency=true"
+      pinHref={pinHrefFor(facilityId ?? facility?.id)}
       formatTime={(instant) => clock(instant, timeZone)}
     />
   );

@@ -188,6 +188,12 @@ export const deviceRegistryMessages = {
     copy: "Salin token",
     copied: "Token disalin",
     copyFailed: "Gagal menyalin. Pilih token lalu salin manual.",
+    useHere: "Pakai di perangkat ini",
+    usedHere: "Dipakai di perangkat ini",
+    usedHereHint:
+      "Token tersimpan di browser ini. Alarm panik dan notifikasi outlet memakai perangkat ini.",
+    useHereFailed:
+      "Token tidak bisa disimpan di browser ini. Salin token lalu simpan manual.",
     close: "Selesai, token sudah disimpan",
     reissueAction: "Terbitkan ulang token",
     reissueTitle: "Terbitkan ulang token?",

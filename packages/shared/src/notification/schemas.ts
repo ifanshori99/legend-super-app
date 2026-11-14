@@ -509,6 +509,12 @@ export const pushSubscriptionInputSchema = z.strictObject({
   endpoint: publicHttpsUrlSchema,
   keys: z.strictObject({ p256dh: base64url(200), auth: base64url(100) }),
   deviceLabel: z.string().trim().max(100).nullable(),
+  /**
+   * Outlet whose panic alarms this browser should receive. The server accepts
+   * it only when the caller holds the emergency respond permission there; a
+   * registered device (X-Device-Token) fixes the outlet itself.
+   */
+  outletId: outletIdSchema.optional(),
 });
 export const pushSubscriptionSchema = z.strictObject({
   id: pushSubscriptionIdSchema,

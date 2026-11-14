@@ -9,6 +9,8 @@ import { SwitchUserScreen } from "@/features/ws01-device-pin/components/switch-u
 export const Route = createFileRoute("/_ops/pos/ganti-pengguna")({
   validateSearch: z.object({
     emergency: z.boolean().optional().catch(undefined),
+    // Facility to reopen after the emergency PIN (only a UUID, never a URL).
+    facilityId: z.uuid().optional().catch(undefined),
   }),
   head: () => {
     const t = createTranslator();
@@ -28,6 +30,12 @@ export const Route = createFileRoute("/_ops/pos/ganti-pengguna")({
 });
 
 function SwitchUserRoute() {
-  const { emergency } = Route.useSearch();
-  return <SwitchUserScreen shell="pos" emergency={emergency === true} />;
+  const { emergency, facilityId } = Route.useSearch();
+  return (
+    <SwitchUserScreen
+      shell="pos"
+      emergency={emergency === true}
+      returnFacilityId={facilityId}
+    />
+  );
 }

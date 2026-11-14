@@ -221,8 +221,8 @@ async function subscribePush(staff: Staff) {
     [sessionId, randomUUID(), staff.userId],
   );
   await owner.query(
-    `INSERT INTO push_subscriptions (tenant_id, id, user_id, endpoint_hash, subscription_ciphertext, key_version, outlet_id, session_id)
-     VALUES ($1, $2, $3, $4, 'cipher', 'v1', $5, $6)`,
+    `INSERT INTO push_subscriptions (tenant_id, id, user_id, endpoint_hash, subscription_ciphertext, key_version, outlet_id, session_id, registered_at)
+     VALUES ($1, $2, $3, $4, 'cipher', 'v1', $5, $6, now())`,
     [
       staff.tenant.tenantId,
       randomUUID(),
@@ -579,7 +579,7 @@ describe("legend-po3fe production factory panic delivery", () => {
       [sessionId, randomUUID(), staff.userId],
     );
     await owner.query(
-      `INSERT INTO push_subscriptions (tenant_id,id,user_id,endpoint_hash,subscription_ciphertext,key_version,outlet_id,session_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      `INSERT INTO push_subscriptions (tenant_id,id,user_id,endpoint_hash,subscription_ciphertext,key_version,outlet_id,session_id,registered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now())`,
       [
         tenantA.tenantId,
         randomUUID(),

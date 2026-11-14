@@ -65,7 +65,23 @@ test("setup preserves an existing external database and credentials", () => {
     const content = `BETTER_AUTH_SECRET=${"x".repeat(48)}\nBETTER_AUTH_URL=http://localhost:4000\nWEB_URL=http://localhost:3000\nVITE_API_URL=http://localhost:4000\nDATABASE_URL=postgresql://someone:private@db.example/existing\n`;
     writeFileSync(resolve(cwd, ".env.local"), content);
     prepare(cwd);
-    assert.equal(readFileSync(resolve(cwd, ".env.local"), "utf8"), content);
+    // Setup now also adds a throwaway web push (VAPID) pair (intended, legend-ofq4f):
+    // every existing line stays byte-for-byte, the new push lines are appended and valid.
+    const after = readFileSync(resolve(cwd, ".env.local"), "utf8");
+    assert.ok(after.startsWith(content), "existing values are untouched");
+    const added = after.slice(content.length);
+    const value = (name) =>
+      added.match(new RegExp(`^${name}="?([^"\\n]*)"?$`, "m"))?.[1];
+    assert.equal(value("NOTIFICATION_PUSH_PROVIDER"), "web_push");
+    const publicKey = Buffer.from(value("VAPID_PUBLIC_KEY") ?? "", "base64url");
+    assert.equal(publicKey.length, 65);
+    assert.equal(publicKey[0], 0x04);
+    assert.equal(
+      Buffer.from(value("VAPID_PRIVATE_KEY") ?? "", "base64url").length,
+      32,
+    );
+    assert.match(value("VAPID_SUBJECT") ?? "", /^(mailto:|https:\/\/)/);
+    assert.ok(!added.includes("DATABASE_URL"));
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

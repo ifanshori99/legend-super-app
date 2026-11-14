@@ -12,6 +12,14 @@
 //  - A successful DELETE answers 204 (the contract has no response schema).
 //  - Registering again with the same endpoint refreshes the same row
 //    (one row per tenant+user+endpoint) and moves registered_at forward.
+//  - Design v2 (architect round): a subscription is revoked by an EXPLICIT end
+//    of its login session (sign-out, revoking the session), never by the
+//    session merely expiring: deleting an expired session row (no Better Auth
+//    hook) keeps the subscription and clears session_id (ON DELETE SET NULL).
+//  - Registering from another tenant's outlet: any 403/404 is accepted, and
+//    nothing may be stored (the brief fixes only "ditolak").
+//  - DB-level composite foreign keys (tenant, outlet) / (tenant, outlet,
+//    device) are asserted by inserting rows directly as the table owner.
 //  - Not covered here: revocation on PIN change (the brief gives no trigger
 //    contract to test against).
 import { createECDH, randomUUID } from "node:crypto";
@@ -22,7 +30,10 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import {
+  DEVICE_TOKEN_HEADER,
+  requestSupportWriteAccessInputSchema,
+} from "@starter/shared/platform";
 import { pushPublicKeySchema } from "@starter/shared/notification";
 
 // config/env.ts reads process.env once at import, so the push configuration
@@ -41,7 +52,18 @@ const vapid = await vi.hoisted(async () => {
 
 import { createApp } from "../app.ts";
 import { enrollDevice, revokeDevice } from "../services/device.service.ts";
-import { agent, originHeader, verifySessionMfa } from "./helpers";
+import {
+  approveSupportAccessRequest,
+  requestSupportWriteAccess,
+  SUPPORT_ACCESS_WRITE_MAX_MINUTES,
+} from "../services/platform-support.service.ts";
+import {
+  agent,
+  originHeader,
+  setRole,
+  signUp,
+  verifySessionMfa,
+} from "./helpers";
 import {
   createIsolatedTenant,
   owner,
@@ -57,6 +79,7 @@ let tenantB: IsolatedTenant;
 let outletA: string;
 let outletA2: string;
 const userIds: string[] = [];
+const supportAdminIds: string[] = [];
 const hostA = () => ({ Host: tenantA.hostname });
 
 async function seedOutlet(tenant: IsolatedTenant, label: string) {
@@ -181,6 +204,15 @@ const scopeOf = (tenant: IsolatedTenant, outlet: string): ScopedTenantContext =>
     }),
     { kind: "outlets", outletIds: [outletIdSchema.parse(outlet)] },
   );
+const scopedTenantOf = (tenant: IsolatedTenant): ScopedTenantContext =>
+  establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: tenant.tenantId,
+      brandId: null,
+      source: "session",
+    }),
+    { kind: "tenant" },
+  );
 async function enroll(tenant: IsolatedTenant, outlet: string) {
   return enrollDevice(scopeOf(tenant, outlet), actor, {
     outletId: outlet,
@@ -246,7 +278,13 @@ beforeAll(async () => {
 afterAll(async () => {
   await purge(tenantA.tenantId);
   await purge(tenantB.tenantId);
-  await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [userIds]);
+  await owner.query(
+    `DELETE FROM platform_admins WHERE user_id = ANY($1::text[])`,
+    [supportAdminIds],
+  );
+  await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [
+    [...userIds, ...supportAdminIds],
+  ]);
   await owner.end();
 });
 
@@ -556,15 +594,287 @@ describe("legend-ofq4f POST /api/notifications/push-subscriptions", () => {
     expect(await rowsOf(staff.userId)).toEqual([]);
   });
 
-  it("deleting the session row removes only that session's subscriptions", async () => {
+  it("an expired session row being deleted keeps the subscription (session_id becomes NULL)", async () => {
     const staff = await member(tenantA, {
       permissions: [RESPOND],
       outlet: outletA,
     });
     expect((await post(staff, subscriptionBody())).status).toBe(200);
     const [row] = await rowsOf(staff.userId);
+    expect(row!.registered_at).toBeInstanceOf(Date);
+    // Expired by idle time (not revoked), then cleaned up.
+    await owner.query(
+      `UPDATE "session" SET expires_at = now() - interval '1 hour' WHERE id = $1`,
+      [row!.session_id],
+    );
+    await owner.query(`DELETE FROM "session" WHERE id = $1`, [row!.session_id]);
+    const after = await rowsOf(staff.userId);
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({ id: row!.id, session_id: null });
+    expect(after[0]!.registered_at).toEqual(row!.registered_at);
+  });
+
+  // legend-ofq4f round 3 B1. Several product paths revoke a login session by
+  // UPDATE (revoked_at set, row kept). When that row later expires and is
+  // cleaned up, the subscription must not survive as session_id NULL: a
+  // revoked login is an explicit end, unlike a session that merely expired.
+  // Assumption: "not deliverable" is asserted as "no row left for the user".
+  it("B1 a session revoked by UPDATE and deleted afterwards leaves no subscription behind", async () => {
+    const staff = await member(tenantA, {
+      permissions: [RESPOND],
+      outlet: outletA,
+    });
+    expect((await post(staff, subscriptionBody())).status).toBe(200);
+    const [row] = await rowsOf(staff.userId);
+    expect(row!.session_id).not.toBeNull();
+    await owner.query(
+      `UPDATE "session" SET revoked_at = now(), expires_at = now() - interval '1 hour' WHERE id = $1`,
+      [row!.session_id],
+    );
     await owner.query(`DELETE FROM "session" WHERE id = $1`, [row!.session_id]);
     expect(await rowsOf(staff.userId)).toEqual([]);
+  });
+
+  // legend-ofq4f round 3 B2. A support session impersonating a user must not
+  // register push for that user (it would deliver the user's panic alarms to
+  // the support person's browser). Real flow: a platform admin gets an
+  // owner-approved read-write support grant and impersonates the receiver
+  // (read-write so a refusal cannot be a plain read-only block). A normal
+  // registration by the receiver right before is the control.
+  it("B2 an impersonated session cannot register a push subscription (403)", async () => {
+    const staff = await member(tenantA, {
+      permissions: [RESPOND],
+      outlet: outletA,
+    });
+    // Only a tenant Owner can approve the read-write support grant.
+    const approver = await member(tenantA, { permissions: [] });
+    const ownerRole = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, 'Owner', true, 'owner', '[]'::jsonb, false, '["tenant"]'::jsonb)`,
+      [ownerRole, tenantA.tenantId],
+    );
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+      [tenantA.tenantId, approver.userId, ownerRole],
+    );
+    expect((await post(staff, subscriptionBody())).status).toBe(200);
+    expect(await rowsOf(staff.userId)).toHaveLength(1);
+
+    const support = agent(app);
+    const supportEmail = await signUp(support, "Support push");
+    await setRole(supportEmail, "admin");
+    const supportId = (await support.get("/api/auth/get-session")).body.user
+      .id as string;
+    supportAdminIds.push(supportId);
+    await owner.query("INSERT INTO platform_admins (user_id) VALUES ($1)", [
+      supportId,
+    ]);
+    const now = new Date();
+    const requested = await requestSupportWriteAccess({
+      tenantId: tenantA.tenantId,
+      actorUserId: supportId,
+      request: requestSupportWriteAccessInputSchema.parse({
+        reason: "Memeriksa pendaftaran notifikasi petugas dengan persetujuan.",
+        mfaCode: "123456",
+        durationMinutes: SUPPORT_ACCESS_WRITE_MAX_MINUTES,
+      }),
+      mfaVerifiedAt: now.toISOString(),
+      now,
+    });
+    const approved = await approveSupportAccessRequest(
+      scopedTenantOf(tenantA),
+      { userId: approver.userId },
+      requested.id,
+      now,
+    );
+    expect(approved.status).toBe("approved");
+    const impersonated = await support
+      .post("/api/auth/admin/impersonate-user")
+      .set({ ...hostA(), ...originHeader })
+      .send({ userId: staff.userId });
+    expect(impersonated.status, impersonated.text).toBe(200);
+    await verifySessionMfa(staff.email);
+    const me = await support.get("/api/auth/get-session").set(hostA());
+    expect(me.body.user.id).toBe(staff.userId);
+    expect(me.body.session.impersonatedBy).toBe(supportId);
+
+    // NOTE: today this 403 may come from the generic support-session
+    // read-only gate (SUPPORT_ACCESS_READ_ONLY) before registerPush runs, so
+    // this HTTP test cannot go red for B2 on its own; it pins the contract.
+    const refused = await post(
+      { client: support, userId: staff.userId, email: staff.email },
+      subscriptionBody(),
+    );
+    expect(refused.status, refused.text).toBe(403);
+    expect(await rowsOf(staff.userId)).toHaveLength(1);
+  });
+
+  it("revoking the login session removes only that session's subscriptions", async () => {
+    const staff = await member(tenantA, {
+      permissions: [RESPOND],
+      outlet: outletA,
+    });
+    // A second login of the same account, e.g. another phone.
+    const other = agent(app);
+    const signIn = await other
+      .post("/api/auth/sign-in/email")
+      .set(originHeader)
+      .send({ email: staff.email, password: "Test-password-123!" });
+    expect(signIn.status).toBe(200);
+    await verifySessionMfa(staff.email);
+    const otherSession = (await other.get("/api/auth/get-session")).body.session
+      .id as string;
+    const mine = (await staff.client.get("/api/auth/get-session")).body.session
+      .id as string;
+    expect(otherSession).not.toBe(mine);
+
+    expect((await post(staff, subscriptionBody())).status).toBe(200);
+    const theirs = { client: other, userId: staff.userId, email: staff.email };
+    expect((await post(theirs, subscriptionBody())).status).toBe(200);
+    expect(await rowsOf(staff.userId)).toHaveLength(2);
+
+    const revoked = await staff.client
+      .delete(`/api/auth/sessions/${otherSession}`)
+      .set(originHeader);
+    expect(revoked.status).toBe(204);
+
+    const left = await rowsOf(staff.userId);
+    expect(left).toHaveLength(1);
+    expect(left[0]!.session_id).toBe(mine);
+  });
+
+  it("signing out removes only the signed-out session's subscriptions", async () => {
+    const staff = await member(tenantA, {
+      permissions: [RESPOND],
+      outlet: outletA,
+    });
+    const other = agent(app);
+    expect(
+      (
+        await other
+          .post("/api/auth/sign-in/email")
+          .set(originHeader)
+          .send({ email: staff.email, password: "Test-password-123!" })
+      ).status,
+    ).toBe(200);
+    await verifySessionMfa(staff.email);
+    const mine = (await staff.client.get("/api/auth/get-session")).body.session
+      .id as string;
+    expect((await post(staff, subscriptionBody())).status).toBe(200);
+    expect(
+      (
+        await post(
+          { client: other, userId: staff.userId, email: staff.email },
+          subscriptionBody(),
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await other
+          .post("/api/auth/sign-out")
+          .set({ ...hostA(), ...originHeader })
+          .send({})
+      ).status,
+    ).toBe(200);
+    const left = await rowsOf(staff.userId);
+    expect(left).toHaveLength(1);
+    expect(left[0]!.session_id).toBe(mine);
+  });
+
+  it("registering again without an outlet keeps the outlet of the earlier registration", async () => {
+    const staff = await member(tenantA, {
+      permissions: [RESPOND],
+      outlet: outletA,
+    });
+    const endpoint = `https://fcm.googleapis.com/fcm/send/${randomUUID()}`;
+    expect(
+      (await post(staff, subscriptionBody({ outletId: outletA }, endpoint)))
+        .status,
+    ).toBe(200);
+    // e.g. the notification panel, which knows no outlet.
+    expect((await post(staff, subscriptionBody({}, endpoint))).status).toBe(
+      200,
+    );
+    const rows = await rowsOf(staff.userId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.outlet_id).toBe(outletA);
+  });
+
+  it("registering again without a device keeps the device of the earlier registration", async () => {
+    const staff = await member(tenantA, {
+      permissions: [RESPOND],
+      outlet: outletA,
+    });
+    const enrolled = await enroll(tenantA, outletA);
+    const endpoint = `https://fcm.googleapis.com/fcm/send/${randomUUID()}`;
+    expect(
+      (
+        await post(staff, subscriptionBody({}, endpoint), {
+          [DEVICE_TOKEN_HEADER]: enrolled.token,
+        })
+      ).status,
+    ).toBe(200);
+    const [first] = await rowsOf(staff.userId);
+    expect(first!.device_id).not.toBeNull();
+    expect((await post(staff, subscriptionBody({}, endpoint))).status).toBe(
+      200,
+    );
+    const rows = await rowsOf(staff.userId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      device_id: first!.device_id,
+      outlet_id: outletA,
+    });
+  });
+
+  it("refuses an outletId that belongs to another tenant and stores nothing", async () => {
+    const staff = await member(tenantA, {
+      permissions: [RESPOND],
+      outlet: outletA,
+    });
+    const foreignOutlet = await seedOutlet(tenantB, "Outlet tenant lain");
+    const response = await post(
+      staff,
+      subscriptionBody({ outletId: foreignOutlet }),
+    );
+    expect([403, 404]).toContain(response.status);
+    expect(await rowsOf(staff.userId)).toEqual([]);
+  });
+
+  it("the database itself refuses an outlet of another tenant or a device that is not at that outlet", async () => {
+    const staff = await member(tenantA, {
+      permissions: [RESPOND],
+      outlet: outletA,
+    });
+    const foreignOutlet = await seedOutlet(tenantB, "Outlet tenant lain DB");
+    const insert = (outlet: string | null, device: string | null) =>
+      owner.query(
+        `INSERT INTO push_subscriptions
+           (tenant_id, id, user_id, endpoint_hash, subscription_ciphertext, key_version,
+            outlet_id, device_id, registered_at)
+         VALUES ($1, $2, $3, $4, 'cipher', 'v1', $5, $6, now())`,
+        [
+          tenantA.tenantId,
+          randomUUID(),
+          staff.userId,
+          `hash-${randomUUID()}`,
+          outlet,
+          device,
+        ],
+      );
+    await expect(insert(foreignOutlet, null)).rejects.toMatchObject({
+      code: "23503",
+    });
+    const enrolled = await enroll(tenantA, outletA);
+    await expect(insert(outletA2, enrolled.device.id)).rejects.toMatchObject({
+      code: "23503",
+    });
+    // The consistent pair is accepted, so the refusals above are about the key.
+    await expect(insert(outletA, enrolled.device.id)).resolves.toBeDefined();
   });
 });
 

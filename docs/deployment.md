@@ -562,8 +562,42 @@ are configured. Compose sets `WORKER_TRANSPORT=builtin`; put the rest in
 | -------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `WORKER_TRANSPORT`               | `builtin`           | Built-in outbox transport. On the cloud a `cloud-sync` event is consumed locally (the consumption row is the durable, idempotent acknowledgement). With `EDGE_MODE=true` it is queued on the authenticated edge link (`/api/edge-link`) to the cloud. `WORKER_TRANSPORT_MODULE` / `WORKER_CONFIG_MODULE` still override it with a trusted module. |
 | `NOTIFICATION_EMAIL_PROVIDER`    | `disabled`, `brevo` | Required. `brevo` also needs `BREVO_API_KEY` and `NOTIFICATION_EMAIL_FROM` (optional `NOTIFICATION_EMAIL_FROM_NAME`). The provider account and sender domain (SPF/DKIM) are bead legend-wwuc.                                                                                                                                                     |
-| `NOTIFICATION_PUSH_PROVIDER`     | `disabled`          | Required. Web push (VAPID) is bead legend-hyq.                                                                                                                                                                                                                                                                                                    |
+| `NOTIFICATION_PUSH_PROVIDER`     | `disabled`          | Required. `web_push` turns on browser alarms (VAPID values below).                                                                                                                                                                                                                                                                                |
 | `NOTIFICATION_WHATSAPP_PROVIDER` | `disabled`          | Required. WhatsApp templates are bead legend-hyq.                                                                                                                                                                                                                                                                                                 |
+
+Web push (browser alarm for the panic button, legend-ofq4f): set
+`NOTIFICATION_PUSH_PROVIDER=web_push` and the same three `VAPID_*` values in
+**both** the API and `worker.env`. The API serves only the public key to signed-in
+browsers (`GET /api/notifications/push-key`, `null` while push is off) and
+refuses to boot if a value is missing or the pair does not match; the worker
+signs and sends.
+
+- `VAPID_PUBLIC_KEY`: base64url, 65-byte uncompressed P-256 point (87 characters).
+- `VAPID_PRIVATE_KEY`: base64url, 32 bytes (43 characters).
+- `VAPID_SUBJECT`: `mailto:` address or `https://` URL the push service can contact.
+
+Generate the production pair once, on the server, with
+`npx web-push generate-vapid-keys`, and keep it in the secret store. Never
+commit it, paste it in chat, or reuse the local dev pair that `pnpm run setup`
+creates. Rotating the pair invalidates every stored subscription: all browsers
+must register again (the panic alarm falls back to its other channels until they
+do). Subscriptions are sealed with `DATA_ENCRYPTION_KEY`. The keys and the
+subscription endpoints are never logged.
+
+Release checklist: the panic alarm is not ready until
+`NOTIFICATION_PUSH_PROVIDER=web_push` and the three `VAPID_*` values are set in
+both the API and the worker. With the default `disabled` the worker only logs an
+operator error per alarm (no secrets) and the in-app notification is still
+written; nothing reaches a locked phone.
+
+Known limits of push registration:
+
+- A push subscription is bound to the login session, not to the PIN. Switching
+  user with a PIN on a device does not revoke it.
+- Residual risk: a session that expires from idleness without a sign-out, after
+  which another user signs in on the same browser and never opens `/fasilitas`.
+  The previous user's alarm (while still on duty and authorized) keeps showing
+  until 30 days pass or the new user registers.
 
 A disabled channel is never planned for a recipient: in-app notifications are
 still written and the attempt is skipped, never reported as sent. A gap in an

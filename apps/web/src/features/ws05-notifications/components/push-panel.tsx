@@ -26,8 +26,11 @@ import { pushPublicKeyQuery } from "../queries";
 import {
   deviceLabel,
   detectPushState,
+  forgetSubscriptionId,
   readMockSubscriptionId,
+  readStoredSubscriptionId,
   rememberMockSubscriptionId,
+  rememberSubscriptionId,
   requestPushPermission,
   subscribeThisBrowser,
   unsubscribeThisBrowser,
@@ -93,7 +96,7 @@ export function PushPanel() {
       const next = await detectPushState(await loadTenantKey(queryClient));
       if (!active) return;
       setDevice(label);
-      setSubscriptionId(readMockSubscriptionId());
+      setSubscriptionId(readMockSubscriptionId() ?? readStoredSubscriptionId());
       setState(next);
     })();
     return () => {
@@ -126,6 +129,7 @@ export function PushPanel() {
       );
       setSubscriptionId(saved.data.id);
       rememberMockSubscriptionId(saved.data.id);
+      rememberSubscriptionId(saved.data.id);
       setState("active");
       toast({
         title: t("notification.push.enabledToast"),
@@ -144,7 +148,10 @@ export function PushPanel() {
     setError(null);
     setBusy(true);
     try {
-      let id = subscriptionId ?? readMockSubscriptionId();
+      let id =
+        subscriptionId ??
+        readMockSubscriptionId() ??
+        readStoredSubscriptionId();
       // Saving again returns this browser's row (upsert), which the revoke
       // call needs after a reload.
       if (!id)
@@ -153,6 +160,7 @@ export function PushPanel() {
         ).data.id;
       await remove.mutateAsync(id);
       await unsubscribeThisBrowser();
+      forgetSubscriptionId();
       setSubscriptionId(null);
       setState("inactive");
       toast({ title: t("notification.push.disabledToast"), tone: "success" });

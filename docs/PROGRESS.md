@@ -1,3 +1,13 @@
+## legend-ofq4f registrasi web push alarm panik (engineer, cabang `ws/panic-push-registration` dari `origin/ghostex/157120a3` 10a196bc1, 14 Nov 2026 20:51-22:45 WIB)
+
+- Brief dan desain: `docs/briefs/ofq4f-push-registration.md`; bukti: `docs/qa/ofq4f-push-registration.md`.
+- Push terikat user, tenant, sesi, perangkat (X-Device-Token terverifikasi) dan outlet; key VAPID dari API (`getPushKey`); dicabut saat sign-out dan saat sesi berlaku/dicabut dihapus (trigger migrasi 0375). Sesi kedaluwarsa karena diam tidak memutus push (HP terkunci tetap dapat alarm); push > 30 hari tidak dikirim. Sesi impersonasi tidak bisa mendaftar.
+- Worker: maks 5 subscription terbaru per outlet alarm, paralel; 404/410 hapus baris; push mati tidak menahan notifikasi in-app.
+- Temuan architect 791 butir 1-7 selesai di cabang ini. Review architect xhigh atas diff: P0 sesi kedaluwarsa, P1 outlet/FK komposit, P2 dibetulkan (desain v2). Reviewer v2: B1 (sesi dicabut lewat UPDATE lalu dihapus menghidupkan push lagi) dan B2 (impersonasi) dibetulkan.
+- Verifikasi: API 87/87, root 97/97, typecheck API+web, e2e mock 4/4, `db:generate` kosong, prettier+eslint bersih.
+- Sisa: uji di ponsel nyata (push di HP terkunci > 30 menit, iOS PWA, PIN darurat dengan token asli), kunci VAPID produksi dibuat di server.
+- Biaya (20:51-22:45, 114 menit): biaya* total 8948k (utama Opus 2998k; subagent Sonnet 3941k, Opus 1785k, Haiku 224k). 21 subagent, maks 6 bersamaan, rata-rata 0.51 berjalan.
+
 ## WS-06/07 posting faktur pemasok + lanjutan AP (engineer, cabang `ws/purchasing-posting` dari `ws/purchasing-apar` aefe28175, 13 Nov 2026 18:49-19:47 WIB)
 
 - Desain: `docs/briefs/ws-purchasing-posting-design.md` (architect xhigh), review K architect xhigh: H1 dibetulkan, H2/M1 jadi bead penghalang flag.

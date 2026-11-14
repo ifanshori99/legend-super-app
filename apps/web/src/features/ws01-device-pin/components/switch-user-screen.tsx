@@ -32,9 +32,12 @@ const DEMO_OBJECT_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 export function SwitchUserScreen({
   shell,
   emergency = false,
+  returnFacilityId,
 }: {
   shell: "pos" | "kds";
   emergency?: boolean;
+  /** Facility the emergency PIN came from; the return trip keeps it. */
+  returnFacilityId?: string;
 }) {
   const t = useT();
   const toast = useToast();
@@ -68,7 +71,10 @@ export function SwitchUserScreen({
           title: t("devicePin.emergency.success", { name: entry.displayName }),
           tone: "success",
         });
-        void navigate({ to: "/fasilitas" });
+        void navigate({
+          to: "/fasilitas",
+          search: returnFacilityId ? { facilityId: returnFacilityId } : {},
+        });
         return;
       }
       setActiveStaff({ ...entry, outletId: result.outletId });
@@ -78,7 +84,7 @@ export function SwitchUserScreen({
         tone: "success",
       });
     },
-    [emergency, navigate, t, toast],
+    [emergency, navigate, returnFacilityId, t, toast],
   );
   // POS switch: the PIN also makes this person the device's active cashier
   // (token for X-Acting-Staff). The KDS station has no acting-staff support

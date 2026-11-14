@@ -104,6 +104,7 @@ export const AREAS: Readonly<Record<AreaKey, AreaDefinition>> = {
         "wifi.voucher.issue",
         "facility.booth.operate",
         "facility.access.assist",
+        "facility.emergency.respond",
         "ops.checklist.complete",
         "ops.food_safety.log",
         "ops.prep.manage",

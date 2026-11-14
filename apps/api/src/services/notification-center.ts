@@ -18,6 +18,7 @@ import {
   notificationPolicySchema,
   notificationPreferenceSchema,
   notificationTemplateSchema,
+  pushPublicKeySchema,
   pushSubscriptionSchema,
   updateNotificationPreferences,
   registerPushSubscription,
@@ -30,9 +31,13 @@ import {
   isEmailMandatory,
 } from "@starter/shared/notification";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
+import { EMERGENCY_PERMISSION_RESPOND } from "@starter/shared/facility";
+import { env } from "../config/env.ts";
 import type * as schema from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { DEVICE_TOKEN_INVALID } from "../routes/device-id.ts";
+import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import {
   appendNotificationEvent,
   appendNotificationEventsBatch,
@@ -404,9 +409,84 @@ export function createNotificationService(
               !sealed.keyVersion
             )
               throw denied();
+            // Bind to what the server verified, never to client claims
+            // (legend-ofq4f): the login session, the registered device and
+            // the outlet whose panic alarms this browser may receive.
+            const caller = input.caller;
+            if (caller) {
+              // FOR SHARE: a concurrent revoke or sign-out (which lock the
+              // session row FOR UPDATE before deleting its push rows) waits
+              // for this registration, so its row is deleted with the rest.
+              const live = await tx.execute(
+                sql`SELECT impersonated_by FROM session WHERE id=${caller.sessionId} AND user_id=${rawUserId} AND expires_at > now() AND revoked_at IS NULL FOR SHARE`,
+              );
+              if (!live.rows.length)
+                throw new HttpError(
+                  401,
+                  "UNAUTHORIZED",
+                  "Sesi berakhir. Masuk lagi.",
+                );
+              // A support session acting as this user must not leave a
+              // browser that keeps receiving the user's panic alarms after
+              // impersonation ends (legend-ofq4f, reviewer v2).
+              if (
+                (live.rows[0] as { impersonated_by: string | null })
+                  .impersonated_by !== null
+              )
+                throw denied();
+            }
+            let outletId: string | null = null;
+            let deviceId: string | null = null;
+            if (caller?.deviceId) {
+              const device = await tx.execute(
+                sql`SELECT outlet_id FROM devices WHERE tenant_id=${context.tenant.tenantId}::uuid AND id=${caller.deviceId}::uuid AND status='active' AND revoked_at IS NULL`,
+              );
+              if (!device.rows.length)
+                // Device revoked, inactive or unknown: same code and message
+                // as currentDeviceIdOf, so the web client clears its token.
+                throw new HttpError(
+                  401,
+                  DEVICE_TOKEN_INVALID,
+                  "Token perangkat ini tidak berlaku lagi. Daftarkan ulang perangkat.",
+                );
+              deviceId = caller.deviceId;
+              outletId = String(device.rows[0].outlet_id);
+              if (
+                body.outletId !== undefined &&
+                body.outletId.toLowerCase() !== outletId.toLowerCase()
+              )
+                throw denied();
+            } else if (body.outletId !== undefined) {
+              const snapshot = await accessSnapshotInTransaction(
+                tx,
+                context,
+                userId,
+                new Date(),
+              );
+              if (
+                !snapshot.allows(EMERGENCY_PERMISSION_RESPOND, {
+                  type: "outlet",
+                  id: body.outletId,
+                })
+              )
+                throw denied();
+              outletId = body.outletId;
+            }
+            // The same browser endpoint now belongs to this account: a
+            // previous account's row for it must not keep receiving alarms.
+            await tx.execute(
+              sql`DELETE FROM push_subscriptions WHERE tenant_id=${context.tenant.tenantId}::uuid AND endpoint_hash=${sealed.endpointHash} AND user_id <> ${userId}::uuid`,
+            );
             const id = randomUUID();
+            // Only a verified registration (live session) stamps
+            // registered_at; without a caller the row stays NULL and the
+            // worker never delivers to it. A registration without an outlet
+            // (notification panel) keeps the saved outlet; the saved device
+            // stays only while the outlet stays the same, so the
+            // tenant-outlet-device FK always holds.
+            const registeredAt = caller ? sql`now()` : sql`NULL`;
             const result = await tx.execute(
-              sql`INSERT INTO push_subscriptions (tenant_id,id,user_id,endpoint_hash,subscription_ciphertext,key_version,device_label) VALUES (${context.tenant.tenantId}::uuid,${id}::uuid,${userId}::uuid,${sealed.endpointHash},${sealed.ciphertext},${sealed.keyVersion},${body.deviceLabel}) ON CONFLICT (tenant_id,user_id,endpoint_hash) DO UPDATE SET subscription_ciphertext=EXCLUDED.subscription_ciphertext,key_version=EXCLUDED.key_version,device_label=EXCLUDED.device_label RETURNING id,created_at,last_success_at`,
+              sql`INSERT INTO push_subscriptions (tenant_id,id,user_id,endpoint_hash,subscription_ciphertext,key_version,device_label,outlet_id,device_id,session_id,registered_at) VALUES (${context.tenant.tenantId}::uuid,${id}::uuid,${userId}::uuid,${sealed.endpointHash},${sealed.ciphertext},${sealed.keyVersion},${body.deviceLabel},${outletId}::uuid,${deviceId}::uuid,${caller?.sessionId ?? null},${registeredAt}) ON CONFLICT (tenant_id,user_id,endpoint_hash) DO UPDATE SET subscription_ciphertext=EXCLUDED.subscription_ciphertext,key_version=EXCLUDED.key_version,device_label=EXCLUDED.device_label,outlet_id=COALESCE(EXCLUDED.outlet_id,push_subscriptions.outlet_id),device_id=CASE WHEN EXCLUDED.device_id IS NOT NULL THEN EXCLUDED.device_id WHEN EXCLUDED.outlet_id IS NULL OR EXCLUDED.outlet_id=push_subscriptions.outlet_id THEN push_subscriptions.device_id ELSE NULL END,session_id=EXCLUDED.session_id,registered_at=EXCLUDED.registered_at RETURNING id,created_at,last_success_at`,
             );
             const row = result.rows[0];
             return {
@@ -420,6 +500,30 @@ export function createNotificationService(
                   row.last_success_at === null
                     ? null
                     : isoTimestamp(row.last_success_at),
+              }),
+            };
+          }
+          case "getPushKey": {
+            // Only while the deployment can send (provider on, key set) and
+            // the tenant has web push on; otherwise the browser must not ask
+            // the user for notification permission.
+            if (
+              env.NOTIFICATION_PUSH_PROVIDER !== "web_push" ||
+              !env.VAPID_PUBLIC_KEY
+            )
+              return {
+                data: pushPublicKeySchema.parse({ vapidPublicKey: null }),
+              };
+            const policy = await tx.execute(
+              sql`SELECT web_push_enabled FROM notification_policies LIMIT 1`,
+            );
+            const enabled = policy.rows[0]
+              ? policy.rows[0].web_push_enabled === true
+              : defaultNotificationPolicy(context.tenant.tenantId, new Date())
+                  .webPushEnabled;
+            return {
+              data: pushPublicKeySchema.parse({
+                vapidPublicKey: enabled ? env.VAPID_PUBLIC_KEY : null,
               }),
             };
           }

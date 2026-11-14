@@ -189,6 +189,50 @@ describe("legend-ofq4f apiFetch sends X-Device-Token (also architect 791 item 1)
     );
   });
 
+  // Architect round v2 V5: the stored token is dropped only when the registry
+  // says the TOKEN is bad (DEVICE_TOKEN_INVALID). Any other failure (e.g. an
+  // inactive tenant answers UNAUTHORIZED) must leave it in place.
+  async function failWith(status, code) {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ error: { code, message: "no" } }), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    try {
+      await apiFetchWith()("/api/notifications/push-key");
+      assert.fail("the call should have been rejected");
+    } catch (error) {
+      if (error?.code === "ERR_ASSERTION") throw error;
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  test("forgets the stored token when the API answers DEVICE_TOKEN_INVALID", async () => {
+    installBrowser();
+    storage.set("legend.device.token", "tok-abc");
+    await failWith(401, "DEVICE_TOKEN_INVALID");
+    assert.equal(storage.has("legend.device.token"), false);
+  });
+
+  test("keeps the stored token on UNAUTHORIZED, FORBIDDEN and server errors", async () => {
+    installBrowser();
+    for (const [status, code] of [
+      [401, "UNAUTHORIZED"],
+      [403, "FORBIDDEN"],
+      [500, "INTERNAL_ERROR"],
+    ]) {
+      storage.set("legend.device.token", "tok-abc");
+      await failWith(status, code);
+      assert.equal(
+        storage.get("legend.device.token"),
+        "tok-abc",
+        `${status} ${code} must not drop the token`,
+      );
+    }
+  });
+
   test("the emergency PIN call still goes through the shared API caller", () => {
     const source = read("apps/web/src/features/ws01-device-pin/api.ts");
     const call = source.slice(

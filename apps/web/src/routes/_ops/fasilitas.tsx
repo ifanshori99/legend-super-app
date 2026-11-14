@@ -1,6 +1,7 @@
 import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { z } from "zod";
 import { PanicAlertLayer } from "@/features/facility-staff/components/panic-alert-layer";
+import { PanicPushControl } from "@/features/facility-staff/components/panic-push-control";
 import { evaluateGuard } from "@/lib/areas/guard";
 
 // Layout for every /fasilitas/* screen (bead legend-jztb7): the panic alert
@@ -32,8 +33,9 @@ function FacilityLayout() {
       {/* Above the screen so the connection status stays in the first
           viewport; the alert itself is a top-layer dialog either way. */}
       {gate.status === "allowed" && (
-        <div className="mx-auto mb-4 w-full max-w-6xl">
+        <div className="mx-auto mb-4 grid w-full max-w-6xl gap-3">
           <PanicAlertLayer facilityId={search.facilityId} />
+          <PanicPushControl />
         </div>
       )}
       <Outlet />

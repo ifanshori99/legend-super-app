@@ -25,6 +25,10 @@ export type PushState =
   | "ios-outdated";
 
 const MOCK_SUBSCRIPTION_KEY = "legend-mock-push-subscription-id";
+// The API row id of this browser's subscription (bead legend-ofq4f). Not a
+// secret (the endpoint and keys stay server-side); sign-out reads it to revoke
+// the row before the session ends. localStorage: it must survive a reload.
+const SUBSCRIPTION_ID_KEY = "legend.push.subscriptionId";
 
 // Shapes only: mock mode never reaches a push service, so the contract's
 // base64url fields are fixed sample values.
@@ -55,6 +59,31 @@ export function forgetMockSubscriptionId(): void {
   if (!API_MOCK) return;
   try {
     sessionStorage.removeItem(MOCK_SUBSCRIPTION_KEY);
+  } catch {
+    // Storage can be blocked.
+  }
+}
+
+export function readStoredSubscriptionId(): string | null {
+  try {
+    const value = localStorage.getItem(SUBSCRIPTION_ID_KEY);
+    return value === null || value === "" ? null : value;
+  } catch {
+    return null;
+  }
+}
+
+export function rememberSubscriptionId(id: string): void {
+  try {
+    localStorage.setItem(SUBSCRIPTION_ID_KEY, id);
+  } catch {
+    // Storage can be blocked; sign-out then cannot revoke by id.
+  }
+}
+
+export function forgetSubscriptionId(): void {
+  try {
+    localStorage.removeItem(SUBSCRIPTION_ID_KEY);
   } catch {
     // Storage can be blocked.
   }
@@ -156,13 +185,18 @@ function keyToBytes(key: string): Uint8Array<ArrayBuffer> {
 /** Subscribes this browser and returns the contract's registration input. */
 export async function subscribeThisBrowser(
   vapidKey: string | null,
+  // The outlet whose panic alarms this browser should receive. Omitted for
+  // plain notifications; the API refuses it without the emergency permission.
+  outletId?: PushSubscriptionInput["outletId"],
 ): Promise<PushSubscriptionInput> {
   const label = deviceLabel();
+  const scope = outletId === undefined ? {} : { outletId };
   if (API_MOCK) {
     return {
       endpoint: `https://push.legend.mock/subscription/${newIdempotencyKey()}`,
       keys: { p256dh: MOCK_P256DH, auth: MOCK_AUTH },
       deviceLabel: label,
+      ...scope,
     };
   }
   if (!vapidKey) throw new Error("PUSH_UNAVAILABLE");
@@ -182,6 +216,7 @@ export async function subscribeThisBrowser(
     endpoint: json.endpoint,
     keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
     deviceLabel: label,
+    ...scope,
   };
 }
 

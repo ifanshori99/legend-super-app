@@ -12,6 +12,7 @@
 import { createECDH, createHash } from "node:crypto";
 import {
   and,
+  desc,
   eq,
   gt,
   inArray,
@@ -88,6 +89,7 @@ import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
+import { logger } from "../lib/logger.ts";
 import { isReservedAddress } from "../services/identity-email-login.service.ts";
 import { notifyBrevoAuthFailed } from "../services/edge-sync-conflict-alert.ts";
 import {
@@ -101,6 +103,9 @@ import type { deliverNotificationAttempt } from "../services/notification-delive
 import { openPushSubscription } from "../lib/push-subscription.ts";
 import {
   createWebPushProvider,
+  deliverablePushSubscription,
+  MAX_PUSH_SUBSCRIPTIONS_PER_ALERT,
+  pushOutletMatches,
   type WebPushSend,
 } from "./web-push-provider.ts";
 
@@ -202,6 +207,7 @@ async function loadRecipientState(
         and(
           eq(pushSubscriptions.tenantId, tenantId),
           inArray(pushSubscriptions.userId, userIds),
+          deliverablePushSubscription(now),
         ),
       );
     for (const row of rows) subscribed.add(row.userId);
@@ -1293,6 +1299,9 @@ export function createDeliveryRecipientLookup(
         (await panicRecipientStillEligible(tx, notification, new Date()));
       let pushEndpoint: string | null = null;
       if (channels.push && eligible && userState.hasPushSubscription) {
+        // An emergency alarm only reaches browsers of its own outlet; only
+        // recent verified registrations of unrevoked sessions on active
+        // devices count (deliverablePushSubscription); the newest first.
         const subscriptions = await tx
           .select()
           .from(pushSubscriptions)
@@ -1300,19 +1309,35 @@ export function createDeliveryRecipientLookup(
             and(
               eq(pushSubscriptions.tenantId, notification.tenantId),
               eq(pushSubscriptions.userId, notification.userId),
+              deliverablePushSubscription(new Date()),
+              pushOutletMatches(
+                notification.category === "emergency"
+                  ? notification.outletId
+                  : null,
+              ),
             ),
           )
-          .orderBy(pushSubscriptions.createdAt);
-        // One attempt targets one browser. Replays reuse the same endpoint/tag;
-        // multiple registered devices never multiply an alert's delivery cost.
-        const subscription = subscriptions[0];
-        if (subscription)
-          pushEndpoint = openPushSubscription(
-            subscription.subscriptionCiphertext,
-            notification.tenantId,
-            notification.userId,
-            subscription.endpointHash,
-          ).endpoint;
+          .orderBy(desc(pushSubscriptions.registeredAt))
+          .limit(MAX_PUSH_SUBSCRIPTIONS_PER_ALERT);
+        // The attempt names one endpoint (the newest readable one); the push
+        // provider then sends to every deliverable browser of the recipient.
+        // A subscription that cannot be opened is skipped, never fatal.
+        for (const subscription of subscriptions) {
+          try {
+            pushEndpoint = openPushSubscription(
+              subscription.subscriptionCiphertext,
+              notification.tenantId,
+              notification.userId,
+              subscription.endpointHash,
+            ).endpoint;
+            break;
+          } catch {
+            logger.warn(
+              { subscriptionId: subscription.id },
+              "Push subscription could not be opened; skipped",
+            );
+          }
+        }
       }
       const currentReachability = reachabilityOf(userState, channels);
       const reachability = {
@@ -1655,9 +1680,13 @@ export function createWorkerNotificationHandlers(
   const resolveRecipients = createNotificationRecipientResolver(channels);
   return {
     resolveNotificationRecipients: async (context, event, tx) => {
+      // Without push configuration the in-app notification is still created
+      // and the event completes; only the push channel is skipped. Operators
+      // see this error in the log (no keys or subscription data in it).
       if (event.name === "panic_alert.raised" && !channels.push)
-        throw new Error(
-          "Panic web push unavailable: configure NOTIFICATION_PUSH_PROVIDER=web_push and VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT",
+        logger.error(
+          { event: event.name },
+          "Panic web push skipped: set NOTIFICATION_PUSH_PROVIDER=web_push with VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY and VAPID_SUBJECT",
         );
       return resolveRecipients(context, event, tx);
     },

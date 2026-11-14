@@ -7,8 +7,11 @@
 //
 // ASSUMPTIONS where the brief is silent:
 //  - Rejection = exit status 1 and stderr naming the offending variable.
-//  - A mismatched public/private pair is NOT asserted (the brief does not
-//    require it); only shape rules from D4 are.
+//  - A public key that does not belong to the private key (each 65/32 bytes
+//    and well-formed) is rejected (architect round, v2): the push service
+//    would refuse every send. The report names VAPID_PUBLIC_KEY or
+//    VAPID_PRIVATE_KEY (either; the brief does not say which) and never
+//    prints key material.
 import { createECDH } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
@@ -89,7 +92,10 @@ describe("legend-ofq4f push environment", () => {
   it.each(["VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT"] as const)(
     "refuses web_push without %s",
     (missing) => {
-      const { [missing]: _omitted, ...rest } = valid;
+      const rest: Partial<Record<(typeof PUSH_KEYS)[number], string>> = {
+        ...valid,
+      };
+      delete rest[missing];
       expectRejected(loadEnv(rest), missing);
     },
   );
@@ -118,6 +124,25 @@ describe("legend-ofq4f push environment", () => {
       const result = loadEnv({ ...valid, VAPID_PRIVATE_KEY: bad });
       expectRejected(result, "VAPID_PRIVATE_KEY");
     }
+  });
+
+  it("rejects a public key that does not match the private key", () => {
+    const other = vapidPair();
+    const result = loadEnv({ ...valid, VAPID_PUBLIC_KEY: other.publicKey });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/VAPID_(PUBLIC|PRIVATE)_KEY/);
+    for (const secret of [...secrets, other.publicKey])
+      expect(result.stderr).not.toContain(secret);
+  });
+
+  it("rejects a public key that is not a point on the P-256 curve", () => {
+    const offCurve = Buffer.concat([
+      Buffer.from([4]),
+      Buffer.alloc(64, 1),
+    ]).toString("base64url");
+    const result = loadEnv({ ...valid, VAPID_PUBLIC_KEY: offCurve });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/VAPID_(PUBLIC|PRIVATE)_KEY/);
   });
 
   it("rejects a subject that is neither mailto: nor https:", () => {

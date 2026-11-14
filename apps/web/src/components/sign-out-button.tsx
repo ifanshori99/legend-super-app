@@ -3,6 +3,7 @@ import { useNavigate, useRouter } from "@tanstack/react-router";
 import { LogOut } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
 import { endActingStaffMode } from "@/lib/api/acting-staff";
+import { revokePushOnSignOut } from "@/features/ws05-notifications/revoke";
 import { Button } from "@/components/ui/button";
 
 export function SignOutButton() {
@@ -14,6 +15,9 @@ export function SignOutButton() {
     setPending(true);
     setError(false);
     try {
+      // While the session still exists: drop this browser's alarm push
+      // subscription so the next person here does not receive it. Best-effort.
+      await revokePushOnSignOut();
       const result = await authClient.signOut();
       if (result.error) throw new Error("Sign out failed");
       // The POS cashier hold belongs to this login; the next one starts clean.

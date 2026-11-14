@@ -3,10 +3,13 @@
 // Written from docs/briefs/ofq4f-push-registration.md and the 791 findings,
 // never from the worker code.
 //
-// Rules under test (brief D3 + 791 items 3-5):
-//  - Only subscriptions that were registered with a live login session count:
-//    session_id NOT NULL, the session still exists, is not expired and belongs
-//    to the same user. Legacy rows (session_id NULL) are never used.
+// Rules under test (brief D3 + 791 items 3-5, design v2 V3 of the architect round):
+//  - A subscription counts only when it was registered by design v2:
+//    registered_at IS NOT NULL and newer than 30 days. Legacy rows
+//    (registered_at NULL) are never used.
+//  - Its login session may have EXPIRED (idle 30 min) or been deleted
+//    (session_id becomes NULL): the alarm must still arrive. Only an
+//    explicitly REVOKED session (revoked_at set) excludes it.
 //  - A subscription bound to a device counts only while the device is active.
 //  - For a panic alarm only subscriptions of the alarm's outlet count (a NULL
 //    outlet or another outlet does not).
@@ -18,6 +21,9 @@
 //    exists.
 //
 // ASSUMPTIONS where the brief is silent:
+//  - The 30-day edge is tested at 29 days (kept) and 31 days (dropped).
+//  - A hung push endpoint is simulated with a fake webPushSend that never
+//    resolves until released; the other endpoints must be sent meanwhile.
 //  - "newest" = registered_at (created_at is set equal in the fixtures, so
 //    ordering by created_at agrees).
 //  - An attempt whose receiver has no eligible subscription may either not be
@@ -28,7 +34,7 @@
 import { createECDH, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createUlid, type ScopedTenantContext } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
@@ -202,8 +208,13 @@ async function raisedAlarm() {
 type SubscriptionSpec = {
   /** Outlet the browser registered for; default = the alarm's outlet. */
   outlet?: string | null;
-  /** Login session of the registration; default = a live one. */
-  session?: "live" | "expired" | "none";
+  /**
+   * Login session of the registration; default = a live one. "none" = the
+   * session row was deleted after expiry (session_id NULL, ON DELETE SET NULL).
+   */
+  session?: "live" | "expired" | "revoked" | "revoked-expired" | "none";
+  /** Pre-v2 row: registered_at NULL. */
+  legacy?: boolean;
   device?: "active" | "revoked" | null;
   /** Registered this long ago (newer = smaller). */
   ageMs?: number;
@@ -234,13 +245,18 @@ async function seedSubscription(
   if ((spec.session ?? "live") !== "none") {
     sessionId = randomUUID();
     await owner.query(
-      `INSERT INTO "session" (id, expires_at, token, user_id)
-       VALUES ($1, now() + $2::interval, $3, $4)`,
+      `INSERT INTO "session" (id, expires_at, token, user_id, revoked_at)
+       VALUES ($1, now() + $2::interval, $3, $4, $5)`,
       [
         sessionId,
-        spec.session === "expired" ? "-1 hour" : "7 days",
+        spec.session === "expired" || spec.session === "revoked-expired"
+          ? "-1 hour"
+          : "7 days",
         randomUUID(),
         receiver.userId,
+        spec.session === "revoked" || spec.session === "revoked-expired"
+          ? new Date()
+          : null,
       ],
     );
   }
@@ -264,7 +280,7 @@ async function seedSubscription(
     `INSERT INTO push_subscriptions
        (tenant_id, id, user_id, endpoint_hash, subscription_ciphertext, key_version,
         outlet_id, device_id, session_id, created_at, registered_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [
       tenantA.tenantId,
       randomUUID(),
@@ -276,6 +292,7 @@ async function seedSubscription(
       deviceId,
       sessionId,
       registeredAt,
+      spec.legacy ? null : registeredAt,
     ],
   );
   return { endpoint, spec };
@@ -296,6 +313,11 @@ const webPushEnv = {
 async function ring(
   receiver: Receiver,
   env: Record<string, string> = webPushEnv,
+  options: {
+    send?: (subscription: { endpoint: string }) => Promise<unknown>;
+    /** Runs while delivery is in flight, before it is awaited. */
+    during?: (sent: () => string[]) => Promise<void>;
+  } = {},
 ) {
   const context = contextOf(tenantA.tenantId);
   const event = await raisedAlarm();
@@ -304,6 +326,7 @@ async function ring(
     fetch: globalThis.fetch,
     webPushSend: async (...args: unknown[]) => {
       sent.push(args);
+      await options.send?.(args[0] as { endpoint: string });
       return { statusCode: 201, headers: {}, body: "" };
     },
   });
@@ -321,16 +344,23 @@ async function ring(
       [tenantA.tenantId, receiver.userId, ulidToUuid(event.id)],
     )
   ).rows;
-  const results: string[] = [];
-  for (const attempt of attempts)
-    results.push(
-      await deliverNotificationAttempt(
-        database,
-        context,
-        uuidToUlid(attempt.id),
-        handlers.notificationDelivery,
-      ),
-    );
+  const delivery = (async () => {
+    const delivered: string[] = [];
+    for (const attempt of attempts)
+      delivered.push(
+        await deliverNotificationAttempt(
+          database,
+          context,
+          uuidToUlid(attempt.id),
+          handlers.notificationDelivery,
+        ),
+      );
+    return delivered;
+  })();
+  await options.during?.(() =>
+    sent.map((call) => (call[0] as { endpoint: string }).endpoint),
+  );
+  const results = await delivery;
   const notifications = (
     await owner.query(
       `SELECT id FROM notifications WHERE tenant_id = $1 AND user_id = $2 AND source_event_id = $3`,
@@ -398,23 +428,72 @@ describe("legend-ofq4f D3 eligible subscriptions for a panic alarm", () => {
     expect(outcome.results).toEqual(["sent"]);
   });
 
-  it("never sends to a legacy subscription without a session", async () => {
+  it("never sends to a legacy subscription (registered_at NULL), even with a live session", async () => {
     const receiver = await onDutyReceiver("Penerima lama");
-    await seedSubscription(receiver, { session: "none" });
+    await seedSubscription(receiver, { legacy: true });
     expect((await ring(receiver)).endpoints).toEqual([]);
   });
 
-  it("never sends to a subscription whose session expired or is gone", async () => {
-    const receiver = await onDutyReceiver("Penerima sesi mati");
-    await seedSubscription(receiver, { session: "expired" });
-    const gone = await seedSubscription(receiver);
+  it("still sends when the login session EXPIRED (idle 30 min) without being revoked", async () => {
+    const receiver = await onDutyReceiver("Penerima sesi idle");
+    const idle = await seedSubscription(receiver, { session: "expired" });
+    const outcome = await ring(receiver);
+    expect(outcome.endpoints).toEqual([idle.endpoint]);
+    expect(outcome.results).toEqual(["sent"]);
+  });
+
+  it("still sends when the expired session row was deleted (session_id NULL)", async () => {
+    const receiver = await onDutyReceiver("Penerima sesi dihapus");
+    const gone = await seedSubscription(receiver, { session: "none" });
+    expect((await ring(receiver)).endpoints).toEqual([gone.endpoint]);
+    // Same thing through the real foreign key: deleting the session row keeps
+    // the subscription and only clears its session_id.
+    const live = await seedSubscription(receiver);
+    // The session expired by idle time (not revoked), then was cleaned up.
     await owner.query(
-      `DELETE FROM "session" WHERE user_id = $1 AND expires_at > now()`,
+      `UPDATE "session" SET expires_at = now() - interval '1 hour' WHERE user_id = $1 AND revoked_at IS NULL`,
       [receiver.userId],
     );
+    await owner.query(`DELETE FROM "session" WHERE user_id = $1`, [
+      receiver.userId,
+    ]);
+    const { rows } = await owner.query<{ session_id: string | null }>(
+      `SELECT session_id FROM push_subscriptions
+        WHERE user_id = $1 AND tenant_id = $2 ORDER BY created_at`,
+      [receiver.userId, tenantA.tenantId],
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.session_id === null)).toBe(true);
+    expect([...(await ring(receiver)).endpoints].sort()).toEqual(
+      [gone.endpoint, live.endpoint].sort(),
+    );
+  });
+
+  it("never sends to a subscription whose login session was revoked", async () => {
+    const receiver = await onDutyReceiver("Penerima sesi dicabut");
+    await seedSubscription(receiver, { session: "revoked" });
     const live = await seedSubscription(receiver);
-    expect(gone.endpoint).not.toBe(live.endpoint);
     expect((await ring(receiver)).endpoints).toEqual([live.endpoint]);
+  });
+
+  // legend-ofq4f round 3 B1: a login revoked by UPDATE (row kept) that is later
+  // cleaned up must stay undeliverable, not come back as session_id NULL.
+  it("B1 never sends after a session revoked by UPDATE was deleted afterwards", async () => {
+    const receiver = await onDutyReceiver("Penerima dicabut lalu dihapus");
+    await seedSubscription(receiver, { session: "revoked-expired" });
+    const live = await seedSubscription(receiver);
+    await owner.query(
+      `DELETE FROM "session" WHERE user_id = $1 AND revoked_at IS NOT NULL`,
+      [receiver.userId],
+    );
+    expect((await ring(receiver)).endpoints).toEqual([live.endpoint]);
+  });
+
+  it("drops a registration older than 30 days and keeps one of 29 days", async () => {
+    const receiver = await onDutyReceiver("Penerima lama terdaftar");
+    await seedSubscription(receiver, { ageMs: 31 * 24 * HOUR });
+    const recent = await seedSubscription(receiver, { ageMs: 29 * 24 * HOUR });
+    expect((await ring(receiver)).endpoints).toEqual([recent.endpoint]);
   });
 
   it("only sends to subscriptions registered for the alarm's outlet", async () => {
@@ -464,6 +543,50 @@ describe("legend-ofq4f 791 item 3 fan-out to every eligible subscription", () =>
         .map((sub) => sub.endpoint)
         .sort(),
     );
+  });
+});
+
+describe("legend-ofq4f v2 V3 sends are parallel", () => {
+  it("one hanging push endpoint does not hold back the others", async () => {
+    const receiver = await onDutyReceiver("Penerima endpoint macet");
+    // newest registration first: the hanging one would go first if sequential.
+    const hung = await seedSubscription(receiver, { ageMs: MINUTE });
+    const fine = [
+      await seedSubscription(receiver, { ageMs: 5 * MINUTE }),
+      await seedSubscription(receiver, { ageMs: 10 * MINUTE }),
+    ];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let outcome: Awaited<ReturnType<typeof ring>> | undefined;
+    let during: Error | undefined;
+    try {
+      outcome = await ring(receiver, webPushEnv, {
+        send: (subscription) =>
+          subscription.endpoint === hung.endpoint ? gate : Promise.resolve(),
+        during: async (sent) => {
+          try {
+            await vi.waitFor(
+              () => {
+                for (const sub of fine) expect(sent()).toContain(sub.endpoint);
+              },
+              { timeout: 4000, interval: 25 },
+            );
+          } catch (error) {
+            during = error as Error;
+          } finally {
+            release(); // never leave the delivery dangling
+          }
+        },
+      });
+    } finally {
+      release();
+    }
+    expect(
+      during,
+      "the other endpoints must be sent while one endpoint is still hanging",
+    ).toBeUndefined();
+    expect(outcome!.endpoints).toContain(hung.endpoint);
+    expect(outcome!.results).toEqual(["sent"]);
   });
 });
 
