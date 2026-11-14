@@ -10,6 +10,10 @@
 // event payload is a trigger, never the authority: a forged or stale "approved"
 // event cannot close a case whose chain the database still has pending.
 //
+// Chains of a late-funds correction (objectType
+// `payment_reconciliation_correction`, legend-oan3p) are dispatched to
+// `settleReconciliationCorrectionForApproval` the same way.
+//
 // - Other event names, source modules and object types: ignored (not ours).
 // - A chain no case owns: ignored (opening transaction rolled back).
 // - Replay: settling a case that is no longer pending returns it unchanged.
@@ -24,6 +28,11 @@ import {
   RECONCILIATION_SOURCE_MODULE,
   settleReconciliationCaseForApproval,
 } from "./payment-admin-reconciliation.service.ts";
+import {
+  CORRECTION_OBJECT_TYPE,
+  CORRECTION_SOURCE_MODULE,
+  settleReconciliationCorrectionForApproval,
+} from "./payment-reconciliation-correction.service.ts";
 
 /** Envelope as the worker hands it to `deliverEvent`. */
 export type DomainEvent = EventEnvelope;
@@ -36,7 +45,7 @@ function payloadField(event: DomainEvent, key: string): unknown {
 }
 
 /**
- * Settles the reconciliation case that owns the resolved chain. Idempotent and
+ * Settles the reconciliation case or correction that owns the resolved chain. Idempotent and
  * replay safe; ignores events that are not ours.
  */
 export async function handleReconciliationApprovalResolved(
@@ -45,9 +54,14 @@ export async function handleReconciliationApprovalResolved(
   now: Date = new Date(),
 ): Promise<void> {
   if (event.name !== approvalResolvedEvent.name) return;
-  if (payloadField(event, "sourceModule") !== RECONCILIATION_SOURCE_MODULE)
-    return;
-  if (payloadField(event, "objectType") !== RECONCILIATION_OBJECT_TYPE) return;
+  const objectType = payloadField(event, "objectType");
+  const isCase =
+    payloadField(event, "sourceModule") === RECONCILIATION_SOURCE_MODULE &&
+    objectType === RECONCILIATION_OBJECT_TYPE;
+  const isCorrection =
+    payloadField(event, "sourceModule") === CORRECTION_SOURCE_MODULE &&
+    objectType === CORRECTION_OBJECT_TYPE;
+  if (!isCase && !isCorrection) return;
 
   const parsed = approvalResolvedEvent.envelopeSchema.safeParse(event);
   if (!parsed.success) return;
@@ -56,6 +70,14 @@ export async function handleReconciliationApprovalResolved(
   const chainId = parsed.data.payload.chainId;
 
   await withTenant(db, context, async (tx) => {
-    await settleReconciliationCaseForApproval(tx, context, { chainId }, now);
+    if (isCorrection)
+      await settleReconciliationCorrectionForApproval(
+        tx,
+        context,
+        { chainId },
+        now,
+      );
+    else
+      await settleReconciliationCaseForApproval(tx, context, { chainId }, now);
   });
 }

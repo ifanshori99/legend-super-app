@@ -426,6 +426,22 @@ export type ResolveUnallocatedFundInput = z.infer<
 export const reconciliationSourceSchema = z.enum(["gateway", "edc"]);
 export type ReconciliationSource = z.infer<typeof reconciliationSourceSchema>;
 
+/**
+ * Funds of a written-off case arrived in a later settlement import. Nothing is
+ * reversed automatically: finance must review the correction (legend-oan3p).
+ */
+export const reconciliationLateFundsSchema = z.strictObject({
+  correctionId: uuidSchema,
+  settlementId: uuidSchema,
+  settlementLineId: uuidSchema,
+  receivedIdr: nonnegativeIdr,
+  detectedAt: isoDateTimeSchema,
+  correctionStatus: z.enum(["open", "pending_approval", "resolved"]),
+});
+export type ReconciliationLateFunds = z.infer<
+  typeof reconciliationLateFundsSchema
+>;
+
 export const reconciliationCaseViewSchema = z
   .strictObject({
     id: uuidSchema,
@@ -462,6 +478,8 @@ export const reconciliationCaseViewSchema = z
     resolvedByName: ref.nullable(),
     resolvedAt: isoDateTimeSchema.nullable(),
     note: z.string().max(500).nullable(),
+    /** Set when funds of this written-off case arrived later; null otherwise. */
+    lateFunds: reconciliationLateFundsSchema.nullable(),
     createdAt: isoDateTimeSchema,
   })
   .refine((c) => c.receivedIdr - c.expectedIdr === c.varianceIdr, {
@@ -470,6 +488,40 @@ export const reconciliationCaseViewSchema = z
   });
 export type ReconciliationCaseView = z.infer<
   typeof reconciliationCaseViewSchema
+>;
+
+/** Review of funds that arrived after a case was written off (legend-oan3p). */
+export const reconciliationCorrectionViewSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: tenantIdSchema,
+  outletId: outletIdSchema,
+  caseId: uuidSchema,
+  settlementId: uuidSchema,
+  settlementLineId: uuidSchema,
+  source: reconciliationSourceSchema,
+  reference: ref,
+  /** What the write-off removed from the books. */
+  writtenOffIdr: nonnegativeIdr,
+  /** What the later settlement line actually received. */
+  receivedIdr: nonnegativeIdr,
+  /**
+   * `pending_approval`: a decision was requested and waits for an approver who
+   * is not the requester; the correction closes only when that approval passes.
+   */
+  status: z.enum(["open", "pending_approval", "resolved"]),
+  decision: z.enum(["reverse_write_off", "keep_write_off"]).nullable(),
+  requestedBy: uuidSchema.nullable(),
+  requestedByName: ref.nullable(),
+  approvalRequestId: uuidSchema.nullable(),
+  approvedBy: uuidSchema.nullable(),
+  approvedByName: ref.nullable(),
+  resolvedByName: ref.nullable(),
+  resolvedAt: isoDateTimeSchema.nullable(),
+  note: z.string().max(500).nullable(),
+  createdAt: isoDateTimeSchema,
+});
+export type ReconciliationCorrectionView = z.infer<
+  typeof reconciliationCorrectionViewSchema
 >;
 
 export const reconciliationSummarySchema = z.strictObject({
@@ -487,6 +539,14 @@ export const resolveReconciliationCaseInputSchema = clientInputSchema({
 });
 export type ResolveReconciliationCaseInput = z.infer<
   typeof resolveReconciliationCaseInputSchema
+>;
+
+export const resolveReconciliationCorrectionInputSchema = clientInputSchema({
+  decision: z.enum(["reverse_write_off", "keep_write_off"]),
+  note: noteSchema,
+});
+export type ResolveReconciliationCorrectionInput = z.infer<
+  typeof resolveReconciliationCorrectionInputSchema
 >;
 
 // Settlement import (legend-jlqi). Reconciliation only reads and records
@@ -791,6 +851,23 @@ export const resolveReconciliationCase = defineEndpoint({
   params: caseParams,
   body: resolveReconciliationCaseInputSchema,
   response: dataResponseSchema(reconciliationCaseViewSchema),
+});
+/** Late funds of a written-off case: finance reviews, nothing is reversed automatically. */
+export const listReconciliationCorrections = defineEndpoint({
+  method: "GET",
+  path: `${ADMIN}/reconciliation/corrections`,
+  query: cursorPageQuerySchema.extend({
+    ...outletFilter,
+    status: z.enum(["open", "pending_approval", "resolved"]).optional(),
+  }),
+  response: cursorPageSchema(reconciliationCorrectionViewSchema),
+});
+export const resolveReconciliationCorrection = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/reconciliation/corrections/:correctionId/resolve`,
+  params: z.strictObject({ correctionId: uuidSchema }),
+  body: resolveReconciliationCorrectionInputSchema,
+  response: dataResponseSchema(reconciliationCorrectionViewSchema),
 });
 
 // ---- Fixtures: Cafe Legend Bandung, one business day --------------------
@@ -1148,6 +1225,7 @@ const caseFixtures = [
     resolvedByName: null,
     resolvedAt: null,
     note: null,
+    lateFunds: null,
     createdAt: "2026-11-01T05:40:00.000Z",
   },
   {
@@ -1172,6 +1250,7 @@ const caseFixtures = [
     resolvedByName: null,
     resolvedAt: null,
     note: null,
+    lateFunds: null,
     createdAt: "2026-11-01T05:42:00.000Z",
   },
   {
@@ -1196,10 +1275,41 @@ const caseFixtures = [
     resolvedByName: "Dodi Kasir",
     resolvedAt: "2026-11-01T02:20:00.000Z",
     note: "Selisih dibukukan sebagai biaya layanan periode Oktober.",
+    lateFunds: null,
     createdAt: "2026-11-01T01:05:00.000Z",
   },
 ].map((entry) =>
   reconciliationCaseViewSchema.parse({
+    ...entry,
+    tenantId,
+    outletId: bandungId,
+  }),
+);
+
+const correctionFixtures = [
+  {
+    id: "e1f2a3b4-0001-4e01-8f01-000000000001",
+    caseId: "a7b8c9d0-0002-4a02-8b02-000000000002",
+    settlementId: "b8c9d0e1-0004-4b04-9c04-000000000004",
+    settlementLineId: "c9d0e1f2-0004-4c04-8d04-000000000004",
+    source: "edc",
+    reference: "Mandiri batch 2026-11-03 / standalone",
+    writtenOffIdr: 285_000,
+    receivedIdr: 285_000,
+    status: "open",
+    decision: null,
+    requestedBy: null,
+    requestedByName: null,
+    approvalRequestId: null,
+    approvedBy: null,
+    approvedByName: null,
+    resolvedByName: null,
+    resolvedAt: null,
+    note: null,
+    createdAt: "2026-11-03T05:42:00.000Z",
+  },
+].map((entry) =>
+  reconciliationCorrectionViewSchema.parse({
     ...entry,
     tenantId,
     outletId: bandungId,
@@ -1226,6 +1336,7 @@ export const paymentAdminFixtures = [
   [unallocatedFundViewSchema, unallocatedFixtures[0]],
   [unallocatedFundViewSchema, unallocatedFixtures[1]],
   [reconciliationCaseViewSchema, caseFixtures[0]],
+  [reconciliationCorrectionViewSchema, correctionFixtures[0]],
   [reconciliationSummarySchema, reconciliationSummaryFixture],
 ] as const;
 
@@ -1242,5 +1353,6 @@ export const cafeLegendPaymentAdminFixtures = {
   refundablePayments: refundableFixtures,
   unallocatedFunds: unallocatedFixtures,
   reconciliationCases: caseFixtures,
+  reconciliationCorrections: correctionFixtures,
   reconciliationSummary: reconciliationSummaryFixture,
 } as const;

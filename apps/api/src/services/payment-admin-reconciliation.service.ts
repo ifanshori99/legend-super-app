@@ -20,7 +20,10 @@ import {
   reconciliationSummarySchema,
 } from "@starter/shared/payment/admin";
 import { db } from "../db/index.ts";
-import { paymentReconciliationCases as cases } from "../db/schema/payment-admin.ts";
+import {
+  paymentReconciliationCases as cases,
+  paymentReconciliationCorrections as corrections,
+} from "../db/schema/payment-admin.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { paymentSettlementLines as lines } from "../db/schema/payment-settlement.ts";
 import { user } from "../db/schema/user.ts";
@@ -55,13 +58,37 @@ async function viewOf(tx: Tx, row: CaseRow) {
     await nameOf(tx, row.approvedBy),
     // The requester is the closer of record; legacy resolved rows have only resolved_by.
     requestedByName ?? (await nameOf(tx, row.resolvedBy)),
+    await lateFundsOf(tx, row),
   );
+}
+/** Late-funds flag: the correction row of a written-off case, if any (tenant filtered). */
+async function lateFundsOf(tx: Tx, row: CaseRow) {
+  const [correction] = await tx
+    .select()
+    .from(corrections)
+    .where(
+      and(
+        eq(corrections.tenantId, row.tenantId),
+        eq(corrections.caseId, row.id),
+      ),
+    );
+  return correction
+    ? {
+        correctionId: correction.id,
+        settlementId: correction.settlementId,
+        settlementLineId: correction.settlementLineId,
+        receivedIdr: correction.receivedIdr,
+        detectedAt: correction.createdAt.toISOString(),
+        correctionStatus: correction.status,
+      }
+    : null;
 }
 function view(
   row: CaseRow,
   requestedByName: string | null,
   approvedByName: string | null,
   resolvedByName: string | null,
+  lateFunds: Awaited<ReturnType<typeof lateFundsOf>>,
 ) {
   return reconciliationCaseViewSchema.parse({
     id: row.id,
@@ -87,6 +114,7 @@ function view(
     approvalRequestId: row.approvalChainId,
     requestedBy: row.requestedBy,
     approvedBy: row.approvedBy,
+    lateFunds,
     createdAt: row.createdAt.toISOString(),
   });
 }

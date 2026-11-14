@@ -19,6 +19,7 @@ import * as service from "../services/payment-admin.service.ts";
 import * as config from "../services/payment-admin-config.service.ts";
 import * as funds from "../services/payment-admin-funds.service.ts";
 import * as reconciliation from "../services/payment-admin-reconciliation.service.ts";
+import * as corrections from "../services/payment-reconciliation-correction.service.ts";
 import * as settlementImport from "../services/payment-settlement-import.service.ts";
 import * as refunds from "../services/payment-refund.service.ts";
 
@@ -402,6 +403,35 @@ paymentAdminRouter.post(
         actor(req),
         contract.resolveReconciliationCase.params.parse(req.params),
         contract.resolveReconciliationCase.body.parse(req.body),
+        key(req),
+      ),
+    });
+  },
+);
+paymentAdminRouter.get(
+  route(contract.listReconciliationCorrections.path),
+  reconcileQuery,
+  async (req, res) => {
+    res.json(
+      await corrections.listReconciliationCorrections(
+        scope(req),
+        actor(req),
+        contract.listReconciliationCorrections.query.parse(req.query),
+      ),
+    );
+  },
+);
+paymentAdminRouter.post(
+  route(contract.resolveReconciliationCorrection.path),
+  jsonBody,
+  reconcileRecord,
+  async (req, res) => {
+    res.json({
+      data: await corrections.resolveReconciliationCorrection(
+        scope(req),
+        actor(req),
+        contract.resolveReconciliationCorrection.params.parse(req.params),
+        contract.resolveReconciliationCorrection.body.parse(req.body),
         key(req),
       ),
     });
