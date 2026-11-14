@@ -25,7 +25,11 @@ import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
 import { PosError } from "@starter/shared/pos";
 import { posDailyCloses, posShifts } from "../db/schema/pos-shift.ts";
 import type { Tx } from "./menu-internals.ts";
-import { liveExpectedCashIdr, type ShiftRow } from "./pos-shift-support.ts";
+import {
+  heldCorrectionCashIdrOf,
+  liveExpectedCashIdr,
+  type ShiftRow,
+} from "./pos-shift-support.ts";
 
 /**
  * Takes the day locks (shared) for `businessDates` and returns whether any of
@@ -122,7 +126,9 @@ export async function lockCashierShiftForCash(
 }
 
 /**
- * True when `cashOutIdr` is more than the drawer should hold now. Call it only
+ * True when `cashOutIdr` is more than the drawer should hold now: the live
+ * expected cash minus the cash of the shift's other held refunds and voids.
+ * Call it only
  * under the FOR UPDATE shift lock of `lockCashierShiftForCash` (`out` mode), so
  * no other cash movement changes the figures between the check and the write.
  * The answer must never reach the cashier (legend-utqr).
@@ -132,5 +138,8 @@ export async function cashOutExceedsDrawer(
   shift: ShiftRow,
   cashOutIdr: number,
 ): Promise<boolean> {
-  return cashOutIdr > (await liveExpectedCashIdr(tx, shift));
+  // Cash of the shift's other held refunds and voids already left the drawer
+  // (the cashier paid it), so only the physical cash can cover this one.
+  const expected = await liveExpectedCashIdr(tx, shift);
+  return cashOutIdr > expected - (await heldCorrectionCashIdrOf(tx, shift));
 }
