@@ -373,6 +373,9 @@ function AreaFrameBody({
   return (
     <CustomerShell
       brandName={brandName}
+      pageTitle={
+        nav.find((item) => item.current)?.label ?? t(definition.nameKey)
+      }
       nav={nav}
       LinkComponent={RouterShellLink}
       actions={

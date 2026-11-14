@@ -88,6 +88,7 @@ function useBarToastInset(active: boolean) {
 
 export function CustomerShell({
   brandName,
+  pageTitle,
   logoUrl,
   context,
   actions,
@@ -98,6 +99,7 @@ export function CustomerShell({
 }: {
   /** Tenant display name (whitelabel: never the platform name, D43). */
   brandName: string;
+  pageTitle?: string;
   logoUrl?: string | null;
   /** Where the customer is, e.g. "Meja 12 · 3 tamu". */
   context?: ReactNode;
@@ -147,7 +149,12 @@ export function CustomerShell({
 
       <Main
         id={embedded ? undefined : "main-content"}
-        className="min-h-0 flex-1 overflow-y-auto"
+        role={embedded ? "region" : undefined}
+        aria-label={
+          pageTitle ?? nav.find((item) => item.current)?.label ?? brandName
+        }
+        tabIndex={0}
+        className="min-h-0 flex-1 overflow-y-auto focus-visible:-outline-offset-2"
       >
         <div className="mx-auto w-full max-w-2xl px-gutter py-4">
           {children}
