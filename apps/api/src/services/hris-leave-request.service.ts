@@ -800,9 +800,14 @@ export async function createLeaveRequest(
   // is opened under (approval rows are outlet-owned).
   const home = await withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
+    // A live self.leave.request grant at the leave's own (home) outlet, the
+    // same rule presentRequest and the storage read route use (legend-bkd76).
     if (
       access.own === null ||
-      !access.snapshot.permissions.includes("self.leave.request")
+      !access.snapshot.allows("self.leave.request", {
+        type: "outlet",
+        id: access.own.homeOutletId,
+      })
     )
       throw forbidden();
     return access.own.homeOutletId;
@@ -815,7 +820,10 @@ export async function createLeaveRequest(
     if (
       own === null ||
       lower(own.homeOutletId) !== lower(home) ||
-      !access.snapshot.permissions.includes("self.leave.request")
+      !access.snapshot.allows("self.leave.request", {
+        type: "outlet",
+        id: home,
+      })
     )
       throw forbidden();
     const tenantId = scoped.tenant.tenantId;
