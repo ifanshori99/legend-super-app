@@ -12,6 +12,14 @@ import {
   eventNameSchema,
 } from "../events/index.ts";
 
+/**
+ * First edge image version that carries the cloud_to_edge
+ * edge_link.dead_lettered no-op applier (legend-3k41y). Edge images must be
+ * tagged at or above this; EDGE_NODE_VERSION (api edge/config.ts) is the
+ * string an edge reports in its hello. The cloud warns on older edges.
+ */
+export const EDGE_LINK_PLACEHOLDER_MIN_VERSION = "0.2.0";
+
 export const EDGE_LINK_AGGREGATE = "edge_link";
 export const EDGE_LINK_DEAD_LETTERED_EVENT = "edge_link.dead_lettered";
 

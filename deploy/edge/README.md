@@ -88,6 +88,16 @@ an older cloud rejects that heartbeat because its schema is strict. Edges
 with a valid maintenance URL omit the field. Keep local startup-error
 monitoring in place, including during the upgrade and offline operation.
 
+### Image version and the queue placeholder (legend-3k41y)
+
+Set `EDGE_NODE_VERSION` to the image's semver tag when the image is built or
+deployed (for example `0.2.0`). It defaults to `dev`, and a version that is
+not plain semver never triggers the cloud's warning. Edge images must be
+`>= EDGE_LINK_PLACEHOLDER_MIN_VERSION` (`packages/shared/src/edge/link-dead-letter.ts`)
+before a cloud that replaces stale catalog rows with the
+`edge_link.dead_lettered` no-op is released; an older edge cannot classify it
+and its batches stall. See `docs/deployment.md`, section "Edge host".
+
 ## Checklist
 
 - [ ] Preflight prints no FAIL.
