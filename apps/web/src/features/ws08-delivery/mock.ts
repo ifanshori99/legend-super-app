@@ -27,6 +27,7 @@ import {
   getDeliveryReconciliation,
   listDeliveryChannels,
   listDeliveryOrders,
+  mapDeliveryOrderLines,
   resendDeliveryOrderSync,
   resolveDeliveryOrderSync,
   setDeliveryChannelState,
@@ -40,14 +41,18 @@ import type {
   DeliveryPlatform,
   DeliveryPlatformSync,
 } from "@starter/shared/delivery";
-import { cafeLegendFixtures, createUlidFactory } from "@starter/shared/core";
+import {
+  cafeLegendFixtures,
+  createUlidFactory,
+  idr,
+} from "@starter/shared/core";
 import { cafeLegendMenuFixtures } from "@starter/shared/menu";
 import { ApiError } from "../../lib/api/errors.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
-import { channelIsManual, orderIsFinal } from "./lib.ts";
+import { channelIsManual, lineNeedsMapping, orderIsFinal } from "./lib.ts";
 
 const fixtures = cafeLegendDeliveryFixtures;
 const outlet = cafeLegendFixtures.outlets[0];
@@ -439,6 +444,48 @@ registerMock(resolveDeliveryOrderSync, ({ params }) => {
   if (current.platformSync !== "needs_action")
     fail("DELIVERY_SYNC_NOT_PENDING");
   return { data: saveOrder({ ...current, platformSync: "ok" }) };
+});
+
+// legend-5d76: staff map the unmatched lines of a needs_review order. Like the
+// server, the platform price and the order totals stay as received; only the
+// line mapping and the internal order change. Already injected: current row.
+registerMock(mapDeliveryOrderLines, ({ params, body }) => {
+  requireOutlet(params.outletId);
+  const current = findOrder(params.outletId, params.deliveryOrderId);
+  if (current.orderId !== null || current.status !== "received")
+    return { data: current };
+  const unmatched = current.lines.filter(lineNeedsMapping);
+  const mapped = new Map(body.mappings.map((row) => [row.lineNo, row]));
+  if (
+    unmatched.length === 0 ||
+    body.mappings.length !== unmatched.length ||
+    unmatched.some((line) => !mapped.has(line.lineNo))
+  )
+    fail("DELIVERY_MAPPING_INCOMPLETE");
+  const lines = current.lines.map((line) => {
+    const row = mapped.get(line.lineNo);
+    if (!lineNeedsMapping(line) || !row) return line;
+    menuItemOf(row.menuItemId);
+    const channelPriceIdr = idr(channelPriceOf(row.menuItemId));
+    return {
+      ...line,
+      menuItemId: row.menuItemId,
+      variantId: row.variantId ?? null,
+      channelPriceIdr,
+      mapping:
+        channelPriceIdr === line.unitPriceIdr
+          ? ("matched" as const)
+          : ("price_mismatch" as const),
+    };
+  });
+  return {
+    data: saveOrder({
+      ...current,
+      lines,
+      orderId: mintOrderId() as DeliveryChannelOrder["orderId"],
+      number: `D-0${(orderNumberSequence += 1)}`,
+    }),
+  };
 });
 
 // ---- Commission reconciliation -------------------------------------------

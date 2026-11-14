@@ -14,6 +14,7 @@ import {
   createManualDeliveryOrder,
   getDeliveryOrder,
   listDeliveryOrders,
+  mapDeliveryOrderLines,
   resendDeliveryOrderSync,
   resolveDeliveryOrderSync,
   updateDeliveryOrderStatus,
@@ -26,6 +27,7 @@ import {
   requireOutletPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
+import * as deliveryMapLines from "../services/delivery-map-lines.ts";
 import * as deliveryOrders from "../services/delivery-orders.service.ts";
 import * as platformRetry from "../services/delivery-platform-retry.ts";
 
@@ -150,6 +152,29 @@ deliveryOrdersRouter.post(
     const body = resolveDeliveryOrderSync.body.parse(req.body);
     res.json({
       data: await platformRetry.resolveDeliveryOrderSync(
+        getScopedTenantContext(req),
+        { userId: userIdSchema.parse(getAuth(req).user.id) },
+        outletId,
+        deliveryOrderId,
+        body,
+      ),
+    });
+  },
+);
+
+// legend-5d76: staff map the unmatched lines of a needs_review order and send
+// it to the kitchen. Same gate; idempotent (an injected order answers as is).
+deliveryOrdersRouter.post(
+  "/:deliveryOrderId/map-lines",
+  handle,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, deliveryOrderId } = mapDeliveryOrderLines.params.parse(
+      req.params,
+    );
+    const body = mapDeliveryOrderLines.body.parse(req.body);
+    res.json({
+      data: await deliveryMapLines.mapDeliveryOrderLines(
         getScopedTenantContext(req),
         { userId: userIdSchema.parse(getAuth(req).user.id) },
         outletId,

@@ -15,6 +15,7 @@ import {
   listItems,
   listPriceListItems,
   listPriceLists,
+  listVariants,
 } from "@starter/shared/menu";
 import { endpointQueryKey } from "@/lib/api/endpoint";
 import * as api from "./api";
@@ -70,6 +71,18 @@ export const menuItemsQuery = () =>
   queryOptions({
     queryKey: endpointQueryKey(listItems, { query: MENU_QUERY }),
     queryFn: ({ signal }) => api.fetchMenuItems(MENU_QUERY, { signal }),
+    staleTime: DELIVERY_REFETCH_MS,
+    retry: 1,
+  });
+
+/** Variants of one menu item (mapping picker, legend-5d76). */
+export const itemVariantsQuery = (itemId: string) =>
+  queryOptions({
+    queryKey: endpointQueryKey(listVariants, {
+      params: { itemId },
+      query: { limit: api.DELIVERY_LIST_LIMIT },
+    }),
+    queryFn: ({ signal }) => api.fetchItemVariants({ itemId }, { signal }),
     staleTime: DELIVERY_REFETCH_MS,
     retry: 1,
   });

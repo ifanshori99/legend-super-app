@@ -17,6 +17,13 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
@@ -28,6 +35,9 @@ import type {
 import type { MessageKey } from "@starter/shared/i18n";
 import {
   useDeliveryOrder,
+  useMapOrderLines,
+  useItemVariantsFor,
+  useMenuItems,
   useResendOrderSync,
   useResolveOrderSync,
   useUpdateOrderStatus,
@@ -41,8 +51,10 @@ import {
   orderActions,
   orderCanEnterKitchen,
   orderHasPriceMismatch,
+  lineNeedsMapping,
   orderHasUnmatchedLine,
   orderIsFinal,
+  orderNeedsReview,
   orderNetIdr,
   platformKey,
   type DeliveryOrderAction,
@@ -397,6 +409,227 @@ function PlatformSyncNote({
   );
 }
 
+/** The menu item (and variant, when it has some) staff chose for one line. */
+type LinePick = { menuItemId: string; variantId: string | null };
+
+/**
+ * legend-5d76: staff map each unmatched (or sold-out) line of a needs_review
+ * order to a menu item, plus a variant when that item has some, and send it to
+ * the kitchen in one request. The platform price and total stay as received;
+ * the server rejects an item that is missing, inactive, unpriced or sold out
+ * (422 `DELIVERY_MAPPING_INCOMPLETE`). Uses `mutateAsync`: on success the
+ * refetch unmounts this block.
+ */
+function MappingSection({
+  outletId,
+  order,
+  platform,
+  disabled,
+  onBusyChange,
+}: {
+  outletId: string;
+  order: DeliveryChannelOrder;
+  platform: string;
+  disabled: boolean;
+  onBusyChange: (busy: boolean) => void;
+}) {
+  const t = useT();
+  const toast = useToast();
+  const menu = useMenuItems();
+  const map = useMapOrderLines();
+  const readOnly = useSupportReadOnly();
+  const idPrefix = React.useId();
+  const [picked, setPicked] = React.useState<Record<number, LinePick>>({});
+  const unmatchedLines = order.lines.filter(lineNeedsMapping);
+  const menuItems = menu.data?.data ?? [];
+  const variantQueries = useItemVariantsFor(
+    unmatchedLines.map((line) => picked[line.lineNo]?.menuItemId ?? null),
+  );
+  // A line is done once its item is chosen and, if the item has variants, the
+  // variant too. Variants still loading (or failed) keep the button off.
+  const complete = unmatchedLines.every((line, index) => {
+    const pick = picked[line.lineNo];
+    const variants = variantQueries[index]?.data?.data;
+    if (!pick || !variants) return false;
+    return variants.length === 0 || pick.variantId !== null;
+  });
+  const busy = map.isPending;
+  React.useEffect(() => {
+    onBusyChange(busy);
+    return () => onBusyChange(false);
+  }, [busy, onBusyChange]);
+
+  const onSubmit = async () => {
+    if (busy || !complete) return;
+    try {
+      await map.mutateAsync({
+        outletId,
+        deliveryOrderId: order.id,
+        body: {
+          mappings: unmatchedLines.map((line) => ({
+            lineNo: line.lineNo,
+            menuItemId: picked[line.lineNo].menuItemId,
+            ...(picked[line.lineNo].variantId !== null && {
+              variantId: picked[line.lineNo].variantId,
+            }),
+          })),
+        },
+      });
+      toast({ title: t("deliveryOps.mapLines.success"), tone: "success" });
+    } catch {
+      // The error shows inline below; the order stays needs_review.
+    }
+  };
+
+  return (
+    <section
+      aria-label={t("deliveryOps.mapLines.groupLabel")}
+      className="grid gap-3 rounded-container bg-warning-subtle p-card text-sm"
+    >
+      <h3 className="flex items-start gap-2 text-sm font-semibold text-warning">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        {t("deliveryOps.mapLines.title")}
+      </h3>
+      <p>{t("deliveryOps.mapLines.intro", { platform })}</p>
+      <p className="text-muted-foreground">
+        {t("deliveryOps.mapLines.priceHint")}
+      </p>
+      {menu.isError && (
+        <div className="flex flex-wrap items-center gap-2">
+          <p role="alert" className="font-medium text-danger">
+            {t("deliveryOps.mapLines.menuError")}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void menu.refetch()}
+          >
+            {t("deliveryOps.mapLines.menuRetry")}
+          </Button>
+        </div>
+      )}
+      <ul className="grid gap-2">
+        {unmatchedLines.map((line, index) => {
+          const fieldId = `${idPrefix}-${line.lineNo}`;
+          const variantQuery = variantQueries[index];
+          const variants = variantQuery?.data?.data ?? [];
+          return (
+            <li
+              key={line.lineNo}
+              className="grid gap-2 rounded-container border-(length:--border-w) bg-card p-3"
+            >
+              <p className="font-semibold">
+                {line.externalItemName}
+                <span className="font-normal text-muted-foreground tabular">
+                  {" · "}
+                  {t("deliveryOps.detail.lineQty")} {line.quantity}
+                </span>
+              </p>
+              <FormField
+                id={fieldId}
+                label={t("deliveryOps.mapLines.itemLabel", {
+                  name: line.externalItemName,
+                })}
+              >
+                <Select
+                  value={picked[line.lineNo]?.menuItemId ?? ""}
+                  onValueChange={(value) =>
+                    setPicked((current) => ({
+                      ...current,
+                      [line.lineNo]: { menuItemId: value, variantId: null },
+                    }))
+                  }
+                  disabled={busy || menu.isPending}
+                >
+                  <SelectTrigger id={fieldId}>
+                    <SelectValue
+                      placeholder={t("deliveryOps.mapLines.itemPlaceholder")}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {menuItems.map((item) => (
+                      <SelectItem key={item.id} value={item.id}>
+                        {item.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </FormField>
+              {variantQuery?.isError && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <p role="alert" className="font-medium text-danger">
+                    {t("deliveryOps.mapLines.variantError")}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void variantQuery.refetch()}
+                  >
+                    {t("deliveryOps.mapLines.menuRetry")}
+                  </Button>
+                </div>
+              )}
+              {variants.length > 0 && (
+                <FormField
+                  id={`${fieldId}-variant`}
+                  label={t("deliveryOps.mapLines.variantLabel", {
+                    name: line.externalItemName,
+                  })}
+                >
+                  <Select
+                    value={picked[line.lineNo]?.variantId ?? ""}
+                    onValueChange={(value) =>
+                      setPicked((current) => ({
+                        ...current,
+                        [line.lineNo]: {
+                          menuItemId: current[line.lineNo].menuItemId,
+                          variantId: value,
+                        },
+                      }))
+                    }
+                    disabled={busy}
+                  >
+                    <SelectTrigger id={`${fieldId}-variant`}>
+                      <SelectValue
+                        placeholder={t(
+                          "deliveryOps.mapLines.variantPlaceholder",
+                        )}
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {variants.map((variant) => (
+                        <SelectItem key={variant.id} value={variant.id}>
+                          {variant.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </FormField>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {map.error && (
+        <p role="alert" className="font-medium text-danger">
+          {t(deliveryErrorKey(map.error))}
+        </p>
+      )}
+      <Button
+        className="min-h-11"
+        type="button"
+        loading={busy}
+        disabled={disabled || readOnly || busy || !complete}
+        onClick={() => void onSubmit()}
+      >
+        {t("deliveryOps.mapLines.submit")}
+      </Button>
+    </section>
+  );
+}
+
 function OrderDetailBody({
   outletId,
   timeZone,
@@ -435,6 +668,7 @@ function OrderDetailBody({
   const actions = orderActions(order.status);
   const injectable = orderCanEnterKitchen(order);
   const priceMismatch = orderHasPriceMismatch(order);
+  const needsReview = orderNeedsReview(order);
   const unmatched = orderHasUnmatchedLine(order);
   const reasonMissing = reason.trim() === "";
   const reasonError =
@@ -558,6 +792,16 @@ function OrderDetailBody({
           onBusyChange={setSyncBusy}
         />
 
+        {needsReview && canHandle && (
+          <MappingSection
+            outletId={outletId}
+            order={order}
+            platform={t(platformKey(order.platform))}
+            disabled={!online}
+            onBusyChange={setSyncBusy}
+          />
+        )}
+
         {order.customerNote && (
           <div className="grid gap-1 rounded-container bg-surface-2 p-card">
             <p className="type-eyebrow text-muted-foreground">
@@ -607,7 +851,7 @@ function OrderDetailBody({
               {t("deliveryOps.detail.priceMismatchHint")}
             </p>
           )}
-          {unmatched && (
+          {unmatched && !(needsReview && canHandle) && (
             <p className="flex items-start gap-1.5 rounded-container bg-danger-subtle p-3 text-sm font-medium text-danger">
               <CircleAlert
                 className="mt-0.5 size-4 shrink-0"

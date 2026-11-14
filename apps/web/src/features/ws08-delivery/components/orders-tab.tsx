@@ -40,6 +40,7 @@ import { useDeliveryOrders } from "../hooks";
 import {
   formatClock,
   formatDayShort,
+  orderNeedsAttention,
   orderStatusKey,
   platformKey,
 } from "../lib";
@@ -52,6 +53,9 @@ import { ManualOrderSheet } from "./manual-order-sheet";
 import { OrderDetailSheet } from "./order-detail-sheet";
 
 const ALL = "all";
+// "Perlu tindakan" fetches older pages on its own only this many times; after
+// that staff press "Muat lagi", so a quiet outlet never walks the whole history.
+const ATTENTION_AUTO_PAGES_MAX = 5;
 
 export function OrdersTab({
   outletId,
@@ -73,17 +77,35 @@ export function OrdersTab({
   );
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [manualOpen, setManualOpen] = React.useState(false);
+  // The list API has no "needs action" filter, so this narrows the pages
+  // already loaded (legend-c2m5c). Older pages join through "Muat lagi".
+  const [attentionOnly, setAttentionOnly] = React.useState(false);
 
   const orders = useDeliveryOrders(outletId, {
     platform: platform === ALL ? undefined : platform,
     status: status === ALL ? undefined : status,
   });
-  const rows = orders.data?.pages.flatMap((page) => page.data) ?? [];
-  const state: DataState = orders.isPending
-    ? "loading"
-    : rows.length === 0
-      ? "empty"
-      : "ready";
+  const loaded = orders.data?.pages.flatMap((page) => page.data) ?? [];
+  const rows = attentionOnly ? loaded.filter(orderNeedsAttention) : loaded;
+  // A filtered page chain can look empty while older pages still hold
+  // matches: keep fetching until one shows up, the list ends, or the auto
+  // fetch budget is spent (then "Muat lagi" continues by hand).
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = orders;
+  const emptyWithMore =
+    attentionOnly && rows.length === 0 && Boolean(hasNextPage);
+  const pagesLoaded = orders.data?.pages.length ?? 0;
+  const searching = emptyWithMore && pagesLoaded <= ATTENTION_AUTO_PAGES_MAX;
+  React.useEffect(() => {
+    if (searching && !isFetchingNextPage) {
+      void fetchNextPage();
+    }
+  }, [searching, isFetchingNextPage, fetchNextPage]);
+  const state: DataState =
+    orders.isPending || searching
+      ? "loading"
+      : rows.length === 0
+        ? "empty"
+        : "ready";
 
   return (
     <>
@@ -107,16 +129,29 @@ export function OrdersTab({
           onRetry={() => void orders.refetch()}
           empty={{
             title: t("deliveryOps.pesanan.emptyTitle"),
-            description: t("deliveryOps.pesanan.emptyHint"),
+            description: emptyWithMore
+              ? t("deliveryOps.pesanan.attentionCapped")
+              : t("deliveryOps.pesanan.emptyHint"),
+            action: emptyWithMore ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                loading={isFetchingNextPage}
+                onClick={() => void fetchNextPage()}
+              >
+                {t("deliveryOps.pesanan.loadMore")}
+              </Button>
+            ) : undefined,
           }}
           rowCount={rows.length}
           actions={
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <Select
                 value={platform}
-                onValueChange={(value) =>
-                  setPlatform(value as DeliveryPlatform | typeof ALL)
-                }
+                onValueChange={(value) => {
+                  setPlatform(value as DeliveryPlatform | typeof ALL);
+                }}
               >
                 <SelectTrigger
                   aria-label={t("deliveryOps.pesanan.filterPlatform")}
@@ -137,9 +172,9 @@ export function OrdersTab({
               </Select>
               <Select
                 value={status}
-                onValueChange={(value) =>
-                  setStatus(value as DeliveryOrderStatus | typeof ALL)
-                }
+                onValueChange={(value) => {
+                  setStatus(value as DeliveryOrderStatus | typeof ALL);
+                }}
               >
                 <SelectTrigger
                   aria-label={t("deliveryOps.pesanan.filterStatus")}
@@ -158,6 +193,17 @@ export function OrdersTab({
                   ))}
                 </SelectContent>
               </Select>
+              <Button
+                type="button"
+                size="sm"
+                variant={attentionOnly ? "default" : "outline"}
+                aria-pressed={attentionOnly}
+                onClick={() => {
+                  setAttentionOnly((value) => !value);
+                }}
+              >
+                {t("deliveryOps.pesanan.filterAttention")}
+              </Button>
               <Button
                 type="button"
                 size="sm"

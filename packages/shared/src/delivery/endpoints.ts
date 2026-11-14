@@ -28,6 +28,7 @@ import {
   listDeliveryOrdersQuerySchema,
   resendDeliveryOrderSyncInputSchema,
   resolveDeliveryOrderSyncInputSchema,
+  mapDeliveryOrderLinesInputSchema,
   setDeliveryChannelStateInputSchema,
   updateDeliveryOrderStatusInputSchema,
 } from "./schemas.ts";
@@ -134,6 +135,22 @@ export const resolveDeliveryOrderSync = defineEndpoint({
   path: "/api/outlets/:outletId/delivery-orders/:deliveryOrderId/platform-sync/resolve",
   params: orderParams,
   body: resolveDeliveryOrderSyncInputSchema,
+  response: dataResponseSchema(deliveryChannelOrderSchema),
+});
+
+/**
+ * Staff map the unmatched or sold_out lines of a needs_review order (status
+ * `received`, `orderId` null) and inject it into the KDS (legend-5d76).
+ * Idempotent: an order already injected answers 200 with the current row (no
+ * second KDS order). 422 `DELIVERY_MAPPING_INCOMPLETE` when a line stays
+ * unmatched or sold_out, or maps to an unknown, inactive, unpriced or sold-out
+ * item.
+ */
+export const mapDeliveryOrderLines = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/delivery-orders/:deliveryOrderId/map-lines",
+  params: orderParams,
+  body: mapDeliveryOrderLinesInputSchema,
   response: dataResponseSchema(deliveryChannelOrderSchema),
 });
 

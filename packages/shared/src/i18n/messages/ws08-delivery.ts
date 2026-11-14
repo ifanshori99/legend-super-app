@@ -98,7 +98,10 @@ export const deliveryOpsMessages = {
     filterPlatform: "Platform",
     allStatuses: "Semua status",
     allPlatforms: "Semua platform",
+    filterAttention: "Perlu tindakan",
     loadMore: "Muat lagi",
+    attentionCapped:
+      "Belum ada pesanan perlu tindakan di halaman yang sudah dimuat. Muat lagi untuk mencari di pesanan yang lebih lama.",
     column: {
       platform: "Platform",
       status: "Status",
@@ -187,6 +190,25 @@ export const deliveryOpsMessages = {
     resolveConfirm: "Ya, sudah ditangani",
     resolved: "Pesanan ditandai sudah ditangani.",
     actionsLabel: "Tindakan untuk staf",
+  },
+  // legend-5d76: a webhook order whose lines did not match the menu. Staff
+  // pick the menu item per line; the platform price and total stay as sent.
+  mapLines: {
+    title: "Perlu dipetakan",
+    intro:
+      "Sebagian item dari {platform} belum cocok dengan menu outlet atau item yang cocok sedang habis. Pilih item menu (dan varian bila ada) untuk tiap baris, lalu kirim ke dapur.",
+    priceHint:
+      "Total pesanan tetap sesuai harga platform, apa pun item yang dipilih.",
+    itemLabel: "Item menu untuk {name}",
+    itemPlaceholder: "Pilih item menu",
+    variantLabel: "Varian untuk {name}",
+    variantPlaceholder: "Pilih varian",
+    variantError: "Varian item tidak dapat dimuat. Coba lagi.",
+    menuError: "Daftar menu tidak dapat dimuat. Coba lagi.",
+    menuRetry: "Muat ulang menu",
+    submit: "Petakan & kirim ke dapur",
+    success: "Pesanan dipetakan dan dikirim ke dapur.",
+    groupLabel: "Petakan item pesanan",
   },
   manual: {
     title: "Catat pesanan manual",
