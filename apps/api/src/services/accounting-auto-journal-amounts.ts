@@ -1067,6 +1067,7 @@ async function refundGatewaySplitOf(
   >();
   // POS refund rows counted from their lines (not again from their journals).
   let earlierPosRefundIds: string[] = [];
+  const earlierNoTenderLines: { intentId: string; wantIdr: number }[] = [];
   let unprovenResidual = false;
   let tenderNullIdr = 0;
   if (recovery[0]) {
@@ -1103,6 +1104,14 @@ async function refundGatewaySplitOf(
         if (!collect) {
           if (!line.paymentIntentId) earlierGatewayIdr += want;
           else {
+            // legend-izoib: a line naming an intent but no tender has no proof
+            // of its payer when its refund is journaled, so its journal may
+            // have been pinned to ANOTHER intent: counted against the pin too.
+            if (!line.tenderId)
+              earlierNoTenderLines.push({
+                intentId: line.paymentIntentId,
+                wantIdr: want,
+              });
             const linkKey = `pos-refund-gateway:${posRefundId}:${line.paymentIntentId}`;
             earlierIntentWant.set(linkKey, {
               intentId: line.paymentIntentId,
@@ -1322,6 +1331,10 @@ async function refundGatewaySplitOf(
           // refund row or payment refund on the pinned intent accounts for (a
           // payload-only refund, a recovery without source) still took this
           // intent's money into customer_deposit: it counts against the pin.
+          let earlierOtherIntentIdr = 0;
+          for (const entry of earlierNoTenderLines)
+            if (entry.intentId !== pinned.intentId)
+              earlierOtherIntentIdr += entry.wantIdr;
           const earlierJournalIdr = await earlierUnbackedRefundDepositIdr(
             tx,
             tenantId,
@@ -1338,7 +1351,8 @@ async function refundGatewaySplitOf(
               Number(filed?.total ?? 0) +
               earlierGatewayIdr +
               earlierUnfiledIdr +
-              earlierJournalIdr <=
+              earlierJournalIdr +
+              earlierOtherIntentIdr <=
               Number(pinned.amountIdr)
           )
             pinnedIntentId = pinned.intentId;

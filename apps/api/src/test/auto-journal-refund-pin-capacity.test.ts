@@ -928,6 +928,73 @@ describe("legend-zwaro refund pin capacity counts earlier refunds of any kind", 
     expectBalancedLines(await linesOf(world, second.journalEntryId));
   });
 
+  // ZWARO-G: an earlier POS refund 30k whose gateway line names another paid
+  // intent X of the same order (not the pin) and no tender (no captured tender
+  // proves the payer) is journaled first; its leftover has no provable payer, so
+  // it is pinned to P (customer_deposit 30k <= 40k). The earlier line must then
+  // count against P: payload-only 20k parks (30+20 > 40k), payload-only 10k posts.
+  async function earlierLineOnOtherIntent(world: World) {
+    const { orderUlid, intentId: pinId } = await sellPinned(world);
+    const { rows } = await owner.query<{ payment_link_id: string }>(
+      `SELECT payment_link_id FROM payment_intents WHERE id = $1`,
+      [pinId],
+    );
+    const otherId = randomUUID();
+    await owner.query(
+      `INSERT INTO payment_intents
+         (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr, idempotency_key,
+          status, paid_at, instructions, expires_at)
+       VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, 'paid', $7,
+               '{"method":"qris","qrPayload":"test","issuer":null}', now())`,
+      [
+        otherId,
+        world.tenant.id,
+        world.outletId,
+        rows[0]!.payment_link_id,
+        PIN_IDR,
+        `arr-${otherId}`,
+        DAY,
+      ],
+    );
+    const firstId = await seedPosRefund(world, orderUlid, [
+      { method: "qris", amountIdr: 30_000, paymentIntentId: otherId },
+    ]);
+    const first = await post(
+      world,
+      qrRefund(world, orderUlid, firstId, 30_000),
+    );
+    expectBalancedLines(await linesOf(world, first.journalEntryId));
+    return { orderUlid, first };
+  }
+
+  it("ZWARO-G payload-only 20k parks after a journaled 30k POS refund whose line names another intent without a tender (30+20 > 40k pin): customer_deposit credited <= 40k", async () => {
+    const world = await makeWorld();
+    const { orderUlid, first } = await earlierLineOnOtherIntent(world);
+    const secondId = randomUUID();
+    await expectSecondWithinPin(
+      world,
+      first.journalEntryId,
+      qrRefund(world, orderUlid, secondId, 20_000),
+      secondId,
+    );
+  });
+
+  it("ZWARO-G variant: payload-only 10k posts after that earlier 30k (30+10 = 40k pin), balanced, customer_deposit credited <= 40k", async () => {
+    const world = await makeWorld();
+    const { orderUlid, first } = await earlierLineOnOtherIntent(world);
+    const second = await post(
+      world,
+      qrRefund(world, orderUlid, randomUUID(), 10_000),
+    );
+    const firstLines = await linesOf(world, first.journalEntryId);
+    const secondLines = await linesOf(world, second.journalEntryId);
+    expectBalancedLines(secondLines);
+    expect(
+      creditOf(firstLines, "customer_deposit") +
+        creditOf(secondLines, "customer_deposit"),
+    ).toBeLessThanOrEqual(PIN_IDR);
+  });
+
   it("ZWARO-C control: payload-only 30k then 10k (= 40k pin) both post, balanced, customer_deposit credited 40k", async () => {
     const world = await makeWorld();
     const { orderUlid } = await sellPinned(world);
