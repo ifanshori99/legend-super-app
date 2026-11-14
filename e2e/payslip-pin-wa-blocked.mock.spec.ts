@@ -2,16 +2,20 @@
 //   - 409 with reason identity_missing  -> "Nomor WhatsApp belum terdaftar"
 //   - 409 with reason identity_too_new  -> "Nomor WhatsApp belum 3 hari"
 //   - 409 without a reason              -> one combined screen (both causes)
+//   - 409 needs-update marker           -> "Nomor WhatsApp perlu diperbarui"
 //   - 429 with retryAfterSeconds        -> a live "Coba lagi dalam MM:SS" count
 //                                          down on the "Terlalu banyak
-//                                          percobaan" screen
+//                                          percobaan" screen; the "Coba lagi"
+//                                          button shows only after it ends
 // Runs in mock mode (`pnpm test:e2e:mock e2e/payslip-pin-wa-blocked.mock.spec.ts`);
 // the `?waScenario=` scenarios are the mock's stand-ins for those API answers.
 //
 // ASSUMPTIONS
-//  - A 429 without the number keeps the old "Coba lagi nanti" text; that case
-//    is covered by payslip-pin-wa-reset.mock.spec.ts only as long as that
-//    spec's rate-limited scenario has no number, so it is NOT asserted here.
+//  - A 429 without the number keeps the "Coba lagi nanti" text and offers the
+//    retry button at once; that case is covered by
+//    payslip-pin-wa-reset.mock.spec.ts, so it is NOT asserted here.
+//  - The countdown is 12:34 in the mock; the test jumps the browser clock
+//    (page.clock.fastForward) instead of sleeping.
 //  - The screens for "no WhatsApp" and "number under 3 days" must differ in
 //    heading, and neither may offer the other's explanation as its own title.
 import { expect, test, type Page } from "@playwright/test";
@@ -48,6 +52,7 @@ async function openBlocked(page: Page, scenario: string) {
 
 const NO_WA_HEADING = "Nomor WhatsApp belum terdaftar";
 const TOO_NEW_HEADING = "Nomor WhatsApp belum 3 hari";
+const NEEDS_UPDATE_HEADING = "Nomor WhatsApp perlu diperbarui";
 
 test("F30 HR-01 bzw5k: a 409 'no WhatsApp number' shows its own screen, not the under-3-days one", async ({
   page,
@@ -129,6 +134,34 @@ test("F30 ur82k bzw5k: a 429 with a wait shows 'Coba lagi dalam' with a time tha
     .toBeLessThan(first);
 });
 
+test("F30 HR-01 bzw5k: a 409 'needs update' shows its own screen with HR help as the main button and no number", async ({
+  page,
+}) => {
+  await openBlocked(page, "needs-update");
+  await expect(
+    page.getByRole("heading", { name: NEEDS_UPDATE_HEADING }),
+  ).toBeVisible({ timeout: COLD });
+  await expect(page.getByRole("heading", { name: NO_WA_HEADING })).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByRole("heading", { name: TOO_NEW_HEADING }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Lihat cara minta bantuan" }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("button", { name: "Kembali ke slip gaji" })
+      .or(page.getByRole("link", { name: "Kembali ke slip gaji" }))
+      .first(),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: "Buka WhatsApp" })).toHaveCount(
+    0,
+  );
+  await expect(page.getByText(/\+?\d{8,}/)).toHaveCount(0);
+});
+
 test("F30 ur82k bzw5k: while the wait runs there is no retry button, only HR help and a way back", async ({
   page,
 }) => {
@@ -136,7 +169,9 @@ test("F30 ur82k bzw5k: while the wait runs there is no retry button, only HR hel
   await expect(page.getByText(COUNTDOWN).first()).toBeVisible({
     timeout: COLD,
   });
-  await expect(page.getByRole("button", { name: "Coba lagi" })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Coba lagi", exact: true }),
+  ).toHaveCount(0);
   await expect(
     page
       .getByRole("button", { name: "Lihat cara minta bantuan" })
@@ -148,5 +183,27 @@ test("F30 ur82k bzw5k: while the wait runs there is no retry button, only HR hel
       .getByRole("button", { name: "Kembali ke slip gaji" })
       .or(page.getByRole("link", { name: "Kembali ke slip gaji" }))
       .first(),
+  ).toBeVisible();
+});
+
+test("F30 ur82k bzw5k: when the countdown ends the screen says so and the retry button appears", async ({
+  page,
+}) => {
+  // Fake clock that still runs in real time; jumped forward below.
+  await page.clock.install({ time: new Date() });
+  await openBlocked(page, "rate-limited-wait");
+  await expect(page.getByText(COUNTDOWN).first()).toBeVisible({
+    timeout: COLD,
+  });
+  await expect(
+    page.getByRole("button", { name: "Coba lagi", exact: true }),
+  ).toHaveCount(0);
+
+  await page.clock.fastForward("14:00");
+
+  await expect(page.getByText("Pembatasan sudah selesai")).toBeVisible();
+  await expect(page.getByText(COUNTDOWN)).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Coba lagi", exact: true }),
   ).toBeVisible();
 });

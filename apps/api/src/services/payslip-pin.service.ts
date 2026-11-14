@@ -607,7 +607,7 @@ export async function requestPayslipPinResetWa(
       now,
     });
     if (!identity) {
-      // Only the caller's own identity is inspected; the two fixed messages
+      // Only the caller's own identity is inspected; the three fixed markers
       // carry no number or personal data.
       const reason = await diagnoseWhatsAppProofIdentity(tx, {
         userId: self.actor,

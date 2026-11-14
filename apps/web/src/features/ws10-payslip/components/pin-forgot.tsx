@@ -297,6 +297,7 @@ export function PinForgot() {
         onRetry={
           blockedKind === "expired" ||
           blockedKind === "service-unavailable" ||
+          blockedKind === "rate-limited" ||
           blockedKind === "mismatch"
             ? () => void begin()
             : undefined

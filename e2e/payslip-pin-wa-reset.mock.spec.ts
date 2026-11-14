@@ -12,8 +12,8 @@
 //
 // Scenarios are chosen with `?waScenario=` (fallback localStorage
 // "legend.mock.waScenario"): verify (default, verified after 2 polls), pending,
-// expire, no-wa, too-new, unavailable-plain, rate-limited, unavailable,
-// proof-invalid.
+// expire, no-wa, needs-update, too-new, unavailable-plain, rate-limited,
+// rate-limited-wait, unavailable, proof-invalid.
 //
 // Assumptions where the mockup is silent:
 //  - The mock store lives in browser memory and the scenario is read from the
@@ -31,7 +31,13 @@
 //    "unavailable-plain" screen: asserted only by "3 hari", HR/atasan text and
 //    the absence of an active WhatsApp button (brief "Tambahan").
 //  - 429 without a Retry-After header shows a general "Coba lagi nanti"
-//    sentence without a number (brief "Tambahan").
+//    sentence without a number (brief "Tambahan"). With no number to wait for,
+//    the "Coba lagi" button is offered at once (CTO decision, bead 851b).
+//  - 429 with a wait: no "Coba lagi" button during the countdown; it appears
+//    once the countdown ends. The wait is 12:34, so the test jumps the browser
+//    clock forward (page.clock) instead of sleeping.
+//  - needs-update (409, verified number that cannot be used): own heading,
+//    HR help as the main button, no WhatsApp button, no number shown.
 //  - proof-invalid (403 on saving the new PIN) shows an alert, keeps the
 //    new-PIN form, and never reaches "PIN berhasil disimpan".
 //  - The QR (role img) shows from the md breakpoint up (1280 px), not at 390 px.
@@ -357,6 +363,37 @@ test("F30 HR-01 ur82k: no verified WhatsApp number points to HR or the outlet su
   expect(await overflowX(page)).toBeLessThanOrEqual(0);
 });
 
+test("F30 HR-01 ur82k: a verified number that needs an update asks HR to update it, without showing a number", async ({
+  page,
+}) => {
+  await openForgot(page, "needs-update");
+  await startWhatsApp(page);
+  await expect(
+    page.getByRole("heading", { name: "Nomor WhatsApp perlu diperbarui" }),
+  ).toBeVisible({ timeout: COLD });
+  await expect(
+    page.getByText(
+      /Minta HR atau supervisor di outlet untuk memperbarui nomor/,
+    ),
+  ).toBeVisible();
+  // HR help is the main way on: a button, not a side link.
+  await expect(
+    page.getByRole("button", { name: "Lihat cara minta bantuan" }),
+  ).toBeVisible();
+  await expect(action(page, "Kembali ke slip gaji")).toBeVisible();
+  await expectNoActiveWhatsApp(page);
+  // Not mistaken for the other blocked screens.
+  await expect(
+    page.getByRole("heading", { name: "Nomor WhatsApp belum terdaftar" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Nomor WhatsApp belum 3 hari" }),
+  ).toHaveCount(0);
+  // No phone number on screen and no field to change it.
+  await expect(page.getByText(/\+?\d{8,}/)).toHaveCount(0);
+  await expect(page.getByRole("textbox")).toHaveCount(0);
+});
+
 test("F30 HR-01 ur82k: a number linked less than 3 days asks for HR and offers no WhatsApp", async ({
   page,
 }) => {
@@ -409,6 +446,10 @@ test("F30 ur82k: too many attempts shows a wait notice, HR help and no WhatsApp 
   ).toBeVisible();
   await expect(action(page, "Lihat cara minta bantuan")).toBeVisible();
   await expect(action(page, "Kembali ke slip gaji")).toBeVisible();
+  // No number to wait for: the user may try again at once.
+  await expect(
+    page.getByRole("button", { name: "Coba lagi", exact: true }),
+  ).toBeVisible();
   await expectNoActiveWhatsApp(page);
   expect(await overflowX(page)).toBeLessThanOrEqual(0);
 });
@@ -425,6 +466,34 @@ test("F30 ur82k: a 429 with a wait counts down on the screen", async ({
   await expect(timer).toHaveText(/Coba lagi dalam 12:\d\d/);
   const first = await timer.innerText();
   await expect.poll(() => timer.innerText(), { timeout: 5000 }).not.toBe(first);
+  await expect(action(page, "Lihat cara minta bantuan")).toBeVisible();
+  // While the wait runs there is no retry button.
+  await expect(
+    page.getByRole("button", { name: "Coba lagi", exact: true }),
+  ).toHaveCount(0);
+  await expectNoActiveWhatsApp(page);
+});
+
+test("F30 ur82k: after the 429 countdown ends the retry button appears", async ({
+  page,
+}) => {
+  // Fake clock that still runs in real time; jumped forward below.
+  await page.clock.install({ time: new Date() });
+  await openForgot(page, "rate-limited-wait");
+  await startWhatsApp(page);
+  await expect(page.getByRole("timer")).toHaveText(/Coba lagi dalam 12:\d\d/, {
+    timeout: COLD,
+  });
+  await expect(
+    page.getByRole("button", { name: "Coba lagi", exact: true }),
+  ).toHaveCount(0);
+
+  await page.clock.fastForward("14:00");
+
+  await expect(page.getByRole("timer")).toHaveText("Pembatasan sudah selesai");
+  await expect(
+    page.getByRole("button", { name: "Coba lagi", exact: true }),
+  ).toBeVisible();
   await expect(action(page, "Lihat cara minta bantuan")).toBeVisible();
   await expectNoActiveWhatsApp(page);
 });

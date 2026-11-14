@@ -105,6 +105,11 @@ export const payslipWaResetMessages = {
     tooNewTitle: "Nomor WhatsApp belum 3 hari",
     tooNewDescription:
       "Nomor WhatsApp harus tertaut minimal 3 hari sebelum bisa dipakai untuk memulihkan PIN.",
+    needsUpdateTitle: "Nomor WhatsApp perlu diperbarui",
+    needsUpdateDescription:
+      "Nomor WhatsApp Anda sudah tercatat, tetapi perlu diperbarui sebelum bisa dipakai untuk memulihkan PIN.",
+    needsUpdateNotice:
+      "Minta HR atau supervisor di outlet untuk memperbarui nomor WhatsApp Anda, atau mereset PIN Anda.",
     unavailableNoticeTitle: "Pemulihan lewat WhatsApp belum bisa dipakai",
     tooNewNotice:
       "Hubungi HR atau supervisor di outlet untuk mereset PIN Anda, atau coba lagi setelah nomor tertaut 3 hari.",

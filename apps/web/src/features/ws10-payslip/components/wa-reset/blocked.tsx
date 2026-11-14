@@ -20,6 +20,7 @@ type WaResetBlockedKind =
   | "mismatch"
   | "rate-limited"
   | "no-wa"
+  | "needs-update"
   | "too-new"
   | "unavailable-generic"
   | "service-unavailable";
@@ -110,7 +111,8 @@ function WaResetBlocked({
   const secondsLeft = useCountdown(
     kind === "rate-limited" ? retryAfterSeconds : undefined,
   );
-  // Without a server wait there is nothing to count down: retry is offered.
+  // Retry is offered once the countdown reaches 0, or at once when the server
+  // gave no wait (secondsLeft null); it needs the container's `onRetry`.
   const canRetryNow =
     kind === "rate-limited" &&
     (secondsLeft === null || secondsLeft === 0) &&
@@ -264,6 +266,26 @@ function WaResetBlocked({
           title={t("payslipWaReset.blocked.outletHelpTitle")}
         >
           {t("payslipWaReset.blocked.noWaNotice")}
+        </WaNotice>
+        {hrButton(true)}
+        {backButton}
+      </PinLayout>
+    );
+  }
+
+  if (kind === "needs-update") {
+    return (
+      <PinLayout
+        backLink={<WaBackLink />}
+        title={t("payslipWaReset.blocked.needsUpdateTitle")}
+        description={t("payslipWaReset.blocked.needsUpdateDescription")}
+        side={<WaPrivatePinSide />}
+      >
+        <WaNotice
+          tone="neutral"
+          title={t("payslipWaReset.blocked.outletHelpTitle")}
+        >
+          {t("payslipWaReset.blocked.needsUpdateNotice")}
         </WaNotice>
         {hrButton(true)}
         {backButton}

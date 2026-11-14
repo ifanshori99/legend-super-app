@@ -31,6 +31,7 @@ export type WaResetBlockedKind =
   | "mismatch"
   | "rate-limited"
   | "no-wa"
+  | "needs-update"
   | "too-new"
   | "unavailable-generic"
   | "service-unavailable";
@@ -38,9 +39,10 @@ export type WaResetBlockedKind =
 /**
  * Maps a failed start to a blocked screen, or null when it is something else
  * (network, PIN not set) that the caller shows as a plain error. The API does
- * tell "no WhatsApp" from "linked under 3 days" with a marker in `details`
- * (`{field:"whatsapp", message:"identity_missing"|"identity_too_new"}`); without
- * it the generic screen names both.
+ * tell "no WhatsApp", "linked under 3 days" and "number needs an update" with a
+ * marker in `details` (`{field:"whatsapp", message:"identity_missing"|
+ * "identity_too_new"|"identity_needs_update"}`); without it the generic screen
+ * names the first two.
  */
 export function classifyWaResetError(
   error: unknown,
@@ -56,6 +58,7 @@ export function classifyWaResetError(
     )?.message;
     if (marker === "identity_too_new") return "too-new";
     if (marker === "identity_missing") return "no-wa";
+    if (marker === "identity_needs_update") return "needs-update";
     return "unavailable-generic";
   }
   return null;

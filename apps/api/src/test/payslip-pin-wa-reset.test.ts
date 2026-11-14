@@ -1455,3 +1455,143 @@ describe("PIN reset by WhatsApp: why the start is blocked (409 reason, 429 wait)
     expect((await requestProof(other.client)).status).toBe(201);
   });
 });
+
+// Card legend-bzw5k, follow-up 851b. ASSUMPTIONS (CTO decision, scratchpad):
+//  - A WhatsApp identity that is verified and old enough but has
+//    `value_encrypted` NULL (a number that must be re-entered) is a third
+//    reason: details [{ field: "whatsapp", message: "identity_needs_update" }].
+//  - Only the caller's OWN identity row decides; another user's row never does.
+//  - A young or unverified row with NULL `value_encrypted` is NOT needs_update:
+//    too young stays `identity_too_new`, unverified stays `identity_missing`.
+//  - The NULL is seeded with a direct owner UPDATE; `linked_at` is aged again
+//    right after in case a trigger restarts it on UPDATE.
+describe("PIN reset by WhatsApp: a number that needs updating (409 identity_needs_update)", () => {
+  type Detail = { field: string; message: string };
+  const whatsappDetails = (body: { error: { details?: Detail[] } }): Detail[] =>
+    body.error.details ?? [];
+
+  /** Clears the stored number of the employee's WhatsApp identity. */
+  async function clearStoredNumber(staff: Staff, age: string) {
+    const result = await owner.query(
+      `UPDATE user_identities SET value_encrypted = NULL
+        WHERE id = $1 AND type = 'whatsapp'`,
+      [staff.identityId],
+    );
+    expect(result.rowCount).toBe(1);
+    await ageIdentity(staff.identityId, age);
+  }
+
+  const oldEnough = `${MIN_LINK_AGE_DAYS + 1} days`;
+
+  it("409 names identity_needs_update when the verified, old enough number has no stored value", async () => {
+    const staff = await seedStaff("Staf WA Perlu Diperbarui");
+    await clearStoredNumber(staff, oldEnough);
+    const response = await requestProof(staff.client);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.error.code).toBe(
+      "PAYSLIP_PIN_RESET_WHATSAPP_UNAVAILABLE",
+    );
+    expect(whatsappDetails(response.body)).toEqual([
+      { field: "whatsapp", message: "identity_needs_update" },
+    ]);
+    // Nothing is issued for a number that cannot be used.
+    const rows = await owner.query(
+      `SELECT count(*)::int AS n FROM login_challenges
+        WHERE link_user_id = $1 AND purpose = 'payslip_pin_reset'`,
+      [staff.userId],
+    );
+    expect(rows.rows[0].n).toBe(0);
+  });
+
+  it("the needs_update 409 leaks nothing personal: no number, hash, email, ids or name", async () => {
+    const staff = await seedStaff("Staf WA Perlu Diperbarui Bocor");
+    const hash = (
+      await owner.query(
+        `SELECT value_hash FROM user_identities WHERE id = $1`,
+        [staff.identityId],
+      )
+    ).rows[0].value_hash as string;
+    await clearStoredNumber(staff, oldEnough);
+    const response = await requestProof(staff.client);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    const everything = JSON.stringify({
+      body: response.body,
+      headers: response.headers,
+    });
+    for (const secret of [
+      staff.digits,
+      staff.digits.slice(-4),
+      hash,
+      staff.email,
+      staff.userId,
+      staff.employeeId,
+      staff.identityId,
+      "Karyawan Reset WA",
+    ])
+      expect(everything).not.toContain(secret);
+    expect(
+      Object.keys(response.body.error)
+        .filter((k) => k !== "requestId")
+        .sort(),
+    ).toEqual(["code", "details", "message"]);
+    expect(response.body.error.details).toHaveLength(1);
+    expect(Object.keys(response.body.error.details[0]).sort()).toEqual([
+      "field",
+      "message",
+    ]);
+  });
+
+  it("needs_update has the same code and message as the other reasons: only the marker differs", async () => {
+    const needsUpdate = await seedStaff("Staf WA Sama Perlu Diperbarui");
+    await clearStoredNumber(needsUpdate, oldEnough);
+    const missing = await seedStaff("Staf WA Sama Perlu Kosong", {
+      withWhatsapp: false,
+    });
+    const a = await requestProof(needsUpdate.client);
+    const b = await requestProof(missing.client);
+    expect(a.status).toBe(409);
+    expect(b.status).toBe(409);
+    expect(a.body.error.code).toBe(b.body.error.code);
+    expect(a.body.error.message).toBe(b.body.error.message);
+  });
+
+  it("a too-young verified number without a stored value stays identity_too_new", async () => {
+    const staff = await seedStaff("Staf WA Baru Tanpa Nilai");
+    await clearStoredNumber(staff, `${MIN_LINK_AGE_DAYS - 1} days 23 hours`);
+    const response = await requestProof(staff.client);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(whatsappDetails(response.body)).toEqual([
+      { field: "whatsapp", message: "identity_too_new" },
+    ]);
+  });
+
+  it("an unverified number without a stored value stays identity_missing", async () => {
+    const staff = await seedStaff("Staf WA Belum Verifikasi Tanpa Nilai", {
+      verified: false,
+    });
+    await clearStoredNumber(staff, oldEnough);
+    const response = await requestProof(staff.client);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(whatsappDetails(response.body)).toEqual([
+      { field: "whatsapp", message: "identity_missing" },
+    ]);
+  });
+
+  it("someone else's number needing an update does not change this employee's reason", async () => {
+    const other = await seedStaff("Staf WA Orang Lain Perlu Diperbarui");
+    await clearStoredNumber(other, oldEnough);
+    const missing = await seedStaff("Staf WA Tanpa Nomor Sendiri", {
+      withWhatsapp: false,
+    });
+    const response = await requestProof(missing.client);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(whatsappDetails(response.body)).toEqual([
+      { field: "whatsapp", message: "identity_missing" },
+    ]);
+  });
+
+  it("a verified, old enough number with a stored value is still accepted (201)", async () => {
+    const staff = await seedStaff("Staf WA Nilai Lengkap");
+    expect((await requestProof(staff.client)).status).toBe(201);
+  });
+});

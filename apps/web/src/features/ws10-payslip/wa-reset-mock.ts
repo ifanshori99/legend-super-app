@@ -8,6 +8,7 @@
 //   pending           the message never lands
 //   expire            the code lives a few seconds, then reads `expired`
 //   no-wa             409, no verified WhatsApp number (marker identity_missing)
+//   needs-update      409, verified number cannot be used (marker identity_needs_update)
 //   too-new           409, number linked under 3 days (marker identity_too_new)
 //   unavailable-plain 409 without a marker (the API does not tell the two apart)
 //   rate-limited      429 on start, no wait given ("Coba lagi nanti")
@@ -32,6 +33,7 @@ export const WA_RESET_SCENARIOS = [
   "pending",
   "expire",
   "no-wa",
+  "needs-update",
   "too-new",
   "unavailable-plain",
   "rate-limited",
@@ -102,7 +104,9 @@ const UNAVAILABLE_MESSAGE =
 /** Wait the `rate-limited-wait` scenario reports (mm:ss on screen). */
 export const RATE_LIMIT_WAIT_SECONDS = 754;
 
-function unavailable(marker?: "identity_missing" | "identity_too_new") {
+function unavailable(
+  marker?: "identity_missing" | "identity_too_new" | "identity_needs_update",
+) {
   return new ApiError(
     409,
     "PAYSLIP_PIN_RESET_WHATSAPP_UNAVAILABLE",
@@ -124,6 +128,7 @@ const proofInvalid = () =>
 registerMock(startMyPayslipPinResetWa, () => {
   const scenario = currentWaScenario();
   if (scenario === "no-wa") throw unavailable("identity_missing");
+  if (scenario === "needs-update") throw unavailable("identity_needs_update");
   if (scenario === "too-new") throw unavailable("identity_too_new");
   if (scenario === "unavailable-plain") throw unavailable();
   if (scenario === "rate-limited")

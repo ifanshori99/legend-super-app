@@ -416,30 +416,38 @@ export async function findWhatsAppProofIdentity(
 
 /**
  * Why `findWhatsAppProofIdentity` found nothing, for the user's OWN identity
- * only (never another account's): `identity_too_new` when a verified WhatsApp
- * identity exists but was linked less than `WA_PROOF_IDENTITY_MIN_AGE_DAYS`
- * days ago, `identity_missing` when there is none. Reads no number or hash.
+ * only (never another account's): `identity_needs_update` when a verified,
+ * old-enough WhatsApp identity exists but holds no stored number
+ * (`value_encrypted` null), so no sender can be derived; `identity_too_new`
+ * when a verified identity exists but was linked less than
+ * `WA_PROOF_IDENTITY_MIN_AGE_DAYS` days ago; `identity_missing` when there is
+ * none. Reads no number or hash.
  */
 export async function diagnoseWhatsAppProofIdentity(
   tx: Transaction,
   input: { readonly userId: string; readonly now: Date },
-): Promise<"identity_missing" | "identity_too_new"> {
+): Promise<"identity_needs_update" | "identity_too_new" | "identity_missing"> {
   const linkedBefore = new Date(
     input.now.getTime() - WA_PROOF_IDENTITY_MIN_AGE_DAYS * DAY_MS,
   );
-  const [row] = await tx
-    .select({ id: userIdentities.id })
+  const rows = await tx
+    .select({
+      linkedAt: userIdentities.linkedAt,
+      hasNumber: isNotNull(userIdentities.valueEncrypted),
+    })
     .from(userIdentities)
     .where(
       and(
         eq(userIdentities.userId, input.userId),
         eq(userIdentities.type, "whatsapp"),
         isNotNull(userIdentities.verifiedAt),
-        gt(userIdentities.linkedAt, linkedBefore),
       ),
-    )
-    .limit(1);
-  return row ? "identity_too_new" : "identity_missing";
+    );
+  if (rows.some((r) => r.linkedAt <= linkedBefore && !r.hasNumber)) {
+    return "identity_needs_update";
+  }
+  if (rows.some((r) => r.linkedAt > linkedBefore)) return "identity_too_new";
+  return "identity_missing";
 }
 
 /**
