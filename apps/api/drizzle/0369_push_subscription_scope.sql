@@ -11,18 +11,40 @@
 -- Outlet and device FKs are tenant-composite (pattern of devices_outlet_fk).
 -- Numbering: 0375 (journal idx 357); no INSERT/UPDATE statements, so no
 -- data-import-registry entry.
--- The three FKs are NOT VALID: the production migrator is a plain table owner
--- without app.tenant_id, and validating existing rows scans push_subscriptions
--- (FORCE RLS), which raises "tenant context is required" and rolls the whole
--- run back on a populated database. Every pre-existing row has NULL in the new
--- columns, so nothing is left unchecked; new and updated rows are enforced.
+-- The FKs are fully validated (docs/plan/contracts.md pattern 2): the
+-- production migrator is a plain table owner without app.tenant_id, and
+-- validating against FORCE RLS tables raises "tenant context is required". So
+-- FORCE is lifted on the child (push_subscriptions) and both composite parents
+-- (outlets, devices) and restored in this file. lock_timeout is tightened for
+-- the lifts and restored to the migrator's saved value (pattern of 0135).
+DO $lock$
+BEGIN
+  PERFORM set_config('legend.lock_timeout_before_0369', current_setting('lock_timeout'), true);
+  PERFORM set_config('lock_timeout', '5s', true);
+END
+$lock$;
+--> statement-breakpoint
 ALTER TABLE "push_subscriptions" ADD COLUMN "outlet_id" uuid;--> statement-breakpoint
 ALTER TABLE "push_subscriptions" ADD COLUMN "device_id" uuid;--> statement-breakpoint
 ALTER TABLE "push_subscriptions" ADD COLUMN "session_id" text;--> statement-breakpoint
 ALTER TABLE "push_subscriptions" ADD COLUMN "registered_at" timestamp with time zone;--> statement-breakpoint
-ALTER TABLE "push_subscriptions" ADD CONSTRAINT "push_subscriptions_session_id_session_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."session"("id") ON DELETE set null ON UPDATE no action NOT VALID;--> statement-breakpoint
-ALTER TABLE "push_subscriptions" ADD CONSTRAINT "push_subscriptions_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action NOT VALID;--> statement-breakpoint
-ALTER TABLE "push_subscriptions" ADD CONSTRAINT "push_subscriptions_device_fk" FOREIGN KEY ("tenant_id","outlet_id","device_id") REFERENCES "public"."devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action NOT VALID;--> statement-breakpoint
+ALTER TABLE public.push_subscriptions NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.devices NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE "push_subscriptions" ADD CONSTRAINT "push_subscriptions_session_id_session_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."session"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "push_subscriptions" ADD CONSTRAINT "push_subscriptions_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "push_subscriptions" ADD CONSTRAINT "push_subscriptions_device_fk" FOREIGN KEY ("tenant_id","outlet_id","device_id") REFERENCES "public"."devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.devices FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.push_subscriptions FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+SELECT set_config('lock_timeout', COALESCE(NULLIF(current_setting('legend.lock_timeout_before_0369', true), ''), current_setting('lock_timeout')), true);
+--> statement-breakpoint
 CREATE INDEX "push_subscriptions_user_outlet_idx" ON "push_subscriptions" USING btree ("tenant_id","user_id","outlet_id");--> statement-breakpoint
 CREATE INDEX "push_subscriptions_session_idx" ON "push_subscriptions" USING btree ("session_id");--> statement-breakpoint
 -- Session deletes run outside any tenant context, and a browser may hold rows
