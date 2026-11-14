@@ -220,7 +220,7 @@ export async function finalizeReservationDepositRemainders(
   used = used > released ? used - released : 0n;
   const allocations = await tx.execute(sql`
     SELECT a.reservation_id::text, a.outlet_id::text, a.payment_intent_id::text,
-      r.customer_profile_id::text,
+      r.customer_profile_id::text, r.source::text AS source,
       least(a.amount_idr,greatest(least(r.deposit_idr,i.amount_idr,
         greatest(coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
           WHERE e.tenant_id=a.tenant_id AND e.payment_intent_id=i.id),0)
@@ -240,9 +240,12 @@ export async function finalizeReservationDepositRemainders(
     used -= consumed;
     const remainder = held - consumed;
     if (remainder <= 0n) continue;
-    const bookingProfile = allocation.customer_profile_id
-      ? String(allocation.customer_profile_id)
-      : null;
+    // A profile linked from a public booking comes from an unverified phone
+    // number, so it is never trusted to receive credit.
+    const bookingProfile =
+      allocation.customer_profile_id && allocation.source !== "website"
+        ? String(allocation.customer_profile_id)
+        : null;
     const billProfile =
       Number(facts.profiles) === 1 ? String(facts.profile_id) : null;
     const candidate = bookingProfile ?? billProfile;

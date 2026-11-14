@@ -25,6 +25,9 @@ import {
   type Tx,
 } from "./reservation-core.ts";
 
+// legend-lb3c: the H-24 reminder sweep lives with the guest messages.
+export { sweepReservationReminders } from "./reservation-guest-notify.ts";
+
 /** Rows examined per call; the next tick continues. */
 const SWEEP_BATCH = 100;
 

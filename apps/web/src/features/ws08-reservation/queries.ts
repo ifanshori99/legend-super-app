@@ -5,11 +5,13 @@ import { queryOptions } from "@tanstack/react-query";
 import {
   getReservation,
   listReservationPackages,
+  listRescheduleRequests,
   listReservations,
   listWaitlist,
 } from "@starter/shared/reservation";
 import type {
   ListReservationsQuery,
+  RescheduleRequestStatus,
   WaitlistStatus,
 } from "@starter/shared/reservation";
 import { getFloorBoard } from "@starter/shared/qr-order";
@@ -21,6 +23,11 @@ export const DESK_REFETCH_MS = 30_000;
 
 export type WaitlistQuery = {
   status?: WaitlistStatus;
+  limit: number;
+};
+
+export type RescheduleRequestsQuery = {
+  status?: RescheduleRequestStatus;
   limit: number;
 };
 
@@ -69,6 +76,22 @@ export const waitlistQuery = (outletId: string, query: WaitlistQuery) =>
       query,
     }),
     queryFn: ({ signal }) => api.fetchWaitlist({ outletId }, query, { signal }),
+    refetchInterval: DESK_REFETCH_MS,
+    staleTime: DESK_REFETCH_MS / 3,
+    retry: 1,
+  });
+
+export const rescheduleRequestsQuery = (
+  outletId: string,
+  query: RescheduleRequestsQuery,
+) =>
+  queryOptions({
+    queryKey: endpointQueryKey(listRescheduleRequests, {
+      params: { outletId },
+      query,
+    }),
+    queryFn: ({ signal }) =>
+      api.fetchRescheduleRequests({ outletId }, query, { signal }),
     refetchInterval: DESK_REFETCH_MS,
     staleTime: DESK_REFETCH_MS / 3,
     retry: 1,

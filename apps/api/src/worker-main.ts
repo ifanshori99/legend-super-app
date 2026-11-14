@@ -39,7 +39,10 @@ import {
   expireStaleQueueNotifications,
   releaseExpiredSlotHolds,
 } from "./services/facility-slots.service.ts";
-import { handlePaymentPaid } from "./services/reservation-consumers.ts";
+import {
+  handlePaymentPaid,
+  handleReservationConfirmed,
+} from "./services/reservation-consumers.ts";
 import {
   deliverInventoryGlEvent,
   retryBlockedInventoryGl,
@@ -105,7 +108,10 @@ import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
 import { retryPendingRefunds } from "./services/reservation-refunds.ts";
-import { sweepStaleDepositHolds } from "./services/reservation-sweeps.ts";
+import {
+  sweepReservationReminders,
+  sweepStaleDepositHolds,
+} from "./services/reservation-sweeps.ts";
 import { sweepOverdueServiceRequests } from "./services/service-request.service.ts";
 import { expireDueSupportAccessGrants } from "./services/platform-support.service.ts";
 import { generateScheduledChecklistRuns } from "./services/operations-checklist-scheduler.service.ts";
@@ -308,6 +314,11 @@ const runtime = createWorkerRuntime({
           // (idempotent, replay safe), then the deployment consumer runs.
           if (event.name === "payment.paid")
             await handlePaymentPaid(context, event);
+          // RSV-03 (legend-lb3c): the guest's confirmation message, written
+          // only if the booking is still confirmed now. Cloud only, like the
+          // reminder: an edge must not message guests.
+          if (event.name === "reservation.confirmed" && sendsReceiptEmails)
+            await handleReservationConfirmed(context, event);
           // ORD-02 (legend-x4qy/kk7): a verified payment fires its QR order
           // (in this consumption transaction) or settles its POS bill; an
           // expired/failed QR payment re-offers a code or voids the order.
@@ -537,6 +548,13 @@ const relay = createRelayRuntime({
         await retryPendingRefunds(context, new Date());
       } catch {
         console.error("Reservation refund retry sweep failed");
+      }
+      // RSV-03 (legend-lb3c): H-24 reminder with the guest kelola link.
+      // Cloud only, like the refunds: an edge must not message guests.
+      try {
+        await sweepReservationReminders(context, new Date());
+      } catch {
+        console.error("Reservation reminder sweep failed");
       }
     }
     // §3.19 Aset Tetap (legend-hpgo): post last month's depreciation once per

@@ -25,6 +25,7 @@ import {
   reservationDepositOutcomeSchema,
   reservationIdSchema,
   reservationPolicySnapshotSchema,
+  reservationSchema,
   reservationStatusSchema,
 } from "./schemas.ts";
 
@@ -159,6 +160,28 @@ export type ListRescheduleRequestsQuery = z.infer<
   typeof listRescheduleRequestsQuerySchema
 >;
 
+/** Staff approve a request as is: the guest's time (and party size) apply. */
+export const approveRescheduleInputSchema = z.strictObject({});
+export type ApproveRescheduleInput = z.infer<
+  typeof approveRescheduleInputSchema
+>;
+
+export const declineRescheduleInputSchema = z.strictObject({
+  reason: z.string().min(1).max(300).optional(),
+});
+export type DeclineRescheduleInput = z.infer<
+  typeof declineRescheduleInputSchema
+>;
+
+/** The resolved request and the reservation as it stands afterwards. */
+export const resolveRescheduleResultSchema = z.strictObject({
+  request: reservationRescheduleRequestSchema,
+  reservation: reservationSchema,
+});
+export type ResolveRescheduleResult = z.infer<
+  typeof resolveRescheduleResultSchema
+>;
+
 // ---- Endpoints ------------------------------------------------------------
 // Public routes read the token from `x-reservation-link-token`; the tenant
 // comes from the host (D-CORE-3). Staff routes need an outlet-scoped session.
@@ -211,4 +234,31 @@ export const listRescheduleRequests = defineEndpoint({
   params: outletParams,
   query: listRescheduleRequestsQuerySchema,
   response: cursorPageSchema(reservationRescheduleRequestSchema),
+});
+
+const rescheduleRequestParams = z.strictObject({
+  outletId: outletIdSchema,
+  requestId: rescheduleRequestIdSchema,
+});
+
+/**
+ * Moves the booking (and its table holds) to the requested time. A taken table
+ * is RESERVATION_SLOT_TAKEN and the request stays pending. Repeating it on an
+ * approved request returns the same result.
+ */
+export const approveRescheduleRequest = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/reservation-reschedule-requests/:requestId/approve",
+  params: rescheduleRequestParams,
+  body: approveRescheduleInputSchema,
+  response: dataResponseSchema(resolveRescheduleResultSchema),
+});
+
+/** Closes the request; the booking stays as it was. */
+export const declineRescheduleRequest = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/reservation-reschedule-requests/:requestId/decline",
+  params: rescheduleRequestParams,
+  body: declineRescheduleInputSchema,
+  response: dataResponseSchema(resolveRescheduleResultSchema),
 });

@@ -12,7 +12,17 @@
 //   (`requestDepositRefund`, WS-05), never paid here.
 // - A reschedule is only recorded as a request; staff decide later.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { and, asc, eq, gt, isNull, or } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+} from "drizzle-orm";
 import {
   assertOutletInScope,
   decodeCursor,
@@ -73,6 +83,14 @@ import { requestDepositRefund } from "./reservation-refunds.ts";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * Automatic guest links (createdBy null) that may stay active per reservation.
+ * A retried message mints a new link without revoking the earlier one (the
+ * provider may have delivered the earlier one); the oldest beyond this cap are
+ * revoked so the set cannot grow without bound.
+ */
+const AUTOMATIC_LINK_ACTIVE_CAP = 5;
 
 /** A reschedule may be requested at most this far ahead of now (F3). */
 const RESCHEDULE_MAX_AHEAD_DAYS = 180;
@@ -150,8 +168,8 @@ export function hashReservationLinkToken(token: string): string {
 
 /**
  * Revokes the active link of the reservation and inserts a new one, in the
- * caller's transaction (also used by the reminder workstream). Returns the
- * plain token once; it cannot be recovered afterwards.
+ * caller's transaction (staff-issued links). Returns the plain token once; it
+ * cannot be recovered afterwards.
  */
 export async function issueReservationGuestLink(
   tx: Tx,
@@ -171,6 +189,119 @@ export async function issueReservationGuestLink(
     input.outletId,
     input.reservationId,
   );
+  const issued = await insertGuestLink(tx, context, input, reservation);
+  return { token: issued.token, expiresAt: issued.expiresAt };
+}
+
+/**
+ * Link for an automatic guest message (confirmation, reminder; legend-lb3c).
+ * It does NOT revoke earlier automatic links: a retry after a lost response
+ * must not kill the link of a message the provider already delivered
+ * (legend-wmfip). Only the oldest beyond AUTOMATIC_LINK_ACTIVE_CAP are
+ * revoked. It NEVER revokes a link a staff member issued by hand and that is
+ * still valid: then it issues nothing and returns null, and the message goes
+ * out without a new link (the guest already holds a working one).
+ */
+export async function issueAutomaticReservationGuestLink(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { outletId: OutletId; reservationId: string; now: Date },
+): Promise<{ token: string; expiresAt: string } | null> {
+  const reservation = await lockReservation(
+    tx,
+    context,
+    input.outletId,
+    input.reservationId,
+  );
+  const [staffLink] = await tx
+    .select({ id: reservationGuestLinks.id })
+    .from(reservationGuestLinks)
+    .where(
+      and(
+        eq(reservationGuestLinks.tenantId, context.tenant.tenantId),
+        eq(reservationGuestLinks.reservationId, input.reservationId),
+        isNull(reservationGuestLinks.revokedAt),
+        isNotNull(reservationGuestLinks.createdBy),
+        gt(reservationGuestLinks.expiresAt, input.now),
+      ),
+    )
+    .limit(1);
+  if (staffLink) return null;
+  const issued = await insertGuestLink(
+    tx,
+    context,
+    { ...input, actorUserId: null },
+    reservation,
+    { revokeExisting: false },
+  );
+  await capAutomaticLinks(
+    tx,
+    context,
+    input.reservationId,
+    input.now,
+    issued.id,
+  );
+  return { token: issued.token, expiresAt: issued.expiresAt };
+}
+
+/**
+ * Revokes the active automatic links older than the newest cap. The link just
+ * inserted (`keepId`) is never revoked, even when timestamps tie.
+ */
+async function capAutomaticLinks(
+  tx: Tx,
+  context: ScopedTenantContext,
+  reservationId: string,
+  now: Date,
+  keepId: string,
+): Promise<void> {
+  const active = await tx
+    .select({ id: reservationGuestLinks.id })
+    .from(reservationGuestLinks)
+    .where(
+      and(
+        eq(reservationGuestLinks.tenantId, context.tenant.tenantId),
+        eq(reservationGuestLinks.reservationId, reservationId),
+        isNull(reservationGuestLinks.revokedAt),
+        isNull(reservationGuestLinks.createdBy),
+      ),
+    )
+    .orderBy(
+      desc(reservationGuestLinks.createdAt),
+      desc(reservationGuestLinks.id),
+    );
+  const kept = [
+    keepId,
+    ...active
+      .map((row) => row.id)
+      .filter((id) => id !== keepId)
+      .slice(0, AUTOMATIC_LINK_ACTIVE_CAP - 1),
+  ];
+  const stale = active.map((row) => row.id).filter((id) => !kept.includes(id));
+  if (stale.length === 0) return;
+  await tx
+    .update(reservationGuestLinks)
+    .set({ revokedAt: now })
+    .where(
+      and(
+        eq(reservationGuestLinks.tenantId, context.tenant.tenantId),
+        inArray(reservationGuestLinks.id, stale),
+      ),
+    );
+}
+
+async function insertGuestLink(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    outletId: OutletId;
+    reservationId: string;
+    actorUserId: string | null;
+    now: Date;
+  },
+  reservation: ReservationRow,
+  { revokeExisting = true }: { revokeExisting?: boolean } = {},
+): Promise<{ id: string; token: string; expiresAt: string }> {
   const expiresAt = new Date(
     reservation.reservedFor.getTime() + GUEST_LINK_GRACE_HOURS * HOUR_MS,
   );
@@ -180,22 +311,29 @@ export async function issueReservationGuestLink(
       "RESERVATION_TRANSITION_INVALID",
       "Reservasi sudah lewat; tautan tidak dapat dibuat.",
     );
-  await revokeActiveLinks(tx, context, input.reservationId, input.now);
+  if (revokeExisting)
+    await revokeActiveLinks(tx, context, input.reservationId, input.now);
   const token = randomBytes(32).toString("base64url");
+  let id: string;
   try {
-    await tx.insert(reservationGuestLinks).values({
-      tenantId: context.tenant.tenantId,
-      outletId: input.outletId,
-      reservationId: input.reservationId,
-      tokenHash: hashReservationLinkToken(token),
-      expiresAt,
-      createdBy: input.actorUserId,
-      createdAt: input.now,
-    });
+    const [inserted] = await tx
+      .insert(reservationGuestLinks)
+      .values({
+        tenantId: context.tenant.tenantId,
+        outletId: input.outletId,
+        reservationId: input.reservationId,
+        tokenHash: hashReservationLinkToken(token),
+        expiresAt,
+        createdBy: input.actorUserId,
+        createdAt: input.now,
+      })
+      .returning({ id: reservationGuestLinks.id });
+    if (!inserted) throw new Error("Guest link insert returned no row");
+    id = inserted.id;
   } catch (error) {
     scrubLinkQueryError(error);
   }
-  return { token, expiresAt: expiresAt.toISOString() };
+  return { id, token, expiresAt: expiresAt.toISOString() };
 }
 
 async function revokeActiveLinks(
@@ -337,7 +475,9 @@ async function resolveGuestLink(
 
 // ------------------------------------------------------------------ view
 
-function toRescheduleRequest(row: RescheduleRow): ReservationRescheduleRequest {
+export function toRescheduleRequest(
+  row: RescheduleRow,
+): ReservationRescheduleRequest {
   return reservationRescheduleRequestSchema.parse({
     id: row.id,
     reservationId: row.reservationId,

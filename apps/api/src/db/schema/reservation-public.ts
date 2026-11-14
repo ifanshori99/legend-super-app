@@ -72,8 +72,10 @@ export const reservationGuestLinks = pgTable(
       columns: [table.tenantId, table.reservationId],
       foreignColumns: [reservations.tenantId, reservations.id],
     }),
-    // One active link per reservation; revoked rows stay as history.
-    uniqueIndex("reservation_guest_links_active_key")
+    // Several automatic links may be active at once (legend-wmfip: a retry
+    // never revokes the link of an earlier send); the service caps them.
+    // Revoked rows stay as history.
+    index("reservation_guest_links_active_key")
       .on(table.tenantId, table.reservationId)
       .where(sql`${table.revokedAt} IS NULL`),
     check(

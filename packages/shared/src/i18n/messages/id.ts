@@ -1390,6 +1390,7 @@ export const id = {
       emergency: "Darurat",
       security: "Keamanan",
       order_status: "Status pesanan",
+      reservation_confirmation: "Konfirmasi reservasi",
       reservation_reminder: "Pengingat reservasi",
       facility_session: "Sesi fasilitas",
       subscription_billing: "Tagihan langganan",

@@ -28,6 +28,10 @@ export const reservationErrorHttpStatus = {
   RESERVATION_RESCHEDULE_PENDING: 409,
   /** The requested new time is not allowed for this reservation. */
   RESERVATION_RESCHEDULE_INVALID: 422,
+  /** Staff decided this reschedule request the other way already. */
+  RESERVATION_RESCHEDULE_RESOLVED: 409,
+  /** Approve refused: the free-cancellation window of the original time has closed. */
+  RESERVATION_RESCHEDULE_LATE: 409,
   /** Staff DP link resend: the booking no longer waits for its DP. */
   RESERVATION_DEPOSIT_NOT_PENDING: 409,
   /** Staff DP link resend: the frozen payment window has ended (or is under a minute). */
@@ -69,6 +73,10 @@ export const reservationErrorMessages: Record<ReservationErrorCode, string> = {
     "Permintaan jadwal ulang sebelumnya masih diproses.",
   RESERVATION_RESCHEDULE_INVALID:
     "Jadwal baru tidak dapat diminta untuk reservasi ini.",
+  RESERVATION_RESCHEDULE_RESOLVED:
+    "Permintaan jadwal ulang ini sudah diputuskan.",
+  RESERVATION_RESCHEDULE_LATE:
+    "Batas pembatalan gratis untuk jadwal awal sudah lewat; jadwal ulang tidak dapat disetujui.",
   RESERVATION_DEPOSIT_NOT_PENDING:
     "Tautan DP hanya bisa dikirim ulang untuk reservasi yang menunggu DP.",
   RESERVATION_DEPOSIT_WINDOW_CLOSED: "Batas waktu pembayaran DP sudah lewat.",

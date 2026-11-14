@@ -12,6 +12,7 @@ export const reservationMessages = {
     label: "Bagian reservasi",
     schedule: "Jadwal",
     waitlist: "Daftar tunggu",
+    reschedule: "Reschedule",
     packages: "Paket event",
   },
   filters: {
@@ -274,6 +275,37 @@ export const reservationMessages = {
       "{name}, meja Anda siap. Silakan menuju meja resepsionis.",
     queueCount: "{count} tamu",
   },
+  reschedule: {
+    title: "Permintaan reschedule",
+    subtitle:
+      "Tamu minta pindah jam atau jumlah orang. Setujui untuk memindahkan meja.",
+    loading: "Memuat permintaan reschedule…",
+    emptyTitle: "Belum ada permintaan reschedule",
+    emptyHint: "Permintaan dari tautan kelola tamu muncul di sini.",
+    errorTitle: "Permintaan reschedule gagal dimuat",
+    errorHint: "Periksa koneksi internet, lalu coba lagi.",
+    pending: "Menunggu keputusan",
+    pendingCount: "{count} permintaan",
+    noPending: "Tidak ada permintaan yang menunggu.",
+    done: "Sudah diputuskan",
+    status: {
+      pending: "Menunggu",
+      approved: "Disetujui",
+      declined: "Ditolak",
+      withdrawn: "Ditarik tamu",
+    },
+    requestedFor: "Minta pindah ke {time}",
+    pax: "{count} tamu",
+    paxSame: "Jumlah tamu tetap",
+    note: "Catatan: {note}",
+    open: "Lihat reservasi",
+    approve: "Setujui",
+    approveLabel: "Setujui reschedule {time}",
+    decline: "Tolak",
+    declineLabel: "Tolak reschedule {time}",
+    approveSuccess: "Reschedule disetujui. Reservasi dan meja sudah dipindah.",
+    declineSuccess: "Permintaan reschedule ditolak.",
+  },
   packages: {
     title: "Paket event",
     subtitle: "Paket menu untuk rombongan dan acara, dipesan sebelum hari H.",
@@ -310,6 +342,12 @@ export const reservationMessages = {
       "Tamu sedang membayar DP lewat tautan sebelumnya. Tunggu pembayaran selesai.",
     RESERVATION_DEPOSIT_LINK_EXPIRED:
       "Tautan DP sudah tidak berlaku. Kirim ulang tautan dari awal.",
+    RESERVATION_RESCHEDULE_INVALID:
+      "Waktu baru tidak bisa dipakai untuk reservasi ini.",
+    RESERVATION_RESCHEDULE_RESOLVED:
+      "Permintaan ini sudah diputuskan. Muat ulang daftar.",
+    RESERVATION_RESCHEDULE_LATE:
+      "Batas batal gratis jadwal awal sudah lewat. Tolak permintaan ini atau batalkan reservasi sesuai kebijakan.",
     WAITLIST_TRANSITION_INVALID:
       "Status daftar tunggu tidak dapat diubah ke tahap tersebut.",
     WAITLIST_ENTRY_NOT_FOUND: "Pendaftaran daftar tunggu tidak ditemukan.",
