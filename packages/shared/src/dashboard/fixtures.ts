@@ -897,7 +897,10 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
       [],
       [
         {
-          values: {},
+          values: {
+            review_rating: { unit: "decimal", value: "4.6000" },
+            review_count: { unit: "count", value: 10 },
+          },
         },
       ],
     ),
