@@ -1,0 +1,12 @@
+{
+  "widths": [320, 390, 1280],
+  "states": 16,
+  "screenshots": 32,
+  "assertions": [
+    "All 16 states render without overflow at 320/390/1280; headings, action targets and 44px buttons checked.",
+    "DP paid equals refund plus forfeiture in all five money states; no live money operation.",
+    "Approved schedule persists through detail, cancellation, and a second pending request; keyboard focus moves to heading.",
+    "Late cancellation requires confirmation and retains the 25k refund/25k deduction fixture."
+  ],
+  "errors": []
+}
