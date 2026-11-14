@@ -253,7 +253,12 @@ describe("legend-2lp.3 KDS fallback integration", () => {
     const category = randomUUID();
     const menuItem = randomUUID();
     const orderId = createUlid();
-    const ticketIds = Array.from({ length: 5 }, () => createUlid());
+    const fixtureNowMs = Date.now();
+    const heartbeatAt = new Date(fixtureNowMs - 8 * 60 * 60 * 1000);
+    const clock = createFakeClock(heartbeatAt.getTime());
+    // Open, in-progress, done, disabled, already printed, expired, already
+    // seen at the last heartbeat, all voided, and all served respectively.
+    const ticketIds = Array.from({ length: 9 }, () => createUlid());
     await asCashierTenant(tenant.tenantId, async (client) => {
       for (const [stationId, enabled] of [
         [bar, true],
@@ -288,7 +293,7 @@ describe("legend-2lp.3 KDS fallback integration", () => {
           ],
         );
         await client.query(
-          "INSERT INTO kitchen_tickets (id,tenant_id,outlet_id,order_id,station_id,fire_batch_id,business_date,ticket_no,status,fired_at,printed_fallback) VALUES ($1,$2,$3,$4,$5,$6,'2026-11-14',$7,$8,now(),$9)",
+          "INSERT INTO kitchen_tickets (id,tenant_id,outlet_id,order_id,station_id,fire_batch_id,business_date,ticket_no,status,fired_at,printed_fallback) VALUES ($1,$2,$3,$4,$5,$6,'2026-11-14',$7,$8,$10,$9)",
           [
             ulidToUuid(id),
             tenant.tenantId,
@@ -299,6 +304,14 @@ describe("legend-2lp.3 KDS fallback integration", () => {
             index + 1,
             index === 2 ? "done" : index === 1 ? "in_progress" : "new",
             index === 4,
+            new Date(
+              fixtureNowMs +
+                (index === 5
+                  ? -7 * 60 * 60 * 1000
+                  : index === 6
+                    ? -8 * 60 * 60 * 1000 - 1
+                    : index + 1),
+            ),
           ],
         );
         if (index === 1 || index === 2)
@@ -318,9 +331,13 @@ describe("legend-2lp.3 KDS fallback integration", () => {
             menuItem,
           ],
         );
+        if (index === 7 || index === 8)
+          await client.query(
+            "UPDATE kitchen_ticket_items SET status=$2::varchar, started_at=CASE WHEN $2::varchar='served' THEN now() END, ready_at=CASE WHEN $2::varchar='served' THEN now() END, served_at=CASE WHEN $2::varchar='served' THEN now() END WHERE ticket_id=$1",
+            [ulidToUuid(id), index === 7 ? "voided" : "served"],
+          );
       }
     });
-    const clock = createFakeClock();
     const store = createFakeStore(clock, [
       makePrinter("bar-printer", {
         role: "station",
@@ -335,42 +352,67 @@ describe("legend-2lp.3 KDS fallback integration", () => {
       context,
       outletId: outletIdSchema.parse(tenant.outletId),
     });
+    const routedRefs: (string | undefined)[] = [];
     const agent = createPrintAgent({
       store,
       clock,
       transportFor: () => transport,
-      sweepStationTickets: sweep,
+      sweepStationTickets: async (route, ...rest) =>
+        sweep(
+          async (input) => {
+            routedRefs.push(input.sourceRef);
+            return route(input);
+          },
+          ...rest,
+        ),
     });
+    const tupleLocks = () =>
+      asCashierTenant(tenant.tenantId, async (client) => {
+        const { rows } = await client.query<{ id: string; lockTx: string }>(
+          'SELECT id, xmax::text AS "lockTx" FROM kitchen_tickets WHERE tenant_id=$1 ORDER BY id',
+          [tenant.tenantId],
+        );
+        return rows;
+      });
+    const beforeHealthySweep = await tupleLocks();
     await agent.tick();
+    expect.soft(await tupleLocks()).toEqual(beforeHealthySweep);
+    expect.soft(routedRefs).toHaveLength(0);
+    agent.recordKdsHeartbeat(bar);
+    await agent.tick();
+    // FOR UPDATE leaves its locking transaction in xmax, even when it
+    // commits without UPDATE. Healthy screens must never acquire that lock.
+    expect.soft(await tupleLocks()).toEqual(beforeHealthySweep);
+    expect.soft(routedRefs).toHaveLength(0);
     clock.advance(14_999);
     await agent.tick();
-    expect(store.jobs).toHaveLength(0);
-    clock.advance(2);
+    expect.soft(store.jobs).toHaveLength(0);
+    clock.advance(8 * 60 * 60 * 1000 - 14_999 + 20_000);
     await agent.tick();
     await agent.tick();
-    expect(store.jobs.map((job) => job.sourceRef).sort()).toEqual(
-      ticketIds.slice(0, 2).sort(),
-    );
-    expect(transport.printed).toHaveLength(2);
+    expect
+      .soft(store.jobs.map((job) => job.sourceRef).sort())
+      .toEqual(ticketIds.slice(0, 2).sort());
+    expect.soft(transport.printed).toHaveLength(2);
+    expect.soft(routedRefs).not.toContain(ticketIds[5]);
+    expect.soft(routedRefs).not.toContain(ticketIds[6]);
+    expect.soft(routedRefs).not.toContain(ticketIds[7]);
+    expect.soft(routedRefs).not.toContain(ticketIds[8]);
     await asCashierTenant(tenant.tenantId, async (client) => {
       const result = await client.query(
         "SELECT id,printed_fallback FROM kitchen_tickets WHERE tenant_id=$1 ORDER BY ticket_no",
         [tenant.tenantId],
       );
-      expect(result.rows.map((row) => row.printed_fallback)).toEqual([
-        true,
-        true,
-        false,
-        false,
-        true,
-      ]);
+      expect
+        .soft(result.rows.map((row) => row.printed_fallback))
+        .toEqual([true, true, false, false, true, false, false, false, false]);
       await client.query(
         "UPDATE kitchen_tickets SET printed_fallback=false WHERE id=$1",
         [ulidToUuid(ticketIds[0]!)],
       );
     });
     await agent.tick();
-    expect(store.jobs).toHaveLength(2);
-    expect(transport.printed).toHaveLength(2);
+    expect.soft(store.jobs).toHaveLength(2);
+    expect.soft(transport.printed).toHaveLength(2);
   });
 });

@@ -49,7 +49,10 @@ export type PrintAgentOptions = {
   /** Overrides the module-level notifier (see `setPrintAlertNotifier`). */
   notify?: PrintAlertNotifier;
   /** Revisit persistent unbumped station tickets for KDS-down fallback. */
-  sweepStationTickets?: (route: StationTicketRouter) => Promise<void>;
+  sweepStationTickets?: (
+    route: StationTicketRouter,
+    getWindow: KdsFallbackWindowReader,
+  ) => Promise<void>;
 };
 
 export type StationTicketInput = {
@@ -64,6 +67,16 @@ export type StationTicketResult =
 export type StationTicketRouter = (
   input: StationTicketInput,
 ) => Promise<StationTicketResult>;
+
+export type KdsFallbackWindow = {
+  lastHeartbeatAt: Date;
+  oldestTicketAt: Date;
+};
+export type KdsFallbackWindowReader = (
+  stationId: string,
+) => KdsFallbackWindow | null;
+
+export const KDS_FALLBACK_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 export type PrintAgent = ReturnType<typeof createPrintAgent>;
 
@@ -119,7 +132,7 @@ export function createPrintAgent(options: PrintAgentOptions) {
   async function sweepStationTickets(): Promise<void> {
     if (!options.sweepStationTickets) return;
     stationSweep ??= options
-      .sweepStationTickets(routeStationTicket)
+      .sweepStationTickets(routeStationTicket, getKdsFallbackWindow)
       .catch(() => undefined)
       .finally(() => {
         stationSweep = null;
@@ -440,13 +453,36 @@ export function createPrintAgent(options: PrintAgentOptions) {
     return record;
   }
 
+  function getKdsFallbackWindow(stationId: string): KdsFallbackWindow | null {
+    const lastHeartbeatAt = monitor.getLastKdsHeartbeatAt(stationId);
+    if (!lastHeartbeatAt || monitor.isKdsUp(stationId)) return null;
+    return {
+      lastHeartbeatAt,
+      oldestTicketAt: new Date(clock.now().getTime() - KDS_FALLBACK_MAX_AGE_MS),
+    };
+  }
+
+  function canFallbackTicket(input: StationTicketInput): boolean {
+    if (input.ticket.items.length === 0) return false;
+    const window = getKdsFallbackWindow(input.stationId);
+    if (!window) return false;
+    const createdAtMs = input.ticket.createdAt.getTime();
+    return (
+      createdAtMs > window.lastHeartbeatAt.getTime() &&
+      createdAtMs >= window.oldestTicketAt.getTime()
+    );
+  }
+
   async function routeStationTicket(
     input: StationTicketInput,
   ): Promise<StationTicketResult> {
     monitor.watchKds(input.stationId);
-    if (monitor.isKdsUp(input.stationId)) return { printed: false };
+    if (!canFallbackTicket(input)) return { printed: false };
 
     const printers = await store.listPrinters();
+    // A screen can recover while the printer lookup is awaiting the DB.
+    // Re-read its last heartbeat before admitting another fallback job.
+    if (!canFallbackTicket(input)) return { printed: false };
     const stationPrinter = printers.find(
       (printer) =>
         printer.role === "station" && printer.stationId === input.stationId,
@@ -516,6 +552,7 @@ export function createPrintAgent(options: PrintAgentOptions) {
     sweepPendingAlerts,
     enqueue,
     routeStationTicket,
+    getKdsFallbackWindow,
     recordKdsHeartbeat: (stationId: string) =>
       monitor.recordKdsHeartbeat(stationId, clock.now()),
     monitor,

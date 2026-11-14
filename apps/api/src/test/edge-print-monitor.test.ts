@@ -219,14 +219,14 @@ describe("health monitor: KDS", () => {
 
   it("fires down only once per episode", async () => {
     const { monitor, kdsEvents, tickFor } = setup();
-    monitor.watchKds("st1");
+    monitor.recordKdsHeartbeat("st1");
     await tickFor(90_000);
     expect(kdsEvents.filter((e) => e.status === "down")).toHaveLength(1);
   });
 
   it("brings a station back up immediately when a heartbeat resumes", async () => {
     const { monitor, kdsEvents, clock, tickFor } = setup();
-    monitor.watchKds("st1");
+    monitor.recordKdsHeartbeat("st1");
     await tickFor(20_000);
     expect(monitor.isKdsUp("st1")).toBe(false);
     clock.advance(1000);
@@ -250,23 +250,21 @@ describe("health monitor: KDS", () => {
     expect(monitor.isKdsUp("st1")).toBe(true);
   });
 
-  it("assumes a never-heard station up during the grace window, then down", async () => {
-    const { monitor, kdsEvents, tickFor, startMs } = setup();
+  it("keeps a watched station unknown until its first genuine heartbeat", async () => {
+    const { monitor, kdsEvents, tickFor } = setup();
     monitor.watchKds("st1");
     await tickFor(10_000);
     expect(monitor.isKdsUp("st1")).toBe(true);
     expect(kdsEvents).toHaveLength(0);
-    await tickFor(5000);
-    expect(monitor.isKdsUp("st1")).toBe(false);
-    expect(kdsEvents).toEqual([
-      { id: "st1", status: "down", atMs: startMs + 15_000 },
-    ]);
+    await tickFor(90_000);
+    expect(monitor.isKdsUp("st1")).toBe(true);
+    expect(kdsEvents).toHaveLength(0);
   });
 
   it("tracks stations independently", async () => {
     const { monitor, clock } = setup();
     monitor.watchKds("a");
-    monitor.watchKds("b");
+    monitor.recordKdsHeartbeat("b");
     for (let i = 0; i < 6; i += 1) {
       monitor.recordKdsHeartbeat("a");
       clock.advance(TICK_MS);
@@ -276,10 +274,10 @@ describe("health monitor: KDS", () => {
     expect(monitor.isKdsUp("b")).toBe(false);
   });
 
-  it("treats an unwatched station as up and starts watching it", async () => {
+  it("does not infer a down screen merely by asking about an unwatched station", async () => {
     const { monitor, tickFor } = setup();
     expect(monitor.isKdsUp("ghost")).toBe(true);
     await tickFor(15_000);
-    expect(monitor.isKdsUp("ghost")).toBe(false);
+    expect(monitor.isKdsUp("ghost")).toBe(true);
   });
 });
