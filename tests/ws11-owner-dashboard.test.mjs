@@ -131,7 +131,10 @@ describe("owner dashboard part 1 · DASH-02", () => {
   test("DASH-02: the review tile exposes its available rating and count", () => {
     const run = runs["crm.reviews"];
     assert.deepEqual(
-      run.availability.map(({ metricCode, status }) => ({ metricCode, status })),
+      run.availability.map(({ metricCode, status }) => ({
+        metricCode,
+        status,
+      })),
       [
         { metricCode: "review_rating", status: "available" },
         { metricCode: "review_count", status: "available" },
