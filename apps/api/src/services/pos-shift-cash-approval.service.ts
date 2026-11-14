@@ -102,13 +102,7 @@ export async function decideHeldCashMovement(
         "FORBIDDEN",
         "Kas keluar tidak dapat disetujui atau ditolak oleh pencatatnya.",
       );
-    const shift = await findShift(
-      tx,
-      context,
-      outletId,
-      shiftId,
-      true,
-    );
+    const shift = await findShift(tx, context, outletId, shiftId, true);
     const [existing] = await tx
       .select()
       .from(cashMovementOutcomes)

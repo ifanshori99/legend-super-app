@@ -16,8 +16,9 @@
 //     amount > expected now is refused;
 //   - the approver is never the recorder; no permission = FORBIDDEN.
 //
-// The service is called directly (no route is mounted yet, brief B):
-//   decideHeldCashMovement(context, caller, outletId, movementId, { decision })
+// The service is called directly (the HTTP route is covered by
+// pos-shift-cash-approval-route.test.ts, brief round 2):
+//   decideHeldCashMovement(context, caller, outletId, shiftId, movementId, { decision })
 // from ../services/pos-shift-cash-approval.service.ts. Until it exists the file
 // fails on that import (right reason: missing behavior).
 //
@@ -573,7 +574,18 @@ const callerOf = (who: Member) => ({
   deviceId: null,
 });
 
-function decide(
+async function shiftIdOfMovement(movementId: string): Promise<string> {
+  const { rows } = await owner.query<{ shift_id: string }>(
+    "SELECT shift_id FROM cash_movements WHERE tenant_id = $1 AND id = $2",
+    [tenant.tenantId, movementId],
+  );
+  return rows[0]!.shift_id;
+}
+
+// Round 2 signature: shiftId comes right after outletId (a movement of another
+// shift is NOT_FOUND). The helper looks the movement's own shift up so every
+// case below keeps asserting the decision rules, not the lookup.
+async function decide(
   who: Member,
   movementId: string,
   decision: "approved" | "rejected",
@@ -582,6 +594,7 @@ function decide(
     tenantContextOf(tenant.tenantId),
     callerOf(who),
     outletIdSchema.parse(tenant.outletId),
+    await shiftIdOfMovement(movementId),
     movementId,
     { decision },
   );
@@ -1324,3 +1337,73 @@ function shiftReport(who: Member, shiftId: string) {
     .set(headers)
     .set(originHeader);
 }
+
+// ---- 8. Round 2 F: recordCashMovement counts the cash of held refunds / voids --------
+//
+// A held cash refund already left the drawer (it is out of the stored expected
+// figure but physically gone). A new cash out must therefore be held when
+// amount > expected - held correction cash, not only when amount > expected.
+// Only a held refund is seeded here (seedHeldRefund); a held void follows the
+// same rule per the brief but has no seed helper in this file.
+// Assumption: a held cash out is recorded with 201 and needs_approval = true,
+// exactly like heldWithSale(0); a cash out that fits is recorded counted.
+
+describe("legend-3l4q recording a cash out while a refund is held (round 2 F)", () => {
+  async function drawerWithHeldRefund(refundIdr: number) {
+    // Float Rp100.000 + cash sale Rp100.000 = expected Rp200.000.
+    const cashier = await newCashier("Kasir Refund");
+    const shift = await openShift(cashier);
+    const orderId = await seedCashSale(shift, cashier, 100_000);
+    await seedHeldRefund(shift.id, orderId, cashier, refundIdr);
+    return { cashier, shift };
+  }
+
+  it("legend-3l4q: a cash out that fits expected (Rp200.000) but exceeds expected - held refund (Rp140.000) is held: needs_approval and not counted in expected", async () => {
+    const { cashier, shift } = await drawerWithHeldRefund(60_000);
+
+    const response = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: HELD_IDR,
+      reasonNote: "Beli gas elpiji",
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+
+    const [row] = await movementsOf(shift.id);
+    expect(row).toMatchObject({ amount: HELD_IDR, needs_approval: true });
+    // Held = not counted: expected stays Rp200.000 (the held refund is not in it either).
+    expect(await drawerNow(cashier, shift.id, 200_000)).toMatchObject({
+      expected: 200_000,
+    });
+  });
+
+  it("legend-3l4q: a cash out that fits after the held refund (Rp130.000 <= Rp140.000) is not held and is counted in expected", async () => {
+    const { cashier, shift } = await drawerWithHeldRefund(60_000);
+
+    const response = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: 130_000,
+      reasonNote: "Beli gas elpiji",
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+
+    const [row] = await movementsOf(shift.id);
+    expect(row).toMatchObject({ amount: 130_000, needs_approval: false });
+    expect(await drawerNow(cashier, shift.id, 70_000)).toMatchObject({
+      expected: 70_000,
+    });
+  });
+
+  it("legend-3l4q: a cash out exactly equal to expected - held refund (Rp140.000) is not held (only amount > expected - held refund is held)", async () => {
+    const { cashier, shift } = await drawerWithHeldRefund(60_000);
+
+    const response = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: 140_000,
+      reasonNote: "Beli gas elpiji",
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+
+    const [row] = await movementsOf(shift.id);
+    expect(row).toMatchObject({ amount: 140_000, needs_approval: false });
+  });
+});
