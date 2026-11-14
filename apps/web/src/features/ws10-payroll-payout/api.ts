@@ -9,7 +9,7 @@ import type {
   EndpointOutput,
 } from "@starter/shared/api";
 import { listBankAccounts } from "@starter/shared/accounting";
-import { getEmployeePii, listEmployees } from "@starter/shared/hris";
+import { listEmployees } from "@starter/shared/hris";
 import { listPayrollRuns, type PayrollRun } from "@starter/shared/hris/payroll";
 import {
   approveDisbursementBatch,
@@ -20,24 +20,26 @@ import {
   exportDisbursementBatch,
   getDisbursementBatch,
   getPayoutConfig,
+  listPayoutBatches,
   listRunDisbursementBatches,
+  PAYOUT_EVIDENCE_UPLOAD_PATH,
+  payoutEvidenceUploadResponseSchema,
   resolveDisbursementItems,
+  returnDisbursementItems,
   submitDisbursementBatch,
   upsertPayoutConfig,
 } from "@starter/shared/hris/payroll/payout";
 import { orgEndpoints } from "@starter/shared/platform";
+import type { PayrollPayoutEvidenceUploadDto } from "@starter/shared/types";
 import type { PayoutBankFormat } from "@starter/shared/validators/payroll-payout";
+import { apiErrorBodySchema } from "@starter/shared/core";
 import { apiFetch } from "@/lib/api/client";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api/errors";
 import { callEndpoint } from "@/lib/api/endpoint";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { API_URL } from "@/lib/env";
 import { collectAllPages, LIST_LIMIT } from "../ws10-payroll-run/lib";
-import {
-  bankCodeLabel,
-  bankFileFallbackName,
-  maskedAccountDisplay,
-} from "./lib";
+import { bankFileFallbackName } from "./lib";
 
 type Body<E extends AnyEndpoint> = EndpointInput<E>["body"];
 
@@ -47,7 +49,10 @@ export type ApproveBatchInput = Body<typeof approveDisbursementBatch>;
 export type CancelBatchInput = Body<typeof cancelDisbursementBatch>;
 export type ConfirmItemsInput = Body<typeof confirmDisbursementItems>;
 export type ResolveItemsInput = Body<typeof resolveDisbursementItems>;
+export type ReturnItemsInput = Body<typeof returnDisbursementItems>;
 export type ConfirmCashInput = Body<typeof confirmDisbursementCash>;
+export type ListBatchesQuery = EndpointInput<typeof listPayoutBatches>["query"];
+export type ListBatchesPage = EndpointOutput<typeof listPayoutBatches>;
 export type SubmitBatchResult = EndpointOutput<
   typeof submitDisbursementBatch
 >["data"];
@@ -78,7 +83,6 @@ export type PayoutEmployee = {
   userId: string | null;
   name: string;
   subtitle: string;
-  bankLabel: string | null;
 };
 
 export type PayoutSourceAccountRow = {
@@ -207,6 +211,12 @@ export const fetchRunBatches = (runId: string, signal?: AbortSignal) =>
     { signal },
   );
 
+/** One page of the PT's batches across runs, newest first (max 20). */
+export const fetchPayoutBatches = (
+  query: ListBatchesQuery,
+  signal?: AbortSignal,
+) => callEndpoint(listPayoutBatches, { query }, { signal });
+
 export const fetchBatch = (batchId: string, signal?: AbortSignal) =>
   callEndpoint(getDisbursementBatch, { params: { id: batchId } }, { signal });
 
@@ -228,36 +238,14 @@ export async function fetchPayoutEmployees(
       { signal },
     ),
   );
-  // The bank account number is masked PII behind its own endpoint; the payee
-  // row shows the employee number and, from the item, the bank code.
+  // The payee's bank account comes from the item's locked snapshot, never from
+  // the HR profile.
   return page.data.map((employee) => ({
     id: employee.id,
     userId: employee.userId,
     name: employee.fullName,
     subtitle: employee.employeeNo,
-    bankLabel: null,
   }));
-}
-
-/**
- * "BCA ●●●● 4821" for one payee, from the masked HR-03 profile (readable with
- * payroll.view). Null when the profile has no account or the caller may not
- * read it; the screen then shows the bank code and says the number is hidden.
- */
-export async function fetchPayeeBankLabel(
-  employeeId: string,
-  signal?: AbortSignal,
-): Promise<string | null> {
-  if (API_MOCK) return null;
-  const { data } = await callEndpoint(
-    getEmployeePii,
-    { params: { employeeId } },
-    { signal },
-  );
-  if (data.bankAccount === null) return null;
-  const bank = bankCodeLabel(data.bankCode);
-  const number = maskedAccountDisplay(data.bankAccount.masked);
-  return bank === null ? number : `${bank} ${number}`;
 }
 
 // ---- Writes ----------------------------------------------------------------
@@ -287,8 +275,66 @@ export const postConfirmItems = (batchId: string, body: ConfirmItemsInput) =>
 export const postResolveItems = (batchId: string, body: ResolveItemsInput) =>
   callEndpoint(resolveDisbursementItems, { params: { id: batchId }, body });
 
+export const postReturnItems = (batchId: string, body: ReturnItemsInput) =>
+  callEndpoint(returnDisbursementItems, { params: { id: batchId }, body });
+
 export const postConfirmCash = (batchId: string, body: ConfirmCashInput) =>
   callEndpoint(confirmDisbursementCash, { params: { id: batchId }, body });
+
+/**
+ * Uploads a resolve/return proof (multipart `file`, sent without a JSON
+ * content type so the browser sets the boundary). The server sniffs the bytes;
+ * a failure becomes an `ApiError` carrying the server's status and code.
+ */
+export async function uploadPayoutEvidence(
+  batchId: string,
+  file: File,
+): Promise<PayrollPayoutEvidenceUploadDto> {
+  if (API_MOCK) {
+    // The mock registry carries JSON only, so the mock answers here. A PDF
+    // mimics the server while the PDF scanner is not wired (503).
+    if (/\.pdf$/i.test(file.name) || file.type === "application/pdf")
+      throw new ApiError(
+        503,
+        "SERVICE_UNAVAILABLE",
+        "Pemindai malware belum tersedia.",
+      );
+    return {
+      evidenceKey: `tenants/mock/payroll-payout/${batchId}/evidence/mock.png`,
+      contentType: file.type === "image/jpeg" ? "image/jpeg" : "image/png",
+      sizeBytes: file.size,
+    };
+  }
+  const body = new FormData();
+  body.set("file", file);
+  const path = PAYOUT_EVIDENCE_UPLOAD_PATH.replace(
+    ":id",
+    encodeURIComponent(batchId),
+  );
+  let response: Response;
+  try {
+    response = await fetch(new URL(path, API_URL), {
+      method: "POST",
+      credentials: "include",
+      headers: { accept: "application/json" },
+      body,
+    });
+  } catch {
+    throw new ApiError(0, "NETWORK_ERROR", NETWORK_ERROR_MESSAGE);
+  }
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const parsed = apiErrorBodySchema.safeParse(payload);
+    const error = parsed.success ? parsed.data.error : undefined;
+    throw new ApiError(
+      response.status,
+      error?.code ?? "HTTP_ERROR",
+      error?.message ?? `Request failed with status ${response.status}.`,
+      error?.details,
+    );
+  }
+  return payoutEvidenceUploadResponseSchema.parse(payload).data;
+}
 
 export type ExportedFile = { filename: string; checksumSha256: string };
 

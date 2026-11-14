@@ -26,6 +26,7 @@ import {
   PayeeTable,
   isExcludedItem,
   isPayableItem,
+  lacksAccountSnapshot,
 } from "./approval-items";
 import { ApprovalSteps } from "./approval-steps";
 import { ApprovalSummary } from "./approval-summary";
@@ -119,6 +120,7 @@ function ApprovalBatch({
   const batch = query.data;
   const payable = batch.items.filter(isPayableItem);
   const excluded = batch.items.filter(isExcludedItem);
+  const noSnapshotCount = payable.filter(lacksAccountSnapshot).length;
   const isCreator = batch.requestedBy === currentUserId;
   const pendingApproval = batch.status === "pending_approval";
 
@@ -139,6 +141,8 @@ function ApprovalBatch({
   let blockKey: MessageKey | null = null;
   if (!access.canApprove)
     blockKey = "payrollPayoutReview.approval.blocked.noPermission";
+  else if (noSnapshotCount > 0)
+    blockKey = "payrollPayoutReview.approval.blocked.noSnapshot";
   else if (isCreator)
     blockKey = "payrollPayoutReview.approval.blocked.selfApproval";
   else if (sourceInactive)
@@ -151,7 +155,7 @@ function ApprovalBatch({
     blockKey = "payrollPayoutReview.approval.blocked.needCheck";
 
   const submit = () => {
-    if (!batch.contentHash || approve.isPending) return;
+    if (!batch.contentHash || approve.isPending || noSnapshotCount > 0) return;
     setError(null);
     approve.mutate(
       { batchId: batch.id, contentHash: batch.contentHash },
@@ -257,6 +261,7 @@ function ApprovalBatch({
           checked={checked}
           onCheckedChange={setChecked}
           blockKey={blockKey}
+          blockParams={{ count: noSnapshotCount }}
           busy={approve.isPending && !stepUp.active}
           onApprove={submit}
           showApprove={pendingApproval}

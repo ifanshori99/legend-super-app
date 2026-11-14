@@ -5,6 +5,7 @@ export const payrollPayoutReviewMessages = {
     refresh: "Segarkan",
     unknownEmployee: "Karyawan tidak dikenal",
     noAccount: "Rekening belum tercatat",
+    noSnapshot: "Rekening belum tercatat di batch",
     noReason: "Dikecualikan oleh sistem",
     loadingLabel: "Memuat data pencairan",
     close: "Tutup",
@@ -85,6 +86,8 @@ export const payrollPayoutReviewMessages = {
       expires: "Persetujuan berlaku sampai {time}.",
     },
     blocked: {
+      noSnapshot:
+        "{count} karyawan transfer bank belum punya rekening tercatat di batch ini, jadi pengajuan ini tidak bisa disetujui. Hubungi tim teknis untuk membatalkan lalu mengajukan ulang.",
       selfApproval:
         "Anda yang mengajukan pencairan ini. Penyetuju harus orang lain.",
       noPermission: "Akun Anda tidak punya izin menyetujui pencairan.",
@@ -223,19 +226,55 @@ export const payrollPayoutReviewMessages = {
     bankRef: "Nomor referensi bank",
     bankRefHint: "Salin dari bukti transfer internet banking.",
     bankRefRequired: "Nomor referensi bank wajib diisi.",
-    evidenceUnavailableTitle: "Gagal dan Tidak terkirim belum bisa dipilih",
-    evidenceUnavailable:
-      "Unggah bukti belum tersedia: menandai gagal atau tidak terkirim memerlukan berkas bukti dari bank. Jangan bayar ulang. Hubungi tim teknis untuk penyelesaian manual.",
     submit: "Simpan hasil",
     cancel: "Batal",
     cashTitle: "Konfirmasi tunai diterima",
     cashDescription:
       "{name} · {amount}. Catat bahwa karyawan sudah menerima uang tunai.",
     cashSubmit: "Konfirmasi diterima",
+    evidenceFile: "Berkas bukti dari bank",
+    evidenceFileHint:
+      "Foto atau screenshot bukti (JPG atau PNG, maks 5 MB). Item ini tetap tercatat diekspor sampai dua orang berbeda menandai hasil yang sama.",
+    evidenceFileRequired: "Pilih berkas bukti dulu.",
+    note: "Catatan",
+    noteHint: "Tulis apa yang terjadi, misalnya pesan penolakan dari bank.",
+    noteRequired: "Catatan wajib diisi.",
+    resolveWarning:
+      "Jangan bayar ulang sebelum dua orang berbeda menandai hasil ini. Setelah itu slip gaji bisa dicairkan lagi.",
+    proposed:
+      "Usulan tercatat. Orang lain perlu menandai hasil yang sama dengan buktinya sendiri.",
+    resolved: "Hasil tercatat. Slip gaji ini bisa dicairkan ulang.",
+    uploading: "Mengunggah bukti…",
+    returnFileHint:
+      "Foto atau screenshot bukti dana masuk kembali dari bank (JPG atau PNG, maks 5 MB). Item tetap tercatat dibayar sampai dua orang berbeda mencatat dana kembali.",
+    returnWarning:
+      "Dana kembali membalik catatan pembayaran gaji ini. Jangan bayar ulang sebelum dua orang mencatatnya.",
+    returnTitle: "Catat dana kembali",
+    returnDescription:
+      "Untuk {name} · {amount}. Pakai ini bila transfer yang sudah berhasil dikembalikan bank. Perlu dua orang berbeda.",
+    returnAction: "Catat dana kembali",
+    returnSubmit: "Simpan dana kembali",
+    returnProposed:
+      "Usulan tercatat. Orang kedua perlu mengonfirmasi dengan bukti yang sama.",
+    returnDone: "Dana kembali tercatat.",
   },
   error: {
     evidenceInvalid:
       "Berkas bukti tidak dikenali untuk pencairan ini. Tidak ada hasil yang dicatat.",
+    evidencePhotoOnly: "Unggah foto atau screenshot bukti.",
+    evidenceTooLarge: "Berkas lebih dari 5 MB. Kecilkan foto lalu coba lagi.",
+    evidenceRejected:
+      "Berkas bukti ditolak pemeriksaan keamanan. Pakai foto atau screenshot lain.",
+    evidenceUnavailable:
+      "Unggah bukti belum tersedia di server. Tidak ada hasil yang dicatat. Hubungi tim teknis.",
+    resolveSamePerson:
+      "Penandaan kedua harus dilakukan orang lain, bukan orang yang mengusulkan pertama.",
+    resolveOutcomeMismatch:
+      "Hasil ini berbeda dari usulan pertama. Periksa lagi bukti bank.",
+    returnEvidenceMismatch:
+      "Orang kedua harus memakai bukti yang sama dengan orang pertama. Layar ini belum bisa melakukannya; hubungi tim teknis. Tidak ada dana yang dicatat kembali.",
+    returnSamePerson:
+      "Konfirmasi kedua harus dilakukan orang lain, bukan orang yang mencatat pertama.",
   },
   detail: {
     title: "Rincian pembayaran",

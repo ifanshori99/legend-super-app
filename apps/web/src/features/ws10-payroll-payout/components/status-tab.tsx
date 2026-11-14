@@ -1,7 +1,8 @@
 // Status karyawan tab (legend-wnkep.7): the result of a payout employee by
 // employee. Manual transfer files download once, results are recorded by a
 // second person with MFA (and password when asked), an `unknown` result has
-// no pay-again button. Buttons are switched off for clarity only; the server
+// no pay-again button. A failed or unsent transfer, and funds that came back,
+// are recorded with an uploaded proof photo. Buttons are switched off for clarity only; the server
 // stays the checker and its refusals are always shown.
 import * as React from "react";
 import { CircleAlert, Download } from "lucide-react";
@@ -22,7 +23,12 @@ import {
   isExcludedItem,
   useEmployeeLine,
 } from "./approval-items";
-import { CashDialog, DetailDialog, ResultDialog } from "./status-dialogs";
+import {
+  CashDialog,
+  DetailDialog,
+  ResultDialog,
+  ReturnDialog,
+} from "./status-dialogs";
 import { VerifyPanel, useStepUp } from "./approval-verify";
 import { StatusList, type RowAction } from "./status-items";
 import { summarizeGroups } from "./status-groups";
@@ -78,7 +84,7 @@ function StatusSkeleton() {
 }
 
 type ActiveDialog = {
-  kind: "record" | "cash" | "detail";
+  kind: "record" | "cash" | "detail" | "return";
   item: PayrollDisbursementItemDto;
 } | null;
 
@@ -91,7 +97,7 @@ function StatusBatch({
   const toast = useToast();
   const query = useBatch(batchId);
   const exportFile = useExportBatch();
-  const line = useEmployeeLine(query.data?.items ?? []);
+  const line = useEmployeeLine();
   const [dialog, setDialog] = React.useState<ActiveDialog>(null);
   const [exportError, setExportError] = React.useState<string | null>(null);
   const exportStepUp = useStepUp();
@@ -122,6 +128,8 @@ function StatusBatch({
   const isCreator = batch.requestedBy === currentUserId;
   const canRecord = (access.canApprove || access.canRequest) && !isCreator;
   const blockKey = isCreator ? "creator" : !canRecord ? "access" : null;
+  // Funds that came back are recorded for a manual transfer that was paid.
+  const canReturn = batch.channel === "manual_bank" && access.canApprove;
   const canExport =
     batch.channel === "manual_bank" &&
     batch.status === "approved" &&
@@ -365,6 +373,19 @@ function StatusBatch({
       )}
       {dialog?.kind === "detail" && (
         <DetailDialog
+          item={dialog.item}
+          person={line(dialog.item)}
+          onClose={closeDialog}
+          onReturn={
+            canReturn && dialog.item.status === "succeeded"
+              ? () => setDialog({ kind: "return", item: dialog.item })
+              : undefined
+          }
+        />
+      )}
+      {dialog?.kind === "return" && (
+        <ReturnDialog
+          batchId={batch.id}
           item={dialog.item}
           person={line(dialog.item)}
           onClose={closeDialog}

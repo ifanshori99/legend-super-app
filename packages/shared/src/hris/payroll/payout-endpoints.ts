@@ -11,6 +11,7 @@ import {
   PAYOUT_BANK_FORMATS,
   PAYOUT_BATCH_STATUSES,
   PAYOUT_CHANNELS,
+  PAYOUT_EVIDENCE_CONTENT_TYPES,
   PAYOUT_EXCLUDED_REASONS,
   PAYOUT_ITEM_STATUSES,
   PAYOUT_METHODS,
@@ -19,10 +20,12 @@ import {
   confirmCashHandoverInputSchema,
   confirmManualItemsInputSchema,
   createDisbursementBatchInputSchema,
+  listPayoutBatchesQuerySchema,
   payoutBatchParamsSchema,
   payoutLegalEntityParamsSchema,
   payoutRunParamsSchema,
   resolveManualItemsSchema,
+  returnManualItemsSchema,
   upsertPayoutConfigInputSchema,
 } from "../../validators/payroll-payout.ts";
 
@@ -59,6 +62,9 @@ export const payoutItemSchema = z.object({
   amountIdr: idr,
   feeIdr: idr,
   bankCode: z.string().nullable(),
+  // Locked when the batch was created; null for cash and for legacy items.
+  accountHolderName: z.string().nullable(),
+  maskedAccountNumber: z.string().nullable(),
   nameMatch: z.boolean().nullable(),
   providerRef: z.string().nullable(),
   confirmedBy: z.string().nullable(),
@@ -124,6 +130,23 @@ export const listRunDisbursementBatches = defineEndpoint({
   path: `${BASE}/runs/:id/disbursement-batches`,
   params: payoutRunParamsSchema,
   response: z.object({ data: z.array(payoutBatchSchema) }),
+});
+
+/**
+ * Batches of the tenant across runs, newest first, cursor paged (max 20 per
+ * page). Each batch carries its items, like the per-run list.
+ */
+export const listPayoutBatches = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/payout-batches`,
+  query: listPayoutBatchesQuerySchema,
+  response: z.object({
+    data: z.array(payoutBatchSchema),
+    meta: z.object({
+      limit: z.number().int(),
+      nextCursor: z.string().nullable(),
+    }),
+  }),
 });
 
 export const createDisbursementBatch = defineEndpoint({
@@ -224,6 +247,40 @@ export const resolveDisbursementItems = defineEndpoint({
       resolved: z.number().int(),
       proposed: z.number().int(),
     }),
+  }),
+});
+
+/**
+ * Funds came back after a paid transfer (payroll.disburse.approve + step-up
+ * MFA). Two different non-requesters give the same evidence: the first only
+ * proposes (`proposed`), the second moves the item to `returned` (`returned`).
+ */
+export const returnDisbursementItems = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/disbursement-batches/:id/return`,
+  params: payoutBatchParamsSchema,
+  body: returnManualItemsSchema,
+  response: z.object({
+    data: z.object({
+      batchStatus: z.enum(PAYOUT_BATCH_STATUSES),
+      returned: z.number().int(),
+      proposed: z.number().int(),
+    }),
+  }),
+});
+
+/**
+ * Upload of a resolve/return proof: multipart with one `file` part (JPEG, PNG
+ * or PDF, 5 MiB; step-up MFA). The typed client cannot send multipart, so the
+ * web reads this path with a raw fetch; the answer is parsed with
+ * `payoutEvidenceUploadResponseSchema`. Pass `evidenceKey` to resolve or return.
+ */
+export const PAYOUT_EVIDENCE_UPLOAD_PATH = `${BASE}/disbursement-batches/:id/evidence`;
+export const payoutEvidenceUploadResponseSchema = z.object({
+  data: z.object({
+    evidenceKey: z.string(),
+    contentType: z.enum(PAYOUT_EVIDENCE_CONTENT_TYPES),
+    sizeBytes: z.number().int(),
   }),
 });
 

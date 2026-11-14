@@ -10,6 +10,18 @@
 // - run PAY-2026-10-01 with batch 202 in the status view: one item each
 //   waiting, paid by the provider, paid by hand, failed and unknown outcome.
 // `?mock=empty` lists no payable run; `?mock=error|offline` fail every call.
+// Three payout-only scenarios are read from `?mock=` here (they are not in the
+// shared scenario list): `legacy-account` makes the first item of batch 201 a
+// legacy item without a locked account (the approval is blocked), and
+// `batches-paged` serves the per-PT batch list in three pages (cursors "p2",
+// "p3"): batch 201 first, then batch 202 plus an older history batch (older than
+// every shown run's lock, so the screen stops loading by itself and "Muat
+// lagi" stays), then an empty last page. `batches-paged-open` puts the
+// pending-approval batch 201 on page 2 behind batch 202, to prove it is loaded
+// without a click.
+// Bank items carry the locked payee snapshot (name + "****1234"); cash items
+// carry none. Resolve and return need two different people: the first call
+// only proposes, so a single mock user always gets `proposed: 1`.
 //
 // Payable runs and employee names come through two mock-only paths
 // (/api/mock/payout/*) because the payroll-run and HR mocks seed no locked run
@@ -29,8 +41,10 @@ import {
   exportDisbursementBatch,
   getDisbursementBatch,
   getPayoutConfig,
+  listPayoutBatches,
   listRunDisbursementBatches,
   resolveDisbursementItems,
+  returnDisbursementItems,
   submitDisbursementBatch,
   upsertPayoutConfig,
 } from "@starter/shared/hris/payroll/payout";
@@ -87,63 +101,54 @@ const PEOPLE: PayoutEmployee[] = [
     userId: null,
     name: "Alya Putri",
     subtitle: "Kasir · Kemang",
-    bankLabel: "BCA •••• 2210",
   },
   {
     id: uid(302),
     userId: null,
     name: "Bima Pratama",
     subtitle: "Barista · Kemang",
-    bankLabel: "Mandiri •••• 0873",
   },
   {
     id: uid(303),
     userId: null,
     name: "Citra Lestari",
     subtitle: "Dapur · Senopati",
-    bankLabel: "BNI •••• 5541",
   },
   {
     id: uid(304),
     userId: null,
     name: "Dimas Saputra",
     subtitle: "Pelayan · Senopati",
-    bankLabel: "BCA •••• 7712",
   },
   {
     id: uid(305),
     userId: null,
     name: "Eka Wijaya",
     subtitle: "Gudang · Kemang",
-    bankLabel: "BCA •••• 3308",
   },
   {
     id: uid(306),
     userId: null,
     name: "Gita Maharani",
     subtitle: "Kasir · Kemang",
-    bankLabel: "Mandiri •••• 6125",
   },
   {
     id: uid(307),
     userId: null,
     name: "Hadi Wibowo",
     subtitle: "Barista · Kemang",
-    bankLabel: "BCA •••• 9084",
   },
   {
     id: uid(308),
     userId: userIds.hrApprover,
     name: "Rani Wulandari",
     subtitle: "HR · Kantor",
-    bankLabel: null,
   },
   {
     id: uid(309),
     userId: userIds.financeApprover,
     name: "Sari Kurniawan",
     subtitle: "Finance · Kantor",
-    bankLabel: null,
   },
 ];
 
@@ -226,18 +231,23 @@ function item(
   amountIdr: number,
   overrides: Partial<PayrollDisbursementItemDto> = {},
 ): PayrollDisbursementItemDto {
+  const channel = overrides.channel ?? "manual_bank";
+  const holder = PEOPLE.find((person) => person.id === uid(employee))?.name;
   return {
     id: uid(n),
     batchId,
     payslipId: uid(n + 500),
     employeeId: uid(employee),
-    channel: "manual_bank",
+    channel,
     attemptNo: 1,
     status: "prepared",
     excludedReason: null,
     amountIdr,
     feeIdr: FEE_IDR,
     bankCode: "014",
+    // The locked payee snapshot: bank items have one, cash items do not.
+    accountHolderName: channel === "cash" ? null : (holder ?? null),
+    maskedAccountNumber: channel === "cash" ? null : "****1234",
     nameMatch: null,
     providerRef: null,
     confirmedBy: null,
@@ -315,7 +325,7 @@ function seedBatches(): PayrollDisbursementBatchDto[] {
     item(2002, b, 302, 4_800_000, {
       attemptNo: 2,
       status: "succeeded",
-      confirmedBy: userIds.financeApprover,
+      confirmedBy: userIds.hrApprover,
       confirmationRef: "TRF-20261031-0042",
       settledAt: NOW,
     }),
@@ -346,8 +356,11 @@ function seedBatches(): PayrollDisbursementBatchDto[] {
       // Totals cover payable items only (the cancelled item is not paid).
       itemCount: 5,
       totalIdr: 23_500_000,
+      // Asked by finance, approved and confirmed by HR (the default mock user),
+      // so the default user may resolve or return its items.
+      requestedBy: userIds.financeApprover,
       requestedAt: "2026-10-30T03:00:00.000Z",
-      approvedBy: userIds.financeApprover,
+      approvedBy: userIds.hrApprover,
       approvedAt: "2026-10-30T04:00:00.000Z",
       contentHash: hashOf(statusItems),
       exportedBy: userIds.hrApprover,
@@ -357,13 +370,17 @@ function seedBatches(): PayrollDisbursementBatchDto[] {
   ];
 }
 
+/** First call of the two-person resolve/return: who proposed what. */
+type Proposal = { kind: "resolve" | "return"; outcome: string; by: string };
 type PayoutMockState = {
   config: PayrollPayoutConfigDto;
   batches: PayrollDisbursementBatchDto[];
+  proposals: Record<string, Proposal>;
 };
 const store = createMockStore<PayoutMockState>(() => ({
   config: seedConfig(),
   batches: seedBatches(),
+  proposals: {},
 }));
 const state = () => store.get();
 let counter = 5000;
@@ -379,6 +396,58 @@ function currentActor(): string {
   return role === "finance" || role === "owner"
     ? userIds.financeApprover
     : userIds.hrApprover;
+}
+
+// ---- Payout-only scenarios ------------------------------------------------------
+
+type PayoutScenario = "legacy-account" | "batches-paged" | "batches-paged-open";
+let rememberedScenario: PayoutScenario | null = null;
+
+/**
+ * `?mock=legacy-account|batches-paged|batches-paged-open`. The shared scenario list does not know
+ * them, so they are read from the URL here and kept for the page's lifetime.
+ */
+function payoutScenario(): PayoutScenario | null {
+  if (typeof window !== "undefined") {
+    const value = new URLSearchParams(window.location.search).get("mock");
+    if (
+      value === "legacy-account" ||
+      value === "batches-paged" ||
+      value === "batches-paged-open"
+    )
+      rememberedScenario = value;
+    else if (value !== null) rememberedScenario = null;
+  }
+  return rememberedScenario;
+}
+
+/** What the screens read: `legacy-account` strips one locked account. */
+function view(row: PayrollDisbursementBatchDto): PayrollDisbursementBatchDto {
+  if (
+    payoutScenario() !== "legacy-account" ||
+    row.id !== MOCK_PAYOUT_IDS.batchApproval
+  )
+    return row;
+  return {
+    ...row,
+    items: row.items.map((entry, index) =>
+      index === 0
+        ? { ...entry, accountHolderName: null, maskedAccountNumber: null }
+        : entry,
+    ),
+  };
+}
+
+const BATCH_PAGE_TWO = "p2";
+const BATCH_PAGE_THREE = "p3";
+
+/** A finished batch from before every shown run was locked (older history). */
+function historyBatch(): PayrollDisbursementBatchDto {
+  return batch(uid(901), uid(902), [], {
+    status: "completed",
+    createdAt: "2026-09-30T03:00:00.000Z",
+    updatedAt: "2026-09-30T03:00:00.000Z",
+  });
 }
 
 const refuse = (status: number, code: string, message: string) =>
@@ -513,11 +582,64 @@ registerMock(listRunDisbursementBatches, ({ params, scenario }) => ({
   data:
     scenario === "empty"
       ? []
-      : state().batches.filter((row) => row.payrollRunId === params.id),
+      : state()
+          .batches.filter((row) => row.payrollRunId === params.id)
+          .map(view),
 }));
 
+registerMock(listPayoutBatches, ({ query, scenario }) => {
+  if (scenario === "empty")
+    return { data: [], meta: { limit: query.limit, nextCursor: null } };
+  const rows = state()
+    .batches.filter(
+      (row) =>
+        (query.legalEntityId === undefined ||
+          row.legalEntityId === query.legalEntityId) &&
+        (query.status === undefined || row.status === query.status),
+    )
+    .map(view);
+  const paged = payoutScenario();
+  const isPaged = paged === "batches-paged" || paged === "batches-paged-open";
+  if (
+    query.cursor !== undefined &&
+    !(isPaged && [BATCH_PAGE_TWO, BATCH_PAGE_THREE].includes(query.cursor))
+  )
+    throw refuse(422, "VALIDATION_ERROR", "Kursor tidak valid.");
+  if (isPaged) {
+    const pick = (id: string) => rows.filter((row) => row.id === id);
+    const pageOne = pick(
+      paged === "batches-paged"
+        ? MOCK_PAYOUT_IDS.batchApproval
+        : MOCK_PAYOUT_IDS.batchStatus,
+    );
+    const pageTwo =
+      paged === "batches-paged"
+        ? [...pick(MOCK_PAYOUT_IDS.batchStatus), historyBatch()]
+        : pick(MOCK_PAYOUT_IDS.batchApproval);
+    // `batches-paged-open` ends on page 2; `batches-paged` has a third page.
+    if (query.cursor === BATCH_PAGE_THREE)
+      return { data: [], meta: { limit: query.limit, nextCursor: null } };
+    if (query.cursor === BATCH_PAGE_TWO)
+      return {
+        data: pageTwo,
+        meta: {
+          limit: query.limit,
+          nextCursor: paged === "batches-paged" ? BATCH_PAGE_THREE : null,
+        },
+      };
+    return {
+      data: pageOne,
+      meta: { limit: query.limit, nextCursor: BATCH_PAGE_TWO },
+    };
+  }
+  return {
+    data: rows.slice(0, query.limit),
+    meta: { limit: query.limit, nextCursor: null },
+  };
+});
+
 registerMock(getDisbursementBatch, ({ params }) => ({
-  data: find(params.id),
+  data: view(find(params.id)),
 }));
 
 registerMock(createDisbursementBatch, ({ params, body }) => {
@@ -710,6 +832,45 @@ registerMock(confirmDisbursementItems, ({ params, body }) => {
   };
 });
 
+/**
+ * The two-person rule of resolve and return: the first call records a proposal
+ * (nothing moves), a second call by someone else with the same outcome applies
+ * it. Returns the ids this call applied.
+ */
+function propose(
+  kind: Proposal["kind"],
+  outcome: string,
+  itemIds: readonly string[],
+) {
+  const actor = currentActor();
+  const proposals = { ...state().proposals };
+  const applied: string[] = [];
+  for (const id of itemIds) {
+    const key = `${kind}:${id}`;
+    const earlier = proposals[key];
+    if (!earlier) {
+      proposals[key] = { kind, outcome, by: actor };
+      continue;
+    }
+    if (earlier.by === actor)
+      throw refuse(
+        409,
+        "PAYOUT_RESOLVE_SAME_PERSON",
+        "Orang yang sama tidak bisa menyetujui usulannya sendiri.",
+      );
+    if (earlier.outcome !== outcome)
+      throw refuse(
+        409,
+        "PAYOUT_RESOLVE_OUTCOME_MISMATCH",
+        "Hasil yang dipilih berbeda dari usulan sebelumnya.",
+      );
+    delete proposals[key];
+    applied.push(id);
+  }
+  store.set({ ...state(), proposals });
+  return applied;
+}
+
 registerMock(resolveDisbursementItems, ({ params, body }) => {
   const current = find(params.id);
   if (current.requestedBy === currentActor())
@@ -718,17 +879,64 @@ registerMock(resolveDisbursementItems, ({ params, body }) => {
       "PAYOUT_CONFIRM_SELF",
       "Pembuat pengajuan tidak boleh menyelesaikan transfernya sendiri.",
     );
-  const next = settle(
-    current,
-    mapItems(current.items, body.itemIds, {
-      status: body.outcome === "failed" ? "failed" : "not_sent",
-    }),
-  );
+  const applied = propose("resolve", body.outcome, body.itemIds);
+  const next =
+    applied.length === 0
+      ? current
+      : settle(
+          current,
+          mapItems(current.items, applied, {
+            status: body.outcome === "failed" ? "failed" : "not_sent",
+          }),
+        );
   return {
     data: {
       batchStatus: next.status,
-      resolved: body.itemIds.length,
-      proposed: 0,
+      resolved: applied.length,
+      proposed: body.itemIds.length - applied.length,
+    },
+  };
+});
+
+registerMock(returnDisbursementItems, ({ params, body }) => {
+  const current = find(params.id);
+  if (current.requestedBy === currentActor())
+    throw refuse(
+      403,
+      "PAYOUT_CONFIRM_SELF",
+      "Pembuat pengajuan tidak boleh mengembalikan dana transfernya sendiri.",
+    );
+  if (current.channel !== "manual_bank")
+    throw refuse(
+      409,
+      "PAYOUT_CHANNEL_MISMATCH",
+      "Pengembalian dana hanya untuk transfer bank manual.",
+    );
+  for (const id of body.itemIds) {
+    const target = current.items.find((entry) => entry.id === id);
+    if (!target)
+      throw refuse(404, "NOT_FOUND", "Item pencairan tidak ditemukan.");
+    if (target.status !== "succeeded")
+      throw refuse(
+        409,
+        "PAYOUT_ITEM_STATE",
+        "Hanya transfer yang berhasil bisa dikembalikan.",
+      );
+  }
+  const applied = propose("return", "returned", body.itemIds);
+  const next =
+    applied.length === 0
+      ? current
+      : save({
+          ...current,
+          items: mapItems(current.items, applied, { status: "returned" }),
+          updatedAt: new Date().toISOString(),
+        });
+  return {
+    data: {
+      batchStatus: next.status,
+      returned: applied.length,
+      proposed: body.itemIds.length - applied.length,
     },
   };
 });

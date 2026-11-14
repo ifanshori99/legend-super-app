@@ -1,9 +1,10 @@
 // Query keys and options for the payout screens. Endpoint-backed keys sit under
 // their endpoint id, so a mutation invalidates `[endpoint.id]`.
-import { queryOptions } from "@tanstack/react-query";
+import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 import {
   getDisbursementBatch,
   getPayoutConfig,
+  listPayoutBatches,
   listRunDisbursementBatches,
 } from "@starter/shared/hris/payroll/payout";
 import { orgEndpoints } from "@starter/shared/platform";
@@ -18,8 +19,6 @@ export const payoutKeys = {
     [...payoutKeys.all, "payable-runs", legalEntityId] as const,
   paidRuns: (legalEntityId: string) =>
     [...payoutKeys.all, "paid-runs", legalEntityId] as const,
-  bankLabel: (employeeId: string) =>
-    [...payoutKeys.all, "bank-label", employeeId] as const,
   employees: () => [...payoutKeys.all, "employees"] as const,
 };
 
@@ -66,6 +65,34 @@ export const runBatchesQuery = (runId: string) =>
     select: (response) => response.data,
   });
 
+/** Page size of the per-PT batch list (the API maximum). */
+export const BATCH_LIST_LIMIT = 20;
+
+/**
+ * Batches of one PT across runs, newest first, a page at a time. The key sits
+ * under the endpoint id so a write can invalidate `[listPayoutBatches.id]`.
+ */
+export const entityBatchesQuery = (legalEntityId: string) =>
+  infiniteQueryOptions({
+    queryKey: [
+      ...endpointQueryKey(listPayoutBatches, {
+        query: { legalEntityId, limit: BATCH_LIST_LIMIT },
+      }),
+      "pages",
+    ] as const,
+    queryFn: ({ pageParam, signal }) =>
+      api.fetchPayoutBatches(
+        {
+          legalEntityId,
+          limit: BATCH_LIST_LIMIT,
+          ...(pageParam ? { cursor: pageParam } : {}),
+        },
+        signal,
+      ),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.meta.nextCursor,
+  });
+
 export const batchQuery = (batchId: string) =>
   queryOptions({
     queryKey: endpointQueryKey(getDisbursementBatch, {
@@ -80,13 +107,4 @@ export const employeesQuery = () =>
     queryKey: payoutKeys.employees(),
     queryFn: ({ signal }) => api.fetchPayoutEmployees(signal),
     staleTime: 60_000,
-  });
-
-/** Masked bank account of one payee; a refusal (403) is not retried. */
-export const bankLabelQuery = (employeeId: string) =>
-  queryOptions({
-    queryKey: payoutKeys.bankLabel(employeeId),
-    queryFn: ({ signal }) => api.fetchPayeeBankLabel(employeeId, signal),
-    staleTime: 5 * 60_000,
-    retry: false,
   });

@@ -73,7 +73,7 @@ export function StatusList({
   onAction: (action: RowAction, item: PayrollDisbursementItemDto) => void;
 }) {
   const t = useT();
-  const line = useEmployeeLine(items);
+  const line = useEmployeeLine();
   const blockText = useBlockText(recordBlockKey).text;
 
   const subText = (item: PayrollDisbursementItemDto): string => {

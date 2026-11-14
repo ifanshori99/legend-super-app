@@ -67,6 +67,9 @@ export const payrollPayoutMessages = {
     unknown: "Tidak ikut dibayar",
   },
   runs: {
+    loadMore: "Muat pencairan berikutnya",
+    loadingMore: "Memuat pencairan…",
+    loadMoreError: "Pencairan berikutnya gagal dimuat. Coba lagi.",
     title: {
       list: "Periode gaji siap bayar",
       regular: "Gaji {period}",

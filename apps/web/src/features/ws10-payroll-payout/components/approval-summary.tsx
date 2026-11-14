@@ -47,6 +47,7 @@ export function ApprovalSummary({
   checked,
   onCheckedChange,
   blockKey,
+  blockParams,
   busy,
   onApprove,
   showApprove,
@@ -64,6 +65,8 @@ export function ApprovalSummary({
   onCheckedChange: (value: boolean) => void;
   /** Why the approve button is off; null = ready. */
   blockKey: MessageKey | null;
+  /** Values for the reason text, e.g. {count} of the no-snapshot reason. */
+  blockParams?: Record<string, string | number>;
   busy: boolean;
   onApprove: () => void;
   showApprove: boolean;
@@ -142,7 +145,7 @@ export function ApprovalSummary({
           </Button>
           {blockKey ? (
             <p id={reasonId} className="text-sm text-muted-foreground">
-              {t(blockKey)}
+              {t(blockKey, blockParams)}
             </p>
           ) : (
             <p className="text-sm text-muted-foreground">
