@@ -25,6 +25,8 @@ export function settingsErrorMessage(error: unknown, t: Translate): string {
       return t("tenantSettings.errors.notFound");
     case "CONFLICT":
       return t("tenantSettings.errors.conflict");
+    case "WHATSAPP_NUMBER_TAKEN":
+      return t("tenantSettings.errors.whatsappNumberTaken");
     case "VALIDATION_ERROR":
       return t("tenantSettings.errors.invalid");
     case "NETWORK_ERROR":
