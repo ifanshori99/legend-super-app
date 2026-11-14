@@ -121,7 +121,7 @@ async function mapRole(
 
 async function entity(
   provisioned: boolean,
-  tenantId = fixtureTenantId,
+  tenantId: string = fixtureTenantId,
 ): Promise<string> {
   const id = randomUUID();
   await owner.query(
@@ -148,7 +148,7 @@ type AccountRow = {
 async function accountsOf(
   entityId: string,
   code: string,
-  tenantId = fixtureTenantId,
+  tenantId: string = fixtureTenantId,
 ): Promise<AccountRow[]> {
   const { rows } = await owner.query<AccountRow>(
     `SELECT id, name, type, report_group, parent_id, is_active FROM chart_of_accounts
@@ -161,7 +161,7 @@ async function accountsOf(
 async function mappingsOf(
   entityId: string,
   role: string,
-  tenantId = fixtureTenantId,
+  tenantId: string = fixtureTenantId,
 ): Promise<string[]> {
   const { rows } = await owner.query<{ account_id: string }>(
     `SELECT account_id FROM account_mappings
@@ -173,7 +173,7 @@ async function mappingsOf(
 
 async function rowCounts(
   entityId: string,
-  tenantId = fixtureTenantId,
+  tenantId: string = fixtureTenantId,
 ): Promise<{ accounts: number; mappings: number }> {
   const accounts = await owner.query<{ n: string }>(
     "SELECT count(*)::text AS n FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2",
