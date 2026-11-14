@@ -14,3 +14,7 @@ C. clearStaleWireOpen (outlet baru diakuisisi, lintas proses): hapus marker HANY
 D. recoverInFlight(ctx) juga memanggil clearStaleWireOpen untuk outlet yang dimiliki (agar marker proses mati yang sudah lewat jendela hilang tanpa restart).
 Layanan rekonsiliasi (edc-reconciliation.service.ts) TIDAK diubah: marker non-null tetap memblokir.
 Tidak ada migrasi.
+
+## Ronde 2 (architect, temuan 1 high)
+E. Marker proses mati di dalam jendela tidak pernah terhapus karena `recoverInFlight` tidak dipanggil produksi. Tambah sweep sendiri di agent: untuk tiap outlet yang diakuisisi di `start()`, `setInterval` (dep baru `staleWireSweepMs`, default 60_000, `unref()`) memanggil `clearStaleWireOpen(ctx, [outletId])` (error: logger.error, tidak melempar); dihentikan di `releaseOutlet(key)` dan `stop`. Tes baru di edc-failover-861.test.ts: crash tengah sale, start ulang di dalam jendela (marker tetap), geser `now` lewat jendela, TANPA memanggil recoverInFlight, tunggu sweep (staleWireSweepMs kecil): marker hilang; dan panggilan proses ini yang masih jalan melewati jendela TETAP menjaga markernya (wireOpen).
+Temuan 2 (medium, lock hilang + adapter menggantung >10 menit di proses lama) dibawa ke CTO, tidak diubah.
