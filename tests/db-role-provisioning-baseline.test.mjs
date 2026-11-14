@@ -14,6 +14,9 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { Pool } from "pg";
 import { pnpmCommand, root } from "../scripts/lib.mjs";
+import { useRoleAuditLock } from "./helpers/role-audit-lock.mjs";
+
+useRoleAuditLock();
 
 const hex = (bytes) => randomBytes(bytes).toString("hex");
 
