@@ -59,6 +59,9 @@ function PbjtReportContent({
   const csvHeaders: PbjtCsvHeaders = {
     code: t("tax.report.csv.code"),
     rate: t("tax.report.csv.rate"),
+    priceMode: t("tax.report.csv.priceMode"),
+    priceModeIncluded: t("tax.report.priceModeIncluded"),
+    priceModeExcluded: t("tax.report.priceModeExcluded"),
     transactions: t("tax.report.csv.transactions"),
     gross: t("tax.report.csv.gross"),
     base: t("tax.report.csv.base"),
@@ -166,6 +169,7 @@ function PbjtReportContent({
                 <TableRow>
                   <TableHead>{t("tax.report.columns.rule")}</TableHead>
                   <TableHead numeric>{t("tax.report.columns.rate")}</TableHead>
+                  <TableHead>{t("tax.report.columns.priceMode")}</TableHead>
                   <TableHead numeric>
                     {t("tax.report.columns.transactions")}
                   </TableHead>
@@ -179,12 +183,19 @@ function PbjtReportContent({
               </TableHeader>
               <TableBody>
                 {recap.rows.map((row) => (
-                  <TableRow key={row.taxRuleCode}>
+                  <TableRow
+                    key={`${row.taxRuleCode}:${row.rateBp}:${row.priceIncludesTax}`}
+                  >
                     <TableCell className="font-medium">
                       {row.taxRuleCode}
                     </TableCell>
                     <TableCell numeric>
                       {formatBasisPoints(row.rateBp)}
+                    </TableCell>
+                    <TableCell>
+                      {row.priceIncludesTax
+                        ? t("tax.report.priceModeIncluded")
+                        : t("tax.report.priceModeExcluded")}
                     </TableCell>
                     <TableCell numeric>
                       <NumberDisplay value={row.transactionCount} />
@@ -208,11 +219,16 @@ function PbjtReportContent({
                 <TableRow>
                   <TableCell>{t("tax.report.totalRow")}</TableCell>
                   <TableCell numeric />
+                  <TableCell />
                   <TableCell numeric>
                     <NumberDisplay value={sums?.transactionCount ?? 0} />
                   </TableCell>
                   <TableCell numeric>
-                    <Money amount={sums?.grossSalesIdr ?? 0} />
+                    {sums?.grossSalesIdr == null && sums ? (
+                      "-"
+                    ) : (
+                      <Money amount={sums?.grossSalesIdr ?? 0} />
+                    )}
                   </TableCell>
                   <TableCell numeric>
                     <Money amount={recap.totalTaxBaseIdr} />

@@ -421,13 +421,16 @@ export function effectiveSettings<
 
 export type PbjtTotals = {
   transactionCount: number;
-  grossSalesIdr: number;
+  /** Null when the rows mix inclusive and exclusive gross (not summable). */
+  grossSalesIdr: number | null;
   serviceChargeIdr: number;
 };
 
 /** Column sums the recap totals do not already carry (gross sales, service). */
 export function pbjtRowTotals(recap: PbjtMonthlyRecap): PbjtTotals {
-  return recap.rows.reduce(
+  const mixedPriceModes =
+    new Set(recap.rows.map((row) => row.priceIncludesTax)).size > 1;
+  const sums = recap.rows.reduce(
     (totals, row) => ({
       transactionCount: totals.transactionCount + row.transactionCount,
       grossSalesIdr: totals.grossSalesIdr + row.grossSalesIdr,
@@ -435,11 +438,19 @@ export function pbjtRowTotals(recap: PbjtMonthlyRecap): PbjtTotals {
     }),
     { transactionCount: 0, grossSalesIdr: 0, serviceChargeIdr: 0 },
   );
+  return {
+    ...sums,
+    grossSalesIdr: mixedPriceModes ? null : sums.grossSalesIdr,
+  };
 }
 
 export type PbjtCsvHeaders = {
   code: string;
   rate: string;
+  priceMode: string;
+  /** Cell text for a row whose prices include tax / exclude tax. */
+  priceModeIncluded: string;
+  priceModeExcluded: string;
   transactions: string;
   gross: string;
   base: string;
@@ -473,6 +484,7 @@ export function toPbjtCsv(
     [
       headers.code,
       headers.rate,
+      headers.priceMode,
       headers.transactions,
       headers.gross,
       headers.base,
@@ -482,6 +494,9 @@ export function toPbjtCsv(
     ...recap.rows.map((row) => [
       row.taxRuleCode,
       row.rateBp,
+      row.priceIncludesTax
+        ? headers.priceModeIncluded
+        : headers.priceModeExcluded,
       row.transactionCount,
       row.grossSalesIdr,
       row.taxBaseIdr,
@@ -491,8 +506,9 @@ export function toPbjtCsv(
     [
       headers.total,
       "",
+      "",
       sums.transactionCount,
-      sums.grossSalesIdr,
+      sums.grossSalesIdr ?? "",
       recap.totalTaxBaseIdr,
       sums.serviceChargeIdr,
       recap.totalTaxIdr,

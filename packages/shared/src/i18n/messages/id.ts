@@ -3688,12 +3688,15 @@ export const id = {
       columns: {
         rule: "Aturan pajak",
         rate: "Tarif",
+        priceMode: "Mode harga",
         transactions: "Transaksi",
         gross: "Penjualan bruto",
         base: "Dasar pajak",
         service: "Service charge",
         tax: "Pajak",
       },
+      priceModeIncluded: "Harga termasuk pajak",
+      priceModeExcluded: "Harga belum termasuk pajak",
       totalRow: "Total",
       totalTax: "Total pajak",
       totalBase: "Total dasar pajak",
@@ -3703,6 +3706,7 @@ export const id = {
       csv: {
         code: "Kode aturan",
         rate: "Tarif (basis poin)",
+        priceMode: "Mode harga",
         transactions: "Transaksi",
         gross: "Penjualan bruto (Rp)",
         base: "Dasar pajak (Rp)",

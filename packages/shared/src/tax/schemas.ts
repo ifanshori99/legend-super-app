@@ -359,6 +359,12 @@ export const taxPeriodSchema = z
 export const pbjtRecapRowSchema = z.strictObject({
   taxRuleCode: ruleCodeSchema,
   rateBp: basisPointsSchema,
+  /**
+   * Price mode of the sales in this row. Gross of an inclusive sale contains
+   * its tax and gross of an exclusive sale does not, so the two are never
+   * summed into one row (one row per rule, rate and price mode).
+   */
+  priceIncludesTax: z.boolean(),
   transactionCount: z.number().int().nonnegative(),
   grossSalesIdr: idrSchema,
   taxBaseIdr: idrSchema,
