@@ -20,7 +20,7 @@
 import { createHash, createPublicKey } from "node:crypto";
 import {
   EDGE_PEOPLE_SNAPSHOT_EMAIL_DOMAIN,
-  edgePeopleSnapshotSchema,
+  edgePeopleSnapshotCloudSchema,
   type EdgePeopleSnapshot,
 } from "@starter/shared/edge";
 import { rolePermissionsAsGranted } from "@starter/shared/access";
@@ -519,7 +519,7 @@ export async function buildEdgePeopleSnapshot(
   // The strict contract is the last line of defense against an extra column.
   // A row the contract refuses must not fail silently (a 422 nobody logs):
   // log the issue paths and codes only, never a value, and answer 500.
-  const result = edgePeopleSnapshotSchema.safeParse(candidate);
+  const result = edgePeopleSnapshotCloudSchema.safeParse(candidate);
   if (!result.success) {
     logger.error(
       {

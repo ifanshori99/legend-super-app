@@ -66,7 +66,7 @@ const MAX_MAPPINGS = 200;
 
 const name150 = z.string().min(1).max(150);
 
-export const edgeMasterUomSchema = z.strictObject({
+export const edgeMasterUomSchema = z.object({
   id: uomIdSchema,
   tenantId: tenantIdSchema,
   code: z.string().min(1).max(10),
@@ -76,7 +76,7 @@ export const edgeMasterUomSchema = z.strictObject({
 });
 export type EdgeMasterUom = z.infer<typeof edgeMasterUomSchema>;
 
-export const edgeMasterStockLocationSchema = z.strictObject({
+export const edgeMasterStockLocationSchema = z.object({
   id: stockLocationIdSchema,
   tenantId: tenantIdSchema,
   outletId: outletIdSchema,
@@ -89,7 +89,7 @@ export type EdgeMasterStockLocation = z.infer<
   typeof edgeMasterStockLocationSchema
 >;
 
-export const edgeMasterAccountSchema = z.strictObject({
+export const edgeMasterAccountSchema = z.object({
   id: accountIdSchema,
   tenantId: tenantIdSchema,
   legalEntityId: legalEntityIdSchema,
@@ -104,7 +104,7 @@ export const edgeMasterAccountSchema = z.strictObject({
 });
 export type EdgeMasterAccount = z.infer<typeof edgeMasterAccountSchema>;
 
-export const edgeMasterAccountMappingSchema = z.strictObject({
+export const edgeMasterAccountMappingSchema = z.object({
   tenantId: tenantIdSchema,
   legalEntityId: legalEntityIdSchema,
   /** Any posting role name, known to this build or not (see the header). */
@@ -122,7 +122,7 @@ export type KnownEdgeMasterAccountMapping = Omit<
 
 /** Scope-consistent: one tenant, one outlet, one legal entity, ids unique. */
 export const edgeMasterSnapshotSchema = z
-  .strictObject({
+  .object({
     version: z.literal(EDGE_MASTER_SNAPSHOT_VERSION),
     issuedAt: isoDateTimeSchema,
     tenantId: tenantIdSchema,
@@ -203,7 +203,7 @@ export const edgeMasterSnapshotSchema = z
   });
 export type EdgeMasterSnapshot = z.infer<typeof edgeMasterSnapshotSchema>;
 
-export const edgeMasterSnapshotResponseSchema = z.strictObject({
+export const edgeMasterSnapshotResponseSchema = z.object({
   snapshot: edgeMasterSnapshotSchema,
   /** HMAC-SHA256 (lowercase hex) over canonicalJson(snapshot). */
   signature: z.string().regex(/^[0-9a-f]{64}$/),

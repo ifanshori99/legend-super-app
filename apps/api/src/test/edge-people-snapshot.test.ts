@@ -966,7 +966,7 @@ describe("legend-ye4j1 T1 whitelist and strict contract", () => {
     expect(parsed.success, JSON.stringify(parsed)).toBe(true);
   });
 
-  it("T1 a copy with an extra column on a user, employee or shift fails the strict contract", async () => {
+  it("T1 strips extra columns on the snapshot and its records", async () => {
     const body = await snapshotOf(nodeA.credential);
     expect(body.users.length).toBeGreaterThan(0);
     expect(body.employees.length).toBeGreaterThan(0);
@@ -980,16 +980,20 @@ describe("legend-ye4j1 T1 whitelist and strict contract", () => {
         Record<string, unknown>[]
       >;
       copy[key]![0]![column] = "leak";
-      return edgePeopleSnapshotSchema.safeParse(copy);
+      return edgePeopleSnapshotSchema.parse(copy);
     };
-    expect(withExtra("users", "passwordHash").success).toBe(false);
-    expect(withExtra("employees", "ptkpStatus").success).toBe(false);
-    expect(withExtra("shiftAssignments", "createIdempotencyKey").success).toBe(
-      false,
+    expect(withExtra("users", "passwordHash").users[0]).not.toHaveProperty(
+      "passwordHash",
     );
     expect(
-      edgePeopleSnapshotSchema.safeParse({ ...body, seed: "leak" }).success,
-    ).toBe(false);
+      withExtra("employees", "ptkpStatus").employees[0],
+    ).not.toHaveProperty("ptkpStatus");
+    expect(
+      withExtra("shiftAssignments", "createIdempotencyKey").shiftAssignments[0],
+    ).not.toHaveProperty("createIdempotencyKey");
+    expect(
+      edgePeopleSnapshotSchema.parse({ ...body, seed: "leak" }),
+    ).not.toHaveProperty("seed");
   });
 });
 
