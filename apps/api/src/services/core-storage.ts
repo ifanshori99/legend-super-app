@@ -23,14 +23,12 @@ import type * as schema from "../db/schema";
 import { coreStorageObjects } from "../db/schema/core-storage";
 import { withTenant } from "../db/tenant";
 import {
-  assertScannerAcceptsDocuments,
   processImage,
-  scanUpload,
+  scanUploadBytes,
   type MalwareScanner,
 } from "./core-image";
 import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
-import { assertSafePdf } from "./pdf-safety";
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -90,14 +88,14 @@ export async function uploadStorage(
     input.purpose === "document" &&
     Buffer.from(bytes).subarray(0, 5).toString("ascii") === "%PDF-"
   ) {
-    assertScannerAcceptsDocuments(deps.scanner);
-    // Structure first (malformed, encrypted, active content: 422), then the
-    // malware scan; nothing is stored until both pass (legend-851ef).
-    const { pageCount } = await assertSafePdf(bytes, {
+    // Scanner capability, structure (malformed, encrypted, active content: 422)
+    // and malware scan; nothing is stored until all pass (legend-851ef).
+    const { pageCount } = await scanUploadBytes(bytes, {
+      kind: "pdf",
+      scanner: deps.scanner,
       maxBytes: policy.maxBytes,
     });
     logger.info({ pageCount }, "storage pdf checked");
-    await scanUpload(deps.scanner, bytes);
     contentType = "application/pdf";
     full = bytes;
   } else {

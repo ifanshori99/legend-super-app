@@ -137,3 +137,16 @@ export const createStorageSignedUrl = defineEndpoint({
   body: signedStorageUrlBodySchema,
   response: dataResponseSchema(signedStorageUrlSchema),
 });
+
+/** What the upload pipeline accepts right now. `documentsAccepted` is false
+ * while no malware scanner that handles PDFs is wired, so screens offer photos
+ * only. It reads configuration, never the scanner's health. */
+export const storageCapabilitiesSchema = z.strictObject({
+  documentsAccepted: z.boolean(),
+});
+export type StorageCapabilities = z.infer<typeof storageCapabilitiesSchema>;
+export const getStorageCapabilities = defineEndpoint({
+  method: "GET",
+  path: "/api/storage/capabilities",
+  response: dataResponseSchema(storageCapabilitiesSchema),
+});

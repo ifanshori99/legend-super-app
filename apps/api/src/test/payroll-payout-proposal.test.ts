@@ -13,6 +13,7 @@ import { totpCode, totpStep } from "../lib/totp.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import { validPdfBytes } from "./helpers/pdf-fixtures.ts";
 import {
   BUDI,
   SITI,
@@ -107,11 +108,11 @@ afterAll(async () => {
 
 // ---- Helpers --------------------------------------------------------------
 
-const pdfBytes = () =>
-  Buffer.from(`%PDF-1.4\n1 0 obj<<>>endobj\nbukti ${randomUUID()}\n%%EOF\n`);
+const pdfBytes = async () =>
+  Buffer.from(await validPdfBytes({ marker: `bukti ${randomUUID()}` }));
 
 async function uploadProof(who: Staff, batchId: string) {
-  const bytes = pdfBytes();
+  const bytes = await pdfBytes();
   const res = await who.client
     .post(`${BASE}/${batchId}/evidence`)
     .set(originHeader)

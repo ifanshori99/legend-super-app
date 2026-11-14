@@ -28,8 +28,9 @@
 // - Round 2 (A1): JPEG/PNG are decoded and re-encoded (EXIF removed); so the
 //   images in these tests are real (made with sharp) and `sizeBytes` is the size
 //   of the stored bytes, not of the uploaded ones. A truncated image is 415.
-// - A scanner that rejects (infection) is refused with a 4xx and no blob; the
-//   exact 4xx is not pinned. A scanner with acceptsDocuments:false refuses a PDF
+// - A scanner that rejects (infection, a 422 detection) is refused with a 4xx
+//   and no blob; the exact 4xx is not pinned. M6 (legend-egrrp): a scanner that
+//   merely fails (not a detection) is now 503 SCANNER_UNAVAILABLE, not 422. A scanner with acceptsDocuments:false refuses a PDF
 //   with 503 (assertScannerAcceptsDocuments) and no blob.
 // - A batch that is a draft or a cash batch is refused with 409 or 422 before
 //   any blob is stored (the brief says "409 or 422 per the service's pattern").
@@ -39,10 +40,11 @@
 //   not pdf/jpeg/png (whatever the declared type says): 415, as the brief says.
 import { Pool } from "pg";
 import sharp from "sharp";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FakeObjectStorage } from "@starter/shared/adapters";
 import { PAYOUT_EVIDENCE_MAX_BYTES } from "@starter/shared/validators/payroll-payout";
 import { createApp } from "../app.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { totpCode, totpStep } from "../lib/totp.ts";
 import {
   NoopMalwareScanner,
@@ -51,6 +53,7 @@ import {
 import { returnManualItems } from "../services/payroll-payout-manual.service.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
+import { validPdfBytes } from "./helpers/pdf-fixtures.ts";
 import {
   APP,
   APP2,
@@ -179,8 +182,13 @@ async function staff(app: ReturnType<typeof createApp>, permissions: string[]) {
   return { client, userId };
 }
 
-const pdfBytes = () =>
-  Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\nlaporan bank\n%%EOF\n");
+// M6 (legend-egrrp): the payout PDF goes through assertSafePdf, so the fixture
+// is a real, parseable PDF (a hand-written stub is refused with 422).
+let realPdf: Buffer;
+beforeAll(async () => {
+  realPdf = Buffer.from(await validPdfBytes({ marker: "laporan bank" }));
+});
+const pdfBytes = () => realPdf;
 const brokenJpegBytes = () =>
   Buffer.from([
     0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00,
@@ -516,7 +524,7 @@ describe("legend-zoqh1 upload payment proof for resolve and return", () => {
     const { batchId } = await exportedRun();
     const rt = makeRuntime({
       scan: async () => {
-        throw new Error("EICAR-Test-Signature detected");
+        throw new HttpError(422, "UPLOAD_REJECTED", "EICAR-Test-Signature");
       },
     });
     const who = await approver(rt.app);

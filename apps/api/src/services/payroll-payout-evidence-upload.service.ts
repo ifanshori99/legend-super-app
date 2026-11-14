@@ -26,10 +26,7 @@ import { db } from "../db/index.ts";
 import { payrollDisbursementBatches } from "../db/schema/payroll-payout.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
-import {
-  assertScannerAcceptsDocuments,
-  type MalwareScanner,
-} from "./core-image.ts";
+import { scanUploadBytes, type MalwareScanner } from "./core-image.ts";
 import { assertEvidenceKeyForBatch } from "./payroll-payout-evidence.ts";
 
 const KINDS: Record<
@@ -149,19 +146,23 @@ export async function uploadPayoutEvidence(
       "PAYOUT_BATCH_NOT_EXPORTED",
       "Batch ini belum di tahap yang menerima bukti.",
     );
-  // A scanner that cannot vet PDFs refuses before any blob is stored.
-  if (contentType === "application/pdf")
-    assertScannerAcceptsDocuments(deps.scanner);
-  // Rejects on detection or scanner failure: nothing is stored either way. The
-  // caller gets a 422, never the scanner's own message.
+  // Scanner capability, PDF structure and malware scan, before any blob is
+  // stored (legend-egrrp). A detection or an unsafe PDF is a 422 with this
+  // module's own code and message; an unavailable scanner or checker is a 503.
   try {
-    await deps.scanner.scan(bytes);
-  } catch {
-    throw new HttpError(
-      422,
-      "PAYOUT_EVIDENCE_REJECTED",
-      "Berkas bukti ditolak pemindai. Unggah berkas lain.",
-    );
+    await scanUploadBytes(bytes, {
+      kind: contentType === "application/pdf" ? "pdf" : "image",
+      scanner: deps.scanner,
+      maxBytes: PAYOUT_EVIDENCE_MAX_BYTES,
+    });
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 422)
+      throw new HttpError(
+        422,
+        "PAYOUT_EVIDENCE_REJECTED",
+        "Berkas bukti ditolak pemindai. Unggah berkas lain.",
+      );
+    throw error;
   }
   const stored =
     contentType === "application/pdf"

@@ -28,6 +28,7 @@ import { totpCode, totpStep } from "../lib/totp.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import { validPdfBytes } from "./helpers/pdf-fixtures.ts";
 import {
   BUDI,
   SITI,
@@ -127,13 +128,13 @@ async function ageChallengeStamp(userId: string) {
   expect(moved.rowCount, "premise: the challenge stamped the session").toBe(1);
 }
 
-const pdfBytes = () =>
-  Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\nlaporan bank\n%%EOF\n");
+const pdfBytes = async () =>
+  Buffer.from(await validPdfBytes({ marker: "laporan bank" }));
 
-function upload(who: Staff, batchId: string, password?: string) {
+async function upload(who: Staff, batchId: string, password?: string) {
   const req = who.client.post(`${BASE}/${batchId}/evidence`).set(originHeader);
   if (password !== undefined) req.field("password", password);
-  return req.attach("file", pdfBytes(), {
+  return req.attach("file", await pdfBytes(), {
     filename: "bukti.pdf",
     contentType: "application/pdf",
   });

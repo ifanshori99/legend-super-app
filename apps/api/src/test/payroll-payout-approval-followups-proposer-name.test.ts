@@ -24,6 +24,7 @@ import { totpCode, totpStep } from "../lib/totp.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import { validPdfBytes } from "./helpers/pdf-fixtures.ts";
 import {
   BUDI,
   SITI,
@@ -123,9 +124,7 @@ async function uploadProof(who: Staff, batchId: string) {
     .set(originHeader)
     .attach(
       "file",
-      Buffer.from(
-        `%PDF-1.4\n1 0 obj<<>>endobj\nbukti ${randomUUID()}\n%%EOF\n`,
-      ),
+      Buffer.from(await validPdfBytes({ marker: `bukti ${randomUUID()}` })),
       { filename: "bukti.pdf", contentType: "application/pdf" },
     );
   expect(res.status, JSON.stringify(res.body)).toBe(201);
