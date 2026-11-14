@@ -221,6 +221,66 @@ async function expectReceiptsKept(scratch: Pool) {
   expect(all.rows[0].n).toBe(5);
 }
 
+async function expectMigrationForeignKeysValidated(scratch: Pool) {
+  const constraint = await scratch.query(
+    `SELECT c.convalidated,
+            c.confrelid = 'public.payroll_payout_gl_postings'::regclass AS correct_target,
+            ARRAY(
+              SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, position)
+              JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+              ORDER BY k.position
+            ) AS source_columns,
+            ARRAY(
+              SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY AS k(attnum, position)
+              JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = k.attnum
+              ORDER BY k.position
+            ) AS target_columns
+       FROM pg_constraint c
+      WHERE c.conname = 'payroll_disbursement_items_gl_posting_fk'
+        AND c.conrelid = 'public.payroll_disbursement_items'::regclass
+        AND c.contype = 'f'`,
+  );
+  expect(constraint.rows).toEqual([
+    {
+      convalidated: true,
+      correct_target: true,
+      source_columns: ["tenant_id", "batch_id", "gl_posting_id"],
+      target_columns: ["tenant_id", "batch_id", "id"],
+    },
+  ]);
+  const edgeConstraints = await scratch.query(
+    `SELECT conname, convalidated, confrelid::regclass::text AS target_table
+       FROM pg_constraint
+      WHERE conname = ANY($1)
+        AND contype = 'f'
+      ORDER BY conname`,
+    [
+      [
+        "edge_link_dead_letters_edge_node_fk",
+        "edge_link_dead_letters_outlet_id_outlets_id_fk",
+        "edge_receipt_skips_outlet_id_outlets_id_fk",
+      ],
+    ],
+  );
+  expect(edgeConstraints.rows).toEqual([
+    {
+      conname: "edge_link_dead_letters_edge_node_fk",
+      convalidated: true,
+      target_table: "edge_nodes",
+    },
+    {
+      conname: "edge_link_dead_letters_outlet_id_outlets_id_fk",
+      convalidated: true,
+      target_table: "outlets",
+    },
+    {
+      conname: "edge_receipt_skips_outlet_id_outlets_id_fk",
+      convalidated: true,
+      target_table: "outlets",
+    },
+  ]);
+}
+
 /**
  * `Pool.end()` resolves before the server has closed the sessions; a
  * `DROP DATABASE ... WITH (FORCE)` racing them terminates a client that is
@@ -242,7 +302,9 @@ async function expectRlsStillForced(scratch: Pool) {
   // FKs and backfill; 0068 lifts it on outlets and stations; 0069 on outlets
   // and edge_nodes. Each must restore it before it commits, and the tables the
   // three migrations create must end with RLS forced. 0386 also lifts FORCE
-  // for its handover FK, and must restore it before the transaction commits.
+  // for its handover FK; 0534 does so for its payout posting FK. Each must
+  // restore FORCE before the transaction commits. 0538 and 0539 must also
+  // leave their new edge tables and FK targets with FORCE restored.
   const tables = [
     "outlets",
     "edge_nodes",
@@ -253,6 +315,10 @@ async function expectRlsStillForced(scratch: Pool) {
     "device_training_periods",
     "edge_pull_checkpoints",
     "shift_handovers",
+    "payroll_disbursement_items",
+    "payroll_payout_gl_postings",
+    "edge_link_dead_letters",
+    "edge_receipt_skips",
   ];
   const flags = await scratch.query(
     `SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class
@@ -307,11 +373,12 @@ describe("legend-wg5t migration 0065 on pre-0065 duplicate receipts", () => {
     expect(registry.rows[0].name).toBeNull();
   });
 
+  // The growing full migration folder can outlast the default test timeout.
   it("applies the full migration folder without error", async () => {
     await expect(
       migrate(drizzle(scratch), { migrationsFolder: drizzleFolder }),
     ).resolves.not.toThrow();
-  });
+  }, 120_000);
 
   it("backfills one registry row per edge_to_cloud event, from the earliest receipt", async () => {
     await expectBackfilledRegistry(scratch);
@@ -323,6 +390,7 @@ describe("legend-wg5t migration 0065 on pre-0065 duplicate receipts", () => {
 
   it("leaves row level security forced on the receipts and on the new registry", async () => {
     await expectRlsStillForced(scratch);
+    await expectMigrationForeignKeysValidated(scratch);
   });
 
   it("the old partial unique index is gone and the registry is append-only", async () => {
@@ -426,11 +494,12 @@ describe("legend-wg5t migration 0065 run by a non-superuser table owner", () => 
     });
   });
 
+  // The growing full migration folder can outlast the default test timeout.
   it("applies the full migration folder as the non-superuser owner", async () => {
     await expect(
       migrate(drizzle(owner), { migrationsFolder: drizzleFolder }),
     ).resolves.not.toThrow();
-  });
+  }, 120_000);
 
   it("backfills one registry row per edge_to_cloud event, from the earliest receipt", async () => {
     await expectBackfilledRegistry(adminInScratch);
@@ -442,5 +511,6 @@ describe("legend-wg5t migration 0065 run by a non-superuser table owner", () => 
 
   it("leaves row level security forced on the receipts and on the new registry", async () => {
     await expectRlsStillForced(adminInScratch);
+    await expectMigrationForeignKeysValidated(adminInScratch);
   });
 });
