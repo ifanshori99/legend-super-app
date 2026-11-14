@@ -1,3 +1,10 @@
+## Merge train batch64e (merge train, `int/batch64e` dari `origin/milestone/m1` b42619abc, 14 Nov 2026 20:20-22:45 WIB)
+
+- Sudah: 7 cabang masuk berurutan tanpa konflik dan tanpa migrasi: `fix/db-role-baseline-race` (legend-cwz62, perbaikan flake root; hanya `tests/db-role-provisioning*.test.mjs` + `tests/helpers/role-audit-lock.mjs`), `fix/e2e-pos-corrections` (legend-jemae), `ct/customer-display-promo-pairing` (legend-r1ax), `fix/backup-postgres-user` (legend-j5n1), `fix/print-dispatch-recheck` (legend-z76q), `fix/e2e-ijv8-qhh5` (legend-ncvcz), `ws/codec-print-flake` (legend-p5vke). `ws/edge-sync-resilience` sudah ada di m1 (0 commit di depan); kartu legend-n2d3g bukan cabang.
+- Gerbang: prettier+eslint 27 berkas hijau; `check-workspace-links` hijau; `pnpm run lint` exit 0 (3m); `pnpm run typecheck` 3/3 hijau (3m28s); `heavy pnpm run test` satu run penuh: node:test root 3001/3001 (tahap root hijau, tanpa flake db-role), vitest API 1137 berkas lulus (2 dilewati), 18234 tes lulus, 41 dilewati, 16 todo, 0 gagal (~1j50m total). Tanpa run kedua.
+- Berikut: fast-forward `milestone/m1` ke `int/batch64e`; lalu 64f dan 64g (refund, QRIS 0368-0370 snapshot prevId 0367, `ws/edge-kds-stations` 0371), plus antrean CTO setelah 64g.
+- Biaya sesi (12:32-22:45, termasuk 64a-64d): biaya* total 5613k (utama Sonnet 5.5 5421k; subagent 192k). 3 subagent; parallel-report: rata-rata 0.22 subagent berjalan per agent (11 sesi). Waktu terbanyak menunggu antrean `heavy` dan vitest API.
+
 ## Merge train batch64c (merge train, `int/batch64c` dari `origin/milestone/m1` 9b8433f69, 14 Nov 2026 18:50-20:50 WIB)
 
 - Sudah: payout masuk lewat 3 merge: `fix/finance-exceptions-known-count` (memuat `ui/payout-finance-exceptions`), `fix/payroll-policies-hydration`, `ws/payout-approval-followups` 172a26c77 (memuat `ws/payout-api-gaps`, `ws/payout-evidence-hardening`, `ws/payout-followups`, `ui/payout-wiring`; temuan architect sudah di dalamnya). Konflik hanya `docs/PROGRESS.md` (disimpan kedua sisi) dan journal/snapshot migrasi.
