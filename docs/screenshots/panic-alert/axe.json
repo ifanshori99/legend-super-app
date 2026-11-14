@@ -1,0 +1,103 @@
+{
+  "base": "http://localhost:3299",
+  "path": "/fasilitas/darurat",
+  "totals": {
+    "serious": 0,
+    "critical": 0
+  },
+  "axe": {
+    "incoming-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "incoming-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "multiple-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "multiple-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "mine-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "mine-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "acknowledged-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "acknowledged-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "reconnecting-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "reconnecting-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "unreachable-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "unreachable-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "revoked-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "revoked-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "idle-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "idle-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    }
+  },
+  "overflow320": {
+    "incoming": {
+      "scrollWidth": 320,
+      "clientWidth": 320,
+      "overflow": false
+    },
+    "multiple": {
+      "scrollWidth": 320,
+      "clientWidth": 320,
+      "overflow": false
+    }
+  },
+  "failures": []
+}
