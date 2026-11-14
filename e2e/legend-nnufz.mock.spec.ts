@@ -193,7 +193,7 @@ test.describe("legend-nnufz service order card", () => {
     await expect(page.getByText("Utama · Belum terhubung")).toHaveCount(0);
   });
 
-  test("a failed provider read reads as unavailable and hides the readiness note", async ({
+  test("a failed provider read shows a page load error, not locked cards or the platform banner", async ({
     page,
   }) => {
     await failFirstTwoCalls(page, "GET /api/ai/provider", {
@@ -203,22 +203,14 @@ test.describe("legend-nnufz service order card", () => {
     });
     await page.goto(`${PAGE}?state=detected`);
     await waitForHydration(page);
-    await expect(
-      page.getByText("Cadangan otomatis · Status belum bisa dimuat"),
-    ).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("Bagian ini belum bisa dimuat")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByRole("button", { name: "Coba lagi" })).toBeVisible();
+    await expect(page.getByText("AI dimatikan oleh platform")).toHaveCount(0);
     await expect(page.getByText("Cadangan otomatis · Belum siap")).toHaveCount(
       0,
     );
-    await expect(
-      page.getByText(
-        "Siapkan model kustom agar AI memiliki cadangan saat ChatGPT bermasalah.",
-      ),
-    ).toHaveCount(0);
-    await expect(
-      page.getByText(
-        "Cadangan dipakai otomatis bila layanan utama bermasalah.",
-      ),
-    ).toHaveCount(0);
   });
 });
 

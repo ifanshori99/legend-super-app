@@ -35,6 +35,10 @@ export function useProvider() {
 export function useChatgptLogin(refetchWhilePending = false) {
   return useQuery({
     ...chatgptQuery(),
+    // The page gate reads the status before the cards mount. Without this, a
+    // failed status is fetched again when the cards mount and can turn into a
+    // stale "connected" reading; the cards keep the error until retried.
+    retryOnMount: false,
     refetchInterval: (query) => {
       if (!refetchWhilePending) return false;
       const status = query.state.data?.data;

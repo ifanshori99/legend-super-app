@@ -2,6 +2,8 @@
 // They replace the cards, so nothing can be changed while the page cannot be
 // trusted to show the real settings.
 import { useLocation } from "@tanstack/react-router";
+import { cn } from "cn";
+import type { MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -11,19 +13,26 @@ import { AdminCard } from "@/features/ws12-ai-admin/components/shared";
 function SkeletonCard({
   titleKey,
   rows,
+  tall = false,
 }: {
-  titleKey: string;
-  rows: ("line" | "field")[];
+  titleKey: MessageKey;
+  rows: ("short" | "line" | "field")[];
+  tall?: boolean;
 }) {
   const t = useT();
   return (
-    <AdminCard>
+    <AdminCard className={tall ? "min-h-[300px]" : undefined}>
       <h2 className="type-title">{t(titleKey)}</h2>
       <div aria-hidden="true" className="grid gap-3">
         {rows.map((row, index) => (
           <Skeleton
             key={index}
-            className={row === "line" ? "h-4 w-1/2 first:w-1/3" : "h-11 w-full"}
+            className={cn(
+              "bg-border",
+              row === "short" && "h-4 w-1/3",
+              row === "line" && "h-4 w-full",
+              row === "field" && "h-11 w-full",
+            )}
           />
         ))}
       </div>
@@ -45,23 +54,24 @@ export function AiSettingsLoading() {
       </p>
       <div
         aria-busy="true"
-        aria-label={t("aiSettings.states.loadingLabel")}
         className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_17.5rem] lg:items-start"
       >
         <div className="grid min-w-0 gap-4">
           <SkeletonCard
             titleKey="aiSettings.states.cardChatgpt"
-            rows={["line", "line", "line", "field"]}
+            rows={["short", "line", "line", "field"]}
+            tall
           />
           <SkeletonCard
             titleKey="aiSettings.states.cardCustom"
-            rows={["line", "field", "line", "field", "line", "field"]}
+            rows={["short", "field", "short", "field", "short", "field"]}
           />
         </div>
         <div className="grid min-w-0 gap-4">
           <SkeletonCard
             titleKey="aiSettings.states.cardBudget"
-            rows={["line", "line", "field"]}
+            rows={["short", "line", "field"]}
+            tall
           />
           <SkeletonCard
             titleKey="aiSettings.order.title"
@@ -74,21 +84,53 @@ export function AiSettingsLoading() {
 }
 
 /** No connection: nothing was sent, and the visitor can retry. */
-export function AiSettingsOffline({ onRetry }: { onRetry: () => void }) {
+export function AiSettingsOffline({
+  onRetry,
+  retrying = false,
+}: {
+  onRetry: () => void;
+  retrying?: boolean;
+}) {
   const t = useT();
   return (
     <AdminCard aria-labelledby="ai-offline-title" className="max-w-2xl">
       <h2 id="ai-offline-title" className="type-title">
         {t("aiSettings.states.offlineTitle")}
       </h2>
-      <p className="text-base leading-6 text-muted-foreground">
+      <p role="alert" className="text-base leading-6 text-muted-foreground">
         {t("aiSettings.states.offlineBody")}
       </p>
       <p className="text-base leading-6 text-muted-foreground">
         {t("aiSettings.states.offlineHint")}
       </p>
       <div>
-        <Button type="button" onClick={onRetry}>
+        <Button type="button" loading={retrying} onClick={onRetry}>
+          {t("aiSettings.states.retry")}
+        </Button>
+      </div>
+    </AdminCard>
+  );
+}
+
+/** The settings failed to load for a reason other than no connection or an ended session. */
+export function AiSettingsLoadError({
+  onRetry,
+  retrying = false,
+}: {
+  onRetry: () => void;
+  retrying?: boolean;
+}) {
+  const t = useT();
+  return (
+    <AdminCard aria-labelledby="ai-error-title" className="max-w-2xl">
+      <h2 id="ai-error-title" className="type-title">
+        {t("aiSettings.error.title")}
+      </h2>
+      <p role="alert" className="text-base leading-6 text-muted-foreground">
+        {t("aiSettings.error.hint")}
+      </p>
+      <div>
+        <Button type="button" loading={retrying} onClick={onRetry}>
           {t("aiSettings.states.retry")}
         </Button>
       </div>

@@ -108,7 +108,7 @@ export function BudgetCard({ locked = false }: { locked?: boolean }) {
         <h2 id="ai-budget-title" className="type-title">
           {t("aiSettingsCustom.budget.title")}
         </h2>
-        <p className="text-sm leading-5 text-muted-foreground">
+        <p className="text-base leading-6 text-muted-foreground">
           {t("aiSettingsCustom.budget.description")}
         </p>
         {governance.isError && (
@@ -137,7 +137,7 @@ export function BudgetCard({ locked = false }: { locked?: boolean }) {
           ) : (
             <Money amount={usedIdr} size="xl" />
           )}
-          <p className="text-sm leading-5 text-muted-foreground">
+          <p className="text-xs leading-4 text-muted-foreground sm:text-sm sm:leading-5">
             {monthName(new Date())}
           </p>
           {cap > 0 ? (
@@ -197,7 +197,7 @@ export function BudgetCard({ locked = false }: { locked?: boolean }) {
               )}
             </>
           ) : (
-            <p className="text-base leading-6 font-semibold">
+            <p className="text-sm leading-5 font-bold text-warning sm:text-base sm:leading-6">
               {t("aiSettingsCustom.budget.off")}
             </p>
           )}
@@ -306,7 +306,7 @@ function BudgetForm({ cap, locked }: { cap: number; locked: boolean }) {
         variant="outline"
         loading={update.isPending}
         disabled={locked}
-        className="w-full"
+        className="w-full sm:w-auto sm:justify-self-start"
       >
         {t("aiSettingsCustom.budget.save")}
       </Button>

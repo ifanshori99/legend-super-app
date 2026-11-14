@@ -101,7 +101,7 @@ function PanelHeading({
   return (
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div className="grid gap-1">
-        <p className="text-xs leading-4 font-semibold tracking-wide text-muted-foreground uppercase">
+        <p className="type-eyebrow text-muted-foreground">
           {t("aiSettingsChatgpt.eyebrow")}
         </p>
         <div className="flex items-center gap-2">
@@ -195,7 +195,9 @@ function ChatgptBody({
     expiredFor === serverStatus.expiresAt
       ? { ...serverStatus, state: "expired" }
       : serverStatus;
-  const locked = disabled || !status.viewerCanManage;
+  // `disabled` is the tenant lock; `platformDisabled` is the global ChatGPT env switch.
+  const off = disabled || status.platformDisabled;
+  const locked = off || !status.viewerCanManage;
   const kind =
     status.state === "failed" || status.state === "expired"
       ? "retry"
@@ -241,7 +243,12 @@ function ChatgptBody({
           {t("aiSettingsChatgpt.error.refreshNote")}
         </p>
       )}
-      <fieldset disabled={disabled} className="grid min-w-0 gap-4 border-0 p-0">
+      {status.platformDisabled && (
+        <Notice tone="warning" title={t("aiSettingsChatgpt.platformOff.title")}>
+          {t("aiSettingsChatgpt.platformOff.body")}
+        </Notice>
+      )}
+      <fieldset disabled={off} className="grid min-w-0 gap-4 border-0 p-0">
         {status.state === "pending" ? (
           <PendingView
             status={status}
@@ -261,7 +268,7 @@ function ChatgptBody({
       </fieldset>
       <RevokeChatgptDialog
         open={revokeOpen}
-        disabled={disabled}
+        disabled={off}
         onClose={() => setRevokeOpen(false)}
         onRevoked={() => titleRef.current?.focus()}
       />
@@ -288,17 +295,20 @@ function Notice({
   title,
   children,
   role,
+  large,
 }: {
   tone: "warning" | "danger";
   title: string;
   children: string;
   role?: "alert";
+  large?: boolean;
 }) {
   return (
     <div
       role={role}
       className={cn(
-        "grid gap-1 rounded-control border-(length:--border-w) p-3 text-sm leading-5",
+        "grid gap-1 rounded-control border-(length:--border-w) p-3",
+        large ? "text-base leading-6" : "text-sm leading-5",
         tone === "danger"
           ? "border-danger/40 bg-danger-subtle text-danger"
           : "border-warning bg-warning-subtle text-warning",
@@ -322,6 +332,7 @@ function DisconnectedView({
   const [consent, setConsent] = React.useState(false);
   const retry = status.state === "failed" || status.state === "expired";
   const consentId = React.useId();
+  const consentLabelId = `${consentId}-label`;
   return (
     <>
       {status.state === "failed" && (
@@ -345,10 +356,10 @@ function DisconnectedView({
       <p className="text-sm leading-5 text-muted-foreground">
         {t("aiSettingsChatgpt.intro")}
       </p>
-      <Notice tone="warning" title={t("aiSettingsChatgpt.risk.title")}>
+      <Notice large tone="warning" title={t("aiSettingsChatgpt.risk.title")}>
         {t("aiSettingsChatgpt.risk.body")}
       </Notice>
-      <div className="flex min-h-11 items-start gap-3">
+      <div className="-mb-2 flex min-h-11 items-start gap-3">
         <Checkbox
           id={consentId}
           checked={consent}
@@ -357,6 +368,7 @@ function DisconnectedView({
           className="mt-0.5"
         />
         <Label
+          id={consentLabelId}
           htmlFor={consentId}
           className="min-h-11 items-start py-0.5 font-normal"
         >
@@ -368,6 +380,8 @@ function DisconnectedView({
           type="button"
           variant={locked ? "outline" : "default"}
           disabled={locked || !consent}
+          className="w-full disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100 disabled:shadow-none sm:w-auto"
+          aria-describedby={consentLabelId}
           loading={start.isPending}
           onClick={() => start.mutate()}
         >
@@ -550,8 +564,12 @@ function PendingView({
         <li>{t("aiSettingsChatgpt.pending.steps.back")}</li>
       </ol>
       {link && (
-        <div className="grid justify-items-start gap-2">
-          <Button asChild={!locked} disabled={locked}>
+        <div className="grid justify-items-start gap-2 max-sm:justify-items-stretch">
+          <Button
+            asChild={!locked}
+            disabled={locked}
+            className="w-full sm:w-auto"
+          >
             {locked ? (
               <span>{t("aiSettingsChatgpt.pending.openLogin")}</span>
             ) : (
@@ -592,6 +610,7 @@ function PendingView({
               type="button"
               variant="outline"
               disabled={locked}
+              className="w-full sm:w-auto"
               onClick={() => {
                 setProblem(null);
                 setAttempt((n) => n + 1);
@@ -607,6 +626,7 @@ function PendingView({
           type="button"
           variant="outline"
           disabled={locked}
+          className="w-full sm:w-auto"
           loading={cancel.isPending}
           onClick={() => cancel.mutate()}
         >
@@ -656,7 +676,7 @@ function ConnectedView({
           variant="outline"
           disabled={locked}
           onClick={onRevoke}
-          className="text-danger"
+          className="w-full text-danger sm:w-auto"
         >
           {t("aiSettingsChatgpt.connected.revoke")}
         </Button>

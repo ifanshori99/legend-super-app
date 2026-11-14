@@ -29,6 +29,7 @@ import type {
 } from "@starter/shared/ai";
 import {
   usePatchProviderCapabilities,
+  useChatgptLogin,
   useProvider,
   useSaveProvider,
   useTestProvider,
@@ -144,6 +145,7 @@ function CustomCard({
   const t = useT();
   const save = useSaveProvider();
   const test = useTestProvider();
+  const chatgptConnected = useChatgptLogin().data?.data.state === "connected";
   const formRef = React.useRef<HTMLFormElement>(null);
   const [draft, setDraft] = React.useState<Draft>({
     baseUrl: config?.baseUrl ?? "",
@@ -271,7 +273,7 @@ function CustomCard({
     <AdminCard aria-labelledby="ai-custom-title" aria-busy={busy || undefined}>
       <div className="flex items-start justify-between gap-3">
         <div className="grid min-w-0 gap-1">
-          <p className="text-xs leading-4 font-semibold tracking-wide text-muted-foreground uppercase">
+          <p className="type-eyebrow text-muted-foreground">
             {t("aiSettingsCustom.custom.eyebrow")}
           </p>
           <div className="flex items-center gap-2.5">
@@ -302,7 +304,7 @@ function CustomCard({
       </div>
 
       <div className="grid min-w-0 gap-4">
-        <p className="text-sm leading-5 text-muted-foreground">
+        <p className="text-base leading-6 text-muted-foreground">
           {t("aiSettingsCustom.custom.description")}
         </p>
         {refreshFailed && (
@@ -318,7 +320,7 @@ function CustomCard({
           ref={formRef}
           onSubmit={(event) => void submit(event)}
           noValidate
-          className="grid gap-4"
+          className="grid gap-4 [&_[id$='-hint']]:text-xs [&_[id$='-hint']]:leading-4 [&_label]:font-semibold"
         >
           <FormField
             label={t("aiSettingsCustom.custom.urlLabel")}
@@ -379,10 +381,12 @@ function CustomCard({
           <div className="grid gap-1.5">
             <Button
               type="submit"
-              variant={last === null ? "outline" : "default"}
+              variant={
+                locked ? "secondary" : chatgptConnected ? "default" : "outline"
+              }
               loading={busy}
               disabled={locked}
-              className="w-fit"
+              className="w-full sm:w-auto"
             >
               {busy
                 ? t("aiSettingsCustom.custom.testing")
@@ -392,7 +396,7 @@ function CustomCard({
                       : "aiSettingsCustom.custom.retest",
                   )}
             </Button>
-            <p className="text-sm leading-5 text-muted-foreground">
+            <p className="text-xs leading-4 text-muted-foreground">
               {t("aiSettingsCustom.custom.testNote")}
             </p>
           </div>

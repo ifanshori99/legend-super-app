@@ -72,9 +72,11 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type AiGatewayChannel = AiChannel | "tanya_ai";
 type AiBillingMode = "api_metered" | "chatgpt_plan";
 
+// Stored settings only. `platformLocked` is derived from the tenant's feature
+// flags at read time (ai-platform-lock.ts), never stored with the settings.
 export type AiSettingsView = Omit<
   AiGovernanceSettings,
-  "updatedAt" | "updatedBy"
+  "updatedAt" | "updatedBy" | "platformLocked"
 >;
 
 export type AiCacheKeyInput = {

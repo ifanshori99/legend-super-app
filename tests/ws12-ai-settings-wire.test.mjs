@@ -200,8 +200,11 @@ describe("legend-nnufz platform lock scope", () => {
     assert.doesNotMatch(page, /role="alert"/);
   });
 
-  test("the ChatGPT card carries no lock notice", () => {
-    assert.doesNotMatch(chatgpt, /platformOff|platformLock/);
+  test("the ChatGPT card carries no tenant lock notice", () => {
+    // The tenant lock is explained once by the page banner. The card only
+    // explains the global ChatGPT switch (env AI_CHATGPT_ENABLED).
+    assert.doesNotMatch(chatgpt, /aiSettings\.platform(Off|Lock)/);
+    assert.match(chatgpt, /aiSettingsChatgpt\.platformOff/);
   });
 });
 

@@ -5,7 +5,7 @@
 // variant adds &role=admin).
 //
 // For every state: at 1280 and 390 px run axe (wcag2a, wcag2aa, wcag21aa,
-// wcag22aa) and take a full-page screenshot; at 320 px check that the page
+// wcag22aa) and take a screenshot of the whole content (the viewport grows to the scroll height of `main#main-content`); at 320 px check that the page
 // does not scroll horizontally. Screenshots go to
 // docs/screenshots/ai-settings-v2/<state>-<width>.png and a JSON summary to
 // docs/screenshots/ai-settings-v2/summary.json. Exit code 1 when axe reports a
@@ -135,15 +135,35 @@ const overflowOf = (page) =>
       : null;
   });
 
+/**
+ * The content scrolls inside `main#main-content`, so a full-page screenshot
+ * cuts it off. Grow the viewport height to the scroll height of the content
+ * (width stays fixed at 1280/390), then let the layout settle.
+ */
+async function fitViewportToContent(page, run) {
+  const height = await page.evaluate(() => {
+    const main = document.querySelector("main#main-content");
+    const scroller =
+      main && main.scrollHeight > main.clientHeight ? main : null;
+    const extra = scroller ? window.innerHeight - scroller.clientHeight : 0;
+    return Math.max(
+      document.documentElement.scrollHeight,
+      scroller ? scroller.scrollHeight + extra : 0,
+    );
+  });
+  if (height > run.height) {
+    await page.setViewportSize({ width: run.width, height });
+    await page.waitForTimeout(200);
+  }
+}
+
 async function main() {
   const baseUrl = (process.env.UI_BASE ?? "http://localhost:3417").replace(
     /\/+$/,
     "",
   );
   const filters = new Set(process.argv.slice(2));
-  const pages = PAGES.filter(
-    (p) => filters.size === 0 || filters.has(p.name),
-  );
+  const pages = PAGES.filter((p) => filters.size === 0 || filters.has(p.name));
   if (pages.length === 0) {
     console.log(`No page matches: ${[...filters].join(", ")}`);
     process.exit(2);
@@ -197,10 +217,8 @@ async function main() {
                   .join(" | ")})`,
               );
             }
-            await page.screenshot({
-              path: join(OUT_DIR, `${id}.png`),
-              fullPage: true,
-            });
+            await fitViewportToContent(page, run);
+            await page.screenshot({ path: join(OUT_DIR, `${id}.png`) });
             row.screenshot = `docs/screenshots/ai-settings-v2/${id}.png`;
           } else {
             const overflow = await overflowOf(page);
@@ -245,8 +263,13 @@ async function main() {
   await writeFile(SUMMARY_FILE, `${JSON.stringify(summary, null, 2)}\n`);
 
   console.log(`\naxe: ${axe.source}, tags: ${AXE_TAGS.join(", ")}`);
+  const hidden = new Set(["problems", "screenshot", "url"]);
   console.table(
-    rows.map(({ problems, screenshot, url, ...rest }) => rest),
+    rows.map((row) =>
+      Object.fromEntries(
+        Object.entries(row).filter(([key]) => !hidden.has(key)),
+      ),
+    ),
   );
   console.log(
     failures.length === 0

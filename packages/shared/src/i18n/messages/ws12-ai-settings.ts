@@ -24,7 +24,6 @@ export const aiSettingsMessages = {
     cardChatgpt: "Login ChatGPT",
     cardCustom: "Model kustom",
     cardBudget: "Anggaran AI bulanan",
-    loadingLabel: "Pengaturan sedang dimuat",
     offlineTitle: "Koneksi terputus",
     offlineBody:
       "Pengaturan AI belum dapat dimuat. Periksa koneksi internet, lalu coba lagi.",

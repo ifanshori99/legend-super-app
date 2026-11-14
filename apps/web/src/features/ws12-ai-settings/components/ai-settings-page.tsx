@@ -13,6 +13,7 @@ import { BudgetCard } from "./budget-card";
 import { ChatgptPanel } from "./chatgpt-panel";
 import { CustomModelPanel } from "./custom-model-panel";
 import {
+  AiSettingsLoadError,
   AiSettingsLoading,
   AiSettingsOffline,
   AiSettingsSessionExpired,
@@ -35,19 +36,19 @@ export function AiSettingsPage() {
     ...(chatgpt.data ? [] : [chatgpt.error]),
     ...(provider.data ? [] : [provider.error]),
   ];
+  const retry = () => {
+    void chatgpt.refetch();
+    void provider.refetch();
+  };
+  const retrying = chatgpt.isFetching || provider.isFetching;
   let body: ReactNode;
   let showCards = false;
   if (failures.some((error) => hasStatus(error, 401))) {
     body = <AiSettingsSessionExpired />;
   } else if (failures.some((error) => hasStatus(error, 0))) {
-    body = (
-      <AiSettingsOffline
-        onRetry={() => {
-          void chatgpt.refetch();
-          void provider.refetch();
-        }}
-      />
-    );
+    body = <AiSettingsOffline onRetry={retry} retrying={retrying} />;
+  } else if (!provider.data && provider.error) {
+    body = <AiSettingsLoadError onRetry={retry} retrying={retrying} />;
   } else if (chatgpt.isPending || provider.isPending) {
     body = <AiSettingsLoading />;
   } else {
@@ -68,7 +69,7 @@ export function AiSettingsPage() {
   return (
     <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <p className="max-w-2xl text-sm leading-5 text-muted-foreground">
+        <p className="max-w-2xl text-base leading-6 text-muted-foreground">
           {t("aiSettings.intro")}
         </p>
         {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
