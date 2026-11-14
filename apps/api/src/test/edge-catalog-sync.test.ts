@@ -28,8 +28,9 @@
 //    `code` is "CATALOG_MISSING_REF", as for the old missing-ref error.
 //  - A derived stream is skipped when its parent stream failed (menu_items and
 //    modifiers when stations failed, recipes when inventory_items failed, and
-//    menu_items, modifiers and item_variants when recipes failed or were
-//    skipped, legend-3kdd): its
+//    menu_items and item_variants when recipes failed or were skipped,
+//    legend-3kdd; modifiers do NOT wait for recipes, their recipe_id has no
+//    foreign key on the edge): its
 //    error mentions CATALOG_PARENT_FAILED, nothing is fetched for it and its
 //    checkpoint does not move. Assumption: independent streams still run.
 //  - The cloud sends `stationId` on menu_items / modifiers only when the
@@ -1915,18 +1916,18 @@ describe("97p edge pull: resume and broken connection", () => {
     const stored = await checkpointStreams();
     expect(stored).not.toContain("catalog:recipes");
     expect(stored).not.toContain("catalog:inventory_items");
-    // menu_items, modifiers and item_variants point at recipes (legend-3kdd),
-    // so they are skipped too; streams that do not depend on recipes ran.
-    for (const stream of [
-      "menu_items",
-      "modifiers",
-      "item_variants",
-    ] as const) {
+    // menu_items and item_variants point at recipes (legend-3kdd), so they are
+    // skipped too. Modifiers carry a recipe id with NO foreign key on the edge
+    // (the recipe may belong to another brand and never be delivered), so the
+    // modifiers stream does not wait for recipes and still runs.
+    for (const stream of ["menu_items", "item_variants"] as const) {
       expect(errorText(result.streams[stream]?.error), stream).toContain(
         "CATALOG_PARENT_FAILED",
       );
       expect(stored).not.toContain(`catalog:${stream}`);
     }
+    expect(result.streams.modifiers?.error).toBeFalsy();
+    expect(stored).toContain("catalog:modifiers");
     expect(result.streams.menu_categories?.error).toBeFalsy();
     expect(stored).toContain("catalog:menu_categories");
 
@@ -1934,6 +1935,70 @@ describe("97p edge pull: resume and broken connection", () => {
     const healed = await pullOk(cloud);
     expect(healed.streams.recipes?.error).toBeFalsy();
     await expectEdgeEqualsCloud();
+  });
+
+  it("legend-3kdd a modifier whose recipe belongs to another brand and is not delivered to this edge still syncs: row stored with its recipe_id, checkpoint stored, never CATALOG_PARENT_FAILED", async () => {
+    // Assumption: a modifier is tenant-wide, so its recipe may be a recipe of
+    // another brand (ids.recBr2, brand2) that the edge of O1 (brand A) never
+    // receives. The edge must not refuse the modifier for that.
+    const data = await exportMine();
+    expect(idsOf(data.recipes)).not.toContain(ids.recBr2);
+    data.modifiers = [{ ...data.modifiers[0]!, recipeId: ids.recBr2 }];
+    const cloud = scriptedCloud(data, 100);
+    const result = await pullOk(cloud);
+    expect(result.streams.recipes?.error).toBeFalsy();
+    expect(result.streams.modifiers?.error).toBeFalsy();
+    // The foreign recipe is not on the edge, yet the modifier points at it.
+    expect(
+      await edge.rows("SELECT id FROM recipes WHERE id = $1", [ids.recBr2]),
+    ).toHaveLength(0);
+    const rows = await edge.rows(
+      "SELECT id, recipe_id FROM modifiers WHERE id = $1",
+      [ids.mod1],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.recipe_id).toBe(ids.recBr2);
+    expect(await checkpointStreams()).toContain("catalog:modifiers");
+  });
+
+  it("legend-3kdd the edge database is migrated in edge mode: no modifiers_recipe_fk, but menu_items and item_variants keep theirs", async () => {
+    const rows = await edge.rows(
+      `SELECT conrelid::regclass::text AS tbl FROM pg_constraint
+        WHERE conname IN ('menu_items_recipe_fk', 'item_variants_recipe_fk', 'modifiers_recipe_fk')
+        ORDER BY 1`,
+    );
+    expect(rows.map((r) => String(r.tbl))).toEqual([
+      "item_variants",
+      "menu_items",
+    ]);
+  });
+
+  it("legend-3kdd when the recipes stream fails, modifiers still run while menu_items and item_variants are skipped with CATALOG_PARENT_FAILED", async () => {
+    const cloud = scriptedCloud(await exportMine(), 100);
+    cloud.breakAt("recipes", 1);
+    const result = await pullOk(cloud);
+    expect(result.streams.recipes?.error).toBeTruthy();
+    expect(errorText(result.streams.recipes?.error)).not.toContain(
+      "CATALOG_PARENT_FAILED",
+    );
+    expect(result.streams.modifiers?.error).toBeFalsy();
+    expect(cloud.calls.some((c) => c.stream === "modifiers")).toBe(true);
+    for (const stream of ["menu_items", "item_variants"] as const) {
+      expect(errorText(result.streams[stream]?.error), stream).toContain(
+        "CATALOG_PARENT_FAILED",
+      );
+      expect(
+        cloud.calls.some((c) => c.stream === stream),
+        stream,
+      ).toBe(false);
+    }
+    const stored = await checkpointStreams();
+    expect(stored).toContain("catalog:modifiers");
+    for (const stream of ["recipes", "menu_items", "item_variants"])
+      expect(stored).not.toContain(`catalog:${stream}`);
+    expect(
+      await edge.rows("SELECT id FROM modifiers WHERE id = $1", [ids.mod1]),
+    ).toHaveLength(1);
   });
 
   it("24318 a full pull resets local sync_txid first: an edge row with a huge local txid is corrected by the cloud's smaller txid (empty checkpoints and cat1 checkpoints)", async () => {

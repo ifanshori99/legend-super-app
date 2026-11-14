@@ -173,10 +173,12 @@ export async function createEdgeDatabase(input: {
   };
 
   try {
-    await runMigrations(owner, migrationsFolder, {
-      lockTimeout: "10s",
-      statementTimeout: "0",
-    });
+    await runMigrations(
+      owner,
+      migrationsFolder,
+      { lockTimeout: "10s", statementTimeout: "0" },
+      { edgeMode: true },
+    );
     await provisionRoles({ adminUrl: ownerUrl, appUrl });
     appPool = createAppPool(appUrl, { max: 4 });
     appPool.on("error", ignoreIdleError);

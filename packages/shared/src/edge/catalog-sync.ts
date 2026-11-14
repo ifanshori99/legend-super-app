@@ -64,9 +64,10 @@ export const EDGE_CATALOG_SYNC_PATH = "/api/edge-sync/catalog";
  * Pull order. `stations` and `inventory_items` come first so the rows that
  * items, modifiers and recipes point to (`stationId`, `outputItemId`) already
  * exist on the edge when those streams are applied. `recipes` follow right
- * after `inventory_items` and before `modifiers`, `menu_items` and
- * `item_variants`: those carry `recipe_id` with a composite foreign key to
- * `recipes` on the edge too (legend-3kdd).
+ * after `inventory_items` and before `menu_items` and `item_variants`: those
+ * carry `recipe_id` with a composite foreign key to `recipes` on the edge too
+ * (legend-3kdd). `modifiers` carry `recipe_id` without that key on the edge
+ * (recipes are brand-scoped, modifiers tenant-level) and do not wait.
  */
 export const CATALOG_SYNC_STREAMS = [
   "stations",

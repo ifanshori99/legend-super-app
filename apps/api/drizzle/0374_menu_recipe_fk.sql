@@ -4,6 +4,14 @@
 -- at a recipe of its own tenant, and a referenced recipe cannot be deleted
 -- (ON DELETE NO ACTION).
 --
+-- The modifiers key exists on the cloud only. Modifiers are tenant-level but
+-- recipes are brand-scoped, and an edge node never receives the recipes of other
+-- brands, so a modifier there can point at a recipe the edge does not hold. The
+-- edge is migrated by the same files; the migrator sets the session setting
+-- legend.edge_mode to 'on' on an edge database (EDGE_MODE=true) and the modifiers
+-- orphan scan and key are skipped there. menu_items and item_variants keep the
+-- key on both.
+--
 -- Orphan check first: a recipe_id with no recipe of the same tenant (missing or
 -- another tenant's) would fail the key, so it is set to NULL. NULL means "no
 -- recipe", the same state as a menu row never linked to one; no price, tax or
@@ -34,16 +42,20 @@ WHERE v.recipe_id IS NOT NULL
     SELECT 1 FROM public.recipes r
     WHERE r.tenant_id = v.tenant_id AND r.id = v.recipe_id
   );--> statement-breakpoint
-UPDATE public.modifiers d
-SET recipe_id = NULL
-WHERE d.recipe_id IS NOT NULL
-  AND NOT EXISTS (
-    SELECT 1 FROM public.recipes r
-    WHERE r.tenant_id = d.tenant_id AND r.id = d.recipe_id
-  );--> statement-breakpoint
 ALTER TABLE "menu_items" ADD CONSTRAINT "menu_items_recipe_fk" FOREIGN KEY ("tenant_id","recipe_id") REFERENCES "public"."recipes"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "item_variants" ADD CONSTRAINT "item_variants_recipe_fk" FOREIGN KEY ("tenant_id","recipe_id") REFERENCES "public"."recipes"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "modifiers" ADD CONSTRAINT "modifiers_recipe_fk" FOREIGN KEY ("tenant_id","recipe_id") REFERENCES "public"."recipes"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+DO $$ BEGIN
+  IF pg_catalog.current_setting('legend.edge_mode', true) IS DISTINCT FROM 'on' THEN
+    UPDATE public.modifiers d
+    SET recipe_id = NULL
+    WHERE d.recipe_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM public.recipes r
+        WHERE r.tenant_id = d.tenant_id AND r.id = d.recipe_id
+      );
+    ALTER TABLE "modifiers" ADD CONSTRAINT "modifiers_recipe_fk" FOREIGN KEY ("tenant_id","recipe_id") REFERENCES "public"."recipes"("tenant_id","id") ON DELETE no action ON UPDATE no action;
+  END IF;
+END $$;--> statement-breakpoint
 ALTER TABLE public.recipes FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE public.modifiers FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE public.item_variants FORCE ROW LEVEL SECURITY;--> statement-breakpoint

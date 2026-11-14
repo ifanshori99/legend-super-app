@@ -19,8 +19,8 @@
 //   by local transactions are not comparable with the cloud's.
 // - A stream whose rows another stream's rows point at (stations for
 //   menu_items and modifiers, inventory_items for recipes, recipes for
-//   menu_items, modifiers and item_variants) that failed in this
-//   pull makes those streams skip the pull (error `CATALOG_PARENT_FAILED`,
+//   menu_items and item_variants; modifiers have no recipe key on the edge)
+//   that failed in this pull makes those streams skip the pull (error `CATALOG_PARENT_FAILED`,
 //   checkpoint untouched); a reference to a row not local yet is refused as
 //   transient (`CATALOG_MISSING_REF`) by the apply anyway.
 // - menu_categories: parent links the apply had to write null (parent not local
@@ -97,7 +97,7 @@ const PARENT_STREAMS: Readonly<
   Partial<Record<CatalogSyncStream, readonly CatalogSyncStream[]>>
 > = {
   menu_items: ["stations", "recipes"],
-  modifiers: ["stations", "recipes"],
+  modifiers: ["stations"],
   item_variants: ["recipes"],
   recipes: ["inventory_items"],
   vouchers: ["promotions"],

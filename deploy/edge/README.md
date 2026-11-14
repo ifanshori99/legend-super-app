@@ -46,6 +46,15 @@ screen, because the edge only holds today plus that many day keys.
 
 7. Start the API and Caddy, then confirm `GET /api/edge/health` over HTTPS.
 
+## Database migrations
+
+Run the migrator (`node dist/migrate.js`) on the edge database with
+`EDGE_MODE=true` in its environment, never with a copy of the cloud
+environment file. Edge mode skips the `modifiers.recipe_id` foreign key
+(migration 0374): modifiers are tenant-level but an edge only receives the
+recipes of its own brand, so the key would refuse the modifiers page of any
+modifier that points at another brand's recipe.
+
 ## Local audit retention login
 
 The edge API runs audit retention against its own PostgreSQL database. After

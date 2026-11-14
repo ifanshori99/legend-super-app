@@ -70,12 +70,19 @@ export async function runMigrations(
   pool: Pool,
   migrationsFolder: string,
   timeouts: MigrationTimeouts,
+  options?: { edgeMode?: boolean },
 ) {
   const client = await pool.connect();
   try {
+    // legend.edge_mode lets a migration skip cloud-only constraints on an edge
+    // database (0374 modifiers_recipe_fk).
     await client.query(
-      `SELECT set_config('lock_timeout', $1, false), set_config('statement_timeout', $2, false)`,
-      [timeouts.lockTimeout, timeouts.statementTimeout],
+      `SELECT set_config('lock_timeout', $1, false), set_config('statement_timeout', $2, false), set_config('legend.edge_mode', $3, false)`,
+      [
+        timeouts.lockTimeout,
+        timeouts.statementTimeout,
+        options?.edgeMode ? "on" : "off",
+      ],
     );
     await migrate(drizzle(client), { migrationsFolder });
   } finally {
