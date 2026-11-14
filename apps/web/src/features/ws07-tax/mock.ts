@@ -112,7 +112,11 @@ function recapTemplate(type: TaxReportType): TaxReportLine[] {
   if (!template) return [];
   // Document numbers belong to the fixture period, so they are not carried
   // into another month's recap.
-  return template.lines.map((line) => ({ ...line, references: [] }));
+  return template.lines.map((line) => ({
+    ...line,
+    references: [],
+    warnings: [],
+  }));
 }
 
 // ---- Report list -----------------------------------------------------------

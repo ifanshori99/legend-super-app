@@ -39,6 +39,7 @@ import {
   DASHBOARD_CATALOG,
   dashboardLayoutSchema,
   dashboardQueueRowsSchema,
+  dashboardValuesQuerySchema,
   dashboardValuesSchema,
   reportAcceptsAggregateView,
   reportByCode,
@@ -51,6 +52,9 @@ import { withTenant } from "../db/tenant";
 import { postJournalInTransaction } from "../services/accounting-journal.service";
 import { closeFiscalPeriod } from "../services/accounting-period-close.service";
 import {
+  admittedTiles,
+  getDashboardLayout,
+  getDashboardValues,
   setDashboardCacheTtlMs,
   viewerReportsOf,
 } from "../services/dashboard-run.service";
@@ -998,5 +1002,156 @@ describe("a single outletIds on GET", () => {
       `/api/dashboards/queues/kitchen_queue/rows?outletIds=${a.outlet1}`,
     );
     expect(rows.status).toBe(200);
+  });
+});
+
+// ---- Outlet clock (legend-nipn7) --------------------------------------------
+
+describe("today and periodClosed follow the outlet clock", () => {
+  // 20:30 UTC on 10 June: Jakarta (+7) is 03:30 on the 11th, still before the
+  // 04:00 cutoff, so its business date is the 10th; Makassar (+8) is 04:30 and
+  // Jayapura (+9) is 05:30 on the 11th, so theirs is the 11th. The default
+  // clock (Jakarta, 04:00) would have said the 10th for all three.
+  const NOW = new Date("2025-06-10T20:30:00Z");
+  let w: World;
+  let jakarta: string;
+  let makassar: string;
+  let jayapura: string;
+  let cutoffLate: string;
+
+  async function addOutlet(
+    from: string,
+    timezone: string,
+    cutoff: string,
+  ): Promise<string> {
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
+       SELECT $1, tenant_id, brand_id, legal_entity_id, $2, 'Outlet Zona', address, $4, $5, opening_hours, status
+       FROM outlets WHERE id = $3`,
+      [
+        id,
+        `Z-${randomUUID().slice(0, 8)}`.toUpperCase(),
+        from,
+        timezone,
+        cutoff,
+      ],
+    );
+    return id;
+  }
+
+  beforeAll(async () => {
+    w = await makeWorld("zona", 0);
+    jakarta = w.outlet1;
+    makassar = w.outlet2;
+    await owner.query(
+      `UPDATE outlets SET timezone = 'Asia/Jakarta', business_day_cutoff = '04:00' WHERE id = $1`,
+      [jakarta],
+    );
+    await owner.query(
+      `UPDATE outlets SET timezone = 'Asia/Makassar', business_day_cutoff = '04:00' WHERE id = $1`,
+      [makassar],
+    );
+    jayapura = await addOutlet(jakarta, "Asia/Jayapura", "04:00");
+    cutoffLate = await addOutlet(jakarta, "Asia/Jakarta", "06:00");
+  });
+
+  const tiles = () => admittedTiles("owner", FULL);
+  const valuesAt = (
+    outletIds: string[],
+    query: Record<string, string>,
+    now = NOW,
+  ) =>
+    getDashboardValues(
+      context(w),
+      {
+        dashboard: "owner",
+        viewer: "full",
+        tiles: tiles(),
+        query: dashboardValuesQuerySchema.parse({
+          ...(outletIds.length > 0 ? { outletIds } : {}),
+          ...query,
+        }),
+      },
+      { now },
+    );
+  const layoutAt = (outletIds: string[], now = NOW) =>
+    getDashboardLayout(
+      context(w),
+      { dashboard: "owner", tiles: tiles(), outletIds },
+      { now },
+    );
+
+  it("gives each outlet the business date of its own zone", async () => {
+    expect((await layoutAt([jakarta])).businessDate).toBe("2025-06-10");
+    expect((await layoutAt([makassar])).businessDate).toBe("2025-06-11");
+    expect((await layoutAt([jayapura])).businessDate).toBe("2025-06-11");
+    expect((await valuesAt([jakarta], { period: "today" })).businessDate).toBe(
+      "2025-06-10",
+    );
+    const makassarToday = await valuesAt([makassar], { period: "today" });
+    expect(makassarToday.businessDate).toBe("2025-06-11");
+    expect(makassarToday.tiles[0]?.period).toMatchObject({
+      startDate: "2025-06-11",
+      endDate: "2025-06-11",
+      status: "open",
+    });
+  });
+
+  it("resolves presets on the outlet date, not the default clock's", async () => {
+    const yesterday = await valuesAt([makassar], { period: "yesterday" });
+    expect(yesterday.tiles[0]?.period).toMatchObject({
+      startDate: "2025-06-10",
+      endDate: "2025-06-10",
+      status: "closed",
+    });
+  });
+
+  it("closes a period by the outlet's own today", async () => {
+    const custom = {
+      period: "custom",
+      startDate: "2025-06-10",
+      endDate: "2025-06-10",
+    };
+    // The 10th is over in Makassar, still today in Jakarta.
+    expect((await valuesAt([makassar], custom)).tiles[0]?.period.status).toBe(
+      "closed",
+    );
+    expect((await valuesAt([jakarta], custom)).tiles[0]?.period.status).toBe(
+      "open",
+    );
+  });
+
+  it("takes the earliest outlet date when outlets differ", async () => {
+    const both = await valuesAt([jakarta, makassar, jayapura], {
+      period: "today",
+    });
+    expect(both.businessDate).toBe("2025-06-10");
+    const custom = {
+      period: "custom",
+      startDate: "2025-06-10",
+      endDate: "2025-06-10",
+    };
+    // One outlet is still on the 10th, so the period is not closed for the set.
+    expect(
+      (await valuesAt([jakarta, makassar, jayapura], custom)).tiles[0]?.period
+        .status,
+    ).toBe("open");
+    // Tenant scope (no outlet filter) reads every outlet: same earliest date.
+    expect((await valuesAt([], { period: "today" })).businessDate).toBe(
+      "2025-06-10",
+    );
+  });
+
+  it("follows the outlet cutoff after midnight", async () => {
+    // 22:30 UTC = 05:30 Jakarta on the 11th: past the 04:00 cutoff, before 06:00.
+    const night = new Date("2025-06-10T22:30:00Z");
+    expect((await layoutAt([jakarta], night)).businessDate).toBe("2025-06-11");
+    expect((await layoutAt([cutoffLate], night)).businessDate).toBe(
+      "2025-06-10",
+    );
+    const late = await valuesAt([cutoffLate], { period: "today" }, night);
+    expect(late.businessDate).toBe("2025-06-10");
+    expect(late.tiles[0]?.period.status).toBe("open");
   });
 });

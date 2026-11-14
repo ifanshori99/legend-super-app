@@ -17,6 +17,24 @@ import {
 } from "@/components/ui/table";
 import { formatTaxLineRate, taxSubjectLabelKey, taxTypeLabelKey } from "../lib";
 
+// Auditor notes of one line (screen only, never in the Coretax export).
+function LineWarnings({ warnings }: { warnings: readonly string[] }) {
+  const t = useT();
+  if (warnings.length === 0) return null;
+  return (
+    <ul className="grid gap-0.5 text-sm text-warning">
+      {warnings.map((warning, index) => (
+        <li key={`${index}-${warning}`} className="break-words">
+          <span className="font-medium">
+            {t("accounting.tax.report.warningsLabel")}:
+          </span>{" "}
+          {warning}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function ReportLinesTable({ report }: { report: TaxReport }) {
   const t = useT();
   const rows = report.lines;
@@ -77,6 +95,7 @@ export function ReportLinesTable({ report }: { report: TaxReport }) {
                 </>
               )}
             </dl>
+            <LineWarnings warnings={line.warnings} />
           </li>
         ))}
         <li className="flex items-center justify-between gap-2 p-card font-medium">
@@ -133,6 +152,7 @@ export function ReportLinesTable({ report }: { report: TaxReport }) {
                   {line.references.length === 0
                     ? "—"
                     : line.references.join(", ")}
+                  <LineWarnings warnings={line.warnings} />
                 </TableCell>
               </TableRow>
             ))}
