@@ -1301,16 +1301,47 @@ describe("legend-ljs6i residual gateway part of a refund without source evidence
     ).toHaveLength(0);
   });
 
-  // legend-fpy9s: an earlier POS refund has a deposit part D on ANOTHER intent
-  // whose linked payment refund at the shared key is 'failed' (money released,
-  // key spent). The bound counts D as owed against the pinned intent (current
-  // behaviour, asserted as is): a later refund on the pinned intent parks when
-  // D + gateway part exceeds the pinned intent, and posts when it fits.
-  async function seedEarlierDepositOnOtherIntent(depositIdr: number) {
+  // Every posted case: balanced, the whole gateway part goes to customer_deposit
+  // (never gateway_clearing), and it never exceeds the pinned 40k intent minus
+  // the earlier amounts that count against it.
+  async function expectPostedToDeposit(
+    world: World,
+    entryId: string,
+    refundId: string,
+    gatewayIdr: number,
+    countedEarlierIdr = 0,
+    pinnedIdr = 40_000,
+  ) {
+    const lines = await linesOf(world, entryId);
+    expectBalancedLines(lines);
+    expect(creditOf(lines, "customer_deposit")).toBe(gatewayIdr);
+    expect(creditOf(lines, "gateway_clearing")).toBe(0);
+    expect(creditOf(lines, "customer_deposit")).toBeLessThanOrEqual(
+      pinnedIdr - countedEarlierIdr,
+    );
+    expect(
+      await parkedOf(world.tenant, `aj:order-refund:${refundId}`),
+    ).toHaveLength(0);
+  }
+
+  // legend-xiz1p: an earlier POS refund has a deposit part D on ANOTHER intent
+  // X whose linked payment refund at the shared key is 'failed' (money released,
+  // key spent). The key is pos-refund-gateway:<refund>:<intent>, one payment
+  // refund per refund + intent, so D only ever draws on X's capacity. It does
+  // NOT count against the pinned intent: a later refund on the pinned intent
+  // posts whenever it fits the pinned intent alone. `target: "pinned"` puts D on
+  // the pinned intent itself (control: that one still counts).
+  async function seedEarlierDepositOnOtherIntent(
+    depositIdr: number,
+    target: "other" | "pinned" = "other",
+  ) {
     const world = await makeWorld();
     const { linkId, intentId } = await seedLinkedIntent(world, 40_000);
     await post(world, paymentPaid(world, intentId, 40_000));
-    const other = await seedLinkedIntent(world, depositIdr);
+    const other =
+      target === "pinned"
+        ? { linkId, intentId }
+        : await seedLinkedIntent(world, depositIdr);
     const orderUlid = createUlid();
     const sale = {
       ...SALE,
@@ -1352,23 +1383,24 @@ describe("legend-ljs6i residual gateway part of a refund without source evidence
       }),
     );
     expectBalancedLines(await linesOf(world, first.journalEntryId));
-    return { world, orderUlid };
+    return { world, orderUlid, other, firstId };
   }
 
-  it("ARR-15a deposit part D (15k) of an earlier refund on ANOTHER intent, linked payment refund 'failed', counts as owed against the pinned 40k intent: a later payload-only refund of 30k (15k + 30k > 40k) parks, no journal", async () => {
+  it("ARR-15a deposit part D (15k) of an earlier refund on ANOTHER intent, linked payment refund 'failed', does not draw on the pinned 40k intent: a later payload-only refund of 30k posts to customer_deposit 30k, no gateway_clearing, no park", async () => {
     errorSpy.mockImplementation(() => {});
     const { world, orderUlid } = await seedEarlierDepositOnOtherIntent(15_000);
 
     const secondId = randomUUID();
-    await expectParkedNoJournal(
+    const second = await post(
       world,
       orderRefunded(world, orderUlid, secondId, {
         grossSalesIdr: 30_000,
         pbjtIdr: 0,
         lines: [{ method: "qris", amountIdr: 30_000 }],
       }),
-      secondId,
     );
+    await expectPostedToDeposit(world, second.journalEntryId, secondId, 30_000);
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 
   it("ARR-15b same setup, D (15k) still fits: a later payload-only refund of 20k on the pinned 40k intent (15k + 20k <= 40k) posts to customer_deposit, no park", async () => {
@@ -1384,13 +1416,261 @@ describe("legend-ljs6i residual gateway part of a refund without source evidence
         lines: [{ method: "qris", amountIdr: 20_000 }],
       }),
     );
-    const secondLines = await linesOf(world, second.journalEntryId);
-    expectBalancedLines(secondLines);
-    expect(creditOf(secondLines, "customer_deposit")).toBe(20_000);
-    expect(creditOf(secondLines, "gateway_clearing")).toBe(0);
-    expect(
-      await parkedOf(world.tenant, `aj:order-refund:${secondId}`),
-    ).toHaveLength(0);
+    await expectPostedToDeposit(world, second.journalEntryId, secondId, 20_000);
+  });
+
+  // legend-xiz1p: an earlier POS refund LINE (not a deposit) on another intent X
+  // with a failed linked refund. Same key rule: it draws on X, not the pinned one.
+  async function seedEarlierLineOnOtherIntent(lineIdr: number) {
+    const world = await makeWorld();
+    const { linkId, intentId } = await seedLinkedIntent(world, 40_000);
+    await post(world, paymentPaid(world, intentId, 40_000));
+    const other = await seedLinkedIntent(world, lineIdr);
+    await post(world, paymentPaid(world, other.intentId, lineIdr));
+    const orderUlid = createUlid();
+    const sale = {
+      ...SALE,
+      tenders: [{ method: "cash" as const, amountIdr: 55_000 }],
+    };
+    await seedPosOrder(world, orderUlid, sale, { linkId, intentId });
+    await post(world, orderPaid(world, orderUlid, sale));
+
+    const firstId = await seedPosRefund(world, orderUlid, [
+      {
+        method: "qris",
+        amountIdr: lineIdr,
+        paymentIntentId: other.intentId,
+        tenderId: randomUUID(),
+      },
+    ]);
+    await seedLinkedPaymentRefund(
+      world,
+      firstId,
+      other.intentId,
+      lineIdr,
+      "failed",
+    );
+    const first = await post(
+      world,
+      orderRefunded(world, orderUlid, firstId, {
+        grossSalesIdr: lineIdr,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: lineIdr }],
+      }),
+    );
+    expectBalancedLines(await linesOf(world, first.journalEntryId));
+    return { world, orderUlid };
+  }
+
+  it("ARR-16 an earlier POS refund LINE (15k) on ANOTHER intent with a failed linked refund does not draw on the pinned 40k intent: a later payload-only refund of 30k (fits the pinned intent alone) posts to customer_deposit, no park", async () => {
+    errorSpy.mockImplementation(() => {});
+    const { world, orderUlid } = await seedEarlierLineOnOtherIntent(15_000);
+
+    const secondId = randomUUID();
+    const second = await post(
+      world,
+      orderRefunded(world, orderUlid, secondId, {
+        grossSalesIdr: 30_000,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: 30_000 }],
+      }),
+    );
+    await expectPostedToDeposit(world, second.journalEntryId, secondId, 30_000);
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  // legend-xiz1p: ARR-15 setup plus an admin re-file: a second, non-failed
+  // payment refund on X under ANOTHER idempotency key (K2).
+  async function seedEarlierDepositOnOtherIntentWithRefile() {
+    const seeded = await seedEarlierDepositOnOtherIntent(15_000);
+    const refilePaymentRefundId = randomUUID();
+    await owner.query(
+      `INSERT INTO payment_refunds
+         (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+          requested_by, approved_by, decided_at, completed_at)
+       VALUES ($1, $2, $3, $4, $5, 'Pengembalian dana', 'completed', 'requester', 'approver', $6, $6)`,
+      [
+        refilePaymentRefundId,
+        seeded.world.tenant.id,
+        seeded.world.outletId,
+        seeded.other.intentId,
+        15_000,
+        DAY,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO payment_admin_idempotency (tenant_id, key, fingerprint, response)
+       VALUES ($1, $2, $3, $4::jsonb)`,
+      [
+        seeded.world.tenant.id,
+        `pos-refund-gateway-refile:${seeded.firstId}:${seeded.other.intentId}:2`,
+        "1".repeat(64),
+        JSON.stringify({ refundId: refilePaymentRefundId }),
+      ],
+    );
+    return seeded;
+  }
+
+  it("ARR-17 re-file under ANOTHER key: failed deposit D (15k) on other intent X at key K1 plus a second non-failed payment refund on X under key K2 (admin re-file) still do not draw on the pinned 40k intent: a later payload-only refund of 30k posts, customer_deposit not above the pinned intent", async () => {
+    errorSpy.mockImplementation(() => {});
+    const { world, orderUlid } =
+      await seedEarlierDepositOnOtherIntentWithRefile();
+
+    const secondId = randomUUID();
+    const second = await post(
+      world,
+      orderRefunded(world, orderUlid, secondId, {
+        grossSalesIdr: 30_000,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: 30_000 }],
+      }),
+    );
+    await expectPostedToDeposit(world, second.journalEntryId, secondId, 30_000);
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("ARR-18a control, no overpay: deposit D (15k) of an earlier refund on the PINNED intent itself, linked refund 'failed': a later payload-only refund of 30k (15k + 30k > 40k) still parks, no journal", async () => {
+    errorSpy.mockImplementation(() => {});
+    const { world, orderUlid } = await seedEarlierDepositOnOtherIntent(
+      15_000,
+      "pinned",
+    );
+
+    const secondId = randomUUID();
+    await expectParkedNoJournal(
+      world,
+      orderRefunded(world, orderUlid, secondId, {
+        grossSalesIdr: 30_000,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: 30_000 }],
+      }),
+      secondId,
+    );
+  });
+
+  it("ARR-18b same pinned intent, D (15k) still fits: a later payload-only refund of 20k (15k + 20k <= 40k) posts to customer_deposit", async () => {
+    errorSpy.mockImplementation(() => {});
+    const { world, orderUlid } = await seedEarlierDepositOnOtherIntent(
+      15_000,
+      "pinned",
+    );
+
+    const secondId = randomUUID();
+    const second = await post(
+      world,
+      orderRefunded(world, orderUlid, secondId, {
+        grossSalesIdr: 20_000,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: 20_000 }],
+      }),
+    );
+    await expectPostedToDeposit(
+      world,
+      second.journalEntryId,
+      secondId,
+      20_000,
+      15_000,
+    );
+  });
+
+  // legend-xiz1p: line 20k on the PINNED intent + deposit 15k on other intent X,
+  // both linked refunds 'failed'. Only the 20k counts against the pinned 40k.
+  async function seedLinePinnedPlusDepositOther() {
+    const world = await makeWorld();
+    const { linkId, intentId } = await seedLinkedIntent(world, 40_000);
+    await post(world, paymentPaid(world, intentId, 40_000));
+    const other = await seedLinkedIntent(world, 15_000);
+    await post(world, paymentPaid(world, other.intentId, 15_000));
+    const orderUlid = createUlid();
+    // A 70k order: after the earlier 35k, the order itself still has room for
+    // the later 25k, so only the pinned-intent bound can park it.
+    const sale = {
+      grossSalesIdr: 70_000,
+      pbjtIdr: 0,
+      tenders: [{ method: "cash" as const, amountIdr: 70_000 }],
+    };
+    await seedPosOrder(world, orderUlid, sale, { linkId, intentId });
+    await post(world, orderPaid(world, orderUlid, sale));
+
+    const firstId = await seedPosRefund(world, orderUlid, [
+      {
+        method: "qris",
+        amountIdr: 20_000,
+        paymentIntentId: intentId,
+        tenderId: randomUUID(),
+      },
+    ]);
+    await owner.query(
+      `INSERT INTO pos_deposit_refunds
+         (tenant_id, outlet_id, order_id, pos_refund_id, payment_intent_id, amount_idr, released_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        world.tenant.id,
+        world.outletId,
+        ulidToUuid(orderUlid),
+        firstId,
+        other.intentId,
+        15_000,
+        DAY,
+      ],
+    );
+    await seedLinkedPaymentRefund(world, firstId, intentId, 20_000, "failed");
+    await seedLinkedPaymentRefund(
+      world,
+      firstId,
+      other.intentId,
+      15_000,
+      "failed",
+    );
+    const first = await post(
+      world,
+      orderRefunded(world, orderUlid, firstId, {
+        grossSalesIdr: 35_000,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: 35_000 }],
+      }),
+    );
+    expectBalancedLines(await linesOf(world, first.journalEntryId));
+    return { world, orderUlid };
+  }
+
+  it("ARR-19a line 20k on the pinned 40k intent + deposit 15k on another intent (both failed): only the 20k counts, a later payload-only refund of 20k (20k + 20k <= 40k) posts to customer_deposit", async () => {
+    errorSpy.mockImplementation(() => {});
+    const { world, orderUlid } = await seedLinePinnedPlusDepositOther();
+
+    const secondId = randomUUID();
+    const second = await post(
+      world,
+      orderRefunded(world, orderUlid, secondId, {
+        grossSalesIdr: 20_000,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: 20_000 }],
+      }),
+    );
+    await expectPostedToDeposit(
+      world,
+      second.journalEntryId,
+      secondId,
+      20_000,
+      20_000,
+    );
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("ARR-19b same setup: a later payload-only refund of 25k (20k + 25k > 40k) parks, no journal", async () => {
+    errorSpy.mockImplementation(() => {});
+    const { world, orderUlid } = await seedLinePinnedPlusDepositOther();
+
+    const secondId = randomUUID();
+    await expectParkedNoJournal(
+      world,
+      orderRefunded(world, orderUlid, secondId, {
+        grossSalesIdr: 25_000,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: 25_000 }],
+      }),
+      secondId,
+    );
   });
 
   it("ARR-10 an order with an intentless gateway tender (30k) pinned to a paid 55k intent: a refund claiming 55k gateway is not covered by the pin, it parks with no journal", async () => {

@@ -941,7 +941,12 @@ async function refundGatewaySplitOf(
   // Earlier gateway lines with an intent, by their pos-refund-gateway key: one
   // whose payment refund failed (or was never linked) is still owed
   // (legend-0dgi1).
-  const earlierIntentWant = new Map<string, number>();
+  // The intent is kept beside the want: only the pinned intent's own keys
+  // bound the pin (legend-xiz1p).
+  const earlierIntentWant = new Map<
+    string,
+    { intentId: string; wantIdr: number }
+  >();
   let unprovenResidual = false;
   let tenderNullIdr = 0;
   if (recovery[0]) {
@@ -979,10 +984,10 @@ async function refundGatewaySplitOf(
           if (!line.paymentIntentId) earlierGatewayIdr += want;
           else {
             const linkKey = `pos-refund-gateway:${posRefundId}:${line.paymentIntentId}`;
-            earlierIntentWant.set(
-              linkKey,
-              (earlierIntentWant.get(linkKey) ?? 0) + want,
-            );
+            earlierIntentWant.set(linkKey, {
+              intentId: line.paymentIntentId,
+              wantIdr: (earlierIntentWant.get(linkKey)?.wantIdr ?? 0) + want,
+            });
           }
         }
         const named = line.tenderId
@@ -1047,10 +1052,12 @@ async function refundGatewaySplitOf(
         );
       for (const row of earlierDeposits) {
         const linkKey = `pos-refund-gateway:${row.posRefundId}:${row.intentId}`;
-        earlierIntentWant.set(
-          linkKey,
-          (earlierIntentWant.get(linkKey) ?? 0) + Number(row.amountIdr),
-        );
+        earlierIntentWant.set(linkKey, {
+          intentId: row.intentId,
+          wantIdr:
+            (earlierIntentWant.get(linkKey)?.wantIdr ?? 0) +
+            Number(row.amountIdr),
+        });
       }
     }
     // A payload without lines (stored before they were kept): its gateway
@@ -1143,10 +1150,17 @@ async function refundGatewaySplitOf(
                 ne(paymentRefunds.status, "failed"),
               ),
             );
-          // An earlier POS refund line with an intent counts unless a
-          // non-failed payment refund is linked to it (already in `filed`).
+          // An earlier POS refund line or DP return on the PINNED intent counts
+          // unless a non-failed payment refund is linked to it (already in
+          // `filed`). One on another intent is refunded from that intent, so it
+          // cannot draw on this one (legend-xiz1p). A refund re-filed under
+          // another key on the pinned intent stays counted twice: stricter.
           let earlierUnfiledIdr = 0;
-          if (!recoveryWithoutSource && earlierIntentWant.size > 0) {
+          const pinnedWant = new Map<string, number>();
+          for (const [linkKey, entry] of earlierIntentWant)
+            if (entry.intentId === pinned.intentId)
+              pinnedWant.set(linkKey, entry.wantIdr);
+          if (!recoveryWithoutSource && pinnedWant.size > 0) {
             const linked = await tx
               .select({
                 key: paymentAdminIdempotency.key,
@@ -1163,9 +1177,9 @@ async function refundGatewaySplitOf(
               .where(
                 and(
                   eq(paymentAdminIdempotency.tenantId, tenantId),
-                  inArray(paymentAdminIdempotency.key, [
-                    ...earlierIntentWant.keys(),
-                  ]),
+                  inArray(paymentAdminIdempotency.key, [...pinnedWant.keys()]),
+                  // Only a refund filed on the pinned intent offsets its want.
+                  eq(paymentRefunds.paymentIntentId, pinned.intentId),
                   ne(paymentRefunds.status, "failed"),
                 ),
               );
@@ -1177,7 +1191,7 @@ async function refundGatewaySplitOf(
                 row.key,
                 (linkedIdr.get(row.key) ?? 0) + Number(row.amountIdr),
               );
-            for (const [linkKey, want] of earlierIntentWant)
+            for (const [linkKey, want] of pinnedWant)
               earlierUnfiledIdr += Math.max(
                 0,
                 want - (linkedIdr.get(linkKey) ?? 0),
