@@ -27,7 +27,9 @@
 //    CatalogMissingRefError, transient: the checkpoint stays). Assumption: its
 //    `code` is "CATALOG_MISSING_REF", as for the old missing-ref error.
 //  - A derived stream is skipped when its parent stream failed (menu_items and
-//    modifiers when stations failed, recipes when inventory_items failed): its
+//    modifiers when stations failed, recipes when inventory_items failed, and
+//    menu_items, modifiers and item_variants when recipes failed or were
+//    skipped, legend-3kdd): its
 //    error mentions CATALOG_PARENT_FAILED, nothing is fetched for it and its
 //    checkpoint does not move. Assumption: independent streams still run.
 //  - The cloud sends `stationId` on menu_items / modifiers only when the
@@ -252,6 +254,7 @@ const ORDER: Stream[] = [
   "stations",
   "printers",
   "inventory_items",
+  "recipes",
   "menu_categories",
   "modifier_groups",
   "modifiers",
@@ -259,7 +262,6 @@ const ORDER: Stream[] = [
   "item_variants",
   "menu_item_modifier_groups",
   "price_lists",
-  "recipes",
   "promotions",
   "vouchers",
 ];
@@ -267,6 +269,8 @@ const ORDER: Stream[] = [
 const TABLE_ORDER: Table[] = [
   "stations",
   "inventory_items",
+  "recipes",
+  "recipe_lines",
   "menu_categories",
   "modifier_groups",
   "modifiers",
@@ -275,8 +279,6 @@ const TABLE_ORDER: Table[] = [
   "menu_item_modifier_groups",
   "price_lists",
   "price_list_items",
-  "recipes",
-  "recipe_lines",
 ];
 
 // ---------------------------------------------------------------- helpers
@@ -1843,7 +1845,12 @@ describe("97p edge pull: resume and broken connection", () => {
     expect(
       await edge.rows("SELECT id FROM recipes WHERE id = $1", [ids.rec1]),
     ).toHaveLength(0);
-    expect(result.streams.menu_items?.error).toBeFalsy();
+    // 0374: menu rows may point at recipes (composite FK), so they wait for
+    // the recipes stream; a stream with no recipe link still runs.
+    expect(result.streams.menu_items?.error).toMatchObject({
+      code: "CATALOG_PARENT_FAILED",
+    });
+    expect(result.streams.menu_categories?.error).toBeFalsy();
     // The cloud now sends a reference the edge knows (inventory item arrived).
     data.recipes = [{ ...good[0]!, outputItemId: ids.inv1 }];
     const healed = await pullOk(cloud);
@@ -1908,9 +1915,20 @@ describe("97p edge pull: resume and broken connection", () => {
     const stored = await checkpointStreams();
     expect(stored).not.toContain("catalog:recipes");
     expect(stored).not.toContain("catalog:inventory_items");
-    // Streams that do not depend on inventory items ran.
-    expect(result.streams.menu_items?.error).toBeFalsy();
-    expect(stored).toContain("catalog:menu_items");
+    // menu_items, modifiers and item_variants point at recipes (legend-3kdd),
+    // so they are skipped too; streams that do not depend on recipes ran.
+    for (const stream of [
+      "menu_items",
+      "modifiers",
+      "item_variants",
+    ] as const) {
+      expect(errorText(result.streams[stream]?.error), stream).toContain(
+        "CATALOG_PARENT_FAILED",
+      );
+      expect(stored).not.toContain(`catalog:${stream}`);
+    }
+    expect(result.streams.menu_categories?.error).toBeFalsy();
+    expect(stored).toContain("catalog:menu_categories");
 
     cloud.heal();
     const healed = await pullOk(cloud);
@@ -2542,8 +2560,12 @@ describe("24318 stations and inventory_items streams", () => {
     expect(result.streams.inventory_items?.error).toBeTruthy();
     const stored = (await checkpoints()).map((r) => String(r.stream));
     expect(stored).not.toContain("catalog:inventory_items");
-    expect(result.streams.menu_items?.error).toBeFalsy();
-    expect(stored).toContain("catalog:menu_items");
+    // 0374: menu_items waits for recipes, which waits for inventory_items.
+    expect(result.streams.menu_items?.error).toMatchObject({
+      code: "CATALOG_PARENT_FAILED",
+    });
+    expect(result.streams.menu_categories?.error).toBeFalsy();
+    expect(stored).toContain("catalog:menu_categories");
   });
 
   it("a station of another outlet never leaks: menu_items and modifiers carry stationId only for stations of the credential's outlet, otherwise null", async () => {

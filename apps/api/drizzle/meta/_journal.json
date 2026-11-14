@@ -2479,6 +2479,13 @@
       "when": 1794629276111,
       "tag": "0367_payout_resolution_withdraw_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 374,
+      "version": "7",
+      "when": 1794629277111,
+      "tag": "0374_menu_recipe_fk",
+      "breakpoints": true
     }
   ]
 }

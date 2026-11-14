@@ -63,12 +63,16 @@ export const EDGE_CATALOG_SYNC_PATH = "/api/edge-sync/catalog";
 /**
  * Pull order. `stations` and `inventory_items` come first so the rows that
  * items, modifiers and recipes point to (`stationId`, `outputItemId`) already
- * exist on the edge when those streams are applied.
+ * exist on the edge when those streams are applied. `recipes` follow right
+ * after `inventory_items` and before `modifiers`, `menu_items` and
+ * `item_variants`: those carry `recipe_id` with a composite foreign key to
+ * `recipes` on the edge too (legend-3kdd).
  */
 export const CATALOG_SYNC_STREAMS = [
   "stations",
   "printers",
   "inventory_items",
+  "recipes",
   "menu_categories",
   "modifier_groups",
   "modifiers",
@@ -76,7 +80,6 @@ export const CATALOG_SYNC_STREAMS = [
   "item_variants",
   "menu_item_modifier_groups",
   "price_lists",
-  "recipes",
   "promotions",
   "vouchers",
 ] as const;
@@ -460,6 +463,7 @@ export const catalogSyncPageSchema = z.discriminatedUnion("stream", [
   pageOf("stations"),
   pageOf("printers"),
   pageOf("inventory_items"),
+  pageOf("recipes"),
   pageOf("menu_categories"),
   pageOf("modifier_groups"),
   pageOf("modifiers"),
@@ -467,7 +471,6 @@ export const catalogSyncPageSchema = z.discriminatedUnion("stream", [
   pageOf("item_variants"),
   pageOf("menu_item_modifier_groups"),
   pageOf("price_lists"),
-  pageOf("recipes"),
   pageOf("promotions"),
   pageOf("vouchers"),
 ]);

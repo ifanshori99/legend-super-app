@@ -15,8 +15,9 @@
 // live rows. Cloud remains the source of truth for master data (PRD §5
 // "Pembagian Sumber Kebenaran", cloud wins).
 //
-// Tables not owned by this bead yet (recipes, tax_rules, devices) are plain
-// UUID columns without a foreign key; their beads add the composite keys.
+// Tables not owned by this bead yet (tax_rules, devices) are plain UUID columns
+// without a foreign key; their beads add the composite keys. `recipe_id` on
+// menu_items, item_variants and modifiers references recipes (legend-3kdd).
 
 import { sql } from "drizzle-orm";
 import {
@@ -42,6 +43,7 @@ import type {
 import { idrColumn, businessDate } from "../columns";
 import { idr } from "@starter/shared/core";
 import { brands, outlets, tenants } from "./platform-org";
+import { recipes } from "./recipe";
 import { syncTxidColumn } from "./sync-txid";
 
 /** PRD §6 C: timestamps are TIMESTAMPTZ. */
@@ -186,7 +188,7 @@ export const menuItems = pgTable(
      */
     stationType: varchar("station_type", { length: 20 }),
     course: varchar("course", { length: 20 }),
-    /** WS-06 recipes (HPP and stock deduction); table not on main yet. */
+    /** WS-06 recipes (HPP and stock deduction). */
     recipeId: uuid("recipe_id"),
     /** WS-05 tax rules; table not on main yet. */
     taxRuleId: uuid("tax_rule_id"),
@@ -228,6 +230,11 @@ export const menuItems = pgTable(
       name: "menu_items_station_fk",
       columns: [table.tenantId, table.stationId],
       foreignColumns: [stations.tenantId, stations.id],
+    }),
+    foreignKey({
+      name: "menu_items_recipe_fk",
+      columns: [table.tenantId, table.recipeId],
+      foreignColumns: [recipes.tenantId, recipes.id],
     }),
     index("menu_items_category_order_idx").on(
       table.tenantId,
@@ -281,6 +288,11 @@ export const itemVariants = pgTable(
       name: "item_variants_item_fk",
       columns: [table.tenantId, table.menuItemId],
       foreignColumns: [menuItems.tenantId, menuItems.id],
+    }),
+    foreignKey({
+      name: "item_variants_recipe_fk",
+      columns: [table.tenantId, table.recipeId],
+      foreignColumns: [recipes.tenantId, recipes.id],
     }),
     uniqueIndex("item_variants_item_name_key")
       .on(table.tenantId, table.menuItemId, table.name)
@@ -360,6 +372,11 @@ export const modifiers = pgTable(
       name: "modifiers_station_fk",
       columns: [table.tenantId, table.stationId],
       foreignColumns: [stations.tenantId, stations.id],
+    }),
+    foreignKey({
+      name: "modifiers_recipe_fk",
+      columns: [table.tenantId, table.recipeId],
+      foreignColumns: [recipes.tenantId, recipes.id],
     }),
     uniqueIndex("modifiers_group_name_key")
       .on(table.tenantId, table.groupId, table.name)

@@ -18,7 +18,8 @@
 //   local `sync_txid` stamps (in the first page's transaction): stamps written
 //   by local transactions are not comparable with the cloud's.
 // - A stream whose rows another stream's rows point at (stations for
-//   menu_items and modifiers, inventory_items for recipes) that failed in this
+//   menu_items and modifiers, inventory_items for recipes, recipes for
+//   menu_items, modifiers and item_variants) that failed in this
 //   pull makes those streams skip the pull (error `CATALOG_PARENT_FAILED`,
 //   checkpoint untouched); a reference to a row not local yet is refused as
 //   transient (`CATALOG_MISSING_REF`) by the apply anyway.
@@ -95,8 +96,9 @@ type PendingCheckpoint =
 const PARENT_STREAMS: Readonly<
   Partial<Record<CatalogSyncStream, readonly CatalogSyncStream[]>>
 > = {
-  menu_items: ["stations"],
-  modifiers: ["stations"],
+  menu_items: ["stations", "recipes"],
+  modifiers: ["stations", "recipes"],
+  item_variants: ["recipes"],
   recipes: ["inventory_items"],
   vouchers: ["promotions"],
 };
