@@ -2416,6 +2416,13 @@
       "when": 1794672234247,
       "tag": "0379_panic_push_second_opinion",
       "breakpoints": true
+    },
+    {
+      "idx": 359,
+      "version": "7",
+      "when": 1794680000000,
+      "tag": "0380_push_devices_cross_tenant",
+      "breakpoints": true
     }
   ]
 }

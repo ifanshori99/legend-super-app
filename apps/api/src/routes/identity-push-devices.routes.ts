@@ -1,14 +1,13 @@
 // legend-gchkf: the owner's panic-alarm devices under /api/identity/push-devices
 // (contract `listPushDevices` / `revokePushDevice` in @starter/shared/identity).
-// Account-level and own rows only: the user id comes from the verified session,
-// the tenant from the session or the registered domain (TEN-02), never from
-// the path or body.
+// Account-level and own rows only, in every tenant: the owner is derived from
+// the verified session inside the database functions, never from the path or
+// body.
 
 import { Router, type Request } from "express";
 import { pushDeviceParamsSchema } from "@starter/shared/identity";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { requireTrustedOrigin } from "../middleware/origin";
-import { findTenantContext } from "../middleware/tenant";
 import {
   listOwnPushDevices,
   revokeOwnPushDevice,
@@ -21,7 +20,6 @@ function scopeOf(req: Request) {
   return {
     userId: auth.user.id,
     currentSessionId: auth.session.id,
-    domainTenantId: findTenantContext(req)?.tenantId ?? null,
   };
 }
 
