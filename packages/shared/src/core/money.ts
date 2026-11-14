@@ -30,7 +30,11 @@ export function idr(amount: number): Idr {
   return (amount === 0 ? 0 : amount) as Idr;
 }
 
-function fromBigInt(value: bigint): Idr {
+/**
+ * Exact bigint -> Idr (no float, no rounding). Throws RangeError beyond the
+ * safe-integer range instead of silently losing digits.
+ */
+export function idrFromBigInt(value: bigint): Idr {
   if (
     value > BigInt(Number.MAX_SAFE_INTEGER) ||
     value < BigInt(Number.MIN_SAFE_INTEGER)
@@ -93,11 +97,11 @@ export function divideRounded(
 }
 
 export function addIdr(a: Idr, b: Idr): Idr {
-  return fromBigInt(BigInt(a) + BigInt(b));
+  return idrFromBigInt(BigInt(a) + BigInt(b));
 }
 
 export function subtractIdr(a: Idr, b: Idr): Idr {
-  return fromBigInt(BigInt(a) - BigInt(b));
+  return idrFromBigInt(BigInt(a) - BigInt(b));
 }
 
 export function negateIdr(a: Idr): Idr {
@@ -107,12 +111,12 @@ export function negateIdr(a: Idr): Idr {
 export function sumIdr(amounts: readonly Idr[]): Idr {
   let total = 0n;
   for (const amount of amounts) total += BigInt(amount);
-  return fromBigInt(total);
+  return idrFromBigInt(total);
 }
 
 /** amount x whole-number factor (e.g. unit price x quantity). */
 export function multiplyIdr(amount: Idr, factor: number): Idr {
-  return fromBigInt(BigInt(amount) * integer(factor, "Factor"));
+  return idrFromBigInt(BigInt(amount) * integer(factor, "Factor"));
 }
 
 /** amount x numerator / denominator, rounded. E.g. 12% x 11/12 DPP. */
@@ -122,7 +126,7 @@ export function applyRatio(
   denominator: number,
   mode: RoundingMode,
 ): Idr {
-  return fromBigInt(
+  return idrFromBigInt(
     divideRounded(
       BigInt(amount) * integer(numerator, "Numerator"),
       integer(denominator, "Denominator"),
@@ -182,7 +186,9 @@ export function roundToIncrement(
       `Rounding increment must be a positive integer: ${increment}`,
     );
   const step = BigInt(increment);
-  const rounded = fromBigInt(divideRounded(BigInt(amount), step, mode) * step);
+  const rounded = idrFromBigInt(
+    divideRounded(BigInt(amount), step, mode) * step,
+  );
   return { amount: rounded, adjustment: subtractIdr(rounded, amount) };
 }
 
@@ -220,7 +226,7 @@ export function allocateIdr(total: Idr, weights: readonly number[]): Idr[] {
     parts[index] += 1n;
     leftover -= 1n;
   }
-  return parts.map((part) => fromBigInt(negative ? -part : part));
+  return parts.map((part) => idrFromBigInt(negative ? -part : part));
 }
 
 /** Equal split (split bill per person), earlier parts take the extra rupiah. */
@@ -280,7 +286,7 @@ export function extendCostIdr(
   unitCostIdr: Decimal4,
   mode: RoundingMode,
 ): Idr {
-  return fromBigInt(
+  return idrFromBigInt(
     divideRounded(
       parseDecimal4(quantity) * parseDecimal4(unitCostIdr),
       SCALE * SCALE,
