@@ -5484,3 +5484,10 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Guard uang (temuan architect): sisa DP dari reservasi `source='website'` tidak memakai profil booking sebagai kandidat kredit (nomor tidak terverifikasi); hanya profil bill. Test di `reservation-deposit-remainder.test.ts`.
 - Risiko diterima (keputusan CTO): nomor salah ketik menerima pesan WA/konfirmasi booking orang lain.
 - Gerbang: 18 berkas test terarah (446 test) hijau, typecheck api hijau, `db:generate` kosong, check-journal ok, prettier+eslint hijau. Merah-dulu terbukti di base: T1 (200 vs 409), T2 (3 test), T3 (4 test), R1b (2 test).
+
+## 2026-11-14: Outbox dead alert fairness (legend-o2iul)
+
+- Cabang `fix/outbox-dead-alert-fairness`, dasar `origin/milestone/m1` (`9b8433f69`). Cursor putaran menyimpan batas ID tertinggi agar kedatangan head baru tidak menunda retry alarm lama tanpa batas; batas 100 head dan deduplikasi advisory lock tetap berlaku. Tidak ada migrasi.
+- Bukti gagal-dulu: test retry dengan head baru tiap sweep gagal karena alarm lama hanya dicoba sekali (harus dua kali); 17 test lama hijau. Dua regresi kini mencakup 101 head baru per sweep dan sweep bersamaan atas alarm belum terkirim.
+- Review independen satu subagent bersih. ESLint dan Prettier dua file TypeScript hijau; `LEGEND_TEST_FILES=src/test/edge-event-class.test.ts heavy pnpm test` hijau 19/19 (34,91 detik); `heavy pnpm --filter @starter/api typecheck` hijau (satu run). Gate penuh/build tidak dijalankan sesuai brief terarah; milik merge train. Prettier `docs/PROGRESS.md` merah juga pada versi HEAD/base; format dokumen lama tidak diubah.
+- Subagent: total 4 (2 Explore, 1 test-writer, 1 reviewer), puncak 3 bersamaan; token heavy dipegang parent. session-usage.py tidak menemukan transkrip Codex; parallel-report hanya membaca sesi Claude, biaya/token dan rata-rata Codex tidak tersedia.
