@@ -1659,6 +1659,7 @@ test("POS-04 order.paid and order.refunded payloads post balanced WS-07 journals
     pbjtIdr: 5_460,
     refundCashIdr: 50_060,
     refundGatewayIdr: 0,
+    refundGatewayClearingIdr: 0,
     refundEdcIdr: 0,
     refundPointsIdr: 10_000,
   };

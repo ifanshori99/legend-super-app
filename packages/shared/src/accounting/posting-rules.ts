@@ -225,6 +225,9 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["cash_on_hand", "credit", "refundCashIdr"],
       // Owed to the guest until the gateway pays it out (payment.refunded).
       ["customer_deposit", "credit", "refundGatewayIdr"],
+      // legend-2jyr: the gateway part no payment refund pays out later (no
+      // intent, receipt never booked) reverses the sale's clearing debit.
+      ["gateway_clearing", "credit", "refundGatewayClearingIdr"],
       ["edc_clearing", "credit", "refundEdcIdr"],
       // Points returned to the member restore the liability the sale used
       // (mirror of the order.paid loyalty_liability debit, §3.20).
@@ -269,6 +272,7 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["sales_discount", "credit", "discountIdr"],
       ["cash_on_hand", "credit", "refundCashIdr"],
       ["customer_deposit", "credit", "refundGatewayIdr"],
+      ["gateway_clearing", "credit", "refundGatewayClearingIdr"],
       ["edc_clearing", "credit", "refundEdcIdr"],
       ["loyalty_liability", "credit", "refundPointsIdr"],
     ],
@@ -672,6 +676,29 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     [
       ["cash_on_hand", "debit", "differenceIdr"],
       ["cash_over_short", "credit", "differenceIdr"],
+    ],
+  ),
+  // legend-89pn: drawer cash that does not pass through a sale. A drop (drawer
+  // to safe) is still the outlet's cash and has no rule; a cash movement held
+  // for approval is never booked (the consumer ignores it).
+  rule(
+    { event: "cash_movement.recorded", variant: "cash_out" },
+    "cashier_shift",
+    "Kas keluar kasir",
+    "§3.11 POS Kasir (kas masuk dan keluar dengan alasan); §4 E",
+    [
+      ["cash_out_expense", "debit", "amountIdr"],
+      ["cash_on_hand", "credit", "amountIdr"],
+    ],
+  ),
+  rule(
+    { event: "cash_movement.recorded", variant: "cash_in" },
+    "cashier_shift",
+    "Kas masuk kasir",
+    "§3.11 POS Kasir (kas masuk dan keluar dengan alasan); §4 E",
+    [
+      ["cash_on_hand", "debit", "amountIdr"],
+      ["cash_in_clearing", "credit", "amountIdr"],
     ],
   ),
   rule(

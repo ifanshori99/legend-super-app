@@ -192,6 +192,11 @@ export const POSTING_ACCOUNT_ROLES = {
   loyalty_liability: "liability",
   /** Customer advances: DP held, late or double gateway payments, refunds awaiting payout. */
   customer_deposit: "liability",
+  /**
+   * Cash put into a drawer outside a sale (kas masuk, legend-89pn): held as a
+   * liability until finance classifies it, never as income.
+   */
+  cash_in_clearing: "liability",
   tax_payable_pbjt: "liability",
   /** PPN output and other taxes of a sale, split from PBJT per tax type (legend-xa9bc). */
   tax_payable_ppn: "liability",
@@ -234,6 +239,8 @@ export const POSTING_ACCOUNT_ROLES = {
   bank_charges: "expense",
   depreciation_expense: "expense",
   service_expense: "expense",
+  /** Cash taken out of a drawer with a free-text reason (kas keluar, legend-89pn). */
+  cash_out_expense: "expense",
   cash_over_short: "expense",
   /**
    * Custom payroll deductions (koperasi dues etc.). Default is salary_expense's
@@ -424,6 +431,13 @@ const standardRows: Row[] = [
     "2100",
     ["customer_deposit"],
   ],
+  [
+    "2108",
+    "Kas Masuk Belum Diklasifikasi",
+    "current_liability",
+    "2100",
+    ["cash_in_clearing"],
+  ],
   ["2200", "Utang Pajak", "current_liability", null],
   ["2201", "Utang PBJT", "current_liability", "2200", ["tax_payable_pbjt"]],
   ["2202", "Utang PPh 21", "current_liability", "2200", ["pph21_payable"]],
@@ -550,6 +564,13 @@ const standardRows: Row[] = [
     "operating_expense",
     "6100",
     ["pph21_borne_expense"],
+  ],
+  [
+    "6112",
+    "Beban Kas Keluar Kasir",
+    "operating_expense",
+    "6100",
+    ["cash_out_expense"],
   ],
   ["7100", "Pendapatan Lain-lain", "other_income", null],
   ["7101", "Pembulatan Kas", "other_income", "7100", ["rounding"]],

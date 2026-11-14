@@ -781,6 +781,20 @@ async function wasteByDate(world: World, sourceId: string) {
   return byDate;
 }
 
+/** The late-adjustment marker of each journal of a source, by entry date. */
+async function lateFromByDate(world: World, sourceId: string) {
+  const { rows } = await owner.query<{
+    entry_date: string;
+    late_adjustment_from: string | null;
+  }>(
+    `SELECT entry_date::text AS entry_date, late_adjustment_from::text AS late_adjustment_from
+       FROM journal_entries
+      WHERE tenant_id = $1 AND legal_entity_id = $2 AND source_id = $3`,
+    [tenantId, world.entity, sourceId],
+  );
+  return new Map(rows.map((row) => [row.entry_date, row.late_adjustment_from]));
+}
+
 describe("§3.19 a waste log across two business dates keeps its rupiah (IT-68)", () => {
   it("INV-GL-WASTE-02 rows of Rp0,4 + Rp0,4 on two business dates journal exactly the log value of Rp1, once, on one date", async () => {
     const world = await makeWorld();
@@ -817,7 +831,7 @@ describe("§3.19 a waste log across two business dates keeps its rupiah (IT-68)"
     expect(await journalsOf(world, log.logId)).toHaveLength(1);
   });
 
-  it("INV-GL-WASTE-03 a closed period parks the posting; after reopening and the sweep the journals still add up to the log value", async () => {
+  it("INV-GL-WASTE-03 a closed period posts the waste on the first open day as a late adjustment; the journals still add up to the log value", async () => {
     const world = await makeWorld();
     const log = await straddlingWasteLog(world);
     // 2026-09 holds the date that is allocated the rupiah: close it.
@@ -828,36 +842,36 @@ describe("§3.19 a waste log across two business dates keeps its rupiah (IT-68)"
     );
 
     const result = await deliverRow(log.rowIds[0]!);
-    expect(result).toEqual({ status: "blocked", code: "PERIOD_CLOSED" });
-    // Never more than the log value while parked, and the block is recorded.
-    const parked = [...(await wasteByDate(world, log.logId)).values()].reduce(
-      (sum, v) => sum + v,
-      0,
-    );
-    expect(parked).toBeLessThanOrEqual(log.valueIdr);
-    expect(await blockedOf("waste_log", log.logId)).toHaveLength(1);
+    expect(result.status).toBe("posted");
+    expect(await blockedOf("waste_log", log.logId)).toHaveLength(0);
 
-    await owner.query(
-      `UPDATE fiscal_periods
-          SET status = 'open', closed_by = NULL, closed_at = NULL, version = version + 1
-        WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = '2026-09'`,
-      [tenantId, world.entity],
-    );
-    await sweep(1);
-    await sweep(2);
-
+    // Nothing lands in the closed period; the rupiah sits on the first open
+    // day, flagged with its natural date, and adds up to the log value.
     const byDate = await wasteByDate(world, log.logId);
+    expect([...byDate.entries()]).toEqual([["2026-10-01", 1]]);
     expect([...byDate.values()].reduce((sum, v) => sum + v, 0)).toBe(
       log.valueIdr,
     );
-    // Same amount on the same date as an undisturbed posting would give.
-    expect([...byDate.entries()]).toEqual([["2026-09-30", 1]]);
+    expect([...(await lateFromByDate(world, log.logId)).entries()]).toEqual([
+      ["2026-10-01", "2026-09-30"],
+    ]);
+    const entries = await journalsOf(world, log.logId);
+    expect(entries).toHaveLength(1);
+    expect(await linesOf(world, entries[0]!.id)).toEqual([
+      { role: "inventory", debit: 0, credit: 1 },
+      { role: "waste_expense", debit: 1, credit: 0 },
+    ]);
     expect(await trackingOf(log.logId)).toHaveLength(2);
-    expect(await blockedOf("waste_log", log.logId)).toHaveLength(0);
-    // Delivering again finds nothing left.
+
+    // A replay of either row's event and a sweep post nothing more.
+    await sweep(1);
     expect(await deliverRow(log.rowIds[1]!)).toEqual({
       status: "already_posted",
     });
+    expect(await deliverRow(log.rowIds[0]!)).toEqual({
+      status: "already_posted",
+    });
+    expect(await journalsOf(world, log.logId)).toHaveLength(1);
   });
 });
 
@@ -1081,8 +1095,8 @@ describe("§3.19 delivery is idempotent", () => {
 });
 
 describe("§3.19 a posting that cannot happen is blocked, not lost (ACC-02)", () => {
-  it("INV-GL-PERIOD-01 a closed period blocks the delivery without throwing; the outer transaction commits; after reopening the sweep posts once", async () => {
-    const world = await makeWorld();
+  it("INV-GL-PERIOD-01 a closed period no longer parks; a blocked delivery (missing mapping) does not throw, the outer transaction commits, and after mapping the sweep posts once on the first open day", async () => {
+    const world = await makeWorld({ unmapped: ["inventory"] });
     const orderId = createUlid();
     const item = await insertItem("Kopi");
     await receive(world, item, "5.0000", "1000.0000");
@@ -1107,21 +1121,24 @@ describe("§3.19 a posting that cannot happen is blocked, not lost (ACC-02)", ()
       );
       return outcome;
     });
-    expect(result).toEqual({ status: "blocked", code: "PERIOD_CLOSED" });
+    expect(result).toEqual({
+      status: "blocked",
+      code: "ACCOUNT_MAPPING_MISSING",
+    });
     expect(await markerExists(before)).toBe(true);
     expect(await markerExists(after)).toBe(true);
     expect(await journalCount(world)).toBe(0);
     expect(await trackingOf(orderId)).toHaveLength(0);
     const blocked = await blockedOf("order", orderId);
     expect(blocked).toHaveLength(1);
-    expect(blocked[0]!.error_code).toBe("PERIOD_CLOSED");
+    expect(blocked[0]!.error_code).toBe("ACCOUNT_MAPPING_MISSING");
     const attempts = blocked[0]!.attempts;
 
     // A sweep right now skips the fresh block: nothing is counted.
     await retryBlockedInventoryGl(context(), NOW);
     expect((await blockedOf("order", orderId))[0]!.attempts).toBe(attempts);
 
-    // Still closed after the retry window: the sweep keeps it blocked and
+    // Still unmapped after the retry window: the sweep keeps it blocked and
     // counts the attempt.
     await sweep(1);
     const stillBlocked = await blockedOf("order", orderId);
@@ -1129,18 +1146,18 @@ describe("§3.19 a posting that cannot happen is blocked, not lost (ACC-02)", ()
     expect(stillBlocked[0]!.attempts).toBeGreaterThan(attempts);
     expect(await journalCount(world)).toBe(0);
 
-    await owner.query(
-      `UPDATE fiscal_periods
-          SET status = 'open', closed_by = NULL, closed_at = NULL, version = version + 1
-        WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = '2026-10'`,
-      [tenantId, world.entity],
-    );
+    await mapRole(world.entity, "inventory", world.accounts.inventory);
     await sweep(2);
     await sweep(3);
 
+    // Posted once, on the first open day, flagged with the sale date; nothing
+    // in the closed period.
     const entries = await journalsOf(world, orderId);
     expect(entries).toHaveLength(1);
-    expect(entries[0]!.entry_date).toBe("2026-10-15");
+    expect(entries[0]!.entry_date).toBe("2026-11-01");
+    expect([...(await lateFromByDate(world, orderId)).entries()]).toEqual([
+      ["2026-11-01", "2026-10-15"],
+    ]);
     expect(await linesOf(world, entries[0]!.id)).toEqual([
       { role: "cogs", debit: 2000, credit: 0 },
       { role: "inventory", debit: 0, credit: 2000 },
@@ -1205,25 +1222,14 @@ describe("§3.19 a posting that cannot happen is blocked, not lost (ACC-02)", ()
 
 describe("§3.19 the accounting module gate (TEN-05)", () => {
   it("INV-GL-MODULE-01 with accounting off the delivery and the sweep ignore the tenant and write nothing; switched on again they post", async () => {
-    const world = await makeWorld();
+    const world = await makeWorld({ unmapped: ["inventory"] });
     const item = await insertItem("Kopi");
     await receive(world, item, "9.0000", "1000.0000");
     const blockedOrder = createUlid();
     const freshOrder = createUlid();
-    const closer = randomUUID();
-    await owner.query(
-      `UPDATE fiscal_periods SET status = 'closed', closed_by = $3, closed_at = now(), version = version + 1
-        WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = '2026-10'`,
-      [tenantId, world.entity, closer],
-    );
     const first = await sellOrder(world, blockedOrder, item, "-1.0000");
     expect((await deliver(first.event)).status).toBe("blocked");
-    await owner.query(
-      `UPDATE fiscal_periods
-          SET status = 'open', closed_by = NULL, closed_at = NULL, version = version + 1
-        WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = '2026-10'`,
-      [tenantId, world.entity],
-    );
+    await mapRole(world.entity, "inventory", world.accounts.inventory);
     const second = await sellOrder(world, freshOrder, item, "-2.0000");
     const attempts = (await blockedOf("order", blockedOrder))[0]!.attempts;
 
