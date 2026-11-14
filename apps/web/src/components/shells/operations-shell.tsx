@@ -145,7 +145,7 @@ export function OperationsShell({
           )}
           <LiveClock timeZone={zone} />
           {outletControl || actions ? (
-            <div className="flex min-w-0 items-center gap-2 max-sm:w-full">
+            <div className="flex min-w-0 flex-wrap items-center gap-2 max-sm:w-full">
               {outletControl ? (
                 <div className="min-w-0 max-sm:flex-1 sm:max-w-72">
                   {outletControl}

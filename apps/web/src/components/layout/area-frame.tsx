@@ -14,6 +14,11 @@ import { RouterShellLink } from "@/components/layout/router-link";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { CustomerShell } from "@/components/shells/customer-shell";
 import { ManagementShell } from "@/components/shells/management-shell";
+import {
+  OperationsScreenProvider,
+  resolveOperationsTitle,
+  useOperationsScreenValue,
+} from "@/components/shells/operations-screen";
 import { OperationsShell } from "@/components/shells/operations-shell";
 import { SignOutButton } from "@/components/sign-out-button";
 import { Link } from "@tanstack/react-router";
@@ -145,6 +150,48 @@ export function AreaFrame(props: AreaFrameProps) {
         onSelectOutlet={selectOutlet}
       />
     </TenantProvider>
+  );
+}
+
+/**
+ * Operations shell fed by the screen: a screen that calls
+ * useOperationsScreen names itself in the status bar and adds its actions
+ * before the theme toggle; otherwise the status bar shows the area name.
+ */
+function OperationsFrame({
+  areaTitle,
+  staffName,
+  online,
+  forcedMode,
+  outletControl,
+  children,
+}: {
+  areaTitle: string;
+  staffName?: string;
+  online: boolean;
+  forcedMode?: "dark";
+  outletControl: ReactNode;
+  children: ReactNode;
+}) {
+  const screen = useOperationsScreenValue();
+  return (
+    <OperationsShell
+      title={resolveOperationsTitle(screen, areaTitle)}
+      staffName={staffName}
+      online={online}
+      mode={forcedMode}
+      outletControl={outletControl}
+      actions={
+        screen.actions || !forcedMode ? (
+          <>
+            {screen.actions}
+            {forcedMode ? null : <ThemeToggle />}
+          </>
+        ) : null
+      }
+    >
+      <div className="h-full overflow-y-auto p-4">{children}</div>
+    </OperationsShell>
   );
 }
 
@@ -335,16 +382,17 @@ function AreaFrameBody({
 
   if (definition.shell === "operations") {
     return (
-      <OperationsShell
-        title={t(definition.nameKey)}
-        staffName={session?.user.name}
-        online={online}
-        mode={definition.forcedMode}
-        outletControl={outletPicker}
-        actions={definition.forcedMode ? null : <ThemeToggle />}
-      >
-        <div className="h-full overflow-y-auto p-4">{body}</div>
-      </OperationsShell>
+      <OperationsScreenProvider>
+        <OperationsFrame
+          areaTitle={t(definition.nameKey)}
+          staffName={session?.user.name}
+          online={online}
+          forcedMode={definition.forcedMode}
+          outletControl={outletPicker}
+        >
+          {body}
+        </OperationsFrame>
+      </OperationsScreenProvider>
     );
   }
 

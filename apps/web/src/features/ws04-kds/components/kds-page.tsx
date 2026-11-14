@@ -17,6 +17,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { useOperationsScreen } from "@/components/shells/operations-screen";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
@@ -92,6 +93,7 @@ export function KdsPage() {
 
 function KdsContent() {
   const t = useT();
+  useOperationsScreen({ title: t("kds.title") });
   // The outlet the shell selected; null when the session has none, in which
   // case the queries stay off and the empty state shows.
   const { outlet } = useTenantContext();
@@ -141,7 +143,8 @@ function KdsContent() {
   return (
     <div className="flex w-full flex-col gap-5">
       <header className="flex flex-col gap-1">
-        <h1 className="type-display">{t("kds.title")}</h1>
+        {/* The shell status bar carries the visible screen name. */}
+        <h1 className="sr-only">{t("kds.title")}</h1>
         <p className="max-w-prose text-sm leading-5 text-muted-foreground">
           {t("kds.intro")}
         </p>
