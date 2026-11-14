@@ -24,7 +24,15 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { createUlid, ulidToUuid } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
 import { inventoryEvents } from "@starter/shared/inventory";
@@ -37,7 +45,12 @@ import {
   relayOutbox,
   replayOutbox,
 } from "../services/core-outbox.ts";
-import { countBlockedOutboxAggregates } from "../services/core-outbox-dead-alert.ts";
+import {
+  alertBlockedOutboxAggregates,
+  countBlockedOutboxAggregates,
+} from "../services/core-outbox-dead-alert.ts";
+import * as conflictAlerts from "../services/edge-sync-conflict-alert.ts";
+import { logger } from "../lib/logger.ts";
 import { resetEdgeApplierRegistryForTests } from "../edge/applier-registry.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
 import { registerAccessEdgeApplier } from "../edge/access-applier.ts";
@@ -267,6 +280,36 @@ async function createFixture() {
      VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 minute', $2)`,
     [tenantId, supervisorUserId, supervisorRoleId, outletA],
   );
+}
+
+async function createBlockedHead(
+  context: ReturnType<typeof establishScopedTenantContext>,
+  destination: string,
+) {
+  const first = edgeEvent("order.paid", "order");
+  const second = {
+    ...edgeEvent("order.paid", "order"),
+    aggregateId: first.aggregateId,
+    sequence: 2,
+  };
+  const firstId = createUlid();
+  for (const [id, event] of [
+    [firstId, first],
+    [createUlid(), second],
+  ] as const) {
+    await withTenant(db, context, (tx) =>
+      appendOutbox(tx, context, {
+        id,
+        event,
+        destination,
+        direction: null,
+        peerId: null,
+      }),
+    );
+  }
+  expect(
+    await markOutboxDead(db, context, { outboxId: firstId, generation: 0 }),
+  ).toBe(true);
 }
 
 beforeAll(async () => {
@@ -681,6 +724,106 @@ describe("legend-eadm D alarm storm and once-only path", () => {
       destinations: ["cloud-sync"],
     });
     expect(await notificationCount()).toBe(before + 2);
+  });
+
+  it("legend-mciif skips supervisor lookup on repeated sweeps", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "domain" }),
+      { kind: "tenant" },
+    );
+    const destination = "test-mciif-dedupe";
+    await createBlockedHead(context, destination);
+    const notify = vi.spyOn(conflictAlerts, "notifyOutletSupervisors");
+    try {
+      await alertBlockedOutboxAggregates(db, context, {
+        destinations: [destination],
+      });
+      await alertBlockedOutboxAggregates(db, context, {
+        destinations: [destination],
+      });
+      expect(notify).toHaveBeenCalledTimes(1);
+    } finally {
+      notify.mockRestore();
+    }
+  });
+
+  it("legend-mciif bounds a sweep and processes remaining heads on the next sweep", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "domain" }),
+      { kind: "tenant" },
+    );
+    const destination = "test-mciif-limit";
+    for (let i = 0; i < 101; i++) await createBlockedHead(context, destination);
+    const before = await notificationCount();
+    await alertBlockedOutboxAggregates(db, context, {
+      destinations: [destination],
+    });
+    const first = (await notificationCount()) - before;
+    expect(first).toBeGreaterThan(0);
+    expect(first).toBeLessThanOrEqual(100);
+    await alertBlockedOutboxAggregates(db, context, {
+      destinations: [destination],
+    });
+    expect(await notificationCount()).toBeGreaterThan(before + first);
+  }, 120_000);
+
+  it("legend-mciif advances past a batch of failed alarms and retries it after wrapping", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "domain" }),
+      { kind: "tenant" },
+    );
+    const destination = "test-mciif-failed-batch";
+    for (let i = 0; i < 101; i++) await createBlockedHead(context, destination);
+    const before = await notificationCount();
+    const notify = vi
+      .spyOn(conflictAlerts, "notifyOutletSupervisors")
+      .mockRejectedValue(new Error("notification unavailable"));
+    try {
+      await alertBlockedOutboxAggregates(db, context, {
+        destinations: [destination],
+      });
+      expect(notify).toHaveBeenCalledTimes(100);
+      expect(await notificationCount()).toBe(before);
+    } finally {
+      notify.mockRestore();
+    }
+    await alertBlockedOutboxAggregates(db, context, {
+      destinations: [destination],
+    });
+    expect(await notificationCount()).toBe(before + 1);
+    await alertBlockedOutboxAggregates(db, context, {
+      destinations: [destination],
+    });
+    expect(await notificationCount()).toBe(before + 101);
+  }, 120_000);
+
+  it("legend-mciif logs missing recipients once across sweeps", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "domain" }),
+      { kind: "tenant" },
+    );
+    const destination = "test-mciif-empty";
+    await createBlockedHead(context, destination);
+    await owner.query(
+      "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = $2",
+      [tenantId, supervisorUserId],
+    );
+    const errors = vi.spyOn(logger, "error");
+    try {
+      await alertBlockedOutboxAggregates(db, context, {
+        destinations: [destination],
+      });
+      await alertBlockedOutboxAggregates(db, context, {
+        destinations: [destination],
+      });
+      expect(errors).toHaveBeenCalledTimes(1);
+    } finally {
+      errors.mockRestore();
+      await owner.query(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by) VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 minute', $2)`,
+        [tenantId, supervisorUserId, supervisorRoleId, outletA],
+      );
+    }
   });
 
   it("legend-1opho alarms once when a dead edge event blocks its aggregate across relay sweeps", async () => {

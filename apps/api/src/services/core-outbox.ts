@@ -23,7 +23,10 @@ import { domainEventOutbox } from "../db/schema/core-events";
 import { withTenant } from "../db/tenant";
 import { isEdgeNode } from "../edge/mode.ts";
 import { logger } from "../lib/logger.ts";
-import { alertBlockedOutboxAggregates } from "./core-outbox-dead-alert.ts";
+import {
+  alertBlockedOutboxAggregates,
+  countBlockedOutboxAggregates,
+} from "./core-outbox-dead-alert.ts";
 import {
   inEdgeApplyScope,
   isEdgeApplyRefusedEvent,
@@ -236,7 +239,10 @@ export async function relayOutbox(
       options.destinations.includes(CLOUD_SYNC_DESTINATION)
     ) {
       try {
-        const blockedAggregates = await alertBlockedOutboxAggregates(
+        await alertBlockedOutboxAggregates(database, context, {
+          destinations: [CLOUD_SYNC_DESTINATION],
+        });
+        const blockedAggregates = await countBlockedOutboxAggregates(
           database,
           context,
           {
