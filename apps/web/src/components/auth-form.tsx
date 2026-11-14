@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { siteConfig } from "@/config/site";
+import { postLoginPath } from "@/lib/areas/post-login";
 
 export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
   const signingUp = mode === "sign-up";
@@ -45,7 +46,12 @@ export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
       endActingStaffMode();
       // Re-run route guards with the new cookie, then move to the app.
       await router.invalidate();
-      await navigate({ to: siteConfig.appHomePath, replace: true });
+      // The root context now holds the new session's access.
+      const access = router.state.matches[0]?.context.access;
+      await navigate({
+        to: access ? postLoginPath(access) : siteConfig.appHomePath,
+        replace: true,
+      });
     } catch {
       setError(
         "We couldn't reach the server. Check your connection and try again.",

@@ -5309,3 +5309,10 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Review: architect K xhigh 1 ronde; 1 Medium (batch lama tanpa nilai beku) + 1 Low (akun GL sumber) dibetulkan dengan test gagal-dulu. Temuan Low 3 (repost fee cek config, terlalu ketat) dibiarkan.
 - Idx `_journal.json` dibetulkan: 0538=352, 0539=353, 0546=354, 0568=355; check-journal hijau.
 - Gerbang: 11 berkas test terarah 253/253, tsc api, eslint, prettier, `db:generate` kosong. `edge-received-events-migration` gagal pra-ada (migrasi 0534, bukan 0568; lihat catatan 545).
+## 2026-11-14: Kartu kecil platform, POS, keamanan (cabang ws/platform-pos-security-small)
+
+- legend-bag1: kontrak `GET /api/platform/audit-events` dan `GET /api/platform/health` pindah ke `packages/shared/src/platform` (ops.ts, endpoints.ts); permission `platform.audit.view` + label Indonesia; route `GET /api/platform/health` (database mati = `degraded` di body); guard web audit ikut izin baru. Route audit-events belum dibuat (perlu keputusan masking/filter lintas tenant).
+- legend-ptp2: test HTTP qris tanpa device masuk `pos-receipt-kfix.test.ts`: C-000001, `pos_orders.device_id` null, `receipt.device_id` = outlet. Hijau, tidak ada bug uang, logika tidak diubah.
+- legend-ykam: `/notes` sudah hilang (appHomePath `/member`, commit 04d2836a3). Sisanya dikerjakan: `lib/areas/post-login.ts` `postLoginPath(access)`; sesi dengan `dashboard.management.view` mendarat di `/kelola`, customer di `/member` (`_auth.tsx`, `auth-form.tsx`).
+- legend-2ywn: denylist `SENSITIVE_FUNCTIONS` diganti baseline `pg_init_privs` (privtype 'i'); fail-closed bila baseline kosong (anchor `pg_read_file`, `lo_import`, `pg_switch_wal`). Review architect: tidak ada false negative; celah tersisa (extension 'e', `SENSITIVE_TABLES`) jadi kartu lanjutan.
+- Gerbang: 5 tes root + 3 berkas vitest hijau, 7 berkas kontrak root hijau, prettier+eslint hijau, typecheck api+web hijau, `db:generate` kosong. E2E Playwright tidak dijalankan (scripts/test.mjs tidak bisa memfilter).
