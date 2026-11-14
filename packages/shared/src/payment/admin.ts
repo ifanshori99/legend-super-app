@@ -429,11 +429,15 @@ export type ReconciliationSource = z.infer<typeof reconciliationSourceSchema>;
 /**
  * Funds of a written-off case arrived in a later settlement import. Nothing is
  * reversed automatically: finance must review the correction (legend-oan3p).
+ * When the late amount differs from the sale, `mismatchCaseId` points to the
+ * mismatch case of the same line: finance must decide the correction and that
+ * case together so the loss is never booked twice.
  */
 export const reconciliationLateFundsSchema = z.strictObject({
   correctionId: uuidSchema,
   settlementId: uuidSchema,
   settlementLineId: uuidSchema,
+  mismatchCaseId: uuidSchema.nullable(),
   receivedIdr: nonnegativeIdr,
   detectedAt: isoDateTimeSchema,
   correctionStatus: z.enum(["open", "pending_approval", "resolved"]),
@@ -498,6 +502,12 @@ export const reconciliationCorrectionViewSchema = z.strictObject({
   caseId: uuidSchema,
   settlementId: uuidSchema,
   settlementLineId: uuidSchema,
+  /**
+   * Mismatch case of the same line (late amount differs from the sale); null
+   * when it matched exactly. Finance must decide this correction and that case
+   * together so the loss is never booked twice.
+   */
+  mismatchCaseId: uuidSchema.nullable(),
   source: reconciliationSourceSchema,
   reference: ref,
   /** What the write-off removed from the books. */
@@ -1292,6 +1302,7 @@ const correctionFixtures = [
     caseId: "a7b8c9d0-0002-4a02-8b02-000000000002",
     settlementId: "b8c9d0e1-0004-4b04-9c04-000000000004",
     settlementLineId: "c9d0e1f2-0004-4c04-8d04-000000000004",
+    mismatchCaseId: null,
     source: "edc",
     reference: "Mandiri batch 2026-11-03 / standalone",
     writtenOffIdr: 285_000,

@@ -77,6 +77,7 @@ async function lateFundsOf(tx: Tx, row: CaseRow) {
         correctionId: correction.id,
         settlementId: correction.settlementId,
         settlementLineId: correction.settlementLineId,
+        mismatchCaseId: correction.mismatchCaseId,
         receivedIdr: correction.receivedIdr,
         detectedAt: correction.createdAt.toISOString(),
         correctionStatus: correction.status,

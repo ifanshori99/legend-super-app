@@ -16402,6 +16402,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "mismatch_case_id": {
+          "name": "mismatch_case_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "source": {
           "name": "source",
           "type": "varchar(20)",
@@ -16561,6 +16567,21 @@
           "columnsFrom": [
             "tenant_id",
             "case_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payment_reconciliation_corrections_mismatch_case_fk": {
+          "name": "payment_reconciliation_corrections_mismatch_case_fk",
+          "tableFrom": "payment_reconciliation_corrections",
+          "tableTo": "payment_reconciliation_cases",
+          "columnsFrom": [
+            "tenant_id",
+            "mismatch_case_id"
           ],
           "columnsTo": [
             "tenant_id",

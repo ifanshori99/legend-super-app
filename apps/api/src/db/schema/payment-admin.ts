@@ -388,6 +388,12 @@ export const paymentReconciliationCorrections = pgTable(
     settlementId: uuid("settlement_id").notNull(),
     /** The settlement line that matched the written-off sale. */
     settlementLineId: uuid("settlement_line_id").notNull(),
+    /**
+     * The mismatch case opened for the same line when the late amount differs
+     * from the sale; finance decides both together so the loss is never
+     * booked twice. Null when the line matched exactly.
+     */
+    mismatchCaseId: uuid("mismatch_case_id"),
     source: varchar("source", { length: 20 }).notNull(),
     reference: varchar("reference", { length: 100 }).notNull(),
     /** abs(case.variance_idr): what was written off. */
@@ -423,6 +429,14 @@ export const paymentReconciliationCorrections = pgTable(
     foreignKey({
       name: "payment_reconciliation_corrections_case_fk",
       columns: [t.tenantId, t.caseId],
+      foreignColumns: [
+        paymentReconciliationCases.tenantId,
+        paymentReconciliationCases.id,
+      ],
+    }),
+    foreignKey({
+      name: "payment_reconciliation_corrections_mismatch_case_fk",
+      columns: [t.tenantId, t.mismatchCaseId],
       foreignColumns: [
         paymentReconciliationCases.tenantId,
         paymentReconciliationCases.id,

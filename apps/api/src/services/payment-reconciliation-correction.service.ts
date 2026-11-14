@@ -67,6 +67,7 @@ async function viewOf(tx: Tx, row: CorrectionRow) {
     caseId: row.caseId,
     settlementId: row.settlementId,
     settlementLineId: row.settlementLineId,
+    mismatchCaseId: row.mismatchCaseId,
     source: row.source,
     reference: row.reference,
     writtenOffIdr: row.writtenOffIdr,

@@ -1034,3 +1034,164 @@ describe("EDC-06 legend-oan3p only a written-off case is flagged", () => {
     expect((await listedCase(requester, s.caseId)).lateFunds).toBeNull();
   });
 });
+
+// ------------------------------------------------- D2: mismatch link and race
+
+async function mismatchCaseIdOf(correctionId: string) {
+  const { rows } = await asTenant(tenantId, (c) =>
+    c.query<{ mismatch_case_id: string | null }>(
+      `SELECT mismatch_case_id FROM payment_reconciliation_corrections WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, correctionId],
+    ),
+  );
+  expect(rows).toHaveLength(1);
+  return rows[0]!.mismatch_case_id;
+}
+
+describe("EDC-06 legend-oan3p a late line with a different amount links its mismatch case", () => {
+  it("EDC-06 late funds: written off 50000, 48000 arrives -> one correction (received 48000) linked to the new mismatch case; the case view shows the same link", async () => {
+    const s = await writeOffSetup();
+    const late = await post(
+      requester,
+      gatewayBody({
+        day: s.day,
+        reference: `GW-${s.tag}-SHORT`,
+        lines: [{ reference: s.pz, amountIdr: 48000, feeIdr: 0 }],
+      }),
+    );
+    expectOk(late);
+
+    // The import opens a mismatch case for the line (assumption: it is the only
+    // case of this sale that carries a settlement line; the write-off has none).
+    const cases = await casesByReference(s.pz);
+    const mismatch = cases.filter((c) => c.settlement_line_id !== null);
+    expect(mismatch).toHaveLength(1);
+    expect(mismatch[0]!.id).not.toBe(s.caseId);
+    const mismatchId = mismatch[0]!.id;
+    expect((await caseStatus(s.caseId)).status).toBe("resolved");
+
+    const correction = await oneCorrection(s.caseId);
+    expect(Number(correction.written_off_idr)).toBe(50000);
+    expect(Number(correction.received_idr)).toBe(48000);
+    expect(await mismatchCaseIdOf(correction.id)).toBe(mismatchId);
+
+    const view = await listedCase(requester, s.caseId);
+    expect(view.lateFunds).toMatchObject({
+      correctionId: correction.id,
+      receivedIdr: 48000,
+      mismatchCaseId: mismatchId,
+    });
+    const listed = await listCorrections(requester);
+    expect(listed.find((c) => c.id === correction.id)).toMatchObject({
+      receivedIdr: 48000,
+      mismatchCaseId: mismatchId,
+    });
+
+    // replaying the import never moves the link nor adds a second correction
+    const again = await post(
+      requester,
+      gatewayBody({
+        day: s.day,
+        reference: `GW-${s.tag}-SHORT`,
+        lines: [{ reference: s.pz, amountIdr: 48000, feeIdr: 0 }],
+      }),
+    );
+    expect([200, 201, 409]).toContain(again.status);
+    expect(await correctionsOfCase(s.caseId)).toHaveLength(1);
+    expect(await mismatchCaseIdOf(correction.id)).toBe(mismatchId);
+  });
+
+  it("EDC-06 late funds: an exact-amount late line has no mismatch case, so mismatchCaseId is null everywhere", async () => {
+    const s = await writeOffThenLate();
+    const correction = await oneCorrection(s.caseId);
+    expect(await mismatchCaseIdOf(correction.id)).toBeNull();
+    expect(
+      (await casesByReference(s.pz)).filter((c) => c.settlement_line_id),
+    ).toHaveLength(0);
+    expect((await listedCase(requester, s.caseId)).lateFunds).toMatchObject({
+      correctionId: correction.id,
+      mismatchCaseId: null,
+    });
+    const listed = await listCorrections(requester);
+    expect(listed.find((c) => c.id === correction.id)).toMatchObject({
+      mismatchCaseId: null,
+    });
+  });
+});
+
+describe("EDC-06 legend-oan3p the import and the write-off settle can overlap", () => {
+  it("EDC-06 late funds: the import runs while the settle holds the case row lock; once the settle commits there is exactly one correction and the case is resolved", async () => {
+    // Case asked, chain fully approved, but the worker has not settled it yet.
+    const s = await missingSetup();
+    const asked = await resolveCase(s.caseId);
+    expect(asked.status, JSON.stringify(asked.body)).toBe(200);
+    const request = await pendingRequest(CASE_OBJECT, s.caseId);
+    await decide(approverId, request.id, "approved");
+    expect((await caseStatus(s.caseId)).status).not.toBe("resolved");
+
+    // Connection 2 plays the settle: it takes the case row lock first.
+    const settle = await owner.connect();
+    let committed = false;
+    try {
+      await settle.query("BEGIN");
+      await settle.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
+      const { rows: pidRows } = await settle.query<{ pid: number }>(
+        "SELECT pg_backend_pid() AS pid",
+      );
+      await settle.query(
+        "SELECT id FROM payment_reconciliation_cases WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+        [tenantId, s.caseId],
+      );
+
+      // Connection 1: the late import starts while the lock is held.
+      let importDone = false;
+      const importing = lateReport(s).then((r) => {
+        importDone = true;
+        return r;
+      });
+
+      // Wait until the import is queued behind our lock (or has finished
+      // without needing it); bounded, never a fixed sleep.
+      const deadline = Date.now() + 20_000;
+      for (;;) {
+        if (importDone || Date.now() > deadline) break;
+        const { rows } = await owner.query<{ n: string }>(
+          "SELECT count(*)::text AS n FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))",
+          [pidRows[0]!.pid],
+        );
+        if (Number(rows[0]!.n) > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      // The settle completes: the write-off lands, then the lock is released.
+      await settle.query(
+        "UPDATE payment_reconciliation_cases SET status = 'resolved', approved_by = $3 WHERE tenant_id = $1 AND id = $2",
+        [tenantId, s.caseId, approverId],
+      );
+      await settle.query("COMMIT");
+      committed = true;
+
+      const late = await importing;
+      expectOk(late);
+    } finally {
+      if (!committed) await settle.query("ROLLBACK").catch(() => undefined);
+      settle.release();
+    }
+
+    // No lost write-off, no lost correction, no duplicate.
+    expect((await caseStatus(s.caseId)).status).toBe("resolved");
+    const rows = await correctionsOfCase(s.caseId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: "open" });
+    expect(Number(rows[0]!.received_idr)).toBe(50000);
+    expect(await auditCount(OPENED_AUDIT, rows[0]!.id)).toBe(1);
+
+    // The worker replaying the approval afterwards changes nothing.
+    await runWorker(request.chain_id);
+    expect((await caseStatus(s.caseId)).status).toBe("resolved");
+    expect(await correctionsOfCase(s.caseId)).toHaveLength(1);
+  });
+});

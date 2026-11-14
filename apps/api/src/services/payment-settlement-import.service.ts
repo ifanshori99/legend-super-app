@@ -25,6 +25,7 @@ import { edcTransactions } from "../db/schema/edc.ts";
 import {
   paymentEdcTerminals,
   paymentReconciliationCases as cases,
+  paymentReconciliationCorrections as corrections,
 } from "../db/schema/payment-admin.ts";
 import {
   paymentSettlementLines as lines,
@@ -528,16 +529,33 @@ export async function importSettlement(
         tally[status] += 1;
         if (status === "matched") continue;
         const expected = pos ? pos.amountIdr : 0;
-        await tx.insert(cases).values({
-          ...caseBase,
-          settlementLineId: lineRow.id,
-          reference: line.reference,
-          expectedIdr: idr(expected),
-          receivedIdr: idr(line.amountIdr),
-          varianceIdr: idr(line.amountIdr - expected),
-          reason,
-          status: "open",
-        });
+        const [mismatchCase] = await tx
+          .insert(cases)
+          .values({
+            ...caseBase,
+            settlementLineId: lineRow.id,
+            reference: line.reference,
+            expectedIdr: idr(expected),
+            receivedIdr: idr(line.amountIdr),
+            varianceIdr: idr(line.amountIdr - expected),
+            reason,
+            status: "open",
+          })
+          .returning({ id: cases.id });
+        // Late funds of a written-off sale with a different amount: the
+        // correction (opened above for this same line) points to this case so
+        // finance decides both together (legend-oan3p).
+        if (pos && mismatchCase)
+          await tx
+            .update(corrections)
+            .set({ mismatchCaseId: mismatchCase.id })
+            .where(
+              and(
+                eq(corrections.tenantId, tenantId),
+                eq(corrections.settlementLineId, lineRow.id),
+                isNull(corrections.mismatchCaseId),
+              ),
+            );
         tally.cases += 1;
       }
 

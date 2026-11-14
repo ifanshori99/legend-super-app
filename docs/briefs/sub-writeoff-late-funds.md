@@ -68,3 +68,17 @@ New file `apps/api/src/test/payment-reconciliation-late-funds.test.ts`, reusing 
 5. Correction approval: requester cannot approve own chain; Owner or Finance Manager approval (one level) → worker → `resolved` with decision kept; rejected → back to `open`; resolve on non-open → 409; no policy → 409 fail closed.
 6. A `matched` or `open` case is not flagged (existing behaviour kept).
    Run: `cd <worktree> && LEGEND_TEST_FILES="src/test/payment-reconciliation-late-funds.test.ts" heavy pnpm test`. Must fail first for the right reason (missing table/endpoint/flag), not setup. Report the failing assertions.
+
+## Part D — architect follow-ups (round 2)
+
+D1 (implementer). Late line with a different amount: the import then also opens a `mismatch` case for that line (settlement_line_id set). Link it so finance never books the loss twice:
+
+- Add nullable `mismatch_case_id uuid` to `payment_reconciliation_corrections` (FK (tenant_id, mismatch_case_id) → payment_reconciliation_cases(tenant_id, id), inline). Edit migration 0606 in place (not pushed/applied anywhere) and regenerate snapshot; `pnpm db:generate` must stay empty.
+- Fill it in the import transaction for the same line (whichever order the mismatch case and `closeMissingCasesOfSale` run; if the correction is created first, update it after the mismatch case insert, tenant-filtered). Null when the line matched exactly.
+- Contract: `mismatchCaseId: uuidSchema.nullable()` on `reconciliationCorrectionViewSchema` and on `reconciliationLateFundsSchema`; fixtures updated.
+- Doc comment: finance must decide the correction and the linked mismatch case together.
+
+D2 (test-writer), same test file:
+
+- Race: two connections. Hold the case row lock in the approval settle (approved chain, worker path) while the import runs; commit settle; import completes → exactly one correction, case `resolved`.
+- Late line with different amount (e.g. written off 50000, 48000 arrives): one correction with `receivedIdr` 48000 and `mismatchCaseId` = the new mismatch case id; case view `lateFunds.mismatchCaseId` same; exact-amount line → `mismatchCaseId` null.
