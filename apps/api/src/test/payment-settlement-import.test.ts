@@ -36,7 +36,10 @@ import {
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
 import { handleReconciliationApprovalResolved } from "../services/payment-reconciliation-approval-consumer";
-import { decideApprovalRequest } from "../services/platform-approval.service";
+import {
+  decideApprovalRequest,
+  expireDueApprovalRequests,
+} from "../services/platform-approval.service";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
 
 type MutableBody = {
@@ -1796,11 +1799,20 @@ describe("EDC-06 legend-aegsj one missing case per sale for life", () => {
       expected_idr: 50000,
       variance_idr: -50000,
     });
-    // The summary counts only rows that really went in: Z once + W once.
+    // The summaries count only rows that really went in. Which report runs
+    // first decides whether the still-unsettled X also gets a missing case
+    // (report B first) or not (report A first), so compare with the rows.
+    const { rows: inserted } = await asTenant(tenantId, (c) =>
+      c.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM payment_reconciliation_cases
+          WHERE tenant_id = $1 AND settlement_id = ANY($2::uuid[])`,
+        [tenantId, [a.body.data.id, b.body.data.id]],
+      ),
+    );
     expect(
       (a.body.data.casesCreated as number) +
         (b.body.data.casesCreated as number),
-    ).toBe(2);
+    ).toBe(Number(inserted[0]!.n));
 
     // The single case closes once: one approval, one resolved event.
     await requestClose(missing[0]!.id);
@@ -1871,6 +1883,759 @@ describe("EDC-06 legend-aegsj one missing case per sale for life", () => {
   });
 });
 
+// ------------------------------------------- legend-hbifd matched auto-close
+//
+// Rule (CTO decision, brief legend-hbifd): when a LATER report matches (or
+// mismatches) a sale that still has an open / pending_approval "missing" case,
+// the case closes itself as `matched`: no `reconciliation_case.resolved`
+// event, no write-off, no resolvedBy/approvedBy; a pending approval chain is
+// cancelled so it can never be approved afterwards.
+//
+// Assumptions: the exact note text and the 409 message come from the brief;
+// the audit row is found by action name + case id anywhere in the event JSON;
+// an approval request cancelled by the import has status "cancelled".
+
+const MATCHED_AUDIT = "payment.reconciliation_case_matched_closed";
+const MATCHED_409 =
+  "Reconciliation case was closed automatically: its sale was matched in a settlement report.";
+const matchedNote = (report: string, line: number) =>
+  `Closed automatically: sale matched a settlement line (report ${report}, line ${line})`;
+
+async function caseDetail(caseId: string) {
+  const { rows } = await asTenant(tenantId, (c) =>
+    c.query<{
+      status: string;
+      note: string | null;
+      resolved_by: string | null;
+      approved_by: string | null;
+      settlement_line_id: string | null;
+    }>(
+      `SELECT status, note, resolved_by, approved_by, settlement_line_id
+         FROM payment_reconciliation_cases WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, caseId],
+    ),
+  );
+  expect(rows).toHaveLength(1);
+  return rows[0]!;
+}
+
+async function requestsOfCase(caseId: string) {
+  const { rows } = await asTenant(tenantId, (c) =>
+    c.query<{ id: string; chain_id: string; status: string }>(
+      `SELECT id, chain_id, status FROM approval_requests
+        WHERE tenant_id = $1 AND object_type = 'payment_reconciliation_case'
+          AND object_id = $2 ORDER BY created_at`,
+      [tenantId, caseId],
+    ),
+  );
+  return rows;
+}
+
+async function pendingRequestOf(caseId: string) {
+  const pending = (await requestsOfCase(caseId)).filter(
+    (r) => r.status === "pending",
+  );
+  expect(pending).toHaveLength(1);
+  return pending[0]!;
+}
+
+const approveRequest = (requestId: string) =>
+  decideApprovalRequest(
+    tenantContext(),
+    approverId,
+    requestId,
+    { decision: "approved", reason: "Sesuai laporan settlement." },
+    { mfaVerified: true, idempotencyKey: null },
+  );
+
+/** Runs the worker over every approval.resolved event of a chain not yet handled. */
+async function applyChainEvents(chainId: string, handled: Set<string>) {
+  const { rows } = await asTenant(tenantId, (c) =>
+    c.query<{ event: unknown }>(
+      `SELECT event FROM domain_event_outbox
+        WHERE tenant_id = $1 AND destination = 'cloud-sync'
+          AND event->>'name' = 'approval.resolved'
+          AND event->'payload'->>'chainId' = $2`,
+      [tenantId, chainId],
+    ),
+  );
+  for (const row of rows) {
+    const event = eventEnvelopeSchema.parse(row.event);
+    if (handled.has(event.id)) continue;
+    handled.add(event.id);
+    await handleReconciliationApprovalResolved(tenantWide, event, new Date());
+  }
+}
+
+/** A later report, another reference, same period, that carries the missing sale Z. */
+async function matchingGatewayReport(
+  s: { day: string; tag: string; pz: string },
+  suffix: string,
+  amountIdr = 50000,
+) {
+  const response = await post(
+    manager,
+    gatewayBody({
+      day: s.day,
+      reference: `GW-${s.tag}-${suffix}`,
+      lines: [
+        {
+          reference: s.pz,
+          amountIdr,
+          feeIdr: Math.round(amountIdr * 0.007),
+        },
+      ],
+    }),
+  );
+  expectOk(response);
+  settlementIds.push(response.body.data.id);
+  return response;
+}
+
+async function matchedAuditCount(caseId: string) {
+  const { rows } = await asTenant(tenantId, (c) =>
+    c.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = $2 AND event::text LIKE $3`,
+      [tenantId, MATCHED_AUDIT, `%${caseId}%`],
+    ),
+  );
+  return Number(rows[0]!.n);
+}
+
+async function resolveViaApi(caseId: string) {
+  return manager
+    .post(`/api/payments/admin/reconciliation/cases/${caseId}/resolve`)
+    .set(originHeader)
+    .set("Idempotency-Key", `res-${randomUUID()}`)
+    .send({ note: "Bank statement checked, accepted" });
+}
+
+describe("EDC-06 legend-hbifd a later report that matches the sale closes its missing case as matched", () => {
+  it("EDC-06 an open missing case becomes matched when a later gateway report settles its sale; nothing is written off", async () => {
+    const s = await gatewayMissingSetup();
+    const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+    const money = await moneySnapshot();
+
+    const later = await matchingGatewayReport(s, "B");
+    expect(later.body.data).toMatchObject({ matchedLines: 1, casesCreated: 0 });
+
+    const row = await caseDetail(s.missingId);
+    expect(row).toMatchObject({
+      status: "matched",
+      resolved_by: null,
+      approved_by: null,
+      settlement_line_id: null,
+    });
+    expect(row.note).toBe(matchedNote(`GW-${s.tag}-B`, 1));
+    expect(await matchedAuditCount(s.missingId)).toBe(1);
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore);
+    expect(await moneySnapshot()).toEqual(money);
+
+    // Nobody can close it any more; it is closed by the match already.
+    const resolve = await resolveViaApi(s.missingId);
+    expect(resolve.status, JSON.stringify(resolve.body)).toBe(409);
+    expect(JSON.stringify(resolve.body)).toContain(MATCHED_409);
+    expect(await requestsOfCase(s.missingId)).toHaveLength(0);
+
+    // It stays the one case of that sale for life: more reports neither
+    // reopen it nor add a second one (migration 0574 still holds).
+    await laterGatewayReport(s, "C");
+    const all = await casesByReference(s.pz);
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ id: s.missingId, status: "matched" });
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore);
+  });
+
+  it("EDC-06 an open missing EDC case becomes matched when a later batch report settles the sale", async () => {
+    const day = nextDay();
+    const tag = uid();
+    const terminalId = await seedTerminal();
+    const batchA = `A${tag.slice(0, 5)}`;
+    const batchB = `B${tag.slice(0, 5)}`;
+    const r1 = `RRNH1${tag}`;
+    const r3 = `RRNH3${tag}`;
+    await seedEdcSale({
+      terminalId,
+      rrn: r1,
+      amountIdr: 20000,
+      batchNo: batchA,
+    });
+    await seedEdcSale({
+      terminalId,
+      rrn: r3,
+      amountIdr: 15000,
+      batchNo: batchA,
+    });
+    const first = await post(
+      manager,
+      edcBody({
+        day,
+        reference: `EDC-${tag}-A`,
+        terminalId,
+        batchNo: batchA,
+        lines: [{ reference: r1, amountIdr: 20000, feeIdr: 140 }],
+      }),
+    );
+    expectOk(first);
+    settlementIds.push(first.body.data.id);
+    const [missing] = await casesByReference(r3);
+    expect(missing).toMatchObject({ status: "open", settlement_line_id: null });
+    const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+
+    // Another batch number (the same batch would be refused with 409): the
+    // sale is found by terminal + RRN and the report settles it.
+    const second = await post(
+      manager,
+      edcBody({
+        day,
+        reference: `EDC-${tag}-B`,
+        terminalId,
+        batchNo: batchB,
+        lines: [{ reference: r3, amountIdr: 15000, feeIdr: 105 }],
+      }),
+    );
+    expectOk(second);
+    settlementIds.push(second.body.data.id);
+    expect(second.body.data).toMatchObject({
+      matchedLines: 1,
+      casesCreated: 0,
+    });
+
+    const row = await caseDetail(missing!.id);
+    expect(row).toMatchObject({
+      status: "matched",
+      resolved_by: null,
+      approved_by: null,
+    });
+    expect(row.note).toBe(matchedNote(`EDC-${tag}-B`, 1));
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore);
+    expect((await resolveViaApi(missing!.id)).status).toBe(409);
+    expect(await casesByReference(r3)).toHaveLength(1);
+  });
+
+  it("EDC-06 a mismatching line (different amount) for the sale also closes its missing case as matched", async () => {
+    const s = await gatewayMissingSetup();
+    const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+
+    const later = await matchingGatewayReport(s, "B", 45000);
+    expect(later.body.data).toMatchObject({
+      matchedLines: 0,
+      mismatchLines: 1,
+      casesCreated: 1,
+    });
+
+    // The amount difference is its own (open) case on the new report's line.
+    const all = await casesByReference(s.pz);
+    expect(all).toHaveLength(2);
+    const mismatch = all.find((c) => c.id !== s.missingId)!;
+    expect(mismatch).toMatchObject({
+      status: "open",
+      expected_idr: 50000,
+      received_idr: 45000,
+      variance_idr: -5000,
+    });
+    expect(mismatch.settlement_line_id).not.toBeNull();
+
+    const row = await caseDetail(s.missingId);
+    expect(row.status).toBe("matched");
+    expect(row.note).toBe(matchedNote(`GW-${s.tag}-B`, 1));
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore);
+  });
+
+  it("EDC-06 a case waiting for approval becomes matched, its request is cancelled and approving it afterwards is refused", async () => {
+    const s = await gatewayMissingSetup();
+    await requestClose(s.missingId);
+    const request = await pendingRequestOf(s.missingId);
+    const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+
+    await matchingGatewayReport(s, "B");
+
+    expect(await caseDetail(s.missingId)).toMatchObject({
+      status: "matched",
+      resolved_by: null,
+      approved_by: null,
+    });
+    expect((await requestsOfCase(s.missingId))[0]).toMatchObject({
+      id: request.id,
+      status: "cancelled",
+    });
+    expect(await matchedAuditCount(s.missingId)).toBe(1);
+
+    // The approver clicks approve on the stale request: refused, 409.
+    await expect(approveRequest(request.id)).rejects.toMatchObject({
+      code: "APPROVAL_REQUEST_NOT_PENDING",
+      status: 409,
+    });
+    // The worker may see the cancellation event; it must not reopen the case.
+    await applyChainEvents(request.chain_id, new Set());
+    expect((await caseDetail(s.missingId)).status).toBe("matched");
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore);
+    expect((await resolveViaApi(s.missingId)).status).toBe(409);
+  });
+
+  it("EDC-06 an approval already recorded but not yet applied by the worker loses to the match: no write-off", async () => {
+    const s = await gatewayMissingSetup();
+    await requestClose(s.missingId);
+    const request = await pendingRequestOf(s.missingId);
+    const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+
+    await approveRequest(request.id); // recorded, worker has not run yet
+    expect((await caseDetail(s.missingId)).status).toBe("pending_approval");
+
+    await matchingGatewayReport(s, "B");
+    expect((await caseDetail(s.missingId)).status).toBe("matched");
+
+    // The worker now handles whatever events the chain has: still matched.
+    await applyChainEvents(request.chain_id, new Set());
+    expect(await caseDetail(s.missingId)).toMatchObject({
+      status: "matched",
+      resolved_by: null,
+      approved_by: null,
+    });
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore);
+  });
+
+  it("EDC-06 approve and a matching import at the same time: exactly one wins, never a write-off of a matched sale", async () => {
+    // Repeated: the interleaving differs from run to run. Either outcome is
+    // fine, a mix is not. Approve first and applied -> resolved + exactly one
+    // event (the write-off happened before the match). Import first -> matched
+    // + no event.
+    const outcomes: string[] = [];
+    for (let round = 0; round < 4; round += 1) {
+      const s = await gatewayMissingSetup();
+      await requestClose(s.missingId);
+      const request = await pendingRequestOf(s.missingId);
+      const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+      const handled = new Set<string>();
+
+      const approveAndApply = async () => {
+        try {
+          await approveRequest(request.id);
+        } catch (error) {
+          // The import cancelled the request first.
+          expect(error).toMatchObject({
+            code: "APPROVAL_REQUEST_NOT_PENDING",
+          });
+          return "refused" as const;
+        }
+        await applyChainEvents(request.chain_id, handled);
+        return "approved" as const;
+      };
+      const [decision, imported] = await Promise.all([
+        approveAndApply(),
+        matchingGatewayReport(s, "B"),
+      ]);
+      await applyChainEvents(request.chain_id, handled);
+
+      expect(imported.body.data).toMatchObject({ matchedLines: 1 });
+      const row = await caseDetail(s.missingId);
+      const events = (await countOutboxEvents(RESOLVED_EVENT)) - resolvedBefore;
+      if (row.status === "resolved") {
+        expect(decision).toBe("approved");
+        expect(events).toBe(1);
+        expect(row.approved_by).toBe(approverId);
+      } else {
+        expect(row.status).toBe("matched");
+        expect(events).toBe(0);
+        expect(row.approved_by).toBeNull();
+      }
+      outcomes.push(row.status);
+      // One case per sale, whatever the outcome.
+      expect(await casesByReference(s.pz)).toHaveLength(1);
+    }
+    expect(outcomes.every((o) => o === "resolved" || o === "matched")).toBe(
+      true,
+    );
+  });
+
+  it("EDC-06 another missing sale of the same report is not touched when only one sale is matched", async () => {
+    const day = nextDay();
+    const tag = uid();
+    const px = `PR-${tag}-X`;
+    const pz = `PR-${tag}-Z`;
+    const pq = `PR-${tag}-Q`;
+    await seedIntent({ providerRef: px, amountIdr: 100000, day });
+    await seedIntent({ providerRef: pz, amountIdr: 50000, day });
+    await seedIntent({ providerRef: pq, amountIdr: 70000, day });
+    const a = await post(
+      manager,
+      gatewayBody({
+        day,
+        reference: `GW-${tag}-A`,
+        lines: [{ reference: px, amountIdr: 100000, feeIdr: 700 }],
+      }),
+    );
+    expectOk(a);
+    settlementIds.push(a.body.data.id);
+    const [caseZ] = await casesByReference(pz);
+    const [caseQ] = await casesByReference(pq);
+    expect(caseZ).toMatchObject({ status: "open", settlement_line_id: null });
+    expect(caseQ).toMatchObject({ status: "open", settlement_line_id: null });
+    await requestClose(caseQ!.id); // Q waits for approval
+
+    await matchingGatewayReport({ day, tag, pz }, "B");
+
+    expect((await caseDetail(caseZ!.id)).status).toBe("matched");
+    // Q still waits, with its pending request, and can still be approved.
+    expect((await caseDetail(caseQ!.id)).status).toBe("pending_approval");
+    expect((await requestsOfCase(caseQ!.id))[0]!.status).toBe("pending");
+    const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+    await decideCase(caseQ!.id, "approved");
+    expect((await caseDetail(caseQ!.id)).status).toBe("resolved");
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore + 1);
+  });
+
+  it("EDC-06 the summary stops counting a missing case once its sale is matched", async () => {
+    const summaryOf = async () => {
+      const response = await manager.get(`${SUMMARY}?outletId=${outletA}`);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      return response.body.data as { openCases: number; varianceIdr: number };
+    };
+    const before = await summaryOf();
+    const s = await gatewayMissingSetup();
+    const open = await summaryOf();
+    expect(open.openCases).toBe(before.openCases + 1);
+    expect(open.varianceIdr).toBe(before.varianceIdr - 50000);
+
+    await requestClose(s.missingId); // pending_approval still counts
+    const pending = await summaryOf();
+    expect(pending.openCases).toBe(open.openCases);
+    expect(pending.varianceIdr).toBe(open.varianceIdr);
+
+    await matchingGatewayReport(s, "B");
+    const matched = await summaryOf();
+    expect(matched.openCases).toBe(before.openCases);
+    expect(matched.varianceIdr).toBe(before.varianceIdr);
+  });
+});
+
+// ---------------------------------------- legend-hbifd review gaps (a)-(f)
+//
+// Assumptions: a request that expired stays `expired` when a later import
+// closes its case (terminal outcomes stand, like cancel on expired = 409);
+// a report for another outlet never closes a case of this outlet, whichever
+// way its line is classified; a case whose source_transaction_id is NULL
+// (legacy, written before migration 0574) cannot be tied to a sale, so a
+// match never closes it. Hardening (f): the worker, applying an approved
+// chain, closes the case as `matched` (no resolved event) when its sale
+// already has a settlement line, even though no import closed it first.
+
+type SaleSet = { day: string; tag: string; px: string; pz: string; pq: string };
+
+/** X settled by report A; Z and Q never settled (two open missing cases). */
+async function twoMissingSetup(): Promise<
+  SaleSet & { caseZ: string; caseQ: string }
+> {
+  const day = nextDay();
+  const tag = uid();
+  const px = `PR-${tag}-X`;
+  const pz = `PR-${tag}-Z`;
+  const pq = `PR-${tag}-Q`;
+  await seedIntent({ providerRef: px, amountIdr: 100000, day });
+  await seedIntent({ providerRef: pz, amountIdr: 50000, day });
+  await seedIntent({ providerRef: pq, amountIdr: 70000, day });
+  const a = await post(
+    manager,
+    gatewayBody({
+      day,
+      reference: `GW-${tag}-A`,
+      lines: [{ reference: px, amountIdr: 100000, feeIdr: 700 }],
+    }),
+  );
+  expectOk(a);
+  settlementIds.push(a.body.data.id);
+  const [caseZ] = await casesByReference(pz);
+  const [caseQ] = await casesByReference(pq);
+  expect(caseZ).toMatchObject({ status: "open", settlement_line_id: null });
+  expect(caseQ).toMatchObject({ status: "open", settlement_line_id: null });
+  return { day, tag, px, pz, pq, caseZ: caseZ!.id, caseQ: caseQ!.id };
+}
+
+async function expireChain(chainId: string) {
+  await asTenant(tenantId, (c) =>
+    c.query(
+      `UPDATE approval_requests
+          SET created_at = now() - interval '2 hours',
+              deadline_at = now() - interval '1 minute'
+        WHERE tenant_id = $1 AND chain_id = $2`,
+      [tenantId, chainId],
+    ),
+  );
+  await expireDueApprovalRequests(tenantWide);
+}
+
+describe("EDC-06 legend-hbifd review gaps: what a later match must not touch", () => {
+  it("EDC-06 (a) a resolved missing case is not touched by a later matching report: still resolved, still one event", async () => {
+    const s = await gatewayMissingSetup();
+    await requestClose(s.missingId);
+    const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+    await decideCase(s.missingId, "approved");
+    expect((await caseDetail(s.missingId)).status).toBe("resolved");
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore + 1);
+    const before = await caseDetail(s.missingId);
+    const money = await moneySnapshot();
+
+    const later = await matchingGatewayReport(s, "B");
+    expect(later.body.data).toMatchObject({ matchedLines: 1, casesCreated: 0 });
+
+    expect(await caseDetail(s.missingId)).toEqual(before);
+    expect(before.approved_by).toBe(approverId);
+    expect(await matchedAuditCount(s.missingId)).toBe(0);
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore + 1);
+    expect(await casesByReference(s.pz)).toHaveLength(1);
+    expect(await moneySnapshot()).toEqual(money);
+  });
+
+  it("EDC-06 (b) an import by an outlet-scoped user closes the waiting case as matched and cancels its chain", async () => {
+    const day = nextDay();
+    const tag = uid();
+    const px = `PR-${tag}-X`;
+    const pz = `PR-${tag}-Z`;
+    await seedIntent({
+      outlet: outletB,
+      providerRef: px,
+      amountIdr: 100000,
+      day,
+    });
+    await seedIntent({
+      outlet: outletB,
+      providerRef: pz,
+      amountIdr: 50000,
+      day,
+    });
+    const a = await post(
+      scoped,
+      gatewayBody({
+        outletId: outletB,
+        day,
+        reference: `GW-${tag}-A`,
+        lines: [{ reference: px, amountIdr: 100000, feeIdr: 700 }],
+      }),
+    );
+    expectOk(a);
+    settlementIds.push(a.body.data.id);
+    const [missing] = await casesByReference(pz);
+    expect(missing).toMatchObject({ status: "open", settlement_line_id: null });
+    await requestClose(missing!.id);
+    const request = await pendingRequestOf(missing!.id);
+    const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+
+    const b = await post(
+      scoped,
+      gatewayBody({
+        outletId: outletB,
+        day,
+        reference: `GW-${tag}-B`,
+        lines: [{ reference: pz, amountIdr: 50000, feeIdr: 350 }],
+      }),
+    );
+    expectOk(b);
+    settlementIds.push(b.body.data.id);
+    expect(b.body.data).toMatchObject({ matchedLines: 1, casesCreated: 0 });
+
+    expect(await caseDetail(missing!.id)).toMatchObject({
+      status: "matched",
+      resolved_by: null,
+      approved_by: null,
+    });
+    expect((await requestsOfCase(missing!.id))[0]).toMatchObject({
+      id: request.id,
+      status: "cancelled",
+    });
+    expect(await matchedAuditCount(missing!.id)).toBe(1);
+    await expect(approveRequest(request.id)).rejects.toMatchObject({
+      code: "APPROVAL_REQUEST_NOT_PENDING",
+      status: 409,
+    });
+    await applyChainEvents(request.chain_id, new Set());
+    expect((await caseDetail(missing!.id)).status).toBe("matched");
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore);
+  });
+
+  it("EDC-06 (c) a report of another outlet does not close an open or waiting case of this outlet", async () => {
+    const s = await twoMissingSetup();
+    await requestClose(s.caseQ);
+    const request = await pendingRequestOf(s.caseQ);
+    const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+
+    const other = await post(
+      manager,
+      gatewayBody({
+        outletId: outletB,
+        day: s.day,
+        reference: `GW-${s.tag}-OB`,
+        lines: [
+          { reference: s.pz, amountIdr: 50000, feeIdr: 350 },
+          { reference: s.pq, amountIdr: 70000, feeIdr: 490 },
+        ],
+      }),
+    );
+    expectOk(other);
+    settlementIds.push(other.body.data.id);
+
+    expect((await caseDetail(s.caseZ)).status).toBe("open");
+    expect((await caseDetail(s.caseQ)).status).toBe("pending_approval");
+    expect((await requestsOfCase(s.caseQ))[0]).toMatchObject({
+      id: request.id,
+      status: "pending",
+    });
+    expect(await matchedAuditCount(s.caseZ)).toBe(0);
+    expect(await matchedAuditCount(s.caseQ)).toBe(0);
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore);
+  });
+
+  it("EDC-06 (c) a legacy case without a sale id (source_transaction_id NULL) is not closed by a match", async () => {
+    const s = await twoMissingSetup();
+    await requestClose(s.caseQ);
+    const request = await pendingRequestOf(s.caseQ);
+    await asTenant(tenantId, (c) =>
+      c.query(
+        `UPDATE payment_reconciliation_cases SET source_transaction_id = NULL
+          WHERE tenant_id = $1 AND id = ANY($2::uuid[])`,
+        [tenantId, [s.caseZ, s.caseQ]],
+      ),
+    );
+    const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+
+    const later = await post(
+      manager,
+      gatewayBody({
+        day: s.day,
+        reference: `GW-${s.tag}-B`,
+        lines: [
+          { reference: s.pz, amountIdr: 50000, feeIdr: 350 },
+          { reference: s.pq, amountIdr: 70000, feeIdr: 490 },
+        ],
+      }),
+    );
+    expectOk(later);
+    settlementIds.push(later.body.data.id);
+    expect(later.body.data).toMatchObject({ matchedLines: 2 });
+
+    expect((await caseDetail(s.caseZ)).status).toBe("open");
+    expect((await caseDetail(s.caseQ)).status).toBe("pending_approval");
+    expect((await requestsOfCase(s.caseQ))[0]).toMatchObject({
+      id: request.id,
+      status: "pending",
+    });
+    expect(await matchedAuditCount(s.caseZ)).toBe(0);
+    expect(await matchedAuditCount(s.caseQ)).toBe(0);
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore);
+  });
+
+  it("EDC-06 (d) an expired chain, worker already applied (case open again): a later match closes it as matched without error", async () => {
+    const s = await gatewayMissingSetup();
+    await requestClose(s.missingId);
+    const request = await pendingRequestOf(s.missingId);
+    await expireChain(request.chain_id);
+    const handled = new Set<string>();
+    await applyChainEvents(request.chain_id, handled);
+    expect((await caseDetail(s.missingId)).status).toBe("open");
+    const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+
+    await matchingGatewayReport(s, "B");
+
+    expect(await caseDetail(s.missingId)).toMatchObject({
+      status: "matched",
+      resolved_by: null,
+      approved_by: null,
+    });
+    expect((await requestsOfCase(s.missingId))[0]).toMatchObject({
+      id: request.id,
+      status: "expired",
+    });
+    await applyChainEvents(request.chain_id, handled);
+    expect((await caseDetail(s.missingId)).status).toBe("matched");
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore);
+  });
+
+  it("EDC-06 (d) an expired chain, worker not yet run (case still waiting): a later match closes it as matched without error", async () => {
+    const s = await gatewayMissingSetup();
+    await requestClose(s.missingId);
+    const request = await pendingRequestOf(s.missingId);
+    await expireChain(request.chain_id);
+    expect((await requestsOfCase(s.missingId))[0]!.status).toBe("expired");
+    const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+
+    await matchingGatewayReport(s, "B");
+
+    expect(await caseDetail(s.missingId)).toMatchObject({
+      status: "matched",
+      resolved_by: null,
+      approved_by: null,
+    });
+    expect((await requestsOfCase(s.missingId))[0]!.status).toBe("expired");
+    // The worker now sees the expiry event: the case must stay matched.
+    await applyChainEvents(request.chain_id, new Set());
+    expect((await caseDetail(s.missingId)).status).toBe("matched");
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore);
+    expect(await casesByReference(s.pz)).toHaveLength(1);
+  });
+
+  it("EDC-06 (e) an approval recorded before the match never produces a write-off event, even when the worker sees the event twice", async () => {
+    const s = await gatewayMissingSetup();
+    await requestClose(s.missingId);
+    const request = await pendingRequestOf(s.missingId);
+    const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+    await approveRequest(request.id); // chain recorded as approved
+
+    await matchingGatewayReport(s, "B"); // closes the case as matched first
+    const closed = await caseDetail(s.missingId);
+    expect(closed).toMatchObject({
+      status: "matched",
+      resolved_by: null,
+      approved_by: null,
+    });
+
+    await applyChainEvents(request.chain_id, new Set());
+    await applyChainEvents(request.chain_id, new Set()); // replayed delivery
+    expect(await caseDetail(s.missingId)).toEqual(closed);
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore);
+    expect(await casesByReference(s.pz)).toHaveLength(1);
+  });
+
+  it("EDC-06 (f) hardening: an approved chain whose sale already has a settlement line closes the case as matched, with no resolved event", async () => {
+    const s = await gatewayMissingSetup();
+    await requestClose(s.missingId);
+    const request = await pendingRequestOf(s.missingId);
+    const resolvedBefore = await countOutboxEvents(RESOLVED_EVENT);
+    const money = await moneySnapshot();
+    await approveRequest(request.id);
+    expect((await caseDetail(s.missingId)).status).toBe("pending_approval");
+
+    // No import closed the case: the sale gets its settlement line straight in SQL.
+    const [report] = await settlementsBy(`GW-${s.tag}-A`);
+    const { rows: intents } = await asTenant(tenantId, (c) =>
+      c.query<{ id: string }>(
+        "SELECT id FROM payment_intents WHERE tenant_id = $1 AND provider_ref = $2",
+        [tenantId, s.pz],
+      ),
+    );
+    expect(intents).toHaveLength(1);
+    await asTenant(tenantId, (c) =>
+      c.query(
+        `INSERT INTO payment_settlement_lines
+           (tenant_id, outlet_id, settlement_id, line_no, reference, amount_idr, fee_idr,
+            expected_idr, matched_payment_intent_id, match_status)
+         VALUES ($1, $2, $3, 99, $4, 50000, 350, 50000, $5, 'matched')`,
+        [tenantId, outletA, report!.id, s.pz, intents[0]!.id],
+      ),
+    );
+
+    await applyChainEvents(request.chain_id, new Set());
+
+    expect(await caseDetail(s.missingId)).toMatchObject({
+      status: "matched",
+      resolved_by: null,
+      approved_by: null,
+    });
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(resolvedBefore);
+    expect(await casesByReference(s.pz)).toHaveLength(1);
+    expect(await moneySnapshot()).toEqual(money);
+  });
+});
+
 describe("EDC-06 legend-aegsj database refuses a second missing case (migration 0574)", () => {
   it("EDC-06 the journal registers 0574 after the last earlier entry", () => {
     const journal = JSON.parse(
@@ -1884,7 +2649,7 @@ describe("EDC-06 legend-aegsj database refuses a second missing case (migration 
     ) as { entries: { idx: number; when: number; tag: string }[] };
     const entry = journal.entries.find((row) => row.idx === 574);
     expect(entry?.tag).toMatch(/^0574_/);
-    const earlier = journal.entries.filter((row) => row.idx !== 574);
+    const earlier = journal.entries.filter((row) => row.idx < 574);
     expect(entry!.when).toBeGreaterThan(
       Math.max(...earlier.map((r) => r.when)),
     );

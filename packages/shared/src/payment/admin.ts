@@ -447,8 +447,10 @@ export const reconciliationCaseViewSchema = z
     /**
      * `pending_approval`: closing was requested and waits for an approver who
      * is not the requester; the case closes only when that approval passes.
+     * `matched`: a later settlement report listed the sale, so the "missing"
+     * case closed by itself (no write-off, no approval needed).
      */
-    status: z.enum(["open", "pending_approval", "resolved"]),
+    status: z.enum(["open", "pending_approval", "matched", "resolved"]),
     /** Who asked to close the case (set once closing was requested). */
     requestedBy: uuidSchema.nullable(),
     requestedByName: ref.nullable(),
@@ -762,7 +764,9 @@ export const listReconciliationCases = defineEndpoint({
   path: `${ADMIN}/reconciliation/cases`,
   query: cursorPageQuerySchema.extend({
     ...outletFilter,
-    status: z.enum(["open", "pending_approval", "resolved"]).optional(),
+    status: z
+      .enum(["open", "pending_approval", "matched", "resolved"])
+      .optional(),
     source: reconciliationSourceSchema.optional(),
   }),
   response: cursorPageSchema(reconciliationCaseViewSchema),

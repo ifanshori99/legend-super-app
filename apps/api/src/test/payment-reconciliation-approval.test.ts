@@ -631,6 +631,73 @@ describe("EDC-06 reconciliation summary", () => {
   });
 });
 
+describe("EDC-06 reconciliation case closed automatically (legend-hbifd)", () => {
+  // The import closes a missing case as `matched` when a later report settles
+  // its sale (covered end to end in payment-settlement-import.test.ts). Here
+  // the case is put in that state directly: what the admin API shows and does
+  // with a `matched` case.
+  async function matchedCase() {
+    const caseId = await seedCase(-10_000);
+    await owner.query(
+      "UPDATE payment_reconciliation_cases SET status = 'matched' WHERE id = $1",
+      [caseId],
+    );
+    return caseId;
+  }
+
+  it("EDC-06 a matched case cannot be closed by hand: 409 and no approval request", async () => {
+    const caseId = await matchedCase();
+    const response = await resolveCase(requester, caseId);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(JSON.stringify(response.body)).toContain(
+      "Reconciliation case was closed automatically: its sale was matched in a settlement report.",
+    );
+    expect(await requestsOfCase(caseId)).toHaveLength(0);
+    expect((await caseRow(caseId)).status).toBe("matched");
+  });
+
+  it("EDC-06 the case list shows a matched case and can filter by status matched", async () => {
+    const caseId = await matchedCase();
+    const openId = await seedCase(-5_000);
+    const filtered = await requester.get(
+      `${ADMIN}/cases?outletId=${outletA}&status=matched&limit=100`,
+    );
+    expect(filtered.status, JSON.stringify(filtered.body)).toBe(200);
+    const ids = filtered.body.data.map((c: { id: string }) => c.id);
+    expect(ids).toContain(caseId);
+    expect(ids).not.toContain(openId);
+    expect(
+      filtered.body.data.every(
+        (c: { status: string }) => c.status === "matched",
+      ),
+    ).toBe(true);
+    expect((await listedCase(requester, caseId)).status).toBe("matched");
+    // The open filter does not return it.
+    const open = await requester.get(
+      `${ADMIN}/cases?outletId=${outletA}&status=open&limit=100`,
+    );
+    expect(open.status).toBe(200);
+    expect(open.body.data.map((c: { id: string }) => c.id)).not.toContain(
+      caseId,
+    );
+  });
+
+  it("EDC-06 the summary does not count a matched case as open or as variance", async () => {
+    const summaryOf = async () => {
+      const response = await requester.get(
+        `${ADMIN}/summary?outletId=${outletA}`,
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      return response.body.data as { openCases: number; varianceIdr: number };
+    };
+    const before = await summaryOf();
+    await matchedCase();
+    const after = await summaryOf();
+    expect(after.openCases).toBe(before.openCases);
+    expect(after.varianceIdr).toBe(before.varianceIdr);
+  });
+});
+
 describe("TEN-02 reconciliation tenant isolation", () => {
   it("TEN-02 another tenant's case cannot be resolved or seen", async () => {
     const response = await resolveCase(requester, otherCase);

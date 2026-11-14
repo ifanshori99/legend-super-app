@@ -359,7 +359,7 @@ export const paymentReconciliationCases = pgTable(
     ),
     check(
       "payment_reconciliation_cases_status_check",
-      sql`${t.status} IN ('open','pending_approval','resolved')`,
+      sql`${t.status} IN ('open','pending_approval','matched','resolved')`,
     ),
     check(
       "payment_reconciliation_cases_amount_check",
