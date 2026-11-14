@@ -34,6 +34,13 @@ export function deviceIdOf(req: Request): string | null {
   return payload.deviceId;
 }
 
+/** The `iat` (epoch seconds) of the request's verified device token, else null. Signature check only, like deviceIdOf. */
+export function deviceTokenIssuedAtOf(req: Request): number | null {
+  const raw = req.get(DEVICE_TOKEN_HEADER);
+  const payload = raw ? verifyDeviceToken(raw) : null;
+  return payload === null ? null : payload.issuedAt;
+}
+
 /**
  * The signed device id, only while the registry still accepts this token:
  * device active and not revoked, token not rotated out (`issuedAt` at or after

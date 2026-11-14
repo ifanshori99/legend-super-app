@@ -19,11 +19,15 @@ import { logger } from "../lib/logger.ts";
 import {
   assertPushServiceEndpoint,
   openPushSubscription,
-  pushEndpointHash,
 } from "../lib/push-subscription.ts";
 
-/** One alert reaches at most this many of a recipient's browsers, newest first. */
-export const MAX_PUSH_SUBSCRIPTIONS_PER_ALERT = 5;
+/**
+ * Safety bound on how many of a recipient's browsers one alert is sent to,
+ * newest registration first. It is applied only after the sealed subscriptions
+ * were opened, so unreadable rows can never push a working phone out of the
+ * set. Reaching it is an anomaly (logged as an error), not a normal limit.
+ */
+export const MAX_PUSH_TARGETS_PER_RECIPIENT = 30;
 
 /**
  * Which saved subscriptions may still receive a push. Legacy rows (never
@@ -33,7 +37,9 @@ export const MAX_PUSH_SUBSCRIPTIONS_PER_ALERT = 5;
  * keep its panic alarms. Once the expired session row is cleaned up the FK
  * nulls session_id and the row still qualifies; sign-out and revoke delete the
  * rows instead (session delete trigger in 0375, identity-session.service.ts). A bound device must
- * still be active. Whether the recipient may still receive the alert
+ * still be active and the registration must carry the device's current token
+ * generation: re-issuing the device token retires the older registrations.
+ * Whether the recipient may still receive the alert
  * (permission, duty, active user) is checked separately. Identifiers are
  * written qualified because a single-table Drizzle select drops the table name.
  */
@@ -52,7 +58,9 @@ export function deliverablePushSubscription(now: Date): SQL {
         where "ps_device"."id" = "push_subscriptions"."device_id"
           and "ps_device"."tenant_id" = "push_subscriptions"."tenant_id"
           and "ps_device"."status" = 'active'
-          and "ps_device"."revoked_at" is null)))`;
+          and "ps_device"."revoked_at" is null
+          and "ps_device"."token_issued_at" is not null
+          and "push_subscriptions"."device_token_issued_at" = "ps_device"."token_issued_at")))`;
 }
 
 /** A panic alarm goes only to browsers registered for the alarm's outlet. */
@@ -86,7 +94,6 @@ export function createWebPushProvider(
           throw new Error("Tenant-wide push requires tenant scope");
       } else assertOutletInScope(context.outletScope, request.outletId);
       assertPushServiceEndpoint(request.endpoint);
-      const endpointHash = pushEndpointHash(request.endpoint);
       const selected = await withTenant(database, context, async (tx) => {
         // The persisted attempt identifies the recipient. An endpoint shared
         // with another account must never select that account's sealed keys.
@@ -94,6 +101,10 @@ export function createWebPushProvider(
           .select({
             subscription: pushSubscriptions,
             link: notifications.link,
+            // Browsers this attempt already reached on an earlier try.
+            delivered: sql<
+              string[] | null
+            >`"delivery_attempts"."delivered_push_subscription_ids"::text[]`,
           })
           .from(deliveryAttempts)
           .innerJoin(
@@ -123,8 +134,7 @@ export function createWebPushProvider(
                 or "push_subscriptions"."outlet_id" = "notifications"."outlet_id")`,
             ),
           )
-          .orderBy(desc(pushSubscriptions.registeredAt))
-          .limit(MAX_PUSH_SUBSCRIPTIONS_PER_ALERT);
+          .orderBy(desc(pushSubscriptions.registeredAt));
         const targets: {
           row: typeof pushSubscriptions.$inferSelect;
           subscription: ReturnType<typeof openPushSubscription>;
@@ -146,12 +156,33 @@ export function createWebPushProvider(
             );
           }
         }
-        // The attempt was planned for one saved endpoint: it must still be
-        // among the deliverable ones, otherwise the plan is stale.
-        if (!targets.some((t) => t.row.endpointHash === endpointHash))
-          return null;
+        if (targets.length > MAX_PUSH_TARGETS_PER_RECIPIENT) {
+          logger.error(
+            {
+              eligible: targets.length,
+              cap: MAX_PUSH_TARGETS_PER_RECIPIENT,
+              reference: request.reference,
+            },
+            "Push targets exceed the safety bound; oldest registrations skipped",
+          );
+          targets.length = MAX_PUSH_TARGETS_PER_RECIPIENT;
+        }
+        // The attempt was planned for one saved endpoint, but it sends to all
+        // of the recipient's deliverable browsers. The planned endpoint may be
+        // gone (410, sign-out) while another phone still has to get a retry,
+        // so the plan is stale only when no deliverable target remains.
+        // Checked over all targets, before already-reached browsers are dropped.
+        if (targets.length === 0) return null;
+        // A retry sends only to browsers that did not take the alert yet.
+        const reached = new Set(rows[0]?.delivered ?? []);
         const link = inAppLinkSchema.safeParse(rows[0]?.link);
-        return { targets, url: link.success ? link.data : "/" };
+        return {
+          targets: targets.filter((t) => !reached.has(t.row.id)),
+          alreadyDelivered:
+            targets.length -
+            targets.filter((t) => !reached.has(t.row.id)).length,
+          url: link.success ? link.data : "/",
+        };
       });
       if (!selected) return { reference: request.reference, accepted: false };
       const payload = JSON.stringify({
@@ -228,10 +259,35 @@ export function createWebPushProvider(
             "Gone push subscriptions could not be deleted",
           ),
         );
-      const delivered = succeeded.length;
-      // Any browser that took the alert counts as delivered. Only when none did
-      // and one failed for a retryable reason is the attempt retried.
-      if (delivered === 0 && transientFailure) throw transientFailure;
+      // Remember who took the alert before deciding the outcome, so a retry
+      // does not ring them again. A failed write only risks a duplicate push,
+      // which is better than a lost alarm.
+      if (succeeded.length > 0)
+        await withTenant(database, context, (tx) =>
+          tx.execute(
+            sql`UPDATE delivery_attempts
+              SET delivered_push_subscription_ids = array(
+                select distinct unnest(
+                  delivered_push_subscription_ids
+                  || ARRAY[${sql.join(
+                    succeeded.map((id) => sql`${id}::uuid`),
+                    sql`, `,
+                  )}]::uuid[]))
+              WHERE tenant_id = ${context.tenant.tenantId}::uuid
+                AND idempotency_key = ${request.reference}
+                AND channel = 'web_push'
+                AND status = 'sending'`,
+          ),
+        ).catch(() =>
+          logger.warn(
+            { reference: request.reference },
+            "Delivered push subscriptions could not be recorded",
+          ),
+        );
+      // A browser that stays unreachable for a retryable reason retries the
+      // attempt even when others took the alert; only those are sent again.
+      if (transientFailure) throw transientFailure;
+      const delivered = succeeded.length + selected.alreadyDelivered;
       if (delivered === 0)
         return { reference: request.reference, accepted: false };
       // Delivery succeeded already. Optional telemetry must never schedule a

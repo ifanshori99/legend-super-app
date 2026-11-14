@@ -104,7 +104,6 @@ import { openPushSubscription } from "../lib/push-subscription.ts";
 import {
   createWebPushProvider,
   deliverablePushSubscription,
-  MAX_PUSH_SUBSCRIPTIONS_PER_ALERT,
   pushOutletMatches,
   type WebPushSend,
 } from "./web-push-provider.ts";
@@ -1317,8 +1316,7 @@ export function createDeliveryRecipientLookup(
               ),
             ),
           )
-          .orderBy(desc(pushSubscriptions.registeredAt))
-          .limit(MAX_PUSH_SUBSCRIPTIONS_PER_ALERT);
+          .orderBy(desc(pushSubscriptions.registeredAt));
         // The attempt names one endpoint (the newest readable one); the push
         // provider then sends to every deliverable browser of the recipient.
         // A subscription that cannot be opened is skipped, never fatal.

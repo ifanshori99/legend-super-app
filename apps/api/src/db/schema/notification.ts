@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
@@ -101,6 +102,14 @@ export const deliveryAttempts = pgTable(
     idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
     costIdr: bigint("cost_idr", { mode: "number" }).notNull().default(0),
     providerRef: varchar("provider_ref", { length: 255 }),
+    /**
+     * Web push subscriptions of this attempt that already accepted the push,
+     * so a retry after a partial failure sends only to the rest (legend-806).
+     */
+    deliveredPushSubscriptionIds: uuid("delivered_push_subscription_ids")
+      .array()
+      .notNull()
+      .default(sql`'{}'::uuid[]`),
     errorCode: varchar("error_code", { length: 64 }),
     skipReason: varchar("skip_reason", { length: 40 }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -195,6 +204,15 @@ export const pushSubscriptions = pgTable(
     outletId: uuid("outlet_id"),
     /** Registered device whose X-Device-Token was presented at registration. */
     deviceId: uuid("device_id"),
+    /**
+     * devices.token_issued_at of the token presented at registration. The
+     * worker sends only while it still equals the device's current value, so
+     * a reissued token (lost or stolen phone) silences the old registration.
+     * Null when device_id is null.
+     */
+    deviceTokenIssuedAt: timestamp("device_token_issued_at", {
+      withTimezone: true,
+    }),
     /**
      * Login session that registered it. Deleting a still-valid session
      * (sign-out, revoke) deletes the row (trigger in 0375), as does a revoke

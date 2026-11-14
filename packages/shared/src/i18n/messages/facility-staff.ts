@@ -11,6 +11,10 @@ export const facilityStaffMessages = {
       "Aktifkan agar alarm panik sampai ke perangkat ini saat layar tertutup.",
     enable: "Aktifkan notifikasi alarm",
     enabled: "Notifikasi alarm aktif di perangkat ini.",
+    binding: "Menyambungkan notifikasi alarm ke outlet ini…",
+    unbound:
+      "Notifikasi alarm belum tersambung ke outlet ini. Alarm panik bisa tidak sampai ke perangkat ini.",
+    retry: "Coba lagi",
     enableError: "Notifikasi alarm belum bisa diaktifkan. Coba lagi.",
     blocked:
       "Izin notifikasi diblokir. Izinkan notifikasi untuk situs ini di pengaturan browser, lalu muat ulang.",

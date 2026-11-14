@@ -437,9 +437,16 @@ export function createNotificationService(
             }
             let outletId: string | null = null;
             let deviceId: string | null = null;
+            let deviceTokenIssuedAt: Date | null = null;
             if (caller?.deviceId) {
+              // FOR SHARE: a concurrent reissue (issueDeviceToken locks the
+              // device FOR UPDATE and deletes its push rows) waits for this
+              // registration, so a row made with the old token is deleted too.
+              // The token must be at least as new as the device's current
+              // generation (same rule as findActiveDeviceForToken); a NULL
+              // floor or a caller without a verified iat matches nothing.
               const device = await tx.execute(
-                sql`SELECT outlet_id FROM devices WHERE tenant_id=${context.tenant.tenantId}::uuid AND id=${caller.deviceId}::uuid AND status='active' AND revoked_at IS NULL`,
+                sql`SELECT outlet_id, token_issued_at FROM devices WHERE tenant_id=${context.tenant.tenantId}::uuid AND id=${caller.deviceId}::uuid AND status='active' AND revoked_at IS NULL AND token_issued_at IS NOT NULL AND floor(extract(epoch from token_issued_at)) <= ${caller.deviceTokenIssuedAt ?? null}::bigint FOR SHARE`,
               );
               if (!device.rows.length)
                 // Device revoked, inactive or unknown: same code and message
@@ -451,6 +458,9 @@ export function createNotificationService(
                 );
               deviceId = caller.deviceId;
               outletId = String(device.rows[0].outlet_id);
+              deviceTokenIssuedAt = new Date(
+                device.rows[0].token_issued_at as string | Date,
+              );
               if (
                 body.outletId !== undefined &&
                 body.outletId.toLowerCase() !== outletId.toLowerCase()
@@ -472,10 +482,13 @@ export function createNotificationService(
                 throw denied();
               outletId = body.outletId;
             }
-            // The same browser endpoint now belongs to this account: a
-            // previous account's row for it must not keep receiving alarms.
+            // The same browser endpoint now belongs to this account: any other
+            // account's row for it, in any tenant, must not keep receiving
+            // alarms. The function (owner rights: RLS hides other tenants)
+            // takes an advisory lock per endpoint, so concurrent registrations
+            // of one endpoint serialise and only the last owner keeps a row.
             await tx.execute(
-              sql`DELETE FROM push_subscriptions WHERE tenant_id=${context.tenant.tenantId}::uuid AND endpoint_hash=${sealed.endpointHash} AND user_id <> ${userId}::uuid`,
+              sql`SELECT app.claim_push_endpoint(${context.tenant.tenantId}::uuid,${userId}::uuid,${sealed.endpointHash})`,
             );
             const id = randomUUID();
             // Only a verified registration (live session) stamps
@@ -486,7 +499,7 @@ export function createNotificationService(
             // tenant-outlet-device FK always holds.
             const registeredAt = caller ? sql`now()` : sql`NULL`;
             const result = await tx.execute(
-              sql`INSERT INTO push_subscriptions (tenant_id,id,user_id,endpoint_hash,subscription_ciphertext,key_version,device_label,outlet_id,device_id,session_id,registered_at) VALUES (${context.tenant.tenantId}::uuid,${id}::uuid,${userId}::uuid,${sealed.endpointHash},${sealed.ciphertext},${sealed.keyVersion},${body.deviceLabel},${outletId}::uuid,${deviceId}::uuid,${caller?.sessionId ?? null},${registeredAt}) ON CONFLICT (tenant_id,user_id,endpoint_hash) DO UPDATE SET subscription_ciphertext=EXCLUDED.subscription_ciphertext,key_version=EXCLUDED.key_version,device_label=EXCLUDED.device_label,outlet_id=COALESCE(EXCLUDED.outlet_id,push_subscriptions.outlet_id),device_id=CASE WHEN EXCLUDED.device_id IS NOT NULL THEN EXCLUDED.device_id WHEN EXCLUDED.outlet_id IS NULL OR EXCLUDED.outlet_id=push_subscriptions.outlet_id THEN push_subscriptions.device_id ELSE NULL END,session_id=EXCLUDED.session_id,registered_at=EXCLUDED.registered_at RETURNING id,created_at,last_success_at`,
+              sql`INSERT INTO push_subscriptions (tenant_id,id,user_id,endpoint_hash,subscription_ciphertext,key_version,device_label,outlet_id,device_id,device_token_issued_at,session_id,registered_at) VALUES (${context.tenant.tenantId}::uuid,${id}::uuid,${userId}::uuid,${sealed.endpointHash},${sealed.ciphertext},${sealed.keyVersion},${body.deviceLabel},${outletId}::uuid,${deviceId}::uuid,${deviceTokenIssuedAt}::timestamptz,${caller?.sessionId ?? null},${registeredAt}) ON CONFLICT (tenant_id,user_id,endpoint_hash) DO UPDATE SET subscription_ciphertext=EXCLUDED.subscription_ciphertext,key_version=EXCLUDED.key_version,device_label=EXCLUDED.device_label,outlet_id=COALESCE(EXCLUDED.outlet_id,push_subscriptions.outlet_id),device_id=CASE WHEN EXCLUDED.device_id IS NOT NULL THEN EXCLUDED.device_id WHEN EXCLUDED.outlet_id IS NULL OR EXCLUDED.outlet_id=push_subscriptions.outlet_id THEN push_subscriptions.device_id ELSE NULL END,device_token_issued_at=CASE WHEN EXCLUDED.device_id IS NOT NULL THEN EXCLUDED.device_token_issued_at WHEN EXCLUDED.outlet_id IS NULL OR EXCLUDED.outlet_id=push_subscriptions.outlet_id THEN push_subscriptions.device_token_issued_at ELSE NULL END,session_id=EXCLUDED.session_id,registered_at=EXCLUDED.registered_at RETURNING id,created_at,last_success_at`,
             );
             const row = result.rows[0];
             return {

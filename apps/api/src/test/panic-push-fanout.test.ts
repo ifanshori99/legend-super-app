@@ -261,17 +261,23 @@ async function seedSubscription(
     );
   }
   let deviceId: string | null = null;
+  // Dispatch sends to a device-bound row only while the row's
+  // device_token_issued_at equals the device's token_issued_at (P1-2), so the
+  // seed gives both the same value.
+  let deviceTokenIssuedAt: Date | null = null;
   if (spec.device) {
     deviceId = randomUUID();
+    deviceTokenIssuedAt = new Date();
     await owner.query(
-      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, status, revoked_at)
-       VALUES ($1, $2, $3, 'pos', 'Kasir uji', $4, $5)`,
+      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, status, revoked_at, token_issued_at)
+       VALUES ($1, $2, $3, 'pos', 'Kasir uji', $4, $5, $6)`,
       [
         deviceId,
         tenantA.tenantId,
         outletA,
         spec.device,
         spec.device === "revoked" ? new Date() : null,
+        deviceTokenIssuedAt,
       ],
     );
   }
@@ -279,8 +285,8 @@ async function seedSubscription(
   await owner.query(
     `INSERT INTO push_subscriptions
        (tenant_id, id, user_id, endpoint_hash, subscription_ciphertext, key_version,
-        outlet_id, device_id, session_id, created_at, registered_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        outlet_id, device_id, device_token_issued_at, session_id, created_at, registered_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
     [
       tenantA.tenantId,
       randomUUID(),
@@ -290,6 +296,7 @@ async function seedSubscription(
       sealed.keyVersion,
       spec.outlet === undefined ? outletA : spec.outlet,
       deviceId,
+      deviceTokenIssuedAt,
       sessionId,
       registeredAt,
       spec.legacy ? null : registeredAt,
@@ -527,7 +534,7 @@ describe("legend-ofq4f 791 item 3 fan-out to every eligible subscription", () =>
     expect(outcome.results.every((result) => result === "sent")).toBe(true);
   });
 
-  it("caps the fan-out at 5 and keeps the 5 newest registrations", async () => {
+  it("sends to all 7 registrations: the old cap of 5 no longer drops older phones", async () => {
     const receiver = await onDutyReceiver("Penerima tujuh perangkat");
     const subs: Seeded[] = [];
     for (let minutesAgo = 70; minutesAgo >= 10; minutesAgo -= 10)
@@ -536,12 +543,9 @@ describe("legend-ofq4f 791 item 3 fan-out to every eligible subscription", () =>
       );
     expect(subs).toHaveLength(7); // oldest first
     const outcome = await ring(receiver);
-    expect(outcome.endpoints).toHaveLength(5);
+    expect(outcome.endpoints).toHaveLength(7);
     expect([...outcome.endpoints].sort()).toEqual(
-      subs
-        .slice(2)
-        .map((sub) => sub.endpoint)
-        .sort(),
+      subs.map((sub) => sub.endpoint).sort(),
     );
   });
 });

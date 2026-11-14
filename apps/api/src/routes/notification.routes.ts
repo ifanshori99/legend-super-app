@@ -43,6 +43,12 @@ export type NotificationCaller = {
   sessionId: string;
   /** The device named by a valid X-Device-Token, else null. */
   deviceId: string | null;
+  /**
+   * `iat` (epoch seconds) of that verified token. The registration needs it to
+   * prove the token is not older than the device's current generation; a
+   * caller with a device but no value is refused (legend-806 P1-2).
+   */
+  deviceTokenIssuedAt?: number | null;
 };
 export type NotificationInput = {
   params?: unknown;

@@ -29,6 +29,15 @@ const MOCK_SUBSCRIPTION_KEY = "legend-mock-push-subscription-id";
 // secret (the endpoint and keys stay server-side); sign-out reads it to revoke
 // the row before the session ends. localStorage: it must survive a reload.
 const SUBSCRIPTION_ID_KEY = "legend.push.subscriptionId";
+// Who registered this browser's subscription (user id) and a counter that goes
+// up on every saved registration. A browser endpoint belongs to one account at
+// a time: a different signed-in user must never inherit it, and a sign-out
+// cleanup that outlived its timeout must not undo a newer registration.
+const OWNER_KEY = "legend.push.owner";
+const OWNER_GEN_KEY = "legend.push.ownerGen";
+// The endpoint the owner registered. Cleanup unsubscribes only that endpoint,
+// so a fresh endpoint the next account is still saving is never dropped.
+const OWNER_ENDPOINT_KEY = "legend.push.ownerEndpoint";
 
 // Shapes only: mock mode never reaches a push service, so the contract's
 // base64url fields are fixed sample values.
@@ -73,9 +82,46 @@ export function readStoredSubscriptionId(): string | null {
   }
 }
 
-export function rememberSubscriptionId(id: string): void {
+export function readPushOwner(): string | null {
   try {
+    const value = localStorage.getItem(OWNER_KEY);
+    return value === null || value === "" ? null : value;
+  } catch {
+    return null;
+  }
+}
+
+export function readOwnerEndpoint(): string | null {
+  try {
+    const value = localStorage.getItem(OWNER_ENDPOINT_KEY);
+    return value === null || value === "" ? null : value;
+  } catch {
+    return null;
+  }
+}
+
+export function readOwnerGeneration(): number {
+  try {
+    const value = Number(localStorage.getItem(OWNER_GEN_KEY));
+    return Number.isFinite(value) ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Call once the API confirmed the registration for `ownerUserId`. */
+export function rememberSubscriptionId(
+  id: string,
+  ownerUserId: string,
+  endpoint?: string,
+): void {
+  try {
+    const generation = readOwnerGeneration() + 1;
     localStorage.setItem(SUBSCRIPTION_ID_KEY, id);
+    localStorage.setItem(OWNER_KEY, ownerUserId);
+    if (endpoint) localStorage.setItem(OWNER_ENDPOINT_KEY, endpoint);
+    else localStorage.removeItem(OWNER_ENDPOINT_KEY);
+    localStorage.setItem(OWNER_GEN_KEY, String(generation));
   } catch {
     // Storage can be blocked; sign-out then cannot revoke by id.
   }
@@ -84,6 +130,8 @@ export function rememberSubscriptionId(id: string): void {
 export function forgetSubscriptionId(): void {
   try {
     localStorage.removeItem(SUBSCRIPTION_ID_KEY);
+    localStorage.removeItem(OWNER_KEY);
+    localStorage.removeItem(OWNER_ENDPOINT_KEY);
   } catch {
     // Storage can be blocked.
   }
@@ -187,7 +235,10 @@ export async function subscribeThisBrowser(
   vapidKey: string | null,
   // The outlet whose panic alarms this browser should receive. Omitted for
   // plain notifications; the API refuses it without the emergency permission.
-  outletId?: PushSubscriptionInput["outletId"],
+  outletId: string | undefined,
+  // The signed-in user. An existing browser subscription registered by anyone
+  // else (or by nobody we know) is dropped and replaced by a fresh endpoint.
+  ownerUserId: string,
 ): Promise<PushSubscriptionInput> {
   const label = deviceLabel();
   const scope = outletId === undefined ? {} : { outletId };
@@ -202,7 +253,11 @@ export async function subscribeThisBrowser(
   if (!vapidKey) throw new Error("PUSH_UNAVAILABLE");
   await navigator.serviceWorker.register("/sw.js");
   const registration = await navigator.serviceWorker.ready;
-  const existing = await registration.pushManager.getSubscription();
+  let existing = await registration.pushManager.getSubscription();
+  if (existing && readPushOwner() !== ownerUserId) {
+    await existing.unsubscribe();
+    existing = null;
+  }
   const subscription =
     existing ??
     (await registration.pushManager.subscribe({
@@ -220,8 +275,15 @@ export async function subscribeThisBrowser(
   };
 }
 
-/** Drops this browser's push subscription; the API row is removed separately. */
-export async function unsubscribeThisBrowser(): Promise<void> {
+/**
+ * Drops this browser's push subscription; the API row is removed separately.
+ * With `onlyEndpoint`, a subscription on any other endpoint is left alone (it
+ * belongs to a newer registration). Without it (no endpoint was stored), the
+ * current subscription is dropped whatever it is.
+ */
+export async function unsubscribeThisBrowser(
+  onlyEndpoint?: string | null,
+): Promise<void> {
   if (API_MOCK) {
     forgetMockSubscriptionId();
     return;
@@ -229,6 +291,7 @@ export async function unsubscribeThisBrowser(): Promise<void> {
   try {
     const registration = await navigator.serviceWorker.getRegistration();
     const subscription = await registration?.pushManager.getSubscription();
+    if (onlyEndpoint && subscription?.endpoint !== onlyEndpoint) return;
     await subscription?.unsubscribe();
   } catch {
     // A browser without a live registration has nothing left to unsubscribe.

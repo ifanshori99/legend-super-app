@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
+import { useRouteContext } from "@tanstack/react-router";
 import {
   BellRing,
   CircleCheck,
@@ -9,6 +10,7 @@ import {
   Smartphone,
 } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { API_MOCK } from "@/lib/api/mock-flag";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -83,6 +85,12 @@ export function PushPanel() {
   const remove = useDeletePushSubscription();
   const queryClient = useQueryClient();
   const tenantKey = () => loadTenantKey(queryClient);
+  const sessionUserId = useRouteContext({
+    strict: false,
+    select: (context) => context.session?.user.id,
+  });
+  // Mock mode has no real session; the owner mark only needs to be stable.
+  const userId = sessionUserId ?? (API_MOCK ? "mock-user" : null);
   const [state, setState] = useState<PushState>("checking");
   const [device, setDevice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -108,6 +116,7 @@ export function PushPanel() {
     setError(null);
     setBusy(true);
     try {
+      if (!userId) throw new Error("NO_SESSION");
       const next = await detectPushState(await tenantKey());
       if (next !== "inactive" && next !== "active") {
         setState(next);
@@ -124,12 +133,15 @@ export function PushPanel() {
           return;
         }
       }
-      const saved = await save.mutateAsync(
-        await subscribeThisBrowser(await tenantKey()),
+      const input = await subscribeThisBrowser(
+        await tenantKey(),
+        undefined,
+        userId,
       );
+      const saved = await save.mutateAsync(input);
       setSubscriptionId(saved.data.id);
       rememberMockSubscriptionId(saved.data.id);
-      rememberSubscriptionId(saved.data.id);
+      rememberSubscriptionId(saved.data.id, userId, input.endpoint);
       setState("active");
       toast({
         title: t("notification.push.enabledToast"),
@@ -148,6 +160,7 @@ export function PushPanel() {
     setError(null);
     setBusy(true);
     try {
+      if (!userId) throw new Error("NO_SESSION");
       let id =
         subscriptionId ??
         readMockSubscriptionId() ??
@@ -156,7 +169,9 @@ export function PushPanel() {
       // call needs after a reload.
       if (!id)
         id = (
-          await save.mutateAsync(await subscribeThisBrowser(await tenantKey()))
+          await save.mutateAsync(
+            await subscribeThisBrowser(await tenantKey(), undefined, userId),
+          )
         ).data.id;
       await remove.mutateAsync(id);
       await unsubscribeThisBrowser();

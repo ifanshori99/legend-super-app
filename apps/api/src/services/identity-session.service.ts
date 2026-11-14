@@ -413,11 +413,42 @@ export async function revokeOwnSession(input: {
  * app.delete_session_push_subscriptions.
  */
 async function deleteSessionPushSubscriptions(
-  tx: Tx,
+  tx: Tx | typeof db,
   sessionId: string,
 ): Promise<void> {
   await tx.execute(
     sql`SELECT app.delete_session_push_subscriptions(${sessionId})`,
+  );
+}
+
+/**
+ * legend-ofq4f (second opinion P1-1): an explicit end of one session (sign-out,
+ * revoke, admin revoke) deletes that session's push subscriptions even when
+ * the session has already expired. The delete trigger spares an expired
+ * session on purpose (idle cleanup must keep panic alarms), so Better Auth's
+ * `session.delete.before` hook calls this for explicit endpoints. Throws on
+ * failure: the caller fails the revoke rather than leave a live alarm behind.
+ */
+export async function deleteSessionPushSubscriptionsForSession(
+  sessionId: string,
+): Promise<void> {
+  await deleteSessionPushSubscriptions(db, sessionId);
+}
+
+/**
+ * legend-ofq4f (second opinion P1-1): a revoke of all of a user's sessions
+ * (revoke-sessions, password reset, ban, admin revoke) also deletes the
+ * user's orphan subscriptions (session_id NULL after an expired session was
+ * cleaned up), which no per-session delete can reach. `keepSessionId` is the
+ * current session of revoke-other-sessions, whose own subscriptions stay.
+ * app.delete_user_push_subscriptions (migration 0379) runs in every tenant.
+ */
+export async function deleteUserPushSubscriptions(
+  userId: string,
+  keepSessionId: string | null,
+): Promise<void> {
+  await db.execute(
+    sql`SELECT app.delete_user_push_subscriptions(${userId}, ${keepSessionId})`,
   );
 }
 

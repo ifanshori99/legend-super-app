@@ -15,7 +15,10 @@ import type { TenantContext } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { db } from "../db/index.ts";
 import { createPushSubscriptionProtector } from "../lib/push-subscription.ts";
-import { currentDeviceIdOf } from "../routes/device-id.ts";
+import {
+  currentDeviceIdOf,
+  deviceTokenIssuedAtOf,
+} from "../routes/device-id.ts";
 import { getAuth } from "../middleware/auth.ts";
 import type {
   NotificationOperation,
@@ -55,6 +58,7 @@ export function createNotificationPushPorts(): NotificationRoutePorts {
       return {
         sessionId: getAuth(req).session.id,
         deviceId: await currentDeviceIdOf(req),
+        deviceTokenIssuedAt: deviceTokenIssuedAtOf(req),
       };
     },
     service: createNotificationService(

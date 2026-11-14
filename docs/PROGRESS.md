@@ -5371,3 +5371,11 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Semua temuan review dibetulkan dan disetujui ulang: field tenant bertingkat, boot-edge berpotensi antre ganda, kelayakan penerima push saat kirim, dan tujuan notifikasi nonpanic. Test terarah hijau: root 187/187, API 176/176; mock legend-jztb7 4/4 hijau (termasuk 390 px). ESLint 22 berkas kode/test dan Prettier kode/test/manifest/lock hijau. Typecheck web hijau pada satu run; API hijau setelah normalisasi alasan pencabutan (TS2322 pada run awal). Test relay/sesi terdampak diulang 95/95 hijau setelah normalisasi; build akhir hijau 2/2 task, 0 cache, 9,717 detik. Seluruh job selesai 20:48 WIB.
 - Diagnosis antrean build: job menunggu sejak 19:47 dengan wrapper lama. Host memperbarui kebijakan resmi founder Q2 saat job masih antre; tiket milik thread ini dihentikan sebelum bundler mulai (exit 143), dibersihkan, lalu satu job identik dijalankan lewat wrapper terbaru. FIFO sempat tertahan tiket lebih tua yang memakai batas sebelumnya. Build sudah selesai; tidak mengubah skrip global, batas, atau proses thread lain. Waktu sesi sekitar 18:50–20:48 WIB, banyak terpakai menunggu antrean global.
 - Batas rilis: kunci VAPID nyata, registrasi subscription/public-key HTTP, dan penyediaan kredensial perangkat browser belum siap. Tidak membuat kunci produksi palsu; mock bukan bukti pengiriman ponsel nyata. Status Beads tetap dikelola CTO.
+
+## 806 Perbaikan second opinion alarm panik (14 Nov 2026 malam, engineer Opus, bead legend-24y9h)
+
+- Cabang `ws/panic-push-registration`, basis e241e9476. Migrasi baru `0379_panic_push_second_opinion.sql` (journal idx 358, merge train boleh menomori ulang). 0375 dan 0379 harus dirilis bersama.
+- Semua temuan P0-1..P0-4 dan P1-1..P1-3 dibetulkan, masing-masing dengan test gagal-dulu. Rincian per temuan: `docs/qa/second-opinion-alarm-panik.md` bagian "Tindak lanjut 806".
+- Review: reviewer sonnet (2 bug dibetulkan) dan architect xhigh (A1-A4 diterima). A1, A3, A4 terbukti gagal-dulu. A2 tidak bisa direproduksi, allowlist dipertahankan sebagai pengerasan.
+- Test terarah API: 26 file, 468/468 lulus.
+- Lanjutan: bead legend-gchkf (cabut HP yang sesinya kedaluwarsa). Uji HP nyata (Android terkunci, iOS PWA) tetap utang gerbang rilis. Tidak di-merge ke m1.
