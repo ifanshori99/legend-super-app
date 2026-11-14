@@ -61,7 +61,7 @@ export function AiSettingsPage() {
         </div>
         <div className="grid min-w-0 gap-4">
           <BudgetCard locked={locked} />
-          <OrderCard />
+          <OrderCard locked={locked} />
         </div>
       </div>
     );

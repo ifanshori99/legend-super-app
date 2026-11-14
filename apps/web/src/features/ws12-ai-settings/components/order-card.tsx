@@ -5,9 +5,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AdminCard } from "@/features/ws12-ai-admin/components/shared";
 import { useChatgptLogin, useProvider } from "../hooks";
 
-// No lock prop: the mockup keeps the saved status visible while the platform
-// lock is on, and the page banner explains the lock.
-export function OrderCard() {
+// `locked` is accepted for symmetry with the other cards but changes nothing:
+// the mockup keeps the saved status visible while the platform lock is on, and
+// the page banner explains the lock.
+export function OrderCard(_props: { locked?: boolean }) {
   const t = useT();
   const login = useChatgptLogin();
   const provider = useProvider();
