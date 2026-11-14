@@ -31,6 +31,8 @@ import {
   edgePrintJobs,
   edgePrinters,
 } from "../../db/schema/edge-print.ts";
+import { devices } from "../../db/schema/device.ts";
+import { stations } from "../../db/schema/menu.ts";
 import { withTenant } from "../../db/tenant.ts";
 import type {
   NewPrintJob,
@@ -227,6 +229,80 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
   }
 
   return {
+    async checkStationTicketDestination(job) {
+      return run(async (tx) => {
+        const validDevice = async (id: string) => {
+          const [device] = await tx
+            .select({ id: devices.id })
+            .from(devices)
+            .where(
+              and(
+                eq(devices.id, id),
+                eq(devices.tenantId, tenantId),
+                eq(devices.outletId, outletId),
+                eq(devices.type, "printer"),
+                eq(devices.status, "active"),
+                isNull(devices.revokedAt),
+              ),
+            )
+            .limit(1);
+          return Boolean(device);
+        };
+        if (job.kind !== "station_ticket" && job.originalPrinterId) {
+          const printers = await tx
+            .select({ id: edgePrinters.id, role: edgePrinters.role })
+            .from(edgePrinters)
+            .where(
+              and(
+                printerScope(),
+                isNull(edgePrinters.retiredAt),
+                sql`${edgePrinters.id} IN (${job.printerId}::uuid, ${job.originalPrinterId}::uuid)`,
+              ),
+            );
+          if (
+            printers.length === 2 &&
+            printers.every((printer) => printer.role !== "station")
+          )
+            return true;
+        }
+        const validPrinter = async (id: string) => {
+          const [printer] = await tx
+            .select()
+            .from(edgePrinters)
+            .where(
+              and(
+                printerScope(),
+                eq(edgePrinters.id, id),
+                isNull(edgePrinters.retiredAt),
+              ),
+            )
+            .limit(1);
+          if (!printer || !(await validDevice(id))) return false;
+          if (printer.role !== "station") return true;
+          if (!printer.stationId) return false;
+          const [station] = await tx
+            .select({ id: stations.id })
+            .from(stations)
+            .where(
+              and(
+                eq(stations.id, printer.stationId),
+                eq(stations.tenantId, tenantId),
+                eq(stations.outletId, outletId),
+                eq(stations.printerDeviceId, printer.id),
+                isNull(stations.deletedAt),
+              ),
+            )
+            .limit(1);
+          return Boolean(station);
+        };
+        if (!(await validPrinter(job.printerId))) return false;
+        return (
+          !job.originalPrinterId ||
+          job.originalPrinterId === job.printerId ||
+          (await validPrinter(job.originalPrinterId))
+        );
+      });
+    },
     async listPrinters() {
       return run(async (tx) => {
         const rows = await tx
