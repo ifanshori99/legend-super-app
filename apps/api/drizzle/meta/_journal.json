@@ -2467,10 +2467,10 @@
       "breakpoints": true
     },
     {
-      "idx": 366,
+      "idx": 371,
       "version": "7",
-      "when": 1794629275111,
-      "tag": "0366_device_scanner_status",
+      "when": 1794629280111,
+      "tag": "0371_device_scanner_status",
       "breakpoints": true
     }
   ]

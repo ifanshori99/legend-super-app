@@ -29,7 +29,7 @@ agent), jadi perangkat yang melapor.
    juga mengirim satu heartbeat segera saat status pemindai berubah, supaya
    "terputus" tampil dalam hitungan detik, bukan menunggu siklus berikut.
 4. **Penyimpanan**: dua kolom nullable di `devices`: `scanner_status`
-   (`connected`/`disconnected`, CHECK) dan `scanner_observed_at`. Migrasi 0366.
+   (`connected`/`disconnected`, CHECK) dan `scanner_observed_at`. Migrasi 0371.
    Heartbeat tanpa field `scanner` tidak mengubah kedua kolom itu.
 5. **Pembaca**: `GET /api/outlets/:outletId/kitchen/scanner-status` (kontrak yang
    sudah diharapkan web), izin `kds.station.manage` atau izin baca KDS yang sudah
