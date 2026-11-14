@@ -142,7 +142,7 @@ const putProvider = (who: Actor, model = "lock-model") =>
 const getJson = async (who: Actor, path: string) => {
   const res = await who.client.get(path);
   expect(res.status, `${path}: ${res.text}`).toBe(200);
-  return res.body.data as Record<string, any>;
+  return res.body.data as Record<string, unknown>;
 };
 const ask = (who: Actor, question = `Pertanyaan kunci ${randomUUID()}`) =>
   who.client
@@ -626,6 +626,79 @@ describe("legend-nnufz (4) systemAiComplete under lock", () => {
 // ---- (5) MCP bearer and OAuth -------------------------------------------------------
 
 describe("legend-nnufz (5) MCP under lock", () => {
+  it("rejects a token exchange when the platform lock commits while its transaction is waiting", async () => {
+    const client = await approvedClient();
+    const user = await powerUser("Pengguna OAuth recheck");
+    const verifier = randomBytes(32).toString("base64url");
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const auth = await authorize(user, client.clientId, challenge);
+    expect(auth.code, auth.error).toBeTruthy();
+    const tokenCount = async () => {
+      const result = await floorPool.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM mcp_tokens WHERE tenant_id = $1 AND mcp_client_id = $2",
+        [tenantId, client.id],
+      );
+      return result.rows[0]!.count;
+    };
+    const tokensBefore = await tokenCount();
+    const meta = (await tenantAgent().get(METADATA_PATH)).body as Record<
+      string,
+      string
+    >;
+    const blocker = await floorPool.connect();
+    let committed = false;
+    try {
+      await blocker.query("BEGIN");
+      const pid = (
+        await blocker.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
+      ).rows[0]!.pid;
+      await blocker.query(
+        `UPDATE tenants SET feature_flags = jsonb_set(feature_flags, '{modules}', $2::jsonb) WHERE id = $1`,
+        [
+          tenantId,
+          JSON.stringify(originalModules.filter((m) => m !== "ai_assistant")),
+        ],
+      );
+      const exchange = () =>
+        tenantAgent().post(pathOf(meta.token_endpoint!)).type("form").send({
+          grant_type: "authorization_code",
+          redirect_uri: REDIRECT_URI,
+          code: auth.code!,
+          client_id: client.clientId,
+          code_verifier: verifier,
+        });
+      const response = exchange().then((value) => value);
+      let waiting = false;
+      for (let i = 0; i < 100 && !waiting; i += 1) {
+        const result = await floorPool.query<{ waiting: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::integer = ANY(pg_blocking_pids(pid))) AS waiting",
+          [pid],
+        );
+        waiting = result.rows[0]!.waiting;
+        if (!waiting) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(
+        waiting,
+        "OAuth transaction must wait for the uncommitted tenant lock",
+      ).toBe(true);
+      await blocker.query("COMMIT");
+      committed = true;
+      const denied = await response;
+      expect(denied.status, denied.text).toBe(403);
+      expect(denied.text).toContain(LOCKED);
+      expect(await tokenCount()).toBe(tokensBefore);
+
+      // A denied exchange must not burn the code or create a token.
+      await unlock();
+      const retry = await exchange();
+      expect(retry.status, retry.text).toBe(200);
+      expect(retry.body.access_token).toBeTruthy();
+    } finally {
+      if (!committed) await blocker.query("ROLLBACK");
+      blocker.release();
+    }
+  }, 20_000);
+
   it("a bearer token issued before the lock is refused with 403 AI_PLATFORM_DISABLED", async () => {
     const client = await approvedClient();
     const user = await powerUser("Pengguna MCP kunci");
