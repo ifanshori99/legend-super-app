@@ -359,6 +359,7 @@ export type LinkDeliveryChannelInput = z.infer<
 export const listDeliveryOrdersQuerySchema = z.strictObject({
   platform: deliveryPlatformSchema.optional(),
   status: deliveryOrderStatusSchema.optional(),
+  attention: z.stringbool({ truthy: ["true"], falsy: ["false"] }).optional(),
   cursor: z.string().min(1).max(1024).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(25),
 });

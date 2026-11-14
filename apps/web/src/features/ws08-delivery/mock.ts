@@ -52,7 +52,12 @@ import { registerMock } from "../../lib/mock/registry.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
-import { channelIsManual, lineNeedsMapping, orderIsFinal } from "./lib.ts";
+import {
+  channelIsManual,
+  lineNeedsMapping,
+  orderIsFinal,
+  orderNeedsAttention,
+} from "./lib.ts";
 
 const fixtures = cafeLegendDeliveryFixtures;
 const outlet = cafeLegendFixtures.outlets[0];
@@ -296,7 +301,8 @@ registerMock(listDeliveryOrders, ({ params, query, scenario }) => {
       (row) =>
         row.outletId === params.outletId &&
         (query.platform === undefined || row.platform === query.platform) &&
-        (query.status === undefined || row.status === query.status),
+        (query.status === undefined || row.status === query.status) &&
+        (query.attention !== true || orderNeedsAttention(row)),
     )
     .sort(
       (left, right) =>

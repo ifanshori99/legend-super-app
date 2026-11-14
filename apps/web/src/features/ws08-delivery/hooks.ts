@@ -40,6 +40,7 @@ import {
 export type DeliveryOrderFilters = {
   platform?: DeliveryPlatform;
   status?: DeliveryOrderStatus;
+  attention?: "true" | "false";
 };
 
 function useInvalidate(endpoints: readonly AnyEndpoint[]) {
@@ -65,7 +66,7 @@ export function useChannels(outletId: string | undefined) {
 
 /**
  * Incoming orders, newest first, as an infinite cursor list. Filters are part
- * of the key, so switching the status or platform starts a clean page chain.
+ * of the key, so switching any filter starts a clean page chain.
  */
 export function useDeliveryOrders(
   outletId: string | undefined,

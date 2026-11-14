@@ -132,6 +132,22 @@ export async function listDeliveryOrders(
       filters.push(eq(deliveryChannelOrders.platform, query.platform));
     if (query.status)
       filters.push(eq(deliveryChannelOrders.status, query.status));
+    // Match the staff action queue before LIMIT, so older held orders are
+    // reachable without walking pages of orders that need no intervention.
+    if (query.attention) {
+      filters.push(sql`(
+        ${deliveryChannelOrders.platformSyncState} = 'needs_action'
+        OR (
+          ${deliveryChannelOrders.status} = 'received'
+          AND ${deliveryChannelOrders.orderId} IS NULL
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(${deliveryChannelOrders.lines}) AS line(value)
+            WHERE line.value->>'mapping' IN ('unmatched', 'sold_out')
+          )
+        )
+      )`);
+    }
     if (query.cursor) {
       let after: z.infer<typeof cursorKeySchema>;
       try {
