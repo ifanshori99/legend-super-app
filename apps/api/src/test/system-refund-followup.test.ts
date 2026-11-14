@@ -18,7 +18,8 @@
 // Ids: weuo2-A re-filed once after a non-person failure, replays and concurrent
 // settles add nothing; weuo2-B three failures stop the loop, alarm + audit +
 // list entry, once; weuo2-C person rejection, no re-file, in the list;
-// weuo2-D money cap with a pending sibling; weuo2-E follow-up list API (tenant
+// weuo2-D money cap with a pending sibling; weuo2-F provider decline is not
+// re-filed (failure_needs_person); weuo2-E follow-up list API (tenant
 // isolation, permission, strict query, newest first, drops once a live refund
 // exists).
 //
@@ -275,7 +276,11 @@ async function supervisorNotifications() {
   return rows;
 }
 
-type FollowUp = { id: string; paymentIntentId: string };
+type FollowUp = {
+  id: string;
+  paymentIntentId: string;
+  blockedReason?: string;
+};
 async function followUps(
   client: ReturnType<typeof agent> = approver,
   headers: { Host: string } = world.headers,
@@ -415,6 +420,58 @@ describe("legend-weuo2 weuo2-C a person's rejection is never re-filed", () => {
     expect(await followUpIds()).toContain(first.id);
 
     // Replay of the decision: still one audit row, one alarm, one refund.
+    await settleRefundFromChain(world.context, first.id);
+    expect(await auditRows(first.id)).toHaveLength(1);
+    expect((await supervisorNotifications()).length).toBe(alarmsBefore + 1);
+    expect(await expectCapped(paid.intentId, paidIdr)).toHaveLength(1);
+  });
+});
+
+describe("legend-weuo2 weuo2-F a provider decline is not re-filed (CTO 15 Nov)", () => {
+  it("weuo2-F the provider declines the system refund: no new refund, one alarm, one audit row, listed as failure_needs_person, money capped", async () => {
+    const paid = await paidTicket();
+    const paidIdr = (await linkedOf(world, paid.order.id)).paid;
+    await cancelOrder(paid);
+    const first = await liveSystemRefund(paid.intentId, paidIdr);
+    const alarmsBefore = (await supervisorNotifications()).length;
+
+    const fake = new FakeRefundGateway();
+    fake.enqueue("failed");
+    setPaymentRefundGateway(fake);
+    try {
+      const response = await approver
+        .post(`${ADMIN}/refunds/${first.id}/approve`)
+        .set(world.headers)
+        .set(originHeader)
+        .send({ idempotencyKey: `apr-${randomUUID()}` });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.data.status).toBe("failed");
+    } finally {
+      setPaymentRefundGateway(null);
+    }
+    await settleRefundFromChain(world.context, first.id);
+
+    // A new request could pay twice after a provider decline: not re-filed.
+    const rows = await expectCapped(paid.intentId, paidIdr);
+    expect(rows, "a provider-declined refund was re-filed").toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: first.id, status: "failed" });
+    expect(liveSum(rows)).toBeLessThanOrEqual(paidIdr);
+
+    expect(await auditRows(first.id)).toHaveLength(1);
+    const alarms = (await supervisorNotifications()).slice(alarmsBefore);
+    expect(alarms).toHaveLength(1);
+    expect(`${alarms[0]!.title} ${alarms[0]!.body}`).toMatch(
+      /pengembalian|refund/i,
+    );
+    const response = await followUps();
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const items = (response.body.data as FollowUp[]).filter(
+      (item) => item.id === first.id,
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]!.blockedReason).toBe("failure_needs_person");
+
+    // Replays add nothing.
     await settleRefundFromChain(world.context, first.id);
     expect(await auditRows(first.id)).toHaveLength(1);
     expect((await supervisorNotifications()).length).toBe(alarmsBefore + 1);

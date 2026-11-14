@@ -49,19 +49,16 @@ export const MAX_FOLLOWUP_SCAN = 500;
 const FOLLOWUP_ACTORS = ["system:facility", "system:qr"] as const;
 
 /**
- * Failures a new request can fix: an expired approval, an approver who lost
- * the right, a provider decline (the money did not leave) and `cap_exceeded`
- * (the new amount is `cap - reserved`, so it is what is really left). A
- * rejection is a person's decision (same rule as
- * `refileRecoveryRefundAfterFailure`, order-recovery-refund.ts), and
- * `source_document` or an unknown reason would repeat on a new request: those
- * wait for a person.
+ * Failures a new request can fix: an expired approval and an approver who lost
+ * the right. Same rule as `refileRecoveryRefundAfterFailure`
+ * (order-recovery-refund.ts, CTO decision 15 Nov: rules that limit payment).
+ * `provider_declined`, `cap_exceeded`, `source_document`, a rejection (a
+ * person's decision) and an unknown reason go straight to the follow-up list
+ * and alarm: a new request could pay twice or would repeat.
  */
 const REFILE_FAILURE_REASONS: readonly string[] = [
   "approval_expired",
   "approver_unauthorized",
-  "provider_declined",
-  "cap_exceeded",
 ];
 
 export const isFollowupActor = (requestedBy: string): boolean =>
@@ -130,16 +127,9 @@ export async function settleSystemRefundFailure(
     refund.status !== "failed"
   )
     return;
-  const live = await tx.execute(sql`
-    SELECT 1
-      FROM payment_refunds
-     WHERE tenant_id = ${refund.tenantId}
-       AND payment_intent_id = ${refund.paymentIntentId}::uuid
-       AND unallocated_fund_id IS NULL
-       AND status IN ('pending', 'approved')
-     LIMIT 1
-  `);
-  if (live.rows.length > 0) return;
+  // No "any live refund" shortcut: a pending refund of another part (e.g. the
+  // late refund of the same payment) does not cover what THIS one held. The
+  // exact remaining balance below (pending and approved are reserved) decides.
   const [intent] = await tx
     .select()
     .from(paymentIntents)
@@ -236,9 +226,9 @@ export async function settleSystemRefundFailure(
 /**
  * Failed system refunds that still leave the guest owed money, newest first.
  * Derived on every read: the latest failed refund of a payment by a follow-up
- * requester, with no refund still live (pending or approved) on that payment
- * and a refundable balance above zero. A completed refund (manual settle or a
- * new request) or a live one removes it. Needs the refund read permission,
+ * requester, while the payment still has a refundable balance above zero
+ * (pending and approved refunds are reserved, so a live refund that covers the
+ * money removes it, and so does a completed one). Needs the refund read permission,
  * tenant-wide or at the outlet asked for. The balance cannot be filtered in
  * SQL, so rows are scanned in batches until the page is full.
  */
@@ -300,13 +290,6 @@ export async function listRefundFollowups(
                  AND later.status = 'failed'
                  AND later.requested_by IN (${actors})
                  AND (later.created_at, later.id) > (${paymentRefunds.createdAt}, ${paymentRefunds.id}))`,
-            // No refund live on the payment: nothing covers the money.
-            sql`NOT EXISTS (
-              SELECT 1 FROM payment_refunds live
-               WHERE live.tenant_id = ${paymentRefunds.tenantId}
-                 AND live.payment_intent_id = ${paymentRefunds.paymentIntentId}
-                 AND live.unallocated_fund_id IS NULL
-                 AND live.status IN ('pending', 'approved'))`,
             // Cheap pre-filter of the balance: a payment that is not paid any
             // more, or whose refunds already add up to what was paid, owes
             // nothing (the exact balance below can only be lower).

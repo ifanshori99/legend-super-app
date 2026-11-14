@@ -956,6 +956,123 @@ describe.each(["rejected", "approval_expired"] as const)(
   },
 );
 
+describe("QR late-path system refund: bounded re-file (legend-weuo2)", () => {
+  // Assumptions: MAX_SYSTEM_REFUND_REFILE_ATTEMPTS = 3 (literal here). The
+  // alarm is a notification about a refund ("pengembalian" or "refund") in this
+  // tenant; the audit row is `payment.refund_followup_required` on the refund
+  // id; the follow-up list is read by `staff` (payment.reconcile).
+  // One alarm = one notification per supervisor of the outlet (the staff and
+  // `second` both hold the supervisor role here); never more than 1 per user.
+  const alarmRows = async () =>
+    (
+      await owner.query<{ user_id: string }>(
+        `SELECT user_id FROM notifications
+          WHERE tenant_id = $1 AND (title || ' ' || body) ~* 'pengembalian|refund'`,
+        [tenant.tenantId],
+      )
+    ).rows;
+  const tenantAlarms = async () => (await alarmRows()).length;
+  const perUser = (rows: { user_id: string }[]) => {
+    const counts = new Map<string, number>();
+    for (const row of rows)
+      counts.set(row.user_id, (counts.get(row.user_id) ?? 0) + 1);
+    return counts;
+  };
+  const expectOneAlarmPerUser = async (
+    before: Map<string, number>,
+  ): Promise<number> => {
+    const rows = await alarmRows();
+    const after = perUser(rows);
+    expect(after.size).toBeGreaterThan(0);
+    const raised = [...after].map(
+      ([user, count]) => count - (before.get(user) ?? 0),
+    );
+    expect(raised.every((n) => n === 0 || n === 1)).toBe(true);
+    expect(
+      raised.some((n) => n === 1),
+      "no alarm was raised",
+    ).toBe(true);
+    return rows.length;
+  };
+  const followupAudits = async (refundId: string) =>
+    (
+      await owner.query<{ id: string }>(
+        `SELECT id FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'objectId' = $2
+            AND event->>'action' = 'payment.refund_followup_required'`,
+        [tenant.tenantId, refundId],
+      )
+    ).rows.length;
+
+  it("expiring the system:qr refund 3 times: re-filed after the 1st and 2nd, after the 3rd no new refund, listed as refile_limit with one alarm, never above what was paid", async () => {
+    const { intentId, totalIdr, paid } = await lateSettledOrder();
+    expect(await deliver(paid)).toEqual({
+      route: "qr",
+      outcome: "late_payment_on_voided_order",
+    });
+    const alarmsBefore = await tenantAlarms();
+    const alarmUsersBefore = perUser(await alarmRows());
+    const failedIds: string[] = [];
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const live = (await refundsOfIntent(intentId)).filter(
+        (row) => row.requested_by === "system:qr" && row.status !== "failed",
+      );
+      expect(
+        live,
+        `no live system:qr refund before expiry ${attempt}`,
+      ).toHaveLength(1);
+      failedIds.push(live[0]!.id);
+      await failSystemRefund(
+        "approval_expired",
+        live[0]!.id,
+        tenant.tenantId,
+        () => Promise.reject(new Error("not rejected in this test")),
+        contextOf(tenant.tenantId),
+      );
+      expect(await reservedOfIntent(intentId)).toBeLessThanOrEqual(totalIdr);
+      if (attempt < 3) {
+        // Re-filed for the whole amount, not an alarm yet.
+        const after = await refundsOfIntent(intentId);
+        expect(after).toHaveLength(attempt + 1);
+        expect(await reservedOfIntent(intentId)).toBe(totalIdr);
+        expect(await followupAudits(live[0]!.id)).toBe(0);
+        expect(await tenantAlarms()).toBe(alarmsBefore);
+      }
+    }
+
+    const rows = await refundsOfIntent(intentId);
+    expect(rows, "a refund beyond the bound was filed").toHaveLength(3);
+    expect(rows.every((row) => row.status === "failed")).toBe(true);
+    expect(await reservedOfIntent(intentId)).toBe(0);
+    const last = failedIds[2]!;
+    expect(await followupAudits(last)).toBe(1);
+    const alarmsAfter = await expectOneAlarmPerUser(alarmUsersBefore);
+
+    // Reading the list needs `payment.transaction.view` (CONTRACT): grant it.
+    await owner.query(
+      "UPDATE roles SET permissions = permissions || '[\"payment.transaction.view\"]'::jsonb WHERE id = $1",
+      [tenant.roleId],
+    );
+    const list = await staff.client
+      .get("/api/payments/admin/refunds/follow-ups?limit=100")
+      .set(headers)
+      .set(originHeader);
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    const items = (
+      list.body.data as { id: string; blockedReason?: string }[]
+    ).filter((item) => item.id === last);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.blockedReason).toBe("refile_limit");
+
+    // Replay of the last failure: still one audit row, one alarm, 3 refunds.
+    await settleRefundFromChain(contextOf(tenant.tenantId), last);
+    expect(await followupAudits(last)).toBe(1);
+    expect(await tenantAlarms()).toBe(alarmsAfter);
+    expect(await refundsOfIntent(intentId)).toHaveLength(3);
+  });
+});
+
 describe("reserved system idempotency keys", () => {
   it("a user cannot pre-claim the late-payment key; the system filer still files", async () => {
     const { intentId, totalIdr, paid } = await lateSettledOrder();
