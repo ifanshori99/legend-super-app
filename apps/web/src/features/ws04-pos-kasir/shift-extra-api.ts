@@ -46,7 +46,12 @@ export async function fetchHeldCashOuts(
     ),
   ]);
   const items = report.data.movements
-    .filter((row) => row.needsApproval === true && row.type !== "cash_in")
+    .filter(
+      (row) =>
+        row.needsApproval === true &&
+        row.outcome == null &&
+        row.type !== "cash_in",
+    )
     .map((row) => ({
       id: row.id,
       type: row.type === "drop" ? ("drop" as const) : ("cash_out" as const),

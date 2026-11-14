@@ -368,7 +368,36 @@ async function seedCashSale(
   return orderId;
 }
 
-// ---- Accounting fixtures (same chart as pos-shift-codex146.test.ts F2) --------------
+/** A held cash refund of the order, charged to `shiftId` (one cash line, as the refund writer stores it). */
+async function seedHeldRefund(
+  shiftId: string,
+  orderId: string,
+  cashier: Cashier,
+  amountIdr: number,
+): Promise<void> {
+  await asOwnerTenant(tenant.tenantId, (client) =>
+    client.query(
+      `INSERT INTO pos_order_refunds
+         (tenant_id, outlet_id, order_id, amount_idr, reason, reason_note, lines,
+          requested_by, approved_by, approval_request_id, refunded_at, shift_id, needs_approval)
+       VALUES ($1, $2, $3, $4, 'quality_complaint', 'Minuman tumpah', $5::jsonb,
+               $6, $7, $8, now(), $9, true)`,
+      [
+        tenant.tenantId,
+        tenant.outletId,
+        orderId,
+        amountIdr,
+        JSON.stringify([{ method: "cash", amountIdr, reference: null }]),
+        cashier.userId,
+        supervisor.userId,
+        randomUUID(),
+        shiftId,
+      ],
+    ),
+  );
+}
+
+// ---- Accounting fixtures (pos-shift-codex146.test.ts F2 chart plus cash_out_expense) --------------
 
 const ACCOUNTING_CHART: [string, string, string, string, string][] = [
   ["cash_on_hand", "1101", "Kas", "asset", "current_asset"],
@@ -407,6 +436,14 @@ const ACCOUNTING_CHART: [string, string, string, string, string][] = [
     "other_income",
   ],
   ["cash_over_short", "6108", "Selisih Kas", "expense", "operating_expense"],
+  // legend-ym2kr: the counter account of a booked cash out (rule cash_movement.recorded / cash_out).
+  [
+    "cash_out_expense",
+    "6109",
+    "Kas Keluar Kasir",
+    "expense",
+    "operating_expense",
+  ],
 ];
 
 /** Accounting module on, a mapped chart of accounts and open periods for the test tenant. */
@@ -1015,6 +1052,38 @@ describe("legend-3l4q the outlet never pays cash that is not in the drawer", () 
     });
   });
 
+  it("legend-3l4q: cash of a held refund already left the drawer, so it bounds the approval: amount > expected - held refund cash is a CONFLICT with no outcome and no event", async () => {
+    // Drawer figures: Rp100.000 float + Rp100.000 cash sale = Rp200.000. A held
+    // cash refund of Rp60.000 is out of the figures but already paid out, so
+    // only Rp140.000 is physically there: the Rp150.000 cash out must not pass.
+    const { cashier, shift, movementId } = await heldWithSale(0);
+    const orderId = await seedCashSale(shift, cashier, 100_000);
+    await seedHeldRefund(shift.id, orderId, cashier, 60_000);
+
+    await expect(
+      decide(supervisor, movementId, "approved"),
+    ).rejects.toMatchObject({ code: "CONFLICT", status: 409 });
+    expect(await outcomesOf(shift.id)).toEqual([]);
+    expect(await eventsOf(movementId, "cash_movement.approved")).toHaveLength(
+      0,
+    );
+    expect(
+      await auditsOf("pos_shift.cash_movement_approved", movementId),
+    ).toHaveLength(0);
+  });
+
+  it("legend-3l4q: with a smaller held refund (Rp40.000) the same cash out fits the physical drawer (Rp160.000) and approves", async () => {
+    const { cashier, shift, movementId } = await heldWithSale(0);
+    const orderId = await seedCashSale(shift, cashier, 100_000);
+    await seedHeldRefund(shift.id, orderId, cashier, 40_000);
+
+    await decide(supervisor, movementId, "approved");
+
+    expect(await outcomesOf(shift.id)).toEqual([
+      { movement_id: movementId, outcome: "approved" },
+    ]);
+  });
+
   it("legend-3l4q: a held cash out that is rejected while the drawer cannot cover it stores a 'rejected' outcome (rejecting never pays anything)", async () => {
     const { shift, movementId } = await heldWithSale(0);
 
@@ -1179,3 +1248,79 @@ describe("legend-ym2kr a held cash out reaches the ledger only when approved", (
     expect(await journalsOfMovement(row!.id)).toBe(0);
   });
 });
+
+// ---- 8. What each reader sees of a decision ------------------------------------------
+
+describe("legend-3l4q the decision shows on the supervisor's read only", () => {
+  // Assumptions: the contract (posCashMovementSchema) says `outcome` is sent
+  // together with `needsApproval`, only to callers that see live figures
+  // (supervisor reads), "approved" | "rejected" | "expired" once decided and
+  // null while still pending; the shift's own cashier never gets the key. Both
+  // reads (GET .../cash-movements and the shift report) follow the same rule.
+  it("legend-3l4q: a supervisor sees outcome approved / rejected / null on held rows (list and shift report); the cashier's own read has no outcome key", async () => {
+    const cashier = await newCashier("Kasir Hasil");
+    const shift = await openShift(cashier);
+    // Three cash outs larger than the Rp100.000 drawer: all held when recorded.
+    const amounts = { approved: 150_000, rejected: 120_000, pending: 130_000 };
+    for (const [label, amountIdr] of Object.entries(amounts)) {
+      const recorded = await move(cashier, shift.id, {
+        type: "cash_out",
+        amountIdr,
+        reasonNote: `Kas keluar ${label}`,
+      });
+      expect(recorded.status, JSON.stringify(recorded.body)).toBe(201);
+    }
+    const idOf = Object.fromEntries(
+      (await movementsOf(shift.id)).map((row) => {
+        expect(row.needs_approval).toBe(true);
+        return [row.amount, row.id];
+      }),
+    ) as Record<number, string>;
+    // Fill the drawer so the approve is allowed (expected Rp300.000 >= 150.000).
+    await seedCashSale(shift, cashier, 200_000);
+    await decide(supervisor, idOf[amounts.approved]!, "approved");
+    await decide(supervisor, idOf[amounts.rejected]!, "rejected");
+
+    const outcomes = (rows: { id: string; outcome?: unknown }[]) =>
+      Object.fromEntries(rows.map((row) => [row.id, row.outcome]));
+    const expected = {
+      [idOf[amounts.approved]!]: "approved",
+      [idOf[amounts.rejected]!]: "rejected",
+      [idOf[amounts.pending]!]: null,
+    };
+
+    const listed = await listMovementsOf(supervisor, shift.id);
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect(outcomes(listed.body.data)).toEqual(expected);
+    for (const row of listed.body.data)
+      expect(row.needsApproval, "held rows keep the flag").toBe(true);
+    const read = await shiftReport(supervisor, shift.id);
+    expect(read.status, JSON.stringify(read.body)).toBe(200);
+    expect(outcomes(read.body.data.movements)).toEqual(expected);
+
+    const mine = await listMovementsOf(cashier, shift.id);
+    const mineReport = await shiftReport(cashier, shift.id);
+    expect(mine.status, JSON.stringify(mine.body)).toBe(200);
+    expect(mineReport.status, JSON.stringify(mineReport.body)).toBe(200);
+    expect(mine.body.data).toHaveLength(3);
+    expect(mineReport.body.data.movements).toHaveLength(3);
+    for (const row of [...mine.body.data, ...mineReport.body.data.movements]) {
+      expect(row).not.toHaveProperty("outcome");
+      expect(row).not.toHaveProperty("needsApproval");
+    }
+  });
+});
+
+function listMovementsOf(who: Member, shiftId: string) {
+  return who.client
+    .get(`${SHIFTS()}/${shiftId}/cash-movements`)
+    .set(headers)
+    .set(originHeader);
+}
+
+function shiftReport(who: Member, shiftId: string) {
+  return who.client
+    .get(`${SHIFTS()}/${shiftId}`)
+    .set(headers)
+    .set(originHeader);
+}

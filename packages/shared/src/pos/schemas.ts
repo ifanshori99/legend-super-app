@@ -1263,6 +1263,12 @@ export const posCashMovementSchema = z.strictObject({
    * never in the record response or for the shift's own cashier.
    */
   needsApproval: z.boolean().optional(),
+  /**
+   * How a held movement was decided (approved, rejected or expired at close);
+   * null while still pending. Sent together with `needsApproval`, so a held
+   * list shows only `needsApproval && outcome === null`.
+   */
+  outcome: z.enum(["approved", "rejected", "expired"]).nullable().optional(),
 });
 export type PosCashMovement = z.infer<typeof posCashMovementSchema>;
 

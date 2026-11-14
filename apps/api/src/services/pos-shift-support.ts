@@ -56,6 +56,10 @@ import { accessSnapshotInTransaction, type Tx } from "./permission-resolver.ts";
 
 export type ShiftRow = typeof posShifts.$inferSelect;
 export type CashMovementRow = typeof cashMovements.$inferSelect;
+/** A movement with its decision (`cash_movement_outcomes`), null while pending. */
+export type CashMovementWithOutcome = CashMovementRow & {
+  outcome?: "approved" | "rejected" | "expired" | null;
+};
 export type OpenPosShiftInput = z.output<typeof openPosShiftInputSchema>;
 export type ClosePosShiftInput = z.output<typeof closePosShiftInputSchema>;
 export type ForceClosePosShiftInput = z.output<
@@ -709,10 +713,20 @@ export async function assertShiftOutflowBound(
 export async function movementsOf(
   tx: Tx,
   shift: ShiftRow,
-): Promise<CashMovementRow[]> {
-  return tx
-    .select()
+): Promise<CashMovementWithOutcome[]> {
+  const rows = await tx
+    .select({
+      movement: cashMovements,
+      outcome: cashMovementOutcomes.outcome,
+    })
     .from(cashMovements)
+    .leftJoin(
+      cashMovementOutcomes,
+      and(
+        eq(cashMovementOutcomes.tenantId, cashMovements.tenantId),
+        eq(cashMovementOutcomes.movementId, cashMovements.id),
+      ),
+    )
     .where(
       and(
         eq(cashMovements.tenantId, shift.tenantId),
@@ -721,6 +735,7 @@ export async function movementsOf(
       ),
     )
     .orderBy(asc(cashMovements.recordedAt), asc(cashMovements.id));
+  return rows.map((r) => ({ ...r.movement, outcome: r.outcome }));
 }
 
 // ---- Events and audit -------------------------------------------------------
@@ -955,9 +970,11 @@ export function countReceiptDto(row: ShiftCountRow): PosShiftCountReceipt {
 /**
  * `withApproval` adds the held flag for callers that see live figures
  * (supervisor reads); never for the record response or the shift's cashier.
+ * The same callers get `outcome` (null while pending) so an approved or
+ * rejected row is not shown as held; rows without a joined outcome send null.
  */
 export function movementDto(
-  row: CashMovementRow,
+  row: CashMovementWithOutcome,
   options: { withApproval?: boolean } = {},
 ): PosCashMovement {
   return posCashMovementSchema.parse({
@@ -971,7 +988,9 @@ export function movementDto(
     recordedBy: row.recordedBy,
     recordedAt: toIsoDateTime(row.recordedAt),
     approvedBy: row.approvedBy,
-    ...(options.withApproval ? { needsApproval: row.needsApproval } : {}),
+    ...(options.withApproval
+      ? { needsApproval: row.needsApproval, outcome: row.outcome ?? null }
+      : {}),
   });
 }
 

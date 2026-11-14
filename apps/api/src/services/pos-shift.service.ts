@@ -66,6 +66,7 @@ import { approvalPolicies } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { posOverrides } from "../db/schema/device-pin.ts";
 import {
+  cashMovementOutcomes,
   cashMovementRefusals,
   cashMovements,
   posDailyCloses,
@@ -476,14 +477,27 @@ export async function listCashMovements(
       );
     }
     const rows = await tx
-      .select()
+      .select({
+        movement: cashMovements,
+        outcome: cashMovementOutcomes.outcome,
+      })
       .from(cashMovements)
+      .leftJoin(
+        cashMovementOutcomes,
+        and(
+          eq(cashMovementOutcomes.tenantId, cashMovements.tenantId),
+          eq(cashMovementOutcomes.movementId, cashMovements.id),
+        ),
+      )
       .where(and(...filters))
       .orderBy(
         sql`${cashMovements.recordedAt} asc`,
         sql`${cashMovements.id} asc`,
       )
-      .limit(query.limit + 1);
+      .limit(query.limit + 1)
+      .then((joined) =>
+        joined.map((r) => ({ ...r.movement, outcome: r.outcome })),
+      );
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
     return {

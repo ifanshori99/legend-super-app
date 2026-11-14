@@ -36,6 +36,7 @@ import {
   auditShift,
   computeShiftAggregates,
   findShift,
+  heldCorrectionCashIdrOf,
   type ShiftCaller,
 } from "./pos-shift-support.ts";
 
@@ -98,7 +99,13 @@ export async function decideHeldCashMovement(
         "FORBIDDEN",
         "Kas keluar tidak dapat disetujui atau ditolak oleh pencatatnya.",
       );
-    const shift = await findShift(tx, context, outletId, movement.shiftId, true);
+    const shift = await findShift(
+      tx,
+      context,
+      outletId,
+      movement.shiftId,
+      true,
+    );
     const [existing] = await tx
       .select()
       .from(cashMovementOutcomes)
@@ -133,7 +140,9 @@ export async function decideHeldCashMovement(
     if (decision === "approved") {
       // The held row is not in the figures yet, so this is the cash the drawer
       // holds now: approving more than that would pay out cash that is not
-      // there (same formula as recordCashMovement).
+      // there (same formula as recordCashMovement). Cash of a held refund or
+      // void has already left the drawer though the figures leave it out, so
+      // it is taken off too: the physical cash is what bounds the approval.
       const live = await computeShiftAggregates(tx, shift);
       const expected =
         Number(shift.openingFloatIdr) +
@@ -142,7 +151,8 @@ export async function decideHeldCashMovement(
         live.cashInIdr -
         live.cashOutIdr -
         live.cashDropIdr;
-      if (movement.amountIdr > expected)
+      const physical = expected - (await heldCorrectionCashIdrOf(tx, shift));
+      if (movement.amountIdr > physical)
         throw new CoreError(
           "CONFLICT",
           "Jumlah kas keluar melebihi kas yang tersedia di laci saat ini.",
