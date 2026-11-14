@@ -50,12 +50,14 @@ import {
   eventEnvelopeSchema,
   type EventEnvelope,
 } from "@starter/shared/events";
+import { replaceAccountMappings } from "@starter/shared/accounting";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { recordStockMovement } from "../services/inventory.service.ts";
 import { recordSupplierInvoicePayableInTransaction } from "../services/accounting-ap.service.ts";
+import { replaceAccountMappingsForEntity } from "../services/accounting-accounts.service.ts";
 import {
   deliverAutoJournalEvent,
   type AutoJournalResult,
@@ -792,6 +794,111 @@ describe("supplier side is unchanged by the variance", () => {
     expect(num((await balanceOf(world, stock)).quantity)).toBe(0);
     expect(await glNet(world, "inventory")).toBe(0);
     expect(await glNet(world, "inventory_price_variance")).toBe(0);
+  });
+});
+
+describe("legend-mksir inventory variance follows the configured posting account", () => {
+  let customCode = 5900;
+
+  async function customAccount(
+    world: World,
+    type: "expense" | "revenue",
+    parentId: string | null = null,
+  ): Promise<string> {
+    const { rows } = await owner.query<{ id: string }>(
+      `INSERT INTO chart_of_accounts
+         (tenant_id, legal_entity_id, code, name, type, report_group, parent_id)
+       VALUES ($1, $2, $3, 'Selisih persediaan kustom', $4, $5, $6) RETURNING id`,
+      [
+        world.tenant.id,
+        world.entity,
+        String(++customCode),
+        type,
+        type === "expense" ? "operating_expense" : "revenue",
+        parentId,
+      ],
+    );
+    return rows[0]!.id;
+  }
+
+  function remap(world: World, accountId: string) {
+    return replaceAccountMappingsForEntity(
+      contextOf(world.tenant),
+      world.entity,
+      replaceAccountMappings.body.parse({
+        mappings: Object.entries(world.accounts).map(([role, id]) => ({
+          role,
+          accountId: role === "inventory_price_variance" ? accountId : id,
+        })),
+      }),
+      actor,
+    );
+  }
+
+  it.each(["expense", "revenue"] as const)(
+    "legend-mksir a custom %s leaf posts a balanced return once without increasing supplier debt",
+    async (type) => {
+      const world = await makeWorld(await makeTenant());
+      const accountId = await customAccount(world, type);
+      await remap(world, accountId);
+      world.accounts.inventory_price_variance = accountId;
+      const stock = await seedStock(world, [
+        { quantity: "10.0000", unitCost: "1000.0000" },
+        { quantity: "10.0000", unitCost: "800.0000" },
+      ]);
+      const supplierId = await seedSupplierPayable(world, 500_000);
+      const payableBefore = await glNet(world, "accounts_payable");
+      const inventoryBefore = await glNet(world, "inventory");
+      const done = await returnFromReceipt(world, stock, {
+        quantity: "5.0000",
+        receiptCost: "1000.0000",
+        invoicedValueIdr: 5_000,
+        ppnIdr: 550,
+        supplierId,
+      });
+
+      await expectBalanced(world, done.result.journalEntryId);
+      expect(await netOf(world, done.result.journalEntryId)).toEqual({
+        accounts_payable: 5_550,
+        ppn_input: -550,
+        inventory: -4_500,
+        inventory_price_variance: -500,
+      });
+      const after = await balanceOf(world, stock);
+      expect(await glNet(world, "inventory")).toBe(
+        inventoryBefore -
+          roundIdr(done.before.quantity, done.before.avg) +
+          roundIdr(after.quantity, after.avg),
+      );
+      expect(await glNet(world, "accounts_payable")).toBe(
+        payableBefore + 5_550,
+      );
+      await deliver(world.tenant, done.event);
+      expect(await returnJournalCount(world)).toBe(1);
+      expect(await glNet(world, "accounts_payable")).toBe(
+        payableBefore + 5_550,
+      );
+    },
+  );
+
+  it("legend-mksir rejects a non-posting parent before replacing mappings", async () => {
+    const world = await makeWorld(await makeTenant());
+    const parentId = await customAccount(world, "expense");
+    await customAccount(world, "expense", parentId);
+    await expect(remap(world, parentId)).rejects.toMatchObject({
+      status: 422,
+      code: "VALIDATION_ERROR",
+      message: "Role inventory_price_variance: header account is not postable",
+    });
+    const { rows } = await owner.query<{ account_id: string }>(
+      `SELECT account_id FROM account_mappings
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'inventory_price_variance'`,
+      [world.tenant.id, world.entity],
+    );
+    expect(rows).toEqual([
+      { account_id: world.accounts.inventory_price_variance },
+    ]);
+    expect(await returnJournalCount(world)).toBe(0);
   });
 });
 

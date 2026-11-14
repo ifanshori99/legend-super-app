@@ -223,8 +223,12 @@ export const POSTING_ACCOUNT_ROLES = {
   inventory_adjustment: "expense",
   /** Supplier invoice price vs purchase order price (GRNI is cleared at the order price, legend-29vw). */
   purchase_price_variance: "expense",
-  /** Moving-average cost vs returned stock value on a purchase return (legend-uloj6). */
-  inventory_price_variance: "expense",
+  /**
+   * Moving-average cost vs returned stock value on a purchase return.
+   * The tenant chooses its posting account; the standard chart uses expense
+   * 5106, while a custom mapping may use another type (legend-mksir).
+   */
+  inventory_price_variance: null,
   /** Direct cash purchases paid from petty cash (PRD §3.18 pembelian sederhana). */
   petty_purchase_expense: "expense",
   salary_expense: "expense",

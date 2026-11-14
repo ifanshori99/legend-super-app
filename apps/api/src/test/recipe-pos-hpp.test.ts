@@ -1076,6 +1076,101 @@ describe("HPP through the real POS complete path (a)", () => {
     expect(journals).toHaveLength(1);
     expect(journals[0]!.lines).toEqual(hppJournal(2 * CUP_COST));
   }, 30_000);
+
+  it("legend-7l2bq an inactive recipe location leaves the POS sale payable and completed, with no partial stock deduction", async () => {
+    const healthy = await buildKit();
+    const inactive = await buildKit();
+    await owner.query(
+      `UPDATE recipe_lines SET deduction_location_id = $1
+        WHERE tenant_id = $2 AND recipe_id = (
+          SELECT recipe_id FROM menu_items WHERE tenant_id = $2 AND id = $3
+        )`,
+      [inactive.location, tenantA, inactive.menuItem],
+    );
+    await owner.query(
+      "UPDATE stock_locations SET is_active = false WHERE tenant_id = $1 AND id = $2",
+      [tenantA, inactive.location],
+    );
+    await configureOutlet("real_time", healthy.location);
+    await asOwnerTenant(async (client) => {
+      for (const menuItem of [healthy.menuItem, inactive.menuItem])
+        await client.query(
+          `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr)
+           VALUES ($1, $2, $3, $4, 25000)`,
+          [randomUUID(), tenantA, priceList, menuItem],
+        );
+    });
+
+    const created = await pos("", {
+      channel: "pos",
+      serviceType: "takeaway",
+      items: [healthy.menuItem, inactive.menuItem].map((menuItemId) => ({
+        menuItemId,
+        quantity: 1,
+        modifierIds: [],
+      })),
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const orderId = created.body.data.id as string;
+    let status = created.body.data.status as string;
+    if (status === "draft") {
+      const submitted = await pos(`/${orderId}/submit`, {
+        expectedStatus: status,
+      });
+      expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+      status = submitted.body.data.status as string;
+    }
+    const paid = await pos(`/${orderId}/tenders`, {
+      method: "cash",
+      receivedIdr: created.body.data.totalIdr as number,
+      expectedStatus: status,
+    });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    const completed = await pos(`/${orderId}/complete`, {
+      expectedStatus: paid.body.data.order.status as string,
+    });
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+
+    const order = { ulid: orderId, uuid: ulidToUuid(orderId) };
+    const { rows: snapshots } = await owner.query<{
+      menu_item_id: string;
+      cost: string | null;
+    }>(
+      `SELECT menu_item_id, cost_snapshot_idr::text AS cost FROM order_items
+        WHERE tenant_id = $1 AND order_id = $2 ORDER BY menu_item_id`,
+      [tenantA, order.uuid],
+    );
+    expect(snapshots).toEqual(
+      expect.arrayContaining([
+        { menu_item_id: healthy.menuItem, cost: String(CUP_COST) },
+        { menu_item_id: inactive.menuItem, cost: null },
+      ]),
+    );
+    const { rows } = await owner.query<{ event: unknown }>(
+      `SELECT event FROM domain_event_outbox
+        WHERE tenant_id = $1 AND event->>'name' = 'order.paid'
+          AND event->'payload'->>'orderId' = $2`,
+      [tenantA, orderId],
+    );
+    expect(rows).toHaveLength(1);
+    const event = eventEnvelopeSchema.parse(rows[0]!.event);
+    await deliver(event);
+    await deliver(event);
+
+    expect(await saleDeductionOf(order)).toMatchObject({ status: "skipped" });
+    expect(await deductionsOf(order.ulid, order.uuid)).toHaveLength(1);
+    expect(await orderLedger(order)).toEqual([]);
+    expect(await journalsOf(orderId)).toEqual([]);
+    for (const kit of [healthy, inactive]) {
+      expect(await onHand(kit.location, kit.beans)).toBe("1000.0000");
+      expect(await onHand(kit.location, kit.milk)).toBe("10000.0000");
+    }
+    const { rows: persisted } = await owner.query<{ status: string }>(
+      "SELECT status FROM orders WHERE tenant_id = $1 AND id = $2",
+      [tenantA, order.uuid],
+    );
+    expect(persisted).toEqual([{ status: "completed" }]);
+  }, 30_000);
 });
 
 describe("HPP reversal on a final void; refunds never reverse (c, d)", () => {
