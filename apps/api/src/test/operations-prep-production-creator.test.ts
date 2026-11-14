@@ -51,7 +51,12 @@ import {
 } from "../services/operations-prep-production.ts";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
-const outletA = outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[0].id);
+const fixtureOutlet = outletIdSchema.parse(
+  cafeLegendPlatformFixtures.outlets[0].id,
+);
+// The creator requires exactly one active kitchen. Other inventory suites leave
+// stock locations in the shared fixture outlet, so use an outlet owned here.
+const outletA = outletIdSchema.parse(randomUUID());
 const otherTenant = randomUUID();
 const otherBrand = randomUUID();
 const otherEntity = randomUUID();
@@ -385,6 +390,19 @@ beforeAll(async () => {
     "ops.prep.manage",
     "inventory.production.record",
   ]);
+  await asOwner(tenantId, (client) =>
+    client.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       SELECT $1, tenant_id, brand_id, legal_entity_id, $2, 'Prep production isolated', address, timezone, opening_hours, status
+         FROM outlets WHERE tenant_id = $3 AND id = $4`,
+      [
+        outletA,
+        `PP-${outletA.slice(0, 8).toUpperCase()}`,
+        tenantId,
+        fixtureOutlet,
+      ],
+    ),
+  );
   const { rows } = await owner.query<{ brand_id: string }>(
     "SELECT brand_id FROM outlets WHERE id = $1",
     [outletA],
@@ -489,19 +507,31 @@ afterAll(async () => {
     );
   });
   // audit_logs is append-only (trigger) and its (tenant_id, outlet_id) FK blocks
-  // the outlet delete below (the creator audits each order), so the owner
+  // the outlet deletes below (the creator audits each order), so the owner
   // suspends the trigger for this one purge, as floor-test-helpers does.
-  await asOwner(otherTenant, async (client) => {
-    await client.query(
-      "ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_append_only",
-    );
-    await client.query("DELETE FROM audit_logs WHERE tenant_id = $1", [
-      otherTenant,
-    ]);
-    await client.query(
-      "ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_append_only",
-    );
-  });
+  for (const [tenant, outlet] of [
+    [tenantId, outletA],
+    [otherTenant, otherOutletRaw],
+  ] as const) {
+    await asOwner(tenant, async (client) => {
+      await client.query(
+        "ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_append_only",
+      );
+      await client.query(
+        "DELETE FROM audit_logs WHERE tenant_id = $1 AND outlet_id = $2",
+        [tenant, outlet],
+      );
+      await client.query(
+        "ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_append_only",
+      );
+    });
+  }
+  await asOwner(tenantId, (client) =>
+    client.query("DELETE FROM outlets WHERE tenant_id = $1 AND id = $2", [
+      tenantId,
+      outletA,
+    ]),
+  );
   await asOwner(otherTenant, async (client) => {
     for (const table of [
       "role_assignments",

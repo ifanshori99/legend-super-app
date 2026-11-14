@@ -275,11 +275,12 @@ function fakeSocket() {
 }
 
 const cleanups: Array<() => void> = [];
-// A simulated clock for resendDue: every tick is 4 s later than the one before,
-// so the 3 s refresh and the 3 s resend are always due (and 10 min never is).
+// The service timestamps sends with the real clock. Advance beyond that clock
+// too, so slow setup or database calls cannot leave a tick before the last send.
+// Every tick is also 4 s later than the previous one, making refresh due again.
 let clock = Date.now();
 const tick = () => {
-  clock += 4_000;
+  clock = Math.max(clock, Date.now()) + 4_000;
   return resendDue(clock);
 };
 
@@ -454,6 +455,9 @@ describe("G2 effects of a resolved alert on the edge", () => {
   it(
     "the resend stops and a socket that connects later never gets the alert",
     async () => {
+      // Reproduce a slow full-suite startup without sleeping: the simulated
+      // clock can predate the real send, which records its own Date.now().
+      clock = Date.now() - 60_000;
       const alertId = await pressAlert();
       const open = fakeSocket();
       await sendOpenAlertsTo(open.subscriber);
