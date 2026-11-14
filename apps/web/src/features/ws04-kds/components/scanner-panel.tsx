@@ -92,7 +92,7 @@ export function ScannerPanel({
   const succeed = (act: ScanAction, ticket: KitchenTicketDetail) => {
     const params = {
       subject: subject(ticket),
-      code: ticketScanCode(ticket.orderId),
+      code: ticketScanCode(ticket.ticketNo),
     };
     if (act === "bump")
       setFeedback({
@@ -142,7 +142,7 @@ export function ScannerPanel({
               kind: "error",
               title: t("kds.scanner.invalidTitle"),
               body: t("kds.scanner.invalidBody", {
-                code: ticketScanCode(result.ticket.orderId),
+                code: ticketScanCode(result.ticket.ticketNo),
                 status: t(`kds.status.${result.ticket.status}`),
               }),
             }
@@ -164,7 +164,7 @@ export function ScannerPanel({
         title: t("kds.scanner.recallTitle"),
         body: t("kds.scanner.recallBody", {
           subject: subject(ticket),
-          code: ticketScanCode(ticket.orderId),
+          code: ticketScanCode(ticket.ticketNo),
         }),
       });
       onRecall(ticket, (recalled) =>
@@ -175,7 +175,7 @@ export function ScannerPanel({
                 title: t("kds.scanner.doneRecallTitle"),
                 body: t("kds.scanner.doneRecallBody", {
                   subject: subject(ticket),
-                  code: ticketScanCode(ticket.orderId),
+                  code: ticketScanCode(ticket.ticketNo),
                 }),
               }
             : { kind: "ready" },
@@ -309,7 +309,7 @@ export function ScannerPanel({
                 ? t("kds.scanner.busyPlaceholder")
                 : example
                   ? t("kds.scanner.placeholder", {
-                      code: ticketScanCode(example.orderId),
+                      code: ticketScanCode(example.ticketNo),
                     })
                   : t("kds.scanner.placeholderNoExample")
           }

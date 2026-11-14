@@ -205,6 +205,10 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "maps the new bank_charges posting role to the entity's own account 8101 (an active expense account with no child account) for every already provisioned legal entity that has no bank_charges mapping (legend-658); idempotent, never updates or deletes, no amount or journal touched; FORCE RLS lifted for that one statement and restored",
   "0346_payroll_disbursement_grants.sql":
     "appends payroll.payout.configure, payroll.disburse.request and payroll.disburse.approve to the stored owner, finance and hr template role rows of existing tenants (legend-wnkep.1; configure: owner+finance, request: owner+hr, approve: owner+finance+hr); idempotent, no duplicates, never touches tenant_admin, another template or a custom role; each tenant is named (app.tenant_id) before its roles rows are touched, FORCE RLS stays on",
+  "0590_kitchen_station_config.sql":
+    "numbers stations.display_order of existing stations per outlet (name, created_at, id) so the KDS tabs keep the order they had (legend-bopi2); idempotent, edits no other column, is_active and auto_print_fallback take their column defaults, no amount touched; FORCE RLS lifted for that one statement and restored",
+  "0591_kitchen_ticket_no.sql":
+    "fills kitchen_tickets.business_date (outlet business day of fired_at, from the outlet zone and cutoff) and numbers kitchen_tickets.ticket_no 1.. per tenant, outlet and business day by fired_at, id for every existing ticket (legend-tzyj2); idempotent for tickets without a number, edits no other column, no amount touched; FORCE RLS lifted on kitchen_tickets and outlets for that one statement and restored",
 };
 
 // Entrypoints that open a database pool but import no data.

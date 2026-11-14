@@ -101,8 +101,8 @@ async function rawKitchenTicket(orderId: string) {
   try {
     await asOwnerTenant(world.tenant.tenantId, (client) =>
       client.query(
-        `INSERT INTO kitchen_tickets (id, tenant_id, outlet_id, order_id, station_id, fire_batch_id, status, priority, fired_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'new', 0, now())`,
+        `INSERT INTO kitchen_tickets (id, tenant_id, outlet_id, order_id, station_id, fire_batch_id, business_date, ticket_no, status, priority, fired_at)
+         VALUES ($1, $2, $3, $4, $5, $6, '2026-11-01', (SELECT coalesce(max(m.ticket_no), 0) + 1 FROM kitchen_tickets m WHERE m.tenant_id = $2::uuid AND m.outlet_id = $3::uuid AND m.business_date = '2026-11-01'), 'new', 0, now())`,
         [
           randomUUID(),
           world.tenant.tenantId,
@@ -861,8 +861,8 @@ async function rawTicket(
   try {
     await asOwnerTenant(world.tenant.tenantId, (client) =>
       client.query(
-        `INSERT INTO kitchen_tickets (id, tenant_id, outlet_id, order_id, station_id, fire_batch_id, status, priority, fired_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'new', 0, now())`,
+        `INSERT INTO kitchen_tickets (id, tenant_id, outlet_id, order_id, station_id, fire_batch_id, business_date, ticket_no, status, priority, fired_at)
+         VALUES ($1, $2, $3, $4, $5, $6, '2026-11-01', (SELECT coalesce(max(m.ticket_no), 0) + 1 FROM kitchen_tickets m WHERE m.tenant_id = $2::uuid AND m.outlet_id = $3::uuid AND m.business_date = '2026-11-01'), 'new', 0, now())`,
         [
           id,
           world.tenant.tenantId,

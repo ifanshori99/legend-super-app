@@ -123,6 +123,12 @@ export const stations = pgTable(
     /** Print agent target (WS-02 devices); plain UUID until that table lands. */
     printerDeviceId: uuid("printer_device_id"),
     targetSeconds: integer("target_seconds"),
+    /** KDS tab order, left to right (legend-bopi2). */
+    displayOrder: integer("display_order").notNull().default(0),
+    /** An inactive station has no KDS tab; at least one per outlet stays active. */
+    isActive: boolean("is_active").notNull().default(true),
+    /** F12 "Fallback Cetak": print automatically when the tablet stops answering. */
+    autoPrintFallback: boolean("auto_print_fallback").notNull().default(false),
     createdAt,
     updatedAt,
     deletedAt,
@@ -149,6 +155,7 @@ export const stations = pgTable(
       table.updatedAt,
       table.id,
     ),
+    check("stations_display_order_check", sql`${table.displayOrder} >= 0`),
     check(
       "stations_type_check",
       sql`${table.type} IN ('coffee_bar', 'beverage_bar', 'hot_kitchen', 'cold_kitchen', 'pastry')`,

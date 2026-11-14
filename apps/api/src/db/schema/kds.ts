@@ -27,16 +27,23 @@ import {
   check,
   foreignKey,
   index,
+  integer,
   pgTable,
   primaryKey,
   smallint,
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
-import { outletIdColumn, tenantIdColumn, ulidInUuid } from "../columns";
+import {
+  businessDate,
+  outletIdColumn,
+  tenantIdColumn,
+  ulidInUuid,
+} from "../columns";
 import { stations } from "./menu";
 import { outlets, tenants } from "./platform-org";
 import { orderItems, orders } from "./qr-order";
@@ -58,6 +65,10 @@ export const kitchenTickets = pgTable(
     orderId: ulidInUuid("order_id").notNull(),
     stationId: uuid("station_id").notNull(),
     fireBatchId: ulidInUuid("fire_batch_id").notNull(),
+    /** Outlet business day of `firedAt` (zone + cutoff), scopes `ticketNo`. */
+    businessDate: businessDate("business_date").notNull(),
+    /** Running number per outlet and business day (scan code K-001). */
+    ticketNo: integer("ticket_no").notNull(),
     status: varchar("status", { length: 20 }).notNull(),
     priority: smallint("priority").notNull().default(0),
     firedAt: timestamp("fired_at", { withTimezone: true }).notNull(),
@@ -92,6 +103,12 @@ export const kitchenTickets = pgTable(
       columns: [table.tenantId, table.outletId],
       foreignColumns: [outlets.tenantId, outlets.id],
     }),
+    uniqueIndex("kitchen_tickets_outlet_day_ticket_no_key").on(
+      table.tenantId,
+      table.outletId,
+      table.businessDate,
+      table.ticketNo,
+    ),
     index("kitchen_tickets_station_status_idx").on(
       table.tenantId,
       table.stationId,

@@ -78,7 +78,11 @@ import {
 } from "../db/schema/kds.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
-import { appendOrderEvent } from "./pos-order-support.ts";
+import {
+  appendOrderEvent,
+  businessDateFor,
+  loadOutlet,
+} from "./pos-order-support.ts";
 import {
   notifyQrKitchenVoid,
   notifyUnroutedQrLines,
@@ -380,6 +384,12 @@ export async function routeFiredItemsToKitchen(
   // Sorted station order = sorted cursor lock order across concurrent fires.
   for (const stationId of [...byStation.keys()].sort()) {
     const items = byStation.get(stationId) ?? [];
+    const { businessDate, ticketNo } = await nextKitchenTicketNo(
+      tx,
+      context,
+      outletId,
+      now,
+    );
     const [ticket] = await tx
       .insert(kitchenTickets)
       .values({
@@ -389,6 +399,8 @@ export async function routeFiredItemsToKitchen(
         orderId: input.orderId,
         stationId,
         fireBatchId,
+        businessDate,
+        ticketNo,
         status: "new",
         priority: 0,
         firedAt: now,
@@ -493,6 +505,65 @@ export async function routeFiredItemsToKitchen(
     now,
   });
   return { ticketIds, unroutedItemIds };
+}
+
+/**
+ * Takes the ticket-number lock of the outlet's business day: one advisory
+ * lock per (tenant, outlet, business day), held to the end of the caller's
+ * transaction (re-taking it in the same transaction is free). Returns the
+ * business day the lock covers.
+ *
+ * LOCK ORDER RULE (deadlock, legend-tzyj2): take the ticket-number lock
+ * BEFORE any station-feed lock (`appendStationFeed`, the cursor row of a
+ * station). A POS fire takes ticket-no then feed; a path that voids kitchen
+ * items first (feed lock) and routes after (ticket-no lock) would close the
+ * cycle against it. Such a path calls this function first, then voids.
+ */
+export async function lockKitchenTicketNo(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  now: Date,
+): Promise<string> {
+  const tenantId = context.tenant.tenantId;
+  const businessDate = businessDateFor(
+    await loadOutlet(tx, context, outletId),
+    now,
+  );
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`kitchen-ticket-no:${tenantId}:${outletId}:${businessDate}`}, 0))`,
+  );
+  return businessDate;
+}
+
+/**
+ * Next ticket number of the outlet's business day (pickup.service.ts
+ * pattern): the ticket-number lock (`lockKitchenTicketNo`), then `max + 1`.
+ * The lock lasts to the end of the caller's transaction, so two concurrent
+ * fires never read the same max, and a repeat call in the same transaction
+ * sees the tickets inserted so far.
+ */
+async function nextKitchenTicketNo(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  now: Date,
+): Promise<{ businessDate: string; ticketNo: number }> {
+  const tenantId = context.tenant.tenantId;
+  const businessDate = await lockKitchenTicketNo(tx, context, outletId, now);
+  const [top] = await tx
+    .select({
+      max: sql<number | null>`max(${kitchenTickets.ticketNo})`.mapWith(Number),
+    })
+    .from(kitchenTickets)
+    .where(
+      and(
+        eq(kitchenTickets.tenantId, tenantId),
+        eq(kitchenTickets.outletId, outletId),
+        eq(kitchenTickets.businessDate, businessDate),
+      ),
+    );
+  return { businessDate, ticketNo: (top?.max ?? 0) + 1 };
 }
 
 type StationRule = {

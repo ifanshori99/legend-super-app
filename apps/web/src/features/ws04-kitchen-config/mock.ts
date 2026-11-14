@@ -14,6 +14,7 @@ import {
   listOrderIssues,
   orderIssueViews,
   updateCapacityRules,
+  updateKitchenStations,
 } from "@starter/shared/kitchen";
 import type {
   CapacityRule,
@@ -26,7 +27,6 @@ import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { FIXTURE_BUSINESS_DATE } from "./outlet.ts";
-import { updateKitchenStations } from "./contract-gap.ts";
 import { periodIncludesDate } from "./lib.ts";
 
 const { stationConfigs, capacityRules, pacing, servingTimeSummaries } =
@@ -82,7 +82,7 @@ registerMock(listKitchenStations, ({ params, scenario }) => {
 });
 
 // Replaces order and flags of every station of the outlet at once, like the
-// proposed endpoint (./contract-gap.ts). Unknown or missing stations refuse the
+// endpoint (@starter/shared/kitchen). Unknown or missing stations refuse the
 // whole save, so a reorder is never half applied.
 registerMock(updateKitchenStations, ({ params, body }) => {
   const own = stations

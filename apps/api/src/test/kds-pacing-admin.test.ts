@@ -251,9 +251,10 @@ async function openTicket(stationId: string, itemId: string): Promise<string> {
     );
     await client.query(
       `INSERT INTO kitchen_tickets
-         (id, tenant_id, outlet_id, order_id, station_id, fire_batch_id, status, priority,
-          fired_at, started_at, done_at, cancelled_at)
-       VALUES ($1, $2, $3, $4, $5, $6, 'new', 0, $7, NULL, NULL, NULL)`,
+         (id, tenant_id, outlet_id, order_id, station_id, fire_batch_id, business_date, ticket_no,
+          status, priority, fired_at, started_at, done_at, cancelled_at)
+       VALUES ($1, $2, $3, $4, $5, $6, '2026-11-01', (SELECT coalesce(max(m.ticket_no), 0) + 1 FROM kitchen_tickets m WHERE m.tenant_id = $2::uuid AND m.outlet_id = $3::uuid AND m.business_date = '2026-11-01'),
+               'new', 0, $7, NULL, NULL, NULL)`,
       [ticketId, tenantId, outletId, orderId, stationId, randomUUID(), firedAt],
     );
     await client.query(

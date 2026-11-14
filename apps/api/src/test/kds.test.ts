@@ -1121,8 +1121,11 @@ describe("KDS-02 gapless feed and cursor resync", () => {
         [total],
       );
       await client.query(
-        `INSERT INTO kitchen_tickets (id, tenant_id, outlet_id, order_id, station_id, fire_batch_id, status, priority, fired_at)
-         SELECT s.ticket_id, t.tenant_id, t.outlet_id, t.order_id, $2::uuid, gen_random_uuid(), 'new', 0, now()
+        `INSERT INTO kitchen_tickets (id, tenant_id, outlet_id, order_id, station_id, fire_batch_id, business_date, ticket_no, status, priority, fired_at)
+         SELECT s.ticket_id, t.tenant_id, t.outlet_id, t.order_id, $2::uuid, gen_random_uuid(), '2026-11-01',
+                (SELECT coalesce(max(m.ticket_no), 0) FROM kitchen_tickets m
+                 WHERE m.tenant_id = t.tenant_id AND m.outlet_id = t.outlet_id AND m.business_date = '2026-11-01') + s.n::int,
+                'new', 0, now()
          FROM kitchen_tickets t, seed s WHERE t.id = $1::uuid`,
         [template, station],
       );
