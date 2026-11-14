@@ -32,6 +32,7 @@ import {
 import { AccessError, type PermissionCode } from "@starter/shared/access";
 import {
   businessDateOf,
+  CoreError,
   createUlid,
   divideRounded,
   encodeCursor,
@@ -80,6 +81,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { linkStorageObjectSource } from "./core-storage.ts";
 import { recordStockMovementInTransaction } from "./inventory.service.ts";
 import {
   assertOutlet,
@@ -749,6 +751,26 @@ export async function createGoodsReceipt(
             position,
           })),
         );
+      // Link each photo to this receipt so it reads as a goods receipt file.
+      for (const mediaId of mediaIds) {
+        try {
+          await linkStorageObjectSource(tx, {
+            tenantId: context.tenant.tenantId,
+            objectId: mediaId,
+            sourceKind: "goods_receipt",
+            sourceId: receiptId,
+            actorUserId,
+            outletId: input.outletId,
+          });
+        } catch (error) {
+          // The storage helper answers a core 400; this contract answers 422.
+          if (error instanceof CoreError && error.code === "VALIDATION_ERROR")
+            throw invalid(
+              "A photo must be your own unattached receipt photo of this outlet.",
+            );
+          throw error;
+        }
+      }
 
       await postGoodsReceiptStockInTransaction(
         tx,

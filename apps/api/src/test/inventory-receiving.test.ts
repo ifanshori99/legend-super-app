@@ -163,7 +163,10 @@ async function insertLocation(outletId: string): Promise<string> {
   return rows[0]!.id;
 }
 
-/** Storage rows are seeded as the migration owner; FKs are skipped so tenant B needs no outlet. */
+/**
+ * Storage rows are seeded as the migration owner; FKs are skipped so tenant B needs no outlet.
+ * The uploader is the receiving user: a create links the photo only for its uploader (legend-9h4qh).
+ */
 async function insertStorageObject(
   tenantId: string,
   outletId: string,
@@ -175,9 +178,16 @@ async function insertStorageObject(
     await client.query("BEGIN");
     await client.query("SET LOCAL session_replication_role = replica");
     await client.query(
-      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
-       VALUES ($1, $2, $3, $4, $5, 'image/webp', 1024)`,
-      [tenantId, outletId, id, purpose, `legend-o1o4s/${id}.webp`],
+      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, owner_user_id)
+       VALUES ($1, $2, $3, $4, $5, 'image/webp', 1024, $6)`,
+      [
+        tenantId,
+        outletId,
+        id,
+        purpose,
+        `legend-o1o4s/${id}.webp`,
+        receiver.userId,
+      ],
     );
     await client.query("COMMIT");
   } catch (error) {

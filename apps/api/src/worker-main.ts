@@ -148,6 +148,7 @@ import {
 } from "./services/core-storage-runtime.ts";
 import { registerAttendanceSelfiePurgeJob } from "./worker/attendance-selfie-purge.job.ts";
 import { registerEdgeSelfieOrphanSweepJob } from "./worker/edge-selfie-orphan-sweep.job.ts";
+import { registerReceiptPhotoOrphanSweepJob } from "./worker/receipt-photo-orphan-sweep.job.ts";
 import { registerBlindIndexRebuildJob } from "./worker/blind-index-rebuild.job.ts";
 import { registerHrisPiiResealJob } from "./worker/hris-pii-reseal.job.ts";
 import { logger } from "./lib/logger";
@@ -919,6 +920,13 @@ try {
     });
     // legend-0wvoz: the orphan sweep of received edge selfies deletes objects too.
     await registerEdgeSelfieOrphanSweepJob({
+      boss,
+      storage: storageRuntime.storage,
+      database: db,
+      log: consoleLikeLog(logger),
+    });
+    // legend-9h4qh: unlinked goods receipt photos older than 24 hours.
+    await registerReceiptPhotoOrphanSweepJob({
       boss,
       storage: storageRuntime.storage,
       database: db,
