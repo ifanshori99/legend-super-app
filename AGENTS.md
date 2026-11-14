@@ -96,6 +96,10 @@ Use PostgreSQL `pgTable`/boolean/timestamp-with-time-zone columns and asynchrono
 - `pnpm test` penuh dan `pnpm check` hanya untuk gate akhir: sekali, lewat `heavy`, oleh satu `test-runner`.
 - Jangan menjalankan suite penuh paralel dari worktree yang sama.
 
+## Pra-gate sebelum lapor
+
+- Migrasi baru: pindahkan FK tabel baru dari `ALTER TABLE ... ADD CONSTRAINT` hasil `db:generate` ke dalam `CREATE TABLE` sebelum migrasi diterapkan.
+
 ## Verify and hand off
 
 Run `pnpm check` (lint, typecheck, API + root tests on disposable PostgreSQL) and `pnpm build` for substantive changes. For auth/routing/session/CORS changes also run `pnpm test:e2e` (production builds + Playwright). For setup or Compose changes run `pnpm test:setup`. Add tests for real behavior and data isolation. Review the UI at narrow and wide widths when changing layout. The starter placeholder page and `e2e/starter.spec.ts` are gone (bead legend-fbu); new screens go in a route area, see `docs/frontend.md` "Where to put a new screen".
