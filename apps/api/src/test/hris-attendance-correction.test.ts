@@ -1385,3 +1385,226 @@ describe("hris.attendance.duty_meal", () => {
     expect(listed).toEqual([]);
   });
 });
+
+// ---- expectedEmployeeId guard (card legend-2boxs) -------------------------
+//
+// Assumptions (the card leaves these open):
+//  - `expectedEmployeeId` is an optional body field on the correction request.
+//    When present it must equal the caller's own employee id (compared
+//    case-insensitively); otherwise the server refuses with 403 or 409 before
+//    anything is written: no correction row, no approval request, no audit
+//    event, no stored idempotency key.
+//  - An id of an employee of another outlet or of another tenant is refused
+//    the same way as a colleague's (never 404/422, so the answer does not
+//    reveal whether the employee exists).
+//  - A matching or omitted field behaves exactly as before (200 or 201).
+describe("hris.attendance.correction expectedEmployeeId (legend-2boxs)", () => {
+  const otherTenantId = randomUUID();
+  const otherTenantEmployee = randomUUID();
+  let colleagueEmployee: string;
+  let otherOutletEmployee: string;
+
+  beforeAll(async () => {
+    colleagueEmployee = await seedEmployee(null, outlet.id);
+    otherOutletEmployee = await seedEmployee(null, otherOutlet.id);
+    // An employee of a different tenant. Replica mode skips the foreign keys
+    // so no second tenant, brand or outlet has to be provisioned.
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [otherTenantId],
+      );
+      await client.query(
+        `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
+                                employment_type, join_date, status)
+         VALUES ($1, $2, NULL, $3, 'Karyawan Tenant Lain', $4, 'pkwtt', '2025-03-01', 'active')`,
+        [
+          otherTenantEmployee,
+          otherTenantId,
+          `XT-${otherTenantEmployee.slice(0, 8).toUpperCase()}`,
+          randomUUID(),
+        ],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+
+  afterAll(async () => {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [otherTenantId],
+      );
+      await client.query("DELETE FROM employees WHERE id = $1", [
+        otherTenantEmployee,
+      ]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+
+  /** Everything a filed correction could leave behind for the requester. */
+  async function footprint(idempotencyKey: string) {
+    return ownerTx(async (db) => {
+      const count = async (sql: string, params: unknown[]) =>
+        Number((await db.query(sql, params)).rows[0].n);
+      return {
+        corrections: await count(
+          "SELECT count(*) AS n FROM attendance_corrections WHERE tenant_id = $1 AND employee_id = $2",
+          [tenant.id, employeeCorr],
+        ),
+        approvals: await count(
+          "SELECT count(*) AS n FROM approval_requests WHERE tenant_id = $1 AND requested_by = $2",
+          [tenant.id, corrStaff.userId],
+        ),
+        audits: await count(
+          "SELECT count(*) AS n FROM audit_logs WHERE tenant_id = $1 AND event->>'actorId' = $2",
+          [tenant.id, corrStaff.userId],
+        ),
+        idempotency: await count(
+          "SELECT count(*) AS n FROM hris_idempotency WHERE tenant_id = $1 AND key = $2",
+          [tenant.id, idempotencyKey],
+        ),
+      };
+    });
+  }
+
+  const file = (body: unknown) =>
+    post(corrStaff.client, "/api/hris/attendance/corrections", body);
+
+  // Every mismatch answers the same 409 + code, so nothing reveals whether
+  // the expected id exists in another outlet or tenant.
+  function expectIdentityMismatch(
+    response: { status: number; body: unknown },
+    label = "mismatch",
+  ) {
+    expect(response.status, `${label}: ${JSON.stringify(response.body)}`).toBe(
+      409,
+    );
+    expect((response.body as { error?: { code?: string } }).error?.code).toBe(
+      "ATTENDANCE_CORRECTION_IDENTITY_MISMATCH",
+    );
+  }
+
+  async function expectRefusedWithoutTrace(
+    day: string,
+    expectedEmployeeId: string,
+  ) {
+    const idempotencyKey = key();
+    const before = await footprint(idempotencyKey);
+    const response = await file(
+      correctionBody(day, { expectedEmployeeId, idempotencyKey }),
+    );
+    expectIdentityMismatch(response);
+    expect(await footprint(idempotencyKey)).toEqual(before);
+    expect(await manualLogsAt(day)).toHaveLength(0);
+  }
+
+  it("refuses a colleague of the same outlet and leaves no trace", async () => {
+    await expectRefusedWithoutTrace(dayStr(21), colleagueEmployee);
+  });
+
+  it("refuses an employee of another outlet and leaves no trace", async () => {
+    await expectRefusedWithoutTrace(dayStr(22), otherOutletEmployee);
+  });
+
+  it("refuses an employee of another tenant and leaves no trace", async () => {
+    await expectRefusedWithoutTrace(dayStr(23), otherTenantEmployee);
+  });
+
+  it("refuses an employee id that exists nowhere the same way", async () => {
+    await expectRefusedWithoutTrace(dayStr(24), randomUUID());
+  });
+
+  it("files the correction when expectedEmployeeId is the caller's own employee", async () => {
+    const day = dayStr(25);
+    const idempotencyKey = key();
+    const response = await file(
+      correctionBody(day, { expectedEmployeeId: employeeCorr, idempotencyKey }),
+    );
+    expect([200, 201], JSON.stringify(response.body)).toContain(
+      response.status,
+    );
+    expect(response.body.data.employeeId).toBe(employeeCorr);
+    expect(response.body.data.status).toBe("pending");
+    expect(await correctionStatus(response.body.data.id)).toBe("pending");
+  });
+
+  it("compares the expected id case-insensitively", async () => {
+    const response = await file(
+      correctionBody(dayStr(26), {
+        expectedEmployeeId: employeeCorr.toUpperCase(),
+      }),
+    );
+    expect([200, 201], JSON.stringify(response.body)).toContain(
+      response.status,
+    );
+    expect(response.body.data.employeeId).toBe(employeeCorr);
+  });
+
+  it("behaves as before when expectedEmployeeId is omitted", async () => {
+    const response = await file(correctionBody(dayStr(27)));
+    expect([200, 201], JSON.stringify(response.body)).toContain(
+      response.status,
+    );
+    expect(response.body.data.employeeId).toBe(employeeCorr);
+    expect(response.body.data.status).toBe("pending");
+  });
+
+  it("still refuses a malformed expectedEmployeeId as a validation error", async () => {
+    const response = await file(
+      correctionBody(dayStr(28), { expectedEmployeeId: "bukan-uuid" }),
+    );
+    expect([400, 422], JSON.stringify(response.body)).toContain(
+      response.status,
+    );
+  });
+
+  it("keeps refusing a mismatch when the same idempotency key is sent again", async () => {
+    const day = dayStr(29);
+    const idempotencyKey = key();
+    const before = await footprint(idempotencyKey);
+    const body = correctionBody(day, {
+      expectedEmployeeId: colleagueEmployee,
+      idempotencyKey,
+    });
+    for (const attempt of [1, 2]) {
+      const response = await file(body);
+      expectIdentityMismatch(response, `attempt ${attempt}`);
+    }
+    // A refused request must not store its key, or a later honest request
+    // with the same key would replay a refusal (or worse, a success).
+    expect(await footprint(idempotencyKey)).toEqual(before);
+  });
+
+  it("refuses a mismatch even when the key already filed a correction for the caller", async () => {
+    const day = dayStr(30);
+    const idempotencyKey = key();
+    const first = await file(correctionBody(day, { idempotencyKey }));
+    expect([200, 201], JSON.stringify(first.body)).toContain(first.status);
+    const before = await footprint(idempotencyKey);
+    const replay = await file(
+      correctionBody(day, {
+        idempotencyKey,
+        expectedEmployeeId: colleagueEmployee,
+      }),
+    );
+    expectIdentityMismatch(replay);
+    expect(await footprint(idempotencyKey)).toEqual(before);
+  });
+});
