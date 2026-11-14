@@ -203,6 +203,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "trigger function bodies only: stamp sync_txid on edge_printers and edge_printer_tombstones at runtime and write a tombstone row when a printer is deleted; the migration itself rewrites no existing row and imports nothing",
   "0534_payout_gl_postings.sql":
     "maps the new bank_charges posting role to the entity's own account 8101 (an active expense account with no child account) for every already provisioned legal entity that has no bank_charges mapping (legend-658); idempotent, never updates or deletes, no amount or journal touched; FORCE RLS lifted for that one statement and restored",
+  "0568_payout_source_bank_frozen.sql":
+    "sets the new source_bank_account_id on manual_bank payout batches that are still approved or exported, copying the payout config's source account (the config cannot change while a batch runs); finished batches stay empty, existing values are never overwritten, no amount or journal touched; FORCE RLS lifted for that one statement and restored",
   "0346_payroll_disbursement_grants.sql":
     "appends payroll.payout.configure, payroll.disburse.request and payroll.disburse.approve to the stored owner, finance and hr template role rows of existing tenants (legend-wnkep.1; configure: owner+finance, request: owner+hr, approve: owner+finance+hr); idempotent, no duplicates, never touches tenant_admin, another template or a custom role; each tenant is named (app.tenant_id) before its roles rows are touched, FORCE RLS stays on",
 };

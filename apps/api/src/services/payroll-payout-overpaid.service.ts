@@ -42,6 +42,7 @@ import { payrollEntryDateOf, payrollGlKeys } from "./payroll-gl-consumer.ts";
 import { assertEvidenceKeyForBatch } from "./payroll-payout-evidence.ts";
 import {
   PAYOUT_BANK_CHARGES_MAPPING_MISSING,
+  PAYOUT_SOURCE_ACCOUNT_MISSING,
   accountingEnabled,
   activeSourceGlAccount,
   frozenSourceGlAccount,
@@ -198,7 +199,7 @@ export async function recordOverpaidItem(
   if (locked || feeOnly) {
     // Credit the account frozen on this batch (legend-hkh57), never the config
     // of today. A batch from before the freeze falls back to the account its
-    // settle journal used, then to the config.
+    // settle journal used; without one it is refused.
     let sourceAccountId: string;
     if (batch.sourceBankAccountId !== null) {
       sourceAccountId = (await frozenSourceGlAccount(
@@ -220,22 +221,25 @@ export async function recordOverpaidItem(
         )
         .orderBy(payrollPayoutGlPostings.postedAt)
         .limit(1);
+      // No frozen account and no settle journal to copy it from: the batch is
+      // from before the freeze and finished. Today's config is not its
+      // account, so the most restrictive rule applies: refuse (409).
+      if (!settled)
+        throw payoutRefuse(
+          409,
+          PAYOUT_SOURCE_ACCOUNT_MISSING.code,
+          PAYOUT_SOURCE_ACCOUNT_MISSING.message,
+        );
       // The configured account must be active. A settled account is not the
       // config, so it is checked on its own: a batch settled from an account
       // since replaced and deactivated refuses the report (409).
-      const configuredAccountId = await activeSourceGlAccount(
+      await activeSourceGlAccount(tx, tenantId, batch.legalEntityId);
+      sourceAccountId = await settledSourceAccount(
         tx,
         tenantId,
         batch.legalEntityId,
+        settled.journalKey,
       );
-      sourceAccountId = settled
-        ? await settledSourceAccount(
-            tx,
-            tenantId,
-            batch.legalEntityId,
-            settled.journalKey,
-          )
-        : configuredAccountId;
     }
     await assertActiveBankGlAccount(
       tx,

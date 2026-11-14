@@ -65,6 +65,7 @@ import {
 } from "./payroll-payout.service.ts";
 import {
   PAYOUT_BANK_CHARGES_MAPPING_MISSING,
+  PAYOUT_SOURCE_ACCOUNT_MISSING,
   accountingEnabled,
   assertActiveBankGlAccount,
   activeSourceGlAccount,
@@ -115,7 +116,7 @@ async function sourceBankOverride(
   tx: Tx,
   tenantId: TenantId,
   batch: Pick<BatchRow, "channel" | "legalEntityId" | "sourceBankAccountId">,
-  options: { optional?: boolean } = {},
+  options: { optional?: boolean; requireFrozen?: boolean } = {},
 ): Promise<Partial<Record<"bank", string>> | undefined | null> {
   if (batch.channel === "cash") return undefined;
   // A batch with a frozen account keeps it, whatever the config says now
@@ -130,6 +131,14 @@ async function sourceBankOverride(
     );
     return frozen === null ? null : { bank: frozen };
   }
+  // A late posting (fee re-post) of a batch with no frozen account never
+  // follows today's config: the most restrictive rule is to refuse.
+  if (options.requireFrozen)
+    throw payoutRefuse(
+      409,
+      PAYOUT_SOURCE_ACCOUNT_MISSING.code,
+      PAYOUT_SOURCE_ACCOUNT_MISSING.message,
+    );
   // `optional`: the caller can go on without the account (answered with null).
   const glAccountId = await activeSourceGlAccount(
     tx,
@@ -544,7 +553,9 @@ export async function repostSkippedFees(
         accountOverrides = { bank: settledBank };
       } else
         accountOverrides =
-          (await sourceBankOverride(tx, tenantId, batch)) ?? undefined;
+          (await sourceBankOverride(tx, tenantId, batch, {
+            requireFrozen: true,
+          })) ?? undefined;
       await postJournalFromRuleInTransaction(
         tx,
         context,

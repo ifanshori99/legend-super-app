@@ -36,6 +36,7 @@
 //   never a 500, and posts nothing.
 // - Frozen-account inactive at overpaid uses the existing code
 //   `PAYOUT_SOURCE_ACCOUNT_MISSING`.
+import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import { originHeader } from "./helpers.ts";
@@ -227,6 +228,64 @@ async function makeBankChargesHeader() {
     );
 }
 
+/** Account `code` becomes inactive or a header (it gets a child). Returns the restore. */
+async function breakGlAccount(code: string, how: "inactive" | "header") {
+  if (how === "inactive") {
+    const setActive = (active: boolean) =>
+      W.asTenant(
+        (c) =>
+          c.query(
+            `UPDATE chart_of_accounts SET is_active = $3
+              WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = $4`,
+            [W.tenantId, W.entityId(), active, code],
+          ),
+        true,
+      );
+    await setActive(false);
+    return () => setActive(true);
+  }
+  const [child] = await W.rowsOf(
+    `INSERT INTO chart_of_accounts
+       (tenant_id, legal_entity_id, code, name, type, report_group, parent_id)
+     SELECT tenant_id, legal_entity_id, $3 || '9', 'Anak Uji', type, report_group, id
+       FROM chart_of_accounts
+      WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = $3
+     RETURNING id`,
+    [W.tenantId, W.entityId(), code],
+  );
+  return () =>
+    W.asTenant(
+      (c) =>
+        c.query(`DELETE FROM chart_of_accounts WHERE id = $1`, [child!.id]),
+      true,
+    );
+}
+
+/** A batch from before the freeze: the frozen account is cleared (triggers off). */
+const clearFrozenSource = (batchId: string) =>
+  W.asTenant(
+    (c) =>
+      c.query(
+        `UPDATE payroll_disbursement_batches SET source_bank_account_id = NULL WHERE id = $1`,
+        [batchId],
+      ),
+    true,
+  );
+
+/** The backfill statements of migration 0568 (the ones that read the configs). */
+function backfillStatements() {
+  const sql = readFileSync(
+    new URL(
+      "../../drizzle/0568_payout_source_bank_frozen.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  return sql
+    .split("--> statement-breakpoint")
+    .filter((statement) => statement.includes("payroll_payout_configs"));
+}
+
 /**
  * Journal lines booked under any idempotency key that carries this item id,
  * summed by GL code, plus how many distinct entries debit 8101.
@@ -261,8 +320,10 @@ async function financeClient(label: string) {
     .post("/api/auth/mfa/factors")
     .set(originHeader)
     .send({ type: "totp" });
-  expect(enrolled.status, `${PASSWORD_NOTE} ${JSON.stringify(enrolled.body)}`)
-    .toBe(201);
+  expect(
+    enrolled.status,
+    `${PASSWORD_NOTE} ${JSON.stringify(enrolled.body)}`,
+  ).toBe(201);
   const { factorId, secretBase32 } = enrolled.body.data as {
     factorId: string;
     secretBase32: string;
@@ -355,7 +416,8 @@ describe("T1: the source bank account is frozen on the batch (hkh57)", () => {
         `SELECT id FROM payroll_disbursement_batches WHERE tenant_id = $1 AND payroll_run_id = $2`,
         [W.tenantId, runId],
       );
-      const itemsBefore = (await W.itemsOf(batch1)).length + (await W.itemsOf(batch2)).length;
+      const itemsBefore =
+        (await W.itemsOf(batch1)).length + (await W.itemsOf(batch2)).length;
 
       await recordOverpaidItem(idOf(budiFirst), batch1);
 
@@ -365,7 +427,10 @@ describe("T1: the source bank account is frozen on the batch (hkh57)", () => {
         byCode["1101"],
         "the new source (B) must not be credited for an old batch's transfer",
       ).toBeUndefined();
-      expect(byCode["1103"], "batch 1's frozen source credited net pay + fee").toEqual({
+      expect(
+        byCode["1103"],
+        "batch 1's frozen source credited net pay + fee",
+      ).toEqual({
         debit: 0,
         credit: BUDI_NET + FEE,
       });
@@ -380,8 +445,9 @@ describe("T1: the source bank account is frozen on the batch (hkh57)", () => {
           [W.tenantId, runId],
         ),
       ).toHaveLength(batchesBefore.length);
-      expect((await W.itemsOf(batch1)).length + (await W.itemsOf(batch2)).length)
-        .toBe(itemsBefore);
+      expect(
+        (await W.itemsOf(batch1)).length + (await W.itemsOf(batch2)).length,
+      ).toBe(itemsBefore);
       expect((await W.batchById(batch1)).source_bank_account_id).toBe(sourceA);
     } finally {
       await setSourceBank(sourceA);
@@ -415,6 +481,20 @@ describe("T1: the source bank account is frozen on the batch (hkh57)", () => {
       await setSourceBank(sourceA);
     }
   });
+  it("[overpaid-old-batch-no-frozen-no-settle] an old batch without a frozen account and without a settle journal refuses the overpaid record 409 even though the config source is active (no fallback to today's config); nothing is booked", async () => {
+    const { batch1, sourceA, budiFirst } = await failedBatchThenSourceMoved();
+    try {
+      await clearFrozenSource(batch1);
+      await W.expectRefused(recordOverpaidItem(idOf(budiFirst), batch1), {
+        status: 409,
+        code: SOURCE_CODE,
+      });
+      expect((await W.itemOfPerson(batch1, BUDI)).status).toBe("failed");
+      expect(Object.keys(await ledgerOfItem(idOf(budiFirst)))).toEqual([]);
+    } finally {
+      await setSourceBank(sourceA);
+    }
+  });
 });
 
 // =========================================================================
@@ -432,7 +512,10 @@ describe("T2: confirm refuses an inactive source even without a locked journal (
         W.confirm(batchId, W.succeedItems(batchId, items)),
         { status: 409, code: SOURCE_CODE },
       );
-      expect(await W.postingsOf(batchId), "no posting, not even skipped").toHaveLength(0);
+      expect(
+        await W.postingsOf(batchId),
+        "no posting, not even skipped",
+      ).toHaveLength(0);
       for (const item of await W.itemsOf(batchId)) {
         expect(item.status, "no confirmation was recorded").toBe("exported");
         expect(item.gl_posting_id).toBeNull();
@@ -572,6 +655,107 @@ describe("T3: the bank charges mapping needs an active, postable account (l1a7p)
     expect((await W.postingsOf(batchId))[0]!.fee_posted).toBe(true);
     expect(await W.postingsOf(batchId)).toHaveLength(1);
   });
+});
+
+// =========================================================================
+// Architect findings: backfill of running batches, no config fallback for old
+// batches, and the source GL account itself must be active and postable
+// =========================================================================
+
+describe("Architect findings on the frozen source", () => {
+  it("[backfill-running-batches] migration 0568 freezes the config account on approved/exported manual_bank batches only; a finished old batch stays empty", async () => {
+    const sourceA = await currentSourceBank();
+    const approvedRun = await W.seedRun(slipsOf());
+    const approved = await W.approvedBatch(approvedRun);
+    const { batchId: exported, items } = await exportedRun();
+    const finishedRun = await W.seedRun(slipsOf());
+    const finished = await W.exportedBatch(finishedRun);
+    await W.confirm(
+      finished,
+      W.succeedItems(
+        finished,
+        (await W.itemsOf(finished)).filter((i) => i.status === "exported"),
+      ),
+    );
+    expect(items.length).toBeGreaterThan(0);
+    const finishedStatus = (await W.batchById(finished)).status;
+    expect(["approved", "exported"]).not.toContain(finishedStatus);
+
+    for (const id of [approved, exported, finished])
+      await clearFrozenSource(id);
+    // Raw: the freeze trigger does not exist yet when the migration runs.
+    await W.asTenant(async (c) => {
+      for (const statement of backfillStatements()) await c.query(statement);
+    }, true);
+
+    expect((await W.batchById(approved)).source_bank_account_id).toBe(sourceA);
+    expect((await W.batchById(exported)).source_bank_account_id).toBe(sourceA);
+    expect(
+      (await W.batchById(finished)).source_bank_account_id,
+      "never guess the account of a finished batch from today's config",
+    ).toBeNull();
+  });
+
+  it("[fee-repost-old-batch-no-frozen] a deferred fee of an old batch without a frozen account is refused 409 instead of using today's config; nothing is posted", async () => {
+    const { batchId, items } = await exportedRun({ lockedJournal: false });
+    const restoreCharges = await deactivateBankCharges();
+    try {
+      await W.confirm(batchId, W.succeedItems(batchId, items));
+    } finally {
+      await restoreCharges();
+    }
+    const [posting] = await W.postingsOf(batchId);
+    expect(posting!.kind).toBe("settle_skipped");
+    expect(posting!.fee_posted).toBe(false);
+    await clearFrozenSource(batchId);
+    await W.expectRefused(repostSkippedFees(batchId), {
+      status: 409,
+      code: SOURCE_CODE,
+    });
+    expect((await W.postingsOf(batchId))[0]!.fee_posted).toBe(false);
+    expect(
+      await W.journalByKey(`payroll-payout-fee:${posting!.item_set_hash}`),
+    ).toBeUndefined();
+  });
+
+  for (const how of ["inactive", "header"] as const) {
+    it(`[source-gl-${how}] a source bank account whose GL account (1103) is ${how} is refused 409 ${SOURCE_CODE} at approve and at confirm; works once fixed`, async () => {
+      const runId = await W.seedRun(slipsOf());
+      const batchId = await W.createBatch(runId);
+      await W.inTx((tx) => submitDisbursementBatch(tx, actorOf(REQ), batchId));
+      const hash = (await W.batchById(batchId)).content_hash as string;
+      const approve = () =>
+        W.inTx((tx) =>
+          approveDisbursementBatch(tx, actorOf(APP), batchId, {
+            contentHash: hash,
+          }),
+        );
+      const restoreApprove = await breakGlAccount("1103", how);
+      try {
+        await W.expectRefused(approve(), { status: 409, code: SOURCE_CODE });
+        expect((await W.batchById(batchId)).status).toBe("pending_approval");
+      } finally {
+        await restoreApprove();
+      }
+      await approve();
+
+      const { batchId: running, items } = await exportedRun();
+      const restoreConfirm = await breakGlAccount("1103", how);
+      try {
+        await W.expectRefused(
+          W.confirm(running, W.succeedItems(running, items)),
+          { status: 409, code: SOURCE_CODE },
+        );
+        for (const item of await W.itemsOf(running))
+          expect(item.status, "no confirmation was recorded").toBe("exported");
+        expect(await W.postingsOf(running)).toHaveLength(0);
+      } finally {
+        await restoreConfirm();
+      }
+      await W.confirm(running, W.succeedItems(running, items));
+      expect((await W.postingsOf(running))[0]!.kind).toBe("settle");
+    });
+  }
 });
 
 void SITI;

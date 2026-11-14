@@ -8,7 +8,21 @@ ALTER TABLE "payroll_disbursement_batches" ADD COLUMN "source_bank_account_id" u
 -- (pattern 2 of migration-fk-force-rls.test.ts).
 ALTER TABLE public.bank_accounts NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE public.payroll_disbursement_batches NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.payroll_payout_configs NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "payroll_disbursement_batches" ADD CONSTRAINT "payroll_disbursement_batches_source_account_fk" FOREIGN KEY ("tenant_id","legal_entity_id","source_bank_account_id") REFERENCES "public"."bank_accounts"("tenant_id","legal_entity_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+-- A batch approved or exported before this column existed is still running, and
+-- the config cannot change while a batch is running (payroll-payout-config
+-- service), so the config account is the one the batch was approved with.
+UPDATE public.payroll_disbursement_batches b
+   SET source_bank_account_id = c.manual_source_bank_account_id
+  FROM public.payroll_payout_configs c
+ WHERE c.tenant_id = b.tenant_id
+   AND c.legal_entity_id = b.legal_entity_id
+   AND c.manual_source_bank_account_id IS NOT NULL
+   AND b.channel = 'manual_bank'
+   AND b.status IN ('approved', 'exported')
+   AND b.source_bank_account_id IS NULL;--> statement-breakpoint
+ALTER TABLE public.payroll_payout_configs FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE public.payroll_disbursement_batches FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE public.bank_accounts FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 -- Once set, the frozen account never changes, and it is only set while the

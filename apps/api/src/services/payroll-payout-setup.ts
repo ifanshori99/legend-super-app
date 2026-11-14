@@ -84,6 +84,44 @@ export async function bankChargesMapped(
   return row !== undefined;
 }
 
+/**
+ * The GL account exists in the same tenant and legal entity, is active and is
+ * postable (no child accounts, so not a header). The source bank account only
+ * counts as usable while its GL account is too: a journal that credits an
+ * inactive or header account would fail late, after the money has moved.
+ */
+async function glAccountPostable(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+  glAccountId: string,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: chartOfAccounts.id })
+    .from(chartOfAccounts)
+    .where(
+      and(
+        eq(chartOfAccounts.tenantId, tenantId),
+        eq(chartOfAccounts.legalEntityId, legalEntityId),
+        eq(chartOfAccounts.id, glAccountId),
+        eq(chartOfAccounts.isActive, true),
+        notExists(
+          tx
+            .select({ one: sql`1` })
+            .from(childAccounts)
+            .where(
+              and(
+                eq(childAccounts.tenantId, tenantId),
+                eq(childAccounts.parentId, chartOfAccounts.id),
+              ),
+            ),
+        ),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
 export const PAYOUT_SOURCE_ACCOUNT_MISSING = {
   code: "PAYOUT_SOURCE_ACCOUNT_MISSING",
   message:
@@ -142,7 +180,11 @@ export async function activeSourceGlAccount(
     )
     .limit(1)
     .for("share", { of: bankAccounts });
-  if (row) return row.glAccountId;
+  if (
+    row &&
+    (await glAccountPostable(tx, tenantId, legalEntityId, row.glAccountId))
+  )
+    return row.glAccountId;
   if (options.optional) return null;
   throw new HttpError(
     409,
@@ -211,7 +253,11 @@ export async function frozenSourceGlAccount(
     )
     .limit(1)
     .for("share", { of: bankAccounts });
-  if (row) return row.glAccountId;
+  if (
+    row &&
+    (await glAccountPostable(tx, tenantId, legalEntityId, row.glAccountId))
+  )
+    return row.glAccountId;
   if (options.optional) return null;
   throw new HttpError(
     409,
