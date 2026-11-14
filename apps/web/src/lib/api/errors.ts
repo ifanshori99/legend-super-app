@@ -11,13 +11,19 @@ export class ApiError extends Error {
   remainingAttempts?: number;
   /** PAYSLIP_PIN_LOCKED (423): ISO datetime the lock ends. */
   lockedUntil?: string;
+  /** RATE_LIMITED (429): whole seconds until a new request may succeed. */
+  retryAfterSeconds?: number;
 
   constructor(
     status: number,
     code: string,
     message: string,
     details?: ApiErrorBody["error"]["details"],
-    extra?: { remainingAttempts?: number; lockedUntil?: string },
+    extra?: {
+      remainingAttempts?: number;
+      lockedUntil?: string;
+      retryAfterSeconds?: number;
+    },
   ) {
     super(message);
     this.name = "ApiError";
@@ -27,6 +33,8 @@ export class ApiError extends Error {
     if (extra?.remainingAttempts !== undefined)
       this.remainingAttempts = extra.remainingAttempts;
     if (extra?.lockedUntil !== undefined) this.lockedUntil = extra.lockedUntil;
+    if (extra?.retryAfterSeconds !== undefined)
+      this.retryAfterSeconds = extra.retryAfterSeconds;
   }
 }
 

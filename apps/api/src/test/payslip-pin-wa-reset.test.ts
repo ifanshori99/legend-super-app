@@ -36,7 +36,12 @@ import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { signKirimWebhook } from "@starter/shared/adapters";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import { createApp } from "../app.ts";
+import { requestPayslipPinResetWa } from "../services/payslip-pin.service.ts";
 import { sealSecret } from "../lib/secrets.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 import {
@@ -1198,5 +1203,255 @@ describe("PIN reset by WhatsApp: the old OTP endpoints are gone", () => {
       .set(originHeader)
       .send({ code: "123456", pin: NEW_PIN, idempotencyKey: key() });
     expect(verify.status).toBe(404);
+  });
+});
+
+// Card legend-bzw5k. ASSUMPTIONS (the contract names the fields but not where
+// the 429 number lives or what an unverified number counts as):
+//  - `retryAfterSeconds` sits in the error envelope next to `code`/`message`
+//    (body.error.retryAfterSeconds), like `remainingAttempts` and `lockedUntil`.
+//    It is a whole number of seconds, 1..3600 (the window is one hour).
+//  - A number that exists but is not verified counts as "no usable number":
+//    `identity_missing`. Only a verified number that is too young is
+//    `identity_too_new`.
+describe("PIN reset by WhatsApp: why the start is blocked (409 reason, 429 wait)", () => {
+  type Detail = { field: string; message: string };
+  const whatsappDetails = (body: { error: { details?: Detail[] } }): Detail[] =>
+    body.error.details ?? [];
+
+  it("409 names identity_missing when the employee has no WhatsApp number", async () => {
+    const staff = await seedStaff("Staf WA Alasan Kosong", {
+      withWhatsapp: false,
+    });
+    const response = await requestProof(staff.client);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.error.code).toBe(
+      "PAYSLIP_PIN_RESET_WHATSAPP_UNAVAILABLE",
+    );
+    expect(whatsappDetails(response.body)).toEqual([
+      { field: "whatsapp", message: "identity_missing" },
+    ]);
+  });
+
+  it("409 names identity_missing when the number is not verified", async () => {
+    const staff = await seedStaff("Staf WA Alasan Belum Verifikasi", {
+      verified: false,
+    });
+    const response = await requestProof(staff.client);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(whatsappDetails(response.body)).toEqual([
+      { field: "whatsapp", message: "identity_missing" },
+    ]);
+  });
+
+  it("409 names identity_too_new when the verified number was linked under the minimum age", async () => {
+    const staff = await seedStaff("Staf WA Alasan Baru", {
+      linkedFor: `${MIN_LINK_AGE_DAYS - 1} days 23 hours`,
+    });
+    const response = await requestProof(staff.client);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.error.code).toBe(
+      "PAYSLIP_PIN_RESET_WHATSAPP_UNAVAILABLE",
+    );
+    expect(whatsappDetails(response.body)).toEqual([
+      { field: "whatsapp", message: "identity_too_new" },
+    ]);
+  });
+
+  it("409 PAYSLIP_PIN_NOT_SET carries no WhatsApp reason", async () => {
+    const staff = await seedStaff("Staf WA Alasan Tanpa PIN", {
+      withPin: false,
+    });
+    const response = await requestProof(staff.client);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.error.code).toBe("PAYSLIP_PIN_NOT_SET");
+    expect(
+      whatsappDetails(response.body).filter((d) => d.field === "whatsapp"),
+    ).toEqual([]);
+  });
+
+  it("the 409 reason leaks nothing personal: no number (own or another person's), email, ids, name or hash", async () => {
+    const stranger = await seedStaff("Staf WA Orang Lain");
+    const missing = await seedStaff("Staf WA Bocor Kosong", {
+      withWhatsapp: false,
+    });
+    const tooNew = await seedStaff("Staf WA Bocor Baru", {
+      linkedFor: "1 hour",
+    });
+    for (const staff of [missing, tooNew]) {
+      const response = await requestProof(staff.client);
+      expect(response.status, JSON.stringify(response.body)).toBe(409);
+      const everything = JSON.stringify({
+        body: response.body,
+        headers: response.headers,
+      });
+      for (const secret of [
+        staff.digits,
+        staff.digits.slice(-4),
+        staff.email,
+        staff.userId,
+        staff.employeeId,
+        staff.identityId,
+        stranger.digits,
+        stranger.digits.slice(-4),
+        stranger.email,
+        stranger.userId,
+        stranger.employeeId,
+        "Karyawan Reset WA",
+      ])
+        expect(everything).not.toContain(secret);
+      // The reason is one marker and nothing more: no extra fields to read.
+      // (`requestId` is the envelope's correlation id, not personal data.)
+      expect(
+        Object.keys(response.body.error)
+          .filter((k) => k !== "requestId")
+          .sort(),
+      ).toEqual(["code", "details", "message"]);
+      expect(response.body.error.details).toHaveLength(1);
+      expect(Object.keys(response.body.error.details[0]).sort()).toEqual([
+        "field",
+        "message",
+      ]);
+      expect(response.body.error.details[0].field).toBe("whatsapp");
+    }
+  });
+
+  it("the two reasons differ only in the marker: same message, same shape", async () => {
+    const missing = await seedStaff("Staf WA Sama Kosong", {
+      withWhatsapp: false,
+    });
+    const tooNew = await seedStaff("Staf WA Sama Baru", {
+      linkedFor: "1 hour",
+    });
+    const a = await requestProof(missing.client);
+    const b = await requestProof(tooNew.client);
+    expect(a.status).toBe(409);
+    expect(b.status).toBe(409);
+    expect(a.body.error.message).toBe(b.body.error.message);
+    expect(a.body.error.code).toBe(b.body.error.code);
+  });
+
+  it("429 carries retryAfterSeconds: a whole number of seconds within the hour window", async () => {
+    const staff = await seedStaff("Staf WA Tunggu");
+    for (let i = 0; i < 5; i += 1) await startReset(staff);
+    const sixth = await requestProof(staff.client);
+    expect(sixth.status, JSON.stringify(sixth.body)).toBe(429);
+    expect(sixth.body.error.code).toBe("RATE_LIMITED");
+    const wait = sixth.body.error.retryAfterSeconds;
+    expect(Number.isInteger(wait), JSON.stringify(sixth.body)).toBe(true);
+    expect(wait).toBeGreaterThanOrEqual(1);
+    expect(wait).toBeLessThanOrEqual(3600);
+    // A second blocked call a moment later never promises a longer wait.
+    const seventh = await requestProof(staff.client);
+    expect(seventh.status).toBe(429);
+    expect(seventh.body.error.retryAfterSeconds).toBeLessThanOrEqual(wait);
+  });
+
+  it("service level: retryAfterSeconds is measured from the OLDEST proof of the hour and the window reopens exactly then", async () => {
+    // Fixed clock passed as `now` (4th argument) so the arithmetic is exact.
+    // Five proofs are requested for real, then aged to 50/40/30/20/10 minutes
+    // before `now`: the oldest (-50 min) decides the wait, not the newest.
+    const staff = await seedStaff("Staf WA Tunggu Jam");
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i += 1)
+      ids.push((await startReset(staff)).challengeId);
+    const now = new Date();
+    const createdAt = [50, 40, 30, 20, 10].map(
+      (minutes) => new Date(now.getTime() - minutes * 60_000),
+    );
+    for (const [i, id] of ids.entries())
+      await owner.query(
+        `UPDATE login_challenges SET created_at = $2 WHERE id = $1`,
+        [id, createdAt[i]],
+      );
+    const oldest = createdAt[0]!.getTime();
+    const wait = Math.round((oldest + 3_600_000 - now.getTime()) / 1000);
+    expect(wait).toBe(600);
+
+    const context = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenant.id as never,
+        brandId: null,
+        source: "domain",
+      }),
+      { kind: "tenant" },
+    );
+    const request = (at: Date) =>
+      requestPayslipPinResetWa(
+        context,
+        staff.userId,
+        {
+          sessionId: randomUUID(),
+          bindingHash: randomBytes(32).toString("hex"),
+          ipHash: null,
+          userAgent: null,
+          webhookSecrets: [SECRET],
+        },
+        at,
+      );
+    const at = (seconds: number) => new Date(now.getTime() + seconds * 1000);
+
+    const blocked = await request(now).then(
+      () => null,
+      (error: unknown) =>
+        error as { status?: number; code?: string; retryAfterSeconds?: number },
+    );
+    expect(
+      blocked,
+      "the sixth request inside the hour must be refused",
+    ).not.toBeNull();
+    expect(blocked!.status).toBe(429);
+    expect(blocked!.code).toBe("RATE_LIMITED");
+    expect(blocked!.retryAfterSeconds).toBe(wait);
+
+    // One second before the oldest proof leaves the window: still refused,
+    // with one second left.
+    const almost = await request(at(wait - 1)).then(
+      () => null,
+      (error: unknown) =>
+        error as { status?: number; retryAfterSeconds?: number },
+    );
+    expect(almost, "still inside the window one second early").not.toBeNull();
+    expect(almost!.status).toBe(429);
+    expect(almost!.retryAfterSeconds).toBe(1);
+
+    // At exactly `wait` the oldest proof is out of the window: a proof is issued.
+    const issued = await request(at(wait));
+    expect(issued.challengeId).toEqual(expect.any(String));
+    expect(issued.code).toEqual(expect.any(String));
+  });
+
+  it("the 429 body leaks no code, number, link or sender hint of the pending proof", async () => {
+    const staff = await seedStaff("Staf WA Tunggu Bocor");
+    let last: Issued | undefined;
+    for (let i = 0; i < 5; i += 1) last = await startReset(staff);
+    const sixth = await requestProof(staff.client);
+    expect(sixth.status, JSON.stringify(sixth.body)).toBe(429);
+    const everything = JSON.stringify(sixth.body);
+    for (const secret of [
+      last!.code,
+      last!.code.replace("-", ""),
+      last!.challengeId,
+      last!.waLink,
+      staff.digits,
+      staff.digits.slice(-4),
+      staff.email,
+      staff.userId,
+      staff.employeeId,
+    ])
+      expect(everything).not.toContain(secret);
+    expect(
+      Object.keys(sixth.body.error)
+        .filter((k) => k !== "requestId")
+        .sort(),
+    ).toEqual(["code", "message", "retryAfterSeconds"]);
+  });
+
+  it("another employee is not slowed down by someone else's 429", async () => {
+    const flooder = await seedStaff("Staf WA Pembanjir");
+    for (let i = 0; i < 5; i += 1) await startReset(flooder);
+    expect((await requestProof(flooder.client)).status).toBe(429);
+    const other = await seedStaff("Staf WA Tak Terdampak");
+    expect((await requestProof(other.client)).status).toBe(201);
   });
 });

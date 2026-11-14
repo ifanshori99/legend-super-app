@@ -68,6 +68,8 @@ export const apiErrorBodySchema = z.object({
     remainingAttempts: z.number().int().nonnegative().optional(),
     /** PAYSLIP_PIN_LOCKED (423): ISO datetime the lock ends. */
     lockedUntil: z.string().datetime().optional(),
+    /** RATE_LIMITED (429): whole seconds until a retry can succeed. */
+    retryAfterSeconds: z.number().int().positive().optional(),
     requestId: z.string().optional(),
   }),
 });
@@ -82,6 +84,7 @@ export function apiErrorBody(
     details?: ApiErrorDetail[];
     remainingAttempts?: number;
     lockedUntil?: string;
+    retryAfterSeconds?: number;
     requestId?: string;
   } = {},
 ): ApiErrorEnvelope {
@@ -100,11 +103,19 @@ export function isApiErrorBody(value: unknown): value is ApiErrorEnvelope {
 export class CoreError extends Error {
   readonly code: CoreErrorCode;
   readonly status: number;
+  /** RATE_LIMITED only: whole seconds until a retry can succeed. */
+  readonly retryAfterSeconds?: number;
 
-  constructor(code: CoreErrorCode, message: string) {
+  constructor(
+    code: CoreErrorCode,
+    message: string,
+    extra: { retryAfterSeconds?: number } = {},
+  ) {
     super(message);
     this.name = "CoreError";
     this.code = code;
     this.status = coreErrorHttpStatus[code];
+    if (extra.retryAfterSeconds !== undefined)
+      this.retryAfterSeconds = extra.retryAfterSeconds;
   }
 }

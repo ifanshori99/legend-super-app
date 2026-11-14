@@ -133,6 +133,7 @@ export async function apiFetch<T>(
       | (ApiErrorBody["error"] & {
           remainingAttempts?: number;
           lockedUntil?: string;
+          retryAfterSeconds?: number;
         })
       | undefined;
     if (error?.code) handleActingStaffRejection(error.code, method);
@@ -149,6 +150,12 @@ export async function apiFetch<T>(
         lockedUntil:
           typeof error?.lockedUntil === "string"
             ? error.lockedUntil
+            : undefined,
+        retryAfterSeconds:
+          typeof error?.retryAfterSeconds === "number" &&
+          Number.isFinite(error.retryAfterSeconds) &&
+          error.retryAfterSeconds > 0
+            ? Math.ceil(error.retryAfterSeconds)
             : undefined,
       },
     );

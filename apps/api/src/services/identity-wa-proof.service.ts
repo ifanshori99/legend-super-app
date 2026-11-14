@@ -153,7 +153,7 @@ export async function issueWhatsAppProof(
   // Every proof opened in the hour counts, cancelled ones included, so
   // cancelling cannot buy more attempts.
   const recent = await tx
-    .select({ id: loginChallenges.id })
+    .select({ id: loginChallenges.id, createdAt: loginChallenges.createdAt })
     .from(loginChallenges)
     .where(
       and(
@@ -163,11 +163,20 @@ export async function issueWhatsAppProof(
         lte(loginChallenges.createdAt, input.now),
       ),
     );
-  if (recent.length >= PAYSLIP_PIN_PROOF_PER_USER_PER_HOUR)
+  if (recent.length >= PAYSLIP_PIN_PROOF_PER_USER_PER_HOUR) {
+    // The oldest proof in the window leaves it 60 minutes after its creation;
+    // the limit lifts then (rounded up, at least 1 second).
+    const oldest = Math.min(...recent.map((row) => row.createdAt.getTime()));
+    const retryAfterSeconds = Math.max(
+      1,
+      Math.ceil((oldest + 60 * MINUTE_MS - input.now.getTime()) / 1000),
+    );
     throw new CoreError(
       "RATE_LIMITED",
       "Terlalu banyak permintaan. Coba lagi nanti.",
+      { retryAfterSeconds },
     );
+  }
 
   await tx
     .update(loginChallenges)
@@ -403,6 +412,34 @@ export async function findWhatsAppProofIdentity(
 ): Promise<{ valueHash: string; senderHint: string } | null> {
   const found = await findWhatsAppProofSender(tx, input);
   return found && { valueHash: found.valueHash, senderHint: found.senderHint };
+}
+
+/**
+ * Why `findWhatsAppProofIdentity` found nothing, for the user's OWN identity
+ * only (never another account's): `identity_too_new` when a verified WhatsApp
+ * identity exists but was linked less than `WA_PROOF_IDENTITY_MIN_AGE_DAYS`
+ * days ago, `identity_missing` when there is none. Reads no number or hash.
+ */
+export async function diagnoseWhatsAppProofIdentity(
+  tx: Transaction,
+  input: { readonly userId: string; readonly now: Date },
+): Promise<"identity_missing" | "identity_too_new"> {
+  const linkedBefore = new Date(
+    input.now.getTime() - WA_PROOF_IDENTITY_MIN_AGE_DAYS * DAY_MS,
+  );
+  const [row] = await tx
+    .select({ id: userIdentities.id })
+    .from(userIdentities)
+    .where(
+      and(
+        eq(userIdentities.userId, input.userId),
+        eq(userIdentities.type, "whatsapp"),
+        isNotNull(userIdentities.verifiedAt),
+        gt(userIdentities.linkedAt, linkedBefore),
+      ),
+    )
+    .limit(1);
+  return row ? "identity_too_new" : "identity_missing";
 }
 
 /**

@@ -10,7 +10,8 @@
 //   no-wa             409, no verified WhatsApp number (marker identity_missing)
 //   too-new           409, number linked under 3 days (marker identity_too_new)
 //   unavailable-plain 409 without a marker (the API does not tell the two apart)
-//   rate-limited      429 on start
+//   rate-limited      429 on start, no wait given ("Coba lagi nanti")
+//   rate-limited-wait 429 on start with retryAfterSeconds (countdown)
 //   unavailable       503 on start
 //   proof-invalid     verifies fine, then the PIN save answers 403
 import { ApiError } from "../../lib/api/errors.ts";
@@ -34,6 +35,7 @@ export const WA_RESET_SCENARIOS = [
   "too-new",
   "unavailable-plain",
   "rate-limited",
+  "rate-limited-wait",
   "unavailable",
   "proof-invalid",
 ] as const;
@@ -97,6 +99,9 @@ export function currentWaScenario(): WaResetScenario {
 const UNAVAILABLE_MESSAGE =
   "Nomor WhatsApp belum bisa dipakai untuk mengatur ulang PIN. Hubungi HR atau atasan di outlet.";
 
+/** Wait the `rate-limited-wait` scenario reports (mm:ss on screen). */
+export const RATE_LIMIT_WAIT_SECONDS = 754;
+
 function unavailable(marker?: "identity_missing" | "identity_too_new") {
   return new ApiError(
     409,
@@ -126,6 +131,14 @@ registerMock(startMyPayslipPinResetWa, () => {
       429,
       "RATE_LIMITED",
       "Terlalu banyak permintaan. Coba lagi dalam 1 jam atau hubungi HR.",
+    );
+  if (scenario === "rate-limited-wait")
+    throw new ApiError(
+      429,
+      "RATE_LIMITED",
+      "Terlalu banyak permintaan. Coba lagi nanti atau hubungi HR.",
+      undefined,
+      { retryAfterSeconds: RATE_LIMIT_WAIT_SECONDS },
     );
   if (scenario === "unavailable")
     throw new ApiError(
@@ -199,10 +212,7 @@ registerMock(submitMyPayslipPinResetWaPin, ({ params, body }) => {
     return { data: { status: "active" as const, lockedUntil: null } };
   if (entry.scenario === "proof-invalid" || entry.status !== "verified")
     throw proofInvalid();
-  if (
-    entry.verifiedAt === null ||
-    Date.now() >= entry.verifiedAt + GRANT_MS
-  )
+  if (entry.verifiedAt === null || Date.now() >= entry.verifiedAt + GRANT_MS)
     throw proofInvalid();
 
   payslipMockStore.set({

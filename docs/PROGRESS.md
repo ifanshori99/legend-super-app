@@ -5517,3 +5517,10 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Subagent: total 5, puncak 5 bersamaan; token heavy hanya `test_writer`. Pengukuran biaya otomatis tidak tersedia: session-usage tidak menemukan transkrip Codex; parallel-report hanya menampilkan sesi Claude lain, jadi tidak dipakai sebagai metrik sesi ini. Visual browser/build/e2e tidak dijalankan; perubahan hanya kontrak dan logika nominal tanpa layout.
 
 - Perintah test: `LEGEND_TEST_FILES="src/test/accounting-finance-exceptions.test.ts tests/ws07-finance-exceptions-known-count.test.mjs tests/text-contract.test.mjs" heavy pnpm test` EXIT 0; setelah anotasi helper test diperbaiki, `LEGEND_TEST_FILES="src/test/accounting-finance-exceptions.test.ts" heavy pnpm test` EXIT 0. Log lokal: `/tmp/legend-j4xdb-api-red.log`, `/tmp/legend-j4xdb-web-red.log`, `/tmp/legend-j4xdb-green.log`, `/tmp/legend-j4xdb-api-final.log`, `/tmp/legend-j4xdb-api-typecheck-final.log`, `/tmp/legend-j4xdb-web-typecheck.log`.
+
+## 2026-11-15: 851 reset PIN slip via WA, alasan 409 dan hitung mundur 429 (legend-bzw5k)
+
+- Cabang: `ghostex/851-reset-pin-wa-alasan-409-429`, base `milestone/m1` (`b42619abc`). Tanpa migrasi.
+- Selesai: 409 `PAYSLIP_PIN_RESET_WHATSAPP_UNAVAILABLE` membawa `details [{field:'whatsapp', message:'identity_missing'|'identity_too_new'}]` (diagnosa hanya identitas milik user sendiri); 429 `RATE_LIMITED` membawa `retryAfterSeconds` di body dan header `Retry-After` (dari proof tertua dalam jendela 60 menit). Web: `ApiError.retryAfterSeconds`, dioper ke `WaResetBlocked`, hitung mundur tersambung, bantuan HR non-urgen sebagai link.
+- Bukti gagal-dulu API: 6 test merah di base (sumber dikembalikan sementara), 52/52 hijau setelah patch. Typecheck shared/api/web hijau, e2e mock hijau, eslint+prettier hijau.
+- Review architect xhigh: tidak ada kebocoran data; temuan e2e skenario salah diperbaiki. Belum diputuskan: tombol coba lagi setelah hitung mundur habis (pin-forgot tidak mengoper `onRetry` untuk `rate-limited`); `valueEncrypted` null dibaca "belum ada WA".

@@ -130,19 +130,25 @@ function WaResetBlocked({
       </Button>
     );
 
-  const hrButton = (primary: boolean) => (
-    <Button
-      type="button"
-      size="lg"
-      variant={primary ? "default" : "outline"}
-      className={WRAP_BUTTON_CLASS}
-      onClick={onHrHelp}
-    >
-      {kind === "expired" || kind === "service-unavailable"
-        ? t("payslipWaReset.blocked.hrHelpUrgent")
-        : t("payslipWaReset.common.hrHelpLink")}
-    </Button>
-  );
+  // HR help is a link while it is the side road ("Lihat cara minta bantuan");
+  // it is a button where it is the main way on, or the urgent wording.
+  const hrButton = (primary: boolean) => {
+    const urgent = kind === "expired" || kind === "service-unavailable";
+    const asLink = !primary && !urgent;
+    return (
+      <Button
+        type="button"
+        size={asLink ? "sm" : "lg"}
+        variant={primary ? "default" : asLink ? "link" : "outline"}
+        className={asLink ? "min-h-6 w-fit py-1" : WRAP_BUTTON_CLASS}
+        onClick={onHrHelp}
+      >
+        {urgent
+          ? t("payslipWaReset.blocked.hrHelpUrgent")
+          : t("payslipWaReset.common.hrHelpLink")}
+      </Button>
+    );
+  };
   const backButton = (
     <Button
       type="button"

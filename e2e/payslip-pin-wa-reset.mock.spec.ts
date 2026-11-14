@@ -96,9 +96,9 @@ async function expectNoActiveWhatsApp(page: Page) {
   await expect(page.getByRole("link", { name: "Buka WhatsApp" })).toHaveCount(
     0,
   );
-  await expect(
-    page.getByRole("button", { name: "Buka WhatsApp" }),
-  ).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Buka WhatsApp" })).toHaveCount(
+    0,
+  );
 }
 
 async function overflowX(page: Page) {
@@ -170,9 +170,7 @@ test("F30 HR-01 ur82k: the waiting screen shows the code, countdown, sender hint
   await expect(page.getByText("WhatsApp di perangkat lain?")).toBeVisible();
   await expect(action(page, "Salin pesan")).toBeVisible();
   await expect(action(page, "Salin nomor tujuan")).toBeVisible();
-  await expect(
-    action(page, "Minta bantuan HR atau supervisor"),
-  ).toBeVisible();
+  await expect(action(page, "Minta bantuan HR atau supervisor")).toBeVisible();
 
   // "Buka WhatsApp" opens wa.me with the message already filled in.
   const open = page.getByRole("link", { name: "Buka WhatsApp" });
@@ -207,9 +205,9 @@ test("F30 HR-01 ur82k: the waiting screen shows the code, countdown, sender hint
     timeout: COLD,
   });
   await expect(
-    page.getByRole("button", { name: "Lanjut ke slip gaji" }).or(
-      page.getByRole("link", { name: "Lanjut ke slip gaji" }),
-    ),
+    page
+      .getByRole("button", { name: "Lanjut ke slip gaji" })
+      .or(page.getByRole("link", { name: "Lanjut ke slip gaji" })),
   ).toBeVisible();
 });
 
@@ -321,9 +319,7 @@ test("F30 ur82k: an expired code stops being usable and a new code can be made",
   ).toBeVisible();
   await expect(page.getByText(/Kode tidak berlaku/)).toBeVisible();
   await expectNoActiveWhatsApp(page);
-  await expect(
-    action(page, "Minta bantuan HR atau supervisor"),
-  ).toBeVisible();
+  await expect(action(page, "Minta bantuan HR atau supervisor")).toBeVisible();
 
   await action(page, "Buat kode baru").click();
   await expectWaiting(page);
@@ -417,6 +413,22 @@ test("F30 ur82k: too many attempts shows a wait notice, HR help and no WhatsApp 
   expect(await overflowX(page)).toBeLessThanOrEqual(0);
 });
 
+test("F30 ur82k: a 429 with a wait counts down on the screen", async ({
+  page,
+}) => {
+  await openForgot(page, "rate-limited-wait");
+  await startWhatsApp(page);
+  await expect(
+    page.getByRole("heading", { name: "Terlalu banyak percobaan" }),
+  ).toBeVisible({ timeout: COLD });
+  const timer = page.getByRole("timer");
+  await expect(timer).toHaveText(/Coba lagi dalam 12:\d\d/);
+  const first = await timer.innerText();
+  await expect.poll(() => timer.innerText(), { timeout: 5000 }).not.toBe(first);
+  await expect(action(page, "Lihat cara minta bantuan")).toBeVisible();
+  await expectNoActiveWhatsApp(page);
+});
+
 test("F30 ur82k: a service that is not set up (503) is a calm state, not a generic failure", async ({
   page,
 }) => {
@@ -451,7 +463,9 @@ test("F30 ur82k: the HR help screen gives two manual steps and a way back", asyn
       "Hubungi HR atau supervisor di outlet dan minta reset PIN slip gaji.",
     ),
   ).toBeVisible();
-  await expect(page.getByText("Minta reset PIN", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Minta reset PIN", { exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByText("Sampaikan bahwa Anda lupa PIN slip gaji."),
   ).toBeVisible();

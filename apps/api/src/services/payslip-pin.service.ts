@@ -60,6 +60,7 @@ import {
   cancelOpenWhatsAppProofs,
   cancelWhatsAppProof,
   consumeWhatsAppProof,
+  diagnoseWhatsAppProofIdentity,
   findWhatsAppProofSender,
   issueWhatsAppProof,
   readWhatsAppProof,
@@ -605,8 +606,26 @@ export async function requestPayslipPinResetWa(
       userId: self.actor,
       now,
     });
-    if (!identity)
-      throw new PayrollError("PAYSLIP_PIN_RESET_WHATSAPP_UNAVAILABLE");
+    if (!identity) {
+      // Only the caller's own identity is inspected; the two fixed messages
+      // carry no number or personal data.
+      const reason = await diagnoseWhatsAppProofIdentity(tx, {
+        userId: self.actor,
+        now,
+      });
+      throw new PayrollError(
+        "PAYSLIP_PIN_RESET_WHATSAPP_UNAVAILABLE",
+        undefined,
+        {
+          details: [
+            {
+              field: "whatsapp",
+              message: reason,
+            },
+          ],
+        },
+      );
+    }
     const issued = await issueWhatsAppProof(tx, context, {
       purpose: "payslip_pin_reset",
       userId: self.actor,
