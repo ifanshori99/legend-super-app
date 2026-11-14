@@ -1683,3 +1683,319 @@ describe("finance-exceptions: receipt_pending_stale", () => {
     expect(await snapshot()).toEqual(before);
   });
 });
+
+// legend-853 (second opinion, finding 2): a POS sale pays through
+// pos_order_tenders, and orders.payment_intent_id is null for POS. A receipt
+// pending for over a day must still show the order's intent(s) and the state
+// of their payment.paid outbox row. Written fail-first from the DTO contract
+// (FinanceExceptionReceiptPendingDto in @starter/shared/types/api), not from
+// the implementation.
+// Assumptions:
+// - The detail lives in `item.receiptPending` ({ orderId, intentId,
+//   outboxState }), as the shared DTO documents; outboxState is one of
+//   pending | dead_lettered | delivered | missing.
+// - The parked payload of these rows carries only the order ULID (a POS
+//   receipt-pending park has no intent id in it), so the intent can only be
+//   found through the order's tenders.
+// - With several intents on one order (a replaced QR, or a split tender), the
+//   item stays one row per parked sale; intentId is any one of the order's
+//   intents, and outboxState reflects the intent that still waits in the
+//   outbox ("pending" beats "missing" for the other intent).
+// - A tender with no payment intent (cash) keeps intentId null and "missing".
+describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
+  const KIND = "receipt_pending_stale" as const;
+  type Receipt = {
+    orderId: string | null;
+    intentId: string | null;
+    outboxState: "pending" | "dead_lettered" | "delivered" | "missing";
+  };
+  type PosSale = {
+    orderUlid: string;
+    orderUuid: string;
+    intents: { id: string; amountIdr: number }[];
+  };
+  const sales: PosSale[] = [];
+  const linkIds: string[] = [];
+  let outlet: string;
+
+  async function seedIntent(amountIdr: number): Promise<string> {
+    const linkId = randomUUID();
+    const intentId = randomUUID();
+    linkIds.push(linkId);
+    await owner.query(
+      `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $6, $6, 'seed-853')`,
+      [
+        linkId,
+        tenantId,
+        outlet,
+        randomBytes(32).toString("hex"),
+        `PT-${linkId.slice(0, 8)}`,
+        amountIdr,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO payment_intents
+         (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr, idempotency_key,
+          status, paid_at, instructions, expires_at)
+       VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, 'paid', now(),
+               '{"method":"qris","qrPayload":"test","issuer":null}', now())`,
+      [intentId, tenantId, outlet, linkId, amountIdr, `pt-${intentId}`],
+    );
+    return intentId;
+  }
+
+  async function seedOutbox(
+    intentId: string,
+    amountIdr: number,
+    state: "pending" | "dead",
+  ): Promise<void> {
+    const outboxId = randomUUID();
+    await owner.query(
+      `INSERT INTO domain_event_outbox
+         (tenant_id, id, outlet_id, event_id, aggregate_type, aggregate_id, sequence, event, destination)
+       VALUES ($1, $2, $3, $4, 'payment', $5, 1, $6, 'cloud-sync')`,
+      [
+        tenantId,
+        outboxId,
+        outlet,
+        randomUUID(),
+        intentId,
+        JSON.stringify({
+          id: createUlid(),
+          tenantId,
+          outletId: outlet,
+          name: "payment.paid",
+          aggregateType: "payment",
+          aggregateId: intentId,
+          sequence: 1,
+          payload: { intentId, receivedIdr: amountIdr },
+        }),
+      ],
+    );
+    if (state === "dead")
+      await owner.query(
+        `UPDATE domain_event_outbox
+            SET dispatch_state = 'dead', dead_lettered_at = now() - interval '10 days'
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, outboxId],
+      );
+  }
+
+  /** A stale-parked POS sale whose payment lives in tenders only. */
+  async function seedPosSale(
+    tenders: {
+      amountIdr: number;
+      withIntent: boolean;
+      outbox?: "pending" | "dead";
+    }[],
+  ): Promise<PosSale> {
+    const orderUlid = createUlid();
+    const orderUuid = ulidToUuid(orderUlid);
+    const total = tenders.reduce((sum, row) => sum + row.amountIdr, 0);
+    await owner.query(
+      `INSERT INTO orders (id, tenant_id, outlet_id, number, channel, service_type, payment_mode,
+         subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
+         status, business_date, placed_at)
+       VALUES ($1, $2, $3, $4, 'pos', 'takeaway', 'pay_first', $5, 0, 0, 0, 0, $5,
+         'awaiting_payment', '2026-03-10', '2026-03-10T05:00:00Z')`,
+      [orderUuid, tenantId, outlet, `PT-${unique()}${unique()}`, total],
+    );
+    await owner.query(
+      `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel, submitted_at)
+       VALUES ($1, $2, $3, 'pos', now())`,
+      [orderUuid, tenantId, outlet],
+    );
+    const intents: PosSale["intents"] = [];
+    for (const tender of tenders) {
+      if (!tender.withIntent) {
+        await owner.query(
+          `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider, amount_idr,
+              received_idr, change_idr, status, requested_at, resolved_at)
+           VALUES ($1, $2, $3, 'cash', 'manual', $4, $4, 0, 'captured', now(), now())`,
+          [tenantId, outlet, orderUuid, tender.amountIdr],
+        );
+        continue;
+      }
+      const intentId = await seedIntent(tender.amountIdr);
+      const link = await owner.query<{ payment_link_id: string }>(
+        "SELECT payment_link_id FROM payment_intents WHERE id = $1",
+        [intentId],
+      );
+      await owner.query(
+        `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider,
+            payment_link_id, payment_link_token_sealed, payment_intent_id, amount_idr,
+            status, requested_at)
+         VALUES ($1, $2, $3, 'qris', 'doit', $4, 'sealed-test-token', $5, $6,
+                 'authorized', now())`,
+        [
+          tenantId,
+          outlet,
+          orderUuid,
+          link.rows[0]!.payment_link_id,
+          intentId,
+          tender.amountIdr,
+        ],
+      );
+      if (tender.outbox)
+        await seedOutbox(intentId, tender.amountIdr, tender.outbox);
+      intents.push({ id: intentId, amountIdr: tender.amountIdr });
+    }
+    await owner.query(
+      `INSERT INTO auto_journal_parked
+         (tenant_id, outlet_id, idempotency_key, event_id, event_name, payload,
+          error_code, retryable, first_failed_at, last_failed_at, next_retry_at)
+       VALUES ($1, $2, $3, $4, 'order.paid', $5::jsonb, 'AUTO_JOURNAL_RECEIPT_PENDING', true,
+         now() - interval '48 hours', now(), now() + interval '1 hour')`,
+      [
+        tenantId,
+        outlet,
+        `aj:sale:${orderUlid}`,
+        createUlid(),
+        JSON.stringify({ orderId: orderUlid, customerPhone: SECRET }),
+      ],
+    );
+    const sale = { orderUlid, orderUuid, intents };
+    sales.push(sale);
+    return sale;
+  }
+
+  async function receiptOf(sale: PosSale): Promise<{
+    item: Item;
+    receipt: Receipt;
+  }> {
+    const payload = await fetchList(finance.cookie, {
+      ...MARCH,
+      outletId: outlet,
+      kind: KIND,
+    });
+    const item = itemsOfKind(payload, KIND).find((row) => {
+      const text = JSON.stringify(row);
+      return text.includes(sale.orderUlid) || text.includes(sale.orderUuid);
+    });
+    expect(item, "the stale POS sale is listed").toBeDefined();
+    const receipt = (item as unknown as { receiptPending?: Receipt })
+      .receiptPending;
+    expect(receipt, "the item carries receiptPending").toBeDefined();
+    return { item: item!, receipt: receipt! };
+  }
+
+  let pendingSale: PosSale;
+  let deadSale: PosSale;
+  let noOutboxSale: PosSale;
+  let cashSale: PosSale;
+  let multiSale: PosSale;
+  let splitDeadSale: PosSale;
+
+  beforeAll(async () => {
+    outlet = await newOutlet("Resi tender POS");
+    pendingSale = await seedPosSale([
+      { amountIdr: 120_000, withIntent: true, outbox: "pending" },
+    ]);
+    deadSale = await seedPosSale([
+      { amountIdr: 65_000, withIntent: true, outbox: "dead" },
+    ]);
+    noOutboxSale = await seedPosSale([{ amountIdr: 40_000, withIntent: true }]);
+    cashSale = await seedPosSale([{ amountIdr: 30_000, withIntent: false }]);
+    // Two intents on one order: the first QR has no outbox row, the second
+    // still waits in the outbox.
+    multiSale = await seedPosSale([
+      { amountIdr: 50_000, withIntent: true },
+      { amountIdr: 70_000, withIntent: true, outbox: "pending" },
+    ]);
+    // A cash tender next to a QR tender with a dead-lettered receipt.
+    splitDeadSale = await seedPosSale([
+      { amountIdr: 20_000, withIntent: false },
+      { amountIdr: 80_000, withIntent: true, outbox: "dead" },
+    ]);
+  }, 60_000);
+
+  afterAll(async () => {
+    const orders = sales.map((sale) => sale.orderUuid);
+    const intents = sales.flatMap((sale) => sale.intents.map((i) => i.id));
+    await owner.query(
+      "DELETE FROM domain_event_outbox WHERE aggregate_id = ANY($1::uuid[])",
+      [intents],
+    );
+    await owner.query(
+      "DELETE FROM auto_journal_parked WHERE idempotency_key = ANY($1::text[])",
+      [sales.map((sale) => `aj:sale:${sale.orderUlid}`)],
+    );
+    await owner.query(
+      "DELETE FROM pos_order_tenders WHERE order_id = ANY($1::uuid[])",
+      [orders],
+    );
+    await owner.query(
+      "DELETE FROM payment_intents WHERE id = ANY($1::uuid[])",
+      [intents],
+    );
+    await owner.query("DELETE FROM payment_links WHERE id = ANY($1::uuid[])", [
+      linkIds,
+    ]);
+    await owner.query("DELETE FROM pos_orders WHERE order_id = ANY($1::uuid[])", [
+      orders,
+    ]);
+    await owner.query("DELETE FROM orders WHERE id = ANY($1::uuid[])", [
+      orders,
+    ]);
+  });
+
+  it("a POS sale paid by a QR tender shows the tender's intent and its pending outbox state", async () => {
+    const { item, receipt } = await receiptOf(pendingSale);
+    expect(receipt.intentId).toBe(pendingSale.intents[0]!.id);
+    expect(receipt.outboxState).toBe("pending");
+    expect(item.amountIdr).toBe(120_000);
+  });
+
+  it("a dead-lettered receipt of a tender intent shows dead_lettered", async () => {
+    const { receipt } = await receiptOf(deadSale);
+    expect(receipt.intentId).toBe(deadSale.intents[0]!.id);
+    expect(receipt.outboxState).toBe("dead_lettered");
+  });
+
+  it("a tender intent with no payment.paid outbox row shows the intent and missing", async () => {
+    const { item, receipt } = await receiptOf(noOutboxSale);
+    expect(receipt.intentId).toBe(noOutboxSale.intents[0]!.id);
+    expect(receipt.outboxState).toBe("missing");
+    expect(item.amountIdr).toBe(40_000);
+  });
+
+  it("a sale paid only in cash has no intent: intentId null and missing", async () => {
+    const { receipt } = await receiptOf(cashSale);
+    expect(receipt.intentId).toBeNull();
+    expect(receipt.outboxState).toBe("missing");
+  });
+
+  it("several intents on one order: the item stays one row and reflects the intent still waiting in the outbox", async () => {
+    const payload = await fetchList(finance.cookie, {
+      ...MARCH,
+      outletId: outlet,
+      kind: KIND,
+    });
+    const rows = itemsOfKind(payload, KIND).filter((row) => {
+      const text = JSON.stringify(row);
+      return (
+        text.includes(multiSale.orderUlid) || text.includes(multiSale.orderUuid)
+      );
+    });
+    expect(rows, "one row per parked sale").toHaveLength(1);
+    const { receipt } = await receiptOf(multiSale);
+    expect(multiSale.intents.map((i) => i.id)).toContain(receipt.intentId);
+    expect(receipt.outboxState).toBe("pending");
+  });
+
+  it("a cash tender next to a QR tender still finds the QR intent and its dead-lettered receipt", async () => {
+    const { receipt } = await receiptOf(splitDeadSale);
+    expect(receipt.intentId).toBe(splitDeadSale.intents[0]!.id);
+    expect(receipt.outboxState).toBe("dead_lettered");
+  });
+
+  it("the summary still counts one row per stale sale", async () => {
+    const payload = await fetchList(finance.cookie, {
+      ...MARCH,
+      outletId: outlet,
+      kind: KIND,
+    });
+    expect(summaryOf(payload, KIND).count).toBe(6);
+  });
+});

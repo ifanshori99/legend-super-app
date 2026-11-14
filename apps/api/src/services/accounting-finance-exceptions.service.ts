@@ -351,6 +351,39 @@ async function receiptPendingStale(
         intentId: (row.intent_id as string | null) ?? null,
       });
   }
+  // A POS sale pays through pos_order_tenders (orders.payment_intent_id is
+  // null for POS); an order may carry several intents (replaced QR, split).
+  const tenderIntents = new Map<string, string[]>();
+  if (orderUuids.size > 0) {
+    const tenders = rowsOf(
+      await tx.execute(
+        sql`SELECT order_id::text AS order_id, outlet_id::text AS outlet_id,
+                   payment_intent_id::text AS intent_id
+              FROM pos_order_tenders
+             WHERE tenant_id = ${scope.tenantId}::uuid
+               AND outlet_id IN (${sql.join(
+                 [...new Set(parked.map((row) => String(row.outlet_id)))].map(
+                   (id) => sql`${id}::uuid`,
+                 ),
+                 sql`, `,
+               )})
+               AND order_id IN (${sql.join(
+                 [...new Set(orderUuids.values())].map(
+                   (id) => sql`${id}::uuid`,
+                 ),
+                 sql`, `,
+               )})
+               AND payment_intent_id IS NOT NULL
+             ORDER BY requested_at, id`,
+      ),
+    );
+    for (const row of tenders) {
+      const key = `${String(row.outlet_id)}:${String(row.order_id)}`;
+      const list = tenderIntents.get(key) ?? [];
+      list.push(String(row.intent_id).toLowerCase());
+      tenderIntents.set(key, list);
+    }
+  }
   const resolved = parked.map((row) => {
     const orderUuid =
       typeof row.order_ulid === "string"
@@ -364,20 +397,28 @@ async function receiptPendingStale(
       typeof row.payload_intent === "string" && UUID.test(row.payload_intent)
         ? row.payload_intent.toLowerCase()
         : null;
+    const candidates = [
+      ...new Set(
+        [
+          payloadIntent,
+          order?.intentId?.toLowerCase() ?? null,
+          ...(orderUuid === undefined
+            ? []
+            : (tenderIntents.get(`${String(row.outlet_id)}:${orderUuid}`) ??
+              [])),
+        ].filter((id): id is string => id !== null),
+      ),
+    ];
     return {
       row,
       orderId: orderUuid ?? null,
       total: order?.total ?? null,
-      intentId: payloadIntent ?? order?.intentId ?? null,
+      candidates,
     };
   });
   const states = new Map<string, OutboxState>();
   const intentAmounts = new Map<string, number>();
-  const intentIds = [
-    ...new Set(
-      resolved.flatMap((entry) => (entry.intentId ? [entry.intentId] : [])),
-    ),
-  ];
+  const intentIds = [...new Set(resolved.flatMap((entry) => entry.candidates))];
   if (intentIds.length > 0) {
     const outletIds = [...new Set(parked.map((row) => String(row.outlet_id)))];
     const intents = rowsOf(
@@ -434,22 +475,35 @@ async function receiptPendingStale(
         states.set(key, state);
     }
   }
-  const items = resolved.map(({ row, orderId, total, intentId }) => ({
-    ...toItem("receipt_pending_stale", "auto_journal", {
-      ...row,
-      amount:
-        (intentId
-          ? intentAmounts.get(`${String(row.outlet_id)}:${intentId}`)
-          : undefined) ?? total,
-    }),
-    receiptPending: {
-      orderId,
-      intentId,
-      outboxState:
-        (intentId && states.get(`${String(row.outlet_id)}:${intentId}`)) ||
-        "missing",
-    } satisfies FinanceExceptionReceiptPendingDto,
-  }));
+  const items = resolved.map(({ row, orderId, total, candidates }) => {
+    // One item per parked sale: show the intent whose outbox row matters most
+    // (dead_lettered, then pending, then delivered, then missing); ties keep
+    // the candidate order (payload, order, tenders).
+    let intentId: string | null = null;
+    let outboxState: OutboxState = "missing";
+    for (const candidate of candidates) {
+      const state =
+        states.get(`${String(row.outlet_id)}:${candidate}`) ?? "missing";
+      if (intentId === null || OUTBOX_RANK[state] > OUTBOX_RANK[outboxState]) {
+        intentId = candidate;
+        outboxState = state;
+      }
+    }
+    return {
+      ...toItem("receipt_pending_stale", "auto_journal", {
+        ...row,
+        amount:
+          (intentId
+            ? intentAmounts.get(`${String(row.outlet_id)}:${intentId}`)
+            : undefined) ?? total,
+      }),
+      receiptPending: {
+        orderId,
+        intentId,
+        outboxState,
+      } satisfies FinanceExceptionReceiptPendingDto,
+    };
+  });
   return {
     kind: "receipt_pending_stale",
     count: items.length,
