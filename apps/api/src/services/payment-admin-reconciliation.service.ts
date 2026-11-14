@@ -1,5 +1,5 @@
 // WS-05 settlement exceptions (PRD §3 F13, EDC-06).
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   assertTrustedScopedContext,
@@ -20,7 +20,10 @@ import {
   reconciliationSummarySchema,
 } from "@starter/shared/payment/admin";
 import { db } from "../db/index.ts";
-import { paymentReconciliationCases as cases } from "../db/schema/payment-admin.ts";
+import {
+  paymentReconciliationCases as cases,
+  paymentReconciliationCorrections as corrections,
+} from "../db/schema/payment-admin.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { paymentSettlementLines as lines } from "../db/schema/payment-settlement.ts";
 import { user } from "../db/schema/user.ts";
@@ -55,13 +58,38 @@ async function viewOf(tx: Tx, row: CaseRow) {
     await nameOf(tx, row.approvedBy),
     // The requester is the closer of record; legacy resolved rows have only resolved_by.
     requestedByName ?? (await nameOf(tx, row.resolvedBy)),
+    await lateFundsOf(tx, row),
   );
+}
+/** Late-funds flag: the correction row of a written-off case, if any (tenant filtered). */
+async function lateFundsOf(tx: Tx, row: CaseRow) {
+  const [correction] = await tx
+    .select()
+    .from(corrections)
+    .where(
+      and(
+        eq(corrections.tenantId, row.tenantId),
+        eq(corrections.caseId, row.id),
+      ),
+    );
+  return correction
+    ? {
+        correctionId: correction.id,
+        settlementId: correction.settlementId,
+        settlementLineId: correction.settlementLineId,
+        mismatchCaseId: correction.mismatchCaseId,
+        receivedIdr: correction.receivedIdr,
+        detectedAt: correction.createdAt.toISOString(),
+        correctionStatus: correction.status,
+      }
+    : null;
 }
 function view(
   row: CaseRow,
   requestedByName: string | null,
   approvedByName: string | null,
   resolvedByName: string | null,
+  lateFunds: Awaited<ReturnType<typeof lateFundsOf>>,
 ) {
   return reconciliationCaseViewSchema.parse({
     id: row.id,
@@ -87,6 +115,7 @@ function view(
     approvalRequestId: row.approvalChainId,
     requestedBy: row.requestedBy,
     approvedBy: row.approvedBy,
+    lateFunds,
     createdAt: row.createdAt.toISOString(),
   });
 }
@@ -257,6 +286,30 @@ export async function resolveReconciliationCase(
             existing.status === "pending_approval"
               ? "Reconciliation case is already waiting for approval."
               : "Reconciliation case is already resolved.",
+          );
+        // legend-kbf9v: a mismatch case linked to an undecided late-funds
+        // correction waits for that correction, so finance never books the
+        // same loss twice. The mismatch case is created and linked in one
+        // import transaction, so resolve cannot see it before the link exists;
+        // correction settle never locks a case. A resolved correction no
+        // longer blocks.
+        const [pendingCorrection] = await tx
+          .select({ id: corrections.id })
+          .from(corrections)
+          .where(
+            and(
+              eq(corrections.tenantId, context.tenant.tenantId),
+              eq(corrections.mismatchCaseId, existing.id),
+              inArray(corrections.status, ["open", "pending_approval"]),
+            ),
+          )
+          .limit(1)
+          .for("share");
+        if (pendingCorrection)
+          throw new HttpError(
+            409,
+            "LATE_FUNDS_CORRECTION_PENDING",
+            "Decide the late-funds correction of this sale first: it is linked to this mismatch case.",
           );
         // A case is never closed by its requester alone: it waits for a chain
         // approved by someone else. A missing policy (APPROVAL_POLICY_MISSING)

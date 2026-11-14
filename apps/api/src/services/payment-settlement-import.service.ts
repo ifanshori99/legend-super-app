@@ -25,6 +25,7 @@ import { edcTransactions } from "../db/schema/edc.ts";
 import {
   paymentEdcTerminals,
   paymentReconciliationCases as cases,
+  paymentReconciliationCorrections as corrections,
 } from "../db/schema/payment-admin.ts";
 import {
   paymentSettlementLines as lines,
@@ -44,6 +45,7 @@ import {
   assertPaymentPermission,
   EVENT_DESTINATION,
 } from "./payment-support.ts";
+import { openLateFundsCorrection } from "./payment-reconciliation-correction.service.ts";
 import { cancelApprovalRequest } from "./platform-approval.service.ts";
 import type { Tx } from "./permission-resolver.ts";
 
@@ -65,7 +67,9 @@ const SETTLED_INTENT_STATUSES = [
  * withdraw a close request still waiting for approval so it can never be
  * approved afterwards. Case row first, then chain (same lock order as
  * settleReconciliationCaseForApproval). Only cases of this exact sale
- * (source_transaction_id) are touched; a resolved case stays resolved.
+ * (source_transaction_id) are touched. A resolved case (written off) stays
+ * resolved and is never reversed: it only gets one finance correction row
+ * (legend-oan3p), no journal and no money event.
  */
 async function closeMissingCasesOfSale(
   tx: Tx,
@@ -77,16 +81,19 @@ async function closeMissingCasesOfSale(
     readonly saleId: string;
     readonly reference: string;
     readonly lineNo: number;
+    /** The settlement line just inserted for this sale. */
+    readonly line: {
+      readonly id: string;
+      readonly settlementId: string;
+      readonly reference: string;
+      readonly receivedIdr: number;
+    };
     readonly now: Date;
   },
 ): Promise<void> {
   const note = `Closed automatically: sale matched a settlement line (report ${input.reference}, line ${input.lineNo})`;
-  const open = await tx
-    .select({
-      id: cases.id,
-      status: cases.status,
-      approvalChainId: cases.approvalChainId,
-    })
+  const found = await tx
+    .select()
     .from(cases)
     .where(
       and(
@@ -95,11 +102,19 @@ async function closeMissingCasesOfSale(
         eq(cases.source, input.source),
         eq(cases.sourceTransactionId, input.saleId),
         isNull(cases.settlementLineId),
-        inArray(cases.status, ["open", "pending_approval"]),
+        inArray(cases.status, ["open", "pending_approval", "resolved"]),
       ),
     )
     .for("update");
-  for (const row of open) {
+  for (const row of found) {
+    if (row.status === "resolved") {
+      await openLateFundsCorrection(tx, context, {
+        caseRow: row,
+        line: input.line,
+        now: input.now,
+      });
+      continue;
+    }
     const [closed] = await tx
       .update(cases)
       .set({ status: "matched", note })
@@ -503,21 +518,44 @@ export async function importSettlement(
             saleId: pos.id,
             reference: input.reference,
             lineNo: index + 1,
+            line: {
+              id: lineRow.id,
+              settlementId: created.id,
+              reference: line.reference,
+              receivedIdr: line.amountIdr,
+            },
             now,
           });
         tally[status] += 1;
         if (status === "matched") continue;
         const expected = pos ? pos.amountIdr : 0;
-        await tx.insert(cases).values({
-          ...caseBase,
-          settlementLineId: lineRow.id,
-          reference: line.reference,
-          expectedIdr: idr(expected),
-          receivedIdr: idr(line.amountIdr),
-          varianceIdr: idr(line.amountIdr - expected),
-          reason,
-          status: "open",
-        });
+        const [mismatchCase] = await tx
+          .insert(cases)
+          .values({
+            ...caseBase,
+            settlementLineId: lineRow.id,
+            reference: line.reference,
+            expectedIdr: idr(expected),
+            receivedIdr: idr(line.amountIdr),
+            varianceIdr: idr(line.amountIdr - expected),
+            reason,
+            status: "open",
+          })
+          .returning({ id: cases.id });
+        // Late funds of a written-off sale with a different amount: the
+        // correction (opened above for this same line) points to this case so
+        // finance decides both together (legend-oan3p).
+        if (pos && mismatchCase)
+          await tx
+            .update(corrections)
+            .set({ mismatchCaseId: mismatchCase.id })
+            .where(
+              and(
+                eq(corrections.tenantId, tenantId),
+                eq(corrections.settlementLineId, lineRow.id),
+                isNull(corrections.mismatchCaseId),
+              ),
+            );
         tally.cases += 1;
       }
 
