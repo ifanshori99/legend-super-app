@@ -66,7 +66,7 @@ const MAX_MAPPINGS = 200;
 
 const name150 = z.string().min(1).max(150);
 
-export const edgeMasterUomSchema = z.object({
+export const edgeMasterUomSchema = z.strictObject({
   id: uomIdSchema,
   tenantId: tenantIdSchema,
   code: z.string().min(1).max(10),

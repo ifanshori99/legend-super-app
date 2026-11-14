@@ -89,7 +89,7 @@ export type DeviceHeartbeatBody = z.infer<typeof deviceHeartbeatBodySchema>;
 
 /** Registry row as the cloud replicates it to an edge node (cloud wins). */
 export const deviceSyncRecordSchema = z
-  .object({
+  .strictObject({
     ...deviceFields,
     updatedAt: isoDateTimeSchema,
     /** Token floor: the edge refuses tokens issued before it (reissue rotates). */
