@@ -157,6 +157,7 @@ import { registerAttendanceSelfiePurgeJob } from "./worker/attendance-selfie-pur
 import { registerEdgeSelfieOrphanSweepJob } from "./worker/edge-selfie-orphan-sweep.job.ts";
 import { registerBlindIndexRebuildJob } from "./worker/blind-index-rebuild.job.ts";
 import { registerHrisPiiResealJob } from "./worker/hris-pii-reseal.job.ts";
+import { registerDataKeyRotationJob } from "./worker/data-key-rotation.job.ts";
 import { logger } from "./lib/logger";
 
 assertDeploymentEnv(process.env);
@@ -912,6 +913,12 @@ try {
   }
   // legend-33mj: on-demand re-seal of HRIS PII after a key rotation.
   await registerHrisPiiResealJob({
+    boss,
+    database: db,
+    log: consoleLikeLog(logger),
+  });
+  // legend-rg8yl: daily re-seal of integration and AI keys left on an old data key.
+  await registerDataKeyRotationJob({
     boss,
     database: db,
     log: consoleLikeLog(logger),
