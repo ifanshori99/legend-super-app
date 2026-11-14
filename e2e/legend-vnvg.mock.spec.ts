@@ -40,7 +40,10 @@ for (const path of ["/member", "/member/poin"]) {
     await expect(prompt.getByText("WhatsApp belum terhubung")).toBeVisible();
     await expect(
       prompt.getByRole("link", { name: PROMPT_TITLE }),
-    ).toHaveAttribute("href", "/masuk/hubungkan");
+    ).toHaveAttribute(
+      "href",
+      `/masuk/hubungkan?lanjut=${encodeURIComponent(path)}`,
+    );
   });
 
   test(`legend-vnvg: ${path} hides the invitation once WhatsApp is verified`, async ({
@@ -55,6 +58,32 @@ for (const path of ["/member", "/member/poin"]) {
       timeout: 20_000,
     });
     await expect(page.getByTestId("member-whatsapp-prompt")).toHaveCount(0);
+  });
+}
+
+// The link screen returns to the member screen the visitor started from. Only
+// /member paths count: anything else falls back to the member home.
+for (const [lanjut, expected] of [
+  ["/member/poin", "/member/poin"],
+  ["/member", "/member"],
+  ["/member/poin?x=1#y", "/member/poin"],
+  ["https://evil.example/member", "/member"],
+  ["//evil.example", "/member"],
+  ["/masuk", "/member"],
+  ["/member/../masuk", "/member"],
+  ["/member/%2Fevil", "/member"],
+] as const) {
+  test(`legend-vnvg: /masuk/hubungkan?lanjut=${lanjut} returns to ${expected}`, async ({
+    page,
+  }) => {
+    await page.goto(
+      `/masuk/hubungkan?lanjut=${encodeURIComponent(lanjut)}&mock=wa-verified`,
+      { waitUntil: "networkidle" },
+    );
+    await waitForHydration(page);
+    await expect(
+      page.getByRole("link", { name: "Ke halaman member" }),
+    ).toHaveAttribute("href", expected, { timeout: 20_000 });
   });
 }
 
@@ -83,7 +112,7 @@ test("legend-vnvg: a failed status check shows an error with a retry", async ({
     .filter({ hasText: "Status WhatsApp belum dapat diperiksa" });
   await expect(alert).toBeVisible({ timeout: 20_000 });
   await expect(
-    alert.getByText("Periksa koneksi Anda, lalu coba lagi."),
+    alert.getByText("Periksa koneksi kamu, lalu coba lagi."),
   ).toBeVisible();
   await expect(alert.getByRole("button", { name: "Coba lagi" })).toBeVisible();
 });

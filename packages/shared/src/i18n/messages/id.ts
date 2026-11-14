@@ -2006,12 +2006,12 @@ export const id = {
     whatsapp: {
       eyebrow: "WhatsApp belum terhubung",
       title: "Hubungkan WhatsApp",
-      body: "Hubungkan nomor WhatsApp Anda untuk mengumpulkan dan menukar poin.",
+      body: "Hubungkan WhatsApp untuk menukar poin dan menerima info poin.",
       action: "Hubungkan WhatsApp",
-      hint: "Anda akan melanjutkan verifikasi melalui WhatsApp.",
+      hint: "Kamu akan melanjutkan verifikasi melalui WhatsApp.",
       loading: "Memuat status WhatsApp",
       errorTitle: "Status WhatsApp belum dapat diperiksa",
-      errorHint: "Periksa koneksi Anda, lalu coba lagi.",
+      errorHint: "Periksa koneksi kamu, lalu coba lagi.",
       historyEmpty: "Hubungkan WhatsApp untuk mulai mengumpulkan poin.",
     },
     points: {

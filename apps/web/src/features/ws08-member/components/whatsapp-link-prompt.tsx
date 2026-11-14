@@ -1,9 +1,10 @@
-import { Link } from "@tanstack/react-router";
+import { Link, useLocation } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { memberReturnPath } from "@/features/ws01-login/flow";
 import type { WhatsAppLinkState } from "../hooks";
 
 // Invitation to link a WhatsApp number on the member screens (legend-vnvg,
@@ -13,6 +14,8 @@ import type { WhatsAppLinkState } from "../hooks";
 // and a linked member sees nothing.
 export function WhatsAppLinkPrompt({ state }: { state: WhatsAppLinkState }) {
   const t = useT();
+  // The link screen sends the member back to the screen they started from.
+  const lanjut = memberReturnPath(useLocation().pathname);
 
   if (state.status === "linked") return null;
 
@@ -52,7 +55,9 @@ export function WhatsAppLinkPrompt({ state }: { state: WhatsAppLinkState }) {
         {t("member.whatsapp.body")}
       </p>
       <Button asChild size="lg" className="w-full">
-        <Link to="/masuk/hubungkan">{t("member.whatsapp.action")}</Link>
+        <Link to="/masuk/hubungkan" search={{ lanjut }}>
+          {t("member.whatsapp.action")}
+        </Link>
       </Button>
       <p className="text-sm leading-5 text-muted-foreground">
         {t("member.whatsapp.hint")}

@@ -49,7 +49,9 @@ export function loginChallengeOutcome(
     view.session === null &&
     (challenge.status === "pending" || challenge.status === "completed")
   )
-    return expiryMs(challenge, nowMs) === 0 ? "expired" : "awaiting_confirmation";
+    return expiryMs(challenge, nowMs) === 0
+      ? "expired"
+      : "awaiting_confirmation";
   if (challenge.status === "completed")
     return view.session !== null ? "signed_in" : "expired";
   if (challenge.status === "cancelled") return "cancelled";
@@ -201,6 +203,31 @@ export function safeReturnPath(
   )
     return undefined;
   return value;
+}
+
+/**
+ * Where `/masuk/hubungkan` returns after linking (legend-vnvg): only a member
+ * screen (`/member` or `/member/...`). The value must first pass
+ * `safeReturnPath`; the result is the bare pathname, so query and fragment are
+ * dropped and dot segments are resolved (`/member/../masuk` is refused).
+ */
+export const MEMBER_RETURN_DEFAULT = "/member";
+
+export function memberReturnPath(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const safe = safeReturnPath(value);
+  if (!safe) return undefined;
+  const pathname = new URL(safe, RETURN_PATH_BASE).pathname;
+  return pathname === "/member" || pathname.startsWith("/member/")
+    ? pathname
+    : undefined;
+}
+
+/** `validateSearch` for `/masuk/hubungkan`: keep `lanjut` only as a member path. */
+export function linkWhatsAppSearch(search: Record<string, unknown>): {
+  lanjut?: string;
+} {
+  return { lanjut: memberReturnPath(search.lanjut) };
 }
 
 /**

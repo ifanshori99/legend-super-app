@@ -15,13 +15,16 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/feedback-state";
-import { errorCode, loginErrorKey } from "../flow";
+import { errorCode, loginErrorKey, MEMBER_RETURN_DEFAULT } from "../flow";
 import { useCurrentAuth } from "../hooks";
 import { loginKeys } from "../queries";
 import { Notice } from "./shared";
 import { WhatsAppLogin } from "./whatsapp-login";
 
-export function LinkWhatsAppScreen() {
+// `returnTo` is the member screen the visitor came from (already validated by
+// the route); linking sends them back there, else to the member home.
+export function LinkWhatsAppScreen({ returnTo }: { returnTo?: string }) {
+  const back = returnTo ?? MEMBER_RETURN_DEFAULT;
   const t = useT();
   const queryClient = useQueryClient();
   const auth = useCurrentAuth();
@@ -55,7 +58,7 @@ export function LinkWhatsAppScreen() {
           live
           action={
             <Button asChild size="lg" className="w-full sm:w-auto">
-              <Link to="/member">{t("login.link.continue")}</Link>
+              <a href={back}>{t("login.link.continue")}</a>
             </Button>
           }
         />
@@ -95,7 +98,7 @@ export function LinkWhatsAppScreen() {
           live
           action={
             <Button asChild size="lg" className="w-full sm:w-auto">
-              <Link to="/member">{t("login.link.verifiedAction")}</Link>
+              <a href={back}>{t("login.link.verifiedAction")}</a>
             </Button>
           }
         />
