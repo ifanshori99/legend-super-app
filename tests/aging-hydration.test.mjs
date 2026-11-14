@@ -1,12 +1,26 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createElement } from "react";
-import { renderToString } from "react-dom/server";
-import { createServer } from "vite";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const webRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+const webRoot = fileURLToPath(new URL("../apps/web/", import.meta.url));
+const webRequire = createRequire(
+  new URL("../apps/web/package.json", import.meta.url),
+);
+const { createElement } = webRequire("react");
+const { renderToString } = webRequire("react-dom/server");
+// The page loads the ESM build of react-query; the provider must come from the
+// same build (require() would return the CJS copy and break the context).
+const { QueryClient, QueryClientProvider } = await import(
+  pathToFileURL(
+    webRequire
+      .resolve("@tanstack/react-query")
+      .replace(/index\.cjs$/, "index.js"),
+  ).href
+);
+const { createServer } = await import(
+  pathToFileURL(webRequire.resolve("vite")).href
+);
 
 test("aging SSR output does not depend on the server's current date", async (t) => {
   const vite = await createServer({
