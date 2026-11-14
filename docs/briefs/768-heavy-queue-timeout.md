@@ -1,0 +1,6 @@
+# 768 heavy: antrean timeout exit 75 (legend-qh8ly)
+Peran: engineer (Codex, kartu S, tooling). Folder kerja: ~/.claude/scripts (heavy, ram-guard) dan ~/.claude/hooks; bukan repo Legend. Tidak ada cabang git; buat cadangan berkas yang diubah di /tmp/legend-qh8ly-backup sebelum mengedit.
+Masalah: lihat `bd show legend-qh8ly` (dari repo Legend). Job yang antre lebih dari 1800 detik keluar exit 75 tanpa pernah jalan; antre ulang masuk dari belakang.
+Tujuan: job tetap menunggu selama antrean maju (posisi berkurang atau pemegang jalur masih hidup), batas mati hanya bila pemegang macet/mati (pid hilang); antre ulang mempertahankan urutan FIFO; `heavy --status` (atau setara) menampilkan posisi. Jangan menambah jalur, jangan melonggarkan batas RAM, disk, atau browser satu sekaligus.
+Bukti: test shell di ~/.claude/scripts/tests/ (pola test-ram-guard-disk-only.sh) untuk: antre lama tidak timeout selama pemegang hidup; pemegang mati -> kunci dilepas; FIFO terjaga. Jalankan test yang ada di folder itu juga. Jangan pkill/killall; jangan ganggu job heavy yang sedang jalan (uji dengan direktori kunci sementara lewat env, bukan kunci asli).
+Lapor: berkas diubah, test dijalankan, angka subagent. Jangan menjalankan suite Legend.
