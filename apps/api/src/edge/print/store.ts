@@ -537,8 +537,9 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
       } catch (error) {
         if (!notify) throw error;
         // A failed queue write rolls back the first insert. Preserve the local
-        // evidence in a fresh transaction; this does not retry delivery.
+        // evidence in a fresh transaction, then let the agent retry delivery.
         await run(insert);
+        return false;
       }
       return true;
     },
