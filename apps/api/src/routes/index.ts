@@ -31,6 +31,7 @@ import { createAccountingBankAccountsRouter } from "./accounting-bank-accounts.r
 import { createAccountingBankStatementsRouter } from "./accounting-bank-statements.routes";
 import { createAccountingBankLinesRouter } from "./accounting-bank-lines.routes";
 import { createAccountingCashDepositsRouter } from "./accounting-cash-deposits.routes";
+import { createAccountingFinanceExceptionsRouter } from "./accounting-finance-exceptions.routes";
 import { createAccountingCashBankEntriesRouter } from "./accounting-cash-bank-entries.routes";
 import { createAccountingPettyCashRouter } from "./accounting-petty-cash.routes";
 import { createAccountingBankReconCasesRouter } from "./accounting-bank-recon-cases.routes";
@@ -100,6 +101,7 @@ import { payrollPolicyRouter, payrollThrRouter } from "./payroll-policy.routes";
 import { payrollServiceChargeRouter } from "./payroll-service-charge.routes";
 import { payrollRapelRouter } from "./payroll-rapel.routes";
 import { payrollPayoutRouter } from "./payroll-payout.routes";
+import { payrollPayoutReturnRouter } from "./payroll-payout-return.routes";
 import { payrollRunsRouter } from "./payroll-runs.routes";
 import {
   payrollMyReimbursementsRouter,
@@ -347,6 +349,8 @@ apiRouter.use("/accounting", createAccountingBankAccountsRouter());
 apiRouter.use("/accounting", createAccountingBankStatementsRouter());
 apiRouter.use("/accounting", createAccountingBankLinesRouter());
 apiRouter.use("/accounting", createAccountingCashDepositsRouter());
+// Read-only finance exceptions list (legend-4oclu).
+apiRouter.use("/accounting", createAccountingFinanceExceptionsRouter());
 // Cash in/out, bank transfers and the petty cash fund (legend-4961).
 apiRouter.use("/accounting", createAccountingCashBankEntriesRouter());
 apiRouter.use("/accounting", createAccountingPettyCashRouter());
@@ -407,6 +411,7 @@ apiRouter.use("/hris/payroll/runs", payrollRunsRouter);
 // Payroll payout / disbursement (legend-648). Guards per route; paths
 // `/payout-configs`, `/runs/:id/disbursement-batches`, `/disbursement-batches`.
 apiRouter.use("/hris/payroll", payrollPayoutRouter);
+apiRouter.use("/hris/payroll", payrollPayoutReturnRouter);
 apiRouter.use(
   "/hris/payroll/reimbursement-categories",
   payrollReimbursementCategoriesRouter,

@@ -381,8 +381,18 @@ async function applyPaid(
           ? "tax_missing"
           : null
         : "tax_mismatch";
-    if (code !== null)
+    if (code !== null) {
       logger.warn({ eventId: event.id, code }, "Edge order tax rows skipped");
+      await tx
+        .update(edgeOrderIngests)
+        .set({ taxFlag: code })
+        .where(
+          and(
+            eq(edgeOrderIngests.tenantId, tenantId),
+            eq(edgeOrderIngests.orderId, payload.orderId),
+          ),
+        );
+    }
   }
   for (const tender of payload.tenders) {
     if (providerOf(tender.method, tender.provider) === null)

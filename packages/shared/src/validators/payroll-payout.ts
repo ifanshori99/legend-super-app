@@ -170,6 +170,20 @@ export const resolveManualItemsSchema = z
     message: "Each item may appear once.",
   });
 
+// Funds came back after a paid transfer: two different non-requesters each
+// call this with the same evidence; the second one moves the item to `returned`.
+export const returnManualItemsSchema = z
+  .strictObject({
+    itemIds: z.array(z.uuid()).min(1).max(1000),
+    evidenceKey: text(200),
+    note: text(500),
+    password: reauthPasswordSchema,
+  })
+  .refine((value) => new Set(value.itemIds).size === value.itemIds.length, {
+    path: ["itemIds"],
+    message: "Each item may appear once.",
+  });
+
 export const confirmCashHandoverInputSchema = z
   .strictObject({
     itemIds: z.array(z.uuid()).min(1).max(1000),
@@ -197,6 +211,7 @@ export type ConfirmManualItemsInput = z.infer<
   typeof confirmManualItemsInputSchema
 >;
 export type ResolveManualItemsInput = z.infer<typeof resolveManualItemsSchema>;
+export type ReturnManualItemsInput = z.infer<typeof returnManualItemsSchema>;
 export type ConfirmCashHandoverInput = z.infer<
   typeof confirmCashHandoverInputSchema
 >;

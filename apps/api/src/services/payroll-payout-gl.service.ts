@@ -35,25 +35,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { TenantId } from "@starter/shared/core";
-import { isModuleEnabled } from "@starter/shared/platform";
 import { payrollPaid, type PayrollRunType } from "@starter/shared/hris/payroll";
-import { bankAccounts } from "../db/schema/accounting-cash-bank.ts";
-import {
-  accountMappings,
-  journalEntries,
-  journalLines,
-  tenants,
-} from "../db/schema/index.ts";
+import { journalEntries } from "../db/schema/index.ts";
 import { payrollRuns } from "../db/schema/payroll.ts";
 import {
   payrollDisbursementItems,
-  payrollPayoutConfigs,
   payrollPayoutGlPostings,
   type PayoutPostingKind,
 } from "../db/schema/payroll-payout.ts";
 import { logger } from "../lib/logger.ts";
 import {
   PAYROLL_SEAL_KEY_VERSION,
+  openPayrollValue,
   sealPayrollValue,
 } from "../lib/payroll-sealed.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
@@ -70,6 +63,17 @@ import {
   type ItemRow,
   type PayoutActor as Actor,
 } from "./payroll-payout.service.ts";
+import {
+  PAYOUT_BANK_CHARGES_MAPPING_MISSING,
+  PAYOUT_SOURCE_ACCOUNT_MISSING,
+  accountingEnabled,
+  assertActiveBankGlAccount,
+  activeSourceGlAccount,
+  assertManualPayoutSetup,
+  bankChargesMapped,
+  frozenSourceGlAccount,
+  settledSourceAccount,
+} from "./payroll-payout-setup.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -111,104 +115,38 @@ function safeAmount(read: () => number): number {
 async function sourceBankOverride(
   tx: Tx,
   tenantId: TenantId,
-  batch: Pick<BatchRow, "channel" | "legalEntityId">,
-  options: { optional?: boolean } = {},
+  batch: Pick<BatchRow, "channel" | "legalEntityId" | "sourceBankAccountId">,
+  options: { optional?: boolean; requireFrozen?: boolean } = {},
 ): Promise<Partial<Record<"bank", string>> | undefined | null> {
   if (batch.channel === "cash") return undefined;
-  const [row] = await tx
-    .select({ glAccountId: bankAccounts.glAccountId })
-    .from(payrollPayoutConfigs)
-    .innerJoin(
-      bankAccounts,
-      and(
-        eq(bankAccounts.tenantId, payrollPayoutConfigs.tenantId),
-        eq(bankAccounts.legalEntityId, payrollPayoutConfigs.legalEntityId),
-        eq(bankAccounts.id, payrollPayoutConfigs.manualSourceBankAccountId),
-      ),
-    )
-    .where(
-      and(
-        eq(payrollPayoutConfigs.tenantId, tenantId),
-        eq(payrollPayoutConfigs.legalEntityId, batch.legalEntityId),
-      ),
-    )
-    .limit(1);
+  // A batch with a frozen account keeps it, whatever the config says now
+  // (legend-hkh57); only a legacy batch without one follows the config.
+  if (batch.sourceBankAccountId !== null) {
+    const frozen = await frozenSourceGlAccount(
+      tx,
+      tenantId,
+      batch.legalEntityId,
+      batch.sourceBankAccountId,
+      options.optional ? { optional: true } : undefined,
+    );
+    return frozen === null ? null : { bank: frozen };
+  }
+  // A late posting (fee re-post) of a batch with no frozen account never
+  // follows today's config: the most restrictive rule is to refuse.
+  if (options.requireFrozen)
+    throw payoutRefuse(
+      409,
+      PAYOUT_SOURCE_ACCOUNT_MISSING.code,
+      PAYOUT_SOURCE_ACCOUNT_MISSING.message,
+    );
   // `optional`: the caller can go on without the account (answered with null).
-  if (!row && options.optional) return null;
-  if (!row)
-    throw payoutRefuse(
-      409,
-      "PAYOUT_CONFIG_DISABLED",
-      "Rekening sumber pembayaran gaji PT ini tidak ditemukan.",
-    );
-  return { bank: row.glAccountId };
-}
-
-/**
- * The account the settle journal of a batch credited (the `bank` role it was
- * posted with). A return must give back to that account even when the config
- * has pointed at another bank account since.
- */
-async function settledSourceAccount(
-  tx: Tx,
-  tenantId: TenantId,
-  legalEntityId: string,
-  journalKey: string,
-): Promise<string> {
-  const [row] = await tx
-    .select({ accountId: journalLines.accountId })
-    .from(journalEntries)
-    .innerJoin(
-      journalLines,
-      and(
-        eq(journalLines.tenantId, journalEntries.tenantId),
-        eq(journalLines.entryId, journalEntries.id),
-      ),
-    )
-    .where(
-      and(
-        eq(journalEntries.tenantId, tenantId),
-        eq(journalEntries.legalEntityId, legalEntityId),
-        eq(journalEntries.idempotencyKey, journalKey),
-        sql`${journalLines.creditIdr} > 0`,
-      ),
-    )
-    .limit(1);
-  if (!row)
-    throw payoutRefuse(
-      409,
-      "PAYOUT_CONFIG_DISABLED",
-      "Jurnal pembayaran batch ini tidak ditemukan, pengembalian tidak diposting.",
-    );
-  return row.accountId;
-}
-
-async function accountingEnabled(tx: Tx, tenantId: TenantId): Promise<boolean> {
-  const [row] = await tx
-    .select({ featureFlags: tenants.featureFlags })
-    .from(tenants)
-    .where(eq(tenants.id, tenantId))
-    .limit(1);
-  return isModuleEnabled(row?.featureFlags ?? null, "accounting");
-}
-
-async function bankChargesMapped(
-  tx: Tx,
-  tenantId: TenantId,
-  legalEntityId: string,
-): Promise<boolean> {
-  const [row] = await tx
-    .select({ accountId: accountMappings.accountId })
-    .from(accountMappings)
-    .where(
-      and(
-        eq(accountMappings.tenantId, tenantId),
-        eq(accountMappings.legalEntityId, legalEntityId),
-        eq(accountMappings.role, "bank_charges"),
-      ),
-    )
-    .limit(1);
-  return row !== undefined;
+  const glAccountId = await activeSourceGlAccount(
+    tx,
+    tenantId,
+    batch.legalEntityId,
+    options.optional ? { optional: true } : undefined,
+  );
+  return glAccountId === null ? null : { bank: glAccountId };
 }
 
 async function runHasLockedJournal(
@@ -275,17 +213,27 @@ export async function settleBatchPayouts(
     netIdr > 0 && (await runHasLockedJournal(tx, tenantId, batch.payrollRunId));
   const kind: PayoutPostingKind = journaled ? "settle" : "settle_skipped";
 
+  // Fail closed on the source account BEFORE the journal branch (legend-ijhe3):
+  // with accounting on, an unusable source is refused whether or not the run
+  // has a locked journal, so it is never turned into `settle_skipped`. Nothing
+  // is recorded; the confirmation can be sent again once the account is active.
+  if (!journaled && (await accountingEnabled(tx, tenantId)))
+    await sourceBankOverride(tx, tenantId, batch);
+
   // The fee is real money the PT paid, whether or not the salary journal
-  // applies. With the salary journal a missing mapping fails closed (the
-  // posting throws). Without it (settle_skipped) the fee is posted only when
-  // accounting is on and both accounts exist: a real payment confirmation is
-  // never blocked by the fee, the skip is logged instead.
-  let feeJournaled = feeIdr > 0 && journaled;
-  if (feeIdr > 0 && !journaled && (await accountingEnabled(tx, tenantId))) {
+  // applies. A fee whose bank charges mapping or source account is missing is
+  // never allowed to block a real payment confirmation (the money is gone): it
+  // is skipped, the posting says `fee_posted = false`, and finance re-posts it
+  // once the mapping is back (`repostSkippedFees`). With accounting off nothing
+  // is journaled at all, so there is nothing to re-post.
+  let feeJournaled = false;
+  let feePosted = true;
+  if (feeIdr > 0 && (journaled || (await accountingEnabled(tx, tenantId)))) {
     feeJournaled =
       (await bankChargesMapped(tx, tenantId, batch.legalEntityId)) &&
       (await sourceBankOverride(tx, tenantId, batch, { optional: true })) !==
         null;
+    feePosted = feeJournaled;
     if (!feeJournaled)
       logger.warn(
         { tenantId, batchId: batch.id, reason: "fee_skipped_no_mapping" },
@@ -355,6 +303,7 @@ export async function settleBatchPayouts(
     ),
     piiKeyVersion: PAYROLL_SEAL_KEY_VERSION,
     postedAt: now,
+    feePosted,
   });
   const linked = await tx
     .update(payrollDisbursementItems)
@@ -500,3 +449,183 @@ export async function emitPayoutRunPaid(
     now,
   });
 }
+
+export type RepostFeesResult = {
+  /** Postings whose fee this call journaled. */
+  reposted: number;
+};
+
+const postingTotalBinding = (tenantId: string, rowId: string) => ({
+  tenantId,
+  table: "payroll_payout_gl_postings" as const,
+  rowId,
+  field: "total" as const,
+});
+
+/** Stored whole-rupiah fee of a posting; a tampered value throws. */
+function postingFeeIdr(
+  posting: { id: string; totalEncrypted: Buffer; piiKeyVersion: number },
+  tenantId: string,
+): number {
+  return safeAmount(() => {
+    const total = JSON.parse(
+      openPayrollValue(
+        posting.totalEncrypted,
+        postingTotalBinding(tenantId, posting.id),
+        posting.piiKeyVersion,
+      ),
+    ) as { feeIdr?: unknown };
+    return Number(total.feeIdr);
+  });
+}
+
+/**
+ * Journals the bank fee of every posting of the batch that skipped it
+ * (`fee_posted = false`): Dr bank charges / Cr the source account, key
+ * `payroll-payout-fee:<item_set_hash>`, then `fee_posted = true`. Exactly once:
+ * the batch advisory lock serializes callers, a caller that waited finds no
+ * posting left, and the journal key is the second guard. A mapping or source
+ * account that is still missing answers 409 and posts nothing.
+ */
+export async function repostSkippedFees(
+  tx: Tx,
+  actor: Actor,
+  batchId: string,
+  now = new Date(),
+): Promise<RepostFeesResult> {
+  const tenantId = actor.tenantId as TenantId;
+  const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`payroll-payout-gl:${tenantId}:${batch.id}`}))`,
+  );
+  const postings = await tx
+    .select()
+    .from(payrollPayoutGlPostings)
+    .where(
+      and(
+        eq(payrollPayoutGlPostings.tenantId, tenantId),
+        eq(payrollPayoutGlPostings.batchId, batch.id),
+        eq(payrollPayoutGlPostings.feePosted, false),
+      ),
+    )
+    .orderBy(asc(payrollPayoutGlPostings.id))
+    .for("update");
+  if (postings.length === 0) return { reposted: 0 };
+
+  if (!(await accountingEnabled(tx, tenantId)))
+    throw payoutRefuse(
+      409,
+      "PAYOUT_ACCOUNTING_DISABLED",
+      "Akuntansi belum aktif, jadi biaya transfer belum bisa dijurnal.",
+    );
+  if (!(await bankChargesMapped(tx, tenantId, batch.legalEntityId)))
+    throw payoutRefuse(
+      409,
+      PAYOUT_BANK_CHARGES_MAPPING_MISSING.code,
+      PAYOUT_BANK_CHARGES_MAPPING_MISSING.message,
+    );
+  await assertManualPayoutSetup(tx, tenantId, batch.legalEntityId);
+
+  const context = payoutScope(actor.tenantId);
+  const entryDate = payrollEntryDateOf(now.toISOString());
+  let reposted = 0;
+  for (const posting of postings) {
+    const feeIdr = postingFeeIdr(posting, tenantId);
+    if (feeIdr > 0) {
+      // A settled group gives to the account its own salary journal used; a
+      // group settled without a journal uses the configured source account.
+      // Either way the account must still belong to an active bank account:
+      // the settled one may have been deactivated since the settle.
+      let accountOverrides: Partial<Record<"bank", string>> | undefined;
+      if (posting.kind === "settle") {
+        const settledBank = await settledSourceAccount(
+          tx,
+          tenantId,
+          batch.legalEntityId,
+          posting.journalKey,
+        );
+        await assertActiveBankGlAccount(
+          tx,
+          tenantId,
+          batch.legalEntityId,
+          settledBank,
+        );
+        accountOverrides = { bank: settledBank };
+      } else
+        accountOverrides =
+          (await sourceBankOverride(tx, tenantId, batch, {
+            requireFrozen: true,
+          })) ?? undefined;
+      await postJournalFromRuleInTransaction(
+        tx,
+        context,
+        {
+          eventName: "payroll.paid",
+          variant: "payout_fee",
+          amounts: { feeIdr },
+          legalEntityId: batch.legalEntityId,
+          outletId: null,
+          entryDate,
+          sourceId: batch.payrollRunId,
+          postedBy: null,
+          idempotencyKey: payoutGlKeys.fee(posting.itemSetHash),
+          accountOverrides,
+        },
+        now,
+      );
+    }
+    const flipped = await tx
+      .update(payrollPayoutGlPostings)
+      .set({ feePosted: true })
+      .where(
+        and(
+          eq(payrollPayoutGlPostings.tenantId, tenantId),
+          eq(payrollPayoutGlPostings.id, posting.id),
+          eq(payrollPayoutGlPostings.feePosted, false),
+        ),
+      )
+      .returning({ id: payrollPayoutGlPostings.id });
+    if (flipped.length !== 1)
+      throw payoutRefuse(
+        409,
+        "PAYOUT_BATCH_STATE_CHANGED",
+        "Status batch berubah saat diproses. Coba lagi.",
+      );
+    reposted += 1;
+  }
+  return { reposted };
+}
+
+export type SkippedFeeRow = {
+  postingId: string;
+  batchId: string;
+  feeIdr: number;
+};
+
+/** Postings whose bank fee is still waiting to be journaled (finance list). */
+export async function listSkippedFees(
+  tx: Tx,
+  tenantId: string,
+): Promise<SkippedFeeRow[]> {
+  const rows = await tx
+    .select()
+    .from(payrollPayoutGlPostings)
+    .where(
+      and(
+        eq(payrollPayoutGlPostings.tenantId, tenantId as TenantId),
+        eq(payrollPayoutGlPostings.feePosted, false),
+      ),
+    )
+    .orderBy(
+      asc(payrollPayoutGlPostings.postedAt),
+      asc(payrollPayoutGlPostings.id),
+    );
+  return rows.map((row) => ({
+    postingId: row.id,
+    batchId: row.batchId,
+    feeIdr: postingFeeIdr(row, tenantId),
+  }));
+}
+
+// Part B (legend-qxkm6): `recordOverpaidItem` lives in its own file.
+export * from "./payroll-payout-overpaid.service.ts";

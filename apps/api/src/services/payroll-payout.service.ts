@@ -67,6 +67,10 @@ import {
 } from "../lib/payroll-sealed.ts";
 import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./hris-access.ts";
+import {
+  assertManualPayoutSetup,
+  configuredSourceBankAccountId,
+} from "./payroll-payout-setup.ts";
 
 export type PayoutActor = { tenantId: string; userId: string };
 export type BatchRow = typeof payrollDisbursementBatches.$inferSelect;
@@ -810,7 +814,7 @@ export async function createDisbursementBatch(
   // ended failed/not_sent/returned/cancelled (or it never had one).
   const history = new Map<
     string,
-    { last: number; status: string; live: boolean }
+    { last: number; status: string; live: boolean; overpaid: boolean }
   >();
   if (slips.length > 0) {
     const past = await tx
@@ -834,7 +838,11 @@ export async function createDisbursementBatch(
         last: 0,
         status: "",
         live: false,
+        overpaid: false,
       };
+      // An overpaid attempt means the money already reached the employee:
+      // the slip is settled by hand (receivable), never by a new batch.
+      if (item.status === "overpaid") seen.overpaid = true;
       if (
         (PAYOUT_LIVE_ITEM_STATUSES as readonly string[]).includes(item.status)
       )
@@ -851,6 +859,7 @@ export async function createDisbursementBatch(
     if (!seen) return true;
     return (
       !seen.live &&
+      !seen.overpaid &&
       (RETRYABLE_ITEM_STATUSES as readonly string[]).includes(seen.status)
     );
   });
@@ -1144,8 +1153,19 @@ export async function approveDisbursementBatch(
       "PAYOUT_SELF_APPROVAL",
       "Pembuat batch tidak boleh menyetujui batchnya sendiri.",
     );
-  if (batch.channel === "manual_bank")
+  // The bank account this batch pays from, frozen with the approval (legend-hkh57).
+  let sourceBankAccountId: string | null = null;
+  if (batch.channel === "manual_bank") {
     await assertManualConfigEnabled(tx, tenantId, batch.legalEntityId);
+    // Fail closed (legend-8codi): no approval while the fee or the source
+    // account cannot be journaled.
+    await assertManualPayoutSetup(tx, asTenant(tenantId), batch.legalEntityId);
+    sourceBankAccountId = await configuredSourceBankAccountId(
+      tx,
+      asTenant(tenantId),
+      batch.legalEntityId,
+    );
+  }
 
   // The approver must have seen exactly what is stored, and what is stored
   // must still be what the items say now.
@@ -1172,6 +1192,7 @@ export async function approveDisbursementBatch(
       approvedBy: asUser(actor.userId),
       approvedAt: now,
       approvalExpiresAt: expires,
+      sourceBankAccountId,
       updatedAt: now,
     })
     .where(

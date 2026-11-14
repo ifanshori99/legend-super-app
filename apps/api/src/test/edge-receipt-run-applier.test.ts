@@ -1239,6 +1239,44 @@ async function ackOrderEvent(
 }
 
 /**
+ * legend-btx4d: the queued order event was oversized and moved to the
+ * dead-letter store: its queue row is gone, the cloud never held it.
+ */
+async function deadLetterOrderEvent(
+  orderId: string,
+  name: OrderEventName,
+): Promise<void> {
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query("SET LOCAL session_replication_role = replica");
+    const moved = await client.query(
+      `DELETE FROM edge_outbound_queue WHERE tenant_id = $1 AND status = 'pending' AND event_id IN (
+         SELECT event_id FROM domain_event_outbox
+          WHERE tenant_id = $1 AND aggregate_id = $2::uuid AND event ->> 'name' = $3)
+       RETURNING outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, event`,
+      [tenant.tenantId, ulidToUuid(orderId), name],
+    );
+    expect(moved.rows).toHaveLength(1);
+    const row = moved.rows[0];
+    await client.query(
+      `INSERT INTO edge_link_dead_letters (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, bytes, reason, event)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 5000000, 'frame_too_large', $10::jsonb)`,
+      [
+        tenant.tenantId,
+        row.outlet_id,
+        row.edge_node_id,
+        row.direction,
+        row.event_id,
+        row.link_seq,
+        row.aggregate_type,
+        row.aggregate_id,
+        row.aggregate_sequence,
+        JSON.stringify(row.event),
+      ],
+    );
+  });
+}
+
+/**
  * An edge database's device run: bound to the node and instance the reporter
  * is given, `orders` already numbered locally from 1 under `prefix`. Written
  * with owner SQL (triggers off, the way a restored edge state looks).
@@ -1725,6 +1763,34 @@ describe("legend-zy43 edge receipt run producer", () => {
     // A not yet reported receipt that is already voided waits for its void.
     await addEdgeReceipt(run, 3);
     await voidEdgeReceipt(run, 3, "queued");
+    expect(await report(run)).toEqual({ reported: 0 });
+  });
+
+  // legend-btx4d review: a dead-lettered order.paid has no queue row, which
+  // used to read as "acknowledged" and sent the receipt of an order the cloud
+  // never got.
+  it("legend-btx4d a receipt whose order.paid was dead-lettered is not reported, and the run waits behind it", async () => {
+    const run = await edgeRun(3, { delivery: ["acked", "queued", "acked"] });
+    await deadLetterOrderEvent(run.orders[1]!, "order.paid");
+    expect(await report(run)).toEqual({ reported: 1 });
+    expect(shapesOf(await reportedEvents(run.device))).toEqual([
+      ["OFF1", 1, ["1"]],
+    ]);
+    expect(await report(run)).toEqual({ reported: 0 });
+  });
+
+  it("legend-btx4d no void event is reported while order.voided is dead-lettered", async () => {
+    const run = await edgeRun(2);
+    await report(run);
+    await voidEdgeReceipt(run, 1, "queued");
+    const orderId = await asOwnerTenant(tenant.tenantId, async (client) => {
+      const r = await client.query(
+        "SELECT order_id FROM pos_receipts WHERE tenant_id = $1 AND number = 'OFF1-000001' AND outlet_id = $2",
+        [tenant.tenantId, run.outletId],
+      );
+      return uuidToUlid(r.rows[0].order_id as string);
+    });
+    await deadLetterOrderEvent(orderId, "order.voided");
     expect(await report(run)).toEqual({ reported: 0 });
   });
 

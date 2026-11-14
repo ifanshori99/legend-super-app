@@ -50,11 +50,23 @@ function harness(events: EventEnvelope[]) {
     event,
   }));
   let acked = 0;
+  // legend-btx4d: a dead-lettered event leaves the queue and the events behind
+  // it are renumbered down by one. See edge-link-deadletter.test.ts.
+  const deadLettered = new Set<number>();
   const store: LinkStore = {
     outboundHead: async () => queue.length,
     lastAckedOutbound: async () => acked,
     readOutbound: async (after, limit) =>
       queue.filter((q) => q.linkSeq > after).slice(0, limit),
+    deadLetterOutbound: async (entry) => {
+      const at = queue.findIndex((q) => q.event.id === entry.event.id);
+      if (at < 0) return;
+      deadLettered.add(entry.linkSeq);
+      queue.splice(at, 1);
+      queue.forEach((q, i) => {
+        queue[i] = { ...q, linkSeq: i + 1 };
+      });
+    },
     ackOutbound: async (upto) => {
       acked = Math.max(acked, upto);
     },
@@ -64,6 +76,7 @@ function harness(events: EventEnvelope[]) {
   const frames: string[] = [];
   const closes: number[] = [];
   const errors: unknown[] = [];
+  const alarms: unknown[] = [];
   const peer = createLinkPeer({
     scope,
     outboundDirection: "edge_to_cloud",
@@ -75,6 +88,7 @@ function harness(events: EventEnvelope[]) {
       close: (code) => closes.push(code),
     },
     onError: (error) => errors.push(error),
+    onDeadLetter: (entry) => alarms.push(entry),
   });
   const batches = () =>
     frames
@@ -109,7 +123,7 @@ function harness(events: EventEnvelope[]) {
       await peer.idle();
     }
   }
-  return { frames, closes, errors, batches, drain, peer };
+  return { frames, closes, errors, alarms, deadLettered, batches, drain, peer };
 }
 
 describe("edge link batches are bounded by bytes", () => {
@@ -132,12 +146,22 @@ describe("edge link batches are bounded by bytes", () => {
     expect(h.batches().length).toBeGreaterThan(1);
   });
 
-  it("legend-zy43 a single event above the frame cap is not sent: loud error, link stays open, nothing skipped", async () => {
-    const h = harness([bigEvent(1, 5 * 1024 * 1024), bigEvent(2, 100)]);
+  // legend-btx4d (flipped from legend-zy43): a single event above the frame cap
+  // used to stall the queue behind it with only a log line. Now it is moved to
+  // the dead-letter store, one alarm goes out, and the queue keeps flowing.
+  it("legend-btx4d a single event above the frame cap is dead-lettered, alarmed once, and the queue behind it is delivered", async () => {
+    const big = bigEvent(1, 5 * 1024 * 1024);
+    const small = bigEvent(2, 100);
+    const h = harness([big, small]);
     await h.drain(1);
-    expect(h.batches()).toHaveLength(0);
     expect(h.closes).toEqual([]);
-    expect(h.errors).toHaveLength(1);
-    expect(String((h.errors[0] as Error).message)).toMatch(/frame limit/);
+    for (const frame of h.frames)
+      expect(frame.length).toBeLessThanOrEqual(LINK_MAX_FRAME_BYTES);
+    const delivered = h
+      .batches()
+      .flatMap((frame) => (frame?.type === "batch" ? frame.batch.events : []));
+    expect(delivered.map((event) => event.id)).toEqual([small.id]);
+    expect([...h.deadLettered]).toEqual([1]);
+    expect(h.alarms).toHaveLength(1);
   });
 });

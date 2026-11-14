@@ -531,6 +531,18 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["salaries_payable", "credit", "netIdr"],
     ],
   ),
+  // A failed attempt turned out paid while the payslip was paid by another
+  // attempt (design 7.9): the employee owes the company the second transfer.
+  rule(
+    { event: "payroll.paid", variant: "payout_overpaid" },
+    "payroll",
+    "Pembayaran gaji ganda (piutang karyawan)",
+    `${AUTO} (payroll); PAYR-04; payout per item; pembayaran ganda`,
+    [
+      ["employee_receivable", "debit", "netIdr"],
+      ["bank", "credit", "netIdr"],
+    ],
+  ),
   // No variant: events emitted before legend-1coh (no disbursedVia), petty cash.
   rule(
     { event: "employee_loan.disbursed" },

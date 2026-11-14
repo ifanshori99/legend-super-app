@@ -23,6 +23,8 @@ import { outlets, tenants } from "./platform-org.ts";
 export type EdgeOrderIngestState =
   "ingested" | "cancelled" | "voided" | "refused";
 
+export type EdgeOrderIngestTaxFlag = "tax_missing" | "tax_mismatch";
+
 export const edgeOrderIngests = pgTable(
   "edge_order_ingests",
   {
@@ -38,6 +40,13 @@ export const edgeOrderIngests = pgTable(
     reason: text("reason"),
     /** The `order.voided` event that voided the order, once applied. */
     voidEventId: ulidInUuid("void_event_id"),
+    /**
+     * Why the order's tax rows were not snapshotted (legend finance
+     * exceptions); NULL for a usable payload and for rows before 0546.
+     */
+    taxFlag: varchar("tax_flag", {
+      length: 20,
+    }).$type<EdgeOrderIngestTaxFlag>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -50,6 +59,10 @@ export const edgeOrderIngests = pgTable(
     check(
       "edge_order_ingests_state_check",
       sql`${table.state} IN ('ingested', 'cancelled', 'voided', 'refused')`,
+    ),
+    check(
+      "edge_order_ingests_tax_flag_check",
+      sql`${table.taxFlag} IS NULL OR ${table.taxFlag} IN ('tax_missing', 'tax_mismatch')`,
     ),
     index("edge_order_ingests_outlet_idx").on(
       table.tenantId,

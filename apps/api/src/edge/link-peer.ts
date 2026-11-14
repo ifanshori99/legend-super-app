@@ -50,6 +50,19 @@ export type QueuedEdgeEvent = {
   readonly event: EventEnvelope;
 };
 
+/**
+ * An outbound event that can never be delivered (legend-btx4d): kept whole,
+ * with its size and the sequence it had, so nothing is lost when it leaves the
+ * queue.
+ */
+export type DeadLetterEntry = {
+  readonly linkSeq: number;
+  readonly event: EventEnvelope;
+  /** Encoded size in bytes. */
+  readonly bytes: number;
+  readonly reason: "frame_too_large";
+};
+
 /** Durable state of one node's link on this side. */
 export type LinkStore = {
   /** Highest link_seq ever assigned in the outbound direction. */
@@ -57,6 +70,15 @@ export type LinkStore = {
   lastAckedOutbound(): Promise<number>;
   /** Queued events with link_seq > afterSeq (acked or not), ascending. */
   readOutbound(afterSeq: number, limit: number): Promise<QueuedEdgeEvent[]>;
+  /**
+   * Optional (legend-btx4d): moves the queue's HEAD event (the next one to
+   * send; nothing behind it was ever sent) out of the queue into the
+   * dead-letter store, whole and recorded once per event, and renumbers the
+   * events behind it so readOutbound stays contiguous (link_seq - 1). Replay
+   * of an event already dead-lettered is a no-op. Without it, an event above
+   * the frame cap only raises onError and holds the queue.
+   */
+  deadLetterOutbound?(entry: DeadLetterEntry): Promise<void>;
   /** Cumulative: every event up to `uptoSeq` is durably applied by the peer. */
   ackOutbound(uptoSeq: number): Promise<void>;
   lastReceivedInbound(): Promise<number>;
@@ -108,6 +130,8 @@ export type LinkPeerOptions = {
   now?: () => Date;
   /** Store/apply failures (no secrets in the error). The link stays up. */
   onError?: (error: unknown) => void;
+  /** After an event was moved to the dead-letter store (once per event). */
+  onDeadLetter?: (entry: DeadLetterEntry) => void;
   onHeartbeat?: (frame: Extract<LinkFrame, { type: "heartbeat" }>) => void;
   /** After the peer acknowledged up to `cursor` (for status/notifications). */
   onAcked?: (cursor: number) => void;
@@ -218,32 +242,48 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
 
   async function pump() {
     if (!ready || stopped || sentUpTo > ackedUpTo) return;
-    const read = await store.readOutbound(sentUpTo, batchSize);
-    if (read.length === 0) return;
-    read.forEach((item, index) => {
-      if (item.linkSeq !== sentUpTo + 1 + index)
-        throw new LinkProtocolError("Outbound queue is not contiguous");
-    });
-    // A batch frame must stay under the peer's frame cap, or the peer closes
-    // the link and the same batch is resent forever, blocking every later
-    // event. Take events while the encoded bytes fit, at least one.
-    const queued: QueuedEdgeEvent[] = [];
-    let bytes = 0;
-    for (const item of read) {
-      const size = Buffer.byteLength(JSON.stringify(item.event));
-      if (queued.length > 0 && bytes + size > LINK_BATCH_MAX_BYTES) break;
-      queued.push(item);
-      bytes += size;
-    }
-    // One event alone above the bound can never be delivered (the peer would
-    // close the link on every attempt). Fail loud, keep the link up, send
-    // nothing: the queue behind it waits, in order, for an operator. It is
-    // never skipped or dropped (that would lose a sale or a payment).
-    if (bytes > LINK_BATCH_MAX_BYTES) {
-      options.onError?.(
-        new LinkProtocolError("Outbound event exceeds the link frame limit"),
-      );
-      return;
+    let queued: QueuedEdgeEvent[] = [];
+    for (;;) {
+      const read = await store.readOutbound(sentUpTo, batchSize);
+      if (read.length === 0) return;
+      read.forEach((item, index) => {
+        if (item.linkSeq !== sentUpTo + 1 + index)
+          throw new LinkProtocolError("Outbound queue is not contiguous");
+      });
+      // A batch frame must stay under the peer's frame cap, or the peer closes
+      // the link and the same batch is resent forever, blocking every later
+      // event. Take events while the encoded bytes fit, at least one.
+      queued = [];
+      let bytes = 0;
+      for (const item of read) {
+        const size = Buffer.byteLength(JSON.stringify(item.event));
+        if (queued.length > 0 && bytes + size > LINK_BATCH_MAX_BYTES) break;
+        queued.push(item);
+        bytes += size;
+      }
+      if (bytes <= LINK_BATCH_MAX_BYTES) break;
+      // One event alone above the bound can never be delivered (the peer
+      // would close the link on every attempt). It is the head of the queue,
+      // so nothing behind it was sent: move it whole to the dead-letter store
+      // and alarm once (legend-btx4d); the store renumbers the queue behind
+      // it, then the loop reads again. Never dropped: a sale or a payment
+      // stays readable there. A store without dead-lettering keeps the old
+      // behavior: fail loud, send nothing, the queue waits in order.
+      const head = queued[0]!;
+      if (!store.deadLetterOutbound) {
+        options.onError?.(
+          new LinkProtocolError("Outbound event exceeds the link frame limit"),
+        );
+        return;
+      }
+      const entry: DeadLetterEntry = {
+        linkSeq: head.linkSeq,
+        event: head.event,
+        bytes,
+        reason: "frame_too_large",
+      };
+      await store.deadLetterOutbound(entry);
+      options.onDeadLetter?.(entry);
     }
     const toSeq = sentUpTo + queued.length;
     const batch: SyncBatch = {

@@ -1536,6 +1536,13 @@ export async function mergeDeviceReceiptRun(
       lastNumber: number;
     };
     receipts: (PosReceipt & { outletSnapshot?: PosReceiptOutletSnapshot })[];
+    /**
+     * legend-n1fzg: ordinals the caller accounted for without a receipt (the
+     * receipt of an order the cloud permanently refused, skipped by the edge
+     * applier and recorded as a conflict). They count as present in the
+     * completeness walk only; no receipt is written for them.
+     */
+    skippedOrdinals?: ReadonlySet<number>;
   },
 ): Promise<{ sequence: ReceiptSequence; inserted: number }> {
   const tenantId = context.tenant.tenantId;
@@ -1733,7 +1740,12 @@ export async function mergeDeviceReceiptRun(
     // Stops after 21 holes: the walk is bounded by the rows present plus 21.
     const missing: number[] = [];
     for (let n = 1; n <= newLast && missing.length <= 20; n += 1)
-      if (!cloudOrdinals.has(n) && !ordinals.has(n)) missing.push(n);
+      if (
+        !cloudOrdinals.has(n) &&
+        !ordinals.has(n) &&
+        !input.skippedOrdinals?.has(n)
+      )
+        missing.push(n);
     if (missing.length > 0) {
       const shown = missing.slice(0, 20).join(", ");
       const more = missing.length > 20 ? " dan lainnya" : "";

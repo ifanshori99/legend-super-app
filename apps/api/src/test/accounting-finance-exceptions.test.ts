@@ -1,0 +1,1215 @@
+// Finance exceptions list (bead legend-4oclu; brief
+// docs/briefs/662-finance-exceptions-contract.md). Written fail-first from the
+// brief, not from the implementation: GET /api/accounting/finance-exceptions
+// does not exist yet. Real Better Auth, RLS and PostgreSQL on the disposable
+// test DB. The real `apiRouter` is mounted on a small host app that pins the
+// tenant (same pattern as accounting-cash-deposits.test.ts), so the suite
+// needs no router export name and fails with 404 until the route is
+// registered in routes/index.ts.
+//
+// Rows are seeded by direct inserts, all dated in March 2026 with a unique
+// timestamp each (05:MM UTC = 12:MM in Jakarta, so every business-date
+// reading gives the same day) and on outlets this file creates, so the exact
+// counts are not disturbed by other suites sharing the DB. The payout kind has
+// no outlet or date control (the posting is stamped now), so it is checked by
+// batch id and by a before/after delta.
+//
+// Assumptions (the brief is silent, stated so they can be contested):
+// - The body is the bare `{ summary, items, truncated }` of the brief; a
+//   `{ data: ... }` envelope (the style of the cash-deposit routes) is read too.
+// - `summary` only holds kinds that have rows (brief: "Tanpa data: array
+//   kosong"); a missing kind is read as { count: 0, amountIdr: 0 }.
+// - A null amount (order not found) adds nothing to the summary amount.
+// - `occurredAt` of an edge ingest row is the ingest/order time; the tests give
+//   the ingest row, the order and the business date the same instant.
+// - `payload.orderId` of a parked event is the order ULID (as the events carry
+//   it); the order row id is ulidToUuid(ULID).
+// - Validation failures (missing/bad from or to, span over 92 days, unknown
+//   kind) answer 400, like the other accounting list routes.
+// - An outlet-scoped caller asking for an outlet outside its scope gets 200
+//   with nothing ("outlet di luar scope tidak terlihat"), not 403.
+// - The "finance" role template holds accounting.journal.view and may be
+//   assigned at outlet scope (cash-deposit tests assign it that way); the
+//   "cashier" template does not hold it.
+// - The fee amount of a skipped payout fee is the fee total of the batch:
+//   3 items x 5_000 (the same figure the fee journal books in
+//   payroll-payout-hardening.test.ts).
+
+import { randomBytes, randomUUID } from "node:crypto";
+import express from "express";
+import { Pool, type PoolClient } from "pg";
+import request from "supertest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createUlid, ulidToUuid } from "@starter/shared/core";
+import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { createApp } from "../app";
+import { errorHandler, notFound } from "../middleware/error-handler";
+import { tenantContext } from "../middleware/tenant";
+import { apiRouter } from "../routes/index";
+import { originHeader } from "./helpers";
+import {
+  ANDI,
+  BUDI,
+  SITI,
+  bank,
+  installPayoutWorld,
+} from "./payroll-payout-fixtures";
+
+const W = installPayoutWorld("finexc");
+const authApp = createApp();
+const tenantId = cafeLegendPlatformFixtures.tenant.id;
+const seedOutlet = cafeLegendPlatformFixtures.outlets[0].id;
+const owner = new Pool({
+  connectionString: process.env.STARTER_TEST_DATABASE_URL,
+  max: 3,
+});
+const unique = () => randomBytes(4).toString("hex");
+const PATH = "/api/accounting/finance-exceptions";
+
+const host = express();
+host.use(
+  "/api",
+  tenantContext({
+    required: false,
+    resolveDomain: async () => null,
+    verifyCredential: async () => null,
+    fallback: async (req) => ({
+      tenantId: req.get("x-test-tenant") ?? tenantId,
+      brandId: null,
+      source: "session" as const,
+    }),
+  }),
+);
+host.use("/api", apiRouter);
+host.use(notFound);
+host.use(errorHandler);
+
+type Kind =
+  | "edge_tax_unsnapshotted"
+  | "edge_void_unsupported"
+  | "edge_receipt_skipped"
+  | "edge_link_dead_letter"
+  | "payout_fee_not_posted";
+const KINDS: Kind[] = [
+  "edge_tax_unsnapshotted",
+  "edge_void_unsupported",
+  "edge_receipt_skipped",
+  "edge_link_dead_letter",
+  "payout_fee_not_posted",
+];
+type Item = {
+  kind: Kind;
+  outletId: string | null;
+  occurredAt: string;
+  refType: string;
+  refId: string;
+  amountIdr: number | null;
+  detail: string | null;
+};
+type Payload = {
+  summary: { kind: Kind; count: number; amountIdr: number }[];
+  items: Item[];
+  truncated: boolean;
+};
+
+const SECRET = "RAHASIA-PAYLOAD-0812";
+const MARCH = { from: "2026-03-01", to: "2026-03-31" };
+
+// ---- plumbing -----------------------------------------------------------
+
+async function asTenant<T>(
+  tenant: string,
+  run: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenant],
+    );
+    const result = await run(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function signedIn(): Promise<{ cookie: string; userId: string }> {
+  const email = `fin-exc-${randomUUID()}@example.com`;
+  const signUp = await request(authApp)
+    .post("/api/auth/sign-up/email")
+    .set(originHeader)
+    .send({
+      name: "Finance exceptions",
+      email,
+      password: "Test-password-123!",
+    });
+  if (signUp.status !== 200) throw new Error(`Sign-up ${signUp.status}`);
+  const cookie = (signUp.headers["set-cookie"] as unknown as string[])
+    .map((value) => value.split(";")[0])
+    .join("; ");
+  const session = await request(authApp)
+    .get("/api/auth/get-session")
+    .set("Cookie", cookie);
+  return { cookie, userId: session.body.user.id as string };
+}
+
+async function assignTemplate(
+  userId: string,
+  templateKey: string,
+  outletId: string | null = null,
+) {
+  const { rows } = await owner.query<{ id: string }>(
+    "SELECT id FROM roles WHERE tenant_id = $1 AND template_key = $2",
+    [tenantId, templateKey],
+  );
+  if (!rows[0]) throw new Error(`No ${templateKey} role template`);
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute', $2)`,
+    [tenantId, userId, rows[0].id, outletId ? "outlet" : "tenant", outletId],
+  );
+}
+
+async function newOutlet(label: string): Promise<string> {
+  const id = randomUUID();
+  await asTenant(tenantId, (client) =>
+    client.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       SELECT $1, tenant_id, brand_id, legal_entity_id, $2, $3, 'Jl. Uji 1', 'Asia/Jakarta', opening_hours, 'active'
+       FROM outlets WHERE tenant_id = $4 AND id = $5`,
+      [
+        id,
+        `X${unique()}`.toUpperCase().slice(0, 12),
+        label,
+        tenantId,
+        seedOutlet,
+      ],
+    ),
+  );
+  return id;
+}
+
+type OtherWorld = { tenant: string; outlet: string };
+async function newOtherTenant(): Promise<OtherWorld> {
+  const id = randomUUID();
+  const brandId = randomUUID();
+  const entityId = randomUUID();
+  const outlet = randomUUID();
+  await owner.query(
+    `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+     SELECT $1, $2, 'Finance exceptions other tenant', plan, status, deployment_mode, feature_flags, limits, created_by
+       FROM tenants WHERE id = $3`,
+    [id, `finexc-${unique()}`, tenantId],
+  );
+  await owner.query(
+    "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'uji', 'Uji')",
+    [brandId, id],
+  );
+  await owner.query(
+    "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Lain', false)",
+    [entityId, id],
+  );
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
+     VALUES ($1, $2, $3, $4, $5, 'Outlet Lain', 'Jl. Lain', 'Asia/Jakarta', '04:00', '{}', 'active')`,
+    [outlet, id, brandId, entityId, `L${unique()}`.toUpperCase()],
+  );
+  return { tenant: id, outlet };
+}
+
+const stamp = (day: string, hour: number, minute: number) =>
+  `2026-03-${day}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00.000Z`;
+
+async function seedNode(tenant: string, outlet: string): Promise<string> {
+  const id = randomUUID();
+  await asTenant(tenant, (client) =>
+    client.query(
+      `INSERT INTO edge_nodes (id, tenant_id, outlet_id, role, label, credential_hash)
+       VALUES ($1, $2, $3, 'primary', 'Mini PC uji pengecualian', $4)`,
+      [id, tenant, outlet, randomBytes(32).toString("hex")],
+    ),
+  );
+  return id;
+}
+
+type OrderSeed = {
+  tenant: string;
+  outlet: string;
+  at: string;
+  taxIdr: number;
+  subtotalIdr?: number;
+  ingest?: "ingested" | "refused" | null;
+  snapshotRuleId?: string;
+};
+async function seedOrder(
+  seed: OrderSeed,
+): Promise<{ uuid: string; ulid: string; totalIdr: number }> {
+  const ulid = createUlid();
+  const uuid = ulidToUuid(ulid);
+  const subtotal = seed.subtotalIdr ?? 100_000;
+  const total = subtotal + seed.taxIdr;
+  await asTenant(seed.tenant, async (client) => {
+    await client.query(
+      `INSERT INTO orders (id, tenant_id, outlet_id, number, channel, service_type,
+         payment_mode, subtotal_idr, discount_idr, service_charge_idr, tax_idr,
+         rounding_idr, total_idr, status, business_date, placed_at)
+       VALUES ($1, $2, $3, $4, 'pos', 'takeaway', 'pay_first', $5, 0, 0, $6, 0, $7,
+         'completed', $8::date, $9::timestamptz)`,
+      [
+        uuid,
+        seed.tenant,
+        seed.outlet,
+        `FX-${unique()}${unique()}`,
+        subtotal,
+        seed.taxIdr,
+        total,
+        seed.at.slice(0, 10),
+        seed.at,
+      ],
+    );
+    if (seed.ingest)
+      await client.query(
+        `INSERT INTO edge_order_ingests
+           (tenant_id, order_id, outlet_id, paid_event_id, state, reason, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $7::timestamptz)`,
+        [
+          seed.tenant,
+          uuid,
+          seed.outlet,
+          randomUUID(),
+          seed.ingest,
+          seed.ingest === "refused" ? "order_exists" : null,
+          seed.at,
+        ],
+      );
+    if (seed.snapshotRuleId)
+      await client.query(
+        `INSERT INTO tax_snapshots
+           (id, tenant_id, outlet_id, source_type, source_id, business_date, tax_rule_id,
+            tax_rule_code, tax_rule_version, tax_type, rate_bp, price_includes_tax,
+            gross_idr, tax_base_idr, service_charge_idr, tax_idr)
+         VALUES ($1, $2, $3, 'order', $4, $5::date, $6, 'PBJT-FX', 1, 'pbjt', 1000,
+           false, $7, $7, 0, $8)`,
+        [
+          randomUUID(),
+          seed.tenant,
+          seed.outlet,
+          uuid,
+          seed.at.slice(0, 10),
+          seed.snapshotRuleId,
+          subtotal,
+          seed.taxIdr,
+        ],
+      );
+  });
+  return { uuid, ulid, totalIdr: total };
+}
+
+async function seedParked(
+  tenant: string,
+  outlet: string,
+  lastFailedAt: string,
+  errorCode: string,
+  orderUlid: string,
+) {
+  await asTenant(tenant, (client) =>
+    client.query(
+      `INSERT INTO auto_journal_parked
+         (tenant_id, outlet_id, idempotency_key, event_id, event_name, payload,
+          error_code, retryable, first_failed_at, last_failed_at, next_retry_at)
+       VALUES ($1, $2, $3, $4, 'order.voided', $5::jsonb, $6, false,
+         '2026-02-20T05:00:00Z', $7::timestamptz, NULL)`,
+      [
+        tenant,
+        outlet,
+        `aj:sale-void:${orderUlid}`,
+        createUlid(),
+        JSON.stringify({ orderId: orderUlid, customerPhone: SECRET }),
+        errorCode,
+        lastFailedAt,
+      ],
+    ),
+  );
+}
+
+async function seedSkip(
+  tenant: string,
+  outlet: string,
+  orderUuid: string,
+  at: string,
+) {
+  await asTenant(tenant, (client) =>
+    client.query(
+      `INSERT INTO edge_receipt_skips
+         (tenant_id, outlet_id, order_id, receipt_number, reason, event_id, created_at)
+       VALUES ($1, $2, $3, $4, 'uji_lewati', $5, $6::timestamptz)`,
+      [tenant, outlet, orderUuid, `R-${unique()}`, randomUUID(), at],
+    ),
+  );
+}
+
+async function seedDeadLetter(
+  tenant: string,
+  outlet: string,
+  node: string,
+  at: string,
+) {
+  await asTenant(tenant, (client) =>
+    client.query(
+      `INSERT INTO edge_link_dead_letters
+         (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq,
+          aggregate_type, aggregate_id, aggregate_sequence, bytes, reason, event, created_at)
+       VALUES ($1, $2, $3, 'edge_to_cloud', $4, 1, 'order', $5, 1, 2000000,
+         'frame_too_large', $6::jsonb, $7::timestamptz)`,
+      [
+        tenant,
+        outlet,
+        node,
+        randomUUID(),
+        randomUUID(),
+        JSON.stringify({ customerPhone: SECRET }),
+        at,
+      ],
+    ),
+  );
+}
+
+/** `count` receipt skips on one outlet, one minute apart from `start`. */
+async function seedManySkips(outlet: string, count: number, start: string) {
+  await asTenant(tenantId, (client) =>
+    client.query(
+      `INSERT INTO edge_receipt_skips
+         (tenant_id, outlet_id, order_id, receipt_number, reason, event_id, created_at)
+       SELECT $1, $2, gen_random_uuid(), 'R-' || n::text, 'uji_lewati', gen_random_uuid(),
+              $3::timestamptz + (n || ' minutes')::interval
+         FROM generate_series(0, $4::int - 1) AS n`,
+      [tenantId, outlet, start, count],
+    ),
+  );
+}
+
+// ---- HTTP ---------------------------------------------------------------
+
+const get = (
+  cookie: string,
+  query: Record<string, string | undefined>,
+  tenantHeader?: string,
+) => {
+  const call = request(host).get(PATH).set("Cookie", cookie).query(query);
+  return tenantHeader ? call.set("x-test-tenant", tenantHeader) : call;
+};
+const payloadOf = (body: { data?: Payload } & Partial<Payload>): Payload =>
+  (body.data ?? body) as Payload;
+async function fetchList(
+  cookie: string,
+  query: Record<string, string | undefined>,
+): Promise<Payload> {
+  const response = await get(cookie, query);
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+  return payloadOf(response.body);
+}
+const summaryOf = (payload: Payload, kind: Kind) => {
+  const entry = payload.summary.find((row) => row.kind === kind);
+  return { count: entry?.count ?? 0, amountIdr: entry?.amountIdr ?? 0 };
+};
+const itemsOfKind = (payload: Payload, kind: Kind) =>
+  payload.items.filter((item) => item.kind === kind);
+const instants = (items: Item[]) =>
+  items.map((item) => new Date(item.occurredAt).toISOString()).sort();
+const addDays = (date: string, days: number): string => {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+};
+
+// ---- world --------------------------------------------------------------
+
+let finance: { cookie: string; userId: string };
+let scoped: { cookie: string; userId: string };
+let cashier: { cookie: string; userId: string };
+let nobody: { cookie: string; userId: string };
+let outletA: string;
+let outletB: string;
+let outletEmpty: string;
+let outletMany: string;
+let outletExact: string;
+let other: OtherWorld;
+const seeded = {} as {
+  taxA1: { uuid: string; totalIdr: number };
+  taxA2: { uuid: string };
+  taxB1: { uuid: string };
+  taxOther: { uuid: string };
+  orderForVoid: { uuid: string; totalIdr: number };
+  otherOrder: { ulid: string };
+  unsnapshottedUuids: string[];
+  excludedUuids: string[];
+};
+
+const T = {
+  a1: stamp("10", 5, 1),
+  a2: stamp("10", 5, 2),
+  b1: stamp("10", 6, 1),
+  voidA1: stamp("12", 5, 1),
+  voidA2: stamp("12", 5, 2),
+  voidA3: stamp("12", 5, 4),
+  voidB: stamp("12", 6, 1),
+  skipA1: stamp("13", 5, 1),
+  skipA2: stamp("13", 5, 2),
+  skipB: stamp("13", 6, 1),
+  deadA: stamp("14", 5, 1),
+  deadB: stamp("14", 6, 1),
+};
+
+beforeAll(async () => {
+  if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
+    throw new Error("Requires the disposable test database");
+  finance = await signedIn();
+  await assignTemplate(finance.userId, "finance");
+  cashier = await signedIn();
+  await assignTemplate(cashier.userId, "cashier");
+  nobody = await signedIn();
+  outletA = await newOutlet("Pengecualian A");
+  outletB = await newOutlet("Pengecualian B");
+  outletEmpty = await newOutlet("Pengecualian Kosong");
+  outletMany = await newOutlet("Pengecualian 501");
+  outletExact = await newOutlet("Pengecualian 500");
+  scoped = await signedIn();
+  await assignTemplate(scoped.userId, "finance", outletB);
+  other = await newOtherTenant();
+
+  const ruleId = randomUUID();
+  await owner.query(
+    `INSERT INTO tax_rules
+       (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+        price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+        published_at, published_by)
+     VALUES ($1, $2, NULL, $3, 'pbjt uji', 'pbjt', 1000, NULL, '[]',
+             '{"itemClasses":["food_beverage"],"categoryIds":[],"itemIds":[]}',
+             false, true, true, 1, '2026-01-01', 'published', now(), $4)`,
+    [ruleId, tenantId, `PBJT-FX-${unique()}`.toUpperCase(), finance.userId],
+  );
+
+  // Kind 1: edge orders with tax > 0 and no tax_snapshots row.
+  const taxA1 = await seedOrder({
+    tenant: tenantId,
+    outlet: outletA,
+    at: T.a1,
+    taxIdr: 11_000,
+    ingest: "ingested",
+  });
+  const taxA2 = await seedOrder({
+    tenant: tenantId,
+    outlet: outletA,
+    at: T.a2,
+    taxIdr: 3_000,
+    ingest: "ingested",
+  });
+  const taxB1 = await seedOrder({
+    tenant: tenantId,
+    outlet: outletB,
+    at: T.b1,
+    taxIdr: 2_000,
+    ingest: "ingested",
+  });
+  // Not listed: snapshot present, tax 0, ingest refused, not an edge order.
+  const withSnapshot = await seedOrder({
+    tenant: tenantId,
+    outlet: outletA,
+    at: stamp("10", 5, 3),
+    taxIdr: 5_000,
+    ingest: "ingested",
+    snapshotRuleId: ruleId,
+  });
+  const zeroTax = await seedOrder({
+    tenant: tenantId,
+    outlet: outletA,
+    at: stamp("10", 5, 4),
+    taxIdr: 0,
+    ingest: "ingested",
+  });
+  const refused = await seedOrder({
+    tenant: tenantId,
+    outlet: outletA,
+    at: stamp("10", 5, 5),
+    taxIdr: 4_000,
+    ingest: "refused",
+  });
+  const notEdge = await seedOrder({
+    tenant: tenantId,
+    outlet: outletA,
+    at: stamp("10", 5, 6),
+    taxIdr: 9_000,
+    ingest: null,
+  });
+  const taxOther = await seedOrder({
+    tenant: other.tenant,
+    outlet: other.outlet,
+    at: stamp("10", 7, 1),
+    taxIdr: 99_000,
+    ingest: "ingested",
+  });
+
+  // Kinds 2 and 3 look an order total up.
+  const orderForVoid = await seedOrder({
+    tenant: tenantId,
+    outlet: outletA,
+    at: stamp("11", 5, 0),
+    taxIdr: 0,
+    subtotalIdr: 55_000,
+    ingest: null,
+  });
+  const otherOrder = await seedOrder({
+    tenant: other.tenant,
+    outlet: other.outlet,
+    at: stamp("11", 7, 0),
+    taxIdr: 0,
+    subtotalIdr: 777_000,
+    ingest: null,
+  });
+
+  // Kind 2: only AUTO_JOURNAL_VOID_UNSUPPORTED rows count.
+  await seedParked(
+    tenantId,
+    outletA,
+    T.voidA1,
+    "AUTO_JOURNAL_VOID_UNSUPPORTED",
+    orderForVoid.ulid,
+  );
+  await seedParked(
+    tenantId,
+    outletA,
+    T.voidA2,
+    "AUTO_JOURNAL_VOID_UNSUPPORTED",
+    createUlid(),
+  );
+  await seedParked(
+    tenantId,
+    outletA,
+    stamp("12", 5, 3),
+    "AUTO_JOURNAL_PAYLOAD_INVALID",
+    createUlid(),
+  );
+  // The order belongs to another tenant: it must not be found, amount null.
+  await seedParked(
+    tenantId,
+    outletA,
+    T.voidA3,
+    "AUTO_JOURNAL_VOID_UNSUPPORTED",
+    otherOrder.ulid,
+  );
+  await seedParked(
+    tenantId,
+    outletB,
+    T.voidB,
+    "AUTO_JOURNAL_VOID_UNSUPPORTED",
+    createUlid(),
+  );
+  await seedParked(
+    other.tenant,
+    other.outlet,
+    stamp("12", 7, 1),
+    "AUTO_JOURNAL_VOID_UNSUPPORTED",
+    otherOrder.ulid,
+  );
+
+  // Kind 3: receipt skips.
+  await seedSkip(tenantId, outletA, orderForVoid.uuid, T.skipA1);
+  await seedSkip(tenantId, outletA, randomUUID(), T.skipA2);
+  await seedSkip(tenantId, outletB, randomUUID(), T.skipB);
+  await seedSkip(
+    other.tenant,
+    other.outlet,
+    otherOrder.uuid,
+    stamp("13", 7, 1),
+  );
+
+  // Kind 4: dead letters.
+  const nodeA = await seedNode(tenantId, outletA);
+  const nodeB = await seedNode(tenantId, outletB);
+  const nodeOther = await seedNode(other.tenant, other.outlet);
+  await seedDeadLetter(tenantId, outletA, nodeA, T.deadA);
+  await seedDeadLetter(tenantId, outletB, nodeB, T.deadB);
+  await seedDeadLetter(
+    other.tenant,
+    other.outlet,
+    nodeOther,
+    stamp("14", 7, 1),
+  );
+
+  // Truncation boundary: 501 rows are cut to 500, exactly 500 are not.
+  await seedManySkips(outletMany, 501, "2026-03-20T00:00:00Z");
+  await seedManySkips(outletExact, 500, "2026-03-20T00:00:00Z");
+
+  seeded.taxA1 = taxA1;
+  seeded.taxA2 = taxA2;
+  seeded.taxB1 = taxB1;
+  seeded.taxOther = taxOther;
+  seeded.orderForVoid = orderForVoid;
+  seeded.otherOrder = otherOrder;
+  seeded.unsnapshottedUuids = [taxA1.uuid, taxA2.uuid, taxB1.uuid];
+  seeded.excludedUuids = [
+    withSnapshot.uuid,
+    zeroTax.uuid,
+    refused.uuid,
+    notEdge.uuid,
+  ];
+}, 120_000);
+
+afterAll(async () => {
+  // Orders, ingests, parked events and dead letters are append-only evidence,
+  // so they stay in the disposable DB.
+  await owner.end();
+});
+
+// ---- tests --------------------------------------------------------------
+
+describe("finance-exceptions: access", () => {
+  it("answers 401 without a session", async () => {
+    const response = await request(host).get(PATH).query(MARCH);
+    expect(response.status).toBe(401);
+  });
+
+  it("answers 403 to a signed-in user without accounting.journal.view", async () => {
+    for (const user of [nobody, cashier]) {
+      const response = await get(user.cookie, MARCH);
+      expect(response.status).toBe(403);
+      expect(JSON.stringify(response.body)).not.toContain("edge_");
+    }
+  });
+
+  it("a finance user of tenant A sees nothing when asking as another tenant", async () => {
+    const response = await get(finance.cookie, MARCH, other.tenant);
+    expect(response.status).toBe(403);
+  });
+});
+
+describe("finance-exceptions: validation", () => {
+  it("requires both from and to", async () => {
+    expect((await get(finance.cookie, { from: MARCH.from })).status).toBe(400);
+    expect((await get(finance.cookie, { to: MARCH.to })).status).toBe(400);
+    expect((await get(finance.cookie, {})).status).toBe(400);
+  });
+
+  it("refuses a malformed date, from after to, a span over 92 days and an unknown kind", async () => {
+    expect(
+      (await get(finance.cookie, { from: "10-03-2026", to: MARCH.to })).status,
+    ).toBe(400);
+    expect(
+      (await get(finance.cookie, { from: "2026-03-31", to: "2026-03-01" }))
+        .status,
+    ).toBe(400);
+    expect(
+      (await get(finance.cookie, { from: "2026-01-01", to: "2026-04-05" }))
+        .status,
+    ).toBe(400);
+    expect(
+      (await get(finance.cookie, { ...MARCH, kind: "bukan_jenis" })).status,
+    ).toBe(400);
+  });
+
+  it("refuses an outletId that is not a UUID", async () => {
+    expect(
+      (await get(finance.cookie, { ...MARCH, outletId: "outlet-1" })).status,
+    ).toBe(400);
+  });
+});
+
+describe("finance-exceptions: empty state", () => {
+  it("returns empty arrays and truncated false when nothing matches", async () => {
+    const payload = await fetchList(finance.cookie, {
+      from: "2026-01-05",
+      to: "2026-01-06",
+      outletId: outletEmpty,
+    });
+    expect(payload.items).toEqual([]);
+    expect(payload.summary.every((row) => row.count === 0)).toBe(true);
+    expect(payload.truncated).toBe(false);
+  });
+
+  it("an outlet with no exceptions in a busy window is empty too", async () => {
+    const payload = await fetchList(finance.cookie, {
+      ...MARCH,
+      outletId: outletEmpty,
+    });
+    expect(payload.items).toEqual([]);
+    expect(payload.truncated).toBe(false);
+  });
+});
+
+describe("finance-exceptions: each kind lists its rows exactly once", () => {
+  let payload: Payload;
+  beforeAll(async () => {
+    payload = await fetchList(finance.cookie, { ...MARCH, outletId: outletA });
+  });
+
+  it("edge_tax_unsnapshotted: edge orders with tax and no snapshot, valued at the order tax", async () => {
+    const items = itemsOfKind(payload, "edge_tax_unsnapshotted");
+    expect(instants(items)).toEqual([T.a1, T.a2].sort());
+    const byOrder = new Map(items.map((item) => [item.refId, item]));
+    expect(byOrder.get(seeded.taxA1.uuid)?.amountIdr).toBe(11_000);
+    expect(byOrder.get(seeded.taxA2.uuid)?.amountIdr).toBe(3_000);
+    // Old rows have no tax_flag: no detail.
+    for (const item of items) expect(item.detail).toBeNull();
+    for (const excluded of seeded.excludedUuids)
+      expect(items.map((item) => item.refId)).not.toContain(excluded);
+    expect(summaryOf(payload, "edge_tax_unsnapshotted")).toEqual({
+      count: 2,
+      amountIdr: 14_000,
+    });
+  });
+
+  it("edge_void_unsupported: only the unsupported-void parked rows, valued at the order total (null when the order is not found)", async () => {
+    const items = itemsOfKind(payload, "edge_void_unsupported");
+    expect(instants(items)).toEqual([T.voidA1, T.voidA2, T.voidA3].sort());
+    const at = (instant: string) =>
+      items.find((item) => new Date(item.occurredAt).toISOString() === instant);
+    expect(at(T.voidA1)?.amountIdr).toBe(seeded.orderForVoid.totalIdr);
+    expect(at(T.voidA2)?.amountIdr).toBeNull();
+    // The order id belongs to another tenant: not found here, so null.
+    expect(at(T.voidA3)?.amountIdr).toBeNull();
+    expect(summaryOf(payload, "edge_void_unsupported")).toEqual({
+      count: 3,
+      amountIdr: seeded.orderForVoid.totalIdr,
+    });
+  });
+
+  it("edge_receipt_skipped: amount is the order total when the order exists, else null", async () => {
+    const items = itemsOfKind(payload, "edge_receipt_skipped");
+    expect(instants(items)).toEqual([T.skipA1, T.skipA2].sort());
+    const at = (instant: string) =>
+      items.find((item) => new Date(item.occurredAt).toISOString() === instant);
+    expect(at(T.skipA1)?.amountIdr).toBe(seeded.orderForVoid.totalIdr);
+    expect(at(T.skipA2)?.amountIdr).toBeNull();
+    expect(summaryOf(payload, "edge_receipt_skipped")).toEqual({
+      count: 2,
+      amountIdr: seeded.orderForVoid.totalIdr,
+    });
+  });
+
+  it("edge_link_dead_letter: listed with a null amount", async () => {
+    const items = itemsOfKind(payload, "edge_link_dead_letter");
+    expect(instants(items)).toEqual([T.deadA]);
+    expect(items[0]!.amountIdr).toBeNull();
+    expect(summaryOf(payload, "edge_link_dead_letter")).toEqual({
+      count: 1,
+      amountIdr: 0,
+    });
+  });
+
+  it("every item carries only the documented fields, in this outlet, ordered by occurredAt descending", async () => {
+    expect(payload.items.length).toBe(2 + 3 + 2 + 1);
+    for (const item of payload.items) {
+      expect(Object.keys(item).sort()).toEqual(
+        [
+          "amountIdr",
+          "detail",
+          "kind",
+          "occurredAt",
+          "outletId",
+          "refId",
+          "refType",
+        ].sort(),
+      );
+      expect(item.outletId).toBe(outletA);
+      expect(item.refType.length).toBeGreaterThan(0);
+      expect(item.refId.length).toBeGreaterThan(0);
+    }
+    const times = payload.items.map((item) =>
+      new Date(item.occurredAt).getTime(),
+    );
+    expect(times).toEqual([...times].sort((a, b) => b - a));
+    const keys = payload.items.map(
+      (item) => `${item.kind}|${item.refType}|${item.refId}`,
+    );
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("returns no raw payload or personal data", async () => {
+    expect(JSON.stringify(payload)).not.toContain(SECRET);
+  });
+
+  it("a tax-flag detail (tax_missing / tax_mismatch) is passed through as the item detail", async () => {
+    const outlet = await newOutlet("Pengecualian Flag");
+    const missing = await seedOrder({
+      tenant: tenantId,
+      outlet,
+      at: stamp("15", 5, 1),
+      taxIdr: 1_500,
+      ingest: "ingested",
+    });
+    const mismatch = await seedOrder({
+      tenant: tenantId,
+      outlet,
+      at: stamp("15", 5, 2),
+      taxIdr: 2_500,
+      ingest: "ingested",
+    });
+    await asTenant(tenantId, async (client) => {
+      for (const [uuid, flag] of [
+        [missing.uuid, "tax_missing"],
+        [mismatch.uuid, "tax_mismatch"],
+      ] as const)
+        await client.query(
+          "UPDATE edge_order_ingests SET tax_flag = $3 WHERE tenant_id = $1 AND order_id = $2",
+          [tenantId, uuid, flag],
+        );
+    });
+    const flagged = await fetchList(finance.cookie, {
+      ...MARCH,
+      outletId: outlet,
+      kind: "edge_tax_unsnapshotted",
+    });
+    const detailOf = (uuid: string) =>
+      flagged.items.find((item) => item.refId === uuid)?.detail;
+    expect(detailOf(missing.uuid)).toBe("tax_missing");
+    expect(detailOf(mismatch.uuid)).toBe("tax_mismatch");
+  });
+});
+
+describe("finance-exceptions: tenant-wide view and summary", () => {
+  it("without an outlet filter both outlets appear once each; summary equals the full counts", async () => {
+    // Window ends before the 20th: the bulk skips seeded for the truncation
+    // tests (1001 rows on that day) would otherwise fill the 500-item cap.
+    const payload = await fetchList(finance.cookie, {
+      from: "2026-03-01",
+      to: "2026-03-19",
+    });
+    const mine = payload.items.filter(
+      (item) => item.outletId === outletA || item.outletId === outletB,
+    );
+    expect(mine.length).toBe(8 + 4);
+    const keys = payload.items.map(
+      (item) => `${item.kind}|${item.refType}|${item.refId}`,
+    );
+    expect(new Set(keys).size).toBe(keys.length);
+    // The other tenant's rows are never present, whatever the window.
+    expect(payload.items.some((item) => item.outletId === other.outlet)).toBe(
+      false,
+    );
+    expect(payload.items.map((item) => item.refId)).not.toContain(
+      seeded.taxOther.uuid,
+    );
+    expect(
+      summaryOf(payload, "edge_tax_unsnapshotted").count,
+    ).toBeGreaterThanOrEqual(3);
+    expect(
+      summaryOf(payload, "edge_tax_unsnapshotted").amountIdr,
+    ).toBeGreaterThanOrEqual(16_000);
+  });
+
+  it("the other tenant's amounts never leak into tenant A's summary", async () => {
+    const payload = await fetchList(finance.cookie, {
+      ...MARCH,
+      kind: "edge_tax_unsnapshotted",
+    });
+    // 99_000 is the other tenant's order tax; tenant A's total is far lower.
+    expect(payload.items.map((item) => item.amountIdr)).not.toContain(99_000);
+    expect(payload.items.map((item) => item.outletId)).not.toContain(
+      other.outlet,
+    );
+  });
+
+  it("asking for another tenant's outlet returns nothing", async () => {
+    const payload = await fetchList(finance.cookie, {
+      ...MARCH,
+      outletId: other.outlet,
+    });
+    expect(payload.items).toEqual([]);
+    expect(payload.summary.every((row) => row.count === 0)).toBe(true);
+  });
+});
+
+describe("finance-exceptions: filters", () => {
+  it("kind keeps one kind in items and in the summary", async () => {
+    for (const kind of KINDS.slice(0, 4)) {
+      const payload = await fetchList(finance.cookie, {
+        ...MARCH,
+        outletId: outletA,
+        kind,
+      });
+      expect(payload.items.length).toBeGreaterThan(0);
+      expect(payload.items.every((item) => item.kind === kind)).toBe(true);
+      expect(
+        payload.summary.filter((row) => row.count > 0).map((row) => row.kind),
+      ).toEqual([kind]);
+    }
+  });
+
+  it("outletId keeps that outlet only, and the two outlets partition the rows", async () => {
+    const a = await fetchList(finance.cookie, { ...MARCH, outletId: outletA });
+    const b = await fetchList(finance.cookie, { ...MARCH, outletId: outletB });
+    expect(a.items.every((item) => item.outletId === outletA)).toBe(true);
+    expect(b.items.every((item) => item.outletId === outletB)).toBe(true);
+    expect(a.items.length).toBe(8);
+    expect(b.items.length).toBe(4);
+    expect(summaryOf(b, "edge_tax_unsnapshotted")).toEqual({
+      count: 1,
+      amountIdr: 2_000,
+    });
+    expect(summaryOf(b, "edge_void_unsupported")).toEqual({
+      count: 1,
+      amountIdr: 0,
+    });
+    expect(summaryOf(b, "edge_receipt_skipped")).toEqual({
+      count: 1,
+      amountIdr: 0,
+    });
+    expect(summaryOf(b, "edge_link_dead_letter")).toEqual({
+      count: 1,
+      amountIdr: 0,
+    });
+  });
+
+  it("from and to are inclusive business dates and filter every kind", async () => {
+    const onlySkips = await fetchList(finance.cookie, {
+      from: "2026-03-13",
+      to: "2026-03-13",
+      outletId: outletA,
+    });
+    expect(onlySkips.items.map((item) => item.kind)).toEqual([
+      "edge_receipt_skipped",
+      "edge_receipt_skipped",
+    ]);
+    expect(summaryOf(onlySkips, "edge_receipt_skipped").count).toBe(2);
+    expect(summaryOf(onlySkips, "edge_tax_unsnapshotted").count).toBe(0);
+
+    const fromTenth = await fetchList(finance.cookie, {
+      from: "2026-03-10",
+      to: "2026-03-12",
+      outletId: outletA,
+    });
+    expect(new Set(fromTenth.items.map((item) => item.kind))).toEqual(
+      new Set(["edge_tax_unsnapshotted", "edge_void_unsupported"]),
+    );
+    expect(fromTenth.items.length).toBe(2 + 3);
+
+    const quiet = await fetchList(finance.cookie, {
+      from: "2026-03-15",
+      to: "2026-03-19",
+      outletId: outletA,
+    });
+    expect(quiet.items).toEqual([]);
+  });
+
+  it("a parked event is dated by its last failure, not its first", async () => {
+    // first_failed_at is 2026-02-20 for every parked row; the last failure is in March.
+    const february = await fetchList(finance.cookie, {
+      from: "2026-02-15",
+      to: "2026-02-25",
+      outletId: outletA,
+      kind: "edge_void_unsupported",
+    });
+    expect(february.items).toEqual([]);
+  });
+});
+
+describe("finance-exceptions: truncation", () => {
+  const day = { from: "2026-03-20", to: "2026-03-20" };
+
+  it("501 rows: items are cut to the newest 500, truncated is true, summary counts all 501", async () => {
+    const payload = await fetchList(finance.cookie, {
+      ...day,
+      outletId: outletMany,
+    });
+    expect(payload.items.length).toBe(500);
+    expect(payload.truncated).toBe(true);
+    expect(summaryOf(payload, "edge_receipt_skipped").count).toBe(501);
+    const times = payload.items.map((item) =>
+      new Date(item.occurredAt).getTime(),
+    );
+    expect(times).toEqual([...times].sort((a, b) => b - a));
+    // The oldest row (minute 0) is the one that was cut.
+    const oldest = new Date("2026-03-20T00:00:00Z").getTime();
+    expect(Math.min(...times)).toBeGreaterThan(oldest);
+    expect(Math.max(...times)).toBe(oldest + 500 * 60_000);
+  });
+
+  it("exactly 500 rows: nothing is cut and truncated is false", async () => {
+    const payload = await fetchList(finance.cookie, {
+      ...day,
+      outletId: outletExact,
+    });
+    expect(payload.items.length).toBe(500);
+    expect(payload.truncated).toBe(false);
+    expect(summaryOf(payload, "edge_receipt_skipped").count).toBe(500);
+  });
+
+  it("a small result is not truncated", async () => {
+    const payload = await fetchList(finance.cookie, {
+      ...MARCH,
+      outletId: outletB,
+    });
+    expect(payload.truncated).toBe(false);
+  });
+});
+
+describe("finance-exceptions: outlet scope", () => {
+  it("an outlet-scoped caller sees only its outlet", async () => {
+    const payload = await fetchList(scoped.cookie, MARCH);
+    expect(payload.items.length).toBeGreaterThan(0);
+    expect(payload.items.every((item) => item.outletId === outletB)).toBe(true);
+    expect(payload.items.length).toBe(4);
+    expect(summaryOf(payload, "edge_tax_unsnapshotted")).toEqual({
+      count: 1,
+      amountIdr: 2_000,
+    });
+    expect(payload.items.map((item) => item.refId)).not.toContain(
+      seeded.taxA1.uuid,
+    );
+  });
+
+  it("asking for an outlet outside the scope shows nothing", async () => {
+    const payload = await fetchList(scoped.cookie, {
+      ...MARCH,
+      outletId: outletA,
+    });
+    expect(payload.items).toEqual([]);
+    expect(payload.summary.every((row) => row.count === 0)).toBe(true);
+    expect(payload.truncated).toBe(false);
+  });
+
+  it("summary of a scoped caller is computed over its outlets only", async () => {
+    const payload = await fetchList(scoped.cookie, {
+      ...MARCH,
+      kind: "edge_receipt_skipped",
+    });
+    expect(summaryOf(payload, "edge_receipt_skipped").count).toBe(1);
+  });
+});
+
+describe("finance-exceptions: payout_fee_not_posted", () => {
+  const BUDI_NET = 4_250_000;
+  const SITI_NET = 3_100_500;
+  const ANDI_NET = 5_000_001;
+  const FEE_TOTAL = 3 * 5_000;
+  const slips = () => [
+    bank(BUDI, BUDI_NET),
+    bank(SITI, SITI_NET),
+    bank(ANDI, ANDI_NET),
+  ];
+  const MAPPING_WHERE = `tenant_id = $1 AND legal_entity_id = $2 AND role = 'bank_charges'`;
+
+  async function exportedRun() {
+    const list = slips();
+    const runId = await W.seedRun(list);
+    await W.postLockedJournal(runId, list);
+    const batchId = await W.exportedBatch(runId);
+    const items = (await W.itemsOf(batchId)).filter(
+      (item) => item.status === "exported",
+    );
+    return { batchId, items };
+  }
+
+  /** Removes the bank_charges mapping; returns the function that puts it back. */
+  async function breakMapping() {
+    const [mapping] = await W.rowsOf(
+      `SELECT account_id FROM account_mappings WHERE ${MAPPING_WHERE}`,
+      [W.tenantId, W.entityId()],
+    );
+    expect(mapping, "premise: the fixture maps bank charges").toBeDefined();
+    await W.asTenant(
+      (c) =>
+        c.query(`DELETE FROM account_mappings WHERE ${MAPPING_WHERE}`, [
+          W.tenantId,
+          W.entityId(),
+        ]),
+      true,
+    );
+    return () =>
+      W.asTenant(
+        (c) =>
+          c.query(
+            `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+             VALUES ($1, $2, 'bank_charges', $3)`,
+            [W.tenantId, W.entityId(), mapping!.account_id],
+          ),
+        true,
+      );
+  }
+
+  it("lists a settled batch whose fee was skipped, once, valued at the fee; a batch with the fee posted is not listed", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const window = { from: addDays(today, -2), to: addDays(today, 2) };
+    const query = { ...window, kind: "payout_fee_not_posted" };
+    const before = await fetchList(finance.cookie, query);
+    const scopedBefore = await fetchList(scoped.cookie, query);
+
+    const posted = await exportedRun();
+    await W.confirm(
+      posted.batchId,
+      W.succeedItems(posted.batchId, posted.items),
+    );
+    const skipped = await exportedRun();
+    const restore = await breakMapping();
+    try {
+      await W.confirm(
+        skipped.batchId,
+        W.succeedItems(skipped.batchId, skipped.items),
+      );
+    } finally {
+      await restore();
+    }
+    const [skippedPosting] = await W.postingsOf(skipped.batchId);
+    expect(skippedPosting!.fee_posted, "premise").toBe(false);
+
+    const after = await fetchList(finance.cookie, query);
+    const mine = after.items.filter((item) => item.detail === skipped.batchId);
+    expect(mine.length).toBe(1);
+    expect(mine[0]!.kind).toBe("payout_fee_not_posted");
+    expect(mine[0]!.amountIdr).toBe(FEE_TOTAL);
+    expect(after.items.map((item) => item.detail)).not.toContain(
+      posted.batchId,
+    );
+    expect(after.truncated).toBe(false);
+    expect(summaryOf(after, "payout_fee_not_posted").count).toBe(
+      summaryOf(before, "payout_fee_not_posted").count + 1,
+    );
+    expect(summaryOf(after, "payout_fee_not_posted").amountIdr).toBe(
+      summaryOf(before, "payout_fee_not_posted").amountIdr + FEE_TOTAL,
+    );
+
+    // No amount of money or bank data beyond the fee leaks into the row.
+    expect(JSON.stringify(mine[0])).not.toContain(String(BUDI_NET));
+
+    // Without a kind filter the payout kind is part of the mixed list.
+    const mixed = await fetchList(finance.cookie, window);
+    expect(mixed.items.some((item) => item.detail === skipped.batchId)).toBe(
+      true,
+    );
+
+    // The posting has no outlet: an outletId filter leaves it out ...
+    const forOutlet = await fetchList(finance.cookie, {
+      ...query,
+      outletId: outletA,
+    });
+    expect(forOutlet.items.map((item) => item.detail)).not.toContain(
+      skipped.batchId,
+    );
+
+    // ... and a caller limited to an outlet does not see tenant-wide rows.
+    const scopedAfter = await fetchList(scoped.cookie, query);
+    expect(scopedAfter.items.map((item) => item.detail)).not.toContain(
+      skipped.batchId,
+    );
+    expect(summaryOf(scopedAfter, "payout_fee_not_posted")).toEqual(
+      summaryOf(scopedBefore, "payout_fee_not_posted"),
+    );
+
+    // Outside its date the row is not listed.
+    const lastYear = await fetchList(finance.cookie, {
+      from: "2025-03-01",
+      to: "2025-03-31",
+      kind: "payout_fee_not_posted",
+    });
+    expect(lastYear.items.map((item) => item.detail)).not.toContain(
+      skipped.batchId,
+    );
+  }, 120_000);
+});
