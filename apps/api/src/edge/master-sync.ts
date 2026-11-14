@@ -736,30 +736,37 @@ export async function syncEdgeMasters(
   const claims = parseEdgeCredential(config.credential);
   if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
   guardMasterImport();
-  let counts: EdgeMasterSyncCounts | undefined;
-  let version: EdgeMasterSnapshot["version"] | undefined;
-  let brandCount = 0;
-  for await (const snapshot of fetchVerifiedMasterSnapshotPages(
-    config,
-    options,
-  )) {
-    if (version === undefined) {
-      version = snapshot.version;
-      markEdgeMasterSnapshotPending(config);
+  try {
+    let counts: EdgeMasterSyncCounts | undefined;
+    let version: EdgeMasterSnapshot["version"] | undefined;
+    let brandCount = 0;
+    for await (const snapshot of fetchVerifiedMasterSnapshotPages(
+      config,
+      options,
+    )) {
+      if (version === undefined) {
+        version = snapshot.version;
+        markEdgeMasterSnapshotPending(config);
+      }
+      const pageCounts = await applyEdgeMasterSnapshot(
+        claims,
+        snapshot,
+        database,
+      );
+      // The outlet's own brand repeats on every page to preserve scope checks.
+      brandCount += pageCounts.brands - (counts === undefined ? 0 : 1);
+      counts = pageCounts;
     }
-    const pageCounts = await applyEdgeMasterSnapshot(
-      claims,
-      snapshot,
-      database,
-    );
-    // The outlet's own brand repeats on every page to preserve scope checks.
-    brandCount += pageCounts.brands - (counts === undefined ? 0 : 1);
-    counts = pageCounts;
+    if (counts === undefined || version === undefined)
+      throw new EdgeMasterSyncError("BAD_SNAPSHOT");
+    await recordAppliedMasterSnapshotVersion(config, version, database);
+    return { ...counts, brands: brandCount };
+  } catch (error) {
+    // A failed master refresh must not stop the outlet's catalog. Downgrade
+    // until a complete v2 sync can rewind recipes and widen the catalog again.
+    masterCapabilities.set(config, { version: null, pending: false });
+    throw error;
   }
-  if (counts === undefined || version === undefined)
-    throw new EdgeMasterSyncError("BAD_SNAPSHOT");
-  await recordAppliedMasterSnapshotVersion(config, version, database);
-  return { ...counts, brands: brandCount };
 }
 
 /** A catalog stream stopped early (legend-24318); code only, never record data. */

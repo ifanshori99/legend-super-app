@@ -11,8 +11,17 @@ import {
   it,
   vi,
 } from "vitest";
-import { brandIdSchema } from "@starter/shared/core";
+import {
+  brandIdSchema,
+  outletIdSchema,
+  tenantIdSchema,
+} from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import { edgeMasterSnapshotResponseSchema } from "@starter/shared/edge/master-sync";
+import { uomIdSchema } from "@starter/shared/inventory";
 import { createApp } from "../app.ts";
 import { db, pool } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -20,11 +29,25 @@ import { parseEdgeRuntimeConfig } from "../edge/config.ts";
 import { bootstrapEdgeNodeIfNeeded } from "../edge/bootstrap.ts";
 import { parseEdgeCredential } from "../edge/credential.ts";
 import {
+  startCatalogGate,
+  type CatalogGateHandle,
+} from "../edge/catalog-gate.ts";
+import { CRITICAL_CATALOG_STREAMS } from "../edge/catalog-freshness.ts";
+import {
+  assertCatalogSalesAllowed,
+  getSalesGateState,
+  installSalesGateProvider,
+  setSalesGateEdgeModeForTests,
+} from "../edge/sales-gate.ts";
+import {
   startEdgeMasterSyncLoop,
   syncEdgeMasters,
 } from "../edge/master-sync.ts";
 import { provisionStandardChart } from "../services/accounting-provisioning.service.ts";
-import { edgeBootstrapSignatureMatches } from "../services/edge-bootstrap.service.ts";
+import {
+  edgeBootstrapSignatureMatches,
+  signEdgeBootstrapBundle,
+} from "../services/edge-bootstrap.service.ts";
 import {
   registerEdgeNode,
   verifyEdgeNodeCredential,
@@ -53,6 +76,8 @@ let small: Fixture;
 let large: Fixture;
 let foreignBrand: string;
 const edges: EdgeDatabase[] = [];
+const gates: CatalogGateHandle[] = [];
+const DAY = 24 * 60 * 60_000;
 
 async function seed(count: number, recipeBrandOverride?: string) {
   const world = await createWorld();
@@ -228,6 +253,7 @@ async function runRounds(
   via: ReturnType<typeof proxy>,
   rounds = 2,
 ) {
+  const initialRounds = via.rounds();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   const worker = startEdgeMasterSyncLoop({
     database: edge.database,
@@ -237,12 +263,17 @@ async function runRounds(
     options: { fetchImpl: via.fetchImpl },
   });
   try {
-    for (let expected = 1; expected <= rounds; expected++) {
+    for (
+      let expected = initialRounds + 1;
+      expected <= initialRounds + rounds;
+      expected++
+    ) {
       // Last-page HTTP completion precedes its commit and the loop becoming
       // idle. Retry interval ticks until an idle loop accepts the next one.
       await vi.waitFor(
         async () => {
-          await vi.advanceTimersByTimeAsync(60_000);
+          if (via.rounds() < expected)
+            await vi.advanceTimersByTimeAsync(60_000);
           expect(via.rounds()).toBeGreaterThanOrEqual(expected);
         },
         { timeout: 15_000, interval: 30 },
@@ -254,6 +285,107 @@ async function runRounds(
   }
 }
 
+function hasErrorCode(error: unknown, code: string) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === code
+  );
+}
+
+async function salesRig(f: Fixture, edge: EdgeDatabase) {
+  const startedAt = new Date("2026-11-15T00:00:00.000Z");
+  let elapsed = 0;
+  const wall = () => new Date(startedAt.getTime() + elapsed);
+  const context = establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(f.world.tenantId),
+      brandId: null,
+      source: "device",
+    }),
+    { kind: "outlets", outletIds: [outletIdSchema.parse(f.world.outletA)] },
+  );
+  const gate = await startCatalogGate({
+    context,
+    scope: {
+      tenantId: f.world.tenantId,
+      outletId: f.world.outletA,
+      edgeNodeId: f.nodeId,
+    },
+    database: edge.database,
+    overrides: { load: async () => null, close: async () => undefined },
+    seed: async (freshness) => {
+      for (const stream of CRITICAL_CATALOG_STREAMS)
+        freshness.seedLastSuccess(stream, startedAt);
+    },
+    persistMs: 10 * DAY,
+    wall,
+    mono: () => 10_000 + elapsed,
+  });
+  gates.push(gate);
+  setSalesGateEdgeModeForTests(() => true);
+  expect(getSalesGateState().blocked).toBe(false);
+  return {
+    gate,
+    wall,
+    advance: (ms: number) => {
+      elapsed += ms;
+    },
+  };
+}
+
+async function failedMasterRound(
+  f: Fixture,
+  edge: EdgeDatabase,
+  via: ReturnType<typeof proxy>,
+  fetchImpl: typeof fetch,
+  gate: CatalogGateHandle,
+) {
+  const failures: unknown[] = [];
+  const finished = () =>
+    CRITICAL_CATALOG_STREAMS.every(
+      (stream) =>
+        gate.freshness.snapshot().streams[stream]?.lastSuccessAt?.getTime() ===
+        gate.clock.now().getTime(),
+    ) || failures.some((error) => hasErrorCode(error, "MASTERS_INCOMPLETE"));
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const worker = startEdgeMasterSyncLoop({
+    database: edge.database,
+    config: f.config,
+    intervalMs: 60_000,
+    catalogOnStart: false,
+    options: { fetchImpl },
+    catalog: { freshness: gate.freshness },
+    onError: (error) => failures.push(error),
+  });
+  try {
+    await vi.waitFor(
+      async () => {
+        if (!finished()) await vi.advanceTimersByTimeAsync(60_000);
+        expect(finished()).toBe(true);
+      },
+      { timeout: 20_000, interval: 30 },
+    );
+  } finally {
+    await worker.stop();
+    vi.useRealTimers();
+  }
+  return failures;
+}
+
+function expectFreshSales(rig: Awaited<ReturnType<typeof salesRig>>) {
+  for (const stream of CRITICAL_CATALOG_STREAMS) {
+    expect
+      .soft(rig.gate.freshness.snapshot().streams[stream]?.lastSuccessAt)
+      .toEqual(rig.wall());
+  }
+  expect
+    .soft(getSalesGateState())
+    .toMatchObject({ blocked: false, stale24h: false });
+  expect.soft(() => assertCatalogSalesAllowed()).not.toThrow();
+}
+
 beforeAll(async () => {
   setEdgeCredentialVerifier(verifyEdgeNodeCredential);
   small = await seed(2);
@@ -261,6 +393,9 @@ beforeAll(async () => {
   foreignBrand = (await createWorld()).brandId;
 }, 240_000);
 afterEach(async () => {
+  for (const gate of gates.splice(0)) await gate.stop();
+  setSalesGateEdgeModeForTests(null);
+  installSalesGateProvider(null);
   for (const edge of edges.splice(0)) await edge.cleanup();
 });
 afterAll(async () => {
@@ -559,9 +694,20 @@ describe("#818 P1-2 master/catalog capability pairing", () => {
     ).toEqual([{ recipe_id: large.crossRecipe }]);
   }, 90_000);
 
-  it("retains non-brand masters when a later page fails, blocks catalog cursors, and recovers on retry", async () => {
-    const edge = await makeEdge(large);
-    const via = proxy(large, "strip-header");
+  it("#834 a failed later master page keeps catalog v2 and sales available, then widens on recovery", async () => {
+    const f = await seed(201, "ffffffff-ffff-4fff-bfff-fffffffffffc");
+    await owner.query("UPDATE menu_items SET recipe_id=$2 WHERE id=$1", [
+      f.item,
+      f.ownRecipe,
+    ]);
+    await owner.query("UPDATE item_variants SET recipe_id=$2 WHERE id=$1", [
+      f.variant,
+      f.ownRecipe,
+    ]);
+    await settleCloud(owner);
+    const edge = await makeEdge(f);
+    const via = proxy(f, "strip-header");
+    const rig = await salesRig(f, edge);
     let continuationAttempts = 0;
     const failing: typeof fetch = (input, init) => {
       const url = new URL(
@@ -580,7 +726,7 @@ describe("#818 P1-2 master/catalog capability pairing", () => {
       return via.fetchImpl(input, init);
     };
     await expect(
-      syncEdgeMasters(large.config, { fetchImpl: failing }, edge.database),
+      syncEdgeMasters(f.config, { fetchImpl: failing }, edge.database),
     ).rejects.toThrow();
     expect(continuationAttempts).toBeGreaterThan(0);
     expect((await edge.rows("SELECT id FROM uoms")).length).toBeGreaterThan(0);
@@ -589,47 +735,111 @@ describe("#818 P1-2 master/catalog capability pairing", () => {
     ).toBeGreaterThan(0);
     expect(
       await edge.rows("SELECT id FROM brands WHERE tenant_id=$1", [
-        large.world.tenantId,
+        f.world.tenantId,
       ]),
     ).toHaveLength(200);
-    const failures: unknown[] = [];
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    const worker = startEdgeMasterSyncLoop({
-      database: edge.database,
-      config: large.config,
-      intervalMs: 60_000,
-      catalogOnStart: false,
-      options: { fetchImpl: failing },
-      onError: (error) => failures.push(error),
-    });
-    try {
-      await vi.advanceTimersByTimeAsync(60_000);
-      await vi.waitFor(() => expect(failures.length).toBeGreaterThan(0), {
-        timeout: 15_000,
-      });
-    } finally {
-      await worker.stop();
-      vi.useRealTimers();
-    }
-    expect(via.catalogVersions).toEqual([]);
+    rig.advance(DAY + 1);
+    await failedMasterRound(f, edge, via, failing, rig.gate);
+    expect.soft(via.catalogVersions.length).toBeGreaterThan(0);
+    expect
+      .soft(via.catalogVersions.every((version) => version === 2))
+      .toBe(true);
+    expectFreshSales(rig);
+    expect(
+      await edge.rows("SELECT id FROM recipes WHERE id=$1", [f.crossRecipe]),
+    ).toEqual([]);
+    expect(
+      await edge.rows("SELECT recipe_id FROM menu_items WHERE id=$1", [f.item]),
+    ).toEqual([{ recipe_id: f.ownRecipe }]);
     expect(
       await edge.rows(
-        "SELECT watermark FROM edge_pull_checkpoints WHERE edge_node_id=$1 AND stream='catalog:recipes'",
-        [large.nodeId],
+        "SELECT watermark FROM edge_pull_checkpoints WHERE edge_node_id=$1 AND stream='catalog:recipes' AND watermark IS NOT NULL",
+        [f.nodeId],
       ),
-    ).toEqual([]);
-    await runRounds(large, edge, via);
+    ).toHaveLength(1);
+    await owner.query("UPDATE menu_items SET recipe_id=$2 WHERE id=$1", [
+      f.item,
+      f.crossRecipe,
+    ]);
+    await owner.query("UPDATE item_variants SET recipe_id=$2 WHERE id=$1", [
+      f.variant,
+      f.crossRecipe,
+    ]);
+    await settleCloud(owner);
+    via.catalogVersions.splice(0);
+    await runRounds(f, edge, via);
+    expect(via.catalogVersions.every((version) => version === 3)).toBe(true);
     expect(
       await edge.rows("SELECT id FROM brands WHERE tenant_id=$1", [
-        large.world.tenantId,
+        f.world.tenantId,
       ]),
     ).toHaveLength(201);
     expect(
-      await edge.rows("SELECT id FROM recipes WHERE id=$1", [
-        large.crossRecipe,
-      ]),
+      await edge.rows("SELECT id FROM recipes WHERE id=$1", [f.crossRecipe]),
     ).toHaveLength(1);
+    expect(
+      await edge.rows("SELECT recipe_id FROM menu_items WHERE id=$1", [f.item]),
+    ).toEqual([{ recipe_id: f.crossRecipe }]);
+    expect(
+      await edge.rows("SELECT recipe_id FROM item_variants WHERE id=$1", [
+        f.variant,
+      ]),
+    ).toEqual([{ recipe_id: f.crossRecipe }]);
   }, 90_000);
+
+  it("#834 repeated LOCAL_CONFLICT after a prior v2 success downgrades to catalog v2 without aging sales closed", async () => {
+    const f = await seed(2, "ffffffff-ffff-4fff-bfff-fffffffffffb");
+    const edge = await makeEdge(f);
+    const via = proxy(f, "strip-header");
+    await runRounds(f, edge, via, 1);
+    expect(via.catalogVersions).toContain(3);
+    via.catalogVersions.splice(0);
+    const rig = await salesRig(f, edge);
+    const claims = parseEdgeCredential(f.credential);
+    if (!claims) throw new Error("Missing fixture credential");
+    const conflicting: typeof fetch = async (input, init) => {
+      const response = await via.fetchImpl(input, init);
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url,
+      );
+      if (url.pathname !== MASTERS || !response.ok) return response;
+      const body = edgeMasterSnapshotResponseSchema.parse(
+        await response.json(),
+      );
+      const firstUom = body.snapshot.uoms[0];
+      if (!firstUom) throw new Error("Missing fixture UOM");
+      firstUom.id = uomIdSchema.parse(randomUUID());
+      return Response.json({
+        snapshot: body.snapshot,
+        signature: signEdgeBootstrapBundle(body.snapshot, claims.hash),
+      });
+    };
+    const failures: unknown[] = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      rig.advance(DAY / 2);
+      failures.push(
+        ...(await failedMasterRound(f, edge, via, conflicting, rig.gate)),
+      );
+    }
+    expect(
+      failures.filter((error) => hasErrorCode(error, "LOCAL_CONFLICT")),
+    ).toHaveLength(3);
+    expect.soft(via.catalogVersions.length).toBeGreaterThan(0);
+    expect
+      .soft(via.catalogVersions.every((version) => version === 2))
+      .toBe(true);
+    expectFreshSales(rig);
+    expect(
+      await edge.rows("SELECT recipe_id FROM menu_items WHERE id=$1", [f.item]),
+    ).toEqual([{ recipe_id: f.crossRecipe }]);
+    via.catalogVersions.splice(0);
+    await runRounds(f, edge, via, 1);
+    expect(via.catalogVersions).toContain(3);
+  }, 120_000);
 
   it("verifies the signed continuation cursor before following it", async () => {
     const isolated = await seed(201, randomUUID());
