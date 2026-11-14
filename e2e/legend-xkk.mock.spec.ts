@@ -40,12 +40,6 @@ async function captureBoth(
   await captureScreenshot(page, `legend-xkk/${name}-1440.png`, options);
 }
 
-/** A 1×1 PNG: the photo field only needs a real image file to preview. */
-const PNG_1X1 = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
-  "base64",
-);
-
 test("INV-05 penerimaan menampilkan QC dan hanya jumlah lolos yang masuk stok", async ({
   page,
 }) => {
@@ -104,6 +98,19 @@ test("INV-05 form penerimaan menolak jumlah di atas sisa PO lalu menyimpan", asy
   ).toBeVisible();
 
   await received.fill("1");
+  await page
+    .locator('input[type="file"]')
+    .setInputFiles("apps/web/demo/sample/menu/croissant-mentega.jpg");
+  const photo = page.getByRole("img", { name: /Pratinjau foto/ });
+  await expect(photo).toBeVisible();
+  await expect(photo).toHaveAttribute("src", /^blob:/);
+  await expect(submitted).toBeEnabled();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await photo.scrollIntoViewIfNeeded();
+  await captureScreenshot(page, "legend-uaoli/receiving-uploaded-390.png");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await photo.scrollIntoViewIfNeeded();
+  await captureScreenshot(page, "legend-uaoli/receiving-uploaded-1280.png");
   await submitted.click();
   await expect(page).toHaveURL(/\/kelola\/pengadaan\/penerimaan$/);
   // Inline notice plus a toast carry the same sentence; either is proof.
@@ -149,7 +156,9 @@ test("INV-05 3-way match menampilkan selisih per baris sebelum dicatat", async (
   const note = dialog.getByLabel("Catatan match");
   await note.fill("Harga cup naik dan qty menyusul penerimaan berikutnya.");
   await dialog.getByRole("button", { name: "Jalankan match" }).click();
-  await expect(page.getByText("Hasil 3-way match dicatat.")).toBeVisible();
+  await expect(
+    page.getByText("Hasil 3-way match dicatat.", { exact: true }),
+  ).toBeVisible();
 });
 
 test("F18 pembayaran supplier memakai approver lain dan pembelian kecil dibatasi policy", async ({
@@ -204,12 +213,16 @@ test("F18 pembayaran supplier memakai approver lain dan pembelian kecil dibatasi
   await form
     .getByLabel("Deskripsi belanja")
     .fill("Daun pandan dan jeruk nipis");
-  await form.locator('input[type="file"]').setInputFiles({
-    name: "nota.png",
-    mimeType: "image/png",
-    buffer: PNG_1X1,
-  });
+  await form
+    .locator('input[type="file"]')
+    .setInputFiles("apps/web/demo/sample/menu/croissant-mentega.jpg");
   await expect(form.getByRole("img", { name: /Pratinjau foto/ })).toBeVisible();
+  await expect(
+    form.getByRole("img", { name: /Pratinjau foto/ }),
+  ).toHaveAttribute("src", /^blob:/);
+  await expect(
+    form.getByRole("button", { name: "Simpan pembelian" }),
+  ).toBeEnabled();
   await captureBoth(page, "petty-form");
   await form.getByRole("button", { name: "Simpan pembelian" }).click();
   await expect(page.getByText("Pembelian kecil tersimpan.")).toBeVisible();

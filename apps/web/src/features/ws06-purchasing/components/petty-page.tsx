@@ -4,9 +4,8 @@
 // is blocked both in the form and by the server code
 // `PETTY_PURCHASE_LIMIT_EXCEEDED`.
 //
-// The contract has no category column and no photo upload endpoint: the
-// description carries the purpose, and the picked photo stays a data URL in
-// local state while only a media id is sent (reported storage gap).
+// The description carries the purpose. Photo evidence is uploaded before the
+// purchase can be recorded; only the storage object's server id is submitted.
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { Wallet } from "lucide-react";
@@ -29,7 +28,6 @@ import {
 import { EmptyState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
-import { MediaPlate } from "@/components/ui/media-plate";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -46,10 +44,11 @@ import { ApiError } from "@/lib/api/errors";
 import type { BusinessDate, Idr } from "@starter/shared/core";
 import { useOutlets } from "@/features/ws07-accounting/hooks";
 import { usePettyCashFunds } from "@/features/ws07-cash-bank/hooks";
-import { PhotoField } from "../../ws06-inventory/components/photo-field.tsx";
+import { normalizeImageFile, uploadStorageFile } from "@/features/storage/api";
 import {
-  WASTE_PHOTO_MAX_BYTES,
-  WASTE_PHOTO_TYPES,
+  PhotoField,
+  StoragePhoto,
+  photoUploadErrorKey,
 } from "../../ws06-inventory/components/photo-field.tsx";
 import {
   useAttemptKey,
@@ -66,9 +65,6 @@ import {
   todayBusinessDate,
 } from "../receiving-lib.ts";
 import { ReceivingOfflineNote } from "./receiving-offline-note.tsx";
-import { newIdempotencyKey } from "../../../lib/idempotency.ts";
-
-type PhotoDraft = { previewUrl: string; mediaId: string };
 
 function PettyFormDialog({
   limitIdr,
@@ -90,8 +86,11 @@ function PettyFormDialog({
   const [description, setDescription] = React.useState("");
   const [amount, setAmount] = React.useState("");
   const [note, setNote] = React.useState("");
-  const [photo, setPhoto] = React.useState<PhotoDraft | null>(null);
+  const [photoMediaId, setPhotoMediaId] = React.useState<string | null>(null);
+  const [uploading, setUploading] = React.useState(false);
   const [photoError, setPhotoError] = React.useState<string | undefined>();
+  const [selectedPhoto, setSelectedPhoto] = React.useState<File | null>(null);
+  const uploadController = React.useRef<AbortController | null>(null);
   const [vendorError, setVendorError] = React.useState<string | undefined>();
   const [descriptionError, setDescriptionError] = React.useState<
     string | undefined
@@ -100,32 +99,50 @@ function PettyFormDialog({
   const [formError, setFormError] = React.useState<string | undefined>();
   const paidAtRef = React.useRef<string | null>(null);
 
+  React.useEffect(() => () => uploadController.current?.abort(), []);
+
   const parsedAmount = amountFromInput(amount);
   const overLimit =
     limitIdr !== null && parsedAmount !== null && parsedAmount > limitIdr;
 
-  function selectPhoto(file: File) {
+  async function selectPhoto(file: File) {
+    if (!outlet || createPurchase.isPending) return;
+    uploadController.current?.abort();
+    const controller = new AbortController();
+    uploadController.current = controller;
+    setSelectedPhoto(file);
+    setPhotoMediaId(null);
     setPhotoError(undefined);
-    if (!WASTE_PHOTO_TYPES.includes(file.type)) {
-      setPhotoError(t("inventoryReceiving.receiving.form.photoInvalid"));
-      return;
+    setUploading(true);
+    try {
+      const object = await uploadStorageFile({
+        purpose: "receipt",
+        sourceKind: "petty_purchase",
+        outletId: outlet.id,
+        file: await normalizeImageFile(file),
+        signal: controller.signal,
+      });
+      if (!controller.signal.aborted) setPhotoMediaId(object.id);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setPhotoError(t(photoUploadErrorKey(error)));
+      }
+    } finally {
+      if (!controller.signal.aborted) setUploading(false);
     }
-    if (file.size > WASTE_PHOTO_MAX_BYTES) {
-      setPhotoError(t("inventoryReceiving.receiving.form.photoTooLarge"));
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result !== "string") return;
-      setPhoto({ previewUrl: reader.result, mediaId: newIdempotencyKey() });
-    };
-    reader.onerror = () =>
-      setPhotoError(t("inventoryReceiving.receiving.form.photoInvalid"));
-    reader.readAsDataURL(file);
+  }
+
+  function clearPhoto() {
+    uploadController.current?.abort();
+    uploadController.current = null;
+    setSelectedPhoto(null);
+    setPhotoMediaId(null);
+    setPhotoError(undefined);
+    setUploading(false);
   }
 
   function submit() {
-    if (!outlet) return;
+    if (!outlet || uploading || createPurchase.isPending || photoError) return;
     let invalid = false;
     setVendorError(undefined);
     setDescriptionError(undefined);
@@ -157,12 +174,12 @@ function PettyFormDialog({
       );
       invalid = true;
     }
-    if (!photo) {
+    if (!photoMediaId) {
       setPhotoError(t("inventoryReceiving.petty.errorPhoto"));
       invalid = true;
     }
     if (invalid) return;
-    if (!photo || parsedAmount === null || today === null) return;
+    if (!photoMediaId || parsedAmount === null || today === null) return;
     // One paid-at per attempt: a retry must send the same payload to reuse the
     // idempotency key instead of booking the spend twice.
     paidAtRef.current ??= new Date().toISOString();
@@ -171,7 +188,7 @@ function PettyFormDialog({
       vendorName: vendor.trim(),
       description: description.trim(),
       amountIdr: parsedAmount,
-      photoMediaId: photo.mediaId,
+      photoMediaId,
       paidAt: paidAtRef.current,
       businessDate: today,
       note: note.trim() === "" ? null : note.trim(),
@@ -239,13 +256,17 @@ function PettyFormDialog({
           <PhotoField
             label={t("inventoryReceiving.petty.photoSection")}
             hint={t("inventoryReceiving.petty.photoHint")}
-            previewUrl={photo?.previewUrl ?? null}
+            mediaId={photoMediaId}
+            isUploading={uploading}
+            disabled={createPurchase.isPending}
             error={photoError}
-            onSelect={selectPhoto}
-            onClear={() => {
-              setPhoto(null);
-              setPhotoError(undefined);
-            }}
+            onSelect={(file) => void selectPhoto(file)}
+            onClear={clearPhoto}
+            onRetry={
+              photoError && selectedPhoto
+                ? () => void selectPhoto(selectedPhoto)
+                : undefined
+            }
           />
           <FormField
             label={t("inventoryReceiving.petty.vendorName")}
@@ -320,7 +341,13 @@ function PettyFormDialog({
               type="button"
               onClick={submit}
               loading={createPurchase.isPending}
-              disabled={overLimit || limitIdr === null}
+              disabled={
+                overLimit ||
+                limitIdr === null ||
+                uploading ||
+                Boolean(photoError) ||
+                createPurchase.isPending
+              }
             >
               <Wallet aria-hidden="true" />
               {t("inventoryReceiving.petty.submit")}
@@ -521,11 +548,10 @@ function PettyContent({ canCreate }: { canCreate: boolean }) {
                     <Money amount={purchase.amountIdr} />
                   </TableCell>
                   <TableCell>
-                    <MediaPlate
+                    <StoragePhoto
+                      mediaId={purchase.photoMediaId}
                       alt={purchase.description}
-                      ratio="card"
-                      missing="quiet"
-                      className="w-10 rounded-md"
+                      className="h-10 w-10 rounded-md"
                     />
                   </TableCell>
                   <TableCell>

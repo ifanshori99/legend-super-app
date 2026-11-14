@@ -1,7 +1,6 @@
 // WS-06 stock opname and waste (bead legend-fzx · PRD v1.7 §3 F16, §4 Alur J,
 // INV-03). Runs against the mock-mode web server (no API, no database):
 // `LEGEND_MOCK_PORT=3244 pnpm test:e2e:mock e2e/legend-fzx.mock.spec.ts`.
-import { Buffer } from "node:buffer";
 import { expect, test, type Page } from "@playwright/test";
 import { waitForHydration } from "./hydration.ts";
 
@@ -13,10 +12,6 @@ test.skip(
   "Mock runner not started: use pnpm test:e2e:mock (playwright.mock.config.ts).",
 );
 test.use({ baseURL });
-
-/** 1×1 transparent PNG, enough for the photo-evidence preview. */
-const ONE_PIXEL_PNG =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 /** Clicks a button that opens a dialog, retrying a lost pre-hydration click. */
 async function openDialog(page: Page, name: string) {
@@ -157,12 +152,17 @@ test("INV-03 waste log records reason, rupiah loss and the optional photo", asyn
   await dialog.locator("#waste-reason").click();
   await page.getByRole("option", { name: "Kedaluwarsa" }).click();
 
-  await dialog.locator('input[type="file"]').setInputFiles({
-    name: "bukti-waste.png",
-    mimeType: "image/png",
-    buffer: Buffer.from(ONE_PIXEL_PNG, "base64"),
-  });
-  await expect(dialog.getByAltText("Pratinjau foto bukti waste")).toBeVisible();
+  await dialog
+    .locator('input[type="file"]')
+    .setInputFiles("apps/web/demo/sample/menu/croissant-mentega.jpg");
+  await expect(dialog.getByAltText("Pratinjau foto bukti")).toBeVisible();
+  await expect(dialog.getByAltText("Pratinjau foto bukti")).toHaveAttribute(
+    "src",
+    /^blob:/,
+  );
+  await expect(
+    dialog.getByRole("button", { name: "Simpan catatan" }),
+  ).toBeEnabled();
 
   await dialog.getByRole("button", { name: "Simpan catatan" }).click();
   await expect(

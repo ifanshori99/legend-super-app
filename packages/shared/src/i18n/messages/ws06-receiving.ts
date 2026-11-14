@@ -123,7 +123,7 @@ export const inventoryReceivingMessages = {
       note: "Catatan penerimaan",
       photoSection: "Foto bukti penerimaan",
       photoHint:
-        "Opsional. JPEG, PNG, atau WebP maksimal 5 MB, misalnya foto surat jalan atau barang yang ditolak.",
+        "Opsional. Pilih foto surat jalan atau barang yang ditolak dari kamera atau galeri. Foto diperkecil sebelum diunggah.",
       photoInvalid: "Berkas harus berupa gambar JPEG, PNG, atau WebP.",
       photoTooLarge: "Foto lebih dari 5 MB. Pilih berkas yang lebih kecil.",
       summary: "Ringkasan penerimaan",
@@ -329,7 +329,7 @@ export const inventoryReceivingMessages = {
       "Catat belanja tunai. Foto bukti wajib dan nominal tidak boleh melebihi batas per transaksi.",
     photoSection: "Foto bukti belanja",
     photoHint:
-      "Wajib. JPEG, PNG, atau WebP maksimal 5 MB sebagai bukti belanja.",
+      "Wajib. Pilih foto bukti belanja dari kamera atau galeri. Foto diperkecil sebelum diunggah.",
     vendorName: "Vendor / pasar",
     vendorHint: "Nama toko atau pasar tempat belanja.",
     description: "Deskripsi belanja",

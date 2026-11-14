@@ -57,6 +57,7 @@ import {
   useUoms,
 } from "../hooks.ts";
 import { ReceivingOfflineNote } from "./receiving-offline-note.tsx";
+import { StoragePhoto } from "../../ws06-inventory/components/photo-field.tsx";
 
 function PoStatusPill({ value }: { value: PurchaseOrderStatus }) {
   const t = useT();
@@ -128,6 +129,17 @@ function ReceiptDetailDialog({
                 </p>
               </div>
             </div>
+            {body.receipt.mediaIds.length > 0 && (
+              <div className="flex flex-wrap gap-3">
+                {body.receipt.mediaIds.map((mediaId) => (
+                  <StoragePhoto
+                    key={mediaId}
+                    mediaId={mediaId}
+                    alt={t("inventoryReceiving.receiving.form.photoSection")}
+                  />
+                ))}
+              </div>
+            )}
             <div className="overflow-x-auto rounded-container border">
               <Table>
                 <TableHeader>
