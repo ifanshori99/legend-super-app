@@ -648,8 +648,24 @@ export function installPayoutWorld(label: string) {
     const id = await createBatch(runId, channel);
     await inTx((tx) => submitDisbursementBatch(tx, actorOf(REQ), id));
     const hash = (await batchById(id)).content_hash as string;
+    // The account the approver saw (legend-3j9yz): the source configured NOW
+    // for manual_bank (tests may switch it mid-flow), null otherwise.
+    const sourceBankAccountId =
+      channel === "manual_bank"
+        ? (((
+            await rowsOf(
+              `SELECT manual_source_bank_account_id AS id
+                 FROM payroll_payout_configs
+                WHERE tenant_id = $1 AND legal_entity_id = $2`,
+              [tenant.id, entityId],
+            )
+          )[0]?.id as string | null | undefined) ?? null)
+        : null;
     await inTx((tx) =>
-      approveDisbursementBatch(tx, actorOf(APP), id, { contentHash: hash }),
+      approveDisbursementBatch(tx, actorOf(APP), id, {
+        contentHash: hash,
+        sourceBankAccountId,
+      } as never),
     );
     return id;
   }

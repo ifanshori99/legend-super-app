@@ -267,10 +267,17 @@ describe("approve and export refuse an inactive source account", () => {
     const batchId = await W.createBatch(runId);
     await W.inTx((tx) => submitDisbursementBatch(tx, actorOf(REQ), batchId));
     const hash = (await W.batchById(batchId)).content_hash as string;
+    const [config] = await W.rowsOf(
+      `SELECT manual_source_bank_account_id AS id FROM payroll_payout_configs
+        WHERE tenant_id = $1 AND legal_entity_id = $2`,
+      [W.tenantId, W.entityId()],
+    );
+    const sourceBankAccountId = config!.id as string;
     const approve = () =>
       W.inTx((tx) =>
         approveDisbursementBatch(tx, actorOf(APP), batchId, {
           contentHash: hash,
+          sourceBankAccountId,
         }),
       );
     const restore = await deactivateSource();

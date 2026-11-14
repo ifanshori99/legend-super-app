@@ -43,6 +43,7 @@ export function ApprovalSummary({
   fundsIdr,
   methodLabel,
   sourceLabel,
+  sourceNote,
   feePerTransferIdr,
   checked,
   onCheckedChange,
@@ -60,6 +61,8 @@ export function ApprovalSummary({
   methodLabel: string;
   /** Null for channels without a source account line (Duitku, cash). */
   sourceLabel: string | null;
+  /** Under the list: whether the source account is already frozen or not yet. */
+  sourceNote?: string | null;
   feePerTransferIdr: number | undefined;
   checked: boolean;
   onCheckedChange: (value: boolean) => void;
@@ -113,6 +116,14 @@ export function ApprovalSummary({
           <Money amount={fundsIdr} size="sm" />
         </Row>
       </dl>
+      {sourceLabel !== null && sourceNote && (
+        <p
+          data-testid="approval-source-note"
+          className="text-sm text-muted-foreground"
+        >
+          {sourceNote}
+        </p>
+      )}
       <p className="text-sm text-muted-foreground">
         {feePerTransferIdr === undefined
           ? t("payrollPayoutReview.approval.summary.feeNoteGeneric")

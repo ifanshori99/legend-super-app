@@ -278,8 +278,12 @@ async function paidBatchCreatedBy(creator: Approver) {
     submitDisbursementBatch(tx, actorOf(creator.userId), batchId),
   );
   const hash = (await W.batchById(batchId)).content_hash as string;
+  const sourceBankAccountId = await currentSourceBank();
   await W.inTx((tx) =>
-    approveDisbursementBatch(tx, actorOf(APP), batchId, { contentHash: hash }),
+    approveDisbursementBatch(tx, actorOf(APP), batchId, {
+      contentHash: hash,
+      sourceBankAccountId,
+    }),
   );
   await W.inTx((tx) => exportManualBatch(tx, actorOf(APP), batchId));
   const items = (await W.itemsOf(batchId)).filter(
@@ -330,10 +334,12 @@ describe("approve and export are refused without the accounting setup (8codi)", 
       const batchId = await W.createBatch(runId);
       await W.inTx((tx) => submitDisbursementBatch(tx, actorOf(REQ), batchId));
       const hash = (await W.batchById(batchId)).content_hash as string;
+      const sourceBankAccountId = await currentSourceBank();
       const approve = () =>
         W.inTx((tx) =>
           approveDisbursementBatch(tx, actorOf(APP), batchId, {
             contentHash: hash,
+            sourceBankAccountId,
           }),
         );
 

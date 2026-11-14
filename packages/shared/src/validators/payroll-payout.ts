@@ -118,8 +118,11 @@ export const createDisbursementBatchInputSchema = z.strictObject({
   channel: payoutChannelSchema,
 });
 
+// `sourceBankAccountId` is the account the approver saw (legend-3j9yz); the key
+// is required, null for a batch that is not manual_bank.
 export const approveDisbursementBatchInputSchema = z.strictObject({
   contentHash: payoutContentHashSchema,
+  sourceBankAccountId: z.uuid().nullable(),
 });
 
 export const cancelDisbursementBatchInputSchema = z.strictObject({

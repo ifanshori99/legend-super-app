@@ -560,10 +560,12 @@ describe("T3: the bank charges mapping needs an active, postable account (l1a7p)
       const batchId = await W.createBatch(runId);
       await W.inTx((tx) => submitDisbursementBatch(tx, actorOf(REQ), batchId));
       const hash = (await W.batchById(batchId)).content_hash as string;
+      const sourceBankAccountId = await currentSourceBank();
       const approve = () =>
         W.inTx((tx) =>
           approveDisbursementBatch(tx, actorOf(APP), batchId, {
             contentHash: hash,
+            sourceBankAccountId,
           }),
         );
       const restore = await breakIt();
@@ -731,10 +733,12 @@ describe("Architect findings on the frozen source", () => {
       const batchId = await W.createBatch(runId);
       await W.inTx((tx) => submitDisbursementBatch(tx, actorOf(REQ), batchId));
       const hash = (await W.batchById(batchId)).content_hash as string;
+      const sourceBankAccountId = await currentSourceBank();
       const approve = () =>
         W.inTx((tx) =>
           approveDisbursementBatch(tx, actorOf(APP), batchId, {
             contentHash: hash,
+            sourceBankAccountId,
           }),
         );
       const restoreApprove = await breakGlAccount("1103", how);

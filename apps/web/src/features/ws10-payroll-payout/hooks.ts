@@ -59,11 +59,25 @@ export function usePayoutLegalEntities() {
   return useQuery(legalEntitiesQuery());
 }
 
-/** `data` is null until the PT has saved a config. */
-export function usePayoutConfig(legalEntityId: string | undefined) {
+/**
+ * `data` is null until the PT has saved a config. `fresh` never trusts the
+ * cache: the screen refetches on open and on window focus, because a person is
+ * about to approve what they see (the source account is frozen at approval).
+ */
+export function usePayoutConfig(
+  legalEntityId: string | undefined,
+  options: { fresh?: boolean } = {},
+) {
   return useQuery({
     ...configQuery(legalEntityId ?? ""),
     enabled: Boolean(legalEntityId),
+    ...(options.fresh
+      ? {
+          staleTime: 0,
+          refetchOnMount: "always" as const,
+          refetchOnWindowFocus: "always" as const,
+        }
+      : {}),
   });
 }
 
@@ -288,7 +302,12 @@ export function useSubmitBatch() {
   });
 }
 
-/** `mutate({ batchId, contentHash })`; the server demands MFA and a second person. */
+/**
+ * `mutate({ batchId, contentHash, sourceBankAccountId })`: the source account
+ * the person saw (null for a batch without one); the server refuses with 409
+ * PAYOUT_SOURCE_MISMATCH when it would freeze another. It also demands MFA and a
+ * second person.
+ */
 export function useApproveBatch() {
   const refresh = useRefreshPayout();
   return useMutation({
@@ -356,16 +375,17 @@ export function useResolveBatch() {
 }
 
 /**
- * `mutate({ batchId, file })`: stores a resolve/return proof and answers its
- * `evidenceKey`. Changes no batch, so nothing is refreshed.
+ * `mutate({ batchId, file, password? })`: stores a resolve/return proof and
+ * answers its `evidenceKey`. Changes no batch, so nothing is refreshed.
  */
 export function useUploadPayoutEvidence() {
   return useMutation<
     PayrollPayoutEvidenceUploadDto,
     Error,
-    { batchId: string; file: File }
+    { batchId: string; file: File; password?: string }
   >({
-    mutationFn: ({ batchId, file }) => api.uploadPayoutEvidence(batchId, file),
+    mutationFn: ({ batchId, file, password }) =>
+      api.uploadPayoutEvidence(batchId, file, password),
   });
 }
 

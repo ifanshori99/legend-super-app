@@ -288,6 +288,7 @@ function batch(
     totalIdr: items.reduce((sum, row) => sum + row.amountIdr, 0),
     bankFormat: "generic_csv",
     exportChecksumSha256: null,
+    sourceBankAccountId: null,
     exportedBy: null,
     exportedAt: null,
     cancelledBy: null,
@@ -372,6 +373,8 @@ function seedBatches(): PayrollDisbursementBatchDto[] {
       exportedBy: userIds.hrApprover,
       exportedAt: "2026-10-30T04:30:00.000Z",
       exportChecksumSha256: "a".repeat(64),
+      // Frozen when it was approved.
+      sourceBankAccountId: ACCOUNTS[0].id,
     }),
   ];
 }
@@ -775,6 +778,16 @@ registerMock(approveDisbursementBatch, ({ params, body }) => {
   const source = ACCOUNTS.find(
     (row) => row.id === state().config.manualSourceBankAccountId,
   );
+  // The approver's screen must show the account the server will freeze.
+  if (
+    current.channel === "manual_bank" &&
+    body.sourceBankAccountId !== source?.id
+  )
+    throw refuse(
+      409,
+      "PAYOUT_SOURCE_MISMATCH",
+      "Rekening sumber berubah sejak layar dibuka. Muat ulang lalu periksa lagi.",
+    );
   if (current.channel === "manual_bank" && !source?.active)
     throw refuse(
       422,
@@ -787,6 +800,8 @@ registerMock(approveDisbursementBatch, ({ params, body }) => {
       status: "approved",
       approvedBy: currentActor(),
       approvedAt: new Date().toISOString(),
+      sourceBankAccountId:
+        current.channel === "manual_bank" ? (source?.id ?? null) : null,
       items: current.items.map((row) => ({
         ...row,
         status: "approved" as const,
@@ -967,6 +982,10 @@ registerMock(listResolutionProposals, ({ params }) => {
           evidenceKey: proposal.evidenceKey,
           note: proposal.note,
           proposedBy: proposal.by,
+          // Same tenant only: a person without a name here reads as null.
+          proposedByName:
+            PEOPLE.find((person) => person.userId === proposal.by)?.name ??
+            null,
           proposedAt: proposal.at,
         },
       ];

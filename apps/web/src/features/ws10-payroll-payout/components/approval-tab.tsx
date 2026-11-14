@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
+import { ApiError } from "@/lib/api/errors";
 import { formatDateTime } from "../../ws10-payroll-run/lib";
 import { payoutErrorMessage } from "../errors";
 import {
@@ -28,6 +29,7 @@ import {
   isPayableItem,
   lacksAccountSnapshot,
 } from "./approval-items";
+import { CancelBatchButton, canCancelStatus } from "./approval-cancel";
 import { ApprovalSteps } from "./approval-steps";
 import { ApprovalSummary } from "./approval-summary";
 import { VerifyPanel, useStepUp } from "./approval-verify";
@@ -97,13 +99,43 @@ function ApprovalBatch({
   // Settings and source accounts belong to the batch's own PT, which may not
   // be the PT selected on the page.
   const batchEntityId = query.data?.legalEntityId;
-  const config = usePayoutConfig(batchEntityId).data;
+  // Never from the cache: the person approves the account shown here, and the
+  // server freezes the one in the settings at that moment.
+  const configQuery = usePayoutConfig(batchEntityId, { fresh: true });
+  const config = configQuery.data;
   const accounts = usePayoutSourceAccounts(batchEntityId).data ?? [];
   const approve = useApproveBatch();
   const userNames = usePayoutUserNames();
   const stepUp = useStepUp();
   const [checked, setChecked] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // Frozen at approval (from the batch); until then the settings' account,
+  // which is the one that will be frozen.
+  const manualBank = query.data?.channel === "manual_bank";
+  const frozenSourceId = manualBank
+    ? (query.data?.sourceBankAccountId ?? null)
+    : null;
+  const sourceId = manualBank
+    ? (frozenSourceId ?? config?.manualSourceBankAccountId ?? null)
+    : null;
+  // The account the person confirmed when ticking the check. Only this id is
+  // ever sent, also on the retry after step-up (MFA).
+  const confirmedSourceRef = React.useRef<string | null | undefined>(undefined);
+  const resetStepUp = stepUp.reset;
+  React.useEffect(() => {
+    const confirmed = confirmedSourceRef.current;
+    if (confirmed === undefined || confirmed === sourceId) return;
+    // The account on screen moved after it was confirmed: ask for a new check.
+    confirmedSourceRef.current = undefined;
+    setChecked(false);
+    resetStepUp();
+    setError(t("payrollPayoutReview.approval.sourceChanged"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceId]);
+  const onCheckedChange = (value: boolean) => {
+    confirmedSourceRef.current = value ? sourceId : undefined;
+    setChecked(value);
+  };
 
   if (query.isPending) return <ApprovalSkeleton />;
   if (query.isError || !query.data) {
@@ -125,12 +157,23 @@ function ApprovalBatch({
   const pendingApproval = batch.status === "pending_approval";
 
   const source =
-    batch.channel === "manual_bank"
-      ? accounts.find(
-          (account) => account.id === config?.manualSourceBankAccountId,
-        )
-      : undefined;
-  const sourceInactive = source !== undefined && !source.active;
+    sourceId === null
+      ? undefined
+      : accounts.find((account) => account.id === sourceId);
+  const sourceInactive =
+    pendingApproval && source !== undefined && !source.active;
+  // Asking for approval of a source the person cannot see (or that is still
+  // being re-read) would approve blind.
+  const sourceChecking =
+    pendingApproval && manualBank && !frozenSourceId && configQuery.isFetching;
+  const sourceUnknown = pendingApproval && manualBank && source === undefined;
+  const sourceNote = !manualBank
+    ? null
+    : frozenSourceId
+      ? t("payrollPayoutReview.approval.summary.sourceFrozenNote")
+      : pendingApproval && source
+        ? t("payrollPayoutReview.approval.summary.sourceWillFreezeNote")
+        : null;
   const sourceLabel =
     batch.channel === "manual_bank"
       ? source
@@ -145,6 +188,10 @@ function ApprovalBatch({
     blockKey = "payrollPayoutReview.approval.blocked.noSnapshot";
   else if (isCreator)
     blockKey = "payrollPayoutReview.approval.blocked.selfApproval";
+  else if (sourceChecking)
+    blockKey = "payrollPayoutReview.approval.blocked.sourceChecking";
+  else if (sourceUnknown)
+    blockKey = "payrollPayoutReview.approval.blocked.sourceUnknown";
   else if (sourceInactive)
     blockKey = "payrollPayoutReview.approval.blocked.sourceInactive";
   else if (!pendingApproval)
@@ -156,12 +203,26 @@ function ApprovalBatch({
 
   const submit = () => {
     if (!batch.contentHash || approve.isPending || noSnapshotCount > 0) return;
+    // A re-read in flight is not a reason to drop a verified retry: the server
+    // compares the id and refuses a stale one.
+    if (sourceUnknown) {
+      setError(t("payrollPayoutReview.approval.blocked.sourceUnknown"));
+      return;
+    }
+    // Only the account the person confirmed, never the one on screen now.
+    const confirmedSourceId = confirmedSourceRef.current;
+    if (confirmedSourceId === undefined) return;
     setError(null);
     approve.mutate(
-      { batchId: batch.id, contentHash: batch.contentHash },
+      {
+        batchId: batch.id,
+        contentHash: batch.contentHash,
+        sourceBankAccountId: confirmedSourceId,
+      },
       {
         onSuccess: () => {
           stepUp.reset();
+          confirmedSourceRef.current = undefined;
           setChecked(false);
           toast({
             title: t("payrollPayoutReview.approval.success"),
@@ -170,6 +231,17 @@ function ApprovalBatch({
         },
         onError: (failure) => {
           if (stepUp.capture(failure)) return;
+          if (
+            failure instanceof ApiError &&
+            failure.code === "PAYOUT_SOURCE_MISMATCH"
+          ) {
+            // The settings moved: read them again and ask for a new check.
+            stepUp.reset();
+            confirmedSourceRef.current = undefined;
+            setChecked(false);
+            void configQuery.refetch();
+            void query.refetch();
+          }
           setError(payoutErrorMessage(failure, t));
         },
       },
@@ -257,9 +329,10 @@ function ApprovalBatch({
           fundsIdr={batchFundsNeeded(batch)}
           methodLabel={t(`payrollPayoutReview.channel.${batch.channel}`)}
           sourceLabel={sourceLabel}
+          sourceNote={sourceNote}
           feePerTransferIdr={config?.feePerTransferIdr}
           checked={checked}
-          onCheckedChange={setChecked}
+          onCheckedChange={onCheckedChange}
           blockKey={blockKey}
           blockParams={{ count: noSnapshotCount }}
           busy={approve.isPending && !stepUp.active}
@@ -279,6 +352,11 @@ function ApprovalBatch({
               }}
             />
           )}
+          {noSnapshotCount > 0 &&
+            access.canRequest &&
+            canCancelStatus(batch.status) && (
+              <CancelBatchButton batchId={batch.id} />
+            )}
           {error && !stepUp.active && (
             <p
               role="alert"

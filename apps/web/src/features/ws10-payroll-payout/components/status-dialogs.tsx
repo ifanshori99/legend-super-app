@@ -93,10 +93,14 @@ function useProofForm(batchId: string, options: { noFile?: boolean } = {}) {
     );
     return !noFile && !noNote;
   };
-  /** Uploads the photo (once), then hands its key to `onKey`. */
+  /**
+   * Uploads the photo (once), then hands its key to `onKey`. The upload runs
+   * the same step-up as the action, so the dialog's `password` goes along.
+   */
   const withKey = (
     onKey: (evidenceKey: string) => void,
     onFail: (failure: unknown) => void,
+    password?: string,
   ) => {
     if (!file) return;
     if (uploaded.current?.file === file) {
@@ -104,7 +108,7 @@ function useProofForm(batchId: string, options: { noFile?: boolean } = {}) {
       return;
     }
     upload.mutate(
-      { batchId, file },
+      { batchId, file, password },
       {
         onSuccess: (result) => {
           uploaded.current = { file, key: result.evidenceKey };
@@ -125,7 +129,11 @@ function useProofForm(batchId: string, options: { noFile?: boolean } = {}) {
   return {
     file,
     note,
-    setNote,
+    setNote: (value: string) => {
+      setNote(value);
+      // The reason shown under the field goes away as soon as it is fixed.
+      setNoteProblem(null);
+    },
     fileProblem,
     noteProblem,
     pick,
@@ -137,6 +145,62 @@ function useProofForm(batchId: string, options: { noFile?: boolean } = {}) {
 }
 
 type ProofForm = ReturnType<typeof useProofForm>;
+
+/**
+ * The native file input speaks the browser's language ("Choose File"), so it
+ * stays invisible: a button opens it and the chosen name is shown in
+ * Indonesian. FormField's id and aria props land on the real input.
+ */
+function EvidencePicker({
+  file,
+  disabled,
+  onPick,
+  ...inputProps
+}: Omit<React.ComponentProps<"input">, "onChange" | "type" | "value"> & {
+  file: File | null;
+  onPick: (file: File | null) => void;
+}) {
+  const t = useT();
+  const input = React.useRef<HTMLInputElement>(null);
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <input
+        {...inputProps}
+        ref={input}
+        type="file"
+        accept="image/jpeg,image/png"
+        data-testid="payout-evidence-file"
+        disabled={disabled}
+        tabIndex={-1}
+        className="sr-only"
+        onChange={(event) => {
+          onPick(event.target.files?.[0] ?? null);
+          // So choosing the same photo again after a refusal still fires.
+          event.target.value = "";
+        }}
+      />
+      <Button
+        type="button"
+        variant="outline"
+        className="min-h-11"
+        disabled={disabled}
+        onClick={() => input.current?.click()}
+      >
+        {t(
+          file
+            ? "payrollPayoutReview.result.changeFile"
+            : "payrollPayoutReview.result.pickFile",
+        )}
+      </Button>
+      <span
+        data-testid="payout-evidence-file-name"
+        className="min-w-0 text-sm break-words text-muted-foreground"
+      >
+        {file ? file.name : t("payrollPayoutReview.result.noFile")}
+      </span>
+    </div>
+  );
+}
 
 function ProofFields({
   form,
@@ -165,13 +229,10 @@ function ProofFields({
             error={form.fileProblem ?? undefined}
             required
           >
-            <Input
-              type="file"
-              accept="image/jpeg,image/png"
-              data-testid="payout-evidence-file"
+            <EvidencePicker
+              file={form.file}
               disabled={busy}
-              className="min-h-11"
-              onChange={(event) => form.pick(event.target.files?.[0] ?? null)}
+              onPick={form.pick}
             />
           </FormField>
           {form.uploading && (
@@ -227,6 +288,16 @@ function ProposalPanel({
   const t = useT();
   const open = useOpenPayoutEvidence();
   const [problem, setProblem] = React.useState<string | null>(null);
+  // The tab opened on the click, until the link arrives. Closing the dialog
+  // meanwhile would leave it blank forever (the callbacks no longer run).
+  const pendingTab = React.useRef<Window | null>(null);
+  React.useEffect(
+    () => () => {
+      pendingTab.current?.close();
+      pendingTab.current = null;
+    },
+    [],
+  );
   const outcomeKey =
     proposal.kind === "return"
       ? "payrollPayoutReview.result.proposal.outcomeReturn"
@@ -238,15 +309,18 @@ function ProposalPanel({
     if (!evidenceKey || open.isPending) return;
     setProblem(null);
     const tab = openInNewTab();
+    pendingTab.current = tab;
     open.mutate(
       { batchId, key: evidenceKey },
       {
         onSuccess: (result) => {
           const url = result.url;
+          pendingTab.current = null;
           if (tab) tab.location.href = url;
           else window.open(url, "_blank", "noopener,noreferrer");
         },
         onError: () => {
+          pendingTab.current = null;
           tab?.close();
           setProblem(t("payrollPayoutReview.result.proposal.openFailed"));
         },
@@ -268,11 +342,10 @@ function ProposalPanel({
         </DetailRow>
         <DetailRow label={t("payrollPayoutReview.result.proposal.by")}>
           <span data-testid="payout-proposal-by">
-            {t(
-              mine
-                ? "payrollPayoutReview.result.proposal.you"
-                : "payrollPayoutReview.result.proposal.other",
-            )}
+            {mine
+              ? t("payrollPayoutReview.result.proposal.you")
+              : (proposal.proposedByName ??
+                t("payrollPayoutReview.result.proposal.other"))}
           </span>
         </DetailRow>
         <DetailRow label={t("payrollPayoutReview.result.proposal.at")}>
@@ -529,7 +602,7 @@ export function ResultDialog({
       send(proposal.evidenceKey);
       return;
     }
-    proof.withKey(send, onFailure);
+    proof.withKey(send, onFailure, password);
   };
 
   const fields = (
@@ -721,7 +794,7 @@ export function ReturnDialog({
       send(proposal.evidenceKey);
       return;
     }
-    proof.withKey(send, onFailure);
+    proof.withKey(send, onFailure, password);
   };
 
   const fields = (

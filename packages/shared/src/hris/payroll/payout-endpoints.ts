@@ -88,6 +88,8 @@ export const payoutBatchSchema = z.object({
   approvedAt: instant.nullable(),
   approvalExpiresAt: instant.nullable(),
   contentHash: z.string().nullable(),
+  // The source bank account frozen at approval (null before; legend-3j9yz).
+  sourceBankAccountId: z.string().nullable(),
   itemCount: z.number().int(),
   totalIdr: idr,
   bankFormat: z.enum(PAYOUT_BANK_FORMATS).nullable(),
@@ -323,6 +325,8 @@ export const listResolutionProposals = defineEndpoint({
         evidenceKey: z.string().nullable(),
         note: z.string().nullable(),
         proposedBy: z.string(),
+        // Display name, only for a user of the same tenant (legend-eszso).
+        proposedByName: z.string().nullable(),
         proposedAt: instant,
       }),
     ),

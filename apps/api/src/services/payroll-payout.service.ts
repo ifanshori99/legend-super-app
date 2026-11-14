@@ -555,6 +555,7 @@ export function toBatchDto(
     approvedAt: iso(row.approvedAt),
     approvalExpiresAt: iso(row.approvalExpiresAt),
     contentHash: row.contentHash,
+    sourceBankAccountId: row.sourceBankAccountId,
     itemCount: row.itemCount,
     totalIdr: openBatchTotals(row).totalIdr,
     bankFormat: row.bankFormat as PayrollDisbursementBatchDto["bankFormat"],
@@ -1177,7 +1178,7 @@ export async function approveDisbursementBatch(
   tx: Tx,
   actor: PayoutActor,
   batchId: string,
-  input: { contentHash: string },
+  input: { contentHash: string; sourceBankAccountId: string | null },
 ): Promise<PayrollDisbursementBatchDto> {
   const tenantId = actor.tenantId;
   const peek = await readBatch(tx, tenantId, batchId);
@@ -1198,6 +1199,19 @@ export async function approveDisbursementBatch(
   // The bank account this batch pays from, frozen with the approval (legend-hkh57).
   let sourceBankAccountId: string | null = null;
   if (batch.channel === "manual_bank") {
+    // Hold the config row (shared lock) for this transaction so the setup
+    // check, the compare below and the freeze all see one version of the
+    // source account; a config change waits until the approval commits.
+    await tx
+      .select({ id: payrollPayoutConfigs.id })
+      .from(payrollPayoutConfigs)
+      .where(
+        and(
+          eq(payrollPayoutConfigs.tenantId, asTenant(tenantId)),
+          eq(payrollPayoutConfigs.legalEntityId, batch.legalEntityId),
+        ),
+      )
+      .for("share");
     await assertManualConfigEnabled(tx, tenantId, batch.legalEntityId);
     // Fail closed (legend-8codi): no approval while the fee or the source
     // account cannot be journaled.
@@ -1207,6 +1221,18 @@ export async function approveDisbursementBatch(
       asTenant(tenantId),
       batch.legalEntityId,
     );
+    // The approver must have seen the account that gets frozen (legend-3j9yz).
+    // A mismatch refuses before anything is written: no audit, batch stays
+    // pending_approval.
+    if (
+      sourceBankAccountId === null ||
+      input.sourceBankAccountId !== sourceBankAccountId
+    )
+      throw payoutRefuse(
+        409,
+        "PAYOUT_SOURCE_MISMATCH",
+        "Rekening sumber berubah sejak Anda membuka batch. Muat ulang lalu setujui lagi.",
+      );
   }
 
   // The approver must have seen exactly what is stored, and what is stored

@@ -13,7 +13,7 @@
 //   person is not touched again.
 // Both only read; neither moves a batch, an item or a journal.
 
-import { and, asc, eq, isNotNull, isNull, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import type { ObjectStorage } from "@starter/shared/adapters";
 import {
   assertTrustedScopedContext,
@@ -29,6 +29,7 @@ import {
   payrollDisbursementBatches,
   payrollDisbursementItems,
 } from "../db/schema/payroll-payout.ts";
+import { roleAssignments, user } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { assertEvidenceKeyForBatch } from "./payroll-payout-evidence.ts";
@@ -112,8 +113,8 @@ export async function listPayoutProposals(
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
   await assertBatchInTenant(context, batchId);
-  const rows = await withTenant(db, context, (tx) =>
-    tx
+  const { rows, names } = await withTenant(db, context, async (tx) => {
+    const rows = await tx
       .select()
       .from(payrollDisbursementItems)
       .where(
@@ -139,10 +140,38 @@ export async function listPayoutProposals(
       .orderBy(
         asc(payrollDisbursementItems.updatedAt),
         asc(payrollDisbursementItems.id),
+      );
+    // Proposer names (legend-eszso): only users with a role assignment in THIS
+    // tenant; anyone else stays null so no other tenant's user name leaks.
+    const proposerIds = [
+      ...new Set(
+        rows.map(
+          (row) =>
+            (row.status === "succeeded"
+              ? row.returnedBy
+              : row.resolvedBy) as string,
+        ),
       ),
-  );
+    ];
+    const names = new Map<string, string>();
+    if (proposerIds.length > 0) {
+      const named = await tx
+        .selectDistinct({ id: user.id, name: user.name })
+        .from(roleAssignments)
+        .innerJoin(user, eq(user.id, roleAssignments.userId))
+        .where(
+          and(
+            eq(roleAssignments.tenantId, tenantId),
+            inArray(roleAssignments.userId, proposerIds),
+          ),
+        );
+      for (const { id, name } of named) names.set(id, name);
+    }
+    return { rows, names };
+  });
   return rows.map((row): PayrollPayoutProposalDto => {
     const isReturn = row.status === "succeeded";
+    const proposedBy = (isReturn ? row.returnedBy : row.resolvedBy) as string;
     return {
       itemId: row.id,
       employeeId: row.employeeId,
@@ -150,7 +179,8 @@ export async function listPayoutProposals(
       outcome: isReturn ? null : row.resolutionOutcome,
       evidenceKey: isReturn ? row.returnEvidenceKey : row.resolutionEvidenceKey,
       note: isReturn ? row.returnNote : row.resolutionNote,
-      proposedBy: (isReturn ? row.returnedBy : row.resolvedBy) as string,
+      proposedBy,
+      proposedByName: names.get(proposedBy) ?? null,
       proposedAt: row.updatedAt.toISOString(),
     };
   });

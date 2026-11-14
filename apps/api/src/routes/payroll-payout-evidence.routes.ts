@@ -1,6 +1,7 @@
 // Upload of a resolve/return payment proof (bead legend-zoqh1), plus its read
 // path and the list of proposals waiting for a second person (legend-t58lr).
-// One multipart `file` part; the object storage and the malware scanner are required, so the
+// One multipart `file` part plus an optional `password` field (the same
+// step-up as resolve, legend-dz8g3); the object storage and the malware scanner are required, so the
 // router answers 503 before multer buffers anything when either is missing.
 // Mounted at `/api/hris/payroll` by `createStorageApiRouter`, for its own path
 // only. It changes no batch or item: the returned `evidenceKey` goes into
@@ -18,7 +19,10 @@ import {
 import { HttpError } from "../lib/http-error.ts";
 import { requireAuth } from "../middleware/auth.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
-import { requireTenantStepUpMfa } from "../middleware/identity.ts";
+import {
+  requireTenantStepUpMfa,
+  requireTenantStepUpPassword,
+} from "../middleware/identity.ts";
 import {
   getScopedTenantContext,
   requireTenantPermission,
@@ -40,6 +44,9 @@ export const PAYROLL_PAYOUT_EVIDENCE_PATH =
 const stepUp = requireTenantStepUpMfa({
   maxAgeMinutes: PAYOUT_STEP_UP_MAX_AGE_MINUTES,
 });
+// Same password gate as resolve (legend-dz8g3); reads the multipart `password`
+// field, so it runs after the upload is parsed.
+const passwordStepUp = requireTenantStepUpPassword();
 
 export function createPayrollPayoutEvidenceRouter(options: {
   storage?: ObjectStorage | null;
@@ -70,8 +77,10 @@ export function createPayrollPayoutEvidenceRouter(options: {
     limits: {
       fileSize: PAYOUT_EVIDENCE_MAX_BYTES,
       files: 1,
-      fields: 0,
-      parts: 1,
+      // One text field: `password`, for the step-up (legend-dz8g3).
+      fields: 1,
+      fieldSize: 1024,
+      parts: 2,
     },
   }).single("file");
   const parseUpload: RequestHandler = (req, res, next) => {
@@ -116,6 +125,7 @@ export function createPayrollPayoutEvidenceRouter(options: {
       next();
     },
     parseUpload,
+    passwordStepUp,
     async (req, res) => {
       const { id } = payoutBatchParamsSchema.parse(req.params);
       if (!req.file)

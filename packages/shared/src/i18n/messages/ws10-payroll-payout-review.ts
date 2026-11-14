@@ -67,6 +67,9 @@ export const payrollPayoutReviewMessages = {
       method: "Metode pembayaran",
       source: "Rekening sumber",
       sourceMissing: "Belum dipilih",
+      sourceFrozenNote: "Dikunci saat disetujui.",
+      sourceWillFreezeNote:
+        "Akan dibekukan saat disetujui. Rekening ini yang dikirim bersama persetujuan Anda.",
       fee: "Biaya PT (perkiraan)",
       total: "Total dana disiapkan",
       feeNote:
@@ -87,7 +90,10 @@ export const payrollPayoutReviewMessages = {
     },
     blocked: {
       noSnapshot:
-        "{count} karyawan transfer bank belum punya rekening tercatat di batch ini, jadi pengajuan ini tidak bisa disetujui. Hubungi tim teknis untuk membatalkan lalu mengajukan ulang.",
+        "{count} karyawan transfer bank belum punya rekening tercatat di batch ini, jadi pengajuan ini tidak bisa disetujui. Batalkan pengajuan ini, lalu ajukan ulang dari tab Siap bayar. Pembatalan perlu izin mengajukan pencairan.",
+      sourceChecking: "Memeriksa rekening sumber terbaru…",
+      sourceUnknown:
+        "Rekening sumber belum bisa dipastikan. Segarkan halaman, atau pilih rekening aktif di Pengaturan PT lalu ajukan ulang.",
       selfApproval:
         "Anda yang mengajukan pencairan ini. Penyetuju harus orang lain.",
       noPermission: "Akun Anda tidak punya izin menyetujui pencairan.",
@@ -103,12 +109,26 @@ export const payrollPayoutReviewMessages = {
       cancelled: "Pengajuan ini dibatalkan. Tidak ada uang yang dikirim.",
       other: "Pengajuan ini sudah diproses.",
     },
+    cancel: {
+      action: "Batalkan pengajuan",
+      title: "Batalkan pengajuan pencairan",
+      description:
+        "Tidak ada uang yang dikirim. Setelah dibatalkan, ajukan ulang dari tab Siap bayar.",
+      reason: "Alasan pembatalan",
+      reasonHint: "Contoh: rekening karyawan belum tercatat di batch ini.",
+      reasonRequired: "Alasan wajib diisi.",
+      submit: "Batalkan pengajuan",
+      back: "Kembali",
+      success: "Pengajuan dibatalkan. Tidak ada uang yang dikirim.",
+    },
     sourceBanner: {
       title: "Rekening sumber tidak aktif — pencairan ditolak",
       description:
         "{account} tidak dapat digunakan. Pilih rekening aktif pada pengaturan PT, lalu ajukan ulang untuk persetujuan.",
     },
     success: "Pencairan disetujui. Lanjutkan di tab Status karyawan.",
+    sourceChanged:
+      "Rekening sumber berubah saat Anda memeriksa. Tidak ada yang disetujui. Periksa rekening yang baru, lalu centang dan setujui lagi.",
   },
   verify: {
     title: "Verifikasi identitas",
@@ -236,6 +256,9 @@ export const payrollPayoutReviewMessages = {
     evidenceFileHint:
       "Foto atau screenshot bukti (JPG atau PNG, maks 5 MB). Item ini tetap tercatat diekspor sampai dua orang berbeda menandai hasil yang sama.",
     evidenceFileRequired: "Pilih berkas bukti dulu.",
+    pickFile: "Pilih foto",
+    changeFile: "Ganti foto",
+    noFile: "Belum ada foto dipilih",
     note: "Catatan",
     noteHint: "Tulis apa yang terjadi, misalnya pesan penolakan dari bank.",
     noteRequired: "Catatan wajib diisi.",
@@ -279,6 +302,8 @@ export const payrollPayoutReviewMessages = {
     },
   },
   error: {
+    sourceMismatch:
+      "Rekening sumber berubah sejak layar dibuka. Tidak ada yang disetujui. Periksa rekening sumber yang baru, lalu setujui lagi.",
     evidenceInvalid:
       "Berkas bukti tidak dikenali untuk pencairan ini. Tidak ada hasil yang dicatat.",
     evidencePhotoOnly: "Unggah foto atau screenshot bukti.",

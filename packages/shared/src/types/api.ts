@@ -112,6 +112,8 @@ export type PayrollPayoutProposalDto = {
   evidenceKey: string | null;
   note: string | null;
   proposedBy: string;
+  /** user.name, only for a user with a role assignment in this tenant; else null. */
+  proposedByName: string | null;
   proposedAt: string;
 };
 
@@ -129,6 +131,8 @@ export type PayrollDisbursementBatchDto = {
   approvedAt: string | null;
   approvalExpiresAt: string | null;
   contentHash: string | null;
+  /** Bank account frozen at approve (manual_bank); null before approve. */
+  sourceBankAccountId: string | null;
   itemCount: number;
   totalIdr: number;
   bankFormat: PayoutBankFormat | null;

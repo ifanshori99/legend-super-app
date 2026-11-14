@@ -210,10 +210,14 @@ payrollPayoutRouter.post(
   jsonBody,
   async (req, res) => {
     const { id } = payoutBatchParamsSchema.parse(req.params);
-    const { contentHash } = approveDisbursementBatchInputSchema.parse(req.body);
+    const { contentHash, sourceBankAccountId } =
+      approveDisbursementBatchInputSchema.parse(req.body);
     const { context, actor } = actorOf(req);
     const data = await withTenant(db, context, (tx) =>
-      approveDisbursementBatch(tx, actor, id, { contentHash }),
+      approveDisbursementBatch(tx, actor, id, {
+        contentHash,
+        sourceBankAccountId,
+      }),
     );
     res.json({ data });
   },

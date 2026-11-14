@@ -26,6 +26,7 @@ const CODE_KEYS: Record<string, MessageKey> = {
   PAYOUT_RUN_ALREADY_PAID: "payrollPayout.error.runAlreadyPaid",
   PAYOUT_EXPORT_FILE_LOST: "payrollPayout.error.exportFileLost",
   PAYOUT_BATCH_ALREADY_OPEN: "payrollPayout.error.batchAlreadyOpen",
+  PAYOUT_SOURCE_MISMATCH: "payrollPayoutReview.error.sourceMismatch",
   PAYOUT_EVIDENCE_REJECTED: "payrollPayoutReview.error.evidenceRejected",
   PAYOUT_RESOLVE_SAME_PERSON: "payrollPayoutReview.error.resolveSamePerson",
   PAYOUT_RESOLVE_OUTCOME_MISMATCH:

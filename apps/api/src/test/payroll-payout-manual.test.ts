@@ -532,10 +532,16 @@ async function createBatch(runId: string, channel = "manual_bank") {
 const submit = (batchId: string, by = REQ) =>
   inTx((tx) => submitDisbursementBatch(tx, actor(by), batchId));
 async function approve(batchId: string, by = APP, contentHash?: string) {
-  const hash =
-    contentHash ?? ((await batchById(batchId)).content_hash as string);
+  const batch = await batchById(batchId);
+  const hash = contentHash ?? (batch.content_hash as string);
   return inTx((tx) =>
-    approveDisbursementBatch(tx, actor(by), batchId, { contentHash: hash }),
+    approveDisbursementBatch(tx, actor(by), batchId, {
+      contentHash: hash,
+      // The account the approver saw (legend-3j9yz): the configured source
+      // for manual_bank, null for other channels.
+      sourceBankAccountId:
+        batch.channel === "manual_bank" ? bankAccountId : null,
+    }),
   );
 }
 async function approvedBatch(runId: string, channel = "manual_bank") {

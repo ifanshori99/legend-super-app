@@ -309,6 +309,7 @@ export const fetchPayoutEvidenceLink = (batchId: string, key: string) =>
 export async function uploadPayoutEvidence(
   batchId: string,
   file: File,
+  password?: string,
 ): Promise<PayrollPayoutEvidenceUploadDto> {
   if (API_MOCK) {
     // The mock registry carries JSON only, so the mock answers here. A PDF
@@ -326,6 +327,8 @@ export async function uploadPayoutEvidence(
     };
   }
   const body = new FormData();
+  // Text fields go before the file part so the server reads them first.
+  if (password) body.set("password", password);
   body.set("file", file);
   const path = PAYOUT_EVIDENCE_UPLOAD_PATH.replace(
     ":id",
