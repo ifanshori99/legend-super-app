@@ -327,10 +327,13 @@ export function createStorageRequestResolver(): ResolveRequest {
       };
       // Historical objects may be unclassified or wrongly classified. The
       // leave reference takes precedence over the stored object's metadata.
+      // The owner needs a live self.leave.request grant at the leave's outlet;
+      // otherwise an approver with hr.leave.approve there.
       const canReadLeave = () =>
         leave === undefined ||
         (leave.outletId.toLowerCase() === object.outletId.toLowerCase() &&
-          (leave.userId === actorUserId ||
+          ((leave.userId === actorUserId &&
+            allowsAny(["self.leave.request"], outlet.data)) ||
             allowsAny(["hr.leave.approve"], outlet.data)));
       if (
         !canReadLeave() ||

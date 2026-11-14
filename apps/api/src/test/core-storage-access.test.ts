@@ -380,6 +380,13 @@ describe("legend-tiie storage request resolver", () => {
         scope: { type: "outlet", id: outletB },
       },
     ]);
+    // legend-9ujp5: the requester must hold self.leave.request at the outlet.
+    const leaveEmployeeA = await signedIn("LegacyLeaveEmployeeA", [
+      {
+        permissions: ["self.leave.request"],
+        scope: { type: "outlet", id: outletA },
+      },
+    ]);
     const employeeId = randomUUID();
     const typeId = randomUUID();
     const requestIds: string[] = [];
@@ -392,7 +399,7 @@ describe("legend-tiie storage request resolver", () => {
           [
             employeeId,
             tenantId,
-            userIds.get(employeeA),
+            userIds.get(leaveEmployeeA),
             `L-${employeeId.slice(0, 8).toUpperCase()}`,
             outletA,
           ],
@@ -430,11 +437,11 @@ describe("legend-tiie storage request resolver", () => {
               employeeId,
               typeId,
               sourceKind === null ? object.id.toUpperCase() : object.id,
-              userIds.get(employeeA),
+              userIds.get(leaveEmployeeA),
             ],
           );
         });
-        expectAllowed(await read(employeeA, object));
+        expectAllowed(await read(leaveEmployeeA, object));
         expectAllowed(await read(approverA, object));
         expectDenied(await read(approverB, object));
         expectDenied(await read(otherEmployeeA, object));
@@ -457,6 +464,147 @@ describe("legend-tiie storage request resolver", () => {
         );
       });
     }
+  });
+
+  // ---- legend-9ujp5: leave attachment read needs live grants ----
+  // Assumptions: the requester reads only while holding self.leave.request at
+  // the leave's outlet; the approver only with hr.leave.approve at that outlet.
+  // Revoking = deleting the user's role_assignments. The attachment is a legacy
+  // object (no source kind) so the leave reference alone decides.
+  async function withLeaveAttachment(
+    requester: Actor,
+    work: (object: StoredObject) => Promise<void>,
+  ) {
+    const employeeId = randomUUID();
+    const typeId = randomUUID();
+    const requestId = randomUUID();
+    try {
+      const object = await seedObject({
+        purpose: "document",
+        outletId: outletA,
+        owner: otherEmployeeA,
+      });
+      await asOwner(async (client) => {
+        await client.query(
+          `INSERT INTO employees
+          (id, tenant_id, user_id, employee_no, full_name, home_outlet_id, employment_type, join_date)
+          VALUES ($1,$2,$3,$4,'Leave employee',$5,'pkwtt','2024-01-01')`,
+          [
+            employeeId,
+            tenantId,
+            userIds.get(requester),
+            `L-${employeeId.slice(0, 8).toUpperCase()}`,
+            outletA,
+          ],
+        );
+        await client.query(
+          `INSERT INTO leave_types
+          (id, tenant_id, code, name, paid, requires_attachment, policy)
+          VALUES ($1,$2,$3,'Leave',true,true,'{}')`,
+          [typeId, tenantId, `L-${typeId.slice(0, 8)}`],
+        );
+        await client.query(
+          `INSERT INTO leave_requests
+          (id, tenant_id, outlet_id, employee_id, leave_type_id, period_year,
+           start_date, end_date, days, attachment_key, requested_by)
+          VALUES ($1,$2,$3,$4,$5,2032,'2032-03-20','2032-03-20',1,$6,$7)`,
+          [
+            requestId,
+            tenantId,
+            outletA,
+            employeeId,
+            typeId,
+            object.id,
+            userIds.get(requester),
+          ],
+        );
+      });
+      await work(object);
+    } finally {
+      await asOwner(async (client) => {
+        await client.query(
+          "DELETE FROM leave_requests WHERE tenant_id = $1 AND id = $2",
+          [tenantId, requestId],
+        );
+        await client.query(
+          "DELETE FROM employees WHERE tenant_id = $1 AND id = $2",
+          [tenantId, employeeId],
+        );
+        await client.query(
+          "DELETE FROM leave_types WHERE tenant_id = $1 AND id = $2",
+          [tenantId, typeId],
+        );
+      });
+    }
+  }
+
+  it("legend-9ujp5 leave attachment: requester is refused once self.leave.request is revoked", async () => {
+    const requester = await signedIn("RevokedLeaveRequester", [
+      {
+        permissions: ["self.leave.request"],
+        scope: { type: "outlet", id: outletA },
+      },
+    ]);
+    await withLeaveAttachment(requester, async (object) => {
+      // Positive control: the requester with the live grant reads it.
+      expectAllowed(await read(requester, object));
+      await asOwner(async (client) => {
+        await client.query(
+          "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = $2",
+          [tenantId, userIds.get(requester)],
+        );
+      });
+      expectDenied(await read(requester, object));
+    });
+  });
+
+  it("legend-9ujp5 leave attachment: requester holding self.leave.request only at another outlet is refused", async () => {
+    const requester = await signedIn("OtherOutletLeaveRequester", [
+      {
+        permissions: ["self.leave.request"],
+        scope: { type: "outlet", id: outletB },
+      },
+    ]);
+    await withLeaveAttachment(requester, async (object) => {
+      expectDenied(await read(requester, object));
+    });
+  });
+
+  it("legend-9ujp5 leave attachment: requester with an active self.leave.request reads it", async () => {
+    const requester = await signedIn("ActiveLeaveRequester", [
+      {
+        permissions: ["self.leave.request"],
+        scope: { type: "outlet", id: outletA },
+      },
+    ]);
+    await withLeaveAttachment(requester, async (object) => {
+      expectAllowed(await read(requester, object));
+    });
+  });
+
+  it("legend-9ujp5 leave attachment: approver at the leave's outlet reads it, approver at another outlet is refused", async () => {
+    const requester = await signedIn("ApproverCaseLeaveRequester", [
+      {
+        permissions: ["self.leave.request"],
+        scope: { type: "outlet", id: outletA },
+      },
+    ]);
+    const approverAtLeaveOutlet = await signedIn("LeaveApproverSameOutlet", [
+      {
+        permissions: ["hr.leave.approve"],
+        scope: { type: "outlet", id: outletA },
+      },
+    ]);
+    const approverAtOtherOutlet = await signedIn("LeaveApproverOtherOutlet", [
+      {
+        permissions: ["hr.leave.approve"],
+        scope: { type: "outlet", id: outletB },
+      },
+    ]);
+    await withLeaveAttachment(requester, async (object) => {
+      expectAllowed(await read(approverAtLeaveOutlet, object));
+      expectDenied(await read(approverAtOtherOutlet, object));
+    });
   });
 
   it("lets a tenant-wide menu manager upload a menu photo at any outlet", async () => {
