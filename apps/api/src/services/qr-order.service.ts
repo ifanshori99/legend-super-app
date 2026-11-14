@@ -151,6 +151,7 @@ import {
   qrOrderServingEstimatePort,
 } from "./qr-order-ports.ts";
 import { listSessionSplitDtosTx } from "./bill-split.service.ts";
+import { assertNoOpenEdcRequest } from "./pos-order-support.ts";
 import { requestRefundsForVoidedQrOrder } from "./qr-order-late-payment.ts";
 import { appendQrOrderPaid } from "./qr-order-paid.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
@@ -2536,6 +2537,10 @@ export async function voidAwaitingPaymentOrderTx(
       "CONFLICT",
       "Hanya pesanan yang belum dibayar yang dapat dibatalkan di sini.",
     );
+  // EDC (legend-kiibf): an ECR sale can exist for this bill (reference = order
+  // number). While it is open the terminal may still take, or already took, the
+  // money, so the void fails closed (409 EDC_REQUEST_OPEN) before any write.
+  await assertNoOpenEdcRequest(tx, context, order);
   const voidedItems = await tx
     .update(orderItems)
     .set({

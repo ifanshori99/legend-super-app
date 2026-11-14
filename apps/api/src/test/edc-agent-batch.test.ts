@@ -34,6 +34,7 @@ import type { EdcPaymentRequest } from "@starter/shared/edc";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { createEdcAgent } from "../edge/edc/agent.ts";
+import { ensureBill } from "./edc-agent-bill-helper.ts";
 import { EdcProviderRegistry } from "../edge/edc/registry.ts";
 import { EcrSimulator } from "../edge/edc/simulator.ts";
 import { agent as httpAgent, signUp } from "./helpers.ts";
@@ -214,8 +215,10 @@ function request(
   } as EdcPaymentRequest;
 }
 
-const pay = (f: Fixture, req: EdcPaymentRequest) =>
-  f.agent.requestPayment(f.ctx, f.actor, req);
+const pay = async (f: Fixture, req: EdcPaymentRequest) => {
+  await ensureBill(owner, req);
+  return f.agent.requestPayment(f.ctx, f.actor, req);
+};
 
 const refTo = (id: string) => ({
   tenantId: tenantIdSchema.parse(tenant.tenantId),

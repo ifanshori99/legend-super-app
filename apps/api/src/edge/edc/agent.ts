@@ -80,7 +80,9 @@ import {
   assertPaymentPermission,
   uniqueViolation,
 } from "../../services/payment-support.ts";
+import { assertEdcSaleBillPayable } from "../../services/pos-order-support.ts";
 import { emitEdcTransactionEvent } from "./events.ts";
+import { EDC_LATE_RESPONSE_WINDOW_MS } from "./late-response.ts";
 import type { EdcProviderRegistry } from "./registry.ts";
 
 export type Database = NodePgDatabase<typeof schema>;
@@ -173,6 +175,8 @@ const MESSAGE_NEVER_SENT = "Transaksi tidak pernah dikirim ke terminal.";
 const MESSAGE_CANCELLED_UNSENT = "Dibatalkan sebelum dikirim ke terminal.";
 const IDEMPOTENCY_CONSTRAINT = "edc_transactions_tenant_idempotency_key";
 const MESSAGE_RECOVERED = "Agent EDC berhenti saat transaksi berjalan.";
+const MESSAGE_CANCEL_AWAITING_SALE =
+  "Pembatalan diterima terminal; menunggu jawaban penjualan.";
 
 function defaultTrace(): string {
   let trace = "";
@@ -398,10 +402,13 @@ function patchFromAnswer(
           { edcTransactionId: row.id, trace: row.trace },
           "EDC terminal amount is missing or differs from the request",
         );
-        return unknownEvidencePatch(
-          result,
-          new EdcError("EDC_AMOUNT_MISMATCH").message,
-        );
+        return {
+          ...unknownEvidencePatch(
+            result,
+            new EdcError("EDC_AMOUNT_MISMATCH").message,
+          ),
+          needsReconciliation: true,
+        };
       }
       return { status: "approved", details: detailsOf(result) };
     case "declined":
@@ -496,6 +503,12 @@ function violatedConstraint(error: unknown, depth = 0): string | undefined {
 export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   const { db, registry } = deps;
   const saleTimeoutMs = deps.saleTimeoutMs ?? 120_000;
+  // The late-response window must outlast the sale call, or a row could
+  // leave the window while its adapter call is still running.
+  if (saleTimeoutMs >= EDC_LATE_RESPONSE_WINDOW_MS)
+    throw new Error(
+      `EDC saleTimeoutMs (${saleTimeoutMs} ms) must be shorter than the late-response window (${EDC_LATE_RESPONSE_WINDOW_MS} ms)`,
+    );
   const inquiryTimeoutMs = deps.inquiryTimeoutMs ?? 15_000;
   const cancelTimeoutMs = deps.cancelTimeoutMs ?? 15_000;
   const notFoundGraceMs = deps.notFoundGraceMs ?? 30_000;
@@ -507,6 +520,11 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   /** Rows whose sale this process is sending or waiting on. Registered before
    * the write-ahead commit so no reader sees `pending` without it. */
   const inFlight = new Set<string>();
+  /** Rows whose adapter call outlived its timeout and is still running in
+   * this process (their `sale_wire_open_at` is live, not stale). Added before
+   * the marker write; removed once the call settles and the marker is
+   * cleared. `clearStaleWireOpen` skips them. */
+  const wireOpen = new Set<string>();
   /** FIFO tail per terminal: one ECR exchange at a time. */
   const tails = new Map<string, Promise<void>>();
   /** Terminals whose adapter call outlived the agent's timeout and has not
@@ -836,6 +854,9 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       /** The sale was claimed at this instant but never sent: clear the claim
        * with the status change. */
       revokeDispatch?: Date | null;
+      /** A late sale answer settled the adapter call: clear
+       * `saleWireOpenAt` in the same transaction, whatever the row's status. */
+      clearWireOpen?: boolean;
     } = {},
   ): Promise<EdcRow> {
     const at = now();
@@ -853,6 +874,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       ...(options.revokeDispatch
         ? { dispatchedAt: null, dispatchBatchNo: null }
         : {}),
+      ...(options.clearWireOpen ? { saleWireOpenAt: null } : {}),
       ...(options.inquiry
         ? {
             inquiryCount: sql`${edcTransactions.inquiryCount} + 1`,
@@ -908,6 +930,17 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
             });
           return updated;
         }
+        // Not open any more (nothing written above): the wire is still done.
+        if (options.clearWireOpen)
+          await tx
+            .update(edcTransactions)
+            .set({ saleWireOpenAt: null })
+            .where(
+              and(
+                eq(edcTransactions.tenantId, ctx.tenant.tenantId),
+                eq(edcTransactions.id, row.id),
+              ),
+            );
         const [current] = await tx
           .select()
           .from(edcTransactions)
@@ -956,7 +989,30 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
         { edcTransactionId: stored.id, trace: stored.trace, lateStatus },
         "EDC approval arrived after the row was final: approved late",
       );
+      // The late approval's own evidence (what a human needs to void the
+      // charge) is kept even when the row was already flagged.
+      const evidence = Object.fromEntries(
+        Object.entries(patch.details ?? {}).filter(
+          ([name, value]) => name !== "message" && value != null,
+        ),
+      );
       const flagged = await withTenant(db, ctx, async (tx) => {
+        const evidenced =
+          Object.keys(evidence).length > 0
+            ? (
+                await tx
+                  .update(edcTransactions)
+                  .set({ updatedAt: at, ...evidence })
+                  .where(
+                    and(
+                      eq(edcTransactions.tenantId, ctx.tenant.tenantId),
+                      eq(edcTransactions.id, stored.id),
+                      eq(edcTransactions.status, lateStatus),
+                    ),
+                  )
+                  .returning()
+              )[0]
+            : undefined;
         const [updated] = await tx
           .update(edcTransactions)
           .set({
@@ -979,7 +1035,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
             row: updated,
             now: at,
           });
-        return updated;
+        return updated ?? evidenced;
       });
       return flagged ?? stored;
     }
@@ -1140,14 +1196,16 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       });
       if (!claimed) return (await reload(ctx, row.id)) ?? row;
       let patch: Patch;
+      const signal = AbortSignal.timeout(saleTimeoutMs);
+      /** The adapter's own promise: it may still settle after the timeout. */
+      const wire: { call?: Promise<unknown>; settled?: true } = {};
       try {
-        const signal = AbortSignal.timeout(saleTimeoutMs);
         const answer = ecrResultSchema.parse(
           await hold(
             () => {
               // `hold` re-checked ownership in this tick: the claim above
               // awaited the database.
-              return provider.sale({
+              const call = provider.sale({
                 terminal,
                 trace: claimed.trace,
                 amountIdr: claimed.amountIdr,
@@ -1155,6 +1213,12 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
                 reference: claimed.reference,
                 signal,
               });
+              wire.call = call;
+              const done = () => {
+                wire.settled = true;
+              };
+              call.then(done, done);
+              return call;
             },
             signal,
             claimed.id,
@@ -1183,6 +1247,54 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           "EDC sale gave no answer",
         );
         patch = unknownPatch();
+        // Timed out on our side only: the terminal may still answer the sale
+        // later. That answer decides the row while it is open (`applyPatch`
+        // writes only an open row; a late approval after final keeps its
+        // evidence and is flagged). `sale_wire_open_at` tells reconciliation
+        // the terminal is still busy; the late write (or an adapter error)
+        // clears it. Tracked at once so `stop` waits for the late write.
+        // Never throws: a failed late write is logged.
+        const call = wire.call;
+        if (signal.aborted && call) {
+          const marked = wire.settled
+            ? Promise.resolve()
+            : setSaleWireOpen(ctx, claimed, true);
+          const late = marked
+            .then(() =>
+              call.then(
+                async (raw) => {
+                  let answer: EcrResult | undefined;
+                  try {
+                    answer = ecrResultSchema.parse(raw);
+                    await applyPatch(
+                      ctx,
+                      claimed,
+                      patchFromAnswer(claimed, answer, answerContext(provider)),
+                      { clearWireOpen: true },
+                    );
+                  } catch (lateError) {
+                    logger.error(
+                      {
+                        edcTransactionId: claimed.id,
+                        trace: claimed.trace,
+                        kind: errorKind(lateError),
+                        outcome: answer?.outcome,
+                        approvalCode: answer?.approvalCode,
+                        rrn: answer?.rrn,
+                        amountIdr: claimed.amountIdr,
+                      },
+                      "EDC late sale answer could not be recorded",
+                    );
+                    await setSaleWireOpen(ctx, claimed, false);
+                  }
+                },
+                () => setSaleWireOpen(ctx, claimed, false),
+              ),
+            )
+            .finally(() => wireOpen.delete(claimed.id));
+          trackWire(key, late);
+          await marked;
+        }
       }
       return applyPatch(ctx, claimed, patch);
     });
@@ -1287,6 +1399,17 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           )
           .limit(1);
         if (blocking.length > 0) return { kind: "retry" };
+        // The terminal is only asked for what the bill still owes right now. A
+        // POS screen that went stale (another tender, a discount) would
+        // otherwise take money the tender step can never book (it requires
+        // the request amount to equal the tender). Read under the same
+        // advisory lock every tender/edit takes, so check and insert are
+        // atomic against them; the order row is not locked here (lock order).
+        await assertEdcSaleBillPayable(tx, ctx, {
+          outletId: input.outletId,
+          reference: input.reference,
+          amountIdr: input.amountIdr,
+        });
         // The terminal is read again here, locked against a concurrent edit
         // (`FOR KEY SHARE` conflicts with the admin's `FOR UPDATE`): the sale
         // goes out to the identity this row was written for, and the admin's
@@ -1353,6 +1476,66 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
         );
       return { kind: "retry" };
     }
+  }
+
+  /** Marks (or clears) "the adapter call of this sale is still running". Set
+   * when the agent gives up waiting; cleared when the call settles. A plain
+   * update by id, any status. Never throws: the 10-minute dispatch window
+   * still guards the row if this write fails. */
+  async function setSaleWireOpen(
+    ctx: ScopedTenantContext,
+    row: EdcRow,
+    open: boolean,
+  ): Promise<void> {
+    if (open) wireOpen.add(row.id);
+    try {
+      await withTenant(db, ctx, (tx) =>
+        tx
+          .update(edcTransactions)
+          .set({ saleWireOpenAt: open ? now() : null })
+          .where(
+            and(
+              eq(edcTransactions.tenantId, ctx.tenant.tenantId),
+              eq(edcTransactions.id, row.id),
+            ),
+          ),
+      );
+    } catch (error) {
+      logger.error(
+        {
+          edcTransactionId: row.id,
+          trace: row.trace,
+          open,
+          kind: errorKind(error),
+        },
+        "EDC sale wire marker could not be written",
+      );
+    }
+  }
+
+  /** An outlet this instance just acquired: a `saleWireOpenAt` left by the
+   * previous process is stale (its adapter call died with it). */
+  async function clearStaleWireOpen(
+    ctx: ScopedTenantContext,
+    outletIds: readonly EdcRow["outletId"][],
+  ): Promise<void> {
+    if (outletIds.length === 0) return;
+    await withTenant(db, ctx, async (tx) => {
+      // `wireOpen` is read here, in the same tick that issues the UPDATE: a
+      // call of this process that is still running keeps its marker.
+      const live = [...wireOpen];
+      await tx
+        .update(edcTransactions)
+        .set({ saleWireOpenAt: null })
+        .where(
+          and(
+            eq(edcTransactions.tenantId, ctx.tenant.tenantId),
+            inArray(edcTransactions.outletId, [...outletIds]),
+            isNotNull(edcTransactions.saleWireOpenAt),
+            live.length > 0 ? notInArray(edcTransactions.id, live) : undefined,
+          ),
+        );
+    });
   }
 
   /** Pending -> unknown for `outletIds` (default: the outlets of `ctx`), which
@@ -1633,14 +1816,30 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           );
         }
         if (answer) {
-          // `approved` here means the customer already paid: recorded as such.
-          return toDto(
-            await applyPatch(
-              ctx,
-              current,
-              patchFromAnswer(current, answer, answerContext(provider)),
-            ),
+          const patch = patchFromAnswer(
+            current,
+            answer,
+            answerContext(provider),
           );
+          // A cancel answer alone is not proof the sale is over: a dispatched
+          // sale's own answer may still be approved (bypass: its call is on
+          // the wire; queued: it may have charged before the cancel). A final
+          // non-approved cancel answer never finalizes a dispatched row; the
+          // sale's own answer decides. Never-dispatched rows keep the answer.
+          if (
+            current.dispatchedAt !== null &&
+            patch.status !== undefined &&
+            patch.status !== "approved" &&
+            isFinal(patch.status)
+          ) {
+            return toDto(
+              await applyPatch(ctx, current, {
+                details: { message: MESSAGE_CANCEL_AWAITING_SALE },
+              }),
+            );
+          }
+          // `approved` here means the customer already paid: recorded as such.
+          return toDto(await applyPatch(ctx, current, patch));
         }
         if (current.status === "pending" && !inFlight.has(current.id))
           return toDto(await applyPatch(ctx, current, unknownPatch()));
@@ -1690,6 +1889,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           acquired.push(key);
           acquiredOutletIds.push(outletId);
         }
+        await clearStaleWireOpen(ctx, acquiredOutletIds);
         await recoverPending(ctx, acquiredOutletIds);
       } catch (error) {
         for (const key of acquired) await releaseOutlet(key);

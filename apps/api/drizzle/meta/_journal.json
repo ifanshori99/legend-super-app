@@ -2507,6 +2507,13 @@
       "when": 1794680000000,
       "tag": "0371_push_devices_cross_tenant",
       "breakpoints": true
+    },
+    {
+      "idx": 372,
+      "version": "7",
+      "when": 1794680677682,
+      "tag": "0372_edc_sale_wire_open",
+      "breakpoints": true
     }
   ]
 }

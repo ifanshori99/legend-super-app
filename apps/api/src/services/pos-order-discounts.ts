@@ -41,6 +41,7 @@ import {
 import {
   appendOrderEvent,
   assertMutable,
+  assertNoOpenEdcRequest,
   assertNoPendingGatewayTender,
   auditPos,
   bumpPos,
@@ -64,6 +65,7 @@ async function assertBeforeSettlement(
   locked: Locked,
 ): Promise<void> {
   assertMutable(locked.order);
+  await assertNoOpenEdcRequest(tx, context, locked.order);
   const tenders = await tendersOf(tx, context, locked.order.id);
   if (capturedIdr(tenders) > 0)
     throw new CoreError(

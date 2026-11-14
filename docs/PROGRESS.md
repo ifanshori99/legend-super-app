@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ## Merge train batch64f (merge train, `int/batch64f` dari `origin/milestone/m1` 7aacd9f68, 15 Nov 2026 00:30-03:25 WIB)
 
 - Sudah: 4 cabang tip masuk berurutan: `ws/test-ci-contract` (legend-pjty), `fix/edge-uom-issystem` (legend-tkc19), `ui/panic-alert-wiring` (memuat `ui/panic-alert`, `ws/panic-contract-gaps`, `ws/panic-alert`; legend-jztb7, legend-kpzmi, legend-kmjax, legend-alovk), `ws/writeoff-late-funds` (legend-oan3p, legend-kbf9v). Satu-satunya konflik: journal migrasi. `0606_reconciliation_late_funds` dinomori ulang jadi `0368_reconciliation_late_funds` (SQL identik byte, `when` naik monoton); snapshot cabang 0606 dibuang, `0368_snapshot.json` dibangun lewat drizzle-kit (prevId = id 0367); `pnpm db:generate` kosong; `check-journal.mjs` 1 entri baru ok.
@@ -6,6 +7,14 @@
 - Berikut: fast-forward `milestone/m1` ke `int/batch64f`. Bead legend-oan3p, jztb7, kmjax, kpzmi, alovk masih REVIEW (menunggu CTO), tidak ditutup. Batch berikut disusun sesuai urutan prioritas CTO (panik, EDC, edge, uang/PII, sisanya), maks 7 cabang, migrasi dinomori ulang setelah 0368.
 - Risiko: `ws/writeoff-late-funds` menyentuh uang (hapus-buku dana terlambat); tes uangnya (`payment-reconciliation-late-funds`, `payment-admin-rls`) hijau di gerbang. Second opinion Codex area payout/uang tetap wajib sebelum gerbang rilis.
 - Biaya sesi (12:32-03:25, termasuk 64a-64e): biaya* total 7758k (utama Sonnet 5.5 7566k; subagent 192k). 3 subagent; parallel-report rata-rata 0.22 subagent berjalan per agent. Waktu terbanyak menunggu antrean `heavy` dan dua run penuh.
+=======
+## Second opinion EDC kunci tagihan, P1 x3 + P2 (engineer, legend-ftsq0, cabang `fix/edc-so-829` dari `origin/fix/edc-qris-confirm-lock` 7e32d2707, 15 Nov 2026)
+
+- Selesai: jawaban cancel tidak pernah menutup sale yang sudah dikirim; jawaban sale setelah timeout tetap dicatat (ditunggu `stop()`); kolom baru `sale_wire_open_at` (migrasi 0381) menandai panggilan sale yang masih berjalan; rekonsiliasi menolak selama kolom terisi dan selama 10 menit sejak dikirim (`EDC_LATE_RESPONSE_WINDOW_MS`, satu tempat); `unknown` tanpa flag bisa diselesaikan Owner/Finance + MFA setelah jendela; event outbox selalu ditulis bersama ledger; approval terlambat menyimpan bukti kartu; `createEdcAgent` menolak timeout sale >= jendela.
+- Aturan QRIS saat kartu terbuka: satu konstanta `QRIS_CAPTURED_WHILE_CARD_SALE_OPEN` (founder Q5 pending). Perilaku tetap: QRIS di-refund langsung, juga bila kartu kemudian ditolak.
+- Bukti: 15 file test terarah, 369 lulus; test merah-dulu `edc-so-829.test.ts` (6 kasus merah di base). Review architect xhigh 2 ronde, temuan ditutup.
+- Berikut: second-opinion Codex ulang bila CTO minta; UI rekonsiliasi (web) belum menampilkan `unknown` tanpa flag.
+>>>>>>> origin/fix/edc-so-829
 
 ## Merge train batch64e (merge train, `int/batch64e` dari `origin/milestone/m1` b42619abc, 14 Nov 2026 20:20-22:45 WIB)
 
@@ -5547,6 +5556,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 
 - Perintah test: `LEGEND_TEST_FILES="src/test/accounting-finance-exceptions.test.ts tests/ws07-finance-exceptions-known-count.test.mjs tests/text-contract.test.mjs" heavy pnpm test` EXIT 0; setelah anotasi helper test diperbaiki, `LEGEND_TEST_FILES="src/test/accounting-finance-exceptions.test.ts" heavy pnpm test` EXIT 0. Log lokal: `/tmp/legend-j4xdb-api-red.log`, `/tmp/legend-j4xdb-web-red.log`, `/tmp/legend-j4xdb-green.log`, `/tmp/legend-j4xdb-api-final.log`, `/tmp/legend-j4xdb-api-typecheck-final.log`, `/tmp/legend-j4xdb-web-typecheck.log`.
 
+<<<<<<< HEAD
 
 ### 782: perbaikan jalur alarm panik (14 Nov 2026)
 
@@ -5581,3 +5591,25 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Service GET/DELETE `/api/identity/push-devices` memakai fungsi itu; HP di tenant lain terlihat dan bisa dicabut; cabut tetap mengakhiri sesi pendaftar (bukan sesi sekarang). Hapus 0 baris: 409 bila HP masih terdaftar, 401 bila sesi pemanggil mati. DTO dan UI tidak berubah.
 - Test baru `push-devices-cross-tenant.test.ts` (8 kasus), gagal-dulu 4/6 di service base. Review architect xhigh: approve; temuan 1, 2, 4 dibetulkan; 3 dan 5 jadi bead legend-xqkr7 (keputusan CTO soal sesi support) dan legend-nb2mk (indeks user_id).
 - Verifikasi akhir: 6 file 116/116, typecheck API, prettier + eslint bersih, `db:generate` kosong.
+=======
+## 2026-11-15: EDC-01 kunci tagihan selama permintaan ECR belum final (legend-ig2sl, cabang fix/edc-bill-lock)
+
+- `assertNoOpenEdcRequest` (services/pos-order-support.ts) mengambil advisory lock yang sama dengan `writeAhead` EDC agent, lalu menolak 409 `EDC_REQUEST_OPEN` bila sale terminal untuk order itu: pending/unknown, ATAU `needs_reconciliation`, ATAU approved tanpa tender hidup. Dipanggil dari: diskon (pasang/hapus), void item, void order, pindah/split item sesi, dan `addPosTender` untuk semua tender kecuali tender ECR ber-`edcTransactionId`. Kunci terbuka hanya setelah status final lewat inquiry atau pelunasan; timeout saja tidak membuka. Kode baru `EDC_REQUEST_OPEN` di packages/shared/src/pos/errors.ts. Tanpa migrasi, edge tidak diubah.
+- Bukti merah-dulu: pos-edc-tender 79 gagal + move-items 7 gagal tanpa guard (409 vs sukses). Hijau: 15 file terarah 329 test; typecheck api dan shared hijau; text-contract dan glob kontrak hijau; prettier dan eslint hijau. Review architect xhigh dua putaran; 4 temuan putaran 1 diperbaiki, putaran 2 bersih.
+- Risiko tersisa untuk CTO: (1) `writeAhead` belum mencocokkan nominal ke sisa tagihan (area edge, perlu bead); (2) `needs_reconciliation=true` mengunci tagihan tanpa jalur pembersih di kode non-test; (3) `voidAwaitingPaymentOrderTx` (QR) tanpa guard, hanya relevan bila order QR awaiting-payment bisa punya permintaan EDC.
+
+## 2026-11-15: EDC lanjutan, nominal writeAhead, pembersih needs_reconciliation, guard void QR (legend-xcbs7, legend-x9zmq, legend-kiibf, cabang fix/edc-followups)
+
+- legend-xcbs7: `writeAhead` (edge/edc/agent.ts) memanggil `assertEdcSaleBillPayable` (services/pos-order-support.ts) di bawah advisory lock yang sama dengan EDC-01. Ditolak tanpa baris baru: tagihan tidak ada, tanpa baris `pos_orders`, status tidak bisa dibayar, atau punya payment link (409 `ORDER_NOT_PAYABLE`); nominal tidak sama dengan sisa tagihan (409 `EDC_AMOUNT_MISMATCH`). Jawaban terminal "approved" dengan nominal hilang/beda kini juga ditandai `needs_reconciliation`.
+- legend-x9zmq: `POST /api/.../edc/transactions/:id/reconciliation` (payment-admin.routes.ts) + services/edc-reconciliation.service.ts. Izin `payment.reconcile` (Owner, Finance) di outlet baris + MFA sesi wajib. Advisory lock lalu `FOR UPDATE`. Hasil `declined`: hanya status unknown/declined/cancelled/failed tanpa tender hidup; unknown jadi declined, tagihan tetap belum dibayar, kunci terbuka. Hasil `approved`: wajib `chargedAmountIdr` = nominal baris; unknown jadi approved hanya bila tidak ada sale approved lain untuk tagihan itu dan tagihan masih bisa dibayar dengan sisa = nominal; approved tanpa tender (ECR) dicek sama; standalone tanpa tender dan status akhir non-approved ditolak (tidak pernah dibalik). Tender tetap dibukukan jalur ECR biasa, sekali. Audit `edc_transaction.reconciliation_resolved` + event bila status berubah. Tanpa migrasi.
+- legend-kiibf: bisa terjadi (agent dulu tidak memeriksa status order). `voidAwaitingPaymentOrderTx` memanggil `assertNoOpenEdcRequest`. Consumer `payment_closed` dan sweep belum-bayar menangkap `EDC_REQUEST_OPEN`, log, dan membiarkan order (sweep berikut mencoba lagi).
+- Bukti gagal-dulu: kode produksi dikembalikan ke HEAD sementara, 46 gagal / 5 lulus, semua karena perilaku yang belum ada.
+- Review architect (xhigh) 2 ronde: temuan 1/2/4/5 dibetulkan, ronde 2 tanpa bug baru. Temuan 3 (race QRIS pending, `handlePosPaymentPaid` tanpa advisory lock) jadi bead legend-56gg2 (P1, sebelum gerbang rilis).
+- Sisa: belum ada UI dan entri kontrak `payment/admin.ts` untuk rekonsiliasi; tanpa idempotency key; jalur `voidAndNotify` paid-late dan refund tetap melempar bila EDC terbuka.
+
+## 2026-11-15: konfirmasi QRIS mengambil kunci tagihan EDC-01 (legend-56gg2, cabang fix/edc-qris-confirm-lock)
+
+- `handlePosPaymentPaid` (services/pos-order-payment.ts) mengambil advisory lock tagihan (tenant, outlet:number) setelah kunci baris orders dan pos_orders, sebelum tender (urutan sama dengan `addPosTender`). Bila penjualan EDC untuk tagihan itu masih terbuka (pending/unknown, ditandai rekonsiliasi, atau approved belum jadi tender), kartu menang: tender QRIS di-void dan intent direfund penuh (alasan `edc_request_open`). `assertNoOpenEdcRequest` kini membungkus `hasOpenEdcRequest` (services/pos-order-support.ts), perilaku pemanggil lama sama. Tanpa migrasi.
+- Test baru `pos-qris-edc-lock.test.ts` (8 kasus, termasuk balapan dengan kunci dipegang klien lain). Gagal-dulu: 5 gagal (QRIS ter-capture / webhook tidak menunggu kunci), 3 lulus (perilaku lama yang sudah benar). Hijau: 10 file API 252 test, root kontrak 26/26, typecheck api hijau, prettier+eslint bersih.
+- Architect xhigh: tanpa temuan, tanpa deadlock. Risiko sisa: bila penjualan kartu yang menang lalu ditolak, QRIS sudah direfund dan tagihan terbuka lagi; kasir perlu pemberitahuan (bead lanjutan).
+>>>>>>> origin/fix/edc-so-829

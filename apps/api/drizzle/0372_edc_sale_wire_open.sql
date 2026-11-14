@@ -1,0 +1,1 @@
+ALTER TABLE "edc_transactions" ADD COLUMN "sale_wire_open_at" timestamp with time zone;

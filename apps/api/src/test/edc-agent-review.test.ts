@@ -54,6 +54,7 @@ import { db } from "../db/index.ts";
 import { createEdcAgent } from "../edge/edc/agent.ts";
 import { EdcProviderRegistry } from "../edge/edc/registry.ts";
 import { EcrSimulator } from "../edge/edc/simulator.ts";
+import { ensureBill } from "./edc-agent-bill-helper.ts";
 import { agent as httpAgent, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -288,8 +289,10 @@ function request(
   } as EdcPaymentRequest;
 }
 
-const pay = (f: Fixture, req: EdcPaymentRequest) =>
-  f.agent.requestPayment(f.ctx, f.actor, req);
+const pay = async (f: Fixture, req: EdcPaymentRequest) => {
+  await ensureBill(owner, req);
+  return f.agent.requestPayment(f.ctx, f.actor, req);
+};
 
 const refTo = (id: string) => ({
   tenantId: tenantIdSchema.parse(tenant.tenantId),
@@ -312,7 +315,8 @@ const passThrough = (
 
 /** The terminal answers the cancel `cancelled`, yet the customer paid: the
  * sale call settles `approved` (and charges at the simulator) only after
- * `open()`. This is the "approved late" case. */
+ * `open()`. A cancel answer alone never finalizes a dispatched sale (CTO rule,
+ * legend-ftsq0), so the sale's own `approved` decides. */
 function lateApproval() {
   let open!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -340,7 +344,8 @@ function lateApproval() {
 }
 
 /** Starts a sale that the terminal keeps waiting on, cancels it (terminal
- * answers `cancelled`) and returns while the sale call is still in flight. */
+ * answers `cancelled`) and returns while the sale call is still in flight.
+ * The cancel answer is no proof the sale is over: the row stays `pending`. */
 async function cancelledButStillSelling(
   f: Fixture,
   state: { saleStarted: boolean },
@@ -357,7 +362,8 @@ async function cancelledButStillSelling(
     rowId = rows[0]!.id;
   });
   const cancelled = await f.agent.cancel(f.ctx, f.actor, refTo(rowId));
-  expect(cancelled.status).toBe("cancelled");
+  expect(cancelled.status).toBe("pending");
+  expect(cancelled.completedAt).toBeNull();
   return { req, selling, rowId };
 }
 
@@ -377,28 +383,30 @@ afterAll(async () => {
 });
 
 describe("EDC review K regressions", () => {
-  it("A1 a sale approved after its cancel blocks a re-bill of the same reference with a new key (EDC_NEEDS_RECONCILIATION)", async () => {
+  // Assumption: a re-bill of a reference that already has an approved row is
+  // refused with EDC_ALREADY_APPROVED (as for the stale-pending retry case).
+  it("A1 a sale approved after its cancel answer is approved (never finalized by the cancel): a re-bill of the same reference with a new key is refused", async () => {
     const late = lateApproval();
     const f = await fixture({ saleTimeoutMs: 10_000, wrap: late.wrap });
     const { req, selling } = await cancelledButStillSelling(f, late.state);
 
-    late.open(); // the customer paid anyway: approved after cancelled
+    late.open(); // the customer paid anyway: the sale's own answer is approved
     const sold = await selling;
-    expect(sold.status).toBe("cancelled");
-    expect(sold.needsReconciliation).toBe(true);
+    expect(sold.status).toBe("approved");
+    expect(sold.needsReconciliation).toBe(false);
     expect(f.bca.chargedCount(f.terminalId)).toBe(1);
 
     // Cashier re-bills the same reference: new idempotency key.
     await expect(
       pay(f, request(f, { reference: req.reference })),
-    ).rejects.toMatchObject({ reason: "EDC_NEEDS_RECONCILIATION" });
+    ).rejects.toMatchObject({ reason: "EDC_ALREADY_APPROVED" });
 
     expect(f.bca.callsFor(f.terminalId).sale).toBe(1);
     expect(f.bca.chargedCount(f.terminalId)).toBe(1);
     const rows = await rowsFor(req.reference);
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.status).toBe("cancelled");
-    expect(rows[0]!.needs_reconciliation).toBe(true);
+    expect(rows[0]!.status).toBe("approved");
+    expect(rows[0]!.needs_reconciliation).toBe(false);
   });
 
   it("A1 any cancelled, failed or declined row flagged needs_reconciliation blocks a re-bill of the reference", async () => {
@@ -428,7 +436,7 @@ describe("EDC review K regressions", () => {
     expect(f.bca.chargedCount(f.terminalId)).toBe(1);
   });
 
-  it("A1b a reference whose sale call is still in flight is EDC_STATUS_UNKNOWN even when its row already reads cancelled", async () => {
+  it("A1b a reference whose sale call is still in flight is EDC_STATUS_UNKNOWN even after its cancel was answered (the row stays pending)", async () => {
     const late = lateApproval();
     const f = await fixture({ saleTimeoutMs: 10_000, wrap: late.wrap });
     const other = await seedTerminal(); // same outlet, so the terminal queue is not involved
@@ -438,7 +446,9 @@ describe("EDC review K regressions", () => {
       pay(f, request(f, { reference: req.reference, terminalId: other })),
     ).rejects.toMatchObject({ reason: "EDC_STATUS_UNKNOWN" });
     expect(f.bca.callsFor(other).sale).toBe(0);
-    expect(await rowsFor(req.reference)).toHaveLength(1);
+    const open = await rowsFor(req.reference);
+    expect(open).toHaveLength(1);
+    expect(open[0]!.status).toBe("pending");
 
     late.open();
     await selling;

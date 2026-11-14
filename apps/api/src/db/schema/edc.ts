@@ -70,6 +70,10 @@ export const edcTransactions = pgTable(
     // that has one). NULL: unknown. An inquiry `not_found` is trusted only
     // while the terminal's open batch still equals this one.
     dispatchBatchNo: varchar("dispatch_batch_no", { length: 20 }),
+    // The agent gave up waiting on this sale (timeout) but the adapter call is
+    // still running on the terminal. NULL: no open wire call. Cleared when the
+    // call settles or when a restarted agent takes the outlet over.
+    saleWireOpenAt: timestamp("sale_wire_open_at", { withTimezone: true }),
     // A second approval for one reference was rejected by the unique index:
     // a human must void one charge and reconcile.
     needsReconciliation: boolean("needs_reconciliation")
