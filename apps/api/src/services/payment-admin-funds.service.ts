@@ -140,6 +140,7 @@ async function view(
       billTotalIdr: Number(r.bill_total_idr),
       outletName: r.outlet_name,
       status,
+      evidenceMismatch: needsReview,
       detectedAt: new Date(String(r.created_at)).toISOString(),
       resolvedByName: r.resolved_by_name,
       resolvedAt: r.resolved_at

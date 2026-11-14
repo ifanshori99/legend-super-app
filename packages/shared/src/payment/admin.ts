@@ -407,6 +407,7 @@ export const unallocatedFundViewSchema = z
     billTotalIdr: positiveIdr,
     outletName: ref,
     status: unallocatedStatusSchema,
+    evidenceMismatch: z.boolean(),
     detectedAt: isoDateTimeSchema,
     resolvedByName: ref.nullable(),
     resolvedAt: isoDateTimeSchema.nullable(),
@@ -1103,6 +1104,7 @@ const unallocatedFixtures = [
 ].map((fund) =>
   unallocatedFundViewSchema.parse({
     ...fund,
+    evidenceMismatch: false,
     tenantId,
     outletId: bandungId,
     outletName: bandung.name,

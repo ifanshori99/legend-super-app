@@ -2,10 +2,60 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as admin from "../packages/shared/src/payment/admin.ts";
 import * as payment from "../packages/shared/src/payment/index.ts";
+import { filterUnallocated } from "../apps/web/src/features/ws05-payment-admin/format.ts";
 
 test("WS-05 admin fixtures satisfy every back-office contract", () => {
   for (const [schema, fixture] of admin.paymentAdminFixtures)
     assert.ok(schema.parse(fixture));
+});
+
+test("legend-s3ex8 evidence mismatch is an explicit boolean and preserves the resolved status", () => {
+  const [, resolved] = admin.cafeLegendPaymentAdminFixtures.unallocatedFunds;
+  const changed = {
+    ...resolved,
+    evidenceMismatch: true,
+    paidAmountIdr: 10_000,
+  };
+  const parsed = admin.unallocatedFundViewSchema.parse(changed);
+  assert.equal(parsed.status, "resolved");
+  assert.equal(parsed.evidenceMismatch, true);
+  assert.equal(parsed.amountIdr, resolved.amountIdr);
+  assert.equal(parsed.paidAmountIdr, 10_000);
+  assert.equal(
+    admin.unallocatedFundViewSchema.safeParse({
+      ...resolved,
+      evidenceMismatch: false,
+    }).success,
+    true,
+  );
+  for (const evidenceMismatch of [undefined, "true", 1, null]) {
+    assert.equal(
+      admin.unallocatedFundViewSchema.safeParse({
+        ...resolved,
+        evidenceMismatch,
+      }).success,
+      false,
+    );
+  }
+});
+
+test("legend-s3ex8 the review filter retains resolved mismatches without making healthy funds actionable", () => {
+  const [open, resolved] =
+    admin.cafeLegendPaymentAdminFixtures.unallocatedFunds;
+  const changed = { ...resolved, evidenceMismatch: true };
+  const pendingReview = {
+    ...open,
+    status: "needs_review",
+    evidenceMismatch: true,
+  };
+  const rows = [open, resolved, changed, pendingReview];
+  assert.deepEqual(filterUnallocated(rows, "needs_review"), [
+    changed,
+    pendingReview,
+  ]);
+  assert.deepEqual(filterUnallocated(rows, "resolved"), [resolved, changed]);
+  assert.deepEqual(filterUnallocated(rows, "open"), [open]);
+  assert.deepEqual(filterUnallocated(rows, "all"), rows);
 });
 
 test("PAY-04 unallocated funds carry the excess amount and a resolution with approval", () => {

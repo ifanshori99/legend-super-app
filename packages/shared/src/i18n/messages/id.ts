@@ -1859,6 +1859,7 @@ export const id = {
       statusOpen: "Belum diselesaikan",
       statusResolved: "Selesai",
       statusNeedsReview: "Perlu dicek",
+      evidenceMismatch: "Bukti berubah",
       needsReviewHint:
         "Bukti pembayaran belum cocok dengan dana ini. Dana tidak bisa diselesaikan sampai bukti diperiksa.",
       filter: "Filter status dana",

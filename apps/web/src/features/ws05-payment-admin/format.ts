@@ -141,7 +141,11 @@ export function filterUnallocated(
   status: UnallocatedStatus | "all",
 ): UnallocatedFundView[] {
   if (status === "all") return [...rows];
-  return rows.filter((row) => row.status === status);
+  return rows.filter(
+    (row) =>
+      row.status === status ||
+      (status === "needs_review" && row.evidenceMismatch),
+  );
 }
 
 export function filterReconciliationCases(

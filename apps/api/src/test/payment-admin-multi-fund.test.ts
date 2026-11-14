@@ -339,6 +339,11 @@ describe("legend-knev multi-fund unallocated resolve", () => {
     expect(list.status).toBe(200);
     const listed = (list.body.data as { id: string }[]).map((f) => f.id);
     expect(listed).toEqual(expect.arrayContaining(bill.fundIds));
+    for (const fundId of bill.fundIds) {
+      expect(
+        list.body.data.find((fund: { id: string }) => fund.id === fundId),
+      ).toMatchObject({ evidenceMismatch: false });
+    }
 
     expect((await resolve(bill.fundIds[0]!)).status).toBe(200);
     expect((await resolve(bill.fundIds[1]!)).status).toBe(200);
@@ -435,6 +440,9 @@ describe("legend-knev multi-fund unallocated resolve", () => {
         evidences: [120_000],
         funds: [{ amount: 20_000, evidence: 0 }],
       });
+      // Seed the historical closed state directly: the credit endpoint returns
+      // 503 until its approved ledger adapter is available. This tests display
+      // of existing resolved funds without claiming a credit payout succeeded.
       await owner.query(
         `UPDATE payment_unallocated_funds
          SET resolution = $2, resolved_at = now(), resolved_by = $3
@@ -454,7 +462,11 @@ describe("legend-knev multi-fund unallocated resolve", () => {
         list.body.data.find(
           (fund: { id: string }) => fund.id === bill.fundIds[0],
         ),
-      ).toMatchObject({ amountIdr: 20_000, paidAmountIdr: evidenceAmount });
+      ).toMatchObject({
+        amountIdr: 20_000,
+        paidAmountIdr: evidenceAmount,
+        evidenceMismatch: true,
+      });
       expect((await resolve(bill.fundIds[0]!)).status).toBe(409);
       expect(await fundRows(bill.fundIds)).toEqual(before);
       expect(await refundsOf(bill.fundIds)).toEqual(refundsBefore);
