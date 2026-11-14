@@ -139,6 +139,35 @@ test("§3.22 RSV-03 the private-room booking shows its own DP, minimum spend and
   await expect(page.getByText(/Minimum belanja Rp\s?500\.000/)).toBeVisible();
 });
 
+test("d6d1 a reloaded booking DP link opens payment and returns a paid confirmation", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 900 });
+  await openBooking(page);
+  await chooseFirstSlot(page);
+  await fillGuest(page);
+  await submitBooking(page);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByRole("link", { name: "Bayar DP" }).click();
+  await expect(page.getByRole("radio", { name: /QRIS/ })).toBeVisible();
+  await page.getByRole("radio", { name: /QRIS/ }).check();
+  await page.getByRole("button", { name: "Lanjutkan pembayaran" }).click();
+  await expect(page.getByText("Pembayaran berhasil")).toBeVisible({
+    timeout: 30_000,
+  });
+  await page.getByRole("link", { name: "Selesai", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Reservasi terkonfirmasi" }),
+  ).toBeVisible();
+  await expect(page.getByText("Menunggu DP")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Bayar DP" })).toHaveCount(0);
+  await page.reload({ waitUntil: "networkidle" });
+  await expect(
+    page.getByRole("heading", { name: "Reservasi terkonfirmasi" }),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: "Bayar DP" })).toHaveCount(0);
+});
+
 test("§3.22 availability empty state offers the walk-in waitlist", async ({
   page,
 }) => {

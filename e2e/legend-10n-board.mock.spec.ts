@@ -13,9 +13,9 @@ test("KDS-01 station selection shows its routed tickets and all-day count", asyn
 }) => {
   await page.goto("/kds?mock=normal");
   await expect(
-    page.getByRole("radio", { name: /^Dapur( \(\d+\))?$/ }),
+    page.getByRole("radio", { name: /^Dapur(?: \d+)?$/ }),
   ).toBeVisible();
-  await page.getByRole("radio", { name: /^Dapur( \(\d+\))?$/ }).click();
+  await page.getByRole("radio", { name: /^Dapur(?: \d+)?$/ }).click();
   const sate = page
     .locator('[data-slot="kds-ticket"]')
     .filter({ hasText: "Sate Ayam" });
@@ -34,13 +34,13 @@ test("KDS-02 station changes preserve the displayed ticket without duplicates", 
   page,
 }) => {
   await page.goto("/kds?mock=normal");
-  await page.getByRole("radio", { name: /^Dapur( \(\d+\))?$/ }).click();
+  await page.getByRole("radio", { name: /^Dapur(?: \d+)?$/ }).click();
   const sate = page
     .locator('[data-slot="kds-ticket"]')
     .filter({ hasText: "Sate Ayam" });
   await expect(sate).toHaveCount(1);
-  await page.getByRole("radio", { name: /^Kopi( \(\d+\))?$/ }).click();
-  await page.getByRole("radio", { name: /^Dapur( \(\d+\))?$/ }).click();
+  await page.getByRole("radio", { name: /^Kopi(?: \d+)?$/ }).click();
+  await page.getByRole("radio", { name: /^Dapur(?: \d+)?$/ }).click();
   await expect(sate).toHaveCount(1);
 });
 
@@ -48,7 +48,7 @@ test("KDS-03 a voided item is visibly marked on its station", async ({
   page,
 }) => {
   await page.goto("/kds?mock=normal");
-  await page.getByRole("radio", { name: /^Nonkopi( \(\d+\))?$/ }).click();
+  await page.getByRole("radio", { name: /^Nonkopi(?: \d+)?$/ }).click();
   const ticket = page
     .locator('[data-slot="kds-ticket"]')
     .filter({ hasText: "Matcha Latte" });
@@ -59,7 +59,7 @@ test("KDS-04 start and bump update the ticket through the kitchen contract", asy
   page,
 }) => {
   await page.goto("/kds?mock=normal");
-  await page.getByRole("radio", { name: /^Dapur( \(\d+\))?$/ }).click();
+  await page.getByRole("radio", { name: /^Dapur(?: \d+)?$/ }).click();
   const ticket = page
     .locator('[data-slot="kds-ticket"]')
     .filter({ hasText: "Sate Ayam" });

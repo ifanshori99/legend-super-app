@@ -1,9 +1,7 @@
 import { useRef, useState, useSyncExternalStore } from "react";
-import { useQueries } from "@tanstack/react-query";
 import { useRouteContext } from "@tanstack/react-router";
 import type {
   KitchenTicketDetail,
-  StationBoard,
   StationConfig,
 } from "@starter/shared/kitchen";
 import { canTransitionKitchenTicket } from "@starter/shared/kitchen";
@@ -42,9 +40,9 @@ import {
   useKdsActions,
   useScannerStatus,
   useStationLabels,
+  useStationSummary,
   useStations,
 } from "../hooks.ts";
-import { boardQuery } from "../queries.ts";
 import { isOpenTicket, ticketScanCode } from "../scan-code.ts";
 import { ScannerPanel } from "./scanner-panel.tsx";
 import {
@@ -101,6 +99,7 @@ function KdsContent() {
   };
   const stations = useStations(outletId);
   const names = useStationLabels(outletId);
+  const summary = useStationSummary(outletId);
   const [selected, setSelected] = useState<StationId | null>(null);
   // Station authorization (legend-fsb7): a station-scoped account only polls
   // and shows the stations in its reach. The API denies the rest with 403, so
@@ -114,27 +113,13 @@ function KdsContent() {
       ? selected
       : active[0]?.stationId;
   const station = names.data?.find((row) => row.stationId === stationId);
-  // The station switch carries each station's live queue (DESIGN.md §5: zones
-  // and stations are a group with counts). The open station's count reuses its
-  // own 2 s board poll (same query key, no extra request); the other stations
-  // are read every 30 s only, so a kitchen tablet does not multiply board reads
-  // on the edge node (Opus review legend-haxq). A dedicated per-station count
-  // endpoint is follow-up work.
-  const stationBoards = useQueries({
-    queries: active.map((item) => ({
-      ...boardQuery(outletId, item.stationId),
-      refetchInterval: item.stationId === stationId ? (false as const) : 30_000,
-      select: (board: StationBoard) =>
-        board.tickets.filter(isOpenTicket).length,
-    })),
-  });
+  // One lightweight summary supplies every tab count; full board polling is
+  // reserved for the selected station.
   const stationName = (id: StationId) =>
     names.data?.find((row) => row.stationId === id)?.name ?? id;
-  // No count until the board is read: undefined renders no chip, never a fake 0.
-  const stationCount = (id: StationId) => {
-    const index = active.findIndex((item) => item.stationId === id);
-    return index === -1 ? undefined : stationBoards[index]?.data;
-  };
+  // No count until the summary is read: undefined renders no chip, never a fake 0.
+  const stationCount = (id: StationId) =>
+    summary.data?.stations.find((row) => row.stationId === id)?.openTickets;
   const failure = stations.error ?? names.error;
   const offline =
     failure instanceof ApiError && failure.code === "NETWORK_ERROR";
