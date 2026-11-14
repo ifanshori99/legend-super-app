@@ -65,6 +65,7 @@ import {
   appendOrderEvent,
   assertExpectedStatus,
   assertMutable,
+  assertNoOpenEdcRequest,
   auditPos,
   bumpPos,
   remainingIdr,
@@ -232,6 +233,14 @@ export async function addPosTender(
       assertExpectedStatus(order, input.expectedStatus);
       assertMutable(order);
       assertPosOrderSettleable({ status: order.status });
+      // EDC-01 (legend-ig2sl): an open or unbooked ECR sale already asked the
+      // terminal for this bill; another tender would be a second payment. Only
+      // the ECR tender that carries that request's id settles it.
+      const settlesEcrRequest =
+        input.edcTransactionId != null &&
+        !input.standalone &&
+        (input.method === "edc_card" || input.method === "edc_qris");
+      if (!settlesEcrRequest) await assertNoOpenEdcRequest(tx, context, order);
       // Native POS payments use tender-level links. A legacy order-level
       // link can still collect through its public token or a remote code,
       // even after a nominal expiry, so do not open a second payment source.

@@ -5,6 +5,8 @@
 export const posErrorHttpStatus = {
   /** POS-04: a completed or voided order is never edited or deleted. */
   ORDER_FINAL_IMMUTABLE: 409,
+  /** EDC-01: an EDC request is still waiting for its result; the bill is locked. */
+  EDC_REQUEST_OPEN: 409,
   /** The action is not one of the order's explicit transitions. */
   ORDER_TRANSITION_INVALID: 409,
   /** Fire needs at least one held item; everything is already in the kitchen. */
@@ -76,6 +78,8 @@ export const POS_ERROR_CODES = Object.keys(
 const defaultMessages: Record<PosErrorCode, string> = {
   ORDER_FINAL_IMMUTABLE:
     "Transaksi ini sudah final dan tidak dapat diubah atau dihapus.",
+  EDC_REQUEST_OPEN:
+    "EDC masih menunggu hasil; cek status EDC dulu sebelum mengubah tagihan.",
   ORDER_TRANSITION_INVALID: "Status pesanan tidak mendukung tindakan ini.",
   ORDER_HAS_NO_HELD_ITEMS: "Tidak ada item yang masih ditahan untuk dikirim.",
   ORDER_NOT_PAYABLE: "Pesanan ini tidak dapat dibayar pada status tersebut.",

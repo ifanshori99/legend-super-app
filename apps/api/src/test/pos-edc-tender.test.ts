@@ -5,7 +5,7 @@
 // tender against an approved ecr sale of the EDC ledger that belongs to the
 // order, and refuses everything else. No test here installs an EDC port.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -24,12 +24,16 @@ import type { PosReceipt } from "@starter/shared/pos";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
-import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
+import {
+  setDeviceOutletResolver,
+  setStaffPin,
+} from "../services/device-pin.service.ts";
 import {
   setPosReceiptPort,
   type PosReceiptPort,
 } from "../services/pos-order-ports.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
+import { createPosOverride } from "../services/staff-override.service.ts";
 import { registerTestDevice } from "./device-seed.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
@@ -40,7 +44,10 @@ import {
 
 const KOPI_IDR = 25_000;
 
+const PIN = "582914";
+
 const ids = {
+  supervisorRole: randomUUID(),
   category: randomUUID(),
   kopi: randomUUID(),
   priceList: randomUUID(),
@@ -53,6 +60,7 @@ let tenant: IsolatedTenant;
 let headers: { Host: string };
 type Member = { client: ReturnType<typeof agent>; userId: string };
 let cashier: Member;
+let supervisor: Member;
 
 // ---- Receipt numbering double (legend-93a port) ---------------------------------
 
@@ -144,22 +152,21 @@ async function member(roleId: string, label: string): Promise<Member> {
 
 function pos(who: Member = cashier, outletId = tenant.outletId) {
   const base = `/api/outlets/${encodeURIComponent(outletId)}/pos/orders`;
+  // The till: cash goes into the drawer of the shift open on this device.
+  const deviceToken = () =>
+    signDeviceToken({
+      version: 1,
+      issuedAt: Math.floor(Date.now() / 1000),
+      tenantId: tenant.tenantId,
+      brandId: null,
+      deviceId: ids.device,
+    });
   const send = (path: string, body: Record<string, unknown>) =>
     who.client
       .post(`${base}${path}`)
       .set(headers)
       .set(originHeader)
-      // The till: cash goes into the drawer of the shift open on this device.
-      .set(
-        DEVICE_TOKEN_HEADER,
-        signDeviceToken({
-          version: 1,
-          issuedAt: Math.floor(Date.now() / 1000),
-          tenantId: tenant.tenantId,
-          brandId: null,
-          deviceId: ids.device,
-        }),
-      )
+      .set(DEVICE_TOKEN_HEADER, deviceToken())
       .send({ idempotencyKey: randomUUID(), ...body });
   return {
     base,
@@ -191,6 +198,33 @@ function pos(who: Member = cashier, outletId = tenant.outletId) {
         reason: "manager_goodwill",
         reasonNote: "Diskon kecil pelanggan tetap",
       }),
+    // Total-changing paths other than the 1% manual discount above.
+    promo: (orderId: string, promoCode: string) =>
+      send(`/${orderId}/discounts`, {
+        source: "promo",
+        kind: "amount",
+        promoCode,
+        reason: "promo_engine",
+      }),
+    voucher: (orderId: string, voucherCode: string) =>
+      send(`/${orderId}/discounts`, {
+        source: "voucher",
+        kind: "amount",
+        voucherCode,
+        reason: "promo_engine",
+      }),
+    voidItem: (
+      orderId: string,
+      itemId: string,
+      body: Record<string, unknown>,
+    ) => send(`/${orderId}/items/${itemId}/void`, body),
+    removeDiscount: (orderId: string, discountId: string) =>
+      who.client
+        .delete(`${base}/${orderId}/discounts/${discountId}`)
+        .set(headers)
+        .set(originHeader)
+        .set(DEVICE_TOKEN_HEADER, deviceToken())
+        .send({ idempotencyKey: randomUUID() }),
     complete: (orderId: string, expectedStatus: string) =>
       send(`/${orderId}/complete`, { expectedStatus }),
     voidOrder: (orderId: string, body: Record<string, unknown>) =>
@@ -226,8 +260,14 @@ beforeAll(async () => {
         "pos.sale.create",
         "pos.payment.accept",
         "pos.discount.apply",
+        "pos.void.request",
         "shift.cash.operate",
       ],
+    ],
+    [
+      ids.supervisorRole,
+      "EDC Supervisor Uji",
+      ["order.view", "pos.void.approve", "pos.discount.approve"],
     ],
   ];
   for (const [id, name, permissions] of roles)
@@ -237,6 +277,17 @@ beforeAll(async () => {
       [id, tenant.tenantId, name, JSON.stringify(permissions)],
     );
   cashier = await member(ids.cashierRole, "POS Kasir");
+  supervisor = await member(ids.supervisorRole, "POS Supervisor");
+  await setStaffPin(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(tenant.tenantId),
+      brandId: null,
+      source: "session",
+    }),
+    supervisor.userId,
+    { outletId: tenant.outletId, userId: supervisor.userId },
+    { pin: PIN },
+  );
   // Finding 2: cash tenders, refunds and voids of cash-paid orders need the
   // acting cashier's open shift (409 SHIFT_NOT_OPEN otherwise). The cashier is
   // the actor of every sale, refund and void here, so one shift opened on the
@@ -320,13 +371,14 @@ afterAll(async () => {
 
 let terminalId: string;
 
-async function newOrder(): Promise<{
+async function newOrder(body: Record<string, unknown> = {}): Promise<{
   orderId: string;
   number: string;
   totalIdr: number;
   status: string;
+  itemIds: string[];
 }> {
-  const created = await pos().create();
+  const created = await pos().create(body);
   expect(created.status, JSON.stringify(created.body)).toBe(201);
   let status = created.body.data.status as string;
   const orderId = created.body.data.id as string;
@@ -340,6 +392,9 @@ async function newOrder(): Promise<{
     number: created.body.data.number as string,
     totalIdr: created.body.data.totalIdr as number,
     status,
+    itemIds: (created.body.data.items as { id: string }[]).map(
+      (item) => item.id,
+    ),
   };
 }
 
@@ -538,46 +593,40 @@ describe("POS EDC tender wiring (legend-dahk)", () => {
   });
 
   for (const status of ["pending", "unknown"]) {
-    // Known EDC bill-lock gap: with the same valid discount passing the control
-    // above, a dispatched pending/unknown ECR request still permits a discount.
-    // The ordinary run persisted Rp54,450 instead of Rp55,000 while the EDC
-    // request remained Rp55,000. Keep the immutable-bill assertion as the
-    // expected failure until the product blocks repricing during ECR payment.
-    it.fails(
-      `EDC-01 a ${status} ECR request already sent locks the POS bill against discounts`,
-      async () => {
-        const order = await newOrder();
-        const edcTransactionId = await ledgerSale({
-          reference: order.number,
-          amountIdr: order.totalIdr,
-          status,
-        });
-        await asOwnerTenant(tenant.tenantId, (client) =>
-          client.query(
-            `UPDATE edc_transactions SET dispatched_at = now() WHERE id = $1`,
-            [edcTransactionId],
-          ),
-        );
+    // The control above shows the same discount is accepted with no ECR
+    // request; once a pending/unknown request has been sent, the bill is locked.
+    it(`EDC-01 a ${status} ECR request already sent locks the POS bill against discounts`, async () => {
+      const order = await newOrder();
+      const edcTransactionId = await ledgerSale({
+        reference: order.number,
+        amountIdr: order.totalIdr,
+        status,
+      });
+      await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          `UPDATE edc_transactions SET dispatched_at = now() WHERE id = $1`,
+          [edcTransactionId],
+        ),
+      );
 
-        const discounted = await pos().discount(order.orderId);
-        const after = await pos().get(order.orderId);
-        expect(after.status).toBe(200);
-        expect(after.body.data).toMatchObject({
-          totalIdr: order.totalIdr,
-          discounts: [],
-          tenders: [],
-        });
-        const { rows } = await asOwnerTenant(tenant.tenantId, (client) =>
-          client.query(
-            `SELECT amount_idr::text AS amount_idr, status
+      const discounted = await pos().discount(order.orderId);
+      const after = await pos().get(order.orderId);
+      expect(after.status).toBe(200);
+      expect(after.body.data).toMatchObject({
+        totalIdr: order.totalIdr,
+        discounts: [],
+        tenders: [],
+      });
+      const { rows } = await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          `SELECT amount_idr::text AS amount_idr, status
            FROM edc_transactions WHERE id = $1`,
-            [edcTransactionId],
-          ),
-        );
-        expect(rows).toEqual([{ amount_idr: String(order.totalIdr), status }]);
-        expect(discounted.status, JSON.stringify(discounted.body)).toBe(409);
-      },
-    );
+          [edcTransactionId],
+        ),
+      );
+      expect(rows).toEqual([{ amount_idr: String(order.totalIdr), status }]);
+      expect(discounted.status, JSON.stringify(discounted.body)).toBe(409);
+    });
   }
 
   it("EDC-02 a missing, unapproved, standalone or mismatched ledger sale is refused", async () => {
@@ -642,5 +691,665 @@ describe("POS EDC tender wiring (legend-dahk)", () => {
       edcTransactionId,
     });
     expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+  });
+});
+
+// ---- EDC-01: the bill is locked while an ECR request is not final ------------------
+//
+// PRD EDC-01: the amount the EDC processes always equals the POS bill and the
+// cashier cannot change it after the request was sent. Decision (CTO): while an
+// ECR sale of the order is dispatched/pending/unknown, EVERY path that changes
+// the total is refused with 409 and a clear EDC code; the bill opens again once
+// the request is final (declined/cancelled/failed, as an inquiry leaves it).
+//
+// Assumptions: (1) "dispatched" is a pending/unknown ledger row with
+// dispatched_at set; a pending row without dispatched_at is also treated as
+// locked ("when in doubt, refuse"). (2) The POS API has no add/edit-item, split
+// or per-order service-charge route; the real total-changing paths are item
+// void, manual/promo/voucher discount and discount removal, which are covered.
+// (3) The error code is not fixed by the contract, so the test asserts 409 and
+// that the code or message names the EDC request.
+
+type Order = Awaited<ReturnType<typeof newOrder>>;
+type Res = Awaited<ReturnType<ReturnType<typeof pos>["discount"]>>;
+type Attempt = () => Promise<Res>;
+
+const sha256 = (value: string) =>
+  createHash("sha256").update(value, "utf8").digest("hex");
+const newCode = () =>
+  `T${randomUUID().replaceAll("-", "").slice(0, 11).toUpperCase()}`;
+
+/** A supervisor PIN approval for one action on one object (fresh each call). */
+async function pinApproval(
+  action: "void" | "discount",
+  objectType: "order" | "order_item",
+  objectId: string,
+): Promise<{ approvedBy: string; overrideId: string }> {
+  const { override } = await createPosOverride(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(tenant.tenantId),
+      brandId: null,
+      source: "session",
+    }),
+    cashier.userId,
+    {
+      outletId: tenant.outletId,
+      action,
+      valueIdr: 1_000_000,
+      reason: "Pelanggan salah pesan",
+      objectType,
+      objectId,
+      approval: {
+        method: "supervisor_pin",
+        approverUserId: userIdSchema.parse(supervisor.userId),
+        pin: PIN,
+      },
+    } as Parameters<typeof createPosOverride>[2],
+    { idempotencyKey: randomUUID() },
+  );
+  expect(override.status).toBe("approved");
+  return { approvedBy: supervisor.userId, overrideId: override.id };
+}
+
+async function seedPromoCode(): Promise<string> {
+  const code = newCode();
+  const id = randomUUID();
+  await asOwnerTenant(tenant.tenantId, (client) =>
+    client.query(
+      `INSERT INTO promotions
+         (id, tenant_id, name, description, status, code_hash, voucher_required, starts_at, ends_at,
+          conditions, benefit, stack_group, stackable, priority, quota_total, quota_per_customer,
+          budget_idr)
+       VALUES ($1, $2, $3, '', 'active', $4, true, now() - interval '1 hour', NULL, $5, $6, $7,
+               true, 0, NULL, NULL, 1000000)`,
+      [
+        id,
+        tenant.tenantId,
+        `EDC lock promo ${id.slice(0, 8)}`,
+        sha256(code),
+        JSON.stringify([
+          { kind: "item_quantity", menuItemIds: [ids.kopi], minQuantity: 1 },
+        ]),
+        JSON.stringify({ kind: "nominal_off", amountIdr: 5_000 }),
+        `g${id.slice(0, 8)}`,
+      ],
+    ),
+  );
+  return code;
+}
+
+async function seedVoucherCode(): Promise<string> {
+  const code = `V${randomUUID().replaceAll("-", "").slice(0, 11).toUpperCase()}`;
+  await asOwnerTenant(tenant.tenantId, (client) =>
+    client.query(
+      `INSERT INTO vouchers (id, tenant_id, promotion_id, customer_profile_id, code_hash, source,
+                             value_idr, valid_from, valid_until)
+       VALUES ($1, $2, NULL, NULL, $3, 'manual', 5000, now() - interval '1 hour', NULL)`,
+      [randomUUID(), tenant.tenantId, sha256(code)],
+    ),
+  );
+  return code;
+}
+
+/** Every route that changes an unpaid POS bill's total. */
+const totalChangingPaths: {
+  name: string;
+  /** Prepares the order (may already change its total) and returns the attempt. */
+  prepare: (order: Order) => Promise<Attempt>;
+}[] = [
+  {
+    name: "manual discount",
+    prepare: async (order) => () => pos().discount(order.orderId),
+  },
+  {
+    name: "promo discount",
+    prepare: async (order) => {
+      const code = await seedPromoCode();
+      return () => pos().promo(order.orderId, code);
+    },
+  },
+  {
+    name: "voucher discount",
+    prepare: async (order) => {
+      const code = await seedVoucherCode();
+      return () => pos().voucher(order.orderId, code);
+    },
+  },
+  {
+    name: "item void",
+    prepare: async (order) => async () => {
+      const itemId = order.itemIds[0] as string;
+      return pos().voidItem(order.orderId, itemId, {
+        reason: "wrong_order",
+        reasonNote: "Salah pesan item",
+        ...(await pinApproval("void", "order_item", itemId)),
+      });
+    },
+  },
+  {
+    name: "discount removal",
+    prepare: async (order) => {
+      const applied = await pos().discount(order.orderId);
+      expect(applied.status, JSON.stringify(applied.body)).toBe(201);
+      const discountId = applied.body.data.discounts[0].id as string;
+      return () => pos().removeDiscount(order.orderId, discountId);
+    },
+  },
+];
+
+/** A fresh two-line bill (so an item void leaves a bill), submitted if needed. */
+function twoLineOrder() {
+  return newOrder({
+    items: [
+      { menuItemId: ids.kopi, quantity: 1, modifierIds: [] },
+      { menuItemId: ids.kopi, quantity: 1, modifierIds: [] },
+    ],
+  });
+}
+
+/** The ECR request for the order's CURRENT bill, in the given state. */
+async function ecrRequest(
+  order: Order,
+  state: {
+    status: string;
+    dispatched: boolean;
+    dispatchedMinutesAgo?: number;
+  },
+): Promise<{ edcTransactionId: string; amountIdr: number }> {
+  const current = await pos().get(order.orderId);
+  expect(current.status).toBe(200);
+  const amountIdr = current.body.data.totalIdr as number;
+  const edcTransactionId = await ledgerSale({
+    reference: order.number,
+    amountIdr,
+    status: state.status,
+  });
+  if (state.dispatched)
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `UPDATE edc_transactions
+            SET dispatched_at = now() - make_interval(mins => $2::int)
+          WHERE id = $1`,
+        [edcTransactionId, state.dispatchedMinutesAgo ?? 0],
+      ),
+    );
+  return { edcTransactionId, amountIdr };
+}
+
+/** What a final inquiry answer does to the ledger row. */
+async function inquiryFinalises(edcTransactionId: string, status: string) {
+  await asOwnerTenant(tenant.tenantId, (client) =>
+    client.query(
+      `UPDATE edc_transactions SET status = $2, completed_at = now() WHERE id = $1`,
+      [edcTransactionId, status],
+    ),
+  );
+}
+
+async function billOf(orderId: string) {
+  const res = await pos().get(orderId);
+  expect(res.status).toBe(200);
+  const data = res.body.data;
+  return {
+    totalIdr: data.totalIdr as number,
+    items: data.items,
+    discounts: data.discounts,
+    tenders: data.tenders,
+  };
+}
+
+function expectLockRefusal(res: Res) {
+  expect(res.status, JSON.stringify(res.body)).toBe(409);
+  expect(
+    `${res.body.error?.code ?? ""} ${res.body.error?.message ?? ""}`,
+    JSON.stringify(res.body),
+  ).toMatch(/edc/i);
+}
+
+describe("EDC-01 the POS bill is locked while an ECR request is not final", () => {
+  const OPEN_STATES = [
+    { label: "pending and sent", status: "pending", dispatched: true },
+    { label: "unknown and sent", status: "unknown", dispatched: true },
+    {
+      label: "pending, send not yet confirmed",
+      status: "pending",
+      dispatched: false,
+    },
+  ];
+
+  describe.each(totalChangingPaths)("$name", (path) => {
+    it("control: without an ECR request the change is accepted and moves the total", async () => {
+      const order = await twoLineOrder();
+      const attempt = await path.prepare(order);
+      const before = await billOf(order.orderId);
+      const res = await attempt();
+      expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+      const after = await billOf(order.orderId);
+      expect(after.totalIdr).not.toBe(before.totalIdr);
+    });
+
+    it.each(OPEN_STATES)(
+      "is refused (409, EDC code) while the request is $label; bill and EDC amount stay equal",
+      async (state) => {
+        const order = await twoLineOrder();
+        const attempt = await path.prepare(order);
+        const request = await ecrRequest(order, state);
+        const before = await billOf(order.orderId);
+        expect(before.totalIdr).toBe(request.amountIdr);
+
+        expectLockRefusal(await attempt());
+
+        // A second try is refused the same way: nothing was half applied.
+        expectLockRefusal(await attempt());
+        const after = await billOf(order.orderId);
+        expect(after).toEqual(before);
+        const { rows } = await owner.query<{
+          amount_idr: string;
+          status: string;
+        }>(
+          `SELECT amount_idr::text AS amount_idr, status
+             FROM edc_transactions WHERE id = $1`,
+          [request.edcTransactionId],
+        );
+        expect(rows).toEqual([
+          { amount_idr: String(after.totalIdr), status: state.status },
+        ]);
+      },
+    );
+
+    it.each(["declined", "cancelled", "failed"])(
+      "opens again once an inquiry leaves the request %s",
+      async (finalStatus) => {
+        const order = await twoLineOrder();
+        const attempt = await path.prepare(order);
+        const request = await ecrRequest(order, {
+          status: "unknown",
+          dispatched: true,
+        });
+        const before = await billOf(order.orderId);
+        expectLockRefusal(await attempt());
+
+        await inquiryFinalises(request.edcTransactionId, finalStatus);
+
+        const res = await attempt();
+        expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+        const after = await billOf(order.orderId);
+        expect(after.totalIdr).not.toBe(before.totalIdr);
+        // The finished (non-approved) request records no payment.
+        expect(after.tenders).toEqual([]);
+      },
+    );
+
+    it.each(["pending", "unknown"])(
+      "a %s request sent two hours ago and never inquired stays locked (timeout does not unlock)",
+      async (status) => {
+        const order = await twoLineOrder();
+        const attempt = await path.prepare(order);
+        await ecrRequest(order, {
+          status,
+          dispatched: true,
+          dispatchedMinutesAgo: 120,
+        });
+        const before = await billOf(order.orderId);
+        expectLockRefusal(await attempt());
+        expect(await billOf(order.orderId)).toEqual(before);
+      },
+    );
+  });
+
+  it("the lock is per bill: another order's change is still accepted", async () => {
+    const locked = await twoLineOrder();
+    await ecrRequest(locked, { status: "unknown", dispatched: true });
+    const other = await twoLineOrder();
+    const res = await pos().discount(other.orderId);
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expectLockRefusal(await pos().discount(locked.orderId));
+  });
+
+  it("an approved EDC sale of the unchanged bill still settles it (the lock never blocks payment)", async () => {
+    const order = await twoLineOrder();
+    const request = await ecrRequest(order, {
+      status: "unknown",
+      dispatched: true,
+    });
+    await inquiryFinalises(request.edcTransactionId, "approved");
+    const paid = await payEdc(order.orderId, order.status, {
+      edcTransactionId: request.edcTransactionId,
+    });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    expect(paid.body.data.remainingIdr).toBe(0);
+    expect((await billOf(order.orderId)).totalIdr).toBe(request.amountIdr);
+  });
+});
+
+// ---- EDC-01 addendum 1: the lock covers unbooked approvals and flagged finals ------
+//
+// Architect review (money, "jangan sampai rugi"). Assumptions: (1) the error
+// code is EDC_REQUEST_OPEN (packages/shared/src/pos/errors.ts, HTTP 409).
+// (2) A sale request of the order keeps the bill locked when it is pending or
+// unknown, OR needs_reconciliation = true (a late approval stored as a final
+// declined/cancelled/failed row), OR it is approved but not yet booked as a live
+// (not voided/failed) tender of the order. An approved request that is already
+// a tender is paid and locks nothing. (3) Cash/QRIS/standalone tenders are
+// refused under the same lock, except an ECR tender that carries the
+// edcTransactionId of the request itself (that path settles the request).
+// (4) Live tender = status not voided/failed.
+
+function expectEdcOpen(res: Res) {
+  expect(res.status, JSON.stringify(res.body)).toBe(409);
+  expect(res.body.error?.code, JSON.stringify(res.body)).toBe(
+    "EDC_REQUEST_OPEN",
+  );
+}
+
+async function setReconciliation(edcTransactionId: string, value: boolean) {
+  await asOwnerTenant(tenant.tenantId, (client) =>
+    client.query(
+      `UPDATE edc_transactions SET needs_reconciliation = $2 WHERE id = $1`,
+      [edcTransactionId, value],
+    ),
+  );
+}
+
+/** Sum and count of the live tenders (not voided/failed) of one order. */
+async function liveTenders(orderId: string) {
+  const { rows } = await owner.query<{ sum: string; count: string }>(
+    `SELECT COALESCE(SUM(amount_idr), 0)::text AS sum, COUNT(*)::text AS count
+       FROM pos_order_tenders
+      WHERE order_id = $1 AND status NOT IN ('voided', 'failed')`,
+    [ulidToUuid(orderId)],
+  );
+  return { sumIdr: Number(rows[0]?.sum), count: Number(rows[0]?.count) };
+}
+
+async function edcAmount(edcTransactionId: string) {
+  const { rows } = await owner.query<{ amount_idr: string }>(
+    `SELECT amount_idr::text AS amount_idr FROM edc_transactions WHERE id = $1`,
+    [edcTransactionId],
+  );
+  return Number(rows[0]?.amount_idr);
+}
+
+describe("EDC-01 an approved ECR sale not yet booked as a tender locks the bill", () => {
+  describe.each(totalChangingPaths)("$name", (path) => {
+    it("is refused 409 EDC_REQUEST_OPEN; paying through payEdc then completes the order with no lock in the way", async () => {
+      const order = await twoLineOrder();
+      const attempt = await path.prepare(order);
+      const request = await ecrRequest(order, {
+        status: "approved",
+        dispatched: false,
+      });
+      const before = await billOf(order.orderId);
+      expect(before.totalIdr).toBe(request.amountIdr);
+
+      expectEdcOpen(await attempt());
+      expectEdcOpen(await attempt());
+      expect(await billOf(order.orderId)).toEqual(before);
+      expect((await liveTenders(order.orderId)).count).toBe(0);
+
+      // Booking the approval settles exactly the bill, once.
+      const paid = await payEdc(order.orderId, order.status, {
+        edcTransactionId: request.edcTransactionId,
+      });
+      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+      expect(paid.body.data.remainingIdr).toBe(0);
+      expect(await liveTenders(order.orderId)).toEqual({
+        sumIdr: request.amountIdr,
+        count: 1,
+      });
+      expect(await edcAmount(request.edcTransactionId)).toBe(before.totalIdr);
+
+      const completed = await pos().complete(
+        order.orderId,
+        paid.body.data.order.status,
+      );
+      expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+      expect(completed.body.data.status).toBe("completed");
+      expect(completed.body.data.totalIdr).toBe(before.totalIdr);
+    });
+  });
+});
+
+describe("EDC-01 a final declined/cancelled/failed row flagged needs_reconciliation keeps the bill locked", () => {
+  describe.each(totalChangingPaths)("$name", (path) => {
+    it.each(["declined", "cancelled", "failed"])(
+      "%s with the flag is refused 409 EDC_REQUEST_OPEN; without the flag (or once reconciled) it is accepted",
+      async (finalStatus) => {
+        const order = await twoLineOrder();
+        const attempt = await path.prepare(order);
+        const request = await ecrRequest(order, {
+          status: finalStatus,
+          dispatched: true,
+        });
+        await setReconciliation(request.edcTransactionId, true);
+        const before = await billOf(order.orderId);
+        expect(before.totalIdr).toBe(request.amountIdr);
+
+        expectEdcOpen(await attempt());
+        expectEdcOpen(await attempt());
+        expect(await billOf(order.orderId)).toEqual(before);
+        expect((await liveTenders(order.orderId)).count).toBe(0);
+        // The ledger row is untouched by the refusal.
+        expect(await edcAmount(request.edcTransactionId)).toBe(before.totalIdr);
+
+        // Reconciled (flag cleared): the final non-approved row no longer locks.
+        await setReconciliation(request.edcTransactionId, false);
+        const res = await attempt();
+        expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+        const after = await billOf(order.orderId);
+        expect(after.totalIdr).not.toBe(before.totalIdr);
+        expect(after.tenders).toEqual([]);
+      },
+    );
+
+    it.each(["declined", "cancelled", "failed"])(
+      "%s without the flag never locked it",
+      async (finalStatus) => {
+        const order = await twoLineOrder();
+        const attempt = await path.prepare(order);
+        const request = await ecrRequest(order, {
+          status: finalStatus,
+          dispatched: true,
+        });
+        const before = await billOf(order.orderId);
+        const res = await attempt();
+        expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+        expect((await billOf(order.orderId)).totalIdr).not.toBe(
+          before.totalIdr,
+        );
+        expect(request.amountIdr).toBe(before.totalIdr);
+      },
+    );
+  });
+});
+
+describe("EDC-01 cash and QRIS tenders are refused while an ECR request is open", () => {
+  const OPEN_REQUESTS = [
+    {
+      label: "pending and sent",
+      status: "pending",
+      dispatched: true,
+      flag: false,
+    },
+    {
+      label: "unknown and sent",
+      status: "unknown",
+      dispatched: true,
+      flag: false,
+    },
+    {
+      label: "pending, send not yet confirmed",
+      status: "pending",
+      dispatched: false,
+      flag: false,
+    },
+    {
+      label: "approved but not yet booked as a tender",
+      status: "approved",
+      dispatched: false,
+      flag: false,
+    },
+    {
+      label: "declined with needs_reconciliation",
+      status: "declined",
+      dispatched: true,
+      flag: true,
+    },
+    {
+      label: "cancelled with needs_reconciliation",
+      status: "cancelled",
+      dispatched: true,
+      flag: true,
+    },
+    {
+      label: "failed with needs_reconciliation",
+      status: "failed",
+      dispatched: true,
+      flag: true,
+    },
+  ];
+  const METHODS: {
+    name: string;
+    send: (order: Order) => Promise<Res>;
+  }[] = [
+    {
+      name: "cash",
+      send: (order) =>
+        pos().cash(order.orderId, order.status, order.totalIdr + 5_000),
+    },
+    {
+      name: "qris",
+      send: (order) =>
+        pos().tender(order.orderId, {
+          method: "qris",
+          expectedStatus: order.status,
+        }),
+    },
+  ];
+
+  describe.each(METHODS)("$name tender", (method) => {
+    it.each(OPEN_REQUESTS)(
+      "is refused 409 EDC_REQUEST_OPEN while the request is $label; nothing stored, bill unpaid, EDC amount equals the bill",
+      async (state) => {
+        const order = await newOrder();
+        const request = await ecrRequest(order, state);
+        if (state.flag) await setReconciliation(request.edcTransactionId, true);
+        const before = await billOf(order.orderId);
+
+        expectEdcOpen(await method.send(order));
+        expectEdcOpen(await method.send(order));
+
+        expect(await liveTenders(order.orderId)).toEqual({
+          sumIdr: 0,
+          count: 0,
+        });
+        const { rows } = await owner.query(
+          `SELECT 1 FROM pos_order_tenders WHERE order_id = $1`,
+          [ulidToUuid(order.orderId)],
+        );
+        expect(rows).toHaveLength(0);
+        const after = await pos().get(order.orderId);
+        expect(after.status).toBe(200);
+        expect(after.body.data.status).toBe(order.status);
+        expect(await billOf(order.orderId)).toEqual(before);
+        expect(await edcAmount(request.edcTransactionId)).toBe(before.totalIdr);
+      },
+    );
+
+    it("control: with no ECR request, or only an unflagged declined one, it is accepted and applies at most the bill", async () => {
+      const clean = await newOrder();
+      const accepted = await method.send(clean);
+      // QRIS needs a payment gateway the test app may not provide; the cash
+      // control proves the guard does not fire without an ECR request.
+      if (method.name === "cash") {
+        expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
+        expect(await liveTenders(clean.orderId)).toEqual({
+          sumIdr: clean.totalIdr,
+          count: 1,
+        });
+      } else {
+        expect(accepted.body.error?.code).not.toBe("EDC_REQUEST_OPEN");
+      }
+
+      const stale = await newOrder();
+      await ecrRequest(stale, { status: "declined", dispatched: true });
+      const afterDeclined = await method.send(stale);
+      expect(afterDeclined.body.error?.code).not.toBe("EDC_REQUEST_OPEN");
+      if (method.name === "cash") {
+        expect(afterDeclined.status, JSON.stringify(afterDeclined.body)).toBe(
+          201,
+        );
+        expect((await liveTenders(stale.orderId)).sumIdr).toBe(stale.totalIdr);
+      }
+    });
+  });
+
+  it("an approved-not-booked request: cash is refused, the EDC tender with its edcTransactionId is accepted, and the customer pays the bill exactly once", async () => {
+    const order = await newOrder();
+    const request = await ecrRequest(order, {
+      status: "approved",
+      dispatched: false,
+    });
+    expect(request.amountIdr).toBe(order.totalIdr);
+
+    expectEdcOpen(
+      await pos().cash(order.orderId, order.status, order.totalIdr + 5_000),
+    );
+    expect((await liveTenders(order.orderId)).count).toBe(0);
+
+    const paid = await payEdc(order.orderId, order.status, {
+      edcTransactionId: request.edcTransactionId,
+    });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    expect(paid.body.data.remainingIdr).toBe(0);
+    expect(await liveTenders(order.orderId)).toEqual({
+      sumIdr: order.totalIdr,
+      count: 1,
+    });
+    expect(await edcAmount(request.edcTransactionId)).toBe(order.totalIdr);
+
+    // Already paid by EDC: a late cash tender must not charge the customer again.
+    const again = await pos().cash(
+      order.orderId,
+      paid.body.data.order.status,
+      order.totalIdr + 5_000,
+    );
+    expect(again.status, JSON.stringify(again.body)).toBeGreaterThanOrEqual(
+      400,
+    );
+    expect((await liveTenders(order.orderId)).sumIdr).toBe(order.totalIdr);
+  });
+
+  it("once the approval is booked as a tender the order is paid and no EDC lock remains (completion works)", async () => {
+    const order = await newOrder();
+    const request = await ecrRequest(order, {
+      status: "approved",
+      dispatched: true,
+    });
+    const paid = await payEdc(order.orderId, order.status, {
+      edcTransactionId: request.edcTransactionId,
+    });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    const completed = await pos().complete(
+      order.orderId,
+      paid.body.data.order.status,
+    );
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+    expect(completed.body.data.status).toBe("completed");
+  });
+
+  it("the lock is per order: another order still takes cash while this one has an open request", async () => {
+    const locked = await newOrder();
+    await ecrRequest(locked, { status: "pending", dispatched: true });
+    const other = await newOrder();
+    const res = await pos().cash(
+      other.orderId,
+      other.status,
+      other.totalIdr + 5_000,
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expectEdcOpen(
+      await pos().cash(locked.orderId, locked.status, locked.totalIdr + 5_000),
+    );
   });
 });

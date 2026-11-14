@@ -21,6 +21,9 @@ import {
   isNotNull,
   isNull,
   ne,
+  notExists,
+  notInArray,
+  or,
   sql,
 } from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
@@ -70,6 +73,7 @@ import {
   posOrders,
   posOrderTenders,
 } from "../db/schema/pos-order.ts";
+import { edcTransactions } from "../db/schema/edc.ts"; // legend-ig2sl
 import { orderIssues } from "../db/schema/kds-issues.ts"; // legend-kxoyf
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -374,6 +378,60 @@ export function assertNoPendingGatewayTender(
       "CONFLICT",
       "Masih ada QRIS yang menunggu pembayaran; total pesanan tidak dapat diubah.",
     );
+}
+
+/**
+ * EDC-01 (legend-ig2sl): while an ECR sale for this bill is still open, the
+ * terminal was asked to charge the amount at that time. Any total-changing
+ * action (and any other tender) fails closed (409) until the request is final
+ * or the bill is settled. Open means: `pending`/`unknown`; a late approval
+ * kept as declined/cancelled/failed (`needs_reconciliation`); or `approved`
+ * without a live tender yet (money taken, not booked). An approved sale that
+ * already is a live tender does not lock. Call it after the order row is
+ * locked, inside the mutating transaction: it takes the same advisory lock as
+ * the edge write-ahead (tenant, outlet:reference), so the two never interleave.
+ */
+export async function assertNoOpenEdcRequest(
+  tx: Tx,
+  context: ScopedTenantContext,
+  order: Pick<OrderRow, "outletId" | "number">,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${tenantId}), hashtext(${`${order.outletId}:${order.number}`}))`,
+  );
+  const [open] = await tx
+    .select({ id: edcTransactions.id })
+    .from(edcTransactions)
+    .where(
+      and(
+        eq(edcTransactions.tenantId, tenantId),
+        eq(edcTransactions.outletId, order.outletId),
+        eq(edcTransactions.type, "sale"),
+        eq(edcTransactions.reference, order.number),
+        or(
+          inArray(edcTransactions.status, ["pending", "unknown"]),
+          eq(edcTransactions.needsReconciliation, true),
+          and(
+            eq(edcTransactions.status, "approved"),
+            notExists(
+              tx
+                .select({ one: sql`1` })
+                .from(posOrderTenders)
+                .where(
+                  and(
+                    eq(posOrderTenders.tenantId, tenantId),
+                    eq(posOrderTenders.edcTransactionId, edcTransactions.id),
+                    notInArray(posOrderTenders.status, ["voided", "failed"]),
+                  ),
+                ),
+            ),
+          ),
+        ),
+      ),
+    )
+    .limit(1);
+  if (open) throw new PosError("EDC_REQUEST_OPEN");
 }
 
 /** Stale-screen guard (contract `expectedStatus`): 412 when it moved on. */
