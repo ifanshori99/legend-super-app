@@ -44,7 +44,9 @@ const PATTERNS: [PiiKind, RegExp][] = [
     "salary",
     /\b(?:gaji|salary|thp|take[\s-]?home(?:[\s-]?pay)?|payroll|upah|penghasilan)\b[^\d\n]{0,25}(?:rp\.?\s*)?\d[\d.,]*(?:\s*(?:jt|juta|rb|ribu|k|m))?/gi,
   ],
-  ["phone", /(\+62|62|0)8\d{1,3}[\s.-]?\d{3,4}[\s.-]?\d{3,5}\b/g],
+  // No word character or hyphen directly before the number: a UUID segment or
+  // a longer digit string must not be read as a phone number.
+  ["phone", /(?<![\w-])(\+62|62|0)8\d{1,3}[\s.-]?\d{3,4}[\s.-]?\d{3,5}\b/g],
 ];
 
 export type PiiFinding = {
@@ -78,13 +80,70 @@ export function redactPii(text: string): string {
   return result;
 }
 
-/** Deep copy of a JSON value with every string passed through redactPii. */
+// Keys that name a personal-data field. Matched on whole words after splitting
+// camelCase and snake_case, so ids and chart-of-accounts fields (accountId,
+// accountCode, microphone) stay intact.
+const SENSITIVE_WORDS = new Set([
+  "phone",
+  "telp",
+  "telepon",
+  "mobile",
+  "whatsapp",
+  "email",
+  "nik",
+  "npwp",
+  "rekening",
+]);
+
+function isSensitiveKey(key: string): boolean {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  return words.some(
+    (word, i) =>
+      SENSITIVE_WORDS.has(word) ||
+      (word === "account" && ["number", "no"].includes(words[i + 1] ?? "")) ||
+      (word === "bank" && words[i + 1] === "account"),
+  );
+}
+
+/**
+ * Deep copy of a JSON value with every string passed through redactPii.
+ * Object keys are redacted too, and a string or number stored under a key that
+ * names personal data (phone, email, nik, npwp, rekening ...) is masked whole,
+ * because a bare value like "1234567890" has no context for the patterns.
+ */
 export function redactJson(value: unknown): unknown {
   if (typeof value === "string") return redactPii(value);
   if (Array.isArray(value)) return value.map(redactJson);
   if (value && typeof value === "object")
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, redactJson(item)]),
+      Object.entries(value).map(([key, item]) => [
+        redactPii(key),
+        isSensitiveKey(key) &&
+        (typeof item === "string" || typeof item === "number")
+          ? "[redacted]"
+          : redactJson(item),
+      ]),
     );
   return value;
+}
+
+/**
+ * Tool results are JSON text (or an error message) that is sent back to the
+ * provider on the next turn (AIG-02). Redact every string value inside a JSON
+ * result; text that is not JSON is redacted as plain text. Content with no
+ * personal data is returned unchanged, byte for byte.
+ */
+export function redactToolResultContent(content: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return redactPii(content);
+  }
+  const redacted = JSON.stringify(redactJson(parsed));
+  return redacted === JSON.stringify(parsed) ? content : redacted;
 }
