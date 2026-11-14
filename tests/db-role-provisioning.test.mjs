@@ -99,6 +99,8 @@ function runJobAsync(env) {
 
 // Catalog state the job controls, without password verifiers (re-salted on
 // every run): a second run must leave it exactly as the first did.
+// Keep all grants to these logins and legend_app, and all members of these
+// logins. Other legend_app members belong to parallel tests in this cluster.
 async function snapshot(pool, roles) {
   const { rows } = await pool.query(
     `WITH r AS (SELECT oid FROM pg_roles WHERE rolname = ANY($1) OR rolname = 'legend_app')
@@ -111,7 +113,7 @@ async function snapshot(pool, roles) {
        'members', (SELECT json_agg(json_build_object('role', roleid::regrole::text, 'member', member::regrole::text,
                      'grantor', grantor::regrole::text, 'admin', admin_option, 'inherit', inherit_option,
                      'set', set_option) ORDER BY roleid::regrole::text, member::regrole::text, grantor::regrole::text)
-                   FROM pg_auth_members WHERE member IN (SELECT oid FROM r) OR roleid IN (SELECT oid FROM r)),
+                   FROM pg_auth_members WHERE member IN (SELECT oid FROM r) OR roleid IN (SELECT oid FROM pg_roles WHERE rolname = ANY($1))),
        'settings', (SELECT count(*) FROM pg_db_role_setting WHERE setrole IN (SELECT oid FROM r)),
        'schemas', (SELECT json_agg(json_build_object('name', nspname, 'owner', nspowner::regrole::text,
                      'acl', nspacl::text) ORDER BY nspname)
