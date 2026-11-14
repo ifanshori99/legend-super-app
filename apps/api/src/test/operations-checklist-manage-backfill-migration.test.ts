@@ -1,4 +1,4 @@
-// legend-wg0g. Migration 0550 appends `ops.checklist.manage` to the stored
+// legend-wg0g. Migration 0356 appends `ops.checklist.manage` to the stored
 // template roles owner, outlet_manager and kitchen_lead of tenants seeded before
 // the permission existed (the resolver reads stored role rows, not the catalog).
 // facility_attendant and custom roles must not get it. Idempotent. The test runs
