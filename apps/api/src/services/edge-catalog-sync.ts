@@ -826,16 +826,33 @@ export async function listCatalogRecordsSince(
   const { tenantId, outletId } = verifiedEdgeNodeSchema
     .pick({ tenantId: true, outletId: true })
     .parse({ tenantId: input.tenantId, outletId: input.outletId });
-  const { stream, limit, protocolVersion } = catalogSyncQuerySchema.parse(
-    input.query,
-  );
-  const since = parseCursor(stream, input.query.since);
   const context = outletContext(
     establishTenantContext({ tenantId, brandId: null, source: "device" }),
     outletId,
   );
 
-  const rows = await withTenant(database, context, async (tx) => {
+  return withTenant(database, context, (tx) =>
+    listCatalogRecordsSinceTx(tx, input),
+  );
+}
+
+/** Internal scanner shared with the cloud publisher in its cursor transaction. */
+export async function listCatalogRecordsSinceTx(
+  tx: Parameters<Parameters<typeof withTenant>[2]>[0],
+  input: {
+    readonly tenantId: VerifiedEdgeNode["tenantId"];
+    readonly outletId: VerifiedEdgeNode["outletId"];
+    readonly query: CatalogSyncQuery;
+  },
+): Promise<CatalogSyncPage> {
+  const { tenantId, outletId } = verifiedEdgeNodeSchema
+    .pick({ tenantId: true, outletId: true })
+    .parse({ tenantId: input.tenantId, outletId: input.outletId });
+  const { stream, limit, protocolVersion } = catalogSyncQuerySchema.parse(
+    input.query,
+  );
+  const since = parseCursor(stream, input.query.since);
+  const rows = await (async () => {
     // Fail closed: an inactive tenant or a closed / unknown outlet syncs nothing.
     const [tenantRow] = await tx
       .select({ status: tenants.status })
@@ -864,7 +881,7 @@ export async function listCatalogRecordsSince(
       since,
       take: limit + 1,
     });
-  });
+  })();
 
   const page = rows.slice(0, limit);
   const last = page.at(-1);

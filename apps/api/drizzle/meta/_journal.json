@@ -2465,6 +2465,13 @@
       "when": 1794629274111,
       "tag": "0365_notification_outbox_alarm_window",
       "breakpoints": true
+    },
+    {
+      "idx": 366,
+      "version": "7",
+      "when": 1794660807275,
+      "tag": "0373_edge_catalog_publisher",
+      "breakpoints": true
     }
   ]
 }

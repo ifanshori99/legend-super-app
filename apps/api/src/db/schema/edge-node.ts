@@ -486,6 +486,29 @@ export const edgePullCheckpoints = pgTable(
   ],
 );
 
+/** Cloud publisher progress, independent of the edge HTTP pull cursor. */
+export const edgeCatalogPublisherCursors = pgTable(
+  "edge_catalog_publisher_cursors",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    edgeNodeId: uuid("edge_node_id").notNull(),
+    brandId: uuid("brand_id").notNull(),
+    stream: varchar("stream", { length: 40 })
+      .$type<CatalogSyncStream>()
+      .notNull(),
+    watermark: text("watermark"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.edgeNodeId, table.stream] }),
+    foreignKey({
+      name: "edge_catalog_publisher_cursors_edge_node_fk",
+      columns: [table.tenantId, table.outletId, table.edgeNodeId],
+      foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
+    }),
+  ],
+);
+
 // Edge-side staff pin peppers (legend-ideif). One row per (node, version): the
 // tenant's derived pepper, AES-256-GCM sealed (edge/staff-pin-pepper-store.ts),
 // so the edge can verify pins offline without ever holding the root pepper.
