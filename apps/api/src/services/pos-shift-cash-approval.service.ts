@@ -14,8 +14,8 @@
 // outcome row is append-only and the database trigger refuses a decision on a
 // closed shift, so a closed shift's figures never move.
 //
-// Service only: no route is mounted until the approver permission is decided,
-// hence the single constant below.
+// Route: POST /pos/shifts/:shiftId/cash-movements/:movementId/decision
+// (routes/pos-shift.routes.ts), guarded by the approver permission below.
 
 import { and, eq } from "drizzle-orm";
 import {
@@ -37,10 +37,11 @@ import {
   computeShiftAggregates,
   findShift,
   heldCorrectionCashIdrOf,
+  parseShiftId,
   type ShiftCaller,
 } from "./pos-shift-support.ts";
 
-/** Temporary (pending the CTO decision): one constant so the swap is one line. */
+/** CTO decision (15 Nov): the shift approver decides; one constant. */
 export const HELD_CASH_MOVEMENT_APPROVE_PERMISSION = "shift.cash.approve_close";
 
 const decisionInputSchema = z.strictObject({
@@ -63,6 +64,7 @@ export async function decideHeldCashMovement(
   context: ScopedTenantContext,
   caller: ShiftCaller,
   outletId: OutletId,
+  shiftId: string,
   movementId: string,
   input: { decision: "approved" | "rejected" },
 ): Promise<HeldCashMovementDecision> {
@@ -91,6 +93,7 @@ export async function decideHeldCashMovement(
           eq(cashMovements.tenantId, tenantId),
           eq(cashMovements.outletId, outletId),
           eq(cashMovements.id, id),
+          eq(cashMovements.shiftId, parseShiftId(shiftId)),
         ),
       );
     if (!movement || !movement.needsApproval) throw movementNotFound();
@@ -103,7 +106,7 @@ export async function decideHeldCashMovement(
       tx,
       context,
       outletId,
-      movement.shiftId,
+      shiftId,
       true,
     );
     const [existing] = await tx

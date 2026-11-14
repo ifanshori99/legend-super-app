@@ -1317,6 +1317,21 @@ export const recordCashMovementInputSchema = clientInputSchema({
   idempotencyKey: idempotencyKeySchema,
 });
 
+/** A supervisor approves or rejects a held cash out or drop (legend-3l4q). */
+export const decidePosCashMovementInputSchema = z.strictObject({
+  decision: z.enum(["approved", "rejected"]),
+});
+
+export const posCashMovementDecisionSchema = z.strictObject({
+  movementId: cashMovementIdSchema,
+  outcome: z.enum(["approved", "rejected"]),
+  decidedBy: userIdSchema,
+  decidedAt: isoDateTimeSchema,
+});
+export type PosCashMovementDecision = z.infer<
+  typeof posCashMovementDecisionSchema
+>;
+
 // ---- End of day (F8 "Tutup Hari") -----------------------------------------
 
 export const endOfDayDeviceRecapSchema = z.strictObject({

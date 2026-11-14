@@ -27,12 +27,14 @@ import { posOverrideIdSchema } from "../access/override.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import { tableSessionIdSchema } from "../qr-order/schemas.ts";
 import {
+  cashMovementIdSchema,
   cashMovementTypeSchema,
   closeBusinessDayInputSchema,
   closePosShiftInputSchema,
   forceClosePosShiftInputSchema,
   customerDisplayPairingSchema,
   customerDisplayStateSchema,
+  decidePosCashMovementInputSchema,
   discountReasonSchema,
   endOfDayRecapSchema,
   endOfDayRecapViewSchema,
@@ -43,6 +45,7 @@ import {
   orderIdSchema,
   pairCustomerDisplayInputSchema,
   posApprovalPolicySchema,
+  posCashMovementDecisionSchema,
   posCashMovementSchema,
   posCatalogSchema,
   posDiscountIdSchema,
@@ -90,6 +93,11 @@ const orderItemParams = z.strictObject({
 const shiftParams = z.strictObject({
   outletId: outletIdSchema,
   shiftId: posShiftIdSchema,
+});
+const cashMovementParams = z.strictObject({
+  outletId: outletIdSchema,
+  shiftId: posShiftIdSchema,
+  movementId: cashMovementIdSchema,
 });
 const receiptParams = z.strictObject({
   outletId: outletIdSchema,
@@ -549,6 +557,18 @@ export const recordPosCashMovement = defineEndpoint({
   params: shiftParams,
   body: recordCashMovementInputSchema,
   response: dataResponseSchema(posCashMovementSchema),
+});
+
+/**
+ * legend-3l4q: a supervisor (`shift.cash.approve_close`, never the recorder)
+ * approves or rejects a held cash out or drop while the shift is open.
+ */
+export const decidePosCashMovement = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/cash-movements/:movementId/decision",
+  params: cashMovementParams,
+  body: decidePosCashMovementInputSchema,
+  response: dataResponseSchema(posCashMovementDecisionSchema),
 });
 
 /** Read side of the same sheet, for the printed shift report. */
