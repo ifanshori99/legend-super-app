@@ -27,6 +27,9 @@ import {
 } from "@starter/shared/core/server";
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import { createApp } from "../app";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { setPaymentRefundGateway } from "../services/payment-refund-gateway";
 import {
   handleRefundApprovalResolved,
@@ -35,6 +38,7 @@ import {
 } from "../services/payment-refund.service";
 import { decideApprovalRequest } from "../services/platform-approval.service";
 import { refundPosOrder } from "../services/pos-order-corrections";
+import { requestPosRefundGatewayPart } from "../services/pos-refund-gateway";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
 import { FakeRefundGateway } from "./refund-fake-gateway";
 import {
@@ -855,5 +859,71 @@ describe("legend-ghgei F3 four-eyes holds through the approvals inbox and the ch
       status: "approved",
       last_payout_error: PAYOUT_QUARANTINED,
     });
+  });
+});
+
+// legend-fpy9s: a gateway line and a deposit part of ONE POS refund on the SAME
+// intent share one gateway idempotency key and one refund amount, so the
+// pin bound could not tell a short-filed line from a covered one. The filer
+// refuses that mix outright (DP_REFUND_SOURCE_UNVERIFIED) before any write.
+// Assumptions: `posRefundId` is a fresh ULID with no pos_order_refunds row (the
+// refusal must not depend on one); the control files one pending refund of the
+// deposit amount under the shared key.
+describe("legend-fpy9s the gateway filer refuses a deposit part plus a line on one intent", () => {
+  type FilerInput = Parameters<typeof requestPosRefundGatewayPart>[2];
+  type FilerTx = Parameters<typeof requestPosRefundGatewayPart>[0];
+
+  const filePart = (
+    sale: Sale,
+    posRefundId: string,
+    parts: Pick<FilerInput, "lines" | "depositParts">,
+  ) =>
+    withTenant(db, scope(), (tx) =>
+      requestPosRefundGatewayPart(tx as FilerTx, scope(), {
+        order: {
+          id: sale.orderId,
+          outletId: outletIdSchema.parse(seededOutletA),
+        } as FilerInput["order"],
+        caller: {
+          userId: userIdSchema.parse(staff.userId),
+          deviceId: null,
+        },
+        posRefundId,
+        now: new Date(),
+        ...parts,
+      }),
+    );
+
+  it("a gateway line plus a deposit part on the same intent is refused 409 DP_REFUND_SOURCE_UNVERIFIED and writes nothing", async () => {
+    const sale = await qrisSale(50_000);
+    const posRefundId = createUlid();
+    const error = await filePart(sale, posRefundId, {
+      lines: [
+        { method: "qris", amountIdr: 10_000, paymentIntentId: sale.intentId },
+      ],
+      depositParts: [{ paymentIntentId: sale.intentId, amountIdr: 20_000 }],
+    }).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(HttpError);
+    expect((error as HttpError).status).toBe(409);
+    expect((error as HttpError).code).toBe("DP_REFUND_SOURCE_UNVERIFIED");
+    expect(await refundRows(sale.intentId)).toEqual([]);
+    expect(await gatewayKeys(posRefundId, sale.intentId)).toEqual([]);
+  });
+
+  // The QRIS sale still holds its money here, so the refund cap leaves no
+  // room and nothing is filed; the control only proves the guard does not
+  // fire for a deposit part alone.
+  it("control: a deposit part alone on the intent is not refused by the guard", async () => {
+    const sale = await qrisSale(50_000);
+    const posRefundId = createUlid();
+    await expect(
+      filePart(sale, posRefundId, {
+        lines: [],
+        depositParts: [{ paymentIntentId: sale.intentId, amountIdr: 20_000 }],
+      }),
+    ).resolves.toBeUndefined();
   });
 });
