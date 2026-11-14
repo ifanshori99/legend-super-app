@@ -18,6 +18,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { findTenantContext } from "../middleware/tenant.ts";
 import { isCatalogDeliveryRefused } from "../services/edge-master-data-publisher.ts";
 import {
+  BRAND_DEPENDENT_CATALOG_STREAMS,
   catalogSyncQuerySchema,
   listCatalogRecordsSince,
 } from "../services/edge-catalog-sync.ts";
@@ -47,8 +48,12 @@ catalogRecordSyncRouter.get("/", async (req, res) => {
       "Tenant does not match this domain.",
     );
   const query = catalogSyncQuerySchema.parse(req.query);
-  // legend-3k41y: a blocked node (outlet brand moved) is refused, fail closed.
-  if (await isCatalogDeliveryRefused(db, node))
+  // legend-3k41y: a blocked node (outlet brand moved) is refused the
+  // brand-filtered streams, fail closed; outlet-scoped streams still flow.
+  if (
+    BRAND_DEPENDENT_CATALOG_STREAMS.has(query.stream) &&
+    (await isCatalogDeliveryRefused(db, node))
+  )
     throw new CoreError(
       "FORBIDDEN",
       "Edge node diblokir: brand outlet berubah, provisi ulang node.",

@@ -34,6 +34,7 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { parseEdgeHardeningEnv } from "@starter/shared/env";
+import { catalogRecordUpdatedEvent } from "@starter/shared/edge";
 import {
   eventEnvelopeSchema,
   syncDirectionSchema,
@@ -83,6 +84,77 @@ export async function lockSyncCursor(
     received_in_seq: Number(row.received_in_seq),
     last_acked_at: (row.last_acked_at as Date | null) ?? null,
   };
+}
+
+/** Parked above any real link_seq while the queue behind a dead letter is renumbered. */
+export const RENUMBER_PARK = 1_000_000_000_000;
+
+/** Aggregate type of the brand-scoped catalog rows the publisher queues. */
+const CATALOG_AGGREGATE_TYPE = catalogRecordUpdatedEvent.entry.aggregateType;
+
+/**
+ * legend-3k41y: moves every still-pending cloud_to_edge catalog row of a node
+ * into edge_link_dead_letters (reason brand_moved, full event kept) and
+ * renumbers the rows behind them down, so link_seq stays gap-free for the
+ * receiver. Run it inside the caller's transaction: it takes the same cursor
+ * lock as the enqueue path, then re-checks that the node is still refused
+ * (publisher blocked, or the outlet brand differs from the cursor brand) and
+ * changes nothing when it is not. Rows at or below the acknowledged cursor
+ * never change number; outlet-scoped events are only renumbered. Assumption:
+ * rows above the acknowledged cursor may already have been sent but not
+ * acknowledged; renumbering them is accepted here (the receiver resumes from
+ * its contiguous cursor). The queue key is not deferrable, so the surviving
+ * rows behind are parked far above first, the removed rows are deleted, then
+ * the parked rows are numbered first, first+1, ... by a window in SQL (every
+ * statement has a constant number of bind parameters). Returns the removed
+ * count.
+ */
+export async function deadLetterPendingCatalogRows(
+  tx: EdgeTx,
+  node: { tenantId: string; outletId: string; edgeNodeId: string },
+): Promise<number> {
+  const cursor = await lockSyncCursor(tx, node, "cloud_to_edge");
+  const refused = await tx.execute(
+    sql`SELECT 1 FROM edge_catalog_publisher_cursors c JOIN outlets o ON o.tenant_id = c.tenant_id AND o.id = c.outlet_id WHERE c.edge_node_id = ${node.edgeNodeId}::uuid AND (c.blocked_at IS NOT NULL OR c.brand_id <> o.brand_id) LIMIT 1`,
+  );
+  if (!refused.rows.length) return 0;
+  const gone = sql`status = 'pending' AND aggregate_type = ${CATALOG_AGGREGATE_TYPE} AND link_seq > ${cursor.acked_out_seq}`;
+  const where = sql`edge_node_id = ${node.edgeNodeId}::uuid AND direction = 'cloud_to_edge' AND ${gone}`;
+  const head = await tx.execute(
+    sql`SELECT MIN(link_seq) AS first FROM edge_outbound_queue WHERE ${where}`,
+  );
+  if (head.rows[0]?.first == null) return 0;
+  const first = Number(head.rows[0].first);
+  await tx.execute(
+    sql`INSERT INTO edge_link_dead_letters (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, bytes, reason, event) SELECT tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, octet_length(event::text), 'brand_moved', event FROM edge_outbound_queue WHERE ${where} ON CONFLICT DO NOTHING`,
+  );
+  await tx.execute(sql`SELECT set_config('app.edge_dead_letter', 'on', true)`);
+  await tx.execute(
+    sql`UPDATE edge_outbound_queue q SET link_seq = q.link_seq + ${RENUMBER_PARK} WHERE q.edge_node_id = ${node.edgeNodeId}::uuid AND q.direction = 'cloud_to_edge' AND q.link_seq > ${first} AND NOT (q.status = 'pending' AND q.aggregate_type = ${CATALOG_AGGREGATE_TYPE} AND q.link_seq > ${cursor.acked_out_seq})`,
+  );
+  const deleted = await tx.execute(
+    sql`WITH d AS (DELETE FROM edge_outbound_queue WHERE ${where} RETURNING 1) SELECT COUNT(*) AS n FROM d`,
+  );
+  const removed = Number(deleted.rows[0]?.n ?? 0);
+  // The queue above the first removed row is gap-free by construction, so the
+  // rows behind close the gap in order. Verify that instead of assuming it.
+  const parked = await tx.execute(
+    sql`SELECT COUNT(*) AS n, MAX(link_seq) AS top FROM edge_outbound_queue WHERE edge_node_id = ${node.edgeNodeId}::uuid AND direction = 'cloud_to_edge' AND link_seq > ${RENUMBER_PARK}`,
+  );
+  const behind = Number(parked.rows[0]?.n ?? 0);
+  if (
+    behind > 0 &&
+    Number(parked.rows[0]?.top) - RENUMBER_PARK - first + 1 !== behind + removed
+  )
+    throw new Error("Edge outbound queue has a gap; refusing to renumber");
+  await tx.execute(
+    sql`UPDATE edge_outbound_queue q SET link_seq = ${first - 1} + m.rn FROM (SELECT link_seq, ROW_NUMBER() OVER (ORDER BY link_seq) AS rn FROM edge_outbound_queue WHERE edge_node_id = ${node.edgeNodeId}::uuid AND direction = 'cloud_to_edge' AND link_seq > ${RENUMBER_PARK}) m WHERE q.edge_node_id = ${node.edgeNodeId}::uuid AND q.direction = 'cloud_to_edge' AND q.link_seq = m.link_seq`,
+  );
+  await tx.execute(
+    sql`UPDATE sync_cursors SET next_out_seq = next_out_seq - ${removed}, updated_at = now() WHERE edge_node_id = ${node.edgeNodeId}::uuid AND direction = 'cloud_to_edge'`,
+  );
+  await tx.execute(sql`SELECT set_config('app.edge_dead_letter', '', true)`);
+  return removed;
 }
 
 /** The node row inside the caller's scope (RLS + outlet policy apply). */

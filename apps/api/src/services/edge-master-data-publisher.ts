@@ -19,7 +19,11 @@ import { catalogRecordIdFromKeys } from "../lib/edge-catalog-identity.ts";
 import { logger } from "../lib/logger.ts";
 import { outletContext } from "./device-pin-support.ts";
 import { listCatalogRecordsSinceTx } from "./edge-catalog-sync.ts";
-import { enqueueEdgeEvent, lockSyncCursor } from "./edge-queue.service.ts";
+import {
+  deadLetterPendingCatalogRows,
+  enqueueEdgeEvent,
+  lockSyncCursor,
+} from "./edge-queue.service.ts";
 import type { VerifiedEdgeNode } from "./staff-pin-sync.ts";
 
 type Database = typeof db;
@@ -175,6 +179,13 @@ export async function publishCatalogForNode(
       const changed = await tx.execute(
         sql`UPDATE edge_catalog_publisher_cursors SET blocked_at = now(), updated_at = now() WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND blocked_at IS NULL RETURNING edge_node_id`,
       );
+      // Same transaction and cursor lock as the block: stale brand catalog rows
+      // leave the queue and the rows behind them close the gap.
+      await deadLetterPendingCatalogRows(tx, {
+        tenantId: input.tenantId,
+        outletId: input.outletId,
+        edgeNodeId: input.edgeNodeId,
+      });
       if (changed.rows.length)
         logger.warn(
           { tenantId: input.tenantId, edgeNodeId: input.edgeNodeId },

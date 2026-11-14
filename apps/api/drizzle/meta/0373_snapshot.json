@@ -46268,7 +46268,7 @@
         },
         "edge_link_dead_letters_reason_check": {
           "name": "edge_link_dead_letters_reason_check",
-          "value": "\"edge_link_dead_letters\".\"reason\" IN ('frame_too_large')"
+          "value": "\"edge_link_dead_letters\".\"reason\" IN ('frame_too_large', 'brand_moved')"
         },
         "edge_link_dead_letters_size_check": {
           "name": "edge_link_dead_letters_size_check",

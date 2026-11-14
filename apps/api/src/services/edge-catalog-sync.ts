@@ -93,6 +93,20 @@ const TXID_MAX = 9223372036854775807n;
 const TXID_PATTERN = /^\d{1,19}$/;
 const CURSOR_INVALID_MESSAGE = "Cursor sinkronisasi katalog tidak valid.";
 
+/**
+ * legend-3k41y: streams whose rows are filtered by the outlet's brand. A node
+ * whose outlet brand moved is refused these (fail closed); the other streams
+ * are tenant-level or outlet-scoped and keep flowing.
+ */
+export const BRAND_DEPENDENT_CATALOG_STREAMS: ReadonlySet<CatalogSyncStream> =
+  new Set([
+    "menu_categories",
+    "menu_items",
+    "recipes",
+    "item_variants",
+    "menu_item_modifier_groups",
+  ]);
+
 /** Streams whose cloud table has no `id`: the key is two uuids. */
 const TWO_KEY_STREAMS: ReadonlySet<CatalogSyncStream> = new Set([
   "menu_item_modifier_groups",

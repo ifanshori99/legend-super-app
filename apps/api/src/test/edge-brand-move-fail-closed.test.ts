@@ -14,8 +14,11 @@
 // Assumptions (the brief leaves them open):
 //  - "Refused" is either an empty result or a thrown error / 4xx: both are
 //    accepted; only delivery of brand A (or any catalog) data fails the test.
-//  - A blocked node receives no `catalog_record` event at all and no catalog
-//    record on any pulled stream (every stream of the node stops).
+//  - Option C (CTO decision): a blocked node receives no `catalog_record`
+//    event through the queue, and its stale catalog_record rows are moved to
+//    edge_link_dead_letters (not just hidden), the queue renumbered gap-free.
+//    The HTTP pull refuses only the brand-filtered streams (menu_categories,
+//    menu_items, ...); non-brand streams such as `stations` still flow.
 //  - The atomicity test samples concurrently: whenever a committed
 //    `blocked_at` is visible, the queue read that follows must already be
 //    empty. It cannot fail by timing, but can only catch a gap by chance.
@@ -40,7 +43,7 @@ import { createWorld, owner, type World } from "./member-loyalty-helpers.ts";
 
 const app = createApp();
 const PULL_PATH = "/api/edge-sync/catalog";
-const PULL_STREAMS = ["menu_categories", "menu_items", "stations"] as const;
+const BRAND_PULL_STREAMS = ["menu_categories", "menu_items"] as const;
 
 beforeAll(() => {
   // server.ts installs the edge registry verifier; createApp() does not.
@@ -88,10 +91,10 @@ async function deliveredByQueue(node: Authenticated) {
   return queued.map((item) => item.event);
 }
 
-/** What the node would receive via HTTP pull; a 4xx refusal counts as nothing. */
+/** What the node would receive via HTTP pull of the brand streams; a 4xx refusal counts as nothing. */
 async function pulled(credential: string) {
   const records: unknown[] = [];
-  for (const stream of PULL_STREAMS) {
+  for (const stream of BRAND_PULL_STREAMS) {
     const res = await request(app)
       .get(PULL_PATH)
       .set("Authorization", `Bearer ${credential}`)
@@ -180,6 +183,20 @@ describe("legend-3k41y brand move while the node is offline (fail closed)", () =
     expect(delivered).not.toContain(f.newBrandACategory);
     expect(delivered).not.toContain(f.brandBCategory);
     expect(delivered).not.toContain("catalog_record");
+    // Option C: not hidden, moved. No pending catalog row is left in the queue
+    // (so no hole) and the old brand A event is kept as dead-letter evidence.
+    const rows = await owner.query<{ aggregate_type: string }>(
+      `SELECT aggregate_type FROM edge_outbound_queue WHERE edge_node_id = $1 AND direction = 'cloud_to_edge'`,
+      [f.node.scope.edgeNodeId],
+    );
+    expect(rows.rows.some((r) => r.aggregate_type === "catalog_record")).toBe(
+      false,
+    );
+    const dead = await owner.query<{ event: unknown }>(
+      `SELECT event FROM edge_link_dead_letters WHERE edge_node_id = $1 AND direction = 'cloud_to_edge'`,
+      [f.node.scope.edgeNodeId],
+    );
+    expect(JSON.stringify(dead.rows)).toContain(f.oldCategory);
   }, 60_000);
 
   it("delivers no brand A record through the HTTP pull after the node comes back", async () => {
@@ -188,9 +205,21 @@ describe("legend-3k41y brand move while the node is offline (fail closed)", () =
     const records = JSON.stringify(await pulled(f.credential));
     expect(records).not.toContain(f.oldCategory);
     expect(records).not.toContain(f.newBrandACategory);
-    // Fail closed: a blocked node gets nothing, not even brand B data.
+    // Fail closed: a blocked node gets no brand-filtered data, not even brand B.
     expect(records).not.toContain(f.brandBCategory);
     expect(JSON.parse(records)).toEqual([]);
+  }, 60_000);
+
+  it("still serves a non-brand stream (stations) to the blocked node through the HTTP pull", async () => {
+    // Option C: only brand-filtered streams are refused; the stream is not a
+    // blanket node ban.
+    const f = await offlineBrandMove();
+    await publish(f.world, f.world.outletA, f.node);
+    const res = await request(app)
+      .get(PULL_PATH)
+      .set("Authorization", `Bearer ${f.credential}`)
+      .query({ stream: "stations", limit: 100 });
+    expect(res.status).toBe(200);
   }, 60_000);
 
   it("refuses the blocked node even if the publisher never ran again after the move", async () => {
@@ -200,6 +229,20 @@ describe("legend-3k41y brand move while the node is offline (fail closed)", () =
     const delivered = JSON.stringify(await deliveredByQueue(f.node));
     expect(delivered).not.toContain(f.oldCategory);
     expect(delivered).not.toContain(f.newBrandACategory);
+    // The lazy guard moves the stale row to the dead letters; it does not
+    // leave a hidden row (hole) in the queue.
+    const rows = await owner.query<{ aggregate_type: string }>(
+      `SELECT aggregate_type FROM edge_outbound_queue WHERE edge_node_id = $1 AND direction = 'cloud_to_edge'`,
+      [f.node.scope.edgeNodeId],
+    );
+    expect(rows.rows.some((r) => r.aggregate_type === "catalog_record")).toBe(
+      false,
+    );
+    const dead = await owner.query<{ event: unknown }>(
+      `SELECT event FROM edge_link_dead_letters WHERE edge_node_id = $1 AND direction = 'cloud_to_edge'`,
+      [f.node.scope.edgeNodeId],
+    );
+    expect(JSON.stringify(dead.rows)).toContain(f.oldCategory);
   }, 60_000);
 
   it("stops delivery in the same transaction that marks the node blocked", async () => {
@@ -220,7 +263,17 @@ describe("legend-3k41y brand move while the node is offline (fail closed)", () =
       );
       const blockedVisible = state.rows.some((row) => row.blocked_at !== null);
       const delivered = JSON.stringify(await deliveredByQueue(f.node));
-      if (blockedVisible && delivered.includes(f.oldCategory))
+      // Option C: the dead-lettering is in the same transaction as the block,
+      // so a visible block means no pending catalog row is left in the queue.
+      const pending = await owner.query(
+        `SELECT 1 FROM edge_outbound_queue
+          WHERE edge_node_id = $1 AND direction = 'cloud_to_edge' AND aggregate_type = 'catalog_record'`,
+        [f.node.scope.edgeNodeId],
+      );
+      if (
+        blockedVisible &&
+        (delivered.includes(f.oldCategory) || pending.rows.length > 0)
+      )
         violations.push(delivered);
     };
     while (!done) await sample();
