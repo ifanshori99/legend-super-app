@@ -1788,7 +1788,11 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
       amountIdr: number;
       withIntent: boolean;
       outbox?: "pending" | "dead";
+      status?: "captured" | "voided";
     }[],
+    // A parked event that names its own intent (order_issue.charge_paid),
+    // separate from the order's tenders.
+    payloadIntent?: { amountIdr: number; outbox?: "pending" | "dead" },
   ): Promise<PosSale> {
     const orderUlid = createUlid();
     const orderUuid = ulidToUuid(orderUlid);
@@ -1807,6 +1811,17 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
       [orderUuid, tenantId, outlet],
     );
     const intents: PosSale["intents"] = [];
+    let payloadIntentId: string | null = null;
+    if (payloadIntent) {
+      payloadIntentId = await seedIntent(payloadIntent.amountIdr);
+      if (payloadIntent.outbox)
+        await seedOutbox(
+          payloadIntentId,
+          payloadIntent.amountIdr,
+          payloadIntent.outbox,
+        );
+      intents.push({ id: payloadIntentId, amountIdr: payloadIntent.amountIdr });
+    }
     for (const tender of tenders) {
       if (!tender.withIntent) {
         await owner.query(
@@ -1825,9 +1840,9 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
       await owner.query(
         `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider,
             payment_link_id, payment_link_token_sealed, payment_intent_id, amount_idr,
-            status, requested_at)
+            status, requested_at, resolved_at)
          VALUES ($1, $2, $3, 'qris', 'doit', $4, 'sealed-test-token', $5, $6,
-                 'authorized', now())`,
+                 $7, now(), $8)`,
         [
           tenantId,
           outlet,
@@ -1835,6 +1850,8 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
           link.rows[0]!.payment_link_id,
           intentId,
           tender.amountIdr,
+          tender.status ?? "captured",
+          new Date(),
         ],
       );
       if (tender.outbox)
@@ -1845,14 +1862,19 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
       `INSERT INTO auto_journal_parked
          (tenant_id, outlet_id, idempotency_key, event_id, event_name, payload,
           error_code, retryable, first_failed_at, last_failed_at, next_retry_at)
-       VALUES ($1, $2, $3, $4, 'order.paid', $5::jsonb, 'AUTO_JOURNAL_RECEIPT_PENDING', true,
+       VALUES ($1, $2, $3, $4, $6, $5::jsonb, 'AUTO_JOURNAL_RECEIPT_PENDING', true,
          now() - interval '48 hours', now(), now() + interval '1 hour')`,
       [
         tenantId,
         outlet,
         `aj:sale:${orderUlid}`,
         createUlid(),
-        JSON.stringify({ orderId: orderUlid, customerPhone: SECRET }),
+        JSON.stringify({
+          orderId: orderUlid,
+          customerPhone: SECRET,
+          ...(payloadIntentId ? { paymentIntentId: payloadIntentId } : {}),
+        }),
+        payloadIntentId ? "order_issue.charge_paid" : "order.paid",
       ],
     );
     const sale = { orderUlid, orderUuid, intents };
@@ -1886,6 +1908,8 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
   let cashSale: PosSale;
   let multiSale: PosSale;
   let splitDeadSale: PosSale;
+  let chargePaidSale: PosSale;
+  let voidedTenderSale: PosSale;
 
   beforeAll(async () => {
     outlet = await newOutlet("Resi tender POS");
@@ -1907,6 +1931,23 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
     splitDeadSale = await seedPosSale([
       { amountIdr: 20_000, withIntent: false },
       { amountIdr: 80_000, withIntent: true, outbox: "dead" },
+    ]);
+    // A charge_paid park names its own intent (receipt still pending); another
+    // tender of the order has a dead-lettered receipt that must not win.
+    chargePaidSale = await seedPosSale(
+      [{ amountIdr: 90_000, withIntent: true, outbox: "dead" }],
+      { amountIdr: 25_000, outbox: "pending" },
+    );
+    // A voided QR tender (its receipt still pending) next to captured cash:
+    // the journal never waits for a voided tender.
+    voidedTenderSale = await seedPosSale([
+      { amountIdr: 20_000, withIntent: false },
+      {
+        amountIdr: 80_000,
+        withIntent: true,
+        outbox: "pending",
+        status: "voided",
+      },
     ]);
   }, 60_000);
 
@@ -1932,9 +1973,10 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
     await owner.query("DELETE FROM payment_links WHERE id = ANY($1::uuid[])", [
       linkIds,
     ]);
-    await owner.query("DELETE FROM pos_orders WHERE order_id = ANY($1::uuid[])", [
-      orders,
-    ]);
+    await owner.query(
+      "DELETE FROM pos_orders WHERE order_id = ANY($1::uuid[])",
+      [orders],
+    );
     await owner.query("DELETE FROM orders WHERE id = ANY($1::uuid[])", [
       orders,
     ]);
@@ -1990,12 +2032,32 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
     expect(receipt.outboxState).toBe("dead_lettered");
   });
 
+  it("a parked event that names its intent shows only that intent, not another tender's dead-lettered one", async () => {
+    const { item, receipt } = await receiptOf(chargePaidSale);
+    // intents[0] is the payload intent (seeded first).
+    expect(receipt.intentId).toBe(chargePaidSale.intents[0]!.id);
+    expect(receipt.outboxState).toBe("pending");
+    expect(item.amountIdr).toBe(25_000);
+  });
+
+  it("a voided tender is ignored: no intent, missing, valued at the order total", async () => {
+    const { item, receipt } = await receiptOf(voidedTenderSale);
+    expect(receipt.intentId).toBeNull();
+    expect(receipt.outboxState).toBe("missing");
+    expect(item.amountIdr).toBe(100_000);
+  });
+
+  it("a split tender intent is valued at the order total, not the QR share", async () => {
+    const { item } = await receiptOf(splitDeadSale);
+    expect(item.amountIdr).toBe(100_000);
+  });
+
   it("the summary still counts one row per stale sale", async () => {
     const payload = await fetchList(finance.cookie, {
       ...MARCH,
       outletId: outlet,
       kind: KIND,
     });
-    expect(summaryOf(payload, KIND).count).toBe(6);
+    expect(summaryOf(payload, KIND).count).toBe(8);
   });
 });
