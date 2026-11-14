@@ -49,10 +49,51 @@ const migrationSql = () =>
 
 /** Runs every statement of the migration as the migration owner, in order. */
 async function migrate(): Promise<void> {
-  for (const statement of migrationSql().split("--> statement-breakpoint")) {
-    const sql = statement.replace(/--.*$/gm, "").trim();
-    if (sql) await owner.query(statement);
+  const client = await owner.connect();
+  const errors: unknown[] = [];
+  let rollbackFailure: Error | undefined;
+  try {
+    await client.query("BEGIN");
+    // Keep concurrent tenant teardown from invalidating the backfill's scan.
+    await client.query("LOCK TABLE public.tenants IN SHARE MODE");
+    for (const statement of migrationSql().split("--> statement-breakpoint")) {
+      const sql = statement.replace(/--.*$/gm, "").trim();
+      if (sql) await client.query(statement);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    errors.push(error);
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      rollbackFailure =
+        rollbackError instanceof Error
+          ? rollbackError
+          : new Error(`Rollback failed: ${String(rollbackError)}`);
+      errors.push(rollbackError);
+    }
+  } finally {
+    try {
+      const results = await Promise.allSettled([
+        client.query(
+          "ALTER TABLE public.account_mappings FORCE ROW LEVEL SECURITY",
+        ),
+        client.query(
+          "ALTER TABLE public.chart_of_accounts FORCE ROW LEVEL SECURITY",
+        ),
+      ]);
+      errors.push(
+        ...results
+          .filter((result) => result.status === "rejected")
+          .map((result) => result.reason),
+      );
+    } finally {
+      client.release(rollbackFailure);
+    }
   }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1)
+    throw new AggregateError(errors, "Migration replay failed");
 }
 
 async function entity(provisioned: boolean): Promise<string> {
