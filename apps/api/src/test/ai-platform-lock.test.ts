@@ -604,7 +604,7 @@ describe("legend-nnufz (3) aiComplete under lock", () => {
 // ---- (4) System call ---------------------------------------------------------------
 
 describe("legend-nnufz (4) systemAiComplete under lock", () => {
-  it("answers ok:false feature_disabled and never calls the provider", async () => {
+  it("answers ok:false platform_locked and never calls the provider", async () => {
     const provider = plainAnswer();
     setAiProviderForTests(provider);
     await lock();
@@ -618,7 +618,7 @@ describe("legend-nnufz (4) systemAiComplete under lock", () => {
       },
       { feature: "AI-10", outletId: null },
     );
-    expect(outcome).toEqual({ ok: false, reason: "feature_disabled" });
+    expect(outcome).toEqual({ ok: false, reason: "platform_locked" });
     expect(provider.requests).toHaveLength(0);
   });
 });

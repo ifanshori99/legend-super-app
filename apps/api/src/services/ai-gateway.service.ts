@@ -63,7 +63,10 @@ import {
 } from "./ai-provider-config.service.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { costMicroUsd, microUsdToIdr, USD_IDR_RATE } from "./ai-pricing.ts";
-import { isAiPlatformLocked } from "./ai-platform-lock.ts";
+import {
+  isAiPlatformLocked,
+  isAiPlatformLockedShared,
+} from "./ai-platform-lock.ts";
 import type { AccessSnapshot } from "./permission-resolver.ts";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -464,7 +467,12 @@ async function reserveAiBudget(
         await recordBlocked(tx, access, { ...meta, billingMode }, reason);
         return { block: reason };
       };
-      if (await isAiPlatformLocked(tx, access.tenant.tenantId))
+      // Operation start is this reservation commit (the provider call follows
+      // it), so check under a shared tenant row lock: a lock write waits for
+      // this commit, and a check after the lock write sees "locked". Lock
+      // order is ai_settings (update) then tenants (share); the lock writers
+      // only take the tenants row, so no cycle.
+      if (await isAiPlatformLockedShared(tx, access.tenant.tenantId))
         return block(BLOCKS.platform);
       if (!settings.aiEnabled || !isFeatureEnabled(settings, meta.feature))
         return block(BLOCKS.feature);

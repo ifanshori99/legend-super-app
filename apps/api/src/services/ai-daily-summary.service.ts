@@ -36,6 +36,7 @@ import { db } from "../db/index.ts";
 import { aiDailySummaries } from "../db/schema/ai-insights.ts";
 import { withTenant } from "../db/tenant.ts";
 import type { AiCompletionRequest } from "../lib/ai/types.ts";
+import { logger } from "../lib/logger.ts";
 import { kindTotals, loadOutletClock } from "./ai-anomaly.service.ts";
 import { dailyLimitFor, getAiSettings } from "./ai-gateway.service.ts";
 import { outletContext } from "./ai-insights-access.ts";
@@ -176,7 +177,18 @@ async function modelText(
     { feature: DAILY_SUMMARY_FEATURE, outletId },
     now,
   );
-  if (!outcome.ok || outcome.result.stopReason !== "end_turn") return null;
+  if (!outcome.ok) {
+    // A platform lock is a deliberate stop, not a model failure: say so in the
+    // log (the blocked ledger row carries AI_PLATFORM_DISABLED) and fall back
+    // to the template text.
+    if (outcome.reason === "platform_locked")
+      logger.info(
+        { feature: DAILY_SUMMARY_FEATURE },
+        "daily summary skipped: ai platform locked",
+      );
+    return null;
+  }
+  if (outcome.result.stopReason !== "end_turn") return null;
   const text = outcome.result.content
     .flatMap((block) => (block.type === "text" ? [block.text] : []))
     .join("\n")

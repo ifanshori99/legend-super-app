@@ -35,6 +35,7 @@ import type { AccessSnapshot } from "./permission-resolver.ts";
 
 export type SystemAiSkipReason =
   | "feature_disabled"
+  | "platform_locked"
   | "pii_blocked"
   | "budget_exceeded"
   | "provider_unavailable";
@@ -45,6 +46,7 @@ export type SystemAiOutcome =
 
 const BLOCK_CODES = {
   feature_disabled: "AI_FEATURE_DISABLED",
+  platform_locked: "AI_PLATFORM_DISABLED",
   pii_blocked: "AI_PII_BLOCKED",
   budget_exceeded: "AI_BUDGET_EXCEEDED",
 } as const;
@@ -94,7 +96,7 @@ export async function systemAiComplete(
   const platformLocked = await withTenant(db, gatewayContext(billing), (tx) =>
     isAiPlatformLocked(tx, billing.tenant.tenantId),
   );
-  if (platformLocked) return recordBlocked(billing, meta, "feature_disabled");
+  if (platformLocked) return recordBlocked(billing, meta, "platform_locked");
   const settings = await getAiSettings(billing);
   if (!settings.aiEnabled || !isFeatureEnabled(settings, meta.feature))
     return recordBlocked(billing, meta, "feature_disabled");
@@ -120,8 +122,13 @@ export async function systemAiComplete(
     });
     return { ok: true, result };
   } catch (error) {
-    if (error instanceof AiError)
+    if (error instanceof AiError) {
+      // The lock can commit between the plain check above and the
+      // reservation's FOR SHARE check inside `aiComplete`.
+      if (error.code === "AI_PLATFORM_DISABLED")
+        return recordBlocked(billing, meta, "platform_locked");
       return { ok: false, reason: "provider_unavailable" };
+    }
     logger.warn(
       { errorName: error instanceof Error ? error.name : "unknown" },
       "system ai call failed",

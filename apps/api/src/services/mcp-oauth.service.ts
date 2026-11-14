@@ -15,6 +15,7 @@ import {
 } from "@starter/shared/ai";
 import { tenantIdSchema, userIdSchema } from "@starter/shared/core";
 import { env } from "../config/env.ts";
+import { isAiPlatformLockedShared } from "./ai-platform-lock.ts";
 import { listCallableTools } from "./ai-tool-invoke.service.ts";
 import type { AccessSnapshot } from "./permission-resolver.ts";
 import { db } from "../db/index.ts";
@@ -39,6 +40,20 @@ export class OAuthError extends Error {
     super(description);
     this.name = "OAuthError";
   }
+}
+
+/**
+ * Platform lock refusal (founder W16 Q7). Answers 403 with the description
+ * `AI_PLATFORM_DISABLED`; `redirectUri` is passed only once it is known to be
+ * registered for the client, so the route may then redirect with the error.
+ */
+function platformLockedError(redirectUri: string | null = null): OAuthError {
+  return new OAuthError(
+    "access_denied",
+    "AI_PLATFORM_DISABLED",
+    403,
+    redirectUri,
+  );
 }
 
 /** `redirect_uri?error=...&state=...` for an error the client may see. */
@@ -102,6 +117,16 @@ export async function validateAuthorizationRequest(
       .limit(1);
     return row;
   });
+  // Platform lock: answered before any other refusal. The redirect_uri is
+  // not trusted until the client registered it, so an unknown client or an
+  // unregistered redirect_uri gets a plain 403 JSON (never a redirect to an
+  // unvalidated URI); a registered one gets the OAuth-safe error redirect
+  // below (`error=access_denied`, `error_description=AI_PLATFORM_DISABLED`).
+  if (
+    settings.platformLocked &&
+    !(clientRow && clientRow.redirectUris.includes(params.redirectUri))
+  )
+    throw platformLockedError();
   if (!clientRow)
     throw new OAuthError("invalid_client", "Unknown client.", 400);
   // Never redirect to a URI the client did not register.
@@ -114,6 +139,7 @@ export async function validateAuthorizationRequest(
   const fail = (error: string, description: string): never => {
     throw new OAuthError(error, description, 400, redirectUri);
   };
+  if (settings.platformLocked) throw platformLockedError(redirectUri);
   if (!settings.mcpEnabled || !settings.aiEnabled)
     fail("access_denied", "MCP is turned off for this organisation.");
   if (clientRow.status !== "approved")
@@ -222,6 +248,10 @@ export async function issueAuthorizationCode(
 
   const code = randomBytes(32).toString("base64url");
   await withTenant(db, context, async (tx) => {
+    // Re-check under a shared tenant row lock: a lock change that commits
+    // between the validation above and this insert cannot slip a code out.
+    if (await isAiPlatformLockedShared(tx, tenantId))
+      throw platformLockedError(redirectUri);
     await tx.insert(mcpAuthCodes).values({
       tenantId,
       mcpClientId: clientRow.id,
@@ -301,6 +331,11 @@ export async function exchangeAuthorizationCode(
   const now = new Date();
 
   const outcome = await withTenant(db, context, async (tx) => {
+    // Platform lock first, before the code row is read or burned: a locked
+    // tenant leaves the code untouched. The shared tenant row lock serializes
+    // this with a lock change, so no token is issued after the lock commits.
+    if (await isAiPlatformLockedShared(tx, tenantId))
+      return { error: "platform_locked" as const };
     // Lock the code row: concurrent exchanges of one code issue one token.
     const [row] = await tx
       .select()
@@ -370,6 +405,8 @@ export async function exchangeAuthorizationCode(
     return { token, scopes };
   });
 
+  if ("error" in outcome && outcome.error === "platform_locked")
+    throw platformLockedError();
   if ("error" in outcome)
     throw new OAuthError(
       outcome.error === "not_approved"
@@ -406,6 +443,7 @@ export async function registerDynamicClient(
 ) {
   const tenantId = tenantIdSchema.parse(tenantIdRaw);
   const settings = await loadMcpSettings(tenantId);
+  if (settings.platformLocked) throw platformLockedError();
   if (!settings.mcpEnabled || !settings.dynamicClientRegistrationEnabled)
     throw new OAuthError(
       "access_denied",
@@ -419,6 +457,9 @@ export async function registerDynamicClient(
   const clientId = `dyn_${randomBytes(12).toString("hex")}`;
   const now = new Date();
   return withTenant(db, context, async (tx) => {
+    // Re-check under a shared tenant row lock (see issueAuthorizationCode).
+    if (await isAiPlatformLockedShared(tx, tenantId))
+      throw platformLockedError();
     const [pending] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(mcpClients)
