@@ -2,6 +2,16 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## CTO G4j04 mulai 15 Nov 01:15
+
+- Cron dibuat ulang (push :17, retro 3 jam); dicatat di memory coordinator 1-2. Migrasi: 0380 fonnr, 0381 EDC, 0382 limiter; bebas 0383.
+- Di-link: G8dut merge train (gerbang 64f run kedua). Selesai + resolve: G26xd (fix/edge-so-816 037d7614e, review architect xhigh berjalan, lalu antre), G0y3a (SO EDC: 3 P1 + 1 P2, docs/qa/second-opinion-edc-kunci-tagihan.md).
+- Thread baru: G5t22 830 perbaikan SO EDC (Opus, basis fix/edc-qris-confirm-lock), G2xkh 832 perangkat alarm lintas tenant (Opus, basis fix/panic-push-device-revoke), G0ubu 831 Codex 4 kartu kecil (0a1r1, 3e8p0, xn214, 8y5fc), G0e3l 833 Codex mockup rekonsiliasi EDC (khi8n).
+- Rantai EDC (fix/edc-bill-lock..fix/edc-qris-confirm-lock) jangan dibatch sebelum fix/edc-so-829 lolos review.
+- Founder: Q5 (QRIS vs kartu) diajukan di W2. Q4 masih di page CTO lama (path diminta ke G6w9t).
+- Kartu basi: legend-mm029/oi7ub/po3fe/ewmfd sudah diperbaiki 10a196bc1 (#782), masih open di bd.
+- Worktree dihapus: legend-72458e6d, legend-b1a89c74, /tmp/legend-edc-second-opinion-829. Disk 17 -> 20 GB.
+
 ## Serah terima CTO 15 Nov 01:10 (dari G6w9t)
 
 Thread berjalan (prefix S30:P6b2j:):
