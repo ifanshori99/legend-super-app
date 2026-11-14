@@ -58,10 +58,7 @@ const registry = CONFIG_SECTION_CODECS as unknown as Record<string, AnyCodec>;
 const call = <T>(fn: (...args: never[]) => T, ...args: unknown[]): T =>
   fn(...(args as never[]));
 
-const UNREGISTERED_SECTIONS: readonly string[] = [];
-const CODEC_SECTIONS = GENERIC_CONFIG_SECTIONS.filter(
-  (section) => !(UNREGISTERED_SECTIONS as readonly string[]).includes(section),
-);
+const CODEC_SECTIONS = GENERIC_CONFIG_SECTIONS;
 
 // These sections have domain-owned codecs (`*/config-codec.ts`, each with its
 // own context and per-codec tests in tests/platform-config-codecs-*.test.mjs
@@ -122,11 +119,6 @@ describe("legend-tct8 registry", () => {
       expect(configSectionCodec(section)).toBe(codec);
     },
   );
-
-  it.each([...UNREGISTERED_SECTIONS])("%s stays unregistered", (section) => {
-    expect(Object.keys(CONFIG_SECTION_CODECS)).not.toContain(section);
-    expect(configSectionCodec(section)).toBeUndefined();
-  });
 
   it("registers no section outside the generic list", () => {
     for (const section of Object.keys(CONFIG_SECTION_CODECS))
