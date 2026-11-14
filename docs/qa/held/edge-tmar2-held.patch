@@ -1,0 +1,802 @@
+diff --git a/apps/api/src/edge/db-link-store.ts b/apps/api/src/edge/db-link-store.ts
+index b4ee04d80..b320f767c 100644
+--- a/apps/api/src/edge/db-link-store.ts
++++ b/apps/api/src/edge/db-link-store.ts
+@@ -19,6 +19,7 @@ import {
+   outletIdSchema,
+   tenantIdSchema,
+   ulidToUuid,
++  uuidToUlid,
+   type ScopedTenantContext,
+ } from "@starter/shared/core";
+ import {
+@@ -357,6 +361,56 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
+     lastAckedOutbound: () => cursorValue("acked_out_seq", outbound),
+     lastReceivedInbound: () => cursorValue("received_in_seq", inbound),
+ 
++    async inboundResume() {
++      return run(async (tx) => {
++        // One snapshot: an earlier connection can still finish applying a
++        // batch while this connection starts its hello.
++        const result = await tx.execute(
++          sql`SELECT received_in_seq, peer_seq_offset, peer_instance_id, last_event_id FROM sync_cursors WHERE edge_node_id = ${nodeId}::uuid AND direction = ${inbound}`,
++        );
++        const row = result.rows[0];
++        const instance = (row?.peer_instance_id as string | null) ?? null;
++        if (instance !== null && instance !== peerInstance)
++          throw new LinkProtocolError(
++            "Link cursor belongs to another edge instance",
++          );
++        const cursor =
++          Number(row?.received_in_seq ?? 0) - Number(row?.peer_seq_offset ?? 0);
++        return {
++          cursor,
++          // Rebasing to a new database leaves the old stored receipt in place.
++          eventId:
++            cursor > 0 && typeof row?.last_event_id === "string"
++              ? uuidToUlid(row.last_event_id)
++              : null,
++        };
++      });
++    },
++
++    ...(outbound === "edge_to_cloud"
++      ? {
++          async verifyPeerReceipt(peerCursor: number, eventId: string) {
++            await run(async (tx) => {
++              const cursor = await lockSyncCursor(tx, node, outbound);
++              const { offset } = await peerNumbering(tx, outbound);
++              const storedSeq = peerCursor + offset;
++              // The cloud itself can restore behind an edge's durable ack.
++              // Old acked queue rows may already have been pruned legitimately.
++              if (storedSeq < cursor.acked_out_seq) return;
++              const result = await tx.execute(
++                storedSeq === cursor.acked_out_seq
++                  ? sql`SELECT last_event_id AS event_id FROM sync_cursors WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound}`
++                  : sql`SELECT event_id FROM edge_outbound_queue WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq = ${storedSeq}`,
++              );
++              if (result.rows[0]?.event_id !== ulidToUuid(eventId))
++                throw new LinkProtocolError(
++                  "Resume event id differs after edge database restore; refusing to acknowledge",
++                );
++            });
++          },
++        }
++      : {}),
++
+     async readOutbound(afterSeq, limit) {
+       return run(async (tx) => {
+         const { offset } = await peerNumbering(tx, outbound);
+diff --git a/apps/api/src/edge/link-client.ts b/apps/api/src/edge/link-client.ts
+index 9c43715de..693cd40c8 100644
+--- a/apps/api/src/edge/link-client.ts
++++ b/apps/api/src/edge/link-client.ts
+@@ -20,6 +20,8 @@ import {
+   LINK_CLOSE,
+   LINK_INSTANCE_HEADER,
+   LINK_MAX_FRAME_BYTES,
++  LINK_PROOF_EVENT_ID,
++  LINK_PROOF_HEADER,
+   LINK_REFUSED_CREDENTIAL,
+   LINK_REFUSED_HEADER,
+   encodeFrame,
+@@ -128,6 +130,7 @@ export function createEdgeLinkClient(
+     const ws = new WebSocket(options.url, {
+       headers: {
+         authorization: `Bearer ${options.credential}`,
++        [LINK_PROOF_HEADER]: LINK_PROOF_EVENT_ID,
+         ...(options.instanceId
+           ? { [LINK_INSTANCE_HEADER]: options.instanceId }
+           : {}),
+diff --git a/apps/api/src/edge/link-peer.ts b/apps/api/src/edge/link-peer.ts
+index 3d34796d9..d8fd2f65a 100644
+--- a/apps/api/src/edge/link-peer.ts
++++ b/apps/api/src/edge/link-peer.ts
+@@ -82,6 +82,10 @@ export type LinkStore = {
+   /** Cumulative: every event up to `uptoSeq` is durably applied by the peer. */
+   ackOutbound(uptoSeq: number): Promise<void>;
+   lastReceivedInbound(): Promise<number>;
++  /** Atomic resume cursor and its durable receipt; effective cursor 0 has no proof. */
++  inboundResume?(): Promise<{ cursor: number; eventId: string | null }>;
++  /** Refuse a reused outbound slot before treating a hello as an acknowledgement. */
++  verifyPeerReceipt?(peerCursor: number, eventId: string): Promise<void>;
+   /**
+    * Applies `events` (link sequences fromSeq+1 .. toSeq) with the conflict
+    * rules, records receipts and advances the inbound cursor to toSeq in ONE
+@@ -123,6 +127,8 @@ export type LinkPeerOptions = {
+   store: LinkStore;
+   transport: LinkTransport;
+   version: string;
++  /** Cloud only, after the edge explicitly requested the optional hello field. */
++  sendInboundEventId?: boolean;
+   batchSize?: number;
+   ackTimeoutMs?: number;
+   /** Backpressure bound on unprocessed received frames (legend-wg5t #1). */
+@@ -319,31 +325,41 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
+ 
+   let helloSent = false;
+   async function sendHello() {
+-    const cursor = await store.lastReceivedInbound();
++    const resume =
++      options.sendInboundEventId && store.inboundResume
++        ? await store.inboundResume()
++        : { cursor: await store.lastReceivedInbound(), eventId: null };
+     helloSent = true;
+     send({
+       type: "hello",
+       version: options.version,
+-      inboundCursor: String(cursor),
++      inboundCursor: String(resume.cursor),
++      ...(resume.cursor > 0 && resume.eventId
++        ? { inboundEventId: resume.eventId }
++        : {}),
+     });
+   }
+ 
+-  async function onHello(cursor: number) {
++  async function onHello(cursor: number, eventId?: string) {
+     if (!Number.isSafeInteger(cursor) || cursor < 0)
+       throw new LinkProtocolError("Hello cursor is not a sequence");
+-    if (store.onPeerHello) {
+-      try {
++    try {
++      // In particular, a restored edge may have filled an old link slot with a
++      // different event. Never turn the cloud's old cursor into an ack for it.
++      if (eventId && store.verifyPeerReceipt)
++        await store.verifyPeerReceipt(cursor, eventId);
++      if (store.onPeerHello) {
+         await store.onPeerHello(cursor);
+         if (!helloSent) await sendHello();
+-      } catch (error) {
+-        if (error instanceof LinkProtocolError) throw error;
+-        // A transient failure (database blip) before our hello would leave
+-        // the peer waiting on an open socket forever: close so it retries.
+-        options.onError?.(error);
+-        stop();
+-        transport.close(LINK_CLOSE.overloaded, "Link not ready; retry");
+-        return;
+       }
++    } catch (error) {
++      if (error instanceof LinkProtocolError) throw error;
++      // A transient handshake failure (including receipt verification) must
++      // reconnect rather than leave an open socket that can never become ready.
++      options.onError?.(error);
++      stop();
++      transport.close(LINK_CLOSE.overloaded, "Link not ready; retry");
++      return;
+     }
+     const head = await store.outboundHead();
+     if (cursor > head)
+@@ -418,7 +434,7 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
+   async function handle(frame: LinkFrame) {
+     switch (frame.type) {
+       case "hello":
+-        return onHello(Number(frame.inboundCursor));
++        return onHello(Number(frame.inboundCursor), frame.inboundEventId);
+       case "batch":
+         if (!ready) throw new LinkProtocolError("Batch before hello");
+         return onBatch(frame.batch);
+diff --git a/apps/api/src/edge/link-server.ts b/apps/api/src/edge/link-server.ts
+index 9a77f14eb..61f79a736 100644
+--- a/apps/api/src/edge/link-server.ts
++++ b/apps/api/src/edge/link-server.ts
+@@ -47,6 +47,8 @@ import {
+   LINK_INSTANCE_HEADER,
+   LINK_MAX_FRAME_BYTES,
+   LINK_PATH,
++  LINK_PROOF_EVENT_ID,
++  LINK_PROOF_HEADER,
+   LINK_REFUSED_CREDENTIAL,
+   LINK_REFUSED_HEADER,
+   type LinkFrame,
+@@ -223,7 +225,11 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
+     { ws: WebSocket; peer: LinkPeer; identity: Identity; timer: NodeJS.Timeout }
+   >();
+ 
+-  function attach(ws: WebSocket, identity: Identity) {
++  function attach(
++    ws: WebSocket,
++    identity: Identity,
++    sendInboundEventId: boolean,
++  ) {
+     const nodeId = identity.scope.edgeNodeId;
+     const previous = links.get(nodeId);
+     if (previous) {
+@@ -240,6 +246,7 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
+       outboundDirection: "cloud_to_edge",
+       store: deps.storeFor(identity),
+       version: deps.version,
++      sendInboundEventId,
+       ackTimeoutMs: deps.ackTimeoutMs,
+       onError: deps.onError,
+       onDeadLetter: (entry) => deps.onDeadLetter?.(identity, entry),
+@@ -367,7 +374,11 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
+           ),
+         };
+         wss.handleUpgrade(request, socket, head, (ws) =>
+-          attach(ws, authenticated),
++          attach(
++            ws,
++            authenticated,
++            request.headers[LINK_PROOF_HEADER] === LINK_PROOF_EVENT_ID,
++          ),
+         );
+       } catch (error) {
+         deps.onError?.(error);
+diff --git a/apps/api/src/edge/protocol.ts b/apps/api/src/edge/protocol.ts
+index f6de84cbf..80eb8bd08 100644
+--- a/apps/api/src/edge/protocol.ts
++++ b/apps/api/src/edge/protocol.ts
+@@ -8,7 +8,7 @@
+ // Cursors are decimal link sequence numbers. Each direction of a link has its
+ // own gap-free sequence (sync_cursors.next_out_seq), so a batch whose
+ // `fromCursor` is N carries link sequences N+1 .. toCursor, one per event.
+-import { z, isoDateTimeSchema } from "@starter/shared/core";
++import { z, isoDateTimeSchema, ulidSchema } from "@starter/shared/core";
+ import {
+   syncDirectionSchema,
+   type SyncDirection,
+@@ -57,6 +57,8 @@ export const linkFrameSchema = z.discriminatedUnion("type", [
+     type: z.literal("hello"),
+     version: text,
+     inboundCursor: linkCursorSchema,
++    /** Cloud receipt proof, sent only to edges advertising support. */
++    inboundEventId: ulidSchema.optional(),
+   }),
+   z.strictObject({ type: z.literal("batch"), batch: syncBatchSchema }),
+   z.strictObject({ type: z.literal("ack"), ack: syncAckSchema }),
+@@ -134,3 +136,6 @@ export const LINK_REFUSED_CREDENTIAL = "credential";
+  * value and never refuses the connection for it.
+  */
+ export const LINK_INSTANCE_HEADER = "x-edge-instance";
++/** New edges request receipt proof without changing their legacy hello. */
++export const LINK_PROOF_HEADER = "x-edge-link-proof";
++export const LINK_PROOF_EVENT_ID = "event-id-v1";
+diff --git a/docs/deployment.md b/docs/deployment.md
+index a7b47eff5..52c5871b4 100644
+--- a/docs/deployment.md
++++ b/docs/deployment.md
+@@ -289,9 +289,11 @@ The cloud sends staff PIN changes to each outlet's edge in commit order, using `
+ 
+    Restored or cloned database (legend-a9iby). The cloud refuses the link with close 1008 when the edge's hello cursor is below what the cloud already saw it acknowledge. The hello cursor is the highest `cloud_to_edge` link sequence the edge applied without a gap. The cloud writes nothing and acknowledges nothing. The close reason reads `Edge database is older than the cloud's link cursor (restored or cloned); refusing to resume`. The edge keeps retrying with backoff, and the cloud refuses it each time, because 1008 is not final on the client. The edge database must also run with `synchronous_commit = on` and `fsync = on`. An edge that loses an applied and acknowledged batch in a power cut looks the same as a restore, and the cloud refuses it the same way.
+ 
+-   The cloud detects this only when the edge had acknowledged `cloud_to_edge` events newer than the backup. Today only QR orders produce them (`apps/api/src/edge/qr-order-forwarding.ts`). An outlet without QR orders, or with none since the backup, is not detected. Its restored database resumes. Events it creates under link numbers the cloud already received are marked acknowledged without being sent, so the cloud loses them. An old machine I1 that comes back after a rebuild to I2 at an outlet without QR has cursor 0. The cloud rebases it instead of refusing it. Event id dedupe prevents data loss, but the two machines rebase each other.
++   Receipt proof (legend-tmar2). New edges advertise `x-edge-link-proof: event-id-v1`; a supporting cloud then includes the last inbound event id with its hello cursor, read together from one database snapshot. Before acknowledging that cursor, the edge compares the exact outbound slot's event id. A different or missing pending event refuses the link with 1008 and `Resume event id differs after edge database restore; refusing to acknowledge`. This also detects reused slots at outlets without QR orders. At an already acknowledged boundary the edge uses the durable cursor's event id, so pruning acknowledged queue rows does not cause a false restore alarm. A cloud cursor behind the edge's durable acknowledgement can still request a replay.
+ 
+-   If the edge log shows the warning `Edge link refused by protocol` with code 1008 and that reason:
++   Deploy cloud before edge. Edges keep their own hello unchanged, and the cloud sends proof only after the request header opts in, so older strict-frame peers remain compatible. An older cloud or edge without receipt proof still detects only regressions in acknowledged `cloud_to_edge` traffic. At an outlet without newer QR orders, restored slots can still be acknowledged without delivery in that legacy combination. Receipt proof does not identify two copies that still have identical event ids: an old machine I1 returning after a rebuild to I2 at an outlet without QR can still cause the two machines to rebase each other. Never run both copies.
++
++   If the edge log shows the warning `Edge link refused by protocol` with code 1008 and either restore reason:
+ 
+    - Stop that edge.
+    - Keep its database for audit.
+diff --git a/apps/api/src/test/edge-link-restore-proof.test.ts b/apps/api/src/test/edge-link-restore-proof.test.ts
+new file mode 100644
+index 000000000..f15bcca5e
+--- /dev/null
++++ b/apps/api/src/test/edge-link-restore-proof.test.ts
+@@ -0,0 +1,397 @@
++// legend-tmar2: a restored edge can reuse link slots while its inbound cursor
++// stays current. Prove identity at the cloud's resume cursor before any ack.
++import { randomUUID } from "node:crypto";
++import { Pool } from "pg";
++import {
++  afterAll,
++  afterEach,
++  beforeAll,
++  describe,
++  expect,
++  it,
++  vi,
++} from "vitest";
++import {
++  cafeLegendFixtures,
++  createUlid,
++  outletIdSchema,
++  tenantIdSchema,
++} from "@starter/shared/core";
++import {
++  establishScopedTenantContext,
++  establishTenantContext,
++} from "@starter/shared/core/server";
++import type { EventEnvelope } from "@starter/shared/events";
++import { createSecondTenant } from "./tenant-isolation-harness.ts";
++import { db } from "../db/index.ts";
++import { withTenant } from "../db/tenant.ts";
++import { createDbLinkStore } from "../edge/db-link-store.ts";
++import {
++  createLinkPeer,
++  LinkProtocolError,
++  type LinkPeer,
++  type LinkStore,
++} from "../edge/link-peer.ts";
++import {
++  registerEdgeNode,
++  revokeEdgeNode,
++} from "../services/edge-node.service.ts";
++import { enqueueEdgeEvent } from "../services/edge-queue.service.ts";
++import { setAuditWriter } from "../services/audit-writer.ts";
++import { coreAuditWriter } from "../services/core-audit-writer.ts";
++
++let tenantId = tenantIdSchema.parse(cafeLegendFixtures.tenant.id);
++let outletId = outletIdSchema.parse(cafeLegendFixtures.outlets[0].id);
++let context = establishScopedTenantContext(
++  establishTenantContext({ tenantId, brandId: null, source: "session" }),
++  { kind: "outlets", outletIds: [outletId] },
++);
++const owner = new Pool({
++  connectionString: process.env.STARTER_TEST_DATABASE_URL,
++  max: 1,
++});
++const peers: LinkPeer[] = [];
++const registeredNodes: string[] = [];
++afterEach(async () => {
++  for (const id of registeredNodes.splice(0))
++    await revokeEdgeNode(context, randomUUID(), {
++      edgeNodeId: id,
++      reason: "Test cleanup",
++    });
++});
++const scope = { tenantId, outletId, edgeNodeId: randomUUID() };
++
++beforeAll(async () => {
++  if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
++    throw new Error("Requires the disposable test database");
++  setAuditWriter(coreAuditWriter);
++  const isolated = await createSecondTenant(owner, "restore-proof");
++  tenantId = tenantIdSchema.parse(isolated.tenantId);
++  outletId = outletIdSchema.parse(isolated.outletId);
++  context = establishScopedTenantContext(
++    establishTenantContext({ tenantId, brandId: null, source: "session" }),
++    { kind: "outlets", outletIds: [outletId] },
++  );
++});
++
++afterAll(async () => {
++  for (const peer of peers) peer.stop();
++  setAuditWriter(null);
++  await owner.end();
++});
++
++let clock = Date.parse("2026-11-15T00:00:00Z");
++function event(sequence: number, aggregateId: string): EventEnvelope {
++  clock += 1;
++  return {
++    id: createUlid(clock),
++    tenantId,
++    outletId,
++    name: "order.item_added",
++    version: 1,
++    aggregateType: "order",
++    aggregateId,
++    sequence,
++    occurredAt: new Date(clock).toISOString(),
++    actor: { type: "system" },
++    deviceId: null,
++    idempotencyKey: `restore-proof-${clock}`,
++    payloadSchemaRef: "order.item_added.v1",
++    payload: {},
++  };
++}
++
++function memoryStore(
++  verifyPeerReceipt: NonNullable<LinkStore["verifyPeerReceipt"]>,
++) {
++  return {
++    outboundHead: async () => 12,
++    lastAckedOutbound: async () => 6,
++    readOutbound: async () => [],
++    ackOutbound: vi.fn(async () => {}),
++    lastReceivedInbound: async () => 0,
++    applyInbound: async () => {},
++    verifyPeerReceipt,
++  };
++}
++
++function connect(store: LinkStore, sendInboundEventId = false) {
++  const send = vi.fn();
++  const close = vi.fn();
++  const onError = vi.fn();
++  const peer = createLinkPeer({
++    scope,
++    outboundDirection: "edge_to_cloud",
++    store,
++    version: "edge",
++    sendInboundEventId,
++    transport: { send, close },
++    onError,
++  });
++  peers.push(peer);
++  return { peer, send, close, onError };
++}
++
++describe("legend-tmar2 resume receipt proof", () => {
++  it("closes with retry after a transient proof read failure instead of leaving an unready socket open", async () => {
++    const error = new Error("Database temporarily unavailable");
++    const store = memoryStore(async () => {
++      throw error;
++    });
++    const { peer, send, close, onError } = connect(store);
++    peer.receive(
++      JSON.stringify({
++        type: "hello",
++        version: "cloud",
++        inboundCursor: "10",
++        inboundEventId: createUlid(++clock),
++      }),
++    );
++    await peer.idle();
++    expect(onError).toHaveBeenCalledWith(error);
++    expect(close).toHaveBeenCalledWith(1013, "Link not ready; retry");
++    expect(store.ackOutbound).not.toHaveBeenCalled();
++    expect(send).not.toHaveBeenCalled();
++  });
++
++  it("refuses reused slots before acknowledging or sending any queued event", async () => {
++    const cloudEventId = createUlid(++clock);
++    const verify = vi.fn(async () => {
++      throw new LinkProtocolError("Resume event id differs after restore");
++    });
++    const store = memoryStore(verify);
++    const { peer, send, close } = connect(store);
++    peer.receive(
++      JSON.stringify({
++        type: "hello",
++        version: "cloud",
++        inboundCursor: "10",
++        inboundEventId: cloudEventId,
++      }),
++    );
++    await peer.idle();
++    expect(verify).toHaveBeenCalledWith(10, cloudEventId);
++    expect(close).toHaveBeenCalledWith(
++      1008,
++      expect.stringContaining("restore"),
++    );
++    expect(store.ackOutbound).not.toHaveBeenCalled();
++    expect(send).not.toHaveBeenCalled();
++  });
++
++  it("accepts the same event at the resume cursor and verifies before ack", async () => {
++    const cloudEventId = createUlid(++clock);
++    const order: string[] = [];
++    const store = memoryStore(async () => {
++      order.push("verify");
++    });
++    store.ackOutbound.mockImplementation(async () => {
++      order.push("ack");
++    });
++    const { peer, close } = connect(store);
++    peer.receive(
++      JSON.stringify({
++        type: "hello",
++        version: "cloud",
++        inboundCursor: "10",
++        inboundEventId: cloudEventId,
++      }),
++    );
++    await peer.idle();
++    expect(order).toEqual(["verify", "ack"]);
++    expect(store.ackOutbound).toHaveBeenCalledWith(10);
++    expect(close).not.toHaveBeenCalled();
++  });
++
++  it("keeps a legacy hello without a proof compatible", async () => {
++    const verify = vi.fn(async () => {});
++    const store = memoryStore(verify);
++    const { peer, close } = connect(store);
++    peer.receive(
++      JSON.stringify({ type: "hello", version: "cloud", inboundCursor: "10" }),
++    );
++    await peer.idle();
++    expect(verify).not.toHaveBeenCalled();
++    expect(store.ackOutbound).toHaveBeenCalledWith(10);
++    expect(close).not.toHaveBeenCalled();
++  });
++
++  it("adds the last inbound event id only when proof capability was negotiated", async () => {
++    const id = createUlid(++clock);
++    const store = {
++      ...memoryStore(async () => {}),
++      lastReceivedInbound: async () => 10,
++      inboundResume: async () => ({ cursor: 10, eventId: id }),
++    };
++    const capable = connect(store, true);
++    capable.peer.start();
++    await capable.peer.idle();
++    expect(JSON.parse(capable.send.mock.calls[0]![0])).toMatchObject({
++      inboundCursor: "10",
++      inboundEventId: id,
++    });
++    const legacy = connect(store);
++    legacy.peer.start();
++    await legacy.peer.idle();
++    expect(JSON.parse(legacy.send.mock.calls[0]![0])).not.toHaveProperty(
++      "inboundEventId",
++    );
++  });
++});
++
++async function queuedStore(
++  makeEvents?: (aggregateId: string) => EventEnvelope[],
++) {
++  const registered = await registerEdgeNode(context, randomUUID(), {
++    outletId,
++    role: "standby",
++    label: `Restore proof ${randomUUID()}`,
++  });
++  registeredNodes.push(registered.edgeNode.id);
++  const node = { tenantId, outletId, edgeNodeId: registered.edgeNode.id };
++  const aggregateId = randomUUID();
++  const events = makeEvents
++    ? makeEvents(aggregateId)
++    : Array.from({ length: 12 }, (_, index) => event(index + 1, aggregateId));
++  await withTenant(db, context, async (tx) => {
++    for (const item of events)
++      await enqueueEdgeEvent(tx, context, {
++        edgeNodeId: node.edgeNodeId,
++        direction: "edge_to_cloud",
++        kind: "transaction_event",
++        event: item,
++      });
++  });
++  const store = createDbLinkStore({
++    database: db,
++    context,
++    node,
++    outboundDirection: "edge_to_cloud",
++  });
++  await store.ackOutbound(6);
++  return { store, node, events };
++}
++
++describe("legend-tmar2 durable edge receipt verification", () => {
++  it("does not acknowledge an unsent panic in a changed prefix just because the last event id matches", async () => {
++    let panicId = "";
++    const { store, node, events } = await queuedStore((aggregateId) => {
++      const prefix = Array.from({ length: 6 }, (_, index) =>
++        event(index + 1, aggregateId),
++      );
++      const queuedPanic: EventEnvelope = {
++        ...event(1, randomUUID()),
++        name: "panic_alert.raised",
++        aggregateType: "panic_alert",
++        payloadSchemaRef: "panic_alert.raised.v1",
++      };
++      panicId = queuedPanic.id;
++      // E and D are stable envelopes relayed again after the restore. Cloud
++      // previously received [E,P,D] at slots7..9. The restored edge instead
++      // queues [Q,E,D], where Q is this new panic. Both histories end in D.
++      return [
++        ...prefix,
++        queuedPanic,
++        event(7, aggregateId),
++        event(8, aggregateId),
++      ];
++    });
++    const { peer } = connect(store);
++    peer.receive(
++      JSON.stringify({
++        type: "hello",
++        version: "cloud",
++        inboundCursor: "9",
++        inboundEventId: events[8]!.id,
++      }),
++    );
++    await peer.idle();
++    const pendingPanic = await owner.query<{ status: string }>(
++      "SELECT status FROM edge_outbound_queue WHERE edge_node_id = $1 AND event->>'id' = $2",
++      [node.edgeNodeId, panicId],
++    );
++    expect(pendingPanic.rows).toEqual([{ status: "pending" }]);
++    expect(await store.lastAckedOutbound()).toBe(6);
++  });
++
++  it("reads the cursor and event id together and omits a prior instance receipt after rebasing to zero", async () => {
++    const { node, events } = await queuedStore();
++    const options = {
++      database: db,
++      context,
++      node,
++      outboundDirection: "cloud_to_edge" as const,
++      classify: () => "transaction_event" as const,
++      applier: {
++        apply: async () => {},
++        lastSequence: async () => 0,
++      },
++    };
++    const cloud = createDbLinkStore(options);
++    await cloud.applyInbound({
++      fromSeq: 0,
++      toSeq: 1,
++      events: [{ linkSeq: 1, event: events[0]! }],
++    });
++    expect(await cloud.inboundResume!()).toEqual({
++      cursor: 1,
++      eventId: events[0]!.id,
++    });
++    // A fresh instance reuses the physical cursor with an offset. The old
++    // receipt remains stored, but must not be advertised at effective zero.
++    const instance = randomUUID();
++    const client = await owner.connect();
++    try {
++      await client.query("BEGIN");
++      await client.query("SET LOCAL session_replication_role = replica");
++      await client.query(
++        "UPDATE sync_cursors SET peer_instance_id = $2, peer_seq_offset = received_in_seq WHERE edge_node_id = $1 AND direction = 'edge_to_cloud'",
++        [node.edgeNodeId, instance],
++      );
++      await client.query("COMMIT");
++    } catch (error) {
++      await client.query("ROLLBACK");
++      throw error;
++    } finally {
++      client.release();
++    }
++    const rebased = createDbLinkStore({ ...options, edgeInstanceId: instance });
++    expect(await rebased.inboundResume!()).toEqual({
++      cursor: 0,
++      eventId: null,
++    });
++  });
++
++  it("compares the pending queue event instead of trusting a reused sequence number", async () => {
++    const { store, events } = await queuedStore();
++    await expect(
++      store.verifyPeerReceipt!(10, createUlid(++clock)),
++    ).rejects.toBeInstanceOf(LinkProtocolError);
++    expect(await store.lastAckedOutbound()).toBe(6);
++    expect(await store.readOutbound(6, 100)).toHaveLength(6);
++    await expect(
++      store.verifyPeerReceipt!(10, events[9]!.id),
++    ).resolves.toBeUndefined();
++  });
++
++  it("keeps proof at the exact ack boundary after its queue row was pruned", async () => {
++    const { store, node, events } = await queuedStore();
++    await store.ackOutbound(10);
++    await owner.query(
++      "DELETE FROM edge_outbound_queue WHERE edge_node_id = $1 AND status = 'acked' AND link_seq <= 10",
++      [node.edgeNodeId],
++    );
++    await expect(
++      store.verifyPeerReceipt!(10, events[9]!.id),
++    ).resolves.toBeUndefined();
++    await expect(
++      store.verifyPeerReceipt!(10, createUlid(++clock)),
++    ).rejects.toBeInstanceOf(LinkProtocolError);
++    expect(await store.lastAckedOutbound()).toBe(10);
++    // A cloud restored behind a durable edge acknowledgement must still be
++    // allowed to replay; that is a different case from reusing edge slots.
++    await expect(
++      store.verifyPeerReceipt!(9, createUlid(++clock)),
++    ).resolves.toBeUndefined();
++  });
++});
+diff --git a/apps/api/src/test/edge-link-restore-capability.test.ts b/apps/api/src/test/edge-link-restore-capability.test.ts
+new file mode 100644
+index 000000000..14be12887
+--- /dev/null
++++ b/apps/api/src/test/edge-link-restore-capability.test.ts
+@@ -0,0 +1,121 @@
++// legend-tmar2: negotiate proof cloud -> edge without sending new strict
++// hello fields to an older peer in either rollout order.
++import { once } from "node:events";
++import { createServer, type Server } from "node:http";
++import type { AddressInfo } from "node:net";
++import { createUlid } from "@starter/shared/core";
++import WebSocket, { WebSocketServer } from "ws";
++import { afterEach, expect, it } from "vitest";
++import { mintEdgeCredential } from "../edge/credential.ts";
++import { createEdgeLinkClient } from "../edge/link-client.ts";
++import type { LinkStore } from "../edge/link-peer.ts";
++import { createEdgeLinkServer } from "../edge/link-server.ts";
++import { LINK_PROOF_EVENT_ID, LINK_PROOF_HEADER } from "../edge/protocol.ts";
++
++const scope = {
++  tenantId: "11111111-1111-4111-8111-111111111111",
++  outletId: "22222222-2222-4222-8222-222222222222",
++  edgeNodeId: "33333333-3333-4333-8333-333333333333",
++};
++const cleanup: (() => Promise<unknown>)[] = [];
++afterEach(async () => {
++  for (const close of cleanup.splice(0).reverse()) await close();
++});
++
++const store = (): LinkStore => ({
++  outboundHead: async () => 0,
++  lastAckedOutbound: async () => 0,
++  readOutbound: async () => [],
++  ackOutbound: async () => {},
++  lastReceivedInbound: async () => 0,
++  applyInbound: async () => {},
++});
++
++async function listen(server: Server) {
++  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
++  cleanup.push(
++    () => new Promise<void>((resolve) => server.close(() => resolve())),
++  );
++  return `ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/edge-link`;
++}
++
++it.each([false, true])(
++  "legend-tmar2 cloud sends a proof only to an edge that opts in (%s)",
++  async (capable) => {
++    const server = createServer();
++    const id = createUlid();
++    const token = mintEdgeCredential(scope).token;
++    const cloud = {
++      ...store(),
++      lastReceivedInbound: async () => 10,
++      inboundResume: async () => ({ cursor: 10, eventId: id }),
++    };
++    const links = createEdgeLinkServer(server, {
++      version: "cloud",
++      authenticate: async (presented) =>
++        presented === token ? { scope } : null,
++      isActive: async () => true,
++      storeFor: () => cloud,
++    });
++    const url = await listen(server);
++    cleanup.push(() => links.close());
++    const socket = new WebSocket(url, {
++      headers: {
++        Authorization: `Bearer ${token}`,
++        ...(capable ? { [LINK_PROOF_HEADER]: LINK_PROOF_EVENT_ID } : {}),
++      },
++    });
++    cleanup.push(async () => {
++      socket.terminate();
++    });
++    const [raw] = await once(socket, "message");
++    const hello = JSON.parse(String(raw));
++    expect(hello).toMatchObject({ type: "hello", inboundCursor: "10" });
++    if (capable) expect(hello.inboundEventId).toBe(id);
++    else expect(hello).not.toHaveProperty("inboundEventId");
++  },
++);
++
++it("legend-tmar2 new client advertises proof support but sends a legacy hello to an old cloud", async () => {
++  const server = createServer();
++  const sockets = new WebSocketServer({ server, path: "/api/edge-link" });
++  const url = await listen(server);
++  cleanup.push(
++    () => new Promise<void>((resolve) => sockets.close(() => resolve())),
++  );
++  let capability: string | string[] | undefined;
++  const hello = new Promise<Record<string, unknown>>((resolve) => {
++    sockets.on("connection", (socket, request) => {
++      capability = request.headers[LINK_PROOF_HEADER];
++      socket.on("message", (raw) => {
++        const frame = JSON.parse(String(raw));
++        if (frame.type === "hello") resolve(frame);
++      });
++      socket.send(
++        JSON.stringify({
++          type: "hello",
++          version: "old-cloud",
++          inboundCursor: "0",
++        }),
++      );
++    });
++  });
++  const client = createEdgeLinkClient({
++    url,
++    credential: mintEdgeCredential(scope).token,
++    scope,
++    store: {
++      ...store(),
++      inboundResume: async () => ({ cursor: 0, eventId: null }),
++    },
++    version: "edge",
++  });
++  cleanup.push(() => client.stop());
++  const frame = await hello;
++  expect(capability).toBe(LINK_PROOF_EVENT_ID);
++  expect(Object.keys(frame).sort()).toEqual([
++    "inboundCursor",
++    "type",
++    "version",
++  ]);
++});
