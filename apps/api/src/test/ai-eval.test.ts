@@ -245,6 +245,46 @@ const GROUPS: EvalRoleGroup[] = [
   "kitchen",
 ];
 
+// Explicitly approved missing-source debt. These still run checkNumeric and
+// must fail until legend-yp2xj wires their sources; an unexpected pass fails CI.
+// New numeric cases never inherit an exception from their tool or role.
+const KNOWN_SOURCE_GAPS: Readonly<Record<string, "legend-yp2xj">> = {
+  "owner-num-023": "legend-yp2xj",
+  "owner-num-024": "legend-yp2xj",
+  "owner-num-025": "legend-yp2xj",
+  "shareholder-num-015": "legend-yp2xj",
+  "shareholder-num-016": "legend-yp2xj",
+  "shareholder-num-017": "legend-yp2xj",
+  "shareholder-num-018": "legend-yp2xj",
+  "shareholder-num-019": "legend-yp2xj",
+  "shareholder-num-020": "legend-yp2xj",
+  "shareholder-num-021": "legend-yp2xj",
+  "shareholder-num-022": "legend-yp2xj",
+  "shareholder-num-023": "legend-yp2xj",
+  "shareholder-num-024": "legend-yp2xj",
+  "shareholder-num-025": "legend-yp2xj",
+  "shareholder-num-026": "legend-yp2xj",
+  "shareholder-num-027": "legend-yp2xj",
+  "shareholder-num-028": "legend-yp2xj",
+  "manager-num-020": "legend-yp2xj",
+  "manager-num-021": "legend-yp2xj",
+  "manager-num-022": "legend-yp2xj",
+  "employee-num-001": "legend-yp2xj",
+  "employee-num-002": "legend-yp2xj",
+  "employee-num-003": "legend-yp2xj",
+  "employee-num-004": "legend-yp2xj",
+  "employee-num-005": "legend-yp2xj",
+  "employee-num-006": "legend-yp2xj",
+  "employee-num-007": "legend-yp2xj",
+  "employee-num-008": "legend-yp2xj",
+  "employee-num-009": "legend-yp2xj",
+  "employee-num-010": "legend-yp2xj",
+  "employee-num-011": "legend-yp2xj",
+  "employee-num-012": "legend-yp2xj",
+  "employee-num-013": "legend-yp2xj",
+  "employee-num-014": "legend-yp2xj",
+};
+
 const selected = (group: EvalRoleGroup): EvalCase[] => {
   const mine = evalCases.filter((entry) => entry.roleGroup === group);
   const numeric = mine.filter((entry) => entry.kind === "numeric");
@@ -538,6 +578,10 @@ async function checkNumeric(entry: EvalCase, run: CaseRun) {
   const tool = entry.expectTool!;
   expect(run.invokes.map((record) => record.name)).toEqual([tool.name]);
   const record = run.invokes[0]!;
+  const tools = new Set(run.requests[0]!.tools?.map((spec) => spec.name) ?? []);
+  // Only a tool the model was offered may have run.
+  if (record.ok) expect(tools.has(tool.name)).toBe(true);
+  expectNoLeak(entry, run);
   expect(record.ok, `${entry.id}: numeric source tool must succeed`).toBe(true);
   expect(
     tool.metricPath,
@@ -550,10 +594,6 @@ async function checkNumeric(entry: EvalCase, run: CaseRun) {
     `${entry.id}: source metric ${tool.metricPath} is unavailable`,
   ).toBe(true);
   expect(run.answer).toContain(String(value));
-  const tools = new Set(run.requests[0]!.tools?.map((spec) => spec.name) ?? []);
-  // Only a tool the model was offered may have run.
-  if (record.ok) expect(tools.has(tool.name)).toBe(true);
-  expectNoLeak(entry, run);
 }
 
 async function checkUnanswerable(entry: EvalCase, run: CaseRun, index: number) {
@@ -795,7 +835,10 @@ describe.each(GROUPS)("AI evaluation: %s", (group) => {
   const cases = selected(group);
   cases.forEach((entry, index) => {
     const tags = entry.criteria.map((id) => `[${id}]`).join("");
-    it(`${tags} ${entry.id} ${entry.question}`, async () => {
+    const sourceGap = KNOWN_SOURCE_GAPS[entry.id];
+    const evaluate = sourceGap ? it.fails : it;
+    const debt = sourceGap ? ` [known source gap: ${sourceGap}]` : "";
+    const evaluateCase = async () => {
       const run = await runCase(entry, index);
       switch (entry.kind) {
         case "numeric":
@@ -809,7 +852,23 @@ describe.each(GROUPS)("AI evaluation: %s", (group) => {
         case "pii":
           return checkPii(entry, run);
       }
-    });
+    };
+    evaluate(
+      `${tags} ${entry.id}${debt} ${entry.question}`,
+      sourceGap
+        ? async () => {
+            try {
+              await evaluateCase();
+            } catch (error) {
+              const expected = `${entry.id}: source metric ${entry.expectTool!.metricPath} is unavailable:`;
+              if (error instanceof Error && error.message.startsWith(expected))
+                throw error;
+              // Returning deliberately makes it.fails reject this unrelated
+              // failure as an unexpected pass, rather than accepting the debt.
+            }
+          }
+        : evaluateCase,
+    );
   });
 
   it(`[AIG-01] ${group}-scope outlet selection is checked against the caller's reach`, async () => {
