@@ -6,7 +6,11 @@
 //   storage of the tenant that owns the batch, inside that batch's folder:
 //   `tenants/<tenantId>/payroll-payout/<batchId>/<file>`. Anything else
 //   (another tenant, another batch, "..", an encoded slash) is refused before
-//   a row is written. Existence of the stored object is not checked here.
+//   a row is written. `assertEvidenceKeyForBatch` checks the shape only (the
+//   upload service uses it before the object exists);
+//   `assertEvidenceKeyForBatchStored` also needs the object in the storage
+//   (legend-01gg8) and is what resolve, return, confirm and the overpaid record
+//   call before any money status changes.
 // - assertPayoutReauth / verifyReauthPassword: when the session's
 //   `mfa_verified_at` may come from the first MFA enrollment alone
 //   (`mfa_challenge_verified_at` is NULL), a money action needs the account
@@ -14,7 +18,14 @@
 //   asked. Wrong guesses are counted per user and lock for a while.
 
 import { and, eq } from "drizzle-orm";
+import type { Express, Request } from "express";
 import { AccessError } from "@starter/shared/access";
+import type { ObjectStorage } from "@starter/shared/adapters";
+import {
+  CoreError,
+  type ScopedTenantContext,
+  type TenantId,
+} from "@starter/shared/core";
 import { db } from "../db";
 import { account } from "../db/schema";
 import { auth } from "../lib/auth";
@@ -71,6 +82,71 @@ export function assertEvidenceKeyForBatch(
   return key;
 }
 
+/**
+ * Where a payment proof lives: the object storage and the verified request
+ * context that scopes it. A missing storage means no proof can be confirmed.
+ */
+export type PayoutEvidenceStore = {
+  readonly storage: ObjectStorage | null | undefined;
+  readonly context: ScopedTenantContext;
+};
+
+const STORAGE_LOCAL_KEY = "payoutEvidenceStorage";
+
+/** Called once by createApp with the storage runtime's object storage (or null). */
+export function setPayoutEvidenceStorage(
+  app: Express,
+  storage: ObjectStorage | null | undefined,
+): void {
+  app.locals[STORAGE_LOCAL_KEY] = storage ?? null;
+}
+
+/** The proof store of a request: the app's storage plus the request's scoped context. */
+export function payoutEvidenceStoreOf(
+  req: Request,
+  context: ScopedTenantContext,
+): PayoutEvidenceStore {
+  return {
+    storage:
+      (req.app.locals[STORAGE_LOCAL_KEY] as ObjectStorage | null) ?? null,
+    context,
+  };
+}
+
+/**
+ * `assertEvidenceKeyForBatch` plus proof that the object really exists in this
+ * tenant's storage (a head-by-get probe): a key with the right shape that was
+ * never uploaded is 422 PAYOUT_EVIDENCE_INVALID. No storage wired: 503, nothing
+ * is accepted. Call it before any row is written.
+ */
+export async function assertEvidenceKeyForBatchStored(
+  store: PayoutEvidenceStore,
+  scope: { readonly tenantId: string; readonly batchId: string },
+  evidenceKey: string,
+): Promise<string> {
+  const key = assertEvidenceKeyForBatch(scope, evidenceKey);
+  if (!store.storage)
+    throw new HttpError(
+      503,
+      "SERVICE_UNAVAILABLE",
+      "Penyimpanan berkas belum tersedia.",
+    );
+  try {
+    await store.storage.get(store.context, {
+      tenantId: scope.tenantId as TenantId,
+      outletId: null,
+      reference: "payout-evidence-check",
+      key,
+      visibility: "private",
+    });
+  } catch (error) {
+    if (error instanceof CoreError && error.code === "NOT_FOUND")
+      throw invalidEvidence();
+    throw error;
+  }
+  return key;
+}
+
 /** Same rule for an optional key: absent or blank becomes null. */
 export function assertOptionalEvidenceKeyForBatch(
   scope: { readonly tenantId: string; readonly batchId: string },
@@ -79,6 +155,17 @@ export function assertOptionalEvidenceKeyForBatch(
   if (evidenceKey === null || evidenceKey === undefined) return null;
   if (evidenceKey.trim().length === 0) return null;
   return assertEvidenceKeyForBatch(scope, evidenceKey);
+}
+
+/** Optional key with the stored-object check; absent or blank becomes null. */
+export async function assertOptionalEvidenceKeyForBatchStored(
+  store: PayoutEvidenceStore,
+  scope: { readonly tenantId: string; readonly batchId: string },
+  evidenceKey: string | null | undefined,
+): Promise<string | null> {
+  if (evidenceKey === null || evidenceKey === undefined) return null;
+  if (evidenceKey.trim().length === 0) return null;
+  return assertEvidenceKeyForBatchStored(store, scope, evidenceKey);
 }
 
 /**

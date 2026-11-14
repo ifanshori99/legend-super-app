@@ -47,6 +47,7 @@ import {
   bank,
   cash,
   evidenceKeyFor,
+  uploadEvidence,
   installPayoutWorld,
   type Row,
 } from "./payroll-payout-fixtures.ts";
@@ -286,7 +287,7 @@ describe("step-up: password again when MFA was only just enrolled", () => {
     const body = {
       itemIds: [idOf(siti)],
       outcome: "failed",
-      evidenceKey: evidenceKeyFor(W.tenantId, batchId, "bank-menolak.pdf"),
+      evidenceKey: uploadEvidence(batchId, "bank-menolak.pdf"),
       note: "Bank menolak transfer, tidak ada dana keluar",
     };
 

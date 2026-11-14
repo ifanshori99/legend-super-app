@@ -71,6 +71,10 @@ export const payoutLegalEntityParamsSchema = z.strictObject({
 });
 export const payoutRunParamsSchema = z.strictObject({ id: z.uuid() });
 export const payoutBatchParamsSchema = z.strictObject({ id: z.uuid() });
+/** Query of the proof read path: the key an upload returned (shape is checked by the API). */
+export const payoutEvidenceReadQuerySchema = z.strictObject({
+  key: z.string().min(1).max(500),
+});
 
 export const payoutMethodSchema = z.enum(PAYOUT_METHODS);
 export const payoutChannelSchema = z.enum(PAYOUT_CHANNELS);

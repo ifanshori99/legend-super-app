@@ -42,7 +42,7 @@ import {
   SITI,
   actorOf,
   bank,
-  evidenceKeyFor,
+  uploadEvidence,
   installPayoutWorld,
   type Row,
 } from "./payroll-payout-fixtures.ts";
@@ -87,11 +87,18 @@ const recordOverpaidItem = (itemId: string, batchId: string, by = APP) =>
         actor: unknown,
         itemId: string,
         input: { evidenceKey: string; note: string },
+        proofs: unknown,
       ) => Promise<unknown>
-    >("recordOverpaidItem")(tx, actorOf(by), itemId, {
-      evidenceKey: evidenceKeyFor(W.tenantId, batchId, "mutasi-bank.pdf"),
-      note: "Mutasi bank menunjukkan transfer kedua untuk slip yang sama",
-    }),
+    >("recordOverpaidItem")(
+      tx,
+      actorOf(by),
+      itemId,
+      {
+        evidenceKey: uploadEvidence(batchId, "mutasi-bank.pdf"),
+        note: "Mutasi bank menunjukkan transfer kedua untuk slip yang sama",
+      },
+      W.proofs(),
+    ),
   );
 
 const failureOf = (work: Promise<unknown>) =>

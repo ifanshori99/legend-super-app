@@ -59,7 +59,10 @@ import {
   listDisbursementBatches,
   submitDisbursementBatch,
 } from "../services/payroll-payout.service.ts";
-import { PAYOUT_STEP_UP_MAX_AGE_MINUTES } from "../services/payroll-payout-evidence.ts";
+import {
+  PAYOUT_STEP_UP_MAX_AGE_MINUTES,
+  payoutEvidenceStoreOf,
+} from "../services/payroll-payout-evidence.ts";
 
 export const payrollPayoutRouter = Router();
 
@@ -276,7 +279,13 @@ payrollPayoutRouter.post(
     const input = confirmManualItemsInputSchema.parse(req.body);
     const { context, actor } = actorOf(req);
     const data = await withTenant(db, context, (tx) =>
-      confirmManualItems(tx, actor, id, input),
+      confirmManualItems(
+        tx,
+        actor,
+        id,
+        input,
+        payoutEvidenceStoreOf(req, context),
+      ),
     );
     res.json({ data });
   },
@@ -298,7 +307,13 @@ payrollPayoutRouter.post(
     const input = resolveManualItemsSchema.parse(req.body);
     const { context, actor } = actorOf(req);
     const data = await withTenant(db, context, (tx) =>
-      resolveManualItems(tx, actor, id, input),
+      resolveManualItems(
+        tx,
+        actor,
+        id,
+        input,
+        payoutEvidenceStoreOf(req, context),
+      ),
     );
     res.json({ data });
   },
