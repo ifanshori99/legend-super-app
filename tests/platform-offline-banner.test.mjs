@@ -4,13 +4,11 @@ import { createRequire, registerHooks } from "node:module";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const webRoot = new URL("../", import.meta.url);
+const webRoot = new URL("../apps/web/src/", import.meta.url);
 const webRequire = createRequire(
-  new URL("../../package.json", import.meta.url),
+  new URL("../apps/web/package.json", import.meta.url),
 );
-const rootRequire = createRequire(
-  new URL("../../../../package.json", import.meta.url),
-);
+const rootRequire = createRequire(new URL("../package.json", import.meta.url));
 const React = webRequire("react");
 const { renderToStaticMarkup } = webRequire("react-dom/server");
 const ts = rootRequire("typescript");
