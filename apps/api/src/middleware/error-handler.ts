@@ -43,7 +43,12 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     code: string,
     message: string,
     details?: ApiErrorDetail[],
-    extra: { remainingAttempts?: number; lockedUntil?: string } = {},
+    extra: {
+      remainingAttempts?: number;
+      lockedUntil?: string;
+      acknowledgedBy?: { displayName: string };
+      acknowledgedAt?: string;
+    } = {},
   ) =>
     res.status(status).json(
       apiErrorBody(code, message, {
@@ -72,6 +77,15 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
         ? { lockedUntil: error.lockedUntil }
         : {}),
     });
+
+  if (error instanceof HttpError && error.context)
+    return send(
+      error.status,
+      error.code,
+      error.message,
+      undefined,
+      error.context,
+    );
 
   if (
     error instanceof HttpError ||

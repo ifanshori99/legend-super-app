@@ -42,11 +42,12 @@ const edgeDir = vi.hoisted(() => {
   return dir;
 });
 
+const sessionCheck = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
 vi.mock("../services/panic-receiver-session.ts", async (importOriginal) => ({
   ...(await importOriginal<
     typeof import("../services/panic-receiver-session.ts")
   >()),
-  recheckReceiverSession: async () => ({ ok: true }),
+  recheckReceiverSession: sessionCheck,
 }));
 
 import {
@@ -62,7 +63,7 @@ import type { EventEnvelope } from "@starter/shared/events";
 import {
   PANIC_ALERT_AGGREGATE_TYPE,
   panicAlertResolvedEvent,
-  type PanicRealtimeFrame,
+  type PanicServerFrame,
 } from "@starter/shared/facility";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
@@ -85,6 +86,7 @@ import {
   type AuthenticatedEdgeNode,
 } from "../services/edge-node.service.ts";
 import {
+  acknowledgePanicAlert,
   resendDue,
   sendOpenAlertsTo,
 } from "../services/panic-relay.service.ts";
@@ -248,14 +250,14 @@ async function conflictReasons(alertId: string): Promise<string[]> {
 
 /** A fake staff socket of the outlet; the frames it was sent are in `sent`. */
 function fakeSocket() {
-  const sent: PanicRealtimeFrame[] = [];
+  const sent: PanicServerFrame[] = [];
   const subscriber: HubSubscriber = {
     session: {
       id: randomUUID(),
       tenantId: tenant.tenantId,
       outletId,
       deviceId: posDevice.id,
-      userId: "user-review-e",
+      userId: randomUUID(),
       pinGenerationAt: new Date(),
       issuedAt: new Date(),
       expiresAt: new Date(Date.now() + 60 * 60_000),
@@ -271,7 +273,7 @@ function fakeSocket() {
   cleanups.push(unsubscribe);
   const sentFor = (alertId: string) =>
     sent.filter((frame) => frame.alertId === alertId).length;
-  return { subscriber, sentFor };
+  return { subscriber, sentFor, sent };
 }
 
 const cleanups: Array<() => void> = [];
@@ -452,6 +454,47 @@ describe("G2 the edge applies panic_alert.resolved", () => {
 });
 
 describe("G2 effects of a resolved alert on the edge", () => {
+  it(
+    "legend-5egl3 recovery does not send a stale panic after acknowledgement",
+    async () => {
+      const alertId = await pressAlert();
+      const socket = fakeSocket();
+      let entered!: () => void;
+      let release!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      sessionCheck.mockImplementationOnce(async () => {
+        entered();
+        await gate;
+        return { ok: true };
+      });
+      const recovery = sendOpenAlertsTo(socket.subscriber);
+      await Promise.race([
+        waiting,
+        recovery.then(() => {
+          throw new Error("Recovery finished before the session check");
+        }),
+      ]);
+      try {
+        await acknowledgePanicAlert(socket.subscriber.session, alertId);
+      } finally {
+        release();
+      }
+      await recovery;
+      expect(
+        socket.sent.filter(
+          (frame) => frame.type === "panic" && frame.alertId === alertId,
+        ),
+      ).toHaveLength(0);
+      expect(socket.subscriber.alerts.has(alertId)).toBe(false);
+    },
+    T,
+  );
+
   it(
     "the resend stops and a socket that connects later never gets the alert",
     async () => {

@@ -133,6 +133,8 @@ export async function apiFetch<T>(
       | (ApiErrorBody["error"] & {
           remainingAttempts?: number;
           lockedUntil?: string;
+          acknowledgedBy?: { displayName?: unknown };
+          acknowledgedAt?: string;
         })
       | undefined;
     if (error?.code) handleActingStaffRejection(error.code, method);
@@ -149,6 +151,14 @@ export async function apiFetch<T>(
         lockedUntil:
           typeof error?.lockedUntil === "string"
             ? error.lockedUntil
+            : undefined,
+        acknowledgedBy:
+          typeof error?.acknowledgedBy?.displayName === "string"
+            ? { displayName: error.acknowledgedBy.displayName }
+            : undefined,
+        acknowledgedAt:
+          typeof error?.acknowledgedAt === "string"
+            ? error.acknowledgedAt
             : undefined,
       },
     );

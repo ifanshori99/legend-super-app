@@ -21,7 +21,7 @@ import {
   EMERGENCY_REVOKED_CLOSE_CODE,
   EMERGENCY_WS_PROTOCOL,
   panicReceivedFrameSchema,
-  type PanicRealtimeFrame,
+  type PanicServerFrame,
 } from "@starter/shared/facility";
 import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
@@ -144,7 +144,7 @@ export function attachEmergencyRealtime(server: Server, options: Options = {}) {
           const subscriber: HubSubscriber = {
             session,
             alerts: new Map(),
-            send: (frame: PanicRealtimeFrame) => {
+            send: (frame: PanicServerFrame) => {
               if (ws.readyState !== WebSocket.OPEN) return false;
               ws.send(JSON.stringify(frame));
               return true;
