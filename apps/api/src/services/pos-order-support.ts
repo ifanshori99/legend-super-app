@@ -398,6 +398,20 @@ export async function assertNoOpenEdcRequest(
   context: ScopedTenantContext,
   order: Pick<OrderRow, "outletId" | "number">,
 ): Promise<void> {
+  if (await hasOpenEdcRequest(tx, context, order))
+    throw new PosError("EDC_REQUEST_OPEN");
+}
+
+/**
+ * The check behind `assertNoOpenEdcRequest`, for callers that must decide
+ * instead of throw (the QRIS payment webhook voids and refunds, it never
+ * throws). Same advisory lock and query; true when a request is open.
+ */
+export async function hasOpenEdcRequest(
+  tx: Tx,
+  context: ScopedTenantContext,
+  order: Pick<OrderRow, "outletId" | "number">,
+): Promise<boolean> {
   const tenantId = context.tenant.tenantId;
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtext(${tenantId}), hashtext(${`${order.outletId}:${order.number}`}))`,
@@ -433,7 +447,7 @@ export async function assertNoOpenEdcRequest(
       ),
     )
     .limit(1);
-  if (open) throw new PosError("EDC_REQUEST_OPEN");
+  return open !== undefined;
 }
 
 /**

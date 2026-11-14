@@ -5539,3 +5539,9 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti gagal-dulu: kode produksi dikembalikan ke HEAD sementara, 46 gagal / 5 lulus, semua karena perilaku yang belum ada.
 - Review architect (xhigh) 2 ronde: temuan 1/2/4/5 dibetulkan, ronde 2 tanpa bug baru. Temuan 3 (race QRIS pending, `handlePosPaymentPaid` tanpa advisory lock) jadi bead legend-56gg2 (P1, sebelum gerbang rilis).
 - Sisa: belum ada UI dan entri kontrak `payment/admin.ts` untuk rekonsiliasi; tanpa idempotency key; jalur `voidAndNotify` paid-late dan refund tetap melempar bila EDC terbuka.
+
+## 2026-11-15: konfirmasi QRIS mengambil kunci tagihan EDC-01 (legend-56gg2, cabang fix/edc-qris-confirm-lock)
+
+- `handlePosPaymentPaid` (services/pos-order-payment.ts) mengambil advisory lock tagihan (tenant, outlet:number) setelah kunci baris orders dan pos_orders, sebelum tender (urutan sama dengan `addPosTender`). Bila penjualan EDC untuk tagihan itu masih terbuka (pending/unknown, ditandai rekonsiliasi, atau approved belum jadi tender), kartu menang: tender QRIS di-void dan intent direfund penuh (alasan `edc_request_open`). `assertNoOpenEdcRequest` kini membungkus `hasOpenEdcRequest` (services/pos-order-support.ts), perilaku pemanggil lama sama. Tanpa migrasi.
+- Test baru `pos-qris-edc-lock.test.ts` (8 kasus, termasuk balapan dengan kunci dipegang klien lain). Gagal-dulu: 5 gagal (QRIS ter-capture / webhook tidak menunggu kunci), 3 lulus (perilaku lama yang sudah benar). Hijau: 10 file API 252 test, root kontrak 26/26, typecheck api hijau, prettier+eslint bersih.
+- Architect xhigh: tanpa temuan, tanpa deadlock. Risiko sisa: bila penjualan kartu yang menang lalu ditolak, QRIS sudah direfund dan tagihan terbuka lagi; kasir perlu pemberitahuan (bead lanjutan).

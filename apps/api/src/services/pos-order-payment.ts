@@ -68,6 +68,7 @@ import {
   assertNoOpenEdcRequest,
   auditPos,
   bumpPos,
+  hasOpenEdcRequest,
   remainingIdr,
   tenderDto,
   tendersOf,
@@ -533,8 +534,8 @@ export async function addPosTender(
  * Voids the order's pending QRIS tenders (event + audit with `reason`), bumps
  * the order, and requests the full late-payment refund for the paid intent.
  * Shared by the webhook branches that cannot capture the money
- * (`bill_below_tender`, `business_day_closed`, `refund_reserved`). Never
- * throws for these cases.
+ * (`bill_below_tender`, `business_day_closed`, `edc_request_open`,
+ * `refund_reserved`). Never throws for these cases.
  */
 async function voidTendersAndRefundPaidQris(
   tx: Tx,
@@ -544,7 +545,11 @@ async function voidTendersAndRefundPaidQris(
     pos: PosRow;
     paymentLinkId: string;
     intentId: string;
-    reason: "bill_below_tender" | "business_day_closed" | "refund_reserved";
+    reason:
+      | "bill_below_tender"
+      | "business_day_closed"
+      | "edc_request_open"
+      | "refund_reserved";
     now: Date;
     /** Wall-clock time the link closes at, when `now` is a fact time. */
     linkClosedAt?: Date;
@@ -612,12 +617,21 @@ async function voidTendersAndRefundPaidQris(
  * the tender needs (above `cap`, which already excludes this open order's
  * tender) voids the tender and refunds the rest instead of capturing, so the
  * guest is never paid back for a sale that then keeps the same money. A
- * refund still pending does not block; its approval fails later. Lock order:
- * orders -> pos_orders -> tender -> link -> intent (the link -> intent order
- * of the WS-05 confirmation and
+ * refund still pending does not block; its approval fails later.
+ *
+ * legend-56gg2 (EDC-01): the capture also takes the bill's EDC advisory lock
+ * (tenant, outlet:number), the lock `assertNoOpenEdcRequest` and the edge
+ * write-ahead take, so it never interleaves with a card sale starting on the
+ * same bill. While an EDC request is open (`hasOpenEdcRequest`), the card
+ * wins: the QRIS tender is voided and the intent refunded in full
+ * (`edc_request_open`), so the guest is never charged twice. Lock order:
+ * orders -> pos_orders -> EDC advisory (as in `addPosTender`) -> tender ->
+ * link -> intent (the link -> intent order of the WS-05 confirmation and
  * `cancelPaymentLinkInTx`) -> day lock (shared; closePosDay locks no intent).
- * No path locks an intent and then an order, pos_orders, tender or link row
- * of this order, so the new lock adds no cycle.
+ * The advisory lock is only ever taken after the order and pos_orders rows
+ * (the EDC writers hold it without locking an order row), and no path locks
+ * an intent and then an order, pos_orders, advisory, tender or link row of
+ * this order, so it adds no cycle.
  */
 export async function handlePosPaymentPaid(
   context: ScopedTenantContext,
@@ -656,6 +670,9 @@ export async function handlePosPaymentPaid(
       )
       .for("update");
     if (!pos) return;
+    // legend-56gg2: EDC advisory lock (same order as addPosTender), taken
+    // before the tender row; decided below once the intent is known.
+    const edcOpen = await hasOpenEdcRequest(tx, context, order);
     const [tender] = await tx
       .select()
       .from(posOrderTenders)
@@ -776,6 +793,22 @@ export async function handlePosPaymentPaid(
         paymentLinkId: payload.data.paymentLinkId,
         intentId: paid.id,
         reason: "business_day_closed",
+        now: at,
+        linkClosedAt: now,
+      });
+      return;
+    }
+    // legend-56gg2 (EDC-01): a card sale for this bill is open (pending,
+    // unknown, flagged, or approved and not booked yet), so the terminal may
+    // take or already took this bill's money. The card wins: void the QRIS
+    // tender and refund the intent in full, never charge the guest twice.
+    if (edcOpen) {
+      await voidTendersAndRefundPaidQris(tx, context, {
+        order,
+        pos,
+        paymentLinkId: payload.data.paymentLinkId,
+        intentId: paid.id,
+        reason: "edc_request_open",
         now: at,
         linkClosedAt: now,
       });
