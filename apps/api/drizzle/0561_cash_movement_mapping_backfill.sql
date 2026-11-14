@@ -19,9 +19,14 @@
 --     equal-type parent), otherwise NULL;
 --   * a role is mapped only when it has no mapping yet AND the entity's account
 --     on that code is active, of the right type (liability for 2108, expense
---     for 6112) and has no child account (a header account is not postable,
---     ACCOUNT_NOT_POSTABLE). Otherwise the mapping is skipped and the event
---     keeps parking ACCOUNT_MAPPING_MISSING, which is safe.
+--     for 6112), has no child account (a header account is not postable,
+--     ACCOUNT_NOT_POSTABLE), carries exactly the seeded name AND is not mapped
+--     to any role yet. A tenant's own account on the code (another name, or
+--     already used by another role such as 'Titipan Khusus' or the
+--     loyalty_liability account) is never taken over, so a cash in / out does
+--     not land on an account used for something else (money, restrictive on
+--     purpose). Otherwise the mapping is skipped and the event keeps parking
+--     ACCOUNT_MAPPING_MISSING, which is safe.
 -- Runs as the migration owner, so it spans every tenant.
 --
 -- The migrator may also be a plain table owner (no BYPASSRLS): FORCE ROW LEVEL
@@ -54,10 +59,10 @@ INSERT INTO public.account_mappings (tenant_id, legal_entity_id, role, account_i
 SELECT a.tenant_id, a.legal_entity_id, d.role, a.id
 FROM public.chart_of_accounts a
 JOIN (VALUES
-  ('2108', 'liability', 'cash_in_clearing'),
-  ('6112', 'expense', 'cash_out_expense')
-) AS d (code, type, role)
-  ON d.code = a.code AND d.type = a.type
+  ('2108', 'Kas Masuk Belum Diklasifikasi', 'liability', 'cash_in_clearing'),
+  ('6112', 'Beban Kas Keluar Kasir', 'expense', 'cash_out_expense')
+) AS d (code, name, type, role)
+  ON d.code = a.code AND d.type = a.type AND d.name = a.name
 WHERE a.is_active
   AND EXISTS (
     SELECT 1 FROM public.account_mappings p
@@ -66,6 +71,10 @@ WHERE a.is_active
   AND NOT EXISTS (
     SELECT 1 FROM public.account_mappings x
     WHERE x.tenant_id = a.tenant_id AND x.legal_entity_id = a.legal_entity_id AND x.role = d.role
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM public.account_mappings m
+    WHERE m.tenant_id = a.tenant_id AND m.legal_entity_id = a.legal_entity_id AND m.account_id = a.id
   )
   AND NOT EXISTS (
     SELECT 1 FROM public.chart_of_accounts c

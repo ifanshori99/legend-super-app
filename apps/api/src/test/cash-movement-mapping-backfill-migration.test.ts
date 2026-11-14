@@ -15,6 +15,11 @@
 //   mapping the tenant already changed stays; a code of another type is not
 //   mapped (the event keeps parking, which is safe); a header account (has a
 //   child) is not mapped.
+// - Restrictive (money, founder choice: when in doubt, limit): an account on
+//   2108 / 6112 is mapped only when it carries exactly the seeded name AND is
+//   not yet mapped to any role. A tenant's own account on the code (other
+//   name, or already used by another role such as loyalty_liability) is never
+//   hijacked; the event keeps parking ACCOUNT_MAPPING_MISSING, which is safe.
 // - Idempotent, spans every (tenant, legal entity) pair.
 // - End to end: events parked before the backfill post a balanced journal
 //   through the existing retry sweep, and never twice.
@@ -269,7 +274,7 @@ describe("legend-89pn migration 0561 cash movement accounts and mappings", () =>
     );
   });
 
-  it("MIG-03 never overwrites: a mapping the tenant changed stays, a custom 2108 keeps its name, a 6112 of another type is not mapped", async () => {
+  it("MIG-03 never overwrites: a mapping the tenant changed stays, a custom account of another name on 2108 is kept and not mapped, a 6112 of another type is not mapped", async () => {
     const remapped = await entity(true);
     const mine = await addAccount(
       fixtureTenantId,
@@ -306,8 +311,8 @@ describe("legend-89pn migration 0561 cash movement accounts and mappings", () =>
     // The unrelated 2108 is created where it is missing (the 6112 was remapped).
     expect(await accountsOf(remapped, "2108")).toHaveLength(1);
 
-    // A custom 2108 keeps its name, is never duplicated; it is mapped because it
-    // is an active liability account without children.
+    // A custom account of another name on 2108 keeps its name, is never
+    // duplicated and is NOT mapped: the cash-in would land on a tenant account.
     const customRows = await accountsOf(custom, "2108");
     expect(customRows).toHaveLength(1);
     expect(customRows[0]).toMatchObject({
@@ -315,7 +320,7 @@ describe("legend-89pn migration 0561 cash movement accounts and mappings", () =>
       name: "Titipan Khusus",
       type: "liability",
     });
-    expect(await mappingsOf(custom, "cash_in_clearing")).toEqual([customId]);
+    expect(await mappingsOf(custom, "cash_in_clearing")).toHaveLength(0);
 
     // An asset account on 6112 is never mapped as an expense; no error.
     const wrongRows = await accountsOf(wrong, "6112");
@@ -328,6 +333,47 @@ describe("legend-89pn migration 0561 cash movement accounts and mappings", () =>
     expect(await mappingsOf(wrong, "cash_out_expense")).toHaveLength(0);
     // The other role of that entity is still backfilled.
     expect(await mappingsOf(wrong, "cash_in_clearing")).toHaveLength(1);
+  });
+
+  it("MIG-03b a 2108 with the seeded name that is already mapped to another role is not mapped to cash_in_clearing", async () => {
+    const entityId = await entity(true);
+    const taken = await addAccount(
+      fixtureTenantId,
+      entityId,
+      "2108",
+      "Kas Masuk Belum Diklasifikasi",
+      "liability",
+    );
+    await mapRole(fixtureTenantId, entityId, "loyalty_liability", taken);
+
+    await migrate();
+    await migrate();
+
+    expect(await accountsOf(entityId, "2108")).toHaveLength(1);
+    expect(await mappingsOf(entityId, "loyalty_liability")).toEqual([taken]);
+    expect(await mappingsOf(entityId, "cash_in_clearing")).toHaveLength(0);
+    // The independent 6112 role is still backfilled.
+    expect(await mappingsOf(entityId, "cash_out_expense")).toHaveLength(1);
+  });
+
+  it("MIG-03c a 6112 of another name is kept and not mapped to cash_out_expense", async () => {
+    const entityId = await entity(true);
+    const customId = await addAccount(
+      fixtureTenantId,
+      entityId,
+      "6112",
+      "Beban Lain-lain",
+      "expense",
+    );
+
+    await migrate();
+    await migrate();
+
+    const rows = await accountsOf(entityId, "6112");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: customId, name: "Beban Lain-lain" });
+    expect(await mappingsOf(entityId, "cash_out_expense")).toHaveLength(0);
+    expect(await mappingsOf(entityId, "cash_in_clearing")).toHaveLength(1);
   });
 
   it("MIG-04 an entity with no account mapping at all (not provisioned) gets nothing", async () => {
@@ -344,7 +390,7 @@ describe("legend-89pn migration 0561 cash movement accounts and mappings", () =>
       fixtureTenantId,
       entityId,
       "2108",
-      "Header Kas Masuk",
+      "Kas Masuk Belum Diklasifikasi",
       "liability",
     );
     await addAccount(
@@ -359,7 +405,7 @@ describe("legend-89pn migration 0561 cash movement accounts and mappings", () =>
       fixtureTenantId,
       entityId,
       "6112",
-      "Header Beban Kas",
+      "Beban Kas Keluar Kasir",
       "expense",
     );
     await addAccount(
@@ -385,7 +431,7 @@ describe("legend-89pn migration 0561 cash movement accounts and mappings", () =>
       fixtureTenantId,
       entityId,
       "2108",
-      "Nonaktif",
+      "Kas Masuk Belum Diklasifikasi",
       "liability",
     );
     await owner.query(
@@ -530,7 +576,7 @@ type OldWorld = {
 };
 
 /** A tenant provisioned before the roles existed: only cash_on_hand (+ headers). */
-async function makeOldWorld(): Promise<OldWorld> {
+async function makeOldWorld(withCashOnHand = true): Promise<OldWorld> {
   const tenant = await newTenant();
   const entityId = randomUUID();
   const outletId = randomUUID();
@@ -550,7 +596,13 @@ async function makeOldWorld(): Promise<OldWorld> {
     ],
   );
   const cashId = await addAccount(tenant.id, entityId, "1101", "Kas", "asset");
-  await mapRole(tenant.id, entityId, "cash_on_hand", cashId);
+  // Without cash_on_hand the entity is still provisioned through another role.
+  await mapRole(
+    tenant.id,
+    entityId,
+    withCashOnHand ? "cash_on_hand" : "sales_revenue",
+    cashId,
+  );
   await addAccount(tenant.id, entityId, "2100", "Utang Lancar", "liability");
   await addAccount(tenant.id, entityId, "6100", "Beban Operasional", "expense");
   for (const period of ["2026-09", "2026-10", "2026-11"])
@@ -748,6 +800,8 @@ describe("legend-89pn parked cash movements of an old tenant post after the back
 
     await migrate();
     await sweep(world.tenant);
+    // The sweep consumed the parked rows: nothing is left parked.
+    expect(await parkedCodes(world)).toEqual([]);
 
     const clearingId = (
       await accountsOf(world.entityId, "2108", world.tenant.id)
@@ -782,6 +836,34 @@ describe("legend-89pn parked cash movements of an old tenant post after the back
     await deliver(world.tenant, outEvent);
     await deliver(world.tenant, inEvent);
     expect(await journalsOf(world)).toHaveLength(2);
+  });
+
+  it("E2E-02 a provisioned entity without cash_on_hand gets the accounts, but its events keep parking and nothing is journaled", async () => {
+    const world = await makeOldWorld(false);
+    const cashOut = await seedMovement(world, "cash_out", 30_000);
+    const cashIn = await seedMovement(world, "cash_in", 75_000);
+    for (const movement of [cashOut, cashIn])
+      expect(
+        await deliver(world.tenant, movementRecorded(world, movement)),
+      ).toMatchObject({ status: "parked", code: "ACCOUNT_MAPPING_MISSING" });
+
+    await migrate();
+    await sweep(world.tenant);
+
+    expect(
+      await accountsOf(world.entityId, "2108", world.tenant.id),
+    ).toHaveLength(1);
+    expect(
+      await accountsOf(world.entityId, "6112", world.tenant.id),
+    ).toHaveLength(1);
+    expect(
+      await mappingsOf(world.entityId, "cash_on_hand", world.tenant.id),
+    ).toHaveLength(0);
+    expect(await parkedCodes(world)).toEqual([
+      "ACCOUNT_MAPPING_MISSING",
+      "ACCOUNT_MAPPING_MISSING",
+    ]);
+    expect(await journalsOf(world)).toHaveLength(0);
   });
 });
 
