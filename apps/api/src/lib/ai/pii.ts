@@ -56,7 +56,7 @@ export type PiiFinding = {
 const DATE_MONTH =
   "(?:jan(?:uari|uary)?|feb(?:ruari|ruary)?|mar(?:et|ch)?|apr(?:il)?|mei|may|jun[ie]?|jul[iy]?|agu(?:stus)?|aug(?:ust)?|sep(?:t(?:ember)?)?|okt(?:ober)?|oct(?:ober)?|nov(?:ember)?|des(?:ember)?|dec(?:ember)?)";
 const SALARY_DATES = new RegExp(
-  `\\b(?:\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2}|\\d{4}[-/]\\d{1,2}|\\d{1,2}[-/.]\\d{1,2}[-/.]\\d{2,4}|${DATE_MONTH}\\.?\\s+\\d{1,2}(?:,?\\s+\\d{4})?|\\d{1,2}\\s+${DATE_MONTH}\\.?(?:\\s+\\d{4})?|${DATE_MONTH}\\.?\\s+\\d{4}|(?:19|20)\\d{2})\\b`,
+  `\\b(?:\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2}|\\d{4}[-/]\\d{1,2}|\\d{1,2}[-/.]\\d{1,2}[-/.]\\d{2,4}|${DATE_MONTH}\\.?\\s+\\d{1,2}(?:,?\\s+\\d{4})?|\\d{1,2}\\s+${DATE_MONTH}\\.?(?:\\s+\\d{4})?|${DATE_MONTH}\\.?\\s+\\d{4})\\b`,
   "gi",
 );
 

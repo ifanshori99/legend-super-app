@@ -63,6 +63,8 @@ describe("redactPii", () => {
   it.each([
     ["gaji Budi Rp 8.500.000", "gaji Budi [salary amount]"],
     ["salary: 12000000", "salary: [salary amount]"],
+    ["salary: 2026", "salary: [salary amount]"],
+    ["THP 2000", "THP [salary amount]"],
     ["THP 7,5 juta", "THP [salary amount]"],
     ["Gaji 5000", "Gaji [salary amount]"],
     ["Gaji Rp 2.026", "Gaji [salary amount]"],
