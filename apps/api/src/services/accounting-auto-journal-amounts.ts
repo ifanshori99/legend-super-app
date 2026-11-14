@@ -840,6 +840,121 @@ type RefundLine = {
 };
 
 /**
+ * legend-zwaro: customer_deposit an order's EARLIER refund journals took, net of
+ * their reversals, for the refunds nothing else accounts for: not an earlier POS
+ * refund row (its lines are counted from the row) and not an order issue with a
+ * non-failed payment refund on the pinned intent (counted from that refund). What
+ * is left (a payload-only refund, a recovery refund without source) has only its
+ * journal to show it drew on the pinned intent. Over-counting only parks.
+ */
+async function earlierUnbackedRefundDepositIdr(
+  tx: Tx,
+  tenantId: TenantId,
+  p: {
+    orderId: string;
+    refundId: string;
+    pinnedIntentId: string;
+    posRefundIds: readonly string[];
+  },
+): Promise<number> {
+  const orderUuid = orderUuidOf(p.orderId);
+  if (orderUuid === null) return 0;
+  const result = await tx.execute<{ source_id: string | null; net: string }>(
+    sql`
+    SELECT coalesce(re.source_id, je.source_id) AS source_id,
+           sum(jl.credit_idr - jl.debit_idr)::text AS net
+      FROM journal_entries je
+      LEFT JOIN journal_entries re
+        ON re.tenant_id = je.tenant_id AND re.id = je.reversal_of
+      JOIN journal_lines jl
+        ON jl.tenant_id = je.tenant_id AND jl.entry_id = je.id
+     WHERE je.tenant_id = ${tenantId}
+       AND coalesce(re.source_type, je.source_type) = 'refund'
+       AND coalesce(re.order_id, je.order_id) = ${orderUuid}::uuid
+       AND (jl.account_id::text =
+              (coalesce(re.posting_account_snapshot, je.posting_account_snapshot))->>'customer_deposit'
+            OR jl.account_id IN (
+              SELECT m.account_id FROM account_mappings m
+               WHERE m.tenant_id = je.tenant_id AND m.role = 'customer_deposit'))
+     GROUP BY 1`,
+  );
+  const posIds = new Set(p.posRefundIds.map((id) => id.toLowerCase()));
+  const candidates = result.rows.filter(
+    (row): row is { source_id: string; net: string } =>
+      row.source_id !== null &&
+      row.source_id !== p.refundId &&
+      Number(row.net) > 0 &&
+      !posIds.has(row.source_id.toLowerCase()),
+  );
+  if (candidates.length === 0) return 0;
+  // What a non-failed payment refund on the pinned intent already covers of a
+  // journal: an order issue's own refund, or the refund filed for a POS refund
+  // by its pos-refund-gateway key (a POS refund journaled before this one but
+  // keyed after it is not in posRefundIds). Only the uncovered rest is owed
+  // (a refund clamped to the intent's limit covers less than its journal).
+  const sourceIds = candidates
+    .map((row) => row.source_id.toLowerCase())
+    .filter((id) => UUID_RE.test(id));
+  const covered = new Map<string, number>();
+  if (sourceIds.length > 0) {
+    const byIssue = await tx
+      .select({
+        issueId: paymentRefunds.orderIssueId,
+        amountIdr: paymentRefunds.amountIdr,
+      })
+      .from(paymentRefunds)
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, tenantId),
+          eq(paymentRefunds.paymentIntentId, p.pinnedIntentId),
+          ne(paymentRefunds.status, "failed"),
+          inArray(paymentRefunds.orderIssueId, sourceIds),
+        ),
+      );
+    for (const row of byIssue)
+      if (row.issueId)
+        covered.set(
+          row.issueId.toLowerCase(),
+          (covered.get(row.issueId.toLowerCase()) ?? 0) + Number(row.amountIdr),
+        );
+    const keyOf = (id: string) =>
+      `pos-refund-gateway:${id}:${p.pinnedIntentId}`;
+    const byKey = await tx
+      .select({
+        key: paymentAdminIdempotency.key,
+        amountIdr: paymentRefunds.amountIdr,
+      })
+      .from(paymentAdminIdempotency)
+      .innerJoin(
+        paymentRefunds,
+        and(
+          eq(paymentRefunds.tenantId, paymentAdminIdempotency.tenantId),
+          sql`${paymentRefunds.id}::text = ${paymentAdminIdempotency.response}->>'refundId'`,
+        ),
+      )
+      .where(
+        and(
+          eq(paymentAdminIdempotency.tenantId, tenantId),
+          inArray(paymentAdminIdempotency.key, sourceIds.map(keyOf)),
+          eq(paymentRefunds.paymentIntentId, p.pinnedIntentId),
+          ne(paymentRefunds.status, "failed"),
+        ),
+      );
+    for (const row of byKey) {
+      const id = sourceIds.find((candidate) => keyOf(candidate) === row.key);
+      if (id) covered.set(id, (covered.get(id) ?? 0) + Number(row.amountIdr));
+    }
+  }
+  let total = 0;
+  for (const row of candidates)
+    total += Math.max(
+      0,
+      Number(row.net) - (covered.get(row.source_id.toLowerCase()) ?? 0),
+    );
+  return total;
+}
+
+/**
  * legend-2jyr + legend-27mt: how much of an order refund's gateway part credits
  * customer_deposit (owed until a payout clears it) and how much reverses the
  * sale's gateway_clearing. The refund mirrors the SALE tender by tender, like
@@ -947,6 +1062,8 @@ async function refundGatewaySplitOf(
     string,
     { intentId: string; wantIdr: number }
   >();
+  // POS refund rows counted from their lines (not again from their journals).
+  let earlierPosRefundIds: string[] = [];
   let unprovenResidual = false;
   let tenderNullIdr = 0;
   if (recovery[0]) {
@@ -1028,6 +1145,7 @@ async function refundGatewaySplitOf(
       .filter((row) => row.id !== p.refundId)
       .filter((row) => !current || key(row) < key(current))
       .sort((a, b) => (key(a) < key(b) ? -1 : 1));
+    earlierPosRefundIds = earlier.map((row) => row.id);
     for (const row of earlier) apply(row.lines, false, row.id);
     // legend-fpy9s: a DP return of an earlier POS refund shares the line's
     // pos-refund-gateway key (one payment refund per refund + intent), so the
@@ -1160,7 +1278,7 @@ async function refundGatewaySplitOf(
           for (const [linkKey, entry] of earlierIntentWant)
             if (entry.intentId === pinned.intentId)
               pinnedWant.set(linkKey, entry.wantIdr);
-          if (!recoveryWithoutSource && pinnedWant.size > 0) {
+          if (pinnedWant.size > 0) {
             const linked = await tx
               .select({
                 key: paymentAdminIdempotency.key,
@@ -1197,12 +1315,27 @@ async function refundGatewaySplitOf(
                 want - (linkedIdr.get(linkKey) ?? 0),
               );
           }
+          // legend-zwaro: an earlier refund journal of the order that no POS
+          // refund row or payment refund on the pinned intent accounts for (a
+          // payload-only refund, a recovery without source) still took this
+          // intent's money into customer_deposit: it counts against the pin.
+          const earlierJournalIdr = await earlierUnbackedRefundDepositIdr(
+            tx,
+            tenantId,
+            {
+              orderId: p.orderId,
+              refundId: p.refundId,
+              pinnedIntentId: pinned.intentId,
+              posRefundIds: earlierPosRefundIds,
+            },
+          );
           if (
             (splits?.n ?? 0) === 0 &&
             gatewayIdr +
               Number(filed?.total ?? 0) +
-              (recoveryWithoutSource ? 0 : earlierGatewayIdr) +
-              earlierUnfiledIdr <=
+              earlierGatewayIdr +
+              earlierUnfiledIdr +
+              earlierJournalIdr <=
               Number(pinned.amountIdr)
           )
             pinnedIntentId = pinned.intentId;
