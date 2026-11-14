@@ -68,6 +68,7 @@ import {
   retryParkedAutoJournals,
   type AutoJournalResult,
 } from "../services/accounting-auto-journal-consumer.ts";
+import { replayMigrationForTenant } from "./helpers/migration-replay.ts";
 
 const fixtureTenantId = cafeLegendPlatformFixtures.tenant.id;
 const owner = new Pool({
@@ -84,13 +85,9 @@ const migrationSql = () =>
     "utf8",
   );
 
-/** Runs every statement of the migration as the migration owner, in order. */
-async function migrate(): Promise<void> {
-  for (const statement of migrationSql().split("--> statement-breakpoint")) {
-    const sql = statement.replace(/--.*$/gm, "").trim();
-    if (sql) await owner.query(statement);
-  }
-}
+/** Replays the migration for one tenant only (legend-edxtt). */
+const migrate = (tenantId: string = fixtureTenantId): Promise<void> =>
+  replayMigrationForTenant(owner, migrationSql(), tenantId);
 
 const GROUP_OF_TYPE: Record<string, string> = {
   asset: "current_asset",
@@ -452,7 +449,7 @@ describe("legend-89pn migration 0360 cash movement accounts and mappings", () =>
     expect(await mappingsOf(entityId, "cash_in_clearing")).toHaveLength(0);
   });
 
-  it("MIG-06 every (tenant, legal entity) pair gets its own accounts; another tenant's rows are not touched; FORCE RLS is restored", async () => {
+  it("MIG-06 every (tenant, legal entity) pair gets its own accounts; an unprovisioned entity gets nothing; FORCE RLS stays on", async () => {
     const tenantA = await newTenant();
     const tenantB = await newTenant();
     const a1 = await entity(true, tenantA.id);
@@ -460,7 +457,8 @@ describe("legend-89pn migration 0360 cash movement accounts and mappings", () =>
     const b1 = await entity(true, tenantB.id);
     const untouched = await entity(false, tenantB.id);
 
-    await migrate();
+    await migrate(tenantA.id);
+    await migrate(tenantB.id);
 
     const ids = new Set<string>();
     for (const [tenantId, entityId] of [
@@ -806,7 +804,7 @@ describe("legend-89pn parked cash movements of an old tenant post after the back
     ]);
     expect(await journalsOf(world)).toHaveLength(0);
 
-    await migrate();
+    await migrate(world.tenant.id);
     await sweep(world.tenant);
     // The sweep consumed the parked rows: nothing is left parked.
     expect(await parkedCodes(world)).toEqual([]);
@@ -855,7 +853,7 @@ describe("legend-89pn parked cash movements of an old tenant post after the back
         await deliver(world.tenant, movementRecorded(world, movement)),
       ).toMatchObject({ status: "parked", code: "ACCOUNT_MAPPING_MISSING" });
 
-    await migrate();
+    await migrate(world.tenant.id);
     await sweep(world.tenant);
 
     expect(
@@ -924,7 +922,7 @@ describe("legend-89pn parked cash movements of an old tenant post after the back
     )[0]!.id;
     await mapRole(world.tenant.id, world.entityId, "salary_expense", salaryId);
 
-    await migrate();
+    await migrate(world.tenant.id);
 
     const expense = await accountsOf(world.entityId, "6112", world.tenant.id);
     expect(expense).toHaveLength(1);
@@ -979,7 +977,7 @@ describe("legend-89pn parked cash movements of an old tenant post after the back
       depositId,
     );
 
-    await migrate();
+    await migrate(world.tenant.id);
 
     const clearing = await accountsOf(world.entityId, "2108", world.tenant.id);
     expect(clearing).toHaveLength(1);
@@ -1010,7 +1008,8 @@ describe("legend-89pn parked cash movements of an old tenant post after the back
       otherSalary,
     );
 
-    await migrate();
+    await migrate(world.tenant.id);
+    await migrate(other.tenant.id);
 
     const ids = async (w: OldWorld, code: string) =>
       (await accountsOf(w.entityId, code, w.tenant.id))[0]!.id;
