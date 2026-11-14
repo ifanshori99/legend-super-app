@@ -1,3 +1,6 @@
+-- Declare the new table's foreign keys inline while it is empty: a later
+-- ADD CONSTRAINT validates through the referenced FORCE-RLS tenant tables
+-- and requires tenant context even for a plain migration owner (0065).
 CREATE TABLE "edge_link_dead_letters" (
 	"tenant_id" uuid NOT NULL,
 	"outlet_id" uuid NOT NULL,
@@ -15,12 +18,12 @@ CREATE TABLE "edge_link_dead_letters" (
 	CONSTRAINT "edge_link_dead_letters_tenant_id_edge_node_id_direction_event_id_pk" PRIMARY KEY("tenant_id","edge_node_id","direction","event_id"),
 	CONSTRAINT "edge_link_dead_letters_direction_check" CHECK ("edge_link_dead_letters"."direction" IN ('edge_to_cloud', 'cloud_to_edge')),
 	CONSTRAINT "edge_link_dead_letters_reason_check" CHECK ("edge_link_dead_letters"."reason" IN ('frame_too_large')),
-	CONSTRAINT "edge_link_dead_letters_size_check" CHECK ("edge_link_dead_letters"."link_seq" >= 1 AND "edge_link_dead_letters"."bytes" >= 0 AND "edge_link_dead_letters"."aggregate_sequence" >= 1)
+	CONSTRAINT "edge_link_dead_letters_size_check" CHECK ("edge_link_dead_letters"."link_seq" >= 1 AND "edge_link_dead_letters"."bytes" >= 0 AND "edge_link_dead_letters"."aggregate_sequence" >= 1),
+	CONSTRAINT "edge_link_dead_letters_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edge_link_dead_letters_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "edge_link_dead_letters_edge_node_fk" FOREIGN KEY ("tenant_id","outlet_id","edge_node_id") REFERENCES "public"."edge_nodes"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
-ALTER TABLE "edge_link_dead_letters" ADD CONSTRAINT "edge_link_dead_letters_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edge_link_dead_letters" ADD CONSTRAINT "edge_link_dead_letters_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "edge_link_dead_letters" ADD CONSTRAINT "edge_link_dead_letters_edge_node_fk" FOREIGN KEY ("tenant_id","outlet_id","edge_node_id") REFERENCES "public"."edge_nodes"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.edge_link_dead_letters'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.edge_link_dead_letters'::regclass);
