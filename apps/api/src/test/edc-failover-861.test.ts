@@ -75,7 +75,7 @@ import { createApp } from "../app.ts";
 import { env } from "../config/env.ts";
 import { db } from "../db/index.ts";
 import { createAppPool } from "../db/role.ts";
-import { createEdcAgent } from "../edge/edc/agent.ts";
+import { createEdcAgent, type EdcAgentDeps } from "../edge/edc/agent.ts";
 import { EDC_LATE_RESPONSE_WINDOW_MS } from "../edge/edc/late-response.ts";
 import { EdcProviderRegistry } from "../edge/edc/registry.ts";
 import { EcrSimulator } from "../edge/edc/simulator.ts";
@@ -411,10 +411,12 @@ function newAgent(
   provider: EdcProvider,
   saleTimeoutMs: number,
   pool?: Pool,
+  extra: Partial<EdcAgentDeps> = {},
 ): ReturnType<typeof createEdcAgent> {
   const a = createEdcAgent({
     db,
     ...(pool ? { pool } : {}),
+    ...extra,
     registry: new EdcProviderRegistry().register(provider),
     saleTimeoutMs,
     inquiryTimeoutMs: 50,
@@ -1026,6 +1028,124 @@ describe("legend-r11em EDC failover wire marker", () => {
         { timeout: 5_000 },
       );
       expect(sim.chargedCount(terminalId)).toBe(1);
+    });
+  });
+
+  describe("861-F stale marker sweep on a running agent", () => {
+    const sweepMs = 40;
+    /** A clock the test moves forward past the late-response window. */
+    function shiftableClock() {
+      let offsetMs = 0;
+      return {
+        now: () => new Date(Date.now() + offsetMs),
+        pastWindow: () => {
+          offsetMs = EDC_LATE_RESPONSE_WINDOW_MS;
+        },
+      };
+    }
+
+    it("clears the marker of a dead process once it is past the window, without recoverInFlight", async () => {
+      const clock = shiftableClock();
+      // The process that held the sale died; its marker is inside the window.
+      const dead = await markedSale({
+        reference: (await newBill()).number,
+        amountIdr: KOPI_IDR,
+        dispatchedAgo: INSIDE_WINDOW,
+        markerAgo: INSIDE_WINDOW,
+      });
+      await seedTerminal();
+      const edc = newAgent(
+        passThrough(new EcrSimulator("bca")),
+        5_000,
+        undefined,
+        { now: clock.now, staleWireSweepMs: sweepMs },
+      );
+      await edc.start(ctx);
+      await new Promise((done) => setTimeout(done, sweepMs * 4));
+      expect(
+        await markerOf(dead),
+        "the sweep cleared a marker that is still inside the window",
+      ).not.toBeNull();
+
+      clock.pastWindow();
+      await vi.waitFor(
+        async () => {
+          expect(
+            await markerOf(dead),
+            "the marker of a dead process was never cleared",
+          ).toBeNull();
+        },
+        { timeout: 5_000 },
+      );
+    });
+
+    it("keeps the marker of a call of this process that is still running past the window", async () => {
+      const clock = shiftableClock();
+      const saleGate = gate();
+      const sim = new EcrSimulator("bca");
+      const { provider, state } = gatedProvider(sim, saleGate);
+      const terminalId = await seedTerminal();
+      const edc = newAgent(provider, 100, undefined, {
+        now: clock.now,
+        staleWireSweepMs: sweepMs,
+      });
+      await edc.start(ctx);
+      const bill = await newBill();
+
+      const selling = edc.requestPayment(
+        ctx,
+        cashier.userId,
+        saleRequest(bill, terminalId),
+      );
+      selling.catch(() => undefined);
+      await vi.waitFor(async () => {
+        const [row] = await ledgerRows(bill.number);
+        expect(state.saleCalls).toBe(1);
+        expect(row?.status).toBe("unknown");
+        expect(row?.sale_wire_open_at).not.toBeNull();
+      });
+      const rowId = (await ledgerRows(bill.number))[0]!.id;
+
+      clock.pastWindow();
+      await new Promise((done) => setTimeout(done, sweepMs * 6));
+      expect(
+        await markerOf(rowId),
+        "the sweep cleared the marker of a call this process still runs",
+      ).not.toBeNull();
+
+      saleGate.open();
+      await selling.catch(() => undefined);
+      await vi.waitFor(
+        async () => {
+          expect(await markerOf(rowId)).toBeNull();
+        },
+        { timeout: 5_000 },
+      );
+    });
+
+    it("stops sweeping once the outlet is released", async () => {
+      const clock = shiftableClock();
+      await seedTerminal();
+      const edc = newAgent(
+        passThrough(new EcrSimulator("bca")),
+        5_000,
+        undefined,
+        { now: clock.now, staleWireSweepMs: sweepMs },
+      );
+      await edc.start(ctx);
+      await edc.stop(ctx);
+      clock.pastWindow();
+      const left = await markedSale({
+        reference: (await newBill()).number,
+        amountIdr: KOPI_IDR,
+        dispatchedAgo: INSIDE_WINDOW,
+        markerAgo: INSIDE_WINDOW,
+      });
+      await new Promise((done) => setTimeout(done, sweepMs * 6));
+      expect(
+        await markerOf(left),
+        "a released outlet is still being swept",
+      ).not.toBeNull();
     });
   });
 });
