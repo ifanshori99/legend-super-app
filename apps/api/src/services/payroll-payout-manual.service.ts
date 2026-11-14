@@ -67,7 +67,6 @@ import {
 } from "./payroll-payout-gl.service.ts";
 import {
   assertEvidenceKeyForBatchStored,
-  assertOptionalEvidenceKeyForBatch,
   assertOptionalEvidenceKeyForBatchStored,
   type PayoutEvidenceStore,
 } from "./payroll-payout-evidence.ts";
@@ -1131,12 +1130,14 @@ export async function confirmCashHandover(
       "PAYOUT_APPROVAL_EXPIRED",
       "Persetujuan batch sudah lewat 24 jam. Batalkan batch dan buat yang baru.",
     );
-  if ((input.evidenceKey?.trim() ?? "").length > 500)
-    throw refuse(422, "PAYOUT_ITEMS_INVALID", "Kunci bukti terlalu panjang.");
-  const evidence = assertOptionalEvidenceKeyForBatch(
-    { tenantId: actor.tenantId, batchId: batch.id },
-    input.evidenceKey,
-  );
+  // Cash handover carries no evidence object: any non-null key is refused and
+  // the stored confirmation evidence stays NULL.
+  if (input.evidenceKey !== undefined && input.evidenceKey !== null)
+    throw refuse(
+      422,
+      "PAYOUT_ITEMS_INVALID",
+      "Serah terima tunai tidak memakai kunci bukti.",
+    );
   await loadItemsForConfirm(tx, tenantId, batch, input.itemIds, "approved");
 
   const updated = await tx
@@ -1145,7 +1146,7 @@ export async function confirmCashHandover(
       status: "succeeded",
       settledAt: now,
       confirmedBy: actor.userId as UserId,
-      confirmationEvidenceKey: evidence,
+      confirmationEvidenceKey: null,
       updatedAt: now,
     })
     .where(
