@@ -1159,7 +1159,7 @@ export async function transitionPrepList(
         "Daftar prep gagal diperbarui.",
       );
     if (status === "completed")
-      await linkProductionOrdersForPrepList(tx, context, row.id, now);
+      await linkProductionOrdersForPrepList(tx, context, row.id, now, actor);
     await storeIdempotentResult(tx, context, {
       key: idempotencyKey,
       fingerprint,

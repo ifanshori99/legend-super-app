@@ -5316,3 +5316,10 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - legend-ykam: `/notes` sudah hilang (appHomePath `/member`, commit 04d2836a3). Sisanya dikerjakan: `lib/areas/post-login.ts` `postLoginPath(access)`; sesi dengan `dashboard.management.view` mendarat di `/kelola`, customer di `/member` (`_auth.tsx`, `auth-form.tsx`).
 - legend-2ywn: denylist `SENSITIVE_FUNCTIONS` diganti baseline `pg_init_privs` (privtype 'i'); fail-closed bila baseline kosong (anchor `pg_read_file`, `lo_import`, `pg_switch_wal`). Review architect: tidak ada false negative; celah tersisa (extension 'e', `SENSITIVE_TABLES`) jadi kartu lanjutan.
 - Gerbang: 5 tes root + 3 berkas vitest hijau, 7 berkas kontrak root hijau, prettier+eslint hijau, typecheck api+web hijau, `db:generate` kosong. E2E Playwright tidak dijalankan (scripts/test.mjs tidak bisa memfilter).
+## 2026-11-14: WS-11 laporan + WS-14 ops backend (cabang ghostex/62d6d898)
+
+- legend-rmvu: `GET /api/reports/schedule-recipients` (user tenant pemanggil saja; keluar hanya userId, name, roleName; tanpa email). Resolusi email untuk pengiriman terjadwal (legend-atcu) belum ada kodenya, bukan bagian kartu ini.
+- legend-wg0g: izin `ops.checklist.manage` (owner, outlet_manager, kitchen_lead); template POST/PATCH di route dan service memakainya. Migrasi 0550 mem-backfill role template tenant yang sudah ada. Route web template dan unggah bukti checklist belum diubah (di luar scope API).
+- legend-qq4k: creator WS-06 terpasang (production order `draft` per baris prep beresep aktif tunggal, tanpa biaya/stok/GL, idempoten, di transaksi sama); service food-safety meneruskan actor. Default tanpa pemasangan tetap no-op.
+- legend-24nl: tidak ada kode; `metrics_daily` (0176, job, sumber non-uang) sudah di m1 lewat legend-5wzoc.
+- Gerbang: 8 berkas tes terarah (138 test) hijau, tes kontrak root 76/76, prettier+eslint hijau, tsc api+web hijau, `db:generate` kosong.
