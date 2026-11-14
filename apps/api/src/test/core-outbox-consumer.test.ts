@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
@@ -204,6 +204,49 @@ describe("outbox consumers", () => {
     const requestMissing = async (gap: unknown) => {
       gaps.push(gap);
     };
+    const relayNext = async () => {
+      const relayed = await relayOutbox(
+        database,
+        context(tenant),
+        enqueue,
+        requestMissing,
+      );
+      if (relayed === 0) {
+        const diagnostics = await withTenant(database, context(tenant), (tx) =>
+          tx.execute(sql`
+            SELECT o.id, o.sequence, o.status, o.dispatch_state,
+              o.dispatch_generation, o.available_at,
+              extract(epoch FROM o.available_at - now()) AS available_in_seconds,
+              o.dispatch_lease_token, o.dispatch_lease_until,
+              o.dispatch_lease_until > now() AS dispatch_lease_active,
+              x.last_sequence
+            FROM domain_event_outbox o
+            LEFT JOIN domain_event_offsets x
+              ON x.tenant_id = o.tenant_id
+              AND x.consumer = o.destination
+              AND x.aggregate_type = o.aggregate_type
+              AND x.aggregate_id = o.aggregate_id
+            ORDER BY o.sequence
+          `),
+        );
+        console.error("Replay relay claimed no rows", diagnostics.rows);
+        const locks = await withTenant(database, context(tenant), (tx) =>
+          tx.execute(sql`
+            SELECT relation::regclass::text AS relation, locktype, mode,
+              granted, pid, page, tuple, transactionid
+            FROM pg_locks
+            WHERE database = (SELECT oid FROM pg_database WHERE datname = current_database())
+              AND relation IN (
+                'domain_event_outbox'::regclass,
+                'domain_event_offsets'::regclass
+              )
+            ORDER BY relation, pid, locktype, mode
+          `),
+        );
+        console.error("Replay relay relation locks", locks.rows);
+      }
+      expect(relayed).toBe(1);
+    };
     expect(
       await relayOutbox(database, context(tenant), enqueue, requestMissing),
     ).toBe(1);
@@ -225,15 +268,7 @@ describe("outbox consumers", () => {
       reason: "Provider outage resolved",
       authorize: allow,
     });
-    // A sweep that finds the row not yet claimable claims nothing and enqueues
-    // nothing, so waiting for the claim (not a fixed count of tries) is safe.
-    await vi.waitFor(
-      async () =>
-        expect(
-          await relayOutbox(database, context(tenant), enqueue, requestMissing),
-        ).toBe(1),
-      { timeout: 5000, interval: 100 },
-    );
+    await relayNext();
     expect(sent.at(-1)).toMatchObject({ outboxId: first.id, generation: 1 });
     expect(
       await consumeOutbox(database, context(tenant), {
@@ -243,13 +278,7 @@ describe("outbox consumers", () => {
         deliver: noop,
       }),
     ).toBe(true);
-    await vi.waitFor(
-      async () =>
-        expect(
-          await relayOutbox(database, context(tenant), enqueue, requestMissing),
-        ).toBe(1),
-      { timeout: 5000, interval: 100 },
-    );
+    await relayNext();
     expect(sent.at(-1)).toMatchObject({ outboxId: second.id, generation: 0 });
   });
 

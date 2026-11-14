@@ -1,3 +1,11 @@
+## 2026-11-14: legend-whg2 investigasi relay sesudah replay
+
+- Cabang `fix/flake-outbox-replay-relay`, base milestone/m1 `7745e40e3`. Tidak ada perubahan production atau migrasi.
+- Base sudah memuat retry 5 detik dari `42c01af2c`; investigasi menggantinya dengan assertion relay langsung dan snapshot eligibility/lease/offset serta relation locks hanya saat hasil 0.
+- Penelusuran menolak dugaan jam Node: `available_at` menggunakan default PostgreSQL `now()`. Dead-letter membersihkan lease (juga diwajibkan constraint); replay ditunggu sampai commit. Belum ada akar masalah terbukti atau bukti gagal-dulu. Patch ini diagnostik, bukan klaim flake selesai; kartu tetap terbuka sampai kegagalan tertangkap.
+- Verifikasi: kelompok `core-outbox-consumer`, `core-outbox`, `core-outbox-gaps`, `ops-outbox-replay-m119` lulus 3 run berturut (masing-masing 4 berkas/27 test, satu worker; 7,46/6,34/7,50 detik), lewat `LEGEND_TEST_FILES=... heavy pnpm test`. `heavy pnpm --filter @starter/api typecheck` keluar 75 setelah antre 1800 detik; tsc belum berjalan, tidak diulang. ESLint dan Prettier file test hijau. Prettier `docs/PROGRESS.md` merah juga pada baseline HEAD (dibuktikan dari salinan `/tmp/legend-whg2-progress-base.md`), tanpa format ulang dokumen besar. Satu reviewer Codex tidak menemukan bug nyata; snapshot setelah relay tidak menjamin lock singkat tertangkap. Tidak ada job tersisa; cabang diagnostik belum siap dinyatakan memperbaiki flake.
+- Subagent total 5, puncak 3 bersamaan; token heavy test_runner. `session-usage.py` tidak mengenali transkrip Codex; `parallel-report --since 15:30` hanya membaca sesi Claude, sehingga biaya/rata-rata sesi ini tidak tersedia.
+
 ## WS-06/07 posting faktur pemasok + lanjutan AP (engineer, cabang `ws/purchasing-posting` dari `ws/purchasing-apar` aefe28175, 13 Nov 2026 18:49-19:47 WIB)
 
 - Desain: `docs/briefs/ws-purchasing-posting-design.md` (architect xhigh), review K architect xhigh: H1 dibetulkan, H2/M1 jadi bead penghalang flag.
