@@ -82,11 +82,6 @@ const createdUserIds: string[] = [];
 const short = () => randomUUID().slice(0, 6);
 const key = () => `k-${randomUUID()}`;
 
-const FLAGS_ON = JSON.stringify({
-  modules: ["accounting"],
-  integrationProviders: [],
-});
-
 type Role =
   | "grni"
   | "accounts_payable"
