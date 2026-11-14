@@ -47,6 +47,7 @@ import { EdcError } from "@starter/shared/edc";
 import type { PosReceipt } from "@starter/shared/pos";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { EDC_LATE_RESPONSE_WINDOW_MS } from "../edge/edc/late-response.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
 import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
 import {
@@ -266,6 +267,10 @@ async function ledgerSale(input: {
   mode?: string;
   approvalCode?: string | null;
   rrn?: string | null;
+  /** Defaults to older than the late-response window, so an `unknown` row is
+   * past the point where the terminal could still answer. Override to test the
+   * window itself. */
+  dispatchedAt?: Date;
 }): Promise<string> {
   const id = randomUUID();
   const final = ["approved", "declined", "cancelled", "failed"].includes(
@@ -278,7 +283,7 @@ async function ledgerSale(input: {
           request_fingerprint, amount_idr, method, status, type, mode, trace,
           approval_code, rrn, completed_at, needs_reconciliation, dispatched_at)
        VALUES ($1, $2, $3, $4, 'bca', $5, $6, 'fp', $7, 'card', $8, 'sale', $9, $10,
-               $11, $12, $13, $14, now())`,
+               $11, $12, $13, $14, $15)`,
       [
         id,
         tenant.tenantId,
@@ -294,6 +299,8 @@ async function ledgerSale(input: {
         input.rrn === undefined ? null : input.rrn,
         final ? new Date() : null,
         input.flagged ?? true,
+        input.dispatchedAt ??
+          new Date(Date.now() - EDC_LATE_RESPONSE_WINDOW_MS - 60_000),
       ],
     ),
   );
@@ -305,6 +312,15 @@ async function setFlag(edcTransactionId: string, value: boolean) {
     client.query(
       `UPDATE edc_transactions SET needs_reconciliation = $2 WHERE id = $1`,
       [edcTransactionId, value],
+    ),
+  );
+}
+
+async function setWireOpen(edcTransactionId: string) {
+  await asOwnerTenant((client) =>
+    client.query(
+      `UPDATE edc_transactions SET sale_wire_open_at = now() WHERE id = $1`,
+      [edcTransactionId],
     ),
   );
 }
@@ -665,6 +681,27 @@ describe("EDC-06 only a flagged sale row can be resolved, and only once", () => 
       needs_reconciliation: true,
     });
     await expectBillLocked(order);
+  });
+
+  it("a row past the late-response window whose adapter call is still open is refused 409 and left untouched", async () => {
+    const order = await newOrder();
+    const id = await ledgerSale({
+      reference: order.number,
+      amountIdr: order.totalIdr,
+      status: "unknown",
+    });
+    await setWireOpen(id);
+    for (const body of [declined(), approved(order.totalIdr)]) {
+      const res = await resolve(ownerUser, id, body);
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+    }
+    expect(await row(id)).toMatchObject({
+      status: "unknown",
+      needs_reconciliation: true,
+      completed_at: null,
+    });
+    expect(await auditRows(id)).toHaveLength(0);
+    expect(await tendersOfRow(id)).toBe(0);
   });
 
   it("resolving twice: the second answer is 409 and there is one audit row", async () => {

@@ -602,6 +602,22 @@ async function voidTendersAndRefundPaidQris(
 }
 
 /**
+ * Policy (one place, easy to change; founder Q5 pending): a QRIS payment
+ * captured by webhook while a card (EDC) sale for the same bill is open. The
+ * card wins: the QRIS tender is voided and the intent refunded in full, so the
+ * guest is never charged twice. A declined card sale reopens the bill and the
+ * QRIS stays valid (the open-sale check is false then, so it is captured).
+ * A QRIS that arrives while the sale is still open is refunded at once, even
+ * if the card is declined later: the guest pays again, nobody is short.
+ */
+export const QRIS_CAPTURED_WHILE_CARD_SALE_OPEN = "void_and_refund" as const;
+
+/** Applies `QRIS_CAPTURED_WHILE_CARD_SALE_OPEN`: true when the QRIS must be voided and refunded. */
+function voidQrisForOpenCardSale(edcOpen: boolean): boolean {
+  return edcOpen && QRIS_CAPTURED_WHILE_CARD_SALE_OPEN === "void_and_refund";
+}
+
+/**
  * Outbox consumer entry for WS-05 `payment.paid` (wired by legend-x4qy).
  * Captures the POS QRIS tender whose payment link the event names, once the
  * link is fully covered by verified money and a `paid` intent exists on it
@@ -802,7 +818,7 @@ export async function handlePosPaymentPaid(
     // unknown, flagged, or approved and not booked yet), so the terminal may
     // take or already took this bill's money. The card wins: void the QRIS
     // tender and refund the intent in full, never charge the guest twice.
-    if (edcOpen) {
+    if (voidQrisForOpenCardSale(edcOpen)) {
       await voidTendersAndRefundPaidQris(tx, context, {
         order,
         pos,

@@ -41,6 +41,10 @@ import { edcTransactions } from "../db/schema/edc.ts";
 import { posOrderTenders } from "../db/schema/pos-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { emitEdcTransactionEvent } from "../edge/edc/events.ts";
+import {
+  EDC_LATE_RESPONSE_WINDOW_MS,
+  lateResponsePossible,
+} from "../edge/edc/late-response.ts";
 import { recordAudit } from "./core-audit.ts";
 import { assertPaymentPermission } from "./payment-support.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -92,6 +96,22 @@ function toDto(row: EdcRow): EdcTransaction {
 
 const notFound = () =>
   new CoreError("NOT_FOUND", "Transaksi EDC tidak ditemukan.");
+
+/** Outbox event named after the status a resolve leaves the row in. */
+function resolvedEventName(status: string): EdcTransactionEventName {
+  switch (status) {
+    case "approved":
+      return "edc_transaction.approved";
+    case "declined":
+      return "edc_transaction.declined";
+    case "cancelled":
+      return "edc_transaction.cancelled";
+    case "failed":
+      return "edc_transaction.failed";
+    default:
+      throw new Error(`EDC reconciliation left a non-final status: ${status}`);
+  }
+}
 
 /** A tender that still counts: the row is booked on a bill (not voided/failed). */
 async function hasLiveTender(
@@ -170,10 +190,29 @@ export async function resolveEdcReconciliation(
     .limit(1)
     .for("update");
   if (!row) throw notFound();
-  if (row.type !== "sale" || !row.needsReconciliation)
+  // Flagged sale, or an unflagged `unknown` sale (a terminal without
+  // inquiry/cancel never raises the flag; legend-ftsq0).
+  if (
+    row.type !== "sale" ||
+    !(row.needsReconciliation || row.status === "unknown")
+  )
     throw new CoreError(
       "CONFLICT",
       "Transaksi ini tidak menunggu rekonsiliasi (sudah diselesaikan atau bukan penjualan).",
+    );
+  // The agent stopped waiting but its adapter call is still running: the
+  // terminal is still processing this sale, whatever status the row shows.
+  if (row.saleWireOpenAt !== null)
+    throw new CoreError(
+      "CONFLICT",
+      "Terminal masih memproses transaksi ini; tunggu sampai selesai, lalu ulangi.",
+    );
+  // An unknown sale may still get a late answer from the terminal: fail closed
+  // until the window passes, for either outcome.
+  if (row.status === "unknown" && lateResponsePossible(row, now))
+    throw new CoreError(
+      "CONFLICT",
+      `Terminal masih mungkin mengirim jawaban untuk transaksi ini; tunggu sampai ${EDC_LATE_RESPONSE_WINDOW_MS / 60_000} menit setelah dikirim, lalu ulangi.`,
     );
 
   const evidence = input.evidence;
@@ -264,7 +303,13 @@ export async function resolveEdcReconciliation(
       needsReconciliation: false,
       updatedAt: now,
     })
-    .where(and(byId, eq(edcTransactions.needsReconciliation, true)))
+    .where(
+      and(
+        byId,
+        eq(edcTransactions.status, row.status),
+        eq(edcTransactions.needsReconciliation, row.needsReconciliation),
+      ),
+    )
     .returning();
   if (!updated) throw new Error("EDC reconciliation update returned no row");
 
@@ -283,7 +328,10 @@ export async function resolveEdcReconciliation(
       objectId: updated.id,
       reason: evidence.note,
       maskedChanges: {
-        before: { status: row.status, needsReconciliation: true },
+        before: {
+          status: row.status,
+          needsReconciliation: row.needsReconciliation,
+        },
         after: {
           status: updated.status,
           needsReconciliation: false,
@@ -298,13 +346,13 @@ export async function resolveEdcReconciliation(
     },
     ["status", "needsReconciliation", "outcome", "evidenceSource"],
   );
-  if (updated.status !== row.status) {
-    const name: EdcTransactionEventName =
-      updated.status === "approved"
-        ? "edc_transaction.approved"
-        : "edc_transaction.declined";
-    await emitEdcTransactionEvent(tx, context, { name, row: updated, now });
-  }
+  // Always emitted, in the same transaction as the ledger update: a status
+  // change and a flag that clears with the status unchanged both need it.
+  await emitEdcTransactionEvent(tx, context, {
+    name: resolvedEventName(updated.status),
+    row: updated,
+    now,
+  });
   return toDto(updated);
 }
 
