@@ -47,12 +47,18 @@ export function createStorageRouter(options: {
   // their existing scanner contracts.
   const selfieScanner: UploadDependencies["scanner"] = {
     acceptsDocuments: options.scanner.acceptsDocuments,
-    async scan(bytes) {
+    async scan(bytes, context) {
       try {
-        await options.scanner.scan(bytes);
+        await options.scanner.scan(bytes, context);
       } catch (error) {
         if (error instanceof HttpError && error.status === 422)
           throw new HttpError(422, "UPLOAD_REJECTED", "Upload rejected.");
+        if (
+          error instanceof HttpError &&
+          error.status === 503 &&
+          error.code === "SCANNER_OVERLOADED"
+        )
+          throw error;
         throw new HttpError(
           503,
           "SCANNER_UNAVAILABLE",

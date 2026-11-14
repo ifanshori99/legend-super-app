@@ -5535,3 +5535,10 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Subagent: total 5, puncak 5 bersamaan; token heavy hanya `test_writer`. Pengukuran biaya otomatis tidak tersedia: session-usage tidak menemukan transkrip Codex; parallel-report hanya menampilkan sesi Claude lain, jadi tidak dipakai sebagai metrik sesi ini. Visual browser/build/e2e tidak dijalankan; perubahan hanya kontrak dan logika nominal tanpa layout.
 
 - Perintah test: `LEGEND_TEST_FILES="src/test/accounting-finance-exceptions.test.ts tests/ws07-finance-exceptions-known-count.test.mjs tests/text-contract.test.mjs" heavy pnpm test` EXIT 0; setelah anotasi helper test diperbaiki, `LEGEND_TEST_FILES="src/test/accounting-finance-exceptions.test.ts" heavy pnpm test` EXIT 0. Log lokal: `/tmp/legend-j4xdb-api-red.log`, `/tmp/legend-j4xdb-web-red.log`, `/tmp/legend-j4xdb-green.log`, `/tmp/legend-j4xdb-api-final.log`, `/tmp/legend-j4xdb-api-typecheck-final.log`, `/tmp/legend-j4xdb-web-typecheck.log`.
+
+## 2026-11-15: batas scan clamd bersamaan + backpressure (legend-1rtm1)
+
+- Cabang: `fix/clamd-scan-limit`, base `53b0db393` (ws/storage-scanner-pdf).
+- Selesai: `ClamdMalwareScanner` membatasi scan bersamaan global 4 dan per tenant 2, antrean FIFO 8; kelebihan (antrean penuh, tenant aktif+antre >= 2x batas, atau menunggu antrean sampai timeout) ditolak 503 `SCANNER_OVERLOADED` tanpa membuka socket. Tulis socket menunggu `drain`. Slot kembali di `finally` (sukses, galat, timeout). Env: `CLAMD_MAX_CONCURRENT` (1..64), `CLAMD_MAX_PER_TENANT` (1..32), `CLAMD_MAX_QUEUED` (0..256).
+- Keputusan: overload gambar TIDAK fail-open (hanya `SCANNER_UNAVAILABLE` fail-open seperti sebelumnya); PDF yang overload tidak tersimpan. `tenantKey` diteruskan dari core-storage (PDF dan gambar), bukti payout, dokumen pemegang saham, selfie; jalur `processImage*` lain (edge selfie, logo) hanya kena batas global.
+- Bukti: gagal-dulu di base 13 gagal / 12 lulus (kontrol); sesudah patch 16 berkas, 185 test hijau lewat `heavy`; typecheck api EXIT 0; prettier+eslint hijau; reviewer sonnet: tanpa cacat (dua catatan sudah ditangani).
