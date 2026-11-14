@@ -129,6 +129,8 @@ export const payrollPayoutReviewMessages = {
     success: "Pencairan disetujui. Lanjutkan di tab Status karyawan.",
     sourceChanged:
       "Rekening sumber berubah saat Anda memeriksa. Tidak ada yang disetujui. Periksa rekening yang baru, lalu centang dan setujui lagi.",
+    contentChanged:
+      "Isi batch berubah saat Anda memeriksa. Tidak ada yang disetujui. Periksa batch yang baru, lalu centang dan setujui lagi.",
   },
   verify: {
     title: "Verifikasi identitas",
