@@ -197,6 +197,9 @@ export function ReconciliationPanel() {
                   <SelectItem value="resolved">
                     {t("paymentAdmin.reconciliation.statusResolved")}
                   </SelectItem>
+                  <SelectItem value="matched">
+                    {t("paymentAdmin.reconciliation.statusMatched")}
+                  </SelectItem>
                 </SelectContent>
               </Select>
               <Select

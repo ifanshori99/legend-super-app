@@ -1829,6 +1829,7 @@ export const id = {
       statusOpen: "Terbuka",
       statusPending: "Menunggu persetujuan",
       statusResolved: "Selesai",
+      statusMatched: "Cocok otomatis",
       emptyTitle: "Tidak ada kasus rekonsiliasi",
       emptyHint: "Semua settlement cocok dengan transaksi dan mutasi rekening.",
     },

@@ -8,6 +8,7 @@ import {
   encodeCursor,
   uuidSchema,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import { AccessError } from "@starter/shared/access";
 import { eventEnvelopeSchema } from "@starter/shared/events";
@@ -189,9 +190,9 @@ export async function getReconciliationSummary(
       .where(and(eq(lines.tenantId, tenantId), outletOf(lines.outletId)));
     const [caseCounts] = await tx
       .select({
-        open: sql<number>`count(*) FILTER (WHERE ${cases.status} <> 'resolved')::int`,
+        open: sql<number>`count(*) FILTER (WHERE ${cases.status} IN ('open','pending_approval'))::int`,
         resolvedThisMonth: sql<number>`count(*) FILTER (WHERE ${cases.status} = 'resolved' AND ${cases.resolvedAt} >= date_trunc('month', now() AT TIME ZONE 'Asia/Jakarta') AT TIME ZONE 'Asia/Jakarta')::int`,
-        variance: sql<string>`COALESCE(sum(${cases.varianceIdr}) FILTER (WHERE ${cases.status} <> 'resolved'), 0)::text`,
+        variance: sql<string>`COALESCE(sum(${cases.varianceIdr}) FILTER (WHERE ${cases.status} IN ('open','pending_approval')), 0)::text`,
       })
       .from(cases)
       .where(and(eq(cases.tenantId, tenantId), outletOf(cases.outletId)));
@@ -243,6 +244,12 @@ export async function resolveReconciliationCase(
       "reconciliation.resolve",
       { caseId, ...input },
       async () => {
+        if (existing.status === "matched")
+          throw new HttpError(
+            409,
+            "CONFLICT",
+            "Reconciliation case was closed automatically: its sale was matched in a settlement report.",
+          );
         if (existing.status !== "open")
           throw new HttpError(
             409,
@@ -322,6 +329,32 @@ export async function resolveReconciliationCase(
       },
     );
   });
+}
+
+/** The settlement line that already carries this missing case's sale, if any. */
+async function findLineOfSale(
+  tx: Tx,
+  tenantId: TenantId,
+  row: CaseRow,
+): Promise<{ reference: string; lineNo: number } | null> {
+  if (row.sourceTransactionId === null) return null;
+  const [line] = await tx
+    .select({ reference: lines.reference, lineNo: lines.lineNo })
+    .from(lines)
+    .where(
+      and(
+        eq(lines.tenantId, tenantId),
+        eq(lines.outletId, row.outletId),
+        eq(
+          row.source === "edc"
+            ? lines.matchedEdcTransactionId
+            : lines.matchedPaymentIntentId,
+          row.sourceTransactionId,
+        ),
+      ),
+    )
+    .limit(1);
+  return line ?? null;
 }
 
 /**
@@ -410,6 +443,56 @@ export async function settleReconciliationCaseForApproval(
         if (!(error instanceof AccessError)) throw error;
       }
     }
+  }
+  // The sale may have reached a settlement line after the close was requested
+  // (e.g. a later report): the money did arrive, so never write it off. Close
+  // as `matched`: no resolution event, no approver, no resolver.
+  const matchedLine =
+    outcome === "approved" &&
+    row.settlementLineId === null &&
+    row.sourceTransactionId !== null
+      ? await findLineOfSale(tx, tenantId, row)
+      : null;
+  if (matchedLine) {
+    const note = `Closed automatically: sale matched a settlement line (report ${matchedLine.reference}, line ${matchedLine.lineNo})`;
+    const [matched] = await tx
+      .update(cases)
+      .set({ status: "matched", note })
+      .where(
+        and(
+          eq(cases.tenantId, tenantId),
+          eq(cases.id, row.id),
+          eq(cases.status, "pending_approval"),
+        ),
+      )
+      .returning();
+    if (!matched) throw new Error("Case update returned no row");
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId: matched.outletId,
+        actorType: "system",
+        actorId: null,
+        deviceId: null,
+        action: "payment.reconciliation_case_matched_closed",
+        objectType: RECONCILIATION_OBJECT_TYPE,
+        objectId: matched.id,
+        reason: note,
+        maskedChanges: {
+          before: { status: row.status },
+          after: { status: matched.status },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
+      },
+      ["status"],
+    );
+    return matched;
   }
   const closed = approver !== null && row.requestedBy !== null;
   const [updated] = await tx

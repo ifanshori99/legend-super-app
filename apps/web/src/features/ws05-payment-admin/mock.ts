@@ -924,7 +924,10 @@ registerMock(getReconciliationSummary, ({ scenario }) => {
   return {
     data: {
       ...store.get().summary,
-      openCases: cases.filter((entry) => entry.status === "open").length,
+      openCases: cases.filter(
+        (entry) =>
+          entry.status === "open" || entry.status === "pending_approval",
+      ).length,
       resolvedThisMonth: cases.filter((entry) => entry.status === "resolved")
         .length,
     },

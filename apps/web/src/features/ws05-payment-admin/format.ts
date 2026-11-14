@@ -103,7 +103,7 @@ export function unallocatedLabelKey(status: UnallocatedStatus): MessageKey {
 export function reconciliationTone(
   status: ReconciliationCaseView["status"],
 ): StatusTone {
-  return status === "resolved" ? "success" : "warning";
+  return status === "resolved" || status === "matched" ? "success" : "warning";
 }
 
 export function reconciliationLabelKey(
@@ -113,7 +113,9 @@ export function reconciliationLabelKey(
     ? "paymentAdmin.reconciliation.statusOpen"
     : status === "pending_approval"
       ? "paymentAdmin.reconciliation.statusPending"
-      : "paymentAdmin.reconciliation.statusResolved";
+      : status === "matched"
+        ? "paymentAdmin.reconciliation.statusMatched"
+        : "paymentAdmin.reconciliation.statusResolved";
 }
 
 /**
