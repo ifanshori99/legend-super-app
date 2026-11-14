@@ -243,20 +243,16 @@ expect_differ() {
 expect_same true true
 expect_same false false
 expect_same --absent --absent
-expect_same '' 0
-expect_same 0 ''
-expect_same '' --absent
 expect_same --absent false
 expect_same false 0
 expect_differ true false
 expect_differ false true
 expect_differ true --absent
 expect_differ --absent true
-expect_differ true ''
 expect_differ 0 true
 # Compose drops a trailing ` #comment` on an unquoted value; so does the check.
 expect_differ 'false # off' true
-expect_same 'false # off' ''
+expect_same 'false # off' false
 expect_same 'true # on' 1
 expect_same '"false" # off' 0
 # env.ts accepts only lower case true/false/1/0, so anything else fails here too.
@@ -267,7 +263,8 @@ expect_invalid() {
     echo "legend-3gna: api=$1 was accepted but env.ts rejects it" >&2
     exit 1
   fi
-  grep -F 'DOIT_REFUNDS_ENABLED must be true, false, 1 or 0' "$tmp/err" >/dev/null || {
+  # Wording is the implementer's; it must name the flag and the allowed values.
+  { grep -F DOIT_REFUNDS_ENABLED "$tmp/err" && grep -F 'true, false, 1 or 0' "$tmp/err"; } >/dev/null || {
     echo "legend-3gna: api=$1 did not fail with the allowed-values message" >&2
     exit 1
   }
@@ -434,3 +431,62 @@ write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED=true'
   exit 1
 }
 echo 'legend-3gna: shell override and bare key checks passed'
+# T4 (CTO approved): an empty DOIT_REFUNDS_ENABLED value is refused in api.env
+# and in worker.env (KEY=, KEY="" and KEY=''), because env.ts rejects it and
+# the API would not start. A key absent from both files still means off. A
+# tab before a trailing comment is refused (Compose only drops a space-led
+# ` #comment`); a space before it stays valid.
+# Assumption: the message wording is the implementer's; the tests need exit
+# status, DOIT_REFUNDS_ENABLED in the message, no value or URL printed, and no
+# `up` call to docker.
+tab=$(printf '\t')
+for empty in 'DOIT_REFUNDS_ENABLED=' 'DOIT_REFUNDS_ENABLED=""' "DOIT_REFUNDS_ENABLED=''"; do
+  for other in 'DOIT_REFUNDS_ENABLED=false' 'DOIT_REFUNDS_ENABLED=true' 'DOIT_REFUNDS_ENABLED='; do
+    write_flag "$tmp/api.env" "$empty"
+    write_flag "$tmp/worker.env" "$other"
+    check_refuses "an empty value in api.env ($empty, other side $other)"
+    deploy_refuses "an empty value in api.env ($empty, other side $other)"
+    write_flag "$tmp/api.env" "$other"
+    write_flag "$tmp/worker.env" "$empty"
+    check_refuses "an empty value in worker.env ($empty, other side $other)"
+    deploy_refuses "an empty value in worker.env ($empty, other side $other)"
+  done
+done
+# Both files without the key: off on both sides, the deploy goes ahead.
+write_flag "$tmp/api.env" ''
+write_flag "$tmp/worker.env" ''
+"$check" --env-file "$tmp/compose.env" >/dev/null 2>"$tmp/err" || {
+  echo 'legend-3gna: the check refused two files that both lack DOIT_REFUNDS_ENABLED' >&2
+  exit 1
+}
+: > "$TEST_LOG"
+"$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1 || {
+  echo 'legend-3gna: deploy refused two files that both lack DOIT_REFUNDS_ENABLED' >&2
+  exit 1
+}
+grep -F 'up -d --wait api web worker caddy' "$TEST_LOG" >/dev/null || {
+  echo 'legend-3gna: services did not start with the flag absent from both files' >&2
+  exit 1
+}
+# A tab then a comment is refused, in either file.
+write_flag "$tmp/api.env" "DOIT_REFUNDS_ENABLED=true${tab}#c"
+write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED=true'
+check_refuses 'a tab before a comment in api.env'
+deploy_refuses 'a tab before a comment in api.env'
+write_flag "$tmp/api.env" 'DOIT_REFUNDS_ENABLED=true'
+write_flag "$tmp/worker.env" "DOIT_REFUNDS_ENABLED=true${tab}#c"
+check_refuses 'a tab before a comment in worker.env'
+deploy_refuses 'a tab before a comment in worker.env'
+# A space then a comment stays valid and deploys.
+write_flag "$tmp/api.env" 'DOIT_REFUNDS_ENABLED=true #c'
+write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED=true'
+"$check" --env-file "$tmp/compose.env" >/dev/null 2>"$tmp/err" || {
+  echo 'legend-3gna: the check refused a space before a comment' >&2
+  exit 1
+}
+: > "$TEST_LOG"
+"$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1 || {
+  echo 'legend-3gna: deploy refused a space before a comment' >&2
+  exit 1
+}
+echo 'legend-3gna: empty value and comment checks passed'

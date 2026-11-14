@@ -2,8 +2,11 @@
 # DOIT_REFUNDS_ENABLED must be the same in api.env and worker.env (legend-3gna):
 # the API queues refunds and the worker pays them, so a split would queue
 # refunds nobody pays (or pay ones the API never recorded as on). Read-only,
-# needs no docker. Absent, empty, 0 and false mean off, 1 and true mean on, the
-# same as apps/api/src/config/env.ts; any other value fails the check.
+# needs no docker. A missing line, 0 and false mean off, 1 and true mean on, the
+# same as apps/api/src/config/env.ts; an empty value (KEY= or only empty quotes)
+# and any other value fail the check, fail closed like env.ts. A trailing comment
+# is dropped only after a space and `#` (as Compose does); a TAB before `#` is
+# part of the value, so it fails.
 # Prints only file names, never values or URLs.
 #
 #   check-refund-flag.sh --env-file /absolute/path/compose.env
@@ -41,13 +44,19 @@ flag_of() {
   if grep -Eq '^[[:space:]]*(export[[:space:]]+)?DOIT_REFUNDS_ENABLED[[:space:]]*$' "$1"; then
     fail "$(basename "$1") has a bare DOIT_REFUNDS_ENABLED line. Give DOIT_REFUNDS_ENABLED an explicit value of true or false on that line."
   fi
-  # Compose drops a trailing ` #comment`, so drop it before reading the value.
+  # No line at all means off. A line with an empty value is refused below.
+  if ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?DOIT_REFUNDS_ENABLED[[:space:]]*[=:]' "$1"; then
+    echo 0
+    return
+  fi
+  # Compose drops a trailing ` #comment` (space, then #; not a TAB), so drop it
+  # before reading the value.
   value=$(value_of "$1" DOIT_REFUNDS_ENABLED |
-    sed -e 's/[[:space:]][[:space:]]*#.*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")
+    sed -e 's/ #.*$//' -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")
   case "$value" in
-    '' | 0 | false) echo 0 ;;
+    0 | false) echo 0 ;;
     1 | true) echo 1 ;;
-    *) fail "DOIT_REFUNDS_ENABLED must be true, false, 1 or 0" ;;
+    *) fail "$(basename "$1") has an empty or invalid DOIT_REFUNDS_ENABLED. It must be true, false, 1 or 0" ;;
   esac
 }
 
