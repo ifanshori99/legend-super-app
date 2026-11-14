@@ -146,11 +146,21 @@ export async function withdrawResolutionProposal(
     );
 
   const proposers = new Set(rows.map((row) => row.resolvedBy));
+  // The columns are NULL after the update, so the audit keeps what was taken
+  // back (outcome and proof key, or "mixed" when the items differ).
+  const uniform = (values: (string | null)[]): string | null => {
+    const distinct = new Set(values);
+    return distinct.size === 1 ? ([...distinct][0] ?? null) : "mixed";
+  };
   await recordPayoutAudit(tx, actor, {
     action: "payroll.disbursement.manual_resolve_withdrawn",
     objectType: "payroll_disbursement_batch",
     objectId: batch.id,
-    before: { status: batch.status },
+    before: {
+      status: batch.status,
+      outcome: uniform(rows.map((row) => row.resolutionOutcome)),
+      evidenceKey: uniform(rows.map((row) => row.resolutionEvidenceKey)),
+    },
     after: {
       status: batch.status,
       itemCount: rows.length,
