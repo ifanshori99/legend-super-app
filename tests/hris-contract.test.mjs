@@ -726,6 +726,18 @@ test("HR event payloads are catalogued on WS-10 and carry no PII", () => {
   }
 
   const events = fixtures.events;
+  assert.deepEqual(
+    Object.values(events)
+      .map((event) => event.name)
+      .sort(),
+    [...hris.hrisEventNames].sort(),
+    "Every HRIS event must have a fixture covered by the PII checks",
+  );
+  for (const definition of hris.hrisDomainEvents) {
+    definition.envelopeSchema.parse(
+      Object.values(events).find((event) => event.name === definition.name),
+    );
+  }
   hris.attendanceLogged.envelopeSchema.parse(events.attendanceLogged);
   hris.shiftPublished.envelopeSchema.parse(events.shiftPublished);
   hris.shiftCancelled.envelopeSchema.parse(events.shiftCancelled);
