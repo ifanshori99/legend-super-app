@@ -110,3 +110,18 @@ Daftar kas keluar tertahan yang sudah ada (cari pemakai `shift-extra-api.ts` / t
 ### Test (test-writer)
 1. `apps/api/src/test/pos-shift-cash-approval.test.ts`: recordCashMovement dengan refund/void tertahan → kas keluar yang muat di expected tapi melebihi expected − koreksi tertahan HARUS ditahan (needsApproval true, tidak masuk expected). Kas keluar yang muat setelah dikurangi → tidak ditahan.
 2. File baru `apps/api/src/test/pos-shift-cash-approval-route.test.ts`: HTTP route di atas: 200 approve oleh supervisor; 403 kasir (tanpa izin); 403 pencatat; 409 kedua kali beda keputusan; 404 movement shift lain/outlet lain/tenant lain; 400/422 body tidak valid; origin tidak tepercaya ditolak.
+
+### Putaran 2 — perbaikan UI (dari ui-auditor + architect)
+File: `apps/web/src/features/ws04-pos-kasir/components/supervisor/held-cash-out-gate.tsx`, `hooks.ts`, `shift-extra-api.ts`, `shift-extra-types.ts`, `mock-engine.ts`, katalog `packages/shared/src/i18n/messages/pos-kasir-supervisor.ts`.
+1. Fokus setelah keputusan: pindah ke notice sukses (`tabIndex={-1}`, fokus) — jangan jatuh ke body.
+2. Live region `role="status"` selalu ter-mount; teks sukses memuat `{type}` dan `{amount}`; scroll/fokus ke sana; kosongkan saat `onContinue`.
+3. Tombol Setujui/Tolak: `aria-describedby` ke judul+meta baris (alasan, waktu, kasir).
+4. Pencatat sendiri: bandingkan `recordedBy` movement dengan user sesi; tombol nonaktif + alasan terlihat (teks katalog "Dicatat oleh Anda; supervisor lain yang memutuskan."). Bila `recordedBy` belum ada di tipe web, tambahkan dari DTO.
+5. Judul dialog & teks sukses pakai `{type}` (Kas keluar / Setoran kas), bukan "kas keluar" tetap.
+6. Galat tak bisa diulang (403/404/409): tombol "Tutup" (key baru), bukan "Batal".
+7. `onSettled` jangan `await` invalidasi; dialog tertutup begitu mutation sukses. Refetch gagal tidak boleh menghapus notice.
+8. Render `DecideDialog` sekali di luar cabang list/empty.
+9. Tombol baris varian outline/secondary (satu aksi utama per layar).
+10. Notice sukses juga menyebut: kasir perlu menghitung ulang laci sebelum tutup shift bila sudah menghitung (key katalog baru).
+11. `shift-extra-api.ts`: pakai endpoint shared `decidePosCashMovement` (callEndpoint/pola yang dipakai file itu) dan tipe `PosCashMovementDecision`; hapus tipe lokal `HeldCashDecisionResult`.
+12. Mock: keputusan sama oleh pemutus sama = 200 idempoten (sama dengan API).
