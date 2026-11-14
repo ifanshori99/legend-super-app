@@ -296,14 +296,15 @@ async function seedMovement(
   shift: SeededShift,
   type: MovementType,
   amountIdr: number,
+  options: { needsApproval?: boolean } = {},
 ): Promise<Movement> {
   const id = randomUUID();
   await asTenant(world.tenant, (client) =>
     client.query(
       `INSERT INTO cash_movements
          (id, tenant_id, outlet_id, shift_id, type, amount_idr, reason_note,
-          recorded_by, recorded_at, idempotency_key, request_fingerprint)
-       VALUES ($1, $2, $3, $4, $5, $6, 'Alasan uji kas', $7, $8, $9, $10)`,
+          recorded_by, recorded_at, idempotency_key, request_fingerprint, needs_approval)
+       VALUES ($1, $2, $3, $4, $5, $6, 'Alasan uji kas', $7, $8, $9, $10, $11)`,
       [
         id,
         world.tenant.id,
@@ -315,6 +316,7 @@ async function seedMovement(
         DAY,
         randomUUID(),
         "d".repeat(64),
+        options.needsApproval ?? false,
       ],
     ),
   );
@@ -910,5 +912,220 @@ describe("legend-89pn shift close stays consistent with the movements", () => {
       closed.countedIdr - FLOAT_IDR,
     );
     expect(await balanceOf(world, "cash_over_short")).toBe(-7_000);
+  });
+});
+
+// ---- Held cash movement approval (legend-3l4q / legend-ym2kr) ----------------
+//
+// Written from the sub-brief (docs/briefs/sub-cash-out-approval.md), not from
+// the consumer. Rules under test: a held movement (needs_approval = true) posts
+// nothing until it has an 'approved' outcome; approving posts exactly one
+// journal under the SAME key as the recorded event (aj:cash-movement:<id>);
+// rejected / expired / undecided never post; a drop never posts.
+//
+// Assumptions:
+// - The approved event payload is the recorded payload without reasonNote /
+//   recordedBy, plus approvedBy and approvedAt (brief B).
+// - The outcome row is seeded directly as the table owner with decided_by <>
+//   recorded_by (the DB trigger requires it) on the still open shift.
+// - A journal's entry_date is the outlet business date of decidedAt (moneyTime),
+//   outlet cutoff 04:00 Asia/Jakarta.
+// - "Nothing posts" is `{ status: "ignored" }`, as AJ-CM-13 / AJ-CM-03 expect.
+
+/** 2026-11-05 16:00 Jakarta: business date 2026-11-05, not the recorded day. */
+const DECIDED = "2026-11-05T09:00:00.000Z";
+
+async function seedOutcome(
+  world: World,
+  movement: Movement,
+  outcome: "approved" | "rejected" | "expired",
+): Promise<void> {
+  const decidedBy = outcome === "expired" ? null : await seedUser();
+  await asTenant(world.tenant, (client) =>
+    client.query(
+      `INSERT INTO cash_movement_outcomes
+         (tenant_id, outlet_id, shift_id, movement_id, outcome, decided_by, decided_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        world.tenant.id,
+        world.outletId,
+        movement.shiftId,
+        movement.id,
+        outcome,
+        decidedBy,
+        DECIDED,
+      ],
+    ),
+  );
+}
+
+function movementApproved(
+  world: World,
+  movement: Movement,
+  extra: { id?: string } = {},
+): EventEnvelope {
+  return envelope(world, {
+    ...(extra.id === undefined ? {} : { id: extra.id }),
+    name: "cash_movement.approved",
+    aggregateType: "cash_movement",
+    aggregateId: movement.id,
+    payload: {
+      movementId: movement.id,
+      shiftId: movement.shiftId,
+      outletId: world.outletId,
+      deviceId: movement.deviceId,
+      type: movement.type,
+      amountIdr: movement.amountIdr,
+      recordedAt: DAY,
+      approvedBy: randomUUID(),
+      approvedAt: DECIDED,
+    },
+  });
+}
+
+async function entryDateOf(world: World, entryId: string): Promise<string> {
+  const { rows } = await owner.query<{ d: string }>(
+    "SELECT entry_date::text AS d FROM journal_entries WHERE tenant_id = $1 AND id = $2",
+    [world.tenant.id, entryId],
+  );
+  return rows[0]!.d;
+}
+
+async function heldSingle(
+  world: World,
+  type: MovementType,
+  amountIdr: number,
+): Promise<Movement> {
+  return seedMovement(world, await seedOpenShift(world), type, amountIdr, {
+    needsApproval: true,
+  });
+}
+
+describe("legend-ym2kr approved held cash out posts exactly one journal", () => {
+  it("AJ-CM-15 approved held cash out: cash_movement.approved posts Cr cash_on_hand / Dr one expense account under key aj:cash-movement:<id>, dated by decidedAt", async () => {
+    const world = await makeWorld();
+    const movement = await heldSingle(world, "cash_out", 150_000);
+    await seedOutcome(world, movement, "approved");
+
+    const result = await deliver(
+      world.tenant,
+      movementApproved(world, movement),
+    );
+    const entryId = await expectPostedOnce(world, movement, result);
+    expect(await keyOf(world, entryId)).toBe(`aj:cash-movement:${movement.id}`);
+    expect(await entryDateOf(world, entryId)).toBe("2026-11-05");
+
+    const lines = await expectSafeBooking(world, entryId, 150_000);
+    expect(lines.find((line) => line.role === "cash_on_hand")).toMatchObject({
+      debit: 0,
+      credit: 150_000,
+    });
+    const counter = lines.filter((line) => line.role !== "cash_on_hand");
+    expect(counter).toHaveLength(1);
+    expect(counter[0]).toMatchObject({
+      type: "expense",
+      debit: 150_000,
+      credit: 0,
+    });
+    expect(await balanceOf(world, "cash_on_hand")).toBe(-150_000);
+  });
+
+  it("AJ-CM-16 a held cash out with no decision yet posts nothing, on the recorded event or an approved event", async () => {
+    const world = await makeWorld();
+    const movement = await heldSingle(world, "cash_out", 150_000);
+
+    expect(
+      await deliver(world.tenant, movementRecorded(world, movement)),
+    ).toEqual({ status: "ignored" });
+    expect(
+      await deliver(world.tenant, movementApproved(world, movement)),
+    ).toEqual({ status: "ignored" });
+    expect(await journalCount(world)).toBe(0);
+  });
+
+  it("AJ-CM-17 replaying cash_movement.approved (same or new event id) and the old cash_movement.recorded after approval keeps one journal", async () => {
+    const world = await makeWorld();
+    const movement = await heldSingle(world, "cash_out", 150_000);
+
+    // Recorded while still held: nothing yet.
+    expect(
+      await deliver(world.tenant, movementRecorded(world, movement)),
+    ).toEqual({ status: "ignored" });
+    await seedOutcome(world, movement, "approved");
+    const approved = movementApproved(world, movement);
+    const first = await deliver(world.tenant, approved);
+    const entryId = await expectPostedOnce(world, movement, first);
+
+    for (const again of [
+      approved,
+      movementApproved(world, movement),
+      movementRecorded(world, movement),
+    ])
+      expect(await deliver(world.tenant, again)).toEqual({
+        status: "already_posted",
+        journalEntryId: entryId,
+      });
+    expect(await journalCount(world)).toBe(1);
+    expect(await balanceOf(world, "cash_on_hand")).toBe(-150_000);
+  });
+
+  it("AJ-CM-18 six concurrent approved deliveries (distinct event ids) leave exactly one journal", async () => {
+    const world = await makeWorld();
+    const movement = await heldSingle(world, "cash_out", 150_000);
+    await seedOutcome(world, movement, "approved");
+
+    const results = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        deliver(world.tenant, movementApproved(world, movement)),
+      ),
+    );
+    expect(results.filter((result) => result.status === "posted")).toHaveLength(
+      1,
+    );
+    expect(await journalCount(world)).toBe(1);
+    expect(await balanceOf(world, "cash_on_hand")).toBe(-150_000);
+  });
+});
+
+describe("legend-ym2kr held cash out that is not approved never posts", () => {
+  for (const outcome of ["rejected", "expired"] as const)
+    it(`AJ-CM-19 ${outcome} held cash out: neither the recorded nor the approved event posts a journal`, async () => {
+      const world = await makeWorld();
+      const movement = await heldSingle(world, "cash_out", 150_000);
+      await seedOutcome(world, movement, outcome);
+
+      expect(
+        await deliver(world.tenant, movementRecorded(world, movement)),
+      ).toEqual({ status: "ignored" });
+      expect(
+        await deliver(world.tenant, movementApproved(world, movement)),
+      ).toEqual({ status: "ignored" });
+      expect(await journalCount(world)).toBe(0);
+      expect(await balanceOf(world, "cash_on_hand")).toBe(0);
+    });
+
+  it("AJ-CM-20 an approved held drop moves the drawer but never posts a journal", async () => {
+    const world = await makeWorld();
+    const movement = await heldSingle(world, "drop", 120_000);
+    await seedOutcome(world, movement, "approved");
+
+    expect(
+      await deliver(world.tenant, movementApproved(world, movement)),
+    ).toEqual({ status: "ignored" });
+    expect(
+      await deliver(world.tenant, movementRecorded(world, movement)),
+    ).toEqual({ status: "ignored" });
+    expect(await journalCount(world)).toBe(0);
+  });
+
+  it("AJ-CM-21 a normal (not held) cash out is unchanged: the recorded event still posts once", async () => {
+    const world = await makeWorld();
+    const movement = await seedSingle(world, "cash_out", 30_000);
+    const result = await deliver(
+      world.tenant,
+      movementRecorded(world, movement),
+    );
+    const entryId = await expectPostedOnce(world, movement, result);
+    expect(await keyOf(world, entryId)).toBe(`aj:cash-movement:${movement.id}`);
   });
 });

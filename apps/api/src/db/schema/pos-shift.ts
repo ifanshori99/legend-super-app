@@ -254,7 +254,7 @@ export const posShiftCounts = pgTable(
     varianceIdr: idrColumn("variance_idr").notNull(),
     /**
      * Sum of the shift's cash outs held for supervisor review at count time
-     * (cash_movements.needs_approval). Left out of expected_idr; the close
+     * (cash_movements.needs_approval, no approved outcome). Left out of expected_idr; the close
      * fails as stale when it changes after the count (legend-67dt).
      */
     heldCashOutIdr: idrColumn("held_cash_out_idr").notNull().default(idr(0)),
@@ -463,7 +463,9 @@ export const cashMovementRefusals = pgTable(
  * (legend-y9bf). The shift close writes 'expired' for every held movement still
  * undecided; 'approved' / 'rejected' land only while the movement's shift is
  * open, so an approval arriving after the close is refused (the unique key and
- * the guard trigger in pos-shift.custom.sql).
+ * the guard trigger in pos-shift.custom.sql). An 'approved' movement counts in
+ * the drawer figures like a plain cash out / drop (legend-3l4q); 'rejected' and
+ * 'expired' do not. The decider differs from cash_movements.recorded_by.
  */
 export const cashMovementOutcomes = pgTable(
   "cash_movement_outcomes",

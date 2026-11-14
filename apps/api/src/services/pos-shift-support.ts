@@ -4,7 +4,7 @@
 // DTO mappers.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, not, or, sql } from "drizzle-orm";
 import type { PermissionCode } from "@starter/shared/access";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
@@ -356,7 +356,12 @@ export async function computeShiftAggregates(
         eq(cashMovements.tenantId, tenantId),
         eq(cashMovements.outletId, outletId),
         eq(cashMovements.shiftId, shift.id),
-        eq(cashMovements.needsApproval, false),
+        // A held movement books into the drawer only once it has an 'approved'
+        // outcome (EXISTS, so a movement counts once).
+        or(
+          eq(cashMovements.needsApproval, false),
+          decidedMovementExists("approved"),
+        ),
       ),
     )
     .groupBy(cashMovements.type);
@@ -369,6 +374,11 @@ export async function computeShiftAggregates(
     cashOutIdr: byType.get("cash_out") ?? 0,
     cashDropIdr: byType.get("drop") ?? 0,
   };
+}
+
+/** Correlated EXISTS: the movement row has an outcome of this kind. */
+function decidedMovementExists(outcome: "approved" | "rejected") {
+  return sql`EXISTS (SELECT 1 FROM ${cashMovementOutcomes} WHERE ${cashMovementOutcomes.tenantId} = ${cashMovements.tenantId} AND ${cashMovementOutcomes.movementId} = ${cashMovements.id} AND ${cashMovementOutcomes.outcome} = ${outcome})`;
 }
 
 /**
@@ -391,6 +401,11 @@ export async function heldCashOutIdrOf(
         eq(cashMovements.outletId, shift.outletId),
         eq(cashMovements.shiftId, shift.id),
         eq(cashMovements.needsApproval, true),
+        // Decided movements leave the held sum: 'approved' is in the drawer
+        // figures, 'rejected' is not booked. 'expired' stays counted (a closed
+        // shift's figures do not change).
+        not(decidedMovementExists("approved")),
+        not(decidedMovementExists("rejected")),
       ),
     );
   return safeHeldTotal(
@@ -558,7 +573,7 @@ export async function expireHeldCashMovements(
 
 /**
  * legend-q7jj F1: how many cash rows the shift has, held or not: its cash
- * movements, refunds and voids (all insert-only). A count stores it; the
+ * movements, refunds, voids and held-movement outcomes (all insert-only). A count stores it; the
  * close refuses the count as stale when it moved, before any approval is
  * judged, so the stale answer never depends on the held status (no balance
  * oracle). Call under the shift row lock. Never in any DTO.
@@ -597,8 +612,24 @@ export async function cashWatermarkOf(
         eq(posOrderVoids.shiftId, shift.id),
       ),
     );
+  // A decision on a held movement changes the drawer figures, so it moves the
+  // watermark too (backstop: a count goes stale after a decision). 'expired'
+  // outcomes only exist after the close, so counting every outcome is fine.
+  const [outcomes] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(cashMovementOutcomes)
+    .where(
+      and(
+        eq(cashMovementOutcomes.tenantId, shift.tenantId),
+        eq(cashMovementOutcomes.outletId, shift.outletId),
+        eq(cashMovementOutcomes.shiftId, shift.id),
+      ),
+    );
   return (
-    Number(movements?.n ?? 0) + Number(refunds?.n ?? 0) + Number(voids?.n ?? 0)
+    Number(movements?.n ?? 0) +
+    Number(refunds?.n ?? 0) +
+    Number(voids?.n ?? 0) +
+    Number(outcomes?.n ?? 0)
   );
 }
 
@@ -696,7 +727,10 @@ export async function movementsOf(
 
 export type ShiftEventName = Extract<
   PosEventName,
-  "cashier_shift.opened" | "cashier_shift.closed" | "cash_movement.recorded"
+  | "cashier_shift.opened"
+  | "cashier_shift.closed"
+  | "cash_movement.recorded"
+  | "cash_movement.approved"
 >;
 
 /**

@@ -41,7 +41,7 @@ const namesByWorkstream = {
   "WS-03":
     "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored table_session.closed table_session.moved table_session.merged table_session.items_moved order.placed item.failed order_issue.resolved order_issue.manual_refund_approved order_issue.refund_reversal_requested order_issue.charge_paid service_request.created service_request.overdue open_bill.inactive open_bill.limit_exceeded table.status_changed table_session.linked table_session.unlinked",
   "WS-04":
-    "order.submitted order.paid order.voided order.refunded kitchen_ticket.created kitchen_ticket.started kitchen_ticket.bumped kitchen_ticket.recalled kitchen_ticket.voided pacing.updated cashier_shift.opened cashier_shift.closed day.closed cash_movement.recorded receipt_run.reported",
+    "order.submitted order.paid order.voided order.refunded kitchen_ticket.created kitchen_ticket.started kitchen_ticket.bumped kitchen_ticket.recalled kitchen_ticket.voided pacing.updated cashier_shift.opened cashier_shift.closed day.closed cash_movement.recorded cash_movement.approved receipt_run.reported",
   "WS-05":
     "payment_intent.created payment.paid payment.funds_unallocated payment.failed payment.refunded payment.refund_requested payment.refund_escalated payment_route.updated edc_terminal.created edc_terminal.updated cashier_payment_default.updated settlement.reconciled notification.created notification.sent payment.expired settlement.imported tax_rule.published service_charge_rule.published tax_settings.published notification.failed notification.read notification_preference.updated subscription.invoice_created",
   "WS-06":

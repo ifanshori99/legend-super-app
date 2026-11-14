@@ -1088,6 +1088,7 @@ test("F8 events: POS event names are registered on the WS-04 catalog line", () =
   // The two names this bead added to the WS-04 line.
   assert.ok(catalog.has("day.closed"));
   assert.ok(catalog.has("cash_movement.recorded"));
+  assert.ok(catalog.has("cash_movement.approved"));
   assert.deepEqual(
     pos.posEventCatalog.map((entry) => entry.name),
     [...pos.posEventNames],
