@@ -81,7 +81,10 @@ import {
   releaseLinksOfSession,
 } from "./table-link.service";
 import { appendOutbox } from "./core-outbox";
-import { expireOpenChargesOfSession } from "./order-recovery-charge";
+import {
+  confirmChargeLinksUnpaid,
+  expireOpenChargesOfSession,
+} from "./order-recovery-charge";
 import { verifyTableQrToken } from "./qr-token";
 import { finalizeReservationDepositRemainders } from "./reservation-deposit-remainder.ts";
 
@@ -775,6 +778,33 @@ export async function openOrJoinTableSession(
     token: input.qrToken,
     resolvedTenantId: context.tenant.tenantId,
   });
+  // legend-ukbq3: a session past its window is expired inside the transaction
+  // below. Its charge payment links are confirmed unpaid at the provider first,
+  // outside any transaction or lock (network I/O); an unconfirmed answer
+  // (409 PAYMENT_PROVIDER_UNCONFIRMED) propagates and nothing is closed. The
+  // `settled` verdict is not read here: a payment it just applied reaches the
+  // charge through the worker, and `expireOpenChargesOfSession` then throws 409
+  // in the transaction for a charge still `open` whose link has a paid intent.
+  const expiring = await withTenant(db, context, async (tx) => {
+    const [scanned] = await tx
+      .select({ id: tables.id })
+      .from(tables)
+      .where(
+        and(
+          eq(tables.tenantId, context.tenant.tenantId),
+          eq(tables.qrTokenHash, verified.hash),
+        ),
+      );
+    if (!scanned) return null;
+    const current = await activeSessionForTable(
+      tx,
+      context.tenant.tenantId,
+      scanned.id,
+    );
+    return current && tokenExpired(current, now) ? current.id : null;
+  });
+  if (expiring)
+    await confirmChargeLinksUnpaid(context, { sessionId: expiring }, now);
   return withTenant(db, context, async (tx) => {
     const [found] = await tx
       .select()
@@ -1345,6 +1375,13 @@ export async function closeTableSession(
   actorUserId: string,
   now = new Date(),
 ): Promise<TableSession> {
+  // legend-ukbq3: charge payment links are confirmed unpaid at the provider
+  // before the close transaction (network I/O stays outside it); an unconfirmed
+  // answer (409 PAYMENT_PROVIDER_UNCONFIRMED) propagates and nothing is closed.
+  // The `settled` verdict is not read here: `expireOpenChargesOfSession` throws
+  // 409 in the transaction for a charge still `open` whose link has a paid
+  // intent (the worker has not applied it yet), so nothing is closed either.
+  await confirmChargeLinksUnpaid(context, { sessionId }, now);
   return withTenant(db, context, async (tx) => {
     const located = await loadSession(tx, context.tenant.tenantId, sessionId);
     // A reservation-seated party may hold secondary tables (marked occupied by

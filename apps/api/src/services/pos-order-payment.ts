@@ -39,6 +39,9 @@ import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import { paymentIntents, paymentLinks } from "../db/schema/index.ts";
 import { posOrders, posOrderTenders } from "../db/schema/pos-order.ts";
+import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
+import { getEdgeRuntimeState } from "../edge/runtime";
+import { loadActiveIntegrationCredentials } from "./platform-integration.service.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { sealSecret } from "../lib/secrets.ts";
@@ -62,11 +65,19 @@ import { settlePosEdcStandalone } from "./pos-edc-standalone.ts";
 import { posEdcTenderPort, posPointsTenderPort } from "./pos-order-ports.ts";
 import { freshDetail, mutatePosOrder } from "./pos-order.service.ts";
 import {
+  POS_QRIS_LIFETIME_MS,
+  assertNoActiveQrisHold,
+  activeHoldOf,
+  lockHoldsOfOrder,
+  openQrisHold,
+} from "./pos-qris-hold.ts";
+import {
   appendOrderEvent,
   assertExpectedStatus,
   assertMutable,
   auditPos,
   bumpPos,
+  capturedIdr,
   remainingIdr,
   tenderDto,
   tendersOf,
@@ -94,6 +105,21 @@ const paidPayloadSchema = z.looseObject({
   intentId: uuidSchema,
   providerRef: z.string().min(1).max(100).nullable().optional(),
 });
+
+/** True on an edge node (same rule as device-pin.service.ts). */
+function isEdgeProcess(): boolean {
+  return getEdgeRuntimeState().edgeMode || process.env.EDGE_MODE === "true";
+}
+
+async function edgeHasGatewayCredentials(
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<boolean> {
+  for (const provider of ["doit", "duitku"] as const)
+    if (await loadActiveIntegrationCredentials(context, provider, outletId))
+      return true;
+  return false;
+}
 
 /**
  * Voids every QRIS tender of the order that still waits for its payment and
@@ -232,6 +258,9 @@ export async function addPosTender(
       assertExpectedStatus(order, input.expectedStatus);
       assertMutable(order);
       assertPosOrderSettleable({ status: order.status });
+      // legend-yhia9 D-01: while a QR can still be paid the bill is frozen, so
+      // no other tender and no second QR (the 0369 trigger is the backstop).
+      await assertNoActiveQrisHold(tx, context, order.id);
       // Native POS payments use tender-level links. A legacy order-level
       // link can still collect through its public token or a remote code,
       // even after a nominal expiry, so do not open a second payment source.
@@ -349,6 +378,14 @@ export async function addPosTender(
               "CONFLICT",
               "Masih ada QRIS yang menunggu pembayaran untuk pesanan ini.",
             );
+          // D-09: an edge node calls the provider itself, so it needs gateway
+          // credentials locally; without them the QR cannot be issued (and a
+          // hold could never be closed there).
+          if (
+            isEdgeProcess() &&
+            !(await edgeHasGatewayCredentials(context, order.outletId))
+          )
+            throw new PosError("QRIS_NEEDS_CLOUD");
           // WS-05 bill for exactly the remaining balance (PAY-01: the amount
           // is the server's). The already covered part shows as a reduction.
           const covered = order.totalIdr - remaining;
@@ -378,9 +415,18 @@ export async function addPosTender(
               method: "qris",
               channelCode: null,
               idempotencyKey: `pos-${createHash("sha256")
-                .update(`${order.id}:${idempotencyKey}`)
+                // legend-yhia9 QH-17: bound to the link too. A POS transaction
+                // that rolled back after the provider made the intent leaves
+                // an orphan intent on a link nobody holds; the retry opens a
+                // new link and must get its own intent, not hit the old one.
+                .update(`${order.id}:${opened.linkId}:${idempotencyKey}`)
                 .digest("hex")
                 .slice(0, 48)}`,
+              // Q92: the cashier QR lives 5 minutes (a per-tender decision;
+              // the shared QRIS intent lifetime stays 10 minutes).
+              expiresAt: new Date(
+                now.getTime() + POS_QRIS_LIFETIME_MS,
+              ).toISOString(),
             },
             now,
           );
@@ -402,6 +448,16 @@ export async function addPosTender(
               resolvedAt: null,
             })
             .returning();
+          if (!inserted) throw new Error("Tender insert returned no row");
+          // D-01: the hold opens in the same POS transaction as the tender.
+          await openQrisHold(tx, {
+            order,
+            tender: inserted,
+            paymentIntentId: intent.id,
+            capturedIdr: capturedIdr(tenders),
+            openedBy: caller.userId,
+            now,
+          });
           break;
         }
         case "edc_card":
@@ -542,6 +598,27 @@ async function voidTendersAndRefundPaidQris(
   },
 ): Promise<void> {
   const { order, pos, now } = input;
+  // legend-yhia9: money arrived that the bill cannot take. While the QR's hold
+  // is active the 0369 trigger refuses the tender void, so the hold ends first
+  // (the payment is real, the refund below returns it; never a second capture).
+  const activeHold = await activeHoldOf(tx, context.tenant.tenantId, order.id);
+  if (activeHold)
+    await tx
+      .update(posQrisHolds)
+      .set({
+        state: "paid",
+        closedAt: now,
+        closeReason: "provider_paid",
+        closeEvidence: { anomaly: input.reason, intentId: input.intentId },
+        nextCheckAt: null,
+      })
+      .where(
+        and(
+          eq(posQrisHolds.tenantId, context.tenant.tenantId),
+          eq(posQrisHolds.id, activeHold.id),
+          inArray(posQrisHolds.state, ["open", "cancelling"]),
+        ),
+      );
   const voided = await voidPendingQrisTenders(tx, context, {
     orderId: order.id,
     now,
@@ -647,6 +724,8 @@ export async function handlePosPaymentPaid(
       )
       .for("update");
     if (!pos) return;
+    // legend-yhia9 lock order: orders -> pos_orders -> pos_qris_holds -> tender.
+    const holds = await lockHoldsOfOrder(tx, tenantId, order.id);
     const [tender] = await tx
       .select()
       .from(posOrderTenders)
@@ -811,6 +890,56 @@ export async function handlePosPaymentPaid(
       });
       return;
     }
+    // legend-yhia9 D-05: the hold goes `paid` first; only then does the 0369
+    // trigger let the tender be captured. The bill is unchanged while the hold
+    // was active, so the paid amount is exactly what is due.
+    const hold = holds.find(
+      (row) =>
+        row.tenderId === tender.id &&
+        (row.state === "open" || row.state === "cancelling"),
+    );
+    // Defence in depth (D-05): the basis the hold froze must still be the
+    // bill, and the paid money exactly the hold's amount. Anything else is an
+    // anomaly: never a capture; the safety net voids the tender and refunds
+    // what the intent holds (one pending refund, the outlet holds the money).
+    if (
+      hold &&
+      ((hold.basisTotalIdr !== null && hold.basisTotalIdr !== order.totalIdr) ||
+        (hold.basisDepositIdr !== null &&
+          hold.basisDepositIdr !== order.depositAppliedIdr) ||
+        Number(paid.amountIdr) !== Number(hold.amountIdr))
+    ) {
+      await voidTendersAndRefundPaidQris(tx, context, {
+        order,
+        pos,
+        paymentLinkId: payload.data.paymentLinkId,
+        intentId: paid.id,
+        reason: "bill_below_tender",
+        now: at,
+        linkClosedAt: now,
+      });
+      return;
+    }
+    if (hold)
+      await tx
+        .update(posQrisHolds)
+        .set({
+          state: "paid",
+          closedAt: at,
+          closeReason: "provider_paid",
+          closeEvidence: {
+            intentId: paid.id,
+            providerRef: paid.providerRef ?? null,
+          },
+          nextCheckAt: null,
+        })
+        .where(
+          and(
+            eq(posQrisHolds.tenantId, tenantId),
+            eq(posQrisHolds.id, hold.id),
+            inArray(posQrisHolds.state, ["open", "cancelling"]),
+          ),
+        );
     await tx
       .update(posOrderTenders)
       .set({
@@ -919,6 +1048,7 @@ export async function handlePosPaymentClosed(
     )
     .for("update");
   if (!pos) return true;
+  const holds = await lockHoldsOfOrder(tx, tenantId, order.id);
   const [tender] = await tx
     .select()
     .from(posOrderTenders)
@@ -933,6 +1063,17 @@ export async function handlePosPaymentClosed(
     !tender ||
     tender.status !== "authorized" ||
     tender.paymentIntentId !== payload.data.intentId
+  )
+    return true;
+  // legend-yhia9 D-04: a local expiry or failure never unlocks the bill. While
+  // the QR's hold is active the tender stays `authorized` (the QR may still be
+  // paid); only provider proof or a manager release closes the hold.
+  if (
+    holds.some(
+      (row) =>
+        row.tenderId === tender.id &&
+        (row.state === "open" || row.state === "cancelling"),
+    )
   )
     return true;
   // A guest who paid just before the expiry sweep: the webhook may already

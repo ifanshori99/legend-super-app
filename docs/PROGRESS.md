@@ -5475,3 +5475,28 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Guard uang (temuan architect): sisa DP dari reservasi `source='website'` tidak memakai profil booking sebagai kandidat kredit (nomor tidak terverifikasi); hanya profil bill. Test di `reservation-deposit-remainder.test.ts`.
 - Risiko diterima (keputusan CTO): nomor salah ketik menerima pesan WA/konfirmasi booking orang lain.
 - Gerbang: 18 berkas test terarah (446 test) hijau, typecheck api hijau, `db:generate` kosong, check-journal ok, prettier+eslint hijau. Merah-dulu terbukti di base: T1 (200 vs 409), T2 (3 test), T3 (4 test), R1b (2 test).
+## 2026-11-13: Backend QRIS ber-DP (legend-yhia9.2-.4) di cabang ws/qris-dp-hold
+
+- Sudah: C1 (tabel `pos_qris_holds`, trigger kunci tagihan, satu QR aktif per tagihan, hold untuk QR split tamu), C2 (pembayaran masuk saat hold aktif diterapkan, uang terlambat ke dana tak teralokasi, job cek penyedia di cloud dan edge, buka kunci manajer `qris_release`), C3 (pairing 6 digit, pilihan tagihan, state layar pelanggan dibangun server). Migrasi 0419-0421, tanpa nomor lain.
+- Bukti: 12 berkas test hold/display/old-QRIS lulus (141/141 pada run terarah), typecheck api dan web lulus, eslint dan prettier hijau pada 39 berkas TS, `db:generate` kosong. Review architect xhigh: tanpa penghalang, 7 temuan should-fix sudah dibetulkan. Reviewer sonnet atas perubahan test lama: tidak ada assertion uang yang melemah.
+- Keputusan: pembayaran nominal salah tidak menutup hold (QH-13), uang diparkir sekali, tagihan terkunci sampai buka kunci manajer. 18 test lama (bill-split-pay, pos-order-qris-lifecycle, round2) disesuaikan karena aturan hold mewajibkan (QR tidak bisa dibatalkan lokal), bukan dilonggarkan.
+- Langkah berikut: gerbang S1 (legend-1yig6, sandbox) sebelum C2 digabung; merge train merechain nomor migrasi (journal loncat 308 ke 419); UI (legend-astv2) tetap ditahan; second opinion Codex area pembayaran sebelum rilis.
+- Belum diverifikasi: `QRIS_NEEDS_CLOUD` di edge asli (kredensial gateway di edge tidak terbukti ada), replay `/pair` tanpa test, pesan kasir saat QR sudah dibayar tapi belum dibukukan.
+
+## 2026-11-13: Perbaikan temuan Codex area uang (legend-eh9i4, legend-5i6k1) di cabang fix/codex-money
+
+- Sudah: cek hold QRIS (QH-13) dipindah ke `applyConfirmation` di bawah lock tagihan/intent yang sama, jadi webhook, polling, dan sync expired ikut. QR Rp33.000 dibayar Rp36.000 lewat polling: seluruh Rp36.000 diparkir sekali, tidak ada capture. Migrasi 0419 (diedit di tempat, tanpa nomor baru): backfill hold untuk intent QRIS tamu (status pending, provider_ref ada) dan gagal bila >1 QR collectible per tagihan (tender POS + tamu). Jurnal refund: akun pajak/service charge dilindungi dari gabungan peta saat ini dan historis; payout ke akun itu diparkir `ACCOUNT_MAPPING_MISSING`.
+- Bukti: 3 test gagal-dulu (poll-wrong-amount, 0419 guest backfill, historic-tax-map) lalu hijau; run gabungan 13 file hijau (125 test); `db:generate` kosong; prettier+eslint hijau. Review architect xhigh: tidak ada penghalang; 2 temuan (provider_ref di backfill tamu, receivedAt jalur polling) dibetulkan.
+- Belum: typecheck api (antre kunci heavy). Catatan lanjutan: hold tetap `open` bila Duitku `assertStrictAmount` menolak nominal salah (bill beku sampai manajer buka kunci, tanpa alert kasir); DB lokal yang sudah menerapkan 0419 tidak mendapat backfill tamu.
+
+## 2026-11-13: Hold QRIS nominal salah ditolak Duitku (legend-baz8i) di cabang fix/qris-hold-strict-amount
+
+- Sudah: `holdGatewayAmountMismatch` (jalur `assertStrictAmount` dan webhook Duitku) kini, saat uang baru diparkir dan ada hold QRIS yang belum `paid`, memanggil helper baru `alertQrisFundsParked` (sama dengan jalur `parkWhenQrisHoldRefusesInTx`): cek hold melambat 24 jam dan supervisor, owner, serta kasir pembuka QR mendapat alert "Uang QRIS perlu dikembalikan". Hold tidak ditutup otomatis (QH-13); manajer buka kunci lewat Q93 lalu refund dari dana tak teralokasi. Replay tidak parkir dan tidak alert dua kali. Teks alert khusus hanya untuk hold yang masih terkunci; callback vs status tidak cocok punya kalimat sendiri.
+- Bukti: test baru `pos-qris-hold-strict-amount.test.ts` (4 test): gagal-dulu di source lama (3 gagal, alert 0 vs 1), hijau sesudahnya; run gabungan 4 file (71 test) hijau; prettier + eslint hijau. Review architect xhigh: tanpa penghalang, 2 saran kata dibetulkan. Tanpa migrasi.
+- Typecheck api (`tsc --noEmit`, lewat heavy) hijau tanpa error.
+
+## 2026-11-14: QRIS hold masuk m1 (legend-yhia9.2, cabang ghostex/775-qris-hold-c1)
+
+- `origin/fix/qris-hold-strict-amount` (183c15283, utuh: C1, C2, C3 dan perbaikan Codex money) digabung ke atas `origin/milestone/m1` 5dcc1cfd9. `ws/qris-dp-due` tidak digabung terpisah: versi `pos-qris-deposit-money.test.ts` di cabang itu sudah mencakup 4 test uangnya (MONEY-04 sudah menunggu `QRIS_HOLD_ACTIVE`).
+- Migrasi dinomori ulang lewat `scripts/migration-renumber.mjs` (salinan sementara yang membolehkan celah 0366-0367, dipesan brief 769): 0419 jadi 0368_pos_qris_holds, 0420 jadi 0369_pos_qris_hold_freeze, 0421 jadi 0370_pos_customer_display. `when` 1794629275111/6111/7111. Snapshot dibangun ulang dari skema gabungan, rantai prevId 0365, 0368, 0369, 0370 utuh.
+- Konflik: `_journal.json` dan snapshot (dibangun ulang), `edge-sync-conflict-alert.ts` (SupervisorAlert memegang `alsoUserIds` dan `outletId: OutletId | null`), `pos-day.service.ts` (kedua impor dipertahankan), `PROGRESS.md` (dua sisi dipertahankan). Tidak ada aturan uang yang dilonggarkan.

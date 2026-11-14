@@ -43,6 +43,7 @@ import { withTenant } from "../db/tenant.ts";
 import { openSecret } from "../lib/secrets.ts";
 import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
 import { deliverOrderPaymentEvent } from "../services/order-payment-consumers.ts";
+import { runPosQrisHoldCheckJob } from "../worker/pos-qris-hold-check.job.ts";
 import {
   setPaymentGateway,
   type GatewayIntentRequest,
@@ -90,7 +91,7 @@ let supervisor: Member;
 class FakeGateway implements PaymentGatewayPort {
   readonly provider = "doit";
   created = 0;
-  status: "pending" | "failed" = "pending";
+  status: "pending" | "failed" | "expired" = "pending";
   async health() {
     return { status: "available" as const };
   }
@@ -522,6 +523,34 @@ async function settleAs(intentId: string, amountIdr: number, ref: string) {
   });
 }
 
+/**
+ * legend-yhia9 D-03: a QR stays collectible (its hold freezes the bill) until
+ * the provider itself answers expired/failed about it. The test gateway
+ * answers `answer`; the hold check job runs past expires_at + 60 s and closes
+ * the hold: tender voided, link closed, bill unlocked.
+ */
+async function closeHoldByProvider(
+  answer: "expired" | "failed",
+  via: FakeGateway = gateway,
+) {
+  // The 5 minute code has lapsed on the real clock too.
+  await owner.query(
+    `UPDATE payment_intents SET expires_at = now() - interval '10 minutes'
+      WHERE tenant_id = $1 AND id IN (
+        SELECT payment_intent_id FROM pos_qris_holds
+         WHERE tenant_id = $1 AND state IN ('open', 'cancelling'))`,
+    [tenant.tenantId],
+  );
+  via.status = answer;
+  try {
+    await runPosQrisHoldCheckJob(contextOf(tenant.tenantId), new Date(), {
+      force: true,
+    });
+  } finally {
+    via.status = "pending";
+  }
+}
+
 async function intentRow(intentId: string) {
   const { rows } = await owner.query<{
     status: string;
@@ -544,7 +573,7 @@ async function intentCountOfLink(linkId: string): Promise<number> {
 }
 
 describe("POS QRIS verified settlement after the intent failed (legend-b0au)", () => {
-  it("a verified webhook after failed + cash tender is a late payment: one pending refund, no double record on replay", async () => {
+  it("a verified webhook after the provider closed the QR + cash tender is a late payment: parked once, no double record on replay", async () => {
     const order = await payableOrder();
     const tender = await openQris(order);
     const intentId = tender.payment_intent_id!;
@@ -564,7 +593,11 @@ describe("POS QRIS verified settlement after the intent failed (legend-b0au)", (
     expect(
       await deliver(await onlyPaymentEvent("payment.failed", intentId)),
     ).toEqual({ route: "pos" });
-    expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("failed");
+    // D-04: the failure event alone does not unlock the bill; the provider's
+    // own answer does (the hold check), which voids the tender.
+    expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("authorized");
+    await closeHoldByProvider("failed");
+    expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("voided");
 
     // The cashier takes the full bill in cash.
     const cash = await pos().cash(
@@ -575,25 +608,30 @@ describe("POS QRIS verified settlement after the intent failed (legend-b0au)", (
     expect(cash.status, JSON.stringify(cash.body)).toBe(201);
     expect(cash.body.data.remainingIdr).toBe(0);
 
-    // The guest's QRIS money still arrives: a verified webhook. Before the
-    // fix `failed -> paid` was refused (409) and the money was lost: not
-    // recorded, not refunded.
+    // The guest's QRIS money still arrives: a verified webhook. The provider
+    // already closed this QR (hold closed), so the bill cannot take it: D-07
+    // parks it in full (never lost, never captured, no automatic refund).
     const ref = `WEBHOOK-${randomBytes(6).toString("hex")}`;
-    await settleAs(intentId, order.totalIdr, ref);
-    const row = await intentRow(intentId);
-    expect(row.status).toBe("paid");
-    expect(row.flags).toContain("late_payment");
-    const paid = await onlyPaymentEvent("payment.paid", intentId);
-    expect(paid.payload).toMatchObject({ late: true });
-
-    await deliver(paid);
-    const refunds = await refundsOfIntent(intentId);
-    expect(refunds).toHaveLength(1);
-    expect(refunds[0]).toMatchObject({
-      amount_idr: String(order.totalIdr),
-      status: "pending",
-      requested_by: "system:pos",
-    });
+    const settleParked = async () => {
+      try {
+        await settleAs(intentId, order.totalIdr, ref);
+      } catch (error) {
+        if ((error as { status?: unknown }).status !== 409) throw error;
+      }
+    };
+    await settleParked();
+    // The intent itself stays closed: nothing was booked on the bill.
+    expect((await intentRow(intentId)).status).toBe("failed");
+    const parkedOf = async () =>
+      (
+        await owner.query<{ amount_idr: string }>(
+          `SELECT amount_idr::text AS amount_idr FROM payment_unallocated_funds
+            WHERE tenant_id = $1 AND payment_intent_id = $2`,
+          [tenant.tenantId, intentId],
+        )
+      ).rows;
+    expect(await parkedOf()).toEqual([{ amount_idr: String(order.totalIdr) }]);
+    expect(await refundsOfIntent(intentId)).toHaveLength(0);
     // The POS bill is untouched: cash stays the only captured tender.
     expect(
       (await tendersOfOrder(order.orderId)).filter(
@@ -601,16 +639,11 @@ describe("POS QRIS verified settlement after the intent failed (legend-b0au)", (
       ),
     ).toHaveLength(1);
 
-    // Replay the webhook and the event: still one refund, one payment.paid.
-    await settleAs(intentId, order.totalIdr, ref);
-    await Promise.all([
-      settleAs(intentId, order.totalIdr, ref),
-      settleAs(intentId, order.totalIdr, ref),
-    ]);
-    await deliver(paid);
-    await Promise.all([deliver(paid), deliver(paid)]);
-    expect(await refundsOfIntent(intentId)).toHaveLength(1);
-    expect(await paymentEvents("payment.paid", intentId)).toHaveLength(1);
+    // Replay the webhook: still one parked row.
+    await settleParked();
+    await Promise.all([settleParked(), settleParked()]);
+    expect(await parkedOf()).toHaveLength(1);
+    expect(await refundsOfIntent(intentId)).toHaveLength(0);
   });
 
   it("an unverified source never settles a failed intent", async () => {
@@ -684,13 +717,10 @@ describe("POS createIntent racing a link cancellation (legend-b0au)", () => {
     try {
       await blocking.hasArrived;
 
-      // Meanwhile cash replaces the QRIS: cancelPaymentLinkInTx commits.
-      const cash = await pos().cash(
-        order.orderId,
-        await statusOf(order.orderId),
-        order.totalIdr,
-      );
-      expect(cash.status, JSON.stringify(cash.body)).toBe(201);
+      // Meanwhile the provider proves the QR dead and the hold check closes
+      // it (cash can no longer replace a collectible QR, D-01):
+      // cancelPaymentLinkInTx commits.
+      await closeHoldByProvider("expired", blocking);
       expect((await linkRow(linkId)).expired).toBe(true);
     } finally {
       blocking.release();

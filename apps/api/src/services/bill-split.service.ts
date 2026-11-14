@@ -62,6 +62,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
+import { activeHoldOf } from "./pos-qris-hold.ts";
 import { LATE_PAYMENT_GRACE_MS } from "./qr-order-consumers.ts";
 import {
   getSessionBill,
@@ -230,6 +231,12 @@ export async function assertSplitMutableTx(
     new HttpError(409, "SPLIT_LOCKED", message);
   if (live.some((part) => part.status === "paid"))
     throw locked("Ada bagian yang sudah dibayar; pembagian tidak bisa diubah.");
+  // legend-yhia9: a QRIS of a part (or of the bill) that can still be paid
+  // freezes the split until the provider shows it paid or dead.
+  if (await activeHoldOf(tx, tenantId, order.id))
+    throw locked(
+      "Ada QR pembayaran yang masih bisa dibayar; tunggu sampai dibayar atau berakhir.",
+    );
   if (order.paymentLinkId === null) return;
   const [link] = await tx
     .select({ paidIdr: paymentLinks.paidIdr })

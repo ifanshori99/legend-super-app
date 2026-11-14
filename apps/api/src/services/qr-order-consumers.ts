@@ -68,6 +68,7 @@ import { refundableBalance } from "./payment-admin.service.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { listSessionDepositSources } from "./reservation-deposit-credit.ts";
 import { pendingRefundIdr } from "./pos-order-late-payment.ts";
+import { markSplitQrisHoldPaidByIntentTx } from "./pos-qris-hold.ts";
 import {
   HOLDS_REFUNDABLE_MONEY,
   requestQrDoublePaymentRefund,
@@ -472,6 +473,14 @@ export async function handleQrOrderPaymentPaid(
   const { intentId, paymentLinkId, currency } = payload.data;
   const order = await lockOrderOfLink(tx, context, paymentLinkId);
   if (!order) return "ignored";
+  // legend-yhia9: the QR was paid, so its hold ends `paid` before any branch
+  // below that the 0369 triggers refuse while the hold is active (void, fire).
+  await markSplitQrisHoldPaidByIntentTx(
+    tx,
+    context.tenant.tenantId,
+    intentId,
+    now,
+  );
   if (order.status === "voided") {
     const [late] = await tx
       .select({ status: paymentIntents.status })

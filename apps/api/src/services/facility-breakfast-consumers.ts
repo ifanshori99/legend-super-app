@@ -42,12 +42,15 @@ import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import { auditFacility } from "./facility-shared.ts";
 import {
+  assertBreakfastLinkHoldsNoMoney,
   BREAKFAST_PAID_INTENT_STATUSES,
   cancelBreakfastOrderTx,
+  confirmBreakfastLinkUnpaid,
   DEAD_TICKET_STATUSES,
   FACILITY_SYSTEM_ACTOR,
   fireBreakfastOrderTx,
   lockBreakfastOrder,
+  lockBreakfastPayLink,
   requestBreakfastRefund,
   type LockedBreakfast,
 } from "./facility-breakfast-money.ts";
@@ -633,6 +636,23 @@ export async function fireDueBreakfastOrders(
     now,
     limit,
   )) {
+    // Provider proof outside any lock (legend-ukbq3): money found there is
+    // settled on the intent, but the worker records the order `paid` later (via
+    // the outbox), so `run` below may still see it `awaiting_payment`: the guard
+    // there then refuses (409) and the order is retried on a later tick, once
+    // the paid mark is in. An unclear answer holds this order until the next
+    // tick.
+    try {
+      await confirmBreakfastLinkUnpaid(context, orderId, now);
+    } catch (error) {
+      failed += 1;
+      logger.warn(
+        { orderId, err: error instanceof Error ? error.message : "unknown" },
+        "Breakfast sweep: provider could not confirm the pay link; retried on the next tick",
+      );
+      await markSweepFailure(context, orderId, "awaiting_payment", now);
+      continue;
+    }
     const done = await run(
       orderId,
       async (tx, locked) => {
@@ -657,6 +677,10 @@ export async function fireDueBreakfastOrders(
           now.getTime() < ticket.endsAt.getTime()
         )
           return false;
+        // Link before intent; refuse while the link holds money not yet marked.
+        if (locked.order.paymentLinkId !== null)
+          await lockBreakfastPayLink(tx, context, locked.order.paymentLinkId);
+        await assertBreakfastLinkHoldsNoMoney(tx, context, locked);
         await cancelBreakfastOrderTx(tx, context, locked, {
           reason: "payment_window_closed",
           actorUserId: null,

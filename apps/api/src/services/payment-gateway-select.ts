@@ -123,7 +123,15 @@ export async function selectGatewayForNewIntent(
     }
     const health = await port.health(context, outletId);
     primaryHealth ??= health;
-    if (health.status !== "down") return { provider, port, health };
+    // Legacy test mode has one port for every provider: the intent belongs to
+    // the provider that port speaks, so its status reads and the QRIS hold
+    // closure evidence (D-03) use the right rule.
+    if (health.status !== "down")
+      return {
+        provider: paymentGatewayLegacyMode() ? port.provider : provider,
+        port,
+        health,
+      };
   }
   return { provider: null, health: primaryHealth ?? DISABLED_HEALTH };
 }

@@ -1844,6 +1844,44 @@ export const posTenderResultSchema = z.strictObject({
 });
 export type PosTenderResult = z.infer<typeof posTenderResultSchema>;
 
+// ---- QRIS hold (legend-yhia9 D-01..D-04) -----------------------------------
+
+export const posQrisHoldStateSchema = z.enum([
+  "open",
+  "cancelling",
+  "paid",
+  "closed",
+]);
+export type PosQrisHoldStateDto = z.infer<typeof posQrisHoldStateSchema>;
+
+/**
+ * The newest QRIS hold of a bill, as the cashier sees it. While `open` or
+ * `cancelling` the bill's money is frozen; `cancelling` means the cashier hid
+ * the QR and the provider has not yet proven it can no longer be paid.
+ */
+export const posQrisHoldSchema = z.strictObject({
+  id: z.string().min(1),
+  orderId: orderIdSchema,
+  /** null for a guest split-bill QR (no POS tender). */
+  tenderId: uuidSchema.nullable(),
+  state: posQrisHoldStateSchema,
+  amountIdr: positiveIdr,
+  /** When the QR stops being payable at the provider. */
+  expiresAt: isoDateTimeSchema.nullable(),
+  cancelRequestedAt: isoDateTimeSchema.nullable(),
+  lastCheckedAt: isoDateTimeSchema.nullable(),
+  closeReason: z
+    .enum([
+      "provider_paid",
+      "provider_expired",
+      "provider_failed",
+      "provider_cancelled",
+      "force_released",
+    ])
+    .nullable(),
+});
+export type PosQrisHold = z.infer<typeof posQrisHoldSchema>;
+
 // ---- Documents: receipt, kuitansi, invoice (POS-07, F43/F44) --------------
 
 export const posDocumentLineSchema = z
@@ -2096,6 +2134,32 @@ export const pairCustomerDisplayInputSchema = clientInputSchema({
   idempotencyKey: idempotencyKeySchema,
 });
 
+/** legend-yhia9 D-08: the code a display shows while it waits to be paired. */
+export const customerDisplayPairingCodeSchema = z.strictObject({
+  code: z.string().regex(/^\d{6}$/),
+  expiresAt: isoDateTimeSchema,
+});
+export type CustomerDisplayPairingCode = z.infer<
+  typeof customerDisplayPairingCodeSchema
+>;
+
+/** The cashier chooses the bill the paired display shows; never an amount. */
+export const selectCustomerDisplayBillInputSchema = clientInputSchema({
+  orderId: orderIdSchema.nullable(),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+export const customerDisplaySelectionSchema = z.strictObject({
+  ...scope,
+  terminalDeviceId: uuidSchema,
+  orderId: orderIdSchema.nullable(),
+  version: z.number().int().nonnegative(),
+  updatedAt: isoDateTimeSchema,
+});
+export type CustomerDisplaySelection = z.infer<
+  typeof customerDisplaySelectionSchema
+>;
+
 export const customerDisplayLineSchema = z.strictObject({
   name,
   quantity: z.number().int().min(1).max(99),
@@ -2107,7 +2171,7 @@ export type CustomerDisplayLine = z.infer<typeof customerDisplayLineSchema>;
 
 /** Dynamic QRIS (DOIT) shown on the second screen; it expires (~10 minutes). */
 export const customerDisplayQrisSchema = z.strictObject({
-  provider: z.literal("doit"),
+  provider: z.enum(["doit", "duitku"]),
   amountIdr: positiveIdr,
   payload: z.string().min(16).max(2048),
   expiresAt: isoDateTimeSchema,

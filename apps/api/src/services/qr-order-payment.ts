@@ -68,6 +68,7 @@ import {
   createSplitPartIntent,
   getIntentView,
 } from "./payment.service.ts";
+import { activeHoldOf, openSplitQrisHold } from "./pos-qris-hold.ts";
 import { handleQrOrderPaymentPaid } from "./qr-order-consumers.ts";
 import {
   loadQrZoneOfSession,
@@ -509,6 +510,18 @@ export async function createGuestPayment(
               "Kode pembayaran bagian ini masih berlaku; selesaikan atau tunggu sampai berakhir.",
             );
           }
+          // legend-yhia9: one collectible QRIS per bill. A live code of this
+          // part was answered above; a QR of another part (or a dead code the
+          // provider has not yet confirmed closed) refuses a new one.
+          if (
+            parsed.method === "qris" &&
+            (await activeHoldOf(tx, context.tenant.tenantId, order.id))
+          )
+            throw new HttpError(
+              409,
+              "QRIS_HOLD_ACTIVE",
+              "QR bagian lain masih bisa dibayar. Tunggu sampai dibayar atau berakhir dulu.",
+            );
           const intent = await createSplitPartIntent(
             context,
             token,
@@ -527,6 +540,14 @@ export async function createGuestPayment(
             { billSplitId: part.id, amountIdr: part.amountIdr },
             now,
           );
+          if (parsed.method === "qris")
+            await openSplitQrisHold(tx, {
+              order,
+              billSplitId: part.id,
+              intentId: intent.id,
+              amount: part.amountIdr,
+              now,
+            });
           // Never `orders.paymentIntentId`: that is the whole-order code.
           await tx
             .update(billSplits)

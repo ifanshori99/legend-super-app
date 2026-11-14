@@ -19,7 +19,7 @@
 //   route; a shift of another outlet or tenant is 404.
 
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   AccessError,
   approvalPolicySchema,
@@ -65,6 +65,7 @@ import { db } from "../db/index.ts";
 import { approvalPolicies } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { posOverrides } from "../db/schema/device-pin.ts";
+import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import {
   cashMovementRefusals,
   cashMovements,
@@ -1256,6 +1257,21 @@ export async function closePosShift(
       // The closer is the shift's cashier: blind replay (legend-4wrfd).
       return shiftDto(shift, undefined, { blind: true });
     }
+    // legend-yhia9 D-01: a QR this cashier issued can still be paid, so the
+    // shift cannot be handed over until it is paid or the provider closes it.
+    const [waiting] = await tx
+      .select({ id: posQrisHolds.id })
+      .from(posQrisHolds)
+      .where(
+        and(
+          eq(posQrisHolds.tenantId, tenantId),
+          eq(posQrisHolds.outletId, outletId),
+          eq(posQrisHolds.openedBy, shift.cashierId),
+          inArray(posQrisHolds.state, ["open", "cancelling"]),
+        ),
+      )
+      .limit(1);
+    if (waiting) throw new PosError("QRIS_HOLD_ACTIVE");
     const [count] = await tx
       .select()
       .from(posShiftCounts)

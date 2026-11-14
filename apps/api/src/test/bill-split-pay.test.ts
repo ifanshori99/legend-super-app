@@ -49,6 +49,7 @@ import { withTenant } from "../db/tenant.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { deliverOrderPaymentEvent } from "../services/order-payment-consumers.ts";
+import { runPosQrisHoldCheckJob } from "../worker/pos-qris-hold-check.job.ts";
 import {
   setPaymentGateway,
   type GatewayIntentRequest,
@@ -95,6 +96,8 @@ const BANKS: PaymentChannel[] = [{ code: "bmri", name: "Mandiri" }];
 class FakeGateway implements PaymentGatewayPort {
   readonly provider = "doit";
   created = 0;
+  /** Provider references the provider reports expired (legend-yhia9 D-03). */
+  readonly expiredRefs = new Set<string>();
   async health() {
     return { status: "available" as const };
   }
@@ -122,7 +125,9 @@ class FakeGateway implements PaymentGatewayPort {
   }
   async getStatus(input: { providerRef: string }) {
     return {
-      status: "pending" as const,
+      status: this.expiredRefs.has(input.providerRef)
+        ? ("expired" as const)
+        : ("pending" as const),
       providerRef: input.providerRef,
       amountIdr: null,
     };
@@ -264,18 +269,46 @@ async function splitOrder(count: number) {
   return { guest, orderId, totalIdr, parts };
 }
 
-async function openCode(guest: Guest, part: Part): Promise<string> {
-  const response = await as(guest).paySplit(part.id);
+async function openCode(
+  guest: Guest,
+  part: Part,
+  method?: "qris" | "va",
+): Promise<string> {
+  const response = await as(guest).paySplit(part.id, { method });
   expect(response.status, JSON.stringify(response.body)).toBe(201);
   expect(response.body.data.status).toBe("pending");
   return response.body.data.id as string;
 }
 
+/**
+ * The part's code lapses. Since legend-yhia9 a QRIS stays collectible (its hold
+ * freezes the bill, so no second QR opens) until the provider itself answers
+ * expired about it: the test gateway does, and the hold check job runs.
+ */
+async function lapseCode(intentId: string) {
+  await owner.query(
+    "UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '1 hour' WHERE tenant_id = $1 AND id = $2",
+    [tenant.tenantId, intentId],
+  );
+  const { rows } = await owner.query<{ provider_ref: string }>(
+    "SELECT provider_ref FROM payment_intents WHERE tenant_id = $1 AND id = $2",
+    [tenant.tenantId, intentId],
+  );
+  gateway.expiredRefs.add(rows[0]!.provider_ref);
+  await runPosQrisHoldCheckJob(contextOf(tenant.tenantId), new Date(), {
+    force: true,
+  });
+}
+
 /** A verified webhook settlement (the trusted source). */
-async function settle(intentId: string, amountIdr: number) {
+async function settle(
+  intentId: string,
+  amountIdr: number,
+  method: "qris" | "va" = "qris",
+) {
   await confirmPayment(contextOf(tenant.tenantId), intentId, {
     source: "verified_webhook",
-    method: "qris",
+    method,
     amountIdr,
     providerRef: `WEBHOOK-${randomBytes(6).toString("hex")}`,
     at: new Date().toISOString(),
@@ -446,8 +479,10 @@ describe("Split bill payment (legend-ms3, ORD-06)", () => {
     const w = await splitOrder(3);
     const [p0, p1] = w.parts as [Part, Part];
 
+    // One QRIS at a time per bill (legend-yhia9 D-01): the second part pays
+    // by virtual account, so both codes are live together.
     const a = await as(w.guest).paySplit(p0.id);
-    const b = await as(w.guest).paySplit(p1.id);
+    const b = await as(w.guest).paySplit(p1.id, { method: "va" });
     expect(a.status, JSON.stringify(a.body)).toBe(201);
     expect(b.status, JSON.stringify(b.body)).toBe(201);
     expect(a.body.data.id).not.toBe(b.body.data.id);
@@ -472,15 +507,12 @@ describe("Split bill payment (legend-ms3, ORD-06)", () => {
     const w = await splitOrder(3);
     const [p0, p1] = w.parts as [Part, Part];
     const qris0 = await openCode(w.guest, p0);
-    const qris1 = await openCode(w.guest, p1);
+    const qris1 = await openCode(w.guest, p1, "va");
 
     // While the code is live the switch is refused (SPLIT_CODE_ACTIVE).
     // Reconciliation resolves the lapsed code as expired, past the
     // late-payment grace: then the switch is allowed.
-    await owner.query(
-      "UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '1 hour' WHERE tenant_id = $1 AND id = $2",
-      [tenant.tenantId, qris0],
-    );
+    await lapseCode(qris0);
 
     const va0 = await as(w.guest).paySplit(p0.id, { method: "va" });
     expect(va0.status, JSON.stringify(va0.body)).toBe(201);
@@ -655,9 +687,9 @@ describe("Split bill payment (legend-ms3, ORD-06)", () => {
     const w = await splitOrder(2);
     const [p0, p1] = w.parts as [Part, Part];
     const code0 = await openCode(w.guest, p0);
-    const code1 = await openCode(w.guest, p1);
+    const code1 = await openCode(w.guest, p1, "va");
     await settle(code0, p0.amountIdr);
-    await settle(code1, p1.amountIdr);
+    await settle(code1, p1.amountIdr, "va");
     const event0 = await onlyPaidEvent(code0);
     const event1 = await onlyPaidEvent(code1);
 
@@ -763,10 +795,7 @@ describe("Split part payer secret (legend-r77pq)", () => {
     const [p0] = w.parts as [Part, Part];
     const oldCode = await openCode(w.guest, p0);
     const oldHash = await payerHash(p0.id);
-    await owner.query(
-      "UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '1 hour' WHERE tenant_id = $1 AND id = $2",
-      [tenant.tenantId, oldCode],
-    );
+    await lapseCode(oldCode);
 
     const newSecret = newPayerSecret();
     const taken = await as(w.guest).paySplit(p0.id, { secret: newSecret });
@@ -788,17 +817,20 @@ describe("Split part payer secret (legend-r77pq)", () => {
     const w = await splitOrder(2);
     const [p0] = w.parts as [Part, Part];
     const secretA = secretFor(p0.id);
-    const intentA = await openCode(w.guest, p0);
-    await owner.query(
-      "UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '1 hour' WHERE tenant_id = $1 AND id = $2",
-      [tenant.tenantId, intentA],
-    );
+    // Virtual-account codes: a lapsed QRIS stays collectible until the
+    // provider proves it dead (legend-yhia9) and its late money is then parked
+    // (D-07), so the "old code pays after a takeover" case is a VA one.
+    const intentA = await openCode(w.guest, p0, "va");
+    await lapseCode(intentA);
     const secretB = newPayerSecret();
-    const taken = await as(w.guest).paySplit(p0.id, { secret: secretB });
+    const taken = await as(w.guest).paySplit(p0.id, {
+      secret: secretB,
+      method: "va",
+    });
     expect(taken.status, JSON.stringify(taken.body)).toBe(201);
     expect(taken.body.data.id).not.toBe(intentA);
 
-    await settle(intentA, p0.amountIdr);
+    await settle(intentA, p0.amountIdr, "va");
     await deliverToQr(await onlyPaidEvent(intentA));
 
     const row = await splitRow(p0.id);

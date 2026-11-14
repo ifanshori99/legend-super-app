@@ -71,6 +71,7 @@ import {
   posOrderTenders,
 } from "../db/schema/pos-order.ts";
 import { orderIssues } from "../db/schema/kds-issues.ts"; // legend-kxoyf
+import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
 import { posOverrideUsableFromDevice } from "./device-pin-support.ts";
@@ -670,7 +671,8 @@ export type ApprovalPurpose =
   | "discount"
   | "correction_void"
   | "refund"
-  | "edc_standalone";
+  | "edc_standalone"
+  | "qris_release";
 
 const APPROVAL_ERROR = {
   void: "VOID_APPROVAL_REQUIRED",
@@ -865,6 +867,20 @@ export async function repriceOrder(
   },
 ): Promise<OrderRow> {
   const { order } = input;
+  // legend-yhia9: a bill with a collectible QRIS never reprices (lines,
+  // discounts, DP). Defense in depth behind each mutator's own guard.
+  const [frozen] = await tx
+    .select({ id: posQrisHolds.id })
+    .from(posQrisHolds)
+    .where(
+      and(
+        eq(posQrisHolds.tenantId, context.tenant.tenantId),
+        eq(posQrisHolds.orderId, order.id),
+        inArray(posQrisHolds.state, ["open", "cancelling"]),
+      ),
+    )
+    .limit(1);
+  if (frozen) throw new PosError("QRIS_HOLD_ACTIVE");
   const items = (await itemsOf(tx, context, order.id)).map((row) => row.item);
   const counted = input.allLines
     ? items

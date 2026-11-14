@@ -596,6 +596,10 @@ export async function postJournalFromRuleInTransaction(
       input.legalEntityId as LegalEntityId,
     ),
   );
+  // legend-5i6k1: keep the current mapping before overrides are applied. The
+  // overrides carry the historic (sale-time) accounts, so the refund guard
+  // below must check both maps.
+  const currentAccountMap = new Map(accountMap);
   for (const [role, accountId] of Object.entries(
     input.accountOverrides ?? {},
   )) {
@@ -618,8 +622,10 @@ export async function postJournalFromRuleInTransaction(
       "tax_payable_ppn",
       "tax_payable_other",
     ] as const) {
-      const accountId = accountMap.get(role);
-      if (accountId !== undefined) protectedAccountIds.add(accountId);
+      for (const map of [currentAccountMap, accountMap]) {
+        const accountId = map.get(role);
+        if (accountId !== undefined) protectedAccountIds.add(accountId);
+      }
     }
     for (const role of [
       "cash_on_hand",
@@ -627,12 +633,14 @@ export async function postJournalFromRuleInTransaction(
       "edc_clearing",
       "loyalty_liability",
     ] as const) {
-      const accountId = accountMap.get(role);
-      if (accountId !== undefined && protectedAccountIds.has(accountId))
-        throw new AccountingError(
-          "ACCOUNT_MAPPING_MISSING",
-          "A refund payout account is mapped to a sale service charge or tax account",
-        );
+      for (const map of [currentAccountMap, accountMap]) {
+        const accountId = map.get(role);
+        if (accountId !== undefined && protectedAccountIds.has(accountId))
+          throw new AccountingError(
+            "ACCOUNT_MAPPING_MISSING",
+            "A refund payout account is mapped to a sale service charge or tax account",
+          );
+      }
     }
   }
   const lines = buildJournalLinesFromRule(rule, input.amounts, accountMap, {

@@ -55,6 +55,7 @@ import {
   type PosCaller,
 } from "./pos-order-support.ts";
 import type { Tx } from "./menu-internals.ts";
+import { assertNoActiveQrisHold } from "./pos-qris-hold.ts";
 
 type ApplyInput = z.output<typeof applyEndpoint.body>;
 
@@ -64,6 +65,8 @@ async function assertBeforeSettlement(
   locked: Locked,
 ): Promise<void> {
   assertMutable(locked.order);
+  // legend-yhia9 D-01: no discount while a QR can still be paid.
+  await assertNoActiveQrisHold(tx, context, locked.order.id);
   const tenders = await tendersOf(tx, context, locked.order.id);
   if (capturedIdr(tenders) > 0)
     throw new CoreError(

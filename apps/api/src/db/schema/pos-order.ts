@@ -600,7 +600,7 @@ export const posOrderApprovalUses = pgTable(
     }),
     check(
       "pos_order_approval_uses_purpose_check",
-      sql`${table.purpose} IN ('order_void', 'item_void', 'discount', 'correction_void', 'refund', 'edc_standalone')`,
+      sql`${table.purpose} IN ('order_void', 'item_void', 'discount', 'correction_void', 'refund', 'edc_standalone', 'qris_release')`,
     ),
   ],
 );

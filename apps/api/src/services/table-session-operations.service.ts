@@ -32,6 +32,7 @@ import {
   tableSessionIdSchema,
   type TableSession,
 } from "@starter/shared/qr-order";
+import { PosError } from "@starter/shared/pos";
 import { sealSecret } from "../lib/secrets";
 import { db } from "../db";
 import {
@@ -46,6 +47,7 @@ import {
 } from "../db/schema";
 import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues";
 import { posOrderTenders } from "../db/schema/pos-order";
+import { activeHoldOf } from "./pos-qris-hold";
 import { reservationTables } from "../db/schema/reservation";
 import { withTenant } from "../db/tenant";
 import {
@@ -1147,6 +1149,9 @@ async function splitOrder(
   },
 ): Promise<number> {
   const { order, selected, liveItems, to, actorUserId, now } = input;
+  // legend-yhia9: its money columns are frozen while a QRIS can still be paid.
+  if (await activeHoldOf(tx, order.tenantId, order.id))
+    throw new PosError("QRIS_HOLD_ACTIVE");
   // A part of an order cannot leave while something else still depends on the
   // whole: a payment link or intent was opened for the full amount, a deposit
   // credit was applied, or the kitchen has not fired it (PBJT snapshots are

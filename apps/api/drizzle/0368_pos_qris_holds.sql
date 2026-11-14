@@ -1,0 +1,141 @@
+-- legend-yhia9 C1: QRIS hold table. FKs are inline on this empty new table so a
+-- plain migration owner does not validate them with ALTER TABLE against
+-- already FORCE-RLS parents (same as 0305).
+CREATE TABLE "pos_qris_holds" (
+	"tenant_id" uuid NOT NULL,
+	"id" uuid NOT NULL,
+	"outlet_id" uuid NOT NULL,
+	"order_id" uuid NOT NULL,
+	"tender_id" uuid,
+	"payment_intent_id" uuid NOT NULL,
+	"bill_split_id" uuid,
+	"amount_idr" bigint NOT NULL,
+	"basis_total_idr" bigint,
+	"basis_deposit_idr" bigint,
+	"basis_captured_idr" bigint,
+	"backfilled" boolean DEFAULT false NOT NULL,
+	"state" text NOT NULL,
+	"opened_at" timestamp with time zone NOT NULL,
+	"opened_by" text,
+	"cancel_requested_at" timestamp with time zone,
+	"cancel_requested_by" text,
+	"last_checked_at" timestamp with time zone,
+	"check_attempts" integer DEFAULT 0 NOT NULL,
+	"next_check_at" timestamp with time zone,
+	"closed_at" timestamp with time zone,
+	"close_reason" text,
+	"close_evidence" jsonb,
+	CONSTRAINT "pos_qris_holds_pkey" PRIMARY KEY("tenant_id","id"),
+	CONSTRAINT "pos_qris_holds_intent_key" UNIQUE("tenant_id","payment_intent_id"),
+	CONSTRAINT "pos_qris_holds_tender_key" UNIQUE("tenant_id","tender_id"),
+	CONSTRAINT "pos_qris_holds_amount_check" CHECK ("pos_qris_holds"."amount_idr" > 0),
+	CONSTRAINT "pos_qris_holds_target_check" CHECK ("pos_qris_holds"."tender_id" IS NOT NULL OR "pos_qris_holds"."bill_split_id" IS NOT NULL),
+	CONSTRAINT "pos_qris_holds_state_check" CHECK ("pos_qris_holds"."state" IN ('open', 'cancelling', 'paid', 'closed')),
+	CONSTRAINT "pos_qris_holds_basis_check" CHECK ("pos_qris_holds"."backfilled" OR "pos_qris_holds"."bill_split_id" IS NOT NULL OR ("pos_qris_holds"."basis_total_idr" IS NOT NULL AND "pos_qris_holds"."basis_deposit_idr" IS NOT NULL AND "pos_qris_holds"."basis_captured_idr" IS NOT NULL AND "pos_qris_holds"."amount_idr" = "pos_qris_holds"."basis_total_idr" - "pos_qris_holds"."basis_deposit_idr" - "pos_qris_holds"."basis_captured_idr")),
+	CONSTRAINT "pos_qris_holds_cancel_pair_check" CHECK (("pos_qris_holds"."cancel_requested_at" IS NULL) = ("pos_qris_holds"."cancel_requested_by" IS NULL)),
+	CONSTRAINT "pos_qris_holds_closed_check" CHECK (("pos_qris_holds"."state" IN ('open', 'cancelling')) = ("pos_qris_holds"."closed_at" IS NULL)),
+	CONSTRAINT "pos_qris_holds_close_reason_check" CHECK (("pos_qris_holds"."close_reason" IS NULL OR "pos_qris_holds"."close_reason" IN ('provider_paid', 'provider_expired', 'provider_failed', 'provider_cancelled', 'force_released')) AND (("pos_qris_holds"."state" IN ('paid', 'closed')) = ("pos_qris_holds"."close_reason" IS NOT NULL)))
+,
+	CONSTRAINT "pos_qris_holds_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "pos_qris_holds_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "pos_qris_holds_opened_by_user_id_fk" FOREIGN KEY ("opened_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "pos_qris_holds_cancel_requested_by_user_id_fk" FOREIGN KEY ("cancel_requested_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "pos_qris_holds_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "pos_qris_holds_order_fk" FOREIGN KEY ("tenant_id","order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "pos_qris_holds_tender_fk" FOREIGN KEY ("tenant_id","tender_id") REFERENCES "public"."pos_order_tenders"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "pos_qris_holds_bill_split_fk" FOREIGN KEY ("tenant_id","bill_split_id") REFERENCES "public"."bill_splits"("tenant_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "pos_qris_holds_intent_fk" FOREIGN KEY ("tenant_id","payment_intent_id") REFERENCES "public"."payment_intents"("tenant_id","id") ON DELETE no action ON UPDATE no action
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX "pos_qris_holds_active_order_key" ON "pos_qris_holds" USING btree ("tenant_id","order_id") WHERE "pos_qris_holds"."state" IN ('open', 'cancelling');
+--> statement-breakpoint
+CREATE INDEX "pos_qris_holds_due_idx" ON "pos_qris_holds" USING btree ("state","next_check_at") WHERE "pos_qris_holds"."state" IN ('open', 'cancelling');
+--> statement-breakpoint
+-- Backfill (design §5): every QRIS tender still waiting for its money gets one
+-- `open` hold (backfilled, basis NULL, amount from the tender) so the bill is
+-- frozen and the hold check job resolves it from the provider
+-- (next_check_at = now()). A guest split-bill QR (a payment intent with
+-- bill_split_id, still pending) gets the same, with bill_split_id set and no
+-- tender. One bill with more than one collectible QR (POS tender and guest
+-- intent together) cannot be frozen safely: the migration fails. The migrator may be a plain table owner (no
+-- BYPASSRLS): lift FORCE on the source tables for this transaction only and
+-- restore it right after (same pattern as 0286, 0292).
+ALTER TABLE public.orders NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_orders NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_order_tenders NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.payment_intents NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.bill_splits NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+DO $$
+DECLARE dup text;
+BEGIN
+  SELECT string_agg(d.order_id::text || ' (' || d.n || ' QRs)', ', ') INTO dup
+  FROM (
+    SELECT q.tenant_id, q.order_id, count(*) AS n
+    FROM (
+      SELECT t.tenant_id, t.order_id
+      FROM public.pos_order_tenders t
+      JOIN public.payment_intents i
+        ON i.tenant_id = t.tenant_id AND i.id = t.payment_intent_id
+      WHERE t.method = 'qris' AND t.status = 'authorized'
+        AND t.payment_link_id IS NOT NULL AND i.status <> 'paid'
+      UNION ALL
+      SELECT bs.tenant_id, bs.order_id
+      FROM public.payment_intents i
+      JOIN public.bill_splits bs
+        ON bs.tenant_id = i.tenant_id AND bs.id = i.bill_split_id
+      WHERE i.bill_split_id IS NOT NULL AND i.method = 'qris'
+        AND i.status = 'pending' AND i.provider_ref IS NOT NULL
+    ) q
+    GROUP BY q.tenant_id, q.order_id
+    HAVING count(*) > 1
+  ) d;
+  IF dup IS NOT NULL THEN
+    RAISE EXCEPTION 'QRIS hold backfill: more than one collectible QRIS on bill(s) %; resolve them before migrating', dup;
+  END IF;
+END $$;
+--> statement-breakpoint
+INSERT INTO public.pos_qris_holds
+  (tenant_id, id, outlet_id, order_id, tender_id, payment_intent_id,
+   amount_idr, backfilled, state, opened_at, opened_by, next_check_at)
+SELECT t.tenant_id, gen_random_uuid(), t.outlet_id, t.order_id, t.id,
+       t.payment_intent_id, t.amount_idr, true, 'open', t.requested_at,
+       coalesce(po.cashier_id, t.captured_by), now()
+FROM public.pos_order_tenders t
+JOIN public.payment_intents i
+  ON i.tenant_id = t.tenant_id AND i.id = t.payment_intent_id
+JOIN public.pos_orders po
+  ON po.tenant_id = t.tenant_id AND po.order_id = t.order_id
+WHERE t.method = 'qris' AND t.status = 'authorized'
+  AND t.payment_link_id IS NOT NULL AND i.status <> 'paid';
+--> statement-breakpoint
+INSERT INTO public.pos_qris_holds
+  (tenant_id, id, outlet_id, order_id, tender_id, payment_intent_id,
+   bill_split_id, amount_idr, backfilled, state, opened_at, opened_by,
+   next_check_at)
+SELECT i.tenant_id, gen_random_uuid(), i.outlet_id, bs.order_id, NULL,
+       i.id, i.bill_split_id, i.amount_idr, true, 'open', i.created_at,
+       NULL, now()
+FROM public.payment_intents i
+JOIN public.bill_splits bs
+  ON bs.tenant_id = i.tenant_id AND bs.id = i.bill_split_id
+WHERE i.bill_split_id IS NOT NULL AND i.method = 'qris'
+  AND i.status = 'pending' AND i.provider_ref IS NOT NULL;
+--> statement-breakpoint
+ALTER TABLE public.bill_splits FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.payment_intents FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_order_tenders FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_orders FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.orders FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.pos_qris_holds'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.pos_qris_holds'::regclass);
