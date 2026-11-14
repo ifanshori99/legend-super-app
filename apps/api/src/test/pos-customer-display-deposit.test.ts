@@ -11,6 +11,8 @@ function display(overrides: Record<string, unknown> = {}) {
     terminalDeviceId: posFixtureIds.devices.pos1,
     displayDeviceId: posFixtureIds.devices.display,
     state: "awaiting_payment",
+    promotions: [],
+    pairingCode: null,
     orderId: posFixtureIds.orders.cashDineIn,
     orderNumber: "POS-0001",
     lines: [

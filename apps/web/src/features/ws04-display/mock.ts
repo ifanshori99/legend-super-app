@@ -4,11 +4,11 @@
 // mode"). The handler behaves like the live service:
 //   - the QRIS is a dynamic DOIT code that expires; a read after expiry
 //     returns a fresh code (PRD §3 F13 "QRIS Dinamis"),
-//   - the state machine only offers the four states the contract allows,
+//   - the state machine offers the states the contract allows,
 //   - totals stay the fixture's: subtotal − discount + service + tax + rounding.
 //
 // Demo switch (browser only, same idea as the edge mock override): set
-//   localStorage["legend-display-mock"] = "idle" | "ordering" |
+//   localStorage["legend-display-mock"] = "unpaired" | "idle" | "ordering" |
 //     "awaiting_payment" | "awaiting_expired" | "awaiting_loading" |
 //     "awaiting_deposit" | "paid"
 // and reload. The default is a live bill awaiting QRIS payment — the screen's
@@ -49,6 +49,7 @@ const QRIS_PAYLOAD = qrisPendingIntentFixture.instructions.qrPayload;
 
 const DEMO_KEY = "legend-display-mock";
 const DEMO_STATES = [
+  "unpaired",
   "idle",
   "ordering",
   "awaiting_payment",
@@ -119,11 +120,26 @@ function buildState(entry: DisplayStore, nowMs: number): DisplayStateWire {
     displayDeviceId: fixture.displayDeviceId,
     version: entry.version,
     updatedAt: new Date(nowMs).toISOString(),
+    promotions: [],
+    pairingCode: null,
   };
-  if (entry.demo === "idle")
+  if (entry.demo === "idle" || entry.demo === "unpaired")
     return {
       ...base,
+      terminalDeviceId:
+        entry.demo === "unpaired" ? null : base.terminalDeviceId,
       state: "idle",
+      pairingCode: entry.demo === "unpaired" ? "012345" : null,
+      promotions:
+        entry.demo === "idle"
+          ? [
+              {
+                title: "Promo Kopi Sore",
+                body: "Nikmati pilihan kopi favorit di sore hari.",
+                validUntil: "2026-12-31T16:59:59.000Z",
+              },
+            ]
+          : [],
       orderId: null,
       orderNumber: null,
       lines: [],
