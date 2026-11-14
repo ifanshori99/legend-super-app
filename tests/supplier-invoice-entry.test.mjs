@@ -435,9 +435,13 @@ test("legend-0xnm the catalog carries the labels the screen and its e2e use", ()
 });
 
 test("legend-0xnm the entry route keeps the invoice permission guard and the form saves through the shared hook", () => {
+  // The route file is `faktur_.baru` (not `faktur.baru`): the list route
+  // `kelola.pengadaan_.faktur` has no <Outlet>, so a nested child rendered
+  // the list instead of the form.
   const route = read(
-    "apps/web/src/routes/_kelola/kelola.pengadaan_.faktur.baru.tsx",
+    "apps/web/src/routes/_kelola/kelola.pengadaan_.faktur_.baru.tsx",
   );
+  assert.match(route, /\/_kelola\/kelola\/pengadaan_\/faktur_\/baru/);
   assert.match(route, /purchasingGuard\(\["purchasing\.invoice\.match"\]\)/);
   assert.match(route, /PurchasingFrame/);
 
@@ -452,4 +456,168 @@ test("legend-0xnm the entry route keeps the invoice permission guard and the for
     "apps/web/src/features/ws06-purchasing/components/invoice-page.tsx",
   );
   assert.match(list, /\/kelola\/pengadaan\/faktur\/baru/);
+});
+
+// ---- API error mapping (round 3, legend-0xnm) -------------------------------
+//
+// Pins `invoiceApiErrorView(code, message, details?)` in invoice-entry-model.ts:
+// a pure function from an API failure (ApiError.code / .message / .details) to
+// what the form shows. Shape:
+//
+//   {
+//     messageKey: "serverRejectedTax" | "serverRejected",  // key under
+//       // `inventoryInvoiceEntry.errors.*`; never the raw server text
+//     taxFields: ("ppn" | "pph23")[],        // inputs to mark invalid
+//     lineIssues: { lineIndex: number,       // 0-based position in the lines sent
+//                   lineNumber: number,      // lineIndex + 1, for "Baris N"
+//                   field: "description" | "quantity" | "unitPrice" }[],
+//   }
+//
+// Assumptions: (1) the server's tax rejection is HttpError(422,
+// VALIDATION_ERROR, <English text>) with no `details`; the exact wording is
+// backend-internal, so the tests use texts that name the tax ("PPN", "PPh 23",
+// "pph23Idr") and the matcher must key on those names, case-insensitively.
+// (2) `details[].field` is "lines.<index>.<field>" (description, quantity,
+// unitPriceIdr) and "ppnIdr" / "pph23Idr". (3) The raw English server message
+// is never part of the returned view. (4) Only VALIDATION_ERROR is read this
+// way.
+const VALIDATION = "VALIDATION_ERROR";
+const PPN_MESSAGES = [
+  "PPN may not exceed 12% of the DPP.",
+  "ppn exceeds 12% of the taxable base",
+];
+const PPH_MESSAGES = [
+  "PPh 23 requires at least one service line.",
+  "pph23Idr cannot exceed the service value",
+];
+
+const noRawServerText = (view, message) =>
+  assert.ok(
+    !JSON.stringify(view).includes(message),
+    `raw server message leaked into the view: ${message}`,
+  );
+
+test("legend-0xnm F18 a server PPN rejection without details becomes the tax view on the PPN field", async () => {
+  const { invoiceApiErrorView } = await model();
+  for (const message of PPN_MESSAGES) {
+    const view = invoiceApiErrorView(VALIDATION, message);
+    assert.equal(view.messageKey, "serverRejectedTax", message);
+    assert.deepEqual(view.taxFields, ["ppn"], message);
+    assert.deepEqual(view.lineIssues, [], message);
+    noRawServerText(view, message);
+    // An explicit empty details list is the same as none.
+    assert.deepEqual(invoiceApiErrorView(VALIDATION, message, []), view);
+  }
+});
+
+test("legend-0xnm F18 a server PPh 23 rejection without details becomes the tax view on the PPh 23 field", async () => {
+  const { invoiceApiErrorView } = await model();
+  for (const message of PPH_MESSAGES) {
+    const view = invoiceApiErrorView(VALIDATION, message);
+    assert.equal(view.messageKey, "serverRejectedTax", message);
+    assert.deepEqual(view.taxFields, ["pph23"], message);
+    assert.deepEqual(view.lineIssues, [], message);
+    noRawServerText(view, message);
+  }
+});
+
+test("legend-0xnm F18 tax details name the tax field and keep the Indonesian message", async () => {
+  const { invoiceApiErrorView } = await model();
+  const english = "Number must be an integer";
+  const ppn = invoiceApiErrorView(VALIDATION, "Invalid request.", [
+    { field: "ppnIdr", message: english },
+  ]);
+  assert.equal(ppn.messageKey, "serverRejectedTax");
+  assert.deepEqual(ppn.taxFields, ["ppn"]);
+  noRawServerText(ppn, english);
+
+  const pph = invoiceApiErrorView(VALIDATION, "Invalid request.", [
+    { field: "pph23Idr", message: english },
+  ]);
+  assert.equal(pph.messageKey, "serverRejectedTax");
+  assert.deepEqual(pph.taxFields, ["pph23"]);
+
+  const both = invoiceApiErrorView(VALIDATION, "Invalid request.", [
+    { field: "ppnIdr", message: english },
+    { field: "pph23Idr", message: english },
+  ]);
+  assert.deepEqual([...both.taxFields].sort(), ["pph23", "ppn"]);
+});
+
+test("legend-0xnm F18 a lines.N.field detail points at row N+1 and that row's input", async () => {
+  const { invoiceApiErrorView } = await model();
+  const english = "Expected number, received nan";
+  const view = invoiceApiErrorView(VALIDATION, "Invalid request.", [
+    { field: "lines.2.quantity", message: english },
+  ]);
+  assert.equal(view.messageKey, "serverRejected");
+  assert.deepEqual(view.taxFields, []);
+  assert.deepEqual(view.lineIssues, [
+    { lineIndex: 2, lineNumber: 3, field: "quantity" },
+  ]);
+  noRawServerText(view, english);
+
+  const several = invoiceApiErrorView(VALIDATION, "Invalid request.", [
+    { field: "lines.0.unitPriceIdr", message: english },
+    { field: "lines.1.description", message: english },
+    { field: "lines.10.quantity", message: english },
+  ]);
+  assert.deepEqual(several.lineIssues, [
+    { lineIndex: 0, lineNumber: 1, field: "unitPrice" },
+    { lineIndex: 1, lineNumber: 2, field: "description" },
+    { lineIndex: 10, lineNumber: 11, field: "quantity" },
+  ]);
+});
+
+test("legend-0xnm F18 line and tax details in one response are both mapped", async () => {
+  const { invoiceApiErrorView } = await model();
+  const view = invoiceApiErrorView(VALIDATION, "Invalid request.", [
+    { field: "lines.1.quantity", message: "Too small" },
+    { field: "ppnIdr", message: "Too big" },
+  ]);
+  assert.equal(view.messageKey, "serverRejectedTax");
+  assert.deepEqual(view.taxFields, ["ppn"]);
+  assert.deepEqual(view.lineIssues, [
+    { lineIndex: 1, lineNumber: 2, field: "quantity" },
+  ]);
+});
+
+test("legend-0xnm F18 an unrelated server rejection stays generic and marks nothing", async () => {
+  const { invoiceApiErrorView } = await model();
+  const message = "Supplier invoice number already exists";
+  for (const view of [
+    invoiceApiErrorView(VALIDATION, message),
+    invoiceApiErrorView(VALIDATION, message, []),
+    invoiceApiErrorView("CONFLICT", message),
+  ]) {
+    assert.equal(view.messageKey, "serverRejected");
+    assert.deepEqual(view.taxFields, []);
+    assert.deepEqual(view.lineIssues, []);
+    noRawServerText(view, message);
+  }
+});
+
+test("legend-0xnm F18 a tax-sounding message under another error code is not read as a tax rejection", async () => {
+  const { invoiceApiErrorView } = await model();
+  const view = invoiceApiErrorView("CONFLICT", PPN_MESSAGES[0]);
+  assert.equal(view.messageKey, "serverRejected");
+  assert.deepEqual(view.taxFields, []);
+});
+
+test("legend-0xnm F18 the error mapping is pure and does not mutate its input", async () => {
+  const { invoiceApiErrorView } = await model();
+  const details = Object.freeze([
+    Object.freeze({ field: "lines.2.quantity", message: "bad" }),
+  ]);
+  const first = invoiceApiErrorView(VALIDATION, "Invalid request.", details);
+  const second = invoiceApiErrorView(VALIDATION, "Invalid request.", details);
+  assert.deepEqual(first, second);
+  assert.equal(details.length, 1);
+});
+
+test("legend-0xnm F18 the form maps API errors through invoiceApiErrorView", () => {
+  const form = read(
+    "apps/web/src/features/ws06-purchasing/components/invoice-form-page.tsx",
+  );
+  assert.match(form, /invoiceApiErrorView\(/);
 });

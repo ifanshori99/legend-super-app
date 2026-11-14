@@ -23,3 +23,17 @@ Dari audit UI: harga PO pakai formatter M; fokus ke field error pertama saat sub
 ## P (implementer pratinjau) `apps/web/src/features/ws06-purchasing/components/invoice-match-preview.tsx` + `packages/shared/src/i18n/messages/ws06-invoice-match-preview.ts`
 
 Harga satuan pakai formatter desimal M (jangan `Money` yang membulatkan); selisih bp ditampilkan sebagai persen (bp/100, format id-ID, mis. `+1,5%`); ikon + teks pada status error/sukses; cek layout 320 px (tanpa scroll horizontal).
+
+## Putaran 3 (reviewer 2) `invoice-form-page.tsx` + katalog `ws06-invoice-entry.ts`
+
+1. Error pajak dari API datang sebagai `HttpError(422, VALIDATION_ERROR, msg)` tanpa `details` (`apps/api/src/services/purchasing-invoice.service.ts:238,1231-1237`). Kenali pesan PPN/PPh 23 itu (cocokkan teks pesan server) dan tampilkan `serverRejectedTax` (Bahasa Indonesia) + tandai field PPN/PPh 23; jangan tampilkan pesan Inggris mentah.
+2. Detail `lines.N.field` dipetakan ke "Baris N+1: <label field>" dan error dipasang ke input baris itu bila ada; pesan server Inggris tidak ditampilkan mentah (pakai teks katalog per field).
+3. Mengubah `invoiceDate` juga menghapus error `dueDate` `dueBeforeInvoice` (validasi ulang pasangan tanggal).
+
+## Putaran 3b: route (e2e 5/5 gagal)
+
+Akar: `kelola.pengadaan_.faktur.baru.tsx` bersarang di `kelola.pengadaan_.faktur.tsx` yang tidak punya `<Outlet>`, jadi /kelola/pengadaan/faktur/baru merender daftar. Agent sudah `git mv` ke `kelola.pengadaan_.faktur_.baru.tsx` dan path `createFileRoute("/_kelola/kelola/pengadaan_/faktur_/baru")`.
+
+- R (implementer): regenerasi `apps/web/src/routeTree.gen.ts` dengan generator resmi (`@tanstack/router-generator@1.167.40` di `node_modules/.pnpm`, config dari `apps/web/vite.config.*`), jangan tulis tangan. Pastikan `<Link to="/kelola/pengadaan/faktur/baru">` di `invoice-page.tsx:871` cocok tipe route. Jangan jalankan tsc/e2e.
+- F3 (implementer): butir 1-3 Putaran 3 di atas. Logika pemetaan error API ditaruh sebagai fungsi murni di `invoice-entry-model.ts` (mis. `invoiceApiErrorView(code, message, details)`), form hanya memakai hasilnya.
+- T3 (test-writer): unit di `tests/supplier-invoice-entry.test.mjs` untuk fungsi pemetaan F3 (pesan PPN/PPh 23 server tanpa details → tax view; `lines.2.quantity` → baris 3). Gagal-dulu sebelum F3 selesai.

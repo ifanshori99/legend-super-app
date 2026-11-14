@@ -370,9 +370,9 @@ import { Route as KelolaKelolaInventoriTransferIndexRouteImport } from './routes
 import { Route as KelolaKelolaInventoriTransferBaruRouteImport } from './routes/_kelola/kelola.inventori.transfer.baru'
 import { Route as KelolaKelolaPayrollRunIndexRouteImport } from './routes/_kelola/kelola.payroll.run.index'
 import { Route as KelolaKelolaPayrollRunRunIdRouteImport } from './routes/_kelola/kelola.payroll.run.$runId'
+import { Route as KelolaKelolaPengadaanFakturBaruRouteImport } from './routes/_kelola/kelola.pengadaan_.faktur_.baru'
 import { Route as KelolaKelolaPengadaanPenerimaanIndexRouteImport } from './routes/_kelola/kelola.pengadaan_.penerimaan.index'
 import { Route as KelolaKelolaPengadaanPenerimaanBaruRouteImport } from './routes/_kelola/kelola.pengadaan_.penerimaan.baru'
-import { Route as KelolaKelolaPengadaanFakturBaruRouteImport } from './routes/_kelola/kelola.pengadaan_.faktur.baru'
 import { Route as KelolaKelolaPengadaanSupplierIndexRouteImport } from './routes/_kelola/kelola.pengadaan_.supplier.index'
 import { Route as KelolaKelolaPengadaanSupplierSupplierIdRouteImport } from './routes/_kelola/kelola.pengadaan_.supplier.$supplierId'
 import { Route as KelolaKelolaPengajuanKindRequestIdRouteImport } from './routes/_kelola/kelola.pengajuan.$kind.$requestId'
@@ -2416,6 +2416,12 @@ const KelolaKelolaPayrollRunRunIdRoute =
     path: '/kelola/payroll/run/$runId',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaKelolaPengadaanFakturBaruRoute =
+  KelolaKelolaPengadaanFakturBaruRouteImport.update({
+    id: '/kelola/pengadaan_/faktur_/baru',
+    path: '/kelola/pengadaan/faktur/baru',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaKelolaPengadaanPenerimaanIndexRoute =
   KelolaKelolaPengadaanPenerimaanIndexRouteImport.update({
     id: '/kelola/pengadaan_/penerimaan/',
@@ -2426,12 +2432,6 @@ const KelolaKelolaPengadaanPenerimaanBaruRoute =
   KelolaKelolaPengadaanPenerimaanBaruRouteImport.update({
     id: '/kelola/pengadaan_/penerimaan/baru',
     path: '/kelola/pengadaan/penerimaan/baru',
-    getParentRoute: () => KelolaRoute,
-  } as any)
-const KelolaKelolaPengadaanFakturBaruRoute =
-  KelolaKelolaPengadaanFakturBaruRouteImport.update({
-    id: '/kelola/pengadaan_/faktur/baru',
-    path: '/kelola/pengadaan/faktur/baru',
     getParentRoute: () => KelolaRoute,
   } as any)
 const KelolaKelolaPengadaanSupplierIndexRoute =
@@ -2881,8 +2881,8 @@ export interface FileRoutesByFullPath {
   '/kelola/inventori/resep/$recipeId': typeof KelolaKelolaInventoriResepRecipeIdRoute
   '/kelola/inventori/transfer/baru': typeof KelolaKelolaInventoriTransferBaruRoute
   '/kelola/payroll/run/$runId': typeof KelolaKelolaPayrollRunRunIdRoute
-  '/kelola/pengadaan/penerimaan/baru': typeof KelolaKelolaPengadaanPenerimaanBaruRoute
   '/kelola/pengadaan/faktur/baru': typeof KelolaKelolaPengadaanFakturBaruRoute
+  '/kelola/pengadaan/penerimaan/baru': typeof KelolaKelolaPengadaanPenerimaanBaruRoute
   '/kelola/pengadaan/supplier/$supplierId': typeof KelolaKelolaPengadaanSupplierSupplierIdRoute
   '/kelola/pengajuan/$kind/$requestId': typeof KelolaKelolaPengajuanKindRequestIdRoute
   '/kelola/pengaturan/mcp-ai/pemakaian': typeof KelolaKelolaPengaturanMcpAiPemakaianRoute
@@ -3251,8 +3251,8 @@ export interface FileRoutesByTo {
   '/kelola/inventori/resep/$recipeId': typeof KelolaKelolaInventoriResepRecipeIdRoute
   '/kelola/inventori/transfer/baru': typeof KelolaKelolaInventoriTransferBaruRoute
   '/kelola/payroll/run/$runId': typeof KelolaKelolaPayrollRunRunIdRoute
-  '/kelola/pengadaan/penerimaan/baru': typeof KelolaKelolaPengadaanPenerimaanBaruRoute
   '/kelola/pengadaan/faktur/baru': typeof KelolaKelolaPengadaanFakturBaruRoute
+  '/kelola/pengadaan/penerimaan/baru': typeof KelolaKelolaPengadaanPenerimaanBaruRoute
   '/kelola/pengadaan/supplier/$supplierId': typeof KelolaKelolaPengadaanSupplierSupplierIdRoute
   '/kelola/pengajuan/$kind/$requestId': typeof KelolaKelolaPengajuanKindRequestIdRoute
   '/kelola/pengaturan/mcp-ai/pemakaian': typeof KelolaKelolaPengaturanMcpAiPemakaianRoute
@@ -3635,8 +3635,8 @@ export interface FileRoutesById {
   '/_kelola/kelola/inventori/resep/$recipeId': typeof KelolaKelolaInventoriResepRecipeIdRoute
   '/_kelola/kelola/inventori/transfer/baru': typeof KelolaKelolaInventoriTransferBaruRoute
   '/_kelola/kelola/payroll/run/$runId': typeof KelolaKelolaPayrollRunRunIdRoute
+  '/_kelola/kelola/pengadaan_/faktur_/baru': typeof KelolaKelolaPengadaanFakturBaruRoute
   '/_kelola/kelola/pengadaan_/penerimaan/baru': typeof KelolaKelolaPengadaanPenerimaanBaruRoute
-  '/_kelola/kelola/pengadaan_/faktur/baru': typeof KelolaKelolaPengadaanFakturBaruRoute
   '/_kelola/kelola/pengadaan_/supplier/$supplierId': typeof KelolaKelolaPengadaanSupplierSupplierIdRoute
   '/_kelola/kelola/pengajuan/$kind/$requestId': typeof KelolaKelolaPengajuanKindRequestIdRoute
   '/_kelola/kelola/pengaturan_/mcp-ai/pemakaian': typeof KelolaKelolaPengaturanMcpAiPemakaianRoute
@@ -4010,8 +4010,8 @@ export interface FileRouteTypes {
     | '/kelola/inventori/resep/$recipeId'
     | '/kelola/inventori/transfer/baru'
     | '/kelola/payroll/run/$runId'
-    | '/kelola/pengadaan/penerimaan/baru'
     | '/kelola/pengadaan/faktur/baru'
+    | '/kelola/pengadaan/penerimaan/baru'
     | '/kelola/pengadaan/supplier/$supplierId'
     | '/kelola/pengajuan/$kind/$requestId'
     | '/kelola/pengaturan/mcp-ai/pemakaian'
@@ -4380,8 +4380,8 @@ export interface FileRouteTypes {
     | '/kelola/inventori/resep/$recipeId'
     | '/kelola/inventori/transfer/baru'
     | '/kelola/payroll/run/$runId'
-    | '/kelola/pengadaan/penerimaan/baru'
     | '/kelola/pengadaan/faktur/baru'
+    | '/kelola/pengadaan/penerimaan/baru'
     | '/kelola/pengadaan/supplier/$supplierId'
     | '/kelola/pengajuan/$kind/$requestId'
     | '/kelola/pengaturan/mcp-ai/pemakaian'
@@ -4763,8 +4763,8 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/inventori/resep/$recipeId'
     | '/_kelola/kelola/inventori/transfer/baru'
     | '/_kelola/kelola/payroll/run/$runId'
+    | '/_kelola/kelola/pengadaan_/faktur_/baru'
     | '/_kelola/kelola/pengadaan_/penerimaan/baru'
-    | '/_kelola/kelola/pengadaan_/faktur/baru'
     | '/_kelola/kelola/pengadaan_/supplier/$supplierId'
     | '/_kelola/kelola/pengajuan/$kind/$requestId'
     | '/_kelola/kelola/pengaturan_/mcp-ai/pemakaian'
@@ -7342,6 +7342,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaPayrollRunRunIdRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/pengadaan_/faktur_/baru': {
+      id: '/_kelola/kelola/pengadaan_/faktur_/baru'
+      path: '/kelola/pengadaan/faktur/baru'
+      fullPath: '/kelola/pengadaan/faktur/baru'
+      preLoaderRoute: typeof KelolaKelolaPengadaanFakturBaruRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/pengadaan_/penerimaan/': {
       id: '/_kelola/kelola/pengadaan_/penerimaan/'
       path: '/kelola/pengadaan/penerimaan'
@@ -7354,13 +7361,6 @@ declare module '@tanstack/react-router' {
       path: '/kelola/pengadaan/penerimaan/baru'
       fullPath: '/kelola/pengadaan/penerimaan/baru'
       preLoaderRoute: typeof KelolaKelolaPengadaanPenerimaanBaruRouteImport
-      parentRoute: typeof KelolaRoute
-    }
-    '/_kelola/kelola/pengadaan_/faktur/baru': {
-      id: '/_kelola/kelola/pengadaan_/faktur/baru'
-      path: '/kelola/pengadaan/faktur/baru'
-      fullPath: '/kelola/pengadaan/faktur/baru'
-      preLoaderRoute: typeof KelolaKelolaPengadaanFakturBaruRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kelola/kelola/pengadaan_/supplier/': {
@@ -7869,8 +7869,8 @@ interface KelolaRouteChildren {
   KelolaKelolaInventoriOpnameCountIdRoute: typeof KelolaKelolaInventoriOpnameCountIdRoute
   KelolaKelolaInventoriResepRecipeIdRoute: typeof KelolaKelolaInventoriResepRecipeIdRoute
   KelolaKelolaPayrollRunRunIdRoute: typeof KelolaKelolaPayrollRunRunIdRoute
-  KelolaKelolaPengadaanPenerimaanBaruRoute: typeof KelolaKelolaPengadaanPenerimaanBaruRoute
   KelolaKelolaPengadaanFakturBaruRoute: typeof KelolaKelolaPengadaanFakturBaruRoute
+  KelolaKelolaPengadaanPenerimaanBaruRoute: typeof KelolaKelolaPengadaanPenerimaanBaruRoute
   KelolaKelolaPengadaanSupplierSupplierIdRoute: typeof KelolaKelolaPengadaanSupplierSupplierIdRoute
   KelolaKelolaPengajuanKindRequestIdRoute: typeof KelolaKelolaPengajuanKindRequestIdRoute
   KelolaKelolaPengaturanMcpAiPemakaianRoute: typeof KelolaKelolaPengaturanMcpAiPemakaianRoute
@@ -8164,10 +8164,9 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaInventoriResepRecipeIdRoute:
     KelolaKelolaInventoriResepRecipeIdRoute,
   KelolaKelolaPayrollRunRunIdRoute: KelolaKelolaPayrollRunRunIdRoute,
+  KelolaKelolaPengadaanFakturBaruRoute: KelolaKelolaPengadaanFakturBaruRoute,
   KelolaKelolaPengadaanPenerimaanBaruRoute:
     KelolaKelolaPengadaanPenerimaanBaruRoute,
-  KelolaKelolaPengadaanFakturBaruRoute:
-    KelolaKelolaPengadaanFakturBaruRoute,
   KelolaKelolaPengadaanSupplierSupplierIdRoute:
     KelolaKelolaPengadaanSupplierSupplierIdRoute,
   KelolaKelolaPengajuanKindRequestIdRoute:

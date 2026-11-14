@@ -91,7 +91,10 @@ export const inventoryInvoiceEntryMessages = {
     noLines: "Pilih minimal satu baris untuk faktur.",
     invalid: "Isian belum valid. Periksa kolom yang ditandai.",
     summary: "Faktur belum bisa disimpan. Periksa kolom yang ditandai.",
-    serverRejected: "Server menolak faktur ini.",
+    serverRejected: "Server menolak faktur ini. Periksa isian lalu coba lagi.",
+    taxRejected:
+      "Server menolak nilai pajak ini. Cocokkan dengan faktur pajak supplier.",
+    serverRejectedLine: "Baris {row}: {field} ditolak server.",
     serverRejectedTax:
       "Server menolak pajak pada faktur ini. PPN maksimal 12% dari nilai barang dan jasa, dan PPh 23 hanya untuk baris jasa.",
   },

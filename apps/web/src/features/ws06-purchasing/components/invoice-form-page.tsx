@@ -75,6 +75,7 @@ import {
   formatIdrDecimalText,
   goodsDraftsFromOrder,
   invoiceAmountFromInput,
+  invoiceApiErrorView,
   invoicePriceFromInput,
   invoiceQuantityFromInput,
   newServiceDraft,
@@ -94,6 +95,7 @@ const ERROR_KEY: Record<InvoiceEntryErrorCode, MessageKey> = {
   invalidQuantity: "inventoryInvoiceEntry.errors.invalidQuantity",
   invalidPrice: "inventoryInvoiceEntry.errors.invalidPrice",
   invalidAmount: "inventoryInvoiceEntry.errors.invalidAmount",
+  taxRejected: "inventoryInvoiceEntry.errors.taxRejected",
   dueBeforeInvoice: "inventoryInvoiceEntry.errors.dueBeforeInvoice",
   noLines: "inventoryInvoiceEntry.errors.noLines",
   invalid: "inventoryInvoiceEntry.errors.invalid",
@@ -102,8 +104,18 @@ const ERROR_KEY: Record<InvoiceEntryErrorCode, MessageKey> = {
 /** Keeps a focused field clear of the sticky summary bar. */
 const FIELD_CLASS = "scroll-mb-40";
 
-/** Server field names for the two tax inputs (`ppnIdr`, `pph23Idr`). */
-const TAX_FIELD = /(^|\.)(ppnIdr|pph23Idr)$/;
+/** Catalog label and error code per line input the server can reject. */
+const LINE_FIELD_LABEL: Record<keyof InvoiceLineErrors, MessageKey> = {
+  description: "inventoryInvoiceEntry.lines.description",
+  quantity: "inventoryInvoiceEntry.lines.quantity",
+  unitPrice: "inventoryInvoiceEntry.lines.unitPrice",
+};
+const LINE_FIELD_CODE: Record<keyof InvoiceLineErrors, InvoiceEntryErrorCode> =
+  {
+    description: "required",
+    quantity: "invalidQuantity",
+    unitPrice: "invalidPrice",
+  };
 
 type PendingConfirm =
   { kind: "order"; value: string } | { kind: "service"; key: string };
@@ -368,26 +380,34 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
           setCreatedId(response.data.invoice.id);
         },
         onError: (error) => {
+          const view = invoiceApiErrorView(
+            error instanceof ApiError ? error.code : undefined,
+            error.message,
+            error instanceof ApiError ? error.details : undefined,
+          );
           if (error instanceof ApiError && error.code === "VALIDATION_ERROR") {
-            const details = error.details ?? [];
-            const detailText =
-              details.length > 0
-                ? details
-                    .map((detail) => `${detail.field}: ${detail.message}`)
-                    .join("; ")
-                : error.message;
-            setFormError(
-              [
-                t(
-                  details.some((detail) => TAX_FIELD.test(detail.field))
-                    ? "inventoryInvoiceEntry.errors.serverRejectedTax"
-                    : "inventoryInvoiceEntry.errors.serverRejected",
-                ),
-                detailText,
-              ]
-                .filter(Boolean)
-                .join(" "),
-            );
+            const sent = lines.filter((line) => line.included);
+            const next: InvoiceEntryErrors = { lines: {} };
+            const messages = [
+              t(`inventoryInvoiceEntry.errors.${view.messageKey}`),
+            ];
+            for (const field of view.taxFields) next[field] = "taxRejected";
+            for (const { lineNumber, field } of view.lineIssues) {
+              const target = sent[lineNumber - 1];
+              if (target)
+                next.lines[target.key] = {
+                  ...next.lines[target.key],
+                  [field]: LINE_FIELD_CODE[field],
+                };
+              messages.push(
+                t("inventoryInvoiceEntry.errors.serverRejectedLine", {
+                  row: lineNumber,
+                  field: t(LINE_FIELD_LABEL[field]),
+                }),
+              );
+            }
+            setErrors(next);
+            setFormError(messages.join(" "));
           } else
             setFormError(
               t(
@@ -614,6 +634,14 @@ function InvoiceFormContent({ onAnother }: { onAnother: () => void }) {
                   onChange={(event) => {
                     setInvoiceDate(event.target.value);
                     clearError("invoiceDate");
+                    // The date pair is checked again when either side changes.
+                    if (errors.dueDate === "dueBeforeInvoice")
+                      setFieldError(
+                        "dueDate",
+                        dueInput !== null && dueInput < event.target.value
+                          ? "dueBeforeInvoice"
+                          : undefined,
+                      );
                   }}
                   onBlur={(event) =>
                     setFieldError(

@@ -55,6 +55,7 @@ export type InvoiceEntryErrorCode =
   | "invalidAmount"
   | "dueBeforeInvoice"
   | "noLines"
+  | "taxRejected"
   | "invalid";
 
 export type InvoiceLineErrors = {
@@ -395,4 +396,77 @@ export function buildInvoiceInput(
     else errors.form = "invalid";
   }
   return { ok: false, errors };
+}
+
+// ---- API error mapping -----------------------------------------------------
+
+export type InvoiceApiErrorLineField = "description" | "quantity" | "unitPrice";
+
+export type InvoiceApiErrorView = {
+  /** Key under `inventoryInvoiceEntry.errors.*`; never the raw server text. */
+  messageKey: "serverRejectedTax" | "serverRejected";
+  /** Tax inputs to mark invalid. */
+  taxFields: ("ppn" | "pph23")[];
+  /** Rejected invoice lines; `lineIndex` is 0-based in the lines sent. */
+  lineIssues: {
+    lineIndex: number;
+    lineNumber: number;
+    field: InvoiceApiErrorLineField;
+  }[];
+};
+
+/** Contract field name (`unitPriceIdr`) or draft name to the draft input. */
+const API_LINE_FIELD: Record<string, InvoiceApiErrorLineField> = {
+  description: "description",
+  quantity: "quantity",
+  unitPrice: "unitPrice",
+  unitPriceIdr: "unitPrice",
+};
+
+/**
+ * Maps an API error to what the form shows in Indonesian. The service rejects
+ * tax with a bare `HttpError(422, VALIDATION_ERROR, <English text>)` and no
+ * details, so the message is matched on the tax names (PPN, PPh 23); schema
+ * failures arrive as `ppnIdr` / `pph23Idr` or `lines.N.field` details (N is
+ * 0-based). Only a VALIDATION_ERROR is read this way, and the raw server text
+ * is never part of the result.
+ */
+export function invoiceApiErrorView(
+  code: string | undefined,
+  message: string | undefined,
+  details?: readonly { field: string; message: string }[],
+): InvoiceApiErrorView {
+  const taxFields: ("ppn" | "pph23")[] = [];
+  const lineIssues: InvoiceApiErrorView["lineIssues"] = [];
+  if (code === "VALIDATION_ERROR") {
+    const addTax = (field: "ppn" | "pph23") => {
+      if (!taxFields.includes(field)) taxFields.push(field);
+    };
+    for (const detail of details ?? []) {
+      if (/(^|\.)ppnIdr$/.test(detail.field)) addTax("ppn");
+      else if (/(^|\.)pph23Idr$/.test(detail.field)) addTax("pph23");
+      else {
+        const match = /^lines\.(\d+)\.(\w+)$/.exec(detail.field);
+        const field = match ? API_LINE_FIELD[match[2] as string] : undefined;
+        if (!match || !field) continue;
+        const lineIndex = Number(match[1]);
+        if (
+          !lineIssues.some(
+            (i) => i.lineIndex === lineIndex && i.field === field,
+          )
+        )
+          lineIssues.push({ lineIndex, lineNumber: lineIndex + 1, field });
+      }
+    }
+    if (taxFields.length === 0 && lineIssues.length === 0) {
+      const text = message ?? "";
+      if (/\bppn\b/i.test(text)) addTax("ppn");
+      if (/\bpph\s?23\b/i.test(text) || /\bpph23/i.test(text)) addTax("pph23");
+    }
+  }
+  return {
+    messageKey: taxFields.length > 0 ? "serverRejectedTax" : "serverRejected",
+    taxFields,
+    lineIssues,
+  };
 }
