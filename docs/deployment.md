@@ -212,6 +212,34 @@ The API uses one node-postgres pool with at most ten connections per process. Mu
 
 Payout payment proofs are checked with a read of the object before resolve, return, confirm or an overpaid record. On S3-compatible storage the API key must hold `s3:ListBucket` on the private bucket as well as `s3:GetObject` and `s3:PutObject`. Without `ListBucket`, a missing object answers AccessDenied instead of NoSuchKey, and a key that was never uploaded then fails with a 500 instead of 422 `PAYOUT_EVIDENCE_INVALID`. No payment is recorded either way.
 
+## Pemindai malware (ClamAV) (legend-w9hwh)
+
+API memindai unggahan lewat `clamd`. Gambar dipindai bila `clamd` ada. Bila `clamd` mati, gambar tetap diterima karena sharp meng-encode ulang pikselnya. PDF wajib lolos `clamd`. Tanpa `clamd`, PDF dijawab 503 `SERVICE_UNAVAILABLE`.
+
+**Service.** Jalankan `clamav/clamav` di VPS, dengan tag LTS yang berlaku saat deploy (patok tag, jangan `latest`). Taruh di jaringan Docker internal saja. Port 3310 tidak dibuka ke internet. Ini perkecualian aturan "Docker hanya untuk database dan Redis", yang berlaku untuk Mac dev, bukan VPS.
+
+**Batas.**
+
+- `mem_limit: 2g` pada container.
+- `clamd.conf`: `ConcurrentDatabaseReload no`, `AlertExceedsMax yes`, `MaxFileSize 100M`, `MaxScanSize 200M`, `StreamMaxLength 12M`.
+- `AlertExceedsMax yes` wajib: tanpa itu, berkas di atas batas dijawab `stream: OK` tanpa dipindai. Dengan opsi ini berkas di atas `MaxFileSize` atau `MaxScanSize` dijawab `FOUND` (422, ditolak). Berkas di atas `StreamMaxLength` dijawab `ERROR` oleh clamd, yang menjadi 503 `SCANNER_UNAVAILABLE` (bukan `FOUND`).
+- Peringatan: jangan isi `CLAMD_HOST` di produksi sebelum kartu M6 (legend-egrrp) masuk. Bukti payout PDF belum lewat `assertSafePdf`, jadi pemeriksaan strukturnya belum lengkap.
+- Dengan `ConcurrentDatabaseReload no`, pemindaian tertahan beberapa puluh detik saat reload signature harian. PDF yang masuk saat itu dijawab 503 dan bisa dicoba lagi.
+
+**Signature.** `freshclam` bawaan image butuh akses keluar ke `database.clamav.net`.
+
+**Env API.**
+
+```bash
+CLAMD_HOST=clamav          # nama service di jaringan internal; kosong = tanpa pemindai
+CLAMD_PORT=3310            # bawaan 3310
+CLAMD_TIMEOUT_MS=15000     # bawaan 15000 (1000 sampai 60000)
+```
+
+**Cek.** `GET /api/health` menjawab `{ "status": "ok", "scanner": "ok" | "unavailable" | "disabled" }`. Status HTTP tetap 200 apa pun nilai `scanner`. `disabled` berarti `CLAMD_HOST` kosong. `unavailable` berarti PING ke `clamd` gagal (hasil di-cache 30 detik). Pastikan `scanner` bernilai `ok` setelah deploy.
+
+**Cadangan.** Bila RAM VPS tidak cukup, biarkan `CLAMD_HOST` kosong. PDF tetap 503 dan finance mengunggah foto atau screenshot.
+
 ## Public API rate limits
 
 The API's session-free reads — the guest QR scan and menu (`/api/qr/*`), the brand website and its menu (`/api/public/site/*`), the SSR brand context (`/api/tenant/*`) and customer payment links (`/api/payments/links/*`) — are capped by one in-memory limiter in the API. Authenticated routes are bounded by their session and permissions; these have no session at all, and the menu reads return the whole catalogue.

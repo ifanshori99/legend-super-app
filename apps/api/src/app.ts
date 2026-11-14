@@ -34,6 +34,7 @@ import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
 import { createStorageApiRouter } from "./routes/storage-api.routes";
 import { setPayoutEvidenceStorage } from "./services/payroll-payout-evidence";
+import { setScannerHealth } from "./routes/health.routes";
 import { createPosCatalogRouter } from "./routes/pos-order.routes.ts";
 import { createMenuMediaUrls } from "./services/menu-media.service.ts";
 import {
@@ -214,6 +215,8 @@ export function createApp({
   setWhatsAppWebhookSecrets(app, whatsappWebhookSecrets);
   // Resolve, return and confirm check that a payment proof is really stored.
   setPayoutEvidenceStorage(app, storageRuntime?.storage);
+  // GET /api/health reports whether the malware scanner answers (legend-w9hwh).
+  setScannerHealth(app, storageRuntime?.scanner);
   app.set("trust proxy", trustProxySetting());
 
   // The synthetic tenant fallback exists only where a synthetic dataset does:

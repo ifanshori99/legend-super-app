@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import { HttpError } from "../lib/http-error.ts";
+import { logger } from "../lib/logger";
 
 /** Replace the no-op with an actual scanner before relying on malware detection. */
 export interface MalwareScanner {
@@ -8,6 +9,12 @@ export interface MalwareScanner {
   /** False when this scanner cannot vet non-image documents (PDF); uploads of
    * those are refused. Absent means true. */
   readonly acceptsDocuments?: boolean;
+  /** True when an image may still be processed (sharp re-encodes it) while the
+   * scanner is unavailable (503). Never applies to a detection (422) or a PDF.
+   * Absent means false: fail closed. */
+  readonly failOpenForImages?: boolean;
+  /** Liveness probe for the readiness report; resolves false, never throws. */
+  ping?(): Promise<boolean>;
 }
 
 /** Fail closed when the scanner cannot complete, without exposing its diagnostics. */
@@ -148,7 +155,22 @@ async function processImageVariants(
       "UNSUPPORTED_MEDIA_TYPE",
       "Unsupported image type.",
     );
-  await scanUpload(scanner, bytes);
+  try {
+    await scanUpload(scanner, bytes);
+  } catch (error) {
+    // The re-encode below strips everything but pixels, so an image may pass
+    // while the scanner restarts. A detection (422) is never skipped.
+    if (
+      scanner.failOpenForImages === true &&
+      error instanceof HttpError &&
+      error.status === 503
+    )
+      logger.warn(
+        {},
+        "Malware scanner unavailable; image accepted after re-encode",
+      );
+    else throw error;
+  }
   try {
     const image = sharp(bytes, {
       limitInputPixels: 50_000_000,
