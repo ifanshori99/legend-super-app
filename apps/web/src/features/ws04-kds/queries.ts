@@ -1,6 +1,12 @@
 import { queryOptions, skipToken } from "@tanstack/react-query";
 import type { StationConfig } from "@starter/shared/kitchen";
-import { fetchBoard, fetchStationLabels, fetchStations } from "./api.ts";
+import {
+  fetchBoard,
+  fetchScannerStatus,
+  fetchStationLabels,
+  fetchStations,
+} from "./api.ts";
+import { KDS_SCANNER_STATUS_AVAILABLE } from "./contract-gap.ts";
 
 // Every key carries the outlet, so switching outlet never serves another
 // outlet's stations or board from cache. A missing outlet (the session has
@@ -12,6 +18,8 @@ export const kdsKeys = {
     ["kds", outletId, "stations"] as const,
   stationLabels: (outletId: string | undefined) =>
     ["kds", outletId, "station-labels"] as const,
+  scannerStatus: (outletId: string | undefined) =>
+    ["kds", outletId, "scanner-status"] as const,
   board: (
     outletId: string | undefined,
     stationId: StationConfig["stationId"],
@@ -41,4 +49,15 @@ export const boardQuery = (
       ? ({ signal }) => fetchBoard(outletId, stationId, signal)
       : skipToken,
     refetchInterval: 2000,
+  });
+// No endpoint answers outside mock mode (contract-gap.ts): the query stays off
+// and the screen reads the scanner as "unknown" instead of faking a status.
+export const scannerStatusQuery = (outletId: string | undefined) =>
+  queryOptions({
+    queryKey: kdsKeys.scannerStatus(outletId),
+    queryFn:
+      outletId && KDS_SCANNER_STATUS_AVAILABLE
+        ? ({ signal }) => fetchScannerStatus(outletId, signal)
+        : skipToken,
+    refetchInterval: 10_000,
   });

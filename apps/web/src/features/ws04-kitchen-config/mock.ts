@@ -17,6 +17,7 @@ import {
 } from "@starter/shared/kitchen";
 import type {
   CapacityRule,
+  StationConfig,
   PacingSnapshot,
   ServingTimeSummary,
 } from "@starter/shared/kitchen";
@@ -25,6 +26,7 @@ import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { FIXTURE_BUSINESS_DATE } from "./outlet.ts";
+import { updateKitchenStations } from "./contract-gap.ts";
 import { periodIncludesDate } from "./lib.ts";
 
 const { stationConfigs, capacityRules, pacing, servingTimeSummaries } =
@@ -55,6 +57,11 @@ function seedSummaries(): ServingTimeSummary[] {
   })) as ServingTimeSummary[];
 }
 
+function seedStationConfigs(): StationConfig[] {
+  return stationConfigs.map((config) => ({ ...config })) as StationConfig[];
+}
+
+const stations = createMockStore<StationConfig[]>(seedStationConfigs);
 const rules = createMockStore<CapacityRule[]>(seedRules);
 const pacingStore = createMockStore<PacingSnapshot>(seedPacing);
 const summaries = createMockStore<ServingTimeSummary[]>(seedSummaries);
@@ -68,10 +75,46 @@ const nextRuleId = () =>
 registerMock(listKitchenStations, ({ params, scenario }) => {
   if (scenario === "empty") return { data: [] };
   return {
-    data: stationConfigs.filter(
-      (config) => config.outletId === params.outletId,
-    ),
+    data: stations
+      .get()
+      .filter((config) => config.outletId === params.outletId),
   };
+});
+
+// Replaces order and flags of every station of the outlet at once, like the
+// proposed endpoint (./contract-gap.ts). Unknown or missing stations refuse the
+// whole save, so a reorder is never half applied.
+registerMock(updateKitchenStations, ({ params, body }) => {
+  const own = stations
+    .get()
+    .filter((config) => config.outletId === params.outletId);
+  const sent = new Set(body.stations.map((row) => row.stationId));
+  if (
+    sent.size !== body.stations.length ||
+    sent.size !== own.length ||
+    own.some((config) => !sent.has(config.stationId))
+  )
+    throw new ApiError(
+      400,
+      "VALIDATION_ERROR",
+      "Daftar stasiun tidak sesuai dengan stasiun outlet.",
+    );
+  const next = own.map((config) => {
+    const row = body.stations.find(
+      (entry) => entry.stationId === config.stationId,
+    )!;
+    return {
+      ...config,
+      displayOrder: row.displayOrder,
+      isActive: row.isActive,
+      autoPrintFallback: row.autoPrintFallback,
+    };
+  });
+  stations.set([
+    ...stations.get().filter((config) => config.outletId !== params.outletId),
+    ...next,
+  ]);
+  return { data: next };
 });
 
 registerMock(listCapacityRules, ({ params, scenario }) => {

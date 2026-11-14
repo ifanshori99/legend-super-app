@@ -142,6 +142,7 @@ import { Route as KelolaKelolaAkuntansiRekonsiliasiRouteImport } from './routes/
 import { Route as KelolaKelolaAkuntansiTutupPeriodeRouteImport } from './routes/_kelola/kelola.akuntansi.tutup-periode'
 import { Route as KelolaKelolaDapurLaporanRouteImport } from './routes/_kelola/kelola.dapur_.laporan'
 import { Route as KelolaKelolaDapurRemakeRouteImport } from './routes/_kelola/kelola.dapur_.remake'
+import { Route as KelolaKelolaDapurStasiunRouteImport } from './routes/_kelola/kelola.dapur_.stasiun'
 import { Route as KelolaKelolaDeliveryIndexRouteImport } from './routes/_kelola/kelola.delivery.index'
 import { Route as KelolaKelolaFasilitasIndexRouteImport } from './routes/_kelola/kelola.fasilitas.index'
 import { Route as KelolaKelolaFasilitasFacilityIdRouteImport } from './routes/_kelola/kelola.fasilitas.$facilityId'
@@ -1080,6 +1081,12 @@ const KelolaKelolaDapurRemakeRoute = KelolaKelolaDapurRemakeRouteImport.update({
   path: '/kelola/dapur/remake',
   getParentRoute: () => KelolaRoute,
 } as any)
+const KelolaKelolaDapurStasiunRoute =
+  KelolaKelolaDapurStasiunRouteImport.update({
+    id: '/kelola/dapur_/stasiun',
+    path: '/kelola/dapur/stasiun',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaKelolaDeliveryIndexRoute =
   KelolaKelolaDeliveryIndexRouteImport.update({
     id: '/kelola/delivery/',
@@ -2634,6 +2641,7 @@ export interface FileRoutesByFullPath {
   '/kelola/akuntansi/tutup-periode': typeof KelolaKelolaAkuntansiTutupPeriodeRoute
   '/kelola/dapur/laporan': typeof KelolaKelolaDapurLaporanRoute
   '/kelola/dapur/remake': typeof KelolaKelolaDapurRemakeRoute
+  '/kelola/dapur/stasiun': typeof KelolaKelolaDapurStasiunRoute
   '/kelola/fasilitas/$facilityId': typeof KelolaKelolaFasilitasFacilityIdRoute
   '/kelola/fasilitas/laporan': typeof KelolaKelolaFasilitasLaporanRoute
   '/kelola/inventori/$itemId': typeof KelolaKelolaInventoriItemIdRoute
@@ -3002,6 +3010,7 @@ export interface FileRoutesByTo {
   '/kelola/akuntansi/tutup-periode': typeof KelolaKelolaAkuntansiTutupPeriodeRoute
   '/kelola/dapur/laporan': typeof KelolaKelolaDapurLaporanRoute
   '/kelola/dapur/remake': typeof KelolaKelolaDapurRemakeRoute
+  '/kelola/dapur/stasiun': typeof KelolaKelolaDapurStasiunRoute
   '/kelola/fasilitas/$facilityId': typeof KelolaKelolaFasilitasFacilityIdRoute
   '/kelola/fasilitas/laporan': typeof KelolaKelolaFasilitasLaporanRoute
   '/kelola/inventori/$itemId': typeof KelolaKelolaInventoriItemIdRoute
@@ -3382,6 +3391,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/akuntansi/tutup-periode': typeof KelolaKelolaAkuntansiTutupPeriodeRoute
   '/_kelola/kelola/dapur_/laporan': typeof KelolaKelolaDapurLaporanRoute
   '/_kelola/kelola/dapur_/remake': typeof KelolaKelolaDapurRemakeRoute
+  '/_kelola/kelola/dapur_/stasiun': typeof KelolaKelolaDapurStasiunRoute
   '/_kelola/kelola/fasilitas/$facilityId': typeof KelolaKelolaFasilitasFacilityIdRoute
   '/_kelola/kelola/fasilitas/laporan': typeof KelolaKelolaFasilitasLaporanRoute
   '/_kelola/kelola/inventori/$itemId': typeof KelolaKelolaInventoriItemIdRoute
@@ -3754,6 +3764,7 @@ export interface FileRouteTypes {
     | '/kelola/akuntansi/tutup-periode'
     | '/kelola/dapur/laporan'
     | '/kelola/dapur/remake'
+    | '/kelola/dapur/stasiun'
     | '/kelola/fasilitas/$facilityId'
     | '/kelola/fasilitas/laporan'
     | '/kelola/inventori/$itemId'
@@ -4122,6 +4133,7 @@ export interface FileRouteTypes {
     | '/kelola/akuntansi/tutup-periode'
     | '/kelola/dapur/laporan'
     | '/kelola/dapur/remake'
+    | '/kelola/dapur/stasiun'
     | '/kelola/fasilitas/$facilityId'
     | '/kelola/fasilitas/laporan'
     | '/kelola/inventori/$itemId'
@@ -4501,6 +4513,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/akuntansi/tutup-periode'
     | '/_kelola/kelola/dapur_/laporan'
     | '/_kelola/kelola/dapur_/remake'
+    | '/_kelola/kelola/dapur_/stasiun'
     | '/_kelola/kelola/fasilitas/$facilityId'
     | '/_kelola/kelola/fasilitas/laporan'
     | '/_kelola/kelola/inventori/$itemId'
@@ -5706,6 +5719,13 @@ declare module '@tanstack/react-router' {
       path: '/kelola/dapur/remake'
       fullPath: '/kelola/dapur/remake'
       preLoaderRoute: typeof KelolaKelolaDapurRemakeRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/dapur_/stasiun': {
+      id: '/_kelola/kelola/dapur_/stasiun'
+      path: '/kelola/dapur/stasiun'
+      fullPath: '/kelola/dapur/stasiun'
+      preLoaderRoute: typeof KelolaKelolaDapurStasiunRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kelola/kelola/delivery/': {
@@ -7611,6 +7631,7 @@ interface KelolaRouteChildren {
   KelolaKelolaAkuntansiTutupPeriodeRoute: typeof KelolaKelolaAkuntansiTutupPeriodeRoute
   KelolaKelolaDapurLaporanRoute: typeof KelolaKelolaDapurLaporanRoute
   KelolaKelolaDapurRemakeRoute: typeof KelolaKelolaDapurRemakeRoute
+  KelolaKelolaDapurStasiunRoute: typeof KelolaKelolaDapurStasiunRoute
   KelolaKelolaFasilitasFacilityIdRoute: typeof KelolaKelolaFasilitasFacilityIdRoute
   KelolaKelolaFasilitasLaporanRoute: typeof KelolaKelolaFasilitasLaporanRoute
   KelolaKelolaInventoriItemIdRoute: typeof KelolaKelolaInventoriItemIdRoute
@@ -7868,6 +7889,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
     KelolaKelolaAkuntansiTutupPeriodeRoute,
   KelolaKelolaDapurLaporanRoute: KelolaKelolaDapurLaporanRoute,
   KelolaKelolaDapurRemakeRoute: KelolaKelolaDapurRemakeRoute,
+  KelolaKelolaDapurStasiunRoute: KelolaKelolaDapurStasiunRoute,
   KelolaKelolaFasilitasFacilityIdRoute: KelolaKelolaFasilitasFacilityIdRoute,
   KelolaKelolaFasilitasLaporanRoute: KelolaKelolaFasilitasLaporanRoute,
   KelolaKelolaInventoriItemIdRoute: KelolaKelolaInventoriItemIdRoute,
