@@ -1660,3 +1660,8 @@ Langkah berikut CTO baru:
 - 13:02 (CTO G1kkr) Serah terima ke CTO baru (brief 747). Batch63 di m1 ec4f7dfc6. Batch64a berjalan (G8dut). Thread aktif: G9bm2 wiring UI payout, G86fe hapus-buku dana terlambat, G2idj wiring UI panik, G4oon tindak lanjut payout. Antrean 64b-64f di brief 747.
 03:27 CTO: mulai 855 (G8c1d Opus edge), 856 (G5oof kas laci), Codex 857/858/859; throttle dilonggarkan untuk perbaikan penting (slot hijau).
 03:57 CTO: 852/855/856 antre merge train; 857 perbaikan architect P2 di G4v70; 860/861 mulai; slot sengaja tidak diisi (antrean >20).
+
+### 15 November 2026 — Second opinion 862: kas laci dan refund
+
+- Review statis 841/856/850 terhadap `milestone/m1` menghasilkan P0=0, P1=0, P2=1, P3=0: kredit recount dapat kehilangan jatah karena waktu keputusan diambil sebelum kunci shift. Laporan dan skenario: `docs/qa/second-opinion-kas-laci-refund-15nov.md`.
+- Tiga subagent read-only, puncak tiga bersamaan; tidak mengubah kode atau data aplikasi dan tidak menjalankan test runtime. Dua perilaku bawaan base dicatat terpisah dari hitungan regresi. Perbaikan serta test konkurensi diserahkan ke CTO melalui laporan akhir; cabang laporan `so/kas-laci-862`.
