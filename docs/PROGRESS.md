@@ -5388,3 +5388,11 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti: test baru `push-devices-revoke.test.ts` (12, gagal 11/12 di basis karena endpoint belum ada) dan `push-devices-revoke-session.test.ts` (7) hijau; 126 test terarah hijau; typecheck shared/api/web hijau; screenshot `docs/screenshots/820-perangkat-{390,1280,dialog-390}.png` (axe 0 pelanggaran, overflow 0).
 - Review: architect xhigh (1 tinggi: HP dicabut mendaftar ulang sendiri; 1 sedang; 2 ringan, semua dibetulkan atau didokumentasi), ui-auditor (7 cacat dibetulkan), reviewer sonnet atas perbaikan (2 temuan web dibetulkan).
 - Belum: perangkat yang terdaftar di tenant LAIN dari tenant sesi login tidak terlihat (butuh fungsi SQL SECURITY DEFINER = migrasi 0380, di luar scope). Panel "Sesi & perangkat" lama punya teks tanggal yang menimpa lencana "Aktif" di 390 px (di luar scope). Uji HP nyata tetap utang gerbang rilis.
+
+## 832 Perangkat alarm panik lintas tenant (15 Nov 2026, engineer, bead legend-fonnr)
+
+- Cabang `fix/panic-device-cross-tenant` dari `origin/fix/panic-push-device-revoke` dd04533e1. Migrasi 0380 (journal idx 359).
+- `app.list_own_push_devices(p_session, p_now)` dan `app.delete_own_push_device(p_session, p_id, p_now)`: SECURITY DEFINER, search_path dikunci, EXECUTE hanya legend_app. Pemilik diturunkan dari sesi login hidup pemanggil (juga terhadap `now()` database), tanpa parameter user/tenant. Filter list = salinan SQL `deliverablePushSubscription` (komentar silang di web-push-provider.ts).
+- Service GET/DELETE `/api/identity/push-devices` memakai fungsi itu; HP di tenant lain terlihat dan bisa dicabut; cabut tetap mengakhiri sesi pendaftar (bukan sesi sekarang). Hapus 0 baris: 409 bila HP masih terdaftar, 401 bila sesi pemanggil mati. DTO dan UI tidak berubah.
+- Test baru `push-devices-cross-tenant.test.ts` (8 kasus), gagal-dulu 4/6 di service base. Review architect xhigh: approve; temuan 1, 2, 4 dibetulkan; 3 dan 5 jadi bead legend-xqkr7 (keputusan CTO soal sesi support) dan legend-nb2mk (indeks user_id).
+- Verifikasi akhir: 6 file 116/116, typecheck API, prettier + eslint bersih, `db:generate` kosong.

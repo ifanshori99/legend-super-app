@@ -80,6 +80,7 @@ async function seedDevice(
   userId: string,
   sessionId: string | null,
   label = "HP uji",
+  binding: { deviceId: string; tokenIssuedAt: Date } | null = null,
 ): Promise<string> {
   const key = createECDH("prime256v1");
   key.generateKeys();
@@ -99,8 +100,9 @@ async function seedDevice(
   await owner.query(
     `INSERT INTO push_subscriptions
        (tenant_id, id, user_id, endpoint_hash, subscription_ciphertext, key_version,
-        outlet_id, device_label, session_id, created_at, registered_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
+        outlet_id, device_label, session_id, created_at, registered_at,
+        device_id, device_token_issued_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $11, $12)`,
     [
       tenant.tenantId,
       id,
@@ -112,9 +114,48 @@ async function seedDevice(
       label,
       sessionId,
       now,
+      binding?.deviceId ?? null,
+      binding?.tokenIssuedAt ?? null,
     ],
   );
   return id;
+}
+
+/**
+ * A POS device row in `tenant` plus an alarm registration bound to it. A
+ * deliverable one has push.device_token_issued_at == devices.token_issued_at.
+ */
+async function seedBoundDevice(
+  tenant: IsolatedTenant,
+  userId: string,
+  label: string,
+  state: {
+    status?: string;
+    revoked?: boolean;
+    reissued?: boolean;
+  } = {},
+): Promise<string> {
+  const deviceId = randomUUID();
+  const issuedAt = new Date(Date.now() - 60_000);
+  await owner.query(
+    `INSERT INTO devices (id, tenant_id, outlet_id, type, label, status, revoked_at, token_issued_at)
+     VALUES ($1, $2, $3, 'pos', $4, $5, $6, $7)`,
+    [
+      deviceId,
+      tenant.tenantId,
+      tenant.outletId,
+      label,
+      state.status ?? "active",
+      state.revoked ? new Date() : null,
+      // Reissued token: the device row carries a newer issue time than the
+      // one the registration was made with.
+      state.reissued ? new Date() : issuedAt,
+    ],
+  );
+  return seedDevice(tenant, userId, null, label, {
+    deviceId,
+    tokenIssuedAt: issuedAt,
+  });
 }
 
 const onHost = (tenant: IsolatedTenant | null) =>
@@ -144,6 +185,9 @@ beforeAll(async () => {
 afterAll(async () => {
   for (const tenant of [t1, t2]) {
     await owner.query(`DELETE FROM push_subscriptions WHERE tenant_id = $1`, [
+      tenant.tenantId,
+    ]);
+    await owner.query(`DELETE FROM devices WHERE tenant_id = $1`, [
       tenant.tenantId,
     ]);
     await dropIsolatedTenant(tenant);
@@ -216,6 +260,32 @@ describe("legend-fonnr alarm devices across tenants", () => {
     const ids = listedIds(response);
     expect(ids).toContain(inT1);
     expect(ids).toContain(inT2);
+  });
+
+  // ASSUMPTION: "not deliverable" mirrors what the alarm can actually reach:
+  // a revoked device (revoked_at set and/or status not active) or a device
+  // whose token was reissued after the registration cannot ring, so the list
+  // hides it. Brief: hidden from GET, a sibling deliverable device stays.
+  it("hides devices that are revoked or whose token was reissued, keeps a deliverable sibling", async () => {
+    const a = await account();
+    const sibling = await seedBoundDevice(t1, a.userId, "HP sehat");
+    const revoked = await seedBoundDevice(t2, a.userId, "HP dicabut", {
+      status: "revoked",
+      revoked: true,
+    });
+    const reissued = await seedBoundDevice(t1, a.userId, "HP token baru", {
+      reissued: true,
+    });
+
+    for (const tenant of [t1, t2, null]) {
+      const response = await list(a, tenant);
+      expect(response.status).toBe(200);
+      const ids = listedIds(response);
+      expect(ids).toContain(sibling);
+      for (const hidden of [revoked, reissued]) {
+        expect(ids).not.toContain(hidden);
+      }
+    }
   });
 });
 
@@ -308,5 +378,30 @@ describe("legend-fonnr SQL functions app.list_own_push_devices / app.delete_own_
     const removed = await deleteFn(a.sessionId, deviceA);
     expect(Number(removed.rows[0]!.n)).toBe(1);
     expect(await rowCount(deviceA)).toBe(0);
+  });
+
+  it("a live session cannot delete another user's subscription through delete_own_push_device", async () => {
+    const a = await account();
+    const b = await account();
+    const bDevice = await seedDevice(t2, b.userId, null, "HP B di T2");
+    const aDevice = await seedDevice(t2, a.userId, null, "HP A di T2");
+
+    // A's live session id, B's subscription id: nothing is removed.
+    const result = await appRole.query<{ n: number }>(
+      `SELECT app.delete_own_push_device($1::text, $2::uuid, now()) AS n`,
+      [a.sessionId, bDevice],
+    );
+    expect(Number(result.rows[0]!.n)).toBe(0);
+    expect(await rowCount(bDevice)).toBe(1);
+    expect(await rowCount(aDevice)).toBe(1);
+
+    // Control: the same call on A's own subscription works.
+    const own = await appRole.query<{ n: number }>(
+      `SELECT app.delete_own_push_device($1::text, $2::uuid, now()) AS n`,
+      [a.sessionId, aDevice],
+    );
+    expect(Number(own.rows[0]!.n)).toBe(1);
+    expect(await rowCount(aDevice)).toBe(0);
+    expect(await rowCount(bDevice)).toBe(1);
   });
 });

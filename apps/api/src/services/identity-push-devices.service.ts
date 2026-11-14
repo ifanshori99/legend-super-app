@@ -10,7 +10,7 @@ import { pushDeviceSchema, type PushDevice } from "@starter/shared/identity";
 import { pushSubscriptionIdSchema } from "@starter/shared/notification";
 import { db } from "../db";
 import { HttpError } from "../lib/http-error";
-import { revokeOwnSession } from "./identity-session.service";
+import { loadSessionRow, revokeOwnSession } from "./identity-session.service";
 
 type Scope = {
   readonly userId: string;
@@ -97,11 +97,36 @@ export async function revokeOwnPushDevice(
       now,
     });
   }
-  // A concurrent revoke may already have removed the row; that is fine only
-  // when the row was found a moment ago, so no 404 here.
-  await db.execute(
-    sql`SELECT app.delete_own_push_device(${scope.currentSessionId}, ${parsed.data}::uuid, ${now.toISOString()}::timestamptz)`,
+  const result = await db.execute<{ deleted: number | string }>(
+    sql`SELECT app.delete_own_push_device(${scope.currentSessionId}, ${parsed.data}::uuid, ${now.toISOString()}::timestamptz) AS deleted`,
   );
+  // The function returns the number of rows it deleted. 0 means nothing was
+  // removed: either a concurrent revoke got there first (the row is gone, keep
+  // the 204) or the delete missed a row that is still deliverable, for example
+  // because the caller's session stopped matching. List again: a row still
+  // listed means the device is not revoked, so answer 409 instead of a false 204.
+  // A caller session that died meanwhile lists nothing, so it cannot confirm
+  // the row is gone: answer 401 (sign in again and retry) instead.
+  if (Number(result.rows[0]?.deleted ?? 0) === 0) {
+    const caller = await loadSessionRow(scope.currentSessionId);
+    if (!caller || caller.revokedAt || caller.expiresAt <= now) {
+      throw new HttpError(
+        401,
+        "UNAUTHORIZED",
+        "Sesi berakhir. Masuk lagi lalu cabut perangkat ini.",
+      );
+    }
+    const stillListed = (await listRows(scope, now)).some(
+      (row) => row.id === parsed.data,
+    );
+    if (stillListed) {
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "Perangkat belum tercabut. Coba lagi.",
+      );
+    }
+  }
 }
 
 function pushDeviceNotFound(): HttpError {

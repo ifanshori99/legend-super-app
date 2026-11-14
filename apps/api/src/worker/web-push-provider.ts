@@ -42,6 +42,9 @@ export const MAX_PUSH_TARGETS_PER_RECIPIENT = 30;
  * Whether the recipient may still receive the alert
  * (permission, duty, active user) is checked separately. Identifiers are
  * written qualified because a single-table Drizzle select drops the table name.
+ *
+ * drizzle/0380_push_devices_cross_tenant.sql (app.list_own_push_devices) holds
+ * an SQL copy of this predicate. Change both together.
  */
 export function deliverablePushSubscription(now: Date): SQL {
   return sql`("push_subscriptions"."registered_at" is not null
