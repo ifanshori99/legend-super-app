@@ -163,14 +163,14 @@ async function seedPaid(amountIdr = 100_000) {
 }
 
 /** A pending refund (below every tier) written straight into the table. */
-async function insertPendingRefund(amountIdr: number) {
+async function insertPendingRefund(amountIdr: number, ageDays = 0) {
   const intentId = await seedPaid(100_000);
   const refundId = randomUUID();
   refundIds.push(refundId);
   await owner.query(
-    `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by)
-     VALUES ($1, $2, $3, $4, $5, 'Pengembalian uji', 'pending', $6)`,
-    [refundId, tenantId, outletA, intentId, amountIdr, requesterId],
+    `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by, created_at)
+     VALUES ($1, $2, $3, $4, $5, 'Pengembalian uji', 'pending', $6, now() - make_interval(days => $7::int))`,
+    [refundId, tenantId, outletA, intentId, amountIdr, requesterId, ageDays],
   );
   return refundId;
 }
@@ -436,5 +436,31 @@ describe("PAY-04 legend-tx8x: a refund re-opened from quarantine needs MFA to be
     expect(reopened.body.error.code).toBe("MFA_REQUIRED");
     expect(callsOf(ordinaryId)).toHaveLength(1);
     expect(callsOf(reopenedId)).toHaveLength(0);
+  });
+
+  it("PAY-04 a pending refund older than the audit retention (701 days, no reopen audit) is refused without MFA, stays pending, and is paid once with MFA", async () => {
+    const refundId = await insertPendingRefund(50_000, 701);
+    expect(await reopenAudits(refundId)).toBe(0);
+
+    const refused = await approve(noMfaApprover, refundId);
+    expect(refused.status).toBe(403);
+    expect(refused.body.error.code).toBe("MFA_REQUIRED");
+    expect((await refundRow(refundId)).status).toBe("pending");
+    expect(callsOf(refundId)).toHaveLength(0);
+
+    const paid = await approve(mfaApprover, refundId);
+    expect(paid.status).toBe(200);
+    expect(paid.body.data.status).toBe("completed");
+    await approve(mfaApprover, refundId);
+    expect(callsOf(refundId)).toHaveLength(1);
+  });
+
+  it("PAY-04 an ordinary 30-day-old refund below every tier is still approved without MFA", async () => {
+    const refundId = await insertPendingRefund(50_000, 30);
+
+    const response = await approve(noMfaApprover, refundId);
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe("completed");
+    expect(callsOf(refundId)).toHaveLength(1);
   });
 });
