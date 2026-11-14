@@ -1,0 +1,6 @@
+# 763 Flake migration-replay vs teardown tenant (legend-edxtt)
+Peran: engineer (Claude Sonnet, test/flake). Base: milestone/m1. Cabang: fix/migration-replay-isolation. Tanpa migrasi baru.
+Masalah: di run API penuh 26 test gagal di 4 berkas (cash-movement-mapping-backfill-migration 15, accounting-coa-backfill-1204 6, purchase-price-variance-migration 4, accounting-db TEN-01 1) karena FK `chart_of_accounts_tenant_id_tenants_id_fk`: replay migrasi berpacu dengan test lain yang menghapus tenant. Sendiri-sendiri lolos. Fix legend-odyct (fix/migration-replay-flake) belum cukup.
+Tujuan: replay hanya menyentuh data tenant miliknya sendiri (tenant id unik per berkas, tanpa replay global atas tabel bersama), atau kunci yang benar. Jangan longgarkan FK atau menghapus assert.
+Bukti: 4 berkas lolos bersama dalam satu run dengan 2 worker, 3x berturut; plus satu berkas penghapus tenant ikut dalam run yang sama (cari lewat Grep "delete(tenants)" di apps/api/src/test). Tidak perlu suite penuh.
+Aturan umum: baca ~/.agents/team/roles/engineer.md dan "Paralel dulu" di ~/.agents/team/TEAM.md. Kerja berat lewat `heavy`, satu job sekaligus, tanpa loop. Satu reviewer sonnet. Pra-gate AGENTS.md. Commit, push cabang tanpa force, jangan merge. Lapor angka subagent.
