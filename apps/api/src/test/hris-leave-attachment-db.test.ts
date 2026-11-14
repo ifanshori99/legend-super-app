@@ -828,3 +828,104 @@ describe("legend-arj.4 leave attachment", () => {
     });
   });
 });
+
+// legend-qu04u: the requester's signed attachment URL needs a LIVE
+// self.leave.request grant at the leave's outlet. Assumptions: "revoked" means
+// the outlet role assignment's valid_until is in the past (there is no revoke
+// flag); a leave-read code elsewhere is hr.employee.view granted tenant-wide,
+// which still lets the requester read the row.
+describe("legend-qu04u leave attachment requester needs a live grant", () => {
+  async function revokeAtOutlet(userId: string) {
+    await sql(
+      `UPDATE role_assignments SET valid_until = now() - interval '1 minute'
+        WHERE tenant_id = $1 AND user_id = $2`,
+      [tenantId, userId],
+    );
+  }
+  async function grantElsewhere(userId: string) {
+    const roleId = randomUUID();
+    createdRoles.push(roleId);
+    await sql(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+       VALUES ($1, $2, $3, false, $4, $5)`,
+      [
+        roleId,
+        tenantId,
+        `Leave read ${roleId.slice(0, 8)}`,
+        JSON.stringify(["hr.employee.view"]),
+        JSON.stringify(["tenant"]),
+      ],
+    );
+    await assign(tenantId, userId, roleId, { type: "tenant" });
+  }
+  async function pending() {
+    const type = await makeType({ tracksBalance: false });
+    const staff = await makeStaff();
+    const objectId = await storageObject(outletA, "document", 0, staff.userId);
+    const created = await createLeaveRequest(
+      outletScope(outletA),
+      staff.userId,
+      requestBody(type.id, objectId),
+      new Date(),
+      stubSigner,
+    );
+    return { staff, objectId, created };
+  }
+
+  it("getLeaveRequest: active requester gets the URL", async () => {
+    const { staff, objectId, created } = await pending();
+    const seen = await getLeaveRequest(
+      outletScope(outletA),
+      staff.userId,
+      created.id,
+      stubSigner,
+    );
+    expect(seen.attachmentUrl).toBe(`https://signed.example.test/${objectId}`);
+  });
+
+  it("getLeaveRequest: requester revoked at the leave outlet but reading elsewhere gets the row, attachmentUrl null, no URL audit", async () => {
+    const { staff, created } = await pending();
+    const before = (await issuedAudit(created.id)).length;
+    await revokeAtOutlet(staff.userId);
+    await grantElsewhere(staff.userId);
+    const seen = await getLeaveRequest(
+      tenantScope(),
+      staff.userId,
+      created.id,
+      stubSigner,
+    );
+    expect(seen.id).toBe(created.id);
+    expect(seen.attachmentUrl).toBeNull();
+    expect(await issuedAudit(created.id)).toHaveLength(before);
+  });
+
+  it("listLeaveRequests: active requester gets the URL", async () => {
+    const { staff, objectId } = await pending();
+    const own = await listLeaveRequests(
+      outletScope(outletA),
+      staff.userId,
+      { limit: 20 },
+      stubSigner,
+    );
+    expect(own.data.map((row) => row.attachmentUrl)).toEqual([
+      `https://signed.example.test/${objectId}`,
+    ]);
+  });
+
+  it("listLeaveRequests: requester revoked at the leave outlet but reading elsewhere gets the row, attachmentUrl null, no URL audit", async () => {
+    const { staff, created } = await pending();
+    const before = (await issuedAudit(created.id)).length;
+    await revokeAtOutlet(staff.userId);
+    await grantElsewhere(staff.userId);
+    const listed = await listLeaveRequests(
+      tenantScope(),
+      staff.userId,
+      { limit: 20 },
+      stubSigner,
+    );
+    const row = listed.data.find((item) => item.id === created.id);
+    expect(row).toBeDefined();
+    expect(row?.attachmentUrl).toBeNull();
+    expect(await issuedAudit(created.id)).toHaveLength(before);
+  });
+});
