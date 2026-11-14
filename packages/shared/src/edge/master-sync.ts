@@ -71,6 +71,7 @@ export const edgeMasterUomSchema = z.strictObject({
   tenantId: tenantIdSchema,
   code: z.string().min(1).max(10),
   name: name150,
+  isSystem: z.boolean().default(false),
   createdAt: isoDateTimeSchema,
 });
 export type EdgeMasterUom = z.infer<typeof edgeMasterUomSchema>;

@@ -204,6 +204,7 @@ function readSnapshotInTenant(
         tenantId: row.tenantId,
         code: row.code,
         name: row.name,
+        isSystem: row.isSystem,
         createdAt: row.createdAt.toISOString(),
       })),
       stockLocations: locationRows.map((row) => ({
