@@ -11,7 +11,7 @@ type Props = {
   qr: TableQr;
   table: Table;
   zone?: FloorZone;
-  /** Brand line until tenant config supplies the real name (D43). */
+  /** Outlet name printed above the QR (founder Q33); empty hides the line. */
   brand: string;
 };
 
@@ -19,7 +19,7 @@ function QrLabel({ qr, table, zone, brand }: Props) {
   const t = useT();
   return (
     <article className="grid break-inside-avoid gap-2 overflow-hidden rounded-container border-(length:--border-w) bg-card p-3 shadow-hairline">
-      <p className="type-eyebrow text-muted-foreground">{brand}</p>
+      {brand && <p className="type-eyebrow text-muted-foreground">{brand}</p>}
       <div className="flex flex-wrap items-start gap-3">
         <QrCode
           value={qr.url}

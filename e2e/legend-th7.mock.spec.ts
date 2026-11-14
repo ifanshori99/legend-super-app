@@ -170,6 +170,12 @@ test.describe("legend-th7 · floor plan & table editor", () => {
     ).toBeVisible();
     // One label per issued table, each with a scannable QR image and the URL.
     await expect(page.getByText("Pindai untuk memesan")).toHaveCount(2);
+    // The brand line on each sticker is the outlet name, not "Legend" (Q33).
+    await expect(
+      page
+        .locator(".floor-print-sheet article")
+        .getByText("Cafe Legend Bandung"),
+    ).toHaveCount(2);
     await expect(page.getByText(/^https:\/\/.+\/t\/v1\./)).toHaveCount(2);
     await expect(
       page.getByRole("img", { name: "Meja A01", exact: true }),

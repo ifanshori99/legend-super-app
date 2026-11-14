@@ -57,3 +57,10 @@ test("re-issuing a label never rotates the table token", () => {
   assert.doesNotMatch(source, /useRotateTableQr/);
   assert.doesNotMatch(source, /rotateTableQr/);
 });
+
+test("sticker brand line is the outlet name, not the catalog brand (Q33)", () => {
+  const source = readFileSync(QR_PAGE, "utf8");
+  assert.match(source, /useTenantContext/);
+  assert.match(source, /outlet\?\.name/);
+  assert.doesNotMatch(source, /app\.defaultBrand/);
+});

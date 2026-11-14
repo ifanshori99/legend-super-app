@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
 import type { ApiError } from "@/lib/api/errors";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useCurrentFloor, useIssueTableQr } from "../hooks";
 import { matchesTableQuery, sortZones, tablesOfZone } from "../lib";
 import { QrLabel } from "./qr-label";
@@ -38,6 +39,9 @@ function QrPage() {
   const toast = useToast();
   const floor = useCurrentFloor();
   const issueQr = useIssueTableQr();
+  // Stickers carry the outlet name (founder Q33), read from the tenant context
+  // the shell already provides; no outlet in scope means no brand line.
+  const outletName = useTenantContext().outlet?.name ?? "";
 
   const [search, setSearch] = React.useState("");
   const [zoneFilter, setZoneFilter] = React.useState<string | null>(null);
@@ -347,7 +351,7 @@ function QrPage() {
                   qr={qr}
                   table={table}
                   zone={zones.find((zone) => zone.id === table.zoneId)}
-                  brand={t("app.defaultBrand")}
+                  brand={outletName}
                 />
               );
             })}
