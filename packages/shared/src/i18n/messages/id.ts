@@ -43,6 +43,9 @@ import { posIssueChargeMessages } from "./pos-issue-charge.ts";
 import { posReceiptPublicMessages } from "./pos-receipt-public.ts";
 import { paymentRefundFollowupMessages } from "./ws05-refund-followup.ts";
 import { reservationMessages } from "./reservation.ts";
+import { reservationGuestMessages } from "./reservation-guest.ts";
+import { reservationGuestRequestMessages } from "./reservation-guest-request.ts";
+import { reservationGuestCancelMessages } from "./reservation-guest-cancel.ts";
 import { websiteMessages } from "./website.ts";
 import { ws01AuthMessages } from "./ws01-auth.ts";
 import { approvalsMessages } from "./ws01-approvals.ts";
@@ -157,6 +160,9 @@ export const id = {
   posReceiptPublic: posReceiptPublicMessages,
   // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).
   reservation: reservationMessages,
+  reservationGuest: reservationGuestMessages,
+  reservationGuestRequest: reservationGuestRequestMessages,
+  reservationGuestCancel: reservationGuestCancelMessages,
   // POS cashier screens (bead legend-mjmm): one catalog file per screen group.
   posKasirCommon: posKasirCommonMessages,
   posKasirPayment: posKasirPaymentMessages,

@@ -7,6 +7,7 @@ import type {
 import { buildEndpointPath, zodIssuesToDetails } from "@starter/shared/api";
 import { z } from "zod";
 import { idempotencyKeySchema } from "@starter/shared/core";
+import { reservationLinkTokenSchema } from "@starter/shared/reservation";
 import { ApiError } from "./errors.ts";
 
 // The typed layer over a transport (apiFetch). Pure: no framework imports, so
@@ -24,13 +25,26 @@ export type Transport = (
   request: TransportRequest,
 ) => Promise<unknown>;
 
+/**
+ * Per-call headers a caller may set. Allow-list: Idempotency-Key and the
+ * reservation link token (a bearer secret for the public guest page; the token
+ * lives in the URL fragment and travels only in this header).
+ */
+export type CallHeaders = {
+  "Idempotency-Key"?: string;
+  "X-Reservation-Link-Token"?: string;
+};
+
 export type CallOptions = {
   signal?: AbortSignal;
-  headers?: { "Idempotency-Key"?: string };
+  headers?: CallHeaders;
 };
 
 const headersSchema = z
-  .object({ "Idempotency-Key": idempotencyKeySchema.optional() })
+  .object({
+    "Idempotency-Key": idempotencyKeySchema.optional(),
+    "X-Reservation-Link-Token": reservationLinkTokenSchema.optional(),
+  })
   .strict();
 
 /** `[input]` is required only when the endpoint declares params, query or body. */

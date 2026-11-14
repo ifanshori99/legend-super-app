@@ -101,6 +101,7 @@ import { Route as PublicMasukGoogleRouteImport } from './routes/_public/masuk.go
 import { Route as PublicMasukHubungkanRouteImport } from './routes/_public/masuk.hubungkan'
 import { Route as PublicMasukTautanRouteImport } from './routes/_public/masuk.tautan'
 import { Route as PublicRTokenRouteImport } from './routes/_public/r.$token'
+import { Route as PublicReservasiKelolaRouteImport } from './routes/_public/reservasi_.kelola'
 import { Route as ShareholderShareholderIndexRouteImport } from './routes/_shareholder/shareholder.index'
 import { Route as ShareholderShareholderKeamananRouteImport } from './routes/_shareholder/shareholder.keamanan'
 import { Route as ShareholderShareholderTanyaAiRouteImport } from './routes/_shareholder/shareholder.tanya-ai'
@@ -842,6 +843,11 @@ const PublicMasukTautanRoute = PublicMasukTautanRouteImport.update({
 const PublicRTokenRoute = PublicRTokenRouteImport.update({
   id: '/r/$token',
   path: '/r/$token',
+  getParentRoute: () => PublicRoute,
+} as any)
+const PublicReservasiKelolaRoute = PublicReservasiKelolaRouteImport.update({
+  id: '/reservasi_/kelola',
+  path: '/reservasi/kelola',
   getParentRoute: () => PublicRoute,
 } as any)
 const ShareholderShareholderIndexRoute =
@@ -2590,6 +2596,7 @@ export interface FileRoutesByFullPath {
   '/masuk/hubungkan': typeof PublicMasukHubungkanRoute
   '/masuk/tautan': typeof PublicMasukTautanRoute
   '/r/$token': typeof PublicRTokenRoute
+  '/reservasi/kelola': typeof PublicReservasiKelolaRoute
   '/shareholder/keamanan': typeof ShareholderShareholderKeamananRoute
   '/shareholder/tanya-ai': typeof ShareholderShareholderTanyaAiRoute
   '/member/': typeof CustomerMemberIndexRoute
@@ -2958,6 +2965,7 @@ export interface FileRoutesByTo {
   '/masuk/hubungkan': typeof PublicMasukHubungkanRoute
   '/masuk/tautan': typeof PublicMasukTautanRoute
   '/r/$token': typeof PublicRTokenRoute
+  '/reservasi/kelola': typeof PublicReservasiKelolaRoute
   '/shareholder/keamanan': typeof ShareholderShareholderKeamananRoute
   '/shareholder/tanya-ai': typeof ShareholderShareholderTanyaAiRoute
   '/member': typeof CustomerMemberIndexRoute
@@ -3338,6 +3346,7 @@ export interface FileRoutesById {
   '/_public/masuk/hubungkan': typeof PublicMasukHubungkanRoute
   '/_public/masuk/tautan': typeof PublicMasukTautanRoute
   '/_public/r/$token': typeof PublicRTokenRoute
+  '/_public/reservasi_/kelola': typeof PublicReservasiKelolaRoute
   '/_shareholder/shareholder/keamanan': typeof ShareholderShareholderKeamananRoute
   '/_shareholder/shareholder/tanya-ai': typeof ShareholderShareholderTanyaAiRoute
   '/_customer/member/': typeof CustomerMemberIndexRoute
@@ -3710,6 +3719,7 @@ export interface FileRouteTypes {
     | '/masuk/hubungkan'
     | '/masuk/tautan'
     | '/r/$token'
+    | '/reservasi/kelola'
     | '/shareholder/keamanan'
     | '/shareholder/tanya-ai'
     | '/member/'
@@ -4078,6 +4088,7 @@ export interface FileRouteTypes {
     | '/masuk/hubungkan'
     | '/masuk/tautan'
     | '/r/$token'
+    | '/reservasi/kelola'
     | '/shareholder/keamanan'
     | '/shareholder/tanya-ai'
     | '/member'
@@ -4457,6 +4468,7 @@ export interface FileRouteTypes {
     | '/_public/masuk/hubungkan'
     | '/_public/masuk/tautan'
     | '/_public/r/$token'
+    | '/_public/reservasi_/kelola'
     | '/_shareholder/shareholder/keamanan'
     | '/_shareholder/shareholder/tanya-ai'
     | '/_customer/member/'
@@ -5419,6 +5431,13 @@ declare module '@tanstack/react-router' {
       path: '/r/$token'
       fullPath: '/r/$token'
       preLoaderRoute: typeof PublicRTokenRouteImport
+      parentRoute: typeof PublicRoute
+    }
+    '/_public/reservasi_/kelola': {
+      id: '/_public/reservasi_/kelola'
+      path: '/reservasi/kelola'
+      fullPath: '/reservasi/kelola'
+      preLoaderRoute: typeof PublicReservasiKelolaRouteImport
       parentRoute: typeof PublicRoute
     }
     '/_shareholder/shareholder/': {
@@ -8293,6 +8312,7 @@ interface PublicRouteChildren {
   PublicMasukHubungkanRoute: typeof PublicMasukHubungkanRoute
   PublicMasukTautanRoute: typeof PublicMasukTautanRoute
   PublicRTokenRoute: typeof PublicRTokenRoute
+  PublicReservasiKelolaRoute: typeof PublicReservasiKelolaRoute
   PublicMasukIndexRoute: typeof PublicMasukIndexRoute
 }
 
@@ -8306,6 +8326,7 @@ const PublicRouteChildren: PublicRouteChildren = {
   PublicMasukHubungkanRoute: PublicMasukHubungkanRoute,
   PublicMasukTautanRoute: PublicMasukTautanRoute,
   PublicRTokenRoute: PublicRTokenRoute,
+  PublicReservasiKelolaRoute: PublicReservasiKelolaRoute,
   PublicMasukIndexRoute: PublicMasukIndexRoute,
 }
 

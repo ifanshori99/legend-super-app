@@ -2,6 +2,7 @@ import { createIsomorphicFn } from "@tanstack/react-start";
 import { API_URL } from "@/lib/env";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api/errors";
 import { bearerHeaderFor } from "@/lib/api/credentials";
+import type { CallHeaders } from "@/lib/api/endpoint-core";
 import {
   ACTING_STAFF_HELD_MESSAGE,
   actingStaffHeaderFor,
@@ -29,7 +30,7 @@ type ApiRequest = {
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
   signal?: AbortSignal;
-  headers?: { "Idempotency-Key"?: string };
+  headers?: CallHeaders;
 };
 
 // Where and how to call the API from the current environment. The .server()
@@ -102,11 +103,18 @@ export async function apiFetch<T>(
         ...actingHeader,
         ...headers,
         // Per-call headers are allow-listed (contracts.md "Typed web client &
-        // idempotency headers"): only Idempotency-Key is forwarded, so no
-        // caller can override the cookie, request id or bearer set above.
+        // idempotency headers"): only Idempotency-Key and X-Reservation-Link-Token
+        // are forwarded, so no caller can override the cookie, request id or
+        // bearer set above.
         ...(callHeaders?.["Idempotency-Key"] === undefined
           ? {}
           : { "Idempotency-Key": callHeaders["Idempotency-Key"] }),
+        ...(callHeaders?.["X-Reservation-Link-Token"] === undefined
+          ? {}
+          : {
+              "X-Reservation-Link-Token":
+                callHeaders["X-Reservation-Link-Token"],
+            }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
