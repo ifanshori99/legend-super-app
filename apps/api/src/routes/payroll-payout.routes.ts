@@ -16,6 +16,7 @@ import {
   confirmManualItemsInputSchema,
   createDisbursementBatchInputSchema,
   payoutBatchParamsSchema,
+  listPayoutBatchesQuerySchema,
   payoutLegalEntityParamsSchema,
   payoutRunParamsSchema,
   resolveManualItemsSchema,
@@ -39,6 +40,7 @@ import {
   listSkippedFees,
   repostSkippedFees,
 } from "../services/payroll-payout-gl.service.ts";
+import { listPayoutBatches } from "../services/payroll-payout-batch-list.service.ts";
 import {
   getPayoutConfig,
   upsertPayoutConfig,
@@ -107,6 +109,24 @@ payrollPayoutRouter.put(
       upsertPayoutConfig(tx, actor, legalEntityId, input),
     );
     res.json({ data });
+  },
+);
+
+payrollPayoutRouter.get(
+  "/payout-batches",
+  requireAuth,
+  requireTenantContext,
+  requireTenantPermission("payroll.view"),
+  async (req, res) => {
+    const query = listPayoutBatchesQuerySchema.parse(req.query);
+    const { context, actor } = actorOf(req);
+    const page = await withTenant(db, context, (tx) =>
+      listPayoutBatches(tx, actor.tenantId, query),
+    );
+    res.json({
+      data: page.items,
+      meta: { limit: query.limit, nextCursor: page.nextCursor },
+    });
   },
 );
 

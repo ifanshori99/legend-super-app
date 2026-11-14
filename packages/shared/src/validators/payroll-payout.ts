@@ -199,7 +199,14 @@ export const confirmCashHandoverInputSchema = z
 
 // Batch list across runs (legend-396pf): newest first, cursor paged, optional
 // legal entity and status filters. Tenant comes from the session.
+export const PAYOUT_BATCH_LIST_LIMIT_MAX = 20;
 export const listPayoutBatchesQuerySchema = cursorPageQuerySchema.extend({
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(PAYOUT_BATCH_LIST_LIMIT_MAX)
+    .default(PAYOUT_BATCH_LIST_LIMIT_MAX),
   legalEntityId: z.uuid().optional(),
   status: z.enum(PAYOUT_BATCH_STATUSES).optional(),
 });

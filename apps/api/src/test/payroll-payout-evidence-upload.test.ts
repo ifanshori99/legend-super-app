@@ -20,14 +20,35 @@
 //   foreign tenant id for the duration of the test (restored in `finally`).
 // - A resolve of an item that is already final is refused with a 4xx (the exact
 //   code is not asserted); the proof is that nothing changes and nothing posts.
+// - Step-up (round 2, A2): the HTTP route needs the same fresh MFA proof as
+//   resolve/return. The brief does not say how a password travels in a multipart
+//   request, so the happy paths use an approver with a real MFA challenge (the
+//   factor pre-dates the session), which skips the password; the refusal test
+//   uses an enrollment-only approver without a password: 401 REAUTH_REQUIRED.
+// - Round 2 (A1): JPEG/PNG are decoded and re-encoded (EXIF removed); so the
+//   images in these tests are real (made with sharp) and `sizeBytes` is the size
+//   of the stored bytes, not of the uploaded ones. A truncated image is 415.
+// - A scanner that rejects (infection) is refused with a 4xx and no blob; the
+//   exact 4xx is not pinned. A scanner with acceptsDocuments:false refuses a PDF
+//   with 503 (assertScannerAcceptsDocuments) and no blob.
+// - A batch that is a draft or a cash batch is refused with 409 or 422 before
+//   any blob is stored (the brief says "409 or 422 per the service's pattern").
+// - The return service refuses a key of another batch with the same
+//   PAYOUT_EVIDENCE_INVALID 422 as resolve (same assertEvidenceKeyForBatch).
 // - Empty file: 422, size above PAYOUT_EVIDENCE_MAX_BYTES: 413, bytes that are
 //   not pdf/jpeg/png (whatever the declared type says): 415, as the brief says.
 import { Pool } from "pg";
+import sharp from "sharp";
 import { afterAll, describe, expect, it } from "vitest";
 import { FakeObjectStorage } from "@starter/shared/adapters";
 import { PAYOUT_EVIDENCE_MAX_BYTES } from "@starter/shared/validators/payroll-payout";
 import { createApp } from "../app.ts";
-import { NoopMalwareScanner } from "../services/core-image.ts";
+import { totpCode, totpStep } from "../lib/totp.ts";
+import {
+  NoopMalwareScanner,
+  type MalwareScanner,
+} from "../services/core-image.ts";
+import { returnManualItems } from "../services/payroll-payout-manual.service.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 import {
@@ -35,8 +56,11 @@ import {
   APP2,
   APP3,
   BUDI,
+  CASHIER,
   SITI,
+  actorOf,
   bank,
+  cash,
   installPayoutWorld,
   type Row,
 } from "./payroll-payout-fixtures.ts";
@@ -46,24 +70,40 @@ const BASE = "/api/hris/payroll/disbursement-batches";
 const FOREIGN_TENANT_ID = "99999999-9999-4999-8999-999999999999";
 const idOf = (row: Row) => row.id as string;
 
-const storage = new FakeObjectStorage();
-const runtime: StorageRuntime = {
-  storage,
-  scanner: new NoopMalwareScanner(),
-  fileSigner: async () => "https://signed.example.test/x",
-  hrisDocumentSigner: async () => null,
-};
-const appWithStorage = createApp({ storageRuntime: runtime });
+/** An app wired to its own fake storage and the given scanner, with a blob counter. */
+function makeRuntime(scanner: MalwareScanner) {
+  const store = new FakeObjectStorage();
+  const runtime: StorageRuntime = {
+    storage: store,
+    scanner,
+    fileSigner: async () => "https://signed.example.test/x",
+    hrisDocumentSigner: async () => null,
+  };
+  return {
+    store,
+    app: createApp({ storageRuntime: runtime }),
+    blobCount: () =>
+      (store as unknown as { objects: Map<string, unknown> }).objects.size,
+  };
+}
+const main = makeRuntime(new NoopMalwareScanner());
+const storage = main.store;
+const appWithStorage = main.app;
+const blobCount = main.blobCount;
 const appWithoutStorage = createApp({ storageRuntime: null });
-const blobCount = () =>
-  (storage as unknown as { objects: Map<string, unknown> }).objects.size;
 
 const dbOwner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 2,
 });
 const grantedUsers: string[] = [];
+const enrolledUsers: string[] = [];
 afterAll(async () => {
+  if (enrolledUsers.length > 0)
+    await dbOwner.query(
+      "DELETE FROM mfa_factors WHERE user_id = ANY($1::uuid[])",
+      [enrolledUsers],
+    );
   if (grantedUsers.length > 0)
     await dbOwner.query(
       "DELETE FROM role_assignments WHERE user_id = ANY($1::text[])",
@@ -72,7 +112,60 @@ afterAll(async () => {
   await dbOwner.end();
 });
 
-/** A signed-in staff member (MFA-verified session) holding exactly these permissions. */
+type Staff = Awaited<ReturnType<typeof staff>>;
+
+/**
+ * A staff member holding exactly these permissions whose second factor was
+ * enrolled and verified in this session. `challenged` backdates the factor and
+ * verifies again, so the session carries a real MFA challenge (no password
+ * needed for step-up); without it only the enrollment itself is proof.
+ */
+async function mfaStaff(
+  app: ReturnType<typeof createApp>,
+  permissions: string[],
+  challenged: boolean,
+) {
+  const client = agent(app);
+  await signUp(client, "Payout Upload");
+  const session = await client.get("/api/auth/get-session");
+  const userId = session.body.user.id as string;
+  grantedUsers.push(userId);
+  enrolledUsers.push(userId);
+  await W.grantRole(userId, permissions);
+  const enrolled = await client
+    .post("/api/auth/mfa/factors")
+    .set(originHeader)
+    .send({ type: "totp" });
+  expect(enrolled.status, JSON.stringify(enrolled.body)).toBe(201);
+  const { factorId, secretBase32 } = enrolled.body.data as {
+    factorId: string;
+    secretBase32: string;
+  };
+  const verified = await client
+    .post("/api/auth/mfa/verify")
+    .set(originHeader)
+    .send({ factorId, code: totpCode(secretBase32, totpStep(new Date())) });
+  expect(verified.status, JSON.stringify(verified.body)).toBe(200);
+  if (challenged) {
+    await dbOwner.query(
+      "UPDATE mfa_factors SET created_at = now() - interval '1 day', verified_at = now() - interval '1 day' WHERE id = $1",
+      [factorId],
+    );
+    const again = await client
+      .post("/api/auth/mfa/verify")
+      .set(originHeader)
+      .send({
+        factorId,
+        code: totpCode(secretBase32, totpStep(new Date()) + 1),
+      });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+  }
+  return { client, userId };
+}
+const APPROVE = ["payroll.view", "payroll.disburse.approve"];
+const approver = (app = appWithStorage) => mfaStaff(app, APPROVE, true);
+
+/** A signed-in staff member (MFA stamp only) holding exactly these permissions. */
 async function staff(app: ReturnType<typeof createApp>, permissions: string[]) {
   const client = agent(app);
   const email = await signUp(client, "Payout Upload");
@@ -83,20 +176,46 @@ async function staff(app: ReturnType<typeof createApp>, permissions: string[]) {
   await W.grantRole(userId, permissions);
   return { client, userId };
 }
-type Staff = Awaited<ReturnType<typeof staff>>;
-const approver = (app = appWithStorage) =>
-  staff(app, ["payroll.view", "payroll.disburse.approve"]);
 
 const pdfBytes = () =>
   Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\nlaporan bank\n%%EOF\n");
-const jpegBytes = () =>
+const brokenJpegBytes = () =>
   Buffer.from([
     0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00,
   ]);
-const pngBytes = () =>
+const brokenPngBytes = () =>
   Buffer.from([
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
   ]);
+
+const SECRET_EXIF = "rahasia-lokasi-pegawai";
+/** A real JPEG carrying EXIF text (the kind a phone camera adds). */
+const realJpeg = () =>
+  sharp({
+    create: { width: 24, height: 16, channels: 3, background: "#cc3300" },
+  })
+    .withExif({
+      IFD0: { ImageDescription: SECRET_EXIF, Copyright: SECRET_EXIF },
+    })
+    .jpeg()
+    .toBuffer();
+const realPng = () =>
+  sharp({
+    create: { width: 24, height: 16, channels: 3, background: "#0033cc" },
+  })
+    .png()
+    .toBuffer();
+const storedBytes = async (key: string, store = storage) =>
+  Buffer.from(
+    (
+      await store.get(W.scope(), {
+        tenantId: W.tenantId,
+        outletId: null,
+        reference: "payout-evidence-upload-test",
+        key,
+      } as never)
+    ).content as Uint8Array,
+  );
 
 const upload = (
   who: Staff,
@@ -132,8 +251,8 @@ describe("legend-zoqh1 upload payment proof for resolve and return", () => {
     const who = await approver();
     const cases = [
       { bytes: pdfBytes(), type: "application/pdf", ext: "pdf" },
-      { bytes: jpegBytes(), type: "image/jpeg", ext: "jpg" },
-      { bytes: pngBytes(), type: "image/png", ext: "png" },
+      { bytes: await realJpeg(), type: "image/jpeg", ext: "jpg" },
+      { bytes: await realPng(), type: "image/png", ext: "png" },
     ] as const;
     const keys = new Set<string>();
     for (const { bytes, type, ext } of cases) {
@@ -151,18 +270,21 @@ describe("legend-zoqh1 upload payment proof for resolve and return", () => {
       );
       expect(data.evidenceKey.length).toBeLessThanOrEqual(200);
       expect(data.contentType).toBe(type);
-      expect(data.sizeBytes).toBe(bytes.length);
       keys.add(data.evidenceKey);
 
-      // The object is stored, byte for byte, and only as a private object.
+      // The object is stored, and only as a private object. A pdf is kept byte
+      // for byte; an image is re-encoded, so only its size is reported as stored.
       const lookup = {
         tenantId: W.tenantId,
         outletId: null,
         reference: "payout-evidence-upload-test",
         key: data.evidenceKey,
       } as never;
-      const stored = await storage.get(W.scope(), lookup);
-      expect(Buffer.from(stored.content as Uint8Array)).toEqual(bytes);
+      const stored = await storedBytes(data.evidenceKey);
+      expect(data.sizeBytes, "sizeBytes is the size of what is stored").toBe(
+        stored.length,
+      );
+      if (ext === "pdf") expect(stored).toEqual(bytes);
       await expect(
         storage.get(W.scope(), {
           ...(lookup as object),
@@ -347,5 +469,187 @@ describe("legend-zoqh1 upload payment proof for resolve and return", () => {
       W.resolve(gone.batchId, [idOf(siti)], "failed", APP2, key2),
     );
     expect(await snapshotOf(gone.batchId)).toBe(final);
+  });
+
+  it("[zoqh1-origin] an upload without a trusted Origin header is refused 403 and stores nothing", async () => {
+    const { batchId } = await exportedRun();
+    const who = await approver();
+    const before = blobCount();
+    const res = await who.client
+      .post(`${BASE}/${batchId}/evidence`)
+      .attach("file", pdfBytes(), {
+        filename: "bukti.pdf",
+        contentType: "application/pdf",
+      });
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(blobCount()).toBe(before);
+    // Control: the same caller with the Origin header is accepted.
+    const ok = await upload(who, batchId, pdfBytes());
+    expect(ok.status, JSON.stringify(ok.body)).toBe(201);
+  });
+
+  it("[zoqh1-stepup] an approver without a second-factor proof is 403 MFA_REQUIRED; nothing is stored; with a real challenge the same upload passes", async () => {
+    // Upload only stores a blob; the password step-up stays on resolve and
+    // return, which are the calls that move an item (and read the password
+    // from a JSON body, which this multipart route has no field for).
+    const { batchId } = await exportedRun();
+    const client = agent(appWithStorage);
+    await signUp(client, "Payout Upload No MFA");
+    const session = await client.get("/api/auth/get-session");
+    const userId = session.body.user.id as string;
+    grantedUsers.push(userId);
+    await W.grantRole(userId, APPROVE);
+    const before = blobCount();
+    const res = await upload({ client, userId }, batchId, pdfBytes());
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error?.code).toBe("MFA_REQUIRED");
+    expect(blobCount(), "no blob without step-up").toBe(before);
+
+    const challenged = await approver();
+    const ok = await upload(challenged, batchId, pdfBytes());
+    expect(ok.status, JSON.stringify(ok.body)).toBe(201);
+  });
+
+  it("[zoqh1-scanner-infected] a scanner that rejects the file refuses the upload with a 4xx and no blob", async () => {
+    const { batchId } = await exportedRun();
+    const rt = makeRuntime({
+      scan: async () => {
+        throw new Error("EICAR-Test-Signature detected");
+      },
+    });
+    const who = await approver(rt.app);
+    for (const [bytes, type, name] of [
+      [pdfBytes(), "application/pdf", "bukti.pdf"],
+      [await realPng(), "image/png", "bukti.png"],
+    ] as const) {
+      const res = await upload(who, batchId, bytes, type, name);
+      expect(res.status, JSON.stringify(res.body)).toBeGreaterThanOrEqual(400);
+      expect(res.status, JSON.stringify(res.body)).toBeLessThan(500);
+      expect(rt.blobCount(), `${name}: infected file leaves no blob`).toBe(0);
+    }
+  });
+
+  it("[zoqh1-scanner-no-documents] a scanner that cannot vet documents refuses a PDF closed (503), with no blob", async () => {
+    const { batchId } = await exportedRun();
+    const rt = makeRuntime(new NoopMalwareScanner({ acceptsDocuments: false }));
+    const who = await approver(rt.app);
+    const res = await upload(who, batchId, pdfBytes());
+    expect(res.status, JSON.stringify(res.body)).toBe(503);
+    expect(rt.blobCount()).toBe(0);
+  });
+
+  it("[zoqh1-image-reencode] a real jpeg is stored without its EXIF and a real png stays a png, with the right contentType", async () => {
+    const { batchId } = await exportedRun();
+    const who = await approver();
+    const jpeg = await realJpeg();
+    expect(
+      jpeg.includes(Buffer.from(SECRET_EXIF)),
+      "premise: the uploaded jpeg carries EXIF text",
+    ).toBe(true);
+    expect((await sharp(jpeg).metadata()).exif, "premise").toBeDefined();
+
+    const jpegRes = await upload(who, batchId, jpeg, "image/jpeg", "foto.jpg");
+    expect(jpegRes.status, JSON.stringify(jpegRes.body)).toBe(201);
+    expect(jpegRes.body.data.contentType).toBe("image/jpeg");
+    const storedJpeg = await storedBytes(jpegRes.body.data.evidenceKey);
+    expect(storedJpeg.includes(Buffer.from(SECRET_EXIF))).toBe(false);
+    const jpegMeta = await sharp(storedJpeg).metadata();
+    expect(jpegMeta.format).toBe("jpeg");
+    expect(jpegMeta.exif, "no EXIF block is kept").toBeUndefined();
+    expect([jpegMeta.width, jpegMeta.height]).toEqual([24, 16]);
+    expect(jpegRes.body.data.sizeBytes).toBe(storedJpeg.length);
+
+    const png = await realPng();
+    const pngRes = await upload(who, batchId, png, "image/png", "foto.png");
+    expect(pngRes.status, JSON.stringify(pngRes.body)).toBe(201);
+    expect(pngRes.body.data.contentType).toBe("image/png");
+    expect(pngRes.body.data.evidenceKey).toMatch(/\.png$/);
+    const storedPng = await storedBytes(pngRes.body.data.evidenceKey);
+    expect((await sharp(storedPng).metadata()).format).toBe("png");
+    expect(pngRes.body.data.sizeBytes).toBe(storedPng.length);
+  });
+
+  it("[zoqh1-broken-image] a jpeg or png that only has the right first bytes cannot be decoded: 415, no blob", async () => {
+    const { batchId } = await exportedRun();
+    const who = await approver();
+    const before = blobCount();
+    const truncated = (await realJpeg()).subarray(0, 40);
+    for (const [bytes, type, name] of [
+      [brokenJpegBytes(), "image/jpeg", "rusak.jpg"],
+      [brokenPngBytes(), "image/png", "rusak.png"],
+      [truncated, "image/jpeg", "terpotong.jpg"],
+    ] as const) {
+      const res = await upload(who, batchId, bytes, type, name);
+      expect(res.status, `${name}: ${JSON.stringify(res.body)}`).toBe(415);
+    }
+    expect(blobCount()).toBe(before);
+  });
+
+  it("[zoqh1-batch-state] a draft batch and a cash batch are refused (409 or 422) before any blob is stored", async () => {
+    const who = await approver();
+    const before = blobCount();
+
+    const draftSlips = [bank(BUDI, 4_000_000)];
+    const draftRun = await W.seedRun(draftSlips);
+    await W.postLockedJournal(draftRun, draftSlips);
+    const draftId = await W.createBatch(draftRun);
+    expect((await W.batchById(draftId)).status, "premise: draft").toBe("draft");
+
+    const cashSlips = [cash(CASHIER, 900_000)];
+    const cashRun = await W.seedRun(cashSlips);
+    await W.postLockedJournal(cashRun, cashSlips);
+    const cashId = await W.approvedBatch(cashRun, "cash");
+
+    for (const [label, id] of [
+      ["draft", draftId],
+      ["cash", cashId],
+    ] as const) {
+      const res = await upload(who, id, pdfBytes());
+      expect([409, 422], `${label}: ${JSON.stringify(res.body)}`).toContain(
+        res.status,
+      );
+    }
+    expect(blobCount(), "no blob for a batch that cannot be resolved").toBe(
+      before,
+    );
+  });
+
+  it("[zoqh1-return-accepts] the return service takes a key uploaded for its own batch (both steps) and refuses the key of another batch", async () => {
+    const a = await exportedRun();
+    const b = await exportedRun();
+    await W.confirm(a.batchId, W.succeedItems(a.batchId, a.items));
+    await W.confirm(b.batchId, W.succeedItems(b.batchId, b.items));
+    const who = await approver();
+    const ownRes = await upload(who, a.batchId, pdfBytes());
+    expect(ownRes.status, JSON.stringify(ownRes.body)).toBe(201);
+    const keyOfA = ownRes.body.data.evidenceKey as string;
+    const returnWith = (batchId: string, itemId: string, by: string) =>
+      W.inTx((tx) =>
+        returnManualItems(tx, actorOf(by), batchId, {
+          itemIds: [itemId],
+          evidenceKey: keyOfA,
+          note: "Bank mengembalikan dana, rekening tujuan ditutup",
+        } as never),
+      );
+
+    // Batch B refuses the key of A; nothing is recorded.
+    const bBudi = await W.itemOfPerson(b.batchId, BUDI);
+    await W.expectRefused(returnWith(b.batchId, idOf(bBudi), APP), {
+      status: 422,
+      code: "PAYOUT_EVIDENCE_INVALID",
+    });
+    const bAfter = await W.itemOfPerson(b.batchId, BUDI);
+    expect(bAfter.status).toBe("succeeded");
+    expect(bAfter.returned_by).toBeNull();
+    expect(await W.countJournals(`payroll-payout-return:${idOf(bBudi)}`)).toBe(
+      0,
+    );
+
+    // Batch A accepts it at both steps (two different non-requesters).
+    const aBudi = await W.itemOfPerson(a.batchId, BUDI);
+    await returnWith(a.batchId, idOf(aBudi), APP);
+    expect((await W.itemOfPerson(a.batchId, BUDI)).returned_by).toBe(APP);
+    await returnWith(a.batchId, idOf(aBudi), APP3);
+    expect((await W.itemOfPerson(a.batchId, BUDI)).status).toBe("returned");
   });
 });

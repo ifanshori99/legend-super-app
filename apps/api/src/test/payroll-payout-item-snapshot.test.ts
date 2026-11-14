@@ -19,6 +19,10 @@
 //   the employee's name or the bank-side holder name is the implementation's
 //   choice (openPayeeBankSnapshot.accountHolder).
 // - Column names are the ones in the brief (snake_case of the DTO fields).
+// - Round 2 (T2): the trigger message carries the code `PAYOUT-24` (brief);
+//   an account number that is not digits (the employee PII validator only asks
+//   for 6-34 characters) cannot be masked, so `maskedAccountNumber` is null
+//   while the name stays and the batch is still created (not a 4xx/5xx).
 // - The direct-UPDATE refusal is asserted on a `prepared`-or-later item (the
 //   batch is exported), where the brief says the columns are frozen absolutely
 //   (the exception is only a snapshot swap while prepared/blocked).
@@ -206,6 +210,10 @@ describe("legend-2bl54 item bank snapshot", () => {
         String(error!.message),
         "refused by the guard, not by a missing column",
       ).not.toMatch(/does not exist/);
+      expect(
+        String(error!.message),
+        "the freeze trigger answers with its own code",
+      ).toContain("PAYOUT-24");
     }
     const after = (await W.itemsOf(batchId)).find(
       (i: Row) => i.id === row!.id,
@@ -253,5 +261,33 @@ describe("legend-2bl54 item bank snapshot", () => {
     expect(itemFor(fresh.body, SITI.id).maskedAccountNumber).toBe(
       lastFour(newAccount),
     );
+  });
+
+  it("[2bl54-non-digit-account] an account number that is not digits gives maskedAccountNumber null; the name stays and the batch is created", async () => {
+    const viewer = await staff(["payroll.view"]);
+    const hr = await staff(["hr.employee.manage", "hr.employee.view"]);
+    const odd = "BCA-XYZ-1234";
+    const put = await hr.client
+      .put(`/api/hris/employees/${ANDI.id}/pii`)
+      .set(originHeader)
+      .send({
+        nik: randomDigits(16),
+        npwp: randomDigits(15),
+        bankAccount: odd,
+        idempotencyKey: `payout-gl-${randomUUID()}`,
+      });
+    expect(put.status, JSON.stringify(put.body)).toBe(200);
+
+    const { batchId } = await bankRun([bank(ANDI, 1_500_000)]);
+    const { body, text } = await fetchBatch(viewer, batchId);
+    const item = itemFor(body, ANDI.id);
+    expect(item.channel).toBe("manual_bank");
+    expect(item.maskedAccountNumber).toBeNull();
+    expect(typeof item.accountHolderName).toBe("string");
+    expect((item.accountHolderName ?? "").trim().length).toBeGreaterThan(0);
+    expect(text, "the raw value is never shown").not.toContain(odd);
+    const [row] = await W.itemsOf(batchId);
+    expect(row).toHaveProperty("masked_account_number", null);
+    expect(row!.account_holder_name).toBeTruthy();
   });
 });

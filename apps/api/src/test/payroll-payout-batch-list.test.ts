@@ -9,6 +9,7 @@
 // keyset cursor, items of every batch included.
 //
 // Assumptions (the brief is silent, stated so they can be contested):
+// - limit is capped at 20 (round 2), so "one big page" means limit 20 (the file makes 5 batches).
 // - The shared tenant also holds batches of other test files (other legal
 //   entities), so listings are scoped with legalEntityId = this file's entity
 //   unless a test is about the unfiltered view.
@@ -19,6 +20,12 @@
 //   move is restored in `finally`.
 // - A garbage cursor is a 4xx (400 or 422), never a 500 and never another
 //   tenant's data; the exact status is not pinned.
+// - Round 2 (T2): the cursor is opaque, so an impossible-date cursor is made
+//   from a REAL cursor by replacing its date part with 2026-02-30 (the cursor is
+//   read raw, or base64/base64url decoded when it has no date in the clear);
+//   the answer must be 422, never a 500. limit is capped at 20 (default 20).
+//   Tied created_at values are set through SQL with microsecond precision, to
+//   prove the keyset never truncates the timestamp.
 // - Invalid query: limit 0, limit not a number, unknown status, legalEntityId
 //   not a uuid, an unknown query key (the schema is strict) are 422.
 import { randomUUID } from "node:crypto";
@@ -162,9 +169,9 @@ describe("legend-396pf payout batch list", () => {
     const viewer = await staff(["payroll.view"]);
     const page = await listPage(viewer, {
       legalEntityId: W.entityId(),
-      limit: 100,
+      limit: 20,
     });
-    expect(page.meta.limit).toBe(100);
+    expect(page.meta.limit).toBe(20);
     expect(page.meta.nextCursor).toBeNull();
     expect(page.data.map((b) => b.id).sort()).toEqual(
       created.map((b) => b.id).sort(),
@@ -206,7 +213,7 @@ describe("legend-396pf payout batch list", () => {
     expect([...ids].sort()).toEqual(created.map((b) => b.id).sort());
     const single = await listPage(viewer, {
       legalEntityId: W.entityId(),
-      limit: 100,
+      limit: 20,
     });
     expect(ids).toEqual(single.data.map((b) => b.id));
     // The last page says there is no next one.
@@ -296,7 +303,7 @@ describe("legend-396pf payout batch list", () => {
       const scoped = await mine(viewer);
       expect(scoped.map((b) => b.id)).not.toContain(foreign.id);
       expect(scoped).toHaveLength(created.length - 1);
-      const everything = await listAll(viewer, { limit: 100 });
+      const everything = await listAll(viewer, { limit: 20 });
       expect(everything.map((b) => b.id)).not.toContain(foreign.id);
 
       const forged = await viewer.client.get(
@@ -335,5 +342,111 @@ describe("legend-396pf payout batch list", () => {
     }
     // Control: the same route answers 200 for a valid query.
     expect((await viewer.client.get(`${LIST}?limit=1`)).status).toBe(200);
+  });
+
+  it("[396pf-limit-cap] limit 21 is 422, limit 20 is accepted, and the default limit is 20", async () => {
+    await batches();
+    const viewer = await staff(["payroll.view"]);
+    const over = await viewer.client.get(`${LIST}?limit=21`);
+    expect(over.status, JSON.stringify(over.body)).toBe(422);
+    const max = await listPage(viewer, {
+      legalEntityId: W.entityId(),
+      limit: 20,
+    });
+    expect(max.meta.limit).toBe(20);
+    const dflt = await listPage(viewer, { legalEntityId: W.entityId() });
+    expect(dflt.meta.limit).toBe(20);
+  });
+
+  it("[396pf-cursor-impossible-date] a cursor whose date does not exist (2026-02-30, year 0000) is 422, not a 500", async () => {
+    await batches();
+    const viewer = await staff(["payroll.view"]);
+    const first = await listPage(viewer, {
+      legalEntityId: W.entityId(),
+      limit: 1,
+    });
+    const real = first.meta.nextCursor;
+    expect(real, "premise: there is a second page").not.toBeNull();
+    const datePart = /\d{4}-\d{2}-\d{2}/;
+    const forge = (cursor: string, date: string): string => {
+      if (datePart.test(cursor)) return cursor.replace(datePart, date);
+      for (const encoding of ["base64url", "base64"] as const) {
+        const decoded = Buffer.from(cursor, encoding).toString("utf8");
+        if (datePart.test(decoded))
+          return Buffer.from(decoded.replace(datePart, date), "utf8").toString(
+            encoding,
+          );
+      }
+      throw new Error(`cursor format has no date to forge: ${cursor}`);
+    };
+    for (const date of ["2026-02-30", "0000-01-01"]) {
+      const forged = forge(real!, date);
+      expect(forged).not.toBe(real);
+      const res = await viewer.client.get(
+        `${LIST}?${new URLSearchParams({ cursor: forged, legalEntityId: W.entityId(), limit: "1" })}`,
+      );
+      expect(res.status, `${date}: ${JSON.stringify(res.body)}`).toBe(422);
+    }
+    // Control: the real cursor still works.
+    const ok = await listPage(viewer, {
+      legalEntityId: W.entityId(),
+      limit: 1,
+      cursor: real!,
+    });
+    expect(ok.data).toHaveLength(1);
+  });
+
+  it("[396pf-same-created-at] batches with the same created_at (and one a few microseconds apart) are listed once each across pages of 1 and 2, in the order of one big page", async () => {
+    const created = await batches();
+    const viewer = await staff(["payroll.view"]);
+    const [x, y, z] = [created[0]!, created[1]!, created[2]!];
+    const originals = await W.asTenant(
+      (c) =>
+        c.query(
+          "SELECT id, created_at::text AS at FROM payroll_disbursement_batches WHERE id = ANY($1::uuid[])",
+          [[x.id, y.id, z.id]],
+        ),
+      true,
+    );
+    const setAt = (id: string, at: string) =>
+      W.asTenant(
+        (c) =>
+          c.query(
+            "UPDATE payroll_disbursement_batches SET created_at = $2::timestamptz WHERE id = $1",
+            [id, at],
+          ),
+        true,
+      );
+    try {
+      // Newer than every other batch, so the ties sit at the top of the list.
+      await setAt(x.id, "2031-01-01 00:00:00.123456+00");
+      await setAt(y.id, "2031-01-01 00:00:00.123456+00");
+      await setAt(z.id, "2031-01-01 00:00:00.123400+00");
+
+      const single = await listPage(viewer, {
+        legalEntityId: W.entityId(),
+        limit: 20,
+      });
+      const expected = single.data.map((b) => b.id);
+      expect(expected).toHaveLength(created.length);
+      const [hi, lo] = [x.id, y.id].sort().reverse() as [string, string];
+      expect(
+        expected.slice(0, 3),
+        "ties by id desc, then the earlier microsecond",
+      ).toEqual([hi, lo, z.id]);
+
+      for (const limit of [1, 2]) {
+        const ids = (await mine(viewer, { limit })).map((b) => b.id);
+        expect(new Set(ids).size, `limit ${limit}: no duplicate`).toBe(
+          ids.length,
+        );
+        expect(ids, `limit ${limit}: none missing, same order`).toEqual(
+          expected,
+        );
+      }
+    } finally {
+      for (const row of originals.rows as { id: string; at: string }[])
+        await setAt(row.id, row.at);
+    }
   });
 });
