@@ -20,7 +20,7 @@ import { isCatalogDeliveryRefused } from "../services/edge-master-data-publisher
 import {
   BRAND_DEPENDENT_CATALOG_STREAMS,
   catalogSyncQuerySchema,
-  listCatalogRecordsSince,
+  listCatalogRecordsForNode,
 } from "../services/edge-catalog-sync.ts";
 import {
   edgeCredentialFromAuthorization,
@@ -60,9 +60,10 @@ catalogRecordSyncRouter.get("/", async (req, res) => {
     );
   res.setHeader("Cache-Control", "private, no-store");
   res.json(
-    await listCatalogRecordsSince(db, {
+    await listCatalogRecordsForNode(db, {
       tenantId: node.tenantId,
       outletId: node.outletId,
+      edgeNodeId: node.edgeNodeId,
       query,
     }),
   );

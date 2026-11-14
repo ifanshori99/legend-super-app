@@ -9,7 +9,7 @@
 //   - `uoms`: tenant-wide unit catalog;
 //   - `stock_locations`: the credential's outlet ONLY;
 //   - `chart_of_accounts` + `account_mappings`: the outlet's legal entity ONLY.
-// It is a full snapshot, not a cursor: `uoms` and `stock_locations` have no
+// Non-brand masters are a full snapshot: `uoms` and `stock_locations` have no
 // `updated_at`, so changes cannot be listed. The edge upserts brands, uoms,
 // locations and accounts by id and never deletes them (ledger rows reference
 // them). The
@@ -68,20 +68,44 @@ export const EDGE_MASTER_SNAPSHOT_VERSION = 2;
  * Oldest version an edge still accepts: a cloud that predates version 2 keeps
  * serving version 1 (no `brands`, no `brandId`), and an OLD edge only accepts
  * the literal 1. So the cloud serves version 2 only to an edge that asks for it
- * with this request header (an older cloud ignores a header it does not know);
- * without it the snapshot is exactly version 1.
+ * with this request header or the snapshotVersion query (an older cloud ignores
+ * those it does not know); without either the snapshot is exactly version 1.
+ * Brand pagination is opt-in. A header-only v2 request for more than 200 brands
+ * falls back to v1, preserving the other masters without a partial brand list.
  */
 export const EDGE_MASTER_SNAPSHOT_MIN_VERSION = 1;
 export const EDGE_MASTER_SNAPSHOT_VERSION_HEADER = "x-edge-snapshot-version";
 
 /** Caps keep a corrupt or hostile response from exhausting edge memory. */
-const MAX_BRANDS = 200;
+export const EDGE_MASTER_BRANDS_PAGE_SIZE = 200;
 const MAX_UOMS = 1000;
 const MAX_LOCATIONS = 200;
 const MAX_ACCOUNTS = 5000;
 const MAX_MAPPINGS = 200;
 
 const name150 = z.string().min(1).max(150);
+
+/** Query negotiation survives proxies that remove the version header. */
+export const edgeMasterSnapshotQuerySchema = z
+  .strictObject({
+    snapshotVersion: z.enum(["1", "2"]).optional(),
+    brandPage: z.literal("1").optional(),
+    brandCursor: brandIdSchema.optional(),
+  })
+  .superRefine((query, ctx) => {
+    if (query.brandCursor !== undefined && query.brandPage === undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["brandCursor"],
+        message: "Brand cursor requires paginated brands",
+      });
+    if (query.brandPage !== undefined && query.snapshotVersion === "1")
+      ctx.addIssue({
+        code: "custom",
+        path: ["brandPage"],
+        message: "Paginated brands require snapshot version 2",
+      });
+  });
 
 /** Same row as the bootstrap bundle's brand (theme and logo have no FK). */
 export const edgeMasterBrandSchema = edgeBootstrapBrandSchema;
@@ -156,8 +180,13 @@ export const edgeMasterSnapshotSchema = z
     legalEntityId: legalEntityIdSchema,
     /** Version 2 only: `outlets.brand_id` of the credential's outlet. */
     brandId: brandIdSchema.optional(),
-    /** Version 2 only: every brand of the tenant. */
-    brands: z.array(edgeMasterBrandSchema).max(MAX_BRANDS).optional(),
+    /** Version 2 only: all tenant brands, or one explicitly requested page. */
+    brands: z
+      .array(edgeMasterBrandSchema)
+      .max(EDGE_MASTER_BRANDS_PAGE_SIZE)
+      .optional(),
+    /** Signed last non-outlet brand of this page; absent after the final page. */
+    nextBrandCursor: brandIdSchema.optional(),
     uoms: z.array(edgeMasterUomSchema).max(MAX_UOMS),
     stockLocations: z.array(edgeMasterStockLocationSchema).max(MAX_LOCATIONS),
     chartOfAccounts: z.array(edgeMasterAccountSchema).max(MAX_ACCOUNTS),
@@ -190,6 +219,8 @@ export const edgeMasterSnapshotSchema = z
         issue(["brands"], "Version 1 snapshots carry no brands");
       if (snapshot.brandId !== undefined)
         issue(["brandId"], "Version 1 snapshots carry no brandId");
+      if (snapshot.nextBrandCursor !== undefined)
+        issue(["nextBrandCursor"], "Version 1 snapshots carry no brand cursor");
     } else {
       if (snapshot.brands === undefined)
         issue(["brands"], "Version 2 snapshots list the tenant's brands");
@@ -205,6 +236,15 @@ export const edgeMasterSnapshotSchema = z
         !snapshot.brands.some((row) => row.id === snapshot.brandId)
       )
         issue(["brandId"], "The outlet's brand is not in the snapshot");
+      if (
+        snapshot.nextBrandCursor !== undefined &&
+        (snapshot.nextBrandCursor === snapshot.brandId ||
+          !snapshot.brands?.some((row) => row.id === snapshot.nextBrandCursor))
+      )
+        issue(
+          ["nextBrandCursor"],
+          "Brand cursor is not a non-outlet page brand",
+        );
     }
     snapshot.uoms.forEach((row, index) => {
       if (row.tenantId !== tenantId) wrongTenant(["uoms", index, "tenantId"]);

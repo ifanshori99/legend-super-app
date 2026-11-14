@@ -98,31 +98,41 @@ const CATALOG_AGGREGATE_TYPE = catalogRecordUpdatedEvent.entry.aggregateType;
 /** Placeholders written per INSERT statement (bind parameters stay bounded). */
 const PLACEHOLDER_CHUNK = 200;
 
-/** Plain read (no lock): is this node blocked or on a different brand now? */
+/**
+ * Hold the outlet's brand stable until the caller commits its delivery read.
+ * Take this lock before a link cursor lock, matching the publisher's order.
+ */
+export async function isCatalogDeliveryRefusedTx(
+  tx: EdgeTx,
+  node: { tenantId: string; outletId: string; edgeNodeId: string },
+): Promise<boolean> {
+  const outlet = await tx.execute(
+    sql`SELECT 1 FROM outlets o JOIN edge_nodes n ON n.tenant_id = o.tenant_id AND n.outlet_id = o.id WHERE o.tenant_id = ${node.tenantId}::uuid AND o.id = ${node.outletId}::uuid AND n.id = ${node.edgeNodeId}::uuid AND n.status = 'active' FOR SHARE OF o`,
+  );
+  if (!outlet.rows.length) return true;
+  return isCatalogRefused(tx, node);
+}
+
+/** Caller already holds the outlet lock; safe to re-check under a cursor lock. */
 async function isCatalogRefused(
   tx: EdgeTx,
-  node: { edgeNodeId: string },
+  node: { tenantId: string; outletId: string; edgeNodeId: string },
 ): Promise<boolean> {
   const refused = await tx.execute(
-    sql`SELECT 1 FROM edge_catalog_publisher_cursors c JOIN outlets o ON o.tenant_id = c.tenant_id AND o.id = c.outlet_id WHERE c.edge_node_id = ${node.edgeNodeId}::uuid AND (c.blocked_at IS NOT NULL OR c.brand_id <> o.brand_id) LIMIT 1`,
+    sql`SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM edge_nodes n JOIN outlets o ON o.tenant_id = n.tenant_id AND o.id = n.outlet_id WHERE n.tenant_id = ${node.tenantId}::uuid AND n.outlet_id = ${node.outletId}::uuid AND n.id = ${node.edgeNodeId}::uuid AND n.status = 'active') OR EXISTS (SELECT 1 FROM edge_catalog_publisher_cursors c JOIN outlets o ON o.tenant_id = c.tenant_id AND o.id = c.outlet_id WHERE c.tenant_id = ${node.tenantId}::uuid AND c.outlet_id = ${node.outletId}::uuid AND c.edge_node_id = ${node.edgeNodeId}::uuid AND (c.blocked_at IS NOT NULL OR c.brand_id <> o.brand_id))`,
   );
   return refused.rows.length > 0;
 }
 
 /**
- * Read path (legend-3k41y): check the refusal first WITHOUT the cursor lock, so
- * a healthy node's read never queues behind the publisher or an ack. Not
- * refused: nothing to do. Refused: neutralizeCatalogRows takes the lock and
- * re-checks under it (a refusal cleared meanwhile changes nothing). A brand
- * move committed before this statement is seen here; one committing after the
- * check had the same exposure under lock-first (a brand change takes no cursor
- * lock), so the window does not widen.
+ * Read path (legend-3k41y): hold the outlet stable before checking refusal and
+ * through the caller's queue SELECT. Healthy reads take no link cursor lock;
+ * refused reads take it and re-check before replacing catalog rows in place.
  */
 export async function neutralizeCatalogRowsIfRefused(
   tx: EdgeTx,
   node: { tenantId: string; outletId: string; edgeNodeId: string },
 ): Promise<number> {
-  if (!(await isCatalogRefused(tx, node))) return 0;
   return neutralizeCatalogRows(tx, node);
 }
 
@@ -147,6 +157,7 @@ export async function neutralizeCatalogRows(
   tx: EdgeTx,
   node: { tenantId: string; outletId: string; edgeNodeId: string },
 ): Promise<number> {
+  if (!(await isCatalogDeliveryRefusedTx(tx, node))) return 0;
   const cursor = await lockSyncCursor(tx, node, "cloud_to_edge");
   if (!(await isCatalogRefused(tx, node))) return 0;
   const where = sql`edge_node_id = ${node.edgeNodeId}::uuid AND direction = 'cloud_to_edge' AND status = 'pending' AND aggregate_type = ${CATALOG_AGGREGATE_TYPE} AND link_seq > ${cursor.acked_out_seq}`;

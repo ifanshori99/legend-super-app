@@ -14,13 +14,14 @@
 //   (integrity and misrouting only; authenticity comes from TLS).
 // - Full snapshot, deterministic order (id, or code for accounts), parsed
 //   with the shared schema before it is signed.
-import { and, asc, DrizzleQueryError, eq } from "drizzle-orm";
+import { and, asc, DrizzleQueryError, eq, gt, ne } from "drizzle-orm";
 import { DatabaseError } from "pg";
-import { CoreError } from "@starter/shared/core";
+import { brandIdSchema, CoreError, type BrandId } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import {
   EDGE_MASTER_SNAPSHOT_MIN_VERSION,
   EDGE_MASTER_SNAPSHOT_VERSION,
+  EDGE_MASTER_BRANDS_PAGE_SIZE,
   edgeMasterSnapshotSchema,
   type EdgeMasterSnapshotResponse,
 } from "@starter/shared/edge/master-sync";
@@ -76,6 +77,12 @@ const denied = () =>
     "Edge node tidak dapat mengambil data master outlet ini.",
   );
 
+type SnapshotOptions = {
+  snapshotVersion?: number;
+  brandPage?: boolean;
+  brandCursor?: BrandId;
+};
+
 /**
  * The signed master snapshot for one verified edge node. `presentedCredential`
  * is the bearer token that `verifyEdgeCredential` accepted for `node`.
@@ -83,7 +90,7 @@ const denied = () =>
 export async function buildEdgeMasterSnapshot(
   node: VerifiedEdgeNode,
   presentedCredential: string,
-  options: { snapshotVersion?: number } = {},
+  options: SnapshotOptions = {},
 ): Promise<EdgeMasterSnapshotResponse> {
   // Version 2 (brands) only for an edge that asked; an older edge accepts the
   // literal version 1 only, so the default is exactly the old snapshot.
@@ -106,7 +113,12 @@ export async function buildEdgeMasterSnapshot(
     outletId,
   );
 
-  const snapshot = await readSnapshot(context, verified, version);
+  if (
+    (options.brandPage && version < 2) ||
+    (options.brandCursor !== undefined && !options.brandPage)
+  )
+    throw new CoreError("VALIDATION_ERROR", "Kursor brand tidak valid.");
+  const snapshot = await readSnapshot(context, verified, version, options);
 
   return {
     snapshot,
@@ -123,9 +135,10 @@ async function readSnapshot(
   context: ReturnType<typeof outletContext>,
   scope: SnapshotScope,
   version: number,
+  options: SnapshotOptions,
 ) {
   try {
-    return await readSnapshotInTenant(context, scope, version);
+    return await readSnapshotInTenant(context, scope, version, options);
   } catch (error) {
     if (!isDatabaseError(error)) throw error;
     throw masterReadFailed(error);
@@ -136,6 +149,7 @@ function readSnapshotInTenant(
   context: ReturnType<typeof outletContext>,
   { tenantId, outletId, edgeNodeId }: SnapshotScope,
   version: number,
+  options: SnapshotOptions,
 ) {
   return withTenant(db, context, async (tx) => {
     const [tenant] = await tx
@@ -169,14 +183,69 @@ function readSnapshotInTenant(
     if (!edgeNode) throw denied();
     const { legalEntityId } = outlet;
 
-    const brandRows =
-      version >= 2
-        ? await tx
-            .select()
-            .from(brands)
-            .where(eq(brands.tenantId, tenantId))
-            .orderBy(asc(brands.id))
-        : [];
+    let brandRows: (typeof brands.$inferSelect)[] = [];
+    let nextBrandCursor: BrandId | undefined;
+    let responseVersion = version;
+    if (version >= 2 && options.brandPage) {
+      // A cursor is an existing non-outlet brand in this tenant. An arbitrary
+      // or foreign id must not silently skip some of this tenant's brands.
+      if (options.brandCursor !== undefined) {
+        const [cursor] = await tx
+          .select({ id: brands.id })
+          .from(brands)
+          .where(
+            and(
+              eq(brands.tenantId, tenantId),
+              eq(brands.id, options.brandCursor),
+              ne(brands.id, outlet.brandId),
+            ),
+          )
+          .limit(1);
+        if (!cursor)
+          throw new CoreError("VALIDATION_ERROR", "Kursor brand tidak valid.");
+      }
+      const [ownBrand] = await tx
+        .select()
+        .from(brands)
+        .where(
+          and(eq(brands.tenantId, tenantId), eq(brands.id, outlet.brandId)),
+        )
+        .limit(1);
+      if (!ownBrand) throw denied();
+      const page = await tx
+        .select()
+        .from(brands)
+        .where(
+          and(
+            eq(brands.tenantId, tenantId),
+            ne(brands.id, outlet.brandId),
+            options.brandCursor === undefined
+              ? undefined
+              : gt(brands.id, options.brandCursor),
+          ),
+        )
+        .orderBy(asc(brands.id))
+        // Reserve one slot for the outlet brand. The extra row is lookahead.
+        .limit(EDGE_MASTER_BRANDS_PAGE_SIZE);
+      const others = page.slice(0, EDGE_MASTER_BRANDS_PAGE_SIZE - 1);
+      brandRows = [ownBrand, ...others];
+      const lastOther = others[others.length - 1];
+      if (page.length === EDGE_MASTER_BRANDS_PAGE_SIZE && lastOther)
+        nextBrandCursor = brandIdSchema.parse(lastOther.id);
+    } else if (version >= 2) {
+      brandRows = await tx
+        .select()
+        .from(brands)
+        .where(eq(brands.tenantId, tenantId))
+        .orderBy(asc(brands.id))
+        .limit(EDGE_MASTER_BRANDS_PAGE_SIZE + 1);
+      // Older edges understand a complete v1 snapshot. Do not send a silent
+      // partial brand list or lose all non-brand masters on a large tenant.
+      if (brandRows.length > EDGE_MASTER_BRANDS_PAGE_SIZE) {
+        responseVersion = EDGE_MASTER_SNAPSHOT_MIN_VERSION;
+        brandRows = [];
+      }
+    }
     const uomRows = await tx
       .select()
       .from(uoms)
@@ -214,14 +283,15 @@ function readSnapshotInTenant(
       .orderBy(asc(accountMappings.role));
 
     const parsed = edgeMasterSnapshotSchema.safeParse({
-      version,
+      version: responseVersion,
       issuedAt: new Date().toISOString(),
       tenantId,
       outletId,
       legalEntityId,
-      ...(version >= 2
+      ...(responseVersion >= 2
         ? {
             brandId: outlet.brandId,
+            ...(nextBrandCursor === undefined ? {} : { nextBrandCursor }),
             brands: brandRows.map((row) => ({
               id: row.id,
               tenantId: row.tenantId,

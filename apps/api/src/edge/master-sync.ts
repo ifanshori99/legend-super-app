@@ -62,6 +62,7 @@
 // Never put the credential or SQL parameters in an error: codes only.
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import {
+  CATALOG_PROTOCOL_MIN_VERSION,
   CATALOG_PROTOCOL_VERSION,
   CATALOG_SYNC_LIMIT_DEFAULT,
   EDGE_CATALOG_SYNC_PATH,
@@ -110,6 +111,65 @@ type Tx = Parameters<Parameters<typeof withTenant>[2]>[0];
 const MIN_SYNC_INTERVAL_MS = 60_000;
 /** Catalog pulls in one tick while a stream reports a backlog (bounded). */
 const MAX_CATALOG_ROUNDS = 20;
+/** A corrupt continuation must not keep the master sync running forever. */
+const MAX_MASTER_BRAND_PAGES = 1000;
+
+type MasterCapability = {
+  version: EdgeMasterSnapshot["version"] | null;
+  pending: boolean;
+};
+// The runtime shares its config between bootstrap and the periodic loop. A
+// restart starts conservatively until its boot-time master sync has committed.
+const masterCapabilities = new WeakMap<EdgeBootstrapConfig, MasterCapability>();
+
+export function markEdgeMasterSnapshotPending(
+  config: EdgeBootstrapConfig,
+): void {
+  const previous = masterCapabilities.get(config);
+  masterCapabilities.set(config, {
+    version: previous?.version ?? null,
+    pending: true,
+  });
+}
+
+/** Call only after every signed master page has committed locally. */
+export async function recordAppliedMasterSnapshotVersion(
+  config: EdgeBootstrapConfig,
+  version: EdgeMasterSnapshot["version"],
+  database: typeof db = db,
+): Promise<void> {
+  const previous = masterCapabilities.get(config);
+  if (version === 2 && previous?.version !== 2) {
+    const claims = parseEdgeCredential(config.credential);
+    if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
+    // Protocol 2 may have checkpointed past recipes of other brands. Rewind
+    // only its cursor on widening; retain freshness and all stored documents.
+    try {
+      await withTenant(database, edgeNodeContext(claims), async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended(${`edge-catalog-sync:${claims.tenantId}:recipes`.toLowerCase()}, 0))`,
+        );
+        await tx
+          .update(edgePullCheckpoints)
+          .set({ watermark: null, updatedAt: new Date() })
+          .where(
+            and(
+              eq(edgePullCheckpoints.tenantId, claims.tenantId),
+              eq(edgePullCheckpoints.outletId, claims.outletId),
+              eq(edgePullCheckpoints.edgeNodeId, claims.edgeNodeId),
+              eq(
+                edgePullCheckpoints.stream,
+                catalogCheckpointStream("recipes"),
+              ),
+            ),
+          );
+      });
+    } catch {
+      throw new EdgeMasterSyncError("LOCAL_WRITE");
+    }
+  }
+  masterCapabilities.set(config, { version, pending: false });
+}
 
 /**
  * legend-10nex: the last success of each critical catalog stream, from its
@@ -216,16 +276,29 @@ export async function fetchVerifiedMasterSnapshot(
   config: EdgeBootstrapConfig,
   options: EdgeBootstrapOptions = {},
 ): Promise<EdgeMasterSnapshot> {
+  return fetchVerifiedMasterSnapshotPage(config, options);
+}
+
+async function fetchVerifiedMasterSnapshotPage(
+  config: EdgeBootstrapConfig,
+  options: EdgeBootstrapOptions,
+  cursor?: EdgeMasterSnapshot["nextBrandCursor"],
+): Promise<EdgeMasterSnapshot> {
   const claims = parseEdgeCredential(config.credential);
   if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
+  const query = new URLSearchParams({
+    snapshotVersion: String(EDGE_MASTER_SNAPSHOT_VERSION),
+    brandPage: "1",
+  });
+  if (cursor !== undefined) query.set("brandCursor", cursor);
   let body: unknown;
   try {
     body = await cloudGetJson({
       cloudUrl: config.cloudUrl,
       credential: config.credential,
-      path: EDGE_MASTER_SNAPSHOT_PATH,
-      // Asks for version 2 (brands); a cloud that predates it ignores the
-      // header and serves version 1, which this edge still applies.
+      path: `${EDGE_MASTER_SNAPSHOT_PATH}?${query.toString()}`,
+      // Query negotiation survives stripped headers. A cloud predating both
+      // options ignores them and returns version 1, still accepted below.
       headers: {
         [EDGE_MASTER_SNAPSHOT_VERSION_HEADER]: String(
           EDGE_MASTER_SNAPSHOT_VERSION,
@@ -254,6 +327,47 @@ export async function fetchVerifiedMasterSnapshot(
   if (!parsed.success) throw new EdgeMasterSyncError("BAD_SNAPSHOT");
   assertScope(claims, parsed.data);
   return parsed.data;
+}
+
+/** Bounded memory: validate and apply one signed page before requesting more. */
+export async function* fetchVerifiedMasterSnapshotPages(
+  config: EdgeBootstrapConfig,
+  options: EdgeBootstrapOptions = {},
+): AsyncGenerator<EdgeMasterSnapshot> {
+  let cursor: EdgeMasterSnapshot["nextBrandCursor"];
+  let first: EdgeMasterSnapshot | undefined;
+  for (let page = 0; page < MAX_MASTER_BRAND_PAGES; page += 1) {
+    const snapshot = await fetchVerifiedMasterSnapshotPage(
+      config,
+      options,
+      cursor,
+    );
+    if (first === undefined) first = snapshot;
+    else if (
+      snapshot.version !== first.version ||
+      !sameId(snapshot.legalEntityId, first.legalEntityId) ||
+      snapshot.brandId !== first.brandId
+    )
+      throw new EdgeMasterSyncError("SCOPE_MISMATCH");
+    const others = (snapshot.brands ?? [])
+      .filter((row) => row.id !== snapshot.brandId)
+      .map((row) => row.id.toLowerCase());
+    const next = snapshot.nextBrandCursor;
+    const incomingCursor = cursor?.toLowerCase();
+    if (
+      (incomingCursor !== undefined &&
+        others.some((id) => id <= incomingCursor)) ||
+      (next !== undefined &&
+        ((incomingCursor !== undefined &&
+          next.toLowerCase() <= incomingCursor) ||
+          next.toLowerCase() !== others.sort().at(-1)))
+    )
+      throw new EdgeMasterSyncError("BAD_SNAPSHOT");
+    yield snapshot;
+    if (next === undefined) return;
+    cursor = next;
+  }
+  throw new EdgeMasterSyncError("MASTER_PAGES_EXCEEDED");
 }
 
 function assertScope(claims: Claims, snapshot: EdgeMasterSnapshot): void {
@@ -622,8 +736,30 @@ export async function syncEdgeMasters(
   const claims = parseEdgeCredential(config.credential);
   if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
   guardMasterImport();
-  const snapshot = await fetchVerifiedMasterSnapshot(config, options);
-  return applyEdgeMasterSnapshot(claims, snapshot, database);
+  let counts: EdgeMasterSyncCounts | undefined;
+  let version: EdgeMasterSnapshot["version"] | undefined;
+  let brandCount = 0;
+  for await (const snapshot of fetchVerifiedMasterSnapshotPages(
+    config,
+    options,
+  )) {
+    if (version === undefined) {
+      version = snapshot.version;
+      markEdgeMasterSnapshotPending(config);
+    }
+    const pageCounts = await applyEdgeMasterSnapshot(
+      claims,
+      snapshot,
+      database,
+    );
+    // The outlet's own brand repeats on every page to preserve scope checks.
+    brandCount += pageCounts.brands - (counts === undefined ? 0 : 1);
+    counts = pageCounts;
+  }
+  if (counts === undefined || version === undefined)
+    throw new EdgeMasterSyncError("BAD_SNAPSHOT");
+  await recordAppliedMasterSnapshotVersion(config, version, database);
+  return { ...counts, brands: brandCount };
 }
 
 /** A catalog stream stopped early (legend-24318); code only, never record data. */
@@ -709,7 +845,13 @@ export function startEdgeMasterSyncLoop(input: {
     cloudGetJson({
       cloudUrl: input.config.cloudUrl,
       credential: input.config.credential,
-      path: catalogPath(stream, since),
+      path: catalogPath(
+        stream,
+        since,
+        masterCapabilities.get(input.config)?.version === 2
+          ? CATALOG_PROTOCOL_VERSION
+          : CATALOG_PROTOCOL_MIN_VERSION,
+      ),
       fetchImpl: input.options?.fetchImpl,
       timeoutMs: input.options?.timeoutMs,
       signal: abort.signal,
@@ -719,6 +861,8 @@ export function startEdgeMasterSyncLoop(input: {
   const pullCatalogRounds = async (): Promise<void> => {
     const claims = parseEdgeCredential(input.config.credential);
     if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
+    if (masterCapabilities.get(input.config)?.pending)
+      throw new EdgeMasterSyncError("MASTERS_INCOMPLETE");
     guardMasterImport();
     const catalog = input.catalog;
     const context = catalog?.context ?? edgeNodeContext(claims);
@@ -844,13 +988,17 @@ export function startEdgeMasterSyncLoop(input: {
   };
 }
 
-function catalogPath(stream: CatalogSyncStream, since: string | null): string {
+function catalogPath(
+  stream: CatalogSyncStream,
+  since: string | null,
+  protocolVersion: number,
+): string {
   const query = new URLSearchParams({
     stream,
     limit: String(CATALOG_SYNC_LIMIT_DEFAULT),
     // Tells the cloud this edge reads the page version. A cloud that predates
     // it rejects the unknown parameter (HTTP 400): see catalog-puller.ts.
-    protocolVersion: String(CATALOG_PROTOCOL_VERSION),
+    protocolVersion: String(protocolVersion),
   });
   if (since !== null) query.set("since", since);
   return `${EDGE_CATALOG_SYNC_PATH}?${query.toString()}`;

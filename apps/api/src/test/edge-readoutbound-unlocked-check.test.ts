@@ -1,6 +1,6 @@
 // legend-3k41y: readOutbound checks "is this node refused?" (cursor blocked_at
-// set, or the cursor's brand differs from the outlet's brand) with a plain
-// committed-state read FIRST. A healthy node does not take the cloud_to_edge
+// set, or the cursor's brand differs from the outlet's brand) while holding
+// an outlet SHARE lock through queue selection. A healthy node does not take the cloud_to_edge
 // cursor lock at all; a refused node takes the lock, re-checks under it, and
 // only then replaces its pending catalog rows with placeholders.
 //
@@ -339,17 +339,22 @@ describe("legend-3k41y unlocked refusal check in readOutbound", () => {
 
   it("legend-3k41y refusal cleared while waiting for the lock: nothing is dead-lettered and the catalog rows stay", async () => {
     const f = await setup();
-    await moveBrand(f, { block: false });
+    await owner.query(
+      "UPDATE edge_catalog_publisher_cursors SET blocked_at=now() WHERE edge_node_id=$1",
+      [f.nodeId],
+    );
     const lock = await holdCursorLock(f.nodeId);
     const { promise } = startRead(f);
     try {
       // The read saw the refusal and is queued behind our lock ...
       await untilALockWaiter();
-      // ... and the outlet moves back to its old brand before it gets in.
-      await owner.query(`UPDATE outlets SET brand_id = $1 WHERE id = $2`, [
-        f.world.brandId,
-        f.world.outletA,
-      ]);
+      // ... and the publisher block clears before it gets in. Changing the
+      // outlet brand here would wait on the reader's SHARE lock; the new
+      // second-opinion race test verifies that required serialization.
+      await owner.query(
+        "UPDATE edge_catalog_publisher_cursors SET blocked_at=NULL WHERE edge_node_id=$1",
+        [f.nodeId],
+      );
     } finally {
       await lock.release();
     }

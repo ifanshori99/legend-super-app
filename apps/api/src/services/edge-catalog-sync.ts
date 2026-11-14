@@ -87,6 +87,7 @@ import { promotions, vouchers } from "../db/schema/crm-promo.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
+import { isCatalogDeliveryRefusedTx } from "./edge-queue.service.ts";
 import type { VerifiedEdgeNode } from "./staff-pin-sync.ts";
 import { verifiedEdgeNodeSchema } from "./staff-pin-sync.ts";
 
@@ -842,6 +843,38 @@ export function negotiateCatalogProtocolVersion(requested: number): number {
  * order. Tenant and outlet come only from the arguments (the verified edge
  * credential); `query` carries the stream, the cursor and the limit only.
  */
+export async function listCatalogRecordsForNode(
+  database: typeof appDb,
+  input: VerifiedEdgeNode & { readonly query: CatalogSyncQuery },
+): Promise<CatalogSyncPage> {
+  const node = verifiedEdgeNodeSchema.parse({
+    tenantId: input.tenantId,
+    outletId: input.outletId,
+    edgeNodeId: input.edgeNodeId,
+  });
+  const query = catalogSyncQuerySchema.parse(input.query);
+  const context = outletContext(
+    establishTenantContext({
+      tenantId: node.tenantId,
+      brandId: null,
+      source: "device",
+    }),
+    node.outletId,
+  );
+  return withTenant(database, context, async (tx) => {
+    if (
+      BRAND_DEPENDENT_CATALOG_STREAMS.has(query.stream) &&
+      (await isCatalogDeliveryRefusedTx(tx, node))
+    )
+      throw new CoreError(
+        "FORBIDDEN",
+        "Edge node diblokir: brand outlet berubah, provisi ulang node.",
+      );
+    return listCatalogRecordsSinceTx(tx, { ...node, query });
+  });
+}
+
+/** Trusted internal scanner; authenticated HTTP delivery uses the node guard above. */
 export async function listCatalogRecordsSince(
   database: typeof appDb,
   input: {

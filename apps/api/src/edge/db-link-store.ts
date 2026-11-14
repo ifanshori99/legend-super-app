@@ -381,10 +381,11 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
         const { offset } = await peerNumbering(tx, outbound);
         // legend-3k41y: fail closed. A node whose catalog publisher is blocked,
         // or whose outlet brand no longer matches the brand its queue was
-        // published for, receives no catalog row. The refusal is checked first
-        // without the cursor lock (a healthy node never waits). Only when
-        // refused, under the lock (the publisher's enqueue takes the same one)
-        // it is re-checked and every pending catalog row is replaced IN PLACE
+        // published for, receives no catalog row. An outlet SHARE lock keeps
+        // its brand stable through the refusal check and queue SELECT. Healthy
+        // reads take no link cursor lock. Only when refused, under that cursor
+        // lock (the publisher's enqueue takes the same one), refusal is checked
+        // again and every pending catalog row is replaced IN PLACE
         // by a no-op placeholder on its own link slot
         // (neutralizeCatalogRowsIfRefused); only then
         // does the SELECT below run, in the same transaction. No row is
