@@ -80,7 +80,6 @@ import {
   actorOf,
   bank,
   cash,
-  evidenceKeyFor,
   uploadEvidence,
   installPayoutWorld,
   netOf,
@@ -232,12 +231,7 @@ describe("settle: the ledger is credited exactly once (R10)", () => {
     await W.postLockedJournal(runId, slips);
     const batchId = await W.approvedBatch(runId, "cash");
     const items = await W.itemsOf(batchId);
-    await W.handover(
-      batchId,
-      items.map(idOf),
-      APP2,
-      evidenceKeyFor(W.tenantId, batchId, "serah-terima.pdf"),
-    );
+    await W.handover(batchId, items.map(idOf), APP2);
 
     const postings = await W.postingsOf(batchId);
     expect(postings).toHaveLength(1);

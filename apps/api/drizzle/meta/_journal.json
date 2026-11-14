@@ -2409,6 +2409,13 @@
       "when": 1794628540042,
       "tag": "0600_payout_item_payee_display",
       "breakpoints": true
+    },
+    {
+      "idx": 358,
+      "version": "7",
+      "when": 1794628600000,
+      "tag": "0608_payout_resolution_withdraw_guard",
+      "breakpoints": true
     }
   ]
 }

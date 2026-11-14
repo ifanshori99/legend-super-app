@@ -813,7 +813,6 @@ const handover = (batchId: string, itemIds: string[], by = APP) =>
   inTx((tx) =>
     confirmCashHandover(tx, actor(by), batchId, {
       itemIds,
-      evidenceKey: uploadEvidence(batchId, "cash.jpg"),
     } as never),
   );
 const succeedAll = (items: Row[], batchId: string) =>

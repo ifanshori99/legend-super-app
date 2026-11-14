@@ -21,6 +21,7 @@ import {
   payoutRunParamsSchema,
   resolveManualItemsSchema,
   upsertPayoutConfigInputSchema,
+  withdrawResolutionSchema,
 } from "@starter/shared/validators/payroll-payout";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -51,6 +52,7 @@ import {
   confirmManualItems,
   resolveManualItems,
 } from "../services/payroll-payout-manual.service.ts";
+import { withdrawResolutionProposal } from "../services/payroll-payout-withdraw.service.ts";
 import {
   approveDisbursementBatch,
   cancelDisbursementBatch,
@@ -314,6 +316,28 @@ payrollPayoutRouter.post(
         input,
         payoutEvidenceStoreOf(req, context),
       ),
+    );
+    res.json({ data });
+  },
+);
+
+// Takes back a step-one resolve proposal (wrong proof). The item stays
+// `exported` and its slip stays blocked; only the proposal is cleared.
+payrollPayoutRouter.post(
+  "/disbursement-batches/:id/withdraw-resolution",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.disburse.approve"),
+  stepUp,
+  jsonBody,
+  passwordStepUp,
+  async (req, res) => {
+    const { id } = payoutBatchParamsSchema.parse(req.params);
+    const input = withdrawResolutionSchema.parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      withdrawResolutionProposal(tx, actor, id, input),
     );
     res.json({ data });
   },
