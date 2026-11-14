@@ -303,6 +303,7 @@ async function receiptPendingStale(
   const parked = rowsOf(
     await tx.execute(
       sql`SELECT p.idempotency_key AS ref_id, p.outlet_id, p.first_failed_at AS occurred_at,
+                 p.event_name, p.payload ->> 'refundId' AS refund_id,
                  p.payload ->> 'orderId' AS order_ulid,
                  coalesce(p.payload ->> 'paymentIntentId', p.payload ->> 'intentId') AS payload_intent
             FROM auto_journal_parked p
@@ -386,6 +387,80 @@ async function receiptPendingStale(
       tenderIntents.set(key, list);
     }
   }
+  // Mirror sessionDepositAt's receipt graph without its locks or posting
+  // checks. A reused DP can connect this sale to receipts on an older session.
+  // Keep the sale bound in SQL so credit uses after it (even by a microsecond)
+  // cannot make an unrelated receipt appear in this read-only report.
+  const depositIntents = new Map<string, string[]>();
+  if (orderUuids.size > 0) {
+    const deposits = rowsOf(
+      await tx.execute(sql`
+        WITH RECURSIVE scoped_orders AS (
+          SELECT o.id, o.tenant_id, o.outlet_id, o.table_session_id, o.deposit_applied_idr,
+                 CASE WHEN EXISTS (SELECT 1 FROM pos_orders sp
+                         WHERE sp.tenant_id = o.tenant_id AND sp.order_id = o.id)
+                      THEN (SELECT sp.completed_at FROM pos_orders sp
+                         WHERE sp.tenant_id = o.tenant_id AND sp.order_id = o.id)
+                      WHEN o.channel IN ('qr', 'facility') AND o.payment_mode = 'pay_first'
+                      THEN o.fired_at END AS sale_at
+            FROM orders o
+           WHERE o.tenant_id = ${scope.tenantId}::uuid
+             AND ${outletClause(sql`o.outlet_id`, [
+               ...new Set(parked.map((row) => String(row.outlet_id))),
+             ])}
+             AND o.id IN (${sql.join(
+               [...new Set(orderUuids.values())].map((id) => sql`${id}::uuid`),
+               sql`, `,
+             )})
+        ), sources AS (
+          SELECT o.id AS order_id, o.outlet_id, a.table_session_id AS session_id,
+                 a.payment_intent_id AS intent_id
+            FROM scoped_orders o
+            JOIN reservation_deposit_allocations a
+              ON a.tenant_id = o.tenant_id AND a.outlet_id = o.outlet_id
+           WHERE o.deposit_applied_idr > 0
+          UNION
+          SELECT o.id, o.outlet_id, u.table_session_id, r.payment_intent_id
+            FROM scoped_orders o
+            JOIN reservation_customer_credit_uses u
+              ON u.tenant_id = o.tenant_id AND u.outlet_id = o.outlet_id
+            JOIN reservation_deposit_remainders r
+              ON r.tenant_id = u.tenant_id AND r.outlet_id = u.outlet_id
+             AND r.id = u.remainder_id
+           WHERE o.deposit_applied_idr > 0 AND u.created_at < o.sale_at
+        ), connected(order_id, outlet_id, node) AS (
+          SELECT o.id, o.outlet_id, 's:' || o.table_session_id::text
+            FROM scoped_orders o
+           WHERE o.deposit_applied_idr > 0 AND o.table_session_id IS NOT NULL
+             AND o.sale_at IS NOT NULL
+          UNION
+          SELECT c.order_id, c.outlet_id,
+                 CASE WHEN c.node = 's:' || s.session_id::text
+                      THEN 'i:' || s.intent_id::text
+                      ELSE 's:' || s.session_id::text END
+            FROM connected c
+            JOIN sources s ON s.order_id = c.order_id AND s.outlet_id = c.outlet_id
+             AND (c.node = 's:' || s.session_id::text OR c.node = 'i:' || s.intent_id::text)
+        )
+        SELECT c.order_id::text AS order_id, c.outlet_id::text AS outlet_id,
+               substring(c.node from 3) AS intent_id, NULL::text AS refund_id
+          FROM connected c WHERE left(c.node, 1) = 'i'
+        UNION
+        SELECT d.order_id::text, d.outlet_id::text, d.payment_intent_id::text,
+               d.pos_refund_id::text
+          FROM scoped_orders o
+          JOIN pos_deposit_refunds d ON d.tenant_id = o.tenant_id
+           AND d.outlet_id = o.outlet_id AND d.order_id = o.id
+        ORDER BY order_id, outlet_id, intent_id, refund_id
+      `),
+    );
+    for (const row of deposits) {
+      const key = `${String(row.outlet_id)}:${String(row.order_id)}:${row.refund_id ?? "sale"}`;
+      const list = depositIntents.get(key) ?? [];
+      list.push(String(row.intent_id).toLowerCase());
+      depositIntents.set(key, list);
+    }
+  }
   const resolved = parked.map((row) => {
     const orderUuid =
       typeof row.order_ulid === "string"
@@ -405,10 +480,28 @@ async function receiptPendingStale(
       payloadIntent === null && orderUuid !== undefined
         ? (tenderIntents.get(`${String(row.outlet_id)}:${orderUuid}`) ?? [])
         : [];
+    const depositSource =
+      row.event_name === "order.paid"
+        ? "sale"
+        : typeof row.refund_id === "string" && UUID.test(row.refund_id)
+          ? row.refund_id.toLowerCase()
+          : null;
+    const fromDeposits =
+      payloadIntent === null &&
+      orderUuid !== undefined &&
+      depositSource !== null
+        ? (depositIntents.get(
+            `${String(row.outlet_id)}:${orderUuid}:${depositSource}`,
+          ) ?? [])
+        : [];
     const candidates = [
       ...new Set(
         (payloadIntent === null
-          ? [order?.intentId?.toLowerCase() ?? null, ...fromTenders]
+          ? [
+              order?.intentId?.toLowerCase() ?? null,
+              ...fromTenders,
+              ...fromDeposits,
+            ]
           : [payloadIntent]
         ).filter((id): id is string => id !== null),
       ),
@@ -418,7 +511,7 @@ async function receiptPendingStale(
       orderId: orderUuid ?? null,
       total: order?.total ?? null,
       candidates,
-      tenderCandidates: new Set(fromTenders),
+      contributionCandidates: new Set([...fromTenders, ...fromDeposits]),
     };
   });
   const states = new Map<string, OutboxState>();
@@ -481,10 +574,10 @@ async function receiptPendingStale(
     }
   }
   const items = resolved.map(
-    ({ row, orderId, total, candidates, tenderCandidates }) => {
+    ({ row, orderId, total, candidates, contributionCandidates }) => {
       // One item per parked sale: show the intent whose outbox row matters most
       // (dead_lettered, then pending, then delivered, then missing); ties keep
-      // the candidate order (order, tenders; a payload intent stands alone).
+      // the candidate order (order, tenders, DP; a payload intent stands alone).
       let intentId: string | null = null;
       let outboxState: OutboxState = "missing";
       for (const candidate of candidates) {
@@ -498,11 +591,11 @@ async function receiptPendingStale(
           outboxState = state;
         }
       }
-      // An intent that comes from a tender is one share of a split payment: the
+      // An intent from a tender or DP source is one share of a split payment: the
       // sale is worth the order total. A payload or embedded intent keeps its
       // own amount.
       const intentAmount =
-        intentId && !tenderCandidates.has(intentId)
+        intentId && !contributionCandidates.has(intentId)
           ? intentAmounts.get(`${String(row.outlet_id)}:${intentId}`)
           : undefined;
       return {

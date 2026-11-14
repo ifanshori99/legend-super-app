@@ -1716,12 +1716,15 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
   };
   const sales: PosSale[] = [];
   const linkIds: string[] = [];
+  const intentLinks = new Map<string, string>();
+  const dpSales = new Set<string>();
   let outlet: string;
 
   async function seedIntent(amountIdr: number): Promise<string> {
     const linkId = randomUUID();
     const intentId = randomUUID();
     linkIds.push(linkId);
+    intentLinks.set(intentId, linkId);
     await owner.query(
       `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $6, $6, 'seed-853')`,
@@ -1882,6 +1885,175 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
     return sale;
   }
 
+  /** Native DP sources deliberately carry no order/tender payment intent. */
+  async function seedDepositSource(
+    sale: PosSale,
+    source: "allocation" | "credit" | "refund",
+    state: "pending" | "dead" = "pending",
+    options: { useAt?: string; indirect?: boolean } = {},
+  ): Promise<string> {
+    dpSales.add(sale.orderUuid);
+    const intentId = await seedIntent(80_000);
+    sale.intents.push({ id: intentId, amountIdr: 80_000 });
+    await seedOutbox(intentId, 80_000, state);
+    if (source === "refund") {
+      const refundId = randomUUID();
+      await owner.query(
+        "UPDATE orders SET status='completed' WHERE tenant_id=$1 AND id=$2 AND status<>'completed'",
+        [tenantId, sale.orderUuid],
+      );
+      await owner.query(
+        `INSERT INTO pos_order_refunds
+           (id, tenant_id, outlet_id, order_id, amount_idr, reason, reason_note, lines,
+            requested_by, approved_by, approval_request_id, refunded_at)
+         VALUES ($1,$2,$3,$4,20000,'customer_request','DP return',
+                 '[{"method":"deposit","amountIdr":20000}]','cashier','manager',$5,now())`,
+        [refundId, tenantId, outlet, sale.orderUuid, randomUUID()],
+      );
+      await owner.query(
+        `INSERT INTO pos_deposit_refunds
+           (tenant_id,outlet_id,order_id,pos_refund_id,payment_intent_id,amount_idr,released_at)
+         VALUES ($1,$2,$3,$4,$5,20000,now())`,
+        [tenantId, outlet, sale.orderUuid, refundId, intentId],
+      );
+      await owner.query(
+        `UPDATE auto_journal_parked SET event_name='order.refunded',
+           payload=payload || jsonb_build_object('refundId',$3::text)
+         WHERE tenant_id=$1 AND idempotency_key=$2`,
+        [tenantId, `aj:sale:${sale.orderUlid}`, refundId],
+      );
+      return intentId;
+    }
+    async function session(): Promise<string> {
+      const zoneId = randomUUID();
+      const tableId = randomUUID();
+      const sessionId = randomUUID();
+
+      await owner.query(
+        `INSERT INTO floor_zones(id,tenant_id,outlet_id,name,payment_mode,hours)
+         VALUES($1,$2,$3,$4,'pay_first','[]')`,
+        [zoneId, tenantId, outlet, `DP ${zoneId}`],
+      );
+      await owner.query(
+        `INSERT INTO tables(id,tenant_id,outlet_id,zone_id,code,capacity,type,layout)
+         VALUES($1,$2,$3,$4,$5,4,'regular','{}')`,
+        [tableId, tenantId, outlet, zoneId, unique().toUpperCase()],
+      );
+      await owner.query(
+        `INSERT INTO table_sessions(id,tenant_id,outlet_id,table_id,pax,payment_mode,status,
+             session_token_hash,session_token_sealed)
+         VALUES($1,$2,$3,$4,2,'pay_first','open',$5,'sealed')`,
+        [sessionId, tenantId, outlet, tableId, randomBytes(32).toString("hex")],
+      );
+      return sessionId;
+    }
+    const originalSession = await session();
+    const destination = source === "credit" ? await session() : originalSession;
+    const reservationId = randomUUID();
+
+    await owner.query(
+      `INSERT INTO reservations(id,tenant_id,outlet_id,guest_name,reserved_for,duration_minutes,pax,
+           deposit_idr,deposit_payment_id,policy_snapshot,status,source,table_session_id,seated_at)
+       VALUES($1,$2,$3,'Guest DP',now(),90,2,80000,$4,'{}','seated','staff',$5,now())`,
+      [reservationId, tenantId, outlet, intentId, originalSession],
+    );
+    if (source === "allocation")
+      await owner.query(
+        `INSERT INTO reservation_deposit_allocations
+           (tenant_id,outlet_id,reservation_id,table_session_id,payment_intent_id,amount_idr)
+         VALUES($1,$2,$3,$4,$5,80000)`,
+        [tenantId, outlet, reservationId, destination, intentId],
+      );
+    else {
+      const profileId = randomUUID();
+      const remainderId = randomUUID();
+
+      await owner.query(
+        `INSERT INTO customer_profiles(id,tenant_id,name,membership_status,whatsapp_verified_at)
+         VALUES($1,$2,'DP credit owner','active',now())`,
+        [profileId, tenantId],
+      );
+      await owner.query(
+        `INSERT INTO reservation_deposit_remainders
+           (id,tenant_id,outlet_id,reservation_id,table_session_id,payment_intent_id,
+            customer_profile_id,amount_idr,remaining_idr,kind)
+         VALUES($1,$2,$3,$4,$5,$6,$7,80000,0,'customer_credit')`,
+        [
+          remainderId,
+          tenantId,
+          outlet,
+          reservationId,
+          originalSession,
+          intentId,
+          profileId,
+        ],
+      );
+      await owner.query(
+        `INSERT INTO reservation_customer_credit_uses
+           (tenant_id,outlet_id,remainder_id,table_session_id,amount_idr,idempotency_key,created_at)
+         VALUES($1,$2,$3,$4,80000,$5,$6)`,
+        [
+          tenantId,
+          outlet,
+          remainderId,
+          destination,
+          randomUUID(),
+          options.useAt ?? "2026-03-10T04:00:00Z",
+        ],
+      );
+      if (options.indirect) {
+        // The current session reaches another receipt through the old session.
+        // A direct-only lookup would display the pending credit receipt and
+        // miss this dead-lettered receipt in the connected component.
+        const indirectIntent = await seedIntent(10_000);
+        sale.intents.push({ id: indirectIntent, amountIdr: 10_000 });
+        await seedOutbox(indirectIntent, 10_000, "dead");
+        const indirectReservation = randomUUID();
+
+        await owner.query(
+          `INSERT INTO reservations(id,tenant_id,outlet_id,guest_name,reserved_for,duration_minutes,pax,
+               deposit_idr,deposit_payment_id,policy_snapshot,status,source,table_session_id,seated_at)
+           VALUES($1,$2,$3,'Shared DP',now(),90,2,10000,$4,'{}','seated','staff',$5,now())`,
+          [
+            indirectReservation,
+            tenantId,
+            outlet,
+            indirectIntent,
+            originalSession,
+          ],
+        );
+        await owner.query(
+          `INSERT INTO reservation_deposit_allocations
+             (tenant_id,outlet_id,reservation_id,table_session_id,payment_intent_id,amount_idr)
+           VALUES($1,$2,$3,$4,$5,10000)`,
+          [
+            tenantId,
+            outlet,
+            indirectReservation,
+            originalSession,
+            indirectIntent,
+          ],
+        );
+        await owner.query(
+          `INSERT INTO reservation_deposit_allocations
+             (tenant_id,outlet_id,reservation_id,table_session_id,payment_intent_id,amount_idr)
+           VALUES($1,$2,$3,$4,$5,80000)`,
+          [tenantId, outlet, reservationId, originalSession, intentId],
+        );
+      }
+    }
+    await owner.query(
+      `UPDATE orders SET table_session_id=$3, deposit_applied_idr=80000,
+         subtotal_idr=100000,total_idr=100000 WHERE tenant_id=$1 AND id=$2`,
+      [tenantId, sale.orderUuid, destination],
+    );
+    await owner.query(
+      "UPDATE pos_orders SET completed_at='2026-03-10T05:00:00Z' WHERE tenant_id=$1 AND order_id=$2",
+      [tenantId, sale.orderUuid],
+    );
+    return intentId;
+  }
+
   async function receiptOf(sale: PosSale): Promise<{
     item: Item;
     receipt: Receipt;
@@ -1952,15 +2124,20 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
   }, 60_000);
 
   afterAll(async () => {
-    const orders = sales.map((sale) => sale.orderUuid);
-    const intents = sales.flatMap((sale) => sale.intents.map((i) => i.id));
+    // DP fixtures include immutable completed-sale/refund evidence and stay in
+    // this disposable database, like the top-level finance fixtures.
+    const cleanupSales = sales.filter((sale) => !dpSales.has(sale.orderUuid));
+    const orders = cleanupSales.map((sale) => sale.orderUuid);
+    const intents = cleanupSales.flatMap((sale) =>
+      sale.intents.map((i) => i.id),
+    );
     await owner.query(
       "DELETE FROM domain_event_outbox WHERE aggregate_id = ANY($1::uuid[])",
       [intents],
     );
     await owner.query(
       "DELETE FROM auto_journal_parked WHERE idempotency_key = ANY($1::text[])",
-      [sales.map((sale) => `aj:sale:${sale.orderUlid}`)],
+      [cleanupSales.map((sale) => `aj:sale:${sale.orderUlid}`)],
     );
     await owner.query(
       "DELETE FROM pos_order_tenders WHERE order_id = ANY($1::uuid[])",
@@ -1971,7 +2148,11 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
       [intents],
     );
     await owner.query("DELETE FROM payment_links WHERE id = ANY($1::uuid[])", [
-      linkIds,
+      linkIds.filter((id) =>
+        cleanupSales.some((sale) =>
+          sale.intents.some((intent) => intentLinks.get(intent.id) === id),
+        ),
+      ),
     ]);
     await owner.query(
       "DELETE FROM pos_orders WHERE order_id = ANY($1::uuid[])",
@@ -2059,5 +2240,129 @@ describe("finance-exceptions: receipt_pending_stale via POS tenders", () => {
       kind: KIND,
     });
     expect(summaryOf(payload, KIND).count).toBe(8);
+  });
+  describe("legend-1get7 DP receipt sources", () => {
+    it("a pending DP receipt wins over the delivered QR tender receipt", async () => {
+      const sale = await seedPosSale([
+        { amountIdr: 20_000, withIntent: true, outbox: "pending" },
+      ]);
+      await owner.query(
+        "UPDATE domain_event_outbox SET status='delivered', delivered_at=now() WHERE tenant_id=$1 AND aggregate_id=$2",
+        [tenantId, sale.intents[0]!.id],
+      );
+      const intentId = await seedDepositSource(sale, "allocation");
+      const { receipt, item } = await receiptOf(sale);
+      expect(receipt.intentId).toBe(intentId);
+      expect(receipt.outboxState).toBe("pending");
+      expect(item.amountIdr).toBe(100_000);
+    });
+
+    it("resolves the allocated reservation DP beside cash and keeps the full order amount", async () => {
+      const sale = await seedPosSale([
+        { amountIdr: 20_000, withIntent: false },
+      ]);
+      const intentId = await seedDepositSource(sale, "allocation");
+      const { receipt, item } = await receiptOf(sale);
+      expect(receipt.intentId).toBe(intentId);
+      expect(receipt.outboxState).toBe("pending");
+      expect(item.amountIdr).toBe(100_000);
+    });
+
+    it("resolves a reused customer-credit DP from its original remainder receipt", async () => {
+      const sale = await seedPosSale([
+        { amountIdr: 20_000, withIntent: false },
+      ]);
+      const intentId = await seedDepositSource(sale, "credit", "dead");
+      const { receipt, item } = await receiptOf(sale);
+      expect(receipt.intentId).toBe(intentId);
+      expect(receipt.outboxState).toBe("dead_lettered");
+      expect(item.amountIdr).toBe(100_000);
+    });
+
+    it("resolves the exact DP release intent of a parked POS refund", async () => {
+      const sale = await seedPosSale([
+        { amountIdr: 20_000, withIntent: false },
+      ]);
+      await seedDepositSource(sale, "refund", "dead");
+      const intentId = await seedDepositSource(sale, "refund");
+      const { receipt } = await receiptOf(sale);
+      expect(receipt.intentId).toBe(intentId);
+      expect(receipt.outboxState).toBe("pending");
+    });
+
+    it("follows the connected old session to the other receipt blocking the DP", async () => {
+      const sale = await seedPosSale([
+        { amountIdr: 20_000, withIntent: false },
+      ]);
+      await seedDepositSource(sale, "credit", "pending", { indirect: true });
+      const { receipt } = await receiptOf(sale);
+      expect(receipt.intentId).toBe(sale.intents.at(-1)!.id);
+      expect(receipt.outboxState).toBe("dead_lettered");
+    });
+
+    it("ignores customer credit committed one microsecond after the sale", async () => {
+      const sale = await seedPosSale([
+        { amountIdr: 20_000, withIntent: false },
+      ]);
+      await seedDepositSource(sale, "credit", "dead", {
+        useAt: "2026-03-10T05:00:00.000001Z",
+      });
+      const { receipt } = await receiptOf(sale);
+      expect(receipt.intentId).toBeNull();
+      expect(receipt.outboxState).toBe("missing");
+    });
+
+    it("does not resolve an allocation belonging to another outlet", async () => {
+      const sale = await seedPosSale([
+        { amountIdr: 20_000, withIntent: false },
+      ]);
+      const intentId = await seedDepositSource(sale, "allocation", "dead");
+      await owner.query(
+        "UPDATE reservation_deposit_allocations SET outlet_id=$3 WHERE tenant_id=$1 AND payment_intent_id=$2",
+        [tenantId, intentId, outletB],
+      );
+      const { receipt } = await receiptOf(sale);
+      expect(receipt.intentId).toBeNull();
+      expect(receipt.outboxState).toBe("missing");
+    });
+
+    it("listing DP exceptions leaves the source facts and money unchanged", async () => {
+      const sale = await seedPosSale([
+        { amountIdr: 20_000, withIntent: false },
+      ]);
+      const intentId = await seedDepositSource(sale, "allocation");
+      async function facts() {
+        return (
+          await owner.query(
+            `SELECT
+             (SELECT to_jsonb(o) FROM orders o WHERE tenant_id=$1 AND id=$2) AS sale,
+             (SELECT to_jsonb(i) FROM payment_intents i WHERE tenant_id=$1 AND id=$3) AS intent,
+             (SELECT jsonb_agg(to_jsonb(a)) FROM reservation_deposit_allocations a
+               WHERE tenant_id=$1 AND payment_intent_id=$3) AS allocations,
+             (SELECT count(*)::int FROM payment_refunds WHERE tenant_id=$1 AND payment_intent_id=$3) AS refunds,
+             (SELECT count(*)::int FROM payment_unallocated_funds WHERE tenant_id=$1 AND payment_intent_id=$3) AS unallocated,
+             (SELECT count(*)::int FROM journal_entries WHERE tenant_id=$1) AS journals`,
+            [tenantId, sale.orderUuid, intentId],
+          )
+        ).rows;
+      }
+      const before = await facts();
+      await receiptOf(sale);
+      await receiptOf(sale);
+      expect(await facts()).toEqual(before);
+    });
+
+    it("an explicit payload intent still takes precedence over a dead-lettered DP", async () => {
+      const sale = await seedPosSale(
+        [{ amountIdr: 20_000, withIntent: false }],
+        { amountIdr: 25_000, outbox: "pending" },
+      );
+      const expectedIntent = sale.intents[0]!.id;
+      await seedDepositSource(sale, "allocation", "dead");
+      const { receipt, item } = await receiptOf(sale);
+      expect(receipt.intentId).toBe(expectedIntent);
+      expect(receipt.outboxState).toBe("pending");
+      expect(item.amountIdr).toBe(25_000);
+    });
   });
 });
