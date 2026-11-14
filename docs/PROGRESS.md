@@ -1555,3 +1555,4 @@ Langkah berikut CTO baru:
 - 08:53 Disk merah 4,3 GB saat run penuh batch62: cleanup-ssd --apply (+6,6 GB) + hapus 9 worktree bersih terdorong milik thread selesai -> 20,5 GB. 1rnql selesai (fix/migration-fk-inline-guard 86a4191ad, antre batch64). batch62 tanpa ws/reports-dashboard-fixes (DASH-02 17/18 di cabangnya): G3ml6 brief 713. Run penuh batch62 ulang 0cc3184c0.
 - 08:57 odyct selesai: fix/migration-replay-flake fc8e69215, antre batch64. Batch64: offline-banner, ssr-hydration, test-orphan-guard, edge-transport-no-outlet, edge-dead-letter-alarm(+cost), payout-cors, e2e-pos-corrections, migration-fk-inline-guard, migration-replay-flake (lebih dari 7: dibagi dua batch).
 - 09:14 h32dy selesai: penjaga disk di ram-guard/heavy/sampler (skrip ~/.claude/scripts, cadangan .bak-712), aturan disk masuk ~/.agents/main.md.
+- 09:19 DASH-02: ws/reports-dashboard-fixes 1b8382dfb (fixture metrik review tersedia tapi kosong), m1 digabung, antre batch63.
