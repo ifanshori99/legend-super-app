@@ -2458,6 +2458,13 @@
       "when": 1794629273111,
       "tag": "0364_kitchen_ticket_no",
       "breakpoints": true
+    },
+    {
+      "idx": 365,
+      "version": "7",
+      "when": 1794629274111,
+      "tag": "0365_notification_outbox_alarm_window",
+      "breakpoints": true
     }
   ]
 }

@@ -28,7 +28,7 @@ import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import { Pool, type PoolClient } from "pg";
 import WebSocket from "ws";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { tenantIdSchema, ulidToUuid, uuidToUlid } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
@@ -59,6 +59,7 @@ const ids = {
   nasi: randomUUID(),
   barA: randomUUID(),
   kitchenA: randomUUID(),
+  screenLimitStation: randomUUID(),
   cashierRole: randomUUID(),
   kdsRole: randomUUID(),
   kdsRoleB: randomUUID(),
@@ -176,6 +177,7 @@ beforeAll(async () => {
     for (const [id, name, type] of [
       [ids.barA, "Bar WS", "beverage_bar"],
       [ids.kitchenA, "Dapur WS", "hot_kitchen"],
+      [ids.screenLimitStation, "Layar WS", "cold_kitchen"],
     ])
       await client.query(
         `INSERT INTO stations (id, tenant_id, outlet_id, name, type) VALUES ($1, $2, $3, $4, $5)`,
@@ -289,8 +291,8 @@ afterAll(async () => {
 
 // ---- POS / KDS helpers ----------------------------------------------------------------
 
-/** Create (+ submit) a POS order and fire whatever is still held. */
-async function placeOrder(menuItemIds: string[]): Promise<string> {
+/** Prepare a POS order, optionally keeping every line held for explicit fire. */
+async function prepareOrder(menuItemIds: string[], holdItems = false) {
   const base = `/api/outlets/${tenant.outletId}/pos/orders`;
   const send = (path: string, body: Record<string, unknown>) =>
     cashier.client
@@ -301,6 +303,7 @@ async function placeOrder(menuItemIds: string[]): Promise<string> {
   const created = await send("", {
     channel: "pos",
     serviceType: "takeaway",
+    holdItems,
     items: menuItemIds.map((menuItemId) => ({
       menuItemId,
       quantity: 1,
@@ -324,14 +327,24 @@ async function placeOrder(menuItemIds: string[]): Promise<string> {
   const held = (
     read.body.data.items as { id: string; fireStatus: string }[]
   ).filter((item) => item.fireStatus === "held");
-  if (held.length > 0) {
-    const fired = await send(`/${orderId}/fire`, {
-      itemIds: held.map((item) => item.id),
-      expectedStatus: read.body.data.status,
-    });
-    expect(fired.status, JSON.stringify(fired.body)).toBe(200);
-  }
-  return orderId;
+  return {
+    orderId,
+    async fire() {
+      if (held.length === 0) return;
+      const fired = await send(`/${orderId}/fire`, {
+        itemIds: held.map((item) => item.id),
+        expectedStatus: read.body.data.status,
+      });
+      expect(fired.status, JSON.stringify(fired.body)).toBe(200);
+    },
+  };
+}
+
+/** Create (+ submit) a POS order and fire whatever is still held. */
+async function placeOrder(menuItemIds: string[]): Promise<string> {
+  const order = await prepareOrder(menuItemIds);
+  await order.fire();
+  return order.orderId;
 }
 
 async function ticketOn(orderId: string, stationId: string): Promise<string> {
@@ -480,8 +493,20 @@ async function refusal(client: Client): Promise<number> {
 /** Give late, unexpected frames a moment to show up (negative assertions). */
 const settle = (ms = 400) => new Promise((resolve) => setTimeout(resolve, ms));
 
-afterAll(() => {
-  for (const ws of open) ws.terminate();
+afterEach(async () => {
+  // A close call only starts the handshake. Finish it before the next test
+  // so previous screens cannot retain slots in the station's connection cap.
+  await Promise.all(
+    open.splice(0).map(async (ws) => {
+      if (ws.readyState === WebSocket.CLOSED) return;
+      const closed = new Promise<void>((resolve) =>
+        ws.once("close", () => resolve()),
+      );
+      if (ws.readyState === WebSocket.CONNECTING) ws.terminate();
+      else ws.close();
+      await closed;
+    }),
+  );
 });
 
 const ticketIdsOf = (client: Client) =>
@@ -519,8 +544,10 @@ describe("KDS-01 realtime delivery", () => {
       kitchen.until((frames) => frames.length >= 1),
     ]);
 
+    const order = await prepareOrder([ids.kopi], true);
+    expect(bar.tickets()).toEqual([]);
     const started = performance.now();
-    const orderId = await placeOrder([ids.kopi]);
+    await order.fire();
     await bar.until((frames) =>
       frames.some((frame) => frame.type === "ticket"),
     );
@@ -528,6 +555,7 @@ describe("KDS-01 realtime delivery", () => {
     // PRD KDS-01: "Item tampil di KDS stasiun benar ≤ 2 detik setelah fire".
     expect(elapsed).toBeLessThan(2_000);
 
+    const orderId = order.orderId;
     const ticketId = await ticketOn(orderId, ids.barA);
     const [frame] = bar.tickets();
     expect(bar.tickets()).toHaveLength(1);
@@ -904,9 +932,15 @@ describe("KDS realtime access control", () => {
   });
 
   it("TEN-03 a station accepts at most 20 screens at once", async () => {
-    const clients = Array.from({ length: 20 }, () => connect(ids.kitchenA));
+    // Use a fresh station: this assertion counts only its own screens.
+    const clients = Array.from({ length: 20 }, () =>
+      connect(ids.screenLimitStation),
+    );
     await Promise.all(clients.map(opened));
-    const extra = connect(ids.kitchenA);
+    await Promise.all(
+      clients.map((client) => client.until((frames) => frames.length === 1)),
+    );
+    const extra = connect(ids.screenLimitStation);
     // Refused over HTTP, or accepted and closed straight away: never served.
     const outcome = await Promise.race([
       once(extra.ws, "unexpected-response").then(() => "refused"),

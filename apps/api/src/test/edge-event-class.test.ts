@@ -498,6 +498,53 @@ describe("legend-niq9 C stock.* other than stock.moved alarms once", () => {
 });
 
 describe("legend-eadm D alarm storm and once-only path", () => {
+  it("legend-tbl4 indexes the tenant, event, outlet and alarm time used by the dedupe window", async () => {
+    const { rows } = await owner.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes
+        WHERE schemaname = 'public' AND tablename = 'notification_outbox'
+          AND indexname = 'notification_outbox_alarm_window_idx'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.indexdef).toContain(
+      "(tenant_id, event_type, outlet_id, created_at)",
+    );
+  });
+
+  it("legend-tbl4 an outlet without a supervisor leaves no dedupe marker and alarms when one is assigned", async () => {
+    const name = "zz_no_supervisor.created";
+    const notificationsBefore = await notificationCount();
+    const outboxCount = () =>
+      count(
+        `SELECT count(*)::int AS n FROM notification_outbox
+          WHERE tenant_id = $1 AND event_type = 'edge_event.parked_unclassified'
+            AND payload->>'eventName' = $2`,
+        [tenantId, name],
+      );
+    await owner.query(
+      "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = $2 AND role_id = $3",
+      [tenantId, supervisorUserId, supervisorRoleId],
+    );
+    try {
+      const unknown = edgeEvent(name);
+      await deliver([unknown]);
+      expect(await parkedRows(unknown.id)).toHaveLength(1);
+      expect(await notificationCount()).toBe(notificationsBefore);
+      expect(await outboxCount()).toBe(0);
+    } finally {
+      await owner.query(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+         VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 minute', $2)`,
+        [tenantId, supervisorUserId, supervisorRoleId, outletA],
+      );
+    }
+    await deliver([edgeEvent(name)]);
+    expect(await notificationCount()).toBe(notificationsBefore + 1);
+    expect(await outboxCount()).toBe(1);
+    await deliver([edgeEvent(name)]);
+    expect(await notificationCount()).toBe(notificationsBefore + 1);
+    expect(await outboxCount()).toBe(1);
+  });
+
   it("unknown events of one name send one alarm; a second name sends one more", async () => {
     const storm = [
       edgeEvent("zz_storm.created"),
