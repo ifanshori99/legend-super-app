@@ -221,7 +221,7 @@ export function RunsTab({
             {entries.loadMoreError && (
               <p
                 role="alert"
-                className="mt-2 text-sm leading-5 text-destructive"
+                className="mt-2 text-sm font-medium text-danger"
                 data-testid="payout-runs-load-more-error"
               >
                 {t("payrollPayout.runs.loadMoreError")}

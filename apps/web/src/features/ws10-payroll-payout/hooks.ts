@@ -15,9 +15,13 @@ import {
   getDisbursementBatch,
   getPayoutConfig,
   listPayoutBatches,
+  listResolutionProposals,
   listRunDisbursementBatches,
 } from "@starter/shared/hris/payroll/payout";
-import type { PayrollPayoutEvidenceUploadDto } from "@starter/shared/types";
+import type {
+  PayrollPayoutEvidenceUploadDto,
+  PayrollPayoutProposalDto,
+} from "@starter/shared/types";
 import type { PayoutBankFormat } from "@starter/shared/validators/payroll-payout";
 import { endpointQueryKey } from "@/lib/api/endpoint";
 import * as api from "./api";
@@ -43,6 +47,7 @@ import {
   paidRunsQuery,
   payableRunsQuery,
   payoutKeys,
+  resolutionProposalsQuery,
   runBatchesQuery,
   sourceAccountsQuery,
 } from "./queries";
@@ -168,6 +173,29 @@ export function useEntityBatches(
   };
 }
 
+const EMPTY_PROPOSALS = new Map<string, PayrollPayoutProposalDto>();
+
+/**
+ * Item id → the first step still waiting for its second person (resolve or
+ * return; an item has at most one). Empty until loaded. Refreshed with every
+ * payout write.
+ */
+export function useResolutionProposals(
+  batchId: string | undefined,
+): Map<string, PayrollPayoutProposalDto> {
+  const query = useQuery({
+    ...resolutionProposalsQuery(batchId ?? ""),
+    enabled: Boolean(batchId),
+  });
+  return React.useMemo(
+    () =>
+      query.data
+        ? new Map(query.data.map((row) => [row.itemId, row] as const))
+        : EMPTY_PROPOSALS,
+    [query.data],
+  );
+}
+
 const EMPTY_EMPLOYEES = new Map<string, PayoutEmployeeView>();
 export type PayoutEmployeeView = Omit<PayoutEmployee, "id" | "userId">;
 
@@ -219,6 +247,9 @@ function useRefreshPayout() {
         queryKey: [listRunDisbursementBatches.id],
       }),
       queryClient.invalidateQueries({ queryKey: [listPayoutBatches.id] }),
+      queryClient.invalidateQueries({
+        queryKey: [listResolutionProposals.id],
+      }),
       queryClient.invalidateQueries({ queryKey: [payoutKeys.all[0]] }),
     ]);
 }
@@ -335,6 +366,18 @@ export function useUploadPayoutEvidence() {
     { batchId: string; file: File }
   >({
     mutationFn: ({ batchId, file }) => api.uploadPayoutEvidence(batchId, file),
+  });
+}
+
+/**
+ * `mutate({ batchId, key })`: answers `{ evidenceKey, url, expiresAt }`, a signed
+ * link of a stored proof (valid 60 seconds). Fetched on the click and never cached; changes no batch.
+ */
+export function useOpenPayoutEvidence() {
+  return useMutation({
+    mutationFn: async ({ batchId, key }: { batchId: string; key: string }) =>
+      (await api.fetchPayoutEvidenceLink(batchId, key)).data,
+    gcTime: 0,
   });
 }
 

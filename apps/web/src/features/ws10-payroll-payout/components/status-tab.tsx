@@ -16,7 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { formatDateTime } from "../../ws10-payroll-run/lib";
 import { payoutErrorMessage } from "../errors";
-import { useBatch, useExportBatch } from "../hooks";
+import { useBatch, useExportBatch, useResolutionProposals } from "../hooks";
 import { batchStatusMeta, type PayoutTabProps } from "../lib";
 import {
   ExcludedList,
@@ -30,7 +30,7 @@ import {
   ReturnDialog,
 } from "./status-dialogs";
 import { VerifyPanel, useStepUp } from "./approval-verify";
-import { StatusList, type RowAction } from "./status-items";
+import { StatusList, proposalFor, type RowAction } from "./status-items";
 import { summarizeGroups } from "./status-groups";
 import { StatusSummary } from "./status-summary";
 
@@ -97,6 +97,7 @@ function StatusBatch({
   const toast = useToast();
   const query = useBatch(batchId);
   const exportFile = useExportBatch();
+  const proposals = useResolutionProposals(batchId);
   const line = useEmployeeLine();
   const [dialog, setDialog] = React.useState<ActiveDialog>(null);
   const [exportError, setExportError] = React.useState<string | null>(null);
@@ -182,6 +183,16 @@ function StatusBatch({
     .filter(([, show]) => show)
     .map(([key]) => key);
   const closeDialog = () => setDialog(null);
+  // The first person's proposal for an item, only of the kind the dialog records.
+  const proposalOf = (
+    item: PayrollDisbursementItemDto,
+    kind: "resolve" | "return",
+  ) => {
+    const found = proposalFor(proposals, item.id);
+    return found?.kind === kind ? found : undefined;
+  };
+  const isMine = (item: PayrollDisbursementItemDto) =>
+    proposalFor(proposals, item.id)?.proposedBy === currentUserId;
 
   return (
     <div className="grid gap-4">
@@ -340,6 +351,7 @@ function StatusBatch({
             items={listed}
             canRecord={canRecord}
             recordBlockKey={blockKey}
+            proposals={proposals}
             onAction={onAction}
           />
         )}
@@ -360,6 +372,8 @@ function StatusBatch({
           batchId={batch.id}
           item={dialog.item}
           person={line(dialog.item)}
+          proposal={proposalOf(dialog.item, "resolve")}
+          mine={isMine(dialog.item)}
           onClose={closeDialog}
         />
       )}
@@ -388,6 +402,8 @@ function StatusBatch({
           batchId={batch.id}
           item={dialog.item}
           person={line(dialog.item)}
+          proposal={proposalOf(dialog.item, "return")}
+          mine={isMine(dialog.item)}
           onClose={closeDialog}
         />
       )}

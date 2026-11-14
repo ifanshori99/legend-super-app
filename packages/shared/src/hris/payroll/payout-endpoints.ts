@@ -22,6 +22,7 @@ import {
   createDisbursementBatchInputSchema,
   listPayoutBatchesQuerySchema,
   payoutBatchParamsSchema,
+  payoutEvidenceReadQuerySchema,
   payoutLegalEntityParamsSchema,
   payoutRunParamsSchema,
   resolveManualItemsSchema,
@@ -281,6 +282,50 @@ export const payoutEvidenceUploadResponseSchema = z.object({
     evidenceKey: z.string(),
     contentType: z.enum(PAYOUT_EVIDENCE_CONTENT_TYPES),
     sizeBytes: z.number().int(),
+  }),
+});
+
+/**
+ * Short-lived (60 s) signed link to one stored proof of the batch
+ * (payroll.disburse.approve, no step-up). Ask for it when the person clicks;
+ * never cache the answer.
+ */
+export const readPayoutEvidence = defineEndpoint({
+  method: "GET",
+  path: PAYOUT_EVIDENCE_UPLOAD_PATH,
+  params: payoutBatchParamsSchema,
+  query: payoutEvidenceReadQuerySchema,
+  response: z.object({
+    data: z.object({
+      evidenceKey: z.string(),
+      url: z.string(),
+      expiresAt: instant,
+    }),
+  }),
+});
+
+/**
+ * First steps of resolve/return waiting for their second person. The second
+ * step must send the same `evidenceKey` (409 PAYOUT_RESOLVE_EVIDENCE_MISMATCH /
+ * PAYOUT_RETURN_EVIDENCE_MISMATCH otherwise). `outcome` is null for a return.
+ */
+export const listResolutionProposals = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/disbursement-batches/:id/resolution-proposals`,
+  params: payoutBatchParamsSchema,
+  response: z.object({
+    data: z.array(
+      z.object({
+        itemId: z.string(),
+        employeeId: z.string(),
+        kind: z.enum(["resolve", "return"]),
+        outcome: z.enum(["failed", "not_sent"]).nullable(),
+        evidenceKey: z.string().nullable(),
+        note: z.string().nullable(),
+        proposedBy: z.string(),
+        proposedAt: instant,
+      }),
+    ),
   }),
 });
 

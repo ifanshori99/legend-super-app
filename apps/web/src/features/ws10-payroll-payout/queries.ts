@@ -5,6 +5,7 @@ import {
   getDisbursementBatch,
   getPayoutConfig,
   listPayoutBatches,
+  listResolutionProposals,
   listRunDisbursementBatches,
 } from "@starter/shared/hris/payroll/payout";
 import { orgEndpoints } from "@starter/shared/platform";
@@ -99,6 +100,15 @@ export const batchQuery = (batchId: string) =>
       params: { id: batchId },
     }),
     queryFn: ({ signal }) => api.fetchBatch(batchId, signal),
+    select: (response) => response.data,
+  });
+
+export const resolutionProposalsQuery = (batchId: string) =>
+  queryOptions({
+    queryKey: endpointQueryKey(listResolutionProposals, {
+      params: { id: batchId },
+    }),
+    queryFn: ({ signal }) => api.fetchResolutionProposals(batchId, signal),
     select: (response) => response.data,
   });
 

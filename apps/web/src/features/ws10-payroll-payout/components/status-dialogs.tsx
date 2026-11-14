@@ -7,7 +7,10 @@
 import * as React from "react";
 import { RadioGroup } from "radix-ui";
 import { formatRupiah } from "@starter/shared/i18n";
-import type { PayrollDisbursementItemDto } from "@starter/shared/types";
+import type {
+  PayrollDisbursementItemDto,
+  PayrollPayoutProposalDto,
+} from "@starter/shared/types";
 import { PAYOUT_EVIDENCE_MAX_BYTES } from "@starter/shared/validators/payroll-payout";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -29,6 +32,7 @@ import { evidenceUploadMessage } from "../errors";
 import {
   useConfirmBatch,
   useConfirmCash,
+  useOpenPayoutEvidence,
   useResolveBatch,
   useReturnBatch,
   useUploadPayoutEvidence,
@@ -47,7 +51,7 @@ const PROOF_TYPES = ["image/jpeg", "image/png"];
  * back". The file is uploaded first; its key is kept so a retry after the
  * step-up sends the result without uploading the photo twice.
  */
-function useProofForm(batchId: string) {
+function useProofForm(batchId: string, options: { noFile?: boolean } = {}) {
   const t = useT();
   const upload = useUploadPayoutEvidence();
   const [file, setFile] = React.useState<File | null>(null);
@@ -77,7 +81,7 @@ function useProofForm(batchId: string) {
   };
   /** False (with the reason shown in place) while the file or note is missing. */
   const validate = () => {
-    const noFile = file === null;
+    const noFile = !options.noFile && file === null;
     const noNote = note.trim() === "";
     if (noFile)
       setFileProblem(
@@ -138,41 +142,48 @@ function ProofFields({
   form,
   busy,
   variant,
+  withFile = true,
 }: {
   form: ProofForm;
   busy: boolean;
   variant: "resolve" | "return";
+  /** False for the second person: the proof comes from the first proposal. */
+  withFile?: boolean;
 }) {
   const t = useT();
   return (
     <>
-      <FormField
-        label={t("payrollPayoutReview.result.evidenceFile")}
-        hint={t(
-          variant === "return"
-            ? "payrollPayoutReview.result.returnFileHint"
-            : "payrollPayoutReview.result.evidenceFileHint",
-        )}
-        error={form.fileProblem ?? undefined}
-        required
-      >
-        <Input
-          type="file"
-          accept="image/jpeg,image/png"
-          data-testid="payout-evidence-file"
-          disabled={busy}
-          className="min-h-11"
-          onChange={(event) => form.pick(event.target.files?.[0] ?? null)}
-        />
-      </FormField>
-      {form.uploading && (
-        <p
-          role="status"
-          data-testid="payout-evidence-uploading"
-          className="text-sm text-muted-foreground"
-        >
-          {t("payrollPayoutReview.result.uploading")}
-        </p>
+      {withFile && (
+        <>
+          <FormField
+            label={t("payrollPayoutReview.result.evidenceFile")}
+            hint={t(
+              variant === "return"
+                ? "payrollPayoutReview.result.returnFileHint"
+                : "payrollPayoutReview.result.evidenceFileHint",
+            )}
+            error={form.fileProblem ?? undefined}
+            required
+          >
+            <Input
+              type="file"
+              accept="image/jpeg,image/png"
+              data-testid="payout-evidence-file"
+              disabled={busy}
+              className="min-h-11"
+              onChange={(event) => form.pick(event.target.files?.[0] ?? null)}
+            />
+          </FormField>
+          {form.uploading && (
+            <p
+              role="status"
+              data-testid="payout-evidence-uploading"
+              className="text-sm text-muted-foreground"
+            >
+              {t("payrollPayoutReview.result.uploading")}
+            </p>
+          )}
+        </>
       )}
       <FormField
         label={t("payrollPayoutReview.result.note")}
@@ -188,6 +199,172 @@ function ProofFields({
           onChange={(event) => form.setNote(event.target.value)}
         />
       </FormField>
+    </>
+  );
+}
+
+/** A new tab, opened on the click so a pop-up blocker lets it through. */
+function openInNewTab(): Window | null {
+  const tab = window.open("about:blank", "_blank");
+  if (tab) tab.opener = null;
+  return tab;
+}
+
+/**
+ * What the first person recorded: the result, who, when, the note and a link
+ * to their proof. The proof address is fetched on the click (it expires in a
+ * minute), never kept.
+ */
+function ProposalPanel({
+  batchId,
+  proposal,
+  mine,
+}: {
+  batchId: string;
+  proposal: PayrollPayoutProposalDto;
+  mine: boolean;
+}) {
+  const t = useT();
+  const open = useOpenPayoutEvidence();
+  const [problem, setProblem] = React.useState<string | null>(null);
+  const outcomeKey =
+    proposal.kind === "return"
+      ? "payrollPayoutReview.result.proposal.outcomeReturn"
+      : proposal.outcome === "not_sent"
+        ? "payrollPayoutReview.result.proposal.outcomeNotSent"
+        : "payrollPayoutReview.result.proposal.outcomeFailed";
+  const evidenceKey = proposal.evidenceKey;
+  const view = () => {
+    if (!evidenceKey || open.isPending) return;
+    setProblem(null);
+    const tab = openInNewTab();
+    open.mutate(
+      { batchId, key: evidenceKey },
+      {
+        onSuccess: (result) => {
+          const url = result.url;
+          if (tab) tab.location.href = url;
+          else window.open(url, "_blank", "noopener,noreferrer");
+        },
+        onError: () => {
+          tab?.close();
+          setProblem(t("payrollPayoutReview.result.proposal.openFailed"));
+        },
+      },
+    );
+  };
+  return (
+    <section
+      aria-label={t("payrollPayoutReview.result.proposal.title")}
+      data-testid="payout-proposal-panel"
+      className="grid gap-2 rounded-container border-(length:--border-w) bg-surface-2 p-3"
+    >
+      <p className="font-semibold">
+        {t("payrollPayoutReview.result.proposal.title")}
+      </p>
+      <dl className="grid">
+        <DetailRow label={t("payrollPayoutReview.result.proposal.outcome")}>
+          <span data-testid="payout-proposal-outcome">{t(outcomeKey)}</span>
+        </DetailRow>
+        <DetailRow label={t("payrollPayoutReview.result.proposal.by")}>
+          <span data-testid="payout-proposal-by">
+            {t(
+              mine
+                ? "payrollPayoutReview.result.proposal.you"
+                : "payrollPayoutReview.result.proposal.other",
+            )}
+          </span>
+        </DetailRow>
+        <DetailRow label={t("payrollPayoutReview.result.proposal.at")}>
+          <span data-testid="payout-proposal-at">
+            {formatDateTime(proposal.proposedAt)}
+          </span>
+        </DetailRow>
+        {proposal.note && (
+          <DetailRow label={t("payrollPayoutReview.result.proposal.note")}>
+            <span
+              data-testid="payout-proposal-note"
+              className="break-words whitespace-pre-wrap"
+            >
+              {proposal.note}
+            </span>
+          </DetailRow>
+        )}
+      </dl>
+      {evidenceKey && (
+        <Button
+          type="button"
+          variant="outline"
+          className="min-h-11 w-fit"
+          data-testid="payout-proposal-evidence"
+          loading={open.isPending}
+          onClick={view}
+        >
+          {t("payrollPayoutReview.result.proposal.viewEvidence")}
+        </Button>
+      )}
+      {open.isPending && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {t("payrollPayoutReview.result.proposal.opening")}
+        </p>
+      )}
+      {problem && (
+        <p
+          role="alert"
+          data-testid="payout-proposal-open-error"
+          className="text-sm font-medium text-danger"
+        >
+          {problem}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** Second person's view: the result is locked, only their own note is asked. */
+function ProposalLock({
+  batchId,
+  proposal,
+  mine,
+  form,
+  busy,
+  variant,
+}: {
+  batchId: string;
+  proposal: PayrollPayoutProposalDto;
+  mine: boolean;
+  form: ProofForm;
+  busy: boolean;
+  variant: "resolve" | "return";
+}) {
+  const t = useT();
+  return (
+    <>
+      <ProposalPanel batchId={batchId} proposal={proposal} mine={mine} />
+      {mine ? (
+        <p
+          role="status"
+          data-testid="payout-proposal-waiting"
+          className="rounded-container bg-warning-subtle p-3 text-sm text-foreground"
+        >
+          {t("payrollPayoutReview.result.proposal.waiting")}
+        </p>
+      ) : (
+        <>
+          <p
+            data-testid="payout-proposal-locked"
+            className="text-sm text-muted-foreground"
+          >
+            {t("payrollPayoutReview.result.proposal.locked")}
+          </p>
+          <ProofFields
+            form={form}
+            busy={busy}
+            variant={variant}
+            withFile={false}
+          />
+        </>
+      )}
     </>
   );
 }
@@ -235,11 +412,17 @@ export function ResultDialog({
   batchId,
   item,
   person,
+  proposal,
+  mine = false,
   onClose,
 }: {
   batchId: string;
   item: PayrollDisbursementItemDto;
   person: Person;
+  /** The first person's proposal, when there is one: this is the second step. */
+  proposal?: PayrollPayoutProposalDto;
+  /** True when the signed-in user made that proposal. */
+  mine?: boolean;
   onClose: () => void;
 }) {
   const t = useT();
@@ -247,9 +430,13 @@ export function ResultDialog({
   const confirm = useConfirmBatch();
   const resolve = useResolveBatch();
   const stepUp = useStepUp({ acceptsPassword: false });
-  const proof = useProofForm(batchId);
+  const locked = proposal !== undefined;
+  const waiting = locked && mine;
+  const proof = useProofForm(batchId, { noFile: locked });
   const refInput = React.useRef<HTMLInputElement>(null);
-  const [outcome, setOutcome] = React.useState<Outcome>("succeeded");
+  const [outcome, setOutcome] = React.useState<Outcome>(
+    proposal ? (proposal.outcome ?? "failed") : "succeeded",
+  );
   const [bankRef, setBankRef] = React.useState("");
   const [problem, setProblem] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -267,7 +454,7 @@ export function ResultDialog({
   const submit = (password?: string) => {
     if (busy) return;
     setError(null);
-    if (outcome === "succeeded") {
+    if (!proposal && outcome === "succeeded") {
       if (bankRef.trim() === "") {
         setProblem(t("payrollPayoutReview.result.bankRefRequired"));
         return;
@@ -298,13 +485,21 @@ export function ResultDialog({
       );
       return;
     }
+    if (waiting) return;
     if (!proof.validate()) return;
-    proof.withKey((evidenceKey) => {
+    // Step 2 always repeats the proposal's outcome (the server rejects others).
+    const resolveOutcome: "failed" | "not_sent" | null = proposal
+      ? (proposal.outcome ?? "failed")
+      : outcome === "succeeded"
+        ? null
+        : outcome;
+    if (resolveOutcome === null) return;
+    const send = (evidenceKey: string) => {
       resolve.mutate(
         {
           batchId,
           itemIds: [item.id],
-          outcome,
+          outcome: resolveOutcome,
           evidenceKey,
           note: proof.note.trim(),
           password,
@@ -324,13 +519,34 @@ export function ResultDialog({
           onError: onFailure,
         },
       );
-    }, onFailure);
+    };
+    if (proposal) {
+      // Second person: the proof is the first person's, never a new upload.
+      if (!proposal.evidenceKey) {
+        setError(t("payrollPayoutReview.error.evidenceInvalid"));
+        return;
+      }
+      send(proposal.evidenceKey);
+      return;
+    }
+    proof.withKey(send, onFailure);
   };
 
   const fields = (
     <div className="grid gap-3">
-      <OutcomeChoice value={outcome} disabled={busy} onChange={onOutcome} />
-      {outcome === "succeeded" ? (
+      {proposal ? (
+        <ProposalLock
+          batchId={batchId}
+          proposal={proposal}
+          mine={mine}
+          form={proof}
+          busy={busy}
+          variant="resolve"
+        />
+      ) : (
+        <OutcomeChoice value={outcome} disabled={busy} onChange={onOutcome} />
+      )}
+      {proposal ? null : outcome === "succeeded" ? (
         <FormField
           label={t("payrollPayoutReview.result.bankRef")}
           hint={t("payrollPayoutReview.result.bankRefHint")}
@@ -416,7 +632,12 @@ export function ResultDialog({
               >
                 {t("payrollPayoutReview.result.cancel")}
               </Button>
-              <Button type="submit" className="min-h-11" loading={busy}>
+              <Button
+                type="submit"
+                className="min-h-11"
+                loading={busy}
+                disabled={waiting}
+              >
                 {t("payrollPayoutReview.result.submit")}
               </Button>
             </DialogFooter>
@@ -435,18 +656,25 @@ export function ReturnDialog({
   batchId,
   item,
   person,
+  proposal,
+  mine = false,
   onClose,
 }: {
   batchId: string;
   item: PayrollDisbursementItemDto;
   person: Person;
+  /** The first person's record of the funds, when there is one. */
+  proposal?: PayrollPayoutProposalDto;
+  /** True when the signed-in user made that proposal. */
+  mine?: boolean;
   onClose: () => void;
 }) {
   const t = useT();
   const toast = useToast();
   const giveBack = useReturnBatch();
   const stepUp = useStepUp({ acceptsPassword: false });
-  const proof = useProofForm(batchId);
+  const waiting = proposal !== undefined && mine;
+  const proof = useProofForm(batchId, { noFile: proposal !== undefined });
   const [error, setError] = React.useState<string | null>(null);
   const busy = giveBack.isPending || proof.uploading;
 
@@ -457,8 +685,9 @@ export function ReturnDialog({
   const submit = (password?: string) => {
     if (busy) return;
     setError(null);
+    if (waiting) return;
     if (!proof.validate()) return;
-    proof.withKey((evidenceKey) => {
+    const send = (evidenceKey: string) => {
       giveBack.mutate(
         {
           batchId,
@@ -482,7 +711,17 @@ export function ReturnDialog({
           onError: onFailure,
         },
       );
-    }, onFailure);
+    };
+    if (proposal) {
+      // Second person: the proof is the first person's, never a new upload.
+      if (!proposal.evidenceKey) {
+        setError(t("payrollPayoutReview.error.evidenceInvalid"));
+        return;
+      }
+      send(proposal.evidenceKey);
+      return;
+    }
+    proof.withKey(send, onFailure);
   };
 
   const fields = (
@@ -493,7 +732,18 @@ export function ReturnDialog({
       >
         {t("payrollPayoutReview.result.returnWarning")}
       </p>
-      <ProofFields form={proof} busy={busy} variant="return" />
+      {proposal ? (
+        <ProposalLock
+          batchId={batchId}
+          proposal={proposal}
+          mine={mine}
+          form={proof}
+          busy={busy}
+          variant="return"
+        />
+      ) : (
+        <ProofFields form={proof} busy={busy} variant="return" />
+      )}
     </div>
   );
 
@@ -547,7 +797,12 @@ export function ReturnDialog({
               >
                 {t("payrollPayoutReview.result.cancel")}
               </Button>
-              <Button type="submit" className="min-h-11" loading={busy}>
+              <Button
+                type="submit"
+                className="min-h-11"
+                loading={busy}
+                disabled={waiting}
+              >
                 {t("payrollPayoutReview.result.returnSubmit")}
               </Button>
             </DialogFooter>

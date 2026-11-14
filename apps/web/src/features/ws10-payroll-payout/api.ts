@@ -21,9 +21,11 @@ import {
   getDisbursementBatch,
   getPayoutConfig,
   listPayoutBatches,
+  listResolutionProposals,
   listRunDisbursementBatches,
   PAYOUT_EVIDENCE_UPLOAD_PATH,
   payoutEvidenceUploadResponseSchema,
+  readPayoutEvidence,
   resolveDisbursementItems,
   returnDisbursementItems,
   submitDisbursementBatch,
@@ -220,6 +222,17 @@ export const fetchPayoutBatches = (
 export const fetchBatch = (batchId: string, signal?: AbortSignal) =>
   callEndpoint(getDisbursementBatch, { params: { id: batchId } }, { signal });
 
+/** First steps of resolve/return waiting for their second person. */
+export const fetchResolutionProposals = (
+  batchId: string,
+  signal?: AbortSignal,
+) =>
+  callEndpoint(
+    listResolutionProposals,
+    { params: { id: batchId } },
+    { signal },
+  );
+
 /** Names for the payee rows (the payout items carry only employee ids). */
 export async function fetchPayoutEmployees(
   signal?: AbortSignal,
@@ -280,6 +293,13 @@ export const postReturnItems = (batchId: string, body: ReturnItemsInput) =>
 
 export const postConfirmCash = (batchId: string, body: ConfirmCashInput) =>
   callEndpoint(confirmDisbursementCash, { params: { id: batchId }, body });
+
+/**
+ * A signed link (60 seconds) to one stored proof. Read it when the person
+ * clicks and open it at once; do not keep it.
+ */
+export const fetchPayoutEvidenceLink = (batchId: string, key: string) =>
+  callEndpoint(readPayoutEvidence, { params: { id: batchId }, query: { key } });
 
 /**
  * Uploads a resolve/return proof (multipart `file`, sent without a JSON

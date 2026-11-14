@@ -480,3 +480,131 @@ test("payout runs tab shows no load-more button when everything fits one page", 
     page.getByRole("button", { name: "Muat pencairan berikutnya" }),
   ).toHaveCount(0);
 });
+
+// ---------------------------------------------------------------------------
+// Putaran 4 (T2): first-person proposal shown to the second person.
+// Brief: docs/briefs/740-sub-payout-wiring.md "Putaran 4".
+//
+// ASSUMPTIONS (UI copy not built yet; texts come from the brief and the
+// existing catalog "result.resolved"):
+// - `mock=resolve-proposal`: the exported manual item on the status tab has a
+//   resolve proposal (Gagal) by another user, so "Catat hasil manual" opens the
+//   dialog in second-person mode.
+// - The panel is titled "Usulan orang pertama", shows the outcome "Gagal", the
+//   proposer (not "Anda", as the proposer is another user), the note, and a
+//   "Lihat bukti" button or link.
+// - Second person has no file upload, and the outcome is locked to the proposal
+//   (asserted only as: no upload input). Saving needs only the own note.
+// - Success text is the catalog's "Hasil tercatat. Slip gaji ini bisa
+//   dicairkan ulang."
+// - "Lihat bukti" opens the signed URL in a new tab (popup event).
+// ---------------------------------------------------------------------------
+
+async function openProposalDialog(page: Page) {
+  await open(page, "status", "resolve-proposal");
+  const action = page.getByRole("button", { name: "Catat hasil manual" });
+  await expect(action.first()).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
+  await action.first().click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
+test("payout status row marks an item that waits for the second person", async ({
+  page,
+}) => {
+  await open(page, "status", "resolve-proposal");
+  await expect(page.getByText("Menunggu orang kedua").first()).toBeVisible({
+    timeout: COLD_START_TIMEOUT_MS,
+  });
+});
+
+test("payout status normal scenario shows no waiting-for-second-person marker", async ({
+  page,
+}) => {
+  await open(page, "status");
+  await expect(page.getByText("Alya Putri").first()).toBeVisible({
+    timeout: COLD_START_TIMEOUT_MS,
+  });
+  await expect(page.getByText("Menunggu orang kedua")).toHaveCount(0);
+});
+
+test("payout resolve dialog shows the first person's proposal with evidence link and no upload", async ({
+  page,
+}) => {
+  const dialog = await openProposalDialog(page);
+  await expect(
+    dialog
+      .getByTestId("payout-proposal-panel")
+      .getByText("Usulan orang pertama"),
+  ).toBeVisible();
+  await expect(dialog.getByText("Gagal").first()).toBeVisible();
+  // Proposer is another user, so it is not labelled as the current user.
+  await expect(dialog.getByText("Anda", { exact: true })).toHaveCount(0);
+  await expect(
+    dialog
+      .getByRole("button", { name: "Lihat bukti" })
+      .or(dialog.getByRole("link", { name: "Lihat bukti" })),
+  ).toBeVisible();
+  // The second person reuses the proposal's evidence: nothing to upload.
+  await expect(dialog.locator('input[type="file"]')).toHaveCount(0);
+  await expect(dialog.getByText("Berkas bukti dari bank")).toHaveCount(0);
+});
+
+test("payout resolve dialog opens the proposal evidence in a new tab", async ({
+  page,
+}) => {
+  const dialog = await openProposalDialog(page);
+  const evidence = dialog
+    .getByRole("button", { name: "Lihat bukti" })
+    .or(dialog.getByRole("link", { name: "Lihat bukti" }));
+  const popupPromise = page.waitForEvent("popup");
+  await evidence.click();
+  const popup = await popupPromise;
+  expect(popup).toBeTruthy();
+  // The dialog stays open and no result was recorded by merely viewing proof.
+  await expect(dialog).toBeVisible();
+  await expect(page.getByText(/Hasil tercatat/)).toHaveCount(0);
+});
+
+test("payout resolve second person confirms the proposal with only their own note", async ({
+  page,
+}) => {
+  const dialog = await openProposalDialog(page);
+  await expect(dialog.locator('input[type="file"]')).toHaveCount(0);
+  await dialog
+    .getByLabel("Catatan", { exact: true })
+    .fill("Sudah saya cek, bukti sesuai.");
+  await dialog.getByRole("button", { name: "Simpan hasil" }).click();
+  await expect(page.getByText(/Hasil tercatat\./).first()).toBeVisible();
+  await expect(
+    page.getByText(/Slip gaji ini bisa dicairkan ulang/).first(),
+  ).toBeVisible();
+});
+
+test("payout resolve second person still needs their own note", async ({
+  page,
+}) => {
+  const dialog = await openProposalDialog(page);
+  await dialog.getByRole("button", { name: "Simpan hasil" }).click();
+  await expect(dialog.getByText("Catatan wajib diisi.")).toBeVisible();
+  await expect(page.getByText(/Hasil tercatat/)).toHaveCount(0);
+});
+
+test("payout resolve shows a clear message when the server says the evidence differs from the proposal", async ({
+  page,
+}) => {
+  const dialog = await openProposalDialog(page);
+  await dialog.getByLabel("Catatan", { exact: true }).fill("Cek ulang bukti.");
+  await failNext(page, {
+    status: 409,
+    code: "PAYOUT_RESOLVE_EVIDENCE_MISMATCH",
+    message: "mismatch",
+  });
+  await dialog.getByRole("button", { name: "Simpan hasil" }).click();
+  await expect(
+    page.getByText(/Bukti berbeda dari usulan orang pertama/).first(),
+  ).toBeVisible();
+  // Nothing was recorded.
+  await expect(page.getByText(/Hasil tercatat/)).toHaveCount(0);
+});

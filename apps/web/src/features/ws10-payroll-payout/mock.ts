@@ -19,6 +19,10 @@
 // lagi" stays), then an empty last page. `batches-paged-open` puts the
 // pending-approval batch 201 on page 2 behind batch 202, to prove it is loaded
 // without a click.
+// `?mock=resolve-proposal` waits for a second person on batch 202: a resolve
+// proposal (failed, with a proof key of the batch) on the exported item and a
+// return proposal on the manually confirmed one, both by the other known user.
+// The second step must send the same proof key (409 *_EVIDENCE_MISMATCH).
 // Bank items carry the locked payee snapshot (name + "****1234"); cash items
 // carry none. Resolve and return need two different people: the first call
 // only proposes, so a single mock user always gets `proposed: 1`.
@@ -42,7 +46,9 @@ import {
   getDisbursementBatch,
   getPayoutConfig,
   listPayoutBatches,
+  listResolutionProposals,
   listRunDisbursementBatches,
+  readPayoutEvidence,
   resolveDisbursementItems,
   returnDisbursementItems,
   submitDisbursementBatch,
@@ -371,16 +377,26 @@ function seedBatches(): PayrollDisbursementBatchDto[] {
 }
 
 /** First call of the two-person resolve/return: who proposed what. */
-type Proposal = { kind: "resolve" | "return"; outcome: string; by: string };
+type Proposal = {
+  kind: "resolve" | "return";
+  outcome: string;
+  by: string;
+  evidenceKey: string;
+  note: string;
+  at: string;
+};
 type PayoutMockState = {
   config: PayrollPayoutConfigDto;
   batches: PayrollDisbursementBatchDto[];
   proposals: Record<string, Proposal>;
+  /** The `resolve-proposal` scenario puts its proposals in once. */
+  proposalsSeeded: boolean;
 };
 const store = createMockStore<PayoutMockState>(() => ({
   config: seedConfig(),
   batches: seedBatches(),
   proposals: {},
+  proposalsSeeded: false,
 }));
 const state = () => store.get();
 let counter = 5000;
@@ -400,11 +416,15 @@ function currentActor(): string {
 
 // ---- Payout-only scenarios ------------------------------------------------------
 
-type PayoutScenario = "legacy-account" | "batches-paged" | "batches-paged-open";
+type PayoutScenario =
+  | "legacy-account"
+  | "batches-paged"
+  | "batches-paged-open"
+  | "resolve-proposal";
 let rememberedScenario: PayoutScenario | null = null;
 
 /**
- * `?mock=legacy-account|batches-paged|batches-paged-open`. The shared scenario list does not know
+ * `?mock=legacy-account|batches-paged|batches-paged-open|resolve-proposal`. The shared scenario list does not know
  * them, so they are read from the URL here and kept for the page's lifetime.
  */
 function payoutScenario(): PayoutScenario | null {
@@ -413,7 +433,8 @@ function payoutScenario(): PayoutScenario | null {
     if (
       value === "legacy-account" ||
       value === "batches-paged" ||
-      value === "batches-paged-open"
+      value === "batches-paged-open" ||
+      value === "resolve-proposal"
     )
       rememberedScenario = value;
     else if (value !== null) rememberedScenario = null;
@@ -436,6 +457,38 @@ function view(row: PayrollDisbursementBatchDto): PayrollDisbursementBatchDto {
         : entry,
     ),
   };
+}
+
+/** Proof key the scenario's proposals carry: it belongs to batch 202. */
+const MOCK_PROPOSAL_EVIDENCE_KEY = `tenants/mock/payroll-payout/${MOCK_PAYOUT_IDS.batchStatus}/evidence/proposal.png`;
+
+/** Puts the scenario's first steps in, once per store (a reset re-arms it). */
+function seedScenarioProposals() {
+  if (payoutScenario() !== "resolve-proposal" || state().proposalsSeeded)
+    return;
+  store.set({
+    ...state(),
+    proposalsSeeded: true,
+    proposals: {
+      ...state().proposals,
+      [`resolve:${uid(2005)}`]: {
+        kind: "resolve",
+        outcome: "failed",
+        by: userIds.financeApprover,
+        evidenceKey: MOCK_PROPOSAL_EVIDENCE_KEY,
+        note: "Bank menolak transfer, saldo tujuan tidak aktif.",
+        at: "2026-10-31T03:20:00.000Z",
+      },
+      [`return:${uid(2002)}`]: {
+        kind: "return",
+        outcome: "returned",
+        by: userIds.financeApprover,
+        evidenceKey: MOCK_PROPOSAL_EVIDENCE_KEY,
+        note: "Dana kembali dari bank penerima.",
+        at: "2026-10-31T04:10:00.000Z",
+      },
+    },
+  });
 }
 
 const BATCH_PAGE_TWO = "p2";
@@ -841,7 +894,9 @@ function propose(
   kind: Proposal["kind"],
   outcome: string,
   itemIds: readonly string[],
+  proof: { evidenceKey: string; note: string },
 ) {
+  seedScenarioProposals();
   const actor = currentActor();
   const proposals = { ...state().proposals };
   const applied: string[] = [];
@@ -849,7 +904,14 @@ function propose(
     const key = `${kind}:${id}`;
     const earlier = proposals[key];
     if (!earlier) {
-      proposals[key] = { kind, outcome, by: actor };
+      proposals[key] = {
+        kind,
+        outcome,
+        by: actor,
+        evidenceKey: proof.evidenceKey,
+        note: proof.note,
+        at: new Date().toISOString(),
+      };
       continue;
     }
     if (earlier.by === actor)
@@ -864,12 +926,67 @@ function propose(
         "PAYOUT_RESOLVE_OUTCOME_MISMATCH",
         "Hasil yang dipilih berbeda dari usulan sebelumnya.",
       );
+    if (earlier.evidenceKey !== proof.evidenceKey)
+      throw kind === "resolve"
+        ? refuse(
+            409,
+            "PAYOUT_RESOLVE_EVIDENCE_MISMATCH",
+            "Bukti berbeda dari usulan orang pertama.",
+          )
+        : refuse(
+            409,
+            "PAYOUT_RETURN_EVIDENCE_MISMATCH",
+            "Bukti berbeda dari usulan orang pertama.",
+          );
     delete proposals[key];
     applied.push(id);
   }
   store.set({ ...state(), proposals });
   return applied;
 }
+
+registerMock(listResolutionProposals, ({ params }) => {
+  const current = find(params.id);
+  seedScenarioProposals();
+  const byItem = new Map(current.items.map((row) => [row.id, row] as const));
+  return {
+    data: Object.entries(state().proposals).flatMap(([key, proposal]) => {
+      const target = byItem.get(key.slice(key.indexOf(":") + 1));
+      if (!target) return [];
+      return [
+        {
+          itemId: target.id,
+          employeeId: target.employeeId,
+          kind: proposal.kind,
+          outcome:
+            proposal.kind === "return"
+              ? null
+              : proposal.outcome === "not_sent"
+                ? ("not_sent" as const)
+                : ("failed" as const),
+          evidenceKey: proposal.evidenceKey,
+          note: proposal.note,
+          proposedBy: proposal.by,
+          proposedAt: proposal.at,
+        },
+      ];
+    }),
+  };
+});
+
+registerMock(readPayoutEvidence, ({ params, query }) => {
+  find(params.id);
+  if (!query.key.includes(`/${params.id}/`))
+    throw refuse(422, "VALIDATION_ERROR", "Kunci bukti bukan milik batch ini.");
+  return {
+    data: {
+      evidenceKey: query.key,
+      // Nothing to show in mock mode; a blank tab proves the link opened.
+      url: "about:blank",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    },
+  };
+});
 
 registerMock(resolveDisbursementItems, ({ params, body }) => {
   const current = find(params.id);
@@ -879,7 +996,7 @@ registerMock(resolveDisbursementItems, ({ params, body }) => {
       "PAYOUT_CONFIRM_SELF",
       "Pembuat pengajuan tidak boleh menyelesaikan transfernya sendiri.",
     );
-  const applied = propose("resolve", body.outcome, body.itemIds);
+  const applied = propose("resolve", body.outcome, body.itemIds, body);
   const next =
     applied.length === 0
       ? current
@@ -923,7 +1040,7 @@ registerMock(returnDisbursementItems, ({ params, body }) => {
         "Hanya transfer yang berhasil bisa dikembalikan.",
       );
   }
-  const applied = propose("return", "returned", body.itemIds);
+  const applied = propose("return", "returned", body.itemIds, body);
   const next =
     applied.length === 0
       ? current

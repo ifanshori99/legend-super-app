@@ -257,6 +257,26 @@ export const payrollPayoutReviewMessages = {
     returnProposed:
       "Usulan tercatat. Orang kedua perlu mengonfirmasi dengan bukti yang sama.",
     returnDone: "Dana kembali tercatat.",
+    proposal: {
+      title: "Usulan orang pertama",
+      outcome: "Hasil",
+      outcomeFailed: "Gagal",
+      outcomeNotSent: "Tidak terkirim",
+      outcomeReturn: "Dana kembali",
+      by: "Diusulkan oleh",
+      you: "Anda",
+      other: "Orang lain",
+      at: "Waktu",
+      note: "Catatan",
+      viewEvidence: "Lihat bukti",
+      opening: "Membuka bukti…",
+      openFailed: "Bukti belum bisa dibuka. Coba lagi.",
+      badge: "Menunggu orang kedua",
+      locked:
+        "Hasil dan bukti mengikuti usulan orang pertama dan tidak bisa diubah. Tulis catatan Anda sendiri.",
+      waiting:
+        "Anda yang mengusulkan ini. Menunggu orang kedua untuk menyimpan hasil yang sama.",
+    },
   },
   error: {
     evidenceInvalid:
@@ -271,8 +291,10 @@ export const payrollPayoutReviewMessages = {
       "Penandaan kedua harus dilakukan orang lain, bukan orang yang mengusulkan pertama.",
     resolveOutcomeMismatch:
       "Hasil ini berbeda dari usulan pertama. Periksa lagi bukti bank.",
+    resolveEvidenceMismatch:
+      "Bukti berbeda dari usulan orang pertama. Muat ulang lalu periksa usulan; tidak ada hasil yang dicatat.",
     returnEvidenceMismatch:
-      "Orang kedua harus memakai bukti yang sama dengan orang pertama. Layar ini belum bisa melakukannya; hubungi tim teknis. Tidak ada dana yang dicatat kembali.",
+      "Bukti berbeda dari usulan orang pertama. Muat ulang lalu periksa usulan; tidak ada dana yang dicatat kembali.",
     returnSamePerson:
       "Konfirmasi kedua harus dilakukan orang lain, bukan orang yang mencatat pertama.",
   },

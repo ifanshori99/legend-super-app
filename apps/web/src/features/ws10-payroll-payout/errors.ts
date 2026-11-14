@@ -30,6 +30,8 @@ const CODE_KEYS: Record<string, MessageKey> = {
   PAYOUT_RESOLVE_SAME_PERSON: "payrollPayoutReview.error.resolveSamePerson",
   PAYOUT_RESOLVE_OUTCOME_MISMATCH:
     "payrollPayoutReview.error.resolveOutcomeMismatch",
+  PAYOUT_RESOLVE_EVIDENCE_MISMATCH:
+    "payrollPayoutReview.error.resolveEvidenceMismatch",
   PAYOUT_RETURN_EVIDENCE_MISMATCH:
     "payrollPayoutReview.error.returnEvidenceMismatch",
   PAYOUT_RETURN_SAME_PERSON: "payrollPayoutReview.error.returnSamePerson",
