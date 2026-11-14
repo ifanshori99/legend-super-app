@@ -24,6 +24,7 @@ import {
   LINK_REFUSED_HEADER,
   LINK_RESTORE_PROOF_HEADER,
   LINK_RESTORE_PROOF_REFUSAL,
+  LINK_RESTORE_PROOF_V2_HEADER,
   encodeFrame,
   type CatalogStale,
 } from "./protocol.ts";
@@ -160,7 +161,10 @@ export function createEdgeLinkClient(
           ? { [LINK_INSTANCE_HEADER]: options.instanceId }
           : {}),
         ...(restoreProofAcked !== null
-          ? { [LINK_RESTORE_PROOF_HEADER]: String(restoreProofAcked) }
+          ? {
+              [LINK_RESTORE_PROOF_HEADER]: String(restoreProofAcked),
+              [LINK_RESTORE_PROOF_V2_HEADER]: "1",
+            }
           : {}),
       },
       maxPayload: LINK_MAX_FRAME_BYTES,
@@ -264,8 +268,13 @@ export function createEdgeLinkClient(
       options.onError?.(new Error(`Edge link socket error: ${error.message}`));
     });
     ws.on("close", (code, reason) => {
-      options.onClose?.(code, reason.toString("utf8"));
+      const closeReason = reason.toString("utf8");
+      options.onClose?.(code, closeReason);
       linkPeer.stop();
+      // The cloud can refuse the proof too (a replayed slot holding another
+      // event): no fast reconnect loop either (legend-tmar2).
+      if (closeReason.startsWith(LINK_RESTORE_PROOF_REFUSAL))
+        proofRefused = true;
       if (proofRefused) attempt = Math.max(attempt, attemptAtStart);
       if (heartbeat) clearInterval(heartbeat);
       heartbeat = undefined;

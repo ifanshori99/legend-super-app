@@ -100,6 +100,8 @@ type Proof = { count: number; sha256: string };
 const uuidOf = (event: EventEnvelope) => ulidToUuid(event.id);
 const proofOfEvents = (events: readonly EventEnvelope[]): Proof =>
   restoreProofOf(events.map(uuidOf));
+/** inboundProof result shape (854): the proven prefix ends at `to`. */
+const proofTo = (to: number, proof: Proof) => ({ to, ...proof });
 
 // ------------------------------------------------------------- fixtures
 
@@ -693,22 +695,28 @@ describe("legend-tmar2 db-link-store proofs cover (A, N] in edge numbering", () 
     const cloud = cloudStore(fx, I2);
     const edgeEvents = [newSet, ...more]; // edge slots 1..4
     // Cloud receipts (edge numbering, offset 3 hidden inside the store).
-    expect(await cloud.inboundProof!(0, 4)).toEqual(proofOfEvents(edgeEvents));
+    expect(await cloud.inboundProof!(0, 4)).toEqual(
+      proofTo(4, proofOfEvents(edgeEvents)),
+    );
     expect(await cloud.inboundProof!(1, 4)).toEqual(
-      proofOfEvents(edgeEvents.slice(1)),
+      proofTo(4, proofOfEvents(edgeEvents.slice(1))),
     );
     expect(await cloud.inboundProof!(2, 3)).toEqual(
-      proofOfEvents([edgeEvents[2]!]),
+      proofTo(3, proofOfEvents([edgeEvents[2]!])),
     );
     // The first slot is the new instance's event, not the old instance's s1.
-    expect(await cloud.inboundProof!(0, 1)).toEqual(proofOfEvents([newSet]));
-    expect(await cloud.inboundProof!(0, 1)).not.toEqual(
-      proofOfEvents([staff.s1]),
+    expect(await cloud.inboundProof!(0, 1)).toEqual(
+      proofTo(1, proofOfEvents([newSet])),
     );
-    expect(await cloud.inboundProof!(4, 4)).toEqual(restoreProofOf([]));
+    expect(await cloud.inboundProof!(0, 1)).not.toEqual(
+      proofTo(1, proofOfEvents([staff.s1])),
+    );
+    expect(await cloud.inboundProof!(4, 4)).toEqual(
+      proofTo(4, restoreProofOf([])),
+    );
     // Same range, same digest as the edge computes from its own queue.
     expect(await cloud.inboundProof!(1, 4)).toEqual(
-      await edge2.outboundProof(1, 4),
+      proofTo(4, await edge2.outboundProof(1, 4)),
     );
 
     // Cloud outbound queue (cloud_to_edge, offset 2): edge slot 1 = the event
@@ -814,15 +822,15 @@ describe("legend-tmar2 standby receipts keep one slot per sent event", () => {
     const n = 3;
     const proof = await cloud.inboundProof!(a, n);
     expect(proof?.count).toBe(n - a);
-    expect(proof).toEqual(await store.outboundProof(a, n));
-    expect(proof).toEqual(proofOfEvents([staff.s2, staff.s3]));
+    expect(proof).toEqual(proofTo(n, await store.outboundProof(a, n)));
+    expect(proof).toEqual(proofTo(n, proofOfEvents([staff.s2, staff.s3])));
     expect(await cloud.inboundProof!(0, n)).toEqual(
-      proofOfEvents([staff.s1, staff.s2, staff.s3]),
+      proofTo(n, proofOfEvents([staff.s1, staff.s2, staff.s3])),
     );
   });
 });
 
-describe("legend-tmar2 inboundProof is null when the cloud cannot prove the range (revisi 1 R2, R3)", () => {
+describe("legend-tmar2 inboundProof returns the longest proven prefix when the cloud cannot prove the whole range (revisi 1 R2, R3; 854 c.)", () => {
   /** A dead-letter style receipt: in edge_inbound_events, not in edge_received_events. */
   async function insertDeadLetterReceipt(fx: Fx, linkSeq: number) {
     await owner.query(
@@ -857,24 +865,36 @@ describe("legend-tmar2 inboundProof is null when the cloud cannot prove the rang
     const { fx, staff } = await threeDelivered("Proof dead letter");
     const cloud = cloudStore(fx, I1);
     const events = [staff.s1, staff.s2, staff.s3];
-    expect(await cloud.inboundProof!(0, 3)).toEqual(proofOfEvents(events));
+    expect(await cloud.inboundProof!(0, 3)).toEqual(
+      proofTo(3, proofOfEvents(events)),
+    );
 
     // A receipt for a dead-lettered event in slot 2, next to the real one.
     await insertDeadLetterReceipt(fx, 2);
-    expect(await cloud.inboundProof!(0, 3)).toEqual(proofOfEvents(events));
-    expect(await cloud.inboundProof!(1, 2)).toEqual(proofOfEvents([staff.s2]));
+    expect(await cloud.inboundProof!(0, 3)).toEqual(
+      proofTo(3, proofOfEvents(events)),
+    );
+    expect(await cloud.inboundProof!(1, 2)).toEqual(
+      proofTo(2, proofOfEvents([staff.s2])),
+    );
   });
 
-  it("a slot with only a dead-letter receipt is a hole: null", async () => {
-    const { fx } = await threeDelivered("Proof dead letter hole");
+  it("a slot with only a dead-letter receipt is a hole: the proof stops before it", async () => {
+    const { fx, staff } = await threeDelivered("Proof dead letter hole");
     const cloud = cloudStore(fx, I1);
     // Slot 4 exists as a receipt, but only of a dead-lettered event.
     await insertDeadLetterReceipt(fx, 4);
-    expect(await cloud.inboundProof!(3, 4)).toBeNull();
-    expect(await cloud.inboundProof!(0, 4)).toBeNull();
+    expect(await cloud.inboundProof!(3, 4)).toEqual({
+      to: 3,
+      ...restoreProofOf([]),
+    });
+    expect(await cloud.inboundProof!(0, 4)).toEqual({
+      to: 3,
+      ...proofOfEvents([staff.s1, staff.s2, staff.s3]),
+    });
   });
 
-  it("a hole in the range (missing receipt) gives null; the intact ranges still prove", async () => {
+  it("a hole in the range (missing receipt) gives the prefix before it; the intact ranges still prove", async () => {
     const { fx, staff } = await threeDelivered("Proof hole");
     const cloud = cloudStore(fx, I1);
     const client = await owner.connect();
@@ -892,22 +912,43 @@ describe("legend-tmar2 inboundProof is null when the cloud cannot prove the rang
     } finally {
       client.release();
     }
-    expect(await cloud.inboundProof!(0, 3)).toBeNull();
-    expect(await cloud.inboundProof!(0, 2)).toBeNull();
-    expect(await cloud.inboundProof!(1, 3)).toBeNull();
-    expect(await cloud.inboundProof!(2, 3)).toEqual(proofOfEvents([staff.s3]));
-    expect(await cloud.inboundProof!(0, 1)).toEqual(proofOfEvents([staff.s1]));
+    expect(await cloud.inboundProof!(0, 3)).toEqual({
+      to: 1,
+      ...proofOfEvents([staff.s1]),
+    });
+    expect(await cloud.inboundProof!(0, 2)).toEqual({
+      to: 1,
+      ...proofOfEvents([staff.s1]),
+    });
+    expect(await cloud.inboundProof!(1, 3)).toEqual({
+      to: 1,
+      ...restoreProofOf([]),
+    });
+    expect(await cloud.inboundProof!(2, 3)).toEqual({
+      to: 3,
+      ...proofOfEvents([staff.s3]),
+    });
+    expect(await cloud.inboundProof!(0, 1)).toEqual({
+      to: 1,
+      ...proofOfEvents([staff.s1]),
+    });
   });
 
-  it("a range past the receipts held (beyond N) gives null", async () => {
-    const { fx } = await threeDelivered("Proof beyond");
-    expect(await cloudStore(fx, I1).inboundProof!(0, 4)).toBeNull();
+  it("a range past the receipts held (beyond N) gives the prefix of what exists, to = N", async () => {
+    const { fx, staff } = await threeDelivered("Proof beyond");
+    expect(await cloudStore(fx, I1).inboundProof!(0, 4)).toEqual({
+      to: 3,
+      ...proofOfEvents([staff.s1, staff.s2, staff.s3]),
+    });
   });
 
-  it("a range wider than 20000 slots gives null; a reversed range too", async () => {
-    const { fx } = await threeDelivered("Proof wide");
+  it("a range wider than 20000 slots gives the prefix of what exists; only a reversed range is null", async () => {
+    const { fx, staff } = await threeDelivered("Proof wide");
     const cloud = cloudStore(fx, I1);
-    expect(await cloud.inboundProof!(0, 20_001)).toBeNull();
+    expect(await cloud.inboundProof!(0, 20_001)).toEqual({
+      to: 3,
+      ...proofOfEvents([staff.s1, staff.s2, staff.s3]),
+    });
     expect(await cloud.inboundProof!(3, 2)).toBeNull();
   });
 });
@@ -930,10 +971,10 @@ describe("legend-tmar2 end to end: a restored edge database is not acked blindly
     });
     // The digests differ over (1, 3]: the cloud holds s2 and s3 there.
     expect(await cloudStore(fx, I1).inboundProof!(1, 3)).toEqual(
-      proofOfEvents([staff.s2, staff.s3]),
+      proofTo(3, proofOfEvents([staff.s2, staff.s3])),
     );
-    expect(await restored.outboundProof(1, 3)).not.toEqual(
-      await cloudStore(fx, I1).inboundProof!(1, 3),
+    expect((await restored.outboundProof(1, 3)).sha256).not.toEqual(
+      (await cloudStore(fx, I1).inboundProof!(1, 3))?.sha256,
     );
     const cursorsBefore = await allCursorColumns(fx);
 

@@ -147,7 +147,10 @@ class CloudStore implements LinkStore {
   received: number;
   applied: string[] = [];
   readonly inboundProofCalls: [number, number][] = [];
-  /** R2: the cloud cannot prove the range (gap in receipts, range too large). */
+  /**
+   * R2: the cloud cannot prove the whole range (gap in receipts, range too
+   * large): it proves only the empty prefix, so `to` stops at `fromSeq`.
+   */
   unprovable = false;
   constructor(readonly receipts: readonly string[]) {
     this.received = receipts.length;
@@ -175,10 +178,13 @@ class CloudStore implements LinkStore {
     this.received = input.toSeq;
   }
   /** Edge numbering; the real store adds peer_seq_offset itself. */
-  async inboundProof(fromSeq: number, toSeq: number): Promise<Proof | null> {
+  async inboundProof(
+    fromSeq: number,
+    toSeq: number,
+  ): Promise<(Proof & { to: number }) | null> {
     this.inboundProofCalls.push([fromSeq, toSeq]);
-    if (this.unprovable) return null;
-    return refProof(this.receipts.slice(fromSeq, toSeq));
+    if (this.unprovable) return { to: fromSeq, ...refProof([]) };
+    return { to: toSeq, ...refProof(this.receipts.slice(fromSeq, toSeq)) };
   }
 }
 
@@ -664,7 +670,7 @@ describe("legend-tmar2 revision 1 (R1, R2, R4)", () => {
     expect(store.acked).toBe(2);
   });
 
-  it("R2. inboundProof null: the cloud hello carries no proof", async () => {
+  it("R2. a proof that stops short of the cursor (848 edge, not strict): the cloud hello carries no proof", async () => {
     const cloud = new CloudStore([...original.slice(0, 5)].map(uuidOf));
     cloud.unprovable = true;
     const frames: string[] = [];

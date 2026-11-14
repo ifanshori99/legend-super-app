@@ -50,6 +50,7 @@ import {
   LINK_REFUSED_CREDENTIAL,
   LINK_REFUSED_HEADER,
   LINK_RESTORE_PROOF_HEADER,
+  LINK_RESTORE_PROOF_V2_HEADER,
   restoreProofAckedFromHeader,
   type LinkFrame,
 } from "./protocol.ts";
@@ -86,6 +87,11 @@ export type EdgeLinkIdentity = {
    * = absent or malformed (old edge; hello carries no proof).
    */
   readonly restoreProofAcked?: number | null;
+  /**
+   * From the `x-edge-restore-proof-v2` upgrade header (legend-tmar2 854): the
+   * edge understands partial proofs and replay checks. Absent for an 848 edge.
+   */
+  readonly restoreProofStrict?: boolean;
 };
 
 const INSTANCE_ID_PATTERN =
@@ -248,7 +254,12 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
       outboundDirection: "cloud_to_edge",
       store: deps.storeFor(identity),
       ...(identity.restoreProofAcked != null
-        ? { restoreProofAcked: identity.restoreProofAcked }
+        ? {
+            restoreProofAcked: identity.restoreProofAcked,
+            ...(identity.restoreProofStrict
+              ? { restoreProofStrict: true }
+              : {}),
+          }
         : {}),
       version: deps.version,
       ackTimeoutMs: deps.ackTimeoutMs,
@@ -379,6 +390,8 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
           restoreProofAcked: restoreProofAckedFromHeader(
             request.headers[LINK_RESTORE_PROOF_HEADER],
           ),
+          restoreProofStrict:
+            request.headers[LINK_RESTORE_PROOF_V2_HEADER] === "1",
         };
         wss.handleUpgrade(request, socket, head, (ws) =>
           attach(ws, authenticated),

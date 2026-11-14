@@ -52,7 +52,11 @@ import {
   type LinkStore,
   type QueuedEdgeEvent,
 } from "./link-peer.ts";
-import { oppositeDirection, restoreProofOf } from "./protocol.ts";
+import {
+  LINK_RESTORE_PROOF_REFUSAL,
+  oppositeDirection,
+  restoreProofOf,
+} from "./protocol.ts";
 import {
   classifyEdgeEvent,
   EdgeEventUnclassifiedError,
@@ -354,6 +358,14 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
       ? {}
       : { onPeerHello: bindPeer };
 
+  const classify = (event: EventEnvelope): EdgeEventKind => {
+    const classifyOption = options.classify;
+    if (!classifyOption) return classifyEdgeEvent(event, inbound);
+    const kind = classifyOption(event, inbound);
+    if (!kind) throw new EdgeEventUnclassifiedError(event.aggregateType);
+    return kind;
+  };
+
   return {
     ...resume,
     outboundHead: () => cursorValue("next_out_seq", outbound),
@@ -379,32 +391,51 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
     // legend-tmar2: the same digest over the receipts this side holds for the
     // peer's slots (fromSeq, toSeq] (peer numbering; the offset maps them to
     // the stored link_seq). Receipts are append-only and never pruned.
-    // Returns null when the cloud cannot prove the range: it is wider than
-    // RESTORE_PROOF_MAX_SLOTS, or a slot has no countable receipt (a hole).
-    // The hello then goes out without a proof, so the link resumes as before
-    // for a history that is incomplete (deliberate fail-open, legend-tmar2).
-    // The digest is built in SQL (one aggregate row, light on memory). On
-    // edge_to_cloud only receipts whose event is in edge_received_events
-    // count: a dead-letter receipt (link-dead-letter-applier) is not an event
-    // the edge holds in that slot, so it must not be hashed.
+    // legend-tmar2 (854): fail closed. Proves the longest COMPLETE prefix
+    // from+1..from+k of the range (capped at RESTORE_PROOF_MAX_SLOTS slots),
+    // each slot holding exactly one countable receipt. k=0 gives the empty
+    // proof (to=from). Null only when the range is inverted (toSeq < fromSeq).
+    // Query 1 reads only link_seq to find k; query 2 builds the digest in SQL
+    // (one aggregate row, light on memory). On edge_to_cloud only receipts
+    // whose event is in edge_received_events count: a dead-letter receipt
+    // (link-dead-letter-applier) is not an event the edge holds in that slot,
+    // so it must not be hashed.
     async inboundProof(fromSeq, toSeq) {
-      if (toSeq < fromSeq || toSeq - fromSeq > RESTORE_PROOF_MAX_SLOTS)
-        return null;
+      if (toSeq < fromSeq) return null;
+      const upTo = Math.min(toSeq, fromSeq + RESTORE_PROOF_MAX_SLOTS);
       return run(async (tx) => {
         const { offset } = await peerNumbering(tx, inbound);
         const registry =
           inbound === "edge_to_cloud"
             ? sql`JOIN edge_received_events rv ON rv.tenant_id = r.tenant_id AND rv.event_id = r.event_id`
             : sql``;
+        const slots = await tx.execute(
+          sql`SELECT r.link_seq, count(*) AS receipts FROM edge_inbound_events r ${registry} WHERE r.tenant_id = ${node.tenantId}::uuid AND r.edge_node_id = ${nodeId}::uuid AND r.direction = ${inbound} AND r.link_seq > ${fromSeq + offset} AND r.link_seq <= ${upTo + offset} GROUP BY r.link_seq ORDER BY r.link_seq`,
+        );
+        // Longest run of consecutive slots with exactly one countable receipt.
+        let length = 0;
+        for (const row of slots.rows) {
+          if (
+            Number(row.link_seq) !== fromSeq + offset + length + 1 ||
+            Number(row.receipts) !== 1
+          )
+            break;
+          length += 1;
+        }
+        if (length === 0) return { to: fromSeq, ...restoreProofOf([]) };
         const result = await tx.execute(
-          sql`SELECT count(*) AS count, count(DISTINCT r.link_seq) AS slots, encode(sha256(convert_to(COALESCE(string_agg(r.event_id::text || chr(10), '' ORDER BY r.link_seq), ''), 'UTF8')), 'hex') AS sha256 FROM edge_inbound_events r ${registry} WHERE r.tenant_id = ${node.tenantId}::uuid AND r.edge_node_id = ${nodeId}::uuid AND r.direction = ${inbound} AND r.link_seq > ${fromSeq + offset} AND r.link_seq <= ${toSeq + offset}`,
+          sql`SELECT count(*) AS count, encode(sha256(convert_to(COALESCE(string_agg(r.event_id::text || chr(10), '' ORDER BY r.link_seq), ''), 'UTF8')), 'hex') AS sha256 FROM edge_inbound_events r ${registry} WHERE r.tenant_id = ${node.tenantId}::uuid AND r.edge_node_id = ${nodeId}::uuid AND r.direction = ${inbound} AND r.link_seq > ${fromSeq + offset} AND r.link_seq <= ${fromSeq + length + offset}`,
         );
         const row = result.rows[0];
-        const count = Number(row?.count ?? 0);
-        // Complete = exactly one countable receipt per slot of the range.
-        if (!row || count !== toSeq - fromSeq || Number(row.slots) !== count)
-          return null;
-        return { count, sha256: String(row.sha256) };
+        // Receipts are append-only, so the prefix cannot shrink between the
+        // two queries; anything else is a broken invariant, not a proof.
+        if (!row || Number(row.count) !== length)
+          throw new Error("Inbound receipts changed while proving the prefix");
+        return {
+          to: fromSeq + length,
+          count: length,
+          sha256: String(row.sha256),
+        };
       });
     },
 
@@ -547,16 +578,58 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
       });
     },
 
+    // legend-tmar2 (854): cloud side, a modern edge re-sent slots at or below
+    // the cursor. Each slot must already hold the same event as a receipt, or
+    // the event must be registered as received (a standby re-send, or a hole
+    // from a restored database): then the missing receipt is written as
+    // 'superseded', closing the hole for inboundProof. Any other event (a
+    // different receipt, or one the cloud never saw) means the edge's history
+    // diverges from the cloud's: refuse, and the batch is not acknowledged.
+    async reconcileReplay({ events }) {
+      if (inbound !== "edge_to_cloud" || events.length === 0) return;
+      await run(async (tx) => {
+        await lockSyncCursor(tx, node, inbound);
+        const { offset } = await peerNumbering(tx, inbound);
+        const first = events[0]!.linkSeq;
+        const last = events[events.length - 1]!.linkSeq;
+        const receipts = await tx.execute(
+          sql`SELECT link_seq, event_id FROM edge_inbound_events WHERE tenant_id = ${node.tenantId}::uuid AND edge_node_id = ${nodeId}::uuid AND direction = ${inbound} AND link_seq >= ${Math.min(first, last) + offset} AND link_seq <= ${Math.max(first, last) + offset}`,
+        );
+        const held = new Map<number, Set<string>>();
+        for (const row of receipts.rows) {
+          const slot = Number(row.link_seq) - offset;
+          const ids = held.get(slot) ?? new Set<string>();
+          ids.add(String(row.event_id).toLowerCase());
+          held.set(slot, ids);
+        }
+        for (const { linkSeq, event } of events) {
+          const refuse = () =>
+            new LinkProtocolError(
+              `${LINK_RESTORE_PROOF_REFUSAL} replayed slot ${linkSeq} holds a different event; refusing to resume`,
+            );
+          if (
+            event.tenantId !== node.tenantId ||
+            event.outletId !== node.outletId
+          )
+            throw refuse();
+          const eventUuid = ulidToUuid(event.id);
+          const slotReceipts = held.get(linkSeq);
+          if (slotReceipts?.has(eventUuid.toLowerCase())) continue;
+          if (slotReceipts && slotReceipts.size > 0) throw refuse();
+          const registered = await tx.execute(
+            sql`SELECT 1 FROM edge_received_events WHERE tenant_id = ${node.tenantId}::uuid AND event_id = ${eventUuid}::uuid`,
+          );
+          if (registered.rows.length === 0) throw refuse();
+          await tx.execute(
+            sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${linkSeq + offset}, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${classify(event)}, 'superseded') ON CONFLICT DO NOTHING`,
+          );
+        }
+      });
+    },
+
     async applyInbound({ fromSeq, toSeq, events }) {
       const applier: EdgeEventApplier<EdgeTx> =
         options.applier ?? edgeEventApplier(inbound);
-      const classifyOption = options.classify;
-      const classify = (event: EventEnvelope): EdgeEventKind => {
-        if (!classifyOption) return classifyEdgeEvent(event, inbound);
-        const kind = classifyOption(event, inbound);
-        if (!kind) throw new EdgeEventUnclassifiedError(event.aggregateType);
-        return kind;
-      };
       await run(async (tx) => {
         const cursor = await lockSyncCursor(tx, node, inbound);
         const { offset } = await peerNumbering(tx, inbound);

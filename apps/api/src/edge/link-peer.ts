@@ -111,18 +111,33 @@ export type LinkStore = {
    */
   outboundProof?(fromSeq: number, toSeq: number): Promise<RestoreProof>;
   /**
-   * Optional, cloud (legend-tmar2): proof over the receipts of events the edge
-   * sent with link_seq in (fromSeq, toSeq] in the EDGE's numbering (the store
-   * adds the peer offset), ascending. Null when the cloud cannot prove the
-   * range (gap in the receipts, range too large): the hello then carries no
-   * proof. That is a deliberate fail-open for incomplete history, the old
-   * behaviour of a hello without proof.
+   * Optional, cloud (legend-tmar2): proof over the receipts
+   * of events the edge sent with link_seq in (fromSeq, toSeq] in the EDGE's
+   * numbering (the store adds the peer offset), ascending. The store proves
+   * the longest complete prefix of the range (slots fromSeq+1..fromSeq+k, k
+   * may be 0, capped by its own limit) and returns where it ends in `to`.
+   * Null only when toSeq < fromSeq. The hello always carries the result:
+   * a hole or an oversized range yields a shorter proof, never none.
    */
-  inboundProof?(fromSeq: number, toSeq: number): Promise<RestoreProof | null>;
+  inboundProof?(
+    fromSeq: number,
+    toSeq: number,
+  ): Promise<(RestoreProof & { to: number }) | null>;
+  /**
+   * Optional, cloud (legend-tmar2 854): checks the part of an edge batch that
+   * lies at or below the cloud's received cursor (a replay) against the
+   * receipts, in the edge's numbering. Resolves when every slot holds the
+   * same event (a missing receipt of a registered event is filled in).
+   * Throws LinkProtocolError (reason starting with LINK_RESTORE_PROOF_REFUSAL)
+   * when a slot holds a different or unknown event: nothing is acknowledged.
+   */
+  reconcileReplay?(input: {
+    events: readonly { linkSeq: number; event: EventEnvelope }[];
+  }): Promise<void>;
 };
 
 export type RestoreProof = { count: number; sha256: string };
-type HelloProof = RestoreProof & { from: number };
+type HelloProof = RestoreProof & { from: number; to?: string };
 
 export type LinkTransport = {
   send(data: string): void;
@@ -150,11 +165,21 @@ export type LinkPeerOptions = {
   now?: () => Date;
   /**
    * Cloud only (legend-tmar2): the edge's acked_out_seq A from the upgrade
-   * header. When set and the cloud's inbound cursor N is above it, the hello
-   * carries `inboundProof` over (A, N] from `store.inboundProof`, with
-   * `from` = A.
+   * header. When set (a modern edge) and the cloud's inbound cursor N is above
+   * it, the hello carries `inboundProof` from `store.inboundProof`, with
+   * `from` = A and `to` only when the proof stops short of N (strict only, see
+   * `restoreProofStrict`; replayed batches are then checked by
+   * `store.reconcileReplay`).
    */
   restoreProofAcked?: number;
+  /**
+   * Cloud only (legend-tmar2 854), valid only with `restoreProofAcked`: the
+   * edge sent `x-edge-restore-proof-v2`, so it takes a partial or empty proof
+   * (`to`) and the cloud checks replayed batches. Without it (an 848 edge) the
+   * hello carries a proof only when it covers the whole range (to == cursor),
+   * else none, and replays are not checked: the 848 behaviour.
+   */
+  restoreProofStrict?: boolean;
   /** Store/apply failures (no secrets in the error). The link stays up. */
   onError?: (error: unknown) => void;
   /** After an event was moved to the dead-letter store (once per event). */
@@ -349,18 +374,32 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
     const cursor = await store.lastReceivedInbound();
     // Cloud only: the edge announced its acked cursor A (upgrade header), so
     // when our inbound cursor N is beyond it, prove which events fill (A, N].
+    // Strict (854 edge): the longest complete prefix, possibly empty, never
+    // omitted. Not strict (848 edge): only a proof of the whole range, else the
+    // hello carries none (the 848 fail-open for incomplete history).
     const proofAcked = options.restoreProofAcked;
-    const proof =
+    const strict = options.restoreProofStrict === true;
+    const found =
       proofAcked !== undefined && cursor > proofAcked && store.inboundProof
         ? await store.inboundProof(proofAcked, cursor)
         : null;
+    const proof = found && (strict || found.to === cursor) ? found : null;
     helloSent = true;
     send({
       type: "hello",
       version: options.version,
       inboundCursor: String(cursor),
       ...(proof && proofAcked !== undefined
-        ? { inboundProof: { from: proofAcked, ...proof } }
+        ? {
+            inboundProof: {
+              from: proofAcked,
+              // Omitted for the whole range so an 848 edge still
+              // accepts it; only a partial or empty proof says where it ends.
+              ...(proof.to !== cursor ? { to: String(proof.to) } : {}),
+              count: proof.count,
+              sha256: proof.sha256,
+            },
+          }
         : {}),
     });
   }
@@ -388,6 +427,9 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
         "Peer cursor is ahead of this side's queue; refusing to resume",
       );
     const acked = await store.lastAckedOutbound();
+    // Highest slot the peer's hello may count as acknowledged: the whole
+    // cursor, or the end of a partial proof (the rest is sent again).
+    let ackTo = cursor;
     if (cursor > acked) {
       // Restore proof (legend-tmar2): the cursor may only count as an ack when
       // the events in (acked, cursor] are the ones the peer holds. Checked
@@ -396,23 +438,32 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
       // announced), not at the current acked: an ack that finished after the
       // header was read must not cause a false refusal.
       if (proof && store.outboundProof) {
+        const proofTo = proof.to === undefined ? cursor : Number(proof.to);
         if (proof.from > acked)
           throw new LinkProtocolError(
             `${LINK_RESTORE_PROOF_REFUSAL} from ${proof.from} is beyond the acknowledged cursor; refusing to resume`,
           );
-        const local = await store.outboundProof(proof.from, cursor);
+        if (proofTo < proof.from || proofTo > cursor)
+          throw new LinkProtocolError(
+            `${LINK_RESTORE_PROOF_REFUSAL} to ${proofTo} is outside the proven range; refusing to resume`,
+          );
+        const local = await store.outboundProof(proof.from, proofTo);
         if (local.count !== proof.count || local.sha256 !== proof.sha256)
           throw new LinkProtocolError(
             `${LINK_RESTORE_PROOF_REFUSAL} mismatch: events in the acknowledged range differ from the peer's; refusing to resume`,
           );
+        ackTo = proofTo;
       }
-      await store.ackOutbound(cursor);
-      options.onAcked?.(cursor);
+      if (ackTo > acked) {
+        await store.ackOutbound(ackTo);
+        options.onAcked?.(ackTo);
+      }
     }
     // A cursor below our ack means the peer restored older state: resend
-    // from where it is (the rows are still queued unless pruned).
-    sentUpTo = cursor;
-    ackedUpTo = cursor;
+    // from where it is (the rows are still queued unless pruned). A partial
+    // proof acks only up to ackTo, so (ackTo, cursor] is sent again.
+    sentUpTo = ackTo;
+    ackedUpTo = ackTo;
     ready = true;
     await pump();
   }
@@ -432,6 +483,22 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
       // Gap: something before this batch never arrived.
       send({ type: "resend", direction: inbound, fromCursor: String(last) });
       return;
+    }
+    // A strict edge (854, restore proof v2 header): the part of the batch at or below
+    // our cursor may hold slots whose receipt never closed or whose event is
+    // not the one we hold, so check it before acknowledging anything.
+    const replayEnd = Math.min(last, toSeq);
+    if (
+      options.restoreProofAcked !== undefined &&
+      options.restoreProofStrict === true &&
+      store.reconcileReplay &&
+      replayEnd > fromSeq
+    ) {
+      await store.reconcileReplay({
+        events: batch.events
+          .slice(0, replayEnd - fromSeq)
+          .map((event, index) => ({ linkSeq: fromSeq + 1 + index, event })),
+      });
     }
     if (toSeq <= last) {
       // Duplicate: already applied; acknowledge again, never re-apply.

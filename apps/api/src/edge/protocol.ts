@@ -55,6 +55,12 @@ export type CatalogStale = z.infer<typeof catalogStaleSchema>;
 const restoreProofSchema = z.strictObject({
   /** The edge's acked cursor A the proof starts after (cloud echoes the header). */
   from: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  /**
+   * Last slot the proof covers. Omitted when it equals the hello's
+   * inboundCursor (the whole range, the shape an older edge accepts); only a
+   * partial or empty proof carries it.
+   */
+  to: linkCursorSchema.optional(),
   count: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
 });
@@ -159,6 +165,15 @@ export const LINK_INSTANCE_HEADER = "x-edge-instance";
  * proof, the edge acks the hello cursor as before.
  */
 export const LINK_RESTORE_PROOF_HEADER = "x-edge-restore-proof";
+
+/**
+ * Sent next to LINK_RESTORE_PROOF_HEADER (value "1") by an edge that
+ * understands a partial proof (`to`), checks replayed batches and keeps its
+ * reconnect backoff after a refusal (legend-tmar2 854). The 848 edge sends only
+ * the header above and gets the 848 behaviour: a hello proof only when it
+ * covers the whole range (fail-open otherwise), no `to`, no replay check.
+ */
+export const LINK_RESTORE_PROOF_V2_HEADER = "x-edge-restore-proof-v2";
 
 /**
  * Prefix of every close reason where the edge refuses a restore proof

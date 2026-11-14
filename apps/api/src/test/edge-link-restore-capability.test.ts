@@ -1,6 +1,8 @@
 // legend-tmar2 (848 design sections 3-4): the edge announces its durable
 // acked_out_seq A in the `x-edge-restore-proof` upgrade header; the cloud
 // answers with a digest of (A, N] in hello only for a valid header and N > A.
+// No v2 header here (848 edge, not strict): the proof is sent only when the
+// store proves the whole range (to == N) and carries no `to` on the wire.
 // Header missing or malformed: the legacy hello, byte for byte, so old edges
 // keep working. Real WebSocket server/client on loopback, in-memory stores.
 //
@@ -62,11 +64,15 @@ describe("legend-tmar2 cloud hello", () => {
   }> {
     const server = createServer();
     const token = mintEdgeCredential(scope).token;
-    const inboundProof = vi.fn(async () => digest);
-    const cloud = {
+    // 854 contract: the store proves the whole range here (to == N).
+    const inboundProof = vi.fn(async (_from: number, to: number) => ({
+      to,
+      ...digest,
+    }));
+    const cloud: LinkStore = {
       ...store({ lastReceivedInbound: async () => cloudCursor }),
       inboundProof,
-    } as LinkStore;
+    };
     const links = createEdgeLinkServer(server, {
       version: "cloud",
       authenticate: async (presented) =>
