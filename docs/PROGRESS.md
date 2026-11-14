@@ -1545,3 +1545,4 @@ Langkah berikut CTO baru:
 - 10:25 bw2q: fix/platform-offline-banner 4b461d82f review sonnet bersih, antre batch64. Brief 706 (jemae e2e POS) antre slot Codex.
 - 10:45 sivp: fix/ssr-hydration 991876567 (test dipindah ke tests/, merah tanpa fix). legend-xpmbb: guard test di luar pola runner. G00yt (Codex) mulai 706 jemae.
 - 11:00 xpmbb: fix/test-orphan-guard ea616877f review bersih. Antre batch64: fix/platform-offline-banner, fix/ssr-hydration, fix/test-orphan-guard, fix/edge-transport-no-outlet (+ fix/edge-dead-letter-alarm bila siap).
+- 11:15 1opho: fix/edge-dead-letter-alarm e37338e6d (base fix/edge-transport-no-outlet) review bersih, antre batch64. n2d3g ditahan sampai ws/edge-sync-resilience masuk.
