@@ -23,6 +23,7 @@ Infra: heavy diperbaiki (legend-qh8ly, t747l, v75d4: head-of-line + kunci browse
 Catatan Retro 30 sudah di RETRO.md: laporan antara "masih menunggu" yang bising; kartu basi (cek git log --all --grep <id> sebelum menugaskan).
 
 Cron dibuat ulang oleh CTO baru: push `17 * * * *`, retro `43 1,4,7,10,13,16,19,22 * * *`.
+- 20:13 retro 3 jam dilewati: slot thread Claude penuh 8/8 (RAM hijau); thread yang menunggu job heavy tidak ditidurkan supaya hasil job tidak hilang.
 
 ## Catatan CTO 12 Nov sore (G32bf)
 
