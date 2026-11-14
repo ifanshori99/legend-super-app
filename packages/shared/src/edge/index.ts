@@ -7,6 +7,7 @@ export * from "./sync-conflicts.ts";
 export * from "./bootstrap.ts";
 export * from "./people-snapshot.ts";
 export * from "./catalog-sync.ts";
+export * from "./catalog-record-event.ts";
 export * from "./selfie-seal.ts";
 export * from "./printers.ts";
 export * from "./link-dead-letter.ts";

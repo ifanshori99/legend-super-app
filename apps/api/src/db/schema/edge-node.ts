@@ -454,6 +454,8 @@ export const edgePullCheckpoints = pgTable(
         | "device_registry"
         | "staff_pins"
         | `catalog:${CatalogSyncStream}`
+        // Local stamp normalization, independent of HTTP progress/freshness.
+        | `catalog:init:${CatalogSyncStream}`
         // Pending menu_categories parent links of the catalog pull (legend-24318).
         | "catalog:menu_categories:parents"
         // Pending printers fallback links of the catalog pull (legend-fbf4v).

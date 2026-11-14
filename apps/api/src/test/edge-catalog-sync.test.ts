@@ -113,7 +113,10 @@ import {
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { db, pool } from "../db/index.ts";
-import { pullCatalog } from "../edge/catalog-puller.ts";
+import {
+  catalogCheckpointStream,
+  pullCatalog,
+} from "../edge/catalog-puller.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { applyCatalogRecords } from "../services/edge-catalog-apply.ts";
@@ -726,10 +729,11 @@ const edgePriceRows = async () =>
     [MINE.price_list_items],
   );
 
+const catalogCursorStreams = CATALOG_SYNC_STREAMS.map(catalogCheckpointStream);
 const checkpoints = () =>
   edge.rows(
-    "SELECT stream, watermark FROM edge_pull_checkpoints WHERE edge_node_id = $1",
-    [node.id],
+    "SELECT stream, watermark FROM edge_pull_checkpoints WHERE edge_node_id = $1 AND stream = ANY($2::varchar[])",
+    [node.id, catalogCursorStreams],
   );
 
 // A scripted cloud: serves the seeded rows (exactly what the real export
@@ -1696,8 +1700,12 @@ describe("97p edge pull: resume and broken connection", () => {
     const cloud = scriptedCloud(data, 100);
     await pullOk(cloud);
     await edge.owner.query(
-      "UPDATE edge_pull_checkpoints SET watermark = $2 WHERE edge_node_id = $1 AND stream LIKE 'catalog:%'",
-      [node.id, encodeCursor(["cat1", "2025-06-01T00:00:00.000000Z", id()])],
+      "UPDATE edge_pull_checkpoints SET watermark = $2 WHERE edge_node_id = $1 AND stream = ANY($3::varchar[])",
+      [
+        node.id,
+        encodeCursor(["cat1", "2025-06-01T00:00:00.000000Z", id()]),
+        catalogCursorStreams,
+      ],
     );
     const before = cloud.calls.length;
     const result = await pullOk(cloud);
@@ -1945,9 +1953,21 @@ describe("97p edge pull: resume and broken connection", () => {
 
     // (b) a cat1 checkpoint counts as no checkpoint.
     await poison();
+    // Model an edge upgrading from the pre-init-marker build: these stamps
+    // are local-origin, so its first initialization must normalize them.
+    // A running edge's marker stays intact during an ordinary cursor rewind
+    // (covered by edge-master-data-applier.test.ts).
     await edge.owner.query(
-      "UPDATE edge_pull_checkpoints SET watermark = $2 WHERE edge_node_id = $1 AND stream LIKE 'catalog:%'",
-      [node.id, encodeCursor(["cat1", "2025-06-01T00:00:00.000000Z", id()])],
+      "DELETE FROM edge_pull_checkpoints WHERE edge_node_id = $1 AND stream LIKE 'catalog:init:%'",
+      [node.id],
+    );
+    await edge.owner.query(
+      "UPDATE edge_pull_checkpoints SET watermark = $2 WHERE edge_node_id = $1 AND stream = ANY($3::varchar[])",
+      [
+        node.id,
+        encodeCursor(["cat1", "2025-06-01T00:00:00.000000Z", id()]),
+        catalogCursorStreams,
+      ],
     );
     await pullOk(cloud);
     await expectEdgeEqualsCloud();

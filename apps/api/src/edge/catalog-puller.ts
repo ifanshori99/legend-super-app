@@ -14,9 +14,11 @@
 //   no rewind: the pull resumes exactly at the checkpoint. A stored cursor of
 //   another tag (`cat1`) or a corrupt one counts as no checkpoint (the stream
 //   is pulled from the start again; applying is idempotent and never lets an
-//   older record over a newer row). That full pull first zeroes the stream's
-//   local `sync_txid` stamps (in the first page's transaction): stamps written
-//   by local transactions are not comparable with the cloud's.
+//   older record over a newer row). Before the first HTTP or event apply, local
+//   `sync_txid` stamps are normalized once: local transaction ids are not
+//   comparable with the cloud's. A separate durable initialization marker
+//   prevents an initial pull from zeroing newer event stamps; held receipts
+//   also protect event-backed documents when a rejected HTTP cursor rewinds.
 // - A stream whose rows another stream's rows point at (stations for
 //   menu_items and modifiers, inventory_items for recipes) that failed in this
 //   pull makes those streams skip the pull (error `CATALOG_PARENT_FAILED`,
@@ -52,6 +54,7 @@ import {
   CoreError,
   decodeCursor,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
@@ -61,6 +64,7 @@ import { isCatalogSyncCursorError } from "../services/edge-catalog-sync.ts";
 import {
   applyCatalogRecords,
   CatalogMissingRefError,
+  filterCatalogRecordsAfterEvents,
   lockCatalogStream,
   repairCategoryParents,
   repairPrinterFallbacks,
@@ -361,8 +365,53 @@ function saveCatalogCheckpoint(
   );
 }
 
+/**
+ * Normalize local bootstrap stamps once, before either receive path writes
+ * cloud versions. Kept separate from the HTTP cursor (including an empty
+ * cursor) and freshness. Receipt guards separately protect event-backed
+ * documents during an HTTP restore/rewind.
+ */
+export async function ensureCatalogStreamInitialized(
+  tx: Tx,
+  input: {
+    readonly tenantId: TenantId;
+    readonly edgeNodeId: string;
+    readonly stream: CatalogSyncStream;
+    readonly at: Date;
+  },
+): Promise<void> {
+  const { tenantId, edgeNodeId, stream, at } = input;
+  await lockCatalogStream(tx, tenantId, stream);
+  const marker = `catalog:init:${stream}` as const;
+  const [initialized] = await tx
+    .select({ watermark: edgePullCheckpoints.watermark })
+    .from(edgePullCheckpoints)
+    .where(
+      and(
+        eq(edgePullCheckpoints.edgeNodeId, edgeNodeId),
+        eq(edgePullCheckpoints.stream, marker),
+      ),
+    )
+    .limit(1);
+  if (initialized) return;
+  const [existing] = await tx
+    .select({ watermark: edgePullCheckpoints.watermark })
+    .from(edgePullCheckpoints)
+    .where(
+      and(
+        eq(edgePullCheckpoints.edgeNodeId, edgeNodeId),
+        eq(edgePullCheckpoints.stream, catalogCheckpointStream(stream)),
+      ),
+    )
+    .limit(1);
+  // An upgraded edge with a valid cloud checkpoint already holds cloud stamps.
+  if (parseCatalogMark(existing?.watermark ?? null) === null)
+    await resetCatalogSyncTxid(tx, tenantId, stream, edgeNodeId);
+  await saveCheckpointRow(tx, edgeNodeId, marker, "1", at);
+}
+
 /** Pending category parents / printer fallbacks (JSON in the watermark); unreadable = none. */
-async function loadPendingParents(
+export async function loadPendingParents(
   tx: Tx,
   edgeNodeId: string,
   checkpoint: PendingCheckpoint = PARENTS_CHECKPOINT,
@@ -396,7 +445,7 @@ async function loadPendingParents(
   }
 }
 
-function savePendingParents(
+export function savePendingParents(
   tx: Tx,
   edgeNodeId: string,
   pairs: readonly DeferredCategoryParent[],
@@ -543,12 +592,14 @@ async function pullStream(
     const result = await withTenant(database, options.context, async (tx) => {
       // The stream lock comes BEFORE the checkpoint is read, so pages of one
       // stream (this pull's and a concurrent pull's) apply one after another.
-      await lockCatalogStream(tx, tenantId, stream);
-      // A full pull (no checkpoint): local stamps are not the cloud's, so they
-      // are zeroed first and every cloud record wins (same commit as the page).
-      // The checkpoint is read again under the lock: a concurrent pull that
-      // already applied newer rows moved it, and zeroing their stamps now would
-      // let this (older) page win over them.
+      await ensureCatalogStreamInitialized(tx, {
+        tenantId,
+        edgeNodeId: options.edgeNodeId,
+        stream,
+        at: succeededAt,
+      });
+      // A refused HTTP cursor may restore HTTP-only copies to cloud state.
+      // Successfully held link versions remain protected during that reset.
       let rewindFrom: string | null = null;
       if (since === null) {
         const [row] = await tx
@@ -571,13 +622,23 @@ async function pullStream(
           current === null ||
           !isCurrentCursor(current)
         )
-          await resetCatalogSyncTxid(tx, tenantId, stream);
+          await resetCatalogSyncTxid(tx, tenantId, stream, options.edgeNodeId);
       }
-      const outcome = await applyCatalogRecords(tx, {
+      const records = await filterCatalogRecordsAfterEvents(tx, {
         tenantId,
+        edgeNodeId: options.edgeNodeId,
         stream,
         records: page.records,
       });
+      const applied = await applyCatalogRecords(tx, {
+        tenantId,
+        stream,
+        records,
+      });
+      const outcome = {
+        ...applied,
+        skipped: applied.skipped + page.records.length - records.length,
+      };
       // Parent links written null go to the durable list in the same commit.
       if (stream === "menu_categories" && outcome.deferredParents.length > 0) {
         const kept = (await loadPendingParents(tx, options.edgeNodeId)).filter(

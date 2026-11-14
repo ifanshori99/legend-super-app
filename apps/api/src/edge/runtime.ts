@@ -71,6 +71,7 @@ import {
 import { registerQrOrderEdgeApplier } from "./qr-order-applier.ts";
 import { registerAttendanceLoggedEdgeApplier } from "./attendance-logged-applier.ts";
 import { registerWifiQuotaEdgeApplier } from "./wifi-quota-applier.ts";
+import { registerMasterDataEdgeApplier } from "./master-data-applier.ts";
 import {
   startWifiQuotaQueueWorker,
   type WifiQuotaWorkerHandle,
@@ -830,6 +831,7 @@ export async function startEdgeRuntime(
   // legend-s4r6: cloud -> edge appliers, before the link can deliver.
   registerQrOrderEdgeApplier();
   registerWifiQuotaEdgeApplier();
+  registerMasterDataEdgeApplier();
   // Section D (legend-khu5): first boot provisions the node from its bundle.
   await bootstrapEdgeNodeIfNeeded(config);
   let local: Awaited<ReturnType<typeof ensureLocalEdgeNode>>;
