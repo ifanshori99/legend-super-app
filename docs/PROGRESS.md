@@ -1,3 +1,10 @@
+## 2026-11-14 10:31 WIB: legend-1iyup PoliciesTab hydration (fix/payroll-policies-hydration)
+
+- Penyebab: dua paragraf aturan lembur/THR menerima Skeleton div saat query statutory pending. Pembungkus menjadi div dengan class, teks, dan kondisi identik; tanpa perubahan API, migrasi, kalkulasi, atau payout.
+- Bukti gagal-dulu di base 70f90cecd: test SSR pending gagal pada div di dalam paragraf; test unavailable dash lulus. Setelah fix, 18/18 test terarah (regresi SSR, payroll legal entity, text-contract) lulus lewat `LEGEND_TEST_FILES='tests/payroll-policies-hydration.test.mjs tests/legend-wpqs-payroll-entity.test.mjs tests/text-contract.test.mjs' heavy pnpm test`.
+- Prettier dan ESLint ketiga file kode/test hijau; `heavy pnpm --filter @starter/web typecheck` hijau. Review konteks segar: tanpa temuan. Browser 5/5 hijau lewat `LEGEND_MOCK_PORT=3297 heavy --browser pnpm test:e2e:mock e2e/legend-1iyup.mock.spec.ts e2e/legend-r1bu.mock.spec.ts --grep 'loading rules hydrate|PAYR-02: the'`: loading dan sukses di 390/1280px tanpa diagnostik hydration, navigasi payroll, empty state, tabel statutory 1440px. Siap commit/push tanpa force; tidak merge/deploy. Gate penuh/build diserahkan ke merge train sesuai aturan thread.
+- Subagent: total 5, puncak 4 bersamaan, token heavy dipegang lead Codex. `session-usage.py` tidak menemukan transkrip Codex; `parallel-report` hanya melaporkan sesi Claude, sehingga biaya/rata-rata sesi ini tidak tersedia.
+
 ## WS-06/07 posting faktur pemasok + lanjutan AP (engineer, cabang `ws/purchasing-posting` dari `ws/purchasing-apar` aefe28175, 13 Nov 2026 18:49-19:47 WIB)
 
 - Desain: `docs/briefs/ws-purchasing-posting-design.md` (architect xhigh), review K architect xhigh: H1 dibetulkan, H2/M1 jadi bead penghalang flag.
@@ -5020,6 +5027,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Subagent: total 7 (1 Explore, 6 test-runner, 2 dihentikan), puncak 1 bersamaan, token heavy dipegang test-runner.
 
 ## ws/infra-security-small (13 Nov 2026)
+
 - legend-moe5 dan legend-3sbl sudah ada di m1 (ce080d9d dan seterusnya, dengan test): ditutup dengan bukti. Sisa deploy moe5: SSR_SHARED_SECRET/WEB_TRUST_PROXY_HOPS belum di deploy/single-vm/*.example; origin hanya terima IP Cloudflare. Scanner malware 3sbl masih NoopMalwareScanner.
 - legend-2mey: safeReturnPath di 3 rute masuk, query /wifi?zone= utuh (signed-in, verify-link). legend-bj5m: resolver pelanggan facility default (active saja, fail-closed). Commit 7c04d6e7, status review.
 - Bukti: test 2mey 30/30, resolver 8/8 + facility-api, tsc web dan api hijau, eslint+prettier hijau.
@@ -5080,7 +5088,6 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gate penuh diulang tidak sampai hijau utuh pada satu run; kegagalan terakhir dibuktikan flake atau test-bug per berkas (aturan batch54). Build `heavy pnpm build` EXIT=0 (18:20).
 - Biaya sesi (batch54+55): utama sonnet-5-5 221 req, subagent 100 req (haiku 34, opus 9, sonnet 57); 15 spawn subagent, puncak 2 bersamaan.
 
-
 ## Penguatan pembayaran: srf6, gjf1, j75w (engineer, cabang `ws/payment-hardening` dari m1 1202164d, 13 Nov 2026 14:32 WIB)
 
 - legend-srf6: indeks dedupe webhook kini (tenant, provider, integration_id, event_id); migrasi 0482 (drop+create, journal idx 482, snapshot) + CHECK `gateway_webhook_events_verified_integration_check` (baris terverifikasi wajib integration_id, NOT VALID: baris lama NULL tidak divalidasi). Kode mati `recordIntegrationMismatch` dihapus. Dua integrasi dengan eventId sama kini masing-masing punya baris; replay integrasi sama tetap ditolak.
@@ -5099,6 +5106,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti: gagal-dulu 20/20 (kolom belum ada); hijau 9 file terarah, lalu operations-availability + menu-availability 21/21 setelah perbaikan test; tsc api, eslint, prettier hijau; `db:generate` kosong.
 
 ## WS-07 kas & bank endpoint nyata (engineer, cabang `ws/cash-bank` dari 52346c44, 13 Nov 2026)
+
 - legend-4961: tabel `cash_bank_entries`, `petty_cash_funds` (CHECK saldo >= 0), `petty_cash_entries` (append-only); migrasi 0484 (drizzle) + 0485 (RLS tenant/outlet, REVOKE, GRANT kolom). Kontrak di `packages/shared/src/accounting/banking.ts` + 7 endpoint, izin `accounting.cash_bank.record` dan `accounting.petty_cash.manage`.
 - Posting: kas masuk/keluar/transfer sinkron (gagal = batal); kas kecil topup/return lewat aturan `document:petty_cash_topup|return`, peta `petty_cash` hilang -> parkir `ACCOUNT_MAPPING_MISSING`, retry `POST /petty-cash/entries/:id/post` (periode tutup -> periode terbuka + lateAdjustmentFrom). Pembelian sederhana menarik dana bila outlet punya dana.
 - Akun lawan: denylist role subledger/kas/bank/aset tetap/ekuitas + GL rekening bank mana pun (CASH_BANK_COUNTER_ACCOUNT_INVALID). Outlet tag harus satu badan usaha.
@@ -5153,17 +5161,21 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Perbaikan mekanis: upgrade sebagai pemilik biasa gagal di 0324 (ADD CONSTRAINT FK ke `outlets` FORCE RLS, 42501). FK tabel baru dipindah inline ke `CREATE TABLE` di 0324, 0326, 0327, 0328 (nama dan definisi sama, snapshot tidak berubah). Proof upgrade m1 (0320) -> 0329 sebagai pemilik DB biasa (rolsuper, rolbypassrls, rolcreaterole, rolcreatedb semua false) lulus, 9 hash SQL cocok, replay tidak berubah. Komentar nomor lama di SQL dan skema diganti nomor baru.
 - Gerbang tiga tahap: lint 18:29-18:30 hijau; typecheck 18:30-18:31 hijau (tanpa cache, 62 s); test penuh 18:31-19:39 (4025 s, 1 worker): 3 gagal dari 16836 (16790 lulus). `payroll-core-db.test.ts` gagal asli (3 tabel payroll baru belum ada di daftar coverage RLS): diperbaiki di test (18dbc695c), hijau 129/129. `audit-retention` dan `panic-relay` (EM-19 Q94) hijau saat diulang per berkas: flake beban, bead baru legend-x778h dan legend-gcdq0. Build `heavy pnpm run build` EXIT=0. Tidak ada run penuh ulang setelah perbaikan test (aturan batch54/55).
 - Subagent batch56: 2 (implementer), puncak 1 bersamaan, token heavy dipegang saya dan implementer.
+
 ### fix/webhook-retry-guard (13 Nov 2026, legend-okrmg + legend-gcdq0)
 
 - legend-okrmg (tingkat K, uang): `reprocessStoredWebhookEvents` kini hanya mengambil `failed` lewat backoff; `received` hanya setelah macet 5 menit (`WEBHOOK_STUCK_RECEIVED_MS`). Tiap baris di-claim atomik (`UPDATE ... WHERE <due> AND id` sebelum diproses) supaya dua worker tidak memproses event yang sama. Test gagal-dulu di HEAD (5 gagal tanpa perbaikan, termasuk claim deterministik lewat lock `FOR UPDATE` + `pg_locks`). Review architect xhigh: kode benar; celah test ditutup. Sisa (bead baru): jalur kirim ulang DOIT dan sweep recurring tanpa claim, uang tetap aman.
 - legend-gcdq0: `edge-access-applier` clamp setAt kini memakai jam DB (bukan Date.now host). `panic-relay`: batas tunggu test dipisah dari SLO 5 s (`PANIC_TEST_WAIT_MS`), SLO tidak dilemahkan. panic-relay sendirian 32/32 hijau; akar flake di bawah beban penuh belum terbukti pasti.
 - Bukti: typecheck api EXIT 0, prettier+eslint file berubah hijau, 4 berkas test terarah 163/163.
+
 ## Panic relay di bawah beban (legend-a43bt, legend-gyqdh) — 13 Nov 2026
+
 - Akar (bug produk, bukan host): `sendFrame` mengirim frame lalu `recordSent` menyisipkan baris `panic_alert_deliveries`; FK ke `panic_alerts` mengambil KEY SHARE yang bentrok dengan `FOR UPDATE` di `recordReceipt` → deadlock 40P01, receipt hilang permanen karena `state.received` sudah true sebelum commit dan error ditelan (resend dan recovery melewati alarm itu). Itu juga sebab EM-19 Q94 dan EM-01.
 - Perbaikan: `FOR NO KEY UPDATE` di 5 titik (panic-relay.service, panic-alert-outbox, panic-alert-cloud.service; first-ack-wins D-07 tetap serial); `recordReceipt` set `received` hanya setelah commit + retry sekali pada 40P01/40001; `sendFrame` berbagi promise kirim yang sedang jalan per socket (cegah frame ganda tanpa salah menandai alarm tak terarah). SLO 5 detik tidak diubah.
 - legend-gyqdh: `panicClock` + `setPanicClockForTest` (jam dan timer injectable) di panic-relay.service; timer fallback POS 15 detik diuji.
 - Test: `apps/api/src/test/panic-relay-load.test.ts` (8 test; 7 gagal di base 4d299ba5e, hijau setelah perbaikan). 3 ronde × 2 proses paralel (panic-relay, panic-relay-load, panic-codex-fix, panic-review-e): hijau semua. api typecheck, eslint, prettier hijau. Review architect: 1 temuan nyata (boolean-skip), sudah diperbaiki.
 - Review architect ke-2 (diff final): 1 temuan nyata, slot kirim sendFrame tertahan lewat `await recordSent` (replay/resend bisa tak keluar saat tulis delivery lambat). Diperbaiki: slot dilepas segera setelah `sub.send`; test PRL-H5 (gagal-dulu dibuktikan dengan mutasi, hijau setelah fix). Run akhir: api typecheck, eslint, prettier hijau; 4 berkas panic (panic-relay, load 9, codex-fix, review-e) hijau.
+
 ## fix/petty-fund-required: Q8 dana kas kecil wajib + Q7 persetujuan kas keluar (Claude engineer, 13 Nov 2026 18:52-19:20 WIB)
 
 - Cabang `fix/petty-fund-required` dari `ws/cash-bank` d54f4f71. Brief: `docs/briefs/sub-petty-fund-required.md`, `docs/briefs/sub-cash-out-approval.md`.
@@ -5184,7 +5196,9 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Risiko terbuka: pengelompokan per outlet dan outlet opsional pada kas keluar, jadi bergantian outlet A / B / tanpa outlet bisa tetap di bawah batas. L2 belum: top-up pending tanpa pemetaan akun petty_cash baru gagal saat disetujui. Toast setujui/tolak masih bertuliskan "Kas keluar" untuk top-up.
 - Bukti: 7 file API (122 tes) hijau; node tests 68/68; typecheck hijau; eslint + prettier hijau; db:generate kosong. Architect xhigh: H1 (bypass/jam kunci `pt:`) dan L1 (kondisi 202) diperbaiki.
 - Screenshot Kas & Bank 390/1280 di `docs/screenshots/cash-bank/` (cash-approval, cash-limit-card, petty-topup-pending).
+
 ## WS-01 brand + tenant config (ws/brand-config, 13 Nov 2026, 17:41-18:11)
+
 - bkdmc: `PUT /api/org/brands/:brandId/logo` (org.theme.manage, tenant scope, audit brand.logo_set); media wajib purpose `brand_logo` di setBrandLogo, createThemeDraft, createBrand, updateBrand (celah ditemukan reviewer). Tanpa migrasi, tanpa UI.
 - 9k0a5: codec wifi_policies sudah ada (tct8); ditambah `spendMode` di item schema + handler ekspor/impor + 7 test.
 - datb2: sudah terpenuhi kode e623ce0b1 (tenant-config.service: satu transaksi, urutan roles/approval/CoA, blokir section sensitif di rute); hanya test guard ditambah. Catatan: ekspor CoA hanya legal entity tertua.
@@ -5196,11 +5210,14 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Subagent: total 24, puncak 5 bersamaan, token heavy dipegang test-runner.
 
 ## WS-01 grant rules (ws/brand-config, 13 Nov 2026, lanjutan, selesai 18:39)
+
 - legend-sjq5w: createCustomRole memanggil assertCanEditCustomRole (opsi reauthenticatedAt/mfaVerified dari route POST /roles, sama dengan PATCH). Run merah di kode lama: 2 test 201 != 403. Test lama diperbaiki: access-owner-grant (re-auth segar), access-hardening (fixture Admin Tenant kurang menu.item.view).
 - legend-wc69d: server sudah menolak non-Owner memberi Owner (test API hijau di kode lama); UI grant-role-dialog memakai grantableRoles (selaras assertCanGrantRole, gagal-tertutup: izin yang dipegang hanya di satu outlet tidak ditawarkan).
 - Architect xhigh: tidak ada temuan terbuka. Gate: vitest 14 berkas (186 test; 2 kegagalan fixture diperbaiki lalu 14/14), typecheck api/shared/web bersih, db:generate kosong, eslint+prettier hijau.
 - Subagent: total 9, puncak 3 bersamaan, token heavy dipegang test-writer/test-runner/implementer diagnosis bergantian.
+
 ## WS-03 QR order dan menu (ws/qr-menu, 13 Nov 2026)
+
 - Sudah: legend-iuvq consumer outbox cetak menu + sweep 30 dtk di worker-main (renderer tetap null/503: mesin PDF belum dipilih), legend-arp35 klien split sudah endpoint nyata; diperbaiki pemetaan galat SPLIT_LOCKED/NOTHING_TO_SPLIT/cashier, splitScope selaras server, item voided disaring, tombol dijaga sum==total; legend-tct6 photoUrl menu QR + situs publik lewat createMenuMediaUrls; legend-8qri tema+logo di respons menu QR (`theme`), tema tenant di Frame, helper outletTimeZone.
 - Bukti: typecheck shared/api/web, guest-menu-api + menu-print-sweep-loop (18), qr-split-money + qr-journey-mock (28), eslint/prettier, db:generate kosong.
 - Belum: screenshot 390 (docs/screenshots/qr-menu/), logo di header mobile, kontras tenant vs palet QR (css.ts), --ring QR tetap karat, split pesanan kasir/deposit tak disaring klien (server menolak, pesan "cashier").
@@ -5208,6 +5225,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Putaran 3 (13 Nov, CTO): legend-3qvvi selesai. Chrome QR (header chip, bar keranjang, stepper, nota) ikut tema tenant lewat token turunan di tokens.css `[data-surface="qr"][data-tenant]`; kontras dijamin konstruksi (on-dark & on-dark-muted = primary-foreground, panel = primary-hover, control = primary, glass-dark 96%), karena audit menemukan turunan lama gagal 4.5 di biru (4.36/4.50) dan primary lain. `data-tenant` hanya dipasang bila tema lolos cek kontras. Mock: menu tanpa tema (default cokelat), tema biru hanya meja demo A01. Tidak ada spec Playwright mock QR; yang ada tests/qr-journey-mock.test.mjs (node). Screenshot 390: menu-tema*, menu-default* di docs/screenshots/qr-menu/. Sisa cokelat netral di A01 (badge Contoh data, opsi terpilih, latar) = token netral, bukan tema.
 
 ## WS-03 mesin PDF cetak menu (ws/menu-pdf, 13 Nov 2026)
+
 - Sudah: legend-hspr8 port `MenuPdfRenderer.render(model: PrintableMenu)` (HTML dibuang), mesin generik pdf-lib di `services/pdf/` (`layoutPdfDocument` murni + `renderPdfDocument`: bungkus teks, tabel, header, footer "Halaman n/N", banyak halaman, header tabel diulang, karakter di luar font jadi `?`), `menu-pdf-renderer.ts` (spec menu). legend-iuvq: `worker-main.ts` memasang renderer sehingga sweep 30 dtk hidup; route `/print` default renderer asli (tidak 503 lagi).
 - Bukti: 6 berkas test (55 test) hijau, typecheck api hijau, eslint + prettier berkas ubahan hijau; tenant lain tidak bisa membaca PDF (storage get, RLS, getLatestMenuPrint). Contoh: `docs/screenshots/menu-pdf/` (menu-sample.pdf + PNG per halaman).
 - Belum: logo di header (spec mendukung `header.logo`, model menu belum membawa logo); slip gaji/struk belum dibangun (sengaja); `printableMenuHash` tidak memuat versi renderer (PDF lama tidak dibuat ulang bila tata letak berubah; aman sekarang karena belum ada PDF tersimpan); footer mencadangkan lebar "Halaman 99/99".
@@ -5231,7 +5249,6 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti upgrade: baseline m1 (1cbb842d5, 322 migrasi) dipasang, lalu pemilik DB biasa (rolsuper, rolbypassrls, rolcreaterole, rolcreatedb semua false) menerapkan 0336-0340: 327 baris, 5 hash SQL cocok 5/5, flag RLS lama identik, `edge_printers` dan `edge_printer_tombstones` ENABLE+FORCE RLS, replay tidak mengubah apa pun.
 - Gerbang: lint 23:32 hijau (0 error, 2 warning lama); typecheck 23:33 hijau (47 s); tes root awal 874 berkas-tes: 5 gagal `purchase-return-posting-contract` (diperbaiki, 21/21). Run penuh 23:36-00:50 (4466 s, 1 worker): root 2884/2884, vitest api 17231 lulus, 8 gagal di 4 berkas. `accounting-asset-no-double-ap` diperbaiki (lihat di atas). `rotate-data-key` (2), `hris-leave-changed-event` (3): timeout 20 dtk, lulus 3x sendiri. `platform-org-api` (2, ZodError openingHours dari baris berkas lain): lulus 3x sendirian. Ketiganya flake beban, kartu flake baru `legend-1jxh8` (P3). `heavy pnpm run build` EXIT=0 (8 s). Tidak ada run penuh ulang setelah perbaikan test (aturan batch54/55); berkas terkena diulang hijau, lint+typecheck+db:generate hijau ulang.
 
-
 ## 2026-11-14: Brief 647 edge sync appliers (ws/edge-sync-appliers, dari c93ffaca9)
 
 - legend-pd9t: `edge/order-edge-applier.ts` + migrasi 0510 (`edge_deferred_events.cost_snapshot_idr`). Order edge tetap diparkir (tanpa appendOutbox). HPP = hitung ulang konvergen dari baris `stock.moved` sale (sourceId = order id), dipanggil setelah order.paid diparkir dan setelah tiap stock.moved. Deviasi: kolom ini ditimpa tiap hitung ulang (bukan "isi hanya NULL"), karena baris stok tiba setelah order.paid dan bisa terpecah batch. Order void (baris `return`) belum mengurangi HPP (informasi saja).
@@ -5241,6 +5258,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - 2026-11-14 legend-7h5s lanjutan: worker-main.ts `sweepsCloudOwnedData` (pola sweepsRefunds) menggerbang sweep approval deadline, cuti, exit clearance, support grant di edge. `releaseExpiredSlotHolds` sengaja TIDAK digerbang: /api/facility dilayani edge (smart lock offline). Tes: edge-worker-cloud-sweeps-gate (7), refund-gate (3) hijau.
 
 ## WS-648 Gaji: inti + kanal manual BCA (ws/payroll-disbursement-manual, 13-14 Nov 2026)
+
 - Sudah (legend-wnkep.1, .2, .4): migrasi 0514-0517 (config kanal per PT, batch + item, kode bank, grant izin), state machine batch/item dengan guard DB (PAYOUT-xx), dua orang setuju (pembuat batch tidak boleh menyetujui), kedaluwarsa persetujuan 24 jam, ekspor berkas bank sekali (CAS + kunci baris), konfirmasi hasil per item (hanya `succeeded`), `resolveManualItems` dua langkah untuk failed/not_sent (dua orang berbeda, bukan pembuat, dengan bukti), serah tunai, format BCA, izin `payroll.payout.configure|disburse.request|disburse.approve`. Berkas bank lama dan batch saling mengunci per run (H1). Fee Rp5.000 disimpan per item, tidak dipotong dari gaji (Q15).
 - Bukti: test gagal-dulu (core, manual, BCA); run terarah 16 berkas/422 test + 27 test root hijau; typecheck api 0 galat; `db:generate` kosong; prettier + eslint bersih. Review: 1 architect xhigh (blokir H1/H2 + M1/M2/L1-L6 dibetulkan) + 1 reviewer sonnet (2 temuan dibetulkan: deadlock lock, bukti langkah kedua).
 - Belum: Duitku (.3, 13 `it.todo`), GL + event `payroll.paid` (.5), UI (.6/.7), DOIT (.8, ditunda Q14). Layout BCA belum dikonfirmasi bank (lihat `docs/design/payroll-disbursement-manual-bca.md`). Tidak ada API yang mengisi `employees.bank_code`: semua item manual `bank_code_missing` sampai HR bisa mengisinya. L5 (kunci bukti terikat storage tenant) ditunda. Second-opinion Codex wajib sebelum gerbang rilis.

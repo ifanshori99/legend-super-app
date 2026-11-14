@@ -142,7 +142,7 @@ export function PoliciesTab({ canRun }: { canRun: boolean }) {
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2">
-            <p className="text-sm leading-5">
+            <div className="text-sm leading-5">
               {rule(
                 overtime
                   ? t("payrollConfig.policies.overtimeRule", {
@@ -153,8 +153,8 @@ export function PoliciesTab({ canRun }: { canRun: boolean }) {
                     })
                   : t("payrollConfig.policies.overtimeRuleNone"),
               )}
-            </p>
-            <p className="text-sm leading-5">
+            </div>
+            <div className="text-sm leading-5">
               {rule(
                 thr
                   ? t("payrollConfig.policies.thrRule", {
@@ -163,7 +163,7 @@ export function PoliciesTab({ canRun }: { canRun: boolean }) {
                     })
                   : t("payrollConfig.policies.thrRuleNone"),
               )}
-            </p>
+            </div>
           </CardContent>
         </Card>
       </CardShell>
