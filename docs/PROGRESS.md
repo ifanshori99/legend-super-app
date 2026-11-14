@@ -1,3 +1,11 @@
+## 787 Foto dan tanda tangan sungguhan di fasilitas (ui-engineer, cabang dari `origin/ws/media-screens-upload` 94a165b19, 14 Nov 2026 sore WIB)
+
+- Sudah: layar kebersihan, tiket kerusakan, dan checklist (foto + tanda tangan) mengunggah file sungguhan lewat klien storage yang sama dengan layar stok (`PhotoField`, `uploadStorageFile`); tidak ada lagi id media acak. Progres, gagal + "Coba lagi", batal unggah, batas ukuran/jenis dari API. Tanda tangan: coretan diekspor PNG; nama ketik saja digambar ke kanvas (alternatif keyboard).
+- Kontrak: source kind baru `cleaning_task`, `maintenance_ticket`, `checklist_evidence` (purpose `receipt`), izin unggah = guard rute fitur, baca = itu + kode manajer fitur. Migrasi `0373_storage_facility_source_kinds` (hanya DROP/ADD check constraint; journal idx 361, merge train renumber).
+- legend-0una sudah selesai di cabang basis (M3 94a165b19), tidak dikerjakan ulang.
+- Keputusan: foto bukti tidak ke pihak ketiga (founder Q30); unggah kebersihan memakai outlet tugas, bukan outlet header (temuan architect).
+- Berikut: bead legend-mg2bz (ikat media lampiran ke source kind + pengunggah di service).
+
 ## WS-05 persetujuan dana tak teralokasi + kasus rekonsiliasi (engineer, cabang `ws/payment-approvals` dari `origin/milestone/m1` b17554cb9, 14 Nov 2026 06:36 WIB)
 
 - Sudah: rekonsiliasi lewat approval_requests (action `reconciliation_case`, status `pending_approval`, consumer `payment-reconciliation-approval-consumer.ts` di worker, migrasi 0565 + seed policy Owner). Dana tak teralokasi sudah lewat chain refund; dibuktikan 10 test (`payment-unallocated-approval.test.ts`). View admin: `approvalRequestId`/`approvedBy` di refund dan kasus. Temuan architect dibetulkan: impor settlement tidak membuat kasus ganda saat `pending_approval`, ringkasan menghitung kasus pending.

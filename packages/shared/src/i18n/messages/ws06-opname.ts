@@ -283,6 +283,7 @@ export const wasteMessages = {
       "Foto tidak bisa dibaca. Pilih foto lain dari kamera atau galeri.",
     photoUploading: "Foto sedang diunggah. Tunggu sebelum menyimpan.",
     photoUploaded: "Foto terunggah.",
+    photoCancelUpload: "Batalkan unggah",
     photoUploadUnavailable:
       "Foto belum terunggah. Penyimpanan atau pemeriksa berkas sedang tidak tersedia. Coba lagi.",
     photoUploadOffline:

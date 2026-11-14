@@ -114,10 +114,22 @@ export function PhotoField({
   onRetry,
   label,
   hint,
+  required = false,
+  capture,
+  contextLabel,
+  chooseRef,
 }: {
   /** Overrides the waste-log wording, e.g. where the photo is mandatory. */
   label?: string;
   hint?: string;
+  /** Mandatory photo: aria-required on the input and a visible marker. */
+  required?: boolean;
+  /** Opens the camera directly on phones that support it. */
+  capture?: "environment" | "user";
+  /** Names the subject in button labels, e.g. "Pilih foto — Lantai bar". */
+  contextLabel?: string;
+  /** Lets a form move focus to the field, e.g. when the photo is missing. */
+  chooseRef?: React.Ref<HTMLButtonElement>;
   previewUrl?: string | null;
   mediaId?: string | null;
   isUploading?: boolean;
@@ -130,10 +142,31 @@ export function PhotoField({
   const t = useT();
   const inputRef = React.useRef<HTMLInputElement>(null);
   const inputId = React.useId();
+  const errorId = `${inputId}-error`;
+  const withContext = (text: string) =>
+    contextLabel ? `${text} — ${contextLabel}` : text;
+  const chooseText =
+    mediaId || previewUrl
+      ? t("waste.form.photoChange")
+      : t("waste.form.photoChoose");
+  const removeText = isUploading
+    ? t("waste.form.photoCancelUpload")
+    : t("waste.form.photoRemove");
+  const statusText = isUploading
+    ? t("waste.form.photoUploading")
+    : mediaId
+      ? t("waste.form.photoUploaded")
+      : "";
   return (
     <div className="grid gap-2" aria-busy={isUploading}>
       <label htmlFor={inputId} className="text-sm leading-5 font-semibold">
         {label ?? t("waste.form.photo")}
+        {required && (
+          <span className="font-normal text-muted-foreground">
+            {" "}
+            ({t("common.required")})
+          </span>
+        )}
       </label>
       <p className="text-sm leading-5 text-muted-foreground">
         {hint ?? t("waste.form.photoHint")}
@@ -158,6 +191,9 @@ export function PhotoField({
             id={inputId}
             type="file"
             accept="image/*"
+            capture={capture}
+            aria-required={required || undefined}
+            aria-describedby={error ? errorId : undefined}
             disabled={disabled || isUploading}
             className="sr-only"
             tabIndex={-1}
@@ -169,42 +205,42 @@ export function PhotoField({
             }}
           />
           <Button
+            ref={chooseRef}
             type="button"
             variant="outline"
             size="sm"
+            aria-label={contextLabel ? withContext(chooseText) : undefined}
+            aria-describedby={error ? errorId : undefined}
             disabled={disabled || isUploading}
             onClick={() => inputRef.current?.click()}
           >
             <ImagePlus aria-hidden="true" />
-            {mediaId || previewUrl
-              ? t("waste.form.photoChange")
-              : t("waste.form.photoChoose")}
+            {chooseText}
           </Button>
           {(mediaId || previewUrl || error || isUploading) && (
             <Button
               type="button"
               variant="ghost"
               size="sm"
+              aria-label={contextLabel ? withContext(removeText) : undefined}
               disabled={disabled}
               onClick={onClear}
             >
               <X aria-hidden="true" />
-              {t("waste.form.photoRemove")}
+              {removeText}
             </Button>
           )}
         </div>
       </div>
-      {isUploading ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          {t("waste.form.photoUploading")}
-        </p>
-      ) : mediaId ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          {t("waste.form.photoUploaded")}
-        </p>
-      ) : null}
+      <div aria-live="polite" className="text-sm text-muted-foreground">
+        {statusText}
+      </div>
       {error && (
-        <p role="alert" className="text-sm font-medium text-danger">
+        <p
+          id={errorId}
+          role="alert"
+          className="text-sm font-medium text-danger"
+        >
           {error}
         </p>
       )}
@@ -214,6 +250,7 @@ export function PhotoField({
           variant="outline"
           size="sm"
           className="justify-self-start"
+          aria-label={contextLabel ? withContext(t("common.retry")) : undefined}
           disabled={disabled || isUploading}
           onClick={onRetry}
         >

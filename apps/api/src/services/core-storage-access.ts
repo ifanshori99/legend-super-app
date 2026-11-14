@@ -95,6 +95,18 @@ export const storageSourcePermissionMap = {
     upload: ["purchasing.petty.record"],
     read: ["accounting.reconcile", "purchasing.petty_policy.manage"],
   },
+  cleaning_task: {
+    upload: ["facility.booth.operate"],
+    read: ["facility.booth.operate", "facility.config.manage"],
+  },
+  maintenance_ticket: {
+    upload: ["ops.equipment.maintain"],
+    read: ["ops.equipment.maintain"],
+  },
+  checklist_evidence: {
+    upload: ["ops.checklist.complete"],
+    read: ["ops.checklist.complete", "ops.checklist.manage"],
+  },
 } as const satisfies Record<
   StorageSourceKind,
   Record<StorageAction, readonly PermissionCode[]>

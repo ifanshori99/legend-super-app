@@ -52,6 +52,9 @@ export const storageSourceKindSchema = z.enum([
   "menu_item",
   "petty_purchase",
   "waste_log",
+  "cleaning_task",
+  "maintenance_ticket",
+  "checklist_evidence",
 ]);
 export type StorageSourceKind = z.infer<typeof storageSourceKindSchema>;
 
@@ -70,6 +73,10 @@ export const storageSourceKindPurpose = {
   petty_purchase: "receipt",
   // Private photo evidence, using the existing receipt image transport (10 MiB).
   waste_log: "receipt",
+  // Facility screens: private evidence photos (checklist also a signature PNG).
+  cleaning_task: "receipt",
+  maintenance_ticket: "receipt",
+  checklist_evidence: "receipt",
 } as const satisfies Record<StorageSourceKind, StoragePurpose>;
 
 /** Kind used when an upload names none: only purposes with one obvious kind.
