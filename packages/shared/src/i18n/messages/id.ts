@@ -1174,6 +1174,8 @@ export const id = {
       queuedHint: "Pengajuan terkirim otomatis saat internet tersedia.",
       errorTitle: "Pengajuan gagal dikirim",
       errorHint: "Periksa koneksi lalu coba lagi. Tidak ada pengajuan ganda.",
+      queueFull:
+        "Antrean penuh oleh pengajuan yang ditolak. Buang atau ubah salah satunya dulu.",
       noLog: "Absen tidak tercatat",
       replayDropped:
         "{count} pengajuan dari antrean ditolak server. Buka Beranda untuk coba lagi, ubah, atau buang.",
@@ -1183,7 +1185,7 @@ export const id = {
       retry: "Coba lagi",
       retryLaterTitle: "Belum terkirim",
       retryLater:
-        "Koneksi atau server bermasalah. Pengajuan tetap tersimpan dan dikirim otomatis saat siap.",
+        "Koneksi atau server bermasalah. Pengajuan tetap tersimpan di perangkat.",
       edit: "Ubah",
       discard: "Buang",
       editTitle: "Ubah pengajuan koreksi",

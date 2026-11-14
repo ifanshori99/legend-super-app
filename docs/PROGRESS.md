@@ -79,3 +79,5 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Sudah: koreksi offline yang ditolak server (4xx final) tetap di antrean, bertanda "Ditolak" + alasan server, tombol Coba lagi / Ubah / Buang di Beranda karyawan. Antrean penuh membuang entri menunggu lebih dulu. Test node 46 lulus, prettier dan eslint hijau.
 - Belum jalan: typecheck apps/web dan e2e mock + screenshot (antre `heavy`, timeout 3x karena slot dipegang job lain).
 - Berikut: jalankan typecheck, e2e `e2e/legend-nv3y.mock.spec.ts` dengan `LEGEND_CAPTURE_SCREENSHOTS=1`, lalu lapor.
+
+- legend-xzzdq (P1) dan legend-l5tvy (P2) dari second opinion HRIS: selesai di cabang yang sama. Profil di-cache per user sesi, cache HRIS dibersihkan saat masuk/keluar, Coba lagi/Buang/kirim ulang memeriksa pemilik ke server, antrean penuh menolak pengajuan baru dengan pesan (tidak membuang penolakan), Ubah atomik. Test node 56, typecheck, e2e mock 12 lulus.

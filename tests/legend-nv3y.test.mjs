@@ -1051,3 +1051,263 @@ test("nvc7 a full queue evicts waiting entries before refused ones", () => {
       true,
     );
 });
+
+// ---- legend-xzzdq (P1 privacy): a new account never sees the previous one's
+// cached profile or offline queue. These import the new modules lazily so each
+// test fails on its own while the implementation is missing.
+
+const featureDir = "../apps/web/src/features/ws10-hris-employee";
+
+test("xzzdq the cached profile key carries the session user id", async () => {
+  const { hrisKeys } = await import(`${featureDir}/keys.ts`);
+  const a = hrisKeys.profile("user-a");
+  const b = hrisKeys.profile("user-b");
+  assert.notDeepEqual(a, b, "two accounts must not share one profile cache");
+  assert.deepEqual(hrisKeys.profile("user-a"), a, "the key is stable per user");
+  // Both stay under the root key so one removeQueries(hrisKeys.all) on
+  // sign-out / sign-in clears every private entry.
+  assert.deepEqual(a.slice(0, hrisKeys.all.length), [...hrisKeys.all]);
+  assert.deepEqual(b.slice(0, hrisKeys.all.length), [...hrisKeys.all]);
+  assert.ok(a.includes("user-a"));
+  assert.ok(b.includes("user-b"));
+});
+
+test("xzzdq canActOnQueued is true only for the same non-null employee", async () => {
+  const { canActOnQueued } = await import(`${featureDir}/identity.ts`);
+  assert.equal(canActOnQueued({ employeeId: "emp-a" }, "emp-a"), true);
+  assert.equal(canActOnQueued({ employeeId: "emp-a" }, "emp-b"), false);
+  assert.equal(canActOnQueued({ employeeId: "emp-a" }, null), false);
+});
+
+test("xzzdq account A's queued corrections and reasons never show for account B", async () => {
+  const { canActOnQueued } = await import(`${featureDir}/identity.ts`);
+  const storage = memoryStorage();
+  const otherId = fixtures.employees.find(
+    (employee) => employee.id !== ME_ID,
+  ).id;
+  const secret = queuedBody(randomUUID(), {
+    reason: "Alasan pribadi akun A.",
+  });
+  enqueueCorrection(secret, ME_ID, storage);
+  markCorrectionRefused(
+    secret.idempotencyKey,
+    {
+      status: 422,
+      code: "X",
+      reason: "Alasan server akun A.",
+      at: REFUSED_AT.toISOString(),
+    },
+    storage,
+  );
+  const queue = readCorrectionQueue(storage);
+
+  // Account B (or nobody yet) sees nothing of A's queue.
+  assert.deepEqual(queuedFor(queue, otherId), []);
+  assert.deepEqual(queuedFor(queue, null), []);
+  assert.equal(queuedFor(queue, ME_ID).length, 1);
+
+  // And B cannot retry or discard A's row even if it is somehow in hand.
+  const [row] = queuedFor(queue, ME_ID);
+  assert.equal(canActOnQueued(row, otherId), false);
+  assert.equal(canActOnQueued(row, null), false);
+  assert.equal(canActOnQueued(row, ME_ID), true);
+});
+
+// ---- legend-l5tvy (P2): a full queue never silently drops the new filing, and
+// Ubah never loses both the old and the replacement entry.
+
+const MAX_QUEUED = 20;
+
+function refusal(reason = "Ditolak.") {
+  return { status: 422, code: "X", reason, at: REFUSED_AT.toISOString() };
+}
+
+/** Seed `refused` refused entries then `waiting` waiting ones, oldest first. */
+function seedQueue(storage, { refused, waiting = 0 }, employeeId = ME_ID) {
+  const refusedKeys = [];
+  const waitingKeys = [];
+  for (let i = 0; i < refused; i += 1) {
+    const body = queuedBody();
+    enqueueCorrection(body, employeeId, storage);
+    markCorrectionRefused(
+      body.idempotencyKey,
+      refusal(`Ditolak ${i}.`),
+      storage,
+    );
+    refusedKeys.push(body.idempotencyKey);
+  }
+  for (let i = 0; i < waiting; i += 1) {
+    const body = queuedBody();
+    enqueueCorrection(body, employeeId, storage);
+    waitingKeys.push(body.idempotencyKey);
+  }
+  return { refusedKeys, waitingKeys };
+}
+
+test("l5tvy a full queue of refused entries refuses the new filing and changes nothing", async () => {
+  const { CorrectionQueueFullError } = await import(`${featureDir}/queue.ts`);
+  const storage = memoryStorage();
+  seedQueue(storage, { refused: MAX_QUEUED });
+  const before = readCorrectionQueue(storage);
+  assert.equal(before.length, MAX_QUEUED);
+  const snapshot = JSON.stringify(before);
+
+  assert.throws(
+    () => enqueueCorrection(queuedBody(), ME_ID, storage),
+    (error) => error instanceof CorrectionQueueFullError,
+  );
+  const after = readCorrectionQueue(storage);
+  assert.equal(after.length, MAX_QUEUED);
+  assert.equal(JSON.stringify(after), snapshot, "no entry dropped or added");
+  assert.ok(after.every((row) => isRefused(row)));
+});
+
+test("l5tvy 19 refused + 1 waiting + a new filing: the waiting one goes, every refusal stays", () => {
+  const storage = memoryStorage();
+  const { refusedKeys, waitingKeys } = seedQueue(storage, {
+    refused: MAX_QUEUED - 1,
+    waiting: 1,
+  });
+  assert.equal(readCorrectionQueue(storage).length, MAX_QUEUED);
+
+  const fresh = queuedBody();
+  enqueueCorrection(fresh, ME_ID, storage);
+  const queue = readCorrectionQueue(storage);
+  assert.equal(queue.length, MAX_QUEUED);
+  assert.equal(
+    queue.some((row) => row.key === waitingKeys[0]),
+    false,
+    "the old waiting entry is the one evicted",
+  );
+  assert.ok(queue.some((row) => row.key === fresh.idempotencyKey));
+  for (const key of refusedKeys)
+    assert.equal(
+      queue.some((row) => row.key === key && isRefused(row)),
+      true,
+      "no refusal is dropped for a new filing",
+    );
+});
+
+test("l5tvy Ubah on a full queue of refused entries swaps one entry and keeps the length", () => {
+  const storage = memoryStorage();
+  const { refusedKeys } = seedQueue(storage, { refused: MAX_QUEUED });
+  const oldKey = refusedKeys[7];
+  const fixed = queuedBody(randomUUID(), { reason: "Sudah diperbaiki." });
+
+  const queue = replaceQueuedCorrection(oldKey, fixed, ME_ID, storage);
+  assert.equal(queue.length, MAX_QUEUED, "never grows past the limit");
+  assert.equal(
+    queue.some((row) => row.key === oldKey),
+    false,
+    "the old attempt is gone",
+  );
+  const created = queue.find((row) => row.key === fixed.idempotencyKey);
+  assert.ok(created, "the replacement is there");
+  assert.equal(isRefused(created), false);
+  assert.equal(created.employeeId, ME_ID);
+  // Every other refusal is untouched.
+  for (const key of refusedKeys.filter((k) => k !== oldKey))
+    assert.equal(
+      queue.some((row) => row.key === key && isRefused(row)),
+      true,
+    );
+  assert.deepEqual(readCorrectionQueue(storage), queue, "one atomic write");
+});
+
+test("l5tvy Ubah with an unknown key leaves the queue as it was", async () => {
+  const storage = memoryStorage();
+  seedQueue(storage, { refused: 3, waiting: 1 });
+  const snapshot = JSON.stringify(readCorrectionQueue(storage));
+  // Assumption: the brief only fixes the outcome (queue unchanged), not
+  // whether the call returns or throws, so both are accepted.
+  try {
+    replaceQueuedCorrection("no-such-key", queuedBody(), ME_ID, storage);
+  } catch {
+    // refusing loudly is fine
+  }
+  assert.equal(JSON.stringify(readCorrectionQueue(storage)), snapshot);
+
+  // Same on a full queue: an unknown key must not turn into an eviction.
+  const full = memoryStorage();
+  seedQueue(full, { refused: MAX_QUEUED });
+  const fullSnapshot = JSON.stringify(readCorrectionQueue(full));
+  try {
+    replaceQueuedCorrection("no-such-key", queuedBody(), ME_ID, full);
+  } catch {
+    // refusing loudly is fine
+  }
+  assert.equal(JSON.stringify(readCorrectionQueue(full)), fullSnapshot);
+});
+
+test("l5tvy Ubah never replaces another employee's entry", () => {
+  const storage = memoryStorage();
+  const otherId = fixtures.employees.find(
+    (employee) => employee.id !== ME_ID,
+  ).id;
+  const theirs = queuedBody();
+  enqueueCorrection(theirs, otherId, storage);
+  markCorrectionRefused(theirs.idempotencyKey, refusal(), storage);
+  seedQueue(storage, { refused: 2 });
+  const snapshot = JSON.stringify(readCorrectionQueue(storage));
+
+  try {
+    replaceQueuedCorrection(
+      theirs.idempotencyKey,
+      queuedBody(),
+      ME_ID,
+      storage,
+    );
+  } catch {
+    // refusing loudly is fine
+  }
+  assert.equal(JSON.stringify(readCorrectionQueue(storage)), snapshot);
+  const row = readCorrectionQueue(storage).find(
+    (r) => r.key === theirs.idempotencyKey,
+  );
+  assert.ok(row, "their entry survives");
+  assert.equal(row.employeeId, otherId);
+  assert.equal(isRefused(row), true);
+});
+
+test("l5tvy the dialog's Ubah order never loses both the old and the new entry", async () => {
+  const { CorrectionQueueFullError } = await import(`${featureDir}/queue.ts`);
+
+  // Offline path on a full queue: one atomic replace. Either the swap happened
+  // or nothing changed; the filer is never left with neither entry.
+  const full = memoryStorage();
+  const { refusedKeys } = seedQueue(full, { refused: MAX_QUEUED });
+  const oldKey = refusedKeys[0];
+  const fixed = queuedBody();
+  try {
+    replaceQueuedCorrection(oldKey, fixed, ME_ID, full);
+  } catch {
+    // a failed replace must leave the old entry in place (checked below)
+  }
+  const afterReplace = readCorrectionQueue(full);
+  const hasOld = afterReplace.some((row) => row.key === oldKey);
+  const hasNew = afterReplace.some((row) => row.key === fixed.idempotencyKey);
+  assert.ok(hasOld || hasNew, "never neither");
+  assert.equal(hasOld && hasNew, false, "never both on a full queue");
+  assert.ok(afterReplace.length <= MAX_QUEUED);
+
+  // Plain enqueue (what the old dialog did first) on a full refused queue
+  // fails loudly and, because the dialog no longer removes the old entry
+  // after success, the old entry is still there.
+  const stuck = memoryStorage();
+  const seeded = seedQueue(stuck, { refused: MAX_QUEUED });
+  assert.throws(
+    () => enqueueCorrection(queuedBody(), ME_ID, stuck),
+    (error) => error instanceof CorrectionQueueFullError,
+  );
+  assert.ok(
+    readCorrectionQueue(stuck).some((row) => row.key === seeded.refusedKeys[0]),
+  );
+});
+
+test("l5tvy the catalog carries the queue-full text", () => {
+  assert.ok(isMessageKey("hris.correction.queueFull"));
+  assert.equal(
+    T("hris.correction.queueFull"),
+    "Antrean penuh oleh pengajuan yang ditolak. Buang atau ubah salah satunya dulu.",
+  );
+});

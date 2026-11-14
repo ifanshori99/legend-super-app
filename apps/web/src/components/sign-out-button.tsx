@@ -1,20 +1,26 @@
 import { useState } from "react";
 import { useNavigate, useRouter } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { LogOut } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
+import { hrisKeys } from "@/features/ws10-hris-employee/queries";
 
 export function SignOutButton() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState(false);
   const router = useRouter();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   async function signOut() {
     setPending(true);
     setError(false);
     try {
       const result = await authClient.signOut();
       if (result.error) throw new Error("Sign out failed");
+      // The next account on this tab must not see the employee data cached
+      // for this one (profile, history, corrections).
+      queryClient.removeQueries({ queryKey: hrisKeys.all });
       await router.invalidate();
       await navigate({ to: "/sign-in", replace: true });
     } catch {

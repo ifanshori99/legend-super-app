@@ -1,16 +1,19 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useRouter } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, LoaderCircle } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { siteConfig } from "@/config/site";
+import { hrisKeys } from "@/features/ws10-hris-employee/queries";
 
 export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
   const signingUp = mode === "sign-up";
   const router = useRouter();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
 
@@ -40,6 +43,9 @@ export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
         );
         return;
       }
+      // A different account may sign in on this tab: drop the employee data
+      // cached for whoever used it before.
+      queryClient.removeQueries({ queryKey: hrisKeys.all });
       // Re-run route guards with the new cookie, then move to the app.
       await router.invalidate();
       await navigate({ to: siteConfig.homePath, replace: true });

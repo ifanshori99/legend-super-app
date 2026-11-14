@@ -6,6 +6,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useRouteContext } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useT } from "@/components/i18n";
 import { useToast } from "@/components/ui/toast";
@@ -13,6 +14,7 @@ import type { AttendanceCorrection, AttendanceLog } from "@starter/shared/hris";
 import { ApiError } from "@/lib/api/errors";
 import { useOnline } from "@/lib/use-online";
 import {
+  fetchMyHrisProfile,
   submitAttendanceCorrection,
   submitClockAttendance,
   type AttendanceCorrectionInput,
@@ -33,21 +35,37 @@ import {
   correctionQueueSnapshot,
   clearCorrectionRefusal,
   enqueueCorrection,
+  hasQueuedCorrection,
   isRefused,
   queuedFor,
   readCorrectionQueue,
   removeQueuedCorrection,
+  replaceQueuedCorrection,
   replayCorrectionQueue,
   replayQueuedCorrection,
   subscribeCorrectionQueue,
   type QueuedCorrection,
   type ReplayOutcome,
 } from "./queue.ts";
+import { canActOnQueued } from "./identity.ts";
+import { API_MOCK } from "@/lib/api/mock-flag";
 import { useHydrated } from "./use-hydrated.ts";
 
 export function useMyHrisProfile() {
   const hydrated = useHydrated();
-  return useQuery({ ...myHrisProfileQuery(), enabled: hydrated });
+  // The session user id comes from the root route context; without a session
+  // the query stays off. It keys the cache, so profiles never cross accounts.
+  const { session } = useRouteContext({ strict: false }) as {
+    session?: { user?: { id?: string } } | null;
+  };
+  // Mock mode has no API, so no session: one fixed key stands in for the user
+  // (the flag is compiled out of a real build, where a missing session keeps
+  // the query off).
+  const userId = session?.user?.id ?? (API_MOCK ? "mock" : null);
+  return useQuery({
+    ...myHrisProfileQuery(userId ?? ""),
+    enabled: hydrated && userId !== null,
+  });
 }
 
 /** The session employee's own id, once `/api/hris/me` answered (HR-01). */
@@ -141,25 +159,56 @@ export function useSubmitCorrection() {
   const queryClient = useQueryClient();
   const employeeId = useMyEmployeeId();
   return useMutation({
-    mutationFn: async (
-      body: AttendanceCorrectionInput,
-    ): Promise<CorrectionSubmitResult> => {
-      const offline = typeof navigator !== "undefined" && !navigator.onLine;
-      if (offline && employeeId !== null) {
-        enqueueCorrection(body, employeeId);
+    mutationFn: async ({
+      body,
+      replaces,
+    }: {
+      body: AttendanceCorrectionInput;
+      /** Key of the queued entry an edit ("Ubah") supersedes (legend-l5tvy). */
+      replaces?: string;
+    }): Promise<CorrectionSubmitResult> => {
+      // Queues the attempt; an edit swaps the old entry in one write. Throws
+      // `CorrectionQueueFullError` instead of reporting a lost request.
+      const queueAttempt = (owner: string): CorrectionSubmitResult => {
+        if (replaces !== undefined && hasQueuedCorrection(replaces, owner))
+          replaceQueuedCorrection(replaces, body, owner);
+        else enqueueCorrection(body, owner);
         return { status: "queued", key: body.idempotencyKey };
-      }
+      };
+      const offline = typeof navigator !== "undefined" && !navigator.onLine;
+      if (offline && employeeId !== null) return queueAttempt(employeeId);
       try {
         const correction = await submitAttendanceCorrection(body);
+        // The server has the edit: only now does the refused original go.
+        if (
+          replaces !== undefined &&
+          employeeId !== null &&
+          hasQueuedCorrection(replaces, employeeId)
+        )
+          removeQueuedCorrection(replaces);
         return { status: "sent", correction };
       } catch (error) {
         if (!isOfflineError(error) || employeeId === null) throw error;
-        enqueueCorrection(body, employeeId);
-        return { status: "queued", key: body.idempotencyKey };
+        return queueAttempt(employeeId);
       }
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: hrisKeys.all }),
   });
+}
+
+/**
+ * "yes" only when the server's own answer for the current cookie is this
+ * employee; "no" when it names someone else; "unknown" on any failure
+ * (offline, 5xx), so the entry stays queued and a later attempt tries again.
+ */
+type SessionOwnership = "yes" | "no" | "unknown";
+async function sessionOwnership(employeeId: string): Promise<SessionOwnership> {
+  try {
+    const fresh = await fetchMyHrisProfile();
+    return fresh.employee.id === employeeId ? "yes" : "no";
+  } catch {
+    return "unknown";
+  }
 }
 
 const EMPTY_QUEUE: QueuedCorrection[] = [];
@@ -202,6 +251,14 @@ export function useFlushCorrectionQueue() {
     if (queue.every(isRefused)) return;
     flushing.current = true;
     void (async () => {
+      // The session cookie is shared by every tab: another tab may have signed
+      // in as someone else since this one loaded its profile. Replay only when
+      // the server still names the same employee, or the request would be
+      // filed under the wrong person.
+      if ((await sessionOwnership(employeeId)) !== "yes") {
+        flushing.current = false;
+        return;
+      }
       // A final answer (validation, not found, key reused) keeps the entry,
       // marked refused, and does not block the entries behind it.
       const { sent, refused } = await replayCorrectionQueue(
@@ -230,13 +287,25 @@ export function useRetryCorrection() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const t = useT();
+  const employeeId = useMyEmployeeId();
   return useMutation({
-    mutationFn: async (row: QueuedCorrection): Promise<ReplayOutcome> => {
+    mutationFn: async (
+      row: QueuedCorrection,
+    ): Promise<ReplayOutcome | "skipped"> => {
+      // Read at action time: a row of another account is never retried here.
+      if (!canActOnQueued(row, employeeId)) return "skipped";
+      // Same check against the server's current session (a stale second tab).
+      const owner = await sessionOwnership(row.employeeId);
+      if (owner === "no") return "skipped";
+      // Could not prove it (offline or a server fault): keep the refusal as is
+      // and say so, instead of a silent no-op.
+      if (owner === "unknown") return "retryLater";
       clearCorrectionRefusal(row.key);
       // Replay reads only `key` and `body`, so the stale flag on `row` is moot.
       return replayQueuedCorrection(row, submitAttendanceCorrection);
     },
     onSuccess: (outcome) => {
+      if (outcome === "skipped") return undefined;
       // No connection or a server fault: the entry waits again, and the
       // employee must hear it instead of seeing the buttons just vanish.
       if (outcome === "retryLater")
@@ -253,8 +322,10 @@ export function useRetryCorrection() {
 
 /** "Buang" on a queued entry: a local action, no server data is lost. */
 export function useDiscardCorrection() {
+  const employeeId = useMyEmployeeId();
   return useMutation({
     mutationFn: async (row: QueuedCorrection) => {
+      if (!canActOnQueued(row, employeeId)) return;
       removeQueuedCorrection(row.key);
     },
   });

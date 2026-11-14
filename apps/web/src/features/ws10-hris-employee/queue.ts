@@ -68,29 +68,34 @@ function isRefusal(value: unknown): value is CorrectionRefusal {
 }
 
 /**
- * Keeps the newest MAX_QUEUED entries, but a refused entry waits for the
- * employee's decision (Coba lagi / Ubah / Buang), so waiting entries are
- * evicted first; the oldest refused ones go only when nothing else can.
+ * Thrown when a new entry cannot be stored: the queue is at MAX_QUEUED and
+ * every entry in it is refused. A refused entry waits for the employee's
+ * decision (Coba lagi / Ubah / Buang), so it is never dropped for a newer one,
+ * and the new request is not reported as saved (legend-l5tvy).
  */
-function trimQueue(queue: QueuedCorrection[]): QueuedCorrection[] {
-  let excess = queue.length - MAX_QUEUED;
-  if (excess <= 0) return queue;
-  const dropped = new Set<QueuedCorrection>();
-  for (const row of queue) {
-    if (excess === 0) break;
-    if (row.refused === undefined) {
-      dropped.add(row);
-      excess -= 1;
-    }
+export class CorrectionQueueFullError extends Error {
+  constructor() {
+    super("The correction queue is full of refused requests.");
+    this.name = "CorrectionQueueFullError";
   }
-  for (const row of queue) {
-    if (excess === 0) break;
-    if (!dropped.has(row)) {
-      dropped.add(row);
-      excess -= 1;
-    }
-  }
-  return queue.filter((row) => !dropped.has(row));
+}
+
+/**
+ * Appends `entry` to `rest`, keeping at most MAX_QUEUED. Only waiting
+ * (non-refused) entries are evicted, oldest first; a refused entry is never
+ * dropped and neither is the new one. When that is not enough room the queue
+ * is left as it was and `CorrectionQueueFullError` is thrown.
+ */
+function fitQueue(
+  rest: QueuedCorrection[],
+  entry: QueuedCorrection,
+): QueuedCorrection[] {
+  const excess = rest.length + 1 - MAX_QUEUED;
+  if (excess <= 0) return [...rest, entry];
+  const evictable = rest.filter((row) => row.refused === undefined);
+  if (evictable.length < excess) throw new CorrectionQueueFullError();
+  const dropped = new Set(evictable.slice(0, excess));
+  return [...rest.filter((row) => !dropped.has(row)), entry];
 }
 
 function isQueued(value: unknown): value is QueuedCorrection {
@@ -135,7 +140,10 @@ export function writeCorrectionQueue(
   notifyQueueChanged();
 }
 
-/** Adds one attempt; replaying the same key replaces it (idempotent). */
+/**
+ * Adds one attempt; replaying the same key replaces it (idempotent). Throws
+ * `CorrectionQueueFullError` when the queue holds MAX_QUEUED refused entries.
+ */
 export function enqueueCorrection(
   body: CorrectionSubmission,
   employeeId: string,
@@ -151,7 +159,7 @@ export function enqueueCorrection(
   const rest = readCorrectionQueue(storage).filter(
     (row) => row.key !== entry.key,
   );
-  const queue = trimQueue([...rest, entry]);
+  const queue = fitQueue(rest, entry);
   writeCorrectionQueue(queue, storage);
   return queue;
 }
@@ -219,7 +227,12 @@ export function clearCorrectionRefusal(
   return queue;
 }
 
-/** "Ubah": the old attempt leaves, the edited one joins under its new key. */
+/**
+ * "Ubah": the old attempt leaves, the edited one joins under its new key, in
+ * one write, so the queue never holds neither and never grows past the limit.
+ * Only an entry of the same `employeeId` can be replaced; an unknown key or
+ * another employee's entry leaves the queue untouched (nothing is added).
+ */
 export function replaceQueuedCorrection(
   oldKey: string,
   body: CorrectionSubmission,
@@ -227,18 +240,34 @@ export function replaceQueuedCorrection(
   storage: StorageLike | null = browserStorage(),
   now: Date = new Date(),
 ): QueuedCorrection[] {
+  const current = readCorrectionQueue(storage);
+  const owned = current.some(
+    (row) => row.key === oldKey && row.employeeId === employeeId,
+  );
+  if (!owned) return current;
   const entry: QueuedCorrection = {
     key: body.idempotencyKey,
     employeeId,
     body,
     queuedAt: now.toISOString(),
   };
-  const rest = readCorrectionQueue(storage).filter(
+  const rest = current.filter(
     (row) => row.key !== oldKey && row.key !== entry.key,
   );
-  const queue = trimQueue([...rest, entry]);
+  const queue = fitQueue(rest, entry);
   writeCorrectionQueue(queue, storage);
   return queue;
+}
+
+/** True when the queue holds an entry with this key filed by this employee. */
+export function hasQueuedCorrection(
+  key: string,
+  employeeId: string,
+  storage: StorageLike | null = browserStorage(),
+): boolean {
+  return readCorrectionQueue(storage).some(
+    (row) => row.key === key && row.employeeId === employeeId,
+  );
 }
 
 export type ReplayOutcome = "sent" | "refused" | "retryLater";

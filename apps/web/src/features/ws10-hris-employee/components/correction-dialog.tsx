@@ -38,7 +38,7 @@ import {
   typeLabelKey,
 } from "../state.ts";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
-import { removeQueuedCorrection, type QueuedCorrection } from "../queue.ts";
+import { CorrectionQueueFullError, type QueuedCorrection } from "../queue.ts";
 
 const TYPES: readonly AttendanceType[] = [
   "in",
@@ -66,8 +66,8 @@ export function CorrectionDialog({
   timeZone: string;
   /**
    * A queued correction the server refused, reopened to fix and resend: the
-   * form starts from its body and the old entry is dropped once the new
-   * request is sent or queued (legend-nvc7).
+   * form starts from its body and the old entry is replaced by the new
+   * request once it is sent or queued, never before (legend-nvc7, legend-l5tvy).
    */
   editing?: QueuedCorrection;
 }) {
@@ -92,7 +92,6 @@ export function CorrectionDialog({
           timeZone={timeZone}
           editing={editing}
           onSent={(status) => {
-            if (editing) removeQueuedCorrection(editing.key);
             toast(
               status === "queued"
                 ? {
@@ -181,9 +180,12 @@ function CorrectionForm({
     }
     setErrors({});
     setFormError(null);
-    submit.mutate(parsed.data, {
-      onSuccess: (result) => onSent(result.status),
-    });
+    submit.mutate(
+      { body: parsed.data, replaces: editing?.key },
+      {
+        onSuccess: (result) => onSent(result.status),
+      },
+    );
   }
 
   return (
@@ -255,9 +257,11 @@ function CorrectionForm({
               {t("hris.correction.errorTitle")}
             </p>
             <p className="text-sm leading-5">
-              {submit.error instanceof Error
-                ? submit.error.message
-                : t("hris.correction.errorTitle")}
+              {submit.error instanceof CorrectionQueueFullError
+                ? t("hris.correction.queueFull")
+                : submit.error instanceof Error
+                  ? submit.error.message
+                  : t("hris.correction.errorTitle")}
             </p>
             <p className="text-sm leading-5 text-muted-foreground">
               {t("hris.correction.errorHint")}
