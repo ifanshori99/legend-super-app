@@ -457,6 +457,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     ];
     const ex = extra();
     ex.heldMovementIds = [heldId];
+    ex.decisions = {};
     ex.forced = null;
     ex.counts = [];
     const sums = [2_100_000, 2_200_000, 2_230_000].slice(3 - cashierCounts, 3);
