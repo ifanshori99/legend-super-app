@@ -18,6 +18,7 @@ export const financeExceptionsResponseSchema = z.strictObject({
     z.strictObject({
       kind: kindSchema,
       count: z.number().int().nonnegative(),
+      knownAmountCount: z.number().int().nonnegative(),
       amountIdr: z.number().int().nonnegative(),
     }),
   ),

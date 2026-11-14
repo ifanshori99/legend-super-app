@@ -146,6 +146,8 @@ registerMock(listFinanceExceptions, ({ query, scenario }) => {
       return {
         kind,
         count: ofKind.length,
+        knownAmountCount: ofKind.filter((item) => item.amountIdr !== null)
+          .length,
         amountIdr: ofKind.reduce((sum, item) => sum + (item.amountIdr ?? 0), 0),
       };
     },

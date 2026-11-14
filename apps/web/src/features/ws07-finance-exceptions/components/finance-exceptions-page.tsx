@@ -49,14 +49,7 @@ export function FinanceExceptionsPage({
   // query with it.
   const summaryData = summaryQuery.data;
   const summaries = React.useMemo(
-    () =>
-      summaryData
-        ? summarizeByKind(
-            summaryData.summary,
-            summaryData.items,
-            summaryData.truncated,
-          )
-        : undefined,
+    () => (summaryData ? summarizeByKind(summaryData.summary) : undefined),
     [summaryData],
   );
   const total = data ? totalCount(data.summary) : 0;

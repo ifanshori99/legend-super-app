@@ -107,7 +107,12 @@ type Item = {
   detail: string | null;
 };
 type Payload = {
-  summary: { kind: Kind; count: number; amountIdr: number }[];
+  summary: {
+    kind: Kind;
+    count: number;
+    amountIdr: number;
+    knownAmountCount: number;
+  }[];
   items: Item[];
   truncated: boolean;
 };
@@ -382,15 +387,20 @@ async function seedDeadLetter(
 }
 
 /** `count` receipt skips on one outlet, one minute apart from `start`. */
-async function seedManySkips(outlet: string, count: number, start: string) {
+async function seedManySkips(
+  outlet: string,
+  count: number,
+  start: string,
+  oldestOrderId: string = randomUUID(),
+) {
   await asTenant(tenantId, (client) =>
     client.query(
       `INSERT INTO edge_receipt_skips
          (tenant_id, outlet_id, order_id, receipt_number, reason, event_id, created_at)
-       SELECT $1, $2, gen_random_uuid(), 'R-' || n::text, 'uji_lewati', gen_random_uuid(),
+       SELECT $1, $2, CASE WHEN n = 0 THEN $5::uuid ELSE gen_random_uuid() END, 'R-' || n::text, 'uji_lewati', gen_random_uuid(),
               $3::timestamptz + (n || ' minutes')::interval
          FROM generate_series(0, $4::int - 1) AS n`,
-      [tenantId, outlet, start, count],
+      [tenantId, outlet, start, count, oldestOrderId],
     ),
   );
 }
@@ -644,7 +654,19 @@ beforeAll(async () => {
   );
 
   // Truncation boundary: 501 rows are cut to 500, exactly 500 are not.
-  await seedManySkips(outletMany, 501, "2026-03-20T00:00:00Z");
+  const oldestKnown = await seedOrder({
+    tenant: tenantId,
+    outlet: outletMany,
+    at: "2026-03-20T00:00:00Z",
+    taxIdr: 0,
+    subtotalIdr: 1_234,
+  });
+  await seedManySkips(
+    outletMany,
+    501,
+    "2026-03-20T00:00:00Z",
+    oldestKnown.uuid,
+  );
   await seedManySkips(outletExact, 500, "2026-03-20T00:00:00Z");
 
   seeded.taxA1 = taxA1;
@@ -873,6 +895,67 @@ describe("finance-exceptions: each kind lists its rows exactly once", () => {
   });
 });
 
+describe("finance-exceptions: known summary amounts", () => {
+  it.each([
+    ["edge_link_dead_letter", "a", 1, 0, 0],
+    ["edge_receipt_skipped", "b", 1, 0, 0],
+    ["edge_void_unsupported", "b", 1, 0, 0],
+    ["edge_receipt_skipped", "a", 2, 1, null],
+    ["edge_void_unsupported", "a", 3, 1, null],
+    ["edge_tax_unsnapshotted", "a", 2, 2, 14_000],
+  ] as const)(
+    "%s outlet %s counts only known amounts and preserves totals",
+    async (kind, outlet, count, knownAmountCount, amount) => {
+      const payload = await fetchList(finance.cookie, {
+        ...MARCH,
+        outletId: outlet === "a" ? outletA : outletB,
+        kind,
+      });
+      expect(payload.summary).toEqual([
+        {
+          kind,
+          count,
+          amountIdr: amount ?? seeded.orderForVoid.totalIdr,
+          knownAmountCount,
+        },
+      ]);
+    },
+  );
+
+  it("zero is known for both SQL and resolved-order summaries", async () => {
+    const outlet = await newOutlet("Pengecualian nilai nol");
+    const at = stamp("16", 5, 1);
+    const order = await seedOrder({
+      tenant: tenantId,
+      outlet,
+      at,
+      taxIdr: 0,
+      subtotalIdr: 0,
+    });
+    await seedSkip(tenantId, outlet, order.uuid, at);
+    await seedParked(
+      tenantId,
+      outlet,
+      at,
+      "AUTO_JOURNAL_VOID_UNSUPPORTED",
+      order.ulid,
+    );
+    const payload = await fetchList(finance.cookie, {
+      ...MARCH,
+      outletId: outlet,
+    });
+    for (const kind of ["edge_receipt_skipped", "edge_void_unsupported"]) {
+      expect(payload.summary.find((row) => row.kind === kind)).toEqual({
+        kind,
+        count: 1,
+        amountIdr: 0,
+        knownAmountCount: 1,
+      });
+    }
+    expect(payload.items.every((item) => item.amountIdr === 0)).toBe(true);
+  });
+});
+
 describe("finance-exceptions: tenant-wide view and summary", () => {
   it("without an outlet filter both outlets appear once each; summary equals the full counts", async () => {
     // Window ends before the 20th: the bulk skips seeded for the truncation
@@ -1020,7 +1103,15 @@ describe("finance-exceptions: truncation", () => {
     });
     expect(payload.items.length).toBe(500);
     expect(payload.truncated).toBe(true);
-    expect(summaryOf(payload, "edge_receipt_skipped").count).toBe(501);
+    expect(payload.summary).toEqual([
+      {
+        kind: "edge_receipt_skipped",
+        count: 501,
+        amountIdr: 1_234,
+        knownAmountCount: 1,
+      },
+    ]);
+    expect(payload.items.every((item) => item.amountIdr === null)).toBe(true);
     const times = payload.items.map((item) =>
       new Date(item.occurredAt).getTime(),
     );
@@ -1173,6 +1264,13 @@ describe("finance-exceptions: payout_fee_not_posted", () => {
     );
     expect(summaryOf(after, "payout_fee_not_posted").amountIdr).toBe(
       summaryOf(before, "payout_fee_not_posted").amountIdr + FEE_TOTAL,
+    );
+    expect(
+      after.summary.find((row) => row.kind === "payout_fee_not_posted")
+        ?.knownAmountCount,
+    ).toBe(
+      (before.summary.find((row) => row.kind === "payout_fee_not_posted")
+        ?.knownAmountCount ?? 0) + 1,
     );
 
     // No amount of money or bank data beyond the fee leaks into the row.
