@@ -81,6 +81,7 @@ import { registerEdgeLinkDeadLetterApplier } from "./link-dead-letter-applier.ts
 import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
 import { registerPanicAlertEdgeApplier } from "./panic-alert-applier.ts";
+import { registerPrintAlertEdgeApplier } from "./print/alert-applier.ts";
 import { resendMateriallessStaffPinSets } from "./staff-pin-resend.ts";
 import {
   WIFI_RECONCILE_INTERVAL_MS,
@@ -1450,6 +1451,7 @@ export async function registerEdgeLink(
   registerAccessEdgeApplier();
   // legend-bod.5: emergency button alerts (panic_alert.*) mirrored idempotently.
   registerPanicAlertEdgeApplier();
+  registerPrintAlertEdgeApplier();
   // Last: anything still unregistered is parked as unclassified, not a stall.
   registerEdgeDeferredFallback();
   const version = env.EDGE_NODE_VERSION;

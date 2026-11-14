@@ -9,12 +9,63 @@
 //   job, route a station ticket (KDS-down fallback) or report a KDS heartbeat.
 //   Null outside edge mode or before start.
 import { db } from "../../db/index.ts";
+import { withTenant } from "../../db/tenant.ts";
+import {
+  createUlid,
+  outletIdSchema,
+  type OutletId,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import {
+  enqueueEdgeEvent,
+  type EdgeTx,
+} from "../../services/edge-queue.service.ts";
 import { getEdgeRuntimeState } from "../runtime.ts";
-import { createPrintAgent, type PrintAgent } from "./agent.ts";
+import {
+  createPrintAgent,
+  setPrintAlertNotifier,
+  type PrintAgent,
+  type PrintAlertNotifier,
+} from "./agent.ts";
 import { createDbPrintStore } from "./store.ts";
 import { defaultTransportFactory } from "./transport.ts";
 
 let current: PrintAgent | null = null;
+
+export function createPrintAlertNotifier(
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  edgeNodeId: string,
+): PrintAlertNotifier {
+  return async (alert, tx) => {
+    if (alert.kind !== "printer_offline" && alert.kind !== "job_failed") return;
+    const id = createUlid();
+    const enqueue = (tx: EdgeTx) =>
+      enqueueEdgeEvent(tx, context, {
+        edgeNodeId,
+        direction: "edge_to_cloud",
+        kind: "transaction_event",
+        event: {
+          id,
+          tenantId: context.tenant.tenantId,
+          outletId,
+          name: "print_alert.raised",
+          version: 1,
+          aggregateType: "print_alert",
+          aggregateId: id,
+          sequence: 1,
+          occurredAt: alert.occurredAt.toISOString(),
+          actor: { type: "system" },
+          deviceId: null,
+          idempotencyKey: `print_alert:${id}`,
+          payloadSchemaRef: "print_alert.raised.v1",
+          payload: { kind: alert.kind, subjectId: alert.subjectId },
+        },
+      });
+    if (tx) await enqueue(tx);
+    else await withTenant(db, context, enqueue);
+  };
+}
 
 export function getEdgePrintAgent(): PrintAgent | null {
   return current;
@@ -25,6 +76,13 @@ export function startEdgePrintAgent(): { stop(): Promise<void> } {
   const runtime = getEdgeRuntimeState();
   if (!runtime.edgeMode || !runtime.identity || current)
     return { stop: async () => {} };
+  setPrintAlertNotifier(
+    createPrintAlertNotifier(
+      runtime.identity.context,
+      outletIdSchema.parse(runtime.identity.scope.outletId),
+      runtime.identity.scope.edgeNodeId,
+    ),
+  );
   const agent = createPrintAgent({
     store: createDbPrintStore({ db, context: runtime.identity.context }),
     transportFor: defaultTransportFactory,
@@ -33,8 +91,11 @@ export function startEdgePrintAgent(): { stop(): Promise<void> } {
   current = agent;
   return {
     async stop() {
-      if (current === agent) current = null;
       await agent.stop();
+      if (current === agent) {
+        current = null;
+        setPrintAlertNotifier(null);
+      }
     },
   };
 }

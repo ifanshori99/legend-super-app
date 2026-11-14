@@ -513,8 +513,8 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
       });
     },
 
-    async recordAlert(alert: PrintAlert) {
-      await run(async (tx) => {
+    async recordAlert(alert: PrintAlert, notify) {
+      const insert = async (tx: Tx) => {
         await tx.insert(edgePrintAlerts).values({
           id: nextUlid(),
           tenantId: tenantId,
@@ -528,7 +528,19 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
           detail: alert.detail,
           occurredAt: alert.occurredAt,
         });
-      });
+      };
+      try {
+        await run(async (tx) => {
+          await insert(tx);
+          await notify?.(alert, tx);
+        });
+      } catch (error) {
+        if (!notify) throw error;
+        // A failed queue write rolls back the first insert. Preserve the local
+        // evidence in a fresh transaction; this does not retry delivery.
+        await run(insert);
+      }
+      return true;
     },
   };
 }

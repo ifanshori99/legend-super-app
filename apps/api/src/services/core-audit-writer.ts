@@ -22,6 +22,8 @@ import type { AuditEntry, AuditWriter } from "./audit-writer.ts";
  * an empty list (fully redacted) until it is added here deliberately.
  */
 const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
+  "print_job.reprinted": ["originalJobId", "kind", "printerId"],
+  "print_job.retried": ["status", "kind", "printerId"],
   "ai_chatgpt.opted_in": [
     "enabled",
     "status",
