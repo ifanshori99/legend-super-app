@@ -137,12 +137,16 @@ const reported = () =>
   onError.mock.calls
     .map(([e]) => (e instanceof Error ? `${e.name}: ${e.message}` : String(e)))
     .join(" | ");
+/** Loaded full-suite runs starve the 1 s vi.waitFor default. */
+const WAIT = { timeout: 10_000 } as const;
 const firstRound = async (spy: FetchMock) => {
-  await vi.waitFor(() =>
-    expect(
-      catalogStreams(spy).length,
-      `onError saw: ${reported()}`,
-    ).toBeGreaterThanOrEqual(CATALOG_SYNC_STREAMS.length),
+  await vi.waitFor(
+    () =>
+      expect(
+        catalogStreams(spy).length,
+        `onError saw: ${reported()}`,
+      ).toBeGreaterThanOrEqual(CATALOG_SYNC_STREAMS.length),
+    WAIT,
   );
   return catalogStreams(spy).slice(0, CATALOG_SYNC_STREAMS.length);
 };
@@ -248,7 +252,7 @@ describe("24318 the master-sync loop pulls the catalog", () => {
         expect(
           freshness.snapshot().streams[stream]?.lastSuccessAt,
         ).not.toBeNull();
-    });
+    }, WAIT);
     await loop.stop();
     loop = null;
 
@@ -305,7 +309,7 @@ describe("24318 the master-sync loop pulls the catalog", () => {
     await tick();
     expect(await firstRound(spy)).toEqual([...CATALOG_SYNC_STREAMS]);
     expect(callsTo(spy, MASTERS_PATH).length).toBeGreaterThanOrEqual(1);
-    await vi.waitFor(() => expect(onError).toHaveBeenCalled());
+    await vi.waitFor(() => expect(onError).toHaveBeenCalled(), WAIT);
   });
 
   it("a failing catalog call does not stop the masters sync, is reported, and the loop keeps ticking", async () => {
@@ -319,7 +323,7 @@ describe("24318 the master-sync loop pulls the catalog", () => {
       expect(callsTo(spy, MASTERS_PATH).length).toBeGreaterThanOrEqual(1);
       expect(callsTo(spy, CATALOG_PATH).length).toBeGreaterThanOrEqual(1);
       expect(onError).toHaveBeenCalled();
-    });
+    }, WAIT);
     // HTTP calls start before the pull finishes. Wait for its complete error
     // round so the next interval is not skipped while this run is in flight.
     await vi.waitFor(
@@ -329,7 +333,7 @@ describe("24318 the master-sync loop pulls the catalog", () => {
             error instanceof EdgeCatalogSyncError ? [error.stream] : [],
           ),
         ).toEqual([...CATALOG_SYNC_STREAMS]),
-      { timeout: 5_000 },
+      WAIT,
     );
     const mastersBefore = callsTo(spy, MASTERS_PATH).length;
     const catalogBefore = callsTo(spy, CATALOG_PATH).length;
@@ -339,7 +343,7 @@ describe("24318 the master-sync loop pulls the catalog", () => {
       await tick();
       expect(callsTo(spy, MASTERS_PATH).length).toBeGreaterThan(mastersBefore);
       expect(callsTo(spy, CATALOG_PATH).length).toBeGreaterThan(catalogBefore);
-    });
+    }, WAIT);
   });
 
   it("a thrown network error on the catalog is reported through onError and never crashes the loop", async () => {
@@ -354,15 +358,27 @@ describe("24318 the master-sync loop pulls the catalog", () => {
     await vi.waitFor(() => {
       expect(onError).toHaveBeenCalled();
       expect(callsTo(spy, CATALOG_PATH).length).toBeGreaterThanOrEqual(1);
-    });
+    }, WAIT);
+    // Catalog calls start before the pull finishes. Wait for its complete
+    // error round (every stream reported) so the next interval is not skipped
+    // while this run is still in flight.
+    await vi.waitFor(
+      () =>
+        expect(
+          onError.mock.calls.flatMap(([error]) =>
+            error instanceof EdgeCatalogSyncError ? [error.stream] : [],
+          ),
+        ).toEqual([...CATALOG_SYNC_STREAMS]),
+      WAIT,
+    );
     // Count ROUNDS (calls to the first stream), not total calls: leftover calls
     // of round 1 must not make this pass. A tick is skipped while a round is in
     // flight, so re-tick inside the retry until round 2 starts.
     await vi.waitFor(async () => {
       await tick();
       expect(catalogRounds(spy)).toBeGreaterThanOrEqual(2);
-    });
-  });
+    }, WAIT);
+  }, 30_000);
 
   it("after stop() no further masters or catalog request is made", async () => {
     const spy = spyCloud({ masters: mastersFail, catalog: catalogEmpty });
@@ -419,15 +435,17 @@ describe("dciax the loop refuses a cloud that does not send syncTxid", () => {
     startLoop();
     await tick();
     // master-sync forwards only the error CODE to onError, not the message.
-    await vi.waitFor(() =>
-      expect(
-        onError.mock.calls.some(([e]) =>
-          /CATALOG_CLOUD_OUTDATED/.test(
-            e instanceof Error ? e.message : String(e),
+    await vi.waitFor(
+      () =>
+        expect(
+          onError.mock.calls.some(([e]) =>
+            /CATALOG_CLOUD_OUTDATED/.test(
+              e instanceof Error ? e.message : String(e),
+            ),
           ),
-        ),
-        `onError saw: ${reported()}`,
-      ).toBe(true),
+          `onError saw: ${reported()}`,
+        ).toBe(true),
+      WAIT,
     );
     const texts = onError.mock.calls
       .map(([e]) =>
@@ -448,6 +466,6 @@ describe("dciax the loop refuses a cloud that does not send syncTxid", () => {
     await vi.waitFor(async () => {
       await tick();
       expect(catalogRounds(spy)).toBeGreaterThanOrEqual(2);
-    });
+    }, WAIT);
   });
 });
