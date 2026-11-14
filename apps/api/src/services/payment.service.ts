@@ -2269,7 +2269,12 @@ export const GATEWAY_POLL_GRACE_MS = 60_000;
 
 /** How long past its expiry a gateway code is still reconciled. A pending
  * intent the gateway never answered for is expired as `timeout` (audited)
- * after it; an expired (superseded) code is no longer asked about. */
+ * after it; an expired (superseded) code is no longer asked about.
+ *
+ * Must stay >= the life of a DOIT virtual account (180 minutes). DOIT has no
+ * documented cancel call, so a VA the guest abandoned by switching bank stays
+ * payable at DOIT until it lapses there; the window keeps reconciling it
+ * (late payment, refund request) for at least that long. */
 export const GATEWAY_POLL_WINDOW_MS = 24 * 60 * 60_000;
 
 /** Longest wait between two polls of a lapsed code. Before it, the wait is
