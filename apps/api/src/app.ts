@@ -285,7 +285,12 @@ export function createApp({
         "X-Device-Token",
         "X-Pin-Proof",
       ],
-      exposedHeaders: ["X-Request-Id", "Location"],
+      exposedHeaders: [
+        "X-Request-Id",
+        "Location",
+        "Content-Disposition",
+        "X-Content-Checksum-Sha256",
+      ],
       maxAge: 600,
     }),
   );
