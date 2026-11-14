@@ -14,6 +14,7 @@ import {
   useMemberRewards,
   useMemberVouchers,
   useMemberVisits,
+  useWhatsAppLink,
 } from "../hooks";
 import { FavoriteList } from "./favorite-list";
 import { ListSkeleton } from "./list-skeleton";
@@ -25,6 +26,7 @@ import { MemberSection } from "./section";
 import { TierCard } from "./tier-card";
 import { VisitList } from "./visit-list";
 import { VoucherCard } from "./voucher-card";
+import { WhatsAppLinkPrompt } from "./whatsapp-link-prompt";
 
 // Member overview: PRD §3.20 "Halaman Member" puts balance, tier and progress,
 // active missions, rewards, visits, vouchers and favorites in the customer
@@ -37,6 +39,7 @@ export function MemberOverviewPage() {
   const vouchersQuery = useMemberVouchers();
   const visitsQuery = useMemberVisits(3);
   const favoritesQuery = useMemberFavorites();
+  const whatsApp = useWhatsAppLink();
 
   if (overviewQuery.isPending)
     return <ListSkeleton rows={5} className="pt-2" />;
@@ -60,6 +63,8 @@ export function MemberOverviewPage() {
         </h1>
         <MembershipStatusBadge status={overview.profile.membershipStatus} />
       </header>
+
+      <WhatsAppLinkPrompt state={whatsApp} />
 
       {!membershipActive && (
         <Card className="gap-2 bg-warning-subtle">

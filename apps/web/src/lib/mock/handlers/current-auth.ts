@@ -12,7 +12,10 @@ import { customerCurrentAuthMock } from "./customer-auth.ts";
 function onCustomerPage(): boolean {
   const location = (globalThis as { location?: { pathname?: string } })
     .location;
-  return location?.pathname?.startsWith("/masuk") ?? false;
+  // /member: the member screens read whatsAppVerified for the link prompt
+  // (legend-vnvg); they are customer pages.
+  const path = location?.pathname ?? "";
+  return path.startsWith("/masuk") || path.startsWith("/member");
 }
 
 registerMock(
