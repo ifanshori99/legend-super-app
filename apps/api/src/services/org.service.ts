@@ -1028,9 +1028,55 @@ export async function listDomains(
   });
 }
 
+const DOMAIN_AUDIT_FIELDS = [
+  "domain",
+  "kind",
+  "brandId",
+  "verified",
+  "result",
+  "reason",
+];
+
+/** Audit row for a tenant_domains write. The hostname goes under `domain`
+ * because `hostname` matches the sensitive-key mask; never pass the
+ * verification token or the DNS record here. */
+async function recordDomainAudit(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  action: string,
+  domainId: string,
+  before: Record<string, unknown> | null,
+  after: Record<string, unknown> | null,
+): Promise<void> {
+  await recordAudit(
+    tx,
+    context,
+    {
+      id: createUlid(),
+      tenantId: context.tenant.tenantId,
+      outletId: null,
+      actorType: "user",
+      actorId: actorUserId,
+      deviceId: null,
+      action,
+      objectType: "tenant_domain",
+      objectId: domainId,
+      reason: null,
+      maskedChanges: { before, after },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: new Date().toISOString(),
+    },
+    DOMAIN_AUDIT_FIELDS,
+  );
+}
+
 export async function addDomain(
   context: ScopedTenantContext,
   input: AddDomainInput,
+  actorUserId: string,
 ): Promise<TenantDomain> {
   if (isReservedHostname(input.hostname, env.reservedDomains))
     throw new PlatformError("DOMAIN_RESERVED");
@@ -1047,6 +1093,20 @@ export async function addDomain(
           verificationToken: randomBytes(32).toString("hex"),
         })
         .returning();
+      await recordDomainAudit(
+        tx,
+        context,
+        actorUserId,
+        "tenant_domain.added",
+        row.id,
+        null,
+        {
+          domain: row.hostname,
+          kind: "custom",
+          brandId: row.brandId,
+          verified: false,
+        },
+      );
       return toTenantDomain(row);
     } catch (error) {
       if (uniqueViolationOn(error, "tenant_domains_tenant_hostname_key"))
@@ -1083,6 +1143,7 @@ async function txtProvesOwnership(record: {
 export async function verifyDomain(
   context: ScopedTenantContext,
   domainId: string,
+  actorUserId: string,
 ): Promise<TenantDomain> {
   // Reads through the caller's own transaction, so the race path below never
   // asks the pool for a second connection while holding one.
@@ -1100,38 +1161,75 @@ export async function verifyDomain(
     if (!row) throw new HttpError(404, "NOT_FOUND", "Domain not found.");
     return row;
   };
+  // A failed verification writes nothing else, and throwing inside a
+  // transaction would roll its audit row back, so it commits on its own first.
+  const auditFailure = (
+    hostname: string,
+    reason: "dns_txt_mismatch" | "domain_taken",
+  ) =>
+    withTenant(db, context, (tx) =>
+      recordDomainAudit(
+        tx,
+        context,
+        actorUserId,
+        "tenant_domain.verification_failed",
+        domainId,
+        { domain: hostname, verified: false },
+        { domain: hostname, result: "failed", reason },
+      ),
+    );
   const current = await withTenant(db, context, loadIn);
   if (current.verifiedAt !== null) return toTenantDomain(current);
   const record = toTenantDomain(current).verification;
   // The lookup runs outside the transaction: DNS can be slow.
-  if (record === null || !(await txtProvesOwnership(record)))
+  if (record === null || !(await txtProvesOwnership(record))) {
+    await auditFailure(current.hostname, "dns_txt_mismatch");
     throw new PlatformError("DOMAIN_VERIFICATION_FAILED");
-  return withTenant(db, context, async (tx) => {
-    try {
-      const [row] = await tx
-        .update(tenantDomains)
-        .set({ verifiedAt: sql`now()` })
-        .where(
-          and(
-            eq(tenantDomains.id, domainId),
-            eq(tenantDomains.tenantId, context.tenant.tenantId),
-            isNull(tenantDomains.verifiedAt),
-          ),
-        )
-        .returning();
-      // Verified by a concurrent request in the meantime: return it as is.
-      return toTenantDomain(row ?? (await loadIn(tx)));
-    } catch (error) {
-      if (uniqueViolationOn(error, "tenant_domains_verified_hostname_key"))
-        throw new PlatformError("DOMAIN_TAKEN");
-      throw error;
-    }
-  });
+  }
+  try {
+    return await withTenant(db, context, async (tx) => {
+      try {
+        const [row] = await tx
+          .update(tenantDomains)
+          .set({ verifiedAt: sql`now()` })
+          .where(
+            and(
+              eq(tenantDomains.id, domainId),
+              eq(tenantDomains.tenantId, context.tenant.tenantId),
+              isNull(tenantDomains.verifiedAt),
+            ),
+          )
+          .returning();
+        // Verified by a concurrent request in the meantime: return it as is,
+        // already audited by that request.
+        if (!row) return toTenantDomain(await loadIn(tx));
+        await recordDomainAudit(
+          tx,
+          context,
+          actorUserId,
+          "tenant_domain.verified",
+          row.id,
+          { domain: row.hostname, verified: false },
+          { domain: row.hostname, verified: true },
+        );
+        return toTenantDomain(row);
+      } catch (error) {
+        if (uniqueViolationOn(error, "tenant_domains_verified_hostname_key"))
+          throw new PlatformError("DOMAIN_TAKEN");
+        throw error;
+      }
+    });
+  } catch (error) {
+    if (error instanceof PlatformError && error.code === "DOMAIN_TAKEN")
+      await auditFailure(current.hostname, "domain_taken");
+    throw error;
+  }
 }
 
 export async function removeDomain(
   context: ScopedTenantContext,
   domainId: string,
+  actorUserId: string,
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
     const [row] = await tx
@@ -1142,8 +1240,22 @@ export async function removeDomain(
           eq(tenantDomains.tenantId, context.tenant.tenantId),
         ),
       )
-      .returning({ id: tenantDomains.id });
+      .returning();
     if (!row) throw new HttpError(404, "NOT_FOUND", "Domain not found.");
+    await recordDomainAudit(
+      tx,
+      context,
+      actorUserId,
+      "tenant_domain.removed",
+      row.id,
+      {
+        domain: row.hostname,
+        kind: row.kind,
+        brandId: row.brandId,
+        verified: row.verifiedAt !== null,
+      },
+      null,
+    );
   });
 }
 

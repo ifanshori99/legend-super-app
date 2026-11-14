@@ -193,7 +193,11 @@ orgRouter.get("/domains", manage, async (req, res) => {
 
 orgRouter.post("/domains", manage, jsonBody, async (req, res) => {
   const input = addDomainInputSchema.parse(req.body);
-  const domain = await addDomain(getScopedTenantContext(req), input);
+  const domain = await addDomain(
+    getScopedTenantContext(req),
+    input,
+    getAuth(req).user.id,
+  );
   res.status(201).location(`/api/org/domains/${domain.id}`).json({
     data: domain,
   });
@@ -201,12 +205,22 @@ orgRouter.post("/domains", manage, jsonBody, async (req, res) => {
 
 orgRouter.post("/domains/:domainId/verify", manage, async (req, res) => {
   const domainId = tenantDomainIdSchema.parse(req.params.domainId);
-  res.json({ data: await verifyDomain(getScopedTenantContext(req), domainId) });
+  res.json({
+    data: await verifyDomain(
+      getScopedTenantContext(req),
+      domainId,
+      getAuth(req).user.id,
+    ),
+  });
 });
 
 orgRouter.delete("/domains/:domainId", manage, async (req, res) => {
   const domainId = tenantDomainIdSchema.parse(req.params.domainId);
-  await removeDomain(getScopedTenantContext(req), domainId);
+  await removeDomain(
+    getScopedTenantContext(req),
+    domainId,
+    getAuth(req).user.id,
+  );
   res.status(204).end();
 });
 
