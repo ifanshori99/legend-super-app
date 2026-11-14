@@ -82,7 +82,6 @@ import {
   type ShiftHandover,
 } from "@starter/shared/operations";
 import type { z } from "zod";
-import { coreStorageObjects } from "../db/schema/core-storage.ts";
 import { menuItems } from "../db/schema/menu.ts";
 import {
   equipment,
@@ -97,6 +96,10 @@ import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { assertOutletPermission } from "./menu-internals.ts";
 import { syncEquipmentAvailability } from "./operations-availability.service.ts";
+import {
+  assertFacilityEvidenceBindable,
+  linkFacilityEvidence,
+} from "./facility-evidence-media.ts";
 import { emitOperationsEvent } from "./operations-events.ts";
 import {
   operationsFingerprint,
@@ -335,31 +338,25 @@ async function assertLinkedMenuItems(
 }
 
 /**
- * Breakdown photos must be storage objects uploaded to this tenant AND outlet
- * (same rule as checklist evidence); an arbitrary or foreign id is a 422.
+ * Breakdown photos must be the reporter's own `maintenance_ticket` uploads at
+ * this tenant and outlet, not yet attached to another document (legend-mg2bz);
+ * anything else is one generic 422 so ids cannot be probed.
  */
-async function assertTicketMediaInOutlet(
+async function assertTicketMediaBindable(
   tx: OperationsTx,
   context: ScopedTenantContext,
+  actorUserId: string,
   outletId: string,
   mediaIds: readonly string[],
 ): Promise<void> {
-  const ids = [...new Set(mediaIds)];
-  if (ids.length === 0) return;
-  const rows = await tx
-    .select({ id: coreStorageObjects.id })
-    .from(coreStorageObjects)
-    .where(
-      and(
-        eq(coreStorageObjects.tenantId, context.tenant.tenantId),
-        eq(coreStorageObjects.outletId, outletId),
-        inArray(coreStorageObjects.id, ids),
-      ),
-    );
-  if (rows.length !== ids.length)
-    validationError(
-      "Foto kerusakan tidak ditemukan. Unggah ulang lalu coba lagi.",
-    );
+  await assertFacilityEvidenceBindable(tx, {
+    tenantId: context.tenant.tenantId,
+    outletId,
+    actorUserId,
+    sourceKind: "maintenance_ticket",
+    mediaIds,
+    message: "Foto kerusakan tidak ditemukan. Unggah ulang lalu coba lagi.",
+  });
 }
 
 // ------------------------------------------------------- OPS-04 availability
@@ -1311,9 +1308,10 @@ export async function createMaintenanceTicket(
     // The input schema already requires one photo; the contract gate keeps a
     // direct service caller (worker, test double) honest too.
     contract(() => assertMaintenanceTicketHasPhoto(input.mediaIds));
-    await assertTicketMediaInOutlet(
+    await assertTicketMediaBindable(
       tx,
       context,
+      actor,
       input.outletId,
       input.mediaIds,
     );
@@ -1368,6 +1366,14 @@ export async function createMaintenanceTicket(
       })
       .returning();
     if (!ticket) throw new Error("Tiket perawatan gagal disimpan.");
+    await linkFacilityEvidence(tx, {
+      tenantId: context.tenant.tenantId,
+      outletId: input.outletId,
+      actorUserId: actor,
+      sourceKind: "maintenance_ticket",
+      sourceId: ticket.id,
+      mediaIds: input.mediaIds,
+    });
 
     if (marksBroken) {
       let broken: EquipmentRow = locked;

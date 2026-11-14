@@ -123,18 +123,58 @@ async function outletClient(outletId: string): Promise<Session> {
   return session;
 }
 
-/** A stored evidence object (photo/signature) in one outlet of the tenant. */
-async function storedMedia(outletId: string = outletA.id): Promise<string> {
+/**
+ * A stored evidence object (photo/signature) in one outlet of the tenant.
+ * Defaults to what the upload endpoint leaves for checklist evidence: kind
+ * `checklist_evidence`, uploaded and owned by the test actor (`staff`), not yet
+ * attached to any document (legend-mg2bz). Overrides model the bad cases.
+ */
+async function storedMedia(
+  outletId: string = outletA.id,
+  options: {
+    sourceKind?: string | null;
+    uploadedBy?: string;
+    sourceId?: string | null;
+  } = {},
+): Promise<string> {
   const id = randomUUID();
+  const sourceKind =
+    options.sourceKind === undefined
+      ? "checklist_evidence"
+      : options.sourceKind;
+  const uploader = options.uploadedBy ?? staff.userId;
+  const sourceId = options.sourceId ?? null;
   await asTenant((client) =>
     client.query(
-      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
-       VALUES ($1, $2, $3, 'document', $4, 'image/webp', 1024)`,
-      [tenant.id, outletId, id, `legend-btha/${id}.webp`],
+      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, source_kind, source_id, owner_user_id, uploaded_by)
+       VALUES ($1, $2, $3, 'receipt', $4, 'image/webp', 1024, $5, $6, $7, $7)`,
+      [
+        tenant.id,
+        outletId,
+        id,
+        `legend-btha/${id}.webp`,
+        sourceKind,
+        sourceId,
+        uploader,
+      ],
     ),
   );
   createdMediaIds.push(id);
   return id;
+}
+
+/** The source link the stored object carries now. */
+async function mediaSource(mediaId: string) {
+  return asTenant(async (client) => {
+    const { rows } = await client.query<{
+      source_kind: string | null;
+      source_id: string | null;
+    }>(
+      "SELECT source_kind, source_id FROM core_storage_objects WHERE tenant_id = $1 AND id = $2",
+      [tenant.id, mediaId],
+    );
+    return rows[0];
+  });
 }
 
 /** A fresh idempotency key: the tenant-wide key space is shared. */
@@ -977,6 +1017,94 @@ describe("Operations checklist runs (legend-btha)", () => {
       photoMediaIds: [await storedMedia()],
     });
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+  });
+
+  it("[legend-mg2bz][OPS-01] refuses a colleague's photo, a photo of the wrong kind, and a photo attached to another run, all with the same 422", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    await startRun(staff, run.id);
+    const other = await postRun(staff, baseTemplateId);
+    const photoItem = itemIdOf(run, "Foto area bar");
+    const signatureItem = itemIdOf(run, "Tanda tangan supervisor");
+    const colleague = await outletClient(outletA.id);
+
+    // Same outlet, but uploaded by a different user.
+    const colleaguePhoto = await postResult(staff, run.id, photoItem, {
+      photoMediaIds: [
+        await storedMedia(outletA.id, { uploadedBy: colleague.userId }),
+      ],
+    });
+    expect(colleaguePhoto.status, JSON.stringify(colleaguePhoto.body)).toBe(
+      422,
+    );
+    expect(colleaguePhoto.body.error.code).toBe("VALIDATION_ERROR");
+    // A colleague's signature is refused the same way.
+    const colleagueSignature = await postResult(staff, run.id, signatureItem, {
+      signatureMediaId: await storedMedia(outletA.id, {
+        uploadedBy: colleague.userId,
+      }),
+    });
+    expect(colleagueSignature.status).toBe(422);
+
+    // Own upload, but of another kind (a maintenance photo), or never typed.
+    const wrongKind = await postResult(staff, run.id, photoItem, {
+      photoMediaIds: [
+        await storedMedia(outletA.id, { sourceKind: "maintenance_ticket" }),
+      ],
+    });
+    expect(wrongKind.status, JSON.stringify(wrongKind.body)).toBe(422);
+    expect(wrongKind.body.error.code).toBe("VALIDATION_ERROR");
+    const untyped = await postResult(staff, run.id, photoItem, {
+      photoMediaIds: [await storedMedia(outletA.id, { sourceKind: null })],
+    });
+    expect(untyped.status).toBe(422);
+
+    // Own checklist photo, but already attached to a different run.
+    const taken = await storedMedia(outletA.id, { sourceId: other.id });
+    const attached = await postResult(staff, run.id, photoItem, {
+      photoMediaIds: [taken],
+    });
+    expect(attached.status, JSON.stringify(attached.body)).toBe(422);
+    expect(attached.body.error.code).toBe("VALIDATION_ERROR");
+    expect((await mediaSource(taken)).source_id).toBe(other.id);
+
+    // Nothing was written by the refused answers.
+    const reread = await staff.client.get(
+      `/api/operations/checklist-runs/${run.id}`,
+    );
+    expect(reread.body.data.results).toEqual([]);
+  });
+
+  it("[legend-mg2bz][OPS-01] accepts own checklist photo and signature, marks them as attached to the run, and lets a corrected answer keep the same photo", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    await startRun(staff, run.id);
+    const photo = await storedMedia();
+    const signature = await storedMedia();
+    const photoItem = itemIdOf(run, "Foto area bar");
+
+    const first = await postResult(staff, run.id, photoItem, {
+      photoMediaIds: [photo],
+    });
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const signed = await postResult(
+      staff,
+      run.id,
+      itemIdOf(run, "Tanda tangan supervisor"),
+      { signatureMediaId: signature },
+    );
+    expect(signed.status, JSON.stringify(signed.body)).toBe(200);
+    for (const mediaId of [photo, signature])
+      expect(await mediaSource(mediaId)).toEqual({
+        source_kind: "checklist_evidence",
+        source_id: run.id,
+      });
+
+    // The answer is corrected with the very same photo: still accepted.
+    const corrected = await postResult(staff, run.id, photoItem, {
+      photoMediaIds: [photo],
+      note: "Dikoreksi",
+    });
+    expect(corrected.status, JSON.stringify(corrected.body)).toBe(200);
+    expect((await mediaSource(photo)).source_id).toBe(run.id);
   });
 });
 
