@@ -4,6 +4,7 @@ import {
   kitchenFixtureSchema,
   orderHeaders,
   getKitchenBoard,
+  getKitchenStationSummary,
   getStationCapacityRules,
   listKitchenStationLabels,
   stationCapacityRuleSchema,
@@ -176,6 +177,24 @@ registerMock(getKitchenBoard, ({ params, scenario }) => {
         : result,
   };
 });
+registerMock(getKitchenStationSummary, ({ params, scenario }) => ({
+  data: {
+    ...fixtures.stationSummary,
+    stations:
+      scenario === "empty"
+        ? []
+        : boards
+            .get()
+            .filter((board) => board.outletId === params.outletId)
+            .map((board) => ({
+              stationId: board.stationId,
+              openTickets: board.tickets.filter(
+                (ticket) =>
+                  ticket.status !== "done" && ticket.status !== "cancelled",
+              ).length,
+            })),
+  },
+}));
 registerMock(startKitchenTicket, ({ params }) => ({
   data: transition(params.ticketId, "start"),
 }));

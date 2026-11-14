@@ -152,10 +152,22 @@ export const fetchReconciliation = async (
  * office (its mock is registered by `features/ws03-menu/mock.ts`): the manual
  * form never invents a menu of its own.
  */
-export const fetchMenuItems = (
+export const fetchMenuItems = async (
   query: Query<typeof listItemsEndpoint>,
   options?: CallOptions,
-) => callEndpoint(listItemsEndpoint, { query }, options);
+) => {
+  let page = await callEndpoint(listItemsEndpoint, { query }, options);
+  const data = [...page.data];
+  while (page.meta.nextCursor) {
+    page = await callEndpoint(
+      listItemsEndpoint,
+      { query: { ...query, cursor: page.meta.nextCursor } },
+      options,
+    );
+    data.push(...page.data);
+  }
+  return { ...page, data };
+};
 
 /** Variants of one menu item: the mapping picker asks for one when it exists. */
 export const fetchItemVariants = (
@@ -177,12 +189,26 @@ export const fetchPriceLists = (
   options?: CallOptions,
 ) => callEndpoint(listPriceListsEndpoint, { query }, options);
 
-export const fetchPriceListItems = (
+export const fetchPriceListItems = async (
   params: Params<typeof listPriceListItemsEndpoint>,
   options?: CallOptions,
-) =>
-  callEndpoint(
+) => {
+  let page = await callEndpoint(
     listPriceListItemsEndpoint,
     { params, query: { limit: DELIVERY_LIST_LIMIT } },
     options,
   );
+  const data = [...page.data];
+  while (page.meta.nextCursor) {
+    page = await callEndpoint(
+      listPriceListItemsEndpoint,
+      {
+        params,
+        query: { limit: DELIVERY_LIST_LIMIT, cursor: page.meta.nextCursor },
+      },
+      options,
+    );
+    data.push(...page.data);
+  }
+  return { ...page, data };
+};

@@ -90,9 +90,11 @@ export function SplitPanel({
   const scope = useMemo(() => splitScope(bill.orders), [bill.orders]);
   const orderItems = useMemo(
     () =>
-      (scope?.orders ?? bill.orders).flatMap((order) =>
-        order.items.filter((item) => item.status !== "voided"),
-      ),
+      (scope?.orders ?? bill.orders)
+        .filter((order) => order.status !== "voided")
+        .flatMap((order) =>
+          order.items.filter((item) => item.status !== "voided"),
+        ),
     [scope, bill.orders],
   );
   const itemIds = orderItems.map((item) => item.id);
