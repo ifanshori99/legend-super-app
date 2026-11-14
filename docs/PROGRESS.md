@@ -1660,3 +1660,4 @@ Langkah berikut CTO baru:
 - 13:02 (CTO G1kkr) Serah terima ke CTO baru (brief 747). Batch63 di m1 ec4f7dfc6. Batch64a berjalan (G8dut). Thread aktif: G9bm2 wiring UI payout, G86fe hapus-buku dana terlambat, G2idj wiring UI panik, G4oon tindak lanjut payout. Antrean 64b-64f di brief 747.
 03:27 CTO: mulai 855 (G8c1d Opus edge), 856 (G5oof kas laci), Codex 857/858/859; throttle dilonggarkan untuk perbaikan penting (slot hijau).
 03:57 CTO: 852/855/856 antre merge train; 857 perbaikan architect P2 di G4v70; 860/861 mulai; slot sengaja tidak diisi (antrean >20).
+05:45 CTO: Retro 30 diterima; heavy menghitung bobot sendiri; merge train pakai gerbang cepat sebelum run penuh; cron push+retro terverifikasi aktif.
