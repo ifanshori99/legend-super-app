@@ -17,6 +17,7 @@ it("TEN-02 payment admin tables have forced restrictive tenant policies", async 
     "payment_cashier_defaults",
     "payment_edc_terminals",
     "payment_reconciliation_cases",
+    "payment_reconciliation_corrections",
     "payment_refunds",
   ];
   const result = await pool.query<{

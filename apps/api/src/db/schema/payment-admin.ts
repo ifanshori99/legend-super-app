@@ -372,6 +372,100 @@ export const paymentReconciliationCases = pgTable(
   ],
 );
 
+/**
+ * Funds of a written-off "missing" case arrived in a later settlement import
+ * (legend-oan3p). Nothing is reversed automatically: finance reviews this row
+ * through the approval matrix. One row per case for life.
+ */
+export const paymentReconciliationCorrections = pgTable(
+  "payment_reconciliation_corrections",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    caseId: uuid("case_id").notNull(),
+    /** Report in which the funds arrived. */
+    settlementId: uuid("settlement_id").notNull(),
+    /** The settlement line that matched the written-off sale. */
+    settlementLineId: uuid("settlement_line_id").notNull(),
+    /**
+     * The mismatch case opened for the same line when the late amount differs
+     * from the sale; finance decides both together so the loss is never
+     * booked twice. Null when the line matched exactly.
+     */
+    mismatchCaseId: uuid("mismatch_case_id"),
+    source: varchar("source", { length: 20 }).notNull(),
+    reference: varchar("reference", { length: 100 }).notNull(),
+    /** abs(case.variance_idr): what was written off. */
+    writtenOffIdr: idrColumn("written_off_idr").notNull(),
+    /** Received amount of the matched line. */
+    receivedIdr: idrColumn("received_idr").notNull(),
+    status: varchar("status", { length: 20 }).notNull().default("open"),
+    decision: varchar("decision", { length: 30 }),
+    approvalChainId: uuid("approval_chain_id"),
+    requestedBy: text("requested_by"),
+    approvedBy: text("approved_by"),
+    resolvedBy: text("resolved_by"),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    note: text("note"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    unique("payment_reconciliation_corrections_tenant_id_key").on(
+      t.tenantId,
+      t.id,
+    ),
+    unique("payment_reconciliation_corrections_case_key").on(
+      t.tenantId,
+      t.caseId,
+    ),
+    foreignKey({
+      name: "payment_reconciliation_corrections_outlet_fk",
+      columns: [t.tenantId, t.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    foreignKey({
+      name: "payment_reconciliation_corrections_case_fk",
+      columns: [t.tenantId, t.caseId],
+      foreignColumns: [
+        paymentReconciliationCases.tenantId,
+        paymentReconciliationCases.id,
+      ],
+    }),
+    foreignKey({
+      name: "payment_reconciliation_corrections_mismatch_case_fk",
+      columns: [t.tenantId, t.mismatchCaseId],
+      foreignColumns: [
+        paymentReconciliationCases.tenantId,
+        paymentReconciliationCases.id,
+      ],
+    }),
+    index("payment_reconciliation_corrections_status_idx").on(
+      t.tenantId,
+      t.outletId,
+      t.status,
+    ),
+    check(
+      "payment_reconciliation_corrections_source_check",
+      sql`${t.source} IN ('gateway','edc')`,
+    ),
+    check(
+      "payment_reconciliation_corrections_status_check",
+      sql`${t.status} IN ('open','pending_approval','resolved')`,
+    ),
+    check(
+      "payment_reconciliation_corrections_decision_check",
+      sql`${t.decision} IS NULL OR ${t.decision} IN ('reverse_write_off','keep_write_off')`,
+    ),
+    check(
+      "payment_reconciliation_corrections_amount_check",
+      sql`${t.writtenOffIdr} >= 0 AND ${t.receivedIdr} >= 0`,
+    ),
+  ],
+);
+
 // The fingerprint binds each tenant-scoped mutation key to the operation and body.
 export const paymentAdminIdempotency = pgTable(
   "payment_admin_idempotency",
