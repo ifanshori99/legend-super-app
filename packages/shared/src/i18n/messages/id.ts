@@ -76,6 +76,10 @@ import { learningMessages } from "./ws10-learning.ts";
 import { lifecycleMessages } from "./ws10-lifecycle.ts";
 import { payrollConfigMessages } from "./ws10-payroll-config.ts";
 import { payrollRunMessages } from "./ws10-payroll-run.ts";
+import { payrollPayoutMessages } from "./ws10-payroll-payout.ts";
+import { payrollPayoutSettingsMessages } from "./ws10-payroll-payout-settings.ts";
+import { payrollPayoutReviewMessages } from "./ws10-payroll-payout-review.ts";
+import { financeExceptionsMessages } from "./ws07-finance-exceptions.ts";
 import { payslipMessages } from "./ws10-payslip.ts";
 import { payslipPinMessages } from "./ws10-payslip-pin.ts";
 import { payslipPinSetupMessages } from "./ws10-payslip-pin-setup.ts";
@@ -254,6 +258,10 @@ export const id = {
   lifecycle: lifecycleMessages,
   payrollConfig: payrollConfigMessages,
   payrollRun: payrollRunMessages,
+  payrollPayout: payrollPayoutMessages,
+  payrollPayoutSettings: payrollPayoutSettingsMessages,
+  payrollPayoutReview: payrollPayoutReviewMessages,
+  financeExceptions: financeExceptionsMessages,
   payslip: payslipMessages,
   payslipPin: {
     ...payslipPinMessages,

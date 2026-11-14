@@ -125,6 +125,8 @@ export type FinanceExceptionItemDto = {
 export type FinanceExceptionSummaryDto = {
   kind: FinanceExceptionKind;
   count: number;
+  /** Rows with a known amount, including zero; counted before items are cut. */
+  knownAmountCount: number;
   amountIdr: number;
 };
 

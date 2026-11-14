@@ -43,6 +43,7 @@ const MAX_ITEMS = FINANCE_EXCEPTIONS_MAX_ITEMS;
 type Collected = {
   kind: FinanceExceptionKind;
   count: number;
+  knownAmountCount: number;
   amountIdr: number;
   items: FinanceExceptionItemDto[];
 };
@@ -119,7 +120,8 @@ async function collectSql(
 ): Promise<Collected> {
   const [totals] = rowsOf(
     await tx.execute(
-      sql`SELECT count(*)::int AS count, coalesce(sum(${source.amount}), 0)::bigint AS amount
+      sql`SELECT count(*)::int AS count, count(${source.amount})::int AS known_amount_count,
+                 coalesce(sum(${source.amount}), 0)::bigint AS amount
             FROM ${source.from} WHERE ${source.where}`,
     ),
   );
@@ -136,6 +138,7 @@ async function collectSql(
   return {
     kind,
     count: num(totals?.count),
+    knownAmountCount: num(totals?.known_amount_count),
     amountIdr: num(totals?.amount),
     items: rows.map((row) => toItem(kind, refType, row)),
   };
@@ -261,6 +264,7 @@ async function voidUnsupported(tx: Executor, scope: Scope): Promise<Collected> {
   return {
     kind: "edge_void_unsupported",
     count: items.length,
+    knownAmountCount: items.filter((item) => item.amountIdr !== null).length,
     amountIdr: items.reduce((sum, item) => sum + (item.amountIdr ?? 0), 0),
     items,
   };
@@ -324,6 +328,7 @@ async function payoutFeeNotPosted(
   return {
     kind: "payout_fee_not_posted",
     count: items.length,
+    knownAmountCount: items.filter((item) => item.amountIdr !== null).length,
     amountIdr: items.reduce((sum, item) => sum + (item.amountIdr ?? 0), 0),
     items,
   };
@@ -370,7 +375,12 @@ export async function listFinanceExceptions(
 
   const summary: FinanceExceptionSummaryDto[] = collected
     .filter((part) => part.count > 0)
-    .map(({ kind, count, amountIdr }) => ({ kind, count, amountIdr }));
+    .map(({ kind, count, knownAmountCount, amountIdr }) => ({
+      kind,
+      count,
+      knownAmountCount,
+      amountIdr,
+    }));
   const total = collected.reduce((sum, part) => sum + part.count, 0);
   const items = collected
     .flatMap((part) => part.items)

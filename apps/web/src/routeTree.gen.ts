@@ -138,6 +138,7 @@ import { Route as KelolaKelolaAkuntansiKasBankRouteImport } from './routes/_kelo
 import { Route as KelolaKelolaAkuntansiLaporanRouteImport } from './routes/_kelola/kelola.akuntansi.laporan'
 import { Route as KelolaKelolaAkuntansiPajakRouteImport } from './routes/_kelola/kelola.akuntansi.pajak'
 import { Route as KelolaKelolaAkuntansiPemetaanRouteImport } from './routes/_kelola/kelola.akuntansi.pemetaan'
+import { Route as KelolaKelolaAkuntansiPengecualianRouteImport } from './routes/_kelola/kelola.akuntansi.pengecualian'
 import { Route as KelolaKelolaAkuntansiPiutangUtangRouteImport } from './routes/_kelola/kelola.akuntansi.piutang-utang'
 import { Route as KelolaKelolaAkuntansiRekonsiliasiRouteImport } from './routes/_kelola/kelola.akuntansi.rekonsiliasi'
 import { Route as KelolaKelolaAkuntansiTutupPeriodeRouteImport } from './routes/_kelola/kelola.akuntansi.tutup-periode'
@@ -190,6 +191,7 @@ import { Route as KelolaKelolaPajakIndexRouteImport } from './routes/_kelola/kel
 import { Route as KelolaKelolaPajakLaporanRouteImport } from './routes/_kelola/kelola.pajak.laporan'
 import { Route as KelolaKelolaPajakOpsiRouteImport } from './routes/_kelola/kelola.pajak.opsi'
 import { Route as KelolaKelolaPajakServiceChargeRouteImport } from './routes/_kelola/kelola.pajak.service-charge'
+import { Route as KelolaKelolaPayrollPencairanRouteImport } from './routes/_kelola/kelola.payroll.pencairan'
 import { Route as KelolaKelolaPayrollPengaturanRouteImport } from './routes/_kelola/kelola.payroll.pengaturan'
 import { Route as KelolaKelolaPayrollServiceChargeRouteImport } from './routes/_kelola/kelola.payroll.service-charge'
 import { Route as KelolaKelolaPelangganIndexRouteImport } from './routes/_kelola/kelola.pelanggan.index'
@@ -1058,6 +1060,12 @@ const KelolaKelolaAkuntansiPemetaanRoute =
     path: '/kelola/akuntansi/pemetaan',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaKelolaAkuntansiPengecualianRoute =
+  KelolaKelolaAkuntansiPengecualianRouteImport.update({
+    id: '/kelola/akuntansi/pengecualian',
+    path: '/kelola/akuntansi/pengecualian',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaKelolaAkuntansiPiutangUtangRoute =
   KelolaKelolaAkuntansiPiutangUtangRouteImport.update({
     id: '/kelola/akuntansi/piutang-utang',
@@ -1353,6 +1361,12 @@ const KelolaKelolaPajakServiceChargeRoute =
   KelolaKelolaPajakServiceChargeRouteImport.update({
     id: '/kelola/pajak/service-charge',
     path: '/kelola/pajak/service-charge',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaPayrollPencairanRoute =
+  KelolaKelolaPayrollPencairanRouteImport.update({
+    id: '/kelola/payroll/pencairan',
+    path: '/kelola/payroll/pencairan',
     getParentRoute: () => KelolaRoute,
   } as any)
 const KelolaKelolaPayrollPengaturanRoute =
@@ -2643,6 +2657,7 @@ export interface FileRoutesByFullPath {
   '/kelola/akuntansi/laporan': typeof KelolaKelolaAkuntansiLaporanRoute
   '/kelola/akuntansi/pajak': typeof KelolaKelolaAkuntansiPajakRoute
   '/kelola/akuntansi/pemetaan': typeof KelolaKelolaAkuntansiPemetaanRoute
+  '/kelola/akuntansi/pengecualian': typeof KelolaKelolaAkuntansiPengecualianRoute
   '/kelola/akuntansi/piutang-utang': typeof KelolaKelolaAkuntansiPiutangUtangRoute
   '/kelola/akuntansi/rekonsiliasi': typeof KelolaKelolaAkuntansiRekonsiliasiRoute
   '/kelola/akuntansi/tutup-periode': typeof KelolaKelolaAkuntansiTutupPeriodeRoute
@@ -2683,6 +2698,7 @@ export interface FileRoutesByFullPath {
   '/kelola/pajak/laporan': typeof KelolaKelolaPajakLaporanRoute
   '/kelola/pajak/opsi': typeof KelolaKelolaPajakOpsiRoute
   '/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
+  '/kelola/payroll/pencairan': typeof KelolaKelolaPayrollPencairanRoute
   '/kelola/payroll/pengaturan': typeof KelolaKelolaPayrollPengaturanRoute
   '/kelola/payroll/service-charge': typeof KelolaKelolaPayrollServiceChargeRoute
   '/kelola/pelanggan/$customerProfileId': typeof KelolaKelolaPelangganCustomerProfileIdRoute
@@ -3013,6 +3029,7 @@ export interface FileRoutesByTo {
   '/kelola/akuntansi/laporan': typeof KelolaKelolaAkuntansiLaporanRoute
   '/kelola/akuntansi/pajak': typeof KelolaKelolaAkuntansiPajakRoute
   '/kelola/akuntansi/pemetaan': typeof KelolaKelolaAkuntansiPemetaanRoute
+  '/kelola/akuntansi/pengecualian': typeof KelolaKelolaAkuntansiPengecualianRoute
   '/kelola/akuntansi/piutang-utang': typeof KelolaKelolaAkuntansiPiutangUtangRoute
   '/kelola/akuntansi/rekonsiliasi': typeof KelolaKelolaAkuntansiRekonsiliasiRoute
   '/kelola/akuntansi/tutup-periode': typeof KelolaKelolaAkuntansiTutupPeriodeRoute
@@ -3052,6 +3069,7 @@ export interface FileRoutesByTo {
   '/kelola/pajak/laporan': typeof KelolaKelolaPajakLaporanRoute
   '/kelola/pajak/opsi': typeof KelolaKelolaPajakOpsiRoute
   '/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
+  '/kelola/payroll/pencairan': typeof KelolaKelolaPayrollPencairanRoute
   '/kelola/payroll/pengaturan': typeof KelolaKelolaPayrollPengaturanRoute
   '/kelola/payroll/service-charge': typeof KelolaKelolaPayrollServiceChargeRoute
   '/kelola/pelanggan/$customerProfileId': typeof KelolaKelolaPelangganCustomerProfileIdRoute
@@ -3395,6 +3413,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/akuntansi/laporan': typeof KelolaKelolaAkuntansiLaporanRoute
   '/_kelola/kelola/akuntansi/pajak': typeof KelolaKelolaAkuntansiPajakRoute
   '/_kelola/kelola/akuntansi/pemetaan': typeof KelolaKelolaAkuntansiPemetaanRoute
+  '/_kelola/kelola/akuntansi/pengecualian': typeof KelolaKelolaAkuntansiPengecualianRoute
   '/_kelola/kelola/akuntansi/piutang-utang': typeof KelolaKelolaAkuntansiPiutangUtangRoute
   '/_kelola/kelola/akuntansi/rekonsiliasi': typeof KelolaKelolaAkuntansiRekonsiliasiRoute
   '/_kelola/kelola/akuntansi/tutup-periode': typeof KelolaKelolaAkuntansiTutupPeriodeRoute
@@ -3435,6 +3454,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/pajak/laporan': typeof KelolaKelolaPajakLaporanRoute
   '/_kelola/kelola/pajak/opsi': typeof KelolaKelolaPajakOpsiRoute
   '/_kelola/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
+  '/_kelola/kelola/payroll/pencairan': typeof KelolaKelolaPayrollPencairanRoute
   '/_kelola/kelola/payroll/pengaturan': typeof KelolaKelolaPayrollPengaturanRoute
   '/_kelola/kelola/payroll/service-charge': typeof KelolaKelolaPayrollServiceChargeRoute
   '/_kelola/kelola/pelanggan/$customerProfileId': typeof KelolaKelolaPelangganCustomerProfileIdRoute
@@ -3769,6 +3789,7 @@ export interface FileRouteTypes {
     | '/kelola/akuntansi/laporan'
     | '/kelola/akuntansi/pajak'
     | '/kelola/akuntansi/pemetaan'
+    | '/kelola/akuntansi/pengecualian'
     | '/kelola/akuntansi/piutang-utang'
     | '/kelola/akuntansi/rekonsiliasi'
     | '/kelola/akuntansi/tutup-periode'
@@ -3809,6 +3830,7 @@ export interface FileRouteTypes {
     | '/kelola/pajak/laporan'
     | '/kelola/pajak/opsi'
     | '/kelola/pajak/service-charge'
+    | '/kelola/payroll/pencairan'
     | '/kelola/payroll/pengaturan'
     | '/kelola/payroll/service-charge'
     | '/kelola/pelanggan/$customerProfileId'
@@ -4139,6 +4161,7 @@ export interface FileRouteTypes {
     | '/kelola/akuntansi/laporan'
     | '/kelola/akuntansi/pajak'
     | '/kelola/akuntansi/pemetaan'
+    | '/kelola/akuntansi/pengecualian'
     | '/kelola/akuntansi/piutang-utang'
     | '/kelola/akuntansi/rekonsiliasi'
     | '/kelola/akuntansi/tutup-periode'
@@ -4178,6 +4201,7 @@ export interface FileRouteTypes {
     | '/kelola/pajak/laporan'
     | '/kelola/pajak/opsi'
     | '/kelola/pajak/service-charge'
+    | '/kelola/payroll/pencairan'
     | '/kelola/payroll/pengaturan'
     | '/kelola/payroll/service-charge'
     | '/kelola/pelanggan/$customerProfileId'
@@ -4520,6 +4544,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/akuntansi/laporan'
     | '/_kelola/kelola/akuntansi/pajak'
     | '/_kelola/kelola/akuntansi/pemetaan'
+    | '/_kelola/kelola/akuntansi/pengecualian'
     | '/_kelola/kelola/akuntansi/piutang-utang'
     | '/_kelola/kelola/akuntansi/rekonsiliasi'
     | '/_kelola/kelola/akuntansi/tutup-periode'
@@ -4560,6 +4585,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pajak/laporan'
     | '/_kelola/kelola/pajak/opsi'
     | '/_kelola/kelola/pajak/service-charge'
+    | '/_kelola/kelola/payroll/pencairan'
     | '/_kelola/kelola/payroll/pengaturan'
     | '/_kelola/kelola/payroll/service-charge'
     | '/_kelola/kelola/pelanggan/$customerProfileId'
@@ -5705,6 +5731,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaAkuntansiPemetaanRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/akuntansi/pengecualian': {
+      id: '/_kelola/kelola/akuntansi/pengecualian'
+      path: '/kelola/akuntansi/pengecualian'
+      fullPath: '/kelola/akuntansi/pengecualian'
+      preLoaderRoute: typeof KelolaKelolaAkuntansiPengecualianRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/akuntansi/piutang-utang': {
       id: '/_kelola/kelola/akuntansi/piutang-utang'
       path: '/kelola/akuntansi/piutang-utang'
@@ -6067,6 +6100,13 @@ declare module '@tanstack/react-router' {
       path: '/kelola/pajak/service-charge'
       fullPath: '/kelola/pajak/service-charge'
       preLoaderRoute: typeof KelolaKelolaPajakServiceChargeRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/payroll/pencairan': {
+      id: '/_kelola/kelola/payroll/pencairan'
+      path: '/kelola/payroll/pencairan'
+      fullPath: '/kelola/payroll/pencairan'
+      preLoaderRoute: typeof KelolaKelolaPayrollPencairanRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kelola/kelola/payroll/pengaturan': {
@@ -7645,6 +7685,7 @@ interface KelolaRouteChildren {
   KelolaKelolaAkuntansiLaporanRoute: typeof KelolaKelolaAkuntansiLaporanRoute
   KelolaKelolaAkuntansiPajakRoute: typeof KelolaKelolaAkuntansiPajakRoute
   KelolaKelolaAkuntansiPemetaanRoute: typeof KelolaKelolaAkuntansiPemetaanRoute
+  KelolaKelolaAkuntansiPengecualianRoute: typeof KelolaKelolaAkuntansiPengecualianRoute
   KelolaKelolaAkuntansiPiutangUtangRoute: typeof KelolaKelolaAkuntansiPiutangUtangRoute
   KelolaKelolaAkuntansiRekonsiliasiRoute: typeof KelolaKelolaAkuntansiRekonsiliasiRoute
   KelolaKelolaAkuntansiTutupPeriodeRoute: typeof KelolaKelolaAkuntansiTutupPeriodeRoute
@@ -7685,6 +7726,7 @@ interface KelolaRouteChildren {
   KelolaKelolaPajakLaporanRoute: typeof KelolaKelolaPajakLaporanRoute
   KelolaKelolaPajakOpsiRoute: typeof KelolaKelolaPajakOpsiRoute
   KelolaKelolaPajakServiceChargeRoute: typeof KelolaKelolaPajakServiceChargeRoute
+  KelolaKelolaPayrollPencairanRoute: typeof KelolaKelolaPayrollPencairanRoute
   KelolaKelolaPayrollPengaturanRoute: typeof KelolaKelolaPayrollPengaturanRoute
   KelolaKelolaPayrollServiceChargeRoute: typeof KelolaKelolaPayrollServiceChargeRoute
   KelolaKelolaPelangganCustomerProfileIdRoute: typeof KelolaKelolaPelangganCustomerProfileIdRoute
@@ -7900,6 +7942,8 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaAkuntansiLaporanRoute: KelolaKelolaAkuntansiLaporanRoute,
   KelolaKelolaAkuntansiPajakRoute: KelolaKelolaAkuntansiPajakRoute,
   KelolaKelolaAkuntansiPemetaanRoute: KelolaKelolaAkuntansiPemetaanRoute,
+  KelolaKelolaAkuntansiPengecualianRoute:
+    KelolaKelolaAkuntansiPengecualianRoute,
   KelolaKelolaAkuntansiPiutangUtangRoute:
     KelolaKelolaAkuntansiPiutangUtangRoute,
   KelolaKelolaAkuntansiRekonsiliasiRoute:
@@ -7945,6 +7989,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaPajakLaporanRoute: KelolaKelolaPajakLaporanRoute,
   KelolaKelolaPajakOpsiRoute: KelolaKelolaPajakOpsiRoute,
   KelolaKelolaPajakServiceChargeRoute: KelolaKelolaPajakServiceChargeRoute,
+  KelolaKelolaPayrollPencairanRoute: KelolaKelolaPayrollPencairanRoute,
   KelolaKelolaPayrollPengaturanRoute: KelolaKelolaPayrollPengaturanRoute,
   KelolaKelolaPayrollServiceChargeRoute: KelolaKelolaPayrollServiceChargeRoute,
   KelolaKelolaPelangganCustomerProfileIdRoute:
