@@ -42,7 +42,7 @@ export const edgeOrderIngests = pgTable(
     voidEventId: ulidInUuid("void_event_id"),
     /**
      * Why the order's tax rows were not snapshotted (legend finance
-     * exceptions); NULL for a usable payload and for rows before 0546.
+     * exceptions); NULL for a usable payload and for rows before 0354.
      */
     taxFlag: varchar("tax_flag", {
       length: 20,

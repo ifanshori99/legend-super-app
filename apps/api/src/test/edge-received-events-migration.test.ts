@@ -303,7 +303,7 @@ async function expectRlsStillForced(scratch: Pool) {
   // and edge_nodes. Each must restore it before it commits, and the tables the
   // three migrations create must end with RLS forced. 0386 also lifts FORCE
   // for its handover FK; 0534 does so for its payout posting FK. Each must
-  // restore FORCE before the transaction commits. 0538 and 0539 must also
+  // restore FORCE before the transaction commits. 0352 and 0353 must also
   // leave their new edge tables and FK targets with FORCE restored.
   const tables = [
     "outlets",

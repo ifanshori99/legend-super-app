@@ -22,7 +22,7 @@
 //   call finds an item that is no longer `failed` and is refused. The journal
 //   key and the unique `journal_key` of the posting are the second and third
 //   guard. The database allows `failed -> overpaid` only while this code has
-//   set `app.payout_overpaid` for its transaction (migration 0543).
+//   set `app.payout_overpaid` for its transaction (migration 0351).
 
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, ne, sql } from "drizzle-orm";

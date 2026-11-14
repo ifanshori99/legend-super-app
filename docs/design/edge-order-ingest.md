@@ -225,7 +225,7 @@ Known limitations (open decision for the CTO):
 
 ## Adopt order QR (legend-dy7pc)
 
-Status: design, not implemented. Migrations 0540-0541 (0538/0539 are taken by
+Status: design, not implemented. Migrations 0540-0541 (0352/0353 are taken by
 other threads). Money rule: never two sales, never two payments kept, nothing
 paid out automatically.
 

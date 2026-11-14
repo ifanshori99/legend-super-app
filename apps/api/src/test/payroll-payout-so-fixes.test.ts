@@ -272,11 +272,11 @@ const clearFrozenSource = (batchId: string) =>
     true,
   );
 
-/** The backfill statements of migration 0568 (the ones that read the configs). */
+/** The backfill statements of migration 0355 (the ones that read the configs). */
 function backfillStatements() {
   const sql = readFileSync(
     new URL(
-      "../../drizzle/0568_payout_source_bank_frozen.sql",
+      "../../drizzle/0355_payout_source_bank_frozen.sql",
       import.meta.url,
     ),
     "utf8",
@@ -663,7 +663,7 @@ describe("T3: the bank charges mapping needs an active, postable account (l1a7p)
 // =========================================================================
 
 describe("Architect findings on the frozen source", () => {
-  it("[backfill-running-batches] migration 0568 freezes the config account on approved/exported manual_bank batches only; a finished old batch stays empty", async () => {
+  it("[backfill-running-batches] migration 0355 freezes the config account on approved/exported manual_bank batches only; a finished old batch stays empty", async () => {
     const sourceA = await currentSourceBank();
     const approvedRun = await W.seedRun(slipsOf());
     const approved = await W.approvedBatch(approvedRun);
