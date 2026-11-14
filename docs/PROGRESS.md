@@ -5539,3 +5539,11 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 
 - Tindak lanjut review parent: pengecualian tahun mandiri ternyata membiarkan nominal `salary: 2026` dan `THP 2000` lolos. Dua regresi merah (34 tetap hijau, `/tmp/legend-pii-bare-nominal-red.log`) lalu hanya alternatif tahun mandiri di regex tanggal dihapus. Cabang regex tanggal lengkap/nama bulan dipertahankan; reviewer delta menyetujui tanpa temuan. Typecheck API sebelumnya EXIT 0; tidak diulang untuk penghapusan string regex ini karena permukaan tipe tetap, sesuai instruksi parent.
 - Verifikasi tindak lanjut terakhir: empat berkas ai-pii, ai-eval-dataset, ai-gateway, ai-acceptance melalui `LEGEND_TEST_FILES` + `heavy pnpm test` EXIT 0, 104/104 test (`/tmp/legend-pii-bare-nominal-green.log`). ESLint dua berkas TypeScript, Prettier tiga berkas perubahan, dan `git diff --check` hijau.
+
+## 2026-11-15: Pembatasan tahun pada tanggal gaji (legend-0a1r1)
+
+- Cabang yang sama `fix/pii-salary-false-positive`, base remote `06823d96f`; satu worktree dipulihkan dan `pnpm worktree:setup` EXIT 0. Tidak ada perubahan perhitungan atau pembayaran gaji.
+- Bukti gagal-dulu dikonfirmasi parent: empat nominal `gaji Mei 4500`, `gaji Juni 9000`, `salary Oct 31, 4500`, dan `gaji 10.10.000` masih lolos tanpa masker; 4 test merah dan 36 hijau, `/tmp/legend-pii-year-red.log`.
+- Keenam posisi tahun pada `SALARY_DATES` dibatasi ke 1900–2099; tanggal numerik tetap menerima tahun tepat dua digit. Batas kata tanggal dipertahankan agar tahun tiga digit tidak diterima sebagian. Kata dan bagian tanggal yang sah tetap memakai aturan yang ada.
+- Review konteks segar atas diff sumber/test tanpa temuan. Sesudah perubahan sumber terakhir, `LEGEND_TEST_FILES="src/test/ai-pii.test.ts" heavy pnpm test` EXIT 0, 40/40 test (`/tmp/legend-pii-year-green.log`), dan satu run `heavy pnpm --filter @starter/api typecheck` EXIT 0. Prettier tiga berkas perubahan, ESLint dua berkas TypeScript, dan `git diff --check` hijau. Gate penuh/build tidak dijalankan pada tindak lanjut regex ini.
+- Subagent: total 5 unik, puncak 4 bersamaan; token heavy hanya `pii_year_tests` saat diberikan parent dan sudah dilepas. `session-usage` tidak menemukan transkrip sesi Codex; `parallel-report` tidak menghitung subagent Codex native, sehingga biaya dan rata-rata paralel tidak tersedia. Tidak ada merge atau deploy.

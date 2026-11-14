@@ -70,6 +70,10 @@ describe("redactPii", () => {
     ["Gaji Rp 2.026", "Gaji [salary amount]"],
     ["salary: 2026.50", "salary: [salary amount]"],
     ["gaji 2026,50", "gaji [salary amount]"],
+    ["gaji Mei 4500", "gaji Mei [salary amount]"],
+    ["gaji Juni 9000", "gaji Juni [salary amount]"],
+    ["salary Oct 31, 4500", "salary Oct 31, [salary amount]"],
+    ["gaji 10.10.000", "gaji [salary amount]"],
     [
       "Slip gaji Oktober 2026: Rp 8.500.000",
       "Slip gaji Oktober 2026: [salary amount]",
