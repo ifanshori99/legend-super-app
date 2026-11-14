@@ -21,6 +21,15 @@
 //   services/payroll-payout-withdraw.service.ts, same shape as
 //   resolveManualItems; it checks no permission itself (the route does).
 // - "refused" for a step-2 item or an item with no proposal is 409 or 422.
+// - round 2 (CTO decisions): the batch requester (payroll_disbursement_batches.
+//   requested_by, the fixture's REQ) cannot withdraw someone else's proposal;
+//   the exact code is not fixed (PAYOUT-18 style or PAYOUT_REQUESTER_CANNOT_
+//   WITHDRAW 403), so the test only requires a 4xx refusal and unchanged state.
+// - round 2, migration 0608: the database guard lets exactly one rewrite
+//   through (all four proposal columns NULL at once, exported, no step 2,
+//   nothing else changed). Every other rewrite stays a 23514 check_violation.
+//   The refusal cases pass before 0608 too; the control that clears all four
+//   columns is the one that fails first.
 // - the audit action name is unknown: any action containing "withdraw" that
 //   mentions the batch id and carries the actor id.
 import { randomUUID } from "node:crypto";
@@ -45,6 +54,7 @@ import { withdrawResolutionProposal } from "../services/payroll-payout-withdraw.
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   BUDI,
+  REQ,
   SITI,
   actorOf,
   bank,
@@ -266,7 +276,7 @@ describe("legend-5rh26 withdraw a step-1 resolve proposal", () => {
           [idOf(siti)],
         );
         await c.query(
-          `UPDATE withdraw_clone SET id = gen_random_uuid(), attempt_no = attempt_no + 1,
+          `UPDATE withdraw_clone SET id = gen_random_uuid(), attempt_no = 99,
                   idempotency_key = 'payslip:' || payslip_id::text || ':attempt:99'`,
         );
         await c.query(
@@ -276,7 +286,9 @@ describe("legend-5rh26 withdraw a step-1 resolve proposal", () => {
       } catch (error) {
         return error as { code?: string; constraint?: string };
       }
-    });
+      // Triggers off: only the unique index may refuse (the insert guard
+      // would otherwise answer 23514 first, as an exported item never starts).
+    }, true);
     expect(clone?.code).toBe("23505");
     expect(clone?.constraint).toBe(
       "payroll_disbursement_items_one_live_per_payslip",
@@ -435,5 +447,197 @@ describe("legend-5rh26 withdraw a step-1 resolve proposal", () => {
         (r) => (r.event as { actorId?: string }).actorId === second.userId,
       ),
     ).toBe(true);
+  });
+
+  it("[5rh26-withdraw-requester-refused] the batch requester cannot withdraw another person's proposal: refused 4xx, proposal and money state unchanged", async () => {
+    const { batchId, siti } = await exportedRun();
+    await propose(first, batchId, idOf(siti));
+    const before = JSON.stringify(await itemRow(batchId, idOf(siti)));
+    const state = await moneyState(batchId);
+    expect((await W.batchById(batchId)).requested_by).toBe(REQ);
+
+    await W.expectRefused(
+      W.inTx((tx) =>
+        withdrawResolutionProposal(tx, actorOf(REQ), batchId, {
+          itemIds: [idOf(siti)],
+        } as never),
+      ),
+      { status: 403 },
+    );
+    expect(JSON.stringify(await itemRow(batchId, idOf(siti)))).toBe(before);
+    expect(await moneyState(batchId)).toBe(state);
+    expect((await itemRow(batchId, idOf(siti))).resolved_by).toBe(first.userId);
+  });
+});
+
+// ---- Database guard (migration 0608) ---------------------------------------
+// Direct UPDATEs on the item row with the triggers on (the pool owner is a
+// superuser; triggers still fire). Only the one withdraw shape may pass.
+
+type PgError = { code?: string; constraint?: string; message?: string };
+const pgFailure = (work: Promise<unknown>) =>
+  work.then(
+    () => null,
+    (error: unknown) => error as PgError,
+  );
+const CLEAR_ALL = `resolved_by = NULL, resolution_outcome = NULL, resolution_evidence_key = NULL, resolution_note = NULL`;
+/** UPDATE one item; $1 is the id, extra values start at $2. */
+const dbUpdate = (itemId: string, set: string, values: unknown[] = []) =>
+  pgFailure(
+    W.asTenant((c) =>
+      c.query(`UPDATE payroll_disbursement_items SET ${set} WHERE id = $1`, [
+        itemId,
+        ...values,
+      ]),
+    ),
+  );
+/** Same, with the triggers off: only to build a state the API cannot reach. */
+const forceItem = (itemId: string, set: string, values: unknown[] = []) =>
+  W.asTenant(
+    (c) =>
+      c.query(`UPDATE payroll_disbursement_items SET ${set} WHERE id = $1`, [
+        itemId,
+        ...values,
+      ]),
+    true,
+  );
+
+async function proposedItem() {
+  const { batchId, siti } = await exportedRun();
+  await propose(first, batchId, idOf(siti));
+  const item = await itemRow(batchId, idOf(siti));
+  expect(item.status).toBe("exported");
+  expect(item.resolved_by).toBe(first.userId);
+  expect(item.resolved_by_2).toBeNull();
+  return { batchId, itemId: idOf(siti), before: JSON.stringify(item) };
+}
+
+describe("migration 0608 database guard on the withdraw", () => {
+  it("[0608-db-clear-all-passes] control: clearing all four proposal columns on an exported item with no step 2 passes; status and the rest stay; clearing again is a no-op", async () => {
+    const { batchId, itemId, before } = await proposedItem();
+    const error = await dbUpdate(itemId, CLEAR_ALL);
+    expect(error, error?.message).toBeNull();
+
+    const after = await itemRow(batchId, itemId);
+    expectProposalCleared(after);
+    const was = JSON.parse(before) as Row;
+    expect(after.attempt_no).toBe(was.attempt_no);
+    expect(after.idempotency_key).toBe(was.idempotency_key);
+    expect(after.resolved_by_2).toBeNull();
+
+    // Nothing proposed any more: the same statement changes no column.
+    expect(await dbUpdate(itemId, CLEAR_ALL)).toBeNull();
+    expectProposalCleared(await itemRow(batchId, itemId));
+  });
+
+  it("[0608-db-partial-clear-refused] clearing only some of the four columns is refused 23514 and the row is unchanged", async () => {
+    const { itemId, batchId, before } = await proposedItem();
+    const cols = [
+      "resolved_by",
+      "resolution_outcome",
+      "resolution_evidence_key",
+      "resolution_note",
+    ];
+    const sets = [
+      ...cols.map((c) => `${c} = NULL`),
+      ...cols.map((skip) =>
+        cols
+          .filter((c) => c !== skip)
+          .map((c) => `${c} = NULL`)
+          .join(", "),
+      ),
+      "resolved_by = NULL, resolution_outcome = NULL",
+    ];
+    for (const set of sets) {
+      const error = await dbUpdate(itemId, set);
+      expect(error?.code, set).toBe("23514");
+    }
+    expect(JSON.stringify(await itemRow(batchId, itemId))).toBe(before);
+  });
+
+  it("[0608-db-clear-with-status-change-refused] clearing the four columns together with a status change is refused 23514", async () => {
+    const { itemId, batchId, before } = await proposedItem();
+    for (const status of ["failed", "not_sent", "approved", "succeeded"]) {
+      const error = await dbUpdate(
+        itemId,
+        `${CLEAR_ALL}, status = '${status}'`,
+      );
+      expect(error?.code, status).toBe("23514");
+    }
+    expect(JSON.stringify(await itemRow(batchId, itemId))).toBe(before);
+  });
+
+  it("[0608-db-clear-after-step2-refused] clearing once step two exists is refused 23514, whether step two stays or goes too; a finished (failed) item is refused as well", async () => {
+    const { itemId, batchId } = await proposedItem();
+    // An exported item that already carries a second person (triggers off).
+    await forceItem(itemId, `resolved_by_2 = $2`, [second.userId]);
+    const mid = JSON.stringify(await itemRow(batchId, itemId));
+    expect((await dbUpdate(itemId, CLEAR_ALL))?.code, "step 2 stays").toBe(
+      "23514",
+    );
+    expect(
+      (await dbUpdate(itemId, `${CLEAR_ALL}, resolved_by_2 = NULL`))?.code,
+      "step 2 cleared too",
+    ).toBe("23514");
+    expect(JSON.stringify(await itemRow(batchId, itemId))).toBe(mid);
+
+    // A real step two through the API: the item is failed and final.
+    const run = await exportedRun();
+    const key = await propose(first, run.batchId, idOf(run.siti));
+    const step2 = await postResolve(second, run.batchId, idOf(run.siti), key);
+    expect(step2.status, JSON.stringify(step2.body)).toBe(200);
+    const done = JSON.stringify(await itemRow(run.batchId, idOf(run.siti)));
+    expect(JSON.parse(done).status).toBe("failed");
+    expect((await dbUpdate(idOf(run.siti), CLEAR_ALL))?.code).toBe("23514");
+    expect(
+      (await dbUpdate(idOf(run.siti), `${CLEAR_ALL}, resolved_by_2 = NULL`))
+        ?.code,
+    ).toBe("23514");
+    expect(JSON.stringify(await itemRow(run.batchId, idOf(run.siti)))).toBe(
+      done,
+    );
+  });
+
+  it("[0608-db-clear-unknown-refused] clearing a proposal on an item whose status is unknown is refused 23514 (the withdraw is for exported items only)", async () => {
+    const { itemId, batchId } = await proposedItem();
+    await forceItem(itemId, `status = 'unknown'`);
+    const before = JSON.stringify(await itemRow(batchId, itemId));
+    expect(JSON.parse(before).status).toBe("unknown");
+    expect((await dbUpdate(itemId, CLEAR_ALL))?.code).toBe("23514");
+    expect(JSON.stringify(await itemRow(batchId, itemId))).toBe(before);
+  });
+
+  it("[0608-db-clear-with-other-column-refused] clearing together with a change to any other column is refused 23514", async () => {
+    const { itemId, batchId, before } = await proposedItem();
+    const others = [
+      `provider_ref = 'WD-OTHER-1'`,
+      `settled_at = now()`,
+      `confirmation_ref = 'WD-OTHER-2'`,
+    ];
+    for (const other of others) {
+      const error = await dbUpdate(itemId, `${CLEAR_ALL}, ${other}`);
+      expect(error?.code, other).toBe("23514");
+    }
+    expect(JSON.stringify(await itemRow(batchId, itemId))).toBe(before);
+  });
+
+  it("[0608-db-rewrite-refused] rewriting a recorded proposal (to another person, outcome, proof or note) is still refused 23514", async () => {
+    const { itemId, batchId, before } = await proposedItem();
+    const rewrites: [string, string, unknown[]][] = [
+      ["another person", `resolved_by = $2`, [second.userId]],
+      ["another outcome", `resolution_outcome = 'not_sent'`, []],
+      ["another proof", `resolution_evidence_key = $2`, ["evidence/other.pdf"]],
+      ["another note", `resolution_note = $2`, ["catatan lain"]],
+      [
+        "clear then write another person",
+        `resolved_by = $2, resolution_outcome = NULL, resolution_evidence_key = NULL, resolution_note = NULL`,
+        [second.userId],
+      ],
+    ];
+    for (const [name, set, values] of rewrites) {
+      const error = await dbUpdate(itemId, set, values);
+      expect(error?.code, name).toBe("23514");
+    }
+    expect(JSON.stringify(await itemRow(batchId, itemId))).toBe(before);
   });
 });

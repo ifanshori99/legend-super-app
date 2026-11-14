@@ -8,10 +8,19 @@
 // - Only the status 422 is asserted for the refusal, not the error code (the
 //   card allows PAYOUT_ITEMS_INVALID or any existing fitting code).
 // - An empty-string key counts as non-null and is refused too.
+// - HTTP block (bottom of the file, decision 3 of round 2): a valid-shaped key
+//   (uploaded or not) reaches the service and is refused 422; empty string,
+//   null and a key over 200 characters never pass the zod body schema and are
+//   refused with 400 (or 422, either is accepted). Every refusal leaves the
+//   money state untouched. The HTTP caller is an approver who just enrolled
+//   TOTP, so every body carries the account password.
 // - The rule is exercised at the service call `confirmCashHandover` through
 //   the shared fixture helper `handover`, with the same actors the other
 //   cash tests use (REQ requests, APP approves, APP2 hands over).
-import { describe, expect, it } from "vitest";
+import { Pool } from "pg";
+import { afterAll, describe, expect, it } from "vitest";
+import { originHeader } from "./helpers.ts";
+import { totpCode, totpStep } from "../lib/totp.ts";
 import {
   APP,
   CASHIER,
@@ -150,5 +159,103 @@ describe("legend-styqg cash handover refuses a payment proof key", () => {
     expect(byId.get(first!)!.confirmation_evidence_key).toBeNull();
     expect(byId.get(second!)!.status).toBe("approved");
     expect(byId.get(second!)!.confirmation_evidence_key).toBeNull();
+  });
+});
+
+// ---- HTTP: POST /disbursement-batches/:id/confirm-cash ----------------------
+
+const PASSWORD = "Test-password-123!";
+const BASE = "/api/hris/payroll/disbursement-batches";
+const mfaOwner = new Pool({
+  connectionString: process.env.STARTER_TEST_DATABASE_URL,
+  max: 2,
+});
+const enrolledUsers: string[] = [];
+
+afterAll(async () => {
+  if (enrolledUsers.length > 0)
+    await mfaOwner.query(
+      "DELETE FROM mfa_factors WHERE user_id = ANY($1::uuid[])",
+      [enrolledUsers],
+    );
+  await mfaOwner.end();
+});
+
+/** A signed-in approver with TOTP enrolled (same set-up as the step-up tests). */
+async function httpApprover(label: string) {
+  const { client, userId } = await W.signedInClient(`Tunai ${label}`);
+  await W.grantRole(userId, ["payroll.view", "payroll.disburse.approve"]);
+  const enrolled = await client
+    .post("/api/auth/mfa/factors")
+    .set(originHeader)
+    .send({ type: "totp" });
+  expect(enrolled.status, JSON.stringify(enrolled.body)).toBe(201);
+  const { factorId, secretBase32 } = enrolled.body.data as {
+    factorId: string;
+    secretBase32: string;
+  };
+  enrolledUsers.push(userId);
+  const verified = await client
+    .post("/api/auth/mfa/verify")
+    .set(originHeader)
+    .send({ factorId, code: totpCode(secretBase32, totpStep(new Date())) });
+  expect(verified.status, JSON.stringify(verified.body)).toBe(200);
+  return client;
+}
+
+describe("legend-styqg cash handover over HTTP refuses a payment proof key", () => {
+  it("[legend-styqg-http-valid-key-422] a well-formed key, uploaded or not, is 422 and nothing moves; the same call without a key is 200", async () => {
+    const { runId, batchId, itemId } = await approvedCashBatch();
+    const client = await httpApprover("kunci sah");
+    const before = await moneyState(runId, batchId);
+    const tenantId = (await W.batchById(batchId)).tenant_id as string;
+    const keys = {
+      uploaded: uploadEvidence(batchId),
+      "never uploaded": evidenceKeyFor(tenantId, batchId, "belum-ada.pdf"),
+    };
+
+    for (const [label, evidenceKey] of Object.entries(keys)) {
+      const res = await client
+        .post(`${BASE}/${batchId}/confirm-cash`)
+        .set(originHeader)
+        .send({ itemIds: [itemId], evidenceKey, password: PASSWORD });
+      expect(res.status, `${label}: ${JSON.stringify(res.body)}`).toBe(422);
+      expect(await moneyState(runId, batchId), label).toBe(before);
+    }
+
+    const ok = await client
+      .post(`${BASE}/${batchId}/confirm-cash`)
+      .set(originHeader)
+      .send({ itemIds: [itemId], password: PASSWORD });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    const [item] = await W.itemsOf(batchId);
+    expect(item!.status).toBe("succeeded");
+    expect(item!.confirmation_evidence_key).toBeNull();
+    expect((await W.runRow(runId)).status).toBe("paid");
+  });
+
+  it("[legend-styqg-http-bad-key-4xx] an empty, null or over-200-character key is refused 400 or 422 and nothing moves", async () => {
+    const { runId, batchId, itemId } = await approvedCashBatch();
+    const client = await httpApprover("kunci rusak");
+    const before = await moneyState(runId, batchId);
+    const badKeys = {
+      empty: "",
+      null: null,
+      "201 characters": "k".repeat(201),
+    };
+
+    for (const [label, evidenceKey] of Object.entries(badKeys)) {
+      const res = await client
+        .post(`${BASE}/${batchId}/confirm-cash`)
+        .set(originHeader)
+        .send({ itemIds: [itemId], evidenceKey, password: PASSWORD });
+      expect([400, 422], `${label}: ${JSON.stringify(res.body)}`).toContain(
+        res.status,
+      );
+      expect(await moneyState(runId, batchId), label).toBe(before);
+    }
+    const [item] = await W.itemsOf(batchId);
+    expect(item!.status).toBe("approved");
+    expect(item!.confirmation_evidence_key).toBeNull();
   });
 });

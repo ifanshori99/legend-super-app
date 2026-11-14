@@ -18,6 +18,7 @@
 //   checked (a never-uploaded key must be withdrawable).
 // - The route holds `payroll.disburse.approve`: that covers both the proposer
 //   and any other approver. Withdrawing only lowers what can be paid out.
+// - The batch requester is refused (403 PAYOUT_REQUESTER_CANNOT_WITHDRAW).
 //
 // Trusted in-transaction writer: the caller wraps `withTenant`. Lock order:
 // the run row, then the batch row (`loadBatchRunFirst`), then the items.
@@ -73,6 +74,14 @@ export async function withdrawResolutionProposal(
       409,
       "PAYOUT_BATCH_NOT_EXPORTED",
       "Berkas transfer batch ini belum diunduh atau sudah selesai, jadi tidak ada usulan yang bisa ditarik.",
+    );
+  // The requester never proposes or confirms a resolution (R5), so they must
+  // not clear someone else's proposal either.
+  if (batch.requestedBy === actor.userId)
+    throw payoutRefuse(
+      403,
+      "PAYOUT_REQUESTER_CANNOT_WITHDRAW",
+      "Pengaju batch tidak boleh menarik usulan penyelesaian orang lain.",
     );
 
   const rows = await tx
