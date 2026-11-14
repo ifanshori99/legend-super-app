@@ -486,6 +486,59 @@ describe("legend-pd9t order.paid cost snapshot converges from the stock rows", (
     expect(await parkedCost(orderId)).toBe("2469");
   });
 
+  // legend-8qm1d. An order that was voided gives its stock back as `return`
+  // rows (positive quantity, same source id). The parked order.paid's cost must
+  // net them: cost = max(0, sale cost - return cost), rounded once. Assumptions
+  // where the card is silent: a fully returned order is "0" (rows exist, so not
+  // NULL = unknown); the return is valued at its own row's unit cost; the
+  // existing "return row is ignored" case above has no order.voided event, so
+  // it stays valid (returns only count on a voided order).
+  it("a voided order's return rows reduce the parked cost: 2 sold, 1 returned = 1 x 1234,5678 rounded to 1235", async () => {
+    const orderId = createUlid(++clock);
+    await deliver([
+      orderPaid(orderId),
+      stockMoved(orderId, "-2.0000", "1234.5678"),
+      orderVoided(orderId),
+    ]);
+    await deliver([stockMoved(orderId, "1.0000", "1234.5678", "return")]);
+    expect(await parkedCost(orderId)).toBe("1235");
+  });
+
+  it("a voided order with everything returned parks 0, never negative and never NULL", async () => {
+    const orderId = createUlid(++clock);
+    await deliver([
+      orderPaid(orderId),
+      stockMoved(orderId, "-2.0000", "1234.5678"),
+      orderVoided(orderId),
+    ]);
+    await deliver([stockMoved(orderId, "2.0000", "1234.5678", "return")]);
+    expect(await parkedCost(orderId)).toBe("0");
+  });
+
+  it("a return larger than the sale never pushes the cost below 0", async () => {
+    const orderId = createUlid(++clock);
+    await deliver([
+      orderPaid(orderId),
+      stockMoved(orderId, "-1.0000", "1234.5678"),
+      orderVoided(orderId),
+    ]);
+    await deliver([stockMoved(orderId, "5.0000", "1234.5678", "return")]);
+    expect(await parkedCost(orderId)).toBe("0");
+  });
+
+  it("a replay of the same return row after the void never subtracts twice", async () => {
+    const orderId = createUlid(++clock);
+    const returned = stockMoved(orderId, "1.0000", "1234.5678", "return");
+    await deliver([
+      orderPaid(orderId),
+      stockMoved(orderId, "-2.0000", "1234.5678"),
+      orderVoided(orderId),
+    ]);
+    await deliver([returned]);
+    await deliver([returned]);
+    expect(await parkedCost(orderId)).toBe("1235");
+  });
+
   it("applies nothing to the cloud outbox for order.paid (no second deduction)", async () => {
     const orderId = createUlid(++clock);
     const paid = orderPaid(orderId);
