@@ -197,7 +197,7 @@ describe("reconciliation_case default approval policy", () => {
       readFileSync(resolve(drizzleFolder, "meta/_journal.json"), "utf8"),
     ) as { entries: { idx: number; when: number; tag: string }[] };
     const entry = journal.entries.find((row) => row.tag === MIGRATION);
-    expect(entry?.idx).toBe(565);
+    expect(entry?.idx).toBe(357);
   });
 
   it("lifts and restores FORCE ROW LEVEL SECURITY around the backfill", () => {
