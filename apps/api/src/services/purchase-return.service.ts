@@ -1060,7 +1060,10 @@ export async function createPurchaseReturn(
       // Moving average of each balance before the return, read under the
       // location lock above. A return moves stock out at the receipt cost but
       // leaves the average alone, so it is valid for every line of that stock.
-      const avgByStock = new Map<string, Decimal4>();
+      const avgByStock = new Map<
+        string,
+        { qtyBefore: bigint; avgCostIdr: Decimal4 }
+      >();
       for (const [stockKey, wanted] of wantedByStock) {
         const [locationId, itemId] = stockKey.split(":") as [string, string];
         const [balance] = await tx
@@ -1078,23 +1081,44 @@ export async function createPurchaseReturn(
           );
         if (!balance || parseDecimal4(balance.quantity) < wanted)
           throw insufficientStock(itemId);
-        avgByStock.set(stockKey, balance.avgCostIdr);
+        avgByStock.set(stockKey, {
+          qtyBefore: parseDecimal4(balance.quantity),
+          avgCostIdr: balance.avgCostIdr,
+        });
       }
-      // D per line = value at receipt cost - round(qty x average before): the
-      // GL inventory credit then equals what the sub-ledger drops (legend-uloj6).
-      const movingAvgVarianceIdr = guardMoneyMath(() =>
-        stockOrder.reduce(
-          (sum, line) =>
-            sum +
-            line.lineValueIdr -
-            extendCostIdr(
-              line.quantity,
-              avgByStock.get(`${line.locationId}:${line.inventoryItemId}`)!,
+      // D per balance = sum of line values at receipt cost - (value of the
+      // balance before - value of the balance after), both valued at the
+      // average. Rounding once per balance, not per line, keeps the GL
+      // inventory credit equal to what the sub-ledger drops even when stock is
+      // returned in steps down to zero (legend-uloj6).
+      const lineValueByStock = new Map<string, number>();
+      for (const line of stockOrder) {
+        const stockKey = `${line.locationId}:${line.inventoryItemId}`;
+        lineValueByStock.set(
+          stockKey,
+          (lineValueByStock.get(stockKey) ?? 0) + line.lineValueIdr,
+        );
+      }
+      const movingAvgVarianceIdr = guardMoneyMath(() => {
+        let total = 0;
+        for (const [stockKey, lineValue] of lineValueByStock) {
+          const { qtyBefore, avgCostIdr } = avgByStock.get(stockKey)!;
+          const wanted = wantedByStock.get(stockKey)!;
+          total +=
+            lineValue -
+            (extendCostIdr(
+              formatDecimal4(qtyBefore),
+              avgCostIdr,
               ROUNDING_MODE,
-            ),
-          0,
-        ),
-      );
+            ) -
+              extendCostIdr(
+                formatDecimal4(qtyBefore - wanted),
+                avgCostIdr,
+                ROUNDING_MODE,
+              ));
+        }
+        return total;
+      });
       for (const line of stockOrder)
         await recordStockMovementInTransaction(tx, context, {
           outletId: input.outletId,
