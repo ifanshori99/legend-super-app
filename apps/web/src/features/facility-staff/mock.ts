@@ -39,6 +39,7 @@ import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { businessDateInOutletZone } from "../facility/flow.ts";
+import { readPanicMockScenario } from "./panic-mock-socket.ts";
 // The facility feature owns GET /api/facility/config for every screen; import
 // its registration instead of registering the same endpoint twice.
 import "../facility/mock.ts";
@@ -356,3 +357,24 @@ registerMock(listFacilityIncidents, ({ query, scenario }) => {
     .sort((a, b) => Date.parse(b.triggeredAt) - Date.parse(a.triggeredAt));
   return paginateFixture(incidents, query, (incident) => incident.id, scenario);
 });
+
+// ---- Panic alerts (WS-02) ---------------------------------------------------
+
+/**
+ * Stand-in for POST /api/emergency/alerts/:id/ack (not a contract endpoint, so
+ * the realtime client calls it through `apiFetch`). The "acknowledged" panic
+ * scenario answers 409 like a colleague who was faster; any other scenario
+ * accepts, and a repeat ack by the same staff is accepted too.
+ */
+export async function mockPanicAck(path: string): Promise<void> {
+  const match = /^\/api\/emergency\/alerts\/([^/]+)\/ack$/.exec(path);
+  if (!match) throw new ApiError(404, "NOT_FOUND", "Alert tidak ditemukan.");
+  // Long enough to see the "Mengirim…" state.
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  if (readPanicMockScenario() === "acknowledged")
+    throw new ApiError(
+      409,
+      "PANIC_ALREADY_ACKNOWLEDGED",
+      "Alert sudah ditangani rekan lain.",
+    );
+}
