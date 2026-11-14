@@ -22,23 +22,28 @@ value_of() {
   sed -n "s/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}$2[[:space:]]*[=:][[:space:]]*//p" "$1" |
     tail -n 1 | sed -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
 }
+# Compose gives a shell variable priority over the same key in compose.env, so
+# the checker does too: a set (even empty) API_ENV_FILE / WORKER_ENV_FILE in the
+# shell wins, an empty one fails closed. Otherwise the compose.env value is used.
 service_file() {
-  path=$(value_of "$env_file" "$1")
-  case "$path" in /*) ;; *) fail "$1 in the compose env file must be an absolute path." ;; esac
+  case "$1" in
+    API_ENV_FILE) if [ "${API_ENV_FILE+set}" = set ]; then path=$API_ENV_FILE; from=shell; else path=$(value_of "$env_file" "$1"); from=compose; fi ;;
+    WORKER_ENV_FILE) if [ "${WORKER_ENV_FILE+set}" = set ]; then path=$WORKER_ENV_FILE; from=shell; else path=$(value_of "$env_file" "$1"); from=compose; fi ;;
+  esac
+  case "$path" in /*) ;; *) fail "$1 (from the $from environment) must be an absolute path." ;; esac
   [ -r "$path" ] || fail "the file named by $1 is not readable."
   printf '%s\n' "$path"
 }
 # Prints 0 (off) or 1 (on) for DOIT_REFUNDS_ENABLED in one env file. A bare
-# KEY line last takes its value from Compose's shell, so read it from there.
+# KEY line (no = or :) would take its value from Compose's shell, which this
+# check cannot see reliably, so it fails closed.
 flag_of() {
-  if grep -E '^[[:space:]]*(export[[:space:]]+)?DOIT_REFUNDS_ENABLED[[:space:]]*([=:]|$)' "$1" | tail -n 1 |
-    grep -Eq '^[[:space:]]*(export[[:space:]]+)?DOIT_REFUNDS_ENABLED[[:space:]]*$'; then
-    value=$(printenv DOIT_REFUNDS_ENABLED || true)
-  else
-    # Compose drops a trailing ` #comment`, so drop it before reading the value.
-    value=$(value_of "$1" DOIT_REFUNDS_ENABLED |
-      sed -e 's/[[:space:]][[:space:]]*#.*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")
+  if grep -Eq '^[[:space:]]*(export[[:space:]]+)?DOIT_REFUNDS_ENABLED[[:space:]]*$' "$1"; then
+    fail "$(basename "$1") has a bare DOIT_REFUNDS_ENABLED line. Give DOIT_REFUNDS_ENABLED an explicit value of true or false on that line."
   fi
+  # Compose drops a trailing ` #comment`, so drop it before reading the value.
+  value=$(value_of "$1" DOIT_REFUNDS_ENABLED |
+    sed -e 's/[[:space:]][[:space:]]*#.*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")
   case "$value" in
     '' | 0 | false) echo 0 ;;
     1 | true) echo 1 ;;

@@ -130,8 +130,13 @@ type Resolved = {
 const defaultLoader: DoitCredentialLoader = (context, outletId) =>
   loadActiveIntegrationCredentials(context, "doit", outletId);
 
+// Only payments already minted on this integration come through here (status,
+// lookup, refund, refund status); removing DOIT from the plan must not stop
+// reconciling money in flight. New payments use `defaultLoader`.
 const defaultByIdLoader: DoitCredentialByIdLoader = (context, integrationId) =>
-  loadIntegrationCredentialsById(context, "doit", integrationId);
+  loadIntegrationCredentialsById(context, "doit", integrationId, {
+    forStoredIntent: true,
+  });
 
 function unavailable(message: string): CoreError {
   return new CoreError("SERVICE_UNAVAILABLE", message);

@@ -571,9 +571,12 @@ are configured. Compose sets `WORKER_TRANSPORT=builtin`; put the rest in
 `DOIT_REFUNDS_ENABLED` must have the same value in `api.env` and `worker.env`
 (legend-3gna): the API queues approved refunds and the worker pays them, so a
 split would queue refunds nobody pays, or pay refunds the API treats as off.
-Absent, empty, `0` and `false` all mean off; anything else is on.
+Absent, empty, `0` and `false` all mean off; `1` and `true` mean on. A bare
+`DOIT_REFUNDS_ENABLED` line (no `=` or `:`) is refused: write the value out.
 `deploy/single-vm/check-refund-flag.sh --env-file /absolute/path/compose.env`
-compares the two files (no docker, prints only file names), and `deploy.sh`
+compares the two files (no docker, prints only file names). Like Compose, it
+lets an exported `API_ENV_FILE` or `WORKER_ENV_FILE` override the path in
+`compose.env`; an exported but empty one fails the check. `deploy.sh`
 runs it before the first `compose up`: a mismatch stops the deploy before
 PostgreSQL starts or anything migrates. The API and the worker also log
 `DOIT_REFUNDS_ENABLED` with its resolved value at startup.
