@@ -293,7 +293,10 @@ export function ManagementShell({
         </header>
         <Main
           id={embedded ? undefined : "main-content"}
-          className="min-h-0 flex-1 overflow-y-auto bg-surface-2"
+          role={embedded ? "region" : undefined}
+          aria-label={pageTitle}
+          tabIndex={0}
+          className="min-h-0 flex-1 overflow-y-auto bg-surface-2 focus-visible:-outline-offset-2"
         >
           <div className="mx-auto w-full max-w-[90rem] px-gutter py-6">
             {children}
