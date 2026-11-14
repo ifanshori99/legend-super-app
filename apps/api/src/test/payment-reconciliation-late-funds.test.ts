@@ -29,8 +29,8 @@
 //  - The suite runs in its own tenant (paymentTestScope) so counts of
 //    journals / outbox events are not disturbed by other test files.
 import { randomBytes, randomUUID } from "node:crypto";
-import { Pool, type PoolClient } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Client as PgClient, Pool, type PoolClient } from "pg";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import {
@@ -38,7 +38,9 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { tenantIdSchema, type ScopedTenantContext } from "@starter/shared/core";
+import { reconciliationCaseViewSchema } from "@starter/shared/payment/admin";
 import { createApp } from "../app";
+import { listReconciliationCases } from "../services/payment-admin-reconciliation.service";
 import { handleReconciliationApprovalResolved } from "../services/payment-reconciliation-approval-consumer";
 import { decideApprovalRequest } from "../services/platform-approval.service";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
@@ -613,6 +615,222 @@ afterAll(async () => {
     owner.query("DELETE FROM tenants WHERE id = $1", [otherTenant]),
   );
   await owner.end();
+});
+
+// The old listing loaded one correction separately for each case. Keep that
+// independent per-case lookup as the output oracle while counting real SQL.
+async function legacyCaseView(caseId: string) {
+  const { rows } = await asTenant(tenantId, (client) =>
+    client.query<{ view: unknown }>(
+      `SELECT json_build_object(
+         'id', c.id, 'tenantId', c.tenant_id, 'outletId', c.outlet_id,
+         'settlementId', c.settlement_id, 'settlementLineId', c.settlement_line_id,
+         'source', c.source, 'provider', c.provider, 'reference', c.reference,
+         'periodStart', c.period_start::text, 'periodEnd', c.period_end::text,
+         'expectedIdr', c.expected_idr, 'receivedIdr', c.received_idr,
+         'varianceIdr', c.variance_idr, 'reason', c.reason, 'status', c.status,
+         'note', c.note, 'requestedByName', requester.name,
+         'approvedByName', approver.name,
+         'resolvedByName', COALESCE(requester.name, resolver.name),
+         'resolvedAt', to_char(c.resolved_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+         'approvalRequestId', c.approval_chain_id,
+         'requestedBy', c.requested_by, 'approvedBy', c.approved_by,
+         'createdAt', to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+         'lateFunds', (SELECT json_build_object(
+           'correctionId', f.id, 'settlementId', f.settlement_id,
+           'settlementLineId', f.settlement_line_id, 'mismatchCaseId', f.mismatch_case_id,
+           'receivedIdr', f.received_idr,
+           'detectedAt', to_char(f.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+           'correctionStatus', f.status)
+           FROM payment_reconciliation_corrections f
+           WHERE f.tenant_id = c.tenant_id AND f.case_id = c.id)
+       ) AS view
+       FROM payment_reconciliation_cases c
+       LEFT JOIN "user" requester ON requester.id = c.requested_by
+       LEFT JOIN "user" approver ON approver.id = c.approved_by
+       LEFT JOIN "user" resolver ON resolver.id = c.resolved_by
+       WHERE c.tenant_id = $1 AND c.id = $2`,
+      [tenantId, caseId],
+    ),
+  );
+  return reconciliationCaseViewSchema.parse(rows[0]?.view);
+}
+
+async function countedCaseList(input: unknown) {
+  const originalQuery = PgClient.prototype.query;
+  const correctionSelects: string[] = [];
+  const spy = vi
+    .spyOn(PgClient.prototype, "query")
+    .mockImplementation(function (this: PgClient, ...args: unknown[]) {
+      const config = args[0] as string | { text?: string };
+      const text = typeof config === "string" ? config : config.text;
+      if (
+        text?.trimStart().toLowerCase().startsWith("select") &&
+        text.includes('"payment_reconciliation_corrections"')
+      )
+        correctionSelects.push(text);
+      return Reflect.apply(originalQuery, this, args);
+    } as typeof originalQuery);
+  try {
+    return {
+      listed: await listReconciliationCases(tenantWide, requesterId, input),
+      correctionSelects,
+    };
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+describe("legend-wa4br reconciliation lateFunds batching", () => {
+  it("keeps legacy DTOs and money identical with one correction query for one or three cases", async () => {
+    const ids = [randomUUID(), randomUUID(), randomUUID()];
+    const expectedAmounts = [50_001, 90_000_001, 123_456];
+    const receivedAmounts = [0, 90_000_000, 123_456];
+    for (const [index, id] of ids.entries()) {
+      await asTenant(tenantId, (client) =>
+        client.query(
+          `INSERT INTO payment_reconciliation_cases
+           (id, tenant_id, outlet_id, settlement_id, source, provider, reference,
+            period_start, period_end, expected_idr, received_idr, variance_idr,
+            reason, status, requested_by, approved_by, resolved_by, resolved_at, created_at)
+           VALUES ($1, $2, $3, $4, 'edc', 'bca', $5, '2020-01-01', '2020-01-01',
+                   $6, $7, $7::bigint - $6::bigint, 'Late funds batch regression',
+                   'resolved', $8, $9, $8, '2026-01-01T00:00:00Z', $10)`,
+          [
+            id,
+            tenantId,
+            outletA,
+            randomUUID(),
+            `BATCH-${id}`,
+            expectedAmounts[index],
+            receivedAmounts[index],
+            requesterId,
+            approverId,
+            new Date(Date.UTC(2030, 0, 3 - index)),
+          ],
+        ),
+      );
+    }
+    for (const [index, id] of ids.slice(0, 2).entries()) {
+      await asTenant(tenantId, (client) =>
+        client.query(
+          `INSERT INTO payment_reconciliation_corrections
+           (tenant_id, outlet_id, case_id, settlement_id, settlement_line_id,
+            mismatch_case_id, source, reference, written_off_idr, received_idr, status)
+           VALUES ($1, $2, $3, $4, $5, $6, 'edc', $7, $8, $9, $10)`,
+          [
+            tenantId,
+            outletA,
+            id,
+            randomUUID(),
+            randomUUID(),
+            index === 0 ? ids[2] : null,
+            `LATE-${id}`,
+            expectedAmounts[index],
+            index === 0 ? 50_000 : 89_999_999,
+            index === 0 ? "open" : "resolved",
+          ],
+        ),
+      );
+    }
+    const foreignCaseId = randomUUID();
+    await asTenant(otherTenant, async (client) => {
+      await client.query(
+        `INSERT INTO payment_reconciliation_cases
+         (id, tenant_id, outlet_id, settlement_id, source, provider, reference,
+          period_start, period_end, expected_idr, received_idr, variance_idr, reason, created_at)
+         VALUES ($1, $2, $3, $4, 'edc', 'bca', $5, '2020-01-01', '2020-01-01',
+                 999999, 0, -999999, 'Foreign late funds', '2031-01-01T00:00:00Z')`,
+        [
+          foreignCaseId,
+          otherTenant,
+          otherOutlet,
+          randomUUID(),
+          `FOREIGN-${foreignCaseId}`,
+        ],
+      );
+      await client.query(
+        `INSERT INTO payment_reconciliation_corrections
+         (tenant_id, outlet_id, case_id, settlement_id, settlement_line_id,
+          source, reference, written_off_idr, received_idr)
+         VALUES ($1, $2, $3, $4, $5, 'edc', $6, 999999, 999999)`,
+        [
+          otherTenant,
+          otherOutlet,
+          foreignCaseId,
+          randomUUID(),
+          randomUUID(),
+          `LATE-${foreignCaseId}`,
+        ],
+      );
+    });
+    try {
+      const legacy = await Promise.all(ids.map(legacyCaseView));
+      const beforeMoney = await moneySnapshot();
+      const one = await countedCaseList({
+        outletId: outletA,
+        source: "edc",
+        limit: 1,
+      });
+      const three = await countedCaseList({
+        source: "edc",
+        limit: 3,
+      });
+      expect(one.listed.data).toEqual(legacy.slice(0, 1));
+      expect(three.listed.data).toEqual(legacy);
+      expect(three.listed.data[2]?.lateFunds).toBeNull();
+      expect(
+        three.listed.data.map((row) => [
+          row.expectedIdr,
+          row.receivedIdr,
+          row.varianceIdr,
+        ]),
+      ).toEqual([
+        [50_001, 0, -50_001],
+        [90_000_001, 90_000_000, -1],
+        [123_456, 123_456, 0],
+      ]);
+      expect(
+        three.listed.data.slice(0, 2).map((row) => row.lateFunds?.receivedIdr),
+      ).toEqual([50_000, 89_999_999]);
+      expect(await moneySnapshot()).toEqual(beforeMoney);
+      expect(one.listed.meta.nextCursor).not.toBeNull();
+      expect(three.listed.meta.nextCursor).toBeNull();
+      expect(one.correctionSelects).toHaveLength(1);
+      expect(three.correctionSelects).toHaveLength(1);
+    } finally {
+      await asTenant(tenantId, async (client) => {
+        await client.query(
+          "DELETE FROM payment_reconciliation_corrections WHERE tenant_id = $1 AND case_id = ANY($2::uuid[])",
+          [tenantId, ids],
+        );
+        await client.query(
+          "DELETE FROM payment_reconciliation_cases WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+          [tenantId, ids],
+        );
+      });
+      await asTenant(otherTenant, async (client) => {
+        await client.query(
+          "DELETE FROM payment_reconciliation_corrections WHERE tenant_id = $1 AND case_id = $2",
+          [otherTenant, foreignCaseId],
+        );
+        await client.query(
+          "DELETE FROM payment_reconciliation_cases WHERE tenant_id = $1 AND id = $2",
+          [otherTenant, foreignCaseId],
+        );
+      });
+    }
+  });
+
+  it("does not query corrections for an empty case page", async () => {
+    const empty = await countedCaseList({
+      outletId: scope.otherOutletId,
+      source: "edc",
+      limit: 3,
+    });
+    expect(empty.listed.data).toEqual([]);
+    expect(empty.correctionSelects).toHaveLength(0);
+  });
 });
 
 // ======================================================================= tests

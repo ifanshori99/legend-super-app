@@ -50,7 +50,11 @@ export const RECONCILIATION_OBJECT_TYPE = "payment_reconciliation_case";
 const RECONCILIATION_DEADLINE_MINUTES = 10080;
 
 type CaseRow = typeof cases.$inferSelect;
-async function viewOf(tx: Tx, row: CaseRow) {
+async function viewOf(
+  tx: Tx,
+  row: CaseRow,
+  lateFunds?: Awaited<ReturnType<typeof lateFundsOf>>,
+) {
   const requestedByName = await nameOf(tx, row.requestedBy);
   return view(
     row,
@@ -58,7 +62,7 @@ async function viewOf(tx: Tx, row: CaseRow) {
     await nameOf(tx, row.approvedBy),
     // The requester is the closer of record; legacy resolved rows have only resolved_by.
     requestedByName ?? (await nameOf(tx, row.resolvedBy)),
-    await lateFundsOf(tx, row),
+    lateFunds === undefined ? await lateFundsOf(tx, row) : lateFunds,
   );
 }
 /** Late-funds flag: the correction row of a written-off case, if any (tenant filtered). */
@@ -72,6 +76,11 @@ async function lateFundsOf(tx: Tx, row: CaseRow) {
         eq(corrections.caseId, row.id),
       ),
     );
+  return correctionView(correction);
+}
+function correctionView(
+  correction: typeof corrections.$inferSelect | undefined,
+) {
   return correction
     ? {
         correctionId: correction.id,
@@ -172,8 +181,28 @@ export async function listReconciliationCases(
       .orderBy(desc(cases.createdAt), desc(cases.id))
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
+    const pageCorrections = page.length
+      ? await tx
+          .select()
+          .from(corrections)
+          .where(
+            and(
+              eq(corrections.tenantId, context.tenant.tenantId),
+              inArray(
+                corrections.caseId,
+                page.map((row) => row.id),
+              ),
+            ),
+          )
+      : [];
+    const correctionsByCase = new Map(
+      pageCorrections.map((correction) => [correction.caseId, correction]),
+    );
     const data = [];
-    for (const row of page) data.push(await viewOf(tx, row));
+    for (const row of page)
+      data.push(
+        await viewOf(tx, row, correctionView(correctionsByCase.get(row.id))),
+      );
     const last = page.at(-1);
     return {
       data,
