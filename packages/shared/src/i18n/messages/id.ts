@@ -1,3 +1,4 @@
+import { designV2Messages } from "./design-v2.ts";
 // Bahasa Indonesia text catalog — the default and source locale (PRD §7
 // "Katalog teks": tanpa teks yang ditulis langsung di kode, override per
 // tenant, siap untuk kamus istilah dan bahasa Inggris).
@@ -125,6 +126,7 @@ import { openBillConvertMessages } from "./open-bill-convert.ts";
 import { openBillPolicyMessages } from "./open-bill-policy.ts";
 
 export const id = {
+  designV2: designV2Messages,
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
   // beads never edit the same lines.
   login: loginMessages,

@@ -347,6 +347,7 @@ import { Route as OpsPosShiftIndexRouteImport } from './routes/_ops/pos.shift.in
 import { Route as OpsPosShiftTutupRouteImport } from './routes/_ops/pos.shift.tutup'
 import { Route as OpsPosTagihSelisihChargeIdRouteImport } from './routes/_ops/pos.tagih-selisih.$chargeId'
 import { Route as OwnerOwnerTanyaAiPanduanRouteImport } from './routes/_owner/owner.tanya-ai_.panduan'
+import { Route as PlatformPlatformDesignSystemV2RouteImport } from './routes/_platform/platform.design-system.v2'
 import { Route as PlatformPlatformTenantIndexRouteImport } from './routes/_platform/platform.tenant.index'
 import { Route as PlatformPlatformTenantTenantIdRouteImport } from './routes/_platform/platform.tenant.$tenantId'
 import { Route as PlatformPlatformTenantBaruRouteImport } from './routes/_platform/platform.tenant.baru'
@@ -2279,6 +2280,12 @@ const OwnerOwnerTanyaAiPanduanRoute =
     path: '/owner/tanya-ai/panduan',
     getParentRoute: () => OwnerRoute,
   } as any)
+const PlatformPlatformDesignSystemV2Route =
+  PlatformPlatformDesignSystemV2RouteImport.update({
+    id: '/platform/design-system/v2',
+    path: '/platform/design-system/v2',
+    getParentRoute: () => PlatformRoute,
+  } as any)
 const PlatformPlatformTenantIndexRoute =
   PlatformPlatformTenantIndexRouteImport.update({
     id: '/platform/tenant/',
@@ -2840,6 +2847,7 @@ export interface FileRoutesByFullPath {
   '/pos/shift/tutup': typeof OpsPosShiftTutupRoute
   '/pos/tagih-selisih/$chargeId': typeof OpsPosTagihSelisihChargeIdRoute
   '/owner/tanya-ai/panduan': typeof OwnerOwnerTanyaAiPanduanRoute
+  '/platform/design-system/v2': typeof PlatformPlatformDesignSystemV2Route
   '/platform/tenant/$tenantId': typeof PlatformPlatformTenantTenantIdRoute
   '/platform/tenant/baru': typeof PlatformPlatformTenantBaruRoute
   '/shareholder/tanya-ai/panduan': typeof ShareholderShareholderTanyaAiPanduanRoute
@@ -3211,6 +3219,7 @@ export interface FileRoutesByTo {
   '/pos/shift/tutup': typeof OpsPosShiftTutupRoute
   '/pos/tagih-selisih/$chargeId': typeof OpsPosTagihSelisihChargeIdRoute
   '/owner/tanya-ai/panduan': typeof OwnerOwnerTanyaAiPanduanRoute
+  '/platform/design-system/v2': typeof PlatformPlatformDesignSystemV2Route
   '/platform/tenant/$tenantId': typeof PlatformPlatformTenantTenantIdRoute
   '/platform/tenant/baru': typeof PlatformPlatformTenantBaruRoute
   '/shareholder/tanya-ai/panduan': typeof ShareholderShareholderTanyaAiPanduanRoute
@@ -3596,6 +3605,7 @@ export interface FileRoutesById {
   '/_ops/pos/shift/tutup': typeof OpsPosShiftTutupRoute
   '/_ops/pos/tagih-selisih/$chargeId': typeof OpsPosTagihSelisihChargeIdRoute
   '/_owner/owner/tanya-ai_/panduan': typeof OwnerOwnerTanyaAiPanduanRoute
+  '/_platform/platform/design-system/v2': typeof PlatformPlatformDesignSystemV2Route
   '/_platform/platform/tenant/$tenantId': typeof PlatformPlatformTenantTenantIdRoute
   '/_platform/platform/tenant/baru': typeof PlatformPlatformTenantBaruRoute
   '/_shareholder/shareholder/tanya-ai_/panduan': typeof ShareholderShareholderTanyaAiPanduanRoute
@@ -3972,6 +3982,7 @@ export interface FileRouteTypes {
     | '/pos/shift/tutup'
     | '/pos/tagih-selisih/$chargeId'
     | '/owner/tanya-ai/panduan'
+    | '/platform/design-system/v2'
     | '/platform/tenant/$tenantId'
     | '/platform/tenant/baru'
     | '/shareholder/tanya-ai/panduan'
@@ -4343,6 +4354,7 @@ export interface FileRouteTypes {
     | '/pos/shift/tutup'
     | '/pos/tagih-selisih/$chargeId'
     | '/owner/tanya-ai/panduan'
+    | '/platform/design-system/v2'
     | '/platform/tenant/$tenantId'
     | '/platform/tenant/baru'
     | '/shareholder/tanya-ai/panduan'
@@ -4727,6 +4739,7 @@ export interface FileRouteTypes {
     | '/_ops/pos/shift/tutup'
     | '/_ops/pos/tagih-selisih/$chargeId'
     | '/_owner/owner/tanya-ai_/panduan'
+    | '/_platform/platform/design-system/v2'
     | '/_platform/platform/tenant/$tenantId'
     | '/_platform/platform/tenant/baru'
     | '/_shareholder/shareholder/tanya-ai_/panduan'
@@ -7194,6 +7207,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OwnerOwnerTanyaAiPanduanRouteImport
       parentRoute: typeof OwnerRoute
     }
+    '/_platform/platform/design-system/v2': {
+      id: '/_platform/platform/design-system/v2'
+      path: '/platform/design-system/v2'
+      fullPath: '/platform/design-system/v2'
+      preLoaderRoute: typeof PlatformPlatformDesignSystemV2RouteImport
+      parentRoute: typeof PlatformRoute
+    }
     '/_platform/platform/tenant/': {
       id: '/_platform/platform/tenant/'
       path: '/platform/tenant'
@@ -8347,6 +8367,7 @@ interface PlatformRouteChildren {
   PlatformPlatformKuotaRoute: typeof PlatformPlatformKuotaRoute
   PlatformPlatformPaketRoute: typeof PlatformPlatformPaketRoute
   PlatformPlatformIndexRoute: typeof PlatformPlatformIndexRoute
+  PlatformPlatformDesignSystemV2Route: typeof PlatformPlatformDesignSystemV2Route
   PlatformPlatformTenantTenantIdRoute: typeof PlatformPlatformTenantTenantIdRoute
   PlatformPlatformTenantBaruRoute: typeof PlatformPlatformTenantBaruRoute
   PlatformPlatformTenantIndexRoute: typeof PlatformPlatformTenantIndexRoute
@@ -8360,6 +8381,7 @@ const PlatformRouteChildren: PlatformRouteChildren = {
   PlatformPlatformKuotaRoute: PlatformPlatformKuotaRoute,
   PlatformPlatformPaketRoute: PlatformPlatformPaketRoute,
   PlatformPlatformIndexRoute: PlatformPlatformIndexRoute,
+  PlatformPlatformDesignSystemV2Route: PlatformPlatformDesignSystemV2Route,
   PlatformPlatformTenantTenantIdRoute: PlatformPlatformTenantTenantIdRoute,
   PlatformPlatformTenantBaruRoute: PlatformPlatformTenantBaruRoute,
   PlatformPlatformTenantIndexRoute: PlatformPlatformTenantIndexRoute,
@@ -8443,11 +8465,15 @@ export const routeTree = rootRouteImport
   ._addFileTypes<FileRouteTypes>()
 
 import type { getRouter } from './router.tsx'
+
 import type { startInstance } from './start.ts'
+
 declare module '@tanstack/react-start' {
   interface Register {
     ssr: true
+
     router: Awaited<ReturnType<typeof getRouter>>
+
     config: Awaited<ReturnType<typeof startInstance.getOptions>>
   }
 }
