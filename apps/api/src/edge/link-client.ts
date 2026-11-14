@@ -154,6 +154,9 @@ export function createEdgeLinkClient(
     // resets when the socket opens, so it is put back when the peer refuses.
     const attemptAtStart = attempt;
     let proofRefused = false;
+    // Set by the upgrade response (below) before the socket opens, so before
+    // the first hello is read: only a 854 cloud echoes the v2 header.
+    let peerEchoesRestoreProof = false;
     const ws = new WebSocket(options.url, {
       headers: {
         authorization: `Bearer ${options.credential}`,
@@ -175,6 +178,13 @@ export function createEdgeLinkClient(
       scope: options.scope,
       outboundDirection: "edge_to_cloud",
       store: options.store,
+      // The v2 header is sent with the proof header: a hello that would ack
+      // without proof is then refused (legend-tmar2 854).
+      requireRestoreProof: restoreProofAcked !== null,
+      // A live getter: the upgrade response arrives after the peer is built.
+      get peerEchoesRestoreProof() {
+        return peerEchoesRestoreProof;
+      },
       version: options.version,
       ackTimeoutMs: options.ackTimeoutMs,
       onError: options.onError,
@@ -194,6 +204,8 @@ export function createEdgeLinkClient(
     // the socket is open, so a handshake that never completes proves nothing.
     let upgradeServerTime: Date | undefined;
     ws.on("upgrade", (response) => {
+      peerEchoesRestoreProof =
+        response.headers[LINK_RESTORE_PROOF_V2_HEADER] === "1";
       const header = response.headers.date;
       if (typeof header !== "string") return;
       const serverTime = new Date(header);

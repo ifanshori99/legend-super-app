@@ -38,6 +38,7 @@ import type {
   EdgeEventKind,
 } from "../db/schema/edge-node.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { logger } from "../lib/logger.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   notifyEdgeSyncConflictRecorded,
@@ -592,8 +593,12 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
         const { offset } = await peerNumbering(tx, inbound);
         const first = events[0]!.linkSeq;
         const last = events[events.length - 1]!.linkSeq;
+        // Same rule as inboundProof (R3): only receipts whose event is in
+        // edge_received_events hold a slot. An unregistered receipt (a
+        // dead-letter receipt) is not an event the edge holds there, so
+        // replaying a registered event into that slot writes 'superseded'.
         const receipts = await tx.execute(
-          sql`SELECT link_seq, event_id FROM edge_inbound_events WHERE tenant_id = ${node.tenantId}::uuid AND edge_node_id = ${nodeId}::uuid AND direction = ${inbound} AND link_seq >= ${Math.min(first, last) + offset} AND link_seq <= ${Math.max(first, last) + offset}`,
+          sql`SELECT r.link_seq, r.event_id FROM edge_inbound_events r JOIN edge_received_events rv ON rv.tenant_id = r.tenant_id AND rv.event_id = r.event_id WHERE r.tenant_id = ${node.tenantId}::uuid AND r.edge_node_id = ${nodeId}::uuid AND r.direction = ${inbound} AND r.link_seq >= ${Math.min(first, last) + offset} AND r.link_seq <= ${Math.max(first, last) + offset}`,
         );
         const held = new Map<number, Set<string>>();
         for (const row of receipts.rows) {
@@ -602,6 +607,7 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
           ids.add(String(row.event_id).toLowerCase());
           held.set(slot, ids);
         }
+        const skippedInserts: number[] = [];
         for (const { linkSeq, event } of events) {
           const refuse = () =>
             new LinkProtocolError(
@@ -620,10 +626,27 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
             sql`SELECT 1 FROM edge_received_events WHERE tenant_id = ${node.tenantId}::uuid AND event_id = ${eventUuid}::uuid`,
           );
           if (registered.rows.length === 0) throw refuse();
-          await tx.execute(
-            sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${linkSeq + offset}, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${classify(event)}, 'superseded') ON CONFLICT DO NOTHING`,
+          const inserted = await tx.execute(
+            sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${linkSeq + offset}, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${classify(event)}, 'superseded') ON CONFLICT DO NOTHING RETURNING 1`,
           );
+          // ON CONFLICT DO NOTHING stays (a concurrent insert must not fail
+          // the batch). The primary key is (tenant_id, edge_node_id,
+          // direction, event_id), with no uniqueness on link_seq, so a
+          // conflict means this same registered event already has a receipt
+          // in another slot: the hole in this slot is not closed by this
+          // insert, so it is counted and logged instead of passing silently.
+          if (inserted.rows.length === 0) skippedInserts.push(linkSeq);
         }
+        if (skippedInserts.length > 0)
+          logger.warn(
+            {
+              edgeNodeId: nodeId,
+              direction: inbound,
+              skippedSlots: skippedInserts.length,
+              firstSkippedSlot: skippedInserts[0],
+            },
+            `Replay reconcile skipped ${skippedInserts.length} receipt insert(s) on conflict`,
+          );
       });
     },
 

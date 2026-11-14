@@ -19,6 +19,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomBytes, randomUUID } from "node:crypto";
+import { inspect } from "node:util";
 import { Pool } from "pg";
 import WebSocket from "ws";
 import {
@@ -47,6 +48,7 @@ import { db } from "../db/index.ts";
 import { registerAccessEdgeApplier } from "../edge/access-applier.ts";
 import { resetEdgeApplierRegistryForTests } from "../edge/applier-registry.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
+import { logger } from "../lib/logger.ts";
 import {
   registerEdgeDeferredFallback,
   registerPosDeferredEdgeApplier,
@@ -697,5 +699,136 @@ describe("legend-tmar2 854 d. a replayed new event is refused, never acked", () 
     expect(rows.map((r) => r.link_seq)).toEqual(["1", "3"]);
     expect(rows.some((r) => r.event_id === uuidOf(panic))).toBe(false);
     expect(await receivedInSeq(fx)).toBe(3);
+  });
+});
+
+// 854 Revisi 2 (R2.2, R2.3). Assumptions: a receipt whose event is NOT in
+// edge_received_events (dead letter) does not hold its slot, like in
+// inboundProof (rule R3); the primary key of edge_inbound_events is
+// (tenant, node, direction, event_id), so a slot may hold several receipts and
+// the same event cannot get a second receipt. A swallowed ON CONFLICT is logged
+// with logger.warn whose text mentions "conflict" (the brief: "(conflict)
+// dicatat ... hitungan di pesan").
+describe("legend-tmar2 854 R2.2 an unregistered receipt does not hold the slot", () => {
+  /** A dead-letter style receipt: in edge_inbound_events, not in edge_received_events. */
+  async function insertUnregisteredReceipt(fx: Fx, linkSeq: number) {
+    await owner.query(
+      `INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome)
+       VALUES ($1, $2, $3, 'edge_to_cloud', $4::uuid, $5, 'order', $6, 1, 'transaction_event', 'applied')`,
+      [
+        fx.tenantId,
+        fx.outletId,
+        fx.node.scope.edgeNodeId,
+        randomUUID(),
+        linkSeq,
+        randomUUID(),
+      ],
+    );
+  }
+
+  it("R2.2 reconcileReplay: the registered event replayed into a slot that only holds an unregistered receipt gets a 'superseded' receipt; the next proof is complete", async () => {
+    const { fx, staff } = await threeDelivered("854 r2.2 reconcile");
+    const cloud = cloudStore(fx, I1);
+    await dropReceipt(fx, 2);
+    await insertUnregisteredReceipt(fx, 2);
+    // The unregistered receipt does not count: the proof stops before slot 2.
+    expect(await cloud.inboundProof!(0, 3)).toEqual({
+      to: 1,
+      ...proofOfEvents([staff.s1]),
+    });
+
+    await cloud.reconcileReplay!({
+      events: [
+        { linkSeq: 2, event: staff.s2 },
+        { linkSeq: 3, event: staff.s3 },
+      ],
+    });
+    const rows = await receiptRows(fx);
+    expect(
+      rows.find((r) => r.link_seq === "2" && r.event_id === uuidOf(staff.s2)),
+    ).toMatchObject({ outcome: "superseded" });
+    expect(await cloud.inboundProof!(0, 3)).toEqual({
+      to: 3,
+      ...proofOfEvents([staff.s1, staff.s2, staff.s3]),
+    });
+  });
+
+  it("R2.2 end to end: a restored edge heals a hole that holds an unregistered receipt, everything is acked without a refusal", async () => {
+    const { fx, staff } = await threeDelivered("854 r2.2 e2e");
+    await dropReceipt(fx, 2);
+    await insertUnregisteredReceipt(fx, 2);
+    const restored = new EdgeStore([staff.s1, staff.s2, staff.s3], {
+      acked: 1,
+      received: 0,
+    });
+    const from = mark();
+    startEdge(fx, restored, I1);
+    await eventually(
+      () => protocolClosesSince(from).length > 0 || restored.acked === 3,
+      "the edge acked slot 3 (or was refused)",
+    );
+    expect(protocolClosesSince(from)).toEqual([]);
+    expect(restored.acked).toBe(3);
+    const rows = await receiptRows(fx);
+    expect(
+      rows.find((r) => r.link_seq === "2" && r.event_id === uuidOf(staff.s2)),
+    ).toMatchObject({ outcome: "superseded" });
+  });
+});
+
+describe("legend-tmar2 854 R2.3 a swallowed ON CONFLICT is logged", () => {
+  /** Move the receipt of one event to another slot (the event keeps its receipt, the old slot is a hole). */
+  async function moveReceipt(fx: Fx, eventUuid: string, linkSeq: number) {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `UPDATE edge_inbound_events SET link_seq = $4
+          WHERE tenant_id = $1 AND edge_node_id = $2 AND direction = 'edge_to_cloud' AND event_id = $3::uuid`,
+        [fx.tenantId, fx.node.scope.edgeNodeId, eventUuid, linkSeq],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  const logged = (warn: MockInstance) =>
+    warn.mock.calls.map((call) => inspect(call, { depth: 4 })).join("\n");
+
+  it("R2.3 the event already has a receipt in another slot: the insert is a no-op and logger.warn records the conflict", async () => {
+    const { fx, staff } = await threeDelivered("854 r2.3 conflict");
+    const cloud = cloudStore(fx, I1);
+    await moveReceipt(fx, uuidOf(staff.s2), 5); // slot 2 is a hole, s2 has a receipt at 5
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      // Whether it then accepts or refuses is not pinned; the conflict must be logged.
+      await cloud.reconcileReplay!({
+        events: [{ linkSeq: 2, event: staff.s2 }],
+      }).catch(() => undefined);
+      expect(logged(warn)).toMatch(/conflict/i);
+      // No secrets: the log never carries the event payload or the credential.
+      expect(logged(warn)).not.toContain(fx.credential);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("R2.3 a normal heal (insert succeeds) logs no conflict", async () => {
+    const { fx, staff } = await threeDelivered("854 r2.3 clean");
+    const cloud = cloudStore(fx, I1);
+    await dropReceipt(fx, 2);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      await cloud.reconcileReplay!({
+        events: [{ linkSeq: 2, event: staff.s2 }],
+      });
+      expect(logged(warn)).not.toMatch(/conflict/i);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

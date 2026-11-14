@@ -172,6 +172,9 @@ export const LINK_RESTORE_PROOF_HEADER = "x-edge-restore-proof";
  * reconnect backoff after a refusal (legend-tmar2 854). The 848 edge sends only
  * the header above and gets the 848 behaviour: a hello proof only when it
  * covers the whole range (fail-open otherwise), no `to`, no replay check.
+ * A 854 cloud echoes this header (value "1") in the upgrade response when the
+ * request carried it; a 854 edge that gets no echo knows the cloud cannot
+ * prove a range and refuses an ack without proof.
  */
 export const LINK_RESTORE_PROOF_V2_HEADER = "x-edge-restore-proof-v2";
 

@@ -180,6 +180,19 @@ export type LinkPeerOptions = {
    * else none, and replays are not checked: the 848 behaviour.
    */
   restoreProofStrict?: boolean;
+  /**
+   * Edge only (legend-tmar2 854): the edge sent the restore proof headers, so a
+   * hello that would ack (cursor above the acked cursor) must carry a proof.
+   * Without one nothing is acked and the link is refused (reason starting with
+   * LINK_RESTORE_PROOF_REFUSAL). Unset: the old behaviour (ack the cursor).
+   */
+  requireRestoreProof?: boolean;
+  /**
+   * Edge only, with `requireRestoreProof`: the upgrade response echoed
+   * `x-edge-restore-proof-v2`, so the cloud supports the proof. Only changes
+   * the refusal message (old cloud vs. a cloud that broke the contract).
+   */
+  peerEchoesRestoreProof?: boolean;
   /** Store/apply failures (no secrets in the error). The link stays up. */
   onError?: (error: unknown) => void;
   /** After an event was moved to the dead-letter store (once per event). */
@@ -453,6 +466,14 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
             `${LINK_RESTORE_PROOF_REFUSAL} mismatch: events in the acknowledged range differ from the peer's; refusing to resume`,
           );
         ackTo = proofTo;
+      } else if (options.requireRestoreProof) {
+        // No proof, nothing acked: an old cloud cannot prove the range and a
+        // modern one must. Thrown before ackOutbound/onAcked.
+        throw new LinkProtocolError(
+          options.peerEchoesRestoreProof
+            ? `${LINK_RESTORE_PROOF_REFUSAL} missing: the cloud supports it but sent none; refusing to resume`
+            : `${LINK_RESTORE_PROOF_REFUSAL} unsupported: cloud does not support restore proof; upgrade cloud first`,
+        );
       }
       if (ackTo > acked) {
         await store.ackOutbound(ackTo);

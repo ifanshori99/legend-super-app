@@ -191,6 +191,14 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
     noServer: true,
     maxPayload: LINK_MAX_FRAME_BYTES,
   });
+  // Restore proof v2 (legend-tmar2 854): echo the header in the upgrade
+  // response so a 854 edge knows this cloud can send a proof. A cloud without
+  // this echo (848) never proves a partial range, so the edge must not ack on
+  // a hello without proof.
+  wss.on("headers", (headers, request) => {
+    if (request.headers[LINK_RESTORE_PROOF_V2_HEADER] === "1")
+      headers.push(`${LINK_RESTORE_PROOF_V2_HEADER}: 1`);
+  });
   const now = deps.now ?? Date.now;
   const heartbeatWriteIntervalMs =
     deps.heartbeatWriteIntervalMs ?? LINK_HEARTBEAT_WRITE_INTERVAL_MS;
