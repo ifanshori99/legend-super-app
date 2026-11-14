@@ -488,6 +488,8 @@ export const aiGovernanceSettingsSchema = z
   .strictObject({
     tenantId: tenantIdSchema,
     ...aiGovernanceEditableShape,
+    /** The platform turned AI off for this tenant; stored values stay intact. */
+    platformLocked: z.boolean(),
     updatedAt: isoDateTimeSchema,
     updatedBy: userIdSchema,
   })

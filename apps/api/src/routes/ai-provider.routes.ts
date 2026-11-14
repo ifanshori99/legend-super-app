@@ -13,6 +13,7 @@ import {
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireBackOfficeSurface } from "../middleware/identity-surface.ts";
+import { requireAiPlatformEnabled } from "../middleware/module.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
@@ -41,27 +42,39 @@ export function createAiProviderRouter(): Router {
     res.json({ data: await getAiProviderView(getScopedTenantContext(req)) });
   });
 
-  router.put("/provider", ...gate, jsonBody, async (req, res) => {
-    const body = upsertEndpoint.body.parse(req.body);
-    res.json({
-      data: await saveAiProviderConfig(
-        getScopedTenantContext(req),
-        getAuth(req).user.id,
-        body,
-      ),
-    });
-  });
+  router.put(
+    "/provider",
+    ...gate,
+    requireAiPlatformEnabled(),
+    jsonBody,
+    async (req, res) => {
+      const body = upsertEndpoint.body.parse(req.body);
+      res.json({
+        data: await saveAiProviderConfig(
+          getScopedTenantContext(req),
+          getAuth(req).user.id,
+          body,
+        ),
+      });
+    },
+  );
 
-  router.patch("/provider", ...gate, jsonBody, async (req, res) => {
-    const body = patchEndpoint.body.parse(req.body);
-    res.json({
-      data: await patchAiProviderCapabilities(
-        getScopedTenantContext(req),
-        getAuth(req).user.id,
-        body,
-      ),
-    });
-  });
+  router.patch(
+    "/provider",
+    ...gate,
+    requireAiPlatformEnabled(),
+    jsonBody,
+    async (req, res) => {
+      const body = patchEndpoint.body.parse(req.body);
+      res.json({
+        data: await patchAiProviderCapabilities(
+          getScopedTenantContext(req),
+          getAuth(req).user.id,
+          body,
+        ),
+      });
+    },
+  );
 
   router.delete("/provider", ...gate, async (req, res) => {
     res.json({
@@ -72,12 +85,18 @@ export function createAiProviderRouter(): Router {
     });
   });
 
-  router.post("/provider/test", ...gate, jsonBody, async (req, res) => {
-    testEndpoint.body.parse(req.body);
-    res.json({
-      data: await testAiProviderConnection(getScopedTenantContext(req)),
-    });
-  });
+  router.post(
+    "/provider/test",
+    ...gate,
+    requireAiPlatformEnabled(),
+    jsonBody,
+    async (req, res) => {
+      testEndpoint.body.parse(req.body);
+      res.json({
+        data: await testAiProviderConnection(getScopedTenantContext(req)),
+      });
+    },
+  );
 
   return router;
 }

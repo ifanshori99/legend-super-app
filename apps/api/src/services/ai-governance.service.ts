@@ -29,6 +29,7 @@ import {
   type z,
 } from "@starter/shared/core";
 import { db } from "../db/index.ts";
+import { isAiPlatformLocked } from "./ai-platform-lock.ts";
 import { aiSettings, aiToolCalls, aiUsageEvents } from "../db/schema/ai.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -83,9 +84,11 @@ function toGovernance(
   view: AiSettingsView,
   updatedAt: Date,
   updatedBy: string,
+  platformLocked: boolean,
 ): AiGovernanceSettings {
   return {
     ...view,
+    platformLocked,
     updatedAt: updatedAt.toISOString(),
     updatedBy: updatedBy as UserId,
   } as AiGovernanceSettings;
@@ -97,9 +100,20 @@ export async function getGovernanceSettings(
 ): Promise<AiGovernanceSettings> {
   return withTenant(db, gatewayContext(access), async (tx) => {
     const row = await getAiSettingsRow(tx, access);
+    const locked = await isAiPlatformLocked(tx, access.tenant.tenantId);
     return row
-      ? toGovernance(settingsRowToView(row), row.updatedAt, row.updatedBy)
-      : toGovernance(defaultAiSettings(access), new Date(0), access.userId);
+      ? toGovernance(
+          settingsRowToView(row),
+          row.updatedAt,
+          row.updatedBy,
+          locked,
+        )
+      : toGovernance(
+          defaultAiSettings(access),
+          new Date(0),
+          access.userId,
+          locked,
+        );
   });
 }
 
@@ -139,7 +153,12 @@ export async function updateGovernanceSettings(
       (key) => key in patch && !sameJson(before[key], merged[key]),
     );
     if (changed.length === 0)
-      return toGovernance(before, row.updatedAt, row.updatedBy);
+      return toGovernance(
+        before,
+        row.updatedAt,
+        row.updatedBy,
+        await isAiPlatformLocked(tx, access.tenant.tenantId),
+      );
     const [saved] = await tx
       .update(aiSettings)
       .set({
@@ -209,6 +228,7 @@ export async function updateGovernanceSettings(
       settingsRowToView(saved),
       saved.updatedAt,
       saved.updatedBy,
+      await isAiPlatformLocked(tx, access.tenant.tenantId),
     );
   });
 }
@@ -243,6 +263,7 @@ export async function getUsageSummary(
       : 0;
     return {
       aiEnabled: settings.aiEnabled,
+      platformLocked: await isAiPlatformLocked(tx, access.tenant.tenantId),
       providerAvailable,
       month,
       features: AI_FEATURE_CODES.map((feature) => ({
@@ -293,6 +314,7 @@ const BLOCK_REASON_BY_CODE: Record<string, AiBlockedReason> = {
   AI_QUOTA_EXCEEDED: "quota_exceeded",
   AI_BUDGET_EXCEEDED: "budget_exceeded",
   AI_FEATURE_DISABLED: "feature_disabled",
+  AI_PLATFORM_DISABLED: "feature_disabled",
   AI_PII_BLOCKED: "pii_blocked",
   AI_TOOL_DISABLED: "tool_disabled",
   AI_TOOL_FORBIDDEN: "permission_denied",

@@ -48,6 +48,8 @@ export const aiErrorHttpStatus = {
   AI_PROVIDER_NOT_CONFIGURED: 404,
   /** WS-12 provider: connection test asked again too soon. */
   AI_PROVIDER_TEST_TOO_SOON: 429,
+  /** The platform turned AI off for this tenant (module `ai_assistant`). */
+  AI_PLATFORM_DISABLED: 403,
 } as const satisfies Record<string, number>;
 
 export type AiErrorCode = keyof typeof aiErrorHttpStatus;
@@ -91,6 +93,7 @@ const defaultMessages: Record<AiErrorCode, string> = {
   AI_PROVIDER_NOT_CONFIGURED: "Provider AI belum diatur untuk tenant ini.",
   AI_PROVIDER_TEST_TOO_SOON:
     "Uji koneksi terlalu sering. Coba lagi sebentar lagi.",
+  AI_PLATFORM_DISABLED: "AI dimatikan oleh platform untuk organisasi Anda.",
 };
 
 export class AiError extends Error {

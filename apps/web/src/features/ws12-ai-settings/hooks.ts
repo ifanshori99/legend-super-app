@@ -50,6 +50,20 @@ export function useChatgptLogin(refetchWhilePending = false) {
   });
 }
 
+/**
+ * Platform kill switch (founder W16 Q7): when the platform turns AI off for the
+ * tenant, every tenant AI setting is locked. Reads `platformLocked` from the
+ * provider view. Fails closed: locked while it is loading or failed to load.
+ * The API enforces it regardless.
+ */
+export function useAiPlatformLock(): { locked: boolean; isPending: boolean } {
+  const provider = useProvider();
+  return {
+    locked: !provider.data || provider.data.data.platformLocked === true,
+    isPending: provider.isPending,
+  };
+}
+
 /** `gcTime: 0` and a `reset()` after success keep the API key out of the mutation cache. */
 export function useSaveProvider() {
   const queryClient = useQueryClient();

@@ -84,6 +84,7 @@ import {
   outletIdsOf,
 } from "./ai-action-executors/access.ts";
 import { toolMatches } from "./ai-metrics/scope.ts";
+import { isAiPlatformLocked } from "./ai-platform-lock.ts";
 import type { AiToolContext } from "./ai-tools/types.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import {
@@ -823,6 +824,10 @@ async function assertActorStillValid(
     throw new ActionExecutionError("Fitur AI dimatikan oleh admin.");
   if (row.source === "mcp" && !(settings?.mcpEnabled ?? false))
     throw new ActionExecutionError("MCP dimatikan oleh admin.");
+  if (await isAiPlatformLocked(tx, row.tenantId))
+    throw new ActionExecutionError(
+      "AI dimatikan oleh platform untuk organisasi Anda.",
+    );
   if (row.source === "mcp") {
     const [client] = await tx
       .select({ status: mcpClients.status })

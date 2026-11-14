@@ -309,6 +309,7 @@ registerMock(getAiUsageSummary, () => {
   return {
     data: aiUsageSummarySchema.parse({
       aiEnabled: true,
+      platformLocked: false,
       ...(state === "unavailable" ? { providerAvailable: false } : {}),
       month: "2026-11",
       features: [

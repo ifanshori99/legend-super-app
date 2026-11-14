@@ -58,7 +58,7 @@ const monthName = (now: Date) =>
     now,
   );
 
-export function BudgetCard() {
+export function BudgetCard({ locked = false }: { locked?: boolean }) {
   const t = useT();
   const governance = useGovernance(true);
   const budget = useBudget(true);
@@ -203,7 +203,7 @@ export function BudgetCard() {
           )}
         </div>
 
-        <BudgetForm cap={cap} />
+        <BudgetForm cap={cap} locked={locked} />
 
         <p className="border-t border-border pt-4 text-sm leading-5 text-muted-foreground">
           {t("aiSettingsCustom.budget.note", {
@@ -217,7 +217,7 @@ export function BudgetCard() {
 }
 
 /** Starts from the stored cap; follows the server value while the field is untouched. */
-function BudgetForm({ cap }: { cap: number }) {
+function BudgetForm({ cap, locked }: { cap: number; locked: boolean }) {
   const t = useT();
   const update = useUpdateGovernance();
   const [text, setText] = React.useState(formatNumber(cap));
@@ -241,6 +241,7 @@ function BudgetForm({ cap }: { cap: number }) {
       : undefined;
 
   const save = (value: number) => {
+    if (locked) return;
     update.mutate(
       { monthlyBudgetIdr: idr(value) },
       {
@@ -255,6 +256,7 @@ function BudgetForm({ cap }: { cap: number }) {
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
+    if (locked) return;
     setSaved(null);
     const value = parseBudget(text);
     if (value === null) {
@@ -284,6 +286,7 @@ function BudgetForm({ cap }: { cap: number }) {
           name="monthlyBudgetIdr"
           inputMode="numeric"
           autoComplete="off"
+          disabled={locked}
           value={text}
           onChange={(event) => {
             setSaved(null);
@@ -302,6 +305,7 @@ function BudgetForm({ cap }: { cap: number }) {
         type="submit"
         variant="outline"
         loading={update.isPending}
+        disabled={locked}
         className="w-full"
       >
         {t("aiSettingsCustom.budget.save")}

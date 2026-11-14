@@ -7,6 +7,7 @@ import {
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireBackOfficeSurface } from "../middleware/identity-surface.ts";
+import { requireAiPlatformEnabled } from "../middleware/module.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getAccessSnapshot,
@@ -51,6 +52,7 @@ aiChatgptRouter.post(
   "/chatgpt/device",
   ...gate,
   ownerOnly,
+  requireAiPlatformEnabled(),
   jsonBody,
   async (req, res) => {
     const input = startChatgptDeviceConnection.body.parse(req.body);
@@ -67,6 +69,7 @@ aiChatgptRouter.post(
   "/chatgpt/device/poll",
   ...gate,
   ownerOnly,
+  requireAiPlatformEnabled(),
   jsonBody,
   async (req, res) => {
     const input = pollChatgptDeviceConnection.body.parse(req.body);

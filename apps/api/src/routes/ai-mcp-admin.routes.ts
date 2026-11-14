@@ -27,6 +27,7 @@ import {
   oauthErrorRedirect,
   previewAuthorizationRequest,
 } from "../services/mcp-oauth.service.ts";
+import { requireAiPlatformEnabled } from "../middleware/module.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import {
   approveMcpClient,
@@ -68,18 +69,26 @@ export function createAiMcpAdminRouter(): Router {
     res.json(await listMcpClients(getAccessSnapshot(req), query));
   });
 
-  router.post("/mcp-clients", ...common, jsonBody, manage, async (req, res) => {
-    const body = registerEndpoint.body.parse(req.body);
-    res.status(201).json({
-      data: await registerMcpClient(getAccessSnapshot(req), body),
-    });
-  });
+  router.post(
+    "/mcp-clients",
+    ...common,
+    jsonBody,
+    manage,
+    requireAiPlatformEnabled(),
+    async (req, res) => {
+      const body = registerEndpoint.body.parse(req.body);
+      res.status(201).json({
+        data: await registerMcpClient(getAccessSnapshot(req), body),
+      });
+    },
+  );
 
   router.post(
     "/mcp-clients/:mcpClientId/approve",
     ...common,
     jsonBody,
     manage,
+    requireAiPlatformEnabled(),
     async (req, res) => {
       const { mcpClientId } = approveEndpoint.params.parse(req.params);
       const body = approveEndpoint.body.parse(req.body);

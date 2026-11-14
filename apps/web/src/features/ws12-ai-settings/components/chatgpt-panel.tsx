@@ -1,12 +1,11 @@
 // Card 1 "Login ChatGPT": the primary AI service. Device-code login in five
 // states (disconnected, pending, connected, failed, expired). The API decides
 // who may manage (`viewerCanManage`, owner only); the UI only presents it.
-// `disabled` is the platform kill switch: every control is off. The reason
-// shows inside this card (`platformOff`), never as a page banner.
+// `disabled` is the platform kill switch: every control is off. The reason is
+// explained by the page banner, never inside this card.
 import * as React from "react";
 import { cn } from "cn";
 import {
-  Ban,
   Check,
   CircleCheck,
   Clock,
@@ -86,7 +85,6 @@ export function ChatgptPanel({ disabled }: { disabled: boolean }) {
     <ChatgptBody
       status={login.data.data}
       disabled={disabled}
-      platformOff={login.data.data.platformDisabled === true}
       refreshFailed={login.isRefetchError}
     />
   );
@@ -129,7 +127,7 @@ function PanelHeading({
 }
 
 const BADGES: Record<
-  "disconnected" | "pending" | "connected" | "retry" | "platformOff",
+  "disconnected" | "pending" | "connected" | "retry",
   {
     tone: React.ComponentProps<typeof Badge>["tone"];
     icon: LucideIcon;
@@ -137,8 +135,7 @@ const BADGES: Record<
       | "aiSettingsChatgpt.badge.disconnected"
       | "aiSettingsChatgpt.badge.pending"
       | "aiSettingsChatgpt.badge.connected"
-      | "aiSettingsChatgpt.badge.retry"
-      | "aiSettings.platformOff.badge";
+      | "aiSettingsChatgpt.badge.retry";
   }
 > = {
   disconnected: {
@@ -161,11 +158,6 @@ const BADGES: Record<
     icon: TriangleAlert,
     label: "aiSettingsChatgpt.badge.retry",
   },
-  platformOff: {
-    tone: "neutral",
-    icon: Ban,
-    label: "aiSettings.platformOff.badge",
-  },
 };
 
 const ANNOUNCE: Record<
@@ -186,12 +178,10 @@ const ANNOUNCE: Record<
 function ChatgptBody({
   status: serverStatus,
   disabled,
-  platformOff,
   refreshFailed,
 }: {
   status: ChatgptLoginStatus;
   disabled: boolean;
-  platformOff: boolean;
   refreshFailed: boolean;
 }) {
   const t = useT();
@@ -207,12 +197,9 @@ function ChatgptBody({
       : serverStatus;
   const locked = disabled || !status.viewerCanManage;
   const kind =
-    platformOff && status.state === "connected"
-      ? "platformOff"
-      : status.state === "failed" || status.state === "expired"
-        ? "retry"
-        : status.state;
-  const noticeId = React.useId();
+    status.state === "failed" || status.state === "expired"
+      ? "retry"
+      : status.state;
   const badge = BADGES[kind];
   const BadgeIcon = badge.icon;
 
@@ -254,24 +241,7 @@ function ChatgptBody({
           {t("aiSettingsChatgpt.error.refreshNote")}
         </p>
       )}
-      {platformOff && (
-        <div
-          id={noticeId}
-          role="status"
-          className="flex gap-3 rounded-control border-(length:--border-w) border-danger/40 bg-danger-subtle p-3 text-danger"
-        >
-          <Ban aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-          <div className="grid gap-1 text-sm leading-5">
-            <p className="font-semibold">{t("aiSettings.platformOff.title")}</p>
-            <p>{t("aiSettings.platformOff.body")}</p>
-          </div>
-        </div>
-      )}
-      <fieldset
-        disabled={disabled}
-        aria-describedby={platformOff ? noticeId : undefined}
-        className="grid min-w-0 gap-4 border-0 p-0"
-      >
+      <fieldset disabled={disabled} className="grid min-w-0 gap-4 border-0 p-0">
         {status.state === "pending" ? (
           <PendingView
             status={status}
@@ -279,11 +249,7 @@ function ChatgptBody({
             onExpired={() => setExpiredFor(status.expiresAt)}
           />
         ) : status.state === "connected" ? (
-          <ConnectedView
-            locked={locked}
-            platformOff={platformOff}
-            onRevoke={() => setRevokeOpen(true)}
-          />
+          <ConnectedView locked={locked} onRevoke={() => setRevokeOpen(true)} />
         ) : (
           <DisconnectedView status={status} locked={locked} />
         )}
@@ -335,13 +301,11 @@ function Notice({
         "grid gap-1 rounded-control border-(length:--border-w) p-3 text-sm leading-5",
         tone === "danger"
           ? "border-danger/40 bg-danger-subtle text-danger"
-          : "bg-surface-2 text-foreground",
+          : "border-warning bg-warning-subtle text-warning",
       )}
     >
       <p className="font-semibold">{title}</p>
-      <p className={tone === "danger" ? undefined : "text-muted-foreground"}>
-        {children}
-      </p>
+      <p>{children}</p>
     </div>
   );
 }
@@ -402,6 +366,7 @@ function DisconnectedView({
       <div>
         <Button
           type="button"
+          variant={locked ? "outline" : "default"}
           disabled={locked || !consent}
           loading={start.isPending}
           onClick={() => start.mutate()}
@@ -658,11 +623,9 @@ function PendingView({
 
 function ConnectedView({
   locked,
-  platformOff,
   onRevoke,
 }: {
   locked: boolean;
-  platformOff: boolean;
   onRevoke: () => void;
 }) {
   const t = useT();
@@ -685,9 +648,7 @@ function ConnectedView({
         </div>
       </div>
       <p className="text-sm leading-5 text-muted-foreground">
-        {platformOff
-          ? t("aiSettings.platformOff.badge")
-          : t("aiSettingsChatgpt.connected.priority")}
+        {t("aiSettingsChatgpt.connected.priority")}
       </p>
       <div>
         <Button

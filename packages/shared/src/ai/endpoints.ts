@@ -165,6 +165,8 @@ export type AiBudgetUsage = z.infer<typeof aiBudgetUsageSchema>;
  */
 export const aiUsageSummarySchema = z.strictObject({
   aiEnabled: z.boolean(),
+  /** The platform turned AI off for this tenant (module `ai_assistant`). */
+  platformLocked: z.boolean(),
   /**
    * False when the tenant switch is on but the provider is down or not
    * configured (AIG-05); the chat shows the "tidak tersedia" state. Absent

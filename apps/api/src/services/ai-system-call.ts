@@ -30,6 +30,7 @@ import {
   readMonthlyUsedIdr,
   usageMonthOf,
 } from "./ai-gateway.service.ts";
+import { isAiPlatformLocked } from "./ai-platform-lock.ts";
 import type { AccessSnapshot } from "./permission-resolver.ts";
 
 export type SystemAiSkipReason =
@@ -90,6 +91,10 @@ export async function systemAiComplete(
   meta: { feature: string; outletId: string | null },
   now: Date = new Date(),
 ): Promise<SystemAiOutcome> {
+  const platformLocked = await withTenant(db, gatewayContext(billing), (tx) =>
+    isAiPlatformLocked(tx, billing.tenant.tenantId),
+  );
+  if (platformLocked) return recordBlocked(billing, meta, "feature_disabled");
   const settings = await getAiSettings(billing);
   if (!settings.aiEnabled || !isFeatureEnabled(settings, meta.feature))
     return recordBlocked(billing, meta, "feature_disabled");
