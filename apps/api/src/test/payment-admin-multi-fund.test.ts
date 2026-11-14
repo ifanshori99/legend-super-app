@@ -201,6 +201,22 @@ async function listFundIds(outletId = outletA) {
   return response;
 }
 
+function statusOf(
+  response: { body: { data: { id: string; status: string }[] } },
+  fundId: string,
+): string | undefined {
+  return response.body.data.find((f) => f.id === fundId)?.status;
+}
+
+/** Fund rows as stored, to prove that listing or a refused resolve mutates nothing. */
+async function fundRows(fundIds: string[]) {
+  const { rows } = await owner.query(
+    "SELECT id, amount_idr::text, resolution FROM payment_unallocated_funds WHERE id = ANY($1::uuid[]) ORDER BY id",
+    [fundIds],
+  );
+  return rows;
+}
+
 async function cleanupBills() {
   for (const bill of seeded.splice(0)) {
     await owner.query(
@@ -363,22 +379,30 @@ describe("legend-knev multi-fund unallocated resolve", () => {
     expect((await resolve(bill.fundIds[2]!)).status).toBe(409);
   });
 
-  it("MF-03 a fund larger than its own evidence is refused with 409", async () => {
+  it("MF-03 a fund larger than its own evidence is refused on resolve and listed as needs_review", async () => {
     // Evidence 20k + 110k on a 100k bill: excess 30k, and the one fund is 30k
     // (sums are consistent) but its evidence only carries 20k.
+    // legend-ftqf: the list no longer fails (409); the inconsistent row stays
+    // visible with status needs_review. Resolve keeps refusing with 409.
     const bill = await seedBill({
       total: 100_000,
       evidences: [20_000, 110_000],
       funds: [{ amount: 30_000, evidence: 0 }],
     });
+    const before = await fundRows(bill.fundIds);
+    const list = await listFundIds();
+    expect(list.status).toBe(200);
+    expect(statusOf(list, bill.fundIds[0]!)).toBe("needs_review");
     const response = await resolve(bill.fundIds[0]!);
     expect(response.status).toBe(409);
     expect(await refundsOf(bill.fundIds)).toEqual([]);
     expect(await resolvedFundIds(bill.fundIds)).toEqual([]);
+    expect(await fundRows(bill.fundIds)).toEqual(before);
   });
 
-  it("MF-04 funds that add up above the bill excess fail closed on resolve and list", async () => {
+  it("MF-04 funds that add up above the bill excess fail closed on resolve and show needs_review on the list", async () => {
     // Excess = evidence 130k - paid_idr 100k = 30k, but funds are 20k + 20k = 40k.
+    // legend-ftqf: the list answers 200 and flags both rows needs_review.
     const bill = await seedBill({
       total: 100_000,
       evidences: [80_000, 50_000],
@@ -387,9 +411,59 @@ describe("legend-knev multi-fund unallocated resolve", () => {
         { amount: 20_000, evidence: 1 },
       ],
     });
+    const before = await fundRows(bill.fundIds);
     expect((await resolve(bill.fundIds[0]!)).status).toBe(409);
-    expect((await listFundIds()).status).toBe(409);
+    const list = await listFundIds();
+    expect(list.status).toBe(200);
+    expect(statusOf(list, bill.fundIds[0]!)).toBe("needs_review");
+    expect(statusOf(list, bill.fundIds[1]!)).toBe("needs_review");
+    expect((await resolve(bill.fundIds[1]!)).status).toBe(409);
     expect(await refundsOf(bill.fundIds)).toEqual([]);
+    expect(await fundRows(bill.fundIds)).toEqual(before);
+  });
+
+  it("MF-14 one inconsistent bill does not hide the healthy ones: list 200, healthy open, bad needs_review, nobody paid more", async () => {
+    // legend-ftqf. Healthy bill: evidence 120k on a 100k bill, fund 20k.
+    // Bad bill: funds 20k + 20k against an excess of 30k.
+    const healthy = await seedBill({
+      total: 100_000,
+      evidences: [120_000],
+      funds: [{ amount: 20_000, evidence: 0 }],
+    });
+    const bad = await seedBill({
+      total: 100_000,
+      evidences: [80_000, 50_000],
+      funds: [
+        { amount: 20_000, evidence: 0 },
+        { amount: 20_000, evidence: 1 },
+      ],
+    });
+    const everyFund = [...healthy.fundIds, ...bad.fundIds];
+    const before = await fundRows(everyFund);
+    const list = await listFundIds();
+    expect(list.status).toBe(200);
+    expect(statusOf(list, healthy.fundIds[0]!)).toBe("open");
+    for (const fundId of bad.fundIds)
+      expect(statusOf(list, fundId)).toBe("needs_review");
+    // Listing moves nothing.
+    expect(await fundRows(everyFund)).toEqual(before);
+    expect(await refundsOf(everyFund)).toEqual([]);
+
+    // A needs_review row cannot be resolved or paid; the healthy one still can,
+    // and the total refunded never exceeds the healthy excess (20k).
+    for (const fundId of bad.fundIds)
+      expect((await resolve(fundId)).status).toBe(409);
+    expect((await resolve(healthy.fundIds[0]!)).status).toBe(200);
+    expect(await refundsOf(bad.fundIds)).toEqual([]);
+    const refunds = await refundsOf(everyFund);
+    expect(refunds.reduce((sum, r) => sum + Number(r.amount_idr), 0)).toBe(
+      20_000,
+    );
+    expect(await resolvedFundIds(bad.fundIds)).toEqual([]);
+    // After the healthy refund the list still answers 200 and keeps the flag.
+    const after = await listFundIds();
+    expect(after.status).toBe(200);
+    expect(statusOf(after, bad.fundIds[0]!)).toBe("needs_review");
   });
 
   it("MF-05 live refunds that already cover the excess block another resolve", async () => {

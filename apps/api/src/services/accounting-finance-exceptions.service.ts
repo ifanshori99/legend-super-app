@@ -1,5 +1,5 @@
 // Finance exceptions list (bead legend-4oclu; brief
-// docs/briefs/662-finance-exceptions-contract.md). Read-only: five kinds of
+// docs/briefs/662-finance-exceptions-contract.md). Read-only: six kinds of
 // rows finance must look at, each from its own source table and each listed
 // exactly once. Every query filters `tenant_id` from the session context and
 // the caller's outlet reach; no payload or bank data leaves this file.
@@ -8,6 +8,8 @@
 //   MAX_ITEMS of them, so a cut list never changes the totals.
 // - Edge rows are dated in their outlet's time zone (orders: their business
 //   date). A payout posting has no outlet and is dated in Asia/Jakarta.
+// - `receipt_pending_stale` is not dated by the window: it lists every parked
+//   auto-journal still waiting for its receipt a day after its first failure.
 // - The payout kind is tenant-wide, so it is shown only to a caller without
 //   an outlet limit and never when an outlet filter is asked for.
 
@@ -21,17 +23,20 @@ import {
 } from "@starter/shared/core";
 import type {
   FinanceExceptionItemDto,
+  FinanceExceptionReceiptPendingDto,
   FinanceExceptionSummaryDto,
   FinanceExceptionsDto,
 } from "@starter/shared/types";
 import {
   FINANCE_EXCEPTIONS_MAX_ITEMS,
+  RECEIPT_PENDING_STALE_AFTER_HOURS,
   type FinanceExceptionKind,
   type FinanceExceptionsQuery,
 } from "@starter/shared/validators/finance-exceptions";
 import { db } from "../db";
 import { withTenant } from "../db/tenant.ts";
 import { openPayrollValue } from "../lib/payroll-sealed.ts";
+import { EVENT_DESTINATION } from "./payment-support.ts";
 
 type Row = Record<string, unknown>;
 const rowsOf = (result: unknown): Row[] =>
@@ -270,6 +275,190 @@ async function voidUnsupported(tx: Executor, scope: Scope): Promise<Collected> {
   };
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type OutboxState = FinanceExceptionReceiptPendingDto["outboxState"];
+/** Worst state wins when an intent has more than one payment.paid row. */
+const OUTBOX_RANK: Record<OutboxState, number> = {
+  missing: 0,
+  delivered: 1,
+  pending: 2,
+  dead_lettered: 3,
+};
+
+/**
+ * Parked auto-journals waiting for a receipt (AUTO_JOURNAL_RECEIPT_PENDING)
+ * for more than a day since their first failure (legend-z13t). Not dated by
+ * the window. Each row carries its order, its payment intent and the state of
+ * that intent's payment.paid outbox row (what the sweep waits for). The amount
+ * is the payment intent's amount_idr, falling back to the order total when the
+ * intent is not found (per tenant and outlet of the parked row). The order
+ * id sits in the payload as a ULID, so orders are looked up like
+ * voidUnsupported does. Read-only.
+ */
+async function receiptPendingStale(
+  tx: Executor,
+  scope: Scope,
+): Promise<Collected> {
+  const parked = rowsOf(
+    await tx.execute(
+      sql`SELECT p.idempotency_key AS ref_id, p.outlet_id, p.first_failed_at AS occurred_at,
+                 p.payload ->> 'orderId' AS order_ulid,
+                 coalesce(p.payload ->> 'paymentIntentId', p.payload ->> 'intentId') AS payload_intent
+            FROM auto_journal_parked p
+           WHERE p.tenant_id = ${scope.tenantId}::uuid
+             AND p.error_code = 'AUTO_JOURNAL_RECEIPT_PENDING'
+             AND p.first_failed_at < now() - make_interval(hours => ${RECEIPT_PENDING_STALE_AFTER_HOURS}::int)
+             AND ${outletClause(sql`p.outlet_id`, scope.reach)}
+           ORDER BY p.first_failed_at DESC, p.idempotency_key DESC`,
+    ),
+  );
+  const orderUuids = new Map<string, string>();
+  for (const row of parked) {
+    const ulid = row.order_ulid;
+    if (typeof ulid !== "string") continue;
+    try {
+      orderUuids.set(ulid, ulidToUuid(ulid));
+    } catch {
+      // Not a ULID: no order to find.
+    }
+  }
+  const orders = new Map<string, { total: number; intentId: string | null }>();
+  if (orderUuids.size > 0) {
+    const found = rowsOf(
+      await tx.execute(
+        sql`SELECT id::text AS id, outlet_id::text AS outlet_id, total_idr,
+                   payment_intent_id::text AS intent_id
+              FROM orders
+             WHERE tenant_id = ${scope.tenantId}::uuid
+               AND outlet_id IN (${sql.join(
+                 [...new Set(parked.map((row) => String(row.outlet_id)))].map(
+                   (id) => sql`${id}::uuid`,
+                 ),
+                 sql`, `,
+               )})
+               AND id IN (${sql.join(
+                 [...new Set(orderUuids.values())].map(
+                   (id) => sql`${id}::uuid`,
+                 ),
+                 sql`, `,
+               )})`,
+      ),
+    );
+    for (const row of found)
+      orders.set(`${String(row.outlet_id)}:${String(row.id)}`, {
+        total: num(row.total_idr),
+        intentId: (row.intent_id as string | null) ?? null,
+      });
+  }
+  const resolved = parked.map((row) => {
+    const orderUuid =
+      typeof row.order_ulid === "string"
+        ? orderUuids.get(row.order_ulid)
+        : undefined;
+    const order =
+      orderUuid === undefined
+        ? undefined
+        : orders.get(`${String(row.outlet_id)}:${orderUuid}`);
+    const payloadIntent =
+      typeof row.payload_intent === "string" && UUID.test(row.payload_intent)
+        ? row.payload_intent.toLowerCase()
+        : null;
+    return {
+      row,
+      orderId: orderUuid ?? null,
+      total: order?.total ?? null,
+      intentId: payloadIntent ?? order?.intentId ?? null,
+    };
+  });
+  const states = new Map<string, OutboxState>();
+  const intentAmounts = new Map<string, number>();
+  const intentIds = [
+    ...new Set(
+      resolved.flatMap((entry) => (entry.intentId ? [entry.intentId] : [])),
+    ),
+  ];
+  if (intentIds.length > 0) {
+    const outletIds = [...new Set(parked.map((row) => String(row.outlet_id)))];
+    const intents = rowsOf(
+      await tx.execute(
+        sql`SELECT id::text AS id, outlet_id::text AS outlet_id, amount_idr
+              FROM payment_intents
+             WHERE tenant_id = ${scope.tenantId}::uuid
+               AND outlet_id IN (${sql.join(
+                 outletIds.map((id) => sql`${id}::uuid`),
+                 sql`, `,
+               )})
+               AND id IN (${sql.join(
+                 intentIds.map((id) => sql`${id}::uuid`),
+                 sql`, `,
+               )})`,
+      ),
+    );
+    for (const row of intents)
+      intentAmounts.set(
+        `${String(row.outlet_id)}:${String(row.id)}`,
+        num(row.amount_idr),
+      );
+    const outbox = rowsOf(
+      await tx.execute(
+        sql`SELECT aggregate_id::text AS intent_id, outlet_id::text AS outlet_id,
+                   status, dead_lettered_at
+              FROM domain_event_outbox
+             WHERE tenant_id = ${scope.tenantId}::uuid
+               AND outlet_id IN (${sql.join(
+                 [...new Set(parked.map((row) => String(row.outlet_id)))].map(
+                   (id) => sql`${id}::uuid`,
+                 ),
+                 sql`, `,
+               )})
+               AND destination = ${EVENT_DESTINATION}
+               AND aggregate_type = 'payment'
+               AND event ->> 'name' = 'payment.paid'
+               AND aggregate_id IN (${sql.join(
+                 intentIds.map((id) => sql`${id}::uuid`),
+                 sql`, `,
+               )})`,
+      ),
+    );
+    for (const row of outbox) {
+      const state: OutboxState =
+        row.dead_lettered_at !== null && row.dead_lettered_at !== undefined
+          ? "dead_lettered"
+          : row.status === "delivered"
+            ? "delivered"
+            : "pending";
+      const key = `${String(row.outlet_id)}:${String(row.intent_id)}`;
+      const seen = states.get(key);
+      if (seen === undefined || OUTBOX_RANK[state] > OUTBOX_RANK[seen])
+        states.set(key, state);
+    }
+  }
+  const items = resolved.map(({ row, orderId, total, intentId }) => ({
+    ...toItem("receipt_pending_stale", "auto_journal", {
+      ...row,
+      amount:
+        (intentId
+          ? intentAmounts.get(`${String(row.outlet_id)}:${intentId}`)
+          : undefined) ?? total,
+    }),
+    receiptPending: {
+      orderId,
+      intentId,
+      outboxState:
+        (intentId && states.get(`${String(row.outlet_id)}:${intentId}`)) ||
+        "missing",
+    } satisfies FinanceExceptionReceiptPendingDto,
+  }));
+  return {
+    kind: "receipt_pending_stale",
+    count: items.length,
+    knownAmountCount: items.filter((item) => item.amountIdr !== null).length,
+    amountIdr: items.reduce((sum, item) => sum + (item.amountIdr ?? 0), 0),
+    items,
+  };
+}
+
 /** Whole-rupiah fee of a posting; an unreadable or tampered value is null. */
 function postingFee(
   tenantId: string,
@@ -369,6 +558,8 @@ export async function listFinanceExceptions(
       parts.push(await receiptSkipped(tx, scope));
     if (wants("edge_link_dead_letter"))
       parts.push(await linkDeadLetters(tx, scope));
+    if (wants("receipt_pending_stale"))
+      parts.push(await receiptPendingStale(tx, scope));
     if (includePayout) parts.push(await payoutFeeNotPosted(tx, scope));
     return parts;
   });

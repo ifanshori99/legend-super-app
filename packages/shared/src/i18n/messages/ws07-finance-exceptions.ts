@@ -12,6 +12,7 @@ export const financeExceptionsMessages = {
     edge_receipt_skipped: "Struk edge dilewati",
     edge_link_dead_letter: "Link edge dead-letter",
     payout_fee_not_posted: "Biaya payout belum dijurnal",
+    receipt_pending_stale: "Jurnal penjualan menunggu struk lebih dari 1 hari",
   },
   kindHelp: {
     edge_tax_unsnapshotted:
@@ -24,6 +25,8 @@ export const financeExceptionsMessages = {
       "Tautan kejadian edge gagal diproses berulang kali dan berhenti di antrean gagal.",
     payout_fee_not_posted:
       "Biaya transfer pencairan gaji belum masuk jurnal. Berlaku untuk seluruh PT.",
+    receipt_pending_stale:
+      "Jurnal otomatis tertahan karena pembayaran gateway belum dijurnal lebih dari 1 hari. Tidak mengikuti rentang tanggal; cek status pengiriman pembayaran di bawah.",
   },
   refTypes: {
     order: "Order edge",
@@ -37,6 +40,16 @@ export const financeExceptionsMessages = {
     tax_missing: "Pajak tidak ada pada data edge.",
     tax_mismatch: "Pajak pada data edge tidak cocok dengan total order.",
     batchPrefix: "Batch pencairan",
+    receiptOrder: "Order",
+    receiptIntent: "Tagihan pembayaran",
+    receiptOutbox: "Status pembayaran lunas",
+    receiptNone: "Tidak ada",
+    outbox: {
+      pending: "Menunggu diproses",
+      dead_lettered: "Gagal diproses berulang (antrean gagal)",
+      delivered: "Sudah terkirim, jurnal belum terbit",
+      missing: "Tidak ditemukan",
+    },
   },
   filters: {
     label: "Filter pengecualian",

@@ -89,7 +89,8 @@ type Kind =
   | "edge_void_unsupported"
   | "edge_receipt_skipped"
   | "edge_link_dead_letter"
-  | "payout_fee_not_posted";
+  | "payout_fee_not_posted"
+  | "receipt_pending_stale";
 const KINDS: Kind[] = [
   "edge_tax_unsnapshotted",
   "edge_void_unsupported",
@@ -1310,4 +1311,375 @@ describe("finance-exceptions: payout_fee_not_posted", () => {
       skipped.batchId,
     );
   }, 120_000);
+});
+
+// legend-z13t: parked AUTO_JOURNAL_RECEIPT_PENDING auto-journals that wait for
+// their payment.paid receipt for more than one day. Written fail-first from
+// docs/briefs/845-finance-view-access.md, not from the implementation.
+// Assumptions (the brief is silent on the exact item shape):
+// - kind is `receipt_pending_stale`; the item keeps the documented 7 fields
+//   and may add more (the brief only says to include order id, intent id,
+//   amount and outbox state, not where they live).
+// - Where order id, intent id and outbox state sit in the item is not
+//   asserted: the serialized item must contain the order id (ULID or its uuid
+//   form), the intent id, and a state word ("pending" while the event waits in
+//   the outbox, "dead" for a dead-lettered one).
+// - amountIdr is the amount of the payment intent.
+// - The parked payload carries the order id (ULID) and the intent id.
+// - Stale means first_failed_at older than one day; the from/to window does
+//   not filter this kind (a March window still lists a row parked this week).
+describe("finance-exceptions: receipt_pending_stale", () => {
+  const KIND = "receipt_pending_stale" as const;
+  type Parked = {
+    intentId: string;
+    orderUlid: string;
+    amountIdr: number;
+    outlet: string;
+    tenant: string;
+  };
+  const made: Parked[] = [];
+  let outletStale: string;
+  let outletOther: string;
+  let outletNone: string;
+  let pendingStale: Parked;
+  let deadStale: Parked;
+  let fresh: Parked;
+  let otherCode: Parked;
+  let foreignOutletRow: Parked;
+  let foreignTenantRow: Parked;
+
+  async function seedIntentRow(
+    tenant: string,
+    outlet: string,
+    amountIdr: number,
+  ): Promise<string> {
+    const linkId = randomUUID();
+    const intentId = randomUUID();
+    await owner.query(
+      `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $6, $6, 'seed')`,
+      [
+        linkId,
+        tenant,
+        outlet,
+        randomBytes(32).toString("hex"),
+        `RP-${linkId.slice(0, 8)}`,
+        amountIdr,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO payment_intents
+         (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr, idempotency_key,
+          status, paid_at, instructions, expires_at)
+       VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, 'paid', now(),
+               '{"method":"qris","qrPayload":"test","issuer":null}', now())`,
+      [intentId, tenant, outlet, linkId, amountIdr, `rp-${intentId}`],
+    );
+    return intentId;
+  }
+
+  async function seedStale(opts: {
+    tenant?: string;
+    outlet: string;
+    amountIdr: number;
+    ageHours: number;
+    errorCode?: string;
+    outbox: "pending" | "dead";
+  }): Promise<Parked> {
+    const tenant = opts.tenant ?? tenantId;
+    const intentId = await seedIntentRow(tenant, opts.outlet, opts.amountIdr);
+    const orderUlid = createUlid();
+    await asTenant(tenant, async (client) => {
+      const outboxId = randomUUID();
+      await client.query(
+        `INSERT INTO domain_event_outbox
+           (tenant_id, id, outlet_id, event_id, aggregate_type, aggregate_id, sequence, event, destination)
+         VALUES ($1, $2, $3, $4, 'payment', $5, 1, $6, 'cloud-sync')`,
+        [
+          tenant,
+          outboxId,
+          opts.outlet,
+          randomUUID(),
+          intentId,
+          // The table check ties the event to its row's tenant, outlet,
+          // aggregate type and sequence.
+          JSON.stringify({
+            id: createUlid(),
+            tenantId: tenant,
+            outletId: opts.outlet,
+            name: "payment.paid",
+            aggregateType: "payment",
+            aggregateId: intentId,
+            sequence: 1,
+            payload: { intentId, receivedIdr: opts.amountIdr },
+          }),
+        ],
+      );
+      if (opts.outbox === "dead")
+        await client.query(
+          `UPDATE domain_event_outbox
+              SET dispatch_state = 'dead', dead_lettered_at = now() - interval '10 days'
+            WHERE tenant_id = $1 AND id = $2`,
+          [tenant, outboxId],
+        );
+      await client.query(
+        `INSERT INTO auto_journal_parked
+           (tenant_id, outlet_id, idempotency_key, event_id, event_name, payload,
+            error_code, retryable, first_failed_at, last_failed_at, next_retry_at)
+         VALUES ($1, $2, $3, $4, 'order.paid', $5::jsonb, $6, true,
+           now() - make_interval(hours => $7::int), now(), now() + interval '1 hour')`,
+        [
+          tenant,
+          opts.outlet,
+          `aj:sale:${orderUlid}`,
+          createUlid(),
+          JSON.stringify({
+            orderId: orderUlid,
+            intentId,
+            customerPhone: SECRET,
+          }),
+          opts.errorCode ?? "AUTO_JOURNAL_RECEIPT_PENDING",
+          opts.ageHours,
+        ],
+      );
+    });
+    const row = {
+      intentId,
+      orderUlid,
+      amountIdr: opts.amountIdr,
+      outlet: opts.outlet,
+      tenant,
+    };
+    made.push(row);
+    return row;
+  }
+
+  const refIdMatches = (item: Item, row: Parked) => {
+    const text = JSON.stringify(item);
+    return [row.orderUlid, ulidToUuid(row.orderUlid), row.intentId].some((id) =>
+      text.includes(id),
+    );
+  };
+  const itemFor = (items: Item[], row: Parked) =>
+    items.find((item) => refIdMatches(item, row));
+
+  beforeAll(async () => {
+    outletStale = await newOutlet("Resi tertunda basi");
+    outletOther = await newOutlet("Resi tertunda lain");
+    outletNone = await newOutlet("Resi tertunda kosong");
+    pendingStale = await seedStale({
+      outlet: outletStale,
+      amountIdr: 110_000,
+      ageHours: 48,
+      outbox: "pending",
+    });
+    deadStale = await seedStale({
+      outlet: outletStale,
+      amountIdr: 55_000,
+      ageHours: 72,
+      outbox: "dead",
+    });
+    fresh = await seedStale({
+      outlet: outletStale,
+      amountIdr: 33_000,
+      ageHours: 12,
+      outbox: "pending",
+    });
+    otherCode = await seedStale({
+      outlet: outletStale,
+      amountIdr: 44_000,
+      ageHours: 96,
+      errorCode: "AUTO_JOURNAL_RECEIPT_MISSING",
+      outbox: "pending",
+    });
+    foreignOutletRow = await seedStale({
+      outlet: outletOther,
+      amountIdr: 22_000,
+      ageHours: 50,
+      outbox: "pending",
+    });
+    const otherWorld = await newOtherTenant();
+    foreignTenantRow = await seedStale({
+      tenant: otherWorld.tenant,
+      outlet: otherWorld.outlet,
+      amountIdr: 99_000,
+      ageHours: 60,
+      outbox: "pending",
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    const intents = made.map((row) => row.intentId);
+    await owner.query(
+      "DELETE FROM domain_event_outbox WHERE aggregate_id = ANY($1::uuid[])",
+      [intents],
+    );
+    await owner.query(
+      "DELETE FROM auto_journal_parked WHERE idempotency_key = ANY($1::text[])",
+      [made.map((row) => `aj:sale:${row.orderUlid}`)],
+    );
+    await owner.query(
+      "DELETE FROM payment_intents WHERE id = ANY($1::uuid[])",
+      [intents],
+    );
+    await owner.query(
+      "DELETE FROM payment_links WHERE reference LIKE 'RP-%' AND created_by = 'seed' AND id NOT IN (SELECT payment_link_id FROM payment_intents)",
+    );
+  });
+
+  it("lists a receipt pending for over a day with order, intent, amount and outbox state, and leaves out fresh or other-code rows", async () => {
+    const payload = await fetchList(finance.cookie, {
+      ...MARCH,
+      outletId: outletStale,
+    });
+    const items = itemsOfKind(payload, KIND);
+    expect(items).toHaveLength(2);
+
+    const pending = itemFor(items, pendingStale)!;
+    expect(pending, "stale pending receipt is listed").toBeDefined();
+    expect(pending.outletId).toBe(outletStale);
+    expect(pending.amountIdr).toBe(110_000);
+    const pendingText = JSON.stringify(pending);
+    expect(pendingText).toContain(pendingStale.intentId);
+    expect(
+      pendingText.includes(pendingStale.orderUlid) ||
+        pendingText.includes(ulidToUuid(pendingStale.orderUlid)),
+      "the order id is in the item",
+    ).toBe(true);
+    expect(pendingText).toMatch(/pending/i);
+
+    const dead = itemFor(items, deadStale)!;
+    expect(dead, "stale dead-lettered receipt is listed").toBeDefined();
+    expect(dead.amountIdr).toBe(55_000);
+    const deadText = JSON.stringify(dead);
+    expect(deadText).toContain(deadStale.intentId);
+    expect(deadText).toMatch(/dead/i);
+
+    expect(itemFor(items, fresh)).toBeUndefined();
+    expect(itemFor(items, otherCode)).toBeUndefined();
+    expect(JSON.stringify(payload.items)).not.toContain(SECRET);
+    expect(summaryOf(payload, KIND)).toEqual({
+      count: 2,
+      amountIdr: 110_000 + 55_000,
+    });
+    // The documented fields stay on every item.
+    for (const item of items)
+      expect(Object.keys(item)).toEqual(
+        expect.arrayContaining([
+          "amountIdr",
+          "detail",
+          "kind",
+          "occurredAt",
+          "outletId",
+          "refId",
+          "refType",
+        ]),
+      );
+  });
+
+  it("the kind filter is accepted and keeps only this kind", async () => {
+    const payload = await fetchList(finance.cookie, {
+      ...MARCH,
+      outletId: outletStale,
+      kind: KIND,
+    });
+    expect(payload.items.length).toBe(2);
+    expect(payload.items.every((item) => item.kind === KIND)).toBe(true);
+  });
+
+  it("is not limited by the from/to window: a row parked this week shows under an old window", async () => {
+    const old = await fetchList(finance.cookie, {
+      from: "2025-01-01",
+      to: "2025-01-31",
+      outletId: outletStale,
+      kind: KIND,
+    });
+    expect(old.items).toHaveLength(2);
+  });
+
+  it("an outlet with no stale receipt shows an empty list and a zero summary", async () => {
+    const payload = await fetchList(finance.cookie, {
+      ...MARCH,
+      outletId: outletNone,
+      kind: KIND,
+    });
+    expect(payload.items).toEqual([]);
+    expect(summaryOf(payload, KIND)).toEqual({ count: 0, amountIdr: 0 });
+    expect(payload.truncated).toBe(false);
+  });
+
+  it("the outletId filter partitions rows by outlet", async () => {
+    const payload = await fetchList(finance.cookie, {
+      ...MARCH,
+      outletId: outletOther,
+      kind: KIND,
+    });
+    expect(payload.items).toHaveLength(1);
+    expect(itemFor(payload.items, foreignOutletRow)).toBeDefined();
+    expect(itemFor(payload.items, pendingStale)).toBeUndefined();
+  });
+
+  it("an outlet-scoped caller never sees a stale receipt of an outlet outside its scope", async () => {
+    // `scoped` is finance on outletB only; both seeded outlets are outside it.
+    const payload = await fetchList(scoped.cookie, { ...MARCH, kind: KIND });
+    for (const row of [pendingStale, deadStale, foreignOutletRow])
+      expect(itemFor(payload.items, row)).toBeUndefined();
+    const asked = await fetchList(scoped.cookie, {
+      ...MARCH,
+      kind: KIND,
+      outletId: outletStale,
+    });
+    expect(asked.items).toEqual([]);
+    expect(summaryOf(asked, KIND)).toEqual({ count: 0, amountIdr: 0 });
+  });
+
+  it("another tenant's stale receipt never shows in tenant A, items or summary", async () => {
+    const payload = await fetchList(finance.cookie, { ...MARCH, kind: KIND });
+    expect(itemFor(payload.items, foreignTenantRow)).toBeUndefined();
+    expect(payload.items.map((item) => item.amountIdr)).not.toContain(99_000);
+  });
+
+  it("is denied without accounting.journal.view and without a session", async () => {
+    const asCashier = await get(cashier.cookie, { ...MARCH, kind: KIND });
+    expect(asCashier.status).toBe(403);
+    const anonymous = await request(host)
+      .get(PATH)
+      .query({ ...MARCH, kind: KIND });
+    expect(anonymous.status).toBe(401);
+  });
+
+  it("is read-only: listing changes no parked row, outbox row, intent or journal", async () => {
+    const snapshot = async () => {
+      const intents = made.map((row) => row.intentId);
+      const keys = made.map((row) => `aj:sale:${row.orderUlid}`);
+      const [parked, outbox, paid, journals] = await Promise.all([
+        owner.query(
+          "SELECT idempotency_key, error_code, retryable, first_failed_at, last_failed_at, next_retry_at FROM auto_journal_parked WHERE idempotency_key = ANY($1::text[]) ORDER BY idempotency_key",
+          [keys],
+        ),
+        owner.query(
+          "SELECT id, status, dispatch_state, dead_lettered_at FROM domain_event_outbox WHERE aggregate_id = ANY($1::uuid[]) ORDER BY id",
+          [intents],
+        ),
+        owner.query(
+          "SELECT id, status, amount_idr::text FROM payment_intents WHERE id = ANY($1::uuid[]) ORDER BY id",
+          [intents],
+        ),
+        owner.query(
+          "SELECT count(*)::int AS n FROM journal_entries WHERE tenant_id = $1",
+          [tenantId],
+        ),
+      ]);
+      return [parked.rows, outbox.rows, paid.rows, journals.rows];
+    };
+    const before = await snapshot();
+    const payload = await fetchList(finance.cookie, {
+      ...MARCH,
+      outletId: outletStale,
+      kind: KIND,
+    });
+    // Premise: the rows are really listed, so the read was exercised.
+    expect(itemsOfKind(payload, KIND)).toHaveLength(2);
+    expect(await snapshot()).toEqual(before);
+  });
 });

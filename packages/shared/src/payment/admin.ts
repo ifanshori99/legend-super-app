@@ -384,15 +384,26 @@ export type ManualRefundSettlementInput = z.infer<
 
 // ---- Unallocated funds (PAY-04) -----------------------------------------
 
-export const unallocatedStatusSchema = z.enum(["open", "resolved"]);
+/**
+ * `needs_review` marks a fund whose payment evidence cannot represent its
+ * amount (legend-ftqf). It is shown, never resolved or refunded, until staff
+ * fix the evidence. The server cannot filter on it (it is computed per row),
+ * so list queries only accept the stored states.
+ */
+export const unallocatedStatusSchema = z.enum([
+  "open",
+  "resolved",
+  "needs_review",
+]);
 export type UnallocatedStatus = z.infer<typeof unallocatedStatusSchema>;
+export const unallocatedFilterSchema = z.enum(["open", "resolved"]);
 
 export const unallocatedFundViewSchema = z
   .strictObject({
     ...unallocatedFundsSchema.shape,
     paymentReference: ref,
     method: paymentMethodSchema,
-    paidAmountIdr: positiveIdr,
+    paidAmountIdr: nonnegativeIdr,
     billTotalIdr: positiveIdr,
     outletName: ref,
     status: unallocatedStatusSchema,
@@ -405,10 +416,13 @@ export const unallocatedFundViewSchema = z
   // (overpaid, double-paid or underpaid). A bill may carry several funds, one
   // per provider evidence (legend-knev); the server refuses a bill whose funds
   // do not add up to exactly what arrived minus what was applied.
-  .refine((f) => f.amountIdr <= f.paidAmountIdr, {
-    path: ["amountIdr"],
-    message: "amount must not exceed the amount paid",
-  });
+  .refine(
+    (f) => f.status === "needs_review" || f.amountIdr <= f.paidAmountIdr,
+    {
+      path: ["amountIdr"],
+      message: "amount must not exceed the amount paid",
+    },
+  );
 export type UnallocatedFundView = z.infer<typeof unallocatedFundViewSchema>;
 
 /** Money moves (refund or credit), so the write carries an idempotency key. */
@@ -746,7 +760,7 @@ export const listUnallocatedFunds = defineEndpoint({
   path: `${ADMIN}/unallocated-funds`,
   query: cursorPageQuerySchema.extend({
     ...outletFilter,
-    status: unallocatedStatusSchema.optional(),
+    status: unallocatedFilterSchema.optional(),
   }),
   response: cursorPageSchema(unallocatedFundViewSchema),
 });

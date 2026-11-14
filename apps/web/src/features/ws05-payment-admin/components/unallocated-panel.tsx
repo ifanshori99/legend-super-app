@@ -92,6 +92,9 @@ export function UnallocatedPanel() {
               <SelectItem value="resolved">
                 {t("paymentAdmin.unallocated.statusResolved")}
               </SelectItem>
+              <SelectItem value="needs_review">
+                {t("paymentAdmin.unallocated.statusNeedsReview")}
+              </SelectItem>
             </SelectContent>
           </Select>
         }
@@ -118,6 +121,11 @@ export function UnallocatedPanel() {
                   {t("paymentAdmin.unallocated.billTotal")}{" "}
                   <Money amount={fund.billTotalIdr} size="sm" />
                 </p>
+                {fund.status === "needs_review" && (
+                  <p className="text-sm text-muted-foreground">
+                    {t("paymentAdmin.unallocated.needsReviewHint")}
+                  </p>
+                )}
                 {fund.resolvedByName && (
                   <p className="text-sm text-muted-foreground">
                     {fund.resolvedByName}
