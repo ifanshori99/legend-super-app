@@ -1790,6 +1790,20 @@ describe("TL-12 get_my_profit_share", () => {
     expect(dflt.map((r) => r.amountIdr).sort()).toEqual([4_500_000, 6_000_000]);
   });
 
+  it("defaults to the Jakarta year at 03:00 WIB on New Year's Day", async () => {
+    const handler = readToolsB["TL-12"];
+    if (!handler) throw new Error("No handler for TL-12");
+    const ctx = {
+      ...ctxFor("shareholder"),
+      now: new Date("2025-12-31T20:00:00Z"),
+    };
+    const output = AI_TOOL_IO["TL-12"].output.parse(await handler(ctx, {}));
+    expect(output.sources[0]?.period).toEqual({
+      from: "2026-01-01",
+      to: "2026-12-31",
+    });
+  });
+
   it("shows nothing for unpaid lines, unapproved shares, other holders or another tenant", async () => {
     const text = JSON.stringify(
       await call("TL-12", "shareholder", { year: 2026 }),

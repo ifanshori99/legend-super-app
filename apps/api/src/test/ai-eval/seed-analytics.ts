@@ -99,6 +99,43 @@ export async function seedAnalytics(client: PoolClient, seed: AnalyticsSeed) {
             `${date}T06:00:00Z`,
           ],
         );
+        const refundOrderId = randomUUID();
+        await client.query(
+          `INSERT INTO orders (id, tenant_id, outlet_id, number, channel, service_type, payment_mode,
+             subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
+             status, business_date, placed_at)
+           VALUES ($1, $2, $3, $4, 'pos', 'dine_in', 'pay_first', 30000, 0, 0, 0, 0,
+                   30000, 'completed', $5, $6)`,
+          [
+            refundOrderId,
+            tenantId,
+            outletId,
+            `EA-refund-${index}`,
+            date,
+            `${date}T06:00:00Z`,
+          ],
+        );
+        await client.query(
+          `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel)
+           VALUES ($1, $2, $3, 'pos')`,
+          [refundOrderId, tenantId, outletId],
+        );
+        await client.query(
+          `INSERT INTO pos_order_refunds (id, tenant_id, outlet_id, order_id, amount_idr,
+             reason, reason_note, lines, requested_by, approved_by, approval_request_id, refunded_at)
+           VALUES ($1, $2, $3, $4, 30000, 'customer_cancelled', 'Eval refund',
+                   '[{"method":"cash","amountIdr":30000,"reference":null}]'::jsonb,
+                   $5, 'eval-supervisor', $6, $7)`,
+          [
+            randomUUID(),
+            tenantId,
+            outletId,
+            refundOrderId,
+            creatorId,
+            randomUUID(),
+            `${date}T06:00:00Z`,
+          ],
+        );
       }
     }
   }

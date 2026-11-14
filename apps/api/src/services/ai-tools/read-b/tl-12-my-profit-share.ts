@@ -11,7 +11,7 @@ import {
   type GetMyProfitShareOutput,
   type ToolPeriod,
 } from "@starter/shared/ai";
-import { formatDecimal4 } from "@starter/shared/core";
+import { formatDecimal4, localDateOf } from "@starter/shared/core";
 import { HttpError } from "../../../lib/http-error.ts";
 import { getMyProfitShareService } from "../../profit-share-distribution.service.ts";
 import type { AiToolHandler } from "../types.ts";
@@ -37,7 +37,7 @@ function periodLabelOf(statement: {
 export const getMyProfitShare: AiToolHandler = async (ctx, raw) => {
   const input = getMyProfitShareInputSchema.parse(raw);
   const reach = await resolveReach(ctx, "profit_share.own.view", "TL-12");
-  const year = input.year ?? ctx.now.getUTCFullYear();
+  const year = input.year ?? Number(localDateOf(ctx.now).slice(0, 4));
 
   const mine = await getMyProfitShareService(
     reach.context,
