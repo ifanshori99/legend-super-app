@@ -1170,6 +1170,8 @@ const customerDisplayState: FixtureInput["customerDisplayState"] = {
   terminalDeviceId: device.pos1,
   displayDeviceId: device.display,
   state: "paid",
+  promotions: [],
+  pairingCode: null,
   orderId: orderIds.cashDineIn,
   orderNumber: "BDG-01-POS-0001",
   lines: [
