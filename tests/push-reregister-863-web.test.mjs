@@ -20,8 +20,12 @@ import {
   createTranslator,
 } from "../packages/shared/src/i18n/index.ts";
 
-const { isRegisteredOnServer, syncPushRegistration } =
-  await import("../apps/web/src/features/ws05-notifications/push-sync.ts");
+const {
+  PUSH_RENEW_AFTER_MS,
+  isRegisteredOnServer,
+  isRenewalDue,
+  syncPushRegistration,
+} = await import("../apps/web/src/features/ws05-notifications/push-sync.ts");
 
 /** Dependencies that record every call and never settle on their own. */
 function harness({
@@ -178,6 +182,143 @@ describe("syncPushRegistration (863)", () => {
     assert.equal(await syncPushRegistration(deps), "confirmed");
     assert.equal(await syncPushRegistration(deps), "confirmed");
     assert.equal(calls.register, 0);
+  });
+});
+
+// 863 delta 2: proactive renewal. A device the server lists, but whose
+// registeredAt is older than 7 days, is registered again. ASSUMPTION: "older
+// than 7 days" is strict (exactly 7 days is not yet due).
+describe("isRenewalDue (863 delta 2)", () => {
+  const NOW = Date.parse("2026-11-15T00:00:00.000Z");
+  const ago = (ms) => new Date(NOW - ms).toISOString();
+
+  test("the renewal window is 7 days", () => {
+    assert.equal(PUSH_RENEW_AFTER_MS, 7 * 24 * 60 * 60 * 1000);
+  });
+
+  test("exactly 7 days old is not due", () => {
+    const devices = [{ id: "a", registeredAt: ago(PUSH_RENEW_AFTER_MS) }];
+    assert.equal(isRenewalDue(devices, "a", NOW), false);
+  });
+
+  test("7 days and 1 ms old is due", () => {
+    const devices = [{ id: "a", registeredAt: ago(PUSH_RENEW_AFTER_MS + 1) }];
+    assert.equal(isRenewalDue(devices, "a", NOW), true);
+  });
+
+  test("a fresh registration is not due", () => {
+    const devices = [{ id: "a", registeredAt: ago(1000) }];
+    assert.equal(isRenewalDue(devices, "a", NOW), false);
+  });
+
+  test("a missing or invalid registeredAt is not due", () => {
+    assert.equal(isRenewalDue([{ id: "a" }], "a", NOW), false);
+    assert.equal(
+      isRenewalDue([{ id: "a", registeredAt: "not a date" }], "a", NOW),
+      false,
+    );
+    assert.equal(
+      isRenewalDue([{ id: "a", registeredAt: "" }], "a", NOW),
+      false,
+    );
+  });
+
+  test("an id that is not in the list is not due", () => {
+    const devices = [{ id: "b", registeredAt: ago(PUSH_RENEW_AFTER_MS * 3) }];
+    assert.equal(isRenewalDue(devices, "a", NOW), false);
+    assert.equal(isRenewalDue([], "a", NOW), false);
+  });
+
+  test("a null stored id is not due", () => {
+    const devices = [{ id: "a", registeredAt: ago(PUSH_RENEW_AFTER_MS * 3) }];
+    assert.equal(isRenewalDue(devices, null, NOW), false);
+  });
+
+  test("only the stored device's age counts, not other rows", () => {
+    const devices = [
+      { id: "old", registeredAt: ago(PUSH_RENEW_AFTER_MS * 3) },
+      { id: "mine", registeredAt: ago(1000) },
+    ];
+    assert.equal(isRenewalDue(devices, "mine", NOW), false);
+  });
+});
+
+describe("syncPushRegistration renewal (863 delta 2)", () => {
+  const NOW = Date.parse("2026-11-15T00:00:00.000Z");
+  const dueDevices = [
+    {
+      id: "sub-1",
+      registeredAt: new Date(NOW - 8 * 24 * 3600 * 1000).toISOString(),
+    },
+  ];
+  const freshDevices = [
+    {
+      id: "sub-1",
+      registeredAt: new Date(NOW - 2 * 24 * 3600 * 1000).toISOString(),
+    },
+  ];
+
+  test("listed but older than 7 days: registers again and reports reregistered", async () => {
+    const { deps, calls } = harness({ devices: dueDevices });
+    assert.equal(
+      await syncPushRegistration({ ...deps, now: () => NOW }),
+      "reregistered",
+    );
+    assert.equal(calls.register, 1);
+  });
+
+  test("due but register throws: still confirmed, not failed", async () => {
+    const { deps, calls } = harness({
+      devices: dueDevices,
+      registerError: new Error("409"),
+    });
+    assert.equal(
+      await syncPushRegistration({ ...deps, now: () => NOW }),
+      "confirmed",
+    );
+    assert.equal(calls.register, 1);
+  });
+
+  test("due but register throws synchronously: still confirmed", async () => {
+    const { deps } = harness({ devices: dueDevices });
+    const throwing = {
+      ...deps,
+      now: () => NOW,
+      register: () => {
+        throw new Error("sync");
+      },
+    };
+    assert.equal(await syncPushRegistration(throwing), "confirmed");
+  });
+
+  test("listed and younger than 7 days: confirmed and register is not called", async () => {
+    const { deps, calls } = harness({ devices: freshDevices });
+    assert.equal(
+      await syncPushRegistration({ ...deps, now: () => NOW }),
+      "confirmed",
+    );
+    assert.equal(calls.register, 0);
+  });
+
+  test("not listed: old behaviour, a failing register is failed", async () => {
+    const { deps, calls } = harness({
+      devices: [],
+      registerError: new Error("500"),
+    });
+    assert.equal(
+      await syncPushRegistration({ ...deps, now: () => NOW }),
+      "failed",
+    );
+    assert.equal(calls.register, 1);
+  });
+
+  test("listing fails: old behaviour, register is called and reregistered", async () => {
+    const { deps, calls } = harness({ listError: new Error("offline") });
+    assert.equal(
+      await syncPushRegistration({ ...deps, now: () => NOW }),
+      "reregistered",
+    );
+    assert.equal(calls.register, 1);
   });
 });
 

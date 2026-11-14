@@ -258,11 +258,15 @@ export function usePushRegistration() {
     }
   };
 
-  const register = async (userId: string) => {
+  const register = async (
+    userId: string,
+    options?: { adoptUnowned?: boolean },
+  ) => {
     const input = await subscribeThisBrowser(
       await tenantKey(),
       undefined,
       userId,
+      options,
     );
     const saved = await save.mutateAsync(input);
     rememberMockSubscriptionId(saved.data.id);
@@ -283,10 +287,14 @@ export function usePushRegistration() {
       register: async () => {
         // Renewing swaps the browser's subscription when someone else owns
         // it (another account, or an impersonating admin). Without a user
-        // action only this user's own subscription is renewed; anything
-        // else waits for the manual button on the notification card.
-        if (readPushOwner() !== userId) throw new Error("PUSH_OWNER_UNKNOWN");
-        await register(userId);
+        // action only this user's own subscription is renewed, or one with
+        // no recorded owner, which keeps its endpoint and lets the server
+        // refuse it (409) when another account holds it. A known other
+        // owner waits for the manual button on the notification card.
+        const owner = readPushOwner();
+        if (owner !== null && owner !== userId)
+          throw new Error("PUSH_OWNER_UNKNOWN");
+        await register(userId, { adoptUnowned: true });
       },
     });
     return { browserState, outcome };

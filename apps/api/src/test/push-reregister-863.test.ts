@@ -47,12 +47,13 @@ const REGISTER = "/api/notifications/push-subscriptions";
 const app = createApp();
 
 let tenant: IsolatedTenant;
+let otherTenant: IsolatedTenant;
 const userIds: string[] = [];
 
 type Account = { client: ReturnType<typeof agent>; userId: string };
 
 /** A signed-in member of the isolated tenant. */
-async function account(): Promise<Account> {
+async function account(inTenant: IsolatedTenant = tenant): Promise<Account> {
   const client = agent(app);
   await signUp(client, "Pengguna Push Lama");
   const userId = (await client.get("/api/auth/get-session")).body.user
@@ -62,7 +63,7 @@ async function account(): Promise<Account> {
     `INSERT INTO role_assignments
        (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
      VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
-    [tenant.tenantId, userId, tenant.roleId],
+    [inTenant.tenantId, userId, inTenant.roleId],
   );
   return { client, userId };
 }
@@ -109,7 +110,10 @@ async function seedRow(
   return id;
 }
 
-const host = () => ({ Host: tenant.hostname, ...originHeader });
+const host = (inTenant: IsolatedTenant = tenant) => ({
+  Host: inTenant.hostname,
+  ...originHeader,
+});
 const listedIds = async (who: Account) => {
   const response = await who.client.get(LIST).set(host());
   expect(response.status).toBe(200);
@@ -118,10 +122,11 @@ const listedIds = async (who: Account) => {
 const register = (
   who: Account,
   subscription: ReturnType<typeof browserSubscription>,
+  inTenant: IsolatedTenant = tenant,
 ) =>
   who.client
     .post(REGISTER)
-    .set(host())
+    .set(host(inTenant))
     .send({ ...subscription, deviceLabel: "HP lama" });
 const rowsOf = async (userId: string) =>
   (
@@ -133,28 +138,33 @@ const rowsOf = async (userId: string) =>
 
 beforeAll(async () => {
   tenant = await createIsolatedTenant(`p863-${randomUUID().slice(0, 6)}`);
-  await owner.query(
-    `INSERT INTO notification_policies
-       (tenant_id, web_push_enabled, email_enabled, whatsapp, max_attempts, retry_backoff_seconds)
-     VALUES ($1, true, true, $2::jsonb, 3, '[30,120]'::jsonb)
-     ON CONFLICT (tenant_id) DO UPDATE SET web_push_enabled = true`,
-    [
-      tenant.tenantId,
-      JSON.stringify({
-        enabled: false,
-        allowedCategories: [],
-        monthlyCap: 0,
-        costPerMessageIdr: 0,
-      }),
-    ],
-  );
+  otherTenant = await createIsolatedTenant(`p863o-${randomUUID().slice(0, 6)}`);
+  for (const t of [tenant, otherTenant]) {
+    await owner.query(
+      `INSERT INTO notification_policies
+         (tenant_id, web_push_enabled, email_enabled, whatsapp, max_attempts, retry_backoff_seconds)
+       VALUES ($1, true, true, $2::jsonb, 3, '[30,120]'::jsonb)
+       ON CONFLICT (tenant_id) DO UPDATE SET web_push_enabled = true`,
+      [
+        t.tenantId,
+        JSON.stringify({
+          enabled: false,
+          allowedCategories: [],
+          monthlyCap: 0,
+          costPerMessageIdr: 0,
+        }),
+      ],
+    );
+  }
 }, 90_000);
 
 afterAll(async () => {
-  await owner.query(`DELETE FROM push_subscriptions WHERE tenant_id = $1`, [
-    tenant.tenantId,
-  ]);
+  await owner.query(
+    `DELETE FROM push_subscriptions WHERE tenant_id = ANY($1::uuid[])`,
+    [[tenant.tenantId, otherTenant.tenantId]],
+  );
   await dropIsolatedTenant(tenant);
+  await dropIsolatedTenant(otherTenant);
   await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [userIds]);
   await owner.end();
 });
@@ -234,5 +244,182 @@ describe("legend-xdlxa 863 registering the same endpoint again revives the row",
     const theirs = await seedRow(other.userId, browserSubscription(), null);
     expect(await listedIds(me)).not.toContain(theirs);
     expect(await listedIds(other)).not.toContain(theirs);
+  });
+});
+
+// 863 delta 2: the server guards endpoint ownership. A second account cannot
+// take over an endpoint that another account already holds (any tenant).
+// ASSUMPTIONS: the error body is `{ error: { code } }` (as elsewhere in the
+// push tests); "row intact" = id, registered_at and subscription_ciphertext
+// unchanged; the owner's first registration goes through the real endpoint.
+describe("legend-xdlxa 863 delta 2 endpoint ownership is guarded by the server", () => {
+  type Held = {
+    id: string;
+    user_id: string;
+    registered_at: Date | null;
+    subscription_ciphertext: string;
+  };
+  const holdersOf = async (userId: string) =>
+    (
+      await owner.query<Held>(
+        `SELECT id, user_id, registered_at, subscription_ciphertext
+           FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at`,
+        [userId],
+      )
+    ).rows;
+
+  it("another user in the same tenant is refused with 409 and the owner's row stays intact", async () => {
+    const a = await account();
+    const b = await account();
+    const subscription = browserSubscription();
+    const first = await register(a, subscription);
+    expect(first.status).toBe(200);
+    const before = await holdersOf(a.userId);
+    expect(before).toHaveLength(1);
+
+    const refused = await register(b, subscription);
+    expect(refused.status, refused.text).toBe(409);
+    expect(refused.body.error.code).toBe("PUSH_SUBSCRIPTION_OWNED_BY_OTHER");
+
+    expect(await holdersOf(a.userId)).toEqual(before);
+    expect(await holdersOf(b.userId)).toEqual([]);
+  });
+
+  it("a user of another tenant is refused with 409 too and the owner's row stays intact", async () => {
+    const a = await account();
+    const b = await account(otherTenant);
+    const subscription = browserSubscription();
+    expect((await register(a, subscription)).status).toBe(200);
+    const before = await holdersOf(a.userId);
+    expect(before).toHaveLength(1);
+
+    const refused = await register(b, subscription, otherTenant);
+    expect(refused.status, refused.text).toBe(409);
+    expect(refused.body.error.code).toBe("PUSH_SUBSCRIPTION_OWNED_BY_OTHER");
+
+    expect(await holdersOf(a.userId)).toEqual(before);
+    expect(await holdersOf(b.userId)).toEqual([]);
+  });
+
+  it("the owner registering the same endpoint again gets 200, the same id and a later registered_at", async () => {
+    const a = await account();
+    const subscription = browserSubscription();
+    const first = await register(a, subscription);
+    expect(first.status).toBe(200);
+    const [before] = await holdersOf(a.userId);
+    expect(before).toBeDefined();
+    // Make the later timestamp unambiguous without sleeping.
+    await owner.query(
+      `UPDATE push_subscriptions SET registered_at = now() - interval '2 days' WHERE id = $1`,
+      [before!.id],
+    );
+    const [aged] = await holdersOf(a.userId);
+
+    const again = await register(a, subscription);
+    expect(again.status, again.text).toBe(200);
+    expect(again.body.data.id).toBe(before!.id);
+
+    const rows = await holdersOf(a.userId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.id).toBe(before!.id);
+    expect(rows[0]!.registered_at!.getTime()).toBeGreaterThan(
+      aged!.registered_at!.getTime(),
+    );
+  });
+});
+
+// 863 delta 2b: the ownership guard only counts rows of OTHER users that are
+// still being delivered to (registered_at NOT NULL and younger than 30 days).
+// A stale or never-registered row of another user does not block a new owner.
+// ASSUMPTIONS: owner A's row is created through the real endpoint (so the
+// endpoint hash is the real one) and then aged by UPDATE; "blocked" = 409 with
+// code PUSH_SUBSCRIPTION_OWNED_BY_OTHER; for the old-duplicate case B's own
+// stale row is forced onto A's endpoint hash by UPDATE (legacy data from before
+// the guard), and B's registration must end with one fresh row for B.
+describe("legend-xdlxa 863 delta 2b only live rows of other users block an endpoint", () => {
+  const DAY = 24 * 3600 * 1000;
+  type Held = {
+    id: string;
+    registered_at: Date | null;
+    subscription_ciphertext: string;
+    endpoint_hash: string;
+  };
+  const rowsFor = async (userId: string) =>
+    (
+      await owner.query<Held>(
+        `SELECT id, registered_at, subscription_ciphertext, endpoint_hash
+           FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at`,
+        [userId],
+      )
+    ).rows;
+  /** A registers through the API, then its row gets the given registered_at. */
+  async function ownerWith(registeredAt: Date | null) {
+    const a = await account();
+    const subscription = browserSubscription();
+    expect((await register(a, subscription)).status).toBe(200);
+    await owner.query(
+      `UPDATE push_subscriptions SET registered_at = $2 WHERE user_id = $1`,
+      [a.userId, registeredAt],
+    );
+    return { a, subscription };
+  }
+
+  it("a row of another user with registered_at NULL does not block", async () => {
+    const { a, subscription } = await ownerWith(null);
+    const b = await account();
+    const response = await register(b, subscription);
+    expect(response.status, response.text).toBe(200);
+    expect(await rowsFor(b.userId)).toHaveLength(1);
+    expect(await rowsFor(a.userId)).toHaveLength(1);
+  });
+
+  it("a row of another user registered 31 days ago does not block", async () => {
+    const { a, subscription } = await ownerWith(
+      new Date(Date.now() - 31 * DAY),
+    );
+    const b = await account();
+    const response = await register(b, subscription);
+    expect(response.status, response.text).toBe(200);
+    expect(await rowsFor(b.userId)).toHaveLength(1);
+    expect(await rowsFor(a.userId)).toHaveLength(1);
+  });
+
+  it("a row of another user registered 29 days ago still blocks and stays intact", async () => {
+    const { a, subscription } = await ownerWith(
+      new Date(Date.now() - 29 * DAY),
+    );
+    const before = await rowsFor(a.userId);
+    expect(before).toHaveLength(1);
+
+    const b = await account();
+    const response = await register(b, subscription);
+    expect(response.status, response.text).toBe(409);
+    expect(response.body.error.code).toBe("PUSH_SUBSCRIPTION_OWNED_BY_OTHER");
+
+    expect(await rowsFor(a.userId)).toEqual(before);
+    expect(await rowsFor(b.userId)).toEqual([]);
+  });
+
+  it("old duplicate data (A and B on one endpoint, A stale): B can register again", async () => {
+    const { a, subscription } = await ownerWith(
+      new Date(Date.now() - 40 * DAY),
+    );
+    const [aRow] = await rowsFor(a.userId);
+    expect(aRow).toBeDefined();
+
+    const b = await account();
+    await seedRow(b.userId, subscription, new Date(Date.now() - 40 * DAY));
+    await owner.query(
+      `UPDATE push_subscriptions SET endpoint_hash = $2 WHERE user_id = $1`,
+      [b.userId, aRow!.endpoint_hash],
+    );
+
+    const response = await register(b, subscription);
+    expect(response.status, response.text).toBe(200);
+
+    const rows = await rowsFor(b.userId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.registered_at).toBeInstanceOf(Date);
+    expect(Date.now() - rows[0]!.registered_at!.getTime()).toBeLessThan(DAY);
   });
 });
