@@ -23,3 +23,9 @@ c. Edge lama (tanpa header): cloud hello tanpa inboundProof, tersambung & ack no
 d. Rentang cocok: ack normal, digest cocok.
 e. Digest mencakup seluruh rentang: event tengah (bukan terakhir) beda -> ditolak (bukti merah prototipe: proof hanya ID terakhir lolos).
 f. Hello strict: field tak dikenal tetap ditolak.
+
+## Kontrak antar-potongan (tetap, jangan ubah tanpa lapor)
+- protocol.ts (implementer A): `LINK_RESTORE_PROOF_HEADER`, hello `inboundProof?: {count:number; sha256:string}`, `export function restoreProofOf(eventIds: Iterable<string>): {count:number; sha256:string}` (uuid lowercase, "\n" separator, SHA-256 hex), `export function restoreProofAckedFromHeader(value: string|string[]|undefined): number|null`.
+- link-peer.ts (A): `LinkStore.outboundProof?(fromSeq:number,toSeq:number): Promise<{count:number; sha256:string}>` (edge) dan `inboundProof?(fromSeq:number,toSeq:number): Promise<{count:number; sha256:string}>` (cloud; seq penomoran edge, store yang menambah offset). `LinkPeerOptions.restoreProofAcked?: number` (cloud saja, = A dari header; bila ada dan N>A, sendHello memanggil store.inboundProof(A,N) dan menaruh hasil di hello.inboundProof). onHello(cursor, proof?) verifikasi lewat store.outboundProof sebelum ackOutbound. link-client.ts (A): kirim header A. Edge: A dibaca dari store.lastAckedOutbound() sebelum tiap connect.
+- db-link-store.ts + link-server.ts + migrasi/index (implementer B): implement outboundProof (edge_outbound_queue, penomoran edge incl. offset bila relevan) dan inboundProof (edge_inbound_events link_seq di (A+offset,N+offset] urut link_seq), pakai `restoreProofOf`; link-server parse header dan teruskan `restoreProofAcked` ke createLinkPeer.
+- A tidak menyentuh db-link-store/link-server; B tidak menyentuh protocol/link-peer/link-client.
