@@ -32,8 +32,8 @@
 // - The migration file is `apps/api/drizzle/0360_cash_movement_mapping_backfill.sql`
 //   and is run statement by statement as the migration owner, like the other
 //   data-migration tests. It spans every tenant, so entities of other tests may
-//   gain the accounts too; this file only looks at its own entities. Test files
-//   run one at a time (fileParallelism false), so no other file is mid-flight.
+//   gain the accounts too; this file only looks at its own entities. A tenant
+//   table lock prevents parallel teardown from invalidating the replay.
 // - Fixture entities are left in place (charts and ledgers are append-only).
 
 import { randomUUID } from "node:crypto";
@@ -85,11 +85,51 @@ const migrationSql = () =>
   );
 
 /** Runs every statement of the migration as the migration owner, in order. */
-async function migrate(): Promise<void> {
-  for (const statement of migrationSql().split("--> statement-breakpoint")) {
-    const sql = statement.replace(/--.*$/gm, "").trim();
-    if (sql) await owner.query(statement);
+async function migrate(sqlText = migrationSql()): Promise<void> {
+  const client = await owner.connect();
+  const errors: unknown[] = [];
+  let rollbackFailure: Error | undefined;
+  try {
+    await client.query("BEGIN");
+    await client.query("LOCK TABLE public.tenants IN SHARE MODE");
+    for (const statement of sqlText.split("--> statement-breakpoint")) {
+      const sql = statement.replace(/--.*$/gm, "").trim();
+      if (sql) await client.query(statement);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    errors.push(error);
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      rollbackFailure =
+        rollbackError instanceof Error
+          ? rollbackError
+          : new Error(`Rollback failed: ${String(rollbackError)}`);
+      errors.push(rollbackError);
+    }
+  } finally {
+    try {
+      const results = await Promise.allSettled([
+        client.query(
+          "ALTER TABLE public.account_mappings FORCE ROW LEVEL SECURITY",
+        ),
+        client.query(
+          "ALTER TABLE public.chart_of_accounts FORCE ROW LEVEL SECURITY",
+        ),
+      ]);
+      errors.push(
+        ...results
+          .filter((result) => result.status === "rejected")
+          .map((result) => result.reason),
+      );
+    } finally {
+      client.release(rollbackFailure);
+    }
   }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1)
+    throw new AggregateError(errors, "Migration replay failed");
 }
 
 const GROUP_OF_TYPE: Record<string, string> = {
@@ -198,6 +238,34 @@ async function rowCounts(
 }
 
 describe("legend-89pn migration 0360 cash movement accounts and mappings", () => {
+  it("restores FORCE RLS when a replay statement fails", async () => {
+    try {
+      await expect(
+        migrate(`
+          ALTER TABLE public.chart_of_accounts NO FORCE ROW LEVEL SECURITY;
+          --> statement-breakpoint
+          ALTER TABLE public.account_mappings NO FORCE ROW LEVEL SECURITY;
+          --> statement-breakpoint
+          SELECT * FROM public.migration_0360_missing_table;
+        `),
+      ).rejects.toThrow();
+      const { rows } = await owner.query<{ relforcerowsecurity: boolean }>(
+        `SELECT relforcerowsecurity FROM pg_class
+         WHERE relname IN ('chart_of_accounts', 'account_mappings')
+           AND relnamespace = 'public'::regnamespace`,
+      );
+      expect(rows).toHaveLength(2);
+      expect(rows.every((row) => row.relforcerowsecurity)).toBe(true);
+    } finally {
+      await owner.query(
+        "ALTER TABLE public.chart_of_accounts FORCE ROW LEVEL SECURITY",
+      );
+      await owner.query(
+        "ALTER TABLE public.account_mappings FORCE ROW LEVEL SECURITY",
+      );
+    }
+  });
+
   it("MIG-01 a provisioned entity gets 2108 (liability, under 2100) and 6112 (expense, under 6100) with their role mappings", async () => {
     const entityId = await entity(true);
     const liabilityParent = await addAccount(
