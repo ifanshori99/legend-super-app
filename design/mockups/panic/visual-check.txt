@@ -1,0 +1,96 @@
+review.html @ 390
+Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/review-mobile.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+review.html @ 320
+Phone, 320px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/review-320.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+state-incoming.html @ 1280
+Computer, 1280px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/incoming-desktop.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+state-incoming.html @ 390
+Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/incoming-mobile.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+state-acknowledged.html @ 1280
+Computer, 1280px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/acknowledged-desktop.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+state-acknowledged.html @ 390
+Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/acknowledged-mobile.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+state-reconnecting.html @ 1280
+Computer, 1280px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/reconnecting-desktop.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+state-reconnecting.html @ 390
+Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/reconnecting-mobile.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+state-unreachable.html @ 1280
+Computer, 1280px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/unreachable-desktop.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+state-unreachable.html @ 390
+Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/unreachable-mobile.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+state-revoked.html @ 1280
+Computer, 1280px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/revoked-desktop.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+state-revoked.html @ 390
+Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/revoked-mobile.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+state-multiple.html @ 1280
+Computer, 1280px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/multiple-desktop.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+state-multiple.html @ 390
+Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/multiple-mobile.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+direction-b.html @ 1280
+Computer, 1280px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/arah-b-alert-desktop.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+direction-b.html @ 390
+Phone, 390px wide (dark theme): /Users/ifanshori99/Projects/legend super app/legend/.worktrees/design-panic-alert/design/mockups/panic/arah-b-alert-mobile.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+FINAL CHANGED-SCREEN CAPTURES
+Computer, 1280px wide (dark theme): design/mockups/panic/review.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+Phone, 390px wide (dark theme): design/mockups/panic/review-mobile.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+Computer, 1280px wide (dark theme): design/mockups/panic/multiple-desktop.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.
+
+Phone, 390px wide (dark theme): design/mockups/panic/multiple-mobile.png
+  Fits: nothing reaches past the screen and the kit had nothing to fit.
+Look at each screenshot before sending the page.

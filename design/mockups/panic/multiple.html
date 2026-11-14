@@ -1,0 +1,88 @@
+<section
+  class="panic-screen"
+  aria-labelledby="multiple-title"
+  data-state="multiple"
+>
+  <header class="screen-top">
+    <span class="status-label"
+      ><span aria-hidden="true">!</span> Darurat · 3 alert menunggu</span
+    >
+    <span class="status-label">Terhubung ke outlet</span>
+  </header>
+  <div class="screen-body">
+    <span class="alert-icon" aria-hidden="true">!</span>
+    <p class="eyebrow">Alert masuk beruntun</p>
+    <h2 class="screen-title" id="multiple-title">3 lokasi perlu bantuan</h2>
+    <p class="lead">
+      Pilih alert yang akan Anda tangani. Alert lain tetap terlihat.
+    </p>
+    <ol
+      class="alert-queue"
+      aria-label="Daftar alert, dari yang diterima paling awal"
+    >
+      <li class="queue-item" data-alert-id="demo-alert-014">
+        <div>
+          <p class="eyebrow">01 · Belum ditangani</p>
+          <h3 class="location">Ruang 07</h3>
+          <p class="details">Lantai 2 · Fasilitas karaoke</p>
+          <p class="details">
+            <time datetime="2026-11-14T20:41:08+07:00">20.41.08 WIB</time> ·
+            Alert PA-014
+          </p>
+        </div>
+        <button
+          class="primary"
+          type="button"
+          data-action="ack"
+          data-alert-id="demo-alert-014"
+          aria-label="Saya tangani alert PA-014 di Ruang 07"
+        >
+          Saya tangani
+        </button>
+      </li>
+      <li class="queue-item" data-alert-id="demo-alert-015">
+        <div>
+          <p class="eyebrow">02 · Belum ditangani</p>
+          <h3 class="location">Ruang 12</h3>
+          <p class="details">Lantai 2 · Fasilitas karaoke</p>
+          <p class="details">
+            <time datetime="2026-11-14T20:41:21+07:00">20.41.21 WIB</time> ·
+            Alert PA-015
+          </p>
+        </div>
+        <button
+          class="secondary"
+          type="button"
+          data-action="ack"
+          data-alert-id="demo-alert-015"
+          aria-label="Saya tangani Ruang 12, alert PA-015"
+        >
+          Saya tangani Ruang 12
+        </button>
+      </li>
+      <li class="queue-item" data-alert-id="demo-alert-016">
+        <div>
+          <p class="eyebrow">03 · Belum ditangani</p>
+          <h3 class="location">Ruang 03</h3>
+          <p class="details">Lantai 1 · Fasilitas karaoke</p>
+          <p class="details">
+            <time datetime="2026-11-14T20:41:29+07:00">20.41.29 WIB</time> ·
+            Alert PA-016
+          </p>
+        </div>
+        <button
+          class="secondary"
+          type="button"
+          data-action="ack"
+          data-alert-id="demo-alert-016"
+          aria-label="Saya tangani Ruang 03, alert PA-016"
+        >
+          Saya tangani Ruang 03
+        </button>
+      </li>
+    </ol>
+  </div>
+  <footer class="screen-footer">
+    Menangani satu alert tidak menyelesaikan alert lainnya.
+  </footer>
+</section>

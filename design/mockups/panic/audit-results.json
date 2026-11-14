@@ -1,0 +1,2570 @@
+{
+  "previousRuns": [
+    {
+      "startedAt": "2026-11-13T23:57:59.327Z",
+      "toolVersions": {
+        "playwright": "1.63.0",
+        "axeCore": "4.14.0"
+      },
+      "sourceHashes": {
+        "state-incoming.html": "5e35d88337e8a70d830828aef8aa1b0ad82fa95e0ceaa4e67736955fc2feabe9",
+        "state-acknowledged.html": "0ac7d3f2405a3a77253ad8d237ef243349dc2610266c8e44ff555eca5aedf5f8",
+        "state-reconnecting.html": "85eba62d297c02a3b9e2ea5f2925c8c3752f49c69463f3a85ffe9cc2c378c78f",
+        "state-unreachable.html": "d0e4d6f42c419eba6ada674b40a3da98bc916a3538616f2b7eeef8bcab04df7e",
+        "state-revoked.html": "dcb8363d1e8a101547846e5eaf708477bdc3a2ff5d27a874127a9e9720ffe939",
+        "state-multiple.html": "15f03e63c29cd578d8a33fb85b17720a5589c8abadfd1c3bfe365feeed581168",
+        "direction-b.html": "0b4429858abd77e69913a043783b6b9f1bc75fbdd44314da009c8792e709d189"
+      },
+      "scope": "Static illustrative mockups only; no backend, delivery, authorization or screen-reader certification.",
+      "axeTags": ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"],
+      "cases": [
+        {
+          "file": "state-incoming.html",
+          "width": 1280,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 1280,
+                "scroll": 1280
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Saya tangani →",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Single ACK records response without closing incident",
+              "pass": true,
+              "evidence": "Simulasi: Anda menuju lokasi. Insiden belum dinyatakan selesai."
+            },
+            {
+              "name": "Single ACK status updated",
+              "pass": true,
+              "evidence": "\n          \n            Alert diterima\n            \n              20.41.08 WIB\n            \n          \n          \n            Status\n            Anda menuju lokasi\n          \n        "
+            },
+            {
+              "name": "ACK feedback receives focus",
+              "pass": true,
+              "evidence": "Simulasi: Anda menuju lokasi. Insiden belum dinyatakan selesai."
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [
+              {
+                "id": "color-contrast",
+                "impact": "serious",
+                "targets": [["button > span[aria-hidden=\"true\"]"]]
+              }
+            ],
+            "passes": 18
+          }
+        },
+        {
+          "file": "state-incoming.html",
+          "width": 390,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 390,
+                "scroll": 390
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Saya tangani →",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Incoming CTA visible without scroll at 390x844",
+              "pass": true,
+              "evidence": {
+                "x": 20,
+                "y": 580.09375,
+                "width": 350,
+                "height": 64
+              }
+            },
+            {
+              "name": "Single ACK records response without closing incident",
+              "pass": true,
+              "evidence": "Simulasi: Anda menuju lokasi. Insiden belum dinyatakan selesai."
+            },
+            {
+              "name": "Single ACK status updated",
+              "pass": true,
+              "evidence": "\n          \n            Alert diterima\n            \n              20.41.08 WIB\n            \n          \n          \n            Status\n            Anda menuju lokasi\n          \n        "
+            },
+            {
+              "name": "ACK feedback receives focus",
+              "pass": true,
+              "evidence": "Simulasi: Anda menuju lokasi. Insiden belum dinyatakan selesai."
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [
+              {
+                "id": "color-contrast",
+                "impact": "serious",
+                "targets": [["button > span[aria-hidden=\"true\"]"]]
+              }
+            ],
+            "passes": 18
+          }
+        },
+        {
+          "file": "state-incoming.html",
+          "width": 320,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 320,
+                "scroll": 320
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Saya tangani →",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Single ACK records response without closing incident",
+              "pass": true,
+              "evidence": "Simulasi: Anda menuju lokasi. Insiden belum dinyatakan selesai."
+            },
+            {
+              "name": "Single ACK status updated",
+              "pass": true,
+              "evidence": "\n          \n            Alert diterima\n            \n              20.41.08 WIB\n            \n          \n          \n            Status\n            Anda menuju lokasi\n          \n        "
+            },
+            {
+              "name": "ACK feedback receives focus",
+              "pass": true,
+              "evidence": "Simulasi: Anda menuju lokasi. Insiden belum dinyatakan selesai."
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [
+              {
+                "id": "color-contrast",
+                "impact": "serious",
+                "targets": [["button > span[aria-hidden=\"true\"]"]]
+              }
+            ],
+            "passes": 18
+          }
+        },
+        {
+          "file": "state-acknowledged.html",
+          "width": 1280,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 1280,
+                "scroll": 1280
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Kembali ke pemantauan",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [
+              {
+                "id": "color-contrast",
+                "impact": "serious",
+                "targets": [[".alert-icon"]]
+              }
+            ],
+            "passes": 21
+          }
+        },
+        {
+          "file": "state-acknowledged.html",
+          "width": 390,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 390,
+                "scroll": 390
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Kembali ke pemantauan",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [
+              {
+                "id": "color-contrast",
+                "impact": "serious",
+                "targets": [[".alert-icon"]]
+              }
+            ],
+            "passes": 21
+          }
+        },
+        {
+          "file": "state-acknowledged.html",
+          "width": 320,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 320,
+                "scroll": 320
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Kembali ke pemantauan",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [
+              {
+                "id": "color-contrast",
+                "impact": "serious",
+                "targets": [[".alert-icon"]]
+              }
+            ],
+            "passes": 21
+          }
+        },
+        {
+          "file": "state-reconnecting.html",
+          "width": 1280,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 1280,
+                "scroll": 1280
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [],
+            "passes": 18
+          },
+          "keyboard": "N/A: informational state has no controls."
+        },
+        {
+          "file": "state-reconnecting.html",
+          "width": 390,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 390,
+                "scroll": 390
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [],
+            "passes": 18
+          },
+          "keyboard": "N/A: informational state has no controls."
+        },
+        {
+          "file": "state-reconnecting.html",
+          "width": 320,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 320,
+                "scroll": 320
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [],
+            "passes": 18
+          },
+          "keyboard": "N/A: informational state has no controls."
+        },
+        {
+          "file": "state-unreachable.html",
+          "width": 1280,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 1280,
+                "scroll": 1280
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Ke layar PIN →",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "PIN recovery is safe local simulation",
+              "pass": true,
+              "evidence": "Simulasi perpindahan ke layar PIN. Masukkan PIN hanya di aplikasi asli. Mockup ini tidak meminta atau memeriksa PIN."
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [
+              {
+                "id": "color-contrast",
+                "impact": "serious",
+                "targets": [["span[aria-hidden=\"true\"]"]]
+              }
+            ],
+            "passes": 19
+          }
+        },
+        {
+          "file": "state-unreachable.html",
+          "width": 390,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 390,
+                "scroll": 390
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Ke layar PIN →",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "PIN recovery is safe local simulation",
+              "pass": true,
+              "evidence": "Simulasi perpindahan ke layar PIN. Masukkan PIN hanya di aplikasi asli. Mockup ini tidak meminta atau memeriksa PIN."
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [
+              {
+                "id": "color-contrast",
+                "impact": "serious",
+                "targets": [["span[aria-hidden=\"true\"]"]]
+              }
+            ],
+            "passes": 19
+          }
+        },
+        {
+          "file": "state-unreachable.html",
+          "width": 320,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 320,
+                "scroll": 320
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Ke layar PIN →",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "PIN recovery is safe local simulation",
+              "pass": true,
+              "evidence": "Simulasi perpindahan ke layar PIN. Masukkan PIN hanya di aplikasi asli. Mockup ini tidak meminta atau memeriksa PIN."
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [
+              {
+                "id": "color-contrast",
+                "impact": "serious",
+                "targets": [["span[aria-hidden=\"true\"]"]]
+              }
+            ],
+            "passes": 19
+          }
+        },
+        {
+          "file": "state-revoked.html",
+          "width": 1280,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 1280,
+                "scroll": 1280
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "SUMMARY",
+                "text": "Lihat langkah berikutnya",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Revoked recovery steps open with keyboard",
+              "pass": true,
+              "evidence": "\n          Lihat langkah berikutnya\n          \n            \n              Beri tahu penanggung jawab outlet bahwa akses perangkat dicabut.\n            \n            \n              Pastikan penerimaan alert dipantau dari perangkat staf yang aktif.\n            \n            \n              Tunggu arahan penanggung jawab sebelum mengaktifkan perangkat ini\n              lagi.\n            \n          \n        "
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [],
+            "passes": 19
+          }
+        },
+        {
+          "file": "state-revoked.html",
+          "width": 390,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 390,
+                "scroll": 390
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "SUMMARY",
+                "text": "Lihat langkah berikutnya",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Revoked recovery steps open with keyboard",
+              "pass": true,
+              "evidence": "\n          Lihat langkah berikutnya\n          \n            \n              Beri tahu penanggung jawab outlet bahwa akses perangkat dicabut.\n            \n            \n              Pastikan penerimaan alert dipantau dari perangkat staf yang aktif.\n            \n            \n              Tunggu arahan penanggung jawab sebelum mengaktifkan perangkat ini\n              lagi.\n            \n          \n        "
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [],
+            "passes": 19
+          }
+        },
+        {
+          "file": "state-revoked.html",
+          "width": 320,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 320,
+                "scroll": 320
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "SUMMARY",
+                "text": "Lihat langkah berikutnya",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Revoked recovery steps open with keyboard",
+              "pass": true,
+              "evidence": "\n          Lihat langkah berikutnya\n          \n            \n              Beri tahu penanggung jawab outlet bahwa akses perangkat dicabut.\n            \n            \n              Pastikan penerimaan alert dipantau dari perangkat staf yang aktif.\n            \n            \n              Tunggu arahan penanggung jawab sebelum mengaktifkan perangkat ini\n              lagi.\n            \n          \n        "
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [],
+            "passes": 19
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 1280,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 1280,
+                "scroll": 1280
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": false,
+              "evidence": [
+                {
+                  "id": "label-content-name-mismatch",
+                  "impact": "serious",
+                  "help": "Elements must have their visible text as part of their accessible name",
+                  "nodes": [
+                    {
+                      "target": [
+                        ".secondary[data-alert-id=\"demo-alert-015\"]"
+                      ],
+                      "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                    },
+                    {
+                      "target": [
+                        ".secondary[data-alert-id=\"demo-alert-016\"]"
+                      ],
+                      "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Saya tangani",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Three independent alerts present",
+              "pass": true,
+              "evidence": 3
+            },
+            {
+              "name": "Queue count after ACK 1",
+              "pass": false,
+              "evidence": {
+                "title": "2 lokasi perlu bantuan",
+                "status": "Darurat · 2 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 1 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 1",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 2
+              }
+            },
+            {
+              "name": "Queue count after ACK 2",
+              "pass": false,
+              "evidence": {
+                "title": "1 lokasi perlu bantuan",
+                "status": "Darurat · 1 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 2 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 2",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 1
+              }
+            },
+            {
+              "name": "Queue count after ACK 3",
+              "pass": false,
+              "evidence": {
+                "title": "Semua alert sudah direspons",
+                "status": "Darurat · 0 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 3 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 3",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 0
+              }
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [
+              {
+                "id": "label-content-name-mismatch",
+                "impact": "serious",
+                "help": "Elements must have their visible text as part of their accessible name",
+                "nodes": [
+                  {
+                    "target": [".secondary[data-alert-id=\"demo-alert-015\"]"],
+                    "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                  },
+                  {
+                    "target": [".secondary[data-alert-id=\"demo-alert-016\"]"],
+                    "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                  }
+                ]
+              }
+            ],
+            "incomplete": [],
+            "passes": 19
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 390,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 390,
+                "scroll": 390
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": false,
+              "evidence": [
+                {
+                  "id": "label-content-name-mismatch",
+                  "impact": "serious",
+                  "help": "Elements must have their visible text as part of their accessible name",
+                  "nodes": [
+                    {
+                      "target": [
+                        ".secondary[data-alert-id=\"demo-alert-015\"]"
+                      ],
+                      "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                    },
+                    {
+                      "target": [
+                        ".secondary[data-alert-id=\"demo-alert-016\"]"
+                      ],
+                      "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Saya tangani",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Three independent alerts present",
+              "pass": true,
+              "evidence": 3
+            },
+            {
+              "name": "Queue count after ACK 1",
+              "pass": false,
+              "evidence": {
+                "title": "2 lokasi perlu bantuan",
+                "status": "Darurat · 2 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 1 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 1",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 2
+              }
+            },
+            {
+              "name": "Queue count after ACK 2",
+              "pass": false,
+              "evidence": {
+                "title": "1 lokasi perlu bantuan",
+                "status": "Darurat · 1 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 2 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 2",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 1
+              }
+            },
+            {
+              "name": "Queue count after ACK 3",
+              "pass": false,
+              "evidence": {
+                "title": "Semua alert sudah direspons",
+                "status": "Darurat · 0 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 3 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 3",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 0
+              }
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [
+              {
+                "id": "label-content-name-mismatch",
+                "impact": "serious",
+                "help": "Elements must have their visible text as part of their accessible name",
+                "nodes": [
+                  {
+                    "target": [".secondary[data-alert-id=\"demo-alert-015\"]"],
+                    "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                  },
+                  {
+                    "target": [".secondary[data-alert-id=\"demo-alert-016\"]"],
+                    "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                  }
+                ]
+              }
+            ],
+            "incomplete": [],
+            "passes": 19
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 320,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 320,
+                "scroll": 320
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": false,
+              "evidence": [
+                {
+                  "id": "label-content-name-mismatch",
+                  "impact": "serious",
+                  "help": "Elements must have their visible text as part of their accessible name",
+                  "nodes": [
+                    {
+                      "target": [
+                        ".secondary[data-alert-id=\"demo-alert-015\"]"
+                      ],
+                      "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                    },
+                    {
+                      "target": [
+                        ".secondary[data-alert-id=\"demo-alert-016\"]"
+                      ],
+                      "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Saya tangani",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Three independent alerts present",
+              "pass": true,
+              "evidence": 3
+            },
+            {
+              "name": "Queue count after ACK 1",
+              "pass": false,
+              "evidence": {
+                "title": "2 lokasi perlu bantuan",
+                "status": "Darurat · 2 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 1 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 1",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 2
+              }
+            },
+            {
+              "name": "Queue count after ACK 2",
+              "pass": false,
+              "evidence": {
+                "title": "1 lokasi perlu bantuan",
+                "status": "Darurat · 1 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 2 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 2",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 1
+              }
+            },
+            {
+              "name": "Queue count after ACK 3",
+              "pass": false,
+              "evidence": {
+                "title": "Semua alert sudah direspons",
+                "status": "Darurat · 0 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 3 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 3",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 0
+              }
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [
+              {
+                "id": "label-content-name-mismatch",
+                "impact": "serious",
+                "help": "Elements must have their visible text as part of their accessible name",
+                "nodes": [
+                  {
+                    "target": [".secondary[data-alert-id=\"demo-alert-015\"]"],
+                    "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                  },
+                  {
+                    "target": [".secondary[data-alert-id=\"demo-alert-016\"]"],
+                    "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                  }
+                ]
+              }
+            ],
+            "incomplete": [],
+            "passes": 19
+          }
+        },
+        {
+          "file": "direction-b.html",
+          "width": 1280,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 1280,
+                "scroll": 1280
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Saya tangani →",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Single ACK records response without closing incident",
+              "pass": true,
+              "evidence": "Simulasi: Anda menuju lokasi. Insiden belum dinyatakan selesai."
+            },
+            {
+              "name": "Single ACK status updated",
+              "pass": true,
+              "evidence": "\n          \n            Alert diterima\n            \n              20.41.08 WIB\n            \n          \n          \n            Status\n            Anda menuju lokasi\n          \n        "
+            },
+            {
+              "name": "ACK feedback receives focus",
+              "pass": true,
+              "evidence": "Simulasi: Anda menuju lokasi. Insiden belum dinyatakan selesai."
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [
+              {
+                "id": "color-contrast",
+                "impact": "serious",
+                "targets": [["button > span[aria-hidden=\"true\"]"]]
+              }
+            ],
+            "passes": 18
+          }
+        },
+        {
+          "file": "direction-b.html",
+          "width": 390,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 390,
+                "scroll": 390
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Saya tangani →",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Single ACK records response without closing incident",
+              "pass": true,
+              "evidence": "Simulasi: Anda menuju lokasi. Insiden belum dinyatakan selesai."
+            },
+            {
+              "name": "Single ACK status updated",
+              "pass": true,
+              "evidence": "\n          \n            Alert diterima\n            \n              20.41.08 WIB\n            \n          \n          \n            Status\n            Anda menuju lokasi\n          \n        "
+            },
+            {
+              "name": "ACK feedback receives focus",
+              "pass": true,
+              "evidence": "Simulasi: Anda menuju lokasi. Insiden belum dinyatakan selesai."
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [
+              {
+                "id": "color-contrast",
+                "impact": "serious",
+                "targets": [["button > span[aria-hidden=\"true\"]"]]
+              }
+            ],
+            "passes": 18
+          }
+        },
+        {
+          "file": "direction-b.html",
+          "width": 320,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 320,
+                "scroll": 320
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Saya tangani →",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Single ACK records response without closing incident",
+              "pass": true,
+              "evidence": "Simulasi: Anda menuju lokasi. Insiden belum dinyatakan selesai."
+            },
+            {
+              "name": "Single ACK status updated",
+              "pass": true,
+              "evidence": "\n          \n            Alert diterima\n            \n              20.41.08 WIB\n            \n          \n          \n            Status\n            Anda menuju lokasi\n          \n        "
+            },
+            {
+              "name": "ACK feedback receives focus",
+              "pass": true,
+              "evidence": "Simulasi: Anda menuju lokasi. Insiden belum dinyatakan selesai."
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [
+              {
+                "id": "color-contrast",
+                "impact": "serious",
+                "targets": [["button > span[aria-hidden=\"true\"]"]]
+              }
+            ],
+            "passes": 18
+          }
+        }
+      ],
+      "failures": [
+        {
+          "file": "state-multiple.html",
+          "width": 1280,
+          "name": "No serious or critical axe violations",
+          "evidence": [
+            {
+              "id": "label-content-name-mismatch",
+              "impact": "serious",
+              "help": "Elements must have their visible text as part of their accessible name",
+              "nodes": [
+                {
+                  "target": [".secondary[data-alert-id=\"demo-alert-015\"]"],
+                  "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                },
+                {
+                  "target": [".secondary[data-alert-id=\"demo-alert-016\"]"],
+                  "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 1280,
+          "name": "Queue count after ACK 1",
+          "evidence": {
+            "title": "2 lokasi perlu bantuan",
+            "status": "Darurat · 2 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 1280,
+          "name": "Queue count after ACK 2",
+          "evidence": {
+            "title": "1 lokasi perlu bantuan",
+            "status": "Darurat · 1 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 1280,
+          "name": "Queue count after ACK 3",
+          "evidence": {
+            "title": "Semua alert sudah direspons",
+            "status": "Darurat · 0 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 390,
+          "name": "No serious or critical axe violations",
+          "evidence": [
+            {
+              "id": "label-content-name-mismatch",
+              "impact": "serious",
+              "help": "Elements must have their visible text as part of their accessible name",
+              "nodes": [
+                {
+                  "target": [".secondary[data-alert-id=\"demo-alert-015\"]"],
+                  "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                },
+                {
+                  "target": [".secondary[data-alert-id=\"demo-alert-016\"]"],
+                  "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 390,
+          "name": "Queue count after ACK 1",
+          "evidence": {
+            "title": "2 lokasi perlu bantuan",
+            "status": "Darurat · 2 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 390,
+          "name": "Queue count after ACK 2",
+          "evidence": {
+            "title": "1 lokasi perlu bantuan",
+            "status": "Darurat · 1 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 390,
+          "name": "Queue count after ACK 3",
+          "evidence": {
+            "title": "Semua alert sudah direspons",
+            "status": "Darurat · 0 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 320,
+          "name": "No serious or critical axe violations",
+          "evidence": [
+            {
+              "id": "label-content-name-mismatch",
+              "impact": "serious",
+              "help": "Elements must have their visible text as part of their accessible name",
+              "nodes": [
+                {
+                  "target": [".secondary[data-alert-id=\"demo-alert-015\"]"],
+                  "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                },
+                {
+                  "target": [".secondary[data-alert-id=\"demo-alert-016\"]"],
+                  "failureSummary": "Fix any of the following:\n  Text inside the element is not included in the accessible name"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 320,
+          "name": "Queue count after ACK 1",
+          "evidence": {
+            "title": "2 lokasi perlu bantuan",
+            "status": "Darurat · 2 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 320,
+          "name": "Queue count after ACK 2",
+          "evidence": {
+            "title": "1 lokasi perlu bantuan",
+            "status": "Darurat · 1 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 320,
+          "name": "Queue count after ACK 3",
+          "evidence": {
+            "title": "Semua alert sudah direspons",
+            "status": "Darurat · 0 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        }
+      ],
+      "finishedAt": "2026-11-13T23:58:03.673Z",
+      "sourceHashesAfter": {
+        "state-incoming.html": "5e35d88337e8a70d830828aef8aa1b0ad82fa95e0ceaa4e67736955fc2feabe9",
+        "state-acknowledged.html": "0ac7d3f2405a3a77253ad8d237ef243349dc2610266c8e44ff555eca5aedf5f8",
+        "state-reconnecting.html": "85eba62d297c02a3b9e2ea5f2925c8c3752f49c69463f3a85ffe9cc2c378c78f",
+        "state-unreachable.html": "d0e4d6f42c419eba6ada674b40a3da98bc916a3538616f2b7eeef8bcab04df7e",
+        "state-revoked.html": "dcb8363d1e8a101547846e5eaf708477bdc3a2ff5d27a874127a9e9720ffe939",
+        "state-multiple.html": "15f03e63c29cd578d8a33fb85b17720a5589c8abadfd1c3bfe365feeed581168",
+        "direction-b.html": "0b4429858abd77e69913a043783b6b9f1bc75fbdd44314da009c8792e709d189"
+      },
+      "pass": false
+    },
+    {
+      "startedAt": "2026-11-13T23:59:05.938Z",
+      "toolVersions": {
+        "playwright": "1.63.0",
+        "axeCore": "4.14.0"
+      },
+      "sourceHashes": {
+        "state-multiple.html": "53f75f679db0020e95051e9974a5603619fb3ceef8511c32b24cb02900273465"
+      },
+      "scope": "Static illustrative mockups only; no backend, delivery, authorization or screen-reader certification.",
+      "axeTags": ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"],
+      "cases": [
+        {
+          "file": "state-multiple.html",
+          "width": 1280,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 1280,
+                "scroll": 1280
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Saya tangani",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Three independent alerts present",
+              "pass": true,
+              "evidence": 3
+            },
+            {
+              "name": "Queue count after ACK 1",
+              "pass": true,
+              "evidence": {
+                "title": "2 lokasi perlu bantuan",
+                "status": "Darurat · 2 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 1 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 1",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 2
+              }
+            },
+            {
+              "name": "Queue count after ACK 2",
+              "pass": true,
+              "evidence": {
+                "title": "1 lokasi perlu bantuan",
+                "status": "Darurat · 1 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 2 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 2",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 1
+              }
+            },
+            {
+              "name": "Queue count after ACK 3",
+              "pass": false,
+              "evidence": {
+                "title": "Semua alert sudah direspons",
+                "status": "Darurat · 0 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 3 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 3",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 0
+              }
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [],
+            "passes": 19
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 390,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 390,
+                "scroll": 390
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Saya tangani",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Three independent alerts present",
+              "pass": true,
+              "evidence": 3
+            },
+            {
+              "name": "Queue count after ACK 1",
+              "pass": true,
+              "evidence": {
+                "title": "2 lokasi perlu bantuan",
+                "status": "Darurat · 2 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 1 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 1",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 2
+              }
+            },
+            {
+              "name": "Queue count after ACK 2",
+              "pass": true,
+              "evidence": {
+                "title": "1 lokasi perlu bantuan",
+                "status": "Darurat · 1 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 2 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 2",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 1
+              }
+            },
+            {
+              "name": "Queue count after ACK 3",
+              "pass": false,
+              "evidence": {
+                "title": "Semua alert sudah direspons",
+                "status": "Darurat · 0 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 3 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 3",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 0
+              }
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [],
+            "passes": 19
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 320,
+          "height": 844,
+          "checks": [
+            {
+              "name": "No horizontal overflow",
+              "pass": true,
+              "evidence": {
+                "viewport": 320,
+                "scroll": 320
+              }
+            },
+            {
+              "name": "Reduced motion is static",
+              "pass": true,
+              "evidence": {
+                "reduced": true,
+                "activeAnimations": 0
+              }
+            },
+            {
+              "name": "No serious or critical axe violations",
+              "pass": true,
+              "evidence": []
+            },
+            {
+              "name": "Keyboard focus is visible on first action",
+              "pass": true,
+              "evidence": {
+                "tag": "BUTTON",
+                "text": "Saya tangani",
+                "focusVisible": true,
+                "outlineStyle": "solid",
+                "outlineWidth": "4px"
+              }
+            },
+            {
+              "name": "Three independent alerts present",
+              "pass": true,
+              "evidence": 3
+            },
+            {
+              "name": "Queue count after ACK 1",
+              "pass": true,
+              "evidence": {
+                "title": "2 lokasi perlu bantuan",
+                "status": "Darurat · 2 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 1 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 1",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 2
+              }
+            },
+            {
+              "name": "Queue count after ACK 2",
+              "pass": true,
+              "evidence": {
+                "title": "1 lokasi perlu bantuan",
+                "status": "Darurat · 1 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 2 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 2",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 1
+              }
+            },
+            {
+              "name": "Queue count after ACK 3",
+              "pass": false,
+              "evidence": {
+                "title": "Semua alert sudah direspons",
+                "status": "Darurat · 0 alert menunggu",
+                "queueLabel": "Daftar alert, dari yang diterima paling awal"
+              }
+            },
+            {
+              "name": "ACK 3 accessible button state",
+              "pass": true,
+              "evidence": {
+                "text": "Respons tercatat",
+                "ariaLabel": null
+              }
+            },
+            {
+              "name": "Other alerts retained after ACK 3",
+              "pass": true,
+              "evidence": {
+                "remainingButtons": 0
+              }
+            },
+            {
+              "name": "No JavaScript runtime errors",
+              "pass": true,
+              "evidence": []
+            }
+          ],
+          "axe": {
+            "violations": [],
+            "incomplete": [],
+            "passes": 19
+          }
+        }
+      ],
+      "failures": [
+        {
+          "file": "state-multiple.html",
+          "width": 1280,
+          "name": "Queue count after ACK 3",
+          "evidence": {
+            "title": "Semua alert sudah direspons",
+            "status": "Darurat · 0 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 390,
+          "name": "Queue count after ACK 3",
+          "evidence": {
+            "title": "Semua alert sudah direspons",
+            "status": "Darurat · 0 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "file": "state-multiple.html",
+          "width": 320,
+          "name": "Queue count after ACK 3",
+          "evidence": {
+            "title": "Semua alert sudah direspons",
+            "status": "Darurat · 0 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        }
+      ],
+      "finishedAt": "2026-11-13T23:59:07.134Z",
+      "sourceHashesAfter": {
+        "state-multiple.html": "53f75f679db0020e95051e9974a5603619fb3ceef8511c32b24cb02900273465"
+      },
+      "pass": false
+    }
+  ],
+  "startedAt": "2026-11-13T23:59:36.914Z",
+  "toolVersions": {
+    "playwright": "1.63.0",
+    "axeCore": "4.14.0"
+  },
+  "sourceHashes": {
+    "state-incoming.html": "8504bc087102c8932dcf47d0ddb23873c05cb9c66dc3e13d08601a391b9698ce",
+    "state-acknowledged.html": "194765be5e0f170a019e9195aaf96838474a133084b30299ee5d511c8750ae02",
+    "state-reconnecting.html": "df99ee4532c44f214892c6e1570c85a82ccd30361e11cd284cf6390a4caabf09",
+    "state-unreachable.html": "ba725f09ac351c50f518e27c441895c796519b17e516e80504b9703fe24dc3e7",
+    "state-revoked.html": "21caa12847c5c0adf97be12457dfbb8e63916e761e7d39e518f2f18ac4ae79de",
+    "state-multiple.html": "53f75f679db0020e95051e9974a5603619fb3ceef8511c32b24cb02900273465",
+    "direction-b.html": "fd7262fabd3848b30f4aa890eececd1906e0ad856f8e8ece51c03487cdc52e1c"
+  },
+  "scope": "Static illustrative mockups only; no backend, delivery, authorization or screen-reader certification.",
+  "axeTags": ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"],
+  "cases": [
+    {
+      "file": "state-multiple.html",
+      "width": 1280,
+      "height": 844,
+      "checks": [
+        {
+          "name": "No horizontal overflow",
+          "pass": true,
+          "evidence": {
+            "viewport": 1280,
+            "scroll": 1280
+          }
+        },
+        {
+          "name": "Reduced motion is static",
+          "pass": true,
+          "evidence": {
+            "reduced": true,
+            "activeAnimations": 0
+          }
+        },
+        {
+          "name": "No serious or critical axe violations",
+          "pass": true,
+          "evidence": []
+        },
+        {
+          "name": "Keyboard focus is visible on first action",
+          "pass": true,
+          "evidence": {
+            "tag": "BUTTON",
+            "text": "Saya tangani",
+            "focusVisible": true,
+            "outlineStyle": "solid",
+            "outlineWidth": "4px"
+          }
+        },
+        {
+          "name": "Three independent alerts present",
+          "pass": true,
+          "evidence": 3
+        },
+        {
+          "name": "Queue count after ACK 1",
+          "pass": true,
+          "evidence": {
+            "title": "2 lokasi perlu bantuan",
+            "status": "Darurat · 2 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "name": "ACK 1 accessible button state",
+          "pass": true,
+          "evidence": {
+            "text": "Respons tercatat",
+            "ariaLabel": null
+          }
+        },
+        {
+          "name": "Other alerts retained after ACK 1",
+          "pass": true,
+          "evidence": {
+            "remainingButtons": 2
+          }
+        },
+        {
+          "name": "Queue count after ACK 2",
+          "pass": true,
+          "evidence": {
+            "title": "1 lokasi perlu bantuan",
+            "status": "Darurat · 1 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "name": "ACK 2 accessible button state",
+          "pass": true,
+          "evidence": {
+            "text": "Respons tercatat",
+            "ariaLabel": null
+          }
+        },
+        {
+          "name": "Other alerts retained after ACK 2",
+          "pass": true,
+          "evidence": {
+            "remainingButtons": 1
+          }
+        },
+        {
+          "name": "Queue count after ACK 3",
+          "pass": true,
+          "evidence": {
+            "title": "Semua alert sudah direspons",
+            "status": "Darurat · 0 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "name": "ACK 3 accessible button state",
+          "pass": true,
+          "evidence": {
+            "text": "Respons tercatat",
+            "ariaLabel": null
+          }
+        },
+        {
+          "name": "Other alerts retained after ACK 3",
+          "pass": true,
+          "evidence": {
+            "remainingButtons": 0
+          }
+        },
+        {
+          "name": "No JavaScript runtime errors",
+          "pass": true,
+          "evidence": []
+        }
+      ],
+      "axe": {
+        "violations": [],
+        "incomplete": [],
+        "passes": 19
+      }
+    },
+    {
+      "file": "state-multiple.html",
+      "width": 390,
+      "height": 844,
+      "checks": [
+        {
+          "name": "No horizontal overflow",
+          "pass": true,
+          "evidence": {
+            "viewport": 390,
+            "scroll": 390
+          }
+        },
+        {
+          "name": "Reduced motion is static",
+          "pass": true,
+          "evidence": {
+            "reduced": true,
+            "activeAnimations": 0
+          }
+        },
+        {
+          "name": "No serious or critical axe violations",
+          "pass": true,
+          "evidence": []
+        },
+        {
+          "name": "Keyboard focus is visible on first action",
+          "pass": true,
+          "evidence": {
+            "tag": "BUTTON",
+            "text": "Saya tangani",
+            "focusVisible": true,
+            "outlineStyle": "solid",
+            "outlineWidth": "4px"
+          }
+        },
+        {
+          "name": "Three independent alerts present",
+          "pass": true,
+          "evidence": 3
+        },
+        {
+          "name": "Queue count after ACK 1",
+          "pass": true,
+          "evidence": {
+            "title": "2 lokasi perlu bantuan",
+            "status": "Darurat · 2 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "name": "ACK 1 accessible button state",
+          "pass": true,
+          "evidence": {
+            "text": "Respons tercatat",
+            "ariaLabel": null
+          }
+        },
+        {
+          "name": "Other alerts retained after ACK 1",
+          "pass": true,
+          "evidence": {
+            "remainingButtons": 2
+          }
+        },
+        {
+          "name": "Queue count after ACK 2",
+          "pass": true,
+          "evidence": {
+            "title": "1 lokasi perlu bantuan",
+            "status": "Darurat · 1 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "name": "ACK 2 accessible button state",
+          "pass": true,
+          "evidence": {
+            "text": "Respons tercatat",
+            "ariaLabel": null
+          }
+        },
+        {
+          "name": "Other alerts retained after ACK 2",
+          "pass": true,
+          "evidence": {
+            "remainingButtons": 1
+          }
+        },
+        {
+          "name": "Queue count after ACK 3",
+          "pass": true,
+          "evidence": {
+            "title": "Semua alert sudah direspons",
+            "status": "Darurat · 0 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "name": "ACK 3 accessible button state",
+          "pass": true,
+          "evidence": {
+            "text": "Respons tercatat",
+            "ariaLabel": null
+          }
+        },
+        {
+          "name": "Other alerts retained after ACK 3",
+          "pass": true,
+          "evidence": {
+            "remainingButtons": 0
+          }
+        },
+        {
+          "name": "No JavaScript runtime errors",
+          "pass": true,
+          "evidence": []
+        }
+      ],
+      "axe": {
+        "violations": [],
+        "incomplete": [],
+        "passes": 19
+      }
+    },
+    {
+      "file": "state-multiple.html",
+      "width": 320,
+      "height": 844,
+      "checks": [
+        {
+          "name": "No horizontal overflow",
+          "pass": true,
+          "evidence": {
+            "viewport": 320,
+            "scroll": 320
+          }
+        },
+        {
+          "name": "Reduced motion is static",
+          "pass": true,
+          "evidence": {
+            "reduced": true,
+            "activeAnimations": 0
+          }
+        },
+        {
+          "name": "No serious or critical axe violations",
+          "pass": true,
+          "evidence": []
+        },
+        {
+          "name": "Keyboard focus is visible on first action",
+          "pass": true,
+          "evidence": {
+            "tag": "BUTTON",
+            "text": "Saya tangani",
+            "focusVisible": true,
+            "outlineStyle": "solid",
+            "outlineWidth": "4px"
+          }
+        },
+        {
+          "name": "Three independent alerts present",
+          "pass": true,
+          "evidence": 3
+        },
+        {
+          "name": "Queue count after ACK 1",
+          "pass": true,
+          "evidence": {
+            "title": "2 lokasi perlu bantuan",
+            "status": "Darurat · 2 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "name": "ACK 1 accessible button state",
+          "pass": true,
+          "evidence": {
+            "text": "Respons tercatat",
+            "ariaLabel": null
+          }
+        },
+        {
+          "name": "Other alerts retained after ACK 1",
+          "pass": true,
+          "evidence": {
+            "remainingButtons": 2
+          }
+        },
+        {
+          "name": "Queue count after ACK 2",
+          "pass": true,
+          "evidence": {
+            "title": "1 lokasi perlu bantuan",
+            "status": "Darurat · 1 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "name": "ACK 2 accessible button state",
+          "pass": true,
+          "evidence": {
+            "text": "Respons tercatat",
+            "ariaLabel": null
+          }
+        },
+        {
+          "name": "Other alerts retained after ACK 2",
+          "pass": true,
+          "evidence": {
+            "remainingButtons": 1
+          }
+        },
+        {
+          "name": "Queue count after ACK 3",
+          "pass": true,
+          "evidence": {
+            "title": "Semua alert sudah direspons",
+            "status": "Darurat · 0 alert menunggu",
+            "queueLabel": "Daftar alert, dari yang diterima paling awal"
+          }
+        },
+        {
+          "name": "ACK 3 accessible button state",
+          "pass": true,
+          "evidence": {
+            "text": "Respons tercatat",
+            "ariaLabel": null
+          }
+        },
+        {
+          "name": "Other alerts retained after ACK 3",
+          "pass": true,
+          "evidence": {
+            "remainingButtons": 0
+          }
+        },
+        {
+          "name": "No JavaScript runtime errors",
+          "pass": true,
+          "evidence": []
+        }
+      ],
+      "axe": {
+        "violations": [],
+        "incomplete": [],
+        "passes": 19
+      }
+    }
+  ],
+  "failures": [],
+  "finishedAt": "2026-11-13T23:59:37.867Z",
+  "sourceHashesAfter": {
+    "state-incoming.html": "8504bc087102c8932dcf47d0ddb23873c05cb9c66dc3e13d08601a391b9698ce",
+    "state-acknowledged.html": "194765be5e0f170a019e9195aaf96838474a133084b30299ee5d511c8750ae02",
+    "state-reconnecting.html": "df99ee4532c44f214892c6e1570c85a82ccd30361e11cd284cf6390a4caabf09",
+    "state-unreachable.html": "ba725f09ac351c50f518e27c441895c796519b17e516e80504b9703fe24dc3e7",
+    "state-revoked.html": "21caa12847c5c0adf97be12457dfbb8e63916e761e7d39e518f2f18ac4ae79de",
+    "state-multiple.html": "53f75f679db0020e95051e9974a5603619fb3ceef8511c32b24cb02900273465",
+    "direction-b.html": "fd7262fabd3848b30f4aa890eececd1906e0ad856f8e8ece51c03487cdc52e1c"
+  },
+  "pass": true
+}
