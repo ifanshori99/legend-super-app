@@ -2486,6 +2486,13 @@
       "when": 1794681221754,
       "tag": "0383_stock_ledger_item_cost_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 384,
+      "version": "7",
+      "when": 1794681222754,
+      "tag": "0384_inventory_price_variance",
+      "breakpoints": true
     }
   ]
 }
