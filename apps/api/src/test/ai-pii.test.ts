@@ -38,12 +38,69 @@ describe("scanPii", () => {
     expect(kinds("penjualan Rp 8.500.000")).toEqual([]);
   });
 
+  it.each([
+    "Slip gaji Oktober 2026",
+    "Slip gaji 31 Oktober 2026",
+    "Slip gaji 31 Oktober",
+    "Payroll 2026-10-31",
+    "Upah tanggal 31/10/2026",
+    "Slip gaji 31 Okt 2026",
+    "Slip gaji 31 Okt. 2026",
+    "Slip gaji 31.10.26",
+    "salary October 31, 2026",
+    "Gaji bulan ini belum dibayar",
+  ])("does not classify words or dates as salary amounts: %s", (text) => {
+    expect(kinds(text)).toEqual([]);
+    expect(redactPii(text)).toBe(text);
+  });
+
   it("does not report one value twice", () => {
     expect(kinds("3174011501900001")).toEqual(["nik"]);
   });
 });
 
 describe("redactPii", () => {
+  it.each([
+    ["gaji Budi Rp 8.500.000", "gaji Budi [salary amount]"],
+    ["salary: 12000000", "salary: [salary amount]"],
+    ["THP 7,5 juta", "THP [salary amount]"],
+    ["Gaji 5000", "Gaji [salary amount]"],
+    ["Gaji Rp 2.026", "Gaji [salary amount]"],
+    ["salary: 2026.50", "salary: [salary amount]"],
+    ["gaji 2026,50", "gaji [salary amount]"],
+    [
+      "Slip gaji Oktober 2026: Rp 8.500.000",
+      "Slip gaji Oktober 2026: [salary amount]",
+    ],
+    [
+      "Gaji 31 Oktober 2026 Rp 8.500.000",
+      "Gaji 31 Oktober 2026 [salary amount]",
+    ],
+    [
+      "Slip gaji 31 Okt 2026 Rp 8.500.000",
+      "Slip gaji 31 Okt 2026 [salary amount]",
+    ],
+    ["Slip gaji 31.10.26 Rp 8.500.000", "Slip gaji 31.10.26 [salary amount]"],
+    [
+      "Slip gaji 31 Oktober Rp 8.500.000",
+      "Slip gaji 31 Oktober [salary amount]",
+    ],
+    [
+      "Slip gaji tanggal 31 Oktober 2026 sebesar Rp 8.500.000",
+      "Slip gaji tanggal 31 Oktober 2026 sebesar [salary amount]",
+    ],
+    [
+      "Gaji dibayar pada tanggal 31 Oktober 2026 Rp 8.500.000",
+      "Gaji dibayar pada tanggal 31 Oktober 2026 [salary amount]",
+    ],
+  ])(
+    "redacts salary amounts while preserving context: %s",
+    (text, expected) => {
+      expect(kinds(text)).toEqual(["salary"]);
+      expect(redactPii(text)).toBe(expected);
+    },
+  );
+
   it("replaces each finding with a neutral placeholder", () => {
     const out = redactPii("Hubungi budi@example.com atau 081234567890.");
     expect(out).toBe("Hubungi [email address] atau [phone number].");
