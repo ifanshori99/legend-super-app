@@ -1,5 +1,5 @@
 {
-  "base": "http://localhost:3241",
+  "base": "http://localhost:3367",
   "path": "/fasilitas/darurat",
   "totals": {
     "serious": 0,
@@ -234,7 +234,7 @@
             "x": 22,
             "y": 502,
             "width": 172,
-            "height": 48
+            "height": 44
           },
           "withinViewport": true
         },
@@ -248,7 +248,7 @@
             "x": 196,
             "y": 502,
             "width": 172,
-            "height": 48
+            "height": 44
           },
           "withinViewport": true
         },
@@ -260,9 +260,9 @@
           "width": 172,
           "boundingBox": {
             "x": 22,
-            "y": 552,
+            "y": 548,
             "width": 172,
-            "height": 48
+            "height": 44
           },
           "withinViewport": true
         },
@@ -274,9 +274,9 @@
           "width": 172,
           "boundingBox": {
             "x": 196,
-            "y": 552,
+            "y": 548,
             "width": 172,
-            "height": 48
+            "height": 44
           },
           "withinViewport": true
         }
@@ -300,7 +300,7 @@
             "x": 22,
             "y": 502,
             "width": 137,
-            "height": 48
+            "height": 44
           },
           "withinViewport": true
         },
@@ -314,7 +314,7 @@
             "x": 161,
             "y": 502,
             "width": 137,
-            "height": 48
+            "height": 44
           },
           "withinViewport": true
         },
@@ -326,9 +326,9 @@
           "width": 137,
           "boundingBox": {
             "x": 22,
-            "y": 552,
+            "y": 548,
             "width": 137,
-            "height": 48
+            "height": 44
           },
           "withinViewport": true
         },
@@ -340,9 +340,9 @@
           "width": 137,
           "boundingBox": {
             "x": 161,
-            "y": 552,
+            "y": 548,
             "width": 137,
-            "height": 48
+            "height": 44
           },
           "withinViewport": true
         }
