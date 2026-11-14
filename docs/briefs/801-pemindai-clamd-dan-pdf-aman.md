@@ -1,0 +1,9 @@
+# 801 Pemindai ClamdMalwareScanner (M4) + assertSafePdf (M5) (tingkat K, keamanan upload)
+Peran: engineer (baca ~/.agents/team/roles/engineer.md). Kartu legend-w9hwh (M4) dan legend-851ef (M5) (`bd show`, `bd update --claim`).
+Desain tetap: `git show origin/docs/media-transport-design:docs/design/media-transport.md` (4327dac7c), terutama D-4, D-5, D-6, tabel "Potongan kartu" baris M4 dan M5. Jangan buat ulang yang ada di "Apa yang sudah ada".
+Basis: worktree dari `origin/fix/storage-scanner-typed-error` (d4c02fa0a, error tipe 503/422 scanner sudah ada, di atas m1). Cabang `ws/storage-scanner-pdf`.
+- M4: `apps/api/src/services/clamd-scanner.ts` (klien INSTREAM), pemilihan runtime di `core-storage-runtime.ts`, env di `config/env.ts` + `.env.example`, field `scanner` di health, bagian deploy di `docs/deployment.md`. Fail-closed untuk dokumen. Test dengan server TCP palsu: OK, FOUND (422), ERROR, timeout, ECONNREFUSED, batas ukuran (503).
+- M5: `apps/api/src/services/pdf-safety.ts` + berkas worker, batas 5 detik dan 256 MB, dipasang di `uploadStorage` jalur dokumen (`core-storage.ts`). Fixture PDF dibuat di test (JavaScript, OpenAction, embedded file, rusak, PDF wajar).
+M4 dan M5 paralel, file terpisah (implementer per kartu, test-writer per kartu, Explore dulu). M6 (payout) TIDAK dikerjakan di sini.
+Jangan sentuh area panik, edge, DOIT, payout, HRIS. Tanpa migrasi kecuali perlu; bila perlu nomor 0378 dan laporkan. Jangan log isi file atau nama file pengguna.
+Selesai: test terarah lewat `heavy`, pra-gate AGENTS.md (prettier, eslint, typecheck API lewat `heavy`), satu subagent architect effort xhigh atas diff, temuan nyata dibetulkan, commit per kartu, push, komentar SHA di kedua kartu. Laporan: SHA, test, hasil architect, angka subagent (total, puncak, pemegang token heavy). Jangan merge ke m1.
