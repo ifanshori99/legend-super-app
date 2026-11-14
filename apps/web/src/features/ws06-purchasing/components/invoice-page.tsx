@@ -94,7 +94,7 @@ const PAYMENT_METHODS: readonly SupplierPaymentMethod[] = [
   "virtual_account",
 ];
 
-function MatchStatusPill({
+export function MatchStatusPill({
   status,
 }: {
   status: "pending" | "matched" | "discrepancy";
@@ -866,6 +866,14 @@ function InvoiceListContent({ canPay }: { canPay: boolean }) {
           onChange: setSearch,
           label: t("common.search"),
         }}
+        actions={
+          <Button asChild>
+            <Link to="/kelola/pengadaan/faktur/baru">
+              <ReceiptText aria-hidden="true" />
+              {t("inventoryInvoiceEntry.newInvoice")}
+            </Link>
+          </Button>
+        }
         empty={{
           title: t("inventoryReceiving.invoices.emptyTitle"),
           description: t("inventoryReceiving.invoices.emptyHint"),

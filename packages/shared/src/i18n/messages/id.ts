@@ -63,6 +63,8 @@ import { inventoryRecipeMessages } from "./ws06-recipe.ts";
 import { inventoryHppMessages } from "./ws06-hpp.ts";
 import { inventorySuppliersMessages } from "./ws06-suppliers.ts";
 import { inventoryReceivingMessages } from "./ws06-receiving.ts";
+import { invoiceMatchPreviewMessages } from "./ws06-invoice-match-preview.ts";
+import { inventoryInvoiceEntryMessages } from "./ws06-invoice-entry.ts";
 import { menuImportMessages } from "./ws03-menu-import.ts";
 import { attendanceQrMessages } from "./ws10-attendance-qr.ts";
 import { leaveClockinReviewMessages } from "./hr-leave-clockin-review.ts";
@@ -221,6 +223,8 @@ export const id = {
   inventoryHpp: inventoryHppMessages,
   inventorySuppliers: inventorySuppliersMessages,
   inventoryReceiving: inventoryReceivingMessages,
+  inventoryInvoiceEntry: inventoryInvoiceEntryMessages,
+  invoiceMatchPreview: invoiceMatchPreviewMessages,
   menuImport: menuImportMessages,
   // Loyalty back office (PRD §3.20), one file so parallel beads never edit the
   // same lines (legend-m8ow).
