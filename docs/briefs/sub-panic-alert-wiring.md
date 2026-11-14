@@ -17,6 +17,7 @@ Aturan semua subagent: jangan jalankan tsc/vitest/build/Playwright kecuali diseb
 ## Antarmuka bersama (wajib persis)
 
 ### A. `apps/web/src/features/facility-staff/panic-queue.ts`
+
 - `PanicQueueItem` tambah: `unitCode: string|null`, `areaName: string|null`,
   `takenBy: string|null`, `takenAt: string|null` (diisi dari frame; taken* awal null).
 - `PanicQueueState` tambah `closedIds: string[]` (alert yang diketahui sudah ditangani
@@ -38,6 +39,7 @@ Aturan semua subagent: jangan jalankan tsc/vitest/build/Playwright kecuali diseb
 - Fungsi lain (`pendingAlerts`, `settledAlerts`, `panicView`) tetap.
 
 ### B. `apps/web/src/features/facility-staff/panic-realtime.ts`
+
 - Frame masuk: coba `panicRealtimeFrameSchema` (perilaku lama: onAlert sekali per id, balas
   `received`), lalu `panicAcknowledgedFrameSchema` -> panggil opsi baru
   `onAcknowledged?(frame)` tiap kali, TANPA balasan. Lainnya diabaikan.
@@ -49,11 +51,13 @@ Aturan semua subagent: jangan jalankan tsc/vitest/build/Playwright kecuali diseb
 - `ack()` tetap; error 409 dilempar apa adanya (ApiError membawa acknowledgedBy).
 
 ### C. `apps/web/src/lib/api/errors.ts` + `client.ts`
+
 - `ApiError` tambah properti opsional `acknowledgedBy?: { displayName: string }` dan
   `acknowledgedAt?: string`, lewat objek `extra` konstruktor (pola `lockedUntil`).
   `client.ts` mengisinya dari body error bila tipenya cocok.
 
 ### D. `apps/web/src/features/facility-staff/use-panic-alerts.ts`
+
 - `onAcknowledged: (frame) => dispatch({ type: "acknowledged", frame })`.
 - Sinkronisasi: panggil `client.openAlerts()` sekali setelah `start()` dan setiap kali
   status menjadi `"open"`. `knownBefore` = id item pending (idle|failed|session) saat
@@ -64,6 +68,7 @@ Aturan semua subagent: jangan jalankan tsc/vitest/build/Playwright kecuali diseb
 - Satu klien per mount; hook ini hanya di-mount sekali (lihat F).
 
 ### E. Mock (`panic-mock-socket.ts`, `mock.ts`) — hanya VITE_API_MOCK
+
 - Frame mock wajib memuat `unitCode` dan `areaName` (dari fixture `fx` unit P2/W1/P1 dan
   area-nya) — tanpa ini schema strict menolak frame dan mock rusak.
 - Registry modul "alert terbuka mock": socket menambah saat mengirim frame panic;
@@ -77,6 +82,7 @@ Aturan semua subagent: jangan jalankan tsc/vitest/build/Playwright kecuali diseb
   `acknowledgedAt`.
 
 ### F. Shell (`routes/_ops/fasilitas.tsx` baru, `emergency-screen.tsx`, `panic-alert-layer.tsx`)
+
 - Layout route `createFileRoute("/_ops/fasilitas")`: `validateSearch` facilityId opsional
   (sama dengan anak), komponen merender `<Outlet />` lalu `<PanicAlertLayer facilityId=… />`
   hanya bila `evaluateGuard({kind:"permission", surface:"pos", anyOf:["facility.access.assist"]}, context.access)`
@@ -85,12 +91,13 @@ Aturan semua subagent: jangan jalankan tsc/vitest/build/Playwright kecuali diseb
 - Hapus mount `PanicAlertLayer` dari `emergency-screen.tsx` (cegah WS dobel).
 - `resolveLocation`: pakai `item.unitCode` / `item.areaName` bila tidak null, fallback
   pemetaan `useUnitBoard` yang ada.
-- Kartu/teks "taken": bila `item.takenBy` ada -> "Sudah ditangani {name}" (kunci i18n baru
+- Kartu/teks "taken": bila `item.takenBy` ada -> "{name} sudah menuju lokasi" (kunci i18n baru
   di `packages/shared/src/i18n/messages/facility-staff.ts`, daftarkan di katalog teks);
   null -> teks lama "rekan lain".
 - Tab "Darurat" 390 px: CTO akan cek lewat screenshot; jangan ubah `staff-chrome.tsx`.
 
 ## Test (test-writer, gagal-dulu)
+
 - `tests/panic-alert-queue.test.mjs`: acknowledged (tiap cabang di A), closedIds,
   ack-taken dengan nama, sync (tambah, dedupe, knownBefore -> taken, sending tak disentuh).
 - `tests/panic-realtime-client.test.mjs`: frame acknowledged -> onAcknowledged tanpa
@@ -98,6 +105,6 @@ Aturan semua subagent: jangan jalankan tsc/vitest/build/Playwright kecuali diseb
 - `tests/panic-alert-screen.test.mjs`: lokasi dari unitCode/areaName; taken dengan nama.
 - `e2e/legend-jztb7.mock.spec.ts` (pola `e2e/legend-1oi9.mock.spec.ts`, skenario lewat
   localStorage `legend.mock.panic`): alert muncul di `/fasilitas` (papan) dan tetap saat
-  pindah ke `/fasilitas/kebersihan` (satu dialog); `taken-remote` -> "Sudah ditangani Rina";
+  pindah ke `/fasilitas/kebersihan` (satu dialog); `taken-remote` -> "Rina sudah menuju lokasi";
   `restore` -> alert tampil setelah `page.reload()`; di 390 px tab Darurat terlihat penuh
   (boundingBox kanan <= lebar viewport dan tidak terpotong oleh scroll container).

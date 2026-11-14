@@ -117,14 +117,14 @@ const STATES = [
     scenario: 'acknowledged',
     ready: (p) => ackButtons(p).first().waitFor({ timeout: COLD }),
     act: (p) => ackButtons(p).first().click(),
-    after: (p) => p.getByText(/Sudah ditangani Rina/).first().waitFor({ timeout: 15_000 }),
+    after: (p) => p.getByText(/Rina sudah menuju lokasi/).first().waitFor({ timeout: 15_000 }),
   },
   {
     // Rekan (Rina) mengambil alert dari perangkat lain: frame acknowledged di ~3,5 s.
     name: 'taken-remote',
     scenario: 'taken-remote',
     ready: (p) => ackButtons(p).first().waitFor({ timeout: COLD }),
-    after: (p) => p.getByText(/Sudah ditangani Rina/).first().waitFor({ timeout: 15_000 }),
+    after: (p) => p.getByText(/Rina sudah menuju lokasi/).first().waitFor({ timeout: 15_000 }),
   },
   {
     // Alert hanya bisa datang dari open-alerts: muat ulang lalu alert harus tampil lagi.

@@ -84,7 +84,7 @@ test("FAC-08 an alert a colleague already took is shown as handled by name", asy
   await expect(
     dialog.getByRole("button", { name: "Saya tangani" }),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
-  await expect(dialog.getByText(/Sudah ditangani Rina/)).toBeVisible();
+  await expect(dialog.getByText(/Rina sudah menuju lokasi/)).toBeVisible();
   await expect(
     dialog.getByRole("button", { name: "Saya tangani" }),
   ).toHaveCount(0);
