@@ -1543,3 +1543,4 @@ Langkah berikut CTO baru:
 - 10:05 Batch61 MENDARAT: milestone/m1 70f90cecd (edge-contract-followups+edge-sales-gl, payroll-payout-gl; 0534->0348, 0536->0349). Tanpa satu run penuh bersih (gabungan run). Flake legend-odyct. e2e mzg/rx0h/sgg merah di base -> kartu baru P1. edge-resilience worktree terhapus cleanup (remote utuh). G2r4f lanjut batch62 (brief 705). G9d1r: pindahkan test banner ke lokasi yang dijalankan suite.
 - 10:15 G558t selesai: ws/reservation-followups 905891fa7 (0575) menggantikan ws/reservation-reschedule di batch63. Retro 27 G7gvi dimulai.
 - 10:25 bw2q: fix/platform-offline-banner 4b461d82f review sonnet bersih, antre batch64. Brief 706 (jemae e2e POS) antre slot Codex.
+- 10:45 sivp: fix/ssr-hydration 991876567 (test dipindah ke tests/, merah tanpa fix). legend-xpmbb: guard test di luar pola runner. G00yt (Codex) mulai 706 jemae.
