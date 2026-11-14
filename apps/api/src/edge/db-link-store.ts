@@ -47,7 +47,7 @@ import {
 } from "../services/edge-sync-conflict-alert.ts";
 import {
   lockSyncCursor,
-  neutralizeCatalogRows,
+  neutralizeCatalogRowsIfRefused,
   type EdgeTx,
 } from "../services/edge-queue.service.ts";
 import { decideInbound, type EdgeConflictReason } from "./conflict.ts";
@@ -381,14 +381,17 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
         const { offset } = await peerNumbering(tx, outbound);
         // legend-3k41y: fail closed. A node whose catalog publisher is blocked,
         // or whose outlet brand no longer matches the brand its queue was
-        // published for, receives no catalog row. Under the node's cursor lock
-        // (the publisher's enqueue takes the same one) the refusal is checked
-        // and every pending catalog row is replaced IN PLACE by a no-op
-        // placeholder on its own link slot (neutralizeCatalogRows); only then
+        // published for, receives no catalog row. The refusal is checked first
+        // without the cursor lock (a healthy node never waits). Only when
+        // refused, under the lock (the publisher's enqueue takes the same one)
+        // it is re-checked and every pending catalog row is replaced IN PLACE
+        // by a no-op placeholder on its own link slot
+        // (neutralizeCatalogRowsIfRefused); only then
         // does the SELECT below run, in the same transaction. No row is
         // renumbered or filtered out of the page, so the receiver's cursor
         // never sees a hole; outlet-scoped events keep flowing.
-        if (outbound === "cloud_to_edge") await neutralizeCatalogRows(tx, node);
+        if (outbound === "cloud_to_edge")
+          await neutralizeCatalogRowsIfRefused(tx, node);
         const result = await tx.execute(
           sql`SELECT link_seq, event FROM edge_outbound_queue WHERE edge_node_id = ${nodeId}::uuid AND direction = ${outbound} AND link_seq > ${afterSeq + offset} ORDER BY link_seq LIMIT ${limit}`,
         );
@@ -414,7 +417,7 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
     //   contiguous cursor never sees a hole. The queue key is not deferrable,
     //   so the rows are parked far above any sequence first, then brought down.
     //   (A catalog row withheld after a brand move is different: it keeps its
-    //   slot and is replaced by a placeholder, neutralizeCatalogRows.)
+    //   slot and is replaced by a placeholder, neutralizeCatalogRowsIfRefused.)
     async deadLetterOutbound(entry) {
       await run(async (tx) => {
         const cursor = await lockSyncCursor(tx, node, outbound);

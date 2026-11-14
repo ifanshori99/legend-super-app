@@ -98,6 +98,34 @@ const CATALOG_AGGREGATE_TYPE = catalogRecordUpdatedEvent.entry.aggregateType;
 /** Placeholders written per INSERT statement (bind parameters stay bounded). */
 const PLACEHOLDER_CHUNK = 200;
 
+/** Plain read (no lock): is this node blocked or on a different brand now? */
+async function isCatalogRefused(
+  tx: EdgeTx,
+  node: { edgeNodeId: string },
+): Promise<boolean> {
+  const refused = await tx.execute(
+    sql`SELECT 1 FROM edge_catalog_publisher_cursors c JOIN outlets o ON o.tenant_id = c.tenant_id AND o.id = c.outlet_id WHERE c.edge_node_id = ${node.edgeNodeId}::uuid AND (c.blocked_at IS NOT NULL OR c.brand_id <> o.brand_id) LIMIT 1`,
+  );
+  return refused.rows.length > 0;
+}
+
+/**
+ * Read path (legend-3k41y): check the refusal first WITHOUT the cursor lock, so
+ * a healthy node's read never queues behind the publisher or an ack. Not
+ * refused: nothing to do. Refused: neutralizeCatalogRows takes the lock and
+ * re-checks under it (a refusal cleared meanwhile changes nothing). A brand
+ * move committed before this statement is seen here; one committing after the
+ * check had the same exposure under lock-first (a brand change takes no cursor
+ * lock), so the window does not widen.
+ */
+export async function neutralizeCatalogRowsIfRefused(
+  tx: EdgeTx,
+  node: { tenantId: string; outletId: string; edgeNodeId: string },
+): Promise<number> {
+  if (!(await isCatalogRefused(tx, node))) return 0;
+  return neutralizeCatalogRows(tx, node);
+}
+
 /**
  * legend-3k41y: a node that is blocked, or whose outlet brand no longer
  * matches the brand its catalog queue was published for, must never receive a
@@ -120,10 +148,7 @@ export async function neutralizeCatalogRows(
   node: { tenantId: string; outletId: string; edgeNodeId: string },
 ): Promise<number> {
   const cursor = await lockSyncCursor(tx, node, "cloud_to_edge");
-  const refused = await tx.execute(
-    sql`SELECT 1 FROM edge_catalog_publisher_cursors c JOIN outlets o ON o.tenant_id = c.tenant_id AND o.id = c.outlet_id WHERE c.edge_node_id = ${node.edgeNodeId}::uuid AND (c.blocked_at IS NOT NULL OR c.brand_id <> o.brand_id) LIMIT 1`,
-  );
-  if (!refused.rows.length) return 0;
+  if (!(await isCatalogRefused(tx, node))) return 0;
   const where = sql`edge_node_id = ${node.edgeNodeId}::uuid AND direction = 'cloud_to_edge' AND status = 'pending' AND aggregate_type = ${CATALOG_AGGREGATE_TYPE} AND link_seq > ${cursor.acked_out_seq}`;
   const stale = await tx.execute(
     sql`SELECT link_seq, event_id, aggregate_type, aggregate_id, aggregate_sequence, octet_length(event::text) AS bytes, event FROM edge_outbound_queue WHERE ${where} ORDER BY link_seq`,
