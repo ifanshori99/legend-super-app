@@ -385,8 +385,30 @@ test("TEN-09 · the preview diff reports added, changed and removed rows per sec
   delete incoming.sections.modules; // not in the file: not previewed
   incoming.sections.payroll_settings = {
     version: 1,
-    items: [{ key: "points", earnPerIdr: 10000 }],
-  }; // section the tenant has not got yet (free-form items, no codec: payroll has no table yet)
+    items: [
+      {
+        key: "pt.staff",
+        kind: "payroll_policy",
+        legalEntityKey: "pt",
+        name: "Bulanan",
+        employeeGroup: {
+          code: "STAFF",
+          name: "Staff",
+          employmentTypes: ["pkwtt"],
+        },
+        cycle: {
+          frequency: "monthly",
+          cutoffDay: 20,
+          payDay: 25,
+          payMonthOffset: 0,
+        },
+        payDateAdjustment: "previous_working_day",
+        jkkRiskClass: "low",
+        bpjsProgrammes: [],
+        isActive: true,
+      },
+    ],
+  }; // A section the tenant has not got yet.
 
   const parsed = configLib.parseBundleText(bundleText(incoming));
   assert.equal(parsed.ok, true, JSON.stringify(parsed));
@@ -438,11 +460,49 @@ test("TEN-09 · a bundle with source-tenant ids, secrets or bad JSON never reach
   };
   const result = configLib.parseBundleText(bundleText(leaky));
   assert.equal(result.ok, false);
-  assert.equal(result.reason, "identifiers");
+  // The strict payroll schema rejects unknown fields; the independent
+  // identifier scan must still report both the forbidden key and UUID.
+  assert.equal(result.reason, "schema");
   assert.ok(
     result.identifierIssues.some((issue) => issue.reason === "forbidden_key"),
   );
   assert.ok(result.identifierIssues.some((issue) => issue.reason === "uuid"));
+
+  // A schema-valid payroll policy with an ID embedded in its name is still
+  // rejected specifically by the identifier scanner.
+  const embedded = structuredClone(fx.configBundle);
+  embedded.sections.payroll_settings = {
+    version: 1,
+    items: [
+      {
+        key: "pt.staff",
+        kind: "payroll_policy",
+        legalEntityKey: "pt",
+        name: `Staff ${fx.tenant.id}`,
+        employeeGroup: {
+          code: "STAFF",
+          name: "Staff",
+          employmentTypes: ["pkwtt"],
+        },
+        cycle: {
+          frequency: "monthly",
+          cutoffDay: 20,
+          payDay: 25,
+          payMonthOffset: 0,
+        },
+        payDateAdjustment: "previous_working_day",
+        jkkRiskClass: "low",
+        bpjsProgrammes: [],
+        isActive: true,
+      },
+    ],
+  };
+  const embeddedResult = configLib.parseBundleText(bundleText(embedded));
+  assert.equal(embeddedResult.ok, false);
+  assert.equal(embeddedResult.reason, "identifiers");
+  assert.ok(
+    embeddedResult.identifierIssues.some((issue) => issue.reason === "uuid"),
+  );
 
   const secret = structuredClone(fx.configBundle);
   secret.sections.payroll_settings = {

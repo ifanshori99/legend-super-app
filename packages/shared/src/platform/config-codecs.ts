@@ -20,9 +20,7 @@
 //
 // Registered here: roles, approval_policies, chart_of_accounts, tax_rules,
 // zones, service_charge_rules, checklists, loyalty_policy, facilities and
-// wifi_policies (the one codec that lives in `platform`). Only
-// payroll_settings stays free-form JSON (identifier scan only) until its
-// owning domain registers a codec: add it to `CONFIG_SECTION_CODECS`.
+// wifi_policies (the one codec that lives in `platform`) and payroll_settings.
 
 import {
   approvalPoliciesConfigCodec,
@@ -39,6 +37,7 @@ import { zonesConfigCodec } from "../qr-order/config-codec.ts";
 import { checklistsConfigCodec } from "../operations/config-codec.ts";
 import { loyaltyPolicyConfigCodec } from "../crm/config-codec.ts";
 import { facilitiesConfigCodec } from "../facility/config-codec.ts";
+import { payrollSettingsConfigCodec } from "../hris/payroll/config-codec.ts";
 import {
   wifiPoliciesConfigCodec,
   type ConfigSectionRefs,
@@ -55,6 +54,7 @@ export const CONFIG_SECTION_CODECS = {
   loyalty_policy: loyaltyPolicyConfigCodec,
   facilities: facilitiesConfigCodec,
   wifi_policies: wifiPoliciesConfigCodec,
+  payroll_settings: payrollSettingsConfigCodec,
 } as const;
 
 export type CodecSection = keyof typeof CONFIG_SECTION_CODECS;
@@ -114,6 +114,7 @@ const DECODE_ORDER: readonly CodecSection[] = [
   "loyalty_policy",
   "facilities",
   "wifi_policies",
+  "payroll_settings",
 ];
 
 type DraftsOf<C extends { fromTemplate: (...args: never[]) => unknown }> =
@@ -134,6 +135,8 @@ export type DecodeConfigBundleOptions = {
   existingRoleKeys?: ReadonlySet<string>;
   /** Target outlet codes when the importer has resolved them. */
   existingOutletKeys?: ReadonlySet<string>;
+  /** Target legal entities resolved by their portable keys. */
+  existingLegalEntityKeys?: ReadonlySet<string>;
   /** Target zones for importing dependent sections without a zones section. */
   existingZoneOutletKeyByKey?: ReadonlyMap<string, string>;
   /** Target tax rule owners; null denotes a tenant-wide rule. */
@@ -314,6 +317,10 @@ export function decodeConfigBundle(
           return facilitiesConfigCodec.fromTemplate(value.items, {
             outletKeys: options.existingOutletKeys,
             taxRuleOutletKeyByKey,
+          });
+        case "payroll_settings":
+          return payrollSettingsConfigCodec.fromTemplate(value.items, {
+            legalEntityKeys: options.existingLegalEntityKeys,
           });
         case "wifi_policies":
           return wifiPoliciesConfigCodec.fromTemplate(

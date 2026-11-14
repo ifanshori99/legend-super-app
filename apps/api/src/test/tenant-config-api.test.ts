@@ -1203,7 +1203,29 @@ describe("TEN-09 failure and repeat imports", () => {
       sections: {
         payroll_settings: {
           version: 1,
-          items: [{ key: "ump", amountIdr: 5_000_000 }],
+          items: [
+            {
+              key: "pt.staff",
+              kind: "payroll_policy",
+              legalEntityKey: "pt",
+              name: "Bulanan",
+              employeeGroup: {
+                code: "STAFF",
+                name: "Staff",
+                employmentTypes: ["pkwtt"],
+              },
+              cycle: {
+                frequency: "monthly",
+                cutoffDay: 20,
+                payDay: 25,
+                payMonthOffset: 0,
+              },
+              payDateAdjustment: "previous_working_day",
+              jkkRiskClass: "low",
+              bpjsProgrammes: [],
+              isActive: true,
+            },
+          ],
         },
       },
     };
