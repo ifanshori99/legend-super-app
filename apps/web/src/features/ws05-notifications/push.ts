@@ -18,6 +18,8 @@ export type PushState =
   | "checking"
   | "inactive"
   | "active"
+  | "reregistering"
+  | "needs-reregister"
   | "blocked"
   | "unsupported"
   | "unavailable"
