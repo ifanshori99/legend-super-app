@@ -106,10 +106,13 @@ export async function defaultLastSequence(
   }
   // Append-only stream shared by both sides: an order placed on the cloud
   // (sent down) continues on the edge (sent up), so both directions count.
+  // A local dead letter has left the queue, but its aggregate sequence is
+  // still used, just as enqueueEdgeEvent treats it when queuing a successor.
   const result = await tx.execute(
     sql`SELECT GREATEST(
       (SELECT COALESCE(MAX(i.aggregate_sequence), 0) FROM edge_inbound_events i WHERE i.edge_node_id = ${edgeNodeId}::uuid AND i.aggregate_type = ${event.aggregateType} AND i.aggregate_id = ${event.aggregateId} AND ${heldReceipt("i")}),
-      (SELECT COALESCE(MAX(aggregate_sequence), 0) FROM edge_outbound_queue WHERE edge_node_id = ${edgeNodeId}::uuid AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${event.aggregateId})
+      (SELECT COALESCE(MAX(aggregate_sequence), 0) FROM edge_outbound_queue WHERE edge_node_id = ${edgeNodeId}::uuid AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${event.aggregateId}),
+      (SELECT COALESCE(MAX(aggregate_sequence), 0) FROM edge_link_dead_letters WHERE edge_node_id = ${edgeNodeId}::uuid AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${event.aggregateId})
     ) AS last`,
   );
   return Number(result.rows[0]?.last ?? 0);
