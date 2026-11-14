@@ -76,6 +76,7 @@ const confirmed: GuestReservationView = {
   outletName: "Cafe Legend · Menteng",
   guestName: "Rina",
   partySize: 4,
+  timeZone: "Asia/Jakarta",
   reservedFor: RESERVED_FOR,
   status: "confirmed",
   note: null,
@@ -108,6 +109,7 @@ const confirmed: GuestReservationView = {
     },
   },
   rescheduleRequest: null,
+  rescheduleDecision: null,
   linkExpiresAt: "2026-11-19T12:00:00.000Z",
 };
 
