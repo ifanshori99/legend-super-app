@@ -53,7 +53,135 @@ for (const kind of ["menu", "prices"]) {
     if (kind === "menu") assert.equal(calls[1].query.status, "active");
     else assert.equal(calls[1].params.priceListId, "channel-prices");
   });
+
+  const fetchPages = (options, cursor) =>
+    kind === "menu"
+      ? fetchMenuItems(
+          {
+            limit: 100,
+            status: "active",
+            outletId: "outlet",
+            ...(cursor ? { cursor } : {}),
+          },
+          options,
+        )
+      : fetchPriceListItems({ priceListId: "channel-prices" }, options);
+
+  test(`d6d1 ${kind} pagination completes exactly at the 50-page cap`, async () => {
+    let calls = 0;
+    const options = { signal: new AbortController().signal };
+    globalThis.__844Transport = async (endpoint, input, passedOptions) => {
+      assert.equal(passedOptions, options);
+      calls += 1;
+      assert.ok(
+        calls <= 50,
+        "Normal pagination must stop at the completed final page",
+      );
+      assert.equal(input.query.limit, 100);
+      if (kind === "menu") assert.equal(input.query.status, "active");
+      else assert.equal(input.params.priceListId, "channel-prices");
+      return {
+        data: [{ id: `line-${calls}`, amountIdr: 17000 + calls }],
+        meta: { nextCursor: calls < 50 ? `page-${calls + 1}` : null },
+      };
+    };
+    const page = await fetchPages(options);
+    assert.equal(calls, 50);
+    assert.deepEqual(
+      page.data,
+      Array.from({ length: 50 }, (_, index) => ({
+        id: `line-${index + 1}`,
+        amountIdr: 17001 + index,
+      })),
+    );
+    assert.equal(page.meta.nextCursor, null);
+  });
+
+  test(`d6d1 ${kind} pagination rejects repeated cursors without partial success`, async () => {
+    let calls = 0;
+    // The fourth response terminates even on broken code: a regression can
+    // fail this assertion but cannot leave an unbounded async request loop.
+    globalThis.__844Transport = async () => {
+      calls += 1;
+      return {
+        data: [{ id: `line-${calls}`, amountIdr: 17000 }],
+        meta: { nextCursor: calls < 4 ? "repeated-cursor" : null },
+      };
+    };
+    await assert.rejects(
+      fetchPages(),
+      (error) =>
+        error instanceof Error &&
+        /cursor|pagin|page|halaman/i.test(error.message),
+    );
+    assert.equal(
+      calls,
+      2,
+      "Repeated continuation is rejected before requesting it twice",
+    );
+  });
+
+  test(`d6d1 ${kind} pagination rejects a continuation beyond 50 pages`, async () => {
+    let calls = 0;
+    // Old unbounded code still terminates at 51, yielding a useful failure.
+    globalThis.__844Transport = async () => {
+      calls += 1;
+      return {
+        data: [{ id: `line-${calls}`, amountIdr: 17000 }],
+        meta: { nextCursor: calls < 51 ? `page-${calls + 1}` : null },
+      };
+    };
+    await assert.rejects(
+      fetchPages(),
+      (error) =>
+        error instanceof Error &&
+        /cursor|pagin|page|halaman/i.test(error.message),
+    );
+    assert.equal(calls, 50, "The client never requests a page beyond its cap");
+  });
+
+  test(`d6d1 ${kind} pagination rejects a nonconsecutive cursor cycle`, async () => {
+    let calls = 0;
+    const cursors = ["cursor-a", "cursor-b", "cursor-a", null];
+    globalThis.__844Transport = async () => {
+      const nextCursor = cursors[calls] ?? null;
+      calls += 1;
+      return {
+        data: [{ id: `line-${calls}`, amountIdr: 17000 }],
+        meta: { nextCursor },
+      };
+    };
+    await assert.rejects(
+      fetchPages(),
+      (error) =>
+        error instanceof Error &&
+        /cursor|pagin|page|halaman/i.test(error.message),
+    );
+    assert.equal(
+      calls,
+      3,
+      "A cursor seen earlier in the chain is never requested twice",
+    );
+  });
 }
+
+test("d6d1 menu pagination rejects a continuation equal to its supplied starting cursor", async () => {
+  let calls = 0;
+  globalThis.__844Transport = async () => {
+    calls += 1;
+    return {
+      data: [{ id: "line", amountIdr: 17000 }],
+      meta: { nextCursor: calls === 1 ? "starting-cursor" : null },
+    };
+  };
+  await assert.rejects(
+    fetchMenuItems({ limit: 100, cursor: "starting-cursor" }),
+    (error) =>
+      error instanceof Error &&
+      /cursor|pagin|page|halaman/i.test(error.message),
+  );
+  assert.equal(calls, 1);
+});
 
 test("d6d1 deposit link survives booking reload, charges exact deposit once and persists paid confirmation", async (t) => {
   const storage = new Map();

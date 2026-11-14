@@ -23,6 +23,7 @@ import {
 } from "@starter/shared/menu";
 import { callEndpoint } from "@/lib/api/endpoint";
 import type { CallOptions } from "@/lib/api/endpoint";
+import { ApiError } from "@/lib/api/errors";
 
 type Body<E extends AnyEndpoint> = EndpointInput<E>["body"];
 type Params<E extends AnyEndpoint> = EndpointInput<E>["params"];
@@ -30,6 +31,27 @@ type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
 
 /** Channels, the live orders behind the review hints, menu picks. */
 export const DELIVERY_LIST_LIMIT = 100;
+const MANUAL_MENU_MAX_PAGES = 50;
+
+function recordMenuContinuation(
+  cursor: string,
+  pagesRead: number,
+  seenCursors: Set<string>,
+) {
+  if (seenCursors.has(cursor))
+    throw new ApiError(
+      502,
+      "RESPONSE_SHAPE_INVALID",
+      "Menu pagination returned a repeated cursor.",
+    );
+  if (pagesRead >= MANUAL_MENU_MAX_PAGES)
+    throw new ApiError(
+      502,
+      "RESPONSE_SHAPE_INVALID",
+      "Menu pagination requires more than 50 pages; the list is incomplete.",
+    );
+  seenCursors.add(cursor);
+}
 
 export const fetchChannels = async (
   params: Params<typeof listDeliveryChannelsEndpoint>,
@@ -147,12 +169,19 @@ export const fetchMenuItems = async (
 ) => {
   let page = await callEndpoint(listItemsEndpoint, { query }, options);
   const data = [...page.data];
+  let pagesRead = 1;
+  const seenCursors = new Set<string>(
+    query.cursor === undefined ? [] : [query.cursor],
+  );
   while (page.meta.nextCursor) {
+    const cursor = page.meta.nextCursor;
+    recordMenuContinuation(cursor, pagesRead, seenCursors);
     page = await callEndpoint(
       listItemsEndpoint,
-      { query: { ...query, cursor: page.meta.nextCursor } },
+      { query: { ...query, cursor } },
       options,
     );
+    pagesRead += 1;
     data.push(...page.data);
   }
   return { ...page, data };
@@ -177,15 +206,20 @@ export const fetchPriceListItems = async (
     options,
   );
   const data = [...page.data];
+  let pagesRead = 1;
+  const seenCursors = new Set<string>();
   while (page.meta.nextCursor) {
+    const cursor = page.meta.nextCursor;
+    recordMenuContinuation(cursor, pagesRead, seenCursors);
     page = await callEndpoint(
       listPriceListItemsEndpoint,
       {
         params,
-        query: { limit: DELIVERY_LIST_LIMIT, cursor: page.meta.nextCursor },
+        query: { limit: DELIVERY_LIST_LIMIT, cursor },
       },
       options,
     );
+    pagesRead += 1;
     data.push(...page.data);
   }
   return { ...page, data };
