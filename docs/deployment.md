@@ -621,8 +621,12 @@ user, provision the restricted application and queue roles (next section), and
 confirm a successful base backup to both repositories. Provisioning is a
 first-boot prerequisite; the deploy script does not perform it. See
 `deploy/backup/README.md` for the supplied systemd timer example and
-restore-drill procedure. Once those prerequisites and the transport adapter are
-ready, use the deploy script for subsequent releases.
+restore-drill procedure. Set `pg1-user` in the private pgBackRest configuration
+to the same PostgreSQL login as `POSTGRES_USER` in `compose.env`. Export that
+same `POSTGRES_USER` when running the isolated restore drill; its example default
+is `replace_me` and must be replaced with the actual login. Once those
+prerequisites and the transport adapter are ready, use the deploy script for
+subsequent releases.
 
 #### Create the migrator login (legend-jtnd)
 

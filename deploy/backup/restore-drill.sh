@@ -33,6 +33,6 @@ fi
 # No listener and a private socket prevent accidental access from the network.
 pg_ctl -D "$target" -o "-c archive_mode=off -c listen_addresses='' -c unix_socket_directories='$socket_dir' -c port=55432" -w start
 started=1
-psql -X -v ON_ERROR_STOP=1 -h "$socket_dir" -p 55432 -d postgres -c 'SELECT now() AS restored_at, pg_is_in_recovery() AS in_recovery;'
+psql -X -v ON_ERROR_STOP=1 -h "$socket_dir" -p 55432 -U "${POSTGRES_USER:-replace_me}" -d postgres -c 'SELECT now() AS restored_at, pg_is_in_recovery() AS in_recovery;'
 end=$(date +%s)
 echo "Restore and startup completed in $((end - start)) seconds; verify data and archived WAL timestamps against the recovery target."
