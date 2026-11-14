@@ -36,6 +36,16 @@
       "critical": 0,
       "rules": []
     },
+    "acknowledged-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "acknowledged-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
     "taken-remote-1280": {
       "serious": 0,
       "critical": 0,
@@ -156,7 +166,7 @@
           "width": 99.59375,
           "boundingBox": {
             "x": 70,
-            "y": 250,
+            "y": 290,
             "width": 99.59375,
             "height": 48
           },
@@ -170,7 +180,7 @@
           "width": 103.1875,
           "boundingBox": {
             "x": 171.59375,
-            "y": 250,
+            "y": 290,
             "width": 103.1875,
             "height": 48
           },
@@ -184,7 +194,7 @@
           "width": 76.34375,
           "boundingBox": {
             "x": 276.78125,
-            "y": 250,
+            "y": 290,
             "width": 76.34375,
             "height": 48
           },
@@ -198,7 +208,7 @@
           "width": 78.34375,
           "boundingBox": {
             "x": 355.125,
-            "y": 250,
+            "y": 290,
             "width": 78.34375,
             "height": 48
           },
@@ -209,21 +219,21 @@
     "tabs-idle-390": {
       "viewportWidth": 390,
       "list": {
-        "scrollWidth": 371,
+        "scrollWidth": 354,
         "clientWidth": 354
       },
-      "listClipped": true,
+      "listClipped": false,
       "links": [
         {
           "text": "Papan bilik",
           "current": null,
           "left": 22,
-          "right": 121.59375,
-          "width": 99.59375,
+          "right": 194,
+          "width": 172,
           "boundingBox": {
             "x": 22,
-            "y": 462,
-            "width": 99.59375,
+            "y": 502,
+            "width": 172,
             "height": 48
           },
           "withinViewport": true
@@ -231,13 +241,13 @@
         {
           "text": "Kebersihan",
           "current": null,
-          "left": 123.59375,
-          "right": 226.78125,
-          "width": 103.1875,
+          "left": 196,
+          "right": 368,
+          "width": 172,
           "boundingBox": {
-            "x": 123.59375,
-            "y": 462,
-            "width": 103.1875,
+            "x": 196,
+            "y": 502,
+            "width": 172,
             "height": 48
           },
           "withinViewport": true
@@ -245,13 +255,13 @@
         {
           "text": "Insiden",
           "current": null,
-          "left": 228.78125,
-          "right": 305.125,
-          "width": 76.34375,
+          "left": 22,
+          "right": 194,
+          "width": 172,
           "boundingBox": {
-            "x": 228.78125,
-            "y": 462,
-            "width": 76.34375,
+            "x": 22,
+            "y": 552,
+            "width": 172,
             "height": 48
           },
           "withinViewport": true
@@ -259,13 +269,13 @@
         {
           "text": "Darurat",
           "current": "page",
-          "left": 307.125,
-          "right": 385.46875,
-          "width": 78.34375,
+          "left": 196,
+          "right": 368,
+          "width": 172,
           "boundingBox": {
-            "x": 307.125,
-            "y": 462,
-            "width": 78.34375,
+            "x": 196,
+            "y": 552,
+            "width": 172,
             "height": 48
           },
           "withinViewport": true
@@ -275,21 +285,21 @@
     "tabs-idle-320": {
       "viewportWidth": 320,
       "list": {
-        "scrollWidth": 371,
+        "scrollWidth": 284,
         "clientWidth": 284
       },
-      "listClipped": true,
+      "listClipped": false,
       "links": [
         {
           "text": "Papan bilik",
           "current": null,
           "left": 22,
-          "right": 121.59375,
-          "width": 99.59375,
+          "right": 159,
+          "width": 137,
           "boundingBox": {
             "x": 22,
-            "y": 462,
-            "width": 99.59375,
+            "y": 502,
+            "width": 137,
             "height": 48
           },
           "withinViewport": true
@@ -297,13 +307,13 @@
         {
           "text": "Kebersihan",
           "current": null,
-          "left": 123.59375,
-          "right": 226.78125,
-          "width": 103.1875,
+          "left": 161,
+          "right": 298,
+          "width": 137,
           "boundingBox": {
-            "x": 123.59375,
-            "y": 462,
-            "width": 103.1875,
+            "x": 161,
+            "y": 502,
+            "width": 137,
             "height": 48
           },
           "withinViewport": true
@@ -311,13 +321,13 @@
         {
           "text": "Insiden",
           "current": null,
-          "left": 228.78125,
-          "right": 305.125,
-          "width": 76.34375,
+          "left": 22,
+          "right": 159,
+          "width": 137,
           "boundingBox": {
-            "x": 228.78125,
-            "y": 462,
-            "width": 76.34375,
+            "x": 22,
+            "y": 552,
+            "width": 137,
             "height": 48
           },
           "withinViewport": true
@@ -325,22 +335,19 @@
         {
           "text": "Darurat",
           "current": "page",
-          "left": 307.125,
-          "right": 385.46875,
-          "width": 78.34375,
+          "left": 161,
+          "right": 298,
+          "width": 137,
           "boundingBox": {
-            "x": 307.125,
-            "y": 462,
-            "width": 78.34375,
+            "x": 161,
+            "y": 552,
+            "width": 137,
             "height": 48
           },
-          "withinViewport": false
+          "withinViewport": true
         }
       ]
     }
   },
-  "failures": [
-    "acknowledged-1280: locator.waitFor: Timeout 15000ms exceeded.",
-    "acknowledged-390: locator.waitFor: Timeout 15000ms exceeded."
-  ]
+  "failures": []
 }
