@@ -2,6 +2,25 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## Serah terima CTO 15 Nov 01:10 (dari G6w9t)
+
+Thread berjalan (prefix S30:P6b2j:):
+- G8dut merge train: gerbang 64f run kedua jalan (tanpa fix/edge-snapshot-tolerant; isi ws/test-ci-contract, fix/edge-uom-issystem, ui/panic-alert-wiring, ws/writeoff-late-funds -> migrasi 0368). Hijau: push int/batch64f + ff m1. m1 masih 7aacd9f68.
+- G26xd (Codex) 818 perbaikan SO edge: 3 P1, scope diperluas ke edge-catalog-sync.routes.ts + edge-bootstrap.routes.ts (edge lama kompatibel, tanpa migrasi).
+- G0y3a (Codex xhigh) 829 second opinion area EDC (legend-ftsq0), ws/criteria-pay-edc...fix/edc-qris-confirm-lock.
+
+Antrean merge train (urutan rantai, semua tanpa migrasi kecuali disebut): ws/tax-menu-keyrotation, ws/tenant-domain-audit -> ws/edge-node-domain-rate 35b69d1c7, ws/metrics-daily-backfill, ws/traceability-strict -> fix/ai-tool-result-pii de5af1cf8 -> fix/mcp-tool-result-pii 60f8cd7f4; ws/traceability-strict -> fix/edc-bill-lock 8185a7ebd -> fix/edc-followups bdae5b4a2 -> fix/edc-qris-confirm-lock 7e32d2707; ws/ai-eval-missing-metric e7668d647 -> fix/ai-sources-tl07-08-12 fb00a4c24 -> fix/ai-eval-anomaly-year 64cfad39e; ws/edge-master-data-publisher; rantai panik (+ 0375/0379 satu batch); ws/storage-scanner-pdf 53b0db393 -> fix/clamd-scan-limit 5e19187b1 -> fix/clamd-scan-tenant-images cefbdf1d1; fix/ops-statusbar-contrast -> ui/ops-statusbar-mobile ca0b1bf0a (founder Q3 setuju); fix/edge-snapshot-tolerant 92accc51e (batch sesudah 64f); ui/member-whatsapp-link (Q29).
+- Ditahan: fix/panic-push-device-revoke dd04533e1 (820) menunggu review UI founder Q4 (page "Perangkat alarm panik"); setelah setuju antre setelah rantai panik.
+
+Founder malam ini: Q1 sudah (tutup CTO lama), Q2 boleh (17 volume Docker dihapus), Q3 setuju (812). Q4 terbuka. Q berikut: Q5.
+Pertanyaan untuk diajukan (Q5): kebijakan QRIS vs kartu di tagihan yang sama: kartu menang, QRIS di-void + refund penuh; bila kartu lalu declined, tagihan terbuka lagi belum lunas (risiko tamu pergi). Rekomendasi: setuju + legend-56mo2 (notifikasi kasir).
+
+Kartu tindak lanjut baru: legend-8y5fc (limiter domain lintas instance), legend-3e8p0 (form cuti HRIS cek capabilities), legend-xn214 (kebijakan selfie edge + edge-selfie-receive tenant), legend-khi8n (UI layar rekonsiliasi EDC, perlu mockup), legend-56mo2 (notifikasi kasir QRIS refund), legend-fonnr (perangkat alarm lintas tenant, migrasi), legend-ttk8t/ibtc8 selesai, legend-0a1r1 (masker gaji false positive), legend-ibtc8.
+Keputusan CTO: klien MCP luar = penyedia AI (AIG-02); tolak tunai/QRIS saat ECR terbuka; cabut perangkat alarm juga akhiri sesinya; snapshot edge: device ketat, people/qrKeys strip, nama sensitif tolak, stream harga ketat, isSystem hanya bila diminta.
+Migrasi bebas berikut: 0380 (cek memory 2; 0368 dipakai ulang oleh writeoff-late-funds di 64f).
+Disk: rem utama (worktree ditolak < 15 GB). Hapus worktree thread selesai yang bersih dan sudah di-push.
+Biaya sesi G6w9t: total ~6,84M (session-usage).
+
 ## CTO G6w9t mulai 14 Nov 23:02
 
 - Cron dibuat ulang (push :17, retro 3 jam); dicatat di memory coordinator 1-2.
