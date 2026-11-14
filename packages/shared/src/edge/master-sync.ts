@@ -201,6 +201,22 @@ export const edgeMasterSnapshotSchema = z
         );
     });
   });
+/** Strict cloud output validation prevents accidentally sending extra columns. */
+export const edgeMasterSnapshotCloudSchema = edgeMasterSnapshotSchema
+  .safeExtend({
+    uoms: z.array(edgeMasterUomSchema.strict()).max(MAX_UOMS),
+    stockLocations: z
+      .array(edgeMasterStockLocationSchema.strict())
+      .max(MAX_LOCATIONS),
+    chartOfAccounts: z
+      .array(edgeMasterAccountSchema.strict())
+      .max(MAX_ACCOUNTS),
+    accountMappings: z
+      .array(edgeMasterAccountMappingSchema.strict())
+      .max(MAX_MAPPINGS),
+  })
+  .strict();
+
 export type EdgeMasterSnapshot = z.infer<typeof edgeMasterSnapshotSchema>;
 
 export const edgeMasterSnapshotResponseSchema = z.object({

@@ -332,6 +332,20 @@ export const deviceSyncPageSchema = z.object({
     watermark: cursorSchema.nullable(),
   }),
 });
+/** Validate cloud output without silently dropping unintended fields. */
+export const deviceSyncCloudPageSchema = deviceSyncPageSchema
+  .extend({
+    data: z.array(deviceSyncRecordSchema.strict()),
+    receiptSequences: z
+      .array(deviceReceiptSequenceSyncSchema.strict())
+      .optional(),
+    receiptWriteoffs: z
+      .array(deviceReceiptWriteoffSyncSchema.strict())
+      .max(RECEIPT_WRITEOFF_SYNC_MAX)
+      .optional(),
+    meta: deviceSyncPageSchema.shape.meta.strict(),
+  })
+  .strict();
 export type DeviceSyncPage = z.infer<typeof deviceSyncPageSchema>;
 export const edgeNodeSchema = z.strictObject({
   ...scope,

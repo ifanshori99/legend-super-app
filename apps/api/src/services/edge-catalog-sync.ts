@@ -41,9 +41,9 @@
 
 import {
   CATALOG_PROTOCOL_VERSION,
-  catalogSyncPageSchema,
+  catalogSyncCloudPageSchema,
   catalogSyncQuerySchema,
-  catalogSyncRecordSchemas,
+  catalogSyncCloudRecordSchemas,
   type CatalogSyncPage,
   type CatalogSyncQuery,
   type CatalogSyncStream,
@@ -872,7 +872,7 @@ export async function listCatalogRecordsSince(
     last === undefined
       ? null
       : encodeMark({ txid: last.txid, keys: last.keys });
-  return catalogSyncPageSchema.parse({
+  return catalogSyncCloudPageSchema.parse({
     // Only an edge that asked: an older edge's strict page schema would
     // refuse the field and stop syncing.
     ...(protocolVersion === undefined
@@ -880,7 +880,7 @@ export async function listCatalogRecordsSince(
       : { protocolVersion: negotiateCatalogProtocolVersion(protocolVersion) }),
     stream,
     records: page.map(({ record }) =>
-      catalogSyncRecordSchemas[stream].parse(record),
+      catalogSyncCloudRecordSchemas[stream].parse(record),
     ),
     nextCursor: lastMark ?? input.query.since ?? null,
     hasMore: rows.length > limit,

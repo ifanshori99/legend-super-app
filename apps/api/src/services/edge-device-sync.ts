@@ -44,6 +44,7 @@
 import {
   deviceReceiptSequenceSyncSchema,
   deviceReceiptWriteoffSyncSchema,
+  deviceSyncCloudPageSchema,
   deviceSyncPageSchema,
   deviceSyncRecordSchema,
   decodeReceiptRunReport,
@@ -453,14 +454,12 @@ export async function listDeviceRecordsSince(
   const lastMark = last
     ? encodeWatermark({ version: last.version, id: last.row.id })
     : null;
-  return deviceSyncPageSchema.parse({
-    data: page.map(({ row }) =>
-      deviceSyncRecordSchema.parse({
-        ...toDevice(row),
-        tokenIssuedAt: row.tokenIssuedAt?.toISOString() ?? null,
-        updatedAt: row.updatedAt.toISOString(),
-      }),
-    ),
+  return deviceSyncCloudPageSchema.parse({
+    data: page.map(({ row }) => ({
+      ...toDevice(row),
+      tokenIssuedAt: row.tokenIssuedAt?.toISOString() ?? null,
+      updatedAt: row.updatedAt.toISOString(),
+    })),
     ...(sequences === undefined ? {} : { receiptSequences: sequences }),
     ...(writeoffs === undefined ? {} : { receiptWriteoffs: writeoffs }),
     // legend-yd0h8: only to an edge that sent `receiptRuns` (old edges parse

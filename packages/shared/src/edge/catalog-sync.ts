@@ -363,23 +363,8 @@ export const recipeSyncRecordSchema = z.object({
 export const promotionSyncRecordSchema = promotionObjectSchema
   .omit({ codeHash: true })
   .extend({
-    conditions: z.array(
-      z.discriminatedUnion("kind", [
-        promotionConditionSchema.options[0].strip(),
-        promotionConditionSchema.options[1].strip(),
-        promotionConditionSchema.options[2].strip(),
-        promotionConditionSchema.options[3].strip(),
-        promotionConditionSchema.options[4].strip(),
-        promotionConditionSchema.options[5].strip(),
-      ]),
-    ),
-    benefit: z.discriminatedUnion("kind", [
-      promotionBenefitSchema.options[0].strip(),
-      promotionBenefitSchema.options[1].strip(),
-      promotionBenefitSchema.options[2].strip(),
-      promotionBenefitSchema.options[3].strip(),
-      promotionBenefitSchema.options[4].strip(),
-    ]),
+    conditions: z.array(promotionConditionSchema),
+    benefit: promotionBenefitSchema,
     codeRef: z
       .string()
       .regex(/^[a-f0-9]{64}$/)
@@ -391,7 +376,7 @@ export const promotionSyncRecordSchema = promotionObjectSchema
     updatedBy: userIdSchema.nullable(),
     syncTxid: syncTxidSchema,
     outletOverrides: z.array(
-      z.object({
+      z.strictObject({
         outletId: uuidSchema,
         enabled: z.boolean(),
         updatedBy: userIdSchema.nullable(),
@@ -399,15 +384,15 @@ export const promotionSyncRecordSchema = promotionObjectSchema
       }),
     ),
     stackingSettings: z
-      .object({
-        stackingPolicy: promoStackingPolicySchema.strip(),
+      .strictObject({
+        stackingPolicy: promoStackingPolicySchema,
         updatedBy: userIdSchema.nullable(),
         updatedAt: isoDateTimeSchema,
         syncTxid: syncTxidSchema,
       })
       .nullable(),
   })
-  .strip();
+  .strict();
 
 /** Single-use state travels read-only; edge redemption requires cloud authority. */
 export const voucherSyncRecordSchema = voucherObjectSchema
@@ -416,7 +401,7 @@ export const voucherSyncRecordSchema = voucherObjectSchema
     issuedBy: userIdSchema.nullable(),
     syncTxid: syncTxidSchema,
   })
-  .strip();
+  .strict();
 
 export const catalogSyncRecordSchemas = {
   stations: stationSyncRecordSchema,
@@ -493,3 +478,53 @@ export const catalogSyncPageSchema = z.discriminatedUnion("stream", [
   pageOf("vouchers"),
 ]);
 export type CatalogSyncPage = z.infer<typeof catalogSyncPageSchema>;
+
+/** Cloud output validation must detect accidental columns, including nested rows. */
+export const catalogSyncCloudRecordSchemas = {
+  stations: stationSyncRecordSchema.strict(),
+  printers: z.union([
+    livePrinterSyncRecordSchema.strict(),
+    printerTombstoneSyncRecordSchema.strict(),
+  ]),
+  inventory_items: inventoryItemSyncRecordSchema.strict(),
+  menu_categories: menuCategorySyncRecordSchema.strict(),
+  modifier_groups: modifierGroupSyncRecordSchema.strict(),
+  modifiers: modifierSyncRecordSchema.strict(),
+  menu_items: menuItemSyncRecordSchema.strict(),
+  item_variants: itemVariantSyncRecordSchema.strict(),
+  menu_item_modifier_groups: menuItemModifierGroupSyncRecordSchema.strict(),
+  price_lists: priceListSyncRecordSchema
+    .extend({ items: z.array(priceListItemRecordSchema.strict()) })
+    .strict(),
+  recipes: recipeSyncRecordSchema
+    .extend({ lines: z.array(recipeLineRecordSchema.strict()) })
+    .strict(),
+  promotions: promotionSyncRecordSchema,
+  vouchers: voucherSyncRecordSchema,
+} as const;
+
+function cloudPageOf<S extends CatalogSyncStream>(stream: S) {
+  return z.strictObject({
+    protocolVersion: z.number().int().min(1).optional(),
+    stream: z.literal(stream),
+    records: z.array(catalogSyncCloudRecordSchemas[stream]),
+    nextCursor: cursorSchema.nullable(),
+    hasMore: z.boolean(),
+  });
+}
+
+export const catalogSyncCloudPageSchema = z.discriminatedUnion("stream", [
+  cloudPageOf("stations"),
+  cloudPageOf("printers"),
+  cloudPageOf("inventory_items"),
+  cloudPageOf("menu_categories"),
+  cloudPageOf("modifier_groups"),
+  cloudPageOf("modifiers"),
+  cloudPageOf("menu_items"),
+  cloudPageOf("item_variants"),
+  cloudPageOf("menu_item_modifier_groups"),
+  cloudPageOf("price_lists"),
+  cloudPageOf("recipes"),
+  cloudPageOf("promotions"),
+  cloudPageOf("vouchers"),
+]);

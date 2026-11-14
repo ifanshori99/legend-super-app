@@ -151,6 +151,16 @@ export const edgeBootstrapBundleSchema = z
         message: "The outlet's brand is not in the bundle",
       });
   });
+/** Strict cloud output validation prevents accidentally sending extra columns. */
+export const edgeBootstrapBundleCloudSchema = edgeBootstrapBundleSchema
+  .safeExtend({
+    tenant: edgeBootstrapTenantSchema.strict(),
+    legalEntity: edgeBootstrapLegalEntitySchema.strict(),
+    brands: z.array(edgeBootstrapBrandSchema.strict()).min(1).max(1),
+    outlet: edgeBootstrapOutletSchema.strict(),
+  })
+  .strict();
+
 export type EdgeBootstrapBundle = z.infer<typeof edgeBootstrapBundleSchema>;
 
 export const edgeBootstrapResponseSchema = z.object({

@@ -317,6 +317,82 @@ describe("528 promotions and voucher catalog streams", () => {
     );
   });
 
+  it("rejects unknown discount restrictions instead of applying a truncated rule", async () => {
+    const promotion = (await all("promotions")).find(
+      (row) => row.id === promoId,
+    )!;
+    const voucher = (await all("vouchers")).find(
+      (row) => row.id === voucherId,
+    )!;
+    const pageFor = (stream: string, record: Rec) => ({
+      stream,
+      records: [record],
+      nextCursor: null,
+      hasMore: false,
+    });
+    expect(
+      catalogSyncPageSchema.safeParse(pageFor("promotions", promotion)).success,
+    ).toBe(true);
+    expect(
+      catalogSyncPageSchema.safeParse(pageFor("vouchers", voucher)).success,
+    ).toBe(true);
+    const conditions = promotion.conditions as Rec[];
+    const benefit = promotion.benefit as Rec;
+    const settings = {
+      stackingPolicy: {
+        mode: "exclusive",
+        maxStacked: 1,
+        allowSameGroup: false,
+      },
+      updatedBy: null,
+      updatedAt: before,
+      syncTxid: "1",
+    };
+    for (const changed of [
+      { ...promotion, minimumNewRestriction: 1 },
+      {
+        ...promotion,
+        conditions: [{ ...conditions[0], minimumNewRestriction: 1 }],
+      },
+      { ...promotion, benefit: { ...benefit, minimumNewRestriction: 1 } },
+      {
+        ...promotion,
+        outletOverrides: [
+          {
+            outletId,
+            enabled: true,
+            updatedBy: null,
+            updatedAt: before,
+            minimumNewRestriction: 1,
+          },
+        ],
+      },
+      {
+        ...promotion,
+        stackingSettings: { ...settings, minimumNewRestriction: 1 },
+      },
+      {
+        ...promotion,
+        stackingSettings: {
+          ...settings,
+          stackingPolicy: {
+            ...settings.stackingPolicy,
+            minimumNewRestriction: 1,
+          },
+        },
+      },
+    ]) {
+      expect(
+        catalogSyncPageSchema.safeParse(pageFor("promotions", changed)).success,
+      ).toBe(false);
+    }
+    expect(
+      catalogSyncPageSchema.safeParse(
+        pageFor("vouchers", { ...voucher, minimumNewRestriction: 1 }),
+      ).success,
+    ).toBe(false);
+  });
+
   it("exports only the credential tenant, with exact money and commit-safe versions", async () => {
     for (const [stream, mine, foreign] of [
       ["promotions", promoId, foreignPromoId],
