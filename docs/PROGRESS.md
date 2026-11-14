@@ -1,3 +1,10 @@
+## WS-05 persetujuan dana tak teralokasi + kasus rekonsiliasi (engineer, cabang `ws/payment-approvals` dari `origin/milestone/m1` b17554cb9, 14 Nov 2026 06:36 WIB)
+
+- Sudah: rekonsiliasi lewat approval_requests (action `reconciliation_case`, status `pending_approval`, consumer `payment-reconciliation-approval-consumer.ts` di worker, migrasi 0565 + seed policy Owner). Dana tak teralokasi sudah lewat chain refund; dibuktikan 10 test (`payment-unallocated-approval.test.ts`). View admin: `approvalRequestId`/`approvedBy` di refund dan kasus. Temuan architect dibetulkan: impor settlement tidak membuat kasus ganda saat `pending_approval`, ringkasan menghitung kasus pending.
+- legend-m0k: audit lengkap, PIN supervisor EDC standalone diverifikasi server; bukti di komentar kartu, status review.
+- Keputusan: policy missing pada rekonsiliasi = gagal tertutup (case tetap open); approver default Owner; `required:false` ditolak 409.
+- Berikut: second-opinion Codex area WS-05 payment; bead legend-wghbj (approver tak berwenang menggagalkan refund).
+
 ## WS-06/07 posting faktur pemasok + lanjutan AP (engineer, cabang `ws/purchasing-posting` dari `ws/purchasing-apar` aefe28175, 13 Nov 2026 18:49-19:47 WIB)
 
 - Desain: `docs/briefs/ws-purchasing-posting-design.md` (architect xhigh), review K architect xhigh: H1 dibetulkan, H2/M1 jadi bead penghalang flag.

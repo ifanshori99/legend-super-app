@@ -100,6 +100,7 @@ import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
 import { runScheduledExitClearance } from "./services/hris-offboarding-jobs.ts";
 import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
 import { handleProfitShareApprovalResolved } from "./services/profit-share-approval-consumers.ts";
+import { handleReconciliationApprovalResolved } from "./services/payment-reconciliation-approval-consumer.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
@@ -373,6 +374,9 @@ const runtime = createWorkerRuntime({
           // PAY-04 (legend-hvvn): an approved refund chain settles the refund;
           // the payout itself runs from the approve call or the payout sweep.
           await handleRefundApprovalResolved(context, event);
+          // PAY recon (PRD §3.7): an approved chain closes the reconciliation
+          // case; rejected/expired reopens it, re-read under the case row lock.
+          await handleReconciliationApprovalResolved(context, event);
           // WS-10 (legend-hggk): approved/rejected leave and overtime settle
           // from the chain outcome re-read under the request row lock.
           await handleHrisApprovalResolved(context, event);

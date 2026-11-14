@@ -144,6 +144,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "flags distribution_lines.recipient_unverified = true for every PAID line created before the migration that has no recipient yet, whether or not its shareholder has a login now (legend-33im6, Codex 405); unpaid lines stay unflagged and get the login at payment time; never sets recipient_user_id (no trusted pre-migration snapshot), only rows with no recipient yet, idempotent, the lines guard trigger and the deferred totals trigger are paused for that one statement only, FORCE RLS lifted and restored in the same migration",
   "0241_shareholder_version_approval_policy.sql":
     "gives every existing tenant that has an Owner template role and no shareholder_version approval policy the default row (floor 0, level 1, Owner, distinct actor) (legend-tm6pp); idempotent, never touches a tenant that already has such a policy, FORCE RLS lifted and restored in the same migration",
+  "0357_reconciliation_case_approval.sql":
+    "gives every existing tenant that has an Owner template role and no reconciliation_case approval policy the default row (floor 0, level 1, Owner, distinct actor) (PAY recon, PRD §3.7); idempotent, never touches a tenant that already has such a policy, no reconciliation case row is written or changed, FORCE RLS lifted on roles and approval_policies and restored in the same migration",
   "0187_audit_retention_maintenance.sql":
     "defines the audit retention SQL functions; the INSERT INTO audit_logs sits inside the purge function body (one summary row per batch, written at purge time), no row is written or changed while the migration runs (legend-usyi)",
   // legend-111j

@@ -536,6 +536,17 @@ beforeAll(async () => {
     throw new Error("Requires the disposable test database");
   manager = await signedIn("tenant");
   scoped = await signedIn("outlet");
+  // Resolving a reconciliation case asks for approval: the tenant needs a policy.
+  await owner.query(
+    "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'reconciliation_case'",
+    [tenantId],
+  );
+  await owner.query(
+    `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+     SELECT $1, 'reconciliation_case', NULL, id, 1, true
+     FROM roles WHERE tenant_id = $1 AND template_key = 'owner'`,
+    [tenantId],
+  );
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
      VALUES ($1, $2, 'Settlement other tenant', 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', $3, $4)`,
@@ -988,7 +999,7 @@ describe("EDC-06 legend-jlqi idempotent re-import", () => {
     expect(await settlementsBy(other.reference)).toHaveLength(0);
   });
 
-  it("EDC-06 re-import does not reopen a case that was resolved", async () => {
+  it("EDC-06 re-import does not reopen a case that was resolved or awaits approval", async () => {
     const s = await gatewayScenario();
     const { id } = await importScenario(s);
     const open = (await casesOf(id)).find((c) => c.reference === s.pw)!;
@@ -1002,7 +1013,9 @@ describe("EDC-06 legend-jlqi idempotent re-import", () => {
     expectOk(again);
     const cases = await casesOf(id);
     expect(cases).toHaveLength(3);
-    expect(cases.find((c) => c.id === open.id)?.status).toBe("resolved");
+    expect(cases.find((c) => c.id === open.id)?.status).toBe(
+      "pending_approval",
+    );
     expect(cases.filter((c) => c.status === "open")).toHaveLength(2);
   });
 
@@ -1159,6 +1172,58 @@ describe("EDC-06 legend-jlqi round 2: one missing case per POS sale (H1)", () =>
     expect(missingZ[0]!.id).toBe(missingAfterA[0]!.id);
     // X was settled by report A: no missing case in any report.
     expect(await casesByReference(px)).toEqual([]);
+  });
+
+  it("EDC-06 a missing case awaiting approval still blocks a second missing case for the same payment", async () => {
+    const day = nextDay();
+    const tag = uid();
+    const px = `PR-${tag}-X`; // settled by report A
+    const pz = `PR-${tag}-Z`; // never settled by anybody
+    const pw = `PR-${tag}-W`; // unknown payment in report B
+    await seedIntent({ providerRef: px, amountIdr: 100000, day });
+    await seedIntent({ providerRef: pz, amountIdr: 50000, day });
+
+    const a = await post(
+      manager,
+      gatewayBody({
+        day,
+        reference: `GW-${tag}-A`,
+        lines: [{ reference: px, amountIdr: 100000, feeIdr: 700 }],
+      }),
+    );
+    expectOk(a);
+    settlementIds.push(a.body.data.id);
+    const [missing] = await casesByReference(pz);
+    expect(missing).toMatchObject({ status: "open", settlement_line_id: null });
+
+    // Ask to close the missing case: it now waits for a second person.
+    const requested = await manager
+      .post(`/api/payments/admin/reconciliation/cases/${missing!.id}/resolve`)
+      .set(originHeader)
+      .set("Idempotency-Key", `res-${randomUUID()}`)
+      .send({ note: "Bank statement checked, accepted" });
+    expect(requested.status).toBe(200);
+    expect((await casesByReference(pz))[0]?.status).toBe("pending_approval");
+
+    // Report B overlaps the same day: Z must not get a second case.
+    const b = await post(
+      manager,
+      gatewayBody({
+        day,
+        reference: `GW-${tag}-B`,
+        lines: [{ reference: pw, amountIdr: 30000, feeIdr: 210 }],
+      }),
+    );
+    expectOk(b);
+    settlementIds.push(b.body.data.id);
+    expect(b.body.data).toMatchObject({ unmatchedLines: 1, casesCreated: 1 });
+
+    const afterB = await casesByReference(pz);
+    expect(afterB).toHaveLength(1);
+    expect(afterB[0]).toMatchObject({
+      id: missing!.id,
+      status: "pending_approval",
+    });
   });
 
   it("EDC-06 a second report for the same EDC batch is refused, so no sale gets a second missing case", async () => {

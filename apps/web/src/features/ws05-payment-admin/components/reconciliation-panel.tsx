@@ -191,6 +191,9 @@ export function ReconciliationPanel() {
                   <SelectItem value="open">
                     {t("paymentAdmin.reconciliation.statusOpen")}
                   </SelectItem>
+                  <SelectItem value="pending_approval">
+                    {t("paymentAdmin.reconciliation.statusPending")}
+                  </SelectItem>
                   <SelectItem value="resolved">
                     {t("paymentAdmin.reconciliation.statusResolved")}
                   </SelectItem>
@@ -249,10 +252,33 @@ export function ReconciliationPanel() {
                   <p className="max-w-2xl text-sm text-muted-foreground">
                     {entry.reason}
                   </p>
-                  {entry.resolvedByName && (
+                  {entry.status === "pending_approval" &&
+                    entry.requestedByName && (
+                      <p className="text-sm text-muted-foreground">
+                        {t("paymentAdmin.reconciliation.requestedBy", {
+                          name: entry.requestedByName,
+                        })}
+                        {entry.note ? ` · ${entry.note}` : ""}
+                      </p>
+                    )}
+                  {entry.status === "resolved" && entry.resolvedByName && (
                     <p className="text-sm text-muted-foreground">
                       {entry.resolvedByName}
                       {entry.note ? ` · ${entry.note}` : ""}
+                    </p>
+                  )}
+                  {entry.status === "resolved" && entry.approvedByName && (
+                    <p className="text-sm text-muted-foreground">
+                      {t("paymentAdmin.reconciliation.approvedBy", {
+                        name: entry.approvedByName,
+                      })}
+                    </p>
+                  )}
+                  {entry.approvalRequestId && (
+                    <p className="text-sm text-muted-foreground tabular-nums">
+                      {t("paymentAdmin.reconciliation.approvalRef", {
+                        id: entry.approvalRequestId,
+                      })}
                     </p>
                   )}
                 </div>
