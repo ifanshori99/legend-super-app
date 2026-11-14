@@ -1,6 +1,7 @@
 // PAY recon / PRD §3.7: the approval policy for the `reconciliation_case`
-// action exists by default (Owner, one level, distinct actor) for new tenants
-// (seedTenantRoleTemplates) and for old tenants without one (migration 0565).
+// action exists by default (Owner or Finance, one level with two rows, either
+// role is enough, distinct actor) for new tenants (seedTenantRoleTemplates) and
+// for old tenants without one (migration 0565).
 // A tenant that already has a policy for the action is never touched, and
 // re-running either path adds nothing.
 //
@@ -131,6 +132,12 @@ const OWNER_DEFAULT: PolicyRow = {
   requires_distinct_actor: true,
   template_key: "owner",
 };
+const FINANCE_DEFAULT: PolicyRow = {
+  ...OWNER_DEFAULT,
+  template_key: "finance",
+};
+// policiesOf orders by template_key: finance, owner.
+const BOTH_DEFAULT: PolicyRow[] = [FINANCE_DEFAULT, OWNER_DEFAULT];
 
 afterAll(async () => {
   if (tenantIds.length > 0) {
@@ -149,17 +156,17 @@ afterAll(async () => {
 });
 
 describe("reconciliation_case default approval policy", () => {
-  it("gives a newly provisioned tenant one Owner level-1 policy that needs a distinct actor", async () => {
+  it("gives a newly provisioned tenant Owner and Finance level-1 policies that need a distinct actor", async () => {
     const tenantId = await createTenant();
     await seedTemplates(tenantId);
-    expect(await policiesOf(tenantId)).toEqual([OWNER_DEFAULT]);
+    expect(await policiesOf(tenantId)).toEqual(BOTH_DEFAULT);
   });
 
   it("does not duplicate or overwrite on a retried provisioning run", async () => {
     const tenantId = await createTenant();
     await seedTemplates(tenantId);
     await seedTemplates(tenantId);
-    expect(await policiesOf(tenantId)).toHaveLength(1);
+    expect(await policiesOf(tenantId)).toEqual(BOTH_DEFAULT);
   });
 
   it("provisioning leaves a policy the tenant already has for the action alone", async () => {
@@ -207,9 +214,9 @@ describe("reconciliation_case default approval policy", () => {
     const tenantId = await oldTenant();
     expect(await policiesOf(tenantId)).toHaveLength(0);
     await applyBackfill();
-    expect(await policiesOf(tenantId)).toEqual([OWNER_DEFAULT]);
+    expect(await policiesOf(tenantId)).toEqual(BOTH_DEFAULT);
     await applyBackfill();
-    expect(await policiesOf(tenantId)).toHaveLength(1);
+    expect(await policiesOf(tenantId)).toEqual(BOTH_DEFAULT);
   });
 
   it("never touches a tenant that already has a policy for the action", async () => {
@@ -229,7 +236,7 @@ describe("reconciliation_case default approval policy", () => {
     });
   });
 
-  it("adds nothing for a tenant without an Owner template role", async () => {
+  it("gives a tenant without an Owner template role the Finance row only", async () => {
     const tenantId = await oldTenant();
     await owner.query(
       "DELETE FROM approval_policies WHERE tenant_id = $1 AND approver_role_id IN (SELECT id FROM roles WHERE tenant_id = $1 AND template_key = 'owner')",
@@ -237,6 +244,34 @@ describe("reconciliation_case default approval policy", () => {
     );
     await owner.query(
       "DELETE FROM roles WHERE tenant_id = $1 AND template_key = 'owner'",
+      [tenantId],
+    );
+    await applyBackfill();
+    expect(await policiesOf(tenantId)).toEqual([FINANCE_DEFAULT]);
+  });
+
+  it("gives a tenant without a Finance template role the Owner row only", async () => {
+    const tenantId = await oldTenant();
+    await owner.query(
+      "DELETE FROM approval_policies WHERE tenant_id = $1 AND approver_role_id IN (SELECT id FROM roles WHERE tenant_id = $1 AND template_key = 'finance')",
+      [tenantId],
+    );
+    await owner.query(
+      "DELETE FROM roles WHERE tenant_id = $1 AND template_key = 'finance'",
+      [tenantId],
+    );
+    await applyBackfill();
+    expect(await policiesOf(tenantId)).toEqual([OWNER_DEFAULT]);
+  });
+
+  it("adds nothing for a tenant with neither template role", async () => {
+    const tenantId = await oldTenant();
+    await owner.query(
+      "DELETE FROM approval_policies WHERE tenant_id = $1 AND approver_role_id IN (SELECT id FROM roles WHERE tenant_id = $1 AND template_key IN ('owner', 'finance'))",
+      [tenantId],
+    );
+    await owner.query(
+      "DELETE FROM roles WHERE tenant_id = $1 AND template_key IN ('owner', 'finance')",
       [tenantId],
     );
     await applyBackfill();

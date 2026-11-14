@@ -427,8 +427,8 @@ export async function importSettlement(
                   sql`NOT EXISTS (SELECT 1 FROM ${lines} WHERE ${lines.tenantId} = ${tenantId} AND ${lines.matchedEdcTransactionId} = ${edcTransactions.id})`,
                   // Voided on the same terminal: the sale is not owed.
                   sql`NOT EXISTS (SELECT 1 FROM ${edcTransactions} AS ${voids} WHERE ${voids.tenantId} = ${tenantId} AND ${voids.terminalId} = ${edcTransactions.terminalId} AND ${voids.type} = 'void' AND ${voids.status} = 'approved' AND (${voids.reference} = ${edcTransactions.reference} OR (${edcTransactions.rrn} IS NOT NULL AND ${voids.rrn} = ${edcTransactions.rrn})))`,
-                  // One sale, at most one live (open or awaiting approval) "missing" case.
-                  sql`NOT EXISTS (SELECT 1 FROM ${cases} WHERE ${cases.tenantId} = ${tenantId} AND ${cases.outletId} = ${input.outletId} AND ${cases.source} = 'edc' AND ${cases.provider} = ${input.provider} AND ${cases.status} IN ('open', 'pending_approval') AND ${cases.settlementLineId} IS NULL AND ${cases.reference} = COALESCE(${edcTransactions.rrn}, ${edcTransactions.approvalCode}, ${edcTransactions.reference}))`,
+                  // One sale, at most one "missing" case for life (open, awaiting approval or resolved).
+                  sql`NOT EXISTS (SELECT 1 FROM ${cases} WHERE ${cases.tenantId} = ${tenantId} AND ${cases.outletId} = ${input.outletId} AND ${cases.source} = 'edc' AND ${cases.provider} = ${input.provider} AND ${cases.settlementLineId} IS NULL AND (${cases.sourceTransactionId} = ${edcTransactions.id} OR (${cases.sourceTransactionId} IS NULL AND ${cases.reference} = COALESCE(${edcTransactions.rrn}, ${edcTransactions.approvalCode}, ${edcTransactions.reference}))))`,
                 ),
               )
               .orderBy(asc(edcTransactions.createdAt), asc(edcTransactions.id))
@@ -436,6 +436,7 @@ export async function importSettlement(
                 rows
                   .filter((r) => !claimed.has(r.id))
                   .map((r) => ({
+                    id: r.id,
                     amountIdr: r.amountIdr,
                     reference: r.rrn ?? r.approvalCode ?? r.reference,
                   })),
@@ -456,8 +457,8 @@ export async function importSettlement(
                   sql`(${paymentIntents.paidAt} AT TIME ZONE 'Asia/Jakarta')::date BETWEEN ${input.periodStart}::date AND ${input.periodEnd}::date`,
                   // Already settled by a line of any report.
                   sql`NOT EXISTS (SELECT 1 FROM ${lines} WHERE ${lines.tenantId} = ${tenantId} AND ${lines.matchedPaymentIntentId} = ${paymentIntents.id})`,
-                  // One sale, at most one live (open or awaiting approval) "missing" case.
-                  sql`NOT EXISTS (SELECT 1 FROM ${cases} WHERE ${cases.tenantId} = ${tenantId} AND ${cases.outletId} = ${input.outletId} AND ${cases.source} = 'gateway' AND ${cases.provider} = ${input.provider} AND ${cases.status} IN ('open', 'pending_approval') AND ${cases.settlementLineId} IS NULL AND ${cases.reference} = COALESCE(${paymentIntents.providerRef}, ${paymentIntents.id}::text))`,
+                  // One sale, at most one "missing" case for life (open, awaiting approval or resolved).
+                  sql`NOT EXISTS (SELECT 1 FROM ${cases} WHERE ${cases.tenantId} = ${tenantId} AND ${cases.outletId} = ${input.outletId} AND ${cases.source} = 'gateway' AND ${cases.provider} = ${input.provider} AND ${cases.settlementLineId} IS NULL AND (${cases.sourceTransactionId} = ${paymentIntents.id} OR (${cases.sourceTransactionId} IS NULL AND ${cases.reference} = COALESCE(${paymentIntents.providerRef}, ${paymentIntents.id}::text))))`,
                 ),
               )
               .orderBy(asc(paymentIntents.paidAt), asc(paymentIntents.id))
@@ -465,22 +466,38 @@ export async function importSettlement(
                 rows
                   .filter((r) => !claimed.has(r.id))
                   .map((r) => ({
+                    id: r.id,
                     amountIdr: r.amountIdr,
                     reference: r.providerRef ?? r.id,
                   })),
               );
       for (const row of missing) {
-        await tx.insert(cases).values({
-          ...caseBase,
-          settlementLineId: null,
-          reference: row.reference,
-          expectedIdr: row.amountIdr,
-          receivedIdr: idr(0),
-          varianceIdr: idr(-row.amountIdr),
-          reason: "POS transaction is missing from the settlement report",
-          status: "open",
-        });
-        tally.cases += 1;
+        // The partial unique index is the last guard against a duplicate
+        // "missing" case; only a row that really went in is counted.
+        const inserted = await tx
+          .insert(cases)
+          .values({
+            ...caseBase,
+            settlementLineId: null,
+            sourceTransactionId: row.id,
+            reference: row.reference,
+            expectedIdr: row.amountIdr,
+            receivedIdr: idr(0),
+            varianceIdr: idr(-row.amountIdr),
+            reason: "POS transaction is missing from the settlement report",
+            status: "open",
+          })
+          .onConflictDoNothing({
+            target: [
+              cases.tenantId,
+              cases.outletId,
+              cases.source,
+              cases.sourceTransactionId,
+            ],
+            where: sql`${cases.settlementLineId} IS NULL AND ${cases.sourceTransactionId} IS NOT NULL`,
+          })
+          .returning({ id: cases.id });
+        tally.cases += inserted.length;
       }
 
       await recordAudit(

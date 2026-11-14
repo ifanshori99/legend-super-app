@@ -5278,3 +5278,11 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gerbang: lint hijau (0 error, 2 warning lama); typecheck 49 dtk hijau; tes root `node --test tests/*.test.mjs` terarah 2851/2855 (4 gagal hanya "isolated database", lingkungan); `heavy pnpm run test` penuh 02:33-03:45 (72 mnt) exit 0: vitest 1082 berkas/17477 lulus/41 skip/16 todo, root 2884/2884; build hijau; e2e `legend-zueb.mock.spec.ts` 18/18 hijau.
 - Flake 654: `rotate-data-key`, `hris-leave-changed-event`, `platform-org-api` TEN-03/06 tidak muncul di run penuh (0 gagal). Bukti fix 654.
 - Belum: `legend-zy43` (tidak ada producer `receipt_run.reported` di edge). Rilis edge order ingest: deploy cloud dulu, baru edge.
+
+## 2026-11-14: Dedupe kasus rekonsiliasi + penyetuju Owner/Finance (legend-aegsj, cabang ws/payment-approvals-dedupe)
+
+- Temuan Codex P2: kasus missing `resolved` diabaikan oleh dedupe impor, laporan lain bisa membuat kasus kedua dan event resolusi kedua. Aturan paling membatasi: satu penjualan = paling banyak SATU kasus missing seumur hidup, semua status (open, pending_approval, resolved); ditolak = kembali open, kasus sama. Nominal kasus missing = nominal penjualan, jadi tidak ada "selisih baru".
+- Kunci = ID penjualan (kolom baru `source_transaction_id`, migrasi 0574, unique partial `payment_reconciliation_cases_missing_sale_key`), bukan `reference` (approval code EDC berulang antar penjualan). Baris lama (NULL) tetap dicocokkan lewat reference, semua status. Insert pakai ON CONFLICT DO NOTHING, hitungan hanya baris yang masuk; advisory lock impor sudah ada.
+- Penyetuju bawaan = Owner ATAU Finance (founder W8 Q10/Q12): dua baris level 1 di seed 0565, `DEFAULT_RECONCILIATION_CASE_APPROVAL_POLICIES`, `seedTenantRoleTemplates`. Pengaju tetap tidak bisa menyetujui sendiri.
+- Bukti: 6 berkas test terarah (132 test) hijau; tsc api, web, shared hijau; prettier+eslint hijau; db:generate kosong; check-journal ok. Architect xhigh: lolos, 2 temuan kecil (test 23505 ditambah; baris legacy dibuat bead legend-ofu02).
+- Bead baru: legend-hbifd (kasus missing open tetap bisa disetujui setelah penjualannya tercocokkan di laporan berikutnya), legend-ofu02 (cek baris missing lama di staging sebelum rilis).

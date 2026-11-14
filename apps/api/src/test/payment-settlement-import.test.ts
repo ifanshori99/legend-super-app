@@ -13,12 +13,30 @@
 //  - Cross-tenant / out-of-scope outlet answers 403 or 404 (house pattern).
 //  - Cases are read by settlement_id straight from payment_reconciliation_cases
 //    so other test files and seeded rows never change the counts.
+//  - legend-aegsj (founder rule, most restrictive): a "missing" case (no
+//    settlement line) exists at most once per POS sale for life, whatever its
+//    status (open, pending_approval, resolved). A later report with another
+//    reference over the same period never opens a second one, so a second
+//    reconciliation_case.resolved can never be approved for the same sale.
+//  - The default approver of a reconciliation case is Owner OR Finance (two
+//    policy rows at level 1); the requester can never approve their own.
 import { randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { eventEnvelopeSchema } from "@starter/shared/events";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import type { ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
+import { handleReconciliationApprovalResolved } from "../services/payment-reconciliation-approval-consumer";
+import { decideApprovalRequest } from "../services/platform-approval.service";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
 
 type MutableBody = {
@@ -58,6 +76,7 @@ const txIds: string[] = [];
 const terminalIds: string[] = [];
 const settlementIds: string[] = [];
 let manager: ReturnType<typeof agent>;
+let approverId: string; // second tenant-wide Owner: may approve what manager asks
 let scoped: ReturnType<typeof agent>;
 let dayCounter = 0;
 
@@ -106,6 +125,10 @@ async function asAppRole<T>(
 }
 
 async function signedIn(scope: "tenant" | "outlet") {
+  return (await signedInWithId(scope)).client;
+}
+
+async function signedInWithId(scope: "tenant" | "outlet") {
   const client = agent(app);
   const email = await signUp(client, `Settlement ${scope}`);
   const session = await client.get("/api/auth/get-session");
@@ -127,7 +150,7 @@ async function signedIn(scope: "tenant" | "outlet") {
       scope === "outlet" ? outletB : null,
     ],
   );
-  return client;
+  return { client, userId };
 }
 
 /** Each scenario gets its own business day so gateway "missing" scans never overlap. */
@@ -418,6 +441,117 @@ async function track(reference: string) {
   for (const row of await settlementsBy(reference)) settlementIds.push(row.id);
 }
 
+// ------------------------------------------------- legend-aegsj case lifecycle
+
+const tenantContext = () =>
+  establishTenantContext({ tenantId, brandId: null, source: "session" });
+const tenantWide: ScopedTenantContext = establishScopedTenantContext(
+  establishTenantContext({ tenantId, brandId: null, source: "job" }),
+  { kind: "tenant" },
+);
+const RESOLVED_EVENT = "reconciliation_case.resolved";
+
+async function countOutboxEvents(name: string) {
+  const { rows } = await asTenant(tenantId, (c) =>
+    c.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM domain_event_outbox
+        WHERE tenant_id = $1 AND event->>'name' = $2`,
+      [tenantId, name],
+    ),
+  );
+  return Number(rows[0]!.n);
+}
+
+/** manager asks to close the case: it waits for a second person. */
+async function requestClose(caseId: string) {
+  const response = await manager
+    .post(`/api/payments/admin/reconciliation/cases/${caseId}/resolve`)
+    .set(originHeader)
+    .set("Idempotency-Key", `res-${randomUUID()}`)
+    .send({ note: "Bank statement checked, accepted" });
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+  expect(response.body.data.status).toBe("pending_approval");
+}
+
+/** Another Owner decides the pending request and the worker applies it. */
+async function decideCase(caseId: string, decision: "approved" | "rejected") {
+  const { rows } = await asTenant(tenantId, (c) =>
+    c.query<{ id: string; chain_id: string }>(
+      `SELECT id, chain_id FROM approval_requests
+        WHERE tenant_id = $1 AND object_type = 'payment_reconciliation_case'
+          AND object_id = $2 AND status = 'pending'`,
+      [tenantId, caseId],
+    ),
+  );
+  expect(rows).toHaveLength(1);
+  const request = rows[0]!;
+  await decideApprovalRequest(
+    tenantContext(),
+    approverId,
+    request.id,
+    { decision, reason: "Sesuai laporan settlement." },
+    { mfaVerified: true, idempotencyKey: null },
+  );
+  const events = await asTenant(tenantId, (c) =>
+    c.query<{ event: unknown }>(
+      `SELECT event FROM domain_event_outbox
+        WHERE tenant_id = $1 AND destination = 'cloud-sync'
+          AND event->>'name' = 'approval.resolved'
+          AND event->'payload'->>'chainId' = $2`,
+      [tenantId, request.chain_id],
+    ),
+  );
+  expect(events.rows).toHaveLength(1);
+  await handleReconciliationApprovalResolved(
+    tenantWide,
+    eventEnvelopeSchema.parse(events.rows[0]!.event),
+    new Date(),
+  );
+}
+
+/** A gateway fixture: X settled by report A, Z never settled (missing). */
+async function gatewayMissingSetup() {
+  const day = nextDay();
+  const tag = uid();
+  const px = `PR-${tag}-X`;
+  const pz = `PR-${tag}-Z`;
+  await seedIntent({ providerRef: px, amountIdr: 100000, day });
+  await seedIntent({ providerRef: pz, amountIdr: 50000, day });
+  const a = await post(
+    manager,
+    gatewayBody({
+      day,
+      reference: `GW-${tag}-A`,
+      lines: [{ reference: px, amountIdr: 100000, feeIdr: 700 }],
+    }),
+  );
+  expectOk(a);
+  settlementIds.push(a.body.data.id);
+  const [missing] = await casesByReference(pz);
+  expect(missing).toMatchObject({ status: "open", settlement_line_id: null });
+  return { day, tag, px, pz, missingId: missing!.id };
+}
+
+/** A later report, another reference, same period; it carries one unknown payment. */
+async function laterGatewayReport(
+  s: { day: string; tag: string },
+  suffix: string,
+) {
+  const response = await post(
+    manager,
+    gatewayBody({
+      day: s.day,
+      reference: `GW-${s.tag}-${suffix}`,
+      lines: [
+        { reference: `PR-${s.tag}-U${suffix}`, amountIdr: 30000, feeIdr: 210 },
+      ],
+    }),
+  );
+  expectOk(response);
+  settlementIds.push(response.body.data.id);
+  return response;
+}
+
 /** Everything a reconciliation import must never change (founder money rule). */
 async function moneySnapshot() {
   return asTenant(tenantId, async (c) => {
@@ -534,9 +668,11 @@ async function importScenario(s: Scenario) {
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
-  manager = await signedIn("tenant");
+  ({ client: manager } = await signedInWithId("tenant"));
+  ({ userId: approverId } = await signedInWithId("tenant"));
   scoped = await signedIn("outlet");
   // Resolving a reconciliation case asks for approval: the tenant needs a policy.
+  // Same as the product default: level 1, Owner or Finance (either is enough).
   await owner.query(
     "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'reconciliation_case'",
     [tenantId],
@@ -544,7 +680,7 @@ beforeAll(async () => {
   await owner.query(
     `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
      SELECT $1, 'reconciliation_case', NULL, id, 1, true
-     FROM roles WHERE tenant_id = $1 AND template_key = 'owner'`,
+     FROM roles WHERE tenant_id = $1 AND template_key IN ('owner', 'finance')`,
     [tenantId],
   );
   await owner.query(
@@ -1557,6 +1693,251 @@ describe("EDC-06 legend-jlqi round 2: terminal and provider must be real (L1)", 
     const response = await post(manager, body);
     expect(response.status).toBe(422);
     expect(await settlementsBy(body.reference)).toHaveLength(0);
+  });
+});
+
+describe("EDC-06 legend-aegsj one missing case per sale for life", () => {
+  it("EDC-06 a later report never opens a second case for a sale whose missing case was approved and resolved", async () => {
+    const s = await gatewayMissingSetup();
+    await requestClose(s.missingId);
+    const eventsBefore = await countOutboxEvents(RESOLVED_EVENT);
+    await decideCase(s.missingId, "approved");
+    expect((await casesByReference(s.pz))[0]).toMatchObject({
+      id: s.missingId,
+      status: "resolved",
+    });
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(eventsBefore + 1);
+
+    // Two more reports over the same day, other references: Z is still absent
+    // from both, but it already had its case.
+    for (const suffix of ["B", "C"]) {
+      const later = await laterGatewayReport(s, suffix);
+      // Only the unknown payment of that report opens a case, never Z again.
+      expect(later.body.data).toMatchObject({
+        unmatchedLines: 1,
+        casesCreated: 1,
+      });
+    }
+    const all = await casesByReference(s.pz);
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ id: s.missingId, status: "resolved" });
+    // No second case, so no second approval and no second booked write-off.
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(eventsBefore + 1);
+  });
+
+  it("EDC-06 a rejected missing case goes back to open and stays the same single case", async () => {
+    const s = await gatewayMissingSetup();
+    await requestClose(s.missingId);
+    await decideCase(s.missingId, "rejected");
+    expect((await casesByReference(s.pz))[0]).toMatchObject({
+      id: s.missingId,
+      status: "open",
+    });
+
+    const later = await laterGatewayReport(s, "B");
+    expect(later.body.data).toMatchObject({ casesCreated: 1 });
+    const all = await casesByReference(s.pz);
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ id: s.missingId, status: "open" });
+  });
+
+  it("EDC-06 an open or pending missing case still blocks a later report", async () => {
+    const s = await gatewayMissingSetup();
+    await laterGatewayReport(s, "B");
+    expect(await casesByReference(s.pz)).toHaveLength(1);
+    await requestClose(s.missingId);
+    await laterGatewayReport(s, "C");
+    const all = await casesByReference(s.pz);
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({
+      id: s.missingId,
+      status: "pending_approval",
+    });
+  });
+
+  it("EDC-06 two reports imported at the same time open exactly one missing case and count it once", async () => {
+    const day = nextDay();
+    const tag = uid();
+    const px = `PR-${tag}-X`;
+    const pz = `PR-${tag}-Z`;
+    await seedIntent({ providerRef: px, amountIdr: 100000, day });
+    await seedIntent({ providerRef: pz, amountIdr: 50000, day });
+    const eventsBefore = await countOutboxEvents(RESOLVED_EVENT);
+
+    // Both reports leave Z out. Report A settles X; report B carries an
+    // unknown payment W (one case of its own).
+    const [a, b] = await Promise.all([
+      post(
+        manager,
+        gatewayBody({
+          day,
+          reference: `GW-${tag}-A`,
+          lines: [{ reference: px, amountIdr: 100000, feeIdr: 700 }],
+        }),
+      ),
+      post(
+        manager,
+        gatewayBody({
+          day,
+          reference: `GW-${tag}-B`,
+          lines: [{ reference: `PR-${tag}-W`, amountIdr: 30000, feeIdr: 210 }],
+        }),
+      ),
+    ]);
+    expectOk(a);
+    expectOk(b);
+    settlementIds.push(a.body.data.id, b.body.data.id);
+
+    const missing = await casesByReference(pz);
+    expect(missing).toHaveLength(1);
+    expect(missing[0]).toMatchObject({
+      status: "open",
+      settlement_line_id: null,
+      expected_idr: 50000,
+      variance_idr: -50000,
+    });
+    // The summary counts only rows that really went in: Z once + W once.
+    expect(
+      (a.body.data.casesCreated as number) +
+        (b.body.data.casesCreated as number),
+    ).toBe(2);
+
+    // The single case closes once: one approval, one resolved event.
+    await requestClose(missing[0]!.id);
+    await decideCase(missing[0]!.id, "approved");
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(eventsBefore + 1);
+  });
+
+  it("EDC-06 an EDC sale missing from a batch report gets one case for life, even after approval and later reports", async () => {
+    const day = nextDay();
+    const tag = uid();
+    const terminalId = await seedTerminal();
+    const batchNo = `A${tag.slice(0, 5)}`;
+    const r1 = `RRNA1${tag}`;
+    const r3 = `RRNA3${tag}`;
+    await seedEdcSale({ terminalId, rrn: r1, amountIdr: 20000, batchNo });
+    await seedEdcSale({ terminalId, rrn: r3, amountIdr: 15000, batchNo });
+    const first = await post(
+      manager,
+      edcBody({
+        day,
+        reference: `EDC-${tag}-A`,
+        terminalId,
+        batchNo,
+        lines: [{ reference: r1, amountIdr: 20000, feeIdr: 140 }],
+      }),
+    );
+    expectOk(first);
+    settlementIds.push(first.body.data.id);
+    const [missing] = await casesByReference(r3);
+    expect(missing).toMatchObject({ status: "open", settlement_line_id: null });
+
+    await requestClose(missing!.id);
+    const eventsBefore = await countOutboxEvents(RESOLVED_EVENT);
+    await decideCase(missing!.id, "approved");
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(eventsBefore + 1);
+
+    // Later EDC reports (new reference, same period) over the same batch, and
+    // over another terminal with the same batch number. Whether the product
+    // refuses (409) or accepts them, r3 never gets a second case. A 500 is a bug.
+    const otherTerminal = await seedTerminal();
+    for (const [suffix, terminal] of [
+      ["B", terminalId],
+      ["C", otherTerminal],
+    ] as const) {
+      const later = await post(
+        manager,
+        edcBody({
+          day,
+          reference: `EDC-${tag}-${suffix}`,
+          terminalId: terminal,
+          batchNo,
+          lines: [
+            {
+              reference: `RRNAX${suffix}${tag}`,
+              amountIdr: 1000,
+              feeIdr: 7,
+            },
+          ],
+        }),
+      );
+      expect([200, 201, 409]).toContain(later.status);
+      await track(`EDC-${tag}-${suffix}`);
+    }
+    const all = await casesByReference(r3);
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ id: missing!.id, status: "resolved" });
+    expect(await countOutboxEvents(RESOLVED_EVENT)).toBe(eventsBefore + 1);
+  });
+});
+
+describe("EDC-06 legend-aegsj database refuses a second missing case (migration 0574)", () => {
+  it("EDC-06 the journal registers 0574 after the last earlier entry", () => {
+    const journal = JSON.parse(
+      readFileSync(
+        resolve(
+          dirname(fileURLToPath(import.meta.url)),
+          "../../drizzle/meta/_journal.json",
+        ),
+        "utf8",
+      ),
+    ) as { entries: { idx: number; when: number; tag: string }[] };
+    const entry = journal.entries.find((row) => row.idx === 574);
+    expect(entry?.tag).toMatch(/^0574_/);
+    const earlier = journal.entries.filter((row) => row.idx !== 574);
+    expect(entry!.when).toBeGreaterThan(
+      Math.max(...earlier.map((r) => r.when)),
+    );
+  });
+
+  // The brief named a (tenant, outlet, source, provider, reference) key; the
+  // implementation may key it on the sale id instead (card approval codes
+  // repeat). The test only requires a partial UNIQUE index on the missing rows.
+  it("EDC-06 a partial unique index guards missing cases (settlement_line_id IS NULL)", async () => {
+    const { rows } = await owner.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes
+        WHERE tablename = 'payment_reconciliation_cases'`,
+    );
+    const guards = rows.filter(
+      (row) =>
+        /CREATE UNIQUE INDEX/i.test(row.indexdef) &&
+        /settlement_line_id\)?\s+IS NULL/i.test(row.indexdef) &&
+        /tenant_id/.test(row.indexdef),
+    );
+    expect(guards.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // The index keys on the sale id (source_transaction_id), not on reference:
+  // two missing rows for one sale are refused even with different references,
+  // while legacy rows (null sale id) may repeat. Rows are inserted straight as
+  // the migration owner, copying a real missing case so FKs and checks hold.
+  it("EDC-06 the database refuses a second missing row for one sale (23505) but allows repeated null sale ids", async () => {
+    const s = await gatewayMissingSetup();
+    const insertCopy = (saleId: string | null, reference: string) =>
+      asTenant(tenantId, (c) =>
+        c.query(
+          `INSERT INTO payment_reconciliation_cases
+             (id, tenant_id, outlet_id, settlement_id, settlement_line_id, source,
+              provider, reference, source_transaction_id, period_start, period_end,
+              expected_idr, received_idr, variance_idr, reason, status)
+           SELECT gen_random_uuid(), tenant_id, outlet_id, settlement_id, NULL, source,
+                  provider, $3, $4::uuid, period_start, period_end,
+                  expected_idr, received_idr, variance_idr, reason, 'open'
+             FROM payment_reconciliation_cases WHERE tenant_id = $1 AND id = $2`,
+          [tenantId, s.missingId, reference, saleId],
+        ),
+      );
+
+    const saleId = randomUUID();
+    await insertCopy(saleId, `GW-${s.tag}-DUP1`);
+    await expect(insertCopy(saleId, `GW-${s.tag}-DUP2`)).rejects.toMatchObject({
+      code: "23505",
+      constraint: "payment_reconciliation_cases_missing_sale_key",
+    });
+
+    // Legacy rows without a sale id are not guarded by the index.
+    await insertCopy(null, `GW-${s.tag}-NULL1`);
+    await insertCopy(null, `GW-${s.tag}-NULL2`);
   });
 });
 
