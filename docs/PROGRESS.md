@@ -1544,3 +1544,4 @@ Langkah berikut CTO baru:
 - 10:15 G558t selesai: ws/reservation-followups 905891fa7 (0575) menggantikan ws/reservation-reschedule di batch63. Retro 27 G7gvi dimulai.
 - 10:25 bw2q: fix/platform-offline-banner 4b461d82f review sonnet bersih, antre batch64. Brief 706 (jemae e2e POS) antre slot Codex.
 - 10:45 sivp: fix/ssr-hydration 991876567 (test dipindah ke tests/, merah tanpa fix). legend-xpmbb: guard test di luar pola runner. G00yt (Codex) mulai 706 jemae.
+- 11:00 xpmbb: fix/test-orphan-guard ea616877f review bersih. Antre batch64: fix/platform-offline-banner, fix/ssr-hydration, fix/test-orphan-guard, fix/edge-transport-no-outlet (+ fix/edge-dead-letter-alarm bila siap).
