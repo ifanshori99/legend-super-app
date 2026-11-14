@@ -123,6 +123,12 @@ export const guestReservationViewSchema = z.strictObject({
       decidedAt: isoDateTimeSchema,
       requestedFor: isoDateTimeSchema,
       partySize: z.number().int().min(1).max(50).nullable(),
+      /**
+       * The booking time that was replaced; set only when approved, null when
+       * declined and on requests approved before it was stored. The decline
+       * reason is never sent to the guest (it may hold internal notes).
+       */
+      previousReservedFor: isoDateTimeSchema.nullable(),
     })
     .nullable(),
   linkExpiresAt: isoDateTimeSchema,

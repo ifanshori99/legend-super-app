@@ -514,6 +514,7 @@ describe("RSV-03 guest view shows the last decided reschedule request (legend-z5
     const token = await issueLink(id);
     const requestedFor = targetAt();
     const requestId = await guestRequests(token, requestedFor, 3);
+    const oldSchedule = (await reservationRow(id)).reserved_for.toISOString();
 
     expect((await decide(requestId, "approve")).status).toBe(200);
 
@@ -528,9 +529,31 @@ describe("RSV-03 guest view shows the last decided reschedule request (legend-z5
       decidedAt: row!.resolved_at!.toISOString(),
       requestedFor,
       partySize: 3,
+      // The replaced schedule, so the guest page can say it was swapped out.
+      previousReservedFor: oldSchedule,
     });
     // The booking itself moved to the approved time.
     expect(view.body.data.reservedFor).toBe(requestedFor);
+  });
+
+  it("RSV-03 an approval from before previous_reserved_for existed (NULL) still parses and shows previousReservedFor null", async () => {
+    const { id } = await freeBooking();
+    const token = await issueLink(id);
+    const requestId = await guestRequests(token, targetAt());
+    expect((await decide(requestId, "approve")).status).toBe(200);
+    await asOwner((client) =>
+      client.query(
+        "UPDATE reservation_reschedule_requests SET previous_reserved_for = NULL WHERE id = $1",
+        [requestId],
+      ),
+    );
+
+    const view = await guestView(token);
+    expect(view.status).toBe(200);
+    expect(view.body.data.rescheduleDecision).toMatchObject({
+      outcome: "approved",
+      previousReservedFor: null,
+    });
   });
 
   it("RSV-03 after staff decline the view shows outcome declined, partySize null when none was asked, booking unchanged", async () => {
@@ -555,10 +578,11 @@ describe("RSV-03 guest view shows the last decided reschedule request (legend-z5
       decidedAt: row!.resolved_at!.toISOString(),
       requestedFor,
       partySize: null,
+      previousReservedFor: null,
     });
     expect(view.body.data.reservedFor).toBe(before.reserved_for.toISOString());
-    // The refusal reason is not part of this contract yet (no column), and
-    // must not leak into the view under any key.
+    // The refusal reason is never sent to the guest (it may hold internal
+    // notes; CTO decision 14 Nov), so it must not leak into the view under any key.
     expect(JSON.stringify(view.body.data)).not.toContain("Meja penuh");
   });
 
@@ -582,6 +606,7 @@ describe("RSV-03 guest view shows the last decided reschedule request (legend-z5
       outcome: "approved",
       requestedFor: firstAt,
       partySize: 4,
+      previousReservedFor: expect.any(String),
     });
 
     expect((await decide(second, "decline")).status).toBe(200);
@@ -591,6 +616,7 @@ describe("RSV-03 guest view shows the last decided reschedule request (legend-z5
       outcome: "declined",
       requestedFor: secondAt,
       partySize: null,
+      previousReservedFor: null,
     });
   });
 

@@ -616,6 +616,8 @@ async function buildGuestView(
             decidedAt: decided.resolvedAt.toISOString(),
             requestedFor: decided.requestedFor.toISOString(),
             partySize: decided.partySize,
+            previousReservedFor:
+              decided.previousReservedFor?.toISOString() ?? null,
           }
         : null,
     linkExpiresAt: link.expiresAt.toISOString(),
