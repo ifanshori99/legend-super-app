@@ -15,8 +15,13 @@
 --   * 2108 / 6112 are inserted only when the entity has no account with that
 --     code (a custom account on the code is kept as is);
 --   * the parent is the entity's 2100 (liability) / 6100 (expense) only when it
---     exists and has the same type (0027 assert_account_parent requires an
---     equal-type parent), otherwise NULL;
+--     exists, has the same type (0027 assert_account_parent requires an
+--     equal-type parent) AND is not used by any posting mapping of the entity
+--     (an account_mappings row with account_id = that account, e.g. 6100 as
+--     salary_expense or 2100 as customer_deposit). Giving a mapped leaf a child
+--     would turn it into a header, and the next journal on it would fail
+--     ACCOUNT_NOT_POSTABLE. Otherwise the parent is NULL (the account is still
+--     created and mapped);
 --   * a role is mapped only when it has no mapping yet AND the entity's account
 --     on that code is active, of the right type (liability for 2108, expense
 --     for 6112), has no child account (a header account is not postable,
@@ -49,6 +54,12 @@ LEFT JOIN public.chart_of_accounts parent
   AND parent.legal_entity_id = p.legal_entity_id
   AND parent.code = d.parent_code
   AND parent.type = d.type
+  AND NOT EXISTS (
+    SELECT 1 FROM public.account_mappings pm
+    WHERE pm.tenant_id = parent.tenant_id
+      AND pm.legal_entity_id = parent.legal_entity_id
+      AND pm.account_id = parent.id
+  )
 WHERE NOT EXISTS (
   SELECT 1 FROM public.chart_of_accounts a
   WHERE a.tenant_id = p.tenant_id AND a.legal_entity_id = p.legal_entity_id AND a.code = d.code

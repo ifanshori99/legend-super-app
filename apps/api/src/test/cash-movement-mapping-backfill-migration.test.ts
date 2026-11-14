@@ -20,6 +20,10 @@
 //   not yet mapped to any role. A tenant's own account on the code (other
 //   name, or already used by another role such as loyalty_liability) is never
 //   hijacked; the event keeps parking ACCOUNT_MAPPING_MISSING, which is safe.
+// - A parent that is a leaf posting account (mapped to a posting role such as
+//   salary_expense or customer_deposit) is never used: adding a child would make
+//   it a header and the next journal on it would fail ACCOUNT_NOT_POSTABLE. The
+//   new account then has no parent. An unmapped 2100 / 6100 stays the parent.
 // - Idempotent, spans every (tenant, legal entity) pair.
 // - End to end: events parked before the backfill post a balanced journal
 //   through the existing retry sweep, and never twice.
@@ -39,9 +43,12 @@ import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createUlid,
+  idr,
+  outletIdSchema,
   tenantIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { accountIdSchema } from "@starter/shared/accounting";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -53,6 +60,7 @@ import {
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { postJournalInTransaction } from "../services/accounting-journal.service.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import {
@@ -864,6 +872,155 @@ describe("legend-89pn parked cash movements of an old tenant post after the back
       "ACCOUNT_MAPPING_MISSING",
     ]);
     expect(await journalsOf(world)).toHaveLength(0);
+  });
+
+  /** Posts a balanced manual journal between a cash account and `accountId`. */
+  function postBetween(
+    world: OldWorld,
+    accountId: string,
+    side: "debit" | "credit",
+    key: string,
+  ) {
+    const context = contextOf(world.tenant);
+    const line = (id: string, debitIdr: number, creditIdr: number) => ({
+      accountId: accountIdSchema.parse(id),
+      debitIdr: idr(debitIdr),
+      creditIdr: idr(creditIdr),
+      outletId: outletIdSchema.parse(world.outletId),
+      costCenter: null,
+    });
+    const target =
+      side === "debit"
+        ? line(accountId, 10_000, 0)
+        : line(accountId, 0, 10_000);
+    const cash =
+      side === "debit"
+        ? line(world.cashId, 0, 10_000)
+        : line(world.cashId, 10_000, 0);
+    return withTenant(db, context, (tx) =>
+      postJournalInTransaction(
+        tx,
+        context,
+        {
+          legalEntityId: world.entityId,
+          outletId: world.outletId,
+          entryDate: "2026-10-15",
+          sourceType: "manual",
+          sourceId: null,
+          description: "Uji parent daun (test)",
+          lines: [target, cash],
+          postedBy: null,
+          idempotencyKey: key,
+        },
+        NOW,
+      ),
+    );
+  }
+
+  it("E2E-03 a 6100 that is a leaf mapped to salary_expense stays a leaf: 6112 has no parent and the salary journal still posts balanced", async () => {
+    const world = await makeOldWorld();
+    const salaryId = (
+      await accountsOf(world.entityId, "6100", world.tenant.id)
+    )[0]!.id;
+    await mapRole(world.tenant.id, world.entityId, "salary_expense", salaryId);
+
+    await migrate();
+
+    const expense = await accountsOf(world.entityId, "6112", world.tenant.id);
+    expect(expense).toHaveLength(1);
+    expect(expense[0]!.parent_id).toBeNull();
+    expect(
+      await mappingsOf(world.entityId, "cash_out_expense", world.tenant.id),
+    ).toEqual([expense[0]!.id]);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM chart_of_accounts WHERE tenant_id = $1 AND parent_id = $2",
+      [world.tenant.id, salaryId],
+    );
+    expect(rows).toHaveLength(0);
+
+    const entry = await postBetween(
+      world,
+      salaryId,
+      "debit",
+      `bf-salary-${randomUUID()}`,
+    );
+    expect(entry.lines).toHaveLength(2);
+    expect(
+      sum(
+        entry.lines.map((l) => ({
+          accountId: l.accountId,
+          debit: l.debitIdr,
+          credit: l.creditIdr,
+        })),
+        "debit",
+      ),
+    ).toBe(10_000);
+    expect(
+      sum(
+        entry.lines.map((l) => ({
+          accountId: l.accountId,
+          debit: l.debitIdr,
+          credit: l.creditIdr,
+        })),
+        "credit",
+      ),
+    ).toBe(10_000);
+  });
+
+  it("E2E-04 a 2100 mapped to a posting role (customer_deposit) stays a leaf: 2108 has no parent and the journal on 2100 still posts", async () => {
+    const world = await makeOldWorld();
+    const depositId = (
+      await accountsOf(world.entityId, "2100", world.tenant.id)
+    )[0]!.id;
+    await mapRole(
+      world.tenant.id,
+      world.entityId,
+      "customer_deposit",
+      depositId,
+    );
+
+    await migrate();
+
+    const clearing = await accountsOf(world.entityId, "2108", world.tenant.id);
+    expect(clearing).toHaveLength(1);
+    expect(clearing[0]!.parent_id).toBeNull();
+    expect(
+      await mappingsOf(world.entityId, "cash_in_clearing", world.tenant.id),
+    ).toEqual([clearing[0]!.id]);
+
+    const entry = await postBetween(
+      world,
+      depositId,
+      "credit",
+      `bf-deposit-${randomUUID()}`,
+    );
+    expect(entry.lines).toHaveLength(2);
+  });
+
+  it("E2E-05 an unmapped 2100 / 6100 header stays the parent, and another entity's mapping on its own 6100 does not change that", async () => {
+    const world = await makeOldWorld();
+    const other = await makeOldWorld();
+    const otherSalary = (
+      await accountsOf(other.entityId, "6100", other.tenant.id)
+    )[0]!.id;
+    await mapRole(
+      other.tenant.id,
+      other.entityId,
+      "salary_expense",
+      otherSalary,
+    );
+
+    await migrate();
+
+    const ids = async (w: OldWorld, code: string) =>
+      (await accountsOf(w.entityId, code, w.tenant.id))[0]!.id;
+    const parent = async (w: OldWorld, code: string) =>
+      (await accountsOf(w.entityId, code, w.tenant.id))[0]!.parent_id;
+    expect(await parent(world, "6112")).toBe(await ids(world, "6100"));
+    expect(await parent(world, "2108")).toBe(await ids(world, "2100"));
+    expect(await parent(other, "6112")).toBeNull();
+    // The 2100 of the other entity is unmapped, so it is still the parent there.
+    expect(await parent(other, "2108")).toBe(await ids(other, "2100"));
   });
 });
 
