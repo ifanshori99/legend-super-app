@@ -4,14 +4,19 @@
 import { z } from "../core/index.ts";
 import { defineDomainEvent } from "../events/define.ts";
 import {
-  catalogSyncRecordSchemas,
+  catalogSyncCloudRecordSchemas,
   type CatalogSyncStream,
 } from "./catalog-sync.ts";
 
+// The record stays STRICT here (legend-3x9l: an unexpected field is refused).
+// Snapshot/page streams tolerate new cloud fields (legend-pitm6), but this event
+// keeps the strict cloud record schemas until the CTO decides otherwise (batch65
+// merge: pitm6 made catalogSyncRecordSchemas tolerant, which broke the 3x9l
+// contract test "rejects partial hints and stream/record mismatches").
 function recordOf<S extends CatalogSyncStream>(stream: S) {
   return z.strictObject({
     stream: z.literal(stream),
-    record: catalogSyncRecordSchemas[stream],
+    record: catalogSyncCloudRecordSchemas[stream],
   });
 }
 
