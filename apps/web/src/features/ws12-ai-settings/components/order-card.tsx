@@ -8,6 +8,7 @@ import { useChatgptLogin, useProvider } from "../hooks";
 // `locked` is accepted for symmetry with the other cards but changes nothing:
 // the mockup keeps the saved status visible while the platform lock is on, and
 // the page banner explains the lock.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for the lock contract test
 export function OrderCard(_props: { locked?: boolean }) {
   const t = useT();
   const login = useChatgptLogin();
