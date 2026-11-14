@@ -510,7 +510,7 @@ export async function assertManualConfigEnabled(
 
 const iso = (value: Date | null) => (value ? value.toISOString() : null);
 
-function toItemDto(row: ItemRow): PayrollDisbursementItemDto {
+export function toItemDto(row: ItemRow): PayrollDisbursementItemDto {
   return {
     id: row.id,
     batchId: row.batchId,
@@ -534,7 +534,7 @@ function toItemDto(row: ItemRow): PayrollDisbursementItemDto {
   };
 }
 
-function toBatchDto(
+export function toBatchDto(
   row: BatchRow,
   items: readonly ItemRow[],
 ): PayrollDisbursementBatchDto {

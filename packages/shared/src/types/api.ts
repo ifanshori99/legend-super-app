@@ -72,6 +72,10 @@ export type PayrollDisbursementItemDto = {
   amountIdr: number;
   feeIdr: number;
   bankCode: string | null;
+  /** Payee name locked when the batch was created; null for cash or legacy items. */
+  accountHolderName: string | null;
+  /** `****1234`, locked when the batch was created; null for cash or legacy items. */
+  maskedAccountNumber: string | null;
   nameMatch: boolean | null;
   providerRef: string | null;
   confirmedBy: string | null;
@@ -79,6 +83,13 @@ export type PayrollDisbursementItemDto = {
   settledAt: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+/** Result of a resolve/return evidence upload: pass evidenceKey to resolve or return. */
+export type PayrollPayoutEvidenceUploadDto = {
+  evidenceKey: string;
+  contentType: "application/pdf" | "image/jpeg" | "image/png";
+  sizeBytes: number;
 };
 
 /** A disbursement batch for one payroll run. totalIdr is the sum of items. */
