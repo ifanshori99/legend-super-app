@@ -4,7 +4,15 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { Pool, type PoolClient } from "pg";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   idr,
   outletIdSchema,
@@ -16,10 +24,23 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import type { EdcPaymentRequest } from "@starter/shared/edc";
+import type { EventEnvelope } from "@starter/shared/events";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { edcTransactions } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { createDbLinkStore } from "../edge/db-link-store.ts";
+import {
+  createLinkPeer,
+  type LinkPeer,
+  type LinkStore,
+} from "../edge/link-peer.ts";
+import { decodeFrame } from "../edge/protocol.ts";
+import {
+  authenticateEdgeCredential,
+  registerEdgeNode,
+} from "../services/edge-node.service.ts";
+import { enqueueEdgeEvent } from "../services/edge-queue.service.ts";
 import { createEdcAgent } from "../edge/edc/agent.ts";
 import { emitEdcTransactionEvent } from "../edge/edc/events.ts";
 import { EdcProviderRegistry } from "../edge/edc/registry.ts";
@@ -76,7 +97,13 @@ async function seedTerminal(): Promise<string> {
          (id, tenant_id, outlet_id, bank_code, terminal_id, merchant_id, model,
           connection, ip_address, supported_methods, status)
        VALUES ($1, $2, $3, 'bca', $4, 'MID-TEST', 'Test EDC', 'lan', '10.0.0.5', $5, 'active')`,
-      [id, tenant.tenantId, tenant.outletId, `TID-${id.slice(0, 8)}`, ["card"]],
+      [
+        id,
+        tenant.tenantId,
+        tenant.outletId,
+        `TID-${id.slice(0, 8)}`,
+        ["card", "qris"],
+      ],
     ),
   );
   return id;
@@ -181,6 +208,163 @@ describe("EDC outbox (EDC-05)", () => {
       { name: "edc_transaction.created", sequence: 1, status: "pending" },
       { name: "edc_transaction.approved", sequence: 2, status: "approved" },
     ]);
+  });
+
+  it("EDC-05 card and QRIS payments recorded offline survive store recreation and sync once after reconnect", async () => {
+    const f = await setup();
+    const registered = await registerEdgeNode(f.ctx, cashier, {
+      outletId: tenant.outletId,
+      role: "primary",
+      label: "EDC offline sync",
+    });
+    const node = await authenticateEdgeCredential(registered.credential);
+    expect(node).not.toBeNull();
+    const storeOptions = {
+      database: db,
+      context: node!.context,
+      node: node!.scope,
+      outboundDirection: "edge_to_cloud" as const,
+    };
+    const offlineStore = createDbLinkStore(storeOptions);
+    // No link peers exist while the cafe internet is down. The ECR simulator
+    // represents the bank terminal on the outlet LAN, independent of that link.
+    const cardRequest = f.request();
+    const qrisRequest = { ...f.request(), method: "qris" as const };
+    const card = await f.agent.requestPayment(f.ctx, cashier, cardRequest);
+    const qris = await f.agent.requestPayment(f.ctx, cashier, qrisRequest);
+    expect([card.status, qris.status]).toEqual(["approved", "approved"]);
+    expect([card.method, qris.method]).toEqual(["card", "qris"]);
+    expect([card.amountIdr, qris.amountIdr]).toEqual([AMOUNT, AMOUNT]);
+    expect(f.sim.chargedCount(f.terminalId)).toBe(2);
+
+    const emitted = await asOwner(async (client) => {
+      const result = await client.query<{ event: EventEnvelope }>(
+        `SELECT event FROM domain_event_outbox
+         WHERE tenant_id = $1 AND aggregate_id = ANY($2::uuid[])
+         ORDER BY aggregate_id, sequence`,
+        [tenant.tenantId, [card.id, qris.id]],
+      );
+      return result.rows.map((row) => row.event);
+    });
+    expect(emitted).toHaveLength(4);
+    // Feed the real ledger's outbox events into the durable edge queue. This
+    // exercises the store/link boundary; automatic outbox routing is separate.
+    await withTenant(db, f.ctx, async (tx) => {
+      for (const event of emitted)
+        await enqueueEdgeEvent(tx, f.ctx, {
+          edgeNodeId: node!.scope.edgeNodeId,
+          direction: "edge_to_cloud",
+          kind: "transaction_event",
+          event,
+        });
+    });
+    expect(await offlineStore.lastAckedOutbound()).toBe(0);
+    expect(
+      (await offlineStore.readOutbound(0, 10)).map((e) => e.event),
+    ).toEqual(emitted);
+
+    // Recreate the sender: queued payment evidence and its cursor come from
+    // PostgreSQL rather than a surviving in-memory peer. As in edge-db.test.ts,
+    // record cloud delivery in a separate store: sharing the sender's database
+    // would also share its pre-existing aggregate history.
+    const edgeStore = createDbLinkStore(storeOptions);
+    const applied: EventEnvelope[] = [];
+    let receivedCursor = 0;
+    const cloudStore: LinkStore = {
+      outboundHead: async () => 0,
+      lastAckedOutbound: async () => 0,
+      readOutbound: async () => [],
+      ackOutbound: async () => {},
+      lastReceivedInbound: async () => receivedCursor,
+      applyInbound: async ({ fromSeq, toSeq, events }) => {
+        if (fromSeq !== receivedCursor) throw new Error("Cloud cursor moved");
+        applied.push(...events.map(({ event }) => event));
+        receivedCursor = toSeq;
+      },
+    };
+    expect(await cloudStore.lastReceivedInbound()).toBe(0);
+    let droppedAck = false;
+    let duplicatedBatch = false;
+    const edgePeer: LinkPeer = createLinkPeer({
+      scope: node!.scope,
+      outboundDirection: "edge_to_cloud",
+      store: edgeStore,
+      version: "edge",
+      ackTimeoutMs: 50,
+      transport: {
+        send(data) {
+          queueMicrotask(() => {
+            cloudPeer.receive(data);
+            if (decodeFrame(data)?.type === "batch") {
+              duplicatedBatch = true;
+              cloudPeer.receive(data);
+            }
+          });
+        },
+        close() {},
+      },
+    });
+    const cloudPeer: LinkPeer = createLinkPeer({
+      scope: node!.scope,
+      outboundDirection: "cloud_to_edge",
+      store: cloudStore,
+      version: "cloud",
+      ackTimeoutMs: 50,
+      transport: {
+        send(data) {
+          if (!droppedAck && decodeFrame(data)?.type === "ack") {
+            droppedAck = true;
+            return;
+          }
+          queueMicrotask(() => edgePeer.receive(data));
+        },
+        close() {},
+      },
+    });
+    try {
+      edgePeer.start();
+      cloudPeer.start();
+      await vi.waitFor(
+        async () => expect(await edgeStore.lastAckedOutbound()).toBe(4),
+        { timeout: 5000 },
+      );
+      expect(droppedAck).toBe(true);
+      expect(duplicatedBatch).toBe(true);
+      expect(applied).toEqual(emitted);
+      const approvals = applied.filter(
+        (event) => event.name === "edc_transaction.approved",
+      );
+      expect(approvals.map((event) => event.aggregateId).sort()).toEqual(
+        [card.id, qris.id].sort(),
+      );
+      expect(approvals.map((event) => event.payload.amountIdr)).toEqual([
+        AMOUNT,
+        AMOUNT,
+      ]);
+      expect(await cloudStore.lastReceivedInbound()).toBe(4);
+      expect(await edgeStore.readOutbound(4, 10)).toEqual([]);
+      const replayCard = await f.agent.requestPayment(
+        f.ctx,
+        cashier,
+        cardRequest,
+      );
+      const replayQris = await f.agent.requestPayment(
+        f.ctx,
+        cashier,
+        qrisRequest,
+      );
+      expect([replayCard.id, replayQris.id]).toEqual([card.id, qris.id]);
+      expect([replayCard.amountIdr, replayQris.amountIdr]).toEqual([
+        AMOUNT,
+        AMOUNT,
+      ]);
+      expect(f.sim.chargedCount(f.terminalId)).toBe(2);
+      expect(await eventsOf(card.id)).toHaveLength(2);
+      expect(await eventsOf(qris.id)).toHaveLength(2);
+    } finally {
+      edgePeer.stop();
+      cloudPeer.stop();
+    }
   });
 
   it("a declined sale writes created then declined", async () => {

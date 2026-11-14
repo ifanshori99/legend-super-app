@@ -649,7 +649,7 @@ describe("TL-01 get_sales_summary", () => {
     expect(out.sources[0]!.finality).toBe("estimate");
   });
 
-  it("outlet manager sees only the assigned outlet and is denied another", async () => {
+  it("AIG-01 outlet manager sees only the assigned outlet and is denied another", async () => {
     const ctx = contextFor(tx, "outlet_manager", x1);
     const out = getSalesSummaryOutputSchema.parse(
       await call("TL-01", ctx, { period }),
@@ -660,7 +660,7 @@ describe("TL-01 get_sales_summary", () => {
     ).rejects.toMatchObject(forbidden);
   });
 
-  it("denies a role that is not in the tool's roles", async () => {
+  it("AIG-01 denies a role that is not in the tool's roles", async () => {
     await expect(
       call("TL-01", contextFor(tx, "kitchen_lead", x1), { period }),
     ).rejects.toMatchObject(forbidden);
@@ -669,7 +669,7 @@ describe("TL-01 get_sales_summary", () => {
     ).rejects.toMatchObject(forbidden);
   });
 
-  it("never returns another tenant's data", async () => {
+  it("AIG-01 never returns another tenant's data", async () => {
     const ownerY = contextFor(ty, "owner");
     const out = getSalesSummaryOutputSchema.parse(
       await call("TL-01", ownerY, { period }),

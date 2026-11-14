@@ -183,6 +183,14 @@ function pos(who: Member = cashier, outletId = tenant.outletId) {
       }),
     tender: (orderId: string, body: Record<string, unknown>) =>
       send(`/${orderId}/tenders`, body),
+    discount: (orderId: string) =>
+      send(`/${orderId}/discounts`, {
+        source: "manual",
+        kind: "percent",
+        percentBp: 100,
+        reason: "manager_goodwill",
+        reasonNote: "Diskon kecil pelanggan tetap",
+      }),
     complete: (orderId: string, expectedStatus: string) =>
       send(`/${orderId}/complete`, { expectedStatus }),
     voidOrder: (orderId: string, body: Record<string, unknown>) =>
@@ -217,6 +225,7 @@ beforeAll(async () => {
         "order.view",
         "pos.sale.create",
         "pos.payment.accept",
+        "pos.discount.apply",
         "shift.cash.operate",
       ],
     ],
@@ -286,6 +295,13 @@ beforeAll(async () => {
                '{"itemClasses":["food_beverage"],"categoryIds":[],"itemIds":[]}',
                false, true, true, 1, '2026-01-01', 'published', now(), $3)`,
       [randomUUID(), tenant.tenantId, cashier.userId],
+    );
+    // Keep the 1% lock probe below the approval threshold; otherwise a
+    // supervisor approval failure would hide whether the ECR bill is locked.
+    await client.query(
+      `INSERT INTO pos_approval_policies (tenant_id, outlet_id, discount_threshold_bp)
+       VALUES ($1, NULL, 1000)`,
+      [tenant.tenantId],
     );
   });
 });
@@ -406,19 +422,35 @@ describe("POS EDC tender wiring (legend-dahk)", () => {
       reference: order.number,
       amountIdr: order.totalIdr,
     });
-    const paid = await payEdc(order.orderId, order.status, {
-      edcTransactionId,
-    });
+    const input = { edcTransactionId, idempotencyKey: randomUUID() };
+    const paid = await payEdc(order.orderId, order.status, input);
     expect(paid.status, JSON.stringify(paid.body)).toBe(201);
     expect(paid.body.data.remainingIdr).toBe(0);
-    const { rows } = await owner.query<{ status: string; provider: string }>(
-      `SELECT status, provider FROM pos_order_tenders WHERE edc_transaction_id = $1`,
+    const replay = await payEdc(order.orderId, order.status, input);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(201);
+    expect(replay.body.data.remainingIdr).toBe(0);
+    const { rows } = await owner.query<{
+      status: string;
+      provider: string;
+      amount_idr: string;
+    }>(
+      `SELECT status, provider, amount_idr::text AS amount_idr
+       FROM pos_order_tenders WHERE edc_transaction_id = $1`,
       [edcTransactionId],
     );
-    expect(rows).toEqual([{ status: "captured", provider: "edc" }]);
+    expect(rows).toEqual([
+      {
+        status: "captured",
+        provider: "edc",
+        amount_idr: String(order.totalIdr),
+      },
+    ]);
+    const after = await pos().get(order.orderId);
+    expect(after.status).toBe(200);
+    expect(after.body.data.totalIdr).toBe(order.totalIdr);
   });
 
-  it("EDC-01 a card-number-like rrn or approval code is never copied to the tender reference", async () => {
+  it("a card-number-like rrn or approval code is never copied to the tender reference", async () => {
     const cases = [
       { rrn: "A4111111111111111", approvalCode: "APP123", want: "APP123" },
       { rrn: "4111111111111111X", approvalCode: null },
@@ -442,6 +474,111 @@ describe("POS EDC tender wiring (legend-dahk)", () => {
       expect(rows[0]?.reference, c.rrn).toBe(c.want ?? order.number);
     }
   });
+
+  it.each(["declined", "cancelled", "failed", "unknown", "pending"])(
+    "EDC-02 a %s EDC sale leaves the bill unchanged and records no settled tender",
+    async (status) => {
+      const order = await newOrder();
+      const edcTransactionId = await ledgerSale({
+        reference: order.number,
+        amountIdr: order.totalIdr,
+        status,
+      });
+      const refused = await payEdc(order.orderId, order.status, {
+        edcTransactionId,
+      });
+      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+      const after = await pos().get(order.orderId);
+      expect(after.status, JSON.stringify(after.body)).toBe(200);
+      expect(after.body.data).toMatchObject({
+        status: order.status,
+        totalIdr: order.totalIdr,
+        tenders: [],
+      });
+      const { rows } = await owner.query(
+        `SELECT 1 FROM pos_order_tenders WHERE order_id = $1`,
+        [ulidToUuid(order.orderId)],
+      );
+      expect(rows).toHaveLength(0);
+    },
+  );
+
+  it.each([-1_000, 1_000])(
+    "EDC-01 an EDC approval differing from the bill by %i rupiah cannot settle or change it",
+    async (difference) => {
+      const order = await newOrder();
+      const edcTransactionId = await ledgerSale({
+        reference: order.number,
+        amountIdr: order.totalIdr + difference,
+      });
+      const refused = await payEdc(order.orderId, order.status, {
+        edcTransactionId,
+      });
+      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+      const after = await pos().get(order.orderId);
+      expect(after.status).toBe(200);
+      expect(after.body.data).toMatchObject({
+        totalIdr: order.totalIdr,
+        tenders: [],
+      });
+    },
+  );
+
+  it("the same cashier can apply the lock-probe discount when no ECR request exists", async () => {
+    const order = await newOrder();
+    expect(order.totalIdr).toBe(55_000);
+    const discounted = await pos().discount(order.orderId);
+    expect(discounted.status, JSON.stringify(discounted.body)).toBe(201);
+    const after = await pos().get(order.orderId);
+    expect(after.status).toBe(200);
+    expect(after.body.data.totalIdr).toBe(54_450);
+    expect(after.body.data.discounts).toHaveLength(1);
+    expect(after.body.data.discounts[0].amountIdr).toBe(500);
+    expect(after.body.data.tenders).toEqual([]);
+  });
+
+  for (const status of ["pending", "unknown"]) {
+    // Known EDC bill-lock gap: with the same valid discount passing the control
+    // above, a dispatched pending/unknown ECR request still permits a discount.
+    // The ordinary run persisted Rp54,450 instead of Rp55,000 while the EDC
+    // request remained Rp55,000. Keep the immutable-bill assertion as the
+    // expected failure until the product blocks repricing during ECR payment.
+    it.fails(
+      `EDC-01 a ${status} ECR request already sent locks the POS bill against discounts`,
+      async () => {
+        const order = await newOrder();
+        const edcTransactionId = await ledgerSale({
+          reference: order.number,
+          amountIdr: order.totalIdr,
+          status,
+        });
+        await asOwnerTenant(tenant.tenantId, (client) =>
+          client.query(
+            `UPDATE edc_transactions SET dispatched_at = now() WHERE id = $1`,
+            [edcTransactionId],
+          ),
+        );
+
+        const discounted = await pos().discount(order.orderId);
+        const after = await pos().get(order.orderId);
+        expect(after.status).toBe(200);
+        expect(after.body.data).toMatchObject({
+          totalIdr: order.totalIdr,
+          discounts: [],
+          tenders: [],
+        });
+        const { rows } = await asOwnerTenant(tenant.tenantId, (client) =>
+          client.query(
+            `SELECT amount_idr::text AS amount_idr, status
+           FROM edc_transactions WHERE id = $1`,
+            [edcTransactionId],
+          ),
+        );
+        expect(rows).toEqual([{ amount_idr: String(order.totalIdr), status }]);
+        expect(discounted.status, JSON.stringify(discounted.body)).toBe(409);
+      },
+    );
+  }
 
   it("EDC-02 a missing, unapproved, standalone or mismatched ledger sale is refused", async () => {
     // One order per approved row: the ledger allows one approved sale per

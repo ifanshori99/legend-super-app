@@ -75,6 +75,20 @@ const kindCode: Record<EvalKind, string> = {
 };
 
 describe("AI eval dataset: shape", () => {
+  it("[AIG-04] covers every required role group in both templates and questions", () => {
+    const requiredGroups: EvalRoleGroup[] = [
+      "owner",
+      "shareholder",
+      "manager",
+      "employee",
+      "kitchen",
+    ];
+    expect([...GROUPS].sort()).toEqual([...requiredGroups].sort());
+    expect(
+      [...new Set(evalCases.map((item) => item.roleGroup))].sort(),
+    ).toEqual([...requiredGroups].sort());
+  });
+
   it("has at least 300 cases", () => {
     expect(evalCases.length).toBeGreaterThanOrEqual(300);
   });
