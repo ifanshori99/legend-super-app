@@ -3,7 +3,7 @@
 # killed run, but only once the owning `pnpm test` process is gone.
 services:
   postgres:
-    image: postgres:17-alpine
+    image: ${STARTER_TEST_POSTGRES_IMAGE:-postgres:17-alpine}
     # tmpfs data counts toward the limit. Override with STARTER_TEST_PG_MEM.
     # 1536m (batch48i): 512m and 768m both OOM-killed full runs 3x (legend-p649r
     # first raised it to 768m; the suite peaked at 445 MiB against the old
