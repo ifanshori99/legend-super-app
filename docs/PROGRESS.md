@@ -66,6 +66,13 @@
 - Verifikasi: tsc web + api lulus, spec mock `e2e/payout.mock.spec.ts` + `e2e/finance-exceptions.mock.spec.ts` 31/31, `scripts/ui-check-payout-finance.mjs` 44/44 (axe 0 serious, tanpa overflow 1280/390/320), screenshot di `docs/screenshots/payout-finance/`. Review architect xhigh + ui-auditor + finish-reviewer, temuan nyata dibetulkan.
 - Biaya (07:13-09:43): biaya* total 15115k (utama Opus 3455k; subagent Sonnet 10819k, Opus 720k, Haiku 120k). 21+ subagent, maks 5 bersamaan, rata-rata 0.4 berjalan.
 
+## 2026-11-14 10:31 WIB: legend-1iyup PoliciesTab hydration (fix/payroll-policies-hydration)
+
+- Penyebab: dua paragraf aturan lembur/THR menerima Skeleton div saat query statutory pending. Pembungkus menjadi div dengan class, teks, dan kondisi identik; tanpa perubahan API, migrasi, kalkulasi, atau payout.
+- Bukti gagal-dulu di base 70f90cecd: test SSR pending gagal pada div di dalam paragraf; test unavailable dash lulus. Setelah fix, 18/18 test terarah (regresi SSR, payroll legal entity, text-contract) lulus lewat `LEGEND_TEST_FILES='tests/payroll-policies-hydration.test.mjs tests/legend-wpqs-payroll-entity.test.mjs tests/text-contract.test.mjs' heavy pnpm test`.
+- Prettier dan ESLint ketiga file kode/test hijau; `heavy pnpm --filter @starter/web typecheck` hijau. Review konteks segar: tanpa temuan. Browser 5/5 hijau lewat `LEGEND_MOCK_PORT=3297 heavy --browser pnpm test:e2e:mock e2e/legend-1iyup.mock.spec.ts e2e/legend-r1bu.mock.spec.ts --grep 'loading rules hydrate|PAYR-02: the'`: loading dan sukses di 390/1280px tanpa diagnostik hydration, navigasi payroll, empty state, tabel statutory 1440px. Siap commit/push tanpa force; tidak merge/deploy. Gate penuh/build diserahkan ke merge train sesuai aturan thread.
+- Subagent: total 5, puncak 4 bersamaan, token heavy dipegang lead Codex. `session-usage.py` tidak menemukan transkrip Codex; `parallel-report` hanya melaporkan sesi Claude, sehingga biaya/rata-rata sesi ini tidak tersedia.
+
 ## WS-06/07 posting faktur pemasok + lanjutan AP (engineer, cabang `ws/purchasing-posting` dari `ws/purchasing-apar` aefe28175, 13 Nov 2026 18:49-19:47 WIB)
 
 - Desain: `docs/briefs/ws-purchasing-posting-design.md` (architect xhigh), review K architect xhigh: H1 dibetulkan, H2/M1 jadi bead penghalang flag.
