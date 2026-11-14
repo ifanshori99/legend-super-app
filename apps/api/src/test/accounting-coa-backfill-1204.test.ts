@@ -31,6 +31,7 @@ const migrate = async (sql = migration) => {
   const client = await owner.connect();
   let replayFailed = false;
   let replayError: unknown;
+  let rollbackFailure: Error | undefined;
   try {
     await client.query("BEGIN");
     // Keep concurrent tenant teardown from invalidating the backfill's scan.
@@ -45,6 +46,10 @@ const migrate = async (sql = migration) => {
     try {
       await client.query("ROLLBACK");
     } catch (rollbackError) {
+      rollbackFailure =
+        rollbackError instanceof Error
+          ? rollbackError
+          : new Error(`Rollback failed: ${String(rollbackError)}`);
       replayError = new AggregateError(
         [error, rollbackError],
         "Replay and rollback failed",
@@ -72,7 +77,7 @@ const migrate = async (sql = migration) => {
         );
       }
     } finally {
-      client.release();
+      client.release(rollbackFailure);
     }
   }
   if (replayFailed) throw replayError;
@@ -151,7 +156,7 @@ const mappingsOf = async (entityId: string, role: string) =>
   ).rows;
 
 describe("legend-s8a3 1204 / 6110 / 6111 backfill migration", () => {
-  it("restores FORCE RLS after a replay statement fails", async () => {
+  it("keeps FORCE RLS enabled after a replay statement fails and rolls back", async () => {
     const failingMigration = `
       ALTER TABLE public.chart_of_accounts NO FORCE ROW LEVEL SECURITY;
       --> statement-breakpoint

@@ -51,6 +51,7 @@ const migrationSql = () =>
 async function migrate(): Promise<void> {
   const client = await owner.connect();
   const errors: unknown[] = [];
+  let rollbackFailure: Error | undefined;
   try {
     await client.query("BEGIN");
     // Keep concurrent tenant teardown from invalidating the backfill's scan.
@@ -65,6 +66,10 @@ async function migrate(): Promise<void> {
     try {
       await client.query("ROLLBACK");
     } catch (rollbackError) {
+      rollbackFailure =
+        rollbackError instanceof Error
+          ? rollbackError
+          : new Error(`Rollback failed: ${String(rollbackError)}`);
       errors.push(rollbackError);
     }
   } finally {
@@ -83,7 +88,7 @@ async function migrate(): Promise<void> {
           .map((result) => result.reason),
       );
     } finally {
-      client.release();
+      client.release(rollbackFailure);
     }
   }
   if (errors.length === 1) throw errors[0];
