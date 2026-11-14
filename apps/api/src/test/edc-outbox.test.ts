@@ -45,6 +45,7 @@ import { createEdcAgent } from "../edge/edc/agent.ts";
 import { emitEdcTransactionEvent } from "../edge/edc/events.ts";
 import { EdcProviderRegistry } from "../edge/edc/registry.ts";
 import { EcrSimulator } from "../edge/edc/simulator.ts";
+import { ensureBill } from "./edc-agent-bill-helper.ts";
 import { agent as httpAgent, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -202,7 +203,9 @@ afterAll(async () => {
 describe("EDC outbox (EDC-05)", () => {
   it("an approved sale writes created then approved, in order", async () => {
     const f = await setup();
-    const tx = await f.agent.requestPayment(f.ctx, cashier, f.request());
+    const req = f.request();
+    await ensureBill(owner, req);
+    const tx = await f.agent.requestPayment(f.ctx, cashier, req);
     expect(tx.status).toBe("approved");
     expect(await eventsOf(tx.id)).toEqual([
       { name: "edc_transaction.created", sequence: 1, status: "pending" },
@@ -230,6 +233,8 @@ describe("EDC outbox (EDC-05)", () => {
     // represents the bank terminal on the outlet LAN, independent of that link.
     const cardRequest = f.request();
     const qrisRequest = { ...f.request(), method: "qris" as const };
+    await ensureBill(owner, cardRequest);
+    await ensureBill(owner, qrisRequest);
     const card = await f.agent.requestPayment(f.ctx, cashier, cardRequest);
     const qris = await f.agent.requestPayment(f.ctx, cashier, qrisRequest);
     expect([card.status, qris.status]).toEqual(["approved", "approved"]);
@@ -370,7 +375,9 @@ describe("EDC outbox (EDC-05)", () => {
   it("a declined sale writes created then declined", async () => {
     const f = await setup();
     f.sim.next(f.terminalId, "decline");
-    const tx = await f.agent.requestPayment(f.ctx, cashier, f.request());
+    const req = f.request();
+    await ensureBill(owner, req);
+    const tx = await f.agent.requestPayment(f.ctx, cashier, req);
     expect((await eventsOf(tx.id)).map((e) => e.name)).toEqual([
       "edc_transaction.created",
       "edc_transaction.declined",
@@ -379,7 +386,9 @@ describe("EDC outbox (EDC-05)", () => {
 
   it("a rolled-back ledger write leaves no outbox row", async () => {
     const f = await setup();
-    const tx = await f.agent.requestPayment(f.ctx, cashier, f.request());
+    const req = f.request();
+    await ensureBill(owner, req);
+    const tx = await f.agent.requestPayment(f.ctx, cashier, req);
     const before = await eventsOf(tx.id);
     await expect(
       withTenant(db, f.ctx, async (dbTx) => {

@@ -41,7 +41,9 @@ import {
   type ScopedTenantContext,
   type UserId,
 } from "@starter/shared/core";
+import { EdcError } from "@starter/shared/edc";
 import {
+  canSettlePosOrder,
   PosError,
   posEvents,
   posOrderDetailSchema,
@@ -432,6 +434,58 @@ export async function assertNoOpenEdcRequest(
     )
     .limit(1);
   if (open) throw new PosError("EDC_REQUEST_OPEN");
+}
+
+/**
+ * An EDC sale may only ask the terminal for what the bill can book as a card
+ * tender right now (legend-xcbs7). The bill is the POS order whose number is
+ * the request reference. Refused with ORDER_NOT_PAYABLE when it is missing, not
+ * a POS order, not open for payment, or still carries a legacy order-level
+ * payment link (the card tender path refuses those, so the money could never
+ * be booked); with EDC_AMOUNT_MISMATCH when `amountIdr` is not exactly the
+ * remaining balance. The caller holds the (tenant, outlet:reference) advisory
+ * lock; the order row is not locked here (lock order).
+ */
+export async function assertEdcSaleBillPayable(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    readonly outletId: OutletId;
+    readonly reference: string;
+    readonly amountIdr: number;
+  },
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const [found] = await tx
+    .select({ order: orders, posOrderId: posOrders.orderId })
+    .from(orders)
+    .leftJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, orders.tenantId),
+        eq(posOrders.orderId, orders.id),
+      ),
+    )
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.outletId, input.outletId),
+        eq(orders.number, input.reference),
+      ),
+    )
+    .limit(1);
+  if (
+    !found ||
+    found.posOrderId === null ||
+    !canSettlePosOrder(found.order.status) ||
+    found.order.paymentLinkId !== null
+  )
+    throw new PosError("ORDER_NOT_PAYABLE");
+  if (
+    input.amountIdr !==
+    remainingIdr(found.order, await tendersOf(tx, context, found.order.id))
+  )
+    throw new EdcError("EDC_AMOUNT_MISMATCH");
 }
 
 /** Stale-screen guard (contract `expectedStatus`): 412 when it moved on. */

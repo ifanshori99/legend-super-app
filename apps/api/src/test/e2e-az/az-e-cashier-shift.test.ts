@@ -43,6 +43,7 @@ import { setPosReceiptPort } from "../../services/pos-order-ports.ts";
 import { createPosReceiptPort } from "../../services/pos-receipt.service.ts";
 import { createPosOverride } from "../../services/staff-override.service.ts";
 import { registerTestDevice } from "../device-seed.ts";
+import { ensureBill } from "../edc-agent-bill-helper.ts";
 import { agent, originHeader, signUp } from "../helpers.ts";
 import {
   createIsolatedTenant,
@@ -1043,6 +1044,16 @@ describe("Alur W bayar di kasir dengan EDC", () => {
     return { edc, scoped, sims, terminals, charge };
   }
 
+  // writeAhead only starts a sale for a real, payable bill of exactly the
+  // amount still owed (EDC_AMOUNT_MISMATCH otherwise).
+  const billFor = (reference: string, amountIdr: number) =>
+    ensureBill(owner, {
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      reference,
+      amountIdr,
+    });
+
   // legend-dahk: the EDC tender port is wired in apps/api/src/app.ts.
   it("EDC-01 EDC-02 kartu disetujui: nominal sama dengan tagihan, tercatat lunas dengan approval code", async () => {
     const f = await edcFixture();
@@ -1108,7 +1119,7 @@ describe("Alur W bayar di kasir dengan EDC", () => {
     const f = await edcFixture();
     try {
       const order = await newOrder();
-      const reference = `BILL-${order.orderId}`;
+      const reference = order.number;
       f.sims.bca.next(f.terminals.bca, "timeout_after_charge");
       const first = await f.charge("bca", reference, order.totalIdr);
       expect(first.status).toBe("unknown");
@@ -1187,13 +1198,12 @@ describe("Alur W bayar di kasir dengan EDC", () => {
   it("EDC-07 dua bank aktif bersamaan di satu outlet menerima transaksi masing-masing", async () => {
     const f = await edcFixture();
     try {
-      const a = await f.charge("bca", `BILL-${randomUUID()}`, 40_000);
-      const b = await f.charge(
-        "mandiri",
-        `BILL-${randomUUID()}`,
-        15_000,
-        "qris",
-      );
+      const refA = `BILL-${randomUUID().slice(0, 8)}`;
+      const refB = `BILL-${randomUUID().slice(0, 8)}`;
+      await billFor(refA, 40_000);
+      await billFor(refB, 15_000);
+      const a = await f.charge("bca", refA, 40_000);
+      const b = await f.charge("mandiri", refB, 15_000, "qris");
       expect(a).toMatchObject({ status: "approved", bank: "bca" });
       expect(b).toMatchObject({ status: "approved", bank: "mandiri" });
     } finally {
@@ -1204,7 +1214,9 @@ describe("Alur W bayar di kasir dengan EDC", () => {
   it("EDC transaksi disetujui menulis event ke outbox edge dalam transaksi yang sama, belum terkirim", async () => {
     const f = await edcFixture();
     try {
-      const tx = await f.charge("bca", `BILL-${randomUUID()}`, 30_000);
+      const reference = `BILL-${randomUUID().slice(0, 8)}`;
+      await billFor(reference, 30_000);
+      const tx = await f.charge("bca", reference, 30_000);
       const { rows } = await owner.query(
         `SELECT event->>'name' AS name, status FROM domain_event_outbox
          WHERE tenant_id = $1 AND event->'payload'->>'transactionId' = $2`,

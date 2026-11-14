@@ -80,6 +80,7 @@ import {
   assertPaymentPermission,
   uniqueViolation,
 } from "../../services/payment-support.ts";
+import { assertEdcSaleBillPayable } from "../../services/pos-order-support.ts";
 import { emitEdcTransactionEvent } from "./events.ts";
 import type { EdcProviderRegistry } from "./registry.ts";
 
@@ -398,10 +399,13 @@ function patchFromAnswer(
           { edcTransactionId: row.id, trace: row.trace },
           "EDC terminal amount is missing or differs from the request",
         );
-        return unknownEvidencePatch(
-          result,
-          new EdcError("EDC_AMOUNT_MISMATCH").message,
-        );
+        return {
+          ...unknownEvidencePatch(
+            result,
+            new EdcError("EDC_AMOUNT_MISMATCH").message,
+          ),
+          needsReconciliation: true,
+        };
       }
       return { status: "approved", details: detailsOf(result) };
     case "declined":
@@ -1287,6 +1291,17 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           )
           .limit(1);
         if (blocking.length > 0) return { kind: "retry" };
+        // The terminal is only asked for what the bill still owes right now. A
+        // POS screen that went stale (another tender, a discount) would
+        // otherwise take money the tender step can never book (it requires
+        // the request amount to equal the tender). Read under the same
+        // advisory lock every tender/edit takes, so check and insert are
+        // atomic against them; the order row is not locked here (lock order).
+        await assertEdcSaleBillPayable(tx, ctx, {
+          outletId: input.outletId,
+          reference: input.reference,
+          amountIdr: input.amountIdr,
+        });
         // The terminal is read again here, locked against a concurrent edit
         // (`FOR KEY SHARE` conflicts with the admin's `FOR UPDATE`): the sale
         // goes out to the identity this row was written for, and the admin's

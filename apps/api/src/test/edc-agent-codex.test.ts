@@ -40,6 +40,7 @@ import { db } from "../db/index.ts";
 import { createEdcAgent, type EdcAgentDeps } from "../edge/edc/agent.ts";
 import { EdcProviderRegistry } from "../edge/edc/registry.ts";
 import { EcrSimulator } from "../edge/edc/simulator.ts";
+import { ensureBill } from "./edc-agent-bill-helper.ts";
 import { agent as httpAgent, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -216,8 +217,10 @@ function request(
   } as EdcPaymentRequest;
 }
 
-const pay = (f: Fixture, req: EdcPaymentRequest) =>
-  f.agent.requestPayment(f.ctx, f.actor, req);
+const pay = async (f: Fixture, req: EdcPaymentRequest) => {
+  await ensureBill(owner, req);
+  return f.agent.requestPayment(f.ctx, f.actor, req);
+};
 
 const refTo = (id: string) => ({
   tenantId: tenantIdSchema.parse(tenant.tenantId),
@@ -345,7 +348,9 @@ describe("Codex finding 2: ownership is checked before the sale goes out", () =>
 
     // The replacement takes over once the old agent let go.
     await replacement.start(f.ctx);
-    const next = await replacement.requestPayment(f.ctx, f.actor, request(f));
+    const nextReq = request(f);
+    await ensureBill(owner, nextReq);
+    const next = await replacement.requestPayment(f.ctx, f.actor, nextReq);
     expect(next.status).toBe("approved");
     expect(f.bca.callsFor(f.terminalId).sale).toBe(2);
   });

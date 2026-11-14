@@ -52,6 +52,7 @@ import { createEdcAgent } from "../edge/edc/agent.ts";
 import { logger } from "../lib/logger.ts";
 import { EdcProviderRegistry } from "../edge/edc/registry.ts";
 import { EcrSimulator } from "../edge/edc/simulator.ts";
+import { ensureBill } from "./edc-agent-bill-helper.ts";
 import { agent as httpAgent, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -334,8 +335,10 @@ const request = (f: Fixture): EdcPaymentRequest =>
     method: "card",
   }) as EdcPaymentRequest;
 
-const pay = (f: Fixture, req: EdcPaymentRequest) =>
-  f.agent.requestPayment(f.ctx, f.actor, req);
+const pay = async (f: Fixture, req: EdcPaymentRequest) => {
+  await ensureBill(owner, req);
+  return f.agent.requestPayment(f.ctx, f.actor, req);
+};
 
 const refTo = (f: Fixture, tx: Pick<EdcTransaction, "id">) => ({
   tenantId: tenantIdSchema.parse(f.tenant.tenantId),
