@@ -1558,3 +1558,4 @@ Langkah berikut CTO baru:
 - 09:19 DASH-02: ws/reports-dashboard-fixes 1b8382dfb (fixture metrik review tersedia tapi kosong), m1 digabung, antre batch63.
 - 09:20 r1ax selesai: ct/customer-display-promo-pairing 3dfaf1a01 review bersih, antre batch64; lanjutan legend-l344l (UI), legend-834cr (akses+mapper). Codex: G12il legend-z76q (brief 715), G021n legend-j5n1 (brief 716).
 - 09:25 j5n1 selesai: fix/backup-postgres-user 06eb57f9f, antre batch64 (test .sh di deploy/backup tidak ikut runner; cek orphan guard).
+- 09:26 Codex #2 kena batas 7 hari (100%, reset 18 Nov 17:43); G9u0b (legend-xar9p, brief 717) dipindah ke #7. Codex yang layak: #7 (10%), #8 (13%); #3-#6 7d 89-93%.
