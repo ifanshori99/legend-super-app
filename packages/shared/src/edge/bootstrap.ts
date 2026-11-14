@@ -57,7 +57,7 @@ const name150 = z.string().min(1).max(150);
 const jsonObjectSchema = z.record(z.string(), z.unknown());
 
 /** `tenants` row as inserted on the edge. */
-export const edgeBootstrapTenantSchema = z.strictObject({
+export const edgeBootstrapTenantSchema = z.object({
   id: tenantIdSchema,
   slug: slugSchema,
   name: name150,
@@ -72,7 +72,7 @@ export const edgeBootstrapTenantSchema = z.strictObject({
 export type EdgeBootstrapTenant = z.infer<typeof edgeBootstrapTenantSchema>;
 
 /** `legal_entities` row without the NPWP columns (stored null on the edge). */
-export const edgeBootstrapLegalEntitySchema = z.strictObject({
+export const edgeBootstrapLegalEntitySchema = z.object({
   id: legalEntityIdSchema,
   tenantId: tenantIdSchema,
   name: name150,
@@ -85,7 +85,7 @@ export type EdgeBootstrapLegalEntity = z.infer<
 >;
 
 /** `brands` row as inserted on the edge. */
-export const edgeBootstrapBrandSchema = z.strictObject({
+export const edgeBootstrapBrandSchema = z.object({
   id: brandIdSchema,
   tenantId: tenantIdSchema,
   slug: slugSchema,
@@ -97,7 +97,7 @@ export const edgeBootstrapBrandSchema = z.strictObject({
 export type EdgeBootstrapBrand = z.infer<typeof edgeBootstrapBrandSchema>;
 
 /** `outlets` row without `region_id` (stored null on the edge). */
-export const edgeBootstrapOutletSchema = z.strictObject({
+export const edgeBootstrapOutletSchema = z.object({
   id: outletIdSchema,
   tenantId: tenantIdSchema,
   brandId: brandIdSchema,
@@ -117,7 +117,7 @@ export type EdgeBootstrapOutlet = z.infer<typeof edgeBootstrapOutletSchema>;
 
 /** FK-complete: every row is the tenant's, the outlet's parents are present. */
 export const edgeBootstrapBundleSchema = z
-  .strictObject({
+  .object({
     version: z.literal(EDGE_BOOTSTRAP_VERSION),
     issuedAt: isoDateTimeSchema,
     tenant: edgeBootstrapTenantSchema,
@@ -151,9 +151,19 @@ export const edgeBootstrapBundleSchema = z
         message: "The outlet's brand is not in the bundle",
       });
   });
+/** Strict cloud output validation prevents accidentally sending extra columns. */
+export const edgeBootstrapBundleCloudSchema = edgeBootstrapBundleSchema
+  .safeExtend({
+    tenant: edgeBootstrapTenantSchema.strict(),
+    legalEntity: edgeBootstrapLegalEntitySchema.strict(),
+    brands: z.array(edgeBootstrapBrandSchema.strict()).min(1).max(1),
+    outlet: edgeBootstrapOutletSchema.strict(),
+  })
+  .strict();
+
 export type EdgeBootstrapBundle = z.infer<typeof edgeBootstrapBundleSchema>;
 
-export const edgeBootstrapResponseSchema = z.strictObject({
+export const edgeBootstrapResponseSchema = z.object({
   bundle: edgeBootstrapBundleSchema,
   /** HMAC-SHA256 (lowercase hex) over canonicalJson(bundle). */
   signature: z.string().regex(/^[0-9a-f]{64}$/),

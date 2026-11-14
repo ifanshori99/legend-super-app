@@ -19,7 +19,7 @@ import { CoreError } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import {
   EDGE_MASTER_SNAPSHOT_VERSION,
-  edgeMasterSnapshotSchema,
+  edgeMasterSnapshotCloudSchema,
   type EdgeMasterSnapshotResponse,
 } from "@starter/shared/edge/master-sync";
 import { db } from "../db/index.ts";
@@ -193,7 +193,7 @@ function readSnapshotInTenant(
       )
       .orderBy(asc(accountMappings.role));
 
-    const parsed = edgeMasterSnapshotSchema.safeParse({
+    const parsed = edgeMasterSnapshotCloudSchema.safeParse({
       version: EDGE_MASTER_SNAPSHOT_VERSION,
       issuedAt: new Date().toISOString(),
       tenantId,
@@ -204,6 +204,7 @@ function readSnapshotInTenant(
         tenantId: row.tenantId,
         code: row.code,
         name: row.name,
+        isSystem: row.isSystem,
         createdAt: row.createdAt.toISOString(),
       })),
       stockLocations: locationRows.map((row) => ({

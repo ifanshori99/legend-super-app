@@ -838,6 +838,47 @@ describe("legend-9ppw 2 fresh edge bootstrap", () => {
 
 // ---------------------------------------------------------------------------
 describe("legend-9ppw 3 master change on the cloud", () => {
+  it("syncs the cloud system flag and defaults old snapshots to false", async () => {
+    const before = await captureMasters(main);
+    const uom = before.snapshot.uoms[0]!;
+    await owner.query("UPDATE uoms SET is_system = true WHERE id = $1", [
+      uom.id,
+    ]);
+    const cloud = await captureMasters(main);
+    expect(cloud.snapshot.uoms.find((row) => row.id === uom.id)?.isSystem).toBe(
+      true,
+    );
+
+    // The database represents a stale edge before applying the cloud response.
+    await owner.query("UPDATE uoms SET is_system = false WHERE id = $1", [
+      uom.id,
+    ]);
+    let response: unknown = cloud;
+    spyCloud({ masters: () => json(response) });
+    await syncEdgeMasters(config(main));
+    const readFlag = async () =>
+      (
+        await owner.query<{ is_system: boolean }>(
+          "SELECT is_system FROM uoms WHERE id = $1",
+          [uom.id],
+        )
+      ).rows[0]!.is_system;
+    expect(await readFlag()).toBe(true);
+
+    // An older cloud signs a snapshot without the field at all.
+    const legacy = {
+      ...cloud.snapshot,
+      uoms: cloud.snapshot.uoms.map((row) => {
+        const legacyRow: Partial<typeof row> = { ...row };
+        delete legacyRow.isSystem;
+        return legacyRow;
+      }),
+    };
+    response = signed(legacy, main);
+    await syncEdgeMasters(config(main));
+    expect(await readFlag()).toBe(false);
+  });
+
   it("applies a renamed location, a new location and a remapped role, and a re-run changes nothing", async () => {
     const before = await dbView(main);
     const bar = before.stockLocations.find((l) => l.type === "bar")!;

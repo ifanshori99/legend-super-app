@@ -53,6 +53,8 @@ import {
 
 import {
   promotionObjectSchema,
+  promotionBenefitSchema,
+  promotionConditionSchema,
   promotionOutletScopeSchema,
   promoStackingPolicySchema,
   voucherObjectSchema,
@@ -142,7 +144,7 @@ const stamps = {
 };
 
 /** Production routing per outlet; scope = the credential's outlet. */
-export const stationSyncRecordSchema = z.strictObject({
+export const stationSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   outletId: uuidSchema,
@@ -161,7 +163,7 @@ export const stationSyncRecordSchema = z.strictObject({
  * `status`, `lastSeenAt` and `offlineSince` are measured by the print agent on
  * the edge and never travel. `stationId` and the fallback are plain UUIDs.
  */
-const livePrinterSyncRecordSchema = z.strictObject({
+const livePrinterSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   outletId: uuidSchema,
@@ -179,7 +181,7 @@ const livePrinterSyncRecordSchema = z.strictObject({
   deletedAt: z.null(),
   syncTxid: syncTxidSchema,
 });
-const printerTombstoneSyncRecordSchema = z.strictObject({
+const printerTombstoneSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   outletId: uuidSchema,
@@ -196,7 +198,7 @@ export const printerSyncRecordSchema = z.union([
  * (switched off with `isActive`, never deleted). `idempotencyKey` is not sent.
  * `parMin` / `parMax` are the exact NUMERIC(14,4) decimal strings.
  */
-export const inventoryItemSyncRecordSchema = z.strictObject({
+export const inventoryItemSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   name,
@@ -212,7 +214,7 @@ export const inventoryItemSyncRecordSchema = z.strictObject({
   syncTxid: syncTxidSchema,
 });
 
-export const menuCategorySyncRecordSchema = z.strictObject({
+export const menuCategorySyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   brandId: uuidSchema,
@@ -222,7 +224,7 @@ export const menuCategorySyncRecordSchema = z.strictObject({
   ...stamps,
 });
 
-export const menuItemSyncRecordSchema = z.strictObject({
+export const menuItemSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   brandId: uuidSchema,
@@ -243,7 +245,7 @@ export const menuItemSyncRecordSchema = z.strictObject({
   ...stamps,
 });
 
-export const itemVariantSyncRecordSchema = z.strictObject({
+export const itemVariantSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   menuItemId: uuidSchema,
@@ -252,7 +254,7 @@ export const itemVariantSyncRecordSchema = z.strictObject({
   ...stamps,
 });
 
-export const modifierGroupSyncRecordSchema = z.strictObject({
+export const modifierGroupSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   name,
@@ -261,7 +263,7 @@ export const modifierGroupSyncRecordSchema = z.strictObject({
   ...stamps,
 });
 
-export const modifierSyncRecordSchema = z.strictObject({
+export const modifierSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   groupId: uuidSchema,
@@ -274,7 +276,7 @@ export const modifierSyncRecordSchema = z.strictObject({
 });
 
 /** Join row; no `id` column in the cloud: the key is (menuItemId, groupId). */
-export const menuItemModifierGroupSyncRecordSchema = z.strictObject({
+export const menuItemModifierGroupSyncRecordSchema = z.object({
   tenantId: uuidSchema,
   menuItemId: uuidSchema,
   groupId: uuidSchema,
@@ -286,7 +288,7 @@ export const menuItemModifierGroupSyncRecordSchema = z.strictObject({
  * One live item of a price list. Only live (not soft-deleted) items travel, so
  * there is no `deletedAt`: an item missing from `items` is gone.
  */
-export const priceListItemRecordSchema = z.strictObject({
+export const priceListItemRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   priceListId: uuidSchema,
@@ -303,7 +305,7 @@ export const priceListItemRecordSchema = z.strictObject({
  * in the same statement as the header: the edge replaces its items with this
  * set (deletes the others) in the same transaction as the header upsert.
  */
-export const priceListSyncRecordSchema = z.strictObject({
+export const priceListSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   outletId: uuidSchema,
@@ -314,7 +316,7 @@ export const priceListSyncRecordSchema = z.strictObject({
 });
 
 /** One line of a recipe; no `updated_at` / `deleted_at` in the cloud. */
-export const recipeLineRecordSchema = z.strictObject({
+export const recipeLineRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   recipeId: uuidSchema,
@@ -333,7 +335,7 @@ export const recipeLineRecordSchema = z.strictObject({
  * edge replaces its lines with this set (deletes the others) in the same
  * transaction as the recipe upsert.
  */
-export const recipeSyncRecordSchema = z.strictObject({
+export const recipeSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   brandId: uuidSchema,
@@ -361,6 +363,8 @@ export const recipeSyncRecordSchema = z.strictObject({
 export const promotionSyncRecordSchema = promotionObjectSchema
   .omit({ codeHash: true })
   .extend({
+    conditions: z.array(promotionConditionSchema),
+    benefit: promotionBenefitSchema,
     codeRef: z
       .string()
       .regex(/^[a-f0-9]{64}$/)
@@ -387,7 +391,8 @@ export const promotionSyncRecordSchema = promotionObjectSchema
         syncTxid: syncTxidSchema,
       })
       .nullable(),
-  });
+  })
+  .strict();
 
 /** Single-use state travels read-only; edge redemption requires cloud authority. */
 export const voucherSyncRecordSchema = voucherObjectSchema
@@ -395,7 +400,8 @@ export const voucherSyncRecordSchema = voucherObjectSchema
   .extend({
     issuedBy: userIdSchema.nullable(),
     syncTxid: syncTxidSchema,
-  });
+  })
+  .strict();
 
 export const catalogSyncRecordSchemas = {
   stations: stationSyncRecordSchema,
@@ -442,7 +448,7 @@ export type CatalogSyncRecordOf<S extends CatalogSyncStream> = z.infer<
 >;
 
 function pageOf<S extends CatalogSyncStream>(stream: S) {
-  return z.strictObject({
+  return z.object({
     /**
      * Explicit protocol version, sent only to an edge that asked for it. The
      * edge checks it before parsing the page and refuses a page without it.
@@ -472,3 +478,53 @@ export const catalogSyncPageSchema = z.discriminatedUnion("stream", [
   pageOf("vouchers"),
 ]);
 export type CatalogSyncPage = z.infer<typeof catalogSyncPageSchema>;
+
+/** Cloud output validation must detect accidental columns, including nested rows. */
+export const catalogSyncCloudRecordSchemas = {
+  stations: stationSyncRecordSchema.strict(),
+  printers: z.union([
+    livePrinterSyncRecordSchema.strict(),
+    printerTombstoneSyncRecordSchema.strict(),
+  ]),
+  inventory_items: inventoryItemSyncRecordSchema.strict(),
+  menu_categories: menuCategorySyncRecordSchema.strict(),
+  modifier_groups: modifierGroupSyncRecordSchema.strict(),
+  modifiers: modifierSyncRecordSchema.strict(),
+  menu_items: menuItemSyncRecordSchema.strict(),
+  item_variants: itemVariantSyncRecordSchema.strict(),
+  menu_item_modifier_groups: menuItemModifierGroupSyncRecordSchema.strict(),
+  price_lists: priceListSyncRecordSchema
+    .extend({ items: z.array(priceListItemRecordSchema.strict()) })
+    .strict(),
+  recipes: recipeSyncRecordSchema
+    .extend({ lines: z.array(recipeLineRecordSchema.strict()) })
+    .strict(),
+  promotions: promotionSyncRecordSchema,
+  vouchers: voucherSyncRecordSchema,
+} as const;
+
+function cloudPageOf<S extends CatalogSyncStream>(stream: S) {
+  return z.strictObject({
+    protocolVersion: z.number().int().min(1).optional(),
+    stream: z.literal(stream),
+    records: z.array(catalogSyncCloudRecordSchemas[stream]),
+    nextCursor: cursorSchema.nullable(),
+    hasMore: z.boolean(),
+  });
+}
+
+export const catalogSyncCloudPageSchema = z.discriminatedUnion("stream", [
+  cloudPageOf("stations"),
+  cloudPageOf("printers"),
+  cloudPageOf("inventory_items"),
+  cloudPageOf("menu_categories"),
+  cloudPageOf("modifier_groups"),
+  cloudPageOf("modifiers"),
+  cloudPageOf("menu_items"),
+  cloudPageOf("item_variants"),
+  cloudPageOf("menu_item_modifier_groups"),
+  cloudPageOf("price_lists"),
+  cloudPageOf("recipes"),
+  cloudPageOf("promotions"),
+  cloudPageOf("vouchers"),
+]);

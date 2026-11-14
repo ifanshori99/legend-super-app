@@ -446,7 +446,7 @@ export async function applyEdgeMasterSnapshotInTransaction(
       .values({ ...row, createdAt: new Date(row.createdAt) })
       .onConflictDoUpdate({
         target: uoms.id,
-        set: { code: row.code, name: row.name },
+        set: { code: row.code, name: row.name, isSystem: row.isSystem },
       });
   }
   for (const row of snapshot.stockLocations) {
