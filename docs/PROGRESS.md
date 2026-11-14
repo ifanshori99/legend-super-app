@@ -2,6 +2,21 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## Serah terima CTO 14 Nov 22:31 (sesi G6evw, 6104725f, compact 1x)
+
+- Cron: push `17 * * * *` dan retro `43 1,4,7,10,13,16,19,22 * * *` wajib dibuat ulang (memory 1). Nomor migrasi: memory 2 (bebas berikut 0378).
+- Thread berjalan:
+  - G8dut merge train: gate 64e jalan di latar; lalu 64f, 64g. Antrean setelah 64g (maks 7 per batch, induk dulu): ajakan-wa-poin-grid-qr-meja bcfbdf011, 780-ui-operasional-kecil (+ fix/ops-statusbar-contrast b1af31c1b; cek konflik fix/e2e-mock-support-access c3cef7cb4), layar-input-faktur-pemasok 882900f6a (+ fix/supplier-invoice-invoiced-qty 5cccfd4b9), upload-foto-fasilitas-sungguhan b961fdcc7 (migrasi -> 0376; + fix/leave-attachment-active-permission f161bcca7 -> fix/leave-create-outlet-permission 043a8cb23; + fix/facility-evidence-bind-source ca9a7c0f4), fix/print-alert-supervisor 7fcfdb369, fix/storage-scanner-typed-error d4c02fa0a, ws/doit-refund-hardening 72805cd6f (setelah rantai refund 64g).
+  - G4buq push registrasi alarm panik (legend-ofq4f, brief 791).
+  - G4ux1 edge SO fix (ws/edge-master-data-publisher badc3d452): sedang ganti dead-letter katalog jadi placeholder no-op di link_seq yang sama (alarm panik tidak boleh hilang); reviewer + architect high.
+  - G5yiz resep tenant ke semua edge + SO pajak (brief 800, migrasi 0377, ws/tax-menu-keyrotation).
+  - G7462 pemindai clamd M4 + assertSafePdf M5 (brief 801, ws/storage-scanner-pdf). M6 (legend-egrrp) setelahnya.
+  - G8idw Codex print agent retry + fallback KDS (brief 802).
+- Second opinion selesai: DOIT refund (dibetulkan 72805cd6f), akses foto/lampiran (bersih), pajak/FK/rotasi (sedang dibetulkan G5yiz). Payout: handover lama bilang selesai, merge train bilang belum; cocokkan sebelum gerbang rilis. Belum: edge (setelah G4ux1), panik (setelah G4buq), pemindai (setelah G7462).
+- Keputusan CTO: refund 700 hari tanpa MFA ditolak; refund POST tetap dikirim setelah DOIT dicabut dari paket; flag refund kosong = deploy gagal; DOIT tanpa cancel VA (Q7, docs doit.id); FK modifier hanya di cloud; resep semua brand ke tiap edge; blok node brand pindah hanya katalog.
+- Kartu baru: legend-2uqcd (di G5yiz), legend-cgduz (di G5yiz), legend-ge9ur (di G8idw), legend-0xx06 (status bar 154px di HP, perlu review UI founder), legend-bkd76 selesai, kartu P4 replay/self-cancel cuti dari G96i9.
+- Founder: Q3-Q6 setuju semua; Q7 dijawab lewat cek dokumen DOIT. Sesi CTO lama G343w masih menyala (minta founder tutup).
+
 ## Serah terima CTO 14 Nov 21:00 (sesi G343w, 6ceb978d, compact 1x)
 
 Biaya sesi CTO: 10,67M unit (Opus utama 10,19M). parallel-report sejak 12:30: 30 sesi, rata-rata 2,3 subagent puncak.
