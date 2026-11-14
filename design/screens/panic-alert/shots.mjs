@@ -2,6 +2,8 @@
 // Screenshot + axe + overflow check untuk layar alert panik staf (legend-alovk).
 // Jalan: UI_CHECK_URL=http://localhost:3225 heavy node design/screens/panic-alert/shots.mjs
 //        ONLY=incoming,mine ... (subset keadaan)
+// Keadaan wiring (legend-jztb7): taken-remote, restore, board-incoming (di /fasilitas),
+// tabs-idle (juga menulis ukuran tab subnav ke axe.json -> tabs).
 // UI_CHECK_URL harus server web dengan VITE_API_MOCK=true (soket palsu:
 // apps/web/src/features/facility-staff/panic-mock-socket.ts). Jangan arahkan ke
 // deployment asli. Output: docs/screenshots/panic-alert/<state>-<lebar>.png dan
@@ -17,6 +19,7 @@ const root = join(here, '..', '..', '..');
 const OUT = join(root, 'docs', 'screenshots', 'panic-alert');
 const BASE = (process.env.UI_CHECK_URL || 'http://localhost:3225').replace(/\/$/, '');
 const PATH = '/fasilitas/darurat';
+const BOARD_PATH = '/fasilitas';
 const STORAGE_KEY = 'legend.mock.panic';
 const TAGS = ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'];
 const COLD = 45_000; // Vite compile route pertama.
@@ -73,8 +76,10 @@ async function runAxe(page) {
 const ackButtons = (page) => page.getByRole('button', { name: /^Saya tangani/ });
 
 /**
- * `scenario` = nilai localStorage (nama skenario soket palsu). `ready` menunggu
- * keadaan tampil; `act` (opsional) menggerakkan layar setelah siap, lalu `after` menunggu hasilnya.
+ * `scenario` = nilai localStorage (nama skenario soket palsu). `path` (opsional)
+ * = halaman yang dibuka, bawaan PATH. `ready` menunggu keadaan tampil; `act`
+ * (opsional) menggerakkan layar setelah siap; `after` (opsional) menunggu hasilnya.
+ * `tabs: true` = ukur tab subnav ke `tabsOut`.
  */
 const STATES = [
   {
@@ -107,12 +112,41 @@ const STATES = [
     after: (p) => p.locator('[data-slot="panic-settled"] [data-ack="mine"]').first().waitFor({ timeout: 15_000 }),
   },
   {
-    // Tanggapan ke API palsu dijawab "sudah diambil rekan lain".
+    // Tanggapan ke API palsu dijawab 409 "sudah ditangani Rina" (nama dari body 409).
     name: 'acknowledged',
     scenario: 'acknowledged',
     ready: (p) => ackButtons(p).first().waitFor({ timeout: COLD }),
     act: (p) => ackButtons(p).first().click(),
-    after: (p) => p.getByText(/Sudah ditangani rekan lain/).first().waitFor({ timeout: 15_000 }),
+    after: (p) => p.getByText(/Sudah ditangani Rina/).first().waitFor({ timeout: 15_000 }),
+  },
+  {
+    // Rekan (Rina) mengambil alert dari perangkat lain: frame acknowledged di ~3,5 s.
+    name: 'taken-remote',
+    scenario: 'taken-remote',
+    ready: (p) => ackButtons(p).first().waitFor({ timeout: COLD }),
+    after: (p) => p.getByText(/Sudah ditangani Rina/).first().waitFor({ timeout: 15_000 }),
+  },
+  {
+    // Alert hanya bisa datang dari open-alerts: muat ulang lalu alert harus tampil lagi.
+    name: 'restore',
+    scenario: 'restore',
+    ready: (p) => ackButtons(p).first().waitFor({ timeout: COLD }),
+    act: (p) => p.reload({ waitUntil: 'load' }),
+    after: (p) => ackButtons(p).first().waitFor({ timeout: COLD }),
+  },
+  {
+    name: 'board-incoming',
+    scenario: 'incoming',
+    path: BOARD_PATH,
+    ready: (p) => p.getByText('Segera ke lokasi').first().waitFor({ timeout: COLD }),
+    overflow320: true,
+  },
+  {
+    name: 'tabs-idle',
+    scenario: 'idle',
+    ready: (p) => p.getByText('Terhubung ke outlet').first().waitFor({ timeout: COLD }),
+    tabs: true,
+    overflow320: true,
   },
   {
     name: 'reconnecting',
@@ -145,6 +179,7 @@ const want = (name) => ONLY.length === 0 || ONLY.includes(name);
 const axeOut = {};
 const overflow = {};
 const failures = [];
+const tabsOut = {};
 
 /** Konteks baru per keadaan/lebar: localStorage kosong, tema terang. */
 async function openState(browser, state, width) {
@@ -156,14 +191,13 @@ async function openState(browser, state, width) {
     } catch {}
   });
   // Atur skenario lalu muat ulang supaya soket baru membacanya.
-  await page.goto(BASE + PATH, { waitUntil: 'load' });
+  const path = state.path ?? PATH;
+  await page.goto(BASE + path, { waitUntil: 'load' });
   await page.evaluate(([k, v]) => localStorage.setItem(k, v), [STORAGE_KEY, state.scenario]);
   await page.reload({ waitUntil: 'load' });
   await state.ready(page);
-  if (state.act) {
-    await state.act(page);
-    await state.after(page);
-  }
+  if (state.act) await state.act(page);
+  if (state.after) await state.after(page);
   await page.waitForTimeout(500); // animasi masuk selesai
   return { ctx, page };
 }
@@ -177,12 +211,53 @@ async function measureOverflow(page, name) {
   console.log(`overflow320 ${name}: scrollWidth=${r.scrollWidth} clientWidth=${r.clientWidth} ${overflow[name].overflow ? 'OVERFLOW' : 'ok'}`);
 }
 
+/** Tiap tautan subnav: kotak vs viewport; ul: scrollWidth vs clientWidth (terpotong bila lebih). */
+async function measureTabs(page, key, width) {
+  const m = await page.evaluate(() => {
+    const ul = document.querySelector('[data-slot="facility-staff-subnav"]');
+    const links = ul ? [...ul.querySelectorAll('a')] : [];
+    return {
+      viewportWidth: document.documentElement.clientWidth,
+      list: ul ? { scrollWidth: ul.scrollWidth, clientWidth: ul.clientWidth } : null,
+      links: links.map((a) => {
+        const r = a.getBoundingClientRect();
+        return {
+          text: a.textContent?.trim() ?? '',
+          current: a.getAttribute('aria-current'),
+          left: r.left,
+          right: r.right,
+          width: r.width,
+        };
+      }),
+    };
+  });
+  const anchors = page.locator('[data-slot="facility-staff-subnav"] a');
+  const boundingBoxes = [];
+  for (let i = 0; i < (await anchors.count()); i++) boundingBoxes.push(await anchors.nth(i).boundingBox());
+  const links = m.links.map((l, i) => {
+    const bb = boundingBoxes[i];
+    return {
+      ...l,
+      boundingBox: bb,
+      withinViewport: bb ? bb.x >= 0 && bb.x + bb.width <= m.viewportWidth : false,
+    };
+  });
+  const listClipped = m.list ? m.list.scrollWidth > m.list.clientWidth : null;
+  tabsOut[key] = { viewportWidth: m.viewportWidth, list: m.list, listClipped, links };
+  const bad = links.filter((l) => !l.withinViewport).map((l) => l.text);
+  console.log(
+    `tabs ${key}: ul=${m.list?.scrollWidth}/${m.list?.clientWidth} ${listClipped ? 'TERPOTONG' : 'ok'}` +
+      (bad.length ? ` di luar viewport: ${bad.join(', ')}` : ''),
+  );
+}
+
 async function capture(browser, state, width) {
   const key = `${state.name}-${width}`;
   let ctx;
   try {
     const opened = await openState(browser, state, width);
     ctx = opened.ctx;
+    if (state.tabs) await measureTabs(opened.page, key, width);
     if (width === 320) {
       await measureOverflow(opened.page, state.name);
     } else {
@@ -223,6 +298,7 @@ try {
     totals,
     axe: axeOut,
     overflow320: overflow,
+    tabs: tabsOut,
     failures,
   };
   writeFileSync(join(OUT, 'axe.json'), JSON.stringify(summary, null, 2));

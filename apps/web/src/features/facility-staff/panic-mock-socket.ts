@@ -1,7 +1,8 @@
 // MOCK/DEMO ONLY (VITE_API_MOCK=true): a scripted stand-in for the staff
 // emergency WebSocket so the panic alert screens can be previewed without the
 // server. The scenario comes from localStorage["legend.mock.panic"]; the
-// default is "incoming". Frames use the real contract (panicRealtimeFrameSchema),
+// default is "idle": the layer sits on every /fasilitas screen, so a demo alert
+// only appears when a scenario is picked on purpose. Frames use the real contract (panicRealtimeFrameSchema),
 // so the realtime client parses them exactly like frames from the API.
 import { cafeLegendFacilityFixtures as fx } from "@starter/shared/facility";
 import type { PanicRealtimeFrame } from "@starter/shared/facility";
@@ -29,9 +30,9 @@ export function readPanicMockScenario(): PanicMockScenario {
     ).localStorage?.getItem(PANIC_MOCK_STORAGE_KEY);
     return (PANIC_MOCK_SCENARIOS as readonly unknown[]).includes(value)
       ? (value as PanicMockScenario)
-      : "incoming";
+      : "idle";
   } catch {
-    return "incoming";
+    return "idle";
   }
 }
 

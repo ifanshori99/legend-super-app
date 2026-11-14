@@ -1,5 +1,5 @@
 {
-  "base": "http://localhost:3299",
+  "base": "http://localhost:3241",
   "path": "/fasilitas/darurat",
   "totals": {
     "serious": 0,
@@ -36,12 +36,42 @@
       "critical": 0,
       "rules": []
     },
-    "acknowledged-1280": {
+    "taken-remote-1280": {
       "serious": 0,
       "critical": 0,
       "rules": []
     },
-    "acknowledged-390": {
+    "taken-remote-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "restore-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "restore-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "board-incoming-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "board-incoming-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tabs-idle-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tabs-idle-390": {
       "serious": 0,
       "critical": 0,
       "rules": []
@@ -97,7 +127,220 @@
       "scrollWidth": 320,
       "clientWidth": 320,
       "overflow": false
+    },
+    "board-incoming": {
+      "scrollWidth": 320,
+      "clientWidth": 320,
+      "overflow": false
+    },
+    "tabs-idle": {
+      "scrollWidth": 320,
+      "clientWidth": 320,
+      "overflow": false
     }
   },
-  "failures": []
+  "tabs": {
+    "tabs-idle-1280": {
+      "viewportWidth": 1280,
+      "list": {
+        "scrollWidth": 371,
+        "clientWidth": 371
+      },
+      "listClipped": false,
+      "links": [
+        {
+          "text": "Papan bilik",
+          "current": null,
+          "left": 70,
+          "right": 169.59375,
+          "width": 99.59375,
+          "boundingBox": {
+            "x": 70,
+            "y": 250,
+            "width": 99.59375,
+            "height": 48
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Kebersihan",
+          "current": null,
+          "left": 171.59375,
+          "right": 274.78125,
+          "width": 103.1875,
+          "boundingBox": {
+            "x": 171.59375,
+            "y": 250,
+            "width": 103.1875,
+            "height": 48
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Insiden",
+          "current": null,
+          "left": 276.78125,
+          "right": 353.125,
+          "width": 76.34375,
+          "boundingBox": {
+            "x": 276.78125,
+            "y": 250,
+            "width": 76.34375,
+            "height": 48
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Darurat",
+          "current": "page",
+          "left": 355.125,
+          "right": 433.46875,
+          "width": 78.34375,
+          "boundingBox": {
+            "x": 355.125,
+            "y": 250,
+            "width": 78.34375,
+            "height": 48
+          },
+          "withinViewport": true
+        }
+      ]
+    },
+    "tabs-idle-390": {
+      "viewportWidth": 390,
+      "list": {
+        "scrollWidth": 371,
+        "clientWidth": 354
+      },
+      "listClipped": true,
+      "links": [
+        {
+          "text": "Papan bilik",
+          "current": null,
+          "left": 22,
+          "right": 121.59375,
+          "width": 99.59375,
+          "boundingBox": {
+            "x": 22,
+            "y": 462,
+            "width": 99.59375,
+            "height": 48
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Kebersihan",
+          "current": null,
+          "left": 123.59375,
+          "right": 226.78125,
+          "width": 103.1875,
+          "boundingBox": {
+            "x": 123.59375,
+            "y": 462,
+            "width": 103.1875,
+            "height": 48
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Insiden",
+          "current": null,
+          "left": 228.78125,
+          "right": 305.125,
+          "width": 76.34375,
+          "boundingBox": {
+            "x": 228.78125,
+            "y": 462,
+            "width": 76.34375,
+            "height": 48
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Darurat",
+          "current": "page",
+          "left": 307.125,
+          "right": 385.46875,
+          "width": 78.34375,
+          "boundingBox": {
+            "x": 307.125,
+            "y": 462,
+            "width": 78.34375,
+            "height": 48
+          },
+          "withinViewport": true
+        }
+      ]
+    },
+    "tabs-idle-320": {
+      "viewportWidth": 320,
+      "list": {
+        "scrollWidth": 371,
+        "clientWidth": 284
+      },
+      "listClipped": true,
+      "links": [
+        {
+          "text": "Papan bilik",
+          "current": null,
+          "left": 22,
+          "right": 121.59375,
+          "width": 99.59375,
+          "boundingBox": {
+            "x": 22,
+            "y": 462,
+            "width": 99.59375,
+            "height": 48
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Kebersihan",
+          "current": null,
+          "left": 123.59375,
+          "right": 226.78125,
+          "width": 103.1875,
+          "boundingBox": {
+            "x": 123.59375,
+            "y": 462,
+            "width": 103.1875,
+            "height": 48
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Insiden",
+          "current": null,
+          "left": 228.78125,
+          "right": 305.125,
+          "width": 76.34375,
+          "boundingBox": {
+            "x": 228.78125,
+            "y": 462,
+            "width": 76.34375,
+            "height": 48
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Darurat",
+          "current": "page",
+          "left": 307.125,
+          "right": 385.46875,
+          "width": 78.34375,
+          "boundingBox": {
+            "x": 307.125,
+            "y": 462,
+            "width": 78.34375,
+            "height": 48
+          },
+          "withinViewport": false
+        }
+      ]
+    }
+  },
+  "failures": [
+    "acknowledged-1280: locator.waitFor: Timeout 15000ms exceeded.",
+    "acknowledged-390: locator.waitFor: Timeout 15000ms exceeded."
+  ]
 }
