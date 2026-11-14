@@ -213,10 +213,24 @@ const onDuty = async (name: string, options: StaffOptions = {}) => {
 };
 
 async function subscribePush(staff: Staff) {
+  // legend-ofq4f: only a subscription registered with a live login session
+  // for the outlet counts as reachable.
+  const sessionId = randomUUID();
   await owner.query(
-    `INSERT INTO push_subscriptions (tenant_id, id, user_id, endpoint_hash, subscription_ciphertext, key_version)
-     VALUES ($1, $2, $3, $4, 'cipher', 'v1')`,
-    [staff.tenant.tenantId, randomUUID(), staff.userId, `hash-${randomUUID()}`],
+    `INSERT INTO "session" (id, expires_at, token, user_id) VALUES ($1, now() + interval '7 days', $2, $3)`,
+    [sessionId, randomUUID(), staff.userId],
+  );
+  await owner.query(
+    `INSERT INTO push_subscriptions (tenant_id, id, user_id, endpoint_hash, subscription_ciphertext, key_version, outlet_id, session_id)
+     VALUES ($1, $2, $3, $4, 'cipher', 'v1', $5, $6)`,
+    [
+      staff.tenant.tenantId,
+      randomUUID(),
+      staff.userId,
+      `hash-${randomUUID()}`,
+      staff.outlet,
+      sessionId,
+    ],
   );
 }
 
@@ -557,8 +571,15 @@ describe("legend-po3fe production factory panic delivery", () => {
       JSON.stringify(subscription),
       `push-subscription:${tenantA.tenantId}:${staff.userId}`,
     );
+    // legend-ofq4f: a subscription only counts when it was registered with a
+    // live login session for the alarm's outlet.
+    const sessionId = randomUUID();
     await owner.query(
-      `INSERT INTO push_subscriptions (tenant_id,id,user_id,endpoint_hash,subscription_ciphertext,key_version) VALUES ($1,$2,$3,$4,$5,$6)`,
+      `INSERT INTO "session" (id, expires_at, token, user_id) VALUES ($1, now() + interval '7 days', $2, $3)`,
+      [sessionId, randomUUID(), staff.userId],
+    );
+    await owner.query(
+      `INSERT INTO push_subscriptions (tenant_id,id,user_id,endpoint_hash,subscription_ciphertext,key_version,outlet_id,session_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [
         tenantA.tenantId,
         randomUUID(),
@@ -566,6 +587,8 @@ describe("legend-po3fe production factory panic delivery", () => {
         createHash("sha256").update(endpoint).digest("hex"),
         ciphertext,
         `v${sealedVersion(ciphertext)}`,
+        outletA,
+        sessionId,
       ],
     );
     const sent: unknown[][] = [];
@@ -724,15 +747,36 @@ describe("legend-po3fe production factory panic delivery", () => {
       data: { url: link },
     });
   });
-  it("reports disabled panic push as an operator-visible failure instead of silently skipping", async () => {
+  it("legend-ofq4f 791-4 disabled push keeps the in-app panic notification and does not reject the event", async () => {
+    // Changed from "rejects": a missing push configuration must not drop the
+    // in-app alarm or send the event to the dead-letter queue (architect 791 item 4).
+    const staff = await onDuty("Penerima tanpa push");
     const event = await raised();
     const context = contextOf(tenantA.tenantId);
     const handlers = createWorkerNotificationHandlers(database, disabled);
+    const consume = createNotificationConsumer(
+      context,
+      handlers.resolveNotificationRecipients,
+    );
     await expect(
-      withTenant(database, context, (tx) =>
-        handlers.resolveNotificationRecipients(context, event, tx),
+      withTenant(database, context, (tx) => consume(event, event.id, tx)),
+    ).resolves.not.toThrow();
+    const { rows } = await owner.query(
+      `SELECT id FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND source_event_id=$3`,
+      [tenantA.tenantId, staff.userId, ulidToUuid(event.id)],
+    );
+    expect(rows).toHaveLength(1);
+    const pushAttempts = await owner.query(
+      `SELECT a.id, a.status FROM delivery_attempts a JOIN notifications n ON n.id=a.notification_id AND n.tenant_id=a.tenant_id WHERE n.tenant_id=$1 AND n.user_id=$2 AND n.source_event_id=$3 AND a.channel=$$web_push$$`,
+      [tenantA.tenantId, staff.userId, ulidToUuid(event.id)],
+    );
+    // Push is skipped: a row may exist but must not be waiting to be sent.
+    expect(
+      pushAttempts.rows.filter(
+        (row: { status: string }) =>
+          row.status === "queued" || row.status === "sent",
       ),
-    ).rejects.toThrow(/push.*disabled|NOTIFICATION_PUSH_PROVIDER/i);
+    ).toHaveLength(0);
   });
 });
 
