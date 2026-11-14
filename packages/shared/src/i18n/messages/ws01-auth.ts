@@ -228,6 +228,36 @@ export const ws01AuthMessages = {
         "Sesi muncul di sini setelah akun ini masuk dari sebuah perangkat.",
     },
 
+    // legend-gchkf: perangkat penerima alarm panik, termasuk yang sesinya sudah habis.
+    pushDevices: {
+      title: "Perangkat alarm",
+      description:
+        "Perangkat yang menerima alarm panik dari akun ini. Perangkat tetap menerima alarm walau sesi masuknya sudah habis, sampai Anda mencabutnya. Cabut perangkat yang hilang atau sudah tidak dipakai.",
+      unnamed: "Perangkat tanpa nama",
+      registeredAt: "Didaftarkan {time}",
+      statusSessionActive: "Sedang masuk",
+      statusSessionEnded: "Sudah keluar, masih menerima alarm",
+      currentBadge: "Perangkat ini",
+      revoke: "Cabut",
+      revokeLabel: "Cabut {device} dari penerima alarm",
+      revokeTitle: "Berhenti kirim alarm ke perangkat ini?",
+      revokeDescription:
+        "{device} tidak akan menerima alarm panik lagi. Untuk menerima alarm lagi, aktifkan notifikasi alarm di perangkat itu setelah masuk kembali.",
+      revokeCurrentWarning:
+        "Ini perangkat yang sedang kamu pakai. Alarm panik tidak akan masuk lagi di sini sampai notifikasi diaktifkan ulang.",
+      revokeSessionNote:
+        "Sesi masuk di perangkat itu juga ikut keluar, jadi perangkat itu perlu masuk lagi.",
+      revokeConfirm: "Cabut perangkat",
+      revoked: "{device} tidak akan menerima alarm lagi.",
+      revokeFailed: "Perangkat belum bisa dicabut. Coba lagi.",
+      revokeGone: "Perangkat ini sudah tidak terdaftar. Daftar diperbarui.",
+      loadErrorTitle: "Daftar perangkat alarm tidak dapat dimuat",
+      loadErrorHint: "Periksa koneksi, lalu coba lagi.",
+      emptyTitle: "Belum ada perangkat penerima alarm",
+      emptyHint:
+        "Perangkat muncul di sini setelah notifikasi alarm diaktifkan di sebuah perangkat.",
+    },
+
     idle: {
       title: "Sesi akan segera berakhir",
       description:

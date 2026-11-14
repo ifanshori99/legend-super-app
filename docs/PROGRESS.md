@@ -5379,3 +5379,12 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Review: reviewer sonnet (2 bug dibetulkan) dan architect xhigh (A1-A4 diterima). A1, A3, A4 terbukti gagal-dulu. A2 tidak bisa direproduksi, allowlist dipertahankan sebagai pengerasan.
 - Test terarah API: 26 file, 468/468 lulus.
 - Lanjutan: bead legend-gchkf (cabut HP yang sesinya kedaluwarsa). Uji HP nyata (Android terkunci, iOS PWA) tetap utang gerbang rilis. Tidak di-merge ke m1.
+
+## 820 Cabut HP terdaftar push alarm panik walau sesi kedaluwarsa (15 Nov 2026, engineer, bead legend-gchkf)
+
+- Cabang akhir `fix/panic-push-device-revoke`, basis `c41dacbd7`. Tanpa migrasi. Kartu: legend-gchkf (status review).
+- Akar: daftar sesi menyembunyikan sesi kedaluwarsa, jadi baris `push_subscriptions` yatim (session_id NULL) tidak punya tombol cabut dan tetap menerima alarm.
+- Perbaikan: `GET /api/identity/push-devices` dan `DELETE /api/identity/push-devices/:id` (requireAuth, requireTrustedOrigin untuk DELETE, id UUID divalidasi shared, user_id difilter di SQL, 404 seragam). Daftar tidak membawa endpoint/keys; berisi id, deviceLabel, registeredAt, sessionActive, current. Hanya baris yang masih dikirimi alarm (logika worker) yang tampil. Cabut menghapus baris dan, bila sesinya aktif dan bukan sesi saat ini, ikut mencabut sesi itu agar HP tidak mendaftar ulang sendiri. Sesi support tidak boleh mencabut (CREDENTIAL_PATHS). Web: kartu "Perangkat alarm" di halaman keamanan; mencabut perangkat ini juga mematikan langganan browser.
+- Bukti: test baru `push-devices-revoke.test.ts` (12, gagal 11/12 di basis karena endpoint belum ada) dan `push-devices-revoke-session.test.ts` (7) hijau; 126 test terarah hijau; typecheck shared/api/web hijau; screenshot `docs/screenshots/820-perangkat-{390,1280,dialog-390}.png` (axe 0 pelanggaran, overflow 0).
+- Review: architect xhigh (1 tinggi: HP dicabut mendaftar ulang sendiri; 1 sedang; 2 ringan, semua dibetulkan atau didokumentasi), ui-auditor (7 cacat dibetulkan), reviewer sonnet atas perbaikan (2 temuan web dibetulkan).
+- Belum: perangkat yang terdaftar di tenant LAIN dari tenant sesi login tidak terlihat (butuh fungsi SQL SECURITY DEFINER = migrasi 0380, di luar scope). Panel "Sesi & perangkat" lama punya teks tanggal yang menimpa lencana "Aktif" di 390 px (di luar scope). Uji HP nyata tetap utang gerbang rilis.

@@ -8,6 +8,7 @@ import {
   createMfaRecoveryCodes,
   extendStaffSession,
   removeMfaFactor,
+  revokeAlarmDevice,
   revokeDeviceSession,
   startMfaEnrollment,
   submitMfaRecoveryCode,
@@ -17,6 +18,7 @@ import {
   currentAuthQuery,
   mfaFactorsQuery,
   mfaRecoveryStatusQuery,
+  pushDevicesQuery,
   securitySessionsQuery,
   staffAuthKeys,
 } from "./queries";
@@ -82,6 +84,24 @@ export function useDeleteMfaFactor() {
     mutationFn: (factorId: string) => removeMfaFactor(factorId),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: staffAuthKeys.all }),
+  });
+}
+
+export function usePushDevices() {
+  return useQuery(pushDevicesQuery());
+}
+
+/** Revokes one alarm phone; the list refreshes so the phone disappears. */
+export function useRevokePushDevice() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => revokeAlarmDevice(id),
+    // Not awaited: the dialog closes now and the list refreshes behind it.
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: staffAuthKeys.pushDevices(),
+      });
+    },
   });
 }
 

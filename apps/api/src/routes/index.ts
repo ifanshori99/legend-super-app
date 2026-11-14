@@ -160,6 +160,7 @@ import { memberRouter } from "./member.routes.ts";
 import { loyaltyProgramRouter } from "./loyalty-program.routes.ts";
 import { customersRouter } from "./customers.routes.ts"; // legend-ts50
 import { identityWaUnlinkRouter } from "./identity-wa-unlink.routes.ts"; // legend-7wzy
+import { identityPushDevicesRouter } from "./identity-push-devices.routes.ts"; // legend-gchkf
 import { segmentsRouter } from "./segments.routes.ts"; // legend-ts50
 import { feedbackRouter } from "./feedback.routes.ts"; // legend-ts50
 import { memberFeedbackRouter } from "./member-feedback.routes.ts"; // legend-ts50
@@ -373,6 +374,7 @@ apiRouter.use("/member", memberFeedbackRouter); // legend-ts50
 apiRouter.use(loyaltyProgramRouter);
 apiRouter.use(customersRouter); // legend-ts50
 apiRouter.use(identityWaUnlinkRouter); // legend-7wzy
+apiRouter.use("/identity/push-devices", identityPushDevicesRouter); // legend-gchkf
 apiRouter.use(segmentsRouter); // legend-ts50
 apiRouter.use(feedbackRouter); // legend-ts50
 apiRouter.use(loyaltyRewardsRouter); // legend-m4p5

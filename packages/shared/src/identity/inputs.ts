@@ -18,6 +18,7 @@ import {
   roleIdSchema,
   upsertApprovalPolicySchema,
 } from "../access/index.ts";
+import { pushSubscriptionIdSchema } from "../notification/schemas.ts";
 import {
   approvalRequestIdSchema,
   loginChallengeIdSchema,
@@ -192,6 +193,11 @@ export type MfaRecoveryVerifyInput = z.infer<typeof mfaRecoveryVerifySchema>;
 
 export const sessionParamsSchema = z.strictObject({
   sessionId: sessionIdSchema,
+});
+
+/** legend-gchkf: the push subscription id of a registered alarm device. */
+export const pushDeviceParamsSchema = z.strictObject({
+  id: pushSubscriptionIdSchema,
 });
 
 // -------------------------------------------------------------- staff pins

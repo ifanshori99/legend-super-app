@@ -46,6 +46,7 @@ import {
   mfaFactorParamsSchema,
   mfaRecoveryVerifySchema,
   mfaVerifySchema,
+  pushDeviceParamsSchema,
   replaceApprovalMatrixSchema,
   roleAssignmentParamsSchema,
   roleParamsSchema,
@@ -76,6 +77,7 @@ import {
   mfaRecoveryStatusSchema,
   mfaRecoveryVerificationResultSchema,
   mfaVerificationResultSchema,
+  pushDeviceSchema,
   sessionViewSchema,
   staffPinSwitchSchema,
 } from "./schemas.ts";
@@ -267,6 +269,23 @@ export const revokeSession = defineEndpoint({
   method: "DELETE",
   path: "/api/auth/sessions/:sessionId",
   params: sessionParamsSchema,
+});
+
+/**
+ * legend-gchkf: the owner's registered panic-alarm devices, including ones
+ * whose login session already expired. Own devices only.
+ */
+export const listPushDevices = defineEndpoint({
+  method: "GET",
+  path: "/api/identity/push-devices",
+  response: dataResponseSchema(z.array(pushDeviceSchema)),
+});
+
+/** Stop alarms to one registered device (its push subscription is deleted). */
+export const revokePushDevice = defineEndpoint({
+  method: "DELETE",
+  path: "/api/identity/push-devices/:id",
+  params: pushDeviceParamsSchema,
 });
 
 // -------------------------------------------------------------- staff pins

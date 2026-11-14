@@ -27,12 +27,15 @@ import {
   generateMfaRecoveryCodes,
   getMfaRecoveryStatus,
   listMfaFactors,
+  listPushDevices,
   listSessions,
   MANAGEMENT_IDLE_MINUTES,
   mfaFactorIdSchema,
   mfaFactorSchema,
   MINUTE_MS,
+  pushDeviceSchema,
   recordSessionActivity,
+  revokePushDevice,
   revokeSession,
   sessionSchema,
   sessionViewSchema,
@@ -41,6 +44,7 @@ import {
   MFA_RECOVERY_CODE_COUNT,
   type MfaEnrollment,
   type MfaFactor,
+  type PushDevice,
   type Session,
   type SessionView,
 } from "@starter/shared/identity";
@@ -71,6 +75,7 @@ type AuthMockState = {
   recovery: RecoveryDemo;
   factors: MfaFactor[];
   sessions: SessionView[];
+  pushDevices: PushDevice[];
   pending: Map<string, PendingFactor>;
   idle: IdleDemo | null;
 };
@@ -116,6 +121,26 @@ function seedSessions(): SessionView[] {
   ];
 }
 
+/** One live phone and one whose session already ended (still gets alarms). */
+function seedPushDevices(): PushDevice[] {
+  return [
+    pushDeviceSchema.parse({
+      id: "6f0c2a1e-5b7d-4c3a-9e11-2d4f8a6b0c01",
+      deviceLabel: "Chrome di iPhone",
+      registeredAt: at(-2 * 24 * 60 * MINUTE_MS),
+      sessionActive: true,
+      current: true,
+    }),
+    pushDeviceSchema.parse({
+      id: "6f0c2a1e-5b7d-4c3a-9e11-2d4f8a6b0c02",
+      deviceLabel: null,
+      registeredAt: at(-20 * 24 * 60 * MINUTE_MS),
+      sessionActive: false,
+      current: false,
+    }),
+  ];
+}
+
 /** The mockup's sample set; the owner's seeded factor already has one. */
 const SEED_RECOVERY_CODES = [
   "ABCDE-FGHJK",
@@ -154,6 +179,7 @@ const seed = (): AuthMockState => ({
     (row) => row.userId === cafeLegendIdentityFixtures.usersByKey.owner.id,
   ),
   sessions: seedSessions(),
+  pushDevices: seedPushDevices(),
   pending: new Map(),
   idle: null,
 });
@@ -368,6 +394,19 @@ registerMock(revokeSession, ({ params }) => {
     throw new ApiError(404, "NOT_FOUND", "Sesi tidak ditemukan.");
   auth.sessions = auth.sessions.filter(
     (view) => view.session.id !== params.sessionId,
+  );
+});
+
+registerMock(listPushDevices, ({ scenario }) => ({
+  data: scenario === "empty" ? [] : state.get().pushDevices,
+}));
+
+registerMock(revokePushDevice, ({ params }) => {
+  const auth = state.get();
+  if (!auth.pushDevices.some((device) => device.id === params.id))
+    throw new ApiError(404, "NOT_FOUND", "Perangkat tidak ditemukan.");
+  auth.pushDevices = auth.pushDevices.filter(
+    (device) => device.id !== params.id,
   );
 });
 
