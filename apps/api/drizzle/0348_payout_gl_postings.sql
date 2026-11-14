@@ -27,7 +27,12 @@ ALTER TABLE "payroll_disbursement_items" ADD COLUMN "returned_by_2" text;--> sta
 ALTER TABLE "payroll_disbursement_items" ADD COLUMN "return_evidence_key" varchar(500);--> statement-breakpoint
 ALTER TABLE "payroll_disbursement_items" ADD COLUMN "return_note" varchar(500);--> statement-breakpoint
 CREATE INDEX "payroll_payout_gl_postings_tenant_batch_idx" ON "payroll_payout_gl_postings" USING btree ("tenant_id","batch_id");--> statement-breakpoint
+-- Validating the new FK scans the existing items rows through the RLS policy,
+-- which needs a tenant context a migration owner without BYPASSRLS does not have.
+-- FORCE RLS is lifted for this one statement and restored, as in 0155 and 0335.
+ALTER TABLE "payroll_disbursement_items" NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "payroll_disbursement_items" ADD CONSTRAINT "payroll_disbursement_items_gl_posting_fk" FOREIGN KEY ("tenant_id","batch_id","gl_posting_id") REFERENCES "public"."payroll_payout_gl_postings"("tenant_id","batch_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payroll_disbursement_items" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "payroll_disbursement_items" ADD CONSTRAINT "payroll_disbursement_items_returners_check" CHECK (("payroll_disbursement_items"."returned_by" IS NULL AND "payroll_disbursement_items"."returned_by_2" IS NULL AND "payroll_disbursement_items"."return_evidence_key" IS NULL AND "payroll_disbursement_items"."return_note" IS NULL) OR ("payroll_disbursement_items"."status" IN ('succeeded', 'returned') AND "payroll_disbursement_items"."returned_by" IS NOT NULL AND "payroll_disbursement_items"."return_evidence_key" IS NOT NULL AND "payroll_disbursement_items"."return_note" IS NOT NULL AND ("payroll_disbursement_items"."returned_by_2" IS NULL OR "payroll_disbursement_items"."returned_by_2" <> "payroll_disbursement_items"."returned_by")));--> statement-breakpoint
 ALTER TABLE "payroll_disbursement_items" ADD CONSTRAINT "payroll_disbursement_items_returned_check" CHECK ("payroll_disbursement_items"."status" <> 'returned' OR "payroll_disbursement_items"."returned_by" IS NULL OR "payroll_disbursement_items"."returned_by_2" IS NOT NULL);--> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.payroll_payout_gl_postings'::regclass);

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
@@ -225,9 +225,15 @@ describe("outbox consumers", () => {
       reason: "Provider outage resolved",
       authorize: allow,
     });
-    expect(
-      await relayOutbox(database, context(tenant), enqueue, requestMissing),
-    ).toBe(1);
+    // A sweep that finds the row not yet claimable claims nothing and enqueues
+    // nothing, so waiting for the claim (not a fixed count of tries) is safe.
+    await vi.waitFor(
+      async () =>
+        expect(
+          await relayOutbox(database, context(tenant), enqueue, requestMissing),
+        ).toBe(1),
+      { timeout: 5000, interval: 100 },
+    );
     expect(sent.at(-1)).toMatchObject({ outboxId: first.id, generation: 1 });
     expect(
       await consumeOutbox(database, context(tenant), {
@@ -237,9 +243,13 @@ describe("outbox consumers", () => {
         deliver: noop,
       }),
     ).toBe(true);
-    expect(
-      await relayOutbox(database, context(tenant), enqueue, requestMissing),
-    ).toBe(1);
+    await vi.waitFor(
+      async () =>
+        expect(
+          await relayOutbox(database, context(tenant), enqueue, requestMissing),
+        ).toBe(1),
+      { timeout: 5000, interval: 100 },
+    );
     expect(sent.at(-1)).toMatchObject({ outboxId: second.id, generation: 0 });
   });
 

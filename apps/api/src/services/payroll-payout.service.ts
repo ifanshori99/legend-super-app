@@ -22,6 +22,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray } from "drizzle-orm";
+import { maskAccountNumber } from "@starter/shared/accounting";
 import {
   createUlid,
   idr,
@@ -67,7 +68,11 @@ import {
 } from "../lib/payroll-sealed.ts";
 import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./hris-access.ts";
-import { assertManualPayoutSetup } from "./payroll-payout-setup.ts";
+import { openPayeeBankSnapshot } from "./payroll-bank-snapshot.service.ts";
+import {
+  assertManualPayoutSetup,
+  configuredSourceBankAccountId,
+} from "./payroll-payout-setup.ts";
 
 export type PayoutActor = { tenantId: string; userId: string };
 export type BatchRow = typeof payrollDisbursementBatches.$inferSelect;
@@ -507,7 +512,7 @@ export async function assertManualConfigEnabled(
 
 const iso = (value: Date | null) => (value ? value.toISOString() : null);
 
-function toItemDto(row: ItemRow): PayrollDisbursementItemDto {
+export function toItemDto(row: ItemRow): PayrollDisbursementItemDto {
   return {
     id: row.id,
     batchId: row.batchId,
@@ -521,6 +526,8 @@ function toItemDto(row: ItemRow): PayrollDisbursementItemDto {
     amountIdr: openItemAmount(row),
     feeIdr: openItemFee(row),
     bankCode: row.bankCode,
+    accountHolderName: row.accountHolderName,
+    maskedAccountNumber: row.maskedAccountNumber,
     nameMatch: row.nameMatch === null ? null : row.nameMatch === "exact",
     providerRef: row.providerRef,
     confirmedBy: row.confirmedBy,
@@ -531,7 +538,7 @@ function toItemDto(row: ItemRow): PayrollDisbursementItemDto {
   };
 }
 
-function toBatchDto(
+export function toBatchDto(
   row: BatchRow,
   items: readonly ItemRow[],
 ): PayrollDisbursementBatchDto {
@@ -677,6 +684,8 @@ type PlannedItem = {
   excludedReason: "bank_code_missing" | "bank_format_unsupported" | null;
   bankSnapshotId: string | null;
   bankCode: string | null;
+  accountHolderName: string | null;
+  maskedAccountNumber: string | null;
 };
 
 /**
@@ -861,13 +870,25 @@ export async function createDisbursementBatch(
     );
   });
 
-  const snapshots = new Map<string, { id: string; bankCode: string | null }>();
+  const snapshots = new Map<
+    string,
+    {
+      id: string;
+      tenantId: string;
+      bankCode: string | null;
+      snapshotEncrypted: Buffer;
+      piiKeyVersion: number;
+    }
+  >();
   if (channel === "manual_bank" && open.length > 0) {
     const rows = await tx
       .select({
         id: payslipBankSnapshots.id,
+        tenantId: payslipBankSnapshots.tenantId,
         payslipId: payslipBankSnapshots.payslipId,
         bankCode: payslipBankSnapshots.bankCode,
+        snapshotEncrypted: payslipBankSnapshots.snapshotEncrypted,
+        piiKeyVersion: payslipBankSnapshots.piiKeyVersion,
       })
       .from(payslipBankSnapshots)
       .where(
@@ -902,6 +923,8 @@ export async function createDisbursementBatch(
         excludedReason: null,
         bankSnapshotId: null,
         bankCode: null,
+        accountHolderName: null,
+        maskedAccountNumber: null,
       });
       continue;
     }
@@ -920,12 +943,32 @@ export async function createDisbursementBatch(
         : !formatSupportsBank(config!.manualBankFormat, bankCode)
           ? "bank_format_unsupported"
           : null;
+    // Display copy of the payee: the holder name and the last four digits only.
+    // An account number that is not all digits (letters allowed by the HRIS
+    // normaliser) cannot be masked; the item then carries no masked number.
+    // A snapshot that cannot be opened (wrong key, tamper, malformed body)
+    // refuses the batch; the cause is never echoed.
+    let payee: ReturnType<typeof openPayeeBankSnapshot>;
+    try {
+      payee = openPayeeBankSnapshot(snapshot);
+    } catch {
+      throw payoutRefuse(
+        422,
+        "PAYROLL_BANK_ACCOUNT_UNREADABLE",
+        "Data rekening slip gaji tidak bisa dibaca, batch tidak bisa dibuat.",
+      );
+    }
+    const maskedAccountNumber = /^\d{4,}$/.test(payee.accountNumber)
+      ? maskAccountNumber(payee.accountNumber)
+      : null;
     planned.push({
       ...base,
       status: excludedReason ? "blocked" : "prepared",
       excludedReason,
       bankSnapshotId: snapshot.id,
       bankCode,
+      accountHolderName: payee.accountHolder,
+      maskedAccountNumber,
     });
   }
   if (planned.length === 0)
@@ -976,6 +1019,8 @@ export async function createDisbursementBatch(
       piiKeyVersion: PAYROLL_SEAL_KEY_VERSION,
       bankSnapshotId: item.bankSnapshotId,
       bankCode: item.bankCode,
+      accountHolderName: item.accountHolderName,
+      maskedAccountNumber: item.maskedAccountNumber,
       status: item.status,
       excludedReason: item.excludedReason,
     })),
@@ -1150,11 +1195,18 @@ export async function approveDisbursementBatch(
       "PAYOUT_SELF_APPROVAL",
       "Pembuat batch tidak boleh menyetujui batchnya sendiri.",
     );
+  // The bank account this batch pays from, frozen with the approval (legend-hkh57).
+  let sourceBankAccountId: string | null = null;
   if (batch.channel === "manual_bank") {
     await assertManualConfigEnabled(tx, tenantId, batch.legalEntityId);
     // Fail closed (legend-8codi): no approval while the fee or the source
     // account cannot be journaled.
     await assertManualPayoutSetup(tx, asTenant(tenantId), batch.legalEntityId);
+    sourceBankAccountId = await configuredSourceBankAccountId(
+      tx,
+      asTenant(tenantId),
+      batch.legalEntityId,
+    );
   }
 
   // The approver must have seen exactly what is stored, and what is stored
@@ -1182,6 +1234,7 @@ export async function approveDisbursementBatch(
       approvedBy: asUser(actor.userId),
       approvedAt: now,
       approvalExpiresAt: expires,
+      sourceBankAccountId,
       updatedAt: now,
     })
     .where(

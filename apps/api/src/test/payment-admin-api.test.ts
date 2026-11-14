@@ -45,7 +45,7 @@ async function signedIn(scope: "tenant" | "outlet") {
   );
   await owner.query(
     `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
-     VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute', $2)`,
+     VALUES ($1, $2, $3, $4, $5, now() - interval '1 hour', $2)`,
     [
       tenantId,
       userId,

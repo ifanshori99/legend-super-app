@@ -745,7 +745,7 @@ export function installPayoutWorld(label: string) {
         );
       });
     } catch {
-      // role key not allowed before migration 0534
+      // role key not allowed before migration 0348
     }
 
     await asTenant(async (c) => {

@@ -9,12 +9,14 @@
 // both can use it without an import cycle. Reads only; nothing here logs an
 // amount or an account number.
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, notExists, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { TenantId } from "@starter/shared/core";
 import { isModuleEnabled } from "@starter/shared/platform";
 import { bankAccounts } from "../db/schema/accounting-cash-bank.ts";
 import {
   accountMappings,
+  chartOfAccounts,
   journalEntries,
   journalLines,
   tenants,
@@ -22,6 +24,8 @@ import {
 import { payrollPayoutConfigs } from "../db/schema/payroll-payout.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./hris-access.ts";
+
+const childAccounts = alias(chartOfAccounts, "payout_child_accounts");
 
 export async function accountingEnabled(
   tx: Tx,
@@ -35,6 +39,12 @@ export async function accountingEnabled(
   return isModuleEnabled(row?.featureFlags ?? null, "accounting");
 }
 
+/**
+ * The `bank_charges` mapping is ready only while the mapped GL account exists
+ * in the same tenant and legal entity, is active and is postable (no child
+ * accounts, so not a header). Approve, export, fee re-post and overpaid all
+ * refuse on `false`; settle defers the fee (`fee_posted = false`) instead.
+ */
 export async function bankChargesMapped(
   tx: Tx,
   tenantId: TenantId,
@@ -43,11 +53,69 @@ export async function bankChargesMapped(
   const [row] = await tx
     .select({ accountId: accountMappings.accountId })
     .from(accountMappings)
+    .innerJoin(
+      chartOfAccounts,
+      and(
+        eq(chartOfAccounts.tenantId, accountMappings.tenantId),
+        eq(chartOfAccounts.id, accountMappings.accountId),
+      ),
+    )
     .where(
       and(
         eq(accountMappings.tenantId, tenantId),
         eq(accountMappings.legalEntityId, legalEntityId),
         eq(accountMappings.role, "bank_charges"),
+        eq(chartOfAccounts.legalEntityId, legalEntityId),
+        eq(chartOfAccounts.isActive, true),
+        notExists(
+          tx
+            .select({ one: sql`1` })
+            .from(childAccounts)
+            .where(
+              and(
+                eq(childAccounts.tenantId, tenantId),
+                eq(childAccounts.parentId, chartOfAccounts.id),
+              ),
+            ),
+        ),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
+ * The GL account exists in the same tenant and legal entity, is active and is
+ * postable (no child accounts, so not a header). The source bank account only
+ * counts as usable while its GL account is too: a journal that credits an
+ * inactive or header account would fail late, after the money has moved.
+ */
+async function glAccountPostable(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+  glAccountId: string,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: chartOfAccounts.id })
+    .from(chartOfAccounts)
+    .where(
+      and(
+        eq(chartOfAccounts.tenantId, tenantId),
+        eq(chartOfAccounts.legalEntityId, legalEntityId),
+        eq(chartOfAccounts.id, glAccountId),
+        eq(chartOfAccounts.isActive, true),
+        notExists(
+          tx
+            .select({ one: sql`1` })
+            .from(childAccounts)
+            .where(
+              and(
+                eq(childAccounts.tenantId, tenantId),
+                eq(childAccounts.parentId, chartOfAccounts.id),
+              ),
+            ),
+        ),
       ),
     )
     .limit(1);
@@ -112,7 +180,11 @@ export async function activeSourceGlAccount(
     )
     .limit(1)
     .for("share", { of: bankAccounts });
-  if (row) return row.glAccountId;
+  if (
+    row &&
+    (await glAccountPostable(tx, tenantId, legalEntityId, row.glAccountId))
+  )
+    return row.glAccountId;
   if (options.optional) return null;
   throw new HttpError(
     409,
@@ -153,6 +225,64 @@ export async function assertActiveBankGlAccount(
     PAYOUT_SOURCE_ACCOUNT_MISSING.code,
     PAYOUT_SOURCE_ACCOUNT_MISSING.message,
   );
+}
+
+/**
+ * The GL account of the bank account frozen on a batch (bead legend-hkh57), and
+ * only while that bank account is active in the same tenant and legal entity.
+ * It never falls back to the config: an old batch keeps its own account.
+ * 409 `PAYOUT_SOURCE_ACCOUNT_MISSING` otherwise; `optional` answers null.
+ */
+export async function frozenSourceGlAccount(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+  bankAccountId: string,
+  options: { optional?: boolean } = {},
+): Promise<string | null> {
+  const [row] = await tx
+    .select({ glAccountId: bankAccounts.glAccountId })
+    .from(bankAccounts)
+    .where(
+      and(
+        eq(bankAccounts.tenantId, tenantId),
+        eq(bankAccounts.legalEntityId, legalEntityId),
+        eq(bankAccounts.id, bankAccountId),
+        eq(bankAccounts.isActive, true),
+      ),
+    )
+    .limit(1)
+    .for("share", { of: bankAccounts });
+  if (
+    row &&
+    (await glAccountPostable(tx, tenantId, legalEntityId, row.glAccountId))
+  )
+    return row.glAccountId;
+  if (options.optional) return null;
+  throw new HttpError(
+    409,
+    PAYOUT_SOURCE_ACCOUNT_MISSING.code,
+    PAYOUT_SOURCE_ACCOUNT_MISSING.message,
+  );
+}
+
+/** The configured source bank account id of a legal entity (null: no config). */
+export async function configuredSourceBankAccountId(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<string | null> {
+  const [row] = await tx
+    .select({ id: payrollPayoutConfigs.manualSourceBankAccountId })
+    .from(payrollPayoutConfigs)
+    .where(
+      and(
+        eq(payrollPayoutConfigs.tenantId, tenantId),
+        eq(payrollPayoutConfigs.legalEntityId, legalEntityId),
+      ),
+    )
+    .limit(1);
+  return row?.id ?? null;
 }
 
 /** The configured source bank account exists and is active. */

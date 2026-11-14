@@ -67,7 +67,12 @@ import {
   assertEvidenceKeyForBatch,
   assertOptionalEvidenceKeyForBatch,
 } from "./payroll-payout-evidence.ts";
-import { assertManualPayoutSetup } from "./payroll-payout-setup.ts";
+import {
+  accountingEnabled,
+  assertManualPayoutSetup,
+  configuredSourceBankAccountId,
+  frozenSourceGlAccount,
+} from "./payroll-payout-setup.ts";
 import {
   computeBatchContentHash,
   loadBatchRunFirst,
@@ -198,6 +203,22 @@ export async function exportManualBatch(
   // Fail closed (legend-8codi): the one download is not spent while the fee or
   // the source account cannot be journaled.
   await assertManualPayoutSetup(tx, tenantId, batch.legalEntityId);
+  // The account frozen at approve must still be usable (legend-hkh57); a batch
+  // approved before the freeze existed is frozen now, with the config account.
+  let sourceBankAccountId = batch.sourceBankAccountId;
+  if (sourceBankAccountId === null)
+    sourceBankAccountId = await configuredSourceBankAccountId(
+      tx,
+      tenantId,
+      batch.legalEntityId,
+    );
+  else if (await accountingEnabled(tx, tenantId))
+    await frozenSourceGlAccount(
+      tx,
+      tenantId,
+      batch.legalEntityId,
+      sourceBankAccountId,
+    );
 
   const [run] = await tx
     .select({
@@ -345,6 +366,7 @@ export async function exportManualBatch(
       exportedBy: actor.userId as UserId,
       exportedAt: now,
       exportChecksumSha256: checksumSha256,
+      sourceBankAccountId,
       updatedAt: now,
     })
     .where(

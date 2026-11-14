@@ -82,8 +82,6 @@ deploy order and this is reported).
   `edge_order_ingests`). Until then refusing is the safe rule: no double order, no
   double revenue. Design: section "Adopt order QR (legend-dy7pc)" below.
 
-## Table `edge_order_ingests` (migration 0522)
-
 ## Table `edge_order_ingests` (migration 0347)
 
 PK `(tenant_id, order_id uuid)`. Columns: `outlet_id`, `paid_event_id`, `state`
@@ -227,7 +225,7 @@ Known limitations (open decision for the CTO):
 
 ## Adopt order QR (legend-dy7pc)
 
-Status: design, not implemented. Migrations 0540-0541 (0538/0539 are taken by
+Status: design, not implemented. Migrations 0540-0541 (0352/0353 are taken by
 other threads). Money rule: never two sales, never two payments kept, nothing
 paid out automatically.
 

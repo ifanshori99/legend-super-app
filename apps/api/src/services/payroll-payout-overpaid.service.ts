@@ -22,7 +22,7 @@
 //   call finds an item that is no longer `failed` and is refused. The journal
 //   key and the unique `journal_key` of the posting are the second and third
 //   guard. The database allows `failed -> overpaid` only while this code has
-//   set `app.payout_overpaid` for its transaction (migration 0543).
+//   set `app.payout_overpaid` for its transaction (migration 0351).
 
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, ne, sql } from "drizzle-orm";
@@ -42,8 +42,10 @@ import { payrollEntryDateOf, payrollGlKeys } from "./payroll-gl-consumer.ts";
 import { assertEvidenceKeyForBatch } from "./payroll-payout-evidence.ts";
 import {
   PAYOUT_BANK_CHARGES_MAPPING_MISSING,
+  PAYOUT_SOURCE_ACCOUNT_MISSING,
   accountingEnabled,
   activeSourceGlAccount,
+  frozenSourceGlAccount,
   assertActiveBankGlAccount,
   bankChargesMapped,
   settledSourceAccount,
@@ -195,36 +197,50 @@ export async function recordOverpaidItem(
   const feeOnly =
     !locked && safeFee(item) > 0 && (await accountingEnabled(tx, tenantId));
   if (locked || feeOnly) {
-    // Credit the account the settle journal of this batch used; the config is
-    // only the fallback when the batch has no settle journal.
-    const [settled] = await tx
-      .select({ journalKey: payrollPayoutGlPostings.journalKey })
-      .from(payrollPayoutGlPostings)
-      .where(
-        and(
-          eq(payrollPayoutGlPostings.tenantId, tenantId),
-          eq(payrollPayoutGlPostings.batchId, batch.id),
-          eq(payrollPayoutGlPostings.kind, "settle"),
-        ),
-      )
-      .orderBy(payrollPayoutGlPostings.postedAt)
-      .limit(1);
-    // The configured account must be active. A settled account is not the
-    // config, so it is checked on its own: a batch settled from an account
-    // since replaced and deactivated refuses the report (409).
-    const configuredAccountId = await activeSourceGlAccount(
-      tx,
-      tenantId,
-      batch.legalEntityId,
-    );
-    const sourceAccountId = settled
-      ? await settledSourceAccount(
-          tx,
-          tenantId,
-          batch.legalEntityId,
-          settled.journalKey,
+    // Credit the account frozen on this batch (legend-hkh57), never the config
+    // of today. A batch from before the freeze falls back to the account its
+    // settle journal used; without one it is refused.
+    let sourceAccountId: string;
+    if (batch.sourceBankAccountId !== null) {
+      sourceAccountId = (await frozenSourceGlAccount(
+        tx,
+        tenantId,
+        batch.legalEntityId,
+        batch.sourceBankAccountId,
+      ))!;
+    } else {
+      const [settled] = await tx
+        .select({ journalKey: payrollPayoutGlPostings.journalKey })
+        .from(payrollPayoutGlPostings)
+        .where(
+          and(
+            eq(payrollPayoutGlPostings.tenantId, tenantId),
+            eq(payrollPayoutGlPostings.batchId, batch.id),
+            eq(payrollPayoutGlPostings.kind, "settle"),
+          ),
         )
-      : configuredAccountId;
+        .orderBy(payrollPayoutGlPostings.postedAt)
+        .limit(1);
+      // No frozen account and no settle journal to copy it from: the batch is
+      // from before the freeze and finished. Today's config is not its
+      // account, so the most restrictive rule applies: refuse (409).
+      if (!settled)
+        throw payoutRefuse(
+          409,
+          PAYOUT_SOURCE_ACCOUNT_MISSING.code,
+          PAYOUT_SOURCE_ACCOUNT_MISSING.message,
+        );
+      // The configured account must be active. A settled account is not the
+      // config, so it is checked on its own: a batch settled from an account
+      // since replaced and deactivated refuses the report (409).
+      await activeSourceGlAccount(tx, tenantId, batch.legalEntityId);
+      sourceAccountId = await settledSourceAccount(
+        tx,
+        tenantId,
+        batch.legalEntityId,
+        settled.journalKey,
+      );
+    }
     await assertActiveBankGlAccount(
       tx,
       tenantId,

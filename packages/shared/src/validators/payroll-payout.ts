@@ -3,6 +3,8 @@
 // Design: docs/design/payroll-disbursement.md. There is no `doit` channel.
 import { z } from "zod";
 
+import { cursorPageQuerySchema } from "../core/pagination.ts";
+
 export const PAYOUT_METHODS = ["duitku", "manual_bank"] as const;
 export type PayoutMethod = (typeof PAYOUT_METHODS)[number];
 
@@ -194,6 +196,34 @@ export const confirmCashHandoverInputSchema = z
     path: ["itemIds"],
     message: "Each item may appear once.",
   });
+
+// Batch list across runs (legend-396pf): newest first, cursor paged, optional
+// legal entity and status filters. Tenant comes from the session.
+export const PAYOUT_BATCH_LIST_LIMIT_MAX = 20;
+export const listPayoutBatchesQuerySchema = cursorPageQuerySchema.extend({
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(PAYOUT_BATCH_LIST_LIMIT_MAX)
+    .default(PAYOUT_BATCH_LIST_LIMIT_MAX),
+  legalEntityId: z.uuid().optional(),
+  status: z.enum(PAYOUT_BATCH_STATUSES).optional(),
+});
+export type ListPayoutBatchesQuery = z.infer<
+  typeof listPayoutBatchesQuerySchema
+>;
+
+// Evidence upload for resolve and return (legend-zoqh1): one multipart `file`
+// part. The API sniffs the bytes; the declared type is not trusted.
+export const PAYOUT_EVIDENCE_CONTENT_TYPES = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+] as const;
+export type PayoutEvidenceContentType =
+  (typeof PAYOUT_EVIDENCE_CONTENT_TYPES)[number];
+export const PAYOUT_EVIDENCE_MAX_BYTES = 5 * 1024 * 1024;
 
 export type UpsertPayoutConfigInput = z.infer<
   typeof upsertPayoutConfigInputSchema

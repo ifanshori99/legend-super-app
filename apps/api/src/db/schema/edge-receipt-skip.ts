@@ -7,7 +7,7 @@
 // accounted for, however many receipts are skipped. Append-only evidence.
 //
 // Tenant + outlet owned: the migration must call `app.enforce_tenant_rls(...)`
-// and then `app.enforce_outlet_rls(...)` for this table (0539).
+// and then `app.enforce_outlet_rls(...)` for this table (0353).
 import {
   index,
   pgTable,

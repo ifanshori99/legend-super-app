@@ -13,9 +13,10 @@ export const PAKET_PERMISSIONS = [
 export const KESEHATAN_PERMISSIONS = [
   "platform.health.view",
 ] as const satisfies readonly PermissionCode[];
-// No dedicated cross-tenant audit permission exists in the catalog; the audit
-// view is read-only platform data, so either platform read permission opens it.
+// The cross-tenant audit view has its own permission (platform.audit.view,
+// legend-bag1); the other platform read permissions also open it.
 export const AUDIT_PERMISSIONS = [
+  "platform.audit.view",
   "platform.health.view",
   "platform.tenant.manage",
 ] as const satisfies readonly PermissionCode[];

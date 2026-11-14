@@ -38,6 +38,10 @@ import {
   createPayrollExportRouter,
   PAYROLL_EXPORT_PATH,
 } from "./payroll-export.routes";
+import {
+  createPayrollPayoutEvidenceRouter,
+  PAYROLL_PAYOUT_EVIDENCE_PATH,
+} from "./payroll-payout-evidence.routes";
 import { createPublicSiteRouter } from "./public-site.routes";
 import { createQrRouter } from "./qr.routes";
 import { createShareholderDocumentsRouter } from "./shareholder-documents.routes";
@@ -171,6 +175,19 @@ export function createStorageApiRouter(options: {
   const payrollExport = createPayrollExportRouter({ runtime });
   router.use("/hris/payroll", (req, res, next) =>
     PAYROLL_EXPORT_PATH.test(req.path) ? payrollExport(req, res, next) : next(),
+  );
+
+  // Payout payment-proof upload (legend-zoqh1): the proof goes to the object
+  // storage after a malware scan. Only its own path enters; resolve and return
+  // stay in apiRouter.
+  const payoutEvidence = createPayrollPayoutEvidenceRouter({
+    storage: runtime?.storage ?? null,
+    scanner: runtime?.scanner,
+  });
+  router.use("/hris/payroll", (req, res, next) =>
+    PAYROLL_PAYOUT_EVIDENCE_PATH.test(req.path)
+      ? payoutEvidence(req, res, next)
+      : next(),
   );
 
   // Tax report export and download (legend-5nhkp) mint or read stored files.

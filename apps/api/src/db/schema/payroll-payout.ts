@@ -204,6 +204,12 @@ export const payrollDisbursementBatches = pgTable(
     piiKeyVersion: smallint("pii_key_version").notNull(),
     /** Format of the manual bank file (null for other channels). */
     bankFormat: varchar("bank_format", { length: 12 }),
+    /**
+     * The company bank account this batch pays from, frozen at approve (or at
+     * export for a batch approved before the column existed). A later change of
+     * the config never moves an old batch. Null: a legacy or cash batch.
+     */
+    sourceBankAccountId: uuid("source_bank_account_id"),
     exportChecksumSha256: varchar("export_checksum_sha256", { length: 64 }),
     exportedBy: actor("exported_by"),
     exportedAt: timestamp("exported_at", { withTimezone: true }),
@@ -251,6 +257,15 @@ export const payrollDisbursementBatches = pgTable(
       name: "payroll_disbursement_batches_run_fk",
       columns: [table.tenantId, table.payrollRunId],
       foreignColumns: [payrollRuns.tenantId, payrollRuns.id],
+    }),
+    foreignKey({
+      name: "payroll_disbursement_batches_source_account_fk",
+      columns: [table.tenantId, table.legalEntityId, table.sourceBankAccountId],
+      foreignColumns: [
+        bankAccounts.tenantId,
+        bankAccounts.legalEntityId,
+        bankAccounts.id,
+      ],
     }),
     check(
       "payroll_disbursement_batches_channel_check",
@@ -446,6 +461,15 @@ export const payrollDisbursementItems = pgTable(
     feeIdrEncrypted: bytea("fee_idr_encrypted").notNull(),
     /** Frozen payee bank data; the account number is not copied. Null: cash. */
     bankSnapshotId: uuid("bank_snapshot_id"),
+    /**
+     * Payee name and masked account number (`****1234`) copied from the
+     * snapshot when the item is created, so a batch view can show who is paid
+     * without opening the sealed snapshot. The full number is never stored here.
+     * Null: cash, and items from before these columns existed. Frozen by a
+     * trigger after insert.
+     */
+    accountHolderName: varchar("account_holder_name", { length: 150 }),
+    maskedAccountNumber: varchar("masked_account_number", { length: 20 }),
     /** BI bank code (3 digits, not secret), copied from the snapshot. */
     bankCode: varchar("bank_code", { length: 3 }),
     inquiryAccountNameEncrypted: bytea("inquiry_account_name_encrypted"),
@@ -594,6 +618,11 @@ export const payrollDisbursementItems = pgTable(
     check(
       "payroll_disbursement_items_key_version_check",
       sql`${table.piiKeyVersion} >= 1`,
+    ),
+    // Cash carries neither field; a masked number is exactly `maskAccountNumber`.
+    check(
+      "payroll_disbursement_items_payee_display_check",
+      sql`(${table.channel} = 'cash' AND ${table.accountHolderName} IS NULL AND ${table.maskedAccountNumber} IS NULL) OR (${table.channel} <> 'cash' AND (${table.maskedAccountNumber} IS NULL OR ${table.maskedAccountNumber} ~ '^\\*{4}[0-9]{4}$'))`,
     ),
     check(
       "payroll_disbursement_items_bank_code_check",

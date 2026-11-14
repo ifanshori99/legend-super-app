@@ -65,11 +65,13 @@ import {
 } from "./payroll-payout.service.ts";
 import {
   PAYOUT_BANK_CHARGES_MAPPING_MISSING,
+  PAYOUT_SOURCE_ACCOUNT_MISSING,
   accountingEnabled,
   assertActiveBankGlAccount,
   activeSourceGlAccount,
   assertManualPayoutSetup,
   bankChargesMapped,
+  frozenSourceGlAccount,
   settledSourceAccount,
 } from "./payroll-payout-setup.ts";
 
@@ -113,10 +115,30 @@ function safeAmount(read: () => number): number {
 async function sourceBankOverride(
   tx: Tx,
   tenantId: TenantId,
-  batch: Pick<BatchRow, "channel" | "legalEntityId">,
-  options: { optional?: boolean } = {},
+  batch: Pick<BatchRow, "channel" | "legalEntityId" | "sourceBankAccountId">,
+  options: { optional?: boolean; requireFrozen?: boolean } = {},
 ): Promise<Partial<Record<"bank", string>> | undefined | null> {
   if (batch.channel === "cash") return undefined;
+  // A batch with a frozen account keeps it, whatever the config says now
+  // (legend-hkh57); only a legacy batch without one follows the config.
+  if (batch.sourceBankAccountId !== null) {
+    const frozen = await frozenSourceGlAccount(
+      tx,
+      tenantId,
+      batch.legalEntityId,
+      batch.sourceBankAccountId,
+      options.optional ? { optional: true } : undefined,
+    );
+    return frozen === null ? null : { bank: frozen };
+  }
+  // A late posting (fee re-post) of a batch with no frozen account never
+  // follows today's config: the most restrictive rule is to refuse.
+  if (options.requireFrozen)
+    throw payoutRefuse(
+      409,
+      PAYOUT_SOURCE_ACCOUNT_MISSING.code,
+      PAYOUT_SOURCE_ACCOUNT_MISSING.message,
+    );
   // `optional`: the caller can go on without the account (answered with null).
   const glAccountId = await activeSourceGlAccount(
     tx,
@@ -190,6 +212,13 @@ export async function settleBatchPayouts(
   const journaled =
     netIdr > 0 && (await runHasLockedJournal(tx, tenantId, batch.payrollRunId));
   const kind: PayoutPostingKind = journaled ? "settle" : "settle_skipped";
+
+  // Fail closed on the source account BEFORE the journal branch (legend-ijhe3):
+  // with accounting on, an unusable source is refused whether or not the run
+  // has a locked journal, so it is never turned into `settle_skipped`. Nothing
+  // is recorded; the confirmation can be sent again once the account is active.
+  if (!journaled && (await accountingEnabled(tx, tenantId)))
+    await sourceBankOverride(tx, tenantId, batch);
 
   // The fee is real money the PT paid, whether or not the salary journal
   // applies. A fee whose bank charges mapping or source account is missing is
@@ -524,7 +553,9 @@ export async function repostSkippedFees(
         accountOverrides = { bank: settledBank };
       } else
         accountOverrides =
-          (await sourceBankOverride(tx, tenantId, batch)) ?? undefined;
+          (await sourceBankOverride(tx, tenantId, batch, {
+            requireFrozen: true,
+          })) ?? undefined;
       await postJournalFromRuleInTransaction(
         tx,
         context,

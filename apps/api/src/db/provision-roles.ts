@@ -87,24 +87,13 @@ const SENSITIVE_TABLES = [
   "pg_statistic_ext_data",
   "pg_largeobject",
 ];
-const SENSITIVE_FUNCTIONS = [
-  "pg_read_file",
-  "pg_read_binary_file",
-  "pg_ls_dir",
-  "pg_stat_file",
-  "pg_ls_logdir",
-  "pg_ls_waldir",
-  "pg_ls_tmpdir",
-  "pg_ls_archive_statusdir",
-  "pg_ls_logicalsnapdir",
-  "pg_ls_logicalmapdir",
-  "pg_ls_replslotdir",
-  "lo_import",
-  "lo_export",
-  "pg_reload_conf",
-  "pg_rotate_logfile",
-  "pg_promote",
-];
+// legend-2ywn: built-in functions are not a denylist. The baseline is the
+// server's own initial privileges (pg_init_privs, privtype 'i', recorded by
+// initdb and not touched by later GRANT/REVOKE): a pg_catalog function whose
+// initial ACL leaves out PUBLIC EXECUTE (pg_switch_wal, pg_read_file,
+// lo_import, ...) fails the audit when the login can run it, directly or
+// through PUBLIC. A function without an initial ACL is PUBLIC by default and
+// is never flagged.
 // Tables with a tenant_id that are deliberately not under the restrictive
 // tenant policy (the same list as apps/api/src/db/rls.test.ts, which explains
 // each). The first three must still keep row-level security enabled: their
@@ -588,14 +577,42 @@ async function assertSequenceRights(
 }
 
 /**
- * The fixed denylist above, checked on the login's effective rights, so a
- * grant to PUBLIC counts the same as a grant to the login.
+ * The sensitive tables above and the built-in function baseline, checked on
+ * the login's effective rights, so a grant to PUBLIC counts the same as a
+ * grant to the login.
  */
 async function assertNoSensitive(
   client: ClientBase,
   user: string,
   label: string,
 ) {
+  // The audit below reads the initdb baseline from pg_init_privs. If that
+  // baseline is empty or incomplete (for example after a restore that dropped
+  // it), the audit would match nothing and pass. Fail closed: require every
+  // overload of a few known-revoked functions to have a baseline entry without
+  // PUBLIC EXECUTE before trusting it.
+  const anchor = await client.query(
+    `SELECT a.name
+     FROM unnest(ARRAY['pg_read_file', 'lo_import', 'pg_switch_wal']) AS a(name)
+     WHERE NOT EXISTS (
+             SELECT 1 FROM pg_catalog.pg_proc f
+             WHERE f.pronamespace = 'pg_catalog'::regnamespace AND f.proname = a.name)
+        OR EXISTS (
+             SELECT 1 FROM pg_catalog.pg_proc f
+             WHERE f.pronamespace = 'pg_catalog'::regnamespace AND f.proname = a.name
+               AND NOT EXISTS (
+                 SELECT 1 FROM pg_catalog.pg_init_privs ip
+                 WHERE ip.classoid = 'pg_catalog.pg_proc'::regclass
+                   AND ip.objoid = f.oid AND ip.objsubid = 0 AND ip.privtype = 'i'
+                   AND NOT EXISTS (
+                     SELECT 1 FROM pg_catalog.aclexplode(ip.initprivs) x
+                     WHERE x.grantee = 0 AND x.privilege_type = 'EXECUTE')))
+     ORDER BY 1`,
+  );
+  if (anchor.rows.length)
+    throw new ProvisionError(
+      `Cannot audit the ${label} role: the built-in function baseline (pg_init_privs) is empty or incomplete for ${anchor.rows.map((row: { name: string }) => row.name).join(", ")}, so sensitive functions could not be told apart. Restore the baseline or re-initialise the cluster, then re-run.`,
+    );
   const reached = await client.query(
     `SELECT ARRAY(
        SELECT format('%s on pg_catalog.%I', p.privilege, c.relname)
@@ -611,12 +628,19 @@ async function assertNoSensitive(
        UNION ALL
        SELECT DISTINCT format('EXECUTE on %I.%I', n.nspname, f.proname)
        FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace
-       WHERE ((n.nspname = 'pg_catalog' AND f.proname = ANY($3::text[]))
+       WHERE ((n.nspname = 'pg_catalog'
+               AND EXISTS (
+                 SELECT 1 FROM pg_catalog.pg_init_privs ip
+                 WHERE ip.classoid = 'pg_catalog.pg_proc'::regclass
+                   AND ip.objoid = f.oid AND ip.objsubid = 0 AND ip.privtype = 'i'
+                   AND NOT EXISTS (
+                     SELECT 1 FROM pg_catalog.aclexplode(ip.initprivs) x
+                     WHERE x.grantee = 0 AND x.privilege_type = 'EXECUTE')))
               OR f.proname LIKE 'dblink%')
          AND has_function_privilege($1, f.oid, 'EXECUTE')
        ORDER BY 1
      ) AS objects`,
-    [user, SENSITIVE_TABLES, SENSITIVE_FUNCTIONS],
+    [user, SENSITIVE_TABLES],
   );
   const objects: string[] = reached.rows[0].objects;
   if (objects.length)

@@ -749,13 +749,21 @@ afterAll(async () => {
       createdPolicies,
     ]);
     await deleteStatutoryTables(conn, tenant.id);
+    // Only the components of this file's own employees: a tenant-wide
+    // `SM_%` sweep would delete salary components another file still uses.
+    const ownComponentIds = (
+      await conn.query<{ component_id: string }>(
+        "SELECT DISTINCT component_id FROM employee_pay_components WHERE tenant_id = $1 AND employee_id = ANY($2)",
+        [tenant.id, createdEmployees],
+      )
+    ).rows.map((row) => row.component_id);
     await conn.query(
       "DELETE FROM employee_pay_components WHERE tenant_id = $1 AND employee_id = ANY($2)",
       [tenant.id, createdEmployees],
     );
     await conn.query(
-      "DELETE FROM pay_components WHERE tenant_id = $1 AND code LIKE 'SM\\_%'",
-      [tenant.id],
+      "DELETE FROM pay_components WHERE tenant_id = $1 AND id = ANY($2)",
+      [tenant.id, ownComponentIds],
     );
     await conn.query(
       "DELETE FROM employment_contracts WHERE tenant_id = $1 AND employee_id = ANY($2)",
