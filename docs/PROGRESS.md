@@ -1,3 +1,10 @@
+## Second opinion EDC kunci tagihan, P1 x3 + P2 (engineer, legend-ftsq0, cabang `fix/edc-so-829` dari `origin/fix/edc-qris-confirm-lock` 7e32d2707, 15 Nov 2026)
+
+- Selesai: jawaban cancel tidak pernah menutup sale yang sudah dikirim; jawaban sale setelah timeout tetap dicatat (ditunggu `stop()`); kolom baru `sale_wire_open_at` (migrasi 0381) menandai panggilan sale yang masih berjalan; rekonsiliasi menolak selama kolom terisi dan selama 10 menit sejak dikirim (`EDC_LATE_RESPONSE_WINDOW_MS`, satu tempat); `unknown` tanpa flag bisa diselesaikan Owner/Finance + MFA setelah jendela; event outbox selalu ditulis bersama ledger; approval terlambat menyimpan bukti kartu; `createEdcAgent` menolak timeout sale >= jendela.
+- Aturan QRIS saat kartu terbuka: satu konstanta `QRIS_CAPTURED_WHILE_CARD_SALE_OPEN` (founder Q5 pending). Perilaku tetap: QRIS di-refund langsung, juga bila kartu kemudian ditolak.
+- Bukti: 15 file test terarah, 369 lulus; test merah-dulu `edc-so-829.test.ts` (6 kasus merah di base). Review architect xhigh 2 ronde, temuan ditutup.
+- Berikut: second-opinion Codex ulang bila CTO minta; UI rekonsiliasi (web) belum menampilkan `unknown` tanpa flag.
+
 ## Merge train batch64e (merge train, `int/batch64e` dari `origin/milestone/m1` b42619abc, 14 Nov 2026 20:20-22:45 WIB)
 
 - Sudah: 7 cabang masuk berurutan tanpa konflik dan tanpa migrasi: `fix/db-role-baseline-race` (legend-cwz62, perbaikan flake root; hanya `tests/db-role-provisioning*.test.mjs` + `tests/helpers/role-audit-lock.mjs`), `fix/e2e-pos-corrections` (legend-jemae), `ct/customer-display-promo-pairing` (legend-r1ax), `fix/backup-postgres-user` (legend-j5n1), `fix/print-dispatch-recheck` (legend-z76q), `fix/e2e-ijv8-qhh5` (legend-ncvcz), `ws/codec-print-flake` (legend-p5vke). `ws/edge-sync-resilience` sudah ada di m1 (0 commit di depan); kartu legend-n2d3g bukan cabang.

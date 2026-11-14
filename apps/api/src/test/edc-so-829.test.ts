@@ -19,6 +19,13 @@
 //         marker (`sale_wire_open_at`) is cleared.
 //   P1-E  a late approval after the row is already final keeps the evidence
 //         (approval code, RRN) and flags the row.
+//   P1-F  round 3: a cancel answer alone never ends a dispatched sale (queued
+//         cancel on a dispatched `unknown` row keeps it `unknown`); a row that
+//         never reached the terminal is still cancelled.
+//   P1-G  round 3: `createEdcAgent` refuses a sale timeout that is not shorter
+//         than the late-response window.
+//   P1-H  round 3: an outlet re-acquire (`start()` again) keeps the wire
+//         marker of a sale call of this very process that is still running.
 //   P2    resolving a flagged row whose status does not change still writes
 //         an outbox event that carries `needsReconciliation: false`.
 //
@@ -86,6 +93,7 @@ import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { createEdcAgent } from "../edge/edc/agent.ts";
+import { EDC_LATE_RESPONSE_WINDOW_MS } from "../edge/edc/late-response.ts";
 import { EdcProviderRegistry } from "../edge/edc/registry.ts";
 import { EcrSimulator } from "../edge/edc/simulator.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
@@ -315,6 +323,8 @@ async function ledgerSale(input: {
   amountIdr: number;
   status: string;
   flagged: boolean;
+  /** Default true. False: the sale never reached the terminal. */
+  dispatched?: boolean;
 }): Promise<string> {
   const id = randomUUID();
   const final = ["approved", "declined", "cancelled", "failed"].includes(
@@ -327,7 +337,7 @@ async function ledgerSale(input: {
           request_fingerprint, amount_idr, method, status, type, mode, trace,
           completed_at, needs_reconciliation, dispatched_at)
        VALUES ($1, $2, $3, $4, 'bca', $5, $6, 'fp', $7, 'card', $8, 'sale', 'ecr', $9,
-               $10, $11, now())`,
+               $10, $11, $12)`,
       [
         id,
         tenant.tenantId,
@@ -340,6 +350,7 @@ async function ledgerSale(input: {
         randomUUID().replaceAll("-", "").slice(0, 12),
         final ? new Date() : null,
         input.flagged,
+        input.dispatched === false ? null : new Date(),
       ],
     ),
   );
@@ -730,19 +741,21 @@ describe("legend-ftsq0 EDC bill lock second-opinion findings", () => {
       expect(state.saleStarted).toBe(true);
       rowId = rows[0]!.id;
     });
-    // The terminal answers the cancel `cancelled`. Whether the agent records
-    // that or keeps the row pending is not asserted: the sale is still on the
-    // wire either way.
+    // The terminal answers the cancel `cancelled`, but a cancel answer alone
+    // is not proof the sale is over (CTO rule): the sale's own answer decides.
     await edc.cancel(ctx, cashier.userId, refTo(rowId)).catch(() => undefined);
+    const [afterCancel] = await ledgerRows(bill.number);
+    expect(
+      afterCancel?.status,
+      "the cancel answer finalized a sale that is still on the wire",
+    ).toBe("pending");
 
     // The sale has not answered: cash is refused, the guest may still be charged.
     const cash = await pos().cash(bill);
-    expect
-      .soft(
-        cash.status,
-        `cash was accepted while the card sale may still charge: ${JSON.stringify(cash.body)}`,
-      )
-      .toBe(409);
+    expect(
+      cash.status,
+      `cash was accepted while the card sale may still charge: ${JSON.stringify(cash.body)}`,
+    ).toBe(409);
 
     // The guest also paid by QRIS in this window.
     const qris = await paidQris(bill);
@@ -1020,6 +1033,145 @@ describe("legend-ftsq0 EDC bill lock second-opinion findings", () => {
     // stays final and is flagged for reconciliation, with the evidence.
     expect(after?.status).toBe("failed");
     expect(after?.needs_reconciliation).toBe(true);
+  });
+
+  it("P1-F a queued cancel on a dispatched `unknown` sale does not finalize it: row stays unknown and the bill stays locked", async () => {
+    const sim = new EcrSimulator("bca");
+    // The terminal answers every cancel `cancelled` with the right trace, yet
+    // that proves nothing about a sale that was sent to the terminal.
+    const provider = passThrough(sim, {
+      cancel: async (r) =>
+        ecrResultSchema.parse({
+          outcome: "cancelled",
+          trace: r.trace,
+          amountIdr: null,
+        }),
+    });
+    const bill = await newBill();
+    const id = await ledgerSale({
+      reference: bill.number,
+      amountIdr: bill.totalIdr,
+      status: "unknown",
+      flagged: false,
+    });
+    const { agent: edc } = await startAgent(provider, 5_000);
+
+    await edc.cancel(ctx, cashier.userId, refTo(id)).catch(() => undefined);
+
+    const [row] = await ledgerRows(bill.number);
+    expect(
+      row?.status,
+      "a cancel answer finalized a dispatched sale whose charge is unproven",
+    ).toBe("unknown");
+    expect(row?.dispatched_at).not.toBeNull();
+    const cash = await pos().cash(bill);
+    expect(cash.status, JSON.stringify(cash.body)).toBe(409);
+    expect(await nonVoidedTenders(bill)).toEqual([]);
+  });
+
+  it.each(["pending", "unknown"])(
+    "P1-F a recovered %s sale that never reached the terminal is cancelled by a cancel",
+    async (status) => {
+      const provider = passThrough(new EcrSimulator("bca"), {
+        cancel: async (r) =>
+          ecrResultSchema.parse({
+            outcome: "cancelled",
+            trace: r.trace,
+            amountIdr: null,
+          }),
+      });
+      const bill = await newBill();
+      // Written before the agent starts: the agent finds it as a leftover.
+      const id = await ledgerSale({
+        reference: bill.number,
+        amountIdr: bill.totalIdr,
+        status,
+        flagged: false,
+        dispatched: false,
+      });
+      const { agent: edc } = await startAgent(provider, 5_000);
+
+      await edc.cancel(ctx, cashier.userId, refTo(id)).catch(() => undefined);
+
+      const [row] = await ledgerRows(bill.number);
+      expect(row?.id).toBe(id);
+      expect(
+        row?.status,
+        "nothing was ever sent to the terminal, so the cancel is final",
+      ).toBe("cancelled");
+      expect(row?.dispatched_at).toBeNull();
+    },
+  );
+
+  it("P1-G createEdcAgent throws when the sale timeout is not shorter than the late-response window", () => {
+    const make = (saleTimeoutMs: number) =>
+      createEdcAgent({
+        db,
+        registry: new EdcProviderRegistry().register(
+          passThrough(new EcrSimulator("bca")),
+        ),
+        saleTimeoutMs,
+        inquiryTimeoutMs: 50,
+        cancelTimeoutMs: 50,
+      });
+    expect(() => make(EDC_LATE_RESPONSE_WINDOW_MS)).toThrow();
+    expect(() => make(EDC_LATE_RESPONSE_WINDOW_MS + 1)).toThrow();
+    // Control: a timeout shorter than the window is accepted.
+    expect(() => make(EDC_LATE_RESPONSE_WINDOW_MS - 1)).not.toThrow();
+  });
+
+  it("P1-H an outlet re-acquire (start() again) keeps the wire marker of a sale call of this process that is still running", async () => {
+    // Assumption: lock loss is hard to simulate without knowing the lock key,
+    // so a second start() on the running agent stands for the re-acquire. Its
+    // outcome (idempotent, or refused) is not asserted, only that the marker
+    // of the live call survives it.
+    const saleGate = gate();
+    const sim = new EcrSimulator("bca");
+    const state = { saleStarted: false };
+    const provider = passThrough(sim, {
+      sale: async (r: EcrSaleRequest) => {
+        state.saleStarted = true;
+        await saleGate.promise;
+        return sim.sale(r);
+      },
+    });
+    const { agent: edc, terminalId } = await startAgent(provider, 100);
+    const bill = await newBill();
+
+    const selling = edc.requestPayment(
+      ctx,
+      cashier.userId,
+      saleRequest(bill, terminalId),
+    );
+    selling.catch(() => undefined);
+    await vi.waitFor(async () => {
+      const [row] = await ledgerRows(bill.number);
+      expect(state.saleStarted).toBe(true);
+      expect(row?.status).toBe("unknown");
+      expect(row?.sale_wire_open_at).not.toBeNull();
+    });
+
+    await edc.start(ctx).catch(() => undefined);
+    const [during] = await ledgerRows(bill.number);
+    expect(
+      during?.sale_wire_open_at,
+      "the re-acquire cleared the marker of a call that is still on the wire",
+    ).not.toBeNull();
+    // The bill stays locked while the call runs.
+    const cash = await pos().cash(bill);
+    expect(cash.status, JSON.stringify(cash.body)).toBe(409);
+
+    // The call settles: the late approval lands and the marker is cleared.
+    saleGate.open();
+    await selling.catch(() => undefined);
+    await vi.waitFor(
+      async () => {
+        const [after] = await ledgerRows(bill.number);
+        expect(after?.status).toBe("approved");
+        expect(after?.sale_wire_open_at).toBeNull();
+      },
+      { timeout: 5_000 },
+    );
   });
 
   it.each(["declined", "cancelled", "failed"])(

@@ -82,6 +82,7 @@ import {
 } from "../../services/payment-support.ts";
 import { assertEdcSaleBillPayable } from "../../services/pos-order-support.ts";
 import { emitEdcTransactionEvent } from "./events.ts";
+import { EDC_LATE_RESPONSE_WINDOW_MS } from "./late-response.ts";
 import type { EdcProviderRegistry } from "./registry.ts";
 
 export type Database = NodePgDatabase<typeof schema>;
@@ -502,6 +503,12 @@ function violatedConstraint(error: unknown, depth = 0): string | undefined {
 export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   const { db, registry } = deps;
   const saleTimeoutMs = deps.saleTimeoutMs ?? 120_000;
+  // The late-response window must outlast the sale call, or a row could
+  // leave the window while its adapter call is still running.
+  if (saleTimeoutMs >= EDC_LATE_RESPONSE_WINDOW_MS)
+    throw new Error(
+      `EDC saleTimeoutMs (${saleTimeoutMs} ms) must be shorter than the late-response window (${EDC_LATE_RESPONSE_WINDOW_MS} ms)`,
+    );
   const inquiryTimeoutMs = deps.inquiryTimeoutMs ?? 15_000;
   const cancelTimeoutMs = deps.cancelTimeoutMs ?? 15_000;
   const notFoundGraceMs = deps.notFoundGraceMs ?? 30_000;
@@ -513,6 +520,11 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   /** Rows whose sale this process is sending or waiting on. Registered before
    * the write-ahead commit so no reader sees `pending` without it. */
   const inFlight = new Set<string>();
+  /** Rows whose adapter call outlived its timeout and is still running in
+   * this process (their `sale_wire_open_at` is live, not stale). Added before
+   * the marker write; removed once the call settles and the marker is
+   * cleared. `clearStaleWireOpen` skips them. */
+  const wireOpen = new Set<string>();
   /** FIFO tail per terminal: one ECR exchange at a time. */
   const tails = new Map<string, Promise<void>>();
   /** Terminals whose adapter call outlived the agent's timeout and has not
@@ -1247,37 +1259,39 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           const marked = wire.settled
             ? Promise.resolve()
             : setSaleWireOpen(ctx, claimed, true);
-          const late = marked.then(() =>
-            call.then(
-              async (raw) => {
-                let answer: EcrResult | undefined;
-                try {
-                  answer = ecrResultSchema.parse(raw);
-                  await applyPatch(
-                    ctx,
-                    claimed,
-                    patchFromAnswer(claimed, answer, answerContext(provider)),
-                    { clearWireOpen: true },
-                  );
-                } catch (lateError) {
-                  logger.error(
-                    {
-                      edcTransactionId: claimed.id,
-                      trace: claimed.trace,
-                      kind: errorKind(lateError),
-                      outcome: answer?.outcome,
-                      approvalCode: answer?.approvalCode,
-                      rrn: answer?.rrn,
-                      amountIdr: claimed.amountIdr,
-                    },
-                    "EDC late sale answer could not be recorded",
-                  );
-                  await setSaleWireOpen(ctx, claimed, false);
-                }
-              },
-              () => setSaleWireOpen(ctx, claimed, false),
-            ),
-          );
+          const late = marked
+            .then(() =>
+              call.then(
+                async (raw) => {
+                  let answer: EcrResult | undefined;
+                  try {
+                    answer = ecrResultSchema.parse(raw);
+                    await applyPatch(
+                      ctx,
+                      claimed,
+                      patchFromAnswer(claimed, answer, answerContext(provider)),
+                      { clearWireOpen: true },
+                    );
+                  } catch (lateError) {
+                    logger.error(
+                      {
+                        edcTransactionId: claimed.id,
+                        trace: claimed.trace,
+                        kind: errorKind(lateError),
+                        outcome: answer?.outcome,
+                        approvalCode: answer?.approvalCode,
+                        rrn: answer?.rrn,
+                        amountIdr: claimed.amountIdr,
+                      },
+                      "EDC late sale answer could not be recorded",
+                    );
+                    await setSaleWireOpen(ctx, claimed, false);
+                  }
+                },
+                () => setSaleWireOpen(ctx, claimed, false),
+              ),
+            )
+            .finally(() => wireOpen.delete(claimed.id));
           trackWire(key, late);
           await marked;
         }
@@ -1473,6 +1487,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     row: EdcRow,
     open: boolean,
   ): Promise<void> {
+    if (open) wireOpen.add(row.id);
     try {
       await withTenant(db, ctx, (tx) =>
         tx
@@ -1505,8 +1520,11 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     outletIds: readonly EdcRow["outletId"][],
   ): Promise<void> {
     if (outletIds.length === 0) return;
-    await withTenant(db, ctx, (tx) =>
-      tx
+    await withTenant(db, ctx, async (tx) => {
+      // `wireOpen` is read here, in the same tick that issues the UPDATE: a
+      // call of this process that is still running keeps its marker.
+      const live = [...wireOpen];
+      await tx
         .update(edcTransactions)
         .set({ saleWireOpenAt: null })
         .where(
@@ -1514,9 +1532,10 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
             eq(edcTransactions.tenantId, ctx.tenant.tenantId),
             inArray(edcTransactions.outletId, [...outletIds]),
             isNotNull(edcTransactions.saleWireOpenAt),
+            live.length > 0 ? notInArray(edcTransactions.id, live) : undefined,
           ),
-        ),
-    );
+        );
+    });
   }
 
   /** Pending -> unknown for `outletIds` (default: the outlets of `ctx`), which

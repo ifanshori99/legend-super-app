@@ -59,3 +59,12 @@ New column (migration 0381): `edc_transactions.sale_wire_open_at timestamptz NUL
 ### T2 — tests (test-writer)
 - Update tests that encode "cancel answer finalizes a dispatched sale": `edc-agent-review.test.ts` (`cancelledButStillSelling` ~363-438, A1b), `edc-pan-logs.test.ts:554-558`, `edc-agent.test.ts` EDC-02/EDC-03 cancel cases, any queued-cancel-on-unknown case. New expectation: row stays open (pending/unknown) until the sale's own answer; never-dispatched rows still `cancelled`.
 - `edc-so-829.test.ts`: P1-C waits for `approved` with approval code (not just flagged); add a test: sale times out, `stop()` called, late approval arrives → after stop resolves the row is `approved` (or flagged with approvalCode) and `sale_wire_open_at` NULL; add: late approval after a final row keeps approvalCode/rrn.
+
+## Ronde 3 (architect re-review, commit 99af9af73)
+
+### A3 — agent.ts (implementer)
+1. Keep `wireOpen: Set<rowId>` in the agent: add in `setSaleWireOpen(..., true)` (before the DB write), delete when the call settles (in the late chain's clear paths). `clearStaleWireOpen` excludes those ids with `notInArray` (like `recoverPending` skips `inFlight`), so a live call of this process keeps its marker after an outlet re-acquire.
+2. `createEdcAgent` throws (plain Error, clear message) when `saleTimeoutMs >= EDC_LATE_RESPONSE_WINDOW_MS` (import from `./late-response.ts`).
+
+### T3 — tests (test-writer)
+- `edc-so-829.test.ts`: P1-A make the cash 409 a hard assertion and assert the row stays `pending` before the sale answers. Add: queued cancel on a dispatched `unknown` row → row stays `unknown`; recovered never-dispatched `unknown`/pending row cancelled → `cancelled`; `createEdcAgent` with `saleTimeoutMs` >= window throws; outlet re-acquire (`start()` after lock loss, or a direct call path if lock loss is hard to simulate) keeps `sale_wire_open_at` of a still-running call.
