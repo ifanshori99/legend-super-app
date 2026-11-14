@@ -186,6 +186,15 @@ export const purchaseReturnRecordedEventPayloadSchema = z
      * legend-5b7uf, which replay as 0.
      */
     returnPriceVarianceIdr: idrSchema.default(idr(0)),
+    /**
+     * Signed sum over the lines of (line value at receipt cost minus
+     * round(qty x moving average before the return)). The stock leaves at
+     * receipt cost but the average does not move, so the journal books
+     * Dr inventory / Cr 5106 for a positive value (flipped for a negative one)
+     * to keep GL inventory at qty x average. Absent on events recorded before
+     * legend-uloj6, which replay as 0.
+     */
+    movingAvgVarianceIdr: idrSchema.optional(),
     /** PPN masukan reversed on the invoiced part. */
     ppnIdr: nonNegativeIdrSchema,
     returnedBy: userIdSchema,

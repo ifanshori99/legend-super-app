@@ -412,7 +412,9 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
   // debitNoteIdr = invoicedValueIdr + returnPriceVarianceIdr + ppnIdr (the
   // billed value plus PPN), reduced by the fact builder. returnPriceVarianceIdr
   // is signed (billed minus order price): a negative amount books on the debit
-  // side of 5105.
+  // side of 5105. returnMovingAvgVarianceIdr is signed the same way: Dr
+  // inventory / Cr 5106 inventory_price_variance moves the inventory credit
+  // from the order-price valueIdr to the moving-average value (legend-uloj6).
   // valueIdr = uninvoicedValueIdr + invoicedValueIdr (event refine), so the
   // journal balances; a zero amount drops its line.
   rule(
@@ -425,6 +427,8 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["accounts_payable", "debit", "debitNoteIdr"],
       ["inventory", "credit", "valueIdr"],
       ["purchase_price_variance", "credit", "returnPriceVarianceIdr"],
+      ["inventory", "debit", "returnMovingAvgVarianceIdr"],
+      ["inventory_price_variance", "credit", "returnMovingAvgVarianceIdr"],
       ["ppn_input", "credit", "ppnIdr"],
     ],
   ),

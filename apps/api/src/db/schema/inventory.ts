@@ -389,6 +389,10 @@ export const stockLedger = pgTable(
       table.occurredAt,
       table.id,
     ),
+    // referenceUnitCost: latest positive unit cost of one item, any location.
+    index("stock_ledger_tenant_item_cost_idx")
+      .on(table.tenantId, table.inventoryItemId, table.occurredAt, table.id)
+      .where(sql`${table.unitCostIdr} > 0`),
     check("stock_ledger_quantity_check", sql`${table.quantity} <> 0`),
     check("stock_ledger_unit_cost_check", sql`${table.unitCostIdr} >= 0`),
     check(
