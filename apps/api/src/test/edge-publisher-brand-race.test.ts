@@ -4,6 +4,7 @@ import { outletIdSchema, tenantIdSchema } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { publishCatalogForNode } from "../services/edge-master-data-publisher.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
+import { settleCloud } from "./helpers/catalog-cloud.ts";
 import { createWorld, owner } from "./member-loyalty-helpers.ts";
 
 afterAll(async () => owner.end());
@@ -43,10 +44,10 @@ it("rolls back the scan if the outlet brand changes between the two checks", asy
     const blocker = await locked.query<{ pid: number }>(
       "SELECT pg_backend_pid() AS pid",
     );
-    await locked.query(
-      `SELECT 1 FROM edge_catalog_publisher_cursors WHERE edge_node_id = $1 AND stream = 'menu_categories' FOR UPDATE`,
-      [input.edgeNodeId],
-    );
+    await locked.query(`UPDATE outlets SET brand_id = $1 WHERE id = $2`, [
+      newBrand,
+      world.outletA,
+    ]);
     pending = publishCatalogForNode(db, input);
     let observed = false;
     for (let n = 0; n < 100 && !observed; n++) {
@@ -58,10 +59,6 @@ it("rolls back the scan if the outlet brand changes between the two checks", asy
       if (!observed) await new Promise((resolve) => setTimeout(resolve, 20));
     }
     expect(observed).toBe(true);
-    await owner.query(`UPDATE outlets SET brand_id = $1 WHERE id = $2`, [
-      newBrand,
-      world.outletA,
-    ]);
     await locked.query("COMMIT");
     await pending;
     pending = undefined;
@@ -107,7 +104,18 @@ it("prevents an A to B to A brand switch during publication", async () => {
     [bCategory, world.tenantId, brandB],
   );
   // Ensure the queue cursor exists before holding it on another connection.
+  const aCategory = randomUUID();
+  await owner.query(
+    `INSERT INTO menu_categories (id, tenant_id, brand_id, name) VALUES ($1, $2, $3, 'Brand A')`,
+    [aCategory, world.tenantId, world.brandId],
+  );
+  await settleCloud(owner);
   await publishCatalogForNode(db, input);
+  await owner.query(
+    `UPDATE menu_categories SET name = 'Brand A updated' WHERE id = $1`,
+    [aCategory],
+  );
+  await settleCloud(owner);
   const blocker = await owner.connect();
   const changer = await owner.connect();
   let publication: Promise<number> | undefined;

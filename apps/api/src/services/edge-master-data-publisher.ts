@@ -1,7 +1,7 @@
 // Durable cloud-to-edge full-state catalog publication. The cursor and the
 // link queue advance together; an interrupted pass is retried on restart.
 import { and, eq, sql } from "drizzle-orm";
-import { CoreError, createUlid } from "@starter/shared/core";
+import { CoreError, createUlid, tenantIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -46,9 +46,14 @@ export async function publishCatalogForNode(
     input.outletId,
   );
   return withTenant(database, context, async (tx) => {
-    // A node lock serializes all streams, including a brand-change block.
+    // Serialize publisher streams without locking the live node row, which is
+    // also updated by the link receiver and node administration.
+    const publisherLock = await tx.execute(
+      sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${`edge-catalog-publisher:${input.tenantId}:${input.edgeNodeId}`}, 0)) AS locked`,
+    );
+    if (publisherLock.rows[0]?.locked !== true) return 0;
     const nodes = await tx.execute(
-      sql`SELECT o.brand_id FROM edge_nodes n JOIN outlets o ON o.tenant_id = n.tenant_id AND o.id = n.outlet_id WHERE n.id = ${input.edgeNodeId}::uuid AND n.tenant_id = ${input.tenantId}::uuid AND n.outlet_id = ${input.outletId}::uuid AND n.status = 'active' FOR NO KEY UPDATE OF n`,
+      sql`SELECT o.brand_id FROM edge_nodes n JOIN outlets o ON o.tenant_id = n.tenant_id AND o.id = n.outlet_id WHERE n.id = ${input.edgeNodeId}::uuid AND n.tenant_id = ${input.tenantId}::uuid AND n.outlet_id = ${input.outletId}::uuid AND n.status = 'active'`,
     );
     const node = nodes.rows[0];
     if (!node)
@@ -58,13 +63,18 @@ export async function publishCatalogForNode(
       sql`SELECT 1 FROM edge_catalog_publisher_cursors WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND blocked_at IS NOT NULL LIMIT 1`,
     );
     if (blocked.rows.length) return 0;
-    await tx.execute(
-      sql`INSERT INTO edge_catalog_publisher_cursors (tenant_id, outlet_id, edge_node_id, brand_id, stream) VALUES (${input.tenantId}::uuid, ${input.outletId}::uuid, ${input.edgeNodeId}::uuid, ${brandId}::uuid, ${input.stream}) ON CONFLICT DO NOTHING`,
+    let stored = await tx.execute(
+      sql`SELECT brand_id, watermark FROM edge_catalog_publisher_cursors WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND stream = ${input.stream}`,
     );
-    const locked = await tx.execute(
-      sql`SELECT brand_id, watermark FROM edge_catalog_publisher_cursors WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND stream = ${input.stream} FOR UPDATE`,
-    );
-    const cursor = locked.rows[0];
+    if (!stored.rows[0]) {
+      await tx.execute(
+        sql`INSERT INTO edge_catalog_publisher_cursors (tenant_id, outlet_id, edge_node_id, brand_id, stream) VALUES (${input.tenantId}::uuid, ${input.outletId}::uuid, ${input.edgeNodeId}::uuid, ${brandId}::uuid, ${input.stream}) ON CONFLICT DO NOTHING`,
+      );
+      stored = await tx.execute(
+        sql`SELECT brand_id, watermark FROM edge_catalog_publisher_cursors WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND stream = ${input.stream}`,
+      );
+    }
+    const cursor = stored.rows[0];
     if (!cursor) throw new Error("Catalog publisher cursor is unavailable");
     const priorBrands = await tx.execute(
       sql`SELECT 1 FROM edge_catalog_publisher_cursors WHERE tenant_id = ${input.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND brand_id <> ${brandId}::uuid LIMIT 1`,
@@ -94,6 +104,9 @@ export async function publishCatalogForNode(
         );
         if (!after.rows[0] || String(after.rows[0].brand_id) !== brandId)
           throw new PublisherBrandChanged();
+        // Empty pages preserve the watermark, so idle sweeps need no queue
+        // cursor creation, row lock, or update.
+        if (page.records.length === 0) return 0;
         await lockSyncCursor(scanTx, input, "cloud_to_edge");
         for (const record of page.records) {
           const keys =
@@ -153,7 +166,8 @@ export async function sweepCatalogPublisher(database: Database): Promise<void> {
     .select({ id: tenants.id })
     .from(tenants)
     .where(eq(tenants.status, "active"));
-  for (const { id: tenantId } of tenantRows) {
+  for (const { id } of tenantRows) {
+    const tenantId = tenantIdSchema.parse(id);
     const context = establishTenantContext({
       tenantId,
       brandId: null,

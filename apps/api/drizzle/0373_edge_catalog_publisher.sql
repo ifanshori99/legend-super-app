@@ -17,4 +17,4 @@ SELECT app.enforce_outlet_rls('public.edge_catalog_publisher_cursors'::regclass)
 --> statement-breakpoint
 ALTER TABLE edge_inbound_events DROP CONSTRAINT edge_inbound_events_outcome_check;
 --> statement-breakpoint
-ALTER TABLE edge_inbound_events ADD CONSTRAINT edge_inbound_events_outcome_check CHECK (outcome IN ('applied','superseded','conflict','deferred'));
+ALTER TABLE edge_inbound_events ADD CONSTRAINT edge_inbound_events_outcome_check CHECK (outcome IN ('applied','superseded','conflict','deferred')) NOT VALID;
