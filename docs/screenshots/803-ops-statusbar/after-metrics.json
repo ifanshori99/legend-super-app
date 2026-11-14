@@ -1,0 +1,126 @@
+[
+  {
+    "screen": "expo",
+    "width": 390,
+    "height": 154,
+    "barBackground": "color(srgb 0.0554902 0.0515686 0.0498039)",
+    "button": {
+      "variant": "outline",
+      "text": "rgb(255, 255, 255)",
+      "background": "rgb(18, 17, 16)",
+      "border": "rgb(168, 163, 155)",
+      "borderWidth": "2px",
+      "height": 56,
+      "width": 141.59375,
+      "borderAgainstBar": 7.7419034042884745,
+      "borderAgainstButton": 7.52406664520537,
+      "textContrast": 18.861463334509136
+    },
+    "scrollWidth": 390,
+    "viewport": 390,
+    "pickerHeight": 60,
+    "hover": {
+      "border": "rgb(168, 163, 155)",
+      "background": "rgb(18, 17, 16)"
+    },
+    "focus": {
+      "border": "rgb(168, 163, 155)",
+      "outline": "rgb(94, 194, 204)",
+      "outlineWidth": "2px"
+    },
+    "screenshot": "/Users/ifanshori99/Projects/legend super app/legend-53130a66/docs/screenshots/803-ops-statusbar/after-expo-390-dark.png"
+  },
+  {
+    "screen": "expo",
+    "width": 1280,
+    "height": 78,
+    "barBackground": "color(srgb 0.0554902 0.0515686 0.0498039)",
+    "button": {
+      "variant": "outline",
+      "text": "rgb(255, 255, 255)",
+      "background": "rgb(18, 17, 16)",
+      "border": "rgb(168, 163, 155)",
+      "borderWidth": "2px",
+      "height": 56,
+      "width": 141.59375,
+      "borderAgainstBar": 7.7419034042884745,
+      "borderAgainstButton": 7.52406664520537,
+      "textContrast": 18.861463334509136
+    },
+    "scrollWidth": 1280,
+    "viewport": 1280,
+    "pickerHeight": 60,
+    "hover": {
+      "border": "rgb(168, 163, 155)",
+      "background": "rgb(18, 17, 16)"
+    },
+    "focus": {
+      "border": "rgb(168, 163, 155)",
+      "outline": "rgb(94, 194, 204)",
+      "outlineWidth": "2px"
+    },
+    "screenshot": "/Users/ifanshori99/Projects/legend super app/legend-53130a66/docs/screenshots/803-ops-statusbar/after-expo-1280-dark.png"
+  },
+  {
+    "screen": "pickup",
+    "width": 390,
+    "height": 154,
+    "barBackground": "color(srgb 0.0554902 0.0515686 0.0498039)",
+    "button": {
+      "variant": "outline",
+      "text": "rgb(255, 255, 255)",
+      "background": "rgb(18, 17, 16)",
+      "border": "rgb(168, 163, 155)",
+      "borderWidth": "2px",
+      "height": 56,
+      "width": 141.59375,
+      "borderAgainstBar": 7.7419034042884745,
+      "borderAgainstButton": 7.52406664520537,
+      "textContrast": 18.861463334509136
+    },
+    "scrollWidth": 390,
+    "viewport": 390,
+    "pickerHeight": 60,
+    "hover": {
+      "border": "rgb(168, 163, 155)",
+      "background": "rgb(18, 17, 16)"
+    },
+    "focus": {
+      "border": "rgb(168, 163, 155)",
+      "outline": "rgb(94, 194, 204)",
+      "outlineWidth": "2px"
+    },
+    "screenshot": "/Users/ifanshori99/Projects/legend super app/legend-53130a66/docs/screenshots/803-ops-statusbar/after-pickup-390-dark.png"
+  },
+  {
+    "screen": "pickup",
+    "width": 1280,
+    "height": 78,
+    "barBackground": "color(srgb 0.0554902 0.0515686 0.0498039)",
+    "button": {
+      "variant": "outline",
+      "text": "rgb(255, 255, 255)",
+      "background": "rgb(18, 17, 16)",
+      "border": "rgb(168, 163, 155)",
+      "borderWidth": "2px",
+      "height": 56,
+      "width": 141.59375,
+      "borderAgainstBar": 7.7419034042884745,
+      "borderAgainstButton": 7.52406664520537,
+      "textContrast": 18.861463334509136
+    },
+    "scrollWidth": 1280,
+    "viewport": 1280,
+    "pickerHeight": 60,
+    "hover": {
+      "border": "rgb(168, 163, 155)",
+      "background": "rgb(18, 17, 16)"
+    },
+    "focus": {
+      "border": "rgb(168, 163, 155)",
+      "outline": "rgb(94, 194, 204)",
+      "outlineWidth": "2px"
+    },
+    "screenshot": "/Users/ifanshori99/Projects/legend super app/legend-53130a66/docs/screenshots/803-ops-statusbar/after-pickup-1280-dark.png"
+  }
+]

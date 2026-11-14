@@ -55,6 +55,7 @@ export function KitchenScreenHeader({
         <Button
           variant="outline"
           size="sm"
+          className="border-input"
           onClick={() => {
             setManual("tapped");
             onRefresh();

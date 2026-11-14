@@ -1,0 +1,82 @@
+[
+  {
+    "screen": "expo",
+    "width": 390,
+    "height": 154,
+    "barBackground": "color(srgb 0.0554902 0.0515686 0.0498039)",
+    "button": {
+      "variant": "outline",
+      "text": "rgb(255, 255, 255)",
+      "background": "rgb(18, 17, 16)",
+      "border": "rgb(92, 88, 82)",
+      "borderWidth": "2px",
+      "borderAgainstBar": 2.747359969351505,
+      "borderAgainstButton": 2.670056500100433,
+      "textContrast": 18.861463334509136
+    },
+    "scrollWidth": 390,
+    "viewport": 390,
+    "pickerHeight": 60,
+    "screenshot": "/Users/ifanshori99/Projects/legend super app/legend-53130a66/docs/screenshots/803-ops-statusbar/before-expo-390-dark.png"
+  },
+  {
+    "screen": "expo",
+    "width": 1280,
+    "height": 78,
+    "barBackground": "color(srgb 0.0554902 0.0515686 0.0498039)",
+    "button": {
+      "variant": "outline",
+      "text": "rgb(255, 255, 255)",
+      "background": "rgb(18, 17, 16)",
+      "border": "rgb(92, 88, 82)",
+      "borderWidth": "2px",
+      "borderAgainstBar": 2.747359969351505,
+      "borderAgainstButton": 2.670056500100433,
+      "textContrast": 18.861463334509136
+    },
+    "scrollWidth": 1280,
+    "viewport": 1280,
+    "pickerHeight": 60,
+    "screenshot": "/Users/ifanshori99/Projects/legend super app/legend-53130a66/docs/screenshots/803-ops-statusbar/before-expo-1280-dark.png"
+  },
+  {
+    "screen": "pickup",
+    "width": 390,
+    "height": 154,
+    "barBackground": "color(srgb 0.0554902 0.0515686 0.0498039)",
+    "button": {
+      "variant": "outline",
+      "text": "rgb(255, 255, 255)",
+      "background": "rgb(18, 17, 16)",
+      "border": "rgb(92, 88, 82)",
+      "borderWidth": "2px",
+      "borderAgainstBar": 2.747359969351505,
+      "borderAgainstButton": 2.670056500100433,
+      "textContrast": 18.861463334509136
+    },
+    "scrollWidth": 390,
+    "viewport": 390,
+    "pickerHeight": 60,
+    "screenshot": "/Users/ifanshori99/Projects/legend super app/legend-53130a66/docs/screenshots/803-ops-statusbar/before-pickup-390-dark.png"
+  },
+  {
+    "screen": "pickup",
+    "width": 1280,
+    "height": 78,
+    "barBackground": "color(srgb 0.0554902 0.0515686 0.0498039)",
+    "button": {
+      "variant": "outline",
+      "text": "rgb(255, 255, 255)",
+      "background": "rgb(18, 17, 16)",
+      "border": "rgb(92, 88, 82)",
+      "borderWidth": "2px",
+      "borderAgainstBar": 2.747359969351505,
+      "borderAgainstButton": 2.670056500100433,
+      "textContrast": 18.861463334509136
+    },
+    "scrollWidth": 1280,
+    "viewport": 1280,
+    "pickerHeight": 60,
+    "screenshot": "/Users/ifanshori99/Projects/legend super app/legend-53130a66/docs/screenshots/803-ops-statusbar/before-pickup-1280-dark.png"
+  }
+]
