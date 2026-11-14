@@ -17,8 +17,7 @@
 // here (modules, textOverrides, theme). The rest carry `items` validated by
 // `configSectionItemSchemas` (strict, one schema per section; multi-kind
 // sections discriminate on `kind`). Items reference each other by `*Key`
-// fields, never by id. `payroll_settings` keeps the generic JSON item until
-// its owning domain registers a codec.
+// fields, never by id.
 
 import {
   basisPointsSchema,
@@ -62,6 +61,7 @@ import {
 import { textOverrideSetSchema } from "../text/index.ts";
 import { itemKey, wifiPolicyItemSchema } from "./config-items.ts";
 import { loyaltyPolicyConfigItemSchema } from "../crm/config-codec.ts";
+import { payrollSettingsConfigItemSchema } from "../hris/payroll/config-codec.ts";
 import {
   configBundleReferenceIssues,
   configSectionItemIssues,
@@ -386,9 +386,6 @@ const facilityItemSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
-/** Sections without a domain codec: any plain JSON object with a key. */
-const unsupportedItemSchema = jsonObject.and(z.object({ key: itemKey }));
-
 /** One strict item schema per generic section. */
 export const configSectionItemSchemas: Record<GenericConfigSection, z.ZodType> =
   {
@@ -402,8 +399,11 @@ export const configSectionItemSchemas: Record<GenericConfigSection, z.ZodType> =
     loyalty_policy: loyaltyPolicyConfigItemSchema,
     facilities: facilityItemSchema,
     wifi_policies: wifiPolicyItemSchema,
-    payroll_settings: unsupportedItemSchema,
+    payroll_settings: payrollSettingsConfigItemSchema,
   };
+
+/** Loose item for previewing unvalidated sections. */
+const unsupportedItemSchema = jsonObject.and(z.object({ key: itemKey }));
 
 /** A generic section: format version + items, each with a stable `key`. */
 function genericSectionOf(item: z.ZodType) {
@@ -607,6 +607,18 @@ const storedConfigBundleSchema = bundleSchemaOf(false).superRefine(
       )
     )
       delete sections.loyalty_policy;
+    const payroll = sections.payroll_settings;
+    if (
+      payroll?.version === 1 &&
+      payroll.items.length > 0 &&
+      payroll.items.every(
+        (item) =>
+          item !== null &&
+          typeof item === "object" &&
+          !Object.hasOwn(item, "kind"),
+      )
+    )
+      delete sections.payroll_settings;
 
     // The remaining sections keep the current item and reference checks. A
     // legacy section is unavailable for those checks, like a partial template

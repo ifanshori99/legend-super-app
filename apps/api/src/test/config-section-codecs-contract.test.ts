@@ -58,9 +58,7 @@ const registry = CONFIG_SECTION_CODECS as unknown as Record<string, AnyCodec>;
 const call = <T>(fn: (...args: never[]) => T, ...args: unknown[]): T =>
   fn(...(args as never[]));
 
-// payroll_settings carries money and its item schema is still the loose JSON
-// item: it stays unregistered until its domain lands.
-const UNREGISTERED_SECTIONS = ["payroll_settings"] as const;
+const UNREGISTERED_SECTIONS: readonly string[] = [];
 const CODEC_SECTIONS = GENERIC_CONFIG_SECTIONS.filter(
   (section) => !(UNREGISTERED_SECTIONS as readonly string[]).includes(section),
 );
@@ -76,6 +74,7 @@ const DOMAIN_CODEC_SECTIONS = [
   "checklists",
   "loyalty_policy",
   "facilities",
+  "payroll_settings",
 ] as const;
 const SHARED_SIGNATURE_SECTIONS = CODEC_SECTIONS.filter(
   (section) => !(DOMAIN_CODEC_SECTIONS as readonly string[]).includes(section),
@@ -245,8 +244,6 @@ describe("legend-tct8 item schemas refuse ids", () => {
             items: Record<string, unknown>[];
           }
         ).items[0];
-      case "payroll_settings":
-        return { key: "default" }; // free-form JSON until the domain lands
       default:
         return undefined; // no known valid item without domain fixtures
     }
