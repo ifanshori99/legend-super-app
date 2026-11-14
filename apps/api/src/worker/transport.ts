@@ -24,7 +24,10 @@ import type * as schema from "../db/schema/index.ts";
 import { parseEdgeRuntimeConfig } from "../edge/config.ts";
 import { parseEdgeCredential } from "../edge/credential.ts";
 import { recordOutboxGapRequest } from "../services/core-outbox-gaps.ts";
-import type { GapRequest } from "../services/core-outbox.ts";
+import {
+  EdgeOutletRequiredError,
+  type GapRequest,
+} from "../services/core-outbox.ts";
 import {
   enqueueEdgeEvent,
   type EdgeTx,
@@ -90,8 +93,7 @@ export function createBuiltinWorkerTransport(options: {
       }
       if (event.tenantId !== edge.tenantId)
         throw new Error("Event tenant does not match the edge credential");
-      if (!event.outletId)
-        throw new Error("Edge sync requires an outlet-scoped event");
+      if (!event.outletId) throw new EdgeOutletRequiredError();
       await enqueueEdgeEvent(tx, context, {
         edgeNodeId: edge.edgeNodeId,
         direction: "edge_to_cloud",
