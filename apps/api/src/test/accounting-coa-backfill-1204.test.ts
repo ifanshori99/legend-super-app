@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { Pool } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { replayMigrationForTenant } from "./helpers/migration-replay.ts";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const owner = new Pool({
@@ -27,10 +28,8 @@ afterAll(async () => {
   await owner.end();
 });
 
-const migrate = async () => {
-  for (const statement of migration.split("--> statement-breakpoint"))
-    if (statement.replace(/--.*$/gm, "").trim()) await owner.query(statement);
-};
+const migrate = (sql = migration) =>
+  replayMigrationForTenant(owner, sql, tenantId);
 
 async function entity(): Promise<string> {
   const id = randomUUID();
@@ -105,6 +104,39 @@ const mappingsOf = async (entityId: string, role: string) =>
   ).rows;
 
 describe("legend-s8a3 1204 / 6110 / 6111 backfill migration", () => {
+  it("keeps FORCE RLS enabled after a replay statement fails and rolls back", async () => {
+    const rolledBackId = randomUUID();
+    const failingMigration = `
+      ALTER TABLE public.chart_of_accounts NO FORCE ROW LEVEL SECURITY;
+      --> statement-breakpoint
+      ALTER TABLE public.account_mappings NO FORCE ROW LEVEL SECURITY;
+      --> statement-breakpoint
+      INSERT INTO public.legal_entities (id, tenant_id, name) VALUES ('${rolledBackId}', '${tenantId}', 'Rolled back');
+      --> statement-breakpoint
+      SELECT 1 / 0;
+    `;
+    await expect(migrate(failingMigration)).rejects.toThrow("division by zero");
+
+    const rolledBack = await owner.query(
+      "SELECT 1 FROM legal_entities WHERE id = $1",
+      [rolledBackId],
+    );
+    expect(rolledBack.rowCount).toBe(0);
+
+    const result = await owner.query<{
+      relname: string;
+      relforcerowsecurity: boolean;
+    }>(
+      `SELECT relname, relforcerowsecurity FROM pg_class
+       WHERE oid IN ('public.chart_of_accounts'::regclass, 'public.account_mappings'::regclass)
+       ORDER BY relname`,
+    );
+    expect(result.rows).toEqual([
+      { relname: "account_mappings", relforcerowsecurity: true },
+      { relname: "chart_of_accounts", relforcerowsecurity: true },
+    ]);
+  });
+
   it("adds one account and one mapping each, twice over, under 1200 / 6100", async () => {
     const id = await provisioned();
 

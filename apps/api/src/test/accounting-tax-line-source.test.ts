@@ -588,8 +588,10 @@ describe("legend-powk0 PBJT tax line source", () => {
 
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ taxIdr: 10_000, baseIdr: 100_000 });
-    expect(lines[0]!.references).toHaveLength(1);
-    expect(lines[0]!.references[0]).toMatch(/non-PBJT Rp2000/);
+    // legend-wqorb: the note is a `warnings` entry, not a source reference.
+    expect(lines[0]!.references).toEqual([]);
+    expect(lines[0]!.warnings).toHaveLength(1);
+    expect(lines[0]!.warnings[0]).toMatch(/non-PBJT Rp2000/);
   });
 
   it("legend-powk0 adds no warning when the sales carry PBJT only", async () => {
@@ -600,6 +602,7 @@ describe("legend-powk0 PBJT tax line source", () => {
 
     expect(lines).toHaveLength(1);
     expect(lines[0]!.references).toEqual([]);
+    expect(lines[0]!.warnings).toEqual([]);
   });
 
   it("legend-powk0 ignores zero-rate sales when grossing up a refund base", async () => {

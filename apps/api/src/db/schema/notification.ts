@@ -46,6 +46,12 @@ export const notificationOutbox = pgTable(
       table.status,
       table.availableAt,
     ),
+    index("notification_outbox_alarm_window_idx").on(
+      table.tenantId,
+      table.eventType,
+      table.outletId,
+      table.createdAt,
+    ),
   ],
 );
 

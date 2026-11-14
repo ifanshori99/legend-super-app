@@ -31,6 +31,10 @@ export const aiSettingsChatgptMessages = {
     body: "Pemakaian akun ChatGPT melalui koneksi ini berisiko membuat akun ChatGPT Anda diblokir.",
     consent: "Saya memahami dan menyetujui risiko akun ChatGPT saya diblokir.",
   },
+  platformOff: {
+    title: "Login ChatGPT dimatikan platform",
+    body: "Login ChatGPT sedang dimatikan oleh platform. Model kustom tetap dipakai sebagai cadangan.",
+  },
   connect: "Hubungkan ChatGPT",
   newCode: "Buat kode baru",
   ownerOnly:

@@ -17,6 +17,7 @@ import {
   idrSchema,
   isoDateTimeSchema,
   outletIdSchema,
+  timeZoneSchema,
   uuidSchema,
   z,
 } from "../core/index.ts";
@@ -25,6 +26,7 @@ import {
   reservationDepositOutcomeSchema,
   reservationIdSchema,
   reservationPolicySnapshotSchema,
+  reservationSchema,
   reservationStatusSchema,
 } from "./schemas.ts";
 
@@ -85,6 +87,8 @@ export const guestReservationViewSchema = z.strictObject({
   outletName: z.string().min(1),
   guestName: z.string().min(1),
   partySize: z.number().int().min(1),
+  /** IANA zone of the outlet (`outlets.timezone`); the UI shows times in it. */
+  timeZone: timeZoneSchema,
   reservedFor: isoDateTimeSchema,
   status: reservationStatusSchema,
   note: z.string().nullable(),
@@ -109,6 +113,24 @@ export const guestReservationViewSchema = z.strictObject({
   }),
   /** The latest pending request, else null. */
   rescheduleRequest: reservationRescheduleRequestSchema.nullable(),
+  /**
+   * The latest request staff already decided (newest `resolvedAt`), else null.
+   * Separate from `rescheduleRequest`, which stays pending-only.
+   */
+  rescheduleDecision: z
+    .strictObject({
+      outcome: z.enum(["approved", "declined"]),
+      decidedAt: isoDateTimeSchema,
+      requestedFor: isoDateTimeSchema,
+      partySize: z.number().int().min(1).max(50).nullable(),
+      /**
+       * The booking time that was replaced; set only when approved, null when
+       * declined and on requests approved before it was stored. The decline
+       * reason is never sent to the guest (it may hold internal notes).
+       */
+      previousReservedFor: isoDateTimeSchema.nullable(),
+    })
+    .nullable(),
   linkExpiresAt: isoDateTimeSchema,
 });
 export type GuestReservationView = z.infer<typeof guestReservationViewSchema>;
@@ -157,6 +179,28 @@ export const listRescheduleRequestsQuerySchema = z.strictObject({
 });
 export type ListRescheduleRequestsQuery = z.infer<
   typeof listRescheduleRequestsQuerySchema
+>;
+
+/** Staff approve a request as is: the guest's time (and party size) apply. */
+export const approveRescheduleInputSchema = z.strictObject({});
+export type ApproveRescheduleInput = z.infer<
+  typeof approveRescheduleInputSchema
+>;
+
+export const declineRescheduleInputSchema = z.strictObject({
+  reason: z.string().min(1).max(300).optional(),
+});
+export type DeclineRescheduleInput = z.infer<
+  typeof declineRescheduleInputSchema
+>;
+
+/** The resolved request and the reservation as it stands afterwards. */
+export const resolveRescheduleResultSchema = z.strictObject({
+  request: reservationRescheduleRequestSchema,
+  reservation: reservationSchema,
+});
+export type ResolveRescheduleResult = z.infer<
+  typeof resolveRescheduleResultSchema
 >;
 
 // ---- Endpoints ------------------------------------------------------------
@@ -211,4 +255,31 @@ export const listRescheduleRequests = defineEndpoint({
   params: outletParams,
   query: listRescheduleRequestsQuerySchema,
   response: cursorPageSchema(reservationRescheduleRequestSchema),
+});
+
+const rescheduleRequestParams = z.strictObject({
+  outletId: outletIdSchema,
+  requestId: rescheduleRequestIdSchema,
+});
+
+/**
+ * Moves the booking (and its table holds) to the requested time. A taken table
+ * is RESERVATION_SLOT_TAKEN and the request stays pending. Repeating it on an
+ * approved request returns the same result.
+ */
+export const approveRescheduleRequest = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/reservation-reschedule-requests/:requestId/approve",
+  params: rescheduleRequestParams,
+  body: approveRescheduleInputSchema,
+  response: dataResponseSchema(resolveRescheduleResultSchema),
+});
+
+/** Closes the request; the booking stays as it was. */
+export const declineRescheduleRequest = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/reservation-reschedule-requests/:requestId/decline",
+  params: rescheduleRequestParams,
+  body: declineRescheduleInputSchema,
+  response: dataResponseSchema(resolveRescheduleResultSchema),
 });

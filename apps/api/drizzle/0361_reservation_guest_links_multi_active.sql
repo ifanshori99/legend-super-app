@@ -1,0 +1,2 @@
+DROP INDEX "reservation_guest_links_active_key";--> statement-breakpoint
+CREATE INDEX "reservation_guest_links_active_key" ON "reservation_guest_links" USING btree ("tenant_id","reservation_id") WHERE "reservation_guest_links"."revoked_at" IS NULL;

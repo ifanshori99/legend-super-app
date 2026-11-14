@@ -5,7 +5,7 @@
 // rows go only through `postLedgerEntry`, under `withProfileLock`.
 
 import { createHash, randomInt } from "node:crypto";
-import { and, count, eq, gte, inArray, ne, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
 import { tenantIdSchema, ulidToUuid } from "@starter/shared/core";
 import { memberTenantContext, withProfileLock } from "../db/member-scope.ts";
 import {
@@ -219,6 +219,9 @@ export async function qualifyReferral(context: EarnStepContext): Promise<void> {
       ),
     );
   if (Number(others?.total ?? 0) > 0) return;
+  // Founder Q6 (14 Nov 2026): an order paid fully with points (no cash part)
+  // never triggers the bonus, whatever minFirstOrderIdr is.
+  if (order.eligibleSpendIdr <= 0) return;
   if (order.eligibleSpendIdr < program.referral.minFirstOrderIdr) return;
 
   const now = new Date();
@@ -344,6 +347,13 @@ export type ReferralReversalInput = {
    * eligible amount; then this flag still makes the refund a full one.
    */
   fullRefund?: boolean;
+  /**
+   * Order issue ids of the rejected refunds of this order (the earn record's
+   * `reject:<id>` entries). Each names the restore lot a rejection gave back
+   * (see `restoreReferralBonusForRejectedRefund`), so what expired from that
+   * lot counts as expired from the bonus.
+   */
+  rejectedIssueIds?: readonly string[];
 };
 
 /** Stable UUID (v5-shaped) per refund or void and bonus row, so a replay is a no-op. */
@@ -353,6 +363,89 @@ function referralReverseSourceId(sourceId: string, entryId: string): string {
     .digest("hex");
   const variant = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** Reason of the `adjust` row that gives back a bonus; names the bonus row it restores. */
+function referralRestoreReason(bonusId: string): string {
+  return `Refund ditolak (ORD-09): bonus referral dipulihkan [${bonusId}]`;
+}
+
+/** Source id of the `adjust` lot that gives back a bonus row for one rejected refund. */
+function referralRestoreSourceId(issueId: string, bonusId: string): string {
+  return referralReverseSourceId(`restore:${issueId}`, bonusId);
+}
+
+/**
+ * Ids of the restore lots of one bonus row: `adjust` rows whose source id is
+ * derived from the bonus row and a rejected refund's issue id.
+ */
+async function restoreLotIds(
+  tx: Tx,
+  tenant: ReturnType<typeof tenantIdSchema.parse>,
+  profileId: string,
+  bonusId: string,
+  rejectedIssueIds: readonly string[],
+): Promise<string[]> {
+  if (rejectedIssueIds.length === 0) return [];
+  const rows = await tx
+    .select({ id: pointLedger.id })
+    .from(pointLedger)
+    .where(
+      and(
+        eq(pointLedger.tenantId, tenant),
+        eq(pointLedger.customerProfileId, profileId),
+        eq(pointLedger.type, "adjust"),
+        inArray(
+          pointLedger.sourceId,
+          rejectedIssueIds.map((issueId) =>
+            referralRestoreSourceId(issueId, bonusId),
+          ),
+        ),
+      ),
+    );
+  return rows.map((row) => row.id);
+}
+
+/**
+ * Points of a bonus row that stay taken back: its `reverse` rows minus the
+ * `adjust` rows that gave them back after a rejected refund (restore).
+ */
+async function netReversedOfBonus(
+  tx: Tx,
+  tenant: ReturnType<typeof tenantIdSchema.parse>,
+  profileId: string,
+  bonusId: string,
+): Promise<number> {
+  const [reversed] = await tx
+    .select({
+      total: sql<string>`COALESCE(-SUM(${pointLedger.points}), 0)`,
+    })
+    .from(pointLedger)
+    .where(
+      and(
+        eq(pointLedger.tenantId, tenant),
+        eq(pointLedger.type, "reverse"),
+        eq(pointLedger.reversesEntryId, bonusId),
+      ),
+    );
+  const [restored] = await tx
+    .select({
+      total: sql<string>`COALESCE(SUM(${pointLedger.points}), 0)`,
+    })
+    .from(pointLedger)
+    .where(
+      and(
+        eq(pointLedger.tenantId, tenant),
+        eq(pointLedger.customerProfileId, profileId),
+        eq(pointLedger.type, "adjust"),
+        eq(pointLedger.sourceType, "adjustment"),
+        eq(pointLedger.reason, referralRestoreReason(bonusId)),
+      ),
+    );
+  return Math.max(
+    0,
+    Number(reversed?.total ?? 0) - Number(restored?.total ?? 0),
+  );
 }
 
 /**
@@ -441,19 +534,14 @@ export async function reverseReferralForOrder(
       )
       .limit(1);
     if (!bonus || bonus.points <= 0) continue;
-    const [taken] = await tx
-      .select({
-        total: sql<string>`COALESCE(-SUM(${pointLedger.points}), 0)`,
-      })
-      .from(pointLedger)
-      .where(
-        and(
-          eq(pointLedger.tenantId, tenant),
-          eq(pointLedger.type, "reverse"),
-          eq(pointLedger.reversesEntryId, bonus.id),
-        ),
-      );
-    const remaining = Math.max(0, bonus.points - Number(taken?.total ?? 0));
+    // legend-sbxr0: a reverse a rejected refund gave back no longer counts.
+    const taken = await netReversedOfBonus(
+      tx,
+      tenant,
+      side.profile.id,
+      bonus.id,
+    );
+    const remaining = Math.max(0, bonus.points - taken);
     if (remaining <= 0) continue;
 
     const grant = (await loadGrantStates(tx, tenant, side.profile.id)).find(
@@ -465,16 +553,32 @@ export async function reverseReferralForOrder(
     // from other grants (legend-4frkf). Points a redeem used still count as
     // the grant's: like an earn reversal they are taken back from the balance
     // (no payout on a void).
+    // The points a rejected refund gave back sit in their own `adjust` lot (id
+    // from its derivable source id): what expired from it expired from the bonus.
+    const restoreIds = await restoreLotIds(
+      tx,
+      tenant,
+      side.profile.id,
+      bonus.id,
+      input.rejectedIssueIds ?? [],
+    );
+    let expireRowCount = grant?.expireRowCount ?? 0;
+    let expiredPoints = grant?.expiredPoints ?? 0;
+    if (restoreIds.length > 0)
+      for (const lot of await loadGrantStates(tx, tenant, side.profile.id)) {
+        if (!restoreIds.includes(lot.id)) continue;
+        expireRowCount += lot.expireRowCount;
+        expiredPoints += lot.expiredPoints;
+      }
     const grantLeft =
-      grant && grant.expireRowCount > 0
-        ? Math.max(
-            0,
-            bonus.points - grant.expiredPoints - Number(taken?.total ?? 0),
-          )
+      expireRowCount > 0
+        ? Math.max(0, bonus.points - expiredPoints - taken)
         : Number.POSITIVE_INFINITY;
+    // Points that expired are gone, not a shortfall: only what the grant still
+    // holds can fall short of the balance.
+    const cappedRemaining = Math.min(remaining, grantLeft);
     const posted = Math.min(
-      remaining,
-      grantLeft,
+      cappedRemaining,
       Math.max(0, Number(side.profile.pointsBalance)),
     );
     const reverseSourceId = referralReverseSourceId(input.sourceId, bonus.id);
@@ -495,7 +599,7 @@ export async function reverseReferralForOrder(
         },
         now,
       );
-    if (remaining > posted)
+    if (cappedRemaining > posted)
       await recordLoyaltyAnomaly(tx, {
         tenantId: tenant,
         kind: "refund_after_redeem",
@@ -506,9 +610,9 @@ export async function reverseReferralForOrder(
         details: {
           sourceType: input.sourceType,
           sourceId: reverseSourceId,
-          deltaPoints: remaining,
+          deltaPoints: cappedRemaining,
           postedPoints: posted,
-          shortfallPoints: remaining - posted,
+          shortfallPoints: cappedRemaining - posted,
         },
       });
   }
@@ -524,4 +628,206 @@ export async function reverseReferralForOrder(
       rewardedAt: null,
     })
     .where(and(eq(referrals.tenantId, tenant), eq(referrals.id, referral.id)));
+}
+
+/** The rejected refund (ORD-09) whose referral bonus reversal is undone. */
+export type ReferralRestoreInput = {
+  tenantId: string;
+  orderId: string;
+  /** The referee: the earn record's profile (a full refund removed the visit row). */
+  refereeProfileId: string;
+  outletId: string;
+  businessDate: string;
+  /** The rejected refund's order issue id: the idempotency key of the restore. */
+  sourceId: string;
+};
+
+/**
+ * A refund that took back the referral bonus is rejected (ORD-09): gives back
+ * exactly what that refund reversed, once. Only an `expired` referral without
+ * a first order (what the reversal leaves) is touched, and each side gets at
+ * most its own `reverse` rows of this refund, never more than the bonus held.
+ * A bonus that already lapsed is not restored, and then neither side is (the
+ * limiting choice: no half restore). Neither side is restored when the referrer
+ * is no longer active or the monthly referral cap of the bonus month is full.
+ * The restore row has a deterministic
+ * dedupe key and a side that already has it is skipped, so a retry or a
+ * concurrent call adds nothing. When a side is restored the referral turns
+ * `rewarded` again, so a later full refund can take the bonus back once more
+ * (the reversal counts the restore rows off). Call in the transaction of the
+ * caller, which holds the referee's profile lock.
+ */
+export async function restoreReferralBonusForRejectedRefund(
+  tx: Tx,
+  input: ReferralRestoreInput,
+  now: Date = new Date(),
+): Promise<void> {
+  const tenant = tenantIdSchema.parse(input.tenantId);
+
+  // Same lock order as the reversal: referee profile, referral, referrer.
+  const referee = await withProfileLock(tx, tenant, input.refereeProfileId);
+  const [referral] = await tx
+    .select()
+    .from(referrals)
+    .where(
+      and(
+        eq(referrals.tenantId, tenant),
+        eq(referrals.refereeProfileId, referee.id),
+        eq(referrals.status, "expired"),
+        sql`${referrals.firstOrderId} IS NULL`,
+      ),
+    )
+    .for("update");
+  if (!referral) return;
+  const referrer = await withProfileLock(
+    tx,
+    tenant,
+    referral.referrerProfileId,
+  );
+
+  // Limiting choice (decision for the CTO): an inactive referrer gets nothing
+  // back, and neither does the referee.
+  if (referrer.membershipStatus !== "active") return;
+  const program = await referralProgram(tx, tenant);
+  if (!program) return;
+
+  const context = memberTenantContext(tenant);
+  const sides = [
+    { profile: referrer, sourceIds: [referral.id] },
+    {
+      profile: referee,
+      sourceIds: [input.orderId, ulidToUuid(input.orderId)],
+    },
+  ];
+  let firstBonusAt: Date | null = null;
+  const restores: {
+    profileId: string;
+    bonusId: string;
+    points: number;
+    expiresAt: Date | null;
+  }[] = [];
+  for (const side of sides) {
+    const [bonus] = await tx
+      .select()
+      .from(pointLedger)
+      .where(
+        and(
+          eq(pointLedger.tenantId, tenant),
+          eq(pointLedger.customerProfileId, side.profile.id),
+          eq(pointLedger.type, "bonus"),
+          eq(pointLedger.sourceType, "referral"),
+          inArray(pointLedger.sourceId, side.sourceIds),
+        ),
+      )
+      .limit(1);
+    if (!bonus || bonus.points <= 0) continue;
+    if (firstBonusAt === null || bonus.createdAt < firstBonusAt)
+      firstBonusAt = bonus.createdAt;
+
+    const restoreSourceId = referralRestoreSourceId(input.sourceId, bonus.id);
+    const [done] = await tx
+      .select({ id: pointLedger.id })
+      .from(pointLedger)
+      .where(
+        and(
+          eq(pointLedger.tenantId, tenant),
+          eq(pointLedger.customerProfileId, side.profile.id),
+          eq(pointLedger.sourceId, restoreSourceId),
+        ),
+      )
+      .limit(1);
+    if (done) continue;
+
+    const [totals] = await tx
+      .select({
+        mine: sql<string>`COALESCE(-SUM(${pointLedger.points}), 0)`,
+      })
+      .from(pointLedger)
+      .where(
+        and(
+          eq(pointLedger.tenantId, tenant),
+          eq(pointLedger.type, "reverse"),
+          eq(pointLedger.reversesEntryId, bonus.id),
+          eq(
+            pointLedger.sourceId,
+            referralReverseSourceId(input.sourceId, bonus.id),
+          ),
+        ),
+      );
+    const mine = Math.min(Number(totals?.mine ?? 0), bonus.points);
+    if (mine <= 0) continue;
+    // A lapsed bonus is not given back, and then no side is.
+    if (bonus.expiresAt !== null && bonus.expiresAt <= now) return;
+    restores.push({
+      profileId: side.profile.id,
+      bonusId: bonus.id,
+      points: mine,
+      expiresAt: bonus.expiresAt,
+    });
+  }
+  if (restores.length === 0 || firstBonusAt === null) return;
+
+  // Monthly cap (as `qualifyReferral`) of the month the bonus was first paid in
+  // (Asia/Jakarta): when the referrer's other rewarded referrals of that month
+  // already fill it, the restore would pay above the cap, so neither side is
+  // restored (limiting choice, decision for the CTO).
+  const bonusMonth = sql`timezone('Asia/Jakarta', ${firstBonusAt.toISOString()}::timestamptz)`;
+  const monthStart = sql`timezone('Asia/Jakarta', date_trunc('month', ${bonusMonth}))`;
+  const nextMonthStart = sql`timezone('Asia/Jakarta', date_trunc('month', ${bonusMonth}) + interval '1 month')`;
+  const [rewardedThatMonth] = await tx
+    .select({ total: count() })
+    .from(referrals)
+    .where(
+      and(
+        eq(referrals.tenantId, tenant),
+        eq(referrals.referrerProfileId, referrer.id),
+        eq(referrals.status, "rewarded"),
+        ne(referrals.id, referral.id),
+        gte(referrals.rewardedAt, monthStart),
+        lt(referrals.rewardedAt, nextMonthStart),
+      ),
+    );
+  if (
+    Number(rewardedThatMonth?.total ?? 0) >=
+    program.referral.maxReferralsPerCustomerPerMonth
+  )
+    return;
+
+  for (const restore of restores) {
+    await postLedgerEntry(
+      tx,
+      context,
+      {
+        tenantId: tenant,
+        customerProfileId: restore.profileId,
+        outletId: input.outletId,
+        type: "adjust",
+        points: restore.points,
+        sourceType: "adjustment",
+        sourceId: referralRestoreSourceId(input.sourceId, restore.bonusId),
+        expiresAt: restore.expiresAt,
+        businessDate: input.businessDate,
+        reason: referralRestoreReason(restore.bonusId),
+      },
+      now,
+    );
+  }
+
+  await tx
+    .update(referrals)
+    // referrals_{first_order,qualified_at,rewarded_at}_check: a rewarded row
+    // keeps its order and both timestamps.
+    .set({
+      status: "rewarded",
+      firstOrderId: input.orderId,
+      qualifiedAt: firstBonusAt,
+      rewardedAt: firstBonusAt,
+    })
+    .where(
+      and(
+        eq(referrals.tenantId, tenant),
+        eq(referrals.id, referral.id),
+        eq(referrals.status, "expired"),
+      ),
+    );
 }

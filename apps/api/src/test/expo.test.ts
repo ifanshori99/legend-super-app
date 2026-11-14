@@ -305,8 +305,8 @@ async function seedTicket(
   await asOwnerTenant(forTenant.tenantId, (client) =>
     client.query(
       `INSERT INTO kitchen_tickets (id, tenant_id, outlet_id, order_id, station_id, fire_batch_id,
-         status, priority, fired_at, done_at, cancelled_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10)`,
+         business_date, ticket_no, status, priority, fired_at, done_at, cancelled_at)
+       VALUES ($1, $2, $3, $4, $5, $6, '2026-11-01', (SELECT coalesce(max(m.ticket_no), 0) + 1 FROM kitchen_tickets m WHERE m.tenant_id = $2::uuid AND m.outlet_id = $3::uuid AND m.business_date = '2026-11-01'), $7, 0, $8, $9, $10)`,
       [
         ulidToUuid(ulid),
         forTenant.tenantId,

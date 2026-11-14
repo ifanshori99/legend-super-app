@@ -132,12 +132,20 @@ async function protectLoyaltyEntityChange(
       : null;
   if (!entityChanged && movingOutlet === null) return;
 
-  // Publishers lock their order/intent before writing paid events. NOWAIT
-  // lets the organisation change retry instead of blocking payment.
+  // AI operations briefly share-lock the tenant. Wait for those operations,
+  // but bound the wait; publishers' order/intent locks remain NOWAIT so the
+  // organisation change retries instead of blocking payment.
   try {
     await tx.transaction(async (savepoint) => {
+      const timeout = await savepoint.execute<{ value: string }>(
+        sql`SELECT current_setting('lock_timeout') AS value`,
+      );
+      await savepoint.execute(sql`SET LOCAL lock_timeout = '1s'`);
       await savepoint.execute(
-        sql`SELECT id FROM tenants WHERE id = ${tenantId} FOR UPDATE NOWAIT`,
+        sql`SELECT id FROM tenants WHERE id = ${tenantId} FOR UPDATE`,
+      );
+      await savepoint.execute(
+        sql`SELECT set_config('lock_timeout', ${timeout.rows[0]!.value}, true)`,
       );
       await savepoint.execute(
         sql`SELECT id FROM orders WHERE tenant_id = ${tenantId} ORDER BY id FOR SHARE NOWAIT`,

@@ -60,6 +60,17 @@ async function signedIn(scope: "tenant" | "outlet") {
 beforeAll(async () => {
   manager = await signedIn("tenant");
   scoped = await signedIn("outlet");
+  // Closing a reconciliation case asks for approval: the tenant needs a policy.
+  await owner.query(
+    "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'reconciliation_case'",
+    [tenantId],
+  );
+  await owner.query(
+    `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+     SELECT $1, 'reconciliation_case', NULL, id, 1, true
+     FROM roles WHERE tenant_id = $1 AND template_key = 'owner'`,
+    [tenantId],
+  );
   await owner.query(
     `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
      VALUES ($1, $2, $3, $4, $5, 100000, 100000, 100000, $6)`,
@@ -418,23 +429,38 @@ describe("WS-05 payment administration", () => {
     expect(response.status).toBe(409);
   });
 
-  it("EDC-06 resolves a settlement difference only with a note", async () => {
+  it("EDC-06 resolving a settlement difference needs a note and only asks for approval", async () => {
     const missing = await manager
       .post(`/api/payments/admin/reconciliation/cases/${caseId}/resolve`)
       .set(originHeader)
       .set("Idempotency-Key", `case-${randomUUID()}`)
       .send({ note: "" });
     expect(missing.status).toBe(422);
-    const resolved = await manager
+    const requested = await manager
       .post(`/api/payments/admin/reconciliation/cases/${caseId}/resolve`)
       .set(originHeader)
       .set("Idempotency-Key", `case-${randomUUID()}`)
       .send({ note: "Bank fee investigated" });
-    expect(resolved.status).toBe(200);
-    expect(resolved.body.data).toMatchObject({
-      status: "resolved",
+    expect(requested.status).toBe(200);
+    expect(requested.body.data).toMatchObject({
+      status: "pending_approval",
       varianceIdr: -10000,
+      requestedBy: userIds[0],
+      approvedBy: null,
     });
+    expect(requested.body.data.approvalRequestId).toEqual(expect.any(String));
+    const pending = await owner.query<{ status: string }>(
+      `SELECT status FROM approval_requests
+       WHERE tenant_id = $1 AND object_type = 'payment_reconciliation_case' AND object_id = $2`,
+      [tenantId, caseId],
+    );
+    expect(pending.rows.map((r) => r.status)).toEqual(["pending"]);
+    const again = await manager
+      .post(`/api/payments/admin/reconciliation/cases/${caseId}/resolve`)
+      .set(originHeader)
+      .set("Idempotency-Key", `case-${randomUUID()}`)
+      .send({ note: "Bank fee investigated again" });
+    expect(again.status).toBe(409);
   });
 
   it("EDC-07 creates a terminal and denies another outlet's administrator", async () => {

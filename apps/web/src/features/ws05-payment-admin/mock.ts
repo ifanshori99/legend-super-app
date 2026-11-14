@@ -924,7 +924,10 @@ registerMock(getReconciliationSummary, ({ scenario }) => {
   return {
     data: {
       ...store.get().summary,
-      openCases: cases.filter((entry) => entry.status === "open").length,
+      openCases: cases.filter(
+        (entry) =>
+          entry.status === "open" || entry.status === "pending_approval",
+      ).length,
       resolvedThisMonth: cases.filter((entry) => entry.status === "resolved")
         .length,
     },
@@ -941,13 +944,20 @@ registerMock(resolveReconciliationCase, ({ endpoint, headers, params, body }) =>
         "NOT_FOUND",
         "Kasus rekonsiliasi tidak ditemukan.",
       );
-    if (entry.status === "resolved")
-      throw new ApiError(409, "CONFLICT", "Kasus ini sudah ditutup.");
+    if (entry.status !== "open")
+      throw new ApiError(
+        409,
+        "CONFLICT",
+        "Kasus ini sudah diajukan atau ditutup.",
+      );
+    // Closing is only requested: another person must approve it before the
+    // case resolves (contract: reconciliation_case approval).
     const updated: ReconciliationCaseView = {
       ...entry,
-      status: "resolved",
-      resolvedByName: ACTOR.name,
-      resolvedAt: now(),
+      status: "pending_approval",
+      requestedBy: ACTOR.id,
+      requestedByName: ACTOR.name,
+      approvalRequestId: newIdempotencyKey(),
       note: body.note,
     };
     store.set({

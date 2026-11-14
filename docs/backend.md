@@ -98,6 +98,8 @@ The Better Auth admin plugin adds its own `/api/auth/admin/*` endpoints. `apps/a
 5. `pnpm db:generate`, inspect the SQL, `pnpm db:migrate`. Keep SQL and metadata together; never edit applied migrations.
 6. Add tests in `apps/api/src/test/` for CRUD, rejected input, anonymous access, origin checks, and cross-account isolation; then build the web side ([frontend](frontend.md)). Run `pnpm check`.
 
+For a newly created table, `db:generate` may emit foreign keys as separate `ALTER TABLE ... ADD CONSTRAINT` statements. Before applying the migration, move each constraint definition inside that table's `CREATE TABLE` parentheses, separated by commas, and remove its separate `ALTER TABLE` statement. This avoids validating the FK later against a FORCE RLS table without tenant context; see migration `0352_edge_link_dead_letters` for an example. Never modify an already applied migration.
+
 ## Tenant database role
 
 Tenant tables use forced RLS. Migrations run using the owner/admin connection in

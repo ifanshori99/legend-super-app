@@ -13,7 +13,7 @@ import { evaluateGuard } from "@/lib/areas/guard";
 // reservation can be opened directly (also what the e2e spec drives).
 const searchSchema = z.object({
   tab: z
-    .enum(["schedule", "waitlist", "packages"])
+    .enum(["schedule", "waitlist", "reschedule", "packages"])
     .catch("schedule")
     .default("schedule"),
   date: z

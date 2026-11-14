@@ -208,6 +208,10 @@ Both servers write one JSON object per line to stdout with `level`, `time`, `ser
 
 The API uses one node-postgres pool with at most ten connections per process. Multiple instances multiply the connection count: use your provider's pooler and tune limits. Better Auth's rate-limit storage is in memory per instance; for several API instances configure shared rate-limit storage (see Better Auth's rate-limit docs). The web server keeps no state.
 
+## Object storage permissions
+
+Payout payment proofs are checked with a read of the object before resolve, return, confirm or an overpaid record. On S3-compatible storage the API key must hold `s3:ListBucket` on the private bucket as well as `s3:GetObject` and `s3:PutObject`. Without `ListBucket`, a missing object answers AccessDenied instead of NoSuchKey, and a key that was never uploaded then fails with a 500 instead of 422 `PAYOUT_EVIDENCE_INVALID`. No payment is recorded either way.
+
 ## Public API rate limits
 
 The API's session-free reads — the guest QR scan and menu (`/api/qr/*`), the brand website and its menu (`/api/public/site/*`), the SSR brand context (`/api/tenant/*`) and customer payment links (`/api/payments/links/*`) — are capped by one in-memory limiter in the API. Authenticated routes are bounded by their session and permissions; these have no session at all, and the menu reads return the whole catalogue.
@@ -617,8 +621,12 @@ user, provision the restricted application and queue roles (next section), and
 confirm a successful base backup to both repositories. Provisioning is a
 first-boot prerequisite; the deploy script does not perform it. See
 `deploy/backup/README.md` for the supplied systemd timer example and
-restore-drill procedure. Once those prerequisites and the transport adapter are
-ready, use the deploy script for subsequent releases.
+restore-drill procedure. Set `pg1-user` in the private pgBackRest configuration
+to the same PostgreSQL login as `POSTGRES_USER` in `compose.env`. Export that
+same `POSTGRES_USER` when running the isolated restore drill; its example default
+is `replace_me` and must be replaced with the actual login. Once those
+prerequisites and the transport adapter are ready, use the deploy script for
+subsequent releases.
 
 #### Create the migrator login (legend-jtnd)
 

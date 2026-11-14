@@ -39,6 +39,11 @@ const WEBSITE_PATHS = new Set([
 // navigation, nothing that could leak the token to another page (legend-1uk9).
 const RECEIPT_PREFIX = "/r/";
 
+// The guest's manage-reservation page (/reservasi/kelola#token) is a bare
+// column too, but not part of the brand site: it draws its own frame, with its
+// own <main id="main-content">, and no site navigation (legend-g12il).
+const GUEST_MANAGE_PATH = "/reservasi/kelola";
+
 function Layout() {
   const { gate } = Route.useRouteContext();
   const { pathname } = useLocation();
@@ -47,7 +52,9 @@ function Layout() {
     return <AreaGateScreen area="public" gate={gate} />;
   return (
     <ThemeScope density="hangat" className="min-h-dvh bg-background">
-      {WEBSITE_PATHS.has(pathname) ? (
+      {WEBSITE_PATHS.has(pathname) ||
+      pathname === GUEST_MANAGE_PATH ||
+      pathname.startsWith(`${GUEST_MANAGE_PATH}/`) ? (
         <Outlet />
       ) : pathname.startsWith(RECEIPT_PREFIX) ? (
         <main

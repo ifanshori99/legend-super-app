@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { selectWarmRoutes } from "./warm-routes.ts";
+import { selectWarmRoutes } from "../e2e/warm-routes.ts";
 
 const defaults = ["/", "/kds"];
 

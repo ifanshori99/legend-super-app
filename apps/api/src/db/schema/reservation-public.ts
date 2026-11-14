@@ -72,8 +72,10 @@ export const reservationGuestLinks = pgTable(
       columns: [table.tenantId, table.reservationId],
       foreignColumns: [reservations.tenantId, reservations.id],
     }),
-    // One active link per reservation; revoked rows stay as history.
-    uniqueIndex("reservation_guest_links_active_key")
+    // Several automatic links may be active at once (legend-wmfip: a retry
+    // never revokes the link of an earlier send); the service caps them.
+    // Revoked rows stay as history.
+    index("reservation_guest_links_active_key")
       .on(table.tenantId, table.reservationId)
       .where(sql`${table.revokedAt} IS NULL`),
     check(
@@ -102,6 +104,14 @@ export const reservationRescheduleRequests = pgTable(
     createdAt,
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     resolvedBy: text("resolved_by"),
+    /**
+     * The booking time before staff approved the move (legend-z5ygw), so the
+     * guest view can say the old schedule was replaced. NULL while pending,
+     * when declined, and on requests approved before this column existed.
+     */
+    previousReservedFor: timestamp("previous_reserved_for", {
+      withTimezone: true,
+    }),
   },
   (table) => [
     unique("reservation_reschedule_requests_tenant_id_id_key").on(

@@ -11,7 +11,13 @@ import {
   pacingQuery,
   servingTimeSummaryQuery,
 } from "./queries.ts";
-import { saveCapacityRules, type CapacityRulesBody } from "./api.ts";
+import {
+  saveCapacityRules,
+  saveKitchenStations,
+  type CapacityRulesBody,
+} from "./api.ts";
+import { kdsKeys } from "../ws04-kds/queries.ts";
+import type { StationUpdate } from "./station-order.ts";
 import type { OrderIssueQuery, ServingSummaryQuery } from "./api.ts";
 
 // The outlet is the one the shell selected (useTenantContext().outlet); null
@@ -70,5 +76,28 @@ export function useUpdateCapacityRules(outletId: Outlet) {
           queryKey: kitchenConfigKeys.pacing(outletId),
         }),
       ]),
+  });
+}
+
+export function useUpdateKitchenStations(outletId: Outlet) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (stations: StationUpdate[]) => {
+      if (!outletId) throw new Error("No outlet selected");
+      return saveKitchenStations(outletId, stations);
+    },
+    // The saved order is what the KDS tabs and the capacity cards read too.
+    onSuccess: (saved) => {
+      queryClient.setQueryData(kitchenConfigKeys.stations(outletId), saved);
+      return Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: kitchenConfigKeys.stations(outletId),
+        }),
+        // The KDS station tabs read the same order and active flags.
+        queryClient.invalidateQueries({
+          queryKey: kdsKeys.stations(outletId ?? undefined),
+        }),
+      ]);
+    },
   });
 }

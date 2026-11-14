@@ -52,6 +52,7 @@
     "./website": "./src/website/index.ts",
     "./hris": "./src/hris/index.ts",
     "./hris/payroll": "./src/hris/payroll/index.ts",
+    "./hris/payroll/payout": "./src/hris/payroll/payout-endpoints.ts",
     "./hris/payroll/payslips": "./src/hris/payroll/payslips.ts",
     "./hris/payroll/server": "./src/hris/payroll/server.ts",
     "./platform": "./src/platform/index.ts",

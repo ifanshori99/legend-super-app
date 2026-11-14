@@ -1,0 +1,716 @@
+{
+  "baseUrl": "http://localhost:3241",
+  "axe": "axe-core bundle",
+  "tags": [
+    "wcag2a",
+    "wcag2aa",
+    "wcag21aa",
+    "wcag22aa"
+  ],
+  "states": {
+    "runs-normal": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "runs-loading": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "runs-error": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "runs-offline": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "runs-empty": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "runs-prepared": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "runs-prepare-refused": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "approval-normal": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "approval-loading": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "approval-error": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "approval-offline": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "approval-empty": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "approval-checked": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "approval-refused-self-approval": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "approval-refused-inactive-source": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "approval-stepup": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "approval-approved": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "status-normal": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "status-loading": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "status-error": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "status-offline": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "status-empty": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "status-unknown": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "status-record-dialog": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "status-record-invalid": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "status-detail-dialog": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "settings-normal": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "settings-loading": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "settings-error": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "settings-offline": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "settings-duitku-off": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "settings-invalid": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "settings-refused-inactive-source": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "settings-saved": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "exceptions-normal": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "exceptions-loading": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "exceptions-empty": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "exceptions-error": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "exceptions-offline": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "exceptions-kind-filtered": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "exceptions-outlet-filtered": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "exceptions-filtered-empty": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "exceptions-range-invalid": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    },
+    "exceptions-dates-missing": {
+      "status": "pass",
+      "widths": {
+        "390": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "1280": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        }
+      }
+    }
+  }
+}

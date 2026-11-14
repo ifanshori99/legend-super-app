@@ -20,7 +20,9 @@ import { Router, type Request, type Response } from "express";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { idempotencyKeySchema } from "@starter/shared/core";
 import {
+  approveRescheduleRequest as approveRescheduleEndpoint,
   cancelGuestReservation as cancelGuestEndpoint,
+  declineRescheduleRequest as declineRescheduleEndpoint,
   issueReservationGuestLink as issueLinkEndpoint,
   listRescheduleRequests as listRescheduleEndpoint,
   requestGuestReschedule as rescheduleGuestEndpoint,
@@ -49,6 +51,10 @@ import {
   requestGuestReschedule,
   revokeGuestLinkForStaff,
 } from "../services/reservation-public.ts";
+import {
+  approveRescheduleRequest,
+  declineRescheduleRequest,
+} from "../services/reservation-reschedule.ts";
 
 export const reservationPublicRouter = Router();
 
@@ -203,5 +209,47 @@ reservationPublicRouter.get(
         query,
       ),
     );
+  },
+);
+
+reservationPublicRouter.post(
+  "/outlets/:outletId/reservation-reschedule-requests/:requestId/approve",
+  ...staff,
+  jsonBody,
+  manage,
+  async (req, res) => {
+    const { outletId, requestId } = approveRescheduleEndpoint.params.parse(
+      req.params,
+    );
+    approveRescheduleEndpoint.body.parse(req.body ?? {});
+    res.json({
+      data: await approveRescheduleRequest(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        outletId,
+        requestId,
+      ),
+    });
+  },
+);
+
+reservationPublicRouter.post(
+  "/outlets/:outletId/reservation-reschedule-requests/:requestId/decline",
+  ...staff,
+  jsonBody,
+  manage,
+  async (req, res) => {
+    const { outletId, requestId } = declineRescheduleEndpoint.params.parse(
+      req.params,
+    );
+    res.json({
+      data: await declineRescheduleRequest(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        outletId,
+        requestId,
+        declineRescheduleEndpoint.body.parse(req.body ?? {}),
+      ),
+    });
   },
 );

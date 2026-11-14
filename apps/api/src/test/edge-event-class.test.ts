@@ -24,11 +24,33 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { createUlid, ulidToUuid } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
 import { inventoryEvents } from "@starter/shared/inventory";
 import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import {
+  appendOutbox,
+  consumeOutbox,
+  markOutboxDead,
+  relayOutbox,
+  replayOutbox,
+} from "../services/core-outbox.ts";
+import {
+  alertBlockedOutboxAggregates,
+  countBlockedOutboxAggregates,
+} from "../services/core-outbox-dead-alert.ts";
+import * as conflictAlerts from "../services/edge-sync-conflict-alert.ts";
+import { logger } from "../lib/logger.ts";
 import { resetEdgeApplierRegistryForTests } from "../edge/applier-registry.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
 import { registerAccessEdgeApplier } from "../edge/access-applier.ts";
@@ -260,6 +282,36 @@ async function createFixture() {
   );
 }
 
+async function createBlockedHead(
+  context: ReturnType<typeof establishScopedTenantContext>,
+  destination: string,
+) {
+  const first = edgeEvent("order.paid", "order");
+  const second = {
+    ...edgeEvent("order.paid", "order"),
+    aggregateId: first.aggregateId,
+    sequence: 2,
+  };
+  const firstId = createUlid();
+  for (const [id, event] of [
+    [firstId, first],
+    [createUlid(), second],
+  ] as const) {
+    await withTenant(db, context, (tx) =>
+      appendOutbox(tx, context, {
+        id,
+        event,
+        destination,
+        direction: null,
+        peerId: null,
+      }),
+    );
+  }
+  expect(
+    await markOutboxDead(db, context, { outboxId: firstId, generation: 0 }),
+  ).toBe(true);
+}
+
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
@@ -299,6 +351,9 @@ afterAll(async () => {
       "delivery_attempts",
       "notifications",
       "notification_outbox",
+      "domain_event_consumptions",
+      "domain_event_offsets",
+      "domain_event_replays",
       "domain_event_outbox",
       "stock_balances",
       "stock_ledger",
@@ -498,6 +553,440 @@ describe("legend-niq9 C stock.* other than stock.moved alarms once", () => {
 });
 
 describe("legend-eadm D alarm storm and once-only path", () => {
+  it("legend-tbl4 indexes the tenant, event, outlet and alarm time used by the dedupe window", async () => {
+    const { rows } = await owner.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes
+        WHERE schemaname = 'public' AND tablename = 'notification_outbox'
+          AND indexname = 'notification_outbox_alarm_window_idx'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.indexdef).toContain(
+      "(tenant_id, event_type, outlet_id, created_at)",
+    );
+  });
+
+  it("legend-tbl4 an outlet without a supervisor leaves no dedupe marker and alarms when one is assigned", async () => {
+    const name = "zz_no_supervisor.created";
+    const notificationsBefore = await notificationCount();
+    const outboxCount = () =>
+      count(
+        `SELECT count(*)::int AS n FROM notification_outbox
+          WHERE tenant_id = $1 AND event_type = 'edge_event.parked_unclassified'
+            AND payload->>'eventName' = $2`,
+        [tenantId, name],
+      );
+    await owner.query(
+      "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = $2 AND role_id = $3",
+      [tenantId, supervisorUserId, supervisorRoleId],
+    );
+    try {
+      const unknown = edgeEvent(name);
+      await deliver([unknown]);
+      expect(await parkedRows(unknown.id)).toHaveLength(1);
+      expect(await notificationCount()).toBe(notificationsBefore);
+      expect(await outboxCount()).toBe(0);
+    } finally {
+      await owner.query(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+         VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 minute', $2)`,
+        [tenantId, supervisorUserId, supervisorRoleId, outletA],
+      );
+    }
+    await deliver([edgeEvent(name)]);
+    expect(await notificationCount()).toBe(notificationsBefore + 1);
+    expect(await outboxCount()).toBe(1);
+    await deliver([edgeEvent(name)]);
+    expect(await notificationCount()).toBe(notificationsBefore + 1);
+    expect(await outboxCount()).toBe(1);
+  });
+
+  it("legend-1opho records an alarm even if another aggregate cannot be enqueued", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "domain" }),
+      { kind: "tenant" },
+    );
+    const first = edgeEvent("order.paid", "order");
+    const later = {
+      ...edgeEvent("order.paid", "order"),
+      aggregateId: first.aggregateId,
+      sequence: 2,
+    };
+    const ready = edgeEvent("order.paid", "order");
+    const firstId = createUlid();
+    const readyId = createUlid();
+    for (const [id, event] of [
+      [firstId, first],
+      [createUlid(), later],
+      [readyId, ready],
+    ] as const) {
+      await withTenant(db, context, (tx) =>
+        appendOutbox(tx, context, {
+          id,
+          event,
+          destination: "cloud-sync",
+          direction: null,
+          peerId: null,
+        }),
+      );
+    }
+    expect(
+      await markOutboxDead(db, context, { outboxId: firstId, generation: 0 }),
+    ).toBe(true);
+    const before = await notificationCount();
+    await expect(
+      relayOutbox(
+        db,
+        context,
+        async () => {
+          throw new Error("enqueue failed");
+        },
+        undefined,
+        { destinations: ["cloud-sync"] },
+      ),
+    ).rejects.toThrow("enqueue failed");
+    expect(await notificationCount()).toBe(before + 1);
+    await markOutboxDead(db, context, { outboxId: readyId, generation: 0 });
+  });
+
+  it("legend-1opho alarms again when a later event of the same aggregate is dead-lettered", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "domain" }),
+      { kind: "tenant" },
+    );
+    const first = edgeEvent("order.paid", "order");
+    const second = {
+      ...edgeEvent("order.paid", "order"),
+      aggregateId: first.aggregateId,
+      sequence: 2,
+    };
+    const third = {
+      ...edgeEvent("order.paid", "order"),
+      aggregateId: first.aggregateId,
+      sequence: 3,
+    };
+    const firstId = createUlid();
+    const secondId = createUlid();
+    for (const [id, event] of [
+      [firstId, first],
+      [secondId, second],
+      [createUlid(), third],
+    ] as const) {
+      await withTenant(db, context, (tx) =>
+        appendOutbox(tx, context, {
+          id,
+          event,
+          destination: "cloud-sync",
+          direction: null,
+          peerId: null,
+        }),
+      );
+    }
+    const before = await notificationCount();
+    await markOutboxDead(db, context, { outboxId: firstId, generation: 0 });
+    await relayOutbox(db, context, async () => randomUUID(), undefined, {
+      destinations: ["cloud-sync"],
+    });
+    expect(await notificationCount()).toBe(before + 1);
+    await replayOutbox(db, context, {
+      outboxId: firstId,
+      actor: { type: "user", id: randomUUID() },
+      reason: "Operator resolved the incident",
+      authorize: async () => true,
+    });
+    await consumeOutbox(db, context, {
+      outboxId: firstId,
+      generation: 1,
+      authorize: async () => true,
+      deliver: async () => {},
+    });
+    await markOutboxDead(db, context, { outboxId: secondId, generation: 0 });
+    await relayOutbox(db, context, async () => randomUUID(), undefined, {
+      destinations: ["cloud-sync"],
+    });
+    await relayOutbox(db, context, async () => randomUUID(), undefined, {
+      destinations: ["cloud-sync"],
+    });
+    expect(await notificationCount()).toBe(before + 2);
+  });
+
+  it("legend-1opho retries a failed alarm without blocking other aggregates", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "domain" }),
+      { kind: "tenant" },
+    );
+    const blocked = [
+      edgeEvent("order.paid", "order"),
+      edgeEvent("order.paid", "order"),
+    ];
+    for (const first of blocked) {
+      const firstId = createUlid();
+      const second = {
+        ...edgeEvent("order.paid", "order"),
+        aggregateId: first.aggregateId,
+        sequence: 2,
+      };
+      for (const [id, event] of [
+        [firstId, first],
+        [createUlid(), second],
+      ] as const) {
+        await withTenant(db, context, (tx) =>
+          appendOutbox(tx, context, {
+            id,
+            event,
+            destination: "cloud-sync",
+            direction: null,
+            peerId: null,
+          }),
+        );
+      }
+      expect(
+        await markOutboxDead(db, context, { outboxId: firstId, generation: 0 }),
+      ).toBe(true);
+    }
+    const failedAggregate = ulidToUuid(blocked[0]!.aggregateId);
+    const failureFn = `${TRIGGER_FN}_dead`;
+    await owner.query(
+      `CREATE FUNCTION ${failureFn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'alarm failure (test)'; END $$`,
+    );
+    await owner.query(
+      `CREATE TRIGGER ${failureFn}_t BEFORE INSERT ON notification_outbox FOR EACH ROW WHEN (NEW.tenant_id = '${tenantId}'::uuid AND NEW.event_type = 'edge_outbox.blocked' AND NEW.payload->>'aggregateId' = '${failedAggregate}') EXECUTE FUNCTION ${failureFn}()`,
+    );
+    const before = await notificationCount();
+    try {
+      await relayOutbox(db, context, async () => randomUUID(), undefined, {
+        destinations: ["cloud-sync"],
+      });
+      expect(await notificationCount()).toBe(before + 1);
+    } finally {
+      await owner.query(
+        `DROP TRIGGER IF EXISTS ${failureFn}_t ON notification_outbox`,
+      );
+      await owner.query(`DROP FUNCTION IF EXISTS ${failureFn}()`);
+    }
+    await relayOutbox(db, context, async () => randomUUID(), undefined, {
+      destinations: ["cloud-sync"],
+    });
+    expect(await notificationCount()).toBe(before + 2);
+    await relayOutbox(db, context, async () => randomUUID(), undefined, {
+      destinations: ["cloud-sync"],
+    });
+    expect(await notificationCount()).toBe(before + 2);
+  });
+
+  it("legend-mciif skips supervisor lookup on repeated sweeps", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "domain" }),
+      { kind: "tenant" },
+    );
+    const destination = "test-mciif-dedupe";
+    await createBlockedHead(context, destination);
+    const notify = vi.spyOn(conflictAlerts, "notifyOutletSupervisors");
+    try {
+      await alertBlockedOutboxAggregates(db, context, {
+        destinations: [destination],
+      });
+      await alertBlockedOutboxAggregates(db, context, {
+        destinations: [destination],
+      });
+      expect(notify).toHaveBeenCalledTimes(1);
+    } finally {
+      notify.mockRestore();
+    }
+  });
+
+  it("legend-mciif bounds a sweep and processes remaining heads on the next sweep", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "domain" }),
+      { kind: "tenant" },
+    );
+    const destination = "test-mciif-limit";
+    for (let i = 0; i < 101; i++) await createBlockedHead(context, destination);
+    const before = await notificationCount();
+    await alertBlockedOutboxAggregates(db, context, {
+      destinations: [destination],
+    });
+    const first = (await notificationCount()) - before;
+    expect(first).toBeGreaterThan(0);
+    expect(first).toBeLessThanOrEqual(100);
+    await alertBlockedOutboxAggregates(db, context, {
+      destinations: [destination],
+    });
+    expect(await notificationCount()).toBeGreaterThan(before + first);
+  }, 120_000);
+
+  it("legend-mciif advances past a batch of failed alarms and retries it after wrapping", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "domain" }),
+      { kind: "tenant" },
+    );
+    const destination = "test-mciif-failed-batch";
+    for (let i = 0; i < 101; i++) await createBlockedHead(context, destination);
+    const before = await notificationCount();
+    const notify = vi
+      .spyOn(conflictAlerts, "notifyOutletSupervisors")
+      .mockRejectedValue(new Error("notification unavailable"));
+    try {
+      await alertBlockedOutboxAggregates(db, context, {
+        destinations: [destination],
+      });
+      expect(notify).toHaveBeenCalledTimes(100);
+      expect(await notificationCount()).toBe(before);
+    } finally {
+      notify.mockRestore();
+    }
+    await alertBlockedOutboxAggregates(db, context, {
+      destinations: [destination],
+    });
+    expect(await notificationCount()).toBe(before + 1);
+    await alertBlockedOutboxAggregates(db, context, {
+      destinations: [destination],
+    });
+    expect(await notificationCount()).toBe(before + 101);
+  }, 120_000);
+
+  it("legend-mciif logs missing recipients once across sweeps", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "domain" }),
+      { kind: "tenant" },
+    );
+    const destination = "test-mciif-empty";
+    await createBlockedHead(context, destination);
+    await owner.query(
+      "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = $2",
+      [tenantId, supervisorUserId],
+    );
+    const errors = vi.spyOn(logger, "error");
+    try {
+      await alertBlockedOutboxAggregates(db, context, {
+        destinations: [destination],
+      });
+      await alertBlockedOutboxAggregates(db, context, {
+        destinations: [destination],
+      });
+      expect(errors).toHaveBeenCalledTimes(1);
+    } finally {
+      errors.mockRestore();
+      await owner.query(
+        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by) VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 minute', $2)`,
+        [tenantId, supervisorUserId, supervisorRoleId, outletA],
+      );
+    }
+  });
+
+  it("legend-1opho alarms once when a dead edge event blocks its aggregate across relay sweeps", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "domain" }),
+      { kind: "tenant" },
+    );
+    const options = { destinations: ["cloud-sync"] };
+    const blockedBefore = await countBlockedOutboxAggregates(
+      db,
+      context,
+      options,
+    );
+    const first = edgeEvent("order.paid", "order");
+    const second = {
+      ...edgeEvent("order.paid", "order"),
+      aggregateId: first.aggregateId,
+      sequence: 2,
+    };
+    const firstId = createUlid();
+    const secondId = createUlid();
+    for (const [id, event] of [
+      [firstId, first],
+      [secondId, second],
+    ] as const) {
+      await withTenant(db, context, (tx) =>
+        appendOutbox(tx, context, {
+          id,
+          event,
+          destination: "cloud-sync",
+          direction: null,
+          peerId: null,
+        }),
+      );
+    }
+    const before = await notificationCount();
+    expect(
+      await markOutboxDead(db, context, { outboxId: firstId, generation: 0 }),
+    ).toBe(true);
+    const sent: string[] = [];
+    for (let sweep = 0; sweep < 3; sweep++) {
+      await relayOutbox(
+        db,
+        context,
+        async (job) => {
+          sent.push(job.outboxId);
+          return randomUUID();
+        },
+        undefined,
+        { destinations: ["cloud-sync"] },
+      );
+    }
+    expect(sent).not.toContain(secondId);
+    expect(await notificationCount()).toBe(before + 1);
+    expect(await countBlockedOutboxAggregates(db, context, options)).toBe(
+      blockedBefore + 1,
+    );
+    const rows = await owner.query<{ dispatch_state: string }>(
+      "SELECT dispatch_state FROM domain_event_outbox WHERE tenant_id = $1 AND id = $2",
+      [tenantId, ulidToUuid(firstId)],
+    );
+    expect(rows.rows[0]?.dispatch_state).toBe("dead");
+
+    // A different aggregate is a distinct incident, but repeated sweeps of
+    // either incident must not generate more alerts.
+    const other = edgeEvent("order.paid", "order");
+    const later = {
+      ...edgeEvent("order.paid", "order"),
+      aggregateId: other.aggregateId,
+      sequence: 2,
+    };
+    const otherId = createUlid();
+    for (const [id, event] of [
+      [otherId, other],
+      [createUlid(), later],
+    ] as const) {
+      await withTenant(db, context, (tx) =>
+        appendOutbox(tx, context, {
+          id,
+          event,
+          destination: "cloud-sync",
+          direction: null,
+          peerId: null,
+        }),
+      );
+    }
+    expect(
+      await markOutboxDead(db, context, { outboxId: otherId, generation: 0 }),
+    ).toBe(true);
+    for (let sweep = 0; sweep < 2; sweep++) {
+      await relayOutbox(
+        db,
+        context,
+        async () => randomUUID(),
+        undefined,
+        options,
+      );
+    }
+    expect(await notificationCount()).toBe(before + 2);
+    expect(await countBlockedOutboxAggregates(db, context, options)).toBe(
+      blockedBefore + 2,
+    );
+
+    const anotherTenant = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: randomUUID(),
+        brandId: null,
+        source: "domain",
+      }),
+      { kind: "tenant" },
+    );
+    expect(await countBlockedOutboxAggregates(db, anotherTenant, options)).toBe(
+      0,
+    );
+  });
+
   it("unknown events of one name send one alarm; a second name sends one more", async () => {
     const storm = [
       edgeEvent("zz_storm.created"),

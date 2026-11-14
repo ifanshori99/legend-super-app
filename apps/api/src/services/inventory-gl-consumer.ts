@@ -21,13 +21,19 @@
 //   group posts one journal on its own date, so a backlog never posts a later
 //   movement on an earlier date.
 //
+// - Late adjustment (legend-tgb3, as for sales): a group whose business date
+//   falls in a closed fiscal period posts on the first day of the period after
+//   the latest closed one, keeps its natural date in
+//   `journal_entries.late_adjustment_from` and writes an
+//   `accounting.journal.late_adjusted` audit row. Nothing parks on
+//   PERIOD_CLOSED any more.
+//
 // Decoupled from cloud-sync: the posting runs in a savepoint. An expected
-// accounting failure (closed period, missing or unusable account mapping)
+// accounting failure (missing or unusable account mapping)
 // rolls the savepoint back, records the source in `inventory_gl_blocked` and
 // returns `blocked`; the outbox consumption itself still commits, so the
 // cloud-sync delivery is never held back by the GL. `retryBlockedInventoryGl`
-// (worker sweep) retries blocked sources; it only retries, nothing is ever
-// posted into another period. Every other error propagates and rolls the
+// (worker sweep) retries blocked sources. Every other error propagates and rolls the
 // consumption back (retry, dead letter, `replayOutbox`).
 //
 // `inventory_gl_postings` tracks every consumed ledger row, so a replay (or
@@ -35,11 +41,18 @@
 // advisory lock serializes concurrent consumers and the sweep of one document.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
-import { AccountingError } from "@starter/shared/accounting";
+import { and, asc, eq, inArray, lte, max, sql } from "drizzle-orm";
+import {
+  AccountingError,
+  defaultPostingRules,
+  periodOf,
+  resolveAutoJournalDate,
+  resolvePostingRule,
+} from "@starter/shared/accounting";
 import {
   businessDateOf,
   assertTrustedScopedContext,
+  createUlid,
   extendCostIdr,
   parseDecimal4,
   type BusinessDate,
@@ -54,6 +67,7 @@ import {
 import { isModuleEnabled } from "@starter/shared/platform";
 import { db } from "../db/index.ts";
 import {
+  fiscalPeriods,
   inventoryGlBlocked,
   inventoryGlPostings,
   outlets,
@@ -63,6 +77,8 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { isTrainingOrder } from "./device-training.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
+import { wouldPostingBeBlockedByClosedPeriod } from "./accounting-period.service.ts";
+import { recordAudit } from "./core-audit.ts";
 import { sourceIdFromDb, sourceIdToDb } from "./inventory.service.ts";
 import {
   COST_PRODUCT_SCALE,
@@ -133,6 +149,14 @@ const MAPPINGS: readonly GlMapping[] = [
     amountKey: "costIdr",
   },
 ];
+
+const LATE_AUDIT_FIELDS = [
+  "journalId",
+  "trigger",
+  "sourceId",
+  "originalDate",
+  "entryDate",
+] as const;
 
 const IDEMPOTENCY_KEY_MAX = 100;
 const RETRY_BATCH = 100;
@@ -405,6 +429,25 @@ export function allocateRoundedIdr(
   return result;
 }
 
+/** Latest closed month of the entity, or null (read under the entity lock). */
+async function latestClosedPeriod(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  legalEntityId: string,
+): Promise<string | null> {
+  const [row] = await tx
+    .select({ period: max(fiscalPeriods.period) })
+    .from(fiscalPeriods)
+    .where(
+      and(
+        eq(fiscalPeriods.tenantId, tenantId),
+        eq(fiscalPeriods.legalEntityId, legalEntityId),
+        eq(fiscalPeriods.status, "closed"),
+      ),
+    );
+  return row?.period ?? null;
+}
+
 function idempotencyKeyOf(
   sourceType: string,
   sourceId: string,
@@ -544,7 +587,7 @@ export async function postStockSourceToGl(
   }
 
   const journalEntryIds: string[] = [];
-  for (const [entryDate, group] of groups) {
+  for (const [naturalDate, group] of groups) {
     // Signed stock effect of each row in whole rupiah (positive = stock in).
     const rowValues = group.map((row) =>
       Number(extendCostIdr(row.quantity, row.unitCostIdr, "half_up")),
@@ -554,7 +597,7 @@ export async function postStockSourceToGl(
     if (mapping.variant === "waste") {
       // Waste rounds once over the whole log (equals waste_logs.value_idr),
       // shared over its business dates by largest remainder.
-      amount = wasteAmounts.get(entryDate)!;
+      amount = wasteAmounts.get(naturalDate)!;
     } else if (mapping.variant === "count") {
       amount = rowSum;
     } else {
@@ -563,6 +606,19 @@ export async function postStockSourceToGl(
 
     let journalEntryId: string | null = null;
     if (amount !== 0) {
+      // Takes the entity FOR SHARE lock: close/reopen cannot race this post.
+      const closed = await wouldPostingBeBlockedByClosedPeriod(
+        tx,
+        tenantId,
+        outlet.legalEntityId,
+        periodOf(naturalDate),
+      );
+      const { entryDate, lateAdjustmentFrom } = resolveAutoJournalDate(
+        naturalDate,
+        closed
+          ? await latestClosedPeriod(tx, tenantId, outlet.legalEntityId)
+          : null,
+      );
       const journal = await postJournalFromRuleInTransaction(
         tx,
         context,
@@ -572,7 +628,7 @@ export async function postStockSourceToGl(
           amounts: { [mapping.amountKey]: amount },
           legalEntityId: outlet.legalEntityId,
           outletId: first.outletId,
-          entryDate,
+          entryDate: entryDate as BusinessDate,
           sourceId: target.domainId,
           postedBy: null,
           idempotencyKey: idempotencyKeyOf(
@@ -580,9 +636,52 @@ export async function postStockSourceToGl(
             target.domainId,
             group[0]!.id,
           ),
+          lateAdjustmentFrom,
+          ...(lateAdjustmentFrom === null
+            ? {}
+            : {
+                description: `${
+                  resolvePostingRule(defaultPostingRules, {
+                    eventName: mapping.eventName,
+                    variant: mapping.variant ?? undefined,
+                  }).description
+                } (penyesuaian terlambat dari ${lateAdjustmentFrom})`,
+              }),
         },
         now,
       );
+      if (lateAdjustmentFrom !== null)
+        await recordAudit(
+          tx,
+          context,
+          {
+            id: createUlid(now.getTime()),
+            tenantId,
+            outletId: first.outletId,
+            actorType: "system",
+            actorId: null,
+            deviceId: null,
+            action: "accounting.journal.late_adjusted",
+            objectType: "journal_entry",
+            objectId: journal.id,
+            reason: null,
+            maskedChanges: {
+              before: null,
+              after: {
+                journalId: journal.id,
+                trigger: mapping.eventName,
+                sourceId: target.domainId,
+                originalDate: lateAdjustmentFrom,
+                entryDate,
+              },
+            },
+            ipHash: null,
+            sensitiveAccess: false,
+            retentionClass: "audit_2y",
+            createdAt: now.toISOString(),
+          },
+          LATE_AUDIT_FIELDS,
+        );
       journalEntryId = journal.id;
       journalEntryIds.push(journal.id);
     }

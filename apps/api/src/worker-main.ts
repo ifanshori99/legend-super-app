@@ -39,7 +39,10 @@ import {
   expireStaleQueueNotifications,
   releaseExpiredSlotHolds,
 } from "./services/facility-slots.service.ts";
-import { handlePaymentPaid } from "./services/reservation-consumers.ts";
+import {
+  handlePaymentPaid,
+  handleReservationConfirmed,
+} from "./services/reservation-consumers.ts";
 import {
   deliverInventoryGlEvent,
   retryBlockedInventoryGl,
@@ -100,11 +103,15 @@ import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
 import { runScheduledExitClearance } from "./services/hris-offboarding-jobs.ts";
 import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
 import { handleProfitShareApprovalResolved } from "./services/profit-share-approval-consumers.ts";
+import { handleReconciliationApprovalResolved } from "./services/payment-reconciliation-approval-consumer.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
 import { retryPendingRefunds } from "./services/reservation-refunds.ts";
-import { sweepStaleDepositHolds } from "./services/reservation-sweeps.ts";
+import {
+  sweepReservationReminders,
+  sweepStaleDepositHolds,
+} from "./services/reservation-sweeps.ts";
 import { sweepOverdueServiceRequests } from "./services/service-request.service.ts";
 import { expireDueSupportAccessGrants } from "./services/platform-support.service.ts";
 import { generateScheduledChecklistRuns } from "./services/operations-checklist-scheduler.service.ts";
@@ -307,6 +314,11 @@ const runtime = createWorkerRuntime({
           // (idempotent, replay safe), then the deployment consumer runs.
           if (event.name === "payment.paid")
             await handlePaymentPaid(context, event);
+          // RSV-03 (legend-lb3c): the guest's confirmation message, written
+          // only if the booking is still confirmed now. Cloud only, like the
+          // reminder: an edge must not message guests.
+          if (event.name === "reservation.confirmed" && sendsReceiptEmails)
+            await handleReservationConfirmed(context, event);
           // ORD-02 (legend-x4qy/kk7): a verified payment fires its QR order
           // (in this consumption transaction) or settles its POS bill; an
           // expired/failed QR payment re-offers a code or voids the order.
@@ -373,6 +385,9 @@ const runtime = createWorkerRuntime({
           // PAY-04 (legend-hvvn): an approved refund chain settles the refund;
           // the payout itself runs from the approve call or the payout sweep.
           await handleRefundApprovalResolved(context, event);
+          // PAY recon (PRD §3.7): an approved chain closes the reconciliation
+          // case; rejected/expired reopens it, re-read under the case row lock.
+          await handleReconciliationApprovalResolved(context, event);
           // WS-10 (legend-hggk): approved/rejected leave and overtime settle
           // from the chain outcome re-read under the request row lock.
           await handleHrisApprovalResolved(context, event);
@@ -533,6 +548,13 @@ const relay = createRelayRuntime({
         await retryPendingRefunds(context, new Date());
       } catch {
         console.error("Reservation refund retry sweep failed");
+      }
+      // RSV-03 (legend-lb3c): H-24 reminder with the guest kelola link.
+      // Cloud only, like the refunds: an edge must not message guests.
+      try {
+        await sweepReservationReminders(context, new Date());
+      } catch {
+        console.error("Reservation reminder sweep failed");
       }
     }
     // §3.19 Aset Tetap (legend-hpgo): post last month's depreciation once per

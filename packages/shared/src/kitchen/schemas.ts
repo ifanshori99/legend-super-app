@@ -209,6 +209,8 @@ const ticketShape = {
   id: kitchenTicketIdSchema,
   orderId: orderIdSchema,
   stationId: stationIdSchema,
+  /** Running number per outlet and business day (KDS scan code K-001). */
+  ticketNo: z.number().int().positive(),
   status: kitchenTicketStatusSchema,
   /** SMALLINT: 0 normal, higher is more urgent (§6 `priority`). */
   priority: z.number().int().min(0).max(9),
@@ -317,7 +319,7 @@ export const stationConfigSchema = z.strictObject({
   ...outletScope,
   id: uuidSchema,
   stationId: stationIdSchema,
-  displayOrder: z.number().int().nonnegative(),
+  displayOrder: z.number().int().nonnegative().max(1000),
   isActive: z.boolean(),
   /** F12 "Fallback Cetak": print automatically when the tablet stops answering. */
   autoPrintFallback: z.boolean(),

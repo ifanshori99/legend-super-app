@@ -5,6 +5,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import {
+  AiError,
   approveMcpClient as approveEndpoint,
   listMcpClients as listClientsEndpoint,
   listMcpTokens as listTokensEndpoint,
@@ -27,6 +28,7 @@ import {
   oauthErrorRedirect,
   previewAuthorizationRequest,
 } from "../services/mcp-oauth.service.ts";
+import { requireAiPlatformEnabled } from "../middleware/module.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import {
   approveMcpClient,
@@ -68,18 +70,26 @@ export function createAiMcpAdminRouter(): Router {
     res.json(await listMcpClients(getAccessSnapshot(req), query));
   });
 
-  router.post("/mcp-clients", ...common, jsonBody, manage, async (req, res) => {
-    const body = registerEndpoint.body.parse(req.body);
-    res.status(201).json({
-      data: await registerMcpClient(getAccessSnapshot(req), body),
-    });
-  });
+  router.post(
+    "/mcp-clients",
+    ...common,
+    jsonBody,
+    manage,
+    requireAiPlatformEnabled(),
+    async (req, res) => {
+      const body = registerEndpoint.body.parse(req.body);
+      res.status(201).json({
+        data: await registerMcpClient(getAccessSnapshot(req), body),
+      });
+    },
+  );
 
   router.post(
     "/mcp-clients/:mcpClientId/approve",
     ...common,
     jsonBody,
     manage,
+    requireAiPlatformEnabled(),
     async (req, res) => {
       const { mcpClientId } = approveEndpoint.params.parse(req.params);
       const body = approveEndpoint.body.parse(req.body);
@@ -103,57 +113,78 @@ export function createAiMcpAdminRouter(): Router {
     },
   );
 
-  router.get("/mcp/authorize/preview", ...common, own, async (req, res) => {
-    const q = previewEndpoint.query.parse(req.query);
-    try {
-      res.json({
-        data: await previewAuthorizationRequest(getAccessSnapshot(req), {
-          responseType: q.response_type ?? "code",
-          clientId: q.client_id,
-          redirectUri: q.redirect_uri,
-          scope: q.scope,
-          state: q.state,
-          codeChallenge: q.code_challenge,
-          codeChallengeMethod: q.code_challenge_method,
-        }),
-      });
-    } catch (error) {
-      if (!(error instanceof OAuthError)) throw error;
-      res.status(error.status).json({
-        error: { code: error.error, message: error.description },
-      });
-    }
-  });
-
-  router.post("/mcp/authorize", ...common, jsonBody, own, async (req, res) => {
-    const body = mcpAuthorizeBodySchema.parse(req.body);
-    const params = {
-      responseType: body.response_type,
-      clientId: body.client_id,
-      redirectUri: body.redirect_uri,
-      scope: body.scope,
-      state: body.state,
-      codeChallenge: body.code_challenge,
-      codeChallengeMethod: body.code_challenge_method,
-    };
-    try {
-      const redirectTo = await issueAuthorizationCode(
-        getAccessSnapshot(req),
-        params,
-      );
-      res.json({ redirectTo });
-    } catch (error) {
-      if (!(error instanceof OAuthError)) throw error;
-      // A refusal the client may see goes back to its registered redirect_uri.
-      if (error.redirectUri)
-        return void res.json({
-          redirectTo: oauthErrorRedirect(error, body.state),
+  // Preview is not a redirect: a locked tenant answers plain 403
+  // AI_PLATFORM_DISABLED (the consent screen shows it).
+  router.get(
+    "/mcp/authorize/preview",
+    ...common,
+    own,
+    requireAiPlatformEnabled(),
+    async (req, res) => {
+      const q = previewEndpoint.query.parse(req.query);
+      try {
+        res.json({
+          data: await previewAuthorizationRequest(getAccessSnapshot(req), {
+            responseType: q.response_type ?? "code",
+            clientId: q.client_id,
+            redirectUri: q.redirect_uri,
+            scope: q.scope,
+            state: q.state,
+            codeChallenge: q.code_challenge,
+            codeChallengeMethod: q.code_challenge_method,
+          }),
         });
-      res.status(error.status).json({
-        error: { code: error.error, message: error.description },
-      });
-    }
-  });
+      } catch (error) {
+        if (!(error instanceof OAuthError)) throw error;
+        if (error.description === "AI_PLATFORM_DISABLED")
+          throw new AiError("AI_PLATFORM_DISABLED");
+        res.status(error.status).json({
+          error: { code: error.error, message: error.description },
+        });
+      }
+    },
+  );
+
+  // Locked tenant answers 403 AI_PLATFORM_DISABLED, never a code or a redirect.
+  router.post(
+    "/mcp/authorize",
+    ...common,
+    jsonBody,
+    own,
+    requireAiPlatformEnabled(),
+    async (req, res) => {
+      const body = mcpAuthorizeBodySchema.parse(req.body);
+      const params = {
+        responseType: body.response_type,
+        clientId: body.client_id,
+        redirectUri: body.redirect_uri,
+        scope: body.scope,
+        state: body.state,
+        codeChallenge: body.code_challenge,
+        codeChallengeMethod: body.code_challenge_method,
+      };
+      try {
+        const redirectTo = await issueAuthorizationCode(
+          getAccessSnapshot(req),
+          params,
+        );
+        res.json({ redirectTo });
+      } catch (error) {
+        if (!(error instanceof OAuthError)) throw error;
+        // Lock won the race after the gate: plain 403, not the redirect below.
+        if (error.description === "AI_PLATFORM_DISABLED")
+          throw new AiError("AI_PLATFORM_DISABLED");
+        // A refusal the client may see goes back to its registered redirect_uri.
+        if (error.redirectUri)
+          return void res.json({
+            redirectTo: oauthErrorRedirect(error, body.state),
+          });
+        res.status(error.status).json({
+          error: { code: error.error, message: error.description },
+        });
+      }
+    },
+  );
 
   router.get("/mcp-tokens", ...common, own, async (req, res) => {
     const query = listTokensEndpoint.query.parse(req.query);

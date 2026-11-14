@@ -5,12 +5,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AnyEndpoint } from "@starter/shared/api";
 import {
   getReservation,
+  listRescheduleRequests,
   listReservations,
   listWaitlist,
 } from "@starter/shared/reservation";
 import type {
   Reservation,
   ReservationPackage,
+  ReservationRescheduleRequest,
   WaitlistEntry,
 } from "@starter/shared/reservation";
 
@@ -19,6 +21,7 @@ import type {
 type ReservationId = Reservation["id"];
 type ReservationPackageId = ReservationPackage["id"];
 type WaitlistEntryId = WaitlistEntry["id"];
+type RescheduleRequestId = ReservationRescheduleRequest["id"];
 import { getFloorBoard } from "@starter/shared/qr-order";
 import type { TableId } from "@starter/shared/qr-order";
 import type { ListReservationsQuery } from "@starter/shared/reservation";
@@ -28,8 +31,10 @@ import {
   floorBoardQuery,
   packagesQuery,
   reservationDetailQuery,
+  rescheduleRequestsQuery,
   reservationsQuery,
   waitlistQuery,
+  type RescheduleRequestsQuery,
   type WaitlistQuery,
 } from "./queries";
 
@@ -93,6 +98,16 @@ export function useWaitlist(
 ) {
   return useQuery({
     ...waitlistQuery(outletId ?? "", query),
+    enabled: Boolean(outletId),
+  });
+}
+
+export function useRescheduleRequests(
+  outletId: string | undefined,
+  query: RescheduleRequestsQuery = { limit: RESERVATION_PAGE_SIZE },
+) {
+  return useQuery({
+    ...rescheduleRequestsQuery(outletId ?? "", query),
     enabled: Boolean(outletId),
   });
 }
@@ -229,6 +244,42 @@ export function useResolveWaitlistEntry() {
       api.resolveWaitlistEntry(
         { outletId: input.outletId, entryId: input.entryId },
         { resolution: input.resolution, tableIds: input.tableIds },
+      ),
+  );
+}
+
+function useRescheduleMutation<TVariables>(
+  mutationFn: (variables: TVariables) => Promise<unknown>,
+) {
+  // Approving moves the booking and its table holds; refresh on errors too,
+  // since a 409 means the request or the table changed under the host.
+  const refresh = useInvalidate([
+    listRescheduleRequests,
+    ...RESERVATION_WRITES,
+  ]);
+  return useMutation({ mutationFn, onSettled: () => refresh() });
+}
+
+export function useApproveRescheduleRequest() {
+  return useRescheduleMutation(
+    (input: { outletId: string; requestId: RescheduleRequestId }) =>
+      api.approveRescheduleRequest({
+        outletId: input.outletId,
+        requestId: input.requestId,
+      }),
+  );
+}
+
+export function useDeclineRescheduleRequest() {
+  return useRescheduleMutation(
+    (input: {
+      outletId: string;
+      requestId: RescheduleRequestId;
+      reason?: string;
+    }) =>
+      api.declineRescheduleRequest(
+        { outletId: input.outletId, requestId: input.requestId },
+        { reason: input.reason },
       ),
   );
 }

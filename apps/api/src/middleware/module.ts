@@ -9,6 +9,8 @@
 import type { RequestHandler } from "express";
 import { assertModuleEnabled, type ModuleKey } from "@starter/shared/platform";
 import { getTenantContext } from "./tenant";
+import { db } from "../db/index.ts";
+import { assertAiPlatformUnlocked } from "../services/ai-platform-lock.ts";
 import { tenantFeatureFlags } from "../services/platform-org.service";
 
 export function requireModuleEnabled(module: ModuleKey): RequestHandler {
@@ -17,6 +19,16 @@ export function requireModuleEnabled(module: ModuleKey): RequestHandler {
     const flags = await tenantFeatureFlags(tenant.tenantId);
     // Throws core FEATURE_DISABLED (403); the error handler maps it.
     assertModuleEnabled(flags, module, "api");
+    next();
+  };
+}
+
+// Founder W16 Q7: when the platform turns AI off for a tenant, every AI write
+// and use route answers 403 AI_PLATFORM_DISABLED. Mount after the permission
+// check; credential removal and reads stay open.
+export function requireAiPlatformEnabled(): RequestHandler {
+  return async (req, _res, next) => {
+    await assertAiPlatformUnlocked(db, getTenantContext(req).tenantId);
     next();
   };
 }

@@ -79,7 +79,5 @@ export const unavailableMetrics: ReadonlySet<string> = new Set([
   "avg_spend_per_pax",
   "device_offline_count",
   "failed_item_count",
-  "new_customers",
-  "returning_customers",
   "table_occupancy_pct",
 ]);

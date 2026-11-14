@@ -43,6 +43,9 @@ import { posIssueChargeMessages } from "./pos-issue-charge.ts";
 import { posReceiptPublicMessages } from "./pos-receipt-public.ts";
 import { paymentRefundFollowupMessages } from "./ws05-refund-followup.ts";
 import { reservationMessages } from "./reservation.ts";
+import { reservationGuestMessages } from "./reservation-guest.ts";
+import { reservationGuestRequestMessages } from "./reservation-guest-request.ts";
+import { reservationGuestCancelMessages } from "./reservation-guest-cancel.ts";
 import { websiteMessages } from "./website.ts";
 import { ws01AuthMessages } from "./ws01-auth.ts";
 import { approvalsMessages } from "./ws01-approvals.ts";
@@ -73,6 +76,10 @@ import { learningMessages } from "./ws10-learning.ts";
 import { lifecycleMessages } from "./ws10-lifecycle.ts";
 import { payrollConfigMessages } from "./ws10-payroll-config.ts";
 import { payrollRunMessages } from "./ws10-payroll-run.ts";
+import { payrollPayoutMessages } from "./ws10-payroll-payout.ts";
+import { payrollPayoutSettingsMessages } from "./ws10-payroll-payout-settings.ts";
+import { payrollPayoutReviewMessages } from "./ws10-payroll-payout-review.ts";
+import { financeExceptionsMessages } from "./ws07-finance-exceptions.ts";
 import { payslipMessages } from "./ws10-payslip.ts";
 import { payslipPinMessages } from "./ws10-payslip-pin.ts";
 import { payslipPinSetupMessages } from "./ws10-payslip-pin-setup.ts";
@@ -157,6 +164,9 @@ export const id = {
   posReceiptPublic: posReceiptPublicMessages,
   // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).
   reservation: reservationMessages,
+  reservationGuest: reservationGuestMessages,
+  reservationGuestRequest: reservationGuestRequestMessages,
+  reservationGuestCancel: reservationGuestCancelMessages,
   // POS cashier screens (bead legend-mjmm): one catalog file per screen group.
   posKasirCommon: posKasirCommonMessages,
   posKasirPayment: posKasirPaymentMessages,
@@ -248,6 +258,10 @@ export const id = {
   lifecycle: lifecycleMessages,
   payrollConfig: payrollConfigMessages,
   payrollRun: payrollRunMessages,
+  payrollPayout: payrollPayoutMessages,
+  payrollPayoutSettings: payrollPayoutSettingsMessages,
+  payrollPayoutReview: payrollPayoutReviewMessages,
+  financeExceptions: financeExceptionsMessages,
   payslip: payslipMessages,
   payslipPin: {
     ...payslipPinMessages,
@@ -338,6 +352,68 @@ export const id = {
       capacity: "Kapasitas",
       serving: "Waktu saji",
       remake: "Remake",
+      stations: "Stasiun",
+    },
+    // Station config editor (bead legend-sonf): KDS tab order, active toggle
+    // and the print fallback per station.
+    stations: {
+      title: "Pengaturan stasiun",
+      intro: "Atur urutan tab dan ketersediaan stasiun dapur.",
+      panelTitle: "Urutan dan status stasiun",
+      panelHint: "Pindahkan stasiun untuk mengubah urutan tab di KDS.",
+      columnStation: "Stasiun",
+      columnOrder: "Urutan",
+      columnStatus: "Status stasiun",
+      columnPrint: "Cetak cadangan",
+      orderLabel: "Urutan tab",
+      unknownStation: "Stasiun tanpa nama",
+      types: {
+        coffee_bar: "Stasiun minuman kopi",
+        beverage_bar: "Stasiun minuman nonkopi",
+        hot_kitchen: "Stasiun makanan panas",
+        cold_kitchen: "Stasiun makanan dingin",
+        pastry: "Stasiun pastry",
+      },
+      moveUp: "Naikkan {name}",
+      moveDown: "Turunkan {name}",
+      statusAria: "Status stasiun {name}",
+      printAria: "Cetak cadangan {name}",
+      on: "Aktif",
+      off: "Nonaktif",
+      noChanges: "Belum ada perubahan",
+      unsaved: "Perubahan belum disimpan",
+      saved: "Tidak ada perubahan yang belum disimpan",
+      save: "Simpan pengaturan",
+      retrySave: "Coba simpan lagi",
+      loading: "Memuat pengaturan stasiun…",
+      errorTitle: "Pengaturan tidak dapat dimuat",
+      errorHint: "Periksa koneksi ke perangkat outlet, lalu coba lagi.",
+      retry: "Coba lagi",
+      emptyTitle: "Belum ada stasiun",
+      emptyHint:
+        "Stasiun yang tersedia untuk outlet akan muncul di sini. Jika daftar masih kosong, minta manajer outlet memeriksa penugasan stasiun.",
+      reload: "Muat ulang daftar",
+      saveFailedTitle: "Pengaturan belum tersimpan",
+      saveFailedHint:
+        "Perubahan tetap di layar. Periksa koneksi lalu coba simpan lagi.",
+      successTitle: "Pengaturan tersimpan",
+      successHint: "Urutan dan status stasiun telah diperbarui.",
+      viewSettings: "Lihat pengaturan",
+      unavailableTitle: "Penyimpanan belum tersedia",
+      unavailableHint:
+        "Urutan dan status stasiun belum dapat diubah dari layar ini. Daftar di bawah hanya untuk dibaca.",
+      fallbackTitle: "Cetak cadangan",
+      fallbackIntro:
+        "Saat tablet KDS tidak merespons, tiket dapat dicetak otomatis di printer stasiun.",
+      fallbackCardTitle: "Per stasiun",
+      fallbackCardText:
+        "Aktifkan cetak cadangan pada baris stasiun yang memerlukannya.",
+      moved: "{name} dipindah ke urutan {n}.",
+      minOneActive:
+        "Minimal satu stasiun harus aktif agar KDS menampilkan tiket.",
+      leaveConfirm: "Perubahan belum disimpan. Tinggalkan halaman?",
+      fallbackNote:
+        "Pastikan printer stasiun tersedia untuk menjaga alur dapur.",
     },
     capacity: {
       title: "Kapasitas & pacing",
@@ -1390,6 +1466,7 @@ export const id = {
       emergency: "Darurat",
       security: "Keamanan",
       order_status: "Status pesanan",
+      reservation_confirmation: "Konfirmasi reservasi",
       reservation_reminder: "Pengingat reservasi",
       facility_session: "Sesi fasilitas",
       subscription_billing: "Tagihan langganan",
@@ -1812,19 +1889,24 @@ export const id = {
       resolve: "Tutup kasus",
       resolveTitle: "Tutup kasus rekonsiliasi",
       resolveBody:
-        "Catat penyelesaian untuk {reference}. Selisih tetap tercatat di laporan.",
+        "Catat penyelesaian untuk {reference}. Penutupan baru berlaku setelah disetujui orang lain; selisih tetap tercatat di laporan.",
       note: "Catatan penyelesaian",
       noteHint:
         "Tulis penyebab dan tindak lanjut, misalnya koreksi MDR atau konfirmasi ke bank.",
       noteRequired: "Tulis catatan penyelesaian minimal 4 karakter.",
       confirm: "Tutup kasus",
-      resolved: "Kasus {reference} ditutup.",
+      resolved: "Penutupan kasus {reference} diajukan, menunggu persetujuan.",
+      requestedBy: "Diajukan oleh {name}",
+      approvedBy: "Disetujui oleh {name}",
+      approvalRef: "No. approval {id}",
       filter: "Filter status kasus",
       allStatuses: "Semua status",
       filterSource: "Filter sumber",
       allSources: "Semua sumber",
       statusOpen: "Terbuka",
+      statusPending: "Menunggu persetujuan",
       statusResolved: "Selesai",
+      statusMatched: "Cocok otomatis",
       emptyTitle: "Tidak ada kasus rekonsiliasi",
       emptyHint: "Semua settlement cocok dengan transaksi dan mutasi rekening.",
     },

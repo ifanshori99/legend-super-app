@@ -262,7 +262,7 @@ function AreaFrameBody({
           className="mb-4"
         />
       ) : null}
-      <OfflineBannerSlot />
+      {area !== "platform" ? <OfflineBannerSlot /> : null}
       {outletPicker ? (
         <div role="status" aria-live="polite" className="sr-only">
           {announcement}
@@ -373,6 +373,9 @@ function AreaFrameBody({
   return (
     <CustomerShell
       brandName={brandName}
+      pageTitle={
+        nav.find((item) => item.current)?.label ?? t(definition.nameKey)
+      }
       nav={nav}
       LinkComponent={RouterShellLink}
       actions={

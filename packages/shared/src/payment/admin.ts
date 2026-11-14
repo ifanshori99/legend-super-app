@@ -239,6 +239,8 @@ export const refundViewSchema = z.strictObject({
    */
   viewerCanApprove: z.boolean(),
   approvedByName: ref.nullable(),
+  /** The approval request (chain) that governs this refund; null for legacy rows. */
+  approvalRequestId: uuidSchema.nullable().optional(),
   note: z.string().max(500).nullable(),
   createdAt: isoDateTimeSchema,
   decidedAt: isoDateTimeSchema.nullable(),
@@ -442,7 +444,21 @@ export const reconciliationCaseViewSchema = z
     /** received − expected; negative means less money arrived than booked. */
     varianceIdr: idrSchema,
     reason: z.string().min(1).max(500),
-    status: z.enum(["open", "resolved"]),
+    /**
+     * `pending_approval`: closing was requested and waits for an approver who
+     * is not the requester; the case closes only when that approval passes.
+     * `matched`: a later settlement report listed the sale, so the "missing"
+     * case closed by itself (no write-off, no approval needed).
+     */
+    status: z.enum(["open", "pending_approval", "matched", "resolved"]),
+    /** Who asked to close the case (set once closing was requested). */
+    requestedBy: uuidSchema.nullable(),
+    requestedByName: ref.nullable(),
+    /** The approval request (chain) behind the closing; null while open. */
+    approvalRequestId: uuidSchema.nullable(),
+    /** Final approver, set only when the case is resolved. */
+    approvedBy: uuidSchema.nullable(),
+    approvedByName: ref.nullable(),
     resolvedByName: ref.nullable(),
     resolvedAt: isoDateTimeSchema.nullable(),
     note: z.string().max(500).nullable(),
@@ -748,7 +764,9 @@ export const listReconciliationCases = defineEndpoint({
   path: `${ADMIN}/reconciliation/cases`,
   query: cursorPageQuerySchema.extend({
     ...outletFilter,
-    status: z.enum(["open", "resolved"]).optional(),
+    status: z
+      .enum(["open", "pending_approval", "matched", "resolved"])
+      .optional(),
     source: reconciliationSourceSchema.optional(),
   }),
   response: cursorPageSchema(reconciliationCaseViewSchema),
@@ -1122,6 +1140,11 @@ const caseFixtures = [
     varianceIdr: -52_500,
     reason: "MDR dipotong dua kali pada settlement bank.",
     status: "open",
+    requestedBy: null,
+    requestedByName: null,
+    approvalRequestId: null,
+    approvedBy: null,
+    approvedByName: null,
     resolvedByName: null,
     resolvedAt: null,
     note: null,
@@ -1141,6 +1164,11 @@ const caseFixtures = [
     varianceIdr: -285_000,
     reason: "Transaksi EDC mode standalone belum muncul di settlement.",
     status: "open",
+    requestedBy: null,
+    requestedByName: null,
+    approvalRequestId: null,
+    approvedBy: null,
+    approvedByName: null,
     resolvedByName: null,
     resolvedAt: null,
     note: null,
@@ -1160,7 +1188,12 @@ const caseFixtures = [
     varianceIdr: -14_500,
     reason: "Biaya layanan gateway lebih besar dari perkiraan.",
     status: "resolved",
-    resolvedByName: "Budi Supervisor",
+    requestedBy: "d4e5f6a7-0002-4d02-8e02-000000000002",
+    requestedByName: "Dodi Kasir",
+    approvalRequestId: "a1b2c3d4-0003-4a03-8b03-0000000000a3",
+    approvedBy: "b1a2c3d4-0001-4a01-8b01-00000000a001",
+    approvedByName: "Budi Supervisor",
+    resolvedByName: "Dodi Kasir",
     resolvedAt: "2026-11-01T02:20:00.000Z",
     note: "Selisih dibukukan sebagai biaya layanan periode Oktober.",
     createdAt: "2026-11-01T01:05:00.000Z",

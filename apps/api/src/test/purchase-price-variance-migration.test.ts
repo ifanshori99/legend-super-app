@@ -27,6 +27,7 @@ import { resolve } from "node:path";
 import { Pool } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { replayMigrationForTenant } from "./helpers/migration-replay.ts";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const owner = new Pool({
@@ -47,13 +48,9 @@ const migrationSql = () =>
     "utf8",
   );
 
-/** Runs every statement of the migration as the migration owner, in order. */
-async function migrate(): Promise<void> {
-  for (const statement of migrationSql().split("--> statement-breakpoint")) {
-    const sql = statement.replace(/--.*$/gm, "").trim();
-    if (sql) await owner.query(statement);
-  }
-}
+/** Replays the migration for the fixture tenant only (legend-edxtt). */
+const migrate = (): Promise<void> =>
+  replayMigrationForTenant(owner, migrationSql(), tenantId);
 
 async function entity(provisioned: boolean): Promise<string> {
   const id = randomUUID();

@@ -1,0 +1,2 @@
+ALTER TABLE "payment_reconciliation_cases" DROP CONSTRAINT "payment_reconciliation_cases_status_check";--> statement-breakpoint
+ALTER TABLE "payment_reconciliation_cases" ADD CONSTRAINT "payment_reconciliation_cases_status_check" CHECK ("payment_reconciliation_cases"."status" IN ('open','pending_approval','matched','resolved'));

@@ -35,6 +35,10 @@ export function useProvider() {
 export function useChatgptLogin(refetchWhilePending = false) {
   return useQuery({
     ...chatgptQuery(),
+    // The page gate reads the status before the cards mount. Without this, a
+    // failed status is fetched again when the cards mount and can turn into a
+    // stale "connected" reading; the cards keep the error until retried.
+    retryOnMount: false,
     refetchInterval: (query) => {
       if (!refetchWhilePending) return false;
       const status = query.state.data?.data;
@@ -48,6 +52,20 @@ export function useChatgptLogin(refetchWhilePending = false) {
       return VIEWER_REFETCH_MS;
     },
   });
+}
+
+/**
+ * Platform kill switch (founder W16 Q7): when the platform turns AI off for the
+ * tenant, every tenant AI setting is locked. Reads `platformLocked` from the
+ * provider view. Fails closed: locked while it is loading or failed to load.
+ * The API enforces it regardless.
+ */
+export function useAiPlatformLock(): { locked: boolean; isPending: boolean } {
+  const provider = useProvider();
+  return {
+    locked: !provider.data || provider.data.data.platformLocked === true,
+    isPending: provider.isPending,
+  };
 }
 
 /** `gcTime: 0` and a `reset()` after success keep the API key out of the mutation cache. */

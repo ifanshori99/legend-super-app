@@ -35,8 +35,9 @@
 //  - pullCatalog has no `overlapMs` any more; the scripted cloud hands out
 //    real `cat2` cursors (helpers/catalog-cloud.ts).
 //
-// Two databases: the main test database is the CLOUD; a second database
-// (helpers/edge-database.ts, restricted login, RLS forced) is the EDGE.
+// Two private databases per file: helpers/catalog-database.ts creates the CLOUD
+// before app imports; helpers/edge-database.ts creates the EDGE (restricted
+// login, RLS forced). Neither uses the shared test database for catalog writes.
 // Cloud rows live under a private tenant on two private outlets (O1 = the
 // outlet of the edge, O2 = a sibling). A second bare tenant B owns rows that
 // must never leave for tenant A. A private tenant keeps tenant-wide catalog
@@ -84,7 +85,15 @@ import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { Pool } from "pg";
 import request from "supertest";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   decodeCursor,
   encodeCursor,
@@ -103,7 +112,7 @@ import {
 } from "@starter/shared/edge";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
-import { db } from "../db/index.ts";
+import { db, pool } from "../db/index.ts";
 import { pullCatalog } from "../edge/catalog-puller.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
@@ -122,6 +131,11 @@ import {
   type EdgeDatabase,
   type Row,
 } from "./helpers/edge-database.ts";
+
+const cloud = await vi.hoisted(async () => {
+  const { createCatalogCloud } = await import("./helpers/catalog-database.ts");
+  return createCatalogCloud();
+});
 
 type Stream = (typeof CATALOG_SYNC_STREAMS)[number];
 /** Streams plus the two child tables that now travel inside their parent record. */
@@ -981,6 +995,16 @@ afterAll(async () => {
     // Best effort: private ids and a private tenant, no other file reads them.
   }
   await mainOwner.end();
+  await pool.end();
+  await cloud.cleanup();
+});
+
+it("owns a separate cloud database for this catalog suite", async () => {
+  const result = await mainOwner.query("SELECT current_database() AS name");
+  const appResult = await pool.query("SELECT current_database() AS name");
+  expect(result.rows[0].name).toBe(cloud.name);
+  expect(appResult.rows[0].name).toBe(cloud.name);
+  expect(`/${cloud.name}`).not.toBe(cloud.parentDatabaseName);
 });
 
 // ------------------------------------------------------- 1 cloud export

@@ -49,6 +49,7 @@ import {
 } from "@starter/shared/core";
 import { env } from "../config/env.ts";
 import { db } from "../db/index.ts";
+import { isAiPlatformLocked } from "./ai-platform-lock.ts";
 import { aiProviderConfigs } from "../db/schema/ai-provider.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
@@ -151,9 +152,13 @@ function toConfig(row: ConfigRow): AiProviderConfig {
   };
 }
 
-const toView = (row: ConfigRow | undefined): AiProviderView => ({
+const toView = (
+  row: ConfigRow | undefined,
+  platformLocked: boolean,
+): AiProviderView => ({
   config: row ? toConfig(row) : null,
   fallbackAvailable: getAiProvider() !== null,
+  platformLocked,
 });
 
 /** Fields safe for an audit row: never the key, only whether one exists. */
@@ -222,7 +227,10 @@ export async function getAiProviderView(
 ): Promise<AiProviderView> {
   assertTenantScope(context);
   return withTenant(db, context, async (tx) =>
-    toView(await readRow(tx, context.tenant.tenantId)),
+    toView(
+      await readRow(tx, context.tenant.tenantId),
+      await isAiPlatformLocked(tx, context.tenant.tenantId),
+    ),
   );
 }
 
@@ -262,7 +270,7 @@ export async function patchAiProviderCapabilities(
       input.capabilityOverrides,
     );
     if (JSON.stringify(previous) === JSON.stringify(capabilityOverrides))
-      return toView(current);
+      return toView(current, await isAiPlatformLocked(tx, tenantId));
     const [saved] = await tx
       .update(aiProviderConfigs)
       .set({
@@ -284,7 +292,7 @@ export async function patchAiProviderCapabilities(
       before: current,
       after: saved,
     });
-    return toView(saved);
+    return toView(saved, await isAiPlatformLocked(tx, tenantId));
   });
 }
 
@@ -418,7 +426,7 @@ export async function saveAiProviderConfig(
     });
     return saved;
   });
-  return toView(row);
+  return toView(row, await isAiPlatformLocked(db, context.tenant.tenantId));
 }
 
 /** Hard delete (DELETE); the tenant falls back to the platform provider. */
@@ -446,7 +454,7 @@ export async function removeAiProviderConfig(
       before: current,
       after: null,
     });
-    return toView(undefined);
+    return toView(undefined, await isAiPlatformLocked(tx, tenantId));
   });
 }
 

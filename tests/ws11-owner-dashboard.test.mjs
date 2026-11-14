@@ -128,6 +128,28 @@ describe("owner dashboard part 1 · DASH-02", () => {
     }
   });
 
+  test("DASH-02: the review tile exposes its available rating and count", () => {
+    const run = runs["crm.reviews"];
+    assert.deepEqual(
+      run.availability.map(({ metricCode, status }) => ({
+        metricCode,
+        status,
+      })),
+      [
+        { metricCode: "review_rating", status: "available" },
+        { metricCode: "review_count", status: "available" },
+      ],
+    );
+    assert.deepEqual(board.metricCell(run, "review_rating"), {
+      unit: "decimal",
+      value: "4.6000",
+    });
+    assert.deepEqual(board.metricCell(run, "review_count"), {
+      unit: "count",
+      value: 10,
+    });
+  });
+
   test("DASH-02: the channel split adds up to the same net sales the summary tile shows", () => {
     const summarySales = board.idrOf(
       board.metricCell(runs["sales.target"], "net_sales"),

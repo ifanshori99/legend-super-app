@@ -9,10 +9,12 @@ import {
   listKitchenStations,
   listOrderIssues,
   updateCapacityRules,
+  updateKitchenStations,
 } from "@starter/shared/kitchen";
 import type { OutletId } from "@starter/shared/core";
 import { listStations } from "@starter/shared/menu";
 import { callEndpoint } from "@/lib/api/endpoint.ts";
+import type { StationUpdate } from "./station-order.ts";
 
 type Params<E extends AnyEndpoint> = EndpointInput<E>["params"];
 type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
@@ -33,6 +35,20 @@ export async function fetchKitchenStations(
     { params: { outletId } },
     { signal },
   );
+  return data;
+}
+
+/**
+ * Replaces the order and flags of every station (bead legend-sonf).
+ */
+export async function saveKitchenStations(
+  outletId: OutletId,
+  stations: StationUpdate[],
+) {
+  const { data } = await callEndpoint(updateKitchenStations, {
+    params: { outletId },
+    body: { stations },
+  });
   return data;
 }
 

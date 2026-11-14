@@ -63,6 +63,10 @@ import {
 } from "./ai-provider-config.service.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { costMicroUsd, microUsdToIdr, USD_IDR_RATE } from "./ai-pricing.ts";
+import {
+  isAiPlatformLocked,
+  isAiPlatformLockedShared,
+} from "./ai-platform-lock.ts";
 import type { AccessSnapshot } from "./permission-resolver.ts";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -71,9 +75,11 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type AiGatewayChannel = AiChannel | "tanya_ai";
 type AiBillingMode = "api_metered" | "chatgpt_plan";
 
+// Stored settings only. `platformLocked` is derived from the tenant's feature
+// flags at read time (ai-platform-lock.ts), never stored with the settings.
 export type AiSettingsView = Omit<
   AiGovernanceSettings,
-  "updatedAt" | "updatedBy"
+  "updatedAt" | "updatedBy" | "platformLocked"
 >;
 
 export type AiCacheKeyInput = {
@@ -287,6 +293,7 @@ export async function readMonthlyUsedIdr(
 type Block = {
   code:
     | "AI_FEATURE_DISABLED"
+    | "AI_PLATFORM_DISABLED"
     | "AI_PII_BLOCKED"
     | "AI_QUOTA_EXCEEDED"
     | "AI_BUDGET_EXCEEDED";
@@ -295,6 +302,7 @@ type Block = {
 
 const BLOCKS = {
   feature: { code: "AI_FEATURE_DISABLED", reason: "feature_disabled" },
+  platform: { code: "AI_PLATFORM_DISABLED", reason: "feature_disabled" },
   pii: { code: "AI_PII_BLOCKED", reason: "pii_blocked" },
   budget: { code: "AI_BUDGET_EXCEEDED", reason: "budget_exceeded" },
   quota: { code: "AI_QUOTA_EXCEEDED", reason: "quota_exceeded" },
@@ -351,6 +359,9 @@ export async function aiPreflight(
         await recordBlocked(tx, access, p, block);
         return { block };
       };
+      // Platform lock first: before the tenant switch, PII and any quota use.
+      if (await isAiPlatformLocked(tx, access.tenant.tenantId))
+        return blocked(BLOCKS.platform);
       if (!settings.aiEnabled || !isFeatureEnabled(settings, p.feature))
         return blocked(BLOCKS.feature);
       const found = scanPii(p.text).found;
@@ -456,6 +467,13 @@ async function reserveAiBudget(
         await recordBlocked(tx, access, { ...meta, billingMode }, reason);
         return { block: reason };
       };
+      // Operation start is this reservation commit (the provider call follows
+      // it), so check under a shared tenant row lock: a lock write waits for
+      // this commit, and a check after the lock write sees "locked". Lock
+      // order is ai_settings (update) then tenants (share); the lock writers
+      // only take the tenants row, so no cycle.
+      if (await isAiPlatformLockedShared(tx, access.tenant.tenantId))
+        return block(BLOCKS.platform);
       if (!settings.aiEnabled || !isFeatureEnabled(settings, meta.feature))
         return block(BLOCKS.feature);
       const cap = Math.min(
@@ -781,6 +799,17 @@ export async function aiComplete(
     outletId?: string | null;
   },
 ): Promise<AiCompletionResult> {
+  // Platform lock first: no provider lookup, no reservation, no paid call.
+  const platformLocked = await withTenant(
+    db,
+    gatewayContext(access),
+    async (tx) => {
+      if (!(await isAiPlatformLocked(tx, access.tenant.tenantId))) return false;
+      await recordBlocked(tx, access, meta, BLOCKS.platform);
+      return true;
+    },
+  );
+  if (platformLocked) throw new AiError("AI_PLATFORM_DISABLED");
   // Tenant's own provider first, platform env provider as the fallback. A
   // lookup failure counts as "no provider": never a silent switch to the
   // platform key.

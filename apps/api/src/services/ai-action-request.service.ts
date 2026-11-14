@@ -84,6 +84,7 @@ import {
   outletIdsOf,
 } from "./ai-action-executors/access.ts";
 import { toolMatches } from "./ai-metrics/scope.ts";
+import { assertAiPlatformUnlockedShared } from "./ai-platform-lock.ts";
 import type { AiToolContext } from "./ai-tools/types.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import {
@@ -540,7 +541,9 @@ async function findRow(
   // settleActionRequest is idempotent and a no-op while the chain is open.
   try {
     await settleActionRequest(discoveryContext(access), row.id);
-  } catch {
+  } catch (error) {
+    // A platform lock must reach the caller as 403, not look like a pending read.
+    if (isPlatformLockError(error)) throw error;
     return row;
   }
   const [fresh] = await withTenant(db, discoveryContext(access), (tx) =>
@@ -754,6 +757,10 @@ export async function getActionRequestStatus(
 
 // ------------------------------------------------------------------- settle
 
+function isPlatformLockError(error: unknown): error is AiError {
+  return error instanceof AiError && error.code === "AI_PLATFORM_DISABLED";
+}
+
 function safeFailureReason(error: unknown): string {
   if (error instanceof ActionExecutionError)
     return error.message.slice(0, FAILURE_REASON_MAX);
@@ -823,6 +830,11 @@ async function assertActorStillValid(
     throw new ActionExecutionError("Fitur AI dimatikan oleh admin.");
   if (row.source === "mcp" && !(settings?.mcpEnabled ?? false))
     throw new ActionExecutionError("MCP dimatikan oleh admin.");
+  // Platform lock: shared row lock on the tenant, held until this tx ends, so
+  // a lock change waits for this execution and a later one sees "locked".
+  // Throws AiError AI_PLATFORM_DISABLED; `execute` and `findRow` let it pass
+  // (not a `failed` action: the request is retried once the platform unlocks).
+  await assertAiPlatformUnlockedShared(tx, row.tenantId);
   if (row.source === "mcp") {
     const [client] = await tx
       .select({ status: mcpClients.status })
@@ -994,6 +1006,9 @@ async function execute(
     );
     return "executed";
   } catch (error) {
+    // Locked platform: abort the settle transaction (the row keeps its prior
+    // status, nothing executes) and answer AI_PLATFORM_DISABLED upstream.
+    if (isPlatformLockError(error)) throw error;
     if (!(error instanceof ActionExecutionError))
       logger.warn(
         { actionRequestId: row.id, toolCode: row.toolCode },
@@ -1067,5 +1082,18 @@ export async function handleAiActionApprovalResolved(
   if (owner === null) return;
   if (storedId(owner.approvalRequestId) !== storedId(resolved.payload.chainId))
     refuse("approval.resolved chain belongs to another action request");
-  await settleActionRequest(context, owner.id);
+  try {
+    await settleActionRequest(context, owner.id);
+  } catch (error) {
+    // The platform AI lock is a deliberate pause, not a delivery failure. This
+    // handler shares the `approval.resolved` delivery with other handlers, so a
+    // throw would retry 5x, dead-letter the event, and skip later handlers.
+    // The action stays pending/approved; reads and `settleActionRequest` still
+    // reject with AI_PLATFORM_DISABLED until the tenant is unlocked.
+    if (!isPlatformLockError(error)) throw error;
+    logger.info(
+      { tenantId: context.tenant.tenantId, actionRequestId: owner.id },
+      "ai action approval settle skipped: platform AI is locked",
+    );
+  }
 }

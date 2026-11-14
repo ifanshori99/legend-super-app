@@ -18,6 +18,7 @@ import {
   requireTenantPermission,
 } from "../middleware/permissions.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
+import { requireAiPlatformEnabled } from "../middleware/module.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import {
   getGovernanceSettings,
@@ -57,6 +58,7 @@ export function createAiGovernanceRouter(): Router {
     ...common,
     jsonBody,
     requireTenantPermission("ai.governance.manage"),
+    requireAiPlatformEnabled(),
     async (req, res) => {
       const body = updateGovernanceEndpoint.body.parse(req.body);
       res.json({

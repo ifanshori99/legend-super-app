@@ -5,11 +5,14 @@
 // ./hooks.ts, which owns cache keys and invalidation.
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import {
+  approveRescheduleRequest as approveRescheduleRequestEndpoint,
   assignReservationTables as assignReservationTablesEndpoint,
   cancelReservation as cancelReservationEndpoint,
   callWaitlistEntry as callWaitlistEntryEndpoint,
+  declineRescheduleRequest as declineRescheduleRequestEndpoint,
   getReservation as getReservationEndpoint,
   listReservationPackages as listReservationPackagesEndpoint,
+  listRescheduleRequests as listRescheduleRequestsEndpoint,
   listReservations as listReservationsEndpoint,
   listWaitlist as listWaitlistEndpoint,
   markReservationNoShow as markReservationNoShowEndpoint,
@@ -135,6 +138,38 @@ export const resolveWaitlistEntry = async (
 ) =>
   (await callEndpoint(resolveWaitlistEntryEndpoint, { params, body }, options))
     .data;
+
+export const fetchRescheduleRequests = (
+  params: Params<typeof listRescheduleRequestsEndpoint>,
+  query: Query<typeof listRescheduleRequestsEndpoint>,
+  options?: CallOptions,
+) => callEndpoint(listRescheduleRequestsEndpoint, { params, query }, options);
+
+/** A taken table answers 409 RESERVATION_SLOT_TAKEN and the request stays pending. */
+export const approveRescheduleRequest = async (
+  params: Params<typeof approveRescheduleRequestEndpoint>,
+  options?: CallOptions,
+) =>
+  (
+    await callEndpoint(
+      approveRescheduleRequestEndpoint,
+      { params, body: {} },
+      options,
+    )
+  ).data;
+
+export const declineRescheduleRequest = async (
+  params: Params<typeof declineRescheduleRequestEndpoint>,
+  body: Body<typeof declineRescheduleRequestEndpoint>,
+  options?: CallOptions,
+) =>
+  (
+    await callEndpoint(
+      declineRescheduleRequestEndpoint,
+      { params, body },
+      options,
+    )
+  ).data;
 
 /** Zones and tables for the assignment floor plan (WS-03 read model). */
 export const fetchFloorBoard = async (

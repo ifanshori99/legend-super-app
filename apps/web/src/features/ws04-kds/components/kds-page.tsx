@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from "react";
+import { useRef, useState, useSyncExternalStore } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { useRouteContext } from "@tanstack/react-router";
 import type {
@@ -40,10 +40,13 @@ import type { AreaAccess } from "@/lib/areas/access";
 import {
   useBoard,
   useKdsActions,
+  useScannerStatus,
   useStationLabels,
   useStations,
 } from "../hooks.ts";
 import { boardQuery } from "../queries.ts";
+import { isOpenTicket, ticketScanCode } from "../scan-code.ts";
+import { ScannerPanel } from "./scanner-panel.tsx";
 import {
   formatElapsedSeconds,
   kdsTimerStatus,
@@ -122,17 +125,15 @@ function KdsContent() {
       ...boardQuery(outletId, item.stationId),
       refetchInterval: item.stationId === stationId ? (false as const) : 30_000,
       select: (board: StationBoard) =>
-        board.tickets.filter(
-          (ticket) => ticket.status !== "done" && ticket.status !== "cancelled",
-        ).length,
+        board.tickets.filter(isOpenTicket).length,
     })),
   });
-  const stationLabel = (id: StationId) => {
-    const name = names.data?.find((row) => row.stationId === id)?.name ?? id;
+  const stationName = (id: StationId) =>
+    names.data?.find((row) => row.stationId === id)?.name ?? id;
+  // No count until the board is read: undefined renders no chip, never a fake 0.
+  const stationCount = (id: StationId) => {
     const index = active.findIndex((item) => item.stationId === id);
-    const count = index === -1 ? undefined : stationBoards[index]?.data;
-    // No count until the board is read — never a fake "(0)".
-    return count === undefined ? name : `${name} (${count})`;
+    return index === -1 ? undefined : stationBoards[index]?.data;
   };
   const failure = stations.error ?? names.error;
   const offline =
@@ -178,7 +179,8 @@ function KdsContent() {
                 selection="ink"
                 options={active.map((item) => ({
                   value: item.stationId,
-                  label: stationLabel(item.stationId),
+                  label: stationName(item.stationId),
+                  count: stationCount(item.stationId),
                 }))}
               />
               <StationBoard
@@ -212,8 +214,16 @@ function StationBoard({
   const t = useT();
   const board = useBoard(outletId, stationId);
   const action = useKdsActions(outletId);
+  const scanner = useScannerStatus(outletId);
   const toast = useToast();
   const [recall, setRecall] = useState<KitchenTicketDetail | null>(null);
+  // Set only when the scanner opened the dialog: tells it how the dialog ended.
+  const recallDone = useRef<((recalled: boolean) => void) | null>(null);
+  const closeRecall = (recalled: boolean) => {
+    setRecall(null);
+    recallDone.current?.(recalled);
+    recallDone.current = null;
+  };
   const [reason, setReason] = useState("");
   const now = useSyncExternalStore(
     subscribeClock,
@@ -243,345 +253,366 @@ function StationBoard({
   if (!data) return null;
   const run = action.mutate;
   return (
-    <>
-      {action.isError && (
-        <p role="alert" className="rounded-md bg-danger-subtle p-3 text-danger">
-          {t("kds.actionError")}
-        </p>
-      )}
-      <section
-        aria-labelledby="kds-all-day"
-        className="border-y-(length:--border-w) py-4"
-      >
-        <h2 id="kds-all-day" className="type-title">
-          {t("kds.queue")}
-        </h2>
-        {data.allDay.rows.length ? (
-          <ul className="mt-3 flex flex-wrap gap-2">
-            {data.allDay.rows.map((row) => (
-              <li
-                key={`${row.menuItemId}-${row.variantId}`}
-                className="inline-flex items-baseline gap-1.5 rounded-control bg-surface-3 px-3 py-1.5"
-              >
-                <span className="font-bold tabular">{row.quantity} ×</span>
-                <span className="font-semibold">{row.name}</span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mt-2 text-muted-foreground">{t("kds.queueEmpty")}</p>
+    <div className="grid items-start gap-5 min-[1001px]:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="flex min-w-0 flex-col gap-5">
+        {action.isError && (
+          <p
+            role="alert"
+            className="rounded-md bg-danger-subtle p-3 text-danger"
+          >
+            {t("kds.actionError")}
+          </p>
         )}
-      </section>
-      <section aria-labelledby="kds-tickets">
-        <h2 id="kds-tickets" className="type-title mb-3">
-          {t("kds.tickets")} · {data.tickets.length}
-        </h2>
-        {data.tickets.length === 0 ? (
-          <EmptyState
-            title={t("kds.emptyTitle")}
-            description={t("kds.emptyHint")}
-          />
-        ) : (
-          <div className="grid items-start gap-3 md:grid-cols-2 2xl:grid-cols-3">
-            {data.tickets.map((ticket) => {
-              const clockNow =
-                import.meta.env.VITE_API_MOCK === "true"
-                  ? Date.parse(data.generatedAt) +
-                    Math.max(0, now - mockStartedAt)
-                  : now;
-              const firedAt = Date.parse(ticket.firedAt);
-              // A finished ticket shows how long it took; a live one keeps
-              // counting. A cancelled ticket has no running clock.
-              const endedAt =
-                ticket.status === "done" && ticket.doneAt !== null
-                  ? Date.parse(ticket.doneAt)
-                  : clockNow;
-              const elapsed =
-                ticket.status === "cancelled"
-                  ? null
-                  : Math.max(0, Math.floor((endedAt - firedAt) / 1000));
-              const stopped =
-                ticket.status === "done" || ticket.status === "cancelled";
-              const timer =
-                !stopped && targetSeconds !== null && elapsed !== null
-                  ? kdsTimerStatus(elapsed, targetSeconds)
-                  : null;
-              const band =
-                ticket.status === "done"
-                  ? {
-                      tone: "success" as const,
-                      icon: CircleCheck,
-                      label: t("kds.status.done"),
-                    }
-                  : ticket.status === "cancelled"
-                    ? {
-                        tone: "neutral" as const,
-                        icon: Ban,
-                        label: t("kds.status.cancelled"),
-                      }
-                    : timer
-                      ? {
-                          tone: TIMER_BAND[timer].tone,
-                          icon: TIMER_BAND[timer].icon,
-                          label: t(TIMER_BAND[timer].labelKey),
-                        }
-                      : {
-                          tone: "neutral" as const,
-                          icon: Clock,
-                          label: t("kds.targetMissing"),
-                        };
-              return (
-                <article
-                  key={ticket.id}
-                  data-slot="kds-ticket"
-                  data-timer-state={timer ?? ticket.status}
-                  className="flex flex-col overflow-hidden rounded-container border-(length:--border-w) bg-card text-foreground"
+        <section
+          aria-labelledby="kds-all-day"
+          className="border-y-(length:--border-w) py-4"
+        >
+          <h2 id="kds-all-day" className="type-title">
+            {t("kds.queue")}
+          </h2>
+          {data.allDay.rows.length ? (
+            <ul className="mt-3 flex flex-wrap gap-2">
+              {data.allDay.rows.map((row) => (
+                <li
+                  key={`${row.menuItemId}-${row.variantId}`}
+                  className="inline-flex items-baseline gap-1.5 rounded-control bg-surface-3 px-3 py-1.5"
                 >
-                  <StatusBand
-                    tone={band.tone}
-                    icon={band.icon}
-                    label={band.label}
+                  <span className="font-bold tabular">{row.quantity} ×</span>
+                  <span className="font-semibold">{row.name}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-muted-foreground">{t("kds.queueEmpty")}</p>
+          )}
+        </section>
+        <section aria-labelledby="kds-tickets">
+          <h2 id="kds-tickets" className="type-title mb-3">
+            {t("kds.tickets")} · {data.tickets.filter(isOpenTicket).length}
+          </h2>
+          {data.tickets.length === 0 ? (
+            <EmptyState
+              title={t("kds.emptyTitle")}
+              description={t("kds.emptyHint")}
+            />
+          ) : (
+            <div className="grid items-start gap-3 md:grid-cols-2 2xl:grid-cols-3">
+              {data.tickets.map((ticket) => {
+                const clockNow =
+                  import.meta.env.VITE_API_MOCK === "true"
+                    ? Date.parse(data.generatedAt) +
+                      Math.max(0, now - mockStartedAt)
+                    : now;
+                const firedAt = Date.parse(ticket.firedAt);
+                // A finished ticket shows how long it took; a live one keeps
+                // counting. A cancelled ticket has no running clock.
+                const endedAt =
+                  ticket.status === "done" && ticket.doneAt !== null
+                    ? Date.parse(ticket.doneAt)
+                    : clockNow;
+                const elapsed =
+                  ticket.status === "cancelled"
+                    ? null
+                    : Math.max(0, Math.floor((endedAt - firedAt) / 1000));
+                const stopped =
+                  ticket.status === "done" || ticket.status === "cancelled";
+                const timer =
+                  !stopped && targetSeconds !== null && elapsed !== null
+                    ? kdsTimerStatus(elapsed, targetSeconds)
+                    : null;
+                const band =
+                  ticket.status === "done"
+                    ? {
+                        tone: "success" as const,
+                        icon: CircleCheck,
+                        label: t("kds.status.done"),
+                      }
+                    : ticket.status === "cancelled"
+                      ? {
+                          tone: "neutral" as const,
+                          icon: Ban,
+                          label: t("kds.status.cancelled"),
+                        }
+                      : timer
+                        ? {
+                            tone: TIMER_BAND[timer].tone,
+                            icon: TIMER_BAND[timer].icon,
+                            label: t(TIMER_BAND[timer].labelKey),
+                          }
+                        : {
+                            tone: "neutral" as const,
+                            icon: Clock,
+                            label: t("kds.targetMissing"),
+                          };
+                return (
+                  <article
+                    key={ticket.id}
+                    data-slot="kds-ticket"
+                    data-timer-state={timer ?? ticket.status}
+                    className="flex flex-col overflow-hidden rounded-container border-(length:--border-w) bg-card text-foreground"
                   >
-                    <div className="flex min-w-0 flex-col">
-                      <p className="text-sm leading-5 font-semibold">
-                        {ticket.tableLabel !== null && (
-                          <>
-                            {t("kds.table", { label: ticket.tableLabel })}
-                            {" · "}
-                          </>
+                    <StatusBand
+                      tone={band.tone}
+                      icon={band.icon}
+                      label={band.label}
+                    >
+                      <div className="flex min-w-0 flex-col">
+                        <p className="text-sm leading-5 font-semibold">
+                          {ticket.tableLabel !== null && (
+                            <>
+                              {t("kds.table", { label: ticket.tableLabel })}
+                              {" · "}
+                            </>
+                          )}
+                          {t("kds.orderCode")}{" "}
+                          <span className="ml-1 font-mono tracking-wider">
+                            #{ticketScanCode(ticket.ticketNo)}
+                          </span>
+                        </p>
+                        <p className="text-xs leading-4">
+                          {t(`kds.channel.${ticket.channel}`)}
+                        </p>
+                      </div>
+                      {elapsed !== null && (
+                        <p className="text-[30px] leading-9 font-bold tabular">
+                          {formatElapsedSeconds(elapsed)}
+                          <span className="sr-only">
+                            {" "}
+                            ·{" "}
+                            {t("timer.elapsed", {
+                              minutes: Math.floor(elapsed / 60),
+                            })}
+                          </span>
+                        </p>
+                      )}
+                    </StatusBand>
+                    <div className="flex flex-col gap-4 p-4">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {!stopped && (
+                          <Badge>{t(`kds.status.${ticket.status}`)}</Badge>
                         )}
-                        {t("kds.orderCode")}{" "}
-                        <span className="font-mono tracking-wider">
-                          {ticket.orderId.slice(-6)}
-                        </span>
-                      </p>
-                      <p className="text-xs leading-4">
-                        {t(`kds.channel.${ticket.channel}`)}
-                      </p>
-                    </div>
-                    {elapsed !== null && (
-                      <p className="text-[30px] leading-9 font-bold tabular">
-                        {formatElapsedSeconds(elapsed)}
-                        <span className="sr-only">
-                          {" "}
-                          ·{" "}
-                          {t("timer.elapsed", {
-                            minutes: Math.floor(elapsed / 60),
-                          })}
-                        </span>
-                      </p>
-                    )}
-                  </StatusBand>
-                  <div className="flex flex-col gap-4 p-4">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {!stopped && (
-                        <Badge>{t(`kds.status.${ticket.status}`)}</Badge>
-                      )}
-                      {ticket.priority > 0 && (
-                        <Badge tone="warning">{t("kds.priority")}</Badge>
-                      )}
-                    </div>
-                    <ul className="divide-y">
-                      {ticket.items.map((item) => (
-                        <li key={item.id} className="flex flex-col gap-2 py-3">
-                          <div className="flex items-start gap-3">
-                            {/* Quantities are a 44px raised square; the count
+                        {ticket.priority > 0 && (
+                          <Badge tone="warning">{t("kds.priority")}</Badge>
+                        )}
+                      </div>
+                      <ul className="divide-y">
+                        {ticket.items.map((item) => (
+                          <li
+                            key={item.id}
+                            className="flex flex-col gap-2 py-3"
+                          >
+                            <div className="flex items-start gap-3">
+                              {/* Quantities are a 44px raised square; the count
                                 stays in the text for screen readers. */}
-                            <span
-                              aria-hidden="true"
-                              className="grid size-11 shrink-0 place-items-center rounded-md bg-surface-3 text-lg font-bold tabular"
-                            >
-                              {item.quantity}
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <p
-                                className={`font-semibold ${item.status === "voided" ? "line-through" : ""}`}
+                              <span
+                                aria-hidden="true"
+                                className="grid size-11 shrink-0 place-items-center rounded-md bg-surface-3 text-lg font-bold tabular"
                               >
-                                <span className="sr-only">
-                                  {item.quantity} ×{" "}
-                                </span>
-                                {item.name}
-                              </p>
-                              {item.modifiers.length > 0 && (
-                                <p className="mt-1 inline-flex w-fit items-start gap-1.5 rounded-md bg-warning-subtle px-2 py-1 text-sm leading-5 font-semibold text-warning">
-                                  <TriangleAlert
-                                    className="mt-0.5 size-4 shrink-0"
-                                    aria-hidden="true"
-                                  />
-                                  <span>
-                                    {t("kds.modifier")}:{" "}
-                                    {item.modifiers.join(", ")}
-                                  </span>
-                                </p>
-                              )}
-                              {item.note && (
-                                <p className="mt-1 inline-flex w-fit items-start gap-1.5 rounded-md bg-warning-subtle px-2 py-1 text-sm leading-5 font-semibold text-warning">
-                                  <TriangleAlert
-                                    className="mt-0.5 size-4 shrink-0"
-                                    aria-hidden="true"
-                                  />
-                                  <span>
-                                    {t("kds.note")}: {item.note}
-                                  </span>
-                                </p>
-                              )}
-                            </div>
-                            <Badge
-                              tone={
-                                item.status === "voided" ? "danger" : "neutral"
-                              }
-                            >
-                              {t(`kds.itemStatus.${item.status}`)}
-                            </Badge>
-                          </div>
-                          {item.status !== "voided" && (
-                            <div className="flex flex-wrap gap-2 pl-14">
-                              {item.status === "queued" && (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="flex-1"
-                                  disabled={action.isPending}
-                                  onClick={() =>
-                                    run({
-                                      kind: "item",
-                                      id: item.id,
-                                      action: "start",
-                                    })
-                                  }
+                                {item.quantity}
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <p
+                                  className={`font-semibold ${item.status === "voided" ? "line-through" : ""}`}
                                 >
-                                  {t("kds.startItem")}
-                                </Button>
-                              )}
-                              {item.status === "in_progress" && (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="flex-1"
-                                  disabled={action.isPending}
-                                  onClick={() =>
-                                    run({
-                                      kind: "item",
-                                      id: item.id,
-                                      action: "ready",
-                                    })
-                                  }
-                                >
-                                  {t("kds.bumpItem")}
-                                </Button>
-                              )}
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="flex-1"
-                                disabled={action.isPending}
-                                onClick={() =>
-                                  action.mutate(
-                                    { kind: "soldOut", id: item.menuItemId },
-                                    {
-                                      onSuccess: () =>
-                                        toast({
-                                          title: t("kds.soldOutDone"),
-                                          tone: "success",
-                                        }),
-                                    },
-                                  )
+                                  <span className="sr-only">
+                                    {item.quantity} ×{" "}
+                                  </span>
+                                  {item.name}
+                                </p>
+                                {item.modifiers.length > 0 && (
+                                  <p className="mt-1 inline-flex w-fit items-start gap-1.5 rounded-md bg-warning-subtle px-2 py-1 text-sm leading-5 font-semibold text-warning">
+                                    <TriangleAlert
+                                      className="mt-0.5 size-4 shrink-0"
+                                      aria-hidden="true"
+                                    />
+                                    <span>
+                                      {t("kds.modifier")}:{" "}
+                                      {item.modifiers.join(", ")}
+                                    </span>
+                                  </p>
+                                )}
+                                {item.note && (
+                                  <p className="mt-1 inline-flex w-fit items-start gap-1.5 rounded-md bg-warning-subtle px-2 py-1 text-sm leading-5 font-semibold text-warning">
+                                    <TriangleAlert
+                                      className="mt-0.5 size-4 shrink-0"
+                                      aria-hidden="true"
+                                    />
+                                    <span>
+                                      {t("kds.note")}: {item.note}
+                                    </span>
+                                  </p>
+                                )}
+                              </div>
+                              <Badge
+                                tone={
+                                  item.status === "voided"
+                                    ? "danger"
+                                    : "neutral"
                                 }
                               >
-                                {t("kds.soldOut")}
-                              </Button>
+                                {t(`kds.itemStatus.${item.status}`)}
+                              </Badge>
                             </div>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                    <div className="flex flex-col gap-2 border-t-(length:--border-w) pt-3">
-                      {/* The ticket's main action is full width, but neutral:
+                            {item.status !== "voided" && (
+                              <div className="flex flex-wrap gap-2 pl-14">
+                                {item.status === "queued" && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="flex-1"
+                                    disabled={action.isPending}
+                                    onClick={() =>
+                                      run({
+                                        kind: "item",
+                                        id: item.id,
+                                        action: "start",
+                                      })
+                                    }
+                                  >
+                                    {t("kds.startItem")}
+                                  </Button>
+                                )}
+                                {item.status === "in_progress" && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="flex-1"
+                                    disabled={action.isPending}
+                                    onClick={() =>
+                                      run({
+                                        kind: "item",
+                                        id: item.id,
+                                        action: "ready",
+                                      })
+                                    }
+                                  >
+                                    {t("kds.bumpItem")}
+                                  </Button>
+                                )}
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="flex-1"
+                                  disabled={action.isPending}
+                                  onClick={() =>
+                                    action.mutate(
+                                      { kind: "soldOut", id: item.menuItemId },
+                                      {
+                                        onSuccess: () =>
+                                          toast({
+                                            title: t("kds.soldOutDone"),
+                                            tone: "success",
+                                          }),
+                                      },
+                                    )
+                                  }
+                                >
+                                  {t("kds.soldOut")}
+                                </Button>
+                              </div>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="flex flex-col gap-2 border-t-(length:--border-w) pt-3">
+                        {/* The ticket's main action is full width, but neutral:
                           a board shows several tickets, and a filled accent
                           button on each would spend the accent budget
                           (DESIGN.md §2, owner Q21). */}
-                      {canTransitionKitchenTicket(ticket.status, "bump") && (
-                        <Button
-                          variant="secondary"
-                          className="w-full"
-                          disabled={action.isPending}
-                          onClick={() =>
-                            run({
-                              kind: "ticket",
-                              id: ticket.id,
-                              action: "bump",
-                            })
-                          }
-                        >
-                          {t("kds.bump")}
-                        </Button>
-                      )}
-                      {canTransitionKitchenTicket(ticket.status, "start") && (
-                        <Button
-                          variant="secondary"
-                          className="w-full"
-                          disabled={action.isPending}
-                          onClick={() =>
-                            run({
-                              kind: "ticket",
-                              id: ticket.id,
-                              action: "start",
-                            })
-                          }
-                        >
-                          {t("kds.start")}
-                        </Button>
-                      )}
-                      <div className="flex flex-wrap gap-2">
-                        {canTransitionKitchenTicket(
-                          ticket.status,
-                          "recall",
-                        ) && (
+                        {canTransitionKitchenTicket(ticket.status, "bump") && (
                           <Button
-                            variant="outline"
-                            className="flex-1"
-                            disabled={action.isPending}
-                            onClick={() => {
-                              setReason("");
-                              setRecall(ticket);
-                            }}
-                          >
-                            {t("kds.recall")}
-                          </Button>
-                        )}
-                        {ticket.status !== "cancelled" && (
-                          <Button
-                            variant="outline"
-                            className="flex-1"
+                            variant="secondary"
+                            className="w-full"
                             disabled={action.isPending}
                             onClick={() =>
                               run({
-                                kind: "priority",
+                                kind: "ticket",
                                 id: ticket.id,
-                                priority: ticket.priority > 0 ? 0 : 1,
+                                action: "bump",
                               })
                             }
                           >
-                            {t(
-                              ticket.priority > 0
-                                ? "kds.removePriority"
-                                : "kds.priority",
-                            )}
+                            {t("kds.bump")}
                           </Button>
                         )}
+                        {canTransitionKitchenTicket(ticket.status, "start") && (
+                          <Button
+                            variant="secondary"
+                            className="w-full"
+                            disabled={action.isPending}
+                            onClick={() =>
+                              run({
+                                kind: "ticket",
+                                id: ticket.id,
+                                action: "start",
+                              })
+                            }
+                          >
+                            {t("kds.start")}
+                          </Button>
+                        )}
+                        <div className="flex flex-wrap gap-2">
+                          {canTransitionKitchenTicket(
+                            ticket.status,
+                            "recall",
+                          ) && (
+                            <Button
+                              variant="outline"
+                              className="flex-1"
+                              disabled={action.isPending}
+                              onClick={() => {
+                                setReason("");
+                                recallDone.current = null;
+                                setRecall(ticket);
+                              }}
+                            >
+                              {t("kds.recall")}
+                            </Button>
+                          )}
+                          {ticket.status !== "cancelled" && (
+                            <Button
+                              variant="outline"
+                              className="flex-1"
+                              disabled={action.isPending}
+                              onClick={() =>
+                                run({
+                                  kind: "priority",
+                                  id: ticket.id,
+                                  priority: ticket.priority > 0 ? 0 : 1,
+                                })
+                              }
+                            >
+                              {t(
+                                ticket.priority > 0
+                                  ? "kds.removePriority"
+                                  : "kds.priority",
+                              )}
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        )}
-      </section>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      </div>
+      <ScannerPanel
+        tickets={data.tickets}
+        action={action}
+        status={scanner.data?.status ?? "unknown"}
+        onRecall={(ticket, done) => {
+          setReason("");
+          recallDone.current = done;
+          setRecall(ticket);
+        }}
+      />
       <Dialog
         open={recall !== null}
         onOpenChange={(open) => {
-          if (!open) setRecall(null);
+          if (!open) closeRecall(false);
         }}
       >
         <DialogContent>
@@ -597,7 +628,7 @@ function StationBoard({
             maxLength={200}
           />
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRecall(null)}>
+            <Button variant="outline" onClick={() => closeRecall(false)}>
               {t("common.cancel")}
             </Button>
             <Button
@@ -611,7 +642,7 @@ function StationBoard({
                       action: "recall",
                       reason: reason.trim(),
                     },
-                    { onSuccess: () => setRecall(null) },
+                    { onSuccess: () => closeRecall(true) },
                   );
               }}
             >
@@ -620,6 +651,6 @@ function StationBoard({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </>
+    </div>
   );
 }

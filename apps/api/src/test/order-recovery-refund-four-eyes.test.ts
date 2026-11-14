@@ -1331,8 +1331,11 @@ describe("legend-94q2l T2 the qrSales guard counts a recovery refund only once i
   it("RG-2 the order.refunded journal of the issue is posted: the 44k payout of that refund posts; customer_deposit nets to 0", async () => {
     const { world, intentId, orderUlid, orderUuid } = await sold();
     const issueId = await seedIssue(world, orderUuid);
-    await post(world, recoveryRefunded(world, orderUlid, issueId, FORTY_FOUR));
+    // Production files the payment refund row (order_issue_id = issue) in the
+    // same transaction that appends order.refunded, so the row exists before
+    // the refund journal is posted; the gateway split reads the intent from it.
     const refundId = await seedPayout(world, intentId, 44_000, issueId);
+    await post(world, recoveryRefunded(world, orderUlid, issueId, FORTY_FOUR));
 
     expect(
       await deliver(

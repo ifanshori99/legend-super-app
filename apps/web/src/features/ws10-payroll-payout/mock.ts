@@ -1,0 +1,1100 @@
+// Mock mode for the payout screens (docs/frontend.md "Typed endpoints and mock
+// mode"). The `normal` fixture mirrors the approved mockup and is what
+// e2e/payout.mock.spec.ts assumes:
+// - PT with Duitku off, source account BCA •••• 4821 (manual transfer);
+// - run PAY-2026-11-01 "Gaji November" with batch 201 awaiting approval, asked
+//   by Rani Wulandari: Alya Putri, Bima Pratama, Citra Lestari, Dimas Saputra,
+//   gaji diterima Rp21.500.000, biaya PT Rp5.000 each (Rp20.000), dana
+//   disiapkan Rp21.520.000;
+// - run PAY-2026-11-02 (no batch yet, "Siapkan");
+// - run PAY-2026-10-01 with batch 202 in the status view: one item each
+//   waiting, paid by the provider, paid by hand, failed and unknown outcome.
+// `?mock=empty` lists no payable run; `?mock=error|offline` fail every call.
+// Three payout-only scenarios are read from `?mock=` here (they are not in the
+// shared scenario list): `legacy-account` makes the first item of batch 201 a
+// legacy item without a locked account (the approval is blocked), and
+// `batches-paged` serves the per-PT batch list in three pages (cursors "p2",
+// "p3"): batch 201 first, then batch 202 plus an older history batch (older than
+// every shown run's lock, so the screen stops loading by itself and "Muat
+// lagi" stays), then an empty last page. `batches-paged-open` puts the
+// pending-approval batch 201 on page 2 behind batch 202, to prove it is loaded
+// without a click.
+// `?mock=resolve-proposal` waits for a second person on batch 202: a resolve
+// proposal (failed, with a proof key of the batch) on the exported item and a
+// return proposal on the manually confirmed one, both by the other known user.
+// The second step must send the same proof key (409 *_EVIDENCE_MISMATCH).
+// Bank items carry the locked payee snapshot (name + "****1234"); cash items
+// carry none. Resolve and return need two different people: the first call
+// only proposes, so a single mock user always gets `proposed: 1`.
+//
+// Payable runs and employee names come through two mock-only paths
+// (/api/mock/payout/*) because the payroll-run and HR mocks seed no locked run
+// and no such employees; in a real build api.ts calls the real contracts.
+// Server rules the mock repeats on purpose: the requester cannot approve or
+// confirm (PAYOUT_SELF_APPROVAL, PAYOUT_CONFIRM_SELF), the bank file downloads
+// once, an inactive source account is refused, Duitku is not available.
+import { z } from "zod";
+import { defineEndpoint } from "@starter/shared/api";
+import { cafeLegendPayrollFixtures } from "@starter/shared/hris/payroll";
+import {
+  approveDisbursementBatch,
+  cancelDisbursementBatch,
+  confirmDisbursementCash,
+  confirmDisbursementItems,
+  createDisbursementBatch,
+  exportDisbursementBatch,
+  getDisbursementBatch,
+  getPayoutConfig,
+  listPayoutBatches,
+  listResolutionProposals,
+  listRunDisbursementBatches,
+  readPayoutEvidence,
+  resolveDisbursementItems,
+  returnDisbursementItems,
+  submitDisbursementBatch,
+  upsertPayoutConfig,
+} from "@starter/shared/hris/payroll/payout";
+import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import type {
+  PayrollDisbursementBatchDto,
+  PayrollDisbursementItemDto,
+  PayrollPayoutConfigDto,
+} from "@starter/shared/types";
+import { ApiError } from "@/lib/api/errors";
+import { MOCK_ROLE_COOKIE, parseMockRole } from "@/lib/areas/access";
+import { registerMock } from "@/lib/mock/registry";
+import { createMockStore } from "@/lib/mock/store";
+import type { PayableRun, PayoutEmployee } from "./api";
+
+const LEGAL_ENTITY_ID = cafeLegendPlatformFixtures.legalEntity.id;
+const { userIds } = cafeLegendPayrollFixtures;
+
+/** Deterministic RFC 4122 ids so e2e and demos can name a batch in the URL. */
+const uid = (n: number) =>
+  `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+export const MOCK_PAYOUT_IDS = {
+  runApproval: uid(101),
+  runNew: uid(102),
+  runStatus: uid(100),
+  batchApproval: uid(201),
+  batchStatus: uid(202),
+} as const;
+
+const ACCOUNTS = [
+  {
+    id: uid(901),
+    label: "BCA · PT Legend Kuliner",
+    maskedNumber: "****4821",
+    active: true,
+  },
+  {
+    id: uid(902),
+    label: "Mandiri · PT Legend Kuliner",
+    maskedNumber: "****1177",
+    active: true,
+  },
+  {
+    id: uid(903),
+    label: "BNI · PT Legend Kuliner",
+    maskedNumber: "****9020",
+    active: false,
+  },
+];
+
+const PEOPLE: PayoutEmployee[] = [
+  {
+    id: uid(301),
+    userId: null,
+    name: "Alya Putri",
+    subtitle: "Kasir · Kemang",
+  },
+  {
+    id: uid(302),
+    userId: null,
+    name: "Bima Pratama",
+    subtitle: "Barista · Kemang",
+  },
+  {
+    id: uid(303),
+    userId: null,
+    name: "Citra Lestari",
+    subtitle: "Dapur · Senopati",
+  },
+  {
+    id: uid(304),
+    userId: null,
+    name: "Dimas Saputra",
+    subtitle: "Pelayan · Senopati",
+  },
+  {
+    id: uid(305),
+    userId: null,
+    name: "Eka Wijaya",
+    subtitle: "Gudang · Kemang",
+  },
+  {
+    id: uid(306),
+    userId: null,
+    name: "Gita Maharani",
+    subtitle: "Kasir · Kemang",
+  },
+  {
+    id: uid(307),
+    userId: null,
+    name: "Hadi Wibowo",
+    subtitle: "Barista · Kemang",
+  },
+  {
+    id: uid(308),
+    userId: userIds.hrApprover,
+    name: "Rani Wulandari",
+    subtitle: "HR · Kantor",
+  },
+  {
+    id: uid(309),
+    userId: userIds.financeApprover,
+    name: "Sari Kurniawan",
+    subtitle: "Finance · Kantor",
+  },
+];
+
+const RUNS: PayableRun[] = [
+  {
+    id: MOCK_PAYOUT_IDS.runApproval,
+    legalEntityId: LEGAL_ENTITY_ID,
+    code: "PAY-2026-11-01",
+    runType: "regular",
+    periodStart: "2026-11-01",
+    periodEnd: "2026-11-30",
+    lockedAt: "2026-11-14T01:30:00.000Z",
+    employeeCount: 4,
+    netIdr: 21_500_000,
+    bankTransferIdr: 21_500_000,
+    bankEmployeeCount: 4,
+  },
+  {
+    id: MOCK_PAYOUT_IDS.runNew,
+    legalEntityId: LEGAL_ENTITY_ID,
+    code: "PAY-2026-11-02",
+    runType: "off_cycle",
+    periodStart: "2026-11-01",
+    periodEnd: "2026-11-30",
+    lockedAt: "2026-11-14T01:30:00.000Z",
+    employeeCount: 3,
+    netIdr: 3_200_000,
+    // One employee is paid in cash: the bank batch covers the other two.
+    bankTransferIdr: 3_200_000,
+    bankEmployeeCount: 2,
+  },
+  {
+    id: MOCK_PAYOUT_IDS.runStatus,
+    legalEntityId: LEGAL_ENTITY_ID,
+    code: "PAY-2026-10-01",
+    runType: "regular",
+    periodStart: "2026-10-01",
+    periodEnd: "2026-10-31",
+    lockedAt: "2026-10-30T02:00:00.000Z",
+    employeeCount: 5,
+    netIdr: 23_500_000,
+    bankTransferIdr: 23_500_000,
+    bankEmployeeCount: 5,
+  },
+];
+
+/** What each run pays, by employee (the payslip net). */
+const PAYEES: Record<string, { employee: number; amount: number }[]> = {
+  [MOCK_PAYOUT_IDS.runApproval]: [
+    { employee: 301, amount: 6_500_000 },
+    { employee: 302, amount: 5_000_000 },
+    { employee: 303, amount: 5_500_000 },
+    { employee: 304, amount: 4_500_000 },
+  ],
+  [MOCK_PAYOUT_IDS.runNew]: [
+    { employee: 306, amount: 1_700_000 },
+    { employee: 307, amount: 1_500_000 },
+  ],
+};
+
+const FEE_IDR = 5_000;
+const NOW = "2026-11-14T02:15:00.000Z";
+
+function hashOf(items: readonly PayrollDisbursementItemDto[]): string {
+  // Not a real SHA-256: a stable 64-hex stand-in over the item ids and amounts.
+  const text = items.map((item) => `${item.id}:${item.amountIdr}`).join("|");
+  let seed = 5381;
+  let out = "";
+  for (let i = 0; out.length < 64; i += 1) {
+    seed = (seed * 33 + text.charCodeAt(i % text.length) + i) >>> 0;
+    out += seed.toString(16).padStart(8, "0");
+  }
+  return out.slice(0, 64);
+}
+
+function item(
+  n: number,
+  batchId: string,
+  employee: number,
+  amountIdr: number,
+  overrides: Partial<PayrollDisbursementItemDto> = {},
+): PayrollDisbursementItemDto {
+  const channel = overrides.channel ?? "manual_bank";
+  const holder = PEOPLE.find((person) => person.id === uid(employee))?.name;
+  return {
+    id: uid(n),
+    batchId,
+    payslipId: uid(n + 500),
+    employeeId: uid(employee),
+    channel,
+    attemptNo: 1,
+    status: "prepared",
+    excludedReason: null,
+    amountIdr,
+    feeIdr: FEE_IDR,
+    bankCode: "014",
+    // The locked payee snapshot: bank items have one, cash items do not.
+    accountHolderName: channel === "cash" ? null : (holder ?? null),
+    maskedAccountNumber: channel === "cash" ? null : "****1234",
+    nameMatch: null,
+    providerRef: null,
+    confirmedBy: null,
+    confirmationRef: null,
+    settledAt: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  };
+}
+
+function batch(
+  id: string,
+  runId: string,
+  items: PayrollDisbursementItemDto[],
+  overrides: Partial<PayrollDisbursementBatchDto>,
+): PayrollDisbursementBatchDto {
+  return {
+    id,
+    legalEntityId: LEGAL_ENTITY_ID,
+    payrollRunId: runId,
+    channel: "manual_bank",
+    status: "draft",
+    haltReason: null,
+    requestedBy: userIds.hrApprover,
+    requestedAt: NOW,
+    approvedBy: null,
+    approvedAt: null,
+    approvalExpiresAt: null,
+    contentHash: null,
+    itemCount: items.length,
+    totalIdr: items.reduce((sum, row) => sum + row.amountIdr, 0),
+    bankFormat: "generic_csv",
+    exportChecksumSha256: null,
+    sourceBankAccountId: null,
+    exportedBy: null,
+    exportedAt: null,
+    cancelledBy: null,
+    cancelledAt: null,
+    cancelReason: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    items,
+    ...overrides,
+  };
+}
+
+const seedConfig = (): PayrollPayoutConfigDto => ({
+  id: uid(801),
+  legalEntityId: LEGAL_ENTITY_ID,
+  method: "manual_bank",
+  integrationId: null,
+  manualSourceBankAccountId: ACCOUNTS[0].id,
+  manualBankFormat: "generic_csv",
+  maxPerTransferIdr: 50_000_000,
+  dailyCapIdr: 100_000_000,
+  feePerTransferIdr: FEE_IDR,
+  enabled: true,
+  updatedBy: userIds.financeApprover,
+  updatedAt: NOW,
+  createdAt: NOW,
+});
+
+function seedBatches(): PayrollDisbursementBatchDto[] {
+  const approvalItems = PAYEES[MOCK_PAYOUT_IDS.runApproval].map((row, index) =>
+    item(1000 + index, MOCK_PAYOUT_IDS.batchApproval, row.employee, row.amount),
+  );
+  const b = MOCK_PAYOUT_IDS.batchStatus;
+  const statusItems = [
+    item(2001, b, 301, 6_000_000, {
+      channel: "duitku",
+      status: "succeeded",
+      providerRef: "DKU-88410",
+      settledAt: NOW,
+    }),
+    item(2002, b, 302, 4_800_000, {
+      attemptNo: 2,
+      status: "succeeded",
+      confirmedBy: userIds.hrApprover,
+      confirmationRef: "TRF-20261031-0042",
+      settledAt: NOW,
+    }),
+    item(2003, b, 303, 5_200_000, { status: "failed" }),
+    item(2004, b, 304, 4_000_000, { status: "unknown" }),
+    item(2005, b, 305, 3_500_000, { status: "exported" }),
+    // Left out at submit: the server sealed its fee, then cancelled the item.
+    // It carries a fee but is not payable, so the fee total must skip it.
+    item(2006, b, 306, 1_700_000, {
+      status: "cancelled",
+      excludedReason: "bank_code_missing",
+      bankCode: null,
+    }),
+  ];
+  return [
+    batch(
+      MOCK_PAYOUT_IDS.batchApproval,
+      MOCK_PAYOUT_IDS.runApproval,
+      approvalItems,
+      {
+        status: "pending_approval",
+        contentHash: hashOf(approvalItems),
+        approvalExpiresAt: "2026-11-16T02:15:00.000Z",
+      },
+    ),
+    batch(b, MOCK_PAYOUT_IDS.runStatus, statusItems, {
+      status: "exported",
+      // Totals cover payable items only (the cancelled item is not paid).
+      itemCount: 5,
+      totalIdr: 23_500_000,
+      // Asked by finance, approved and confirmed by HR (the default mock user),
+      // so the default user may resolve or return its items.
+      requestedBy: userIds.financeApprover,
+      requestedAt: "2026-10-30T03:00:00.000Z",
+      approvedBy: userIds.hrApprover,
+      approvedAt: "2026-10-30T04:00:00.000Z",
+      contentHash: hashOf(statusItems),
+      exportedBy: userIds.hrApprover,
+      exportedAt: "2026-10-30T04:30:00.000Z",
+      exportChecksumSha256: "a".repeat(64),
+      // Frozen when it was approved.
+      sourceBankAccountId: ACCOUNTS[0].id,
+    }),
+  ];
+}
+
+/** First call of the two-person resolve/return: who proposed what. */
+type Proposal = {
+  kind: "resolve" | "return";
+  outcome: string;
+  by: string;
+  evidenceKey: string;
+  note: string;
+  at: string;
+};
+type PayoutMockState = {
+  config: PayrollPayoutConfigDto;
+  batches: PayrollDisbursementBatchDto[];
+  proposals: Record<string, Proposal>;
+  /** The `resolve-proposal` scenario puts its proposals in once. */
+  proposalsSeeded: boolean;
+};
+const store = createMockStore<PayoutMockState>(() => ({
+  config: seedConfig(),
+  batches: seedBatches(),
+  proposals: {},
+  proposalsSeeded: false,
+}));
+const state = () => store.get();
+let counter = 5000;
+const nextId = () => uid((counter += 1));
+
+function currentActor(): string {
+  if (typeof document === "undefined") return userIds.hrApprover;
+  const raw = document.cookie
+    .split("; ")
+    .find((cookie) => cookie.startsWith(`${MOCK_ROLE_COOKIE}=`))
+    ?.slice(MOCK_ROLE_COOKIE.length + 1);
+  const role = parseMockRole(raw);
+  return role === "finance" || role === "owner"
+    ? userIds.financeApprover
+    : userIds.hrApprover;
+}
+
+// ---- Payout-only scenarios ------------------------------------------------------
+
+type PayoutScenario =
+  | "legacy-account"
+  | "batches-paged"
+  | "batches-paged-open"
+  | "resolve-proposal";
+let rememberedScenario: PayoutScenario | null = null;
+
+/**
+ * `?mock=legacy-account|batches-paged|batches-paged-open|resolve-proposal`. The shared scenario list does not know
+ * them, so they are read from the URL here and kept for the page's lifetime.
+ */
+function payoutScenario(): PayoutScenario | null {
+  if (typeof window !== "undefined") {
+    const value = new URLSearchParams(window.location.search).get("mock");
+    if (
+      value === "legacy-account" ||
+      value === "batches-paged" ||
+      value === "batches-paged-open" ||
+      value === "resolve-proposal"
+    )
+      rememberedScenario = value;
+    else if (value !== null) rememberedScenario = null;
+  }
+  return rememberedScenario;
+}
+
+/** What the screens read: `legacy-account` strips one locked account. */
+function view(row: PayrollDisbursementBatchDto): PayrollDisbursementBatchDto {
+  if (
+    payoutScenario() !== "legacy-account" ||
+    row.id !== MOCK_PAYOUT_IDS.batchApproval
+  )
+    return row;
+  return {
+    ...row,
+    items: row.items.map((entry, index) =>
+      index === 0
+        ? { ...entry, accountHolderName: null, maskedAccountNumber: null }
+        : entry,
+    ),
+  };
+}
+
+/** Proof key the scenario's proposals carry: it belongs to batch 202. */
+const MOCK_PROPOSAL_EVIDENCE_KEY = `tenants/mock/payroll-payout/${MOCK_PAYOUT_IDS.batchStatus}/evidence/proposal.png`;
+
+/** Puts the scenario's first steps in, once per store (a reset re-arms it). */
+function seedScenarioProposals() {
+  if (payoutScenario() !== "resolve-proposal" || state().proposalsSeeded)
+    return;
+  store.set({
+    ...state(),
+    proposalsSeeded: true,
+    proposals: {
+      ...state().proposals,
+      [`resolve:${uid(2005)}`]: {
+        kind: "resolve",
+        outcome: "failed",
+        by: userIds.financeApprover,
+        evidenceKey: MOCK_PROPOSAL_EVIDENCE_KEY,
+        note: "Bank menolak transfer, saldo tujuan tidak aktif.",
+        at: "2026-10-31T03:20:00.000Z",
+      },
+      [`return:${uid(2002)}`]: {
+        kind: "return",
+        outcome: "returned",
+        by: userIds.financeApprover,
+        evidenceKey: MOCK_PROPOSAL_EVIDENCE_KEY,
+        note: "Dana kembali dari bank penerima.",
+        at: "2026-10-31T04:10:00.000Z",
+      },
+    },
+  });
+}
+
+const BATCH_PAGE_TWO = "p2";
+const BATCH_PAGE_THREE = "p3";
+
+/** A finished batch from before every shown run was locked (older history). */
+function historyBatch(): PayrollDisbursementBatchDto {
+  return batch(uid(901), uid(902), [], {
+    status: "completed",
+    createdAt: "2026-09-30T03:00:00.000Z",
+    updatedAt: "2026-09-30T03:00:00.000Z",
+  });
+}
+
+const refuse = (status: number, code: string, message: string) =>
+  new ApiError(status, code, message);
+
+function find(batchId: string): PayrollDisbursementBatchDto {
+  const found = state().batches.find((row) => row.id === batchId);
+  if (!found)
+    throw refuse(404, "NOT_FOUND", "Batch pencairan tidak ditemukan.");
+  return found;
+}
+
+function save(next: PayrollDisbursementBatchDto) {
+  store.set({
+    ...state(),
+    batches: state().batches.map((row) => (row.id === next.id ? next : row)),
+  });
+  return next;
+}
+
+/** Batch status after items moved: done when no item still waits. */
+function settle(
+  current: PayrollDisbursementBatchDto,
+  items: PayrollDisbursementItemDto[],
+): PayrollDisbursementBatchDto {
+  const open = items.some((row) =>
+    ["prepared", "approved", "sending", "exported", "unknown"].includes(
+      row.status,
+    ),
+  );
+  const status = open
+    ? current.status
+    : items.every((row) => ["succeeded", "cancelled"].includes(row.status))
+      ? "completed"
+      : "partially_failed";
+  return save({
+    ...current,
+    items,
+    status,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function mapItems(
+  items: PayrollDisbursementItemDto[],
+  ids: readonly string[],
+  patch: Partial<PayrollDisbursementItemDto>,
+) {
+  return items.map((row) =>
+    ids.includes(row.id)
+      ? { ...row, ...patch, updatedAt: new Date().toISOString() }
+      : row,
+  );
+}
+
+// ---- Mock-only reference paths ----------------------------------------------
+
+const referenceQuery = z.object({ legalEntityId: z.string() });
+const payableRunsPath = defineEndpoint({
+  method: "GET",
+  path: "/api/mock/payout/payable-runs",
+  query: referenceQuery,
+  response: z.object({ data: z.array(z.any()) }),
+});
+const sourceAccountsPath = defineEndpoint({
+  method: "GET",
+  path: "/api/mock/payout/source-accounts",
+  query: referenceQuery,
+  response: z.object({ data: z.array(z.any()) }),
+});
+const employeesPath = defineEndpoint({
+  method: "GET",
+  path: "/api/mock/payout/employees",
+  response: z.object({ data: z.array(z.any()) }),
+});
+
+registerMock(payableRunsPath, ({ query, scenario }) => ({
+  data:
+    scenario === "empty"
+      ? []
+      : RUNS.filter((run) => run.legalEntityId === query.legalEntityId),
+}));
+registerMock(sourceAccountsPath, () => ({ data: ACCOUNTS }));
+registerMock(employeesPath, () => ({ data: PEOPLE }));
+
+// ---- Config ------------------------------------------------------------------
+
+registerMock(getPayoutConfig, ({ params }) => ({
+  data:
+    params.legalEntityId === state().config.legalEntityId
+      ? state().config
+      : null,
+}));
+
+registerMock(upsertPayoutConfig, ({ params, body }) => {
+  if (body.method === "duitku")
+    throw refuse(
+      409,
+      "PAYOUT_CHANNEL_NOT_AVAILABLE",
+      "Duitku belum aktif untuk PT ini. Gunakan transfer manual.",
+    );
+  const account = ACCOUNTS.find(
+    (row) => row.id === body.manualSourceBankAccountId,
+  );
+  if (!account?.active)
+    throw refuse(
+      422,
+      "PAYOUT_SOURCE_ACCOUNT_INVALID",
+      "Rekening sumber tidak aktif. Pilih rekening aktif milik PT ini.",
+    );
+  const next: PayrollPayoutConfigDto = {
+    ...state().config,
+    legalEntityId: params.legalEntityId,
+    method: body.method,
+    integrationId: body.integrationId,
+    manualSourceBankAccountId: body.manualSourceBankAccountId,
+    manualBankFormat: body.manualBankFormat,
+    maxPerTransferIdr: body.maxPerTransferIdr,
+    dailyCapIdr: body.dailyCapIdr,
+    feePerTransferIdr: body.feePerTransferIdr,
+    enabled: body.enabled,
+    updatedBy: currentActor(),
+    updatedAt: new Date().toISOString(),
+  };
+  store.set({ ...state(), config: next });
+  return { data: next };
+});
+
+// ---- Batches -----------------------------------------------------------------
+
+registerMock(listRunDisbursementBatches, ({ params, scenario }) => ({
+  data:
+    scenario === "empty"
+      ? []
+      : state()
+          .batches.filter((row) => row.payrollRunId === params.id)
+          .map(view),
+}));
+
+registerMock(listPayoutBatches, ({ query, scenario }) => {
+  if (scenario === "empty")
+    return { data: [], meta: { limit: query.limit, nextCursor: null } };
+  const rows = state()
+    .batches.filter(
+      (row) =>
+        (query.legalEntityId === undefined ||
+          row.legalEntityId === query.legalEntityId) &&
+        (query.status === undefined || row.status === query.status),
+    )
+    .map(view);
+  const paged = payoutScenario();
+  const isPaged = paged === "batches-paged" || paged === "batches-paged-open";
+  if (
+    query.cursor !== undefined &&
+    !(isPaged && [BATCH_PAGE_TWO, BATCH_PAGE_THREE].includes(query.cursor))
+  )
+    throw refuse(422, "VALIDATION_ERROR", "Kursor tidak valid.");
+  if (isPaged) {
+    const pick = (id: string) => rows.filter((row) => row.id === id);
+    const pageOne = pick(
+      paged === "batches-paged"
+        ? MOCK_PAYOUT_IDS.batchApproval
+        : MOCK_PAYOUT_IDS.batchStatus,
+    );
+    const pageTwo =
+      paged === "batches-paged"
+        ? [...pick(MOCK_PAYOUT_IDS.batchStatus), historyBatch()]
+        : pick(MOCK_PAYOUT_IDS.batchApproval);
+    // `batches-paged-open` ends on page 2; `batches-paged` has a third page.
+    if (query.cursor === BATCH_PAGE_THREE)
+      return { data: [], meta: { limit: query.limit, nextCursor: null } };
+    if (query.cursor === BATCH_PAGE_TWO)
+      return {
+        data: pageTwo,
+        meta: {
+          limit: query.limit,
+          nextCursor: paged === "batches-paged" ? BATCH_PAGE_THREE : null,
+        },
+      };
+    return {
+      data: pageOne,
+      meta: { limit: query.limit, nextCursor: BATCH_PAGE_TWO },
+    };
+  }
+  return {
+    data: rows.slice(0, query.limit),
+    meta: { limit: query.limit, nextCursor: null },
+  };
+});
+
+registerMock(getDisbursementBatch, ({ params }) => ({
+  data: view(find(params.id)),
+}));
+
+registerMock(createDisbursementBatch, ({ params, body }) => {
+  if (body.channel === "duitku")
+    throw refuse(
+      409,
+      "PAYOUT_CHANNEL_NOT_AVAILABLE",
+      "Duitku belum aktif untuk PT ini. Gunakan transfer manual.",
+    );
+  const payees = PAYEES[params.id];
+  if (!RUNS.some((run) => run.id === params.id) || !payees)
+    throw refuse(
+      409,
+      "PAYOUT_RUN_NOT_PAYABLE",
+      "Run ini belum bisa dicairkan.",
+    );
+  if (
+    state().batches.some(
+      (row) =>
+        row.payrollRunId === params.id &&
+        !["completed", "partially_failed", "cancelled"].includes(row.status),
+    )
+  )
+    throw refuse(
+      409,
+      "PAYOUT_BATCH_ALREADY_OPEN",
+      "Run ini sudah punya batch pencairan.",
+    );
+  const id = nextId();
+  const created = batch(
+    id,
+    params.id,
+    payees.map((row, index) =>
+      item(counter + 10 + index, id, row.employee, row.amount),
+    ),
+    {
+      channel: body.channel,
+      requestedBy: currentActor(),
+      requestedAt: new Date().toISOString(),
+    },
+  );
+  counter += 20;
+  store.set({ ...state(), batches: [...state().batches, created] });
+  return { data: created };
+});
+
+registerMock(submitDisbursementBatch, ({ params }) => {
+  const current = find(params.id);
+  if (current.status !== "draft")
+    throw refuse(409, "PAYOUT_BATCH_STATE", "Batch ini sudah diajukan.");
+  const next = save({
+    ...current,
+    status: "pending_approval",
+    contentHash: hashOf(current.items),
+    approvalExpiresAt: new Date(Date.now() + 48 * 3600_000).toISOString(),
+  });
+  return { data: { batch: next, excluded: [] } };
+});
+
+registerMock(approveDisbursementBatch, ({ params, body }) => {
+  const current = find(params.id);
+  if (current.status !== "pending_approval")
+    throw refuse(
+      409,
+      "PAYOUT_BATCH_STATE",
+      "Batch ini tidak menunggu persetujuan.",
+    );
+  if (current.requestedBy === currentActor())
+    throw refuse(
+      403,
+      "PAYOUT_SELF_APPROVAL",
+      "Pembuat pengajuan tidak boleh menyetujui pencairannya sendiri.",
+    );
+  if (body.contentHash !== current.contentHash)
+    throw refuse(
+      409,
+      "PAYOUT_HASH_MISMATCH",
+      "Isi batch berubah. Muat ulang lalu periksa lagi.",
+    );
+  const source = ACCOUNTS.find(
+    (row) => row.id === state().config.manualSourceBankAccountId,
+  );
+  // The approver's screen must show the account the server will freeze.
+  if (
+    current.channel === "manual_bank" &&
+    body.sourceBankAccountId !== source?.id
+  )
+    throw refuse(
+      409,
+      "PAYOUT_SOURCE_MISMATCH",
+      "Rekening sumber berubah sejak layar dibuka. Muat ulang lalu periksa lagi.",
+    );
+  if (current.channel === "manual_bank" && !source?.active)
+    throw refuse(
+      422,
+      "PAYOUT_SOURCE_ACCOUNT_INVALID",
+      "Rekening sumber tidak aktif. Pilih rekening aktif milik PT ini.",
+    );
+  return {
+    data: save({
+      ...current,
+      status: "approved",
+      approvedBy: currentActor(),
+      approvedAt: new Date().toISOString(),
+      sourceBankAccountId:
+        current.channel === "manual_bank" ? (source?.id ?? null) : null,
+      items: current.items.map((row) => ({
+        ...row,
+        status: "approved" as const,
+      })),
+    }),
+  };
+});
+
+registerMock(cancelDisbursementBatch, ({ params, body }) => {
+  const current = find(params.id);
+  if (!["draft", "pending_approval", "approved"].includes(current.status))
+    throw refuse(
+      409,
+      "PAYOUT_BATCH_STATE",
+      "Batch ini tidak bisa dibatalkan lagi.",
+    );
+  return {
+    data: save({
+      ...current,
+      status: "cancelled",
+      cancelledBy: currentActor(),
+      cancelledAt: new Date().toISOString(),
+      cancelReason: body.reason,
+      items: current.items.map((row) => ({
+        ...row,
+        status: "cancelled" as const,
+      })),
+    }),
+  };
+});
+
+registerMock(exportDisbursementBatch, ({ params }) => {
+  const current = find(params.id);
+  if (current.status === "exported" && current.exportedAt !== null)
+    throw refuse(
+      409,
+      "PAYOUT_EXPORT_ALREADY_DOWNLOADED",
+      "Berkas transfer batch ini sudah diunduh dan tidak bisa diunduh lagi.",
+    );
+  if (current.status !== "approved")
+    throw refuse(409, "PAYOUT_BATCH_STATE", "Batch ini belum disetujui.");
+  const stamp = new Date().toISOString();
+  save({
+    ...current,
+    status: "exported",
+    exportedBy: currentActor(),
+    exportedAt: stamp,
+    exportChecksumSha256: "b".repeat(64),
+    items: current.items.map((row) => ({
+      ...row,
+      status: "exported" as const,
+    })),
+  });
+  const lines = current.items.map(
+    (row) => `${row.employeeId},${row.bankCode ?? ""},${row.amountIdr}`,
+  );
+  return {
+    data: {
+      filename: `pencairan-${current.id.slice(-4)}.csv`,
+      contentType: "text/csv",
+      content: ["employee,bank,amount", ...lines].join("\n"),
+      checksumSha256: "b".repeat(64),
+    },
+  };
+});
+
+registerMock(confirmDisbursementItems, ({ params, body }) => {
+  const current = find(params.id);
+  if (current.requestedBy === currentActor())
+    throw refuse(
+      403,
+      "PAYOUT_CONFIRM_SELF",
+      "Pembuat pengajuan tidak boleh mengonfirmasi transfernya sendiri.",
+    );
+  if (current.status !== "exported")
+    throw refuse(
+      409,
+      "PAYOUT_BATCH_NOT_EXPORTED",
+      "Berkas transfer belum diunduh.",
+    );
+  let items = current.items;
+  for (const result of body.results)
+    items = mapItems(items, [result.itemId], {
+      status: "succeeded",
+      confirmedBy: currentActor(),
+      confirmationRef: result.bankRef,
+      settledAt: new Date().toISOString(),
+    });
+  const next = settle(current, items);
+  return {
+    data: {
+      batchStatus: next.status,
+      runPaid: next.status === "completed",
+      confirmed: body.results.length,
+    },
+  };
+});
+
+/**
+ * The two-person rule of resolve and return: the first call records a proposal
+ * (nothing moves), a second call by someone else with the same outcome applies
+ * it. Returns the ids this call applied.
+ */
+function propose(
+  kind: Proposal["kind"],
+  outcome: string,
+  itemIds: readonly string[],
+  proof: { evidenceKey: string; note: string },
+) {
+  seedScenarioProposals();
+  const actor = currentActor();
+  const proposals = { ...state().proposals };
+  const applied: string[] = [];
+  for (const id of itemIds) {
+    const key = `${kind}:${id}`;
+    const earlier = proposals[key];
+    if (!earlier) {
+      proposals[key] = {
+        kind,
+        outcome,
+        by: actor,
+        evidenceKey: proof.evidenceKey,
+        note: proof.note,
+        at: new Date().toISOString(),
+      };
+      continue;
+    }
+    if (earlier.by === actor)
+      throw refuse(
+        409,
+        "PAYOUT_RESOLVE_SAME_PERSON",
+        "Orang yang sama tidak bisa menyetujui usulannya sendiri.",
+      );
+    if (earlier.outcome !== outcome)
+      throw refuse(
+        409,
+        "PAYOUT_RESOLVE_OUTCOME_MISMATCH",
+        "Hasil yang dipilih berbeda dari usulan sebelumnya.",
+      );
+    if (earlier.evidenceKey !== proof.evidenceKey)
+      throw kind === "resolve"
+        ? refuse(
+            409,
+            "PAYOUT_RESOLVE_EVIDENCE_MISMATCH",
+            "Bukti berbeda dari usulan orang pertama.",
+          )
+        : refuse(
+            409,
+            "PAYOUT_RETURN_EVIDENCE_MISMATCH",
+            "Bukti berbeda dari usulan orang pertama.",
+          );
+    delete proposals[key];
+    applied.push(id);
+  }
+  store.set({ ...state(), proposals });
+  return applied;
+}
+
+registerMock(listResolutionProposals, ({ params }) => {
+  const current = find(params.id);
+  seedScenarioProposals();
+  const byItem = new Map(current.items.map((row) => [row.id, row] as const));
+  return {
+    data: Object.entries(state().proposals).flatMap(([key, proposal]) => {
+      const target = byItem.get(key.slice(key.indexOf(":") + 1));
+      if (!target) return [];
+      return [
+        {
+          itemId: target.id,
+          employeeId: target.employeeId,
+          kind: proposal.kind,
+          outcome:
+            proposal.kind === "return"
+              ? null
+              : proposal.outcome === "not_sent"
+                ? ("not_sent" as const)
+                : ("failed" as const),
+          evidenceKey: proposal.evidenceKey,
+          note: proposal.note,
+          proposedBy: proposal.by,
+          // Same tenant only: a person without a name here reads as null.
+          proposedByName:
+            PEOPLE.find((person) => person.userId === proposal.by)?.name ??
+            null,
+          proposedAt: proposal.at,
+        },
+      ];
+    }),
+  };
+});
+
+registerMock(readPayoutEvidence, ({ params, query }) => {
+  find(params.id);
+  if (!query.key.includes(`/${params.id}/`))
+    throw refuse(422, "VALIDATION_ERROR", "Kunci bukti bukan milik batch ini.");
+  return {
+    data: {
+      evidenceKey: query.key,
+      // Nothing to show in mock mode; a blank tab proves the link opened.
+      url: "about:blank",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    },
+  };
+});
+
+registerMock(resolveDisbursementItems, ({ params, body }) => {
+  const current = find(params.id);
+  if (current.requestedBy === currentActor())
+    throw refuse(
+      403,
+      "PAYOUT_CONFIRM_SELF",
+      "Pembuat pengajuan tidak boleh menyelesaikan transfernya sendiri.",
+    );
+  const applied = propose("resolve", body.outcome, body.itemIds, body);
+  const next =
+    applied.length === 0
+      ? current
+      : settle(
+          current,
+          mapItems(current.items, applied, {
+            status: body.outcome === "failed" ? "failed" : "not_sent",
+          }),
+        );
+  return {
+    data: {
+      batchStatus: next.status,
+      resolved: applied.length,
+      proposed: body.itemIds.length - applied.length,
+    },
+  };
+});
+
+registerMock(returnDisbursementItems, ({ params, body }) => {
+  const current = find(params.id);
+  if (current.requestedBy === currentActor())
+    throw refuse(
+      403,
+      "PAYOUT_CONFIRM_SELF",
+      "Pembuat pengajuan tidak boleh mengembalikan dana transfernya sendiri.",
+    );
+  if (current.channel !== "manual_bank")
+    throw refuse(
+      409,
+      "PAYOUT_CHANNEL_MISMATCH",
+      "Pengembalian dana hanya untuk transfer bank manual.",
+    );
+  for (const id of body.itemIds) {
+    const target = current.items.find((entry) => entry.id === id);
+    if (!target)
+      throw refuse(404, "NOT_FOUND", "Item pencairan tidak ditemukan.");
+    if (target.status !== "succeeded")
+      throw refuse(
+        409,
+        "PAYOUT_ITEM_STATE",
+        "Hanya transfer yang berhasil bisa dikembalikan.",
+      );
+  }
+  const applied = propose("return", "returned", body.itemIds, body);
+  const next =
+    applied.length === 0
+      ? current
+      : save({
+          ...current,
+          items: mapItems(current.items, applied, { status: "returned" }),
+          updatedAt: new Date().toISOString(),
+        });
+  return {
+    data: {
+      batchStatus: next.status,
+      returned: applied.length,
+      proposed: body.itemIds.length - applied.length,
+    },
+  };
+});
+
+registerMock(confirmDisbursementCash, ({ params, body }) => {
+  const current = find(params.id);
+  if (current.requestedBy === currentActor())
+    throw refuse(
+      403,
+      "PAYOUT_CONFIRM_SELF",
+      "Pembuat pengajuan tidak boleh mengonfirmasi serah terima tunai sendiri.",
+    );
+  const next = settle(
+    current,
+    mapItems(current.items, body.itemIds, {
+      channel: "cash",
+      status: "succeeded",
+      confirmedBy: currentActor(),
+      settledAt: new Date().toISOString(),
+    }),
+  );
+  return {
+    data: { batchStatus: next.status, runPaid: next.status === "completed" },
+  };
+});

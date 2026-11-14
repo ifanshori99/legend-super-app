@@ -1227,12 +1227,14 @@ test("legend-hi82 token summary shows optional names, usage shows provider state
   });
   const usage = {
     aiEnabled: true,
+    platformLocked: false,
     month: "2026-11",
     features: [],
     budget: null,
   };
   accepts(ai.aiUsageSummarySchema, usage);
   accepts(ai.aiUsageSummarySchema, { ...usage, providerAvailable: false });
+  rejects(ai.aiUsageSummarySchema, { ...usage, platformLocked: undefined });
 });
 
 test("legend-jk6s approval inbox reads an action request with a redacted summary", () => {
@@ -1351,8 +1353,15 @@ test("legend-dwrr provider read schema has no key field and stays strict", () =>
     updatedAt: "2026-11-10T01:05:00.000Z",
   };
   accepts(ai.aiProviderConfigSchema, config);
-  accepts(ai.aiProviderViewSchema, { config, fallbackAvailable: false });
-  accepts(ai.aiProviderViewSchema, { config: null, fallbackAvailable: true });
+  const view = { config, fallbackAvailable: false, platformLocked: false };
+  accepts(ai.aiProviderViewSchema, view);
+  accepts(ai.aiProviderViewSchema, { ...view, platformLocked: true });
+  accepts(ai.aiProviderViewSchema, {
+    config: null,
+    fallbackAvailable: true,
+    platformLocked: false,
+  });
+  rejects(ai.aiProviderViewSchema, { config, fallbackAvailable: false });
   for (const extra of ["apiKey", "api_key", "key", "apiKeyEncrypted"]) {
     rejects(ai.aiProviderConfigSchema, { ...config, [extra]: "sk-secret" });
   }

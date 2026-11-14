@@ -66,6 +66,7 @@ export const APPROVAL_ACTIONS = {
   edc_standalone: "§3.13 EDC mode standalone; EDC-04 (PIN supervisor)",
   apology_voucher: "§3.9 Voucher Permintaan Maaf (batas nilai sesuai matriks)",
   unallocated_funds: "PAY-04",
+  reconciliation_case: "PAY recon; §3.7 Matriks Approval",
   purchase_request: "§3.15 Alur Pengadaan (Purchase Request → approval)",
   supplier_payment: "§3.15 Alur Pengadaan (Supplier Payment dengan approval)",
   manual_journal: "§3.16 Jurnal Manual & Berulang",
@@ -203,6 +204,25 @@ export const DEFAULT_SHAREHOLDER_VERSION_APPROVAL_POLICIES: readonly {
   readonly level: number;
   readonly roleTemplateKey: "owner";
 }[] = [{ thresholdIdr: 0, level: 1, roleTemplateKey: "owner" }];
+
+/**
+ * Default reconciliation case approval matrix. Closing a settlement
+ * difference (payment_reconciliation_cases) writes off or accepts missing
+ * money, so it always needs one approval from the Owner or Finance (founder
+ * W8 Q10/Q12). One tier, one level, from Rp0, two rows at the same level: either
+ * role is enough. Distinct actor required (whoever submits the case, Owner or
+ * Finance, cannot approve it; no sole-owner exception, the action is not
+ * self-approvable). Without a policy the approval service fails closed
+ * (APPROVAL_POLICY_MISSING) and the case stays open.
+ */
+export const DEFAULT_RECONCILIATION_CASE_APPROVAL_POLICIES: readonly {
+  readonly thresholdIdr: number;
+  readonly level: number;
+  readonly roleTemplateKey: "owner" | "finance";
+}[] = [
+  { thresholdIdr: 0, level: 1, roleTemplateKey: "owner" },
+  { thresholdIdr: 0, level: 1, roleTemplateKey: "finance" },
+];
 
 export type ApprovalStep = {
   readonly level: number;

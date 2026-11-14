@@ -63,6 +63,7 @@ export const accountingTaxMessages = {
     },
     taxIdMissing: "Tidak ada",
     referenceCount: "{count} referensi",
+    warningsLabel: "Peringatan",
   },
   history: {
     title: "Riwayat status",

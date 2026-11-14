@@ -27,6 +27,7 @@ import type {
   StationBoard,
 } from "@starter/shared/kitchen";
 import { ApiError } from "../../lib/api/errors.ts";
+import { getKdsScannerStatus } from "./contract-gap.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 
@@ -221,3 +222,14 @@ registerMock(updateKitchenTicketItem, ({ params, body }) => {
   if (!result) throw new ApiError(404, "NOT_FOUND", "Item tidak ditemukan.");
   return { data: result };
 });
+// Scanner connection (contract gap, see contract-gap.ts). `?scanner=disconnected`
+// in the URL shows the disconnected state; any other value is connected.
+registerMock(getKdsScannerStatus, () => ({
+  data: {
+    status:
+      typeof location !== "undefined" &&
+      new URLSearchParams(location.search).get("scanner") === "disconnected"
+        ? ("disconnected" as const)
+        : ("connected" as const),
+  },
+}));

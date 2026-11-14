@@ -50,6 +50,7 @@ export const ACTION_MODULE: Readonly<
   expense: "finance",
   supplier_payment: "finance",
   unallocated_funds: "finance",
+  reconciliation_case: "finance",
   manual_journal: "finance",
   period_reopen: "finance",
   purchase_order: "inventory",

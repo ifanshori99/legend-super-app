@@ -35,6 +35,7 @@ import { ApiError } from "../../lib/api/errors.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
+import { settingsBudgetScenario } from "./settings-budget-scenario.ts";
 
 /** The tenant admin the mock records as the actor (mock mode only). */
 const ACTOR = userIdSchema.parse(cafeLegendAccessFixtures.users.tenantAdmin.id);
@@ -55,10 +56,11 @@ type MockState = {
 
 const seed = (): MockState => {
   const off = urlParam("ai") === "off";
+  const scenario = settingsBudgetScenario();
   return {
     settings: aiGovernanceSettingsSchema.parse({
       ...fixtures.governanceSettings,
-      monthlyBudgetIdr: idr(CAP_IDR),
+      monthlyBudgetIdr: idr(scenario?.capIdr ?? CAP_IDR),
       aiEnabled: !off,
       mcpEnabled: !off,
     }),

@@ -60,7 +60,10 @@ import type {
 import { tierMultiplierBp } from "./loyalty-earn-tier-step.ts";
 import { loadGrantStates } from "./loyalty-expiry.service.ts";
 import { loyaltyConsentActive } from "./member-profile.service.ts";
-import { reverseReferralForOrder } from "./referral.service.ts";
+import {
+  restoreReferralBonusForRejectedRefund,
+  reverseReferralForOrder,
+} from "./referral.service.ts";
 import { postLedgerEntry } from "./point-ledger.service.ts";
 import { lockOrderForClaimReversal } from "./table-claim-lock.ts";
 import { checkLoyaltyOutletEntity } from "./loyalty-entity-guard.ts";
@@ -635,6 +638,11 @@ type ReverseInput = {
  * time, while points a redeem used are still taken back. A grant without an
  * expire row (spent by a redeem or not) and one without `expires_at` are
  * limited only by the balance, as before. Call under the profile lock.
+ *
+ * legend-nkp77: `linkedGrantIds` are the `adjust` grants that gave back a
+ * rejected refund of this earn (see `rejectedRefundGrantIds`). Their points
+ * were part of the earn before the refund took them, so what expired from
+ * them counts as expired from the earn, and their expire rows count too.
  */
 async function reversibleOfGrant(
   tx: Tx,
@@ -643,11 +651,51 @@ async function reversibleOfGrant(
   grantId: string,
   grantPoints: number,
   reversedPoints: number,
+  linkedGrantIds: readonly string[] = [],
 ): Promise<number> {
   const grants = await loadGrantStates(tx, tenantId, profileId);
   const grant = grants.find((state) => state.id === grantId);
-  if (!grant || grant.expireRowCount === 0) return Number.POSITIVE_INFINITY;
-  return Math.max(0, grantPoints - grant.expiredPoints - reversedPoints);
+  if (!grant) return Number.POSITIVE_INFINITY;
+  let expireRowCount = grant.expireRowCount;
+  let expiredPoints = grant.expiredPoints;
+  for (const linked of grants) {
+    if (linked.id === grantId || !linkedGrantIds.includes(linked.id)) continue;
+    expireRowCount += linked.expireRowCount;
+    expiredPoints += linked.expiredPoints;
+  }
+  if (expireRowCount === 0) return Number.POSITIVE_INFINITY;
+  return Math.max(0, grantPoints - expiredPoints - reversedPoints);
+}
+
+/**
+ * legend-nkp77: the `adjust` grants restoreRejectedRefund posted for the
+ * rejected refunds of an earn record: type adjust, source type adjustment,
+ * source id = the issue id of a `reject:<issueId>` in its applied reversal
+ * ids. No extra column: the record's own list names them.
+ */
+async function rejectedRefundGrantIds(
+  tx: Tx,
+  tenantId: string,
+  profileId: string,
+  appliedReversalIds: readonly string[],
+): Promise<string[]> {
+  const issueIds = appliedReversalIds
+    .filter((sourceId) => sourceId.startsWith("reject:"))
+    .map((sourceId) => sourceId.slice("reject:".length));
+  if (issueIds.length === 0) return [];
+  const rows = await tx
+    .select({ id: pointLedger.id })
+    .from(pointLedger)
+    .where(
+      and(
+        eq(pointLedger.tenantId, tenantId as never),
+        eq(pointLedger.customerProfileId, profileId),
+        eq(pointLedger.type, "adjust"),
+        eq(pointLedger.sourceType, "adjustment"),
+        inArray(pointLedger.sourceId, issueIds),
+      ),
+    );
+  return rows.map((row) => row.id);
 }
 
 /**
@@ -785,9 +833,9 @@ async function reverseTableClaims(
     if (share <= 0) continue;
     // legend-4frkf: never above the balance or the claim grant's live points;
     // the rest is the shortfall anomaly below (its sourceId keeps a retry a no-op).
-    const posted = Math.min(
+    // legend-nkp77: expired points are not a shortfall, only the balance limit.
+    const capped = Math.min(
       share,
-      profile.pointsBalance,
       await reversibleOfGrant(
         tx,
         tenantId,
@@ -797,6 +845,7 @@ async function reverseTableClaims(
         Number(taken?.total ?? 0),
       ),
     );
+    const posted = Math.min(capped, profile.pointsBalance);
     if (posted > 0)
       await postLedgerEntry(
         tx,
@@ -814,7 +863,7 @@ async function reverseTableClaims(
         },
         now,
       );
-    if (share > posted)
+    if (capped > posted)
       await recordLoyaltyAnomaly(tx, {
         tenantId,
         kind: "refund_after_redeem",
@@ -827,7 +876,7 @@ async function reverseTableClaims(
           sourceId: reverseSourceId,
           deltaPoints: share,
           postedPoints: posted,
-          shortfallPoints: share - posted,
+          shortfallPoints: capped - posted,
         },
       });
   }
@@ -843,29 +892,32 @@ async function reverseReferralBonus(
 ): Promise<void> {
   let refundEligibleIdr = input.refundEligibleIdr;
   let fullRefund = false;
-  if (refundEligibleIdr !== null) {
-    // Cumulative eligible spend refunded so far: the earn record's running
-    // total, already updated by reverseForOrder (replay-safe, no double add).
-    const [record] = await tx
-      .select({
-        refunded: pointEarnRecords.refundedEligibleIdr,
-        eligible: pointEarnRecords.eligibleSpendIdr,
-      })
-      .from(pointEarnRecords)
-      .where(
-        and(
-          eq(pointEarnRecords.tenantId, scope.tenantId as never),
-          eq(pointEarnRecords.orderId, input.orderId),
-        ),
-      )
-      .limit(1);
-    if (record) {
-      refundEligibleIdr = Number(record.refunded);
-      // The earn record's eligible spend excludes the part paid with points,
-      // so a full refund of it is a full refund of the order for the referral.
-      if (refundEligibleIdr >= Number(record.eligible)) fullRefund = true;
-    }
+  // Cumulative eligible spend refunded so far: the earn record's running
+  // total, already updated by reverseForOrder (replay-safe, no double add).
+  const [record] = await tx
+    .select({
+      refunded: pointEarnRecords.refundedEligibleIdr,
+      eligible: pointEarnRecords.eligibleSpendIdr,
+      appliedReversalIds: pointEarnRecords.appliedReversalIds,
+    })
+    .from(pointEarnRecords)
+    .where(
+      and(
+        eq(pointEarnRecords.tenantId, scope.tenantId as never),
+        eq(pointEarnRecords.orderId, input.orderId),
+      ),
+    )
+    .limit(1);
+  if (record && refundEligibleIdr !== null) {
+    refundEligibleIdr = Number(record.refunded);
+    // The earn record's eligible spend excludes the part paid with points,
+    // so a full refund of it is a full refund of the order for the referral.
+    if (refundEligibleIdr >= Number(record.eligible)) fullRefund = true;
   }
+  // The issues whose rejection restored the bonus: they name the restore lots.
+  const rejectedIssueIds = (record?.appliedReversalIds ?? [])
+    .filter((sourceId) => sourceId.startsWith("reject:"))
+    .map((sourceId) => sourceId.slice("reject:".length));
   await reverseReferralForOrder(
     tx,
     {
@@ -877,6 +929,7 @@ async function reverseReferralBonus(
       sourceId: input.sourceId,
       refundEligibleIdr,
       fullRefund,
+      rejectedIssueIds,
     },
     scope.now,
   );
@@ -961,12 +1014,13 @@ async function reverseForOrder(
   const delta = reversePoints ? target - record.reversedPoints : 0;
   // legend-4frkf: never above the balance or the earn grant's live points (an
   // expired grant gives 0), so a reverse cannot cut points of other live grants.
+  // legend-nkp77: what expired is not a shortfall; only the part the balance
+  // cannot cover (points a redeem used) is.
   const wanted = Math.max(0, delta);
-  const posted =
+  const capped =
     wanted > 0 && record.earnEntryId
       ? Math.min(
           wanted,
-          profile.pointsBalance,
           await reversibleOfGrant(
             tx,
             tenantId,
@@ -974,9 +1028,16 @@ async function reverseForOrder(
             record.earnEntryId,
             booked,
             record.reversedPoints,
+            await rejectedRefundGrantIds(
+              tx,
+              tenantId,
+              profile.id,
+              record.appliedReversalIds,
+            ),
           ),
         )
-      : Math.min(wanted, profile.pointsBalance);
+      : wanted;
+  const posted = Math.min(capped, profile.pointsBalance);
 
   if (posted > 0 && record.earnEntryId) {
     const result = await postLedgerEntry(
@@ -999,7 +1060,11 @@ async function reverseForOrder(
     if (!result.inserted) return;
   }
   const reversed = record.reversedPoints + posted;
-  const shortfall = Math.max(0, target - reversed);
+  // legend-nkp77: only the part the balance could not cover (capped - posted)
+  // is a shortfall; points lost to an expired grant are not.
+  // The cumulative target already holds an earlier shortfall (reversed_points
+  // excludes it), so the outstanding shortfall is this gap, not added again.
+  const shortfall = capped - posted;
   await settleRecord(
     tx,
     scope,
@@ -1058,7 +1123,7 @@ async function reverseForOrder(
       })
       .where(visitWhere);
   }
-  if (delta > posted)
+  if (capped > posted)
     await recordLoyaltyAnomaly(tx, {
       tenantId,
       kind: "refund_after_redeem",
@@ -1071,7 +1136,7 @@ async function reverseForOrder(
         sourceId: input.sourceId,
         deltaPoints: delta,
         postedPoints: posted,
-        shortfallPoints: delta - posted,
+        shortfallPoints: capped - posted,
       },
     });
 }
@@ -1164,43 +1229,50 @@ async function restoreRejectedRefund(
     return;
   }
 
-  // Replay the applied refunds in order with reverseForOrder's cumulative
-  // clamp (min(eligible, previous + refund)); an earlier rejection takes its
-  // applied amount back out. A refund with no stored event counts 0.
+  // Order-independent over the active refunds (reverseForOrder keeps
+  // refundedEligible == min(eligible, sum asked of the active refunds)): the
+  // order stays refunded by what the other active refunds ask, so a rejected
+  // refund only gives back the excess. An active refund with no stored event
+  // asks the full eligible amount (the limiting rule: it gives back less).
   const eligible = Number(record.eligibleSpendIdr);
-  const appliedById = new Map<string, number>();
-  let cumulative = 0;
+  const rejectedIds = new Set(
+    record.appliedReversalIds
+      .filter((sourceId) => sourceId.startsWith("reject:"))
+      .map((sourceId) => sourceId.slice("reject:".length)),
+  );
+  let activeAsked = 0;
   for (const sourceId of record.appliedReversalIds) {
-    if (sourceId.startsWith("reject:")) {
-      cumulative -= appliedById.get(sourceId.slice("reject:".length)) ?? 0;
+    if (
+      sourceId.startsWith("reject:") ||
+      sourceId === issueId ||
+      rejectedIds.has(sourceId)
+    )
       continue;
-    }
-    const asked = refundEligibleById.get(sourceId) ?? 0;
-    const next = Math.min(eligible, cumulative + asked);
-    appliedById.set(sourceId, next - cumulative);
-    cumulative = next;
+    activeAsked += refundEligibleById.get(sourceId) ?? eligible;
   }
   const previousRefunded = Number(record.refundedEligibleIdr);
-  const restored = Math.min(appliedById.get(issueId) ?? 0, previousRefunded);
-
-  // The points the refund reversed (none when it was clamped to 0).
-  const [reversal] = await tx
-    .select({ points: pointLedger.points })
-    .from(pointLedger)
-    .where(
-      and(
-        eq(pointLedger.tenantId, tenantId as never),
-        eq(pointLedger.customerProfileId, profile.id),
-        eq(pointLedger.type, "reverse"),
-        eq(pointLedger.sourceType, "refund"),
-        eq(pointLedger.sourceId, issueId),
-      ),
-    )
-    .limit(1);
-  const credited = Math.min(
-    reversal ? -Number(reversal.points) : 0,
-    record.reversedPoints,
+  const restored = Math.min(
+    refundEligibleById.get(issueId) ?? 0,
+    Math.max(0, previousRefunded - Math.min(eligible, activeAsked)),
   );
+
+  const booked = Number(record.bookedPoints);
+  const refundedAfter = previousRefunded - restored;
+  // Same cumulative target as reverseForOrder, rounded up against the member.
+  const target =
+    eligible === 0
+      ? 0
+      : Math.min(
+          booked,
+          Number(
+            (BigInt(booked) * BigInt(refundedAfter) + BigInt(eligible) - 1n) /
+              BigInt(eligible),
+          ),
+        );
+  // Give back only down to the target: never above reversedPoints - target.
+  // The rows of this issue's own `reverse` no longer bound it (it may return
+  // the share that now belongs to a later refund).
+  const credited = Math.max(0, record.reversedPoints - target);
   if (credited > 0) {
     let expiresAt: Date | null = null;
     if (record.earnEntryId) {
@@ -1236,21 +1308,8 @@ async function restoreRejectedRefund(
     );
   }
 
-  const booked = Number(record.bookedPoints);
-  const refundedAfter = previousRefunded - restored;
   const reversed = record.reversedPoints - credited;
   const hasPoints = record.state === "booked" || record.state === "reversed";
-  // Same cumulative target as reverseForOrder, rounded up against the member.
-  const target =
-    eligible === 0
-      ? 0
-      : Math.min(
-          booked,
-          Number(
-            (BigInt(booked) * BigInt(refundedAfter) + BigInt(eligible) - 1n) /
-              BigInt(eligible),
-          ),
-        );
   await settleRecord(
     tx,
     scope,
@@ -1259,12 +1318,37 @@ async function restoreRejectedRefund(
       ? {
           refundedEligibleIdr: idr(refundedAfter),
           reversedPoints: reversed,
-          reversalShortfallPoints: Math.max(0, target - reversed),
+          // Never above the genuine (balance-bound) shortfall already recorded.
+          reversalShortfallPoints: Math.min(
+            Number(record.reversalShortfallPoints),
+            Math.max(0, target - reversed),
+          ),
           state: reversed === booked && booked > 0 ? "reversed" : "booked",
           appliedReversalIds,
         }
       : { refundedEligibleIdr: idr(refundedAfter), appliedReversalIds },
   );
+
+  // legend-sbxr0: the rejected refund may have taken the referral bonus back.
+  // Give it back only while the order is no longer fully refunded (a void
+  // already returned above) and had eligible spend; the referral service
+  // restores exactly what this refund reversed, once (dedupe key per issue).
+  // Money rule: any other active refund of the order (asked amount above 0)
+  // keeps the bonus taken back, since the order can still end fully refunded.
+  if (eligible > 0 && refundedAfter < eligible && activeAsked === 0) {
+    await restoreReferralBonusForRejectedRefund(
+      tx,
+      {
+        tenantId,
+        orderId: input.orderId,
+        refereeProfileId: record.customerProfileId,
+        outletId: record.outletId,
+        businessDate: record.businessDate,
+        sourceId: issueId,
+      },
+      now,
+    );
+  }
 
   // A refund that reached the full eligible spend deleted the visit row and
   // lowered visits_count (reverseForOrder). Bring the visit back when the

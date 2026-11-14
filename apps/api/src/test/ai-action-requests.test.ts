@@ -558,4 +558,56 @@ describe("write permission and execution re-check", () => {
     }
     expect(await availabilityFingerprint(menuItemId)).toBe(before);
   }, 60_000);
+
+  // Platform lock (bead legend-nnufz): a request proposed before the platform
+  // switched `ai_assistant` off must not execute once the chain is approved.
+  it("a tenant locked after the proposal: settle is refused (not failed) and creates no target row", async () => {
+    const { menuItemId, requester, approver } = await requesterWithApprover();
+    const before = await availabilityFingerprint(menuItemId);
+    const receipt = (await writeTools["TL-18"]!(
+      await ctxOf(requester),
+      draft(menuItemId),
+    )) as {
+      actionRequestId: string;
+      approvalRequestId: string;
+    };
+    await decide(approver, receipt.approvalRequestId, "approved");
+
+    const flags = await ownerPool.query(
+      "SELECT feature_flags->'modules' AS modules FROM tenants WHERE id = $1",
+      [tenantId],
+    );
+    const originalModules = flags.rows[0].modules as string[];
+    const setModules = (modules: string[]) =>
+      ownerPool.query(
+        `UPDATE tenants SET feature_flags = jsonb_set(feature_flags, '{modules}', $2::jsonb) WHERE id = $1`,
+        [tenantId, JSON.stringify(modules)],
+      );
+    const statusOf = async () =>
+      (
+        await ownerPool.query(
+          "SELECT status, failure_reason FROM action_requests WHERE id = $1",
+          [receipt.actionRequestId],
+        )
+      ).rows[0] as { status: string; failure_reason: string | null };
+    const statusBefore = (await statusOf()).status;
+    await setModules(originalModules.filter((m) => m !== "ai_assistant"));
+    try {
+      // Second-opinion fix: a platform lock is not an action failure. The
+      // error surfaces (403 AI_PLATFORM_DISABLED) and the row stays untouched.
+      await expect(
+        settleActionRequest(workerContext, receipt.actionRequestId),
+      ).rejects.toMatchObject({ code: "AI_PLATFORM_DISABLED" });
+    } finally {
+      await setModules(originalModules);
+    }
+    expect(await availabilityFingerprint(menuItemId)).toBe(before);
+    const row = await statusOf();
+    expect(row.status).toBe(statusBefore);
+    expect(row.status).not.toBe("failed");
+    expect(row.failure_reason).toBeNull();
+    expect(
+      await eventCount("action_request.executed", receipt.actionRequestId),
+    ).toBe(0);
+  }, 60_000);
 });

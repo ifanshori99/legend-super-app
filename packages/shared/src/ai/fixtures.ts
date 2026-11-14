@@ -720,6 +720,7 @@ const toolCallRecords = [
 
 const governanceSettings = aiGovernanceSettingsSchema.parse({
   tenantId: tenant.id,
+  platformLocked: false,
   aiEnabled: true,
   mcpEnabled: true,
   dynamicClientRegistrationEnabled: false,

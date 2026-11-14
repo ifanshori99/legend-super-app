@@ -41,6 +41,12 @@ export const taxReportLineSchema = z.strictObject({
   taxIdr: nonNegativeIdr,
   /** Source document numbers (invoice, payslip run) for the auditor. */
   references: z.array(z.string().max(60)).max(50),
+  /**
+   * Auditor notes for the screen only (e.g. non-PBJT tax left out of the PBJT
+   * figures). Never exported to Coretax. Reports stored before this field
+   * existed read as an empty list.
+   */
+  warnings: z.array(z.string().max(200)).max(20).default([]),
   /** PPN only: input tax (masukan) or output tax (keluaran); absent means keluaran. */
   direction: z.enum(["masukan", "keluaran"]).optional(),
 });

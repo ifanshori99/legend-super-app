@@ -939,7 +939,15 @@ export type EvaluateMetricsRequest = {
   requireFinal?: boolean;
 };
 
-export type EvaluateMetricsOptions = { sources?: SourceLookup };
+export type EvaluateMetricsOptions = {
+  sources?: SourceLookup;
+  /**
+   * Business date (YYYY-MM-DD) that decides period finality and status.
+   * Defaults to today on the default business-day clock; the dashboard passes
+   * the outlet-aware today so tile values and `period.status` agree.
+   */
+  today?: string;
+};
 
 /**
  * A series of the engine. `dimensions` lists the split values, the outlet
@@ -1188,7 +1196,8 @@ export async function evaluateMetrics(
     request.viewer,
   );
   const tenantId = context.tenant.tenantId;
-  const today = businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK);
+  const today =
+    options.today ?? businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK);
   const range: Range = request.period;
   const buckets = bucketsOf(range, request.bucket);
   if (monthsBetween(range.start, range.end).length > MAX_POINTS)

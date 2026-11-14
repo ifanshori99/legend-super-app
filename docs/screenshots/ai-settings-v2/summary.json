@@ -1,0 +1,383 @@
+{
+  "base": "http://localhost:3417",
+  "axe": {
+    "source": "axe-core bundle",
+    "tags": [
+      "wcag2a",
+      "wcag2aa",
+      "wcag21aa",
+      "wcag22aa"
+    ]
+  },
+  "total": 33,
+  "failed": [
+    "loading-390"
+  ],
+  "rows": [
+    {
+      "page": "empty",
+      "url": "/kelola/pengaturan/ai?state=empty",
+      "width": 1280,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/empty-1280.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "empty",
+      "url": "/kelola/pengaturan/ai?state=empty",
+      "width": 390,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/empty-390.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "empty",
+      "url": "/kelola/pengaturan/ai?state=empty",
+      "width": 320,
+      "serious": null,
+      "total": null,
+      "overflow": "no",
+      "screenshot": null,
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "device",
+      "url": "/kelola/pengaturan/ai?state=device",
+      "width": 1280,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/device-1280.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "device",
+      "url": "/kelola/pengaturan/ai?state=device",
+      "width": 390,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/device-390.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "device",
+      "url": "/kelola/pengaturan/ai?state=device",
+      "width": 320,
+      "serious": null,
+      "total": null,
+      "overflow": "no",
+      "screenshot": null,
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "connected",
+      "url": "/kelola/pengaturan/ai?state=connected",
+      "width": 1280,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/connected-1280.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "connected",
+      "url": "/kelola/pengaturan/ai?state=connected",
+      "width": 390,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/connected-390.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "connected",
+      "url": "/kelola/pengaturan/ai?state=connected",
+      "width": 320,
+      "serious": null,
+      "total": null,
+      "overflow": "no",
+      "screenshot": null,
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "failed",
+      "url": "/kelola/pengaturan/ai?state=failed",
+      "width": 1280,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/failed-1280.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "failed",
+      "url": "/kelola/pengaturan/ai?state=failed",
+      "width": 390,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/failed-390.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "failed",
+      "url": "/kelola/pengaturan/ai?state=failed",
+      "width": 320,
+      "serious": null,
+      "total": null,
+      "overflow": "no",
+      "screenshot": null,
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "expired",
+      "url": "/kelola/pengaturan/ai?state=expired",
+      "width": 1280,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/expired-1280.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "expired",
+      "url": "/kelola/pengaturan/ai?state=expired",
+      "width": 390,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/expired-390.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "expired",
+      "url": "/kelola/pengaturan/ai?state=expired",
+      "width": 320,
+      "serious": null,
+      "total": null,
+      "overflow": "no",
+      "screenshot": null,
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "detected",
+      "url": "/kelola/pengaturan/ai?state=detected",
+      "width": 1280,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/detected-1280.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "detected",
+      "url": "/kelola/pengaturan/ai?state=detected",
+      "width": 390,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/detected-390.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "detected",
+      "url": "/kelola/pengaturan/ai?state=detected",
+      "width": 320,
+      "serious": null,
+      "total": null,
+      "overflow": "no",
+      "screenshot": null,
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "disabled",
+      "url": "/kelola/pengaturan/ai?state=disabled",
+      "width": 1280,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/disabled-1280.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "disabled",
+      "url": "/kelola/pengaturan/ai?state=disabled",
+      "width": 390,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/disabled-390.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "disabled",
+      "url": "/kelola/pengaturan/ai?state=disabled",
+      "width": 320,
+      "serious": null,
+      "total": null,
+      "overflow": "no",
+      "screenshot": null,
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "loading",
+      "url": "/kelola/pengaturan/ai?state=loading",
+      "width": 1280,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/loading-1280.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "loading",
+      "url": "/kelola/pengaturan/ai?state=loading",
+      "width": 390,
+      "serious": 1,
+      "total": 1,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/loading-390.png",
+      "problems": [
+        "[serious] scrollable-region-focusable: Scrollable region must have keyboard access (1 node: #main-content)"
+      ],
+      "result": "FAIL"
+    },
+    {
+      "page": "loading",
+      "url": "/kelola/pengaturan/ai?state=loading",
+      "width": 320,
+      "serious": null,
+      "total": null,
+      "overflow": "no",
+      "screenshot": null,
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "offline",
+      "url": "/kelola/pengaturan/ai?state=offline",
+      "width": 1280,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/offline-1280.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "offline",
+      "url": "/kelola/pengaturan/ai?state=offline",
+      "width": 390,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/offline-390.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "offline",
+      "url": "/kelola/pengaturan/ai?state=offline",
+      "width": 320,
+      "serious": null,
+      "total": null,
+      "overflow": "no",
+      "screenshot": null,
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "session",
+      "url": "/kelola/pengaturan/ai?state=session",
+      "width": 1280,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/session-1280.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "session",
+      "url": "/kelola/pengaturan/ai?state=session",
+      "width": 390,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/session-390.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "session",
+      "url": "/kelola/pengaturan/ai?state=session",
+      "width": 320,
+      "serious": null,
+      "total": null,
+      "overflow": "no",
+      "screenshot": null,
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "connected-admin",
+      "url": "/kelola/pengaturan/ai?state=connected&role=admin",
+      "width": 1280,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/connected-admin-1280.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "connected-admin",
+      "url": "/kelola/pengaturan/ai?state=connected&role=admin",
+      "width": 390,
+      "serious": 0,
+      "total": 0,
+      "overflow": null,
+      "screenshot": "docs/screenshots/ai-settings-v2/connected-admin-390.png",
+      "problems": [],
+      "result": "PASS"
+    },
+    {
+      "page": "connected-admin",
+      "url": "/kelola/pengaturan/ai?state=connected&role=admin",
+      "width": 320,
+      "serious": null,
+      "total": null,
+      "overflow": "no",
+      "screenshot": null,
+      "problems": [],
+      "result": "PASS"
+    }
+  ]
+}

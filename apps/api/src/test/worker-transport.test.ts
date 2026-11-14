@@ -16,10 +16,16 @@ import {
 } from "@starter/shared/core/server";
 import type { EventEnvelope } from "@starter/shared/events";
 import { db } from "../db/index.ts";
+import { logger } from "../lib/logger.ts";
 import { withTenant } from "../db/tenant.ts";
 import { mintEdgeCredential } from "../edge/credential.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
+import {
+  appendOutbox,
+  consumeOutbox,
+  relayOutbox,
+} from "../services/core-outbox.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
 import { createBuiltinWorkerTransport } from "../worker/transport.ts";
 
@@ -310,6 +316,69 @@ describe("legend-18qw worker transport (edge)", () => {
       transport.deliverEvent(context, event, event.id, tx, route()),
     );
     expect((await queuedRows()).rows).toHaveLength(1);
+  });
+
+  it("legend-3owf parks an unsupported tenant-wide event without blocking another aggregate", async () => {
+    const transport = createBuiltinWorkerTransport({
+      database: db,
+      env: edgeEnv(edgeToken),
+    });
+    const context = jobContext();
+    const tenantEvent = orderEvent(null, 1);
+    const outletEvent = orderEvent(outletA, 1);
+    const laterEvent = orderEvent(null, 2, tenantEvent.aggregateId);
+    const laterRow = createUlid();
+    const tenantRow = createUlid();
+    const outletRow = createUlid();
+    for (const [id, event] of [
+      [tenantRow, tenantEvent],
+      [outletRow, outletEvent],
+      [laterRow, laterEvent],
+    ] as const) {
+      await withTenant(db, context, (tx) =>
+        appendOutbox(tx, context, {
+          id,
+          event,
+          destination: "cloud-sync",
+          direction: null,
+          peerId: null,
+        }),
+      );
+    }
+    const jobs: string[] = [];
+    await relayOutbox(db, context, async (job) => {
+      jobs.push(job.outboxId);
+      return randomUUID();
+    });
+    expect(jobs).toContain(tenantRow);
+    expect(jobs).toContain(outletRow);
+    expect(jobs).not.toContain(laterRow);
+    const consume = (outboxId: string) =>
+      consumeOutbox(db, context, {
+        outboxId,
+        authorize: async () => true,
+        deliver: (event, key, tx) =>
+          transport.deliverEvent(context, event, key, tx, route()),
+      });
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    await expect(consume(tenantRow)).resolves.toBe(false);
+    expect(warning).toHaveBeenCalledWith(
+      { outboxId: tenantRow, tenantId },
+      "Edge event without outlet parked in outbox dead letter",
+    );
+    warning.mockRestore();
+    await expect(consume(outletRow)).resolves.toBe(true);
+    const rows = await withTenant(db, context, (tx) =>
+      tx.execute(sql`
+      SELECT dispatch_state, status FROM domain_event_outbox WHERE id = ${ulidToUuid(tenantRow)}::uuid
+    `),
+    );
+    expect(rows.rows).toEqual([{ dispatch_state: "dead", status: "pending" }]);
+    await relayOutbox(db, context, async (job) => {
+      jobs.push(job.outboxId);
+      return randomUUID();
+    });
+    expect(jobs).not.toContain(laterRow);
   });
 
   it("legend-18qw edge tenant-wide event throws", async () => {

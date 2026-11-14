@@ -15,6 +15,7 @@ export const paymentRefundFollowupMessages = {
   requestReason: "Alasan pengajuan",
   requestedBy: "Diajukan oleh",
   decidedBy: "Diputuskan oleh",
+  approvalRequestId: "No. approval",
   lastPayoutError: "Kesalahan pembayaran terakhir",
   failureReason: "Alasan kegagalan",
   rejectionReason: "Alasan penolakan",

@@ -45,7 +45,10 @@ import { fiscalPeriods, legalEntities, taxReports } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { resolveCoretaxTaxIds } from "./accounting-coretax-tax-ids";
-import { buildCoretaxXml } from "./accounting-coretax-xml";
+import {
+  buildCoretaxXml,
+  TAX_LINE_WARNING_PREFIX,
+} from "./accounting-coretax-xml";
 import {
   auditAccountingChange,
   requireLegalEntity,
@@ -138,6 +141,30 @@ function canonicalJson(value: unknown): string {
       .join(",")}}`;
   return JSON.stringify(value);
 }
+
+/**
+ * A stored line in today's shape, for comparison only (the stored row is not
+ * changed). Old lines have no `warnings` and may carry an auditor note in
+ * `references` starting with "Peringatan:"; that note moves to `warnings`.
+ */
+function normalizeTaxLine(line: unknown): unknown {
+  if (typeof line !== "object" || line === null) return line;
+  const row = line as { references?: unknown; warnings?: unknown };
+  const refs = Array.isArray(row.references)
+    ? (row.references as string[])
+    : [];
+  const moved = refs
+    .filter((ref) => ref.startsWith(TAX_LINE_WARNING_PREFIX))
+    .map((ref) => ref.slice(TAX_LINE_WARNING_PREFIX.length).trim());
+  return {
+    ...row,
+    references: refs.filter((ref) => !ref.startsWith(TAX_LINE_WARNING_PREFIX)),
+    warnings: [...(Array.isArray(row.warnings) ? row.warnings : []), ...moved],
+  };
+}
+
+const normalizedLinesJson = (value: unknown): string =>
+  canonicalJson(Array.isArray(value) ? value.map(normalizeTaxLine) : value);
 
 async function lockReport(
   tx: TenantTransaction,
@@ -368,7 +395,7 @@ export async function finalizeTaxReport(
     if (
       current &&
       current.amountIdr === draft.amountIdr &&
-      canonicalJson(current.lines) === canonicalJson(draft.lines)
+      normalizedLinesJson(current.lines) === normalizedLinesJson(draft.lines)
     )
       throw new AccountingError("TAX_REPORT_NO_CHANGE");
 

@@ -25,6 +25,11 @@ const TABS: readonly {
     to: "/kelola/dapur",
   },
   {
+    key: "stations",
+    labelKey: "kitchenConfig.tabs.stations",
+    to: "/kelola/dapur/stasiun",
+  },
+  {
     key: "serving",
     labelKey: "kitchenConfig.tabs.serving",
     to: "/kelola/dapur/laporan",
@@ -36,7 +41,8 @@ const TABS: readonly {
   },
 ];
 
-export type KitchenConfigSection = "capacity" | "serving" | "remake";
+export type KitchenConfigSection =
+  "capacity" | "stations" | "serving" | "remake";
 
 export function KitchenConfigTabs({
   active,

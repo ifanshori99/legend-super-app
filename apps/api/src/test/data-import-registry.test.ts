@@ -144,6 +144,11 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "flags distribution_lines.recipient_unverified = true for every PAID line created before the migration that has no recipient yet, whether or not its shareholder has a login now (legend-33im6, Codex 405); unpaid lines stay unflagged and get the login at payment time; never sets recipient_user_id (no trusted pre-migration snapshot), only rows with no recipient yet, idempotent, the lines guard trigger and the deferred totals trigger are paused for that one statement only, FORCE RLS lifted and restored in the same migration",
   "0241_shareholder_version_approval_policy.sql":
     "gives every existing tenant that has an Owner template role and no shareholder_version approval policy the default row (floor 0, level 1, Owner, distinct actor) (legend-tm6pp); idempotent, never touches a tenant that already has such a policy, FORCE RLS lifted and restored in the same migration",
+  "0357_reconciliation_case_approval.sql":
+    "gives every existing tenant that has an Owner template role and no reconciliation_case approval policy the default row (floor 0, level 1, Owner, distinct actor) (PAY recon, PRD §3.7); idempotent, never touches a tenant that already has such a policy, no reconciliation case row is written or changed, FORCE RLS lifted on roles and approval_policies and restored in the same migration",
+  // legend-89pn
+  "0360_cash_movement_mapping_backfill.sql":
+    "inserts accounts 2108 (Kas Masuk Belum Diklasifikasi) and 6112 (Beban Kas Keluar Kasir) and their cash_in_clearing / cash_out_expense mappings for every already provisioned (tenant, legal entity) pair that has at least one account_mappings row (legend-89pn); idempotent (only when the code or role is absent), never updates or deletes an account or mapping, never takes over a tenant's own account on those codes, parent only when it is a same-type unmapped leaf, FORCE RLS on chart_of_accounts and account_mappings lifted and restored in the same migration",
   "0187_audit_retention_maintenance.sql":
     "defines the audit retention SQL functions; the INSERT INTO audit_logs sits inside the purge function body (one summary row per batch, written at purge time), no row is written or changed while the migration runs (legend-usyi)",
   // legend-111j
@@ -209,6 +214,10 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "appends payroll.payout.configure, payroll.disburse.request and payroll.disburse.approve to the stored owner, finance and hr template role rows of existing tenants (legend-wnkep.1; configure: owner+finance, request: owner+hr, approve: owner+finance+hr); idempotent, no duplicates, never touches tenant_admin, another template or a custom role; each tenant is named (app.tenant_id) before its roles rows are touched, FORCE RLS stays on",
   "0356_ops_checklist_manage_backfill.sql":
     "appends ops.checklist.manage to the stored owner, outlet_manager and kitchen_lead template role rows of existing tenants (legend-wg0g); idempotent, skips rows that already hold it, never touches a custom role or another template, FORCE RLS on roles lifted for that one statement and restored; no table added, imports nothing",
+  "0363_kitchen_station_config.sql":
+    "numbers stations.display_order of existing stations per outlet (name, created_at, id) so the KDS tabs keep the order they had (legend-bopi2); idempotent, edits no other column, is_active and auto_print_fallback take their column defaults, no amount touched; FORCE RLS lifted for that one statement and restored",
+  "0364_kitchen_ticket_no.sql":
+    "fills kitchen_tickets.business_date (outlet business day of fired_at, from the outlet zone and cutoff) and numbers kitchen_tickets.ticket_no 1.. per tenant, outlet and business day by fired_at, id for every existing ticket (legend-tzyj2); idempotent for tickets without a number, edits no other column, no amount touched; FORCE RLS lifted on kitchen_tickets and outlets for that one statement and restored",
 };
 
 // Entrypoints that open a database pool but import no data.

@@ -322,6 +322,7 @@ export async function refundView(
       systemRequesterName(refund.requestedBy) ??
       refund.requestedBy,
     viewerCanApprove,
+    approvalRequestId: refund.approvalChainId ?? null,
     approvedByName: refund.approvedBy
       ? (names.find((n) => n.id === refund.approvedBy)?.name ??
         refund.approvedBy)

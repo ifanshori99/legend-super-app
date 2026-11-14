@@ -148,6 +148,13 @@ export const NOTIFICATION_CATEGORY_CATALOG = {
     defaultChannels: ["web_push"],
     prd: "§3.15; ORD-08",
   },
+  reservation_confirmation: {
+    audience: "customer",
+    realtime: false,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push", "email"],
+    prd: "§3.22 DP & Kebijakan; RSV-03 (legend-lb3c)",
+  },
   reservation_reminder: {
     audience: "customer",
     realtime: false,

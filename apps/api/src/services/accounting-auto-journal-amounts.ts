@@ -83,6 +83,8 @@ import {
   paymentRefunds,
   paymentUnallocatedFunds,
   pointLedger,
+  posDepositRefunds,
+  posOrderRefunds,
   posOrders,
   posOrderTenders,
   posShifts,
@@ -154,6 +156,8 @@ export const AUTO_JOURNAL_EVENTS = [
   "reservation.cancelled",
   "reservation.no_show",
   "cashier_shift.closed",
+  // legend-89pn
+  "cash_movement.recorded",
   "settlement.reconciled",
   "edc_transaction.settled",
   "goods_receipt.recorded",
@@ -256,6 +260,8 @@ const orderRefundedSchema = z.object({
   refundGatewayIdr: idr,
   refundEdcIdr: idr,
   refundPointsIdr: idr,
+  /** Tender lines (method + amount), absent on events stored without them. */
+  lines: z.array(z.object({ method: z.string(), amountIdr: idr })).default([]),
   refundedAt: time,
 });
 
@@ -338,6 +344,17 @@ const shiftClosedSchema = z.object({
   /** countedIdr - expectedIdr: positive = over, negative = short. */
   differenceIdr: idr,
   closedAt: time,
+});
+
+// legend-89pn: the amount and type are re-read from the stored cash_movements
+// row; the payload only names the movement and must agree with the row.
+const cashMovementRecordedSchema = z.object({
+  movementId: z.string().uuid(),
+  shiftId: z.string().uuid(),
+  outletId: z.string().uuid(),
+  type: z.enum(["cash_in", "cash_out", "drop"]),
+  amountIdr: idr,
+  recordedAt: time,
 });
 
 // Purchasing (legend-1xbs, legend-v3lh). The payload is the whole fact, there
@@ -516,6 +533,11 @@ export function storedEventOf(event: {
     }
     case "cashier_shift.closed": {
       const payload = shiftClosedSchema.parse(event.payload);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
+    case "cash_movement.recorded": {
+      const payload = cashMovementRecordedSchema.parse(event.payload);
+      assertEnvelopeOutlet(event, payload.outletId);
       return { ...base, outletId: payload.outletId, occurredAt, payload };
     }
     case "settlement.reconciled": {
@@ -706,6 +728,8 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
       return boundedKey(`aj:dp-forfeit:${String(p.reservationId)}`);
     case "cashier_shift.closed":
       return boundedKey(`aj:shift:${String(p.shiftId)}`);
+    case "cash_movement.recorded":
+      return boundedKey(`aj:cash-movement:${String(p.movementId)}`);
     case "settlement.reconciled":
       return boundedKey(`aj:settlement:${String(p.settlementId)}`);
     case "edc_transaction.settled":
@@ -787,6 +811,195 @@ async function receiptStatesOf(
   if (pendingIds.length > 0)
     await assertNotDeadLettered(tx, tenantId, pendingIds);
   return states;
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Pseudo method of a refund line that may match any gateway tender. */
+const ANY_GATEWAY = "*";
+
+type RefundLine = {
+  method: string;
+  amountIdr: number;
+  tenderId?: string;
+  paymentIntentId?: string | null;
+};
+
+/**
+ * legend-2jyr + legend-27mt: how much of an order refund's gateway part credits
+ * customer_deposit (owed until a payout clears it) and how much reverses the
+ * sale's gateway_clearing. The refund mirrors the SALE tender by tender, like
+ * the payout guard (pos-intent-attribution.ts), never "was a payment refund
+ * filed": a refund line of a posted-receipt intent is owed whether the payment
+ * refund exists yet or not (an admin may file it by hand later).
+ * Attribution of the gateway part to intents:
+ * - POS refund (pos_order_refunds row = refundId): its lines; a line naming a
+ *   tender (legend-186) goes to that tender's intent, a legacy line (method
+ *   only) walks the order's tenders of that method in order, after what earlier
+ *   refunds of the order took; a tender without an intent goes to clearing.
+ *   The deposit-refund part (pos_deposit_refunds) goes to its source intent;
+ * - recovery refund (no POS row): the intent of the payment refund filed with
+ *   order_issue_id = refundId;
+ * - otherwise (payload only): the payload lines as legacy lines.
+ * Per intent, receipt "posted" credits customer_deposit, "pending" parks the
+ * refund retryable, "none" (money received before the wiring; its payout parks
+ * RECEIPT_MISSING) credits gateway_clearing. The deposit part never exceeds
+ * `gatewayIdr` (never credit more than was refunded).
+ */
+async function refundGatewaySplitOf(
+  tx: Tx,
+  tenantId: TenantId,
+  p: {
+    orderId: string;
+    refundId: string;
+    refundGatewayIdr: number;
+    lines: readonly { method: string; amountIdr: number }[];
+  },
+): Promise<{ depositIdr: number; clearingIdr: number }> {
+  const gatewayIdr = p.refundGatewayIdr;
+  if (gatewayIdr <= 0) return { depositIdr: 0, clearingIdr: 0 };
+  const isGateway = (method: string) => {
+    try {
+      return tenderBucket(method as never) === "gateway";
+    } catch {
+      return false;
+    }
+  };
+  // Amount attributed per intent id (null: a tender without an intent).
+  const byIntent = new Map<string | null, number>();
+  const add = (intentId: string | null, amountIdr: number) => {
+    if (amountIdr > 0)
+      byIntent.set(intentId, (byIntent.get(intentId) ?? 0) + amountIdr);
+  };
+  const posRefunds = UUID_RE.test(p.refundId)
+    ? await tx
+        .select({
+          id: posOrderRefunds.id,
+          lines: posOrderRefunds.lines,
+          refundedAt: posOrderRefunds.refundedAt,
+          createdAt: posOrderRefunds.createdAt,
+        })
+        .from(posOrderRefunds)
+        .where(
+          and(
+            eq(posOrderRefunds.tenantId, tenantId),
+            eq(posOrderRefunds.orderId, p.orderId),
+          ),
+        )
+    : [];
+  const current = posRefunds.find((row) => row.id === p.refundId);
+  const recovery =
+    !current && UUID_RE.test(p.refundId)
+      ? await tx
+          .select({ intentId: paymentRefunds.paymentIntentId })
+          .from(paymentRefunds)
+          .where(
+            and(
+              eq(paymentRefunds.tenantId, tenantId),
+              eq(paymentRefunds.orderIssueId, p.refundId),
+            ),
+          )
+      : [];
+  if (recovery[0]) {
+    add(recovery[0].intentId, gatewayIdr);
+  } else {
+    const tenders = (
+      await tx
+        .select({
+          id: posOrderTenders.id,
+          method: posOrderTenders.method,
+          intentId: posOrderTenders.paymentIntentId,
+          amountIdr: posOrderTenders.amountIdr,
+        })
+        .from(posOrderTenders)
+        .where(
+          and(
+            eq(posOrderTenders.tenantId, tenantId),
+            eq(posOrderTenders.orderId, p.orderId),
+            eq(posOrderTenders.status, "captured"),
+          ),
+        )
+        .orderBy(posOrderTenders.requestedAt, posOrderTenders.id)
+    )
+      .filter((tender) => isGateway(tender.method))
+      .map((tender) => ({ ...tender, left: Number(tender.amountIdr) }));
+    const apply = (lines: readonly RefundLine[], collect: boolean) => {
+      for (const line of lines) {
+        if (line.method !== ANY_GATEWAY && !isGateway(line.method)) continue;
+        let want = Number(line.amountIdr);
+        const named = line.tenderId
+          ? tenders.find((tender) => tender.id === line.tenderId)
+          : undefined;
+        const walk = line.tenderId
+          ? named
+            ? [named]
+            : []
+          : tenders.filter(
+              (tender) =>
+                line.method === ANY_GATEWAY || tender.method === line.method,
+            );
+        for (const tender of walk) {
+          const take = Math.min(want, tender.left);
+          if (take <= 0) continue;
+          tender.left -= take;
+          want -= take;
+          if (collect) add(tender.intentId, take);
+        }
+        // A line naming a tender that is gone, or more than the tenders held.
+        if (collect && want > 0)
+          add(line.tenderId ? (line.paymentIntentId ?? null) : null, want);
+      }
+    };
+    const key = (row: { refundedAt: Date; createdAt: Date; id: string }) =>
+      `${row.refundedAt.toISOString()}|${row.createdAt.toISOString()}|${row.id}`;
+    const earlier = posRefunds
+      .filter((row) => row.id !== p.refundId)
+      .filter((row) => !current || key(row) < key(current))
+      .sort((a, b) => (key(a) < key(b) ? -1 : 1));
+    for (const row of earlier) apply(row.lines, false);
+    // A payload without lines (stored before they were kept): its gateway
+    // part walks every gateway tender of the order.
+    apply(
+      current
+        ? current.lines
+        : p.lines.some((line) => isGateway(line.method))
+          ? p.lines
+          : [{ method: ANY_GATEWAY, amountIdr: gatewayIdr }],
+      true,
+    );
+    if (current) {
+      const deposits = await tx
+        .select({
+          intentId: posDepositRefunds.paymentIntentId,
+          amountIdr: posDepositRefunds.amountIdr,
+        })
+        .from(posDepositRefunds)
+        .where(
+          and(
+            eq(posDepositRefunds.tenantId, tenantId),
+            eq(posDepositRefunds.posRefundId, p.refundId),
+          ),
+        );
+      for (const row of deposits) add(row.intentId, Number(row.amountIdr));
+    }
+  }
+  const intentIds = [...byIntent.keys()].filter(
+    (id): id is string => id !== null,
+  );
+  const states = await receiptStatesOf(tx, tenantId, intentIds);
+  let postedIdr = 0;
+  for (const [intentId, amountIdr] of byIntent) {
+    if (intentId === null) continue;
+    const state = states.get(intentId);
+    if (state === "pending")
+      throw new AutoJournalReceiptPending(
+        "Gateway receipt of a refunded intent is not booked yet",
+      );
+    if (state === "posted") postedIdr += amountIdr;
+  }
+  const depositIdr = Math.min(postedIdr, gatewayIdr);
+  return { depositIdr, clearingIdr: gatewayIdr - depositIdr };
 }
 
 /**
@@ -1165,6 +1378,77 @@ async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
  * outlet, amount = charge amount), booked straight to cash_on_hand; there is
  * no receipt to wait for or to bound, the sale journal rule is unchanged.
  */
+/**
+ * legend-89pn: cash in / cash out of an open or closed shift. Restrictive:
+ * - the amount and type come from the stored row; a payload that disagrees is
+ *   refused (POSTING_AMOUNTS_MISMATCH), never posted;
+ * - a drop stays the outlet's cash: nothing to book;
+ * - a movement held for approval (needs_approval, whatever its outcome) is
+ *   outside the shift's expected cash, so the close difference already
+ *   leaves it alone, and it is never booked here;
+ * - the cash_in that pays an order issue charge is booked as a sale by
+ *   order_issue.charge_paid (chargePaidFactOf): booking it again would count
+ *   the cash twice.
+ */
+async function cashMovementFactOf(
+  tx: Tx,
+  tenantId: TenantId,
+  stored: StoredAutoJournalEvent,
+): Promise<AutoJournalFact | null> {
+  const p = cashMovementRecordedSchema.parse(stored.payload);
+  const [movement] = await tx
+    .select({
+      outletId: cashMovements.outletId,
+      shiftId: cashMovements.shiftId,
+      type: cashMovements.type,
+      amountIdr: cashMovements.amountIdr,
+      needsApproval: cashMovements.needsApproval,
+      recordedAt: cashMovements.recordedAt,
+    })
+    .from(cashMovements)
+    .where(
+      and(
+        eq(cashMovements.tenantId, tenantId),
+        eq(cashMovements.id, p.movementId),
+      ),
+    );
+  if (
+    !movement ||
+    movement.outletId !== p.outletId ||
+    movement.shiftId !== p.shiftId ||
+    movement.type !== p.type
+  )
+    throw new AutoJournalPayloadInvalid(
+      "Cash movement of the event not found or not the one recorded",
+    );
+  const amountIdr = Number(movement.amountIdr);
+  if (amountIdr !== p.amountIdr)
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "amountIdr does not match the cash movement",
+    );
+  if (movement.type === "drop" || movement.needsApproval) return null;
+  const [charge] = await tx
+    .select({ id: orderIssueCharges.id })
+    .from(orderIssueCharges)
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, tenantId),
+        eq(orderIssueCharges.cashMovementId, p.movementId),
+      ),
+    )
+    .limit(1);
+  if (charge) return null;
+  return {
+    ruleEvent: "cash_movement.recorded",
+    variant: movement.type,
+    amounts: { amountIdr },
+    sourceId: p.movementId,
+    outletId: movement.outletId,
+    moneyTime: movement.recordedAt,
+  };
+}
+
 async function chargePaidFactOf(
   tx: Tx,
   tenantId: TenantId,
@@ -1607,6 +1891,7 @@ export async function autoJournalFactOf(
         throw new AutoJournalPayloadInvalid(
           "A refund payout account is mapped to a sale service charge or tax account",
         );
+      const gatewaySplit = await refundGatewaySplitOf(tx, tenantId, p);
       return {
         ruleEvent: "order.refunded",
         accountOverrides,
@@ -1621,7 +1906,8 @@ export async function autoJournalFactOf(
             : {}),
           discountIdr: components.discountIdr,
           refundCashIdr: p.refundCashIdr,
-          refundGatewayIdr: p.refundGatewayIdr,
+          refundGatewayIdr: gatewaySplit.depositIdr,
+          refundGatewayClearingIdr: gatewaySplit.clearingIdr,
           refundEdcIdr: p.refundEdcIdr,
           refundPointsIdr: p.refundPointsIdr,
         },
@@ -1856,6 +2142,8 @@ export async function autoJournalFactOf(
         moneyTime: new Date(p.closedAt),
       };
     }
+    case "cash_movement.recorded":
+      return cashMovementFactOf(tx, tenantId, stored);
     // No backing guard (design section 10): the bank statement is the fact,
     // finance reconciles the clearing account, so an over-settlement is a
     // reconciliation case, not a park. A zero fee posts Dr bank / Cr clearing

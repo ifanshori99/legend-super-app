@@ -22,6 +22,7 @@ import {
   getAccessSnapshot,
   loadRequestAccess,
 } from "../middleware/permissions.ts";
+import { requireAiPlatformEnabled } from "../middleware/module.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import {
@@ -95,14 +96,21 @@ export function createAiInsightsRouter(): Router {
     });
   });
 
-  router.post("/drafts/promo-copy", ...common, jsonBody, async (req, res) => {
-    const body = draftPromoCopyEndpoint.body.parse(req.body);
-    res.json({ data: await draftPromoCopy(getAccessSnapshot(req), body) });
-  });
+  router.post(
+    "/drafts/promo-copy",
+    ...common,
+    requireAiPlatformEnabled(),
+    jsonBody,
+    async (req, res) => {
+      const body = draftPromoCopyEndpoint.body.parse(req.body);
+      res.json({ data: await draftPromoCopy(getAccessSnapshot(req), body) });
+    },
+  );
 
   router.post(
     "/drafts/expense-account",
     ...common,
+    requireAiPlatformEnabled(),
     jsonBody,
     async (req, res) => {
       const body = suggestExpenseAccountEndpoint.body.parse(req.body);

@@ -13,6 +13,7 @@ import {
 import {
   boardQuery,
   kdsKeys,
+  scannerStatusQuery,
   stationLabelsQuery,
   stationsQuery,
 } from "./queries.ts";
@@ -21,6 +22,8 @@ export const useStations = (outletId: string | undefined) =>
   useQuery(stationsQuery(outletId));
 export const useStationLabels = (outletId: string | undefined) =>
   useQuery(stationLabelsQuery(outletId));
+export const useScannerStatus = (outletId: string | undefined) =>
+  useQuery(scannerStatusQuery(outletId));
 export const useBoard = (
   outletId: string | undefined,
   id: StationConfig["stationId"],

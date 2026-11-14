@@ -20,8 +20,7 @@
 // the key set in `ctx`; `decodeConfigBundle` passes it for the sections the
 // bundle carries.
 //
-// Not covered here: payroll_settings (money, item schema still the loose JSON
-// item) stays unregistered until its domain lands.
+// Payroll settings have their own domain codec in hris/payroll/config-codec.ts.
 
 import type { ConfigDecodeResult } from "../access/config-codec.ts";
 import { z } from "../core/index.ts";

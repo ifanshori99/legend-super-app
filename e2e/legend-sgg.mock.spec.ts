@@ -84,7 +84,7 @@ test("EDC-07 two banks stay active and a new terminal can be registered", async 
   await expect(page.getByText("TID-9900112").first()).toBeVisible();
 });
 
-test("PAY-04 a refund is requested, waits for approval, then settles", async ({
+test("PAY-04 a refund is requested and approved before processing", async ({
   page,
 }) => {
   await page.goto("/kelola/pembayaran?mock=normal", NAV);
@@ -111,15 +111,25 @@ test("PAY-04 a refund is requested, waits for approval, then settles", async ({
     .getByRole("listitem")
     .filter({ hasText: /A03-0412/ })
     .filter({ hasText: "Budi Supervisor" });
-  await expect(own.getByText("Menunggu approval")).toBeVisible();
-  await expect(own.getByRole("button", { name: "Setujui" })).toHaveCount(0);
+  await expect(own.getByText("Menunggu persetujuan")).toBeVisible();
+  await own.getByRole("button", { name: "Tinjau" }).click();
+  const ownReview = page.getByRole("dialog");
+  await expect(ownReview.getByText("Budi Supervisor")).toBeVisible();
+  await expect(
+    ownReview.getByRole("button", { name: "Setujui refund" }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(ownReview).toBeHidden();
 
-  // A cashier's pending refund is approved by the supervisor and settles.
+  // A cashier's pending refund is approved by the supervisor for processing.
   const pending = page
     .getByRole("listitem")
     .filter({ hasText: /A03-0412/ })
     .filter({ hasText: "Rina Kasir" });
-  await pending.getByRole("button", { name: "Setujui" }).click();
+  await pending.getByRole("button", { name: "Tinjau" }).click();
+  const pendingReview = page.getByRole("dialog");
+  await expect(pendingReview.getByText("Rina Kasir")).toBeVisible();
+  await pendingReview.getByRole("button", { name: "Setujui refund" }).click();
   const approveDialog = page.getByRole("dialog");
   await approveDialog
     .getByLabel("Catatan approval")
@@ -128,7 +138,11 @@ test("PAY-04 a refund is requested, waits for approval, then settles", async ({
   await expect(
     page.getByText(/Refund A03-0412 disetujui/).first(),
   ).toBeVisible();
-  await expect(pending.getByText("Selesai")).toBeVisible();
+  await expect(pending.getByText("Disetujui, diproses")).toBeVisible();
+  await pending.getByRole("button", { name: "Tinjau" }).click();
+  await expect(
+    page.getByRole("dialog").getByText("Menunggu penyedia"),
+  ).toBeVisible();
 });
 
 test("PAY-04 an overpayment is closed by a guest credit with an approval note", async ({
@@ -184,10 +198,13 @@ test("EDC-06 every settlement difference becomes a reconciliation case", async (
 
   await expect(
     page
-      .getByText(/Kasus BCA batch 2026-11-01 \/ TID-8841201 ditutup\./)
+      .getByText(
+        /Penutupan kasus BCA batch 2026-11-01 \/ TID-8841201 diajukan, menunggu persetujuan\./,
+      )
       .first(),
   ).toBeVisible();
-  await expect(openCase.getByText("Selesai")).toBeVisible();
+  // Closing needs another person's approval: the case is not resolved yet.
+  await expect(openCase.getByText("Menunggu persetujuan")).toBeVisible();
 });
 
 test("F13 payment admin screens have empty and error states", async ({

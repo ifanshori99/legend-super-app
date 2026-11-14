@@ -3,12 +3,13 @@
 // data and RECORDS differences as reconciliation cases: it never creates
 // payouts, refunds, journals or unallocated funds.
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { alias, type AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   assertTrustedScopedContext,
   createUlid,
   idr,
+  type OutletId,
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
@@ -36,9 +37,14 @@ import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import {
+  RECONCILIATION_OBJECT_TYPE,
+  RECONCILIATION_SOURCE_MODULE,
+} from "./payment-admin-reconciliation.service.ts";
+import {
   assertPaymentPermission,
   EVENT_DESTINATION,
 } from "./payment-support.ts";
+import { cancelApprovalRequest } from "./platform-approval.service.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 type Input = ReturnType<typeof importEndpoint.body.parse>;
@@ -51,6 +57,109 @@ const SETTLED_INTENT_STATUSES = [
   "partially_refunded",
   "refunded",
 ] as const;
+
+/**
+ * The sale now sits on a settlement line (matched or mismatch): its earlier
+ * "missing" case (no line, booked but not reported) is wrong, the money did
+ * arrive. Close it as `matched` with no resolution event and no write-off, and
+ * withdraw a close request still waiting for approval so it can never be
+ * approved afterwards. Case row first, then chain (same lock order as
+ * settleReconciliationCaseForApproval). Only cases of this exact sale
+ * (source_transaction_id) are touched; a resolved case stays resolved.
+ */
+async function closeMissingCasesOfSale(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    readonly tenantId: TenantId;
+    readonly outletId: OutletId;
+    readonly source: Input["source"];
+    readonly saleId: string;
+    readonly reference: string;
+    readonly lineNo: number;
+    readonly now: Date;
+  },
+): Promise<void> {
+  const note = `Closed automatically: sale matched a settlement line (report ${input.reference}, line ${input.lineNo})`;
+  const open = await tx
+    .select({
+      id: cases.id,
+      status: cases.status,
+      approvalChainId: cases.approvalChainId,
+    })
+    .from(cases)
+    .where(
+      and(
+        eq(cases.tenantId, input.tenantId),
+        eq(cases.outletId, input.outletId),
+        eq(cases.source, input.source),
+        eq(cases.sourceTransactionId, input.saleId),
+        isNull(cases.settlementLineId),
+        inArray(cases.status, ["open", "pending_approval"]),
+      ),
+    )
+    .for("update");
+  for (const row of open) {
+    const [closed] = await tx
+      .update(cases)
+      .set({ status: "matched", note })
+      .where(
+        and(
+          eq(cases.tenantId, input.tenantId),
+          eq(cases.id, row.id),
+          eq(cases.status, row.status),
+        ),
+      )
+      .returning({ id: cases.id });
+    if (!closed) continue;
+    let chainOutcome: string | null = null;
+    if (row.status === "pending_approval" && row.approvalChainId)
+      chainOutcome = await cancelApprovalRequest(tx, context, {
+        chainId: row.approvalChainId,
+        sourceModule: RECONCILIATION_SOURCE_MODULE,
+        actorUserId: null,
+        now: input.now,
+      });
+    // approved/expired/cancelled: a chain that ended before this import (an
+    // approval waiting for the worker, or an expiry) is recorded, not hidden.
+    const caseNote =
+      chainOutcome === "approved" ||
+      chainOutcome === "expired" ||
+      chainOutcome === "cancelled"
+        ? `${note}; approval chain was ${chainOutcome}`
+        : note;
+    if (caseNote !== note)
+      await tx
+        .update(cases)
+        .set({ note: caseNote })
+        .where(and(eq(cases.tenantId, input.tenantId), eq(cases.id, row.id)));
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(input.now.getTime()),
+        tenantId: input.tenantId,
+        outletId: input.outletId,
+        actorType: "system",
+        actorId: null,
+        deviceId: null,
+        action: "payment.reconciliation_case_matched_closed",
+        objectType: RECONCILIATION_OBJECT_TYPE,
+        objectId: row.id,
+        reason: caseNote,
+        maskedChanges: {
+          before: { status: row.status },
+          after: { status: "matched", chainOutcome },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: input.now.toISOString(),
+      },
+      ["status"],
+    );
+  }
+}
 
 /** Unique violation (SQLSTATE 23505), also when the driver error is wrapped. */
 function isUniqueViolation(error: unknown, depth = 0): boolean {
@@ -386,6 +495,16 @@ export async function importSettlement(
           })
           .returning({ id: lines.id });
         if (!lineRow) throw new Error("Settlement line insert returned no row");
+        if (pos)
+          await closeMissingCasesOfSale(tx, context, {
+            tenantId,
+            outletId: input.outletId,
+            source: input.source,
+            saleId: pos.id,
+            reference: input.reference,
+            lineNo: index + 1,
+            now,
+          });
         tally[status] += 1;
         if (status === "matched") continue;
         const expected = pos ? pos.amountIdr : 0;
@@ -427,8 +546,8 @@ export async function importSettlement(
                   sql`NOT EXISTS (SELECT 1 FROM ${lines} WHERE ${lines.tenantId} = ${tenantId} AND ${lines.matchedEdcTransactionId} = ${edcTransactions.id})`,
                   // Voided on the same terminal: the sale is not owed.
                   sql`NOT EXISTS (SELECT 1 FROM ${edcTransactions} AS ${voids} WHERE ${voids.tenantId} = ${tenantId} AND ${voids.terminalId} = ${edcTransactions.terminalId} AND ${voids.type} = 'void' AND ${voids.status} = 'approved' AND (${voids.reference} = ${edcTransactions.reference} OR (${edcTransactions.rrn} IS NOT NULL AND ${voids.rrn} = ${edcTransactions.rrn})))`,
-                  // One sale, at most one open "missing" case.
-                  sql`NOT EXISTS (SELECT 1 FROM ${cases} WHERE ${cases.tenantId} = ${tenantId} AND ${cases.outletId} = ${input.outletId} AND ${cases.source} = 'edc' AND ${cases.provider} = ${input.provider} AND ${cases.status} = 'open' AND ${cases.settlementLineId} IS NULL AND ${cases.reference} = COALESCE(${edcTransactions.rrn}, ${edcTransactions.approvalCode}, ${edcTransactions.reference}))`,
+                  // One sale, at most one "missing" case for life (open, awaiting approval or resolved).
+                  sql`NOT EXISTS (SELECT 1 FROM ${cases} WHERE ${cases.tenantId} = ${tenantId} AND ${cases.outletId} = ${input.outletId} AND ${cases.source} = 'edc' AND ${cases.provider} = ${input.provider} AND ${cases.settlementLineId} IS NULL AND (${cases.sourceTransactionId} = ${edcTransactions.id} OR (${cases.sourceTransactionId} IS NULL AND ${cases.reference} = COALESCE(${edcTransactions.rrn}, ${edcTransactions.approvalCode}, ${edcTransactions.reference}))))`,
                 ),
               )
               .orderBy(asc(edcTransactions.createdAt), asc(edcTransactions.id))
@@ -436,6 +555,7 @@ export async function importSettlement(
                 rows
                   .filter((r) => !claimed.has(r.id))
                   .map((r) => ({
+                    id: r.id,
                     amountIdr: r.amountIdr,
                     reference: r.rrn ?? r.approvalCode ?? r.reference,
                   })),
@@ -456,8 +576,8 @@ export async function importSettlement(
                   sql`(${paymentIntents.paidAt} AT TIME ZONE 'Asia/Jakarta')::date BETWEEN ${input.periodStart}::date AND ${input.periodEnd}::date`,
                   // Already settled by a line of any report.
                   sql`NOT EXISTS (SELECT 1 FROM ${lines} WHERE ${lines.tenantId} = ${tenantId} AND ${lines.matchedPaymentIntentId} = ${paymentIntents.id})`,
-                  // One sale, at most one open "missing" case.
-                  sql`NOT EXISTS (SELECT 1 FROM ${cases} WHERE ${cases.tenantId} = ${tenantId} AND ${cases.outletId} = ${input.outletId} AND ${cases.source} = 'gateway' AND ${cases.provider} = ${input.provider} AND ${cases.status} = 'open' AND ${cases.settlementLineId} IS NULL AND ${cases.reference} = COALESCE(${paymentIntents.providerRef}, ${paymentIntents.id}::text))`,
+                  // One sale, at most one "missing" case for life (open, awaiting approval or resolved).
+                  sql`NOT EXISTS (SELECT 1 FROM ${cases} WHERE ${cases.tenantId} = ${tenantId} AND ${cases.outletId} = ${input.outletId} AND ${cases.source} = 'gateway' AND ${cases.provider} = ${input.provider} AND ${cases.settlementLineId} IS NULL AND (${cases.sourceTransactionId} = ${paymentIntents.id} OR (${cases.sourceTransactionId} IS NULL AND ${cases.reference} = COALESCE(${paymentIntents.providerRef}, ${paymentIntents.id}::text))))`,
                 ),
               )
               .orderBy(asc(paymentIntents.paidAt), asc(paymentIntents.id))
@@ -465,22 +585,38 @@ export async function importSettlement(
                 rows
                   .filter((r) => !claimed.has(r.id))
                   .map((r) => ({
+                    id: r.id,
                     amountIdr: r.amountIdr,
                     reference: r.providerRef ?? r.id,
                   })),
               );
       for (const row of missing) {
-        await tx.insert(cases).values({
-          ...caseBase,
-          settlementLineId: null,
-          reference: row.reference,
-          expectedIdr: row.amountIdr,
-          receivedIdr: idr(0),
-          varianceIdr: idr(-row.amountIdr),
-          reason: "POS transaction is missing from the settlement report",
-          status: "open",
-        });
-        tally.cases += 1;
+        // The partial unique index is the last guard against a duplicate
+        // "missing" case; only a row that really went in is counted.
+        const inserted = await tx
+          .insert(cases)
+          .values({
+            ...caseBase,
+            settlementLineId: null,
+            sourceTransactionId: row.id,
+            reference: row.reference,
+            expectedIdr: row.amountIdr,
+            receivedIdr: idr(0),
+            varianceIdr: idr(-row.amountIdr),
+            reason: "POS transaction is missing from the settlement report",
+            status: "open",
+          })
+          .onConflictDoNothing({
+            target: [
+              cases.tenantId,
+              cases.outletId,
+              cases.source,
+              cases.sourceTransactionId,
+            ],
+            where: sql`${cases.settlementLineId} IS NULL AND ${cases.sourceTransactionId} IS NOT NULL`,
+          })
+          .returning({ id: cases.id });
+        tally.cases += inserted.length;
       }
 
       await recordAudit(

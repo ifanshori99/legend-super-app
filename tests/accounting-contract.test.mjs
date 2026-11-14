@@ -1212,6 +1212,7 @@ describe("Auto-journal receipt-first rules and late adjustment", () => {
       discountIdr: 0,
       refundCashIdr: 0,
       refundGatewayIdr: 55_000,
+      refundGatewayClearingIdr: 0,
       refundEdcIdr: 0,
       refundPointsIdr: 0,
     });

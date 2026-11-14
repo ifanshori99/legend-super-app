@@ -8,11 +8,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useTenantContext } from "@/lib/tenant-context";
 import type { ReservationStatus } from "@starter/shared/reservation";
 import { PackagesTab } from "./packages-tab";
+import { RescheduleTab } from "./reschedule-tab";
 import { ReservationDetailDialog } from "./reservation-detail";
 import { ScheduleTab } from "./schedule-tab";
 import { WaitlistTab } from "./waitlist-tab";
 
-export type ReservationTab = "schedule" | "waitlist" | "packages";
+export type ReservationTab =
+  "schedule" | "waitlist" | "reschedule" | "packages";
 
 function ScreenHeader({ outletName }: { outletName?: string }) {
   const t = useT();
@@ -97,6 +99,9 @@ function ReservationsContent({
           <TabsTrigger value="waitlist">
             {t("reservation.tabs.waitlist")}
           </TabsTrigger>
+          <TabsTrigger value="reschedule">
+            {t("reservation.tabs.reschedule")}
+          </TabsTrigger>
           <TabsTrigger value="packages">
             {t("reservation.tabs.packages")}
           </TabsTrigger>
@@ -116,6 +121,13 @@ function ReservationsContent({
         </TabsContent>
         <TabsContent value="waitlist" className="mt-4">
           <WaitlistTab outletId={outlet.id} timeZone={outlet.timeZone} />
+        </TabsContent>
+        <TabsContent value="reschedule" className="mt-4">
+          <RescheduleTab
+            outletId={outlet.id}
+            timeZone={outlet.timeZone}
+            onOpenReservation={onOpenReservation}
+          />
         </TabsContent>
         <TabsContent value="packages" className="mt-4">
           <PackagesTab outletId={outlet.id} />

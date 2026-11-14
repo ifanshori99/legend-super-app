@@ -1,6 +1,6 @@
 // Pengaturan AI tenant UI text, part "page" (bead legend-nnufz). Namespace:
-// `aiSettings`. Page frame, platform-off notice text (rendered inside the
-// ChatGPT card) and the service order card.
+// `aiSettings`. Page frame, platform lock banner, page states (loading,
+// offline, session expired) and the service order card.
 // Copy follows the approved mockup design/mockups/ai/ai-settings.html.
 
 export const aiSettingsMessages = {
@@ -13,10 +13,29 @@ export const aiSettingsMessages = {
   noAccessTitle: "Pengaturan AI tidak bisa dibuka",
   noAccessHint:
     "Akun ini belum punya izin untuk mengatur AI. Minta admin tenant menambahkannya.",
-  platformOff: {
-    title: "Login ChatGPT dimatikan oleh platform",
-    body: "Koneksi ChatGPT dikunci sampai platform mengaktifkannya kembali. Model kustom dan anggaran tetap bisa diatur.",
-    badge: "Dikunci platform",
+  platformLock: {
+    title: "AI dimatikan oleh platform",
+    body: "AI untuk sementara tidak dapat digunakan. Semua pengaturan dikunci sampai platform mengaktifkannya kembali.",
+    hint: "Pengaturan tersimpan tetap dapat dilihat di bawah.",
+  },
+  states: {
+    loadingStatus:
+      "Memuat pengaturan AI… Pengaturan akan tampil setelah selesai.",
+    cardChatgpt: "Login ChatGPT",
+    cardCustom: "Model kustom",
+    cardBudget: "Anggaran AI bulanan",
+    offlineTitle: "Koneksi terputus",
+    offlineBody:
+      "Pengaturan AI belum dapat dimuat. Periksa koneksi internet, lalu coba lagi.",
+    offlineHint:
+      "Tidak ada perubahan yang dikirim. Hubungkan kembali sebelum mengubah pengaturan.",
+    retry: "Coba lagi",
+    sessionTitle: "Sesi Anda sudah habis",
+    sessionBody:
+      "Masuk kembali untuk melihat dan mengubah pengaturan AI tenant.",
+    sessionHint:
+      "Pengaturan tersimpan tidak berubah. Data akun dan kunci tidak ditampilkan sebelum Anda masuk.",
+    signInAgain: "Masuk kembali",
   },
   error: {
     title: "Bagian ini belum bisa dimuat",
@@ -29,7 +48,6 @@ export const aiSettingsMessages = {
     primary: "ChatGPT",
     primaryConnected: "Utama · Terhubung",
     primaryNotConnected: "Utama · Belum terhubung",
-    primaryLocked: "Utama · Dikunci platform",
     primaryUnavailable: "Utama · Status belum bisa dimuat",
     fallback: "Model kustom",
     fallbackReady: "Cadangan otomatis · Siap",

@@ -18,6 +18,7 @@ import {
   AccessError,
   DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES,
   DEFAULT_SHAREHOLDER_VERSION_APPROVAL_POLICIES,
+  DEFAULT_RECONCILIATION_CASE_APPROVAL_POLICIES,
   DEFAULT_REFUND_APPROVAL_POLICIES,
   approvalPolicyChangedEvent,
   approvalMatrixSchema,
@@ -393,6 +394,31 @@ export async function seedTenantRoleTemplates(
     WHERE NOT EXISTS (
       SELECT 1 FROM approval_policies p
       WHERE p.tenant_id = ${tenantId}::uuid AND p.action_type = 'shareholder_version'
+    )
+  `);
+  // PAY recon (PRD §3.7): closing a reconciliation case needs one approval from
+  // another user, Owner or Finance (either is enough); with no policy the
+  // approval service fails closed and the case stays open. Default matrix from
+  // Rp0 (same rows as migration 0357); only when the tenant has no
+  // reconciliation_case row, and a tenant missing one template gets the other.
+  const reconciliationValues = sql.join(
+    DEFAULT_RECONCILIATION_CASE_APPROVAL_POLICIES.map(
+      (row) =>
+        sql`(${row.thresholdIdr}::bigint, ${row.level}::int, ${row.roleTemplateKey}::text)`,
+    ),
+    sql`, `,
+  );
+  await tx.execute(sql`
+    INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+    SELECT ${tenantId}::uuid, 'reconciliation_case', d.threshold_idr, r.id, d.level, true
+    FROM (VALUES ${reconciliationValues}) AS d(threshold_idr, level, template_key)
+    JOIN roles r
+      ON r.tenant_id = ${tenantId}::uuid
+     AND r.is_template
+     AND r.template_key = d.template_key
+    WHERE NOT EXISTS (
+      SELECT 1 FROM approval_policies p
+      WHERE p.tenant_id = ${tenantId}::uuid AND p.action_type = 'reconciliation_case'
     )
   `);
 }

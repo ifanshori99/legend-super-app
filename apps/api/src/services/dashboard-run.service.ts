@@ -86,6 +86,7 @@ import {
   type EvaluatedMetrics,
   type MetricViewer,
 } from "./metrics-query.service";
+import { outletBusinessDayClock } from "./outlet-clock";
 
 export type DashboardRunOptions = {
   /** Clock for "today" and `generatedAt` (tests); defaults to now. */
@@ -289,6 +290,48 @@ function outletCondition(
     : undefined;
 }
 
+type OutletClockRow = { timezone: string; businessDayCutoff: string };
+
+/**
+ * "Today" of a dashboard: the business date in each outlet's own time zone and
+ * cutoff. Outlets in different zones (or with different cutoffs) can be on
+ * different business dates at the same instant; the dashboard takes the
+ * EARLIEST one, so a period is never called closed before every outlet read
+ * has finished that day. No outlet read: the default clock.
+ */
+function dashboardToday(
+  rows: readonly OutletClockRow[],
+  now: Date,
+): BusinessDate {
+  const dates = rows.map((row) =>
+    businessDateOf(now, outletBusinessDayClock(row)),
+  );
+  return dates.length === 0
+    ? businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK)
+    : dates.reduce((earliest, date) => (date < earliest ? date : earliest));
+}
+
+/** Outlets (zone + cutoff) the caller reads, inside the tenant. */
+async function outletClockRows(
+  context: ScopedTenantContext,
+  filter: OutletQueryFilter,
+): Promise<OutletClockRow[]> {
+  return withTenant(db, context, (tx) =>
+    tx
+      .select({
+        timezone: outlets.timezone,
+        businessDayCutoff: outlets.businessDayCutoff,
+      })
+      .from(outlets)
+      .where(
+        and(
+          eq(outlets.tenantId, context.tenant.tenantId),
+          outletCondition(outlets.id, filter),
+        ),
+      ),
+  );
+}
+
 /** Layout of one dashboard for the caller: admitted tiles and the outlets read. */
 export async function getDashboardLayout(
   context: ScopedTenantContext,
@@ -301,10 +344,13 @@ export async function getDashboardLayout(
 ): Promise<DashboardLayout> {
   const now = options.now ?? new Date();
   const filter = outletIdsForQuery(context.outletScope, input.outletIds);
-  const businessDate = businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK);
   const outletRows = await withTenant(db, context, (tx) =>
     tx
-      .select({ id: outlets.id })
+      .select({
+        id: outlets.id,
+        timezone: outlets.timezone,
+        businessDayCutoff: outlets.businessDayCutoff,
+      })
       .from(outlets)
       .where(
         and(
@@ -321,6 +367,7 @@ export async function getDashboardLayout(
       "REPORT_NOT_PERMITTED",
       "Tidak ada data dashboard yang bisa dibuka untuk akun ini.",
     );
+  const businessDate = dashboardToday(outletRows, now);
   return dashboardLayoutSchema.parse({
     dashboard: input.dashboard,
     title: DASHBOARD_TITLES[input.dashboard],
@@ -409,8 +456,8 @@ export async function getDashboardValues(
   options: DashboardRunOptions = {},
 ): Promise<DashboardValues> {
   const now = options.now ?? new Date();
-  const today = businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK);
   const filter = outletIdsForQuery(context.outletScope, input.query.outletIds);
+  const today = dashboardToday(await outletClockRows(context, filter), now);
   const metricTiles = input.tiles.filter(
     (tile): tile is MetricDashboardTile => tile.kind === "metric",
   );
@@ -461,6 +508,7 @@ export async function getDashboardValues(
             viewer: input.viewer,
           },
           now,
+          { today },
         ),
       });
     }

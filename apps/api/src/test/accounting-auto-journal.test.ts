@@ -1771,7 +1771,7 @@ describe("F19 order.refunded mirrors the sale", () => {
     ],
   };
 
-  it("AJ-REFUND-01 a refund of cash + gateway: Dr revenue, tax / Cr cash and customer_deposit (owed until payout), balanced; replay no-op", async () => {
+  it("AJ-REFUND-01 a refund of cash + gateway: Dr revenue, tax / Cr cash and gateway_clearing (no payment refund row: nothing to pay out later), balanced; replay no-op", async () => {
     const world = await makeWorld();
     const orderUlid = createUlid();
     await seedPosOrder(world, orderUlid, refundedSale);
@@ -1781,7 +1781,7 @@ describe("F19 order.refunded mirrors the sale", () => {
     const result = await post(world, event);
     expect(await linesOf(world, result.journalEntryId)).toEqual([
       { role: "cash_on_hand", debit: 0, credit: 20_000 },
-      { role: "customer_deposit", debit: 0, credit: 35_000 },
+      { role: "gateway_clearing", debit: 0, credit: 35_000 },
       { role: "sales_revenue", debit: 50_000, credit: 0 },
       { role: "tax_payable_pbjt", debit: 5_000, credit: 0 },
     ]);
@@ -1839,7 +1839,7 @@ describe("F19 order.refunded mirrors the sale", () => {
     const refundEntryId = await journalIdOf(world, refundKey);
     expect(await linesOf(world, refundEntryId)).toEqual([
       { role: "cash_on_hand", debit: 0, credit: 20_000 },
-      { role: "customer_deposit", debit: 0, credit: 35_000 },
+      { role: "gateway_clearing", debit: 0, credit: 35_000 },
       { role: "sales_revenue", debit: 50_000, credit: 0 },
       { role: "tax_payable_pbjt", debit: 5_000, credit: 0 },
     ]);

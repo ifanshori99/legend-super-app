@@ -796,15 +796,14 @@ test("TEN-09 every config section has a strict item schema keyed by reference, n
     ).success,
     false,
   );
-  // The browser preview stays loose: it diffs any keyed item in sections
-  // that have no codec (payroll_settings only).
+  // Payroll now has a codec, so preview and import both reject arbitrary items.
   assert.equal(
     platform.configBundleSchema.safeParse(
       bundle({
         payroll_settings: { version: 1, items: [{ key: "a", name: "x" }] },
       }),
     ).success,
-    true,
+    false,
   );
   // Codec-backed sections require the portable domain contract.
   assert.equal(

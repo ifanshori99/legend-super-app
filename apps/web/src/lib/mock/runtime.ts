@@ -6,6 +6,7 @@ import {
 import { zodIssuesToDetails } from "@starter/shared/api";
 import { AccountingError } from "@starter/shared/accounting";
 import type { z } from "zod";
+import type { CallHeaders } from "../api/endpoint-core.ts";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "../api/errors.ts";
 import {
   getLatencyMs,
@@ -23,7 +24,7 @@ export type MockRequest = {
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
   signal?: AbortSignal;
-  headers?: { "Idempotency-Key"?: string };
+  headers?: CallHeaders;
 };
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {

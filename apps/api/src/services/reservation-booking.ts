@@ -63,6 +63,7 @@ import {
   type ReservationRow,
   type Tx,
 } from "./reservation-core.ts";
+import { findLinkableProfileIdByWhatsAppHash } from "./member-profile.service.ts";
 import { reservationDepositPort } from "./reservation-ports.ts";
 import { sweepStaleDepositHolds } from "./reservation-sweeps.ts";
 import {
@@ -328,7 +329,12 @@ function createdFrom(
           expiresAt: row.depositLinkExpiresAt.toISOString(),
         }
       : null;
-  return reservationCreatedSchema.parse({ reservation, deposit });
+  // Public response: never reveal whether the phone matched a member profile.
+  // The link is kept in the DB only (legend-q4sv2).
+  return reservationCreatedSchema.parse({
+    reservation: { ...reservation, customerProfileId: null },
+    deposit,
+  });
 }
 
 async function buildCreated(
@@ -609,13 +615,20 @@ export async function createReservation(
           snapshot.depositRequirement === "required" &&
           snapshot.depositAmountIdr > 0;
         const reservationId = randomUUID();
+        // Lookup only (legend-q4sv2): no profile is created from a number
+        // nobody verified.
+        const customerProfileId = await findLinkableProfileIdByWhatsAppHash(
+          tx,
+          context.tenant.tenantId,
+          contactHash,
+        );
         const [row] = await tx
           .insert(reservations)
           .values({
             id: reservationId,
             tenantId: context.tenant.tenantId,
             outletId,
-            customerProfileId: null,
+            customerProfileId,
             guestName: input.guestName,
             contactHash,
             reservedFor,
@@ -647,7 +660,7 @@ export async function createReservation(
           now,
           payload: {
             reservationId: row.id,
-            customerProfileId: null,
+            customerProfileId: row.customerProfileId,
             reservedFor: reservedFor.toISOString(),
             durationMinutes: duration,
             pax: input.pax,

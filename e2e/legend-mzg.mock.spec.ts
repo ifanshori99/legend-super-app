@@ -21,7 +21,7 @@ test.skip(
 );
 
 /** Fixture ids (cafeLegendAccountingFixtures; stable by construction). */
-const INTERNET_ENTRY = "e1000000-0000-4000-8000-00000000000c"; // manual source
+const INTERNET_ENTRY = "e1000000-0000-4000-8000-00000000000d"; // manual source
 const CASH_SALE_ENTRY = "e1000000-0000-4000-8000-000000000005";
 const PENDING_MANUAL = "e3000000-0000-4000-8000-000000000004";
 
@@ -38,12 +38,8 @@ async function open(page: Page, path: string, heading: string) {
 }
 
 /** Picks an option in a Radix select trigger by accessible option name. */
-async function choose(
-  page: Page,
-  comboboxIndex: number,
-  optionPattern: RegExp,
-) {
-  await page.getByRole("combobox").nth(comboboxIndex).click();
+async function choose(page: Page, line: number, optionPattern: RegExp) {
+  await page.getByLabel(`Akun baris ${line}`).click();
   await page.getByRole("option", { name: optionPattern }).click();
 }
 
@@ -67,9 +63,27 @@ test.describe("accounting back office", () => {
     await expect(
       page.locator("form").getByText("Selisih", { exact: true }).locator(".."),
     ).toContainText(/Rp\s*50\.000/);
+    await page.getByRole("button", { name: "Simpan draf" }).click();
+    await expect(page.getByRole("alert")).toContainText(
+      "Jurnal belum seimbang",
+    );
+    await expect(page).toHaveURL(/jurnal-manual\/baru/);
+
+    // The mock transport runs in memory, so inspect its list through the SPA
+    // to prove the invalid submission did not create a draft.
+    await page.getByRole("link", { name: "Kembali ke jurnal manual" }).click();
     await expect(
-      page.getByRole("button", { name: "Simpan draf" }),
-    ).toBeDisabled();
+      page.getByRole("link", {
+        name: "Akrual sewa gedung November 2026",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(page.getByText("Uji ACC-01 jurnal manual")).toHaveCount(0);
+    await page.goBack();
+    await page.getByLabel("Keterangan").fill("Uji ACC-01 jurnal manual");
+    await choose(page, 1, /6109/);
+    await page.getByLabel("Debit baris 1").fill("100000");
+    await choose(page, 2, /1103/);
 
     await page.getByLabel("Kredit baris 2").fill("100000");
     await expect(
@@ -225,10 +239,10 @@ test.describe("accounting back office", () => {
 
     await page.getByRole("button", { name: "Tambah templat" }).click();
     await page.getByLabel("Keterangan").fill("Uji templat E2E");
-    // The dialog has only the two line-account selects (no kind field).
-    await choose(page, 0, /6105/);
+    // Each line also has an outlet select; choose the account by its label.
+    await choose(page, 1, /6105/);
     await page.getByLabel("Debit baris 1").fill("1000000");
-    await choose(page, 1, /2101/);
+    await choose(page, 2, /2101/);
     await page.getByLabel("Kredit baris 2").fill("1000000");
     await page.getByRole("button", { name: "Simpan templat" }).click();
     await expect(

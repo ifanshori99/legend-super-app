@@ -33,6 +33,28 @@ describe("HTTP plumbing", () => {
     expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
   });
 
+  it("exposes payout export filename and checksum to the web origin", async () => {
+    const path =
+      "/api/hris/payroll/disbursement-batches/01ARZ3NDEKTSV4RRFFQ69G5FAV/export";
+    const preflight = await request(app)
+      .options(path)
+      .set("Origin", WEB_ORIGIN)
+      .set("Access-Control-Request-Method", "POST");
+    const actual = await request(app).post(path).set("Origin", WEB_ORIGIN);
+
+    expect(preflight.status).toBe(204);
+    expect(actual.status).toBe(401);
+    for (const response of [preflight, actual]) {
+      expect(response.headers["access-control-allow-origin"]).toBe(WEB_ORIGIN);
+      const exposed = String(response.headers["access-control-expose-headers"])
+        .toLowerCase()
+        .split(",")
+        .map((header) => header.trim());
+      expect(exposed).toContain("content-disposition");
+      expect(exposed).toContain("x-content-checksum-sha256");
+    }
+  });
+
   // legend-8tv6: payment-admin configuration writes are PUT and carry their
   // retry identity in Idempotency-Key, so the preflight must allow both.
   it("allows the Idempotency-Key preflight for PUT from the web origin only", async () => {

@@ -23,6 +23,7 @@ import {
   type mcpTokens,
 } from "../db/schema/ai.ts";
 import { withTenant } from "../db/tenant.ts";
+import { isAiPlatformLocked } from "./ai-platform-lock.ts";
 import { appendOutbox } from "./core-outbox.ts";
 
 const EVENT_DESTINATION = "cloud-sync";
@@ -47,6 +48,8 @@ export type McpTenantSettings = {
   readonly mcpEnabled: boolean;
   readonly dynamicClientRegistrationEnabled: boolean;
   readonly mcpRateLimitPerMinute: number;
+  /** Platform turned `ai_assistant` off for this tenant: AI and MCP closed. */
+  readonly platformLocked: boolean;
 };
 
 /** No settings row means MCP off (fail closed) and the default 60/min. */
@@ -54,23 +57,35 @@ export async function loadMcpSettings(
   tenantIdRaw: string,
 ): Promise<McpTenantSettings> {
   const tenantId = tenantIdSchema.parse(tenantIdRaw);
-  const [row] = await withTenant(db, tenantScopeById(tenantId), (tx) =>
-    tx
-      .select({
-        aiEnabled: aiSettings.aiEnabled,
-        mcpEnabled: aiSettings.mcpEnabled,
-        dynamic: aiSettings.dynamicClientRegistrationEnabled,
-        rate: aiSettings.mcpRateLimitPerMinute,
-      })
-      .from(aiSettings)
-      .where(eq(aiSettings.tenantId, tenantId))
-      .limit(1),
+  const { row, platformLocked } = await withTenant(
+    db,
+    tenantScopeById(tenantId),
+    async (tx) => {
+      const [found] = await tx
+        .select({
+          aiEnabled: aiSettings.aiEnabled,
+          mcpEnabled: aiSettings.mcpEnabled,
+          dynamic: aiSettings.dynamicClientRegistrationEnabled,
+          rate: aiSettings.mcpRateLimitPerMinute,
+        })
+        .from(aiSettings)
+        .where(eq(aiSettings.tenantId, tenantId))
+        .limit(1);
+      return {
+        row: found,
+        platformLocked: await isAiPlatformLocked(tx, tenantId),
+      };
+    },
   );
+  // Locked: force every switch off so bearer, OAuth and registration all close.
   return {
-    aiEnabled: row?.aiEnabled ?? true,
-    mcpEnabled: row?.mcpEnabled ?? false,
-    dynamicClientRegistrationEnabled: row?.dynamic ?? false,
+    aiEnabled: platformLocked ? false : (row?.aiEnabled ?? true),
+    mcpEnabled: platformLocked ? false : (row?.mcpEnabled ?? false),
+    dynamicClientRegistrationEnabled: platformLocked
+      ? false
+      : (row?.dynamic ?? false),
     mcpRateLimitPerMinute: row?.rate ?? 60,
+    platformLocked,
   };
 }
 

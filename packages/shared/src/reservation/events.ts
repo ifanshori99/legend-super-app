@@ -36,6 +36,7 @@ export const reservationEventNames = [
   "reservation.seated",
   "reservation.completed",
   "reservation.cancelled",
+  "reservation.rescheduled",
   "reservation.no_show",
   "waitlist_entry.called",
   "waitlist_entry.seated",
@@ -121,6 +122,20 @@ export type ReservationClosedPayload = z.infer<
   typeof reservationClosedPayloadSchema
 >;
 
+/** Staff approved a guest's reschedule request; the booking moved. */
+export const reservationRescheduledPayloadSchema = z.strictObject({
+  reservationId: reservationIdSchema,
+  requestId: z.uuid().toLowerCase(),
+  previousReservedFor: isoDateTimeSchema,
+  reservedFor: isoDateTimeSchema,
+  previousPax: z.number().int().min(1).max(60),
+  pax: z.number().int().min(1).max(60),
+  tableIds: z.array(tableIdSchema),
+});
+export type ReservationRescheduledPayload = z.infer<
+  typeof reservationRescheduledPayloadSchema
+>;
+
 export const waitlistEntryCalledPayloadSchema = z.strictObject({
   waitlistEntryId: waitlistEntryIdSchema,
   pax: z.number().int().min(1).max(60),
@@ -172,6 +187,7 @@ const payloadSchemas: Record<
   "reservation.seated": reservationSeatedPayloadSchema,
   "reservation.completed": reservationCompletedPayloadSchema,
   "reservation.cancelled": reservationClosedPayloadSchema,
+  "reservation.rescheduled": reservationRescheduledPayloadSchema,
   "reservation.no_show": reservationClosedPayloadSchema,
   "waitlist_entry.called": waitlistEntryCalledPayloadSchema,
   "waitlist_entry.seated": waitlistEntrySeatedPayloadSchema,

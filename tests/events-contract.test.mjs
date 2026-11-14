@@ -380,6 +380,16 @@ test("catalog is frozen, lookup-able and consistent with the envelope rules", ()
   );
 });
 
+test("blocked edge outbox alert is registered under WS-02", () => {
+  assert.deepEqual(events.eventCatalogByName.get("edge_outbox.blocked"), {
+    name: "edge_outbox.blocked",
+    aggregateType: "edge_outbox",
+    version: 1,
+    payloadSchemaRef: "edge_outbox.blocked.v1",
+    workstream: "WS-02",
+  });
+});
+
 test("adapter domain events are registered under WS-00", () => {
   for (const name of [
     "provider_webhook.received",
