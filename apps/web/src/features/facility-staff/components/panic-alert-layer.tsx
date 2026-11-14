@@ -170,10 +170,16 @@ function Banner({
       data-connection={connection}
       className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b-2 border-foreground bg-warning-subtle px-4 py-3 md:px-10"
     >
-      <p className="flex items-center gap-2 font-semibold">
-        <WifiOff className="size-5 shrink-0 text-warning" aria-hidden="true" />
-        {t("facilityStaff.panic.banner")}
-      </p>
+      <div className="grid gap-1">
+        <p className="flex items-center gap-2 font-semibold">
+          <WifiOff
+            className="size-5 shrink-0 text-warning"
+            aria-hidden="true"
+          />
+          {t("facilityStaff.panic.banner")}
+        </p>
+        <p className="ps-7">{t("facilityStaff.panic.bannerAdvice")}</p>
+      </div>
       {connection === "unreachable" && (
         <a
           href={pinHref}
@@ -348,14 +354,16 @@ function SingleAlert({
             ? t("facilityStaff.panic.alert.headingTest")
             : t("facilityStaff.panic.alert.heading")}
         </h1>
-        <LocationBlock
-          id={LOCATION_ID}
-          nameId={nameId(item.alertId)}
-          tone="danger"
-          label={t("facilityStaff.panic.locationLabel")}
-          name={name}
-          detail={area}
-        />
+        <div className="pt-3">
+          <LocationBlock
+            id={LOCATION_ID}
+            nameId={nameId(item.alertId)}
+            tone="danger"
+            label={t("facilityStaff.panic.locationLabel")}
+            name={name}
+            detail={area}
+          />
+        </div>
       </div>
       <div className="grid gap-6 md:grid-cols-2">
         <dl className="grid grid-cols-2 content-start gap-3 border-t-2 border-foreground pt-4 md:grid-cols-1">
@@ -423,21 +431,23 @@ function AlertQueue({
               key={item.alertId}
               data-slot="panic-queue-card"
               data-alert-id={item.alertId}
-              className="grid gap-3 border-2 border-s-8 border-foreground border-s-danger bg-card p-4 md:p-6"
+              className="grid gap-3 border-2 border-s-8 border-foreground border-s-danger bg-card p-4 md:grid-cols-[minmax(0,1fr)_18rem] md:items-center md:gap-x-6 md:p-6"
             >
-              <p className="flex flex-wrap items-center gap-2 text-base font-semibold text-muted-foreground">
-                <span className="tabular">{number}</span>
-                <span aria-hidden="true">·</span>
-                {item.kind === "test" && <TestBadge />}
-                <span>{t(STATUS_KEYS[item.ack])}</span>
-              </p>
-              <p
-                id={nameId(item.alertId)}
-                className="tabular text-[2.5rem] leading-tight font-bold break-words md:text-5xl"
-              >
-                {name}
-              </p>
-              <p className="tabular text-base">{details.join(" · ")}</p>
+              <div className="grid min-w-0 gap-2">
+                <p className="flex flex-wrap items-center gap-2 text-base font-semibold text-muted-foreground">
+                  <span className="tabular">{number}</span>
+                  <span aria-hidden="true">·</span>
+                  {item.kind === "test" && <TestBadge />}
+                  <span>{t(STATUS_KEYS[item.ack])}</span>
+                </p>
+                <p
+                  id={nameId(item.alertId)}
+                  className="tabular text-[2.5rem] leading-tight font-bold break-words md:text-5xl"
+                >
+                  {name}
+                </p>
+                <p className="tabular text-base">{details.join(" · ")}</p>
+              </div>
               <AckControls
                 item={item}
                 label={

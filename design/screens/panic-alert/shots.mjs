@@ -103,7 +103,8 @@ const STATES = [
     scenario: 'incoming',
     ready: (p) => ackButtons(p).first().waitFor({ timeout: COLD }),
     act: (p) => ackButtons(p).first().click(),
-    after: (p) => p.getByText(/Anda menuju/).first().waitFor({ timeout: 15_000 }),
+    // Teks "Anda menuju" juga ada di footer; tunggu bagian settled milik sendiri.
+    after: (p) => p.locator('[data-slot="panic-settled"] [data-ack="mine"]').first().waitFor({ timeout: 15_000 }),
   },
   {
     // Tanggapan ke API palsu dijawab "sudah diambil rekan lain".

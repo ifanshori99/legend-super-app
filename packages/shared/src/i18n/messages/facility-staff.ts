@@ -214,6 +214,8 @@ export const facilityStaffMessages = {
     },
     banner:
       "Koneksi terputus, mencoba menyambung. Alert di bawah mungkin bukan yang terbaru.",
+    bannerAdvice:
+      "Jangan menunggu koneksi pulih untuk memeriksa lokasi dan menghubungi staf lain.",
     test: "UJI",
     locationLabel: "Lokasi darurat",
     locationUnknown: "Lokasi belum diketahui",
