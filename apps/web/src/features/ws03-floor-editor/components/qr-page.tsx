@@ -68,6 +68,26 @@ function QrPage() {
   const issued = tables.flatMap((table) =>
     labels[table.id] ? [labels[table.id]] : [],
   );
+  // The sheet sits below the long table list: when it first appears, bring it
+  // into view and move focus to its title. Later reprints leave the scroll
+  // position alone so a row of reprints does not throw the page around.
+  const hadSheet = React.useRef(false);
+  React.useEffect(() => {
+    const hasSheet = issued.length > 0;
+    if (hasSheet && !hadSheet.current) {
+      const title = document.getElementById("floor-labels-title");
+      const reduced = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches;
+      title?.scrollIntoView({
+        behavior: reduced ? "auto" : "smooth",
+        block: "start",
+      });
+      title?.focus({ preventScroll: true });
+    }
+    hadSheet.current = hasSheet;
+  }, [issued.length]);
+  const busy = pendingIds.length > 0;
   const state: DataState = floor.isPending
     ? "loading"
     : floor.isError
@@ -105,16 +125,6 @@ function QrPage() {
       for (const tableId of tableIds)
         next[tableId] = (await issueQr.mutateAsync(tableId)).data;
       setLabels((current) => ({ ...current, ...next }));
-      // The sheet sits below the long table list: bring it into view.
-      window.requestAnimationFrame(() =>
-        document.getElementById("floor-labels-title")?.scrollIntoView({
-          behavior: window.matchMedia("(prefers-reduced-motion: reduce)")
-            .matches
-            ? "auto"
-            : "smooth",
-          block: "start",
-        }),
-      );
       toast({
         title: t("floorEditor.qrIssued", {
           code: tableIds
@@ -155,8 +165,8 @@ function QrPage() {
           <Button
             variant="outline"
             onClick={() => void issue(selectedIds)}
-            loading={issueQr.isPending}
-            disabled={tables.length === 0}
+            loading={pendingIds.length > 1}
+            disabled={tables.length === 0 || busy}
           >
             <QrCode aria-hidden="true" />
             {selectedIds.length > 0
@@ -288,7 +298,7 @@ function QrPage() {
                       variant="outline"
                       size="sm"
                       loading={pendingIds.includes(table.id)}
-                      disabled={issueQr.isPending}
+                      disabled={busy}
                       onClick={() => void issue([table.id])}
                     >
                       {labels[table.id]
@@ -315,7 +325,11 @@ function QrPage() {
       {issued.length > 0 && (
         <ThemeScope mode="light" className="floor-print-sheet grid gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2 print:hidden">
-            <h2 id="floor-labels-title" className="type-title">
+            <h2
+              id="floor-labels-title"
+              tabIndex={-1}
+              className="type-title outline-none"
+            >
               {t("floorEditor.qrPreviewTitle")}
             </h2>
             <Button onClick={() => window.print()}>
