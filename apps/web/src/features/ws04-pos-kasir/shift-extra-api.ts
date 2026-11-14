@@ -2,8 +2,12 @@
 // limit / force close (legend-7mlf). Same rules as ./api.ts: shared endpoints go
 // through the typed client, the rest runs on the mock engine in mock mode and
 // fails with CONTRACT_PENDING elsewhere (see ./CONTRACT-GAPS.md).
-import { getPosShift, listPosShiftCounts } from "@starter/shared/pos";
-import { apiFetch } from "@/lib/api/client";
+import {
+  decidePosCashMovement,
+  getPosShift,
+  listPosShiftCounts,
+  type PosCashMovementDecision,
+} from "@starter/shared/pos";
 import { callEndpoint } from "@/lib/api/endpoint";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { contractPending } from "./api";
@@ -13,7 +17,6 @@ import type {
   DecideHeldCashInput,
   ForceCloseInput,
   ForceCloseView,
-  HeldCashDecisionResult,
   HeldCashOutReview,
   OwnCountSummary,
   SubmitForcedCountInput,
@@ -63,6 +66,7 @@ export async function fetchHeldCashOuts(
       recordedAt: row.recordedAt,
       // The movement carries no cashier name yet (gap): the shift screen has it.
       cashierName: "",
+      recordedBy: row.recordedBy,
     }))
     .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
   const totalHeldIdr = items.reduce((sum, item) => sum + item.amountIdr, 0);
@@ -86,21 +90,21 @@ export async function fetchHeldCashOuts(
   };
 }
 
-/**
- * A supervisor approves or rejects a held cash out. Outside mock mode this
- * calls the route directly: the shared endpoint object is not in the contract
- * package yet, so the result is typed by the local `HeldCashDecisionResult`.
- */
+/** A supervisor approves or rejects a held cash out. */
 export async function decideHeldCashMovement(
   outletId: string,
   input: DecideHeldCashInput,
-): Promise<HeldCashDecisionResult> {
+): Promise<PosCashMovementDecision> {
   if (API_MOCK)
     return runPosKasirMock((engine) => engine.decideHeldCashMovement(input));
-  const { data } = await apiFetch<{ data: HeldCashDecisionResult }>(
-    `/api/outlets/${encodeURIComponent(outletId)}/pos/shifts/${encodeURIComponent(input.shiftId)}/cash-movements/${encodeURIComponent(input.movementId)}/decision`,
-    { method: "POST", body: { decision: input.decision } },
-  );
+  const { data } = await callEndpoint(decidePosCashMovement, {
+    params: {
+      outletId,
+      shiftId: input.shiftId,
+      movementId: input.movementId,
+    },
+    body: { decision: input.decision },
+  });
   return data;
 }
 

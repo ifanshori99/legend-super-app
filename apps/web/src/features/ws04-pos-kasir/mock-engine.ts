@@ -10,6 +10,7 @@
 // `getPosKasirEngine`). `?demo=<seed>` (./demo-seed.ts) seeds a state for the
 // mockup screens; only this file reads it. Relative imports only: Node tests
 // load it directly.
+import type { PosCashMovementDecision } from "@starter/shared/pos";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "../../lib/api/errors.ts";
 import {
   SCENARIO_STORAGE_KEY,
@@ -36,6 +37,7 @@ import {
   DEMO_EDC_BANK_REF,
   DEMO_QRIS_CONFIRMED_AT,
   MAX_PIN_MISSES,
+  MOCK_CASHIER_ID,
   MOCK_SUPERVISOR_ID,
   MOCK_SUPERVISOR_PIN,
   codeOrder,
@@ -70,7 +72,6 @@ import {
   type DecideHeldCashInput,
   type ForceCloseInput,
   type ForceCloseView,
-  type HeldCashDecisionResult,
   type HeldCashOut,
   type HeldCashOutReview,
   type OwnCountSummary,
@@ -545,6 +546,8 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
         reasonNote: m.reasonNote,
         recordedAt: m.recordedAt,
         cashierName: shift.cashierName,
+        // `?demo=shift-sendiri`: the signed-in supervisor recorded it.
+        recordedBy: ownShiftView() ? MOCK_SUPERVISOR_ID : MOCK_CASHIER_ID,
       }))
       .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
   }
@@ -1440,7 +1443,9 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
      * Supervisor verdict on a held cash out, same rules as the API: not the
      * recorder, once, never after close, and an approval must fit the drawer.
      */
-    decideHeldCashMovement(input: DecideHeldCashInput): HeldCashDecisionResult {
+    decideHeldCashMovement(
+      input: DecideHeldCashInput,
+    ): PosCashMovementDecision {
       const shift = shiftOf(input.shiftId);
       if (ownShiftView())
         throw new ApiError(
@@ -1452,6 +1457,9 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
         (m) => m.shiftId === shift.id && m.id === input.movementId,
       );
       if (!movement) notFound("Catatan kas tidak ditemukan.");
+      const given = extra().decisions?.[movement.id];
+      // Same verdict by the same decider again: the API answers 200 as before.
+      if (given && given.outcome === input.decision) return { ...given };
       if (shift.status === "closed")
         conflict("SHIFT_CLOSED", "Shift ini sudah ditutup.");
       const held = extra().heldMovementIds;
@@ -1470,12 +1478,15 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
         else shift.cashOutIdr += movement.amountIdr;
       }
       extra().heldMovementIds = held.filter((id) => id !== movement.id);
-      return {
+      const result: PosCashMovementDecision = {
         movementId: movement.id,
         outcome: input.decision,
         decidedBy: MOCK_SUPERVISOR_ID,
         decidedAt: iso(clock()),
       };
+      const ex = extra();
+      ex.decisions = { ...ex.decisions, [movement.id]: result };
+      return { ...result };
     },
 
     witnesses(): SupervisorOption[] {

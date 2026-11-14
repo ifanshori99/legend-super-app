@@ -79,8 +79,8 @@ export const posKasirSupervisorMessages = {
       approve: "Setujui",
       reject: "Tolak",
       groupLabel: "Keputusan untuk {type} {amount}",
-      approveTitle: "Setujui kas keluar ini?",
-      rejectTitle: "Tolak kas keluar ini?",
+      approveTitle: "Setujui {type} ini?",
+      rejectTitle: "Tolak {type} ini?",
       approveBody:
         "{type} {amount} ({reason}) akan dikurangkan dari kas laci dan dibukukan. Keputusan tidak dapat diubah.",
       rejectBody:
@@ -88,9 +88,13 @@ export const posKasirSupervisorMessages = {
       confirmApprove: "Ya, setujui",
       confirmReject: "Ya, tolak",
       cancel: "Batal",
+      close: "Tutup",
+      selfRecorded: "Dicatat oleh Anda; supervisor lain yang memutuskan.",
+      recountHint:
+        "Bila kasir sudah menghitung laci, minta kasir menghitung ulang sebelum menutup shift.",
       pending: "Memproses…",
-      doneApproved: "Kas keluar disetujui.",
-      doneRejected: "Kas keluar ditolak.",
+      doneApproved: "{type} {amount} disetujui.",
+      doneRejected: "{type} {amount} ditolak.",
       failedTitle: "Keputusan belum tersimpan",
       failedGeneric: "Periksa koneksi, lalu coba lagi.",
       forbidden:
