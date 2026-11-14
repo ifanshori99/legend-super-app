@@ -52,7 +52,7 @@ export function agingReportQuery(filters: AgingFiltersQuery) {
         },
         signal,
       ),
-    enabled: Boolean(filters.legalEntityId),
+    enabled: Boolean(filters.legalEntityId && filters.asOf),
   });
 }
 
