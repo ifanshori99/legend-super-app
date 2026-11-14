@@ -81,6 +81,7 @@ import {
   bank,
   cash,
   evidenceKeyFor,
+  uploadEvidence,
   installPayoutWorld,
   netOf,
   type Row,
@@ -102,11 +103,17 @@ const settle = (batchId: string, by = APP2) =>
   W.inTx((tx) => settleBatchPayouts(tx, actorOf(by), batchId));
 const returnItems = (batchId: string, itemIds: string[], by: string) =>
   W.inTx((tx) =>
-    returnManualItems(tx, actorOf(by), batchId, {
-      itemIds,
-      evidenceKey: evidenceKeyFor(W.tenantId, batchId, "dana-kembali.pdf"),
-      note: "Bank mengembalikan dana, rekening tujuan ditutup",
-    } as never),
+    returnManualItems(
+      tx,
+      actorOf(by),
+      batchId,
+      {
+        itemIds,
+        evidenceKey: uploadEvidence(batchId, "dana-kembali.pdf"),
+        note: "Bank mengembalikan dana, rekening tujuan ditutup",
+      } as never,
+      W.proofs(),
+    ),
   );
 const idOf = (row: Row) => row.id as string;
 
@@ -653,6 +660,7 @@ describe("another tenant is untouched", () => {
           { tenantId: otherTenantId, userId: APP2 },
           batchId,
           { results } as never,
+          W.proofs(),
         ),
       ),
     );

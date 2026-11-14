@@ -1,9 +1,11 @@
-// Upload of a resolve/return payment proof (bead legend-zoqh1). One multipart
-// `file` part; the object storage and the malware scanner are required, so the
+// Upload of a resolve/return payment proof (bead legend-zoqh1), plus its read
+// path and the list of proposals waiting for a second person (legend-t58lr).
+// One multipart `file` part; the object storage and the malware scanner are required, so the
 // router answers 503 before multer buffers anything when either is missing.
 // Mounted at `/api/hris/payroll` by `createStorageApiRouter`, for its own path
 // only. It changes no batch or item: the returned `evidenceKey` goes into
-// resolve or return.
+// resolve or return. The two GET routes only read and need the same
+// `payroll.disburse.approve` as the second step they inform.
 
 import { Router, type RequestHandler } from "express";
 import multer from "multer";
@@ -11,6 +13,7 @@ import type { ObjectStorage } from "@starter/shared/adapters";
 import {
   PAYOUT_EVIDENCE_MAX_BYTES,
   payoutBatchParamsSchema,
+  payoutEvidenceReadQuerySchema,
 } from "@starter/shared/validators/payroll-payout";
 import { HttpError } from "../lib/http-error.ts";
 import { requireAuth } from "../middleware/auth.ts";
@@ -23,11 +26,15 @@ import {
 import { requireTenantContext } from "../middleware/tenant.ts";
 import type { MalwareScanner } from "../services/core-image.ts";
 import { PAYOUT_STEP_UP_MAX_AGE_MINUTES } from "../services/payroll-payout-evidence.ts";
+import {
+  listPayoutProposals,
+  readPayoutEvidence,
+} from "../services/payroll-payout-evidence-read.service.ts";
 import { uploadPayoutEvidence } from "../services/payroll-payout-evidence-upload.service.ts";
 
 /** Only this path enters the router (it runs the session guards on each request it sees). */
 export const PAYROLL_PAYOUT_EVIDENCE_PATH =
-  /^\/disbursement-batches\/[^/]+\/evidence$/;
+  /^\/disbursement-batches\/[^/]+\/(?:evidence|resolution-proposals)$/;
 
 // Same recent second factor as resolve and return, whose proof this stores.
 const stepUp = requireTenantStepUpMfa({
@@ -120,6 +127,39 @@ export function createPayrollPayoutEvidenceRouter(options: {
         { storage: storage(), scanner: scanner() },
       );
       res.status(201).json({ data });
+    },
+  );
+
+  // Read path: a short-lived signed URL for one proof of THIS batch. No step-up:
+  // it moves no money. A key of another batch or tenant is 422, an unknown one 404.
+  router.get(
+    "/disbursement-batches/:id/evidence",
+    requireAuth,
+    requireTenantContext,
+    requireTenantPermission("payroll.disburse.approve"),
+    async (req, res) => {
+      const { id } = payoutBatchParamsSchema.parse(req.params);
+      const { key } = payoutEvidenceReadQuerySchema.parse(req.query);
+      const data = await readPayoutEvidence(
+        getScopedTenantContext(req),
+        id,
+        key,
+        { storage: storage() },
+      );
+      res.set("Cache-Control", "no-store").json({ data });
+    },
+  );
+
+  // Proposals waiting for the second person: outcome, proof key, proposer, time.
+  router.get(
+    "/disbursement-batches/:id/resolution-proposals",
+    requireAuth,
+    requireTenantContext,
+    requireTenantPermission("payroll.disburse.approve"),
+    async (req, res) => {
+      const { id } = payoutBatchParamsSchema.parse(req.params);
+      const data = await listPayoutProposals(getScopedTenantContext(req), id);
+      res.set("Cache-Control", "no-store").json({ data });
     },
   );
 

@@ -39,7 +39,10 @@ import {
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
 import type { Tx } from "./hris-access.ts";
 import { payrollEntryDateOf, payrollGlKeys } from "./payroll-gl-consumer.ts";
-import { assertEvidenceKeyForBatch } from "./payroll-payout-evidence.ts";
+import {
+  assertEvidenceKeyForBatchStored,
+  type PayoutEvidenceStore,
+} from "./payroll-payout-evidence.ts";
 import {
   PAYOUT_BANK_CHARGES_MAPPING_MISSING,
   PAYOUT_SOURCE_ACCOUNT_MISSING,
@@ -93,6 +96,7 @@ export async function recordOverpaidItem(
   actor: Actor,
   itemId: string,
   input: OverpaidInput,
+  proofs: PayoutEvidenceStore,
   now = new Date(),
 ): Promise<{ postingId: string; journalKey: string }> {
   const tenantId = actor.tenantId as TenantId;
@@ -110,7 +114,6 @@ export async function recordOverpaidItem(
     .limit(1);
   if (!peek)
     throw payoutRefuse(404, "PAYOUT_ITEM_NOT_FOUND", "Item tidak ditemukan.");
-  const batch = await loadBatchRunFirst(tx, actor.tenantId, peek.batchId);
   const note = input.note.trim();
   if (note === "" || note.length > 500)
     throw payoutRefuse(
@@ -118,10 +121,14 @@ export async function recordOverpaidItem(
       "PAYOUT_NOTE_REQUIRED",
       "Catatan wajib diisi (maks 500 karakter).",
     );
-  const evidence = assertEvidenceKeyForBatch(
-    { tenantId: actor.tenantId, batchId: batch.id },
+  // Stored-proof check before the run and batch rows are locked: a storage
+  // read must not hold them. Nothing is written before it passes.
+  const evidence = await assertEvidenceKeyForBatchStored(
+    proofs,
+    { tenantId: actor.tenantId, batchId: peek.batchId },
     input.evidenceKey,
   );
+  const batch = await loadBatchRunFirst(tx, actor.tenantId, peek.batchId);
   if (batch.channel !== "manual_bank")
     throw payoutRefuse(
       409,

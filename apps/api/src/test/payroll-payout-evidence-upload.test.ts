@@ -90,6 +90,8 @@ const main = makeRuntime(new NoopMalwareScanner());
 const storage = main.store;
 const appWithStorage = main.app;
 const blobCount = main.blobCount;
+/** The proof store matching the storage that the uploads of this suite write to. */
+const store = () => ({ storage, context: W.scope() });
 const appWithoutStorage = createApp({ storageRuntime: null });
 
 const dbOwner = new Pool({
@@ -303,12 +305,12 @@ describe("legend-zoqh1 upload payment proof for resolve and return", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     const key = res.body.data.evidenceKey as string;
 
-    await W.resolve(batchId, [idOf(siti)], "failed", APP, key);
+    await W.resolve(batchId, [idOf(siti)], "failed", APP, key, store());
     let row = await W.itemOfPerson(batchId, SITI);
     expect(row.resolved_by, "first step recorded with the uploaded proof").toBe(
       APP,
     );
-    await W.resolve(batchId, [idOf(siti)], "failed", APP3, key);
+    await W.resolve(batchId, [idOf(siti)], "failed", APP3, key, store());
     row = await W.itemOfPerson(batchId, SITI);
     expect(row.status, "second step finishes the resolve").not.toBe("exported");
   });
@@ -323,7 +325,7 @@ describe("legend-zoqh1 upload payment proof for resolve and return", () => {
 
     const bSiti = b.items.find((i) => i.employee_id === SITI.id)!;
     await W.expectRefused(
-      W.resolve(b.batchId, [idOf(bSiti)], "failed", APP, keyOfA),
+      W.resolve(b.batchId, [idOf(bSiti)], "failed", APP, keyOfA, store()),
       { status: 422, code: "PAYOUT_EVIDENCE_INVALID" },
     );
     const row = await W.itemOfPerson(b.batchId, SITI);
@@ -452,7 +454,7 @@ describe("legend-zoqh1 upload payment proof for resolve and return", () => {
     const itemsBefore = await snapshotOf(paid.batchId);
     const budi = paid.items.find((i) => i.employee_id === BUDI.id)!;
     await W.expectRefused(
-      W.resolve(paid.batchId, [idOf(budi)], "failed", APP, key),
+      W.resolve(paid.batchId, [idOf(budi)], "failed", APP, key, store()),
     );
     expect(await snapshotOf(paid.batchId)).toBe(itemsBefore);
     expect(await W.postingsOf(paid.batchId)).toHaveLength(postingsBefore);
@@ -462,11 +464,11 @@ describe("legend-zoqh1 upload payment proof for resolve and return", () => {
     const siti = gone.items.find((i) => i.employee_id === SITI.id)!;
     const second = await upload(who, gone.batchId, pdfBytes());
     const key2 = second.body.data.evidenceKey as string;
-    await W.resolve(gone.batchId, [idOf(siti)], "failed", APP, key2);
-    await W.resolve(gone.batchId, [idOf(siti)], "failed", APP3, key2);
+    await W.resolve(gone.batchId, [idOf(siti)], "failed", APP, key2, store());
+    await W.resolve(gone.batchId, [idOf(siti)], "failed", APP3, key2, store());
     const final = await snapshotOf(gone.batchId);
     await W.expectRefused(
-      W.resolve(gone.batchId, [idOf(siti)], "failed", APP2, key2),
+      W.resolve(gone.batchId, [idOf(siti)], "failed", APP2, key2, store()),
     );
     expect(await snapshotOf(gone.batchId)).toBe(final);
   });
@@ -625,11 +627,17 @@ describe("legend-zoqh1 upload payment proof for resolve and return", () => {
     const keyOfA = ownRes.body.data.evidenceKey as string;
     const returnWith = (batchId: string, itemId: string, by: string) =>
       W.inTx((tx) =>
-        returnManualItems(tx, actorOf(by), batchId, {
-          itemIds: [itemId],
-          evidenceKey: keyOfA,
-          note: "Bank mengembalikan dana, rekening tujuan ditutup",
-        } as never),
+        returnManualItems(
+          tx,
+          actorOf(by),
+          batchId,
+          {
+            itemIds: [itemId],
+            evidenceKey: keyOfA,
+            note: "Bank mengembalikan dana, rekening tujuan ditutup",
+          } as never,
+          { storage, context: W.scope() },
+        ),
       );
 
     // Batch B refuses the key of A; nothing is recorded.

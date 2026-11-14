@@ -46,6 +46,7 @@ import {
   actorOf,
   bank,
   evidenceKeyFor,
+  uploadEvidence,
   installPayoutWorld,
   type Row,
 } from "./payroll-payout-fixtures.ts";
@@ -107,11 +108,18 @@ const recordOverpaidItem = (itemId: string, batchId: string, by = APP) =>
         actor: unknown,
         itemId: string,
         input: { evidenceKey: string; note: string },
+        proofs: unknown,
       ) => Promise<unknown>
-    >("recordOverpaidItem")(tx, actorOf(by), itemId, {
-      evidenceKey: evidenceKeyFor(W.tenantId, batchId, "mutasi-bank.pdf"),
-      note: "Mutasi bank menunjukkan transfer kedua untuk slip yang sama",
-    }),
+    >("recordOverpaidItem")(
+      tx,
+      actorOf(by),
+      itemId,
+      {
+        evidenceKey: uploadEvidence(batchId, "mutasi-bank.pdf"),
+        note: "Mutasi bank menunjukkan transfer kedua untuk slip yang sama",
+      },
+      W.proofs(),
+    ),
   );
 
 // ---- Setup helpers --------------------------------------------------------
@@ -283,7 +291,7 @@ async function paidBatchCreatedBy(creator: Approver) {
 
 const returnBody = (batchId: string, itemId: string, password?: string) => ({
   itemIds: [itemId],
-  evidenceKey: evidenceKeyFor(W.tenantId, batchId, "dana-kembali.pdf"),
+  evidenceKey: uploadEvidence(batchId, "dana-kembali.pdf"),
   note: "Bank mengembalikan dana, rekening tujuan ditutup",
   ...(password === undefined ? {} : { password }),
 });
@@ -645,11 +653,17 @@ describe("return of a paid item over HTTP (qxkm6)", () => {
     const budi = await W.itemOfPerson(batchId, BUDI);
     const returnWith = (by: string, file: string) =>
       W.inTx((tx: Tx) =>
-        returnManualItems(tx, actorOf(by), batchId, {
-          itemIds: [idOf(budi)],
-          evidenceKey: evidenceKeyFor(W.tenantId, batchId, file),
-          note: "Bank mengembalikan dana, rekening tujuan ditutup",
-        } as never),
+        returnManualItems(
+          tx,
+          actorOf(by),
+          batchId,
+          {
+            itemIds: [idOf(budi)],
+            evidenceKey: uploadEvidence(batchId, file),
+            note: "Bank mengembalikan dana, rekening tujuan ditutup",
+          } as never,
+          W.proofs(),
+        ),
       );
 
     await returnWith(APP, "dana-kembali.pdf");

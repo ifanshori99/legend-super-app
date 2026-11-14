@@ -25,7 +25,10 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import { returnManualItems } from "../services/payroll-payout-manual.service.ts";
-import { PAYOUT_STEP_UP_MAX_AGE_MINUTES } from "../services/payroll-payout-evidence.ts";
+import {
+  PAYOUT_STEP_UP_MAX_AGE_MINUTES,
+  payoutEvidenceStoreOf,
+} from "../services/payroll-payout-evidence.ts";
 
 export const payrollPayoutReturnRouter = Router();
 
@@ -56,7 +59,13 @@ payrollPayoutReturnRouter.post(
     const input = returnManualItemsSchema.parse(req.body);
     const { context, actor } = actorOf(req);
     const data = await withTenant(db, context, (tx) =>
-      returnManualItems(tx, actor, id, input),
+      returnManualItems(
+        tx,
+        actor,
+        id,
+        input,
+        payoutEvidenceStoreOf(req, context),
+      ),
     );
     res.json({ data });
   },
