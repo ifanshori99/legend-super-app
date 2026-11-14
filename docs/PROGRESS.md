@@ -1546,3 +1546,4 @@ Langkah berikut CTO baru:
 - 10:45 sivp: fix/ssr-hydration 991876567 (test dipindah ke tests/, merah tanpa fix). legend-xpmbb: guard test di luar pola runner. G00yt (Codex) mulai 706 jemae.
 - 11:00 xpmbb: fix/test-orphan-guard ea616877f review bersih. Antre batch64: fix/platform-offline-banner, fix/ssr-hydration, fix/test-orphan-guard, fix/edge-transport-no-outlet (+ fix/edge-dead-letter-alarm bila siap).
 - 11:15 1opho: fix/edge-dead-letter-alarm e37338e6d (base fix/edge-transport-no-outlet) review bersih, antre batch64. n2d3g ditahan sampai ws/edge-sync-resilience masuk.
+- 08:32 Slot Codex diisi: G75td legend-3lel2 (brief 708, CORS ekspor payout), G34ip legend-odyct (brief 709, flake replay migrasi; batch62 diberi tahu jangan ikut memperbaiki). Claude 8/8 penuh.
