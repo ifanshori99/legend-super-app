@@ -5298,3 +5298,13 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Migrasi: `db:generate` gagal sebelumnya karena `0534` dan `0538` berbagi parent (gabungan dua cabang). Rantai snapshot dibetulkan: 0534 -> 0536 -> 0542 -> 0538 (prevId diubah) -> 0539 -> 0546 (snapshot baru); `db:generate` kosong.
 - Gerbang: 13 berkas test terarah (271 test) hijau, tsc api + web hijau, prettier+eslint hijau.
 - Belum/follow-up: bank GL fee overpaid jatuh ke akun konfigurasi bila run tanpa jurnal terkunci dan konfigurasi berpindah setelah settle (nominal benar, akun bank bisa salah); `_journal.json` punya idx 333/334 ganda dan `when` 0538/0539 lebih baru dari 0534..0543 akibat gabungan (migrator melewati migrasi `when` lebih lama: periksa DB yang pernah menjalankan edge-sync-resilience sendirian sebelum deploy).
+
+## 2026-11-14: perbaikan temuan second opinion payout gaji (ws/payroll-payout-so-fixes, legend-hkh57, legend-ijhe3, legend-l1a7p)
+
+- Dasar: ws/finance-exceptions 598cd9cb1. Cabang ini menggantikan ws/finance-exceptions di batch62.
+- T1 (hkh57): `payroll_disbursement_batches.source_bank_account_id` (migrasi 0568) dibekukan saat approve (batch lama saat export). Settle, repost fee, dan overpaid memakai rekening beku batch (aktif, else 409 `PAYOUT_SOURCE_ACCOUNT_MISSING`). Migrasi mengisi batch approved/exported yang berjalan dari config. Batch lama selesai tanpa nilai beku dan tanpa jurnal settle: overpaid dan repost fee ditolak 409 (aturan paling membatasi).
+- T2 (ijhe3): `settleBatchPayouts` memvalidasi sumber sebelum percabangan jurnal; akuntansi aktif tanpa jurnal terkunci + sumber nonaktif = 409, bukan `settle_skipped`. Akun GL sumber harus aktif dan bukan header.
+- T3 (l1a7p): `bankChargesMapped` join chart_of_accounts (aktif, bukan header); approve/export ditolak bila tidak. Akun nonaktif sesudah export: konfirmasi tetap tercatat, fee_posted=false, muncul di pengecualian `payout_fee_not_posted`, repost ditolak selama akun nonaktif.
+- Review: architect K xhigh 1 ronde; 1 Medium (batch lama tanpa nilai beku) + 1 Low (akun GL sumber) dibetulkan dengan test gagal-dulu. Temuan Low 3 (repost fee cek config, terlalu ketat) dibiarkan.
+- Idx `_journal.json` dibetulkan: 0538=352, 0539=353, 0546=354, 0568=355; check-journal hijau.
+- Gerbang: 11 berkas test terarah 253/253, tsc api, eslint, prettier, `db:generate` kosong. `edge-received-events-migration` gagal pra-ada (migrasi 0534, bukan 0568; lihat catatan 545).
