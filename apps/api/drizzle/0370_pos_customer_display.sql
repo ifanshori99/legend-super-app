@@ -4,7 +4,10 @@ CREATE TABLE "customer_display_pair_attempts" (
 	"outlet_id" uuid NOT NULL,
 	"terminal_device_id" uuid NOT NULL,
 	"attempted_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "customer_display_pair_attempts_pkey" PRIMARY KEY("tenant_id","id")
+	CONSTRAINT "customer_display_pair_attempts_pkey" PRIMARY KEY("tenant_id","id"),
+	CONSTRAINT "customer_display_pair_attempts_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "customer_display_pair_attempts_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "customer_display_pair_attempts_terminal_fk" FOREIGN KEY ("tenant_id","outlet_id","terminal_device_id") REFERENCES "public"."devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "customer_display_pairing_codes" (
@@ -17,7 +20,10 @@ CREATE TABLE "customer_display_pairing_codes" (
 	"consumed_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "customer_display_pairing_codes_pkey" PRIMARY KEY("tenant_id","id"),
-	CONSTRAINT "customer_display_pairing_codes_hash_check" CHECK (octet_length("customer_display_pairing_codes"."code_hash") = 32)
+	CONSTRAINT "customer_display_pairing_codes_hash_check" CHECK (octet_length("customer_display_pairing_codes"."code_hash") = 32),
+	CONSTRAINT "customer_display_pairing_codes_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "customer_display_pairing_codes_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "customer_display_pairing_codes_device_fk" FOREIGN KEY ("tenant_id","outlet_id","display_device_id") REFERENCES "public"."devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "customer_display_pairings" (
@@ -32,7 +38,11 @@ CREATE TABLE "customer_display_pairings" (
 	"revoked_at" timestamp with time zone,
 	"revoked_by" text,
 	CONSTRAINT "customer_display_pairings_pkey" PRIMARY KEY("tenant_id","id"),
-	CONSTRAINT "customer_display_pairings_status_check" CHECK ("customer_display_pairings"."status" IN ('active', 'revoked') AND (("customer_display_pairings"."status" = 'revoked') = ("customer_display_pairings"."revoked_at" IS NOT NULL)))
+	CONSTRAINT "customer_display_pairings_status_check" CHECK ("customer_display_pairings"."status" IN ('active', 'revoked') AND (("customer_display_pairings"."status" = 'revoked') = ("customer_display_pairings"."revoked_at" IS NOT NULL))),
+	CONSTRAINT "customer_display_pairings_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "customer_display_pairings_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "customer_display_pairings_terminal_fk" FOREIGN KEY ("tenant_id","outlet_id","terminal_device_id") REFERENCES "public"."devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "customer_display_pairings_display_fk" FOREIGN KEY ("tenant_id","outlet_id","display_device_id") REFERENCES "public"."devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
 CREATE TABLE "customer_display_sessions" (
@@ -43,23 +53,13 @@ CREATE TABLE "customer_display_sessions" (
 	"version" bigint DEFAULT 0 NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "customer_display_sessions_pkey" PRIMARY KEY("tenant_id","terminal_device_id"),
-	CONSTRAINT "customer_display_sessions_version_check" CHECK ("customer_display_sessions"."version" >= 0)
+	CONSTRAINT "customer_display_sessions_version_check" CHECK ("customer_display_sessions"."version" >= 0),
+	CONSTRAINT "customer_display_sessions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "customer_display_sessions_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "customer_display_sessions_terminal_fk" FOREIGN KEY ("tenant_id","outlet_id","terminal_device_id") REFERENCES "public"."devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action,
+	CONSTRAINT "customer_display_sessions_order_fk" FOREIGN KEY ("tenant_id","selected_order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
-ALTER TABLE "customer_display_pair_attempts" ADD CONSTRAINT "customer_display_pair_attempts_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_display_pair_attempts" ADD CONSTRAINT "customer_display_pair_attempts_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_display_pair_attempts" ADD CONSTRAINT "customer_display_pair_attempts_terminal_fk" FOREIGN KEY ("tenant_id","outlet_id","terminal_device_id") REFERENCES "public"."devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_display_pairing_codes" ADD CONSTRAINT "customer_display_pairing_codes_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_display_pairing_codes" ADD CONSTRAINT "customer_display_pairing_codes_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_display_pairing_codes" ADD CONSTRAINT "customer_display_pairing_codes_device_fk" FOREIGN KEY ("tenant_id","outlet_id","display_device_id") REFERENCES "public"."devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_display_pairings" ADD CONSTRAINT "customer_display_pairings_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_display_pairings" ADD CONSTRAINT "customer_display_pairings_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_display_pairings" ADD CONSTRAINT "customer_display_pairings_terminal_fk" FOREIGN KEY ("tenant_id","outlet_id","terminal_device_id") REFERENCES "public"."devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_display_pairings" ADD CONSTRAINT "customer_display_pairings_display_fk" FOREIGN KEY ("tenant_id","outlet_id","display_device_id") REFERENCES "public"."devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_display_sessions" ADD CONSTRAINT "customer_display_sessions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_display_sessions" ADD CONSTRAINT "customer_display_sessions_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_display_sessions" ADD CONSTRAINT "customer_display_sessions_terminal_fk" FOREIGN KEY ("tenant_id","outlet_id","terminal_device_id") REFERENCES "public"."devices"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_display_sessions" ADD CONSTRAINT "customer_display_sessions_order_fk" FOREIGN KEY ("tenant_id","selected_order_id") REFERENCES "public"."orders"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "customer_display_pair_attempts_terminal_idx" ON "customer_display_pair_attempts" USING btree ("tenant_id","terminal_device_id","attempted_at");--> statement-breakpoint
 CREATE INDEX "customer_display_pair_attempts_outlet_idx" ON "customer_display_pair_attempts" USING btree ("tenant_id","outlet_id","attempted_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "customer_display_pairing_codes_live_code_key" ON "customer_display_pairing_codes" USING btree ("tenant_id","outlet_id","code_hash") WHERE "customer_display_pairing_codes"."consumed_at" IS NULL;--> statement-breakpoint
