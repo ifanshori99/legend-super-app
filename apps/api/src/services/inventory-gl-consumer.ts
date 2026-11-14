@@ -643,7 +643,7 @@ export async function postStockSourceToGl(
                 description: `${
                   resolvePostingRule(defaultPostingRules, {
                     eventName: mapping.eventName,
-                    variant: mapping.variant,
+                    variant: mapping.variant ?? undefined,
                   }).description
                 } (penyesuaian terlambat dari ${lateAdjustmentFrom})`,
               }),

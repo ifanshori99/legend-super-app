@@ -111,9 +111,7 @@ type World = {
   accounts: Record<Role, string>;
 };
 
-async function makeWorld(
-  options: { unmapped?: Role[] } = {},
-): Promise<World> {
+async function makeWorld(options: { unmapped?: Role[] } = {}): Promise<World> {
   const entity = randomUUID();
   const outletId = randomUUID();
   await owner.query(
@@ -547,7 +545,15 @@ describe("legend-tgb3 inventory GL rolls a closed period to the first open day",
          (id, tenant_id, outlet_id, location_id, target_type, target_id, quantity,
           reason, value_idr, logged_by, occurred_at)
        VALUES ($1, $2, $3, $4, 'inventory_item', $5, 1, 'spoiled', 1500, $6, $7)`,
-      [logId, tenantId, world.outletId, world.locationId, item, wasteUserId, DAY],
+      [
+        logId,
+        tenantId,
+        world.outletId,
+        world.locationId,
+        item,
+        wasteUserId,
+        DAY,
+      ],
     );
     await closePeriods(world, ["2026-10"]);
 

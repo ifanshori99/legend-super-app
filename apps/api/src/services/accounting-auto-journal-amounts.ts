@@ -79,11 +79,12 @@ import {
   orderIssueCharges,
   orders,
   outlets,
-  paymentAdminIdempotency,
   paymentIntents,
   paymentRefunds,
   paymentUnallocatedFunds,
   pointLedger,
+  posDepositRefunds,
+  posOrderRefunds,
   posOrders,
   posOrderTenders,
   posShifts,
@@ -259,6 +260,8 @@ const orderRefundedSchema = z.object({
   refundGatewayIdr: idr,
   refundEdcIdr: idr,
   refundPointsIdr: idr,
+  /** Tender lines (method + amount), absent on events stored without them. */
+  lines: z.array(z.object({ method: z.string(), amountIdr: idr })).default([]),
   refundedAt: time,
 });
 
@@ -813,86 +816,187 @@ async function receiptStatesOf(
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Pseudo method of a refund line that may match any gateway tender. */
+const ANY_GATEWAY = "*";
+
+type RefundLine = {
+  method: string;
+  amountIdr: number;
+  tenderId?: string;
+  paymentIntentId?: string | null;
+};
+
 /**
- * legend-2jyr + legend-27mt: how much of an order refund's gateway part a
- * payment refund will pay out later (payment.refunded debits customer_deposit
- * for it). Only that part may credit customer_deposit; the rest never emits
- * payment.refunded, so it reverses the sale's gateway_clearing instead.
- * Linked payment refund rows:
- * - POS refund: payment_admin_idempotency `pos-refund-gateway:<refundId>:<intent>`
- *   (response.refundId = payment_refunds.id, see posRefundGatewayKey);
- * - recovery refund: payment_refunds.order_issue_id = the refund id.
- * Per linked intent: receipt "posted" counts to customer_deposit, "none" (money
- * received before the wiring; its payout parks RECEIPT_MISSING) to clearing,
- * "pending" parks the refund retryable. The deposit part never exceeds
+ * legend-2jyr + legend-27mt: how much of an order refund's gateway part credits
+ * customer_deposit (owed until a payout clears it) and how much reverses the
+ * sale's gateway_clearing. The refund mirrors the SALE tender by tender, like
+ * the payout guard (pos-intent-attribution.ts), never "was a payment refund
+ * filed": a refund line of a posted-receipt intent is owed whether the payment
+ * refund exists yet or not (an admin may file it by hand later).
+ * Attribution of the gateway part to intents:
+ * - POS refund (pos_order_refunds row = refundId): its lines; a line naming a
+ *   tender (legend-186) goes to that tender's intent, a legacy line (method
+ *   only) walks the order's tenders of that method in order, after what earlier
+ *   refunds of the order took; a tender without an intent goes to clearing.
+ *   The deposit-refund part (pos_deposit_refunds) goes to its source intent;
+ * - recovery refund (no POS row): the intent of the payment refund filed with
+ *   order_issue_id = refundId;
+ * - otherwise (payload only): the payload lines as legacy lines.
+ * Per intent, receipt "posted" credits customer_deposit, "pending" parks the
+ * refund retryable, "none" (money received before the wiring; its payout parks
+ * RECEIPT_MISSING) credits gateway_clearing. The deposit part never exceeds
  * `gatewayIdr` (never credit more than was refunded).
  */
 async function refundGatewaySplitOf(
   tx: Tx,
   tenantId: TenantId,
-  refundId: string,
-  gatewayIdr: number,
+  p: {
+    orderId: string;
+    refundId: string;
+    refundGatewayIdr: number;
+    lines: readonly { method: string; amountIdr: number }[];
+  },
 ): Promise<{ depositIdr: number; clearingIdr: number }> {
+  const gatewayIdr = p.refundGatewayIdr;
   if (gatewayIdr <= 0) return { depositIdr: 0, clearingIdr: 0 };
-  const linked = new Map<string, { intentId: string; amountIdr: number }>();
-  const keyPrefix = `pos-refund-gateway:${refundId}:`;
-  const mapped = await tx
-    .select({
-      paymentRefundId: paymentRefunds.id,
-      intentId: paymentRefunds.paymentIntentId,
-      amountIdr: paymentRefunds.amountIdr,
-    })
-    .from(paymentAdminIdempotency)
-    .innerJoin(
-      paymentRefunds,
-      and(
-        eq(paymentRefunds.tenantId, paymentAdminIdempotency.tenantId),
-        sql`${paymentRefunds.id}::text = ${paymentAdminIdempotency.response}->>'refundId'`,
-      ),
+  const isGateway = (method: string) => {
+    try {
+      return tenderBucket(method as never) === "gateway";
+    } catch {
+      return false;
+    }
+  };
+  // Amount attributed per intent id (null: a tender without an intent).
+  const byIntent = new Map<string | null, number>();
+  const add = (intentId: string | null, amountIdr: number) => {
+    if (amountIdr > 0)
+      byIntent.set(intentId, (byIntent.get(intentId) ?? 0) + amountIdr);
+  };
+  const posRefunds = UUID_RE.test(p.refundId)
+    ? await tx
+        .select({
+          id: posOrderRefunds.id,
+          lines: posOrderRefunds.lines,
+          refundedAt: posOrderRefunds.refundedAt,
+          createdAt: posOrderRefunds.createdAt,
+        })
+        .from(posOrderRefunds)
+        .where(
+          and(
+            eq(posOrderRefunds.tenantId, tenantId),
+            eq(posOrderRefunds.orderId, p.orderId),
+          ),
+        )
+    : [];
+  const current = posRefunds.find((row) => row.id === p.refundId);
+  const recovery =
+    !current && UUID_RE.test(p.refundId)
+      ? await tx
+          .select({ intentId: paymentRefunds.paymentIntentId })
+          .from(paymentRefunds)
+          .where(
+            and(
+              eq(paymentRefunds.tenantId, tenantId),
+              eq(paymentRefunds.orderIssueId, p.refundId),
+            ),
+          )
+      : [];
+  if (recovery[0]) {
+    add(recovery[0].intentId, gatewayIdr);
+  } else {
+    const tenders = (
+      await tx
+        .select({
+          id: posOrderTenders.id,
+          method: posOrderTenders.method,
+          intentId: posOrderTenders.paymentIntentId,
+          amountIdr: posOrderTenders.amountIdr,
+        })
+        .from(posOrderTenders)
+        .where(
+          and(
+            eq(posOrderTenders.tenantId, tenantId),
+            eq(posOrderTenders.orderId, p.orderId),
+            eq(posOrderTenders.status, "captured"),
+          ),
+        )
+        .orderBy(posOrderTenders.requestedAt, posOrderTenders.id)
     )
-    .where(
-      and(
-        eq(paymentAdminIdempotency.tenantId, tenantId),
-        sql`left(${paymentAdminIdempotency.key}, ${keyPrefix.length}) = ${keyPrefix}`,
-      ),
+      .filter((tender) => isGateway(tender.method))
+      .map((tender) => ({ ...tender, left: Number(tender.amountIdr) }));
+    const apply = (lines: readonly RefundLine[], collect: boolean) => {
+      for (const line of lines) {
+        if (line.method !== ANY_GATEWAY && !isGateway(line.method)) continue;
+        let want = Number(line.amountIdr);
+        const named = line.tenderId
+          ? tenders.find((tender) => tender.id === line.tenderId)
+          : undefined;
+        const walk = line.tenderId
+          ? named
+            ? [named]
+            : []
+          : tenders.filter(
+              (tender) =>
+                line.method === ANY_GATEWAY || tender.method === line.method,
+            );
+        for (const tender of walk) {
+          const take = Math.min(want, tender.left);
+          if (take <= 0) continue;
+          tender.left -= take;
+          want -= take;
+          if (collect) add(tender.intentId, take);
+        }
+        // A line naming a tender that is gone, or more than the tenders held.
+        if (collect && want > 0)
+          add(line.tenderId ? (line.paymentIntentId ?? null) : null, want);
+      }
+    };
+    const key = (row: { refundedAt: Date; createdAt: Date; id: string }) =>
+      `${row.refundedAt.toISOString()}|${row.createdAt.toISOString()}|${row.id}`;
+    const earlier = posRefunds
+      .filter((row) => row.id !== p.refundId)
+      .filter((row) => !current || key(row) < key(current))
+      .sort((a, b) => (key(a) < key(b) ? -1 : 1));
+    for (const row of earlier) apply(row.lines, false);
+    // A payload without lines (stored before they were kept): its gateway
+    // part walks every gateway tender of the order.
+    apply(
+      current
+        ? current.lines
+        : p.lines.some((line) => isGateway(line.method))
+          ? p.lines
+          : [{ method: ANY_GATEWAY, amountIdr: gatewayIdr }],
+      true,
     );
-  for (const row of mapped)
-    linked.set(row.paymentRefundId, {
-      intentId: row.intentId,
-      amountIdr: row.amountIdr,
-    });
-  if (UUID_RE.test(refundId)) {
-    const recovery = await tx
-      .select({
-        paymentRefundId: paymentRefunds.id,
-        intentId: paymentRefunds.paymentIntentId,
-        amountIdr: paymentRefunds.amountIdr,
-      })
-      .from(paymentRefunds)
-      .where(
-        and(
-          eq(paymentRefunds.tenantId, tenantId),
-          eq(paymentRefunds.orderIssueId, refundId),
-        ),
-      );
-    for (const row of recovery)
-      linked.set(row.paymentRefundId, {
-        intentId: row.intentId,
-        amountIdr: row.amountIdr,
-      });
+    if (current) {
+      const deposits = await tx
+        .select({
+          intentId: posDepositRefunds.paymentIntentId,
+          amountIdr: posDepositRefunds.amountIdr,
+        })
+        .from(posDepositRefunds)
+        .where(
+          and(
+            eq(posDepositRefunds.tenantId, tenantId),
+            eq(posDepositRefunds.posRefundId, p.refundId),
+          ),
+        );
+      for (const row of deposits) add(row.intentId, Number(row.amountIdr));
+    }
   }
-  if (linked.size === 0) return { depositIdr: 0, clearingIdr: gatewayIdr };
-  const states = await receiptStatesOf(tx, tenantId, [
-    ...new Set([...linked.values()].map((row) => row.intentId)),
-  ]);
+  const intentIds = [...byIntent.keys()].filter(
+    (id): id is string => id !== null,
+  );
+  const states = await receiptStatesOf(tx, tenantId, intentIds);
   let postedIdr = 0;
-  for (const row of linked.values()) {
-    const state = states.get(row.intentId);
+  for (const [intentId, amountIdr] of byIntent) {
+    if (intentId === null) continue;
+    const state = states.get(intentId);
     if (state === "pending")
       throw new AutoJournalReceiptPending(
         "Gateway receipt of a refunded intent is not booked yet",
       );
-    if (state === "posted") postedIdr += row.amountIdr;
+    if (state === "posted") postedIdr += amountIdr;
   }
   const depositIdr = Math.min(postedIdr, gatewayIdr);
   return { depositIdr, clearingIdr: gatewayIdr - depositIdr };
@@ -1787,12 +1891,7 @@ export async function autoJournalFactOf(
         throw new AutoJournalPayloadInvalid(
           "A refund payout account is mapped to a sale service charge or tax account",
         );
-      const gatewaySplit = await refundGatewaySplitOf(
-        tx,
-        tenantId,
-        p.refundId,
-        p.refundGatewayIdr,
-      );
+      const gatewaySplit = await refundGatewaySplitOf(tx, tenantId, p);
       return {
         ruleEvent: "order.refunded",
         accountOverrides,

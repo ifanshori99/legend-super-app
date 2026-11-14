@@ -179,7 +179,14 @@ async function addAccount(
   const { rows } = await owner.query<{ id: string }>(
     `INSERT INTO chart_of_accounts (tenant_id, legal_entity_id, code, name, type, report_group)
      VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-    [world.tenant.id, world.entity, code, `Akun ${role}`, type, GROUP_OF_TYPE[type]],
+    [
+      world.tenant.id,
+      world.entity,
+      code,
+      `Akun ${role}`,
+      type,
+      GROUP_OF_TYPE[type],
+    ],
   );
   world.accounts[role] = rows[0]!.id;
   return rows[0]!.id;
@@ -208,7 +215,13 @@ async function makeWorld(options: { only?: Role[] } = {}): Promise<World> {
   await owner.query(
     `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
      VALUES ($1, $2, $3, $4, $5, 'Outlet CM', 'Jl. CM', 'Asia/Jakarta', '04:00', '{}', 'active')`,
-    [outletId, tenant.id, tenant.brandId, entity, `CM-${short()}`.toUpperCase()],
+    [
+      outletId,
+      tenant.id,
+      tenant.brandId,
+      entity,
+      `CM-${short()}`.toUpperCase(),
+    ],
   );
   const world: World = { tenant, entity, outletId, accounts: {} };
   const roles = (Object.keys(POSTING_ACCOUNT_ROLES) as Role[]).filter(
@@ -625,7 +638,10 @@ describe("legend-89pn cash_movement.recorded posts a balanced journal per type",
     const world = await makeWorld();
     const movement = await seedSingle(world, "cash_out", 30_000);
 
-    const result = await deliver(world.tenant, movementRecorded(world, movement));
+    const result = await deliver(
+      world.tenant,
+      movementRecorded(world, movement),
+    );
     const entryId = await expectPostedOnce(world, movement, result);
 
     const lines = await expectSafeBooking(world, entryId, 30_000);
@@ -635,7 +651,11 @@ describe("legend-89pn cash_movement.recorded posts a balanced journal per type",
     });
     const counter = lines.filter((line) => line.role !== "cash_on_hand");
     expect(counter).toHaveLength(1);
-    expect(counter[0]).toMatchObject({ type: "expense", debit: 30_000, credit: 0 });
+    expect(counter[0]).toMatchObject({
+      type: "expense",
+      debit: 30_000,
+      credit: 0,
+    });
     expect(await balanceOf(world, "cash_on_hand")).toBe(-30_000);
   });
 
@@ -643,7 +663,10 @@ describe("legend-89pn cash_movement.recorded posts a balanced journal per type",
     const world = await makeWorld();
     const movement = await seedSingle(world, "cash_in", 75_000);
 
-    const result = await deliver(world.tenant, movementRecorded(world, movement));
+    const result = await deliver(
+      world.tenant,
+      movementRecorded(world, movement),
+    );
     const entryId = await expectPostedOnce(world, movement, result);
 
     const lines = await expectSafeBooking(world, entryId, 75_000);
@@ -661,7 +684,10 @@ describe("legend-89pn cash_movement.recorded posts a balanced journal per type",
     const world = await makeWorld();
     const movement = await seedSingle(world, "drop", 200_000);
 
-    const result = await deliver(world.tenant, movementRecorded(world, movement));
+    const result = await deliver(
+      world.tenant,
+      movementRecorded(world, movement),
+    );
     expect(["ignored", "posted"]).toContain(result.status);
     if (result.status === "posted") {
       const lines = await expectSafeBooking(
@@ -682,7 +708,10 @@ describe("legend-89pn cash_movement.recorded posts a balanced journal per type",
     const world = await makeWorld();
     const movement = await seedSingle(world, "cash_out", FLOAT_IDR + 1_000);
 
-    const result = await deliver(world.tenant, movementRecorded(world, movement));
+    const result = await deliver(
+      world.tenant,
+      movementRecorded(world, movement),
+    );
     const entryId = await expectPostedOnce(world, movement, result);
     await expectSafeBooking(world, entryId, FLOAT_IDR + 1_000);
     expect(await balanceOf(world, "cash_on_hand")).toBe(-(FLOAT_IDR + 1_000));
@@ -694,7 +723,10 @@ describe("legend-89pn cash_movement.recorded fails closed", () => {
     const world = await makeWorld({ only: ["cash_on_hand"] });
     const movement = await seedSingle(world, "cash_out", 30_000);
 
-    const result = await deliver(world.tenant, movementRecorded(world, movement));
+    const result = await deliver(
+      world.tenant,
+      movementRecorded(world, movement),
+    );
     expect(result).toMatchObject({
       status: "parked",
       code: "ACCOUNT_MAPPING_MISSING",
@@ -713,7 +745,10 @@ describe("legend-89pn cash_movement.recorded fails closed", () => {
   it("AJ-CM-06 a parked cash_out posts once after the tenant maps its accounts, and a second sweep adds nothing", async () => {
     const world = await makeWorld({ only: ["cash_on_hand"] });
     const movement = await seedSingle(world, "cash_out", 45_000);
-    const first = await deliver(world.tenant, movementRecorded(world, movement));
+    const first = await deliver(
+      world.tenant,
+      movementRecorded(world, movement),
+    );
     expect(first.status).toBe("parked");
 
     await mapAllRemainingRoles(world);
@@ -768,7 +803,10 @@ describe("legend-89pn cash_movement.recorded is idempotent", () => {
   it("AJ-CM-09 a re-delivery carrying a different amount does not post a second journal", async () => {
     const world = await makeWorld();
     const movement = await seedSingle(world, "cash_out", 30_000);
-    const first = await deliver(world.tenant, movementRecorded(world, movement));
+    const first = await deliver(
+      world.tenant,
+      movementRecorded(world, movement),
+    );
     await expectPostedOnce(world, movement, first);
 
     await deliver(
@@ -789,9 +827,9 @@ describe("legend-89pn cash_movement.recorded is idempotent", () => {
       ),
     );
     expect(results.filter((r) => r.status === "posted")).toHaveLength(1);
-    expect(
-      results.filter((r) => r.status === "already_posted"),
-    ).toHaveLength(5);
+    expect(results.filter((r) => r.status === "already_posted")).toHaveLength(
+      5,
+    );
     expect(await journalCount(world)).toBe(1);
     expect(await balanceOf(world, "cash_on_hand")).toBe(-30_000);
     expect(await parkedOf(world)).toEqual([]);
@@ -844,10 +882,7 @@ describe("legend-89pn shift close stays consistent with the movements", () => {
 
     await deliver(world.tenant, movementRecorded(world, cashOut));
     expect(
-      await deliver(
-        world.tenant,
-        shiftClosed(world, shift, totals, closed, 0),
-      ),
+      await deliver(world.tenant, shiftClosed(world, shift, totals, closed, 0)),
     ).toEqual({ status: "ignored" });
     expect(await journalCount(world)).toBe(1);
     expect(await balanceOf(world, "cash_on_hand")).toBe(

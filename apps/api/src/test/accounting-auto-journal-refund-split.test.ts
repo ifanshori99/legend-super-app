@@ -401,6 +401,22 @@ async function seedPosOrder(
   return gross;
 }
 
+/** The captured tender of the order that names `intentId` (null: no intent). */
+async function tenderIdOf(
+  world: World,
+  orderUlid: string,
+  intentId: string | null,
+): Promise<string> {
+  const { rows } = await owner.query<{ id: string }>(
+    `SELECT id FROM pos_order_tenders
+      WHERE tenant_id = $1 AND order_id = $2 AND method = 'qris'
+        AND payment_intent_id IS NOT DISTINCT FROM $3::uuid`,
+    [world.tenant.id, ulidToUuid(orderUlid), intentId],
+  );
+  expect(rows).toHaveLength(1);
+  return rows[0]!.id;
+}
+
 /** The pos_order_refunds row of a POS refund of the order; its id. */
 async function seedPosRefund(
   world: World,
@@ -915,7 +931,7 @@ describe("legend-2jyr legend-27mt order.refunded splits its gateway part", () =>
     expect(await balanceOf(world, "gateway_clearing")).toBe(66_000);
   });
 
-  it("AJ-2JYR-03 a tender with an intent whose gateway refund was skipped (no payment refund row) credits gateway_clearing, not customer_deposit", async () => {
+  it("AJ-2JYR-03 a refund line naming the tender of a posted-receipt intent (no payment refund row yet) credits customer_deposit, owed until a payout clears it", async () => {
     const tenant = await makeTenant();
     const world = await makeWorld(tenant);
     const intentId = await intentWith(world, 100_000, "posted");
@@ -923,7 +939,38 @@ describe("legend-2jyr legend-27mt order.refunded splits its gateway part", () =>
       { method: "qris", amountIdr: 100_000, intentId },
     ]);
     const lines: RefundLines = [{ method: "qris", amountIdr: 40_000 }];
-    // No payment_refunds row, no mapping: nothing will ever emit payment.refunded.
+    const refundId = await seedPosRefund(world, orderUlid, [
+      {
+        method: "qris",
+        amountIdr: 40_000,
+        tenderId: await tenderIdOf(world, orderUlid, intentId),
+        paymentIntentId: intentId,
+      },
+    ]);
+
+    const refund = await post(
+      world,
+      orderRefunded(world, orderUlid, refundId, lines, 0),
+    );
+    expect(await linesOf(world, refund.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 0, credit: 40_000 },
+      { role: "sales_revenue", debit: 40_000, credit: 0 },
+    ]);
+    await expectBalanced(world, refund.journalEntryId);
+    await expectDepositNotNegative(world);
+    // receipt and sale net customer_deposit to 0; the refund owes 40k
+    expect(await balanceOf(world, "customer_deposit")).toBe(-40_000);
+  });
+
+  it("AJ-2JYR-03b a legacy line refund (no payment refund filed) of a posted-receipt intent credits customer_deposit (owed until a payout clears it); a manual payment refund later clears it once: customer_deposit never debit-balance, gateway_clearing credited once", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    const intentId = await intentWith(world, 100_000, "posted");
+    const orderUlid = await sell(world, [
+      { method: "qris", amountIdr: 100_000, intentId },
+    ]);
+    // Legacy line: names a method, no tender, no payment refund filed.
+    const lines: RefundLines = [{ method: "qris", amountIdr: 40_000 }];
     const refundId = await seedPosRefund(world, orderUlid, lines);
 
     const refund = await post(
@@ -931,13 +978,18 @@ describe("legend-2jyr legend-27mt order.refunded splits its gateway part", () =>
       orderRefunded(world, orderUlid, refundId, lines, 0),
     );
     expect(await linesOf(world, refund.journalEntryId)).toEqual([
-      { role: "gateway_clearing", debit: 0, credit: 40_000 },
+      { role: "customer_deposit", debit: 0, credit: 40_000 },
       { role: "sales_revenue", debit: 40_000, credit: 0 },
     ]);
     await expectBalanced(world, refund.journalEntryId);
+
+    // The admin files the 40k refund by hand later; its payout clears deposit.
+    const manualId = await seedPaymentRefund(world, intentId, 40_000);
+    await post(world, paymentRefunded(world, manualId, intentId, 40_000));
     await expectDepositNotNegative(world);
-    // receipt and sale net customer_deposit to 0; the refund never touches it
     expect(await balanceOf(world, "customer_deposit")).toBe(0);
+    // receipt Dr 100k, payout Cr 40k: credited once
+    expect(await balanceOf(world, "gateway_clearing")).toBe(60_000);
   });
 
   it("AJ-2JYR-04 (27mt) an intent whose receipt never existed (paid before the wiring): the refund credits gateway_clearing; its payout still parks RECEIPT_MISSING; customer_deposit never goes negative", async () => {
@@ -1054,9 +1106,26 @@ describe("legend-2jyr legend-27mt order.refunded splits its gateway part", () =>
       { method: "cash", amountIdr: 15_000 },
       { method: "qris", amountIdr: 60_000 },
     ];
-    const { refundId } = await posRefund(world, orderUlid, lines, [
-      { intentId: intentA, amountIdr: 30_000 },
-      { intentId: intentB, amountIdr: 20_000 },
+    const refundId = await seedPosRefund(world, orderUlid, [
+      { method: "cash", amountIdr: 15_000 },
+      {
+        method: "qris",
+        amountIdr: 30_000,
+        tenderId: await tenderIdOf(world, orderUlid, intentA),
+        paymentIntentId: intentA,
+      },
+      {
+        method: "qris",
+        amountIdr: 20_000,
+        tenderId: await tenderIdOf(world, orderUlid, intentB),
+        paymentIntentId: intentB,
+      },
+      {
+        method: "qris",
+        amountIdr: 10_000,
+        tenderId: await tenderIdOf(world, orderUlid, null),
+        paymentIntentId: null,
+      },
     ]);
 
     const refund = await post(
@@ -1073,7 +1142,7 @@ describe("legend-2jyr legend-27mt order.refunded splits its gateway part", () =>
     await expectDepositNotNegative(world);
   });
 
-  it("AJ-2JYR-07a cap: payment refunds linked for less than the gateway part credit deposit only that part, the rest goes to gateway_clearing", async () => {
+  it("AJ-2JYR-07a cap: refund lines recorded for more than the event's gateway part never credit deposit above what the event refunded", async () => {
     const tenant = await makeTenant();
     const world = await makeWorld(tenant);
     const intentId = await intentWith(world, 100_000, "posted");
@@ -1081,21 +1150,25 @@ describe("legend-2jyr legend-27mt order.refunded splits its gateway part", () =>
       { method: "qris", amountIdr: 100_000, intentId },
     ]);
 
-    // partial: 25k of the 40k gateway part is backed by a payment refund
+    // the row holds 60k for the tender, the event refunded only 40k
     const lines: RefundLines = [{ method: "qris", amountIdr: 40_000 }];
-    const partial = await posRefund(world, orderUlid, lines, [
-      { intentId, amountIdr: 25_000 },
+    const refundId = await seedPosRefund(world, orderUlid, [
+      {
+        method: "qris",
+        amountIdr: 60_000,
+        tenderId: await tenderIdOf(world, orderUlid, intentId),
+        paymentIntentId: intentId,
+      },
     ]);
-    const partialEntry = await post(
+    const entry = await post(
       world,
-      orderRefunded(world, orderUlid, partial.refundId, lines, 0),
+      orderRefunded(world, orderUlid, refundId, lines, 0),
     );
-    expect(await linesOf(world, partialEntry.journalEntryId)).toEqual([
-      { role: "customer_deposit", debit: 0, credit: 25_000 },
-      { role: "gateway_clearing", debit: 0, credit: 15_000 },
+    expect(await linesOf(world, entry.journalEntryId)).toEqual([
+      { role: "customer_deposit", debit: 0, credit: 40_000 },
       { role: "sales_revenue", debit: 40_000, credit: 0 },
     ]);
-    await expectBalanced(world, partialEntry.journalEntryId);
+    await expectBalanced(world, entry.journalEntryId);
   });
 
   it("AJ-2JYR-07b cap: payment refunds linked for more than the gateway part never credit deposit above what was refunded", async () => {
@@ -1236,8 +1309,8 @@ describe("legend-2jyr legend-27mt order.refunded splits its gateway part", () =>
       failed: 0,
     });
     expect(await journalsWithKey(world, refundKey)).toBe(1);
-    expect(await balanceOf(world, "customer_deposit")).toBe(-25_000);
-    expect(await balanceOf(world, "gateway_clearing")).toBe(100_000 - 15_000);
+    expect(await balanceOf(world, "customer_deposit")).toBe(-40_000);
+    expect(await balanceOf(world, "gateway_clearing")).toBe(100_000);
     // receipt + sale + refund
     expect(await journalCount(world)).toBe(3);
   });

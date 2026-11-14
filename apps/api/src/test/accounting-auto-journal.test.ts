@@ -413,37 +413,6 @@ async function seedRefund(
   return refundId;
 }
 
-/**
- * legend-2jyr: the POS refund filed a gateway payment refund for `intentId`
- * (still pending, so no payout is counted yet; the test's own payout row stays
- * the completed one). That link makes order.refunded credit customer_deposit
- * for the part (owed until payout) instead of gateway_clearing.
- */
-async function linkPosGatewayPart(
-  world: World,
-  posRefundId: string,
-  intentId: string,
-  amountIdr: number,
-): Promise<void> {
-  const paymentRefundId = randomUUID();
-  await owner.query(
-    `INSERT INTO payment_refunds
-       (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by)
-     VALUES ($1, $2, $3, $4, $5, 'Pengembalian dana', 'pending', 'requester')`,
-    [paymentRefundId, world.tenant.id, world.outletId, intentId, amountIdr],
-  );
-  await owner.query(
-    `INSERT INTO payment_admin_idempotency (tenant_id, key, fingerprint, response)
-     VALUES ($1, $2, $3, $4::jsonb)`,
-    [
-      world.tenant.id,
-      `pos-refund-gateway:${posRefundId}:${intentId}`,
-      "0".repeat(64),
-      JSON.stringify({ refundId: paymentRefundId }),
-    ],
-  );
-}
-
 type TenderMethod = "cash" | "qris" | "edc_card" | "points";
 type Tender = {
   method: TenderMethod;
@@ -5615,7 +5584,6 @@ describe("legend-hxpd5 a payout after a POS refund of the intent's sale", () => 
       lines,
       refundedAt,
     );
-    await linkPosGatewayPart(world, posRefundId, intentId, 30_000);
     const refundEvent = orderRefunded(
       world,
       orderUlid,
@@ -5787,7 +5755,6 @@ describe("legend-hxpd5 a payout after a POS refund of the intent's sale", () => 
       lines,
       T_POS_REFUND,
     );
-    await linkPosGatewayPart(world, posRefundId, intentId, 30_000);
     const refundKey = `aj:order-refund:${posRefundId}`;
     expect(
       await deliver(
@@ -5883,7 +5850,6 @@ describe("legend-9z1vm a payout after a per-tender POS refund line of a two-inte
     world: World,
     orderUlid: string,
     lines: Parameters<typeof seedPosRefund>[2],
-    legacyIntentId?: string,
   ) {
     const posRefundId = await seedPosRefund(
       world,
@@ -5891,17 +5857,6 @@ describe("legend-9z1vm a payout after a per-tender POS refund line of a two-inte
       lines,
       T_POS_REFUND,
     );
-    // legend-2jyr: the gateway payment refund each line files (a legacy line
-    // names no intent: `legacyIntentId`, the intent the test pays it out to).
-    // The payout rows the tests deliver stay their own completed rows.
-    const filed = new Map<string, number>();
-    for (const line of lines) {
-      const intentId = line.paymentIntentId ?? legacyIntentId;
-      if (intentId)
-        filed.set(intentId, (filed.get(intentId) ?? 0) + line.amountIdr);
-    }
-    for (const [intentId, amountIdr] of filed)
-      await linkPosGatewayPart(world, posRefundId, intentId, amountIdr);
     const eventLines = lines.map(({ method, amountIdr }) => ({
       method,
       amountIdr,
@@ -6014,12 +5969,9 @@ describe("legend-9z1vm a payout after a per-tender POS refund line of a two-inte
   it("AJ-9Z1VM-05 a legacy 50k row plus a second row naming both tenders (10k first, 40k second) returns the whole method: the first intent pays out its full 60k and the second its full 40k", async () => {
     const { world, orderUlid, first, second, firstTender, secondTender } =
       await twoIntentOrder();
-    await posRefundWith(
-      world,
-      orderUlid,
-      [{ method: "qris", amountIdr: 50_000 }],
-      first,
-    );
+    await posRefundWith(world, orderUlid, [
+      { method: "qris", amountIdr: 50_000 },
+    ]);
     await posRefundWith(world, orderUlid, [
       {
         method: "qris",
@@ -6049,12 +6001,9 @@ describe("legend-9z1vm a payout after a per-tender POS refund line of a two-inte
   it("AJ-9Z1VM-06 a legacy 50k row plus one line naming the first tender (10k) leaves the method partly kept: the first intent frees only 10k, the second stays fully held", async () => {
     const { world, orderUlid, first, second, firstTender } =
       await twoIntentOrder();
-    await posRefundWith(
-      world,
-      orderUlid,
-      [{ method: "qris", amountIdr: 50_000 }],
-      first,
-    );
+    await posRefundWith(world, orderUlid, [
+      { method: "qris", amountIdr: 50_000 },
+    ]);
     await posRefundWith(world, orderUlid, [
       {
         method: "qris",
@@ -6076,12 +6025,9 @@ describe("legend-9z1vm a payout after a per-tender POS refund line of a two-inte
   it("AJ-9Z1VM-07 a legacy 60k row plus a separate row naming only the second tender (40k) returns the whole method: the first intent pays out its full 60k and the second its full 40k", async () => {
     const { world, orderUlid, first, second, secondTender } =
       await twoIntentOrder();
-    await posRefundWith(
-      world,
-      orderUlid,
-      [{ method: "qris", amountIdr: 60_000 }],
-      first,
-    );
+    await posRefundWith(world, orderUlid, [
+      { method: "qris", amountIdr: 60_000 },
+    ]);
     await posRefundWith(world, orderUlid, [
       {
         method: "qris",
@@ -6929,7 +6875,6 @@ describe("legend-77r0 Q81 DP return accounting never funds a payout twice", () =
         ],
       ),
     );
-    await linkPosGatewayPart(world, posRefundId, dp.intentId, 25_000);
     const event = orderRefunded(
       world,
       orderUlid,
