@@ -356,6 +356,7 @@ afterAll(async () => {
       "stock_locations",
       "inventory_items",
       "uoms",
+      "edge_link_slots",
       "edge_inbound_events",
       "edge_received_events",
       "edge_sync_conflicts",

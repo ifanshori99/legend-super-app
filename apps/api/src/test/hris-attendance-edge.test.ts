@@ -269,6 +269,7 @@ afterAll(async () => {
       "attendance_policies",
       "attendance_qr_secrets",
       "employees",
+      "edge_link_slots",
       "edge_inbound_events",
       "edge_received_events",
       "edge_sync_conflicts",

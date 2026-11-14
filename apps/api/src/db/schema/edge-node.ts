@@ -351,6 +351,46 @@ export const edgeInboundEvents = pgTable(
   ],
 );
 
+// legend-pz641: one row per link slot that a counted receipt holds, so the
+// restore proof (db-link-store inboundProof) and replay reconcile read an
+// index range instead of scanning every receipt of the node. A slot is
+// claimed by the receipt that counts (cloud_to_edge always; edge_to_cloud only
+// when the event is in edge_received_events). Dead-letter receipts write no
+// slot. link_seq is the stored number (peer numbering + peer_seq_offset), like
+// edge_inbound_events.link_seq. Append-only. Migration 0440.
+export const edgeLinkSlots = pgTable(
+  "edge_link_slots",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    edgeNodeId: uuid("edge_node_id").notNull(),
+    direction: varchar("direction", { length: 20 })
+      .$type<SyncDirection>()
+      .notNull(),
+    linkSeq: bigint("link_seq", { mode: "number" }).notNull(),
+    eventId: ulidInUuid("event_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.tenantId,
+        table.edgeNodeId,
+        table.direction,
+        table.linkSeq,
+      ],
+    }),
+    foreignKey({
+      name: "edge_link_slots_edge_node_fk",
+      columns: [table.tenantId, table.outletId, table.edgeNodeId],
+      foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
+    }),
+    check("edge_link_slots_direction_check", directionCheck(table.direction)),
+  ],
+);
+
 // Cloud-side registry of edge_to_cloud event ids, one row per (tenant, event)
 // whichever node delivered it first (legend-wg5t). Primary and standby of one
 // outlet may both send the same event id (the standby took over with the

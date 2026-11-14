@@ -297,6 +297,47 @@ async function waitForNoSessions(admin: Pool, database: string) {
   }
 }
 
+// legend-pz641 (0440): the slot table is backfilled from the counted receipts
+// only. Every seeded receipt sits at link_seq 1, so the primary's two counted
+// edge_to_cloud receipts share one slot and that slot must stay empty.
+async function expectLinkSlotsBackfilled(scratch: Pool) {
+  const rows = await scratch.query(
+    `SELECT tenant_id, edge_node_id, direction, link_seq::int AS link_seq, event_id
+       FROM edge_link_slots`,
+  );
+  const slot = (
+    tenantId: string,
+    nodeId: string,
+    direction: string,
+    eventId: string,
+  ) => ({
+    tenant_id: tenantId,
+    edge_node_id: nodeId,
+    direction,
+    link_seq: 1,
+    event_id: eventId,
+  });
+  const sortKey = (r: { tenant_id: string; edge_node_id: string }) =>
+    `${r.tenant_id}/${r.edge_node_id}`;
+  expect(
+    [...rows.rows].sort((a, b) => sortKey(a).localeCompare(sortKey(b))),
+  ).toEqual(
+    [
+      slot(one.tenantId, one.standby.id, "edge_to_cloud", dupEvent),
+      slot(one.tenantId, one.primary.id, "cloud_to_edge", cloudToEdgeEvent),
+      slot(two.tenantId, two.primary.id, "edge_to_cloud", dupEvent),
+    ].sort((a, b) => sortKey(a).localeCompare(sortKey(b))),
+  );
+  const flags = await scratch.query(
+    `SELECT relrowsecurity, relforcerowsecurity FROM pg_class
+      WHERE oid = 'public.edge_link_slots'::regclass`,
+  );
+  expect(flags.rows[0]).toEqual({
+    relrowsecurity: true,
+    relforcerowsecurity: true,
+  });
+}
+
 async function expectRlsStillForced(scratch: Pool) {
   // 0065 lifts FORCE on outlets, edge_nodes and edge_inbound_events for its
   // FKs and backfill; 0068 lifts it on outlets and stations; 0069 on outlets
@@ -512,5 +553,9 @@ describe("legend-wg5t migration 0065 run by a non-superuser table owner", () => 
   it("leaves row level security forced on the receipts and on the new registry", async () => {
     await expectRlsStillForced(adminInScratch);
     await expectMigrationForeignKeysValidated(adminInScratch);
+  });
+
+  it("0440 backfills edge_link_slots from counted receipts and restores FORCE RLS", async () => {
+    await expectLinkSlotsBackfilled(adminInScratch);
   });
 });

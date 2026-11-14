@@ -183,6 +183,7 @@ afterAll(async () => {
     await client.query("BEGIN");
     await client.query("SET LOCAL session_replication_role = replica");
     for (const table of [
+      "edge_link_slots",
       "edge_inbound_events",
       "edge_received_events",
       "edge_sync_conflicts",

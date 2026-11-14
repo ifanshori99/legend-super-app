@@ -402,6 +402,11 @@ async function dropReceipt(fx: Fx, linkSeq: number) {
       `DELETE FROM edge_inbound_events WHERE tenant_id = $1 AND edge_node_id = $2 AND direction = 'edge_to_cloud' AND link_seq = $3`,
       [fx.tenantId, fx.node.scope.edgeNodeId, linkSeq],
     );
+    // Proofs read edge_link_slots: the hole must be there too.
+    await client.query(
+      `DELETE FROM edge_link_slots WHERE tenant_id = $1 AND edge_node_id = $2 AND direction = 'edge_to_cloud' AND link_seq = $3`,
+      [fx.tenantId, fx.node.scope.edgeNodeId, linkSeq],
+    );
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -487,6 +492,7 @@ afterAll(async () => {
     for (const tenantId of createdTenants) {
       for (const table of [
         "domain_event_outbox",
+        "edge_link_slots",
         "edge_inbound_events",
         "edge_received_events",
         "edge_sync_conflicts",
@@ -785,6 +791,11 @@ describe("legend-tmar2 854 R2.3 a swallowed ON CONFLICT is logged", () => {
       await client.query("SET LOCAL session_replication_role = replica");
       await client.query(
         `UPDATE edge_inbound_events SET link_seq = $4
+          WHERE tenant_id = $1 AND edge_node_id = $2 AND direction = 'edge_to_cloud' AND event_id = $3::uuid`,
+        [fx.tenantId, fx.node.scope.edgeNodeId, eventUuid, linkSeq],
+      );
+      await client.query(
+        `UPDATE edge_link_slots SET link_seq = $4
           WHERE tenant_id = $1 AND edge_node_id = $2 AND direction = 'edge_to_cloud' AND event_id = $3::uuid`,
         [fx.tenantId, fx.node.scope.edgeNodeId, eventUuid, linkSeq],
       );

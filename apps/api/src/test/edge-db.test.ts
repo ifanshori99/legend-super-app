@@ -145,6 +145,7 @@ describe("EDG-01 edge registry", () => {
     const names = [
       "edge_inbound_events",
       "edge_link_dead_letters",
+      "edge_link_slots",
       "edge_nodes",
       "edge_order_ingests",
       "edge_outbound_queue",

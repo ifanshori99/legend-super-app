@@ -597,6 +597,7 @@ afterAll(async () => {
       "notifications",
       "notification_outbox",
       "domain_event_outbox",
+      "edge_link_slots",
       "edge_inbound_events",
       "edge_received_events",
       "edge_sync_conflicts",

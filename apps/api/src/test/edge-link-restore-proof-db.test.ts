@@ -595,6 +595,7 @@ afterAll(async () => {
     for (const tenantId of createdTenants) {
       for (const table of [
         "domain_event_outbox",
+        "edge_link_slots",
         "edge_inbound_events",
         "edge_received_events",
         "edge_sync_conflicts",
@@ -903,6 +904,10 @@ describe("legend-tmar2 inboundProof returns the longest proven prefix when the c
       await client.query("SET LOCAL session_replication_role = replica");
       await client.query(
         `DELETE FROM edge_inbound_events WHERE tenant_id = $1 AND edge_node_id = $2 AND direction = 'edge_to_cloud' AND link_seq = 2`,
+        [fx.tenantId, fx.node.scope.edgeNodeId],
+      );
+      await client.query(
+        `DELETE FROM edge_link_slots WHERE tenant_id = $1 AND edge_node_id = $2 AND direction = 'edge_to_cloud' AND link_seq = 2`,
         [fx.tenantId, fx.node.scope.edgeNodeId],
       );
       await client.query("COMMIT");

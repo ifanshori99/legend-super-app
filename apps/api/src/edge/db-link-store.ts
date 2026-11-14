@@ -163,8 +163,13 @@ export type StoredDeadLetter = DeadLetterEntry & { readonly createdAt: Date };
 /** Parked above any real link_seq while the queue behind a dead letter is renumbered. */
 const RENUMBER_PARK = 1_000_000_000_000;
 
-/** Widest range `inboundProof` hashes; a wider one is not proven (null). */
-const RESTORE_PROOF_MAX_SLOTS = 20_000;
+/**
+ * Widest range `inboundProof` hashes in one call (legend-pz641: it reads the
+ * indexed edge_link_slots range, so the cap is higher than when it scanned
+ * every receipt). The cloud truncates the proof here; a modern edge accepts
+ * any `to` up to its cursor, so a longer prefix is proven over repeated calls.
+ */
+const RESTORE_PROOF_MAX_SLOTS = 100_000;
 
 export type DbLinkStore = LinkStore &
   Required<Pick<LinkStore, "deadLetterOutbound">> & {
@@ -183,6 +188,54 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
 
   /** The sending edge database (cloud side); null = unknown (old edge). */
   const peerInstance = options.edgeInstanceId ?? null;
+
+  /**
+   * legend-pz641: claim the stored link slot for a counted receipt. True when
+   * the slot now holds this event (new row, or already this event); false
+   * when another event holds it. Append-only: a held slot is never changed.
+   */
+  async function claimSlot(
+    tx: EdgeTx,
+    storedLinkSeq: number,
+    eventUuid: string,
+  ): Promise<boolean> {
+    const claimed = await tx.execute(
+      sql`INSERT INTO edge_link_slots (tenant_id, outlet_id, edge_node_id, direction, link_seq, event_id) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${storedLinkSeq}, ${eventUuid}::uuid) ON CONFLICT DO NOTHING RETURNING 1`,
+    );
+    if (claimed.rows.length > 0) return true;
+    const holder = await tx.execute(
+      sql`SELECT event_id FROM edge_link_slots WHERE tenant_id = ${node.tenantId}::uuid AND edge_node_id = ${nodeId}::uuid AND direction = ${inbound} AND link_seq = ${storedLinkSeq}`,
+    );
+    return (
+      String(holder.rows[0]?.event_id ?? "").toLowerCase() ===
+      eventUuid.toLowerCase()
+    );
+  }
+
+  /** applyInbound: a slot held by another event keeps the receipt, logs a warning. */
+  async function claimSlotOrWarn(
+    tx: EdgeTx,
+    storedLinkSeq: number,
+    eventUuid: string,
+  ) {
+    if (await claimSlot(tx, storedLinkSeq, eventUuid)) return;
+    logger.warn(
+      { edgeNodeId: nodeId, direction: inbound, linkSeq: storedLinkSeq },
+      "Link slot already held by another event; receipt kept without the slot",
+    );
+  }
+
+  /** Whether this node already holds a receipt of the event at that stored slot. */
+  async function receiptAt(
+    tx: EdgeTx,
+    eventUuid: string,
+    storedLinkSeq: number,
+  ): Promise<boolean> {
+    const result = await tx.execute(
+      sql`SELECT 1 FROM edge_inbound_events WHERE tenant_id = ${node.tenantId}::uuid AND edge_node_id = ${nodeId}::uuid AND direction = ${inbound} AND event_id = ${eventUuid}::uuid AND link_seq = ${storedLinkSeq}`,
+    );
+    return result.rows.length > 0;
+  }
 
   /**
    * legend-nd3cu: the link speaks the peer instance's own numbering, which is
@@ -389,53 +442,34 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
       });
     },
 
-    // legend-tmar2: the same digest over the receipts this side holds for the
+    // legend-tmar2: the same digest over the slots this side holds for the
     // peer's slots (fromSeq, toSeq] (peer numbering; the offset maps them to
-    // the stored link_seq). Receipts are append-only and never pruned.
-    // legend-tmar2 (854): fail closed. Proves the longest COMPLETE prefix
-    // from+1..from+k of the range (capped at RESTORE_PROOF_MAX_SLOTS slots),
-    // each slot holding exactly one countable receipt. k=0 gives the empty
-    // proof (to=from). Null only when the range is inverted (toSeq < fromSeq).
-    // Query 1 reads only link_seq to find k; query 2 builds the digest in SQL
-    // (one aggregate row, light on memory). On edge_to_cloud only receipts
-    // whose event is in edge_received_events count: a dead-letter receipt
-    // (link-dead-letter-applier) is not an event the edge holds in that slot,
-    // so it must not be hashed.
+    // the stored link_seq). legend-tmar2 (854): fail closed. Proves the
+    // longest COMPLETE prefix from+1..from+k of the range (capped at
+    // RESTORE_PROOF_MAX_SLOTS slots), each slot held by exactly one event.
+    // k=0 gives the empty proof (to=from). Null only when the range is
+    // inverted (toSeq < fromSeq).
+    // legend-pz641: reads edge_link_slots (primary key range), one row per
+    // slot held by a counted receipt (cloud_to_edge always; edge_to_cloud only
+    // an event registered in edge_received_events, so a dead-letter receipt
+    // holds none). The prefix is found in SQL: link_seq is strictly
+    // increasing, so link_seq - from = row number holds exactly up to the
+    // first gap. One aggregate row comes back, nothing is pulled into Node.
     async inboundProof(fromSeq, toSeq) {
       if (toSeq < fromSeq) return null;
       const upTo = Math.min(toSeq, fromSeq + RESTORE_PROOF_MAX_SLOTS);
       return run(async (tx) => {
         const { offset } = await peerNumbering(tx, inbound);
-        const registry =
-          inbound === "edge_to_cloud"
-            ? sql`JOIN edge_received_events rv ON rv.tenant_id = r.tenant_id AND rv.event_id = r.event_id`
-            : sql``;
-        const slots = await tx.execute(
-          sql`SELECT r.link_seq, count(*) AS receipts FROM edge_inbound_events r ${registry} WHERE r.tenant_id = ${node.tenantId}::uuid AND r.edge_node_id = ${nodeId}::uuid AND r.direction = ${inbound} AND r.link_seq > ${fromSeq + offset} AND r.link_seq <= ${upTo + offset} GROUP BY r.link_seq ORDER BY r.link_seq`,
-        );
-        // Longest run of consecutive slots with exactly one countable receipt.
-        let length = 0;
-        for (const row of slots.rows) {
-          if (
-            Number(row.link_seq) !== fromSeq + offset + length + 1 ||
-            Number(row.receipts) !== 1
-          )
-            break;
-          length += 1;
-        }
-        if (length === 0) return { to: fromSeq, ...restoreProofOf([]) };
         const result = await tx.execute(
-          sql`SELECT count(*) AS count, encode(sha256(convert_to(COALESCE(string_agg(r.event_id::text || chr(10), '' ORDER BY r.link_seq), ''), 'UTF8')), 'hex') AS sha256 FROM edge_inbound_events r ${registry} WHERE r.tenant_id = ${node.tenantId}::uuid AND r.edge_node_id = ${nodeId}::uuid AND r.direction = ${inbound} AND r.link_seq > ${fromSeq + offset} AND r.link_seq <= ${fromSeq + length + offset}`,
+          sql`SELECT count(*) AS count, encode(sha256(convert_to(COALESCE(string_agg(p.event_id::text || chr(10), '' ORDER BY p.link_seq), ''), 'UTF8')), 'hex') AS sha256 FROM (SELECT s.link_seq, s.event_id, row_number() OVER (ORDER BY s.link_seq) AS rn FROM edge_link_slots s WHERE s.tenant_id = ${node.tenantId}::uuid AND s.edge_node_id = ${nodeId}::uuid AND s.direction = ${inbound} AND s.link_seq > ${fromSeq + offset} AND s.link_seq <= ${upTo + offset}) p WHERE p.link_seq - ${fromSeq + offset} = p.rn`,
         );
         const row = result.rows[0];
-        // Receipts are append-only, so the prefix cannot shrink between the
-        // two queries; anything else is a broken invariant, not a proof.
-        if (!row || Number(row.count) !== length)
-          throw new Error("Inbound receipts changed while proving the prefix");
+        const length = row ? Number(row.count) : 0;
+        if (length === 0) return { to: fromSeq, ...restoreProofOf([]) };
         return {
           to: fromSeq + length,
           count: length,
-          sha256: String(row.sha256),
+          sha256: String(row!.sha256),
         };
       });
     },
@@ -593,20 +627,19 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
         const { offset } = await peerNumbering(tx, inbound);
         const first = events[0]!.linkSeq;
         const last = events[events.length - 1]!.linkSeq;
-        // Same rule as inboundProof (R3): only receipts whose event is in
-        // edge_received_events hold a slot. An unregistered receipt (a
-        // dead-letter receipt) is not an event the edge holds there, so
-        // replaying a registered event into that slot writes 'superseded'.
-        const receipts = await tx.execute(
-          sql`SELECT r.link_seq, r.event_id FROM edge_inbound_events r JOIN edge_received_events rv ON rv.tenant_id = r.tenant_id AND rv.event_id = r.event_id WHERE r.tenant_id = ${node.tenantId}::uuid AND r.edge_node_id = ${nodeId}::uuid AND r.direction = ${inbound} AND r.link_seq >= ${Math.min(first, last) + offset} AND r.link_seq <= ${Math.max(first, last) + offset}`,
+        // Same rule as inboundProof (R3): a slot is held by the event in
+        // edge_link_slots (a counted receipt). A dead-letter receipt holds no
+        // slot, so replaying a registered event into that slot writes
+        // 'superseded' and claims it.
+        const slots = await tx.execute(
+          sql`SELECT link_seq, event_id FROM edge_link_slots WHERE tenant_id = ${node.tenantId}::uuid AND edge_node_id = ${nodeId}::uuid AND direction = ${inbound} AND link_seq >= ${Math.min(first, last) + offset} AND link_seq <= ${Math.max(first, last) + offset}`,
         );
-        const held = new Map<number, Set<string>>();
-        for (const row of receipts.rows) {
-          const slot = Number(row.link_seq) - offset;
-          const ids = held.get(slot) ?? new Set<string>();
-          ids.add(String(row.event_id).toLowerCase());
-          held.set(slot, ids);
-        }
+        const held = new Map<number, string>();
+        for (const row of slots.rows)
+          held.set(
+            Number(row.link_seq) - offset,
+            String(row.event_id).toLowerCase(),
+          );
         const skippedInserts: number[] = [];
         for (const { linkSeq, event } of events) {
           const refuse = () =>
@@ -619,9 +652,9 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
           )
             throw refuse();
           const eventUuid = ulidToUuid(event.id);
-          const slotReceipts = held.get(linkSeq);
-          if (slotReceipts?.has(eventUuid.toLowerCase())) continue;
-          if (slotReceipts && slotReceipts.size > 0) throw refuse();
+          const holder = held.get(linkSeq);
+          if (holder === eventUuid.toLowerCase()) continue;
+          if (holder !== undefined) throw refuse();
           const registered = await tx.execute(
             sql`SELECT 1 FROM edge_received_events WHERE tenant_id = ${node.tenantId}::uuid AND event_id = ${eventUuid}::uuid`,
           );
@@ -632,10 +665,18 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
           // ON CONFLICT DO NOTHING stays (a concurrent insert must not fail
           // the batch). The primary key is (tenant_id, edge_node_id,
           // direction, event_id), with no uniqueness on link_seq, so a
-          // conflict means this same registered event already has a receipt
-          // in another slot: the hole in this slot is not closed by this
-          // insert, so it is counted and logged instead of passing silently.
-          if (inserted.rows.length === 0) skippedInserts.push(linkSeq);
+          // conflict means this same registered event already has a receipt:
+          // in this very slot (a slot the migration backfill did not fill:
+          // claim it) or in another slot (the hole in this slot is not
+          // closed by this insert, so it is counted and logged instead of
+          // passing silently).
+          if (
+            inserted.rows.length > 0 ||
+            (await receiptAt(tx, eventUuid, linkSeq + offset))
+          ) {
+            if (!(await claimSlot(tx, linkSeq + offset, eventUuid)))
+              throw refuse();
+          } else skippedInserts.push(linkSeq);
         }
         if (skippedInserts.length > 0)
           logger.warn(
@@ -688,6 +729,7 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
           const meta: EdgeApplyMeta = {
             edgeNodeId: nodeId,
             edgeInstanceId: options.edgeInstanceId ?? null,
+            peerSeqOffset: offset,
             direction: inbound,
             kind,
             context,
@@ -720,9 +762,16 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
             // proof (inboundProof) hashes one receipt per link slot, so a
             // standby re-sending the primary's event must not leave a hole
             // that would make a legitimate edge look restored (legend-tmar2).
-            await tx.execute(
-              sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${linkSeq + offset}, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, 'superseded') ON CONFLICT DO NOTHING`,
+            const superseded = await tx.execute(
+              sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${linkSeq + offset}, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, 'superseded') ON CONFLICT DO NOTHING RETURNING 1`,
             );
+            // The slot belongs to this receipt (new, or already written for
+            // this very slot); a receipt kept in another slot claims nothing.
+            if (
+              superseded.rows.length > 0 ||
+              (await receiptAt(tx, eventUuid, linkSeq + offset))
+            )
+              await claimSlotOrWarn(tx, linkSeq + offset, eventUuid);
             continue;
           }
           let outcome: "applied" | "superseded" | "conflict";
@@ -768,6 +817,7 @@ export function createDbLinkStore(options: DbLinkStoreOptions): DbLinkStore {
           await tx.execute(
             sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${linkSeq + offset}, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, ${outcome})`,
           );
+          await claimSlotOrWarn(tx, linkSeq + offset, eventUuid);
         }
         await tx.execute(
           sql`UPDATE sync_cursors SET received_in_seq = ${toSeq + offset}, last_event_id = COALESCE(${lastEventId ? ulidToUuid(lastEventId) : null}::uuid, last_event_id), updated_at = now() WHERE edge_node_id = ${nodeId}::uuid AND direction = ${inbound}`,
