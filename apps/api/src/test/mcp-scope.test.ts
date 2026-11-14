@@ -645,6 +645,91 @@ describe("legend-cot3 ai mcp scope: positive control (tenant-wide principal)", (
   });
 });
 
+describe("AIG-01 MCP tenant boundary", () => {
+  it("AIG-01 an unfiltered MCP SOP search returns this tenant's document and excludes a matching document in another tenant", async () => {
+    const marker = `mcp${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const localSop = randomUUID();
+    const localTitle = `Prosedur ${marker} Lokal`;
+    const foreignTenant = randomUUID();
+    const foreignSop = randomUUID();
+    const foreignTitle = `Prosedur ${marker} Rahasia Tenant`;
+    const db = await ownerPool.connect();
+    let committed = false;
+    const cleanup = async () => {
+      if (!committed) await db.query("ROLLBACK");
+      await db.query("BEGIN");
+      try {
+        await db.query("SELECT set_config('app.tenant_id', $1, true)", [
+          foreignTenant,
+        ]);
+        await db.query(
+          "DELETE FROM sop_documents WHERE id = $1 AND tenant_id = $2",
+          [foreignSop, foreignTenant],
+        );
+        await db.query("DELETE FROM tenants WHERE id = $1", [foreignTenant]);
+        await db.query("SELECT set_config('app.tenant_id', $1, true)", [
+          tenantId,
+        ]);
+        await db.query(
+          "DELETE FROM sop_documents WHERE id = $1 AND tenant_id = $2",
+          [localSop, tenantId],
+        );
+        await db.query("COMMIT");
+      } catch (error) {
+        await db.query("ROLLBACK");
+        throw error;
+      } finally {
+        db.release();
+      }
+    };
+    try {
+      await db.query("BEGIN");
+      await db.query("SELECT set_config('app.tenant_id', $1, true)", [
+        tenantId,
+      ]);
+      await db.query(
+        `INSERT INTO sop_documents (id, tenant_id, lineage_id, version, station_id,
+           title, body, requires_acknowledgement, effective_from, published_by)
+         VALUES ($1, $2, $1, 1, NULL, $3, $5, false, '2026-01-01', $4)`,
+        [localSop, tenantId, localTitle, admin.userId, localTitle],
+      );
+      await db.query(
+        `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+         SELECT $1, $2, 'MCP isolation foreign tenant', plan, status, deployment_mode, feature_flags, limits, created_by
+           FROM tenants WHERE id = $3`,
+        [foreignTenant, `mcp-isolation-${foreignTenant}`, tenantId],
+      );
+      await db.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [foreignTenant],
+      );
+      const inserted = await db.query(
+        `INSERT INTO sop_documents (id, tenant_id, lineage_id, version, station_id,
+           title, body, requires_acknowledgement, effective_from, published_by)
+         VALUES ($1, $2, $1, 1, NULL, $3, $5, false, '2026-01-01', $4)`,
+        [foreignSop, foreignTenant, foreignTitle, admin.userId, foreignTitle],
+      );
+      expect(inserted.rowCount).toBe(1);
+      // Both matching documents are committed before the API's separate connection reads.
+      await db.query("COMMIT");
+      committed = true;
+
+      const reply = await callTool(tokens.wide, "search_sop", {
+        query: marker,
+        limit: 10,
+      });
+      expect(denied(reply), reply.raw).toBe(false);
+      expect(errorCodeOf(reply)).not.toBe("INVALID_INPUT");
+      expect(hasAny(reply, [localTitle.toLowerCase()])).toHaveLength(1);
+      expect(hasAny(reply, [foreignSop, foreignTitle.toLowerCase()])).toEqual(
+        [],
+      );
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
 describe("legend-cot3 ai mcp scope: outlet-A principal", () => {
   it("legend-cot3 ai mcp scope: control, the principal reads its own outlet A", async () => {
     const names = await toolNames(tokens.outlet);
@@ -673,7 +758,7 @@ describe("legend-cot3 ai mcp scope: outlet-A principal", () => {
     expect(hasAny(stock, [STOCK_A.toLowerCase()])).toHaveLength(1);
   });
 
-  it("legend-cot3 ai mcp scope: every read tool aimed at outlet B, both outlets or no outlet never shows outlet B", async () => {
+  it("AIG-01 legend-cot3 ai mcp scope: every read tool aimed at outlet B, both outlets or no outlet never shows outlet B", async () => {
     const seen = await sweep(tokens.outlet);
     expect(invalidInputs(seen)).toEqual([]);
     expect(leaksOf(seen)).toEqual([]);
@@ -687,7 +772,7 @@ describe("legend-cot3 ai mcp scope: outlet-A principal", () => {
     expect(answered, "calls naming outlet B that were answered").toEqual([]);
   });
 
-  it("legend-cot3 ai mcp scope: sales without an outlet filter cover outlet A only", async () => {
+  it("AIG-01 legend-cot3 ai mcp scope: sales without an outlet filter cover outlet A only", async () => {
     const sales = await callTool(
       tokens.outlet,
       "get_sales_summary",
@@ -724,7 +809,7 @@ describe("legend-cot3 ai mcp scope: station-only principal holding outlet templa
     expect(denied(control.reply), describeReply(control)).toBe(false);
   });
 
-  it("legend-cot3 ai mcp scope: station scope never answers an outlet-reading tool (no outlet B, no outlet A, no tenant)", async () => {
+  it("AIG-01 legend-cot3 ai mcp scope: station scope never answers an outlet-reading tool (no outlet B, no outlet A, no tenant)", async () => {
     const seen = await sweep(tokens.elevated);
     expect(invalidInputs(seen)).toEqual([]);
     expect(leaksOf(seen)).toEqual([]);

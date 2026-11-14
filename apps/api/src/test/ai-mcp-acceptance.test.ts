@@ -24,7 +24,7 @@
 //  - Errors: the AiError code appears somewhere in the response body (JSON-RPC
 //    error data, tool result text, or HTTP body). Auth failures are HTTP 401.
 //  - Revocation and role changes take effect within 60 s (MCP-02), so those
-//    checks poll up to 65 s instead of expecting an instant effect.
+//    checks poll within 60 s instead of expecting an instant effect.
 //  - maxRowsPerResponse caps the rows of every tool output, search_sop's
 //    `results` included.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -71,7 +71,7 @@ import {
 const MCP_PATH = "/mcp";
 const METADATA_PATH = "/.well-known/oauth-authorization-server";
 const REDIRECT_URI = "http://localhost:8123/callback";
-const REVOCATION_WINDOW_MS = 65_000; // MCP-02 says 60 s; 5 s of slack.
+const REVOCATION_WINDOW_MS = 60_000;
 
 const ALLOWED: McpScope[] = [
   "mcp:sales:read",
@@ -1021,6 +1021,7 @@ describe("[wave 2: M] MCP-02 revocation takes effect within 60 seconds", () => {
     expect([403, 404]).toContain(stranger.status);
     expect((await call(issued.token, "tools/list")).status).toBe(200);
 
+    const revokedAt = performance.now();
     const revoke = await user.client
       .post(`/api/ai/mcp-tokens/${tokenId}/revoke`)
       .set(originHeader)
@@ -1037,6 +1038,9 @@ describe("[wave 2: M] MCP-02 revocation takes effect within 60 seconds", () => {
     );
     expect(after.status).toBe(401);
     expect(after.raw).toContain("MCP_TOKEN_REVOKED");
+    expect(performance.now() - revokedAt).toBeLessThanOrEqual(
+      REVOCATION_WINDOW_MS,
+    );
     expect((await call(other.token, "tools/list")).status).toBe(200);
   }, 90_000);
 
@@ -1076,6 +1080,7 @@ describe("[wave 2: M] MCP-02 revocation takes effect within 60 seconds", () => {
     const issued = await connect(user, client, ["mcp:sales:read"]);
     expect(await toolNames(issued.token)).toContain("get_sales_summary");
 
+    const removedAt = performance.now();
     await removeAssignments(user.userId);
     const args = { period: { from: "2026-10-01", to: "2026-10-07" } };
     const after = await pollUntil(
@@ -1085,6 +1090,9 @@ describe("[wave 2: M] MCP-02 revocation takes effect within 60 seconds", () => {
     );
     expect(denied(after)).toBe(true);
     expect(outputOf(after)).toBeNull();
+    expect(performance.now() - removedAt).toBeLessThanOrEqual(
+      REVOCATION_WINDOW_MS,
+    );
   }, 90_000);
 
   it("MCP-02 an expired token is refused with MCP_TOKEN_EXPIRED", async () => {
@@ -1153,9 +1161,25 @@ describe("[wave 2: M] MCP-03 every tool call is audited", () => {
     );
     const audit = JSON.stringify(rows.rows);
     expect(rows.rowCount).toBeGreaterThanOrEqual(2);
-    expect(audit).toContain("TL-10");
-    expect(audit).toContain("TL-01");
-    expect(audit).toContain(client.id);
+    // Each invocation must carry the full attribution and its own outcome.
+    // A client id somewhere in a different row would not prove this criterion.
+    for (const [toolCode, status] of [
+      ["TL-10", "ok"],
+      ["TL-01", "denied"],
+    ]) {
+      const calls = rows.rows
+        .map((record) => record.row as Record<string, unknown>)
+        .filter((row) => row.tool_code === toolCode);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        tenant_id: tenantId,
+        user_id: user.userId,
+        mcp_client_id: client.id,
+        tool_code: toolCode,
+        channel: "mcp",
+        status,
+      });
+    }
     expect(audit).not.toContain(issued.token);
   });
 });
