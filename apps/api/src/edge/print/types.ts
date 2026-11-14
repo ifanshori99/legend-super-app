@@ -139,6 +139,8 @@ export type PrintJobPage = {
  * transaction (withTenant) unless noted.
  */
 export interface PrintStore {
+  /** Revalidate station ticket destination and station binding immediately before sending. */
+  checkStationTicketDestination(job: PrintJobRecord): Promise<boolean>;
   listPrinters(): Promise<PrinterConfig[]>;
   getPrinter(printerId: string): Promise<PrinterConfig | null>;
   /** Records a status change; `at` becomes last_seen_at when online. */

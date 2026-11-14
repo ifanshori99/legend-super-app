@@ -9,6 +9,7 @@
 // probe or KDS check. Printer content and PII are never logged or put in
 // alerts.
 import { CoreError } from "@starter/shared/core";
+import { logger } from "../../lib/logger.ts";
 import { createHealthMonitor } from "./monitor.ts";
 import { renderStationTicket } from "./templates.ts";
 import { PrintTransportError, type TransportFactory } from "./transport.ts";
@@ -95,6 +96,10 @@ export function createPrintAgent(options: PrintAgentOptions) {
     try {
       await store.recordAlert(alert);
     } catch {
+      logger.warn(
+        { kind: alert.kind, subjectId: alert.subjectId },
+        "Print alert could not be recorded",
+      );
       // A failed alert write must not stop printing.
     }
     try {
@@ -184,6 +189,50 @@ export function createPrintAgent(options: PrintAgentOptions) {
     printer: PrinterConfig,
     job: PrintJobRecord,
   ): Promise<"continue" | "stop"> {
+    if (
+      job.kind === "station_ticket" ||
+      printer.role === "station" ||
+      job.originalPrinterId !== null
+    ) {
+      let valid = false;
+      try {
+        valid = await store.checkStationTicketDestination(job);
+      } catch {
+        // If the registry cannot be read, never send without verification.
+      }
+      if (!valid) {
+        logger.warn(
+          { jobId: job.id, printerId: printer.id },
+          "Station printer validation failed",
+        );
+        try {
+          await store.markFailed(
+            job.id,
+            "Printer stasiun tidak valid atau tidak dapat diverifikasi.",
+            "other",
+          );
+        } catch {
+          logger.error(
+            { jobId: job.id, printerId: printer.id },
+            "Invalid printer job could not be marked failed",
+          );
+          return "stop";
+        }
+        await emit({
+          kind: "job_failed",
+          subjectId: job.id,
+          stationId: printer.stationId,
+          detail: {
+            printerId: printer.id,
+            kind: job.kind,
+            attempts: job.attempts,
+            reason: "invalid_station_printer",
+          },
+          occurredAt: clock.now(),
+        });
+        return "continue";
+      }
+    }
     const transport = transportFor(printer);
     try {
       await transport.send(job.content);

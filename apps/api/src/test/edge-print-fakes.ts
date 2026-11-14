@@ -126,6 +126,9 @@ export function createFakeStore(
       jobs.push(record);
       return { job: record, created: true };
     },
+    async checkStationTicketDestination() {
+      return true;
+    },
     async claimNext(printerId) {
       const next = jobs
         .filter((job) => job.status === "queued" && job.printerId === printerId)
