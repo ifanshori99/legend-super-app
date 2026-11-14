@@ -184,9 +184,6 @@ async function applyOrRefuse(
 /** Dead-letter record as read back (legend-btx4d). */
 export type StoredDeadLetter = DeadLetterEntry & { readonly createdAt: Date };
 
-/** Parked above any real link_seq while the queue behind a dead letter is renumbered. */
-const RENUMBER_PARK = 1_000_000_000_000;
-
 /**
  * Widest range `inboundProof` hashes in one call (legend-pz641: it reads the
  * indexed edge_link_slots range, so the cap is higher than when it scanned
