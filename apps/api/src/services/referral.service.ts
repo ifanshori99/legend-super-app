@@ -4,18 +4,22 @@
 // first paid order qualifies and rewards it in the earn transaction. Ledger
 // rows go only through `postLedgerEntry`, under `withProfileLock`.
 
-import { randomInt } from "node:crypto";
-import { and, count, eq, gte, ne, sql } from "drizzle-orm";
-import { tenantIdSchema } from "@starter/shared/core";
+import { createHash, randomInt } from "node:crypto";
+import { and, count, eq, gte, inArray, ne, sql } from "drizzle-orm";
+import { tenantIdSchema, ulidToUuid } from "@starter/shared/core";
 import { memberTenantContext, withProfileLock } from "../db/member-scope.ts";
 import {
   customerProfiles,
   customerVisits,
   loyaltyPrograms,
+  orders,
+  pointLedger,
   referrals,
 } from "../db/schema/index.ts";
 import type { Tx } from "./inventory-ops.shared.ts";
+import { recordLoyaltyAnomaly } from "./loyalty-anomaly.service.ts";
 import type { EarnStepContext } from "./loyalty-earn-step-context.ts";
+import { loadGrantStates } from "./loyalty-expiry.service.ts";
 import { postLedgerEntry } from "./point-ledger.service.ts";
 
 const CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -317,4 +321,207 @@ export async function qualifyReferral(context: EarnStepContext): Promise<void> {
       },
       now,
     );
+}
+
+/** A refund or void that takes back the referral bonus of its order. */
+export type ReferralReversalInput = {
+  tenantId: string;
+  orderId: string;
+  outletId: string;
+  businessDate: string;
+  sourceType: "refund" | "void";
+  /** The refund or void id: the idempotency key of the reverse rows. */
+  sourceId: string;
+  /**
+   * Eligible amount refunded so far (cumulative); null = a void. Only a void
+   * or a refund of the whole eligible amount reverses; a partial refund does
+   * not (decision for the CTO: the bonus stays, the referee did pay).
+   */
+  refundEligibleIdr: number | null;
+  /**
+   * The earn record says the eligible spend is refunded in full. That spend
+   * excludes the part paid with points, so it can sit below the order's
+   * eligible amount; then this flag still makes the refund a full one.
+   */
+  fullRefund?: boolean;
+};
+
+/** Stable UUID (v5-shaped) per refund or void and bonus row, so a replay is a no-op. */
+function referralReverseSourceId(sourceId: string, entryId: string): string {
+  const hex = createHash("sha256")
+    .update(`referral_reversal:${sourceId}:${entryId}`)
+    .digest("hex");
+  const variant = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/**
+ * Takes back the bonus of the referral whose first paid order is voided or
+ * fully refunded, then marks the referral `expired` so it cannot qualify
+ * again. Each side's `reverse` row names its bonus row and is limited to the
+ * smaller of what is still unreversed, what the bonus grant still holds
+ * (legend-4frkf: expired points count, redeemed ones do not) and the profile's
+ * balance, so no balance goes negative; any shortfall is a
+ * `refund_after_redeem` anomaly. Idempotent: the reverse rows have a
+ * deterministic dedupe key and a second call finds the referral `expired`.
+ * A referral still `pending` (first order under the minimum) paid nothing and
+ * is left alone. Call in the refund or void transaction.
+ */
+export async function reverseReferralForOrder(
+  tx: Tx,
+  input: ReferralReversalInput,
+  now: Date = new Date(),
+): Promise<void> {
+  const tenant = tenantIdSchema.parse(input.tenantId);
+  const byOrder = and(
+    eq(referrals.tenantId, tenant),
+    eq(referrals.firstOrderId, input.orderId),
+    inArray(referrals.status, ["rewarded", "qualified"]),
+  );
+  const [found] = await tx
+    .select({ id: referrals.id, refereeProfileId: referrals.refereeProfileId })
+    .from(referrals)
+    .where(byOrder);
+  if (!found) return;
+
+  if (input.refundEligibleIdr !== null && input.fullRefund !== true) {
+    const [order] = await tx
+      .select({
+        // Same base the earn used: gross sales minus discount.
+        eligible: sql<string>`GREATEST(0, CASE WHEN ${orders.pricesIncludeTax}
+          THEN ${orders.subtotalIdr} - ${orders.serviceChargeIdr} - ${orders.taxIdr}
+          ELSE ${orders.subtotalIdr} END - ${orders.discountIdr})`,
+      })
+      .from(orders)
+      .where(and(eq(orders.tenantId, tenant), eq(orders.id, input.orderId)))
+      .limit(1);
+    // Unknown order: keep the bonus (the limiting choice for the member, but
+    // never a payment above what was earned).
+    if (!order || input.refundEligibleIdr < Number(order.eligible)) return;
+  }
+
+  // Same lock order as `qualifyReferral`: referee profile, referral, referrer.
+  const referee = await withProfileLock(tx, tenant, found.refereeProfileId);
+  const [referral] = await tx
+    .select()
+    .from(referrals)
+    .where(and(byOrder, eq(referrals.id, found.id)))
+    .for("update");
+  // Another reversal got here first.
+  if (!referral) return;
+  const referrer = await withProfileLock(
+    tx,
+    tenant,
+    referral.referrerProfileId,
+  );
+
+  const context = memberTenantContext(tenant);
+  const sides = [
+    {
+      profile: referrer,
+      sourceIds: [referral.id],
+    },
+    {
+      profile: referee,
+      sourceIds: [input.orderId, ulidToUuid(input.orderId)],
+    },
+  ];
+  for (const side of sides) {
+    const [bonus] = await tx
+      .select()
+      .from(pointLedger)
+      .where(
+        and(
+          eq(pointLedger.tenantId, tenant),
+          eq(pointLedger.customerProfileId, side.profile.id),
+          eq(pointLedger.type, "bonus"),
+          eq(pointLedger.sourceType, "referral"),
+          inArray(pointLedger.sourceId, side.sourceIds),
+        ),
+      )
+      .limit(1);
+    if (!bonus || bonus.points <= 0) continue;
+    const [taken] = await tx
+      .select({
+        total: sql<string>`COALESCE(-SUM(${pointLedger.points}), 0)`,
+      })
+      .from(pointLedger)
+      .where(
+        and(
+          eq(pointLedger.tenantId, tenant),
+          eq(pointLedger.type, "reverse"),
+          eq(pointLedger.reversesEntryId, bonus.id),
+        ),
+      );
+    const remaining = Math.max(0, bonus.points - Number(taken?.total ?? 0));
+    if (remaining <= 0) continue;
+
+    const grant = (await loadGrantStates(tx, tenant, side.profile.id)).find(
+      (state) => state.id === bonus.id,
+    );
+    // A grant without `expires_at` is not listed: only the balance limits it.
+    // A grant that already expired (wholly or in part) is limited to what is
+    // left of it: the member lost those points once, they are not taken again
+    // from other grants (legend-4frkf). Points a redeem used still count as
+    // the grant's: like an earn reversal they are taken back from the balance
+    // (no payout on a void).
+    const grantLeft =
+      grant && grant.expireRowCount > 0
+        ? Math.max(
+            0,
+            bonus.points - grant.expiredPoints - Number(taken?.total ?? 0),
+          )
+        : Number.POSITIVE_INFINITY;
+    const posted = Math.min(
+      remaining,
+      grantLeft,
+      Math.max(0, Number(side.profile.pointsBalance)),
+    );
+    const reverseSourceId = referralReverseSourceId(input.sourceId, bonus.id);
+    if (posted > 0)
+      await postLedgerEntry(
+        tx,
+        context,
+        {
+          tenantId: tenant,
+          customerProfileId: side.profile.id,
+          outletId: input.outletId,
+          type: "reverse",
+          points: -posted,
+          sourceType: input.sourceType,
+          sourceId: reverseSourceId,
+          reversesEntryId: bonus.id,
+          businessDate: input.businessDate,
+        },
+        now,
+      );
+    if (remaining > posted)
+      await recordLoyaltyAnomaly(tx, {
+        tenantId: tenant,
+        kind: "refund_after_redeem",
+        outletId: input.outletId,
+        customerProfileId: side.profile.id,
+        orderId: input.orderId,
+        businessDate: input.businessDate,
+        details: {
+          sourceType: input.sourceType,
+          sourceId: reverseSourceId,
+          deltaPoints: remaining,
+          postedPoints: posted,
+          shortfallPoints: remaining - posted,
+        },
+      });
+  }
+
+  await tx
+    .update(referrals)
+    // referrals_{first_order,qualified_at,rewarded_at}_check: only qualified or
+    // rewarded rows keep an order and its timestamps (the ledger keeps the audit).
+    .set({
+      status: "expired",
+      firstOrderId: null,
+      qualifiedAt: null,
+      rewardedAt: null,
+    })
+    .where(and(eq(referrals.tenantId, tenant), eq(referrals.id, referral.id)));
 }
