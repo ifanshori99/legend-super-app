@@ -76,6 +76,48 @@ export const listKitchenStations = defineEndpoint({
 });
 
 /**
+ * One station's new tab settings in a `updateKitchenStations` save. A save may
+ * name only some stations of the outlet: the others keep their settings.
+ */
+export const updateKitchenStationInputSchema = z.strictObject({
+  stationId: stationConfigSchema.shape.stationId,
+  displayOrder: stationConfigSchema.shape.displayOrder,
+  isActive: stationConfigSchema.shape.isActive,
+  autoPrintFallback: stationConfigSchema.shape.autoPrintFallback,
+});
+
+export const updateKitchenStationsBodySchema = z
+  .strictObject({
+    stations: z.array(updateKitchenStationInputSchema).min(1).max(100),
+  })
+  .superRefine((body, ctx) => {
+    const seen = new Set<string>();
+    for (const [index, entry] of body.stations.entries()) {
+      if (seen.has(entry.stationId))
+        ctx.addIssue({
+          code: "custom",
+          path: ["stations", index, "stationId"],
+          message: "Stasiun yang sama tidak boleh disebut dua kali.",
+        });
+      seen.add(entry.stationId);
+    }
+  });
+
+/**
+ * Kitchen config: save the KDS tab order and the two flags in one call, so a
+ * reorder is never half saved (`kds.station.manage`). The answer is the whole
+ * outlet in display order. A station id twice, a station of another outlet or
+ * tenant, or a result with no active station is refused (legend-bopi2).
+ */
+export const updateKitchenStations = defineEndpoint({
+  method: "PUT",
+  path: "/api/outlets/:outletId/kitchen/stations",
+  params: outletParams,
+  body: updateKitchenStationsBodySchema,
+  response: dataResponseSchema(z.array(stationConfigSchema)),
+});
+
+/**
  * Station labels for the KDS switch and timer (legend-gt7f). Needs only
  * `kds.ticket.process`, so a cook reads the name and target time without
  * `menu.item.view`. Lists the active stations the caller reaches, by name.

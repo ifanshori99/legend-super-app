@@ -17,7 +17,7 @@ export type StationRow = {
 export type StationRowFlag = "isActive" | "autoPrintFallback";
 export type MoveDirection = "up" | "down";
 
-/** The body of `updateKitchenStations` (see ./contract-gap.ts). */
+/** The body of `updateKitchenStations` (@starter/shared/kitchen). */
 export type StationUpdate = {
   stationId: string;
   displayOrder: number;

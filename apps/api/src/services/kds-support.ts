@@ -465,6 +465,7 @@ function ticketDetailDto(
     id: row.id,
     orderId: row.orderId,
     stationId: row.stationId,
+    ticketNo: row.ticketNo,
     status: row.status,
     priority: row.priority,
     firedAt: toIsoDateTime(row.firedAt),

@@ -366,7 +366,7 @@ function StationBoard({
                           )}
                           {t("kds.orderCode")}{" "}
                           <span className="ml-1 font-mono tracking-wider">
-                            #{ticketScanCode(ticket.orderId)}
+                            #{ticketScanCode(ticket.ticketNo)}
                           </span>
                         </p>
                         <p className="text-xs leading-4">

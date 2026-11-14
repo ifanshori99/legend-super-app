@@ -1,8 +1,7 @@
 // Station config editor (bead legend-sonf, PRD §3 F12 "KDS per Stasiun"):
 // reorder the KDS tabs, switch a station on or off and turn the print fallback
 // on per station. The draft lives on screen until "Simpan pengaturan"; a failed
-// save keeps it. Saving is a contract gap (../contract-gap.ts): where no API
-// answers it the editor is read-only and says so.
+// save keeps it.
 import * as React from "react";
 import { useBlocker } from "@tanstack/react-router";
 import {
@@ -20,7 +19,6 @@ import { EmptyState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { useTenantContext } from "@/lib/tenant-context";
-import { KITCHEN_STATIONS_UPDATE_AVAILABLE } from "../contract-gap.ts";
 import {
   useKitchenStations,
   useMenuStations,
@@ -51,10 +49,6 @@ const TYPE_KEYS: Record<string, MessageKey> = {
 const ROW_COLS =
   "grid-cols-1 items-center gap-3 min-[601px]:grid-cols-[2rem_minmax(0,1fr)] min-[761px]:grid-cols-[2rem_minmax(7.5rem,1fr)_7.25rem_8.5rem_8.5rem]";
 
-// Read-only (no save endpoint): no order column.
-const READ_ONLY_COLS =
-  "grid-cols-1 items-center gap-3 min-[601px]:grid-cols-[2rem_minmax(0,1fr)] min-[761px]:grid-cols-[2rem_minmax(7.5rem,1fr)_8.5rem_8.5rem]";
-
 type FocusRequest = { stationId: string; direction: MoveDirection };
 
 export function StationConfigPage() {
@@ -75,7 +69,6 @@ export function StationConfigPage() {
   const [announcement, setAnnouncement] = React.useState("");
   const rows = draft ?? saved;
   const dirty = draft !== null && stationsDirty(saved, draft);
-  const editable = KITCHEN_STATIONS_UPDATE_AVAILABLE;
   const noneActive = rows.length > 0 && rows.every((row) => !row.isActive);
 
   // Unsaved changes survive neither a route change nor a reload silently.
@@ -177,55 +170,6 @@ export function StationConfigPage() {
 
   const rankClass =
     "text-center font-bold text-muted-foreground tabular-nums max-[760px]:self-start max-[760px]:pt-1 max-[600px]:text-left";
-
-  // No save endpoint: the same data as plain text, nothing to operate.
-  function renderReadOnlyRows() {
-    return (
-      <div className="mt-6">
-        <div
-          aria-hidden="true"
-          className={cn(
-            READ_ONLY_COLS,
-            "hidden border-t-(length:--border-w) py-3 text-sm text-muted-foreground min-[761px]:grid",
-          )}
-        >
-          <span />
-          <span>{t("kitchenConfig.stations.columnStation")}</span>
-          <span>{t("kitchenConfig.stations.columnStatus")}</span>
-          <span>{t("kitchenConfig.stations.columnPrint")}</span>
-        </div>
-        <ul>
-          {rows.map((row, index) => (
-            <li
-              key={row.stationId}
-              className={cn(
-                "grid",
-                READ_ONLY_COLS,
-                "border-t-(length:--border-w) py-4 max-[600px]:items-stretch max-[600px]:gap-4 max-[600px]:py-6",
-              )}
-            >
-              <span className={rankClass}>{rankLabel(index)}</span>
-              {renderNameCell(row)}
-              <Control label={t("kitchenConfig.stations.columnStatus")}>
-                <span className="font-bold">
-                  {row.isActive
-                    ? t("kitchenConfig.stations.on")
-                    : t("kitchenConfig.stations.off")}
-                </span>
-              </Control>
-              <Control label={t("kitchenConfig.stations.columnPrint")}>
-                <span className="font-bold">
-                  {row.autoPrintFallback
-                    ? t("kitchenConfig.stations.on")
-                    : t("kitchenConfig.stations.off")}
-                </span>
-              </Control>
-            </li>
-          ))}
-        </ul>
-      </div>
-    );
-  }
 
   const editorRows = (
     <div className="mt-6">
@@ -397,16 +341,6 @@ export function StationConfigPage() {
         {/* Hidden, not unmounted, after a save: the footer status keeps its
             live region and only swaps text. */}
         <div hidden={justSaved}>
-          {!editable && (
-            <Notice
-              tone="info"
-              role="status"
-              title={t("kitchenConfig.stations.unavailableTitle")}
-              className="mt-4"
-            >
-              {t("kitchenConfig.stations.unavailableHint")}
-            </Notice>
-          )}
           {saveFailed && (
             <Notice
               tone="danger"
@@ -416,48 +350,42 @@ export function StationConfigPage() {
               {t("kitchenConfig.stations.saveFailedHint")}
             </Notice>
           )}
-          {editable ? editorRows : renderReadOnlyRows()}
-          {editable && (
-            <>
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t-(length:--border-w) pt-6 max-[600px]:flex-col max-[600px]:items-stretch">
-                <span role="status" className="text-sm text-muted-foreground">
-                  {justSaved
-                    ? t("kitchenConfig.stations.saved")
-                    : dirty
-                      ? t("kitchenConfig.stations.unsaved")
-                      : t("kitchenConfig.stations.noChanges")}
-                </span>
-                <Button
-                  type="button"
-                  className="h-14! max-[600px]:w-full"
-                  disabled={!dirty || noneActive}
-                  loading={update.isPending}
-                  aria-describedby={
-                    noneActive ? "station-none-active" : undefined
-                  }
-                  onClick={submit}
-                >
-                  {saveFailed
-                    ? t("kitchenConfig.stations.retrySave")
-                    : t("kitchenConfig.stations.save")}
-                </Button>
-              </div>
-              <div role="status">
-                {noneActive && (
-                  <p
-                    id="station-none-active"
-                    className="mt-3 inline-flex items-start gap-2 text-sm leading-5 font-semibold text-warning"
-                  >
-                    <TriangleAlert
-                      className="mt-0.5 size-4 shrink-0"
-                      aria-hidden="true"
-                    />
-                    {t("kitchenConfig.stations.minOneActive")}
-                  </p>
-                )}
-              </div>
-            </>
-          )}
+          {editorRows}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t-(length:--border-w) pt-6 max-[600px]:flex-col max-[600px]:items-stretch">
+            <span role="status" className="text-sm text-muted-foreground">
+              {justSaved
+                ? t("kitchenConfig.stations.saved")
+                : dirty
+                  ? t("kitchenConfig.stations.unsaved")
+                  : t("kitchenConfig.stations.noChanges")}
+            </span>
+            <Button
+              type="button"
+              className="h-14! max-[600px]:w-full"
+              disabled={!dirty || noneActive}
+              loading={update.isPending}
+              aria-describedby={noneActive ? "station-none-active" : undefined}
+              onClick={submit}
+            >
+              {saveFailed
+                ? t("kitchenConfig.stations.retrySave")
+                : t("kitchenConfig.stations.save")}
+            </Button>
+          </div>
+          <div role="status">
+            {noneActive && (
+              <p
+                id="station-none-active"
+                className="mt-3 inline-flex items-start gap-2 text-sm leading-5 font-semibold text-warning"
+              >
+                <TriangleAlert
+                  className="mt-0.5 size-4 shrink-0"
+                  aria-hidden="true"
+                />
+                {t("kitchenConfig.stations.minOneActive")}
+              </p>
+            )}
+          </div>
         </div>
       </>
     );

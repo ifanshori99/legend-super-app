@@ -9,14 +9,11 @@ import {
   listKitchenStations,
   listOrderIssues,
   updateCapacityRules,
+  updateKitchenStations,
 } from "@starter/shared/kitchen";
 import type { OutletId } from "@starter/shared/core";
 import { listStations } from "@starter/shared/menu";
 import { callEndpoint } from "@/lib/api/endpoint.ts";
-import {
-  KITCHEN_STATIONS_UPDATE_AVAILABLE,
-  updateKitchenStations,
-} from "./contract-gap.ts";
 import type { StationUpdate } from "./station-order.ts";
 
 type Params<E extends AnyEndpoint> = EndpointInput<E>["params"];
@@ -42,16 +39,12 @@ export async function fetchKitchenStations(
 }
 
 /**
- * Replaces the order and flags of every station (bead legend-sonf). The
- * endpoint is a contract gap: where nothing answers it, refuse before any
- * request instead of pretending the save worked.
+ * Replaces the order and flags of every station (bead legend-sonf).
  */
 export async function saveKitchenStations(
   outletId: OutletId,
   stations: StationUpdate[],
 ) {
-  if (!KITCHEN_STATIONS_UPDATE_AVAILABLE)
-    throw new Error("Kitchen station update is not available");
   const { data } = await callEndpoint(updateKitchenStations, {
     params: { outletId },
     body: { stations },

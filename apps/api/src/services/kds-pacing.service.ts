@@ -324,7 +324,9 @@ type MenuItemRouting = {
  * is only an override when it is a live station of this outlet; otherwise the
  * brand-level `station_type` (or, for a legacy row, the override's type) maps
  * to the outlet's first live station of that type by name, id. Items that
- * resolve to nothing are left out (the KDS would not route them either).
+ * resolve to nothing are left out (the KDS would not route them either). An
+ * inactive target falls back to the first active station by display order,
+ * name, id, or stays unchanged when no active station exists.
  */
 export async function resolveItemStations(
   tx: Tx,
@@ -336,7 +338,11 @@ export async function resolveItemStations(
   if (items.length === 0) return result;
   const tenantId = context.tenant.tenantId;
   const live = await tx
-    .select({ id: stations.id, type: stations.type })
+    .select({
+      id: stations.id,
+      type: stations.type,
+      isActive: stations.isActive,
+    })
     .from(stations)
     .where(
       and(
@@ -346,7 +352,21 @@ export async function resolveItemStations(
       ),
     )
     .orderBy(asc(stations.name), asc(stations.id));
-  const liveIds = new Set(live.map((row) => row.id));
+  const [fallback] = await tx
+    .select({ id: stations.id })
+    .from(stations)
+    .where(
+      and(
+        eq(stations.tenantId, tenantId),
+        eq(stations.outletId, outletId),
+        eq(stations.isActive, true),
+        isNull(stations.deletedAt),
+      ),
+    )
+    .orderBy(asc(stations.displayOrder), asc(stations.name), asc(stations.id))
+    .limit(1);
+  const liveById = new Map(live.map((row) => [row.id, row]));
+  const liveIds = new Set(liveById.keys());
   const firstOfType = new Map<string, string>();
   for (const row of live)
     if (!firstOfType.has(row.type)) firstOfType.set(row.type, row.id);
@@ -374,14 +394,24 @@ export async function resolveItemStations(
   const foreignType = new Map(foreign.map((row) => [row.id, row.type]));
   for (const item of items) {
     if (item.stationId && liveIds.has(item.stationId)) {
-      result.set(item.id, item.stationId);
+      const station = liveById.get(item.stationId)!;
+      result.set(
+        item.id,
+        station.isActive ? station.id : (fallback?.id ?? station.id),
+      );
       continue;
     }
     const type =
       item.stationType ??
       (item.stationId ? (foreignType.get(item.stationId) ?? null) : null);
     const stationId = type === null ? null : (firstOfType.get(type) ?? null);
-    if (stationId !== null) result.set(item.id, stationId);
+    if (stationId !== null) {
+      const station = liveById.get(stationId)!;
+      result.set(
+        item.id,
+        station.isActive ? station.id : (fallback?.id ?? station.id),
+      );
+    }
   }
   return result;
 }

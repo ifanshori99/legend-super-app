@@ -13,25 +13,27 @@ import {
 } from "../apps/web/src/features/ws04-kds/scan-code.ts";
 
 const tickets = [
-  { id: "t1", orderId: "01JBQ7Z8K3M4N5P6Q7R8S9T0V1", status: "in_progress" },
-  { id: "t2", orderId: "01JBQ7Z8K3M4N5P6Q7R8S9T0V2", status: "new" },
-  { id: "t3", orderId: "01JBQ7Z8K3M4N5P6Q7R8S9T0V3", status: "done" },
-  { id: "t4", orderId: "01JBQ7Z8K3M4N5P6Q7R8S9T0V4", status: "cancelled" },
+  { id: "t1", ticketNo: 1, status: "in_progress" },
+  { id: "t2", ticketNo: 2, status: "new" },
+  { id: "t3", ticketNo: 3, status: "done" },
+  { id: "t4", ticketNo: 4, status: "cancelled" },
 ];
 
-test("legend-uqfu: the ticket code is the tail shown on the ticket header", () => {
-  assert.equal(ticketScanCode(tickets[0].orderId), "S9T0V1");
+test("legend-tzyj2: the ticket code is the padded ticket number shown on the header", () => {
+  assert.equal(ticketScanCode(tickets[0].ticketNo), "K-001");
+  assert.equal(ticketScanCode(42), "K-042");
+  assert.equal(ticketScanCode(1234), "K-1234");
 });
 
 test("legend-uqfu: parser trims, uppercases and maps the four action words", () => {
-  assert.deepEqual(parseScanCode("  selesai  s9t0v1 \n"), {
+  assert.deepEqual(parseScanCode("  selesai  k-001 \n"), {
     ok: true,
     action: "bump",
-    code: "S9T0V1",
+    code: "K-001",
   });
-  assert.equal(parseScanCode("MULAI #S9T0V2").action, "start");
-  assert.equal(parseScanCode("PRIORITAS S9T0V2").action, "priority");
-  assert.equal(parseScanCode("PANGGIL S9T0V3").action, "recall");
+  assert.equal(parseScanCode("MULAI #K-002").action, "start");
+  assert.equal(parseScanCode("PRIORITAS K-002").action, "priority");
+  assert.equal(parseScanCode("PANGGIL K-003").action, "recall");
 });
 
 test("legend-uqfu: parser refuses empty, malformed and unknown actions", () => {
@@ -41,42 +43,42 @@ test("legend-uqfu: parser refuses empty, malformed and unknown actions", () => {
     ok: false,
     reason: "format",
   });
-  assert.deepEqual(parseScanCode("HAPUS S9T0V1"), {
+  assert.deepEqual(parseScanCode("HAPUS K-001"), {
     ok: false,
     reason: "unknown-action",
   });
-  assert.deepEqual(parseScanCode("toString S9T0V1"), {
+  assert.deepEqual(parseScanCode("toString K-001"), {
     ok: false,
     reason: "unknown-action",
   });
 });
 
 test("legend-uqfu: a scan matches one ticket of the board", () => {
-  const result = resolveScan("selesai s9t0v1", tickets);
+  const result = resolveScan("selesai k-001", tickets);
   assert.equal(result.ok, true);
   assert.equal(result.action, "bump");
   assert.equal(result.ticket.id, "t1");
-  assert.equal(resolveScan("MULAI S9T0V2", tickets).ticket.id, "t2");
-  assert.equal(resolveScan("PANGGIL S9T0V3", tickets).ticket.id, "t3");
+  assert.equal(resolveScan("MULAI K-002", tickets).ticket.id, "t2");
+  assert.equal(resolveScan("PANGGIL K-003", tickets).ticket.id, "t3");
 });
 
 test("legend-uqfu: unknown or ambiguous codes and invalid statuses are errors", () => {
-  assert.equal(resolveScan("SELESAI ZZZZZZ", tickets).reason, "unknown-ticket");
-  assert.equal(resolveScan("SELESAI S9T0V1", []).reason, "unknown-ticket");
+  assert.equal(resolveScan("SELESAI K-999", tickets).reason, "unknown-ticket");
+  assert.equal(resolveScan("SELESAI K-001", []).reason, "unknown-ticket");
   const twins = [
-    { id: "a", orderId: "X-AAAAAA", status: "new" },
-    { id: "b", orderId: "Y-AAAAAA", status: "new" },
+    { id: "a", ticketNo: 7, status: "new" },
+    { id: "b", ticketNo: 7, status: "new" },
   ];
-  assert.equal(resolveScan("MULAI AAAAAA", twins).reason, "unknown-ticket");
+  assert.equal(resolveScan("MULAI K-007", twins).reason, "unknown-ticket");
   // start needs new/recalled, bump needs in_progress, recall needs done.
-  assert.equal(resolveScan("SELESAI S9T0V2", tickets).reason, "invalid-status");
-  assert.equal(resolveScan("MULAI S9T0V1", tickets).reason, "invalid-status");
-  assert.equal(resolveScan("PANGGIL S9T0V1", tickets).reason, "invalid-status");
+  assert.equal(resolveScan("SELESAI K-002", tickets).reason, "invalid-status");
+  assert.equal(resolveScan("MULAI K-001", tickets).reason, "invalid-status");
+  assert.equal(resolveScan("PANGGIL K-001", tickets).reason, "invalid-status");
   assert.equal(
-    resolveScan("PRIORITAS S9T0V4", tickets).reason,
+    resolveScan("PRIORITAS K-004", tickets).reason,
     "invalid-status",
   );
-  assert.equal(resolveScan("HAPUS S9T0V1", tickets).reason, "unknown-action");
+  assert.equal(resolveScan("HAPUS K-001", tickets).reason, "unknown-action");
 });
 
 test("legend-uqfu: priority is allowed on every live ticket", () => {
@@ -86,7 +88,7 @@ test("legend-uqfu: priority is allowed on every live ticket", () => {
 });
 
 test("legend-uqfu: invalid-status carries the ticket, open and scannable follow the status", () => {
-  const refused = resolveScan("SELESAI S9T0V2", tickets);
+  const refused = resolveScan("SELESAI K-002", tickets);
   assert.equal(refused.reason, "invalid-status");
   assert.equal(refused.ticket.id, "t2");
   assert.equal(isOpenTicket({ status: "new" }), true);

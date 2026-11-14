@@ -16,9 +16,9 @@ export const SCAN_ACTIONS: Readonly<Record<string, ScanAction>> = {
   PANGGIL: "recall",
 };
 
-/** The code a ticket header shows (the tail of its order id). */
-export function ticketScanCode(orderId: string): string {
-  return orderId.slice(-6).toUpperCase();
+/** The code a ticket header shows: its per-day ticket number, `K-007`. */
+export function ticketScanCode(ticketNo: number): string {
+  return `K-${String(ticketNo).padStart(3, "0")}`;
 }
 
 export type ParsedScan =
@@ -43,7 +43,7 @@ export function parseScanCode(raw: string): ParsedScan {
 
 export type ScanTicket = {
   id: string;
-  orderId: string;
+  ticketNo: number;
   status: KitchenTicketStatus;
 };
 
@@ -67,8 +67,7 @@ export function canScanAction(
 
 /**
  * Match a scan to one ticket of the current station board. A code that fits
- * no ticket or more than one (two orders can share a tail) is refused, as is
- * an action the ticket's status does not allow.
+ * no ticket or more than one is refused, as is an action the ticket's status does not allow.
  */
 export function resolveScan<T extends ScanTicket>(
   raw: string,
@@ -77,7 +76,7 @@ export function resolveScan<T extends ScanTicket>(
   const parsed = parseScanCode(raw);
   if (!parsed.ok) return parsed;
   const matches = tickets.filter(
-    (ticket) => ticketScanCode(ticket.orderId) === parsed.code,
+    (ticket) => ticketScanCode(ticket.ticketNo) === parsed.code,
   );
   const ticket = matches.length === 1 ? matches[0] : undefined;
   if (ticket === undefined) return { ok: false, reason: "unknown-ticket" };

@@ -78,7 +78,11 @@ import {
 } from "../db/schema/kds.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
-import { appendOrderEvent } from "./pos-order-support.ts";
+import {
+  appendOrderEvent,
+  businessDateFor,
+  loadOutlet,
+} from "./pos-order-support.ts";
 import {
   notifyQrKitchenVoid,
   notifyUnroutedQrLines,
@@ -380,6 +384,12 @@ export async function routeFiredItemsToKitchen(
   // Sorted station order = sorted cursor lock order across concurrent fires.
   for (const stationId of [...byStation.keys()].sort()) {
     const items = byStation.get(stationId) ?? [];
+    const { businessDate, ticketNo } = await nextKitchenTicketNo(
+      tx,
+      context,
+      outletId,
+      now,
+    );
     const [ticket] = await tx
       .insert(kitchenTickets)
       .values({
@@ -389,6 +399,8 @@ export async function routeFiredItemsToKitchen(
         orderId: input.orderId,
         stationId,
         fireBatchId,
+        businessDate,
+        ticketNo,
         status: "new",
         priority: 0,
         firedAt: now,
@@ -495,6 +507,65 @@ export async function routeFiredItemsToKitchen(
   return { ticketIds, unroutedItemIds };
 }
 
+/**
+ * Takes the ticket-number lock of the outlet's business day: one advisory
+ * lock per (tenant, outlet, business day), held to the end of the caller's
+ * transaction (re-taking it in the same transaction is free). Returns the
+ * business day the lock covers.
+ *
+ * LOCK ORDER RULE (deadlock, legend-tzyj2): take the ticket-number lock
+ * BEFORE any station-feed lock (`appendStationFeed`, the cursor row of a
+ * station). A POS fire takes ticket-no then feed; a path that voids kitchen
+ * items first (feed lock) and routes after (ticket-no lock) would close the
+ * cycle against it. Such a path calls this function first, then voids.
+ */
+export async function lockKitchenTicketNo(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  now: Date,
+): Promise<string> {
+  const tenantId = context.tenant.tenantId;
+  const businessDate = businessDateFor(
+    await loadOutlet(tx, context, outletId),
+    now,
+  );
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`kitchen-ticket-no:${tenantId}:${outletId}:${businessDate}`}, 0))`,
+  );
+  return businessDate;
+}
+
+/**
+ * Next ticket number of the outlet's business day (pickup.service.ts
+ * pattern): the ticket-number lock (`lockKitchenTicketNo`), then `max + 1`.
+ * The lock lasts to the end of the caller's transaction, so two concurrent
+ * fires never read the same max, and a repeat call in the same transaction
+ * sees the tickets inserted so far.
+ */
+async function nextKitchenTicketNo(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  now: Date,
+): Promise<{ businessDate: string; ticketNo: number }> {
+  const tenantId = context.tenant.tenantId;
+  const businessDate = await lockKitchenTicketNo(tx, context, outletId, now);
+  const [top] = await tx
+    .select({
+      max: sql<number | null>`max(${kitchenTickets.ticketNo})`.mapWith(Number),
+    })
+    .from(kitchenTickets)
+    .where(
+      and(
+        eq(kitchenTickets.tenantId, tenantId),
+        eq(kitchenTickets.outletId, outletId),
+        eq(kitchenTickets.businessDate, businessDate),
+      ),
+    );
+  return { businessDate, ticketNo: (top?.max ?? 0) + 1 };
+}
+
 type StationRule = {
   overrideStationId: string | null;
   stationType: string | null;
@@ -506,11 +577,13 @@ const stationRuleKey = (rule: StationRule) =>
 /**
  * Menu routing rule -> station that receives the ticket in `outletId`
  * (bead legend-s2dh). A menu item is brand level and names a station TYPE;
- * each outlet resolves it to its own active station of that type (first by
+ * each outlet resolves it to its own live station of that type (first by
  * name, id). The item's `station_id` is only an override inside that
  * station's outlet: elsewhere it is ignored (and usually invisible under
  * outlet RLS). A legacy row with an override but no type falls back to the
- * override's type when the caller can see it. Nothing resolves => CONFLICT,
+ * override's type when the caller can see it. An inactive target falls back to
+ * the first active station by display order, name, id (or itself if none exist).
+ * Nothing resolves => CONFLICT,
  * so the fire rolls back instead of losing the line.
  */
 async function resolveStations(
@@ -541,11 +614,24 @@ async function resolveStations(
             ),
           );
   const overrideById = new Map(overrides.map((row) => [row.id, row]));
-  const byType = new Map<string, string | null>();
+  const [fallback] = await tx
+    .select({ id: stations.id })
+    .from(stations)
+    .where(
+      and(
+        eq(stations.tenantId, tenantId),
+        eq(stations.outletId, outletId),
+        eq(stations.isActive, true),
+        isNull(stations.deletedAt),
+      ),
+    )
+    .orderBy(asc(stations.displayOrder), asc(stations.name), asc(stations.id))
+    .limit(1);
+  const byType = new Map<string, { id: string; isActive: boolean } | null>();
   const stationOfType = async (type: string) => {
     if (!byType.has(type)) {
       const [found] = await tx
-        .select({ id: stations.id })
+        .select({ id: stations.id, isActive: stations.isActive })
         .from(stations)
         .where(
           and(
@@ -557,7 +643,7 @@ async function resolveStations(
         )
         .orderBy(asc(stations.name), asc(stations.id))
         .limit(1);
-      byType.set(type, found?.id ?? null);
+      byType.set(type, found ?? null);
     }
     return byType.get(type) ?? null;
   };
@@ -574,7 +660,10 @@ async function resolveStations(
       override.outletId === outletId &&
       override.deletedAt === null
     ) {
-      result.set(key, override.id);
+      result.set(
+        key,
+        override.isActive ? override.id : (fallback?.id ?? override.id),
+      );
       continue;
     }
     const type = rule.stationType ?? override?.type ?? null;
@@ -583,7 +672,10 @@ async function resolveStations(
       if (skipUnresolved) continue;
       throw unresolvedStation();
     }
-    result.set(key, stationId);
+    result.set(
+      key,
+      stationId.isActive ? stationId.id : (fallback?.id ?? stationId.id),
+    );
   }
   return result;
 }

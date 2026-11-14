@@ -15,7 +15,13 @@
 // - The device id stays null until WS-02 device registration (legend-165)
 //   supplies a verified one: a client-claimed device is never trusted.
 
-import { Router, type Request } from "express";
+import {
+  Router,
+  type Request,
+  type RequestHandler,
+  type Response,
+} from "express";
+import { AccessError } from "@starter/shared/access";
 import { userIdSchema } from "@starter/shared/core";
 import {
   bumpKitchenTicket,
@@ -29,6 +35,7 @@ import {
   listChannelPauses,
   listMenuLoads,
   listKitchenStationLabels,
+  listKitchenStations,
   listKitchenStationTickets,
   recallKitchenTicket,
   releaseManualChannelPause,
@@ -37,6 +44,7 @@ import {
   setMenuLoads,
   startKitchenTicket,
   updateCapacityRules,
+  updateKitchenStations,
   updateKitchenTicketItem,
   voidKitchenTicket,
 } from "@starter/shared/kitchen";
@@ -55,6 +63,7 @@ import { requireTenantContext } from "../middleware/tenant.ts";
 import * as capacity from "../services/kds-capacity.service.ts";
 import * as cookReads from "../services/kds-cook-reads.service.ts";
 import * as pacing from "../services/kds-pacing.service.ts";
+import * as stationConfig from "../services/kds-station-config.service.ts";
 import * as kds from "../services/kds.service.ts";
 import type { KdsActor } from "../services/kds.service.ts";
 
@@ -339,6 +348,66 @@ kdsRouter.post(
 const manageStations = requireOutletPermission("kds.station.manage", (req) =>
   String(req.params.outletId),
 );
+
+// legend-bopi2: the KDS tab order and the two station flags. GET reads the
+// outlet's stations in display order; PUT saves order, active and fallback
+// print in one transaction (`kds.station.manage` on the outlet).
+// The KDS board reads GET for its tabs, so a cook with `kds.ticket.process`
+// only must pass too: a station manager sees every station of the outlet, a
+// cook only the stations in their reach (as `/station-labels`).
+async function passesGuard(
+  guard: RequestHandler,
+  req: Request,
+  res: Response,
+): Promise<boolean> {
+  let passed = false;
+  try {
+    await guard(req, res, () => {
+      passed = true;
+    });
+  } catch (error) {
+    if (error instanceof AccessError) return false;
+    throw error;
+  }
+  return passed;
+}
+
+kdsRouter.get("/stations", async (req, res) => {
+  const { outletId } = listKitchenStations.params.parse(req.params);
+  if (await passesGuard(manageStations, req, res)) {
+    res.json({
+      data: await stationConfig.listKitchenStationConfig(
+        getScopedTenantContext(req),
+        outletId,
+      ),
+    });
+    return;
+  }
+  // Denies (403) unless the caller holds `kds.ticket.process` somewhere.
+  await processTicket(req, res, () => undefined);
+  res.json({
+    data: await stationConfig.listKitchenStationConfigInScope(
+      ticketContext(req),
+      actor(req),
+      outletId,
+      new Date(),
+    ),
+  });
+});
+
+kdsRouter.put("/stations", manageStations, jsonBody, async (req, res) => {
+  const { outletId } = updateKitchenStations.params.parse(req.params);
+  const body = updateKitchenStations.body.parse(req.body);
+  res.json({
+    data: await stationConfig.saveKitchenStationConfig(
+      getScopedTenantContext(req),
+      outletId,
+      body,
+      actor(req),
+      new Date(),
+    ),
+  });
+});
 
 // legend-44jm: GET answers `listCapacityRules` (contract rows), ordered by
 // station, then window_minutes, then id, so two reads of an unchanged config

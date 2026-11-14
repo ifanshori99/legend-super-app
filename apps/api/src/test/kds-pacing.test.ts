@@ -395,9 +395,10 @@ async function ticket(
     );
     await client.query(
       `INSERT INTO kitchen_tickets
-         (id, tenant_id, outlet_id, order_id, station_id, fire_batch_id, status, priority,
-          fired_at, started_at, done_at, cancelled_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10, $11)`,
+         (id, tenant_id, outlet_id, order_id, station_id, fire_batch_id, business_date, ticket_no,
+          status, priority, fired_at, started_at, done_at, cancelled_at)
+       VALUES ($1, $2, $3, $4, $5, $6, '2026-11-01', (SELECT coalesce(max(m.ticket_no), 0) + 1 FROM kitchen_tickets m WHERE m.tenant_id = $2::uuid AND m.outlet_id = $3::uuid AND m.business_date = '2026-11-01'),
+               $7, 0, $8, $9, $10, $11)`,
       [
         ticketId,
         tenantId,
@@ -1841,6 +1842,47 @@ describe("A3 an outlet without capacity rules does no pacing work (KDS-05)", () 
 describe("A4 menu lines follow the real KDS routing (KDS-05)", () => {
   // Used by the pause and ETA cases: an item has no station id, only the
   // brand-level station type, so the outlet's first station of that type serves it.
+  it("routes an inactive target to the active station for ETA and automatic pauses", async () => {
+    const w = await makeWorld("inactive-route");
+    const inactive = await station(w, { type: "beverage_bar" });
+    const active = await station(w, {
+      type: "hot_kitchen",
+      rules: [
+        rule({
+          windowMinutes: 10,
+          capacityPoints: 4,
+          channelPriority: ["dine_in", "gofood"],
+        }),
+      ],
+    });
+    await asOwnerTenant(w.tenant.tenantId, async (client) => {
+      await client.query(
+        `UPDATE stations SET is_active = false WHERE id = $1`,
+        [inactive],
+      );
+    });
+    const target = await item(w, {
+      stationId: inactive,
+      stationType: "beverage_bar",
+      load: { points: 3, prep: 1200 },
+    });
+    const filler = await item(w, { stationId: active });
+    await ticket(w, {
+      stationId: active,
+      lines: [{ itemId: target }, { itemId: filler }],
+    });
+    expect(stationOf(await pacing(w, NOW), active)!.status).toBe("at_capacity");
+    expect(
+      liveAuto(await pauseRows(w)).map((row) => [
+        row.menu_item_id,
+        row.station_id,
+      ]),
+    ).toContainEqual([target, active]);
+    expect(
+      (await portEta(w, [{ menuItemId: target }]))!.minMinutes,
+    ).toBeGreaterThan(20);
+  });
+
   it("KDS-05 an item routed by station type (no station id) is auto-paused at capacity", async () => {
     // Fails without A4: only items with menu_items.station_id were found.
     const w = await makeWorld("typepause");

@@ -2444,6 +2444,20 @@
       "when": 1794629271111,
       "tag": "0362_reservation_reschedule_previous_time",
       "breakpoints": true
+    },
+    {
+      "idx": 363,
+      "version": "7",
+      "when": 1794629272111,
+      "tag": "0363_kitchen_station_config",
+      "breakpoints": true
+    },
+    {
+      "idx": 364,
+      "version": "7",
+      "when": 1794629273111,
+      "tag": "0364_kitchen_ticket_no",
+      "breakpoints": true
     }
   ]
 }

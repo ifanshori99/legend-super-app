@@ -27,6 +27,7 @@ import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
 import {
   cancelKitchenItemsForVoidedLines,
+  lockKitchenTicketNo,
   routeFiredItemsToKitchen,
 } from "./kds.service.ts";
 import {
@@ -290,6 +291,12 @@ export async function deliverSwapKitchenEvent(
       createdAt: now,
       updatedAt: now,
     });
+
+  // Lock order (kds.service.ts lockKitchenTicketNo): ticket-no lock BEFORE any
+  // station-feed lock. The void below locks a station feed; the routing after
+  // it locks ticket-no; a concurrent POS fire does ticket-no then feed. Taking
+  // ticket-no first (same `now` as the routing) keeps one order for all three.
+  await lockKitchenTicketNo(tx, context, order.outletId, now);
 
   // The trigger freezes the lines of a completed order: the old
   // line then stays as it is and the audit row says so.
