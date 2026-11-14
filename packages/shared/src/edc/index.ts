@@ -461,6 +461,77 @@ export const edcTransactionSchema = z.strictObject({
 });
 export type EdcTransaction = z.infer<typeof edcTransactionSchema>;
 
+/** How a flagged (`needs_reconciliation`) ECR sale ended, as decided by a
+ * person with evidence: the charge did not happen, or it did. */
+export const edcReconciliationOutcomeSchema = z.enum(["declined", "approved"]);
+export type EdcReconciliationOutcome = z.infer<
+  typeof edcReconciliationOutcomeSchema
+>;
+
+/** Where the person learned the terminal's real answer. */
+export const edcReconciliationEvidenceSourceSchema = z.enum([
+  "inquiry",
+  "terminal_receipt",
+  "bank_statement",
+]);
+export type EdcReconciliationEvidenceSource = z.infer<
+  typeof edcReconciliationEvidenceSourceSchema
+>;
+
+const noCardNumber = (value: string) => !hasPanLengthDigits(value);
+
+export const edcReconciliationEvidenceSchema = z.strictObject({
+  source: edcReconciliationEvidenceSourceSchema,
+  /** Written reason; never a card number. */
+  note: z
+    .string()
+    .trim()
+    .min(1)
+    .max(500)
+    .refine(noCardNumber, "Catatan tidak boleh memuat nomor kartu"),
+  approvalCode: z
+    .string()
+    .regex(/^[A-Za-z0-9]{1,12}$/)
+    .optional(),
+  rrn: z
+    .string()
+    .regex(/^[A-Za-z0-9]{1,24}$/)
+    .refine(noCardNumber, "RRN tidak boleh menyerupai nomor kartu")
+    .optional(),
+  /** The amount printed on the terminal receipt or bank evidence. Required
+   * for `approved` (see the body rule) so a charge whose real amount differs
+   * from the request is never booked; ignored for `declined`. */
+  chargedAmountIdr: idrSchema
+    .refine((n) => n > 0, "Nominal harus positif")
+    .optional(),
+});
+export type EdcReconciliationEvidence = z.infer<
+  typeof edcReconciliationEvidenceSchema
+>;
+
+/** POST /api/payments/admin/edc/transactions/:id/reconciliation body. */
+export const resolveEdcReconciliationBodySchema = z
+  .strictObject({
+    outcome: edcReconciliationOutcomeSchema,
+    evidence: edcReconciliationEvidenceSchema,
+  })
+  .refine(
+    (body) =>
+      body.outcome !== "approved" ||
+      body.evidence.chargedAmountIdr !== undefined,
+    {
+      path: ["evidence", "chargedAmountIdr"],
+      message: "Nominal yang tercetak di bukti terminal wajib diisi",
+    },
+  );
+export type ResolveEdcReconciliationBody = z.infer<
+  typeof resolveEdcReconciliationBodySchema
+>;
+
+export const resolveEdcReconciliationParamsSchema = z.strictObject({
+  id: uuidSchema,
+});
+
 export type EdcBank = z.infer<typeof edcBankSchema>;
 export type EdcMethod = z.infer<typeof edcMethodSchema>;
 export type EdcConnection = z.infer<typeof edcConnectionSchema>;

@@ -18,6 +18,7 @@ import { sessionMfaVerifiedAt } from "../lib/mfa.ts";
 import * as service from "../services/payment-admin.service.ts";
 import * as config from "../services/payment-admin-config.service.ts";
 import * as funds from "../services/payment-admin-funds.service.ts";
+import * as edcReconciliation from "../services/edc-reconciliation.service.ts";
 import * as reconciliation from "../services/payment-admin-reconciliation.service.ts";
 import * as settlementImport from "../services/payment-settlement-import.service.ts";
 import * as refunds from "../services/payment-refund.service.ts";
@@ -190,6 +191,24 @@ paymentAdminRouter.get(
         scope(req),
         actor(req),
         contract.listRefundablePayments.query.parse(req.query),
+      ),
+    });
+  },
+);
+// EDC reconciliation (legend-x9zmq): clears a flagged ECR sale after a person
+// checked the terminal. The service re-checks payment.reconcile at the outlet.
+paymentAdminRouter.post(
+  "/edc/transactions/:id/reconciliation",
+  jsonBody,
+  reconcileRecord,
+  async (req, res) => {
+    res.json({
+      data: await edcReconciliation.resolveEdcReconciliationForActor(
+        scope(req),
+        actor(req),
+        req.params,
+        req.body,
+        { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
       ),
     });
   },
