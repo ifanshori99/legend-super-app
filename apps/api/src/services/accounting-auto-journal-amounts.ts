@@ -1024,6 +1024,35 @@ async function refundGatewaySplitOf(
       .filter((row) => !current || key(row) < key(current))
       .sort((a, b) => (key(a) < key(b) ? -1 : 1));
     for (const row of earlier) apply(row.lines, false, row.id);
+    // legend-fpy9s: a DP return of an earlier POS refund shares the line's
+    // pos-refund-gateway key (one payment refund per refund + intent), so the
+    // linked refund covers lines + DP. Count the DP in the same want, or the DP
+    // part would cover a shortfall of the line part.
+    if (earlier.length > 0) {
+      const earlierDeposits = await tx
+        .select({
+          posRefundId: posDepositRefunds.posRefundId,
+          intentId: posDepositRefunds.paymentIntentId,
+          amountIdr: posDepositRefunds.amountIdr,
+        })
+        .from(posDepositRefunds)
+        .where(
+          and(
+            eq(posDepositRefunds.tenantId, tenantId),
+            inArray(
+              posDepositRefunds.posRefundId,
+              earlier.map((row) => row.id),
+            ),
+          ),
+        );
+      for (const row of earlierDeposits) {
+        const linkKey = `pos-refund-gateway:${row.posRefundId}:${row.intentId}`;
+        earlierIntentWant.set(
+          linkKey,
+          (earlierIntentWant.get(linkKey) ?? 0) + Number(row.amountIdr),
+        );
+      }
+    }
     // A payload without lines (stored before they were kept): its gateway
     // part walks every gateway tender of the order.
     apply(

@@ -32,6 +32,7 @@ import { tenderBucket } from "@starter/shared/pos";
 import type { SystemRefundActor } from "@starter/shared/payment/admin";
 import { and, eq, inArray } from "drizzle-orm";
 import { paymentIntents, paymentRefunds } from "../db/schema/index.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
@@ -75,12 +76,23 @@ export async function requestPosRefundGatewayPart(
         line.paymentIntentId,
         (byIntent.get(line.paymentIntentId) ?? 0) + line.amountIdr,
       );
+  const lineIntents = new Set(byIntent.keys());
   for (const part of input.depositParts ?? [])
-    if (part.amountIdr > 0)
+    if (part.amountIdr > 0) {
+      // legend-fpy9s: one key per refund + intent. A DP part and a line on the
+      // same intent would share it (the DP could cover a line shortfall, or a
+      // second call would replay the first and file nothing). Refuse.
+      if (lineIntents.has(part.paymentIntentId))
+        throw new HttpError(
+          409,
+          "DP_REFUND_SOURCE_UNVERIFIED",
+          "Sumber pembayaran DP belum dapat diverifikasi; refund DP harus melalui pembayaran asal.",
+        );
       byIntent.set(
         part.paymentIntentId,
         (byIntent.get(part.paymentIntentId) ?? 0) + part.amountIdr,
       );
+    }
   if (byIntent.size === 0) return;
   // Locks the intent rows (ascending); the order row is already held.
   const at = await lockIntentsForFact(tx, tenantId, byIntent.keys(), input.now);

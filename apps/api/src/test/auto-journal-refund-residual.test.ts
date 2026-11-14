@@ -1198,6 +1198,109 @@ describe("legend-ljs6i residual gateway part of a refund without source evidence
     );
   });
 
+  // legend-fpy9s: a deposit part (pos_deposit_refunds row) of the same POS refund
+  // and intent shares the gateway key with the POS refund line. The filed
+  // payment refund covers line + deposit part together, so a shortfall of the
+  // line part must not be hidden by the deposit part.
+  async function seedEarlierLinePlusDeposit(
+    lineIdr: number,
+    depositIdr: number,
+    filedIdr: number,
+  ) {
+    const world = await makeWorld();
+    const { linkId, intentId } = await seedLinkedIntent(world, 40_000);
+    await post(world, paymentPaid(world, intentId, 40_000));
+    const orderUlid = createUlid();
+    const sale = {
+      ...SALE,
+      tenders: [{ method: "cash" as const, amountIdr: 55_000 }],
+    };
+    await seedPosOrder(world, orderUlid, sale, { linkId, intentId });
+    await post(world, orderPaid(world, orderUlid, sale));
+
+    const firstId = await seedPosRefund(world, orderUlid, [
+      {
+        method: "qris",
+        amountIdr: lineIdr,
+        paymentIntentId: intentId,
+        tenderId: randomUUID(),
+      },
+    ]);
+    // The deposit part is inserted directly: the service guard refuses a line
+    // and a deposit part on one intent, but rows can exist at function level.
+    await owner.query(
+      `INSERT INTO pos_deposit_refunds
+         (tenant_id, outlet_id, order_id, pos_refund_id, payment_intent_id, amount_idr, released_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        world.tenant.id,
+        world.outletId,
+        ulidToUuid(orderUlid),
+        firstId,
+        intentId,
+        depositIdr,
+        DAY,
+      ],
+    );
+    await seedLinkedPaymentRefund(world, firstId, intentId, filedIdr);
+    const first = await post(
+      world,
+      orderRefunded(world, orderUlid, firstId, {
+        grossSalesIdr: lineIdr + depositIdr,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: lineIdr + depositIdr }],
+      }),
+    );
+    expectBalancedLines(await linesOf(world, first.journalEntryId));
+    return { world, orderUlid };
+  }
+
+  it("ARR-13 a deposit part on the same key does not cover a shortfall of the POS refund line (line 20k + deposit 15k, only 20k filed): the 15k unfiled stays counted, so a second payload-only refund of 20k on the 40k intent (15k + 20k + 20k > 40k) parks, no journal", async () => {
+    errorSpy.mockImplementation(() => {});
+    const { world, orderUlid } = await seedEarlierLinePlusDeposit(
+      20_000,
+      15_000,
+      20_000,
+    );
+
+    const secondId = randomUUID();
+    await expectParkedNoJournal(
+      world,
+      orderRefunded(world, orderUlid, secondId, {
+        grossSalesIdr: 20_000,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: 20_000 }],
+      }),
+      secondId,
+    );
+  });
+
+  it("ARR-14 control: line 20k + deposit 15k fully filed (35k) is counted once, not twice: a second payload-only refund of 5k on the 40k intent (35k + 5k <= 40k) posts to customer_deposit, no park", async () => {
+    errorSpy.mockImplementation(() => {});
+    const { world, orderUlid } = await seedEarlierLinePlusDeposit(
+      20_000,
+      15_000,
+      35_000,
+    );
+
+    const secondId = randomUUID();
+    const second = await post(
+      world,
+      orderRefunded(world, orderUlid, secondId, {
+        grossSalesIdr: 5_000,
+        pbjtIdr: 0,
+        lines: [{ method: "qris", amountIdr: 5_000 }],
+      }),
+    );
+    const secondLines = await linesOf(world, second.journalEntryId);
+    expectBalancedLines(secondLines);
+    expect(creditOf(secondLines, "customer_deposit")).toBe(5_000);
+    expect(creditOf(secondLines, "gateway_clearing")).toBe(0);
+    expect(
+      await parkedOf(world.tenant, `aj:order-refund:${secondId}`),
+    ).toHaveLength(0);
+  });
+
   it("ARR-10 an order with an intentless gateway tender (30k) pinned to a paid 55k intent: a refund claiming 55k gateway is not covered by the pin, it parks with no journal", async () => {
     errorSpy.mockImplementation(() => {});
     const world = await makeWorld();
