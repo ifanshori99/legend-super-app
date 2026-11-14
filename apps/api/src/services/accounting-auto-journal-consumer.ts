@@ -133,6 +133,7 @@ const RETRYABLE_CODES = [
 
 const PAYLOAD_INVALID = "AUTO_JOURNAL_PAYLOAD_INVALID";
 const DEAD_LETTERED_CODE = "AUTO_JOURNAL_RECEIPT_DEAD_LETTERED";
+const REFUND_SOURCE_PENDING_CODE = "AUTO_JOURNAL_REFUND_SOURCE_PENDING";
 const DEBIT_NOTE_SHORT_CODE = "AUTO_JOURNAL_DEBIT_NOTE_SHORT";
 
 /**
@@ -271,7 +272,7 @@ async function park(
     return { status: "parked", code, retryable: false };
   }
   // legend-3r6r: the sale stopped retrying; make the stuck row loud.
-  if (code === DEAD_LETTERED_CODE) {
+  if (code === DEAD_LETTERED_CODE || code === REFUND_SOURCE_PENDING_CODE) {
     const [already] = await tx
       .select({ code: autoJournalParked.errorCode })
       .from(autoJournalParked)
@@ -282,9 +283,11 @@ async function park(
         ),
       )
       .limit(1);
-    if (already?.code !== DEAD_LETTERED_CODE)
+    if (already?.code !== code)
       console.error(
-        `Auto-journal ${row.eventName} ${row.eventId} parked ${code}: replay the dead-lettered payment.paid`,
+        code === DEAD_LETTERED_CODE
+          ? `Auto-journal ${row.eventName} ${row.eventId} parked ${code}: replay the dead-lettered payment.paid`
+          : `Auto-journal ${row.eventName} ${row.eventId} parked ${code}: refund has no provable gateway source; operator review needed`,
       );
   }
   // A dead-lettered row is not retried at the 10 minute pace, but a daily

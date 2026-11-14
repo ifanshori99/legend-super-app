@@ -934,6 +934,11 @@ async function refundGatewaySplitOf(
         )
         .limit(1)
     ).length > 0;
+  // Gateway part of earlier POS refunds of this order, and whether any part of
+  // this refund has no tender/intent proving its payer (legend-ljs6i).
+  let earlierGatewayIdr = 0;
+  let unprovenResidual = false;
+  let tenderNullIdr = 0;
   if (recovery[0]) {
     add(recovery[0].intentId, gatewayIdr);
   } else {
@@ -961,6 +966,8 @@ async function refundGatewaySplitOf(
       for (const line of lines) {
         if (line.method !== ANY_GATEWAY && !isGateway(line.method)) continue;
         let want = Number(line.amountIdr);
+        // A line with an intent is already filed in payment_refunds.
+        if (!collect && !line.paymentIntentId) earlierGatewayIdr += want;
         const named = line.tenderId
           ? tenders.find((tender) => tender.id === line.tenderId)
           : undefined;
@@ -977,11 +984,20 @@ async function refundGatewaySplitOf(
           if (take <= 0) continue;
           tender.left -= take;
           want -= take;
-          if (collect) add(tender.intentId, take);
+          if (collect) {
+            if (tender.intentId === null) tenderNullIdr += take;
+            add(tender.intentId, take);
+          }
         }
         // A line naming a tender that is gone, or more than the tenders held.
-        if (collect && want > 0)
-          add(line.tenderId ? (line.paymentIntentId ?? null) : null, want);
+        if (collect && want > 0) {
+          const intentId = line.tenderId
+            ? (line.paymentIntentId ?? null)
+            : null;
+          // legend-ljs6i: no tender and no intent proves who paid this part.
+          if (intentId === null) unprovenResidual = true;
+          add(intentId, want);
+        }
       }
     };
     const key = (row: { refundedAt: Date; createdAt: Date; id: string }) =>
@@ -1017,7 +1033,7 @@ async function refundGatewaySplitOf(
       for (const row of deposits) add(row.intentId, Number(row.amountIdr));
     }
   }
-  if (recoveryWithoutSource) {
+  if (recoveryWithoutSource || unprovenResidual) {
     let attributedIdr = 0;
     for (const amountIdr of byIntent.values()) attributedIdr += amountIdr;
     if (byIntent.has(null) || attributedIdr < gatewayIdr) {
@@ -1025,9 +1041,12 @@ async function refundGatewaySplitOf(
       // payment intent (orders.payment_intent_id). Only when no tender
       // attributed anything (never a partial mix), and never more than the
       // intent was worth; anything else waits, never gateway_clearing.
+      // A pre-cutover tender without an intent mixed with an unproven residual
+      // is parked, not pinned (legend-ljs6i).
       const untouched =
-        byIntent.size === 0 ||
-        (byIntent.size === 1 && byIntent.has(null) && attributedIdr > 0);
+        (byIntent.size === 0 ||
+          (byIntent.size === 1 && byIntent.has(null) && attributedIdr > 0)) &&
+        !(unprovenResidual && tenderNullIdr > 0);
       let pinnedIntentId: string | null = null;
       if (untouched) {
         const [pinned] = await tx
@@ -1080,14 +1099,19 @@ async function refundGatewaySplitOf(
             );
           if (
             (splits?.n ?? 0) === 0 &&
-            gatewayIdr + Number(filed?.total ?? 0) <= Number(pinned.amountIdr)
+            gatewayIdr +
+              Number(filed?.total ?? 0) +
+              (recoveryWithoutSource ? 0 : earlierGatewayIdr) <=
+              Number(pinned.amountIdr)
           )
             pinnedIntentId = pinned.intentId;
         }
       }
       if (pinnedIntentId === null)
         throw new AutoJournalRefundSourcePending(
-          "Recovery refund has no payment refund and no provable gateway intent",
+          recoveryWithoutSource
+            ? "Recovery refund has no payment refund and no provable gateway intent"
+            : "Refund has no provable gateway source",
         );
       byIntent.clear();
       byIntent.set(pinnedIntentId, gatewayIdr);
