@@ -881,6 +881,56 @@ describe("legend-mksir inventory variance follows the configured posting account
     },
   );
 
+  it.each([
+    ["asset", "inventory"],
+    ["liability", "accounts_payable"],
+  ] as const)(
+    "legend-mksir rejects an %s mapping without changing stock, supplier debt or journals",
+    async (_type, role) => {
+      const world = await makeWorld(await makeTenant());
+      const stock = await seedStock(world, [
+        { quantity: "10.0000", unitCost: "1000.0000" },
+        { quantity: "10.0000", unitCost: "800.0000" },
+      ]);
+      await seedSupplierPayable(world, 500_000);
+      const stockBefore = await balanceOf(world, stock);
+      const inventoryBefore = await glNet(world, "inventory");
+      const payableBefore = await glNet(world, "accounts_payable");
+      const { rows: mappingsBefore } = await owner.query(
+        `SELECT role, account_id FROM account_mappings
+          WHERE tenant_id = $1 AND legal_entity_id = $2 ORDER BY role`,
+        [world.tenant.id, world.entity],
+      );
+      const { rows: journalsBefore } = await owner.query(
+        "SELECT id FROM journal_entries WHERE tenant_id = $1 AND legal_entity_id = $2 ORDER BY id",
+        [world.tenant.id, world.entity],
+      );
+
+      await expect(remap(world, world.accounts[role])).rejects.toMatchObject({
+        status: 422,
+        code: "VALIDATION_ERROR",
+        message:
+          "Role inventory_price_variance: needs a expense or revenue account",
+      });
+
+      const { rows: mappingsAfter } = await owner.query(
+        `SELECT role, account_id FROM account_mappings
+          WHERE tenant_id = $1 AND legal_entity_id = $2 ORDER BY role`,
+        [world.tenant.id, world.entity],
+      );
+      const { rows: journalsAfter } = await owner.query(
+        "SELECT id FROM journal_entries WHERE tenant_id = $1 AND legal_entity_id = $2 ORDER BY id",
+        [world.tenant.id, world.entity],
+      );
+      expect(mappingsAfter).toEqual(mappingsBefore);
+      expect(journalsAfter).toEqual(journalsBefore);
+      expect(await balanceOf(world, stock)).toEqual(stockBefore);
+      expect(await glNet(world, "inventory")).toBe(inventoryBefore);
+      expect(await glNet(world, "accounts_payable")).toBe(payableBefore);
+      expect(await returnJournalCount(world)).toBe(0);
+    },
+  );
+
   it("legend-mksir rejects a non-posting parent before replacing mappings", async () => {
     const world = await makeWorld(await makeTenant());
     const parentId = await customAccount(world, "expense");

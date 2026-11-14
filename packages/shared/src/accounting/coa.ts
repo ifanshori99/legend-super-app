@@ -225,8 +225,9 @@ export const POSTING_ACCOUNT_ROLES = {
   purchase_price_variance: "expense",
   /**
    * Moving-average cost vs returned stock value on a purchase return.
-   * The tenant chooses its posting account; the standard chart uses expense
-   * 5106, while a custom mapping may use another type (legend-mksir).
+   * The tenant chooses an expense or revenue account; the standard chart uses
+   * expense 5106. Asset and liability mappings would alter stock or supplier
+   * balances instead of recognising the variance (legend-mksir).
    */
   inventory_price_variance: null,
   /** Direct cash purchases paid from petty cash (PRD §3.18 pembelian sederhana). */
@@ -269,6 +270,7 @@ export type PostingAccountRole = keyof typeof POSTING_ACCOUNT_ROLES;
 export const POSTING_ROLE_ALLOWED_TYPES: Partial<
   Record<PostingAccountRole, readonly AccountType[]>
 > = {
+  inventory_price_variance: ["expense", "revenue"],
   service_charge: ["liability", "revenue"],
   payroll_custom_deduction: ["expense", "liability"],
 };
