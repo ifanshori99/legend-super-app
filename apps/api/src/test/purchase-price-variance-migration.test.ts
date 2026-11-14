@@ -27,6 +27,7 @@ import { resolve } from "node:path";
 import { Pool } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { replayMigrationForTenant } from "./helpers/migration-replay.ts";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const owner = new Pool({
@@ -47,54 +48,9 @@ const migrationSql = () =>
     "utf8",
   );
 
-/** Runs every statement of the migration as the migration owner, in order. */
-async function migrate(): Promise<void> {
-  const client = await owner.connect();
-  const errors: unknown[] = [];
-  let rollbackFailure: Error | undefined;
-  try {
-    await client.query("BEGIN");
-    // Keep concurrent tenant teardown from invalidating the backfill's scan.
-    await client.query("LOCK TABLE public.tenants IN SHARE MODE");
-    for (const statement of migrationSql().split("--> statement-breakpoint")) {
-      const sql = statement.replace(/--.*$/gm, "").trim();
-      if (sql) await client.query(statement);
-    }
-    await client.query("COMMIT");
-  } catch (error) {
-    errors.push(error);
-    try {
-      await client.query("ROLLBACK");
-    } catch (rollbackError) {
-      rollbackFailure =
-        rollbackError instanceof Error
-          ? rollbackError
-          : new Error(`Rollback failed: ${String(rollbackError)}`);
-      errors.push(rollbackError);
-    }
-  } finally {
-    try {
-      const results = await Promise.allSettled([
-        client.query(
-          "ALTER TABLE public.account_mappings FORCE ROW LEVEL SECURITY",
-        ),
-        client.query(
-          "ALTER TABLE public.chart_of_accounts FORCE ROW LEVEL SECURITY",
-        ),
-      ]);
-      errors.push(
-        ...results
-          .filter((result) => result.status === "rejected")
-          .map((result) => result.reason),
-      );
-    } finally {
-      client.release(rollbackFailure);
-    }
-  }
-  if (errors.length === 1) throw errors[0];
-  if (errors.length > 1)
-    throw new AggregateError(errors, "Migration replay failed");
-}
+/** Replays the migration for the fixture tenant only (legend-edxtt). */
+const migrate = (): Promise<void> =>
+  replayMigrationForTenant(owner, migrationSql(), tenantId);
 
 async function entity(provisioned: boolean): Promise<string> {
   const id = randomUUID();

@@ -11,6 +11,7 @@ import { resolve } from "node:path";
 import { Pool } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { replayMigrationForTenant } from "./helpers/migration-replay.ts";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const owner = new Pool({
@@ -30,10 +31,7 @@ afterAll(async () => {
   await owner.end();
 });
 
-const migrate = async () => {
-  for (const statement of migration.split("--> statement-breakpoint"))
-    if (statement.replace(/--.*$/gm, "").trim()) await owner.query(statement);
-};
+const migrate = () => replayMigrationForTenant(owner, migration, tenantId);
 
 async function entity(): Promise<string> {
   const id = randomUUID();

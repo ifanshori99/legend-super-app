@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { Pool } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { replayMigrationForTenant } from "./helpers/migration-replay.ts";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const owner = new Pool({
@@ -27,61 +28,8 @@ afterAll(async () => {
   await owner.end();
 });
 
-const migrate = async (sql = migration) => {
-  const client = await owner.connect();
-  let replayFailed = false;
-  let replayError: unknown;
-  let rollbackFailure: Error | undefined;
-  try {
-    await client.query("BEGIN");
-    // Keep concurrent tenant teardown from invalidating the backfill's scan.
-    await client.query("LOCK TABLE public.tenants IN SHARE MODE");
-    for (const statement of sql.split("--> statement-breakpoint"))
-      if (statement.replace(/--.*$/gm, "").trim())
-        await client.query(statement);
-    await client.query("COMMIT");
-  } catch (error) {
-    replayFailed = true;
-    replayError = error;
-    try {
-      await client.query("ROLLBACK");
-    } catch (rollbackError) {
-      rollbackFailure =
-        rollbackError instanceof Error
-          ? rollbackError
-          : new Error(`Rollback failed: ${String(rollbackError)}`);
-      replayError = new AggregateError(
-        [error, rollbackError],
-        "Replay and rollback failed",
-      );
-    }
-  } finally {
-    try {
-      const results = await Promise.allSettled([
-        client.query(
-          "ALTER TABLE public.account_mappings FORCE ROW LEVEL SECURITY",
-        ),
-        client.query(
-          "ALTER TABLE public.chart_of_accounts FORCE ROW LEVEL SECURITY",
-        ),
-      ]);
-      const failure = results.find((result) => result.status === "rejected");
-      if (failure?.status === "rejected") {
-        const errors = results
-          .filter((result) => result.status === "rejected")
-          .map((result) => result.reason);
-        replayFailed = true;
-        replayError = new AggregateError(
-          replayError !== undefined ? [replayError, ...errors] : errors,
-          "Failed to restore FORCE RLS",
-        );
-      }
-    } finally {
-      client.release(rollbackFailure);
-    }
-  }
-  if (replayFailed) throw replayError;
-};
+const migrate = (sql = migration) =>
+  replayMigrationForTenant(owner, sql, tenantId);
 
 async function entity(): Promise<string> {
   const id = randomUUID();
@@ -157,14 +105,23 @@ const mappingsOf = async (entityId: string, role: string) =>
 
 describe("legend-s8a3 1204 / 6110 / 6111 backfill migration", () => {
   it("keeps FORCE RLS enabled after a replay statement fails and rolls back", async () => {
+    const rolledBackId = randomUUID();
     const failingMigration = `
       ALTER TABLE public.chart_of_accounts NO FORCE ROW LEVEL SECURITY;
       --> statement-breakpoint
       ALTER TABLE public.account_mappings NO FORCE ROW LEVEL SECURITY;
       --> statement-breakpoint
+      INSERT INTO public.legal_entities (id, tenant_id, name) VALUES ('${rolledBackId}', '${tenantId}', 'Rolled back');
+      --> statement-breakpoint
       SELECT 1 / 0;
     `;
     await expect(migrate(failingMigration)).rejects.toThrow("division by zero");
+
+    const rolledBack = await owner.query(
+      "SELECT 1 FROM legal_entities WHERE id = $1",
+      [rolledBackId],
+    );
+    expect(rolledBack.rowCount).toBe(0);
 
     const result = await owner.query<{
       relname: string;
