@@ -146,6 +146,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "gives every existing tenant that has an Owner template role and no shareholder_version approval policy the default row (floor 0, level 1, Owner, distinct actor) (legend-tm6pp); idempotent, never touches a tenant that already has such a policy, FORCE RLS lifted and restored in the same migration",
   "0357_reconciliation_case_approval.sql":
     "gives every existing tenant that has an Owner template role and no reconciliation_case approval policy the default row (floor 0, level 1, Owner, distinct actor) (PAY recon, PRD §3.7); idempotent, never touches a tenant that already has such a policy, no reconciliation case row is written or changed, FORCE RLS lifted on roles and approval_policies and restored in the same migration",
+  // legend-89pn
+  "0360_cash_movement_mapping_backfill.sql":
+    "inserts accounts 2108 (Kas Masuk Belum Diklasifikasi) and 6112 (Beban Kas Keluar Kasir) and their cash_in_clearing / cash_out_expense mappings for every already provisioned (tenant, legal entity) pair that has at least one account_mappings row (legend-89pn); idempotent (only when the code or role is absent), never updates or deletes an account or mapping, never takes over a tenant's own account on those codes, parent only when it is a same-type unmapped leaf, FORCE RLS on chart_of_accounts and account_mappings lifted and restored in the same migration",
   "0187_audit_retention_maintenance.sql":
     "defines the audit retention SQL functions; the INSERT INTO audit_logs sits inside the purge function body (one summary row per batch, written at purge time), no row is written or changed while the migration runs (legend-usyi)",
   // legend-111j

@@ -2649,7 +2649,7 @@ describe("EDC-06 legend-aegsj database refuses a second missing case (migration 
     ) as { entries: { idx: number; when: number; tag: string }[] };
     const entry = journal.entries.find((row) => row.idx === 358);
     expect(entry?.tag).toMatch(/^0358_/);
-    const earlier = journal.entries.filter((row) => row.idx !== 358);
+    const earlier = journal.entries.filter((row) => row.idx < 358);
     expect(entry!.when).toBeGreaterThan(
       Math.max(...earlier.map((r) => r.when)),
     );
