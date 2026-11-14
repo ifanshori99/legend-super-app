@@ -87,3 +87,26 @@ File baru `apps/api/src/test/pos-shift-cash-approval.test.ts` dan tambahan kasus
 6. Approve setelah shift tutup → CONFLICT; angka shift tertutup (report) tidak berubah; trigger DB juga menolak insert langsung 'approved' bila shift tutup.
 7. Jurnal: approve → tepat satu jurnal kunci `aj:cash-movement:<id>` (kredit kas, debit lawan), moneyTime = decidedAt; replay event approved dan replay event recorded → tetap satu. Held tanpa keputusan → nol jurnal. Drop disetujui → efek laci, nol jurnal.
    Gagal-dulu harus karena sebab benar (fungsi tidak ada / trigger menolak), bukan setup.
+
+## Putaran 2 (keputusan CTO 15 Nov)
+Penyetuju = `shift.cash.approve_close` (opsi A). UI di kelola web saja. Perbaiki celah recordCashMovement.
+
+### Kontrak route (tetap; R, W, test-writer memakai ini)
+- `POST /api/outlets/:outletId/pos/shifts/:shiftId/cash-movements/:movementId/decision`, body strict `{ decision: "approved" | "rejected" }` → 200 `{ data: { movementId, outcome, decidedBy, decidedAt } }`.
+- Shared: endpoint object `decidePosCashMovement` (params outletId, shiftId, movementId; body schema; response) di file yang sama dengan `recordPosCashMovement`; tipe `PosCashMovementDecision`.
+- Route di `apps/api/src/routes/pos-shift.routes.ts` setelah GET cash-movements: guard `can(HELD_CASH_MOVEMENT_APPROVE_PERMISSION)` (pola `operate`), `jsonBody`; router sudah di bawah requireAuth + requireTrustedOrigin (pastikan).
+- Service `decideHeldCashMovement` dapat parameter `shiftId` (setelah outletId); movement dengan shift lain → NOT_FOUND.
+- Galat: FORBIDDEN 403 (tanpa izin / pencatat sendiri), CONFLICT 409 (sudah diputuskan lain, shift tutup, melebihi kas laci — pesan beda), NOT_FOUND 404.
+
+### R: route + shared (implementer, worktree terpisah)
+File: shared endpoint/types (cari `recordPosCashMovement` di packages/shared/src), `pos-shift.routes.ts`, `pos-shift-cash-approval.service.ts` (param shiftId). Commit di worktree-mu.
+
+### W: UI kelola (implementer, worktree terpisah)
+Daftar kas keluar tertahan yang sudah ada (cari pemakai `shift-extra-api.ts` / teks `pos-kasir-supervisor.ts` "Perlu persetujuan"; layar supervisor/kelola, bukan perangkat kasir). Tambah per baris tombol Setujui/Tolak + dialog konfirmasi (shadcn), mutation hook `useDecideHeldCashMovement` (api.ts → hooks.ts, invalidasi query daftar & shift), galat CONFLICT/FORBIDDEN/limit laci jelas. Semua teks di katalog `packages/shared/src/i18n/messages/pos-kasir-supervisor.ts`. Tombol hanya tampil bila pengguna memegang `shift.cash.approve_close` (presentasi saja). Ikuti `~/.agents/team/ui-standard.md`. Mock (`mock-engine.ts`) ikut mendukung decision bila layar memakai mock. Commit di worktree-mu.
+
+### F: celah recordCashMovement (setelah fail-first)
+`pos-shift.service.ts:~609-624`: `needsApproval = amountIdr > expected - heldCorrectionCashIdrOf(tx, shift)`.
+
+### Test (test-writer)
+1. `apps/api/src/test/pos-shift-cash-approval.test.ts`: recordCashMovement dengan refund/void tertahan → kas keluar yang muat di expected tapi melebihi expected − koreksi tertahan HARUS ditahan (needsApproval true, tidak masuk expected). Kas keluar yang muat setelah dikurangi → tidak ditahan.
+2. File baru `apps/api/src/test/pos-shift-cash-approval-route.test.ts`: HTTP route di atas: 200 approve oleh supervisor; 403 kasir (tanpa izin); 403 pencatat; 409 kedua kali beda keputusan; 404 movement shift lain/outlet lain/tenant lain; 400/422 body tidak valid; origin tidak tepercaya ditolak.
