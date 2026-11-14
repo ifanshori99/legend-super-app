@@ -1,0 +1,5 @@
+# 760 Dev seed domain localhost (legend-vq14)
+Peran: engineer (Codex, kartu S). Base: main. Cabang: fix/dev-seed-localhost-domains. Tanpa migrasi.
+Tujuan: seed dev mendaftarkan localhost dan 127.0.0.1 sebagai domain tenant, supaya login WhatsApp di dev tidak gagal karena tenant tidak ditemukan. Hanya seed dev/test, jangan ubah resolusi domain production. Idempotent (seed dijalankan ulang tidak menggandakan). Test: resolusi tenant dari host localhost:3000 dan 127.0.0.1:3000 berhasil setelah seed.
+Cari lewat Grep "tenant_domains\|tenantDomains" dan berkas seed di apps/api/src.
+Aturan umum: baca berkas peranmu di ~/.agents/team/roles/ dan bagian "Paralel dulu" di ~/.agents/team/TEAM.md (Grep judul, Read offset/limit). Kerja berat lewat `heavy`. Test bukti gagal-dulu. Satu review konteks segar (S: reviewer sonnet). Pra-gate AGENTS.md (prettier, eslint, typecheck paket tersentuh). Commit lokal, push cabang tanpa force. Jangan merge ke main, jangan deploy. Lapor: commit, test yang dijalankan, angka subagent (total, puncak bersamaan), yang belum terverifikasi.

@@ -1,0 +1,5 @@
+# 759 Rekonsiliasi lateFunds N+1 (legend-wa4br)
+Peran: engineer (Codex, kartu S). Base: ws/writeoff-late-funds. Cabang: fix/recon-latefunds-batch. Tanpa migrasi.
+Tujuan: daftar kasus rekonsiliasi mengambil data lateFunds satu query per kasus. Gabung jadi satu query (WHERE case_id IN / join), hasil per kasus identik. Uang: angka tidak boleh berubah; test membandingkan hasil lama vs baru untuk >=3 kasus (termasuk kasus tanpa lateFunds) dan memastikan jumlah query tetap (bukan N).
+Cari service rekonsiliasi lewat Grep "lateFunds" di apps/api/src/services.
+Aturan umum: baca berkas peranmu di ~/.agents/team/roles/ dan bagian "Paralel dulu" di ~/.agents/team/TEAM.md (Grep judul, Read offset/limit). Kerja berat lewat `heavy`. Test bukti gagal-dulu. Satu review konteks segar (S: reviewer sonnet). Pra-gate AGENTS.md (prettier, eslint, typecheck paket tersentuh). Commit lokal, push cabang tanpa force. Jangan merge ke main, jangan deploy. Lapor: commit, test yang dijalankan, angka subagent (total, puncak bersamaan), yang belum terverifikasi.
