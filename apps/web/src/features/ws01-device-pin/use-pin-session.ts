@@ -17,19 +17,23 @@ import type { PosOverrideView } from "@starter/shared/access/override";
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/errors";
 import {
+  endEmergencySessionCall,
   endPosSessionCall,
+  startEmergencySessionCall,
   startPosSessionCall,
   verifyStaffPinCall,
 } from "./api.ts";
 import { usePinLock } from "./use-pin-lock.ts";
 
-export type PinSessionMode = "verify" | "pos-session" | "override";
+export type PinSessionMode =
+  "verify" | "pos-session" | "emergency-session" | "override";
 /** What a POS switch knows about the staff member who is now active. */
 export type PosSessionStaff = {
   user: { id: string; displayName: string };
   outletId: string;
 };
-type PinResult<M extends PinSessionMode> = M extends "pos-session"
+type PinResult<M extends PinSessionMode> = M extends
+  "pos-session" | "emergency-session"
   ? PosSessionStaff
   : M extends "override"
     ? PosOverrideView
@@ -68,6 +72,7 @@ export function usePinSession<M extends PinSessionMode = "verify">({
         if (!overrideCall) throw new Error("overrideCall is required");
         return overrideCall(input);
       }
+      if (mode === "emergency-session") return startEmergencySessionCall(input);
       if (mode !== "pos-session") return verifyStaffPinCall(input);
       const { data } = await startPosSessionCall(input);
       // The token is already stored; the screen only needs who and where.
@@ -116,6 +121,8 @@ export function usePinSession<M extends PinSessionMode = "verify">({
               // The API already made this person the active cashier; undo it.
               if (mode === "pos-session")
                 void endPosSessionCall().catch(() => {});
+              if (mode === "emergency-session")
+                void endEmergencySessionCall().catch(() => {});
               fail(refused);
               return;
             }
@@ -128,6 +135,24 @@ export function usePinSession<M extends PinSessionMode = "verify">({
             if (cause instanceof ApiError && cause.code === "PIN_LOCKED") {
               lock.recordServerLocked();
               fail(t("devicePin.lockout.title"));
+            } else if (
+              mode === "emergency-session" &&
+              cause instanceof ApiError &&
+              cause.code === "DEVICE_NOT_REGISTERED"
+            ) {
+              fail(t("devicePin.emergency.deviceRequired"));
+            } else if (
+              mode === "emergency-session" &&
+              cause instanceof ApiError &&
+              cause.code === "NOT_ON_DUTY"
+            ) {
+              fail(t("devicePin.emergency.notOnDuty"));
+            } else if (
+              mode === "emergency-session" &&
+              cause instanceof ApiError &&
+              cause.status === 403
+            ) {
+              fail(t("devicePin.emergency.notAllowed"));
             } else if (
               cause instanceof ApiError &&
               cause.code === "PIN_INVALID"

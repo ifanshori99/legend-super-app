@@ -30,7 +30,12 @@ import { ACTING_STAFF_TTL_MS } from "@starter/shared/pos/acting-staff";
 import { ApiError } from "@/lib/api/errors";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
-import { endPosSession, startPosSession } from "./api.ts";
+import {
+  endEmergencySession,
+  endPosSession,
+  startEmergencySession,
+  startPosSession,
+} from "./api.ts";
 import { seedRosterIfEmpty } from "./storage.ts";
 
 const cashier = fx.usersByKey.cashier;
@@ -124,6 +129,25 @@ registerMock(startPosSession, ({ body }) => {
 });
 
 registerMock(endPosSession, () => undefined);
+
+registerMock(startEmergencySession, ({ body }) => {
+  const now = new Date();
+  const user = checkPin(body, now, body.staffUserId);
+  // The mock PIN roster has one receiver: its supervisor. The cashier
+  // template does not hold facility.emergency.respond.
+  if (user.id !== supervisor.id)
+    throw new ApiError(403, "FORBIDDEN", "Petugas tidak dapat menerima alarm.");
+  return {
+    data: {
+      user: { id: user.id, displayName: user.displayName },
+      outletId: fx.outletIds.bandung,
+      // Mock duty covers the receiver's 14-hour maximum (API receiver service).
+      expiresAt: new Date(now.getTime() + 14 * 60 * 60_000).toISOString(),
+    },
+  };
+});
+
+registerMock(endEmergencySession, () => undefined);
 
 registerMock(createApprovalRequest, ({ body }) => {
   const now = Date.now();

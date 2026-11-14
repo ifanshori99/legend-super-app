@@ -1,12 +1,13 @@
 import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { z } from "zod";
 import { PanicAlertLayer } from "@/features/facility-staff/components/panic-alert-layer";
+import { PanicPushControl } from "@/features/facility-staff/components/panic-push-control";
 import { evaluateGuard } from "@/lib/areas/guard";
 
 // Layout for every /fasilitas/* screen (bead legend-jztb7): the panic alert
 // layer lives here, mounted once, so an alert survives moving between the
 // board, cleaning, incidents and emergency screens. It only mounts for staff
-// who may assist; the child routes keep their own guards.
+// who may respond to emergencies; the child routes keep their own guards.
 const searchSchema = z.object({
   facilityId: z.uuid().optional().catch(undefined),
 });
@@ -23,7 +24,7 @@ function FacilityLayout() {
     {
       kind: "permission",
       surface: "pos",
-      anyOf: ["facility.access.assist"],
+      anyOf: ["facility.emergency.respond"],
     },
     access,
   );
@@ -32,8 +33,9 @@ function FacilityLayout() {
       {/* Above the screen so the connection status stays in the first
           viewport; the alert itself is a top-layer dialog either way. */}
       {gate.status === "allowed" && (
-        <div className="mx-auto mb-4 w-full max-w-6xl">
+        <div className="mx-auto mb-4 grid w-full max-w-6xl gap-3">
           <PanicAlertLayer facilityId={search.facilityId} />
+          <PanicPushControl />
         </div>
       )}
       <Outlet />

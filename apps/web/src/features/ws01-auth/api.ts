@@ -10,7 +10,9 @@ import {
   getCurrentAuth,
   getMfaRecoveryStatus,
   listMfaFactors,
+  listPushDevices,
   listSessions,
+  revokePushDevice,
   revokeSession,
   verifyMfaFactor,
   verifyMfaRecoveryCode,
@@ -55,6 +57,19 @@ export async function fetchSessions(signal?: AbortSignal) {
 
 export async function revokeDeviceSession(sessionId: string) {
   await callEndpoint(revokeSession, { params: { sessionId } });
+}
+
+/**
+ * Phones registered for panic alarms on this account, including ones whose
+ * login session has already ended (they still receive alarms until revoked).
+ */
+export async function fetchPushDevices(signal?: AbortSignal) {
+  const { data } = await callEndpoint(listPushDevices, undefined, { signal });
+  return data;
+}
+
+export async function revokeAlarmDevice(id: string) {
+  await callEndpoint(revokePushDevice, { params: { id } });
 }
 
 /** Records explicit staff activity before refreshing the idle deadline. */

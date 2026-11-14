@@ -11,6 +11,7 @@ import { ApiError } from "@/lib/api/errors";
 import { useCurrentAuth } from "../hooks";
 import { secondFactorState } from "../state";
 import { MfaPanel } from "./mfa-panel";
+import { PushDevicesPanel } from "./push-devices-panel";
 import { SecurityStatusBand } from "./security-status-band";
 import { SessionsPanel } from "./sessions-panel";
 
@@ -90,6 +91,7 @@ export function SecurityPage() {
           <div className="grid gap-5">
             <MfaPanel mfaRequired={auth.data.mfaRequired} />
             <SessionsPanel mfaRequired={auth.data.mfaRequired} />
+            <PushDevicesPanel />
           </div>
         </>
       )}

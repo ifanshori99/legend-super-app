@@ -64,6 +64,26 @@ vi.hoisted(() => {
     "A".repeat(43);
 });
 
+const upgradeBarrier = vi.hoisted(() => ({
+  afterRead: null as null | (() => Promise<void>),
+}));
+vi.mock("../services/panic-receiver-session.ts", async (importOriginal) => {
+  const original =
+    await importOriginal<
+      typeof import("../services/panic-receiver-session.ts")
+    >();
+  return {
+    ...original,
+    authenticateReceiverSession: async (
+      ...args: Parameters<typeof original.authenticateReceiverSession>
+    ) => {
+      const session = await original.authenticateReceiverSession(...args);
+      if (session && upgradeBarrier.afterRead) await upgradeBarrier.afterRead();
+      return session;
+    },
+  };
+});
+
 import { roleTemplate, type RoleTemplateKey } from "@starter/shared/access";
 import {
   createUlid,
@@ -78,6 +98,7 @@ import {
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { guardEdgeUpgrades } from "../edge/mode.ts";
+import { subscribe, type HubSubscriber } from "../edge/panic-relay-hub.ts";
 import {
   installEdgeStaffPinPeppers,
   resetEdgeStaffPinPeppers,
@@ -92,6 +113,11 @@ import {
   setStaffPin,
 } from "../services/device-pin.service.ts";
 import { enrollDevice, revokeDevice } from "../services/device.service.ts";
+import {
+  findReceiverSessionAny,
+  recheckReceiverSession,
+  revokeReceiverSession,
+} from "../services/panic-receiver-session.ts";
 import { withEdgeModeEnv } from "./edge-mode-env.ts";
 import {
   createIsolatedTenant,
@@ -1722,5 +1748,123 @@ describe("EM-17 Origin checks on the socket and on the writes", () => {
     );
     expect(logout.status, JSON.stringify(logout.body)).toBe(403);
     expect(await liveRows(staff.userId)).toHaveLength(1);
+  });
+});
+
+describe("legend-aagpf stored revocation wins over a cached receiver session", () => {
+  it("rejects the cached session after logout and preserves its stored reason", async () => {
+    const device = await enrollAt(outletA, "waiter_phone", "Cached logout");
+    const staff = await onDutyStaff("Cached logout receiver");
+    const cookie = await loginOk(device, staff);
+    const cached = await withEdgeModeEnv(() =>
+      findReceiverSessionAny(`${PANIC_COOKIE_NAME}=${cookie.value}`),
+    );
+    expect(cached).not.toBeNull();
+    expect(
+      await withEdgeModeEnv(() => recheckReceiverSession(cached!)),
+    ).toEqual({ ok: true });
+    await revokeReceiverSession(cached!, "logout");
+    expect(
+      await withEdgeModeEnv(() => recheckReceiverSession(cached!)),
+    ).toEqual({ ok: false, reason: "logout" });
+    expect((await sessionRows(staff.userId))[0]?.revoke_reason).toBe("logout");
+  });
+});
+
+describe("legend-aagpf revocation between upgrade lookup and subscription", () => {
+  it("closes 4401 and discloses no alert location or responder name after the race", async () => {
+    const device = await enrollAt(outletA, "waiter_phone", "Upgrade race");
+    const staff = await onDutyStaff("Upgrade race receiver");
+    const cookie = await loginOk(device, staff);
+    const cached = await withEdgeModeEnv(() =>
+      findReceiverSessionAny(`${PANIC_COOKIE_NAME}=${cookie.value}`),
+    );
+    expect(cached).not.toBeNull();
+    let entered!: () => void;
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    upgradeBarrier.afterRead = async () => {
+      entered();
+      await gate;
+    };
+    let connection: Promise<Connect>;
+    try {
+      connection = withEdgeModeEnv(() => connectSocket(cookie.value));
+      await waiting;
+      await revokeReceiverSession(cached!, "logout");
+    } finally {
+      upgradeBarrier.afterRead = null;
+      release();
+    }
+    const connected = await connection;
+    expect(connected.ok).toBe(true);
+    if (!connected.ok)
+      throw new Error("Expected upgrade to finish with its cached lookup");
+    const { alertId } = await ring(outletA);
+    const activeDevice = await enrollAt(
+      outletA,
+      "waiter_phone",
+      "Active responder",
+    );
+    const activeStaff = await onDutyStaff("Private responder race name");
+    const activeCookie = await loginOk(activeDevice, activeStaff);
+    expect((await ackAlert(activeCookie.value, alertId)).status).toBe(200);
+    await expectClosed4401(connected.sock);
+    expect(mentions(connected.sock.frames, alertId)).toBe(false);
+    expect(connected.sock.frames.join(" ")).not.toContain(
+      "Private responder race name",
+    );
+  });
+});
+
+describe("legend-aagpf acknowledgement after a missed revocation broadcast", () => {
+  it("rechecks stored logout before disclosing a responders name to a stale subscriber", async () => {
+    const device = await enrollAt(
+      outletA,
+      "waiter_phone",
+      "Stale ACK receiver",
+    );
+    const staff = await onDutyStaff("Stale ACK receiver");
+    const cookie = await loginOk(device, staff);
+    const cached = await withEdgeModeEnv(() =>
+      findReceiverSessionAny(`${PANIC_COOKIE_NAME}=${cookie.value}`),
+    );
+    expect(cached).not.toBeNull();
+    const { alertId } = await ring(outletA);
+    const activeDevice = await enrollAt(outletA, "waiter_phone", "ACK control");
+    const activeStaff = await onDutyStaff("Responder private ACK name");
+    const activeCookie = await loginOk(activeDevice, activeStaff);
+    await revokeReceiverSession(cached!, "logout");
+    const frames: unknown[] = [];
+    const closed: number[] = [];
+    const stale: HubSubscriber = {
+      session: cached!,
+      alerts: new Map(),
+      send: (frame) => {
+        frames.push(frame);
+        return true;
+      },
+      close: (code) => {
+        closed.push(code);
+      },
+    };
+    const unsubscribe = subscribe(stale);
+    try {
+      expect((await ackAlert(activeCookie.value, alertId)).status).toBe(200);
+      await vi.waitFor(() =>
+        expect(closed).toContain(PANIC_REVOKED_CLOSE_CODE),
+      );
+      expect(frames).toHaveLength(0);
+      expect(JSON.stringify(frames)).not.toContain(
+        "Responder private ACK name",
+      );
+    } finally {
+      unsubscribe();
+    }
   });
 });

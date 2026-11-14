@@ -1,3 +1,4 @@
+import { createECDH } from "node:crypto";
 import { z } from "zod";
 import {
   DEPLOYMENT_POLICY_MESSAGE,
@@ -468,6 +469,89 @@ const schema = z
     OBJECT_STORAGE_PRIVATE_BUCKET: z.string().trim().min(1).optional(),
     OBJECT_STORAGE_PUBLIC_BUCKET: z.string().trim().min(1).optional(),
     OBJECT_STORAGE_PUBLIC_BASE_URL: z.url().optional(),
+    // Browser web push for the panic alarm (legend-ofq4f). The API only serves
+    // the public key; the worker signs and sends (its own NOTIFICATION_* checks
+    // stay). With web_push all three VAPID values are required. Never logged:
+    // the messages below name the key, never its value.
+    NOTIFICATION_PUSH_PROVIDER: blankToUndefined(
+      z.enum(["disabled", "web_push"]).default("disabled"),
+    ),
+    VAPID_PUBLIC_KEY: blankToUndefined(z.string().trim().optional()),
+    VAPID_PRIVATE_KEY: blankToUndefined(z.string().trim().optional()),
+    VAPID_SUBJECT: blankToUndefined(z.string().trim().optional()),
+  })
+  .superRefine((values, ctx) => {
+    if (values.NOTIFICATION_PUSH_PROVIDER !== "web_push") return;
+    const issue = (path: string, message: string) =>
+      ctx.addIssue({ code: "custom", path: [path], message });
+    for (const key of [
+      "VAPID_PUBLIC_KEY",
+      "VAPID_PRIVATE_KEY",
+      "VAPID_SUBJECT",
+    ] as const)
+      if (values[key] === undefined)
+        issue(
+          key,
+          `${key} is required when NOTIFICATION_PUSH_PROVIDER is web_push.`,
+        );
+    const { VAPID_PUBLIC_KEY: publicKey, VAPID_PRIVATE_KEY: privateKey } =
+      values;
+    // Public key: 65-byte uncompressed P-256 point (0x04 prefix), base64url.
+    if (publicKey !== undefined) {
+      const bytes = /^[A-Za-z0-9_-]+$/.test(publicKey)
+        ? Buffer.from(publicKey, "base64url")
+        : Buffer.alloc(0);
+      if (
+        !/^[A-Za-z0-9_-]{87}$/.test(publicKey) ||
+        bytes.length !== 65 ||
+        bytes[0] !== 0x04
+      )
+        issue(
+          "VAPID_PUBLIC_KEY",
+          "VAPID_PUBLIC_KEY must be a base64url uncompressed P-256 public key (65 bytes).",
+        );
+    }
+    if (
+      privateKey !== undefined &&
+      (!/^[A-Za-z0-9_-]{43}$/.test(privateKey) ||
+        Buffer.from(privateKey, "base64url").length !== 32)
+    )
+      issue(
+        "VAPID_PRIVATE_KEY",
+        "VAPID_PRIVATE_KEY must be a base64url P-256 private key (32 bytes).",
+      );
+    // The pair must match, otherwise every push is signed for nobody.
+    if (
+      publicKey !== undefined &&
+      privateKey !== undefined &&
+      /^[A-Za-z0-9_-]{87}$/.test(publicKey) &&
+      /^[A-Za-z0-9_-]{43}$/.test(privateKey)
+    ) {
+      try {
+        const key = createECDH("prime256v1");
+        key.setPrivateKey(Buffer.from(privateKey, "base64url"));
+        if (!key.getPublicKey().equals(Buffer.from(publicKey, "base64url")))
+          issue(
+            "VAPID_PUBLIC_KEY",
+            "VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY must be a matching key pair.",
+          );
+      } catch {
+        // Shape problems are already reported above.
+      }
+    }
+    const subject = values.VAPID_SUBJECT;
+    if (
+      subject !== undefined &&
+      !(
+        (subject.startsWith("mailto:") &&
+          z.email().safeParse(subject.slice(7)).success) ||
+        (subject.startsWith("https://") && z.url().safeParse(subject).success)
+      )
+    )
+      issue(
+        "VAPID_SUBJECT",
+        "VAPID_SUBJECT must be a mailto: address or an https:// URL.",
+      );
   })
   .superRefine((values, ctx) => {
     const required = [

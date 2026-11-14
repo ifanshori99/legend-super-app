@@ -3,6 +3,28 @@
 // "Keselamatan", acceptance FAC-06/FAC-08). Own file so parallel beads never
 // edit the same catalog lines.
 export const facilityStaffMessages = {
+  // Panic alarm push opt-in strip above the facility screens (bead
+  // legend-ofq4f): this browser can be reached when the app is in the background.
+  alarmPush: {
+    label: "Notifikasi alarm panik",
+    enableHint:
+      "Aktifkan agar alarm panik sampai ke perangkat ini saat layar tertutup.",
+    enable: "Aktifkan notifikasi alarm",
+    enabled: "Notifikasi alarm aktif di perangkat ini.",
+    binding: "Menyambungkan notifikasi alarm ke outlet ini…",
+    unbound:
+      "Notifikasi alarm belum tersambung ke outlet ini. Alarm panik bisa tidak sampai ke perangkat ini.",
+    retry: "Coba lagi",
+    enableError: "Notifikasi alarm belum bisa diaktifkan. Coba lagi.",
+    blocked:
+      "Izin notifikasi diblokir. Izinkan notifikasi untuk situs ini di pengaturan browser, lalu muat ulang.",
+    unsupported:
+      "Browser ini tidak mendukung notifikasi alarm. Pakai Chrome, Edge, atau Safari terbaru.",
+    unavailable:
+      "Kanal web push belum diaktifkan tenant. Alarm tetap tampil di layar ini.",
+    iosInstall:
+      "Di iPhone, pasang aplikasi ke Layar Utama dulu, lalu aktifkan notifikasi alarm.",
+  },
   nav: {
     board: "Papan bilik",
     cleaning: "Kebersihan",
@@ -228,7 +250,7 @@ export const facilityStaffMessages = {
       session: "Sesi habis",
       mine: "Anda menuju lokasi",
       taken: "Sudah ditangani rekan lain",
-      takenBy: "Sudah ditangani {name}",
+      takenBy: "{name} sudah menuju lokasi",
     },
     alert: {
       eyebrow: "Tombol panik ditekan",
@@ -265,7 +287,7 @@ export const facilityStaffMessages = {
       mineHeadingAlert: "Anda menuju lokasi alert {number}",
       takenEyebrow: "Respons sudah diterima",
       takenHeading: "Sudah ditangani rekan lain",
-      takenHeadingBy: "Sudah ditangani {name}",
+      takenHeadingBy: "{name} sudah menuju lokasi",
       takenHint: "Alert ini sudah diambil rekan lain.",
     },
     unreachable: {

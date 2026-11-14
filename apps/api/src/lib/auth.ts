@@ -36,6 +36,10 @@ import {
   type ImpersonationMatch,
 } from "../services/platform-support.service";
 import { contactDigestSecret, emailDigest } from "./identity-digest";
+import {
+  deleteSessionPushSubscriptionsForSession,
+  deleteUserPushSubscriptions,
+} from "../services/identity-session.service";
 import { resolveHostname } from "../services/org-resolve.service";
 import { logger } from "./logger";
 import { sealSecret } from "./secrets";
@@ -86,6 +90,50 @@ function refuse(error: unknown): never {
       message: error.message,
     });
   throw error;
+}
+
+/*
+ * Better Auth endpoints that revoke every session of a user through
+ * deleteUserSessions (internal-adapter.mjs:503-521): the session delete hook
+ * also removes the user's orphan push subscriptions on these paths. The
+ * /admin/* ones are refused by hooks.before (only impersonation is enabled);
+ * listed so enabling one later cannot skip the sweep. /reset-password is not
+ * here: revokeSessionsOnPasswordReset is off, so it never reaches
+ * deleteUserSessions; emailAndPassword.onPasswordReset sweeps instead.
+ */
+const USER_WIDE_SESSION_REVOKE_PATHS = new Set([
+  "/revoke-sessions",
+  "/change-password",
+  "/delete-user",
+  "/delete-user/callback",
+  "/admin/ban-user",
+  "/admin/revoke-user-sessions",
+  "/admin/remove-user",
+  // A ban through update-user also ends every session of the user.
+  "/admin/update-user",
+]);
+
+/*
+ * Paths that end a session on purpose (legend-ofq4f, second opinion P2). The
+ * session delete hook only deletes push subscriptions for these. Any other
+ * endpoint (/list-sessions, /update-user, ...) that meets an expired cookie
+ * makes Better Auth delete the dead session as a side effect; that is idle
+ * cleanup and must keep the phone's panic alarm. /admin/* is matched by
+ * prefix (see isExplicitSessionEnd).
+ */
+const EXPLICIT_SESSION_END_PATHS = new Set([
+  "/sign-out",
+  "/revoke-session",
+  "/revoke-sessions",
+  "/revoke-other-sessions",
+  "/change-password",
+  "/delete-user",
+  "/delete-user/callback",
+]);
+
+function isExplicitSessionEnd(path: string | undefined): boolean {
+  if (!path) return false;
+  return EXPLICIT_SESSION_END_PATHS.has(path) || path.startsWith("/admin/");
 }
 
 function endCause(
@@ -352,6 +400,42 @@ export const auth = betterAuth({
     // extra. Only the HTTP route: server-side auth.api.getSession calls (the
     // impersonation guard reads the session that way) keep the raw answer.
     after: createAuthMiddleware(async (ctx) => {
+      // legend-ofq4f (second opinion P1-1): Better Auth's revoke-other-sessions
+      // only deletes the other sessions that are still alive, so the session
+      // delete hook never runs when there is none (or only expired ones) and
+      // orphan push subscriptions would stay. After a successful revoke, sweep
+      // every push row of the user except the caller's own session. The
+      // caller's session is the one sensitiveSessionMiddleware loaded before
+      // the handler (it is merged into the same ctx.context object the after
+      // hook receives, dispatch.mjs createInternalContext/runAfterHooks), so
+      // it is the current session, never one that was just revoked.
+      if (ctx.path === "/revoke-other-sessions") {
+        const returned = ctx.context.returned as
+          { status?: boolean } | Error | null | undefined;
+        if (
+          !returned ||
+          returned instanceof Error ||
+          (returned as { status?: boolean }).status !== true
+        )
+          return;
+        const current = ctx.context.session as
+          | { session?: { id?: string }; user?: { id?: string } }
+          | null
+          | undefined;
+        const currentId = current?.session?.id;
+        const userId = current?.user?.id;
+        if (!currentId || !userId) {
+          // An alarm too many beats one lost: skip the sweep.
+          authLog.warn(
+            "revoke-other-sessions: current session unknown, push sweep skipped",
+          );
+          return;
+        }
+        // A failure throws: the revoke fails instead of leaving an alarm on
+        // a phone whose session was revoked.
+        await deleteUserPushSubscriptions(userId, currentId);
+        return;
+      }
       if (ctx.path !== "/get-session" || !ctx.request) return;
       const returned = ctx.context.returned as
         | {
@@ -551,6 +635,23 @@ export const auth = betterAuth({
         },
       },
       delete: {
+        // legend-ofq4f (second opinion P1-1, P2): an explicit end of a session
+        // deletes its web push subscriptions even if the session already
+        // expired (the DB trigger spares expired sessions so idle cleanup
+        // keeps panic alarms). Only the paths in EXPLICIT_SESSION_END_PATHS
+        // (and /admin/*) count; the `/get-session` expiry cleanup, any other
+        // endpoint that meets a dead cookie, and calls without an endpoint
+        // (our own SQL/services) keep them. A failure throws: the revoke fails
+        // instead of leaving an alarm on a signed-out phone. Whole-user revokes
+        // also sweep orphan rows; revoke-other-sessions sweeps in hooks.after
+        // because this hook does not run when no other live session exists.
+        before: async (session, ctx) => {
+          const path = ctx?.path;
+          if (!isExplicitSessionEnd(path)) return;
+          await deleteSessionPushSubscriptionsForSession(session.id);
+          if (path && USER_WIDE_SESSION_REVOKE_PATHS.has(path))
+            await deleteUserPushSubscriptions(session.userId, null);
+        },
         after: async (session, ctx) => {
           const adminUserId = session.impersonatedBy;
           if (typeof adminUserId !== "string" || !adminUserId) return;
@@ -615,6 +716,21 @@ export const auth = betterAuth({
     maxPasswordLength: 128,
     // Add an email provider before enabling verification or password recovery.
     requireEmailVerification: false,
+    // legend-ofq4f (second opinion P1-1): a password reset by token has no
+    // current session, so every push subscription of the user goes, orphans
+    // included (no session row needs to exist for this to run). The password
+    // is already changed here: a failed sweep is logged as an error and does
+    // not fail the reset (that would strand the user with a spent token).
+    onPasswordReset: async ({ user }) => {
+      try {
+        await deleteUserPushSubscriptions(user.id, null);
+      } catch (error) {
+        authLog.error(
+          { err: error, userId: user.id },
+          "legend-ofq4f: failed to delete push subscriptions after password reset",
+        );
+      }
+    },
   },
   rateLimit: {
     // Better Auth only turns its limiter on by itself when NODE_ENV is

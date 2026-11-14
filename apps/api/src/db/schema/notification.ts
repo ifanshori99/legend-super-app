@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
@@ -13,7 +14,9 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import { devices } from "./device";
 import { outlets } from "./platform-org";
+import { session } from "./session";
 
 /** IDs in the shared ULID contract are stored losslessly as UUIDs. */
 export const notificationOutbox = pgTable(
@@ -105,6 +108,14 @@ export const deliveryAttempts = pgTable(
     idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
     costIdr: bigint("cost_idr", { mode: "number" }).notNull().default(0),
     providerRef: varchar("provider_ref", { length: 255 }),
+    /**
+     * Web push subscriptions of this attempt that already accepted the push,
+     * so a retry after a partial failure sends only to the rest (legend-806).
+     */
+    deliveredPushSubscriptionIds: uuid("delivered_push_subscription_ids")
+      .array()
+      .notNull()
+      .default(sql`'{}'::uuid[]`),
     errorCode: varchar("error_code", { length: 64 }),
     skipReason: varchar("skip_reason", { length: 40 }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -195,9 +206,38 @@ export const pushSubscriptions = pgTable(
     subscriptionCiphertext: text("subscription_ciphertext").notNull(),
     keyVersion: varchar("key_version", { length: 64 }).notNull(),
     deviceLabel: varchar("device_label", { length: 100 }),
+    /** Outlet whose panic alarms this browser may receive; null = non-panic only. */
+    outletId: uuid("outlet_id"),
+    /** Registered device whose X-Device-Token was presented at registration. */
+    deviceId: uuid("device_id"),
+    /**
+     * devices.token_issued_at of the token presented at registration. The
+     * worker sends only while it still equals the device's current value, so
+     * a reissued token (lost or stolen phone) silences the old registration.
+     * Null when device_id is null.
+     */
+    deviceTokenIssuedAt: timestamp("device_token_issued_at", {
+      withTimezone: true,
+    }),
+    /**
+     * Login session that registered it. Deleting a still-valid session
+     * (sign-out, revoke) deletes the row (trigger in 0369), as does a revoke
+     * that keeps the session row; a session that merely expired (and is
+     * cleaned up) leaves the row with a null session, so a locked phone
+     * keeps its alarms.
+     */
+    sessionId: text("session_id").references(() => session.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    /**
+     * Set to now() by every verified registration; null marks a row saved
+     * before legend-ofq4f, which the worker never uses. Rows older than 30
+     * days stop receiving pushes until the browser registers again.
+     */
+    registeredAt: timestamp("registered_at", { withTimezone: true }),
     lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
   },
   (table) => [
@@ -207,6 +247,23 @@ export const pushSubscriptions = pgTable(
       table.userId,
       table.endpointHash,
     ),
+    index("push_subscriptions_user_outlet_idx").on(
+      table.tenantId,
+      table.userId,
+      table.outletId,
+    ),
+    // Sign-out and revoke delete by session; the FK's SET NULL scans it too.
+    index("push_subscriptions_session_idx").on(table.sessionId),
+    foreignKey({
+      name: "push_subscriptions_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    foreignKey({
+      name: "push_subscriptions_device_fk",
+      columns: [table.tenantId, table.outletId, table.deviceId],
+      foreignColumns: [devices.tenantId, devices.outletId, devices.id],
+    }),
   ],
 );
 

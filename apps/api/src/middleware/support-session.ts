@@ -83,6 +83,9 @@ const CREDENTIAL_PATHS: ReadonlyArray<{ method: string; path: RegExp }> = [
   // it would keep sending the tenant user's notifications to the support
   // browser after the session and grant end (legend-8bvin).
   { method: "POST", path: /^\/api\/notifications\/push-subscriptions$/ },
+  // Removing one of the user's alarm devices (legend-gchkf): an impersonating
+  // support session must not switch off the user's panic alarms.
+  { method: "DELETE", path: /^\/api\/identity\/push-devices\/[^/]+$/ },
 ];
 
 /**

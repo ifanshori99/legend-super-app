@@ -3,7 +3,7 @@
 // signed in; only the working staff member changes. It also hosts a demo
 // action that opens the reusable override modal.
 import { useCallback, useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, ShieldCheck, UserRound, UsersRound } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -29,9 +29,19 @@ import { PinPad } from "./pin-pad.tsx";
 // Sample order the demo override points at (the POS beads pass their own).
 const DEMO_OBJECT_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 
-export function SwitchUserScreen({ shell }: { shell: "pos" | "kds" }) {
+export function SwitchUserScreen({
+  shell,
+  emergency = false,
+  returnFacilityId,
+}: {
+  shell: "pos" | "kds";
+  emergency?: boolean;
+  /** Facility the emergency PIN came from; the return trip keeps it. */
+  returnFacilityId?: string;
+}) {
   const t = useT();
   const toast = useToast();
+  const navigate = useNavigate();
   const active = useActiveStaff();
   const roster = useRoster();
   const [picked, setPicked] = useState<RosterEntry | "other" | null>(null);
@@ -54,6 +64,19 @@ export function SwitchUserScreen({ shell }: { shell: "pos" | "kds" }) {
         displayName: result.user.displayName,
       };
       rememberStaff(entry);
+      if (emergency) {
+        // Return only after the cookie was issued. Remounting the facility
+        // receiver starts one fresh socket and restores open alerts.
+        toast({
+          title: t("devicePin.emergency.success", { name: entry.displayName }),
+          tone: "success",
+        });
+        void navigate({
+          to: "/fasilitas",
+          search: returnFacilityId ? { facilityId: returnFacilityId } : {},
+        });
+        return;
+      }
       setActiveStaff({ ...entry, outletId: result.outletId });
       setPicked(null);
       toast({
@@ -61,13 +84,17 @@ export function SwitchUserScreen({ shell }: { shell: "pos" | "kds" }) {
         tone: "success",
       });
     },
-    [t, toast],
+    [emergency, navigate, returnFacilityId, t, toast],
   );
   // POS switch: the PIN also makes this person the device's active cashier
   // (token for X-Acting-Staff). The KDS station has no acting-staff support
   // yet, so it keeps the plain PIN check.
   const session = usePinSession({
-    mode: shell === "pos" ? "pos-session" : "verify",
+    mode: emergency
+      ? "emergency-session"
+      : shell === "pos"
+        ? "pos-session"
+        : "verify",
     // The per-staff lockout counts misses for the tile the guest picked.
     userId: picked && picked !== "other" ? picked.userId : null,
     onVerified,
@@ -77,15 +104,19 @@ export function SwitchUserScreen({ shell }: { shell: "pos" | "kds" }) {
   return (
     <div className="mx-auto grid w-full max-w-3xl gap-6 p-4 sm:p-6">
       <header className="grid gap-1">
-        <h1 className="type-title">{t("devicePin.title")}</h1>
+        <h1 className="type-title">
+          {t(emergency ? "devicePin.emergency.title" : "devicePin.title")}
+        </h1>
         <p className="text-sm leading-5 text-muted-foreground">
-          {t("devicePin.subtitle")}
+          {t(emergency ? "devicePin.emergency.subtitle" : "devicePin.subtitle")}
         </p>
-        <p className="text-sm font-semibold" data-testid="active-staff">
-          {active
-            ? t("devicePin.activeNow", { name: active.displayName })
-            : t("devicePin.activeNone")}
-        </p>
+        {!emergency && (
+          <p className="text-sm font-semibold" data-testid="active-staff">
+            {active
+              ? t("devicePin.activeNow", { name: active.displayName })
+              : t("devicePin.activeNone")}
+          </p>
+        )}
       </header>
 
       <CardShell>
@@ -177,7 +208,7 @@ export function SwitchUserScreen({ shell }: { shell: "pos" | "kds" }) {
           <p className="text-center text-xs text-muted-foreground">
             {t("devicePin.switch.stationNote")}
           </p>
-          {active && (
+          {active && !emergency && (
             <Button asChild variant="outline" className="justify-self-center">
               <Link to={shell === "pos" ? "/pos" : "/kds"}>
                 {t(
@@ -191,38 +222,44 @@ export function SwitchUserScreen({ shell }: { shell: "pos" | "kds" }) {
         </CardShellBody>
       </CardShell>
 
-      <CardShell>
-        <CardShellBody className="grid gap-3 p-4 sm:p-5">
-          <div>
-            <h2 className="type-heading">{t("devicePin.demo.title")}</h2>
-            <p className="text-sm text-muted-foreground">
-              {t("devicePin.demo.description")}
-            </p>
-          </div>
-          <Button
-            variant="outline"
-            className="justify-self-start"
-            onClick={() => setOverrideOpen(true)}
-          >
-            <ShieldCheck aria-hidden="true" />
-            {t("devicePin.demo.action")}
-          </Button>
-          {overrideDone && (
-            <p role="status" className="text-sm" data-testid="override-result">
-              <strong>{t("devicePin.demo.resultTitle")}. </strong>
-              {t("devicePin.demo.resultBody", {
-                approver: overrideDone.approverName ?? "Supervisor",
-                method: t(
-                  overrideDone.method === "supervisor_pin"
-                    ? "devicePin.override.method.pin"
-                    : "devicePin.override.method.phone",
-                ),
-              })}
-              <Money amount={overrideDone.valueIdr} size="sm" />
-            </p>
-          )}
-        </CardShellBody>
-      </CardShell>
+      {!emergency && (
+        <CardShell>
+          <CardShellBody className="grid gap-3 p-4 sm:p-5">
+            <div>
+              <h2 className="type-heading">{t("devicePin.demo.title")}</h2>
+              <p className="text-sm text-muted-foreground">
+                {t("devicePin.demo.description")}
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              className="justify-self-start"
+              onClick={() => setOverrideOpen(true)}
+            >
+              <ShieldCheck aria-hidden="true" />
+              {t("devicePin.demo.action")}
+            </Button>
+            {overrideDone && (
+              <p
+                role="status"
+                className="text-sm"
+                data-testid="override-result"
+              >
+                <strong>{t("devicePin.demo.resultTitle")}. </strong>
+                {t("devicePin.demo.resultBody", {
+                  approver: overrideDone.approverName ?? "Supervisor",
+                  method: t(
+                    overrideDone.method === "supervisor_pin"
+                      ? "devicePin.override.method.pin"
+                      : "devicePin.override.method.phone",
+                  ),
+                })}
+                <Money amount={overrideDone.valueIdr} size="sm" />
+              </p>
+            )}
+          </CardShellBody>
+        </CardShell>
+      )}
 
       <OverrideRequestModal
         open={overrideOpen}

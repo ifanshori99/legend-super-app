@@ -33,6 +33,7 @@ import {
 } from "drizzle-orm";
 import {
   CoreError,
+  createUlid,
   outletIdSchema,
   toIsoDateTime,
   userIdSchema,
@@ -48,6 +49,8 @@ import {
 } from "@starter/shared/core/server";
 import {
   EMERGENCY_REVOKED_CLOSE_CODE,
+  PANIC_ALERT_AGGREGATE_TYPE,
+  panicAlertRaisedEvent,
   type PanicFallbackItem,
   type PanicPressBody,
   type PanicRealtimeFrame,
@@ -79,9 +82,17 @@ import { createFixedWindowCounter } from "../lib/fixed-window-counter.ts";
 import { logger } from "../lib/logger.ts";
 import { toLoggableError } from "../lib/safe-error.ts";
 import { outletContext } from "./device-pin-support.ts";
+import { appendOutbox } from "./core-outbox.ts";
 import type { EdgeTx } from "./edge-queue.service.ts";
-import { panicAlertIdFor, queuePanicAlertEvent } from "./panic-alert-outbox.ts";
-import { refuseWhenEdgeServesOutlet } from "./panic-edge-ownership.ts";
+import {
+  panicAlertIdFor,
+  queuePanicAlertEvent,
+  type PanicAlertOutboxEvent,
+} from "./panic-alert-outbox.ts";
+import {
+  isPanicEdgeProcess,
+  refuseWhenEdgeServesOutlet,
+} from "./panic-edge-ownership.ts";
 import {
   recheckReceiverSession,
   type ReceiverSession,
@@ -402,28 +413,58 @@ export async function ingestPanicPress(
           receivedAt: now,
         })
         .onConflictDoNothing();
+      const raised: PanicAlertOutboxEvent = {
+        key: "raised",
+        payload: {
+          alertId,
+          outletId: outletIdSchema.parse(created.outletId),
+          deviceId: device.id,
+          unitId: created.unitId,
+          firstDeviceEventId: body.eventId,
+          kind: created.kind === "test" ? "test" : "press",
+          triggeredAt: triggeredAt ? toIsoDateTime(triggeredAt) : null,
+          receivedAt: toIsoDateTime(created.receivedAt),
+          unitCodeSnapshot: created.unitCodeSnapshot,
+          facilityNameSnapshot: created.facilityNameSnapshot,
+          deviceLabelSnapshot: created.deviceLabelSnapshot,
+          linkOffline,
+        },
+      };
       await queuePanicAlertEvent(tx, context, {
         outletId,
         alertId,
         now,
-        event: {
-          key: "raised",
-          payload: {
-            alertId,
-            outletId: outletIdSchema.parse(created.outletId),
-            deviceId: device.id,
-            unitId: created.unitId,
-            firstDeviceEventId: body.eventId,
-            kind: created.kind === "test" ? "test" : "press",
-            triggeredAt: triggeredAt ? toIsoDateTime(triggeredAt) : null,
-            receivedAt: toIsoDateTime(created.receivedAt),
-            unitCodeSnapshot: created.unitCodeSnapshot,
-            facilityNameSnapshot: created.facilityNameSnapshot,
-            deviceLabelSnapshot: created.deviceLabelSnapshot,
-            linkOffline,
-          },
-        },
+        event: raised,
       });
+      // Edge alerts page staff when up-sync applies them in the cloud. A
+      // cloud-only outlet has no up-sync: queue its first alert here, in the
+      // same transaction. Replay and folded presses return above, so neither
+      // can page staff twice.
+      if (!isPanicEdgeProcess()) {
+        const event = panicAlertRaisedEvent.envelopeSchema.parse({
+          id: createUlid(now.getTime()),
+          tenantId,
+          outletId,
+          name: panicAlertRaisedEvent.name,
+          version: panicAlertRaisedEvent.version,
+          aggregateType: PANIC_ALERT_AGGREGATE_TYPE,
+          aggregateId: alertId,
+          sequence: 1,
+          occurredAt: toIsoDateTime(created.receivedAt),
+          actor: { type: "device", id: device.id },
+          deviceId: device.id,
+          idempotencyKey: `${PANIC_ALERT_AGGREGATE_TYPE}:${alertId}:1`,
+          payloadSchemaRef: panicAlertRaisedEvent.payloadSchemaRef,
+          payload: raised.payload,
+        });
+        await appendOutbox(tx, context, {
+          id: createUlid(now.getTime()),
+          event,
+          destination: "notification",
+          direction: null,
+          peerId: null,
+        });
+      }
       return {
         alert: created,
         areaName: unit?.areaName ?? null,

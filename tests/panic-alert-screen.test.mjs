@@ -529,7 +529,7 @@ test("motion is only enabled behind motion-safe and nothing blinks", () => {
 //
 // Assumptions: `resolveLocation` lives inside PanicAlertLayer (not exported), so
 // the location rule is tested through PanicAlertLayer with its hooks stubbed
-// (globalThis.__panicLayerHooks); the wording "Sudah ditangani {name}" is the
+// (globalThis.__panicLayerHooks); the wording "{name} sudah menuju lokasi" is the
 // brief's own text.
 
 function renderLayer({ state, board } = {}) {
@@ -550,6 +550,14 @@ function renderLayer({ state, board } = {}) {
     delete globalThis.__panicLayerHooks;
   }
 }
+
+test("legend-mm029 layer recovery link requests the emergency PIN session flow", () => {
+  const markup = renderLayer({ state: build([status("unreachable")]) });
+  assert.ok(
+    markup.includes('href="/pos/ganti-pengguna?emergency=true"'),
+    markup,
+  );
+});
 
 test("location: unitCode and areaName from the frame are shown without the unit board", () => {
   const markup = renderLayer({
@@ -601,7 +609,7 @@ test("location: no unitCode and no board row still says the location is unknown"
   assert.ok(text(markup).includes("Lokasi belum diketahui"));
 });
 
-test("taken by a named colleague (realtime frame): 'Sudah ditangani Rina' with the close button", () => {
+test("taken by a named colleague (realtime frame): 'Rina sudah menuju lokasi' with the close button", () => {
   const markup = render(
     build([
       status("open"),
@@ -618,7 +626,7 @@ test("taken by a named colleague (realtime frame): 'Sudah ditangani Rina' with t
     ]),
   );
   const t = text(markup);
-  assert.ok(t.includes("Sudah ditangani Rina"), t);
+  assert.ok(t.includes("Rina sudah menuju lokasi"), t);
   assert.ok(!t.includes("Sudah ditangani rekan lain"), t);
   assert.ok(!t.includes("Anda menuju Ruang 07"));
   assert.equal(buttons(markup).filter((b) => b.label === CLOSE).length, 1);
@@ -639,7 +647,7 @@ test("taken by a named colleague (409 with acknowledgedBy): the name is shown", 
     ]),
   );
   const t = text(markup);
-  assert.ok(t.includes("Sudah ditangani Dewi"), t);
+  assert.ok(t.includes("Dewi sudah menuju lokasi"), t);
   assert.ok(!t.includes("Sudah ditangani rekan lain"), t);
 });
 

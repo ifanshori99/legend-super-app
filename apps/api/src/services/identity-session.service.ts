@@ -15,7 +15,7 @@
 // `token` stays Better Auth's raw token; §6 B's token_hash is the one
 // deliberate deviation (see db/schema/session.ts and the bead report).
 
-import { and, desc, eq, gt, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -52,6 +52,7 @@ import { createSessionExtendLimiter } from "./session-extend-limiter";
 export { SESSION_EXTEND_RATE_LIMIT } from "./session-extend-limiter";
 
 export type SessionRow = typeof session.$inferSelect;
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 const UNKNOWN_DEVICE = "Perangkat tidak dikenal";
 
@@ -298,6 +299,8 @@ export async function revokeOwnSession(input: {
     // legend-rzirp: a support (impersonated) session is deleted, not kept as
     // a revoked row, and its end is audited here with cause "revoked". A
     // direct delete skips Better Auth's delete hook, so no second end row.
+    // Its push subscriptions go with it (session_delete_push_subscriptions
+    // trigger, 0369): the session is still valid when deleted.
     await db.delete(session).where(eq(session.id, row.id));
     try {
       await recordImpersonationEnded({
@@ -333,6 +336,7 @@ export async function revokeOwnSession(input: {
         .update(session)
         .set({ revokedAt, expiresAt })
         .where(eq(session.id, row.id));
+      await deleteSessionPushSubscriptions(tx, row.id);
       await appendControlPlaneEvent(tx, {
         definition: sessionRevokedEvent,
         destination: CONTROL_PLANE_DESTINATION,
@@ -379,6 +383,7 @@ export async function revokeOwnSession(input: {
       .update(session)
       .set({ revokedAt, expiresAt })
       .where(eq(session.id, row.id));
+    await deleteSessionPushSubscriptions(tx, row.id);
     await appendSessionRevoked(tx, context, {
       sessionId: row.id,
       userId: row.userId,
@@ -396,6 +401,55 @@ export async function revokeOwnSession(input: {
     return toWireSession(current ?? row);
   }
   return toWireSession({ ...row, revokedAt, expiresAt });
+}
+
+/**
+ * legend-ofq4f: a revoked session's browsers stop receiving pushes at once.
+ * The worker no longer checks `expires_at` (an idle staff session expires
+ * after 30 minutes but must keep its panic alarms). The revoke keeps the row
+ * and sets `expires_at` in the past, so neither the delete trigger (it spares
+ * expired sessions) nor the FK (SET NULL) would remove them later. They are
+ * deleted in the revoke's own transaction, in every tenant, by
+ * app.delete_session_push_subscriptions.
+ */
+async function deleteSessionPushSubscriptions(
+  tx: Tx | typeof db,
+  sessionId: string,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT app.delete_session_push_subscriptions(${sessionId})`,
+  );
+}
+
+/**
+ * legend-ofq4f (second opinion P1-1): an explicit end of one session (sign-out,
+ * revoke, admin revoke) deletes that session's push subscriptions even when
+ * the session has already expired. The delete trigger spares an expired
+ * session on purpose (idle cleanup must keep panic alarms), so Better Auth's
+ * `session.delete.before` hook calls this for explicit endpoints. Throws on
+ * failure: the caller fails the revoke rather than leave a live alarm behind.
+ */
+export async function deleteSessionPushSubscriptionsForSession(
+  sessionId: string,
+): Promise<void> {
+  await deleteSessionPushSubscriptions(db, sessionId);
+}
+
+/**
+ * legend-ofq4f (second opinion P1-1): a revoke of all of a user's sessions
+ * (revoke-sessions, password reset, ban, admin revoke) also deletes the
+ * user's orphan subscriptions (session_id NULL after an expired session was
+ * cleaned up), which no per-session delete can reach. `keepSessionId` is the
+ * current session of revoke-other-sessions, whose own subscriptions stay.
+ * app.delete_user_push_subscriptions (migration 0370) runs in every tenant.
+ */
+export async function deleteUserPushSubscriptions(
+  userId: string,
+  keepSessionId: string | null,
+): Promise<void> {
+  await db.execute(
+    sql`SELECT app.delete_user_push_subscriptions(${userId}, ${keepSessionId})`,
+  );
 }
 
 /** Same status as a missing row and as another user's row (no enumeration). */

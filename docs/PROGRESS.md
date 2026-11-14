@@ -97,6 +97,16 @@
 - Prettier dan ESLint ketiga file kode/test hijau; `heavy pnpm --filter @starter/web typecheck` hijau. Review konteks segar: tanpa temuan. Browser 5/5 hijau lewat `LEGEND_MOCK_PORT=3297 heavy --browser pnpm test:e2e:mock e2e/legend-1iyup.mock.spec.ts e2e/legend-r1bu.mock.spec.ts --grep 'loading rules hydrate|PAYR-02: the'`: loading dan sukses di 390/1280px tanpa diagnostik hydration, navigasi payroll, empty state, tabel statutory 1440px. Siap commit/push tanpa force; tidak merge/deploy. Gate penuh/build diserahkan ke merge train sesuai aturan thread.
 - Subagent: total 5, puncak 4 bersamaan, token heavy dipegang lead Codex. `session-usage.py` tidak menemukan transkrip Codex; `parallel-report` hanya melaporkan sesi Claude, sehingga biaya/rata-rata sesi ini tidak tersedia.
 
+## legend-ofq4f registrasi web push alarm panik (engineer, cabang `ws/panic-push-registration` dari `origin/ghostex/157120a3` 10a196bc1, 14 Nov 2026 20:51-22:45 WIB)
+
+- Brief dan desain: `docs/briefs/ofq4f-push-registration.md`; bukti: `docs/qa/ofq4f-push-registration.md`.
+- Push terikat user, tenant, sesi, perangkat (X-Device-Token terverifikasi) dan outlet; key VAPID dari API (`getPushKey`); dicabut saat sign-out dan saat sesi berlaku/dicabut dihapus (trigger migrasi 0375). Sesi kedaluwarsa karena diam tidak memutus push (HP terkunci tetap dapat alarm); push > 30 hari tidak dikirim. Sesi impersonasi tidak bisa mendaftar.
+- Worker: maks 5 subscription terbaru per outlet alarm, paralel; 404/410 hapus baris; push mati tidak menahan notifikasi in-app.
+- Temuan architect 791 butir 1-7 selesai di cabang ini. Review architect xhigh atas diff: P0 sesi kedaluwarsa, P1 outlet/FK komposit, P2 dibetulkan (desain v2). Reviewer v2: B1 (sesi dicabut lewat UPDATE lalu dihapus menghidupkan push lagi) dan B2 (impersonasi) dibetulkan.
+- Verifikasi: API 87/87, root 97/97, typecheck API+web, e2e mock 4/4, `db:generate` kosong, prettier+eslint bersih.
+- Sisa: uji di ponsel nyata (push di HP terkunci > 30 menit, iOS PWA, PIN darurat dengan token asli), kunci VAPID produksi dibuat di server.
+- Biaya (20:51-22:45, 114 menit): biaya* total 8948k (utama Opus 2998k; subagent Sonnet 3941k, Opus 1785k, Haiku 224k). 21 subagent, maks 6 bersamaan, rata-rata 0.51 berjalan.
+
 ## WS-06/07 posting faktur pemasok + lanjutan AP (engineer, cabang `ws/purchasing-posting` dari `ws/purchasing-apar` aefe28175, 13 Nov 2026 18:49-19:47 WIB)
 
 - Desain: `docs/briefs/ws-purchasing-posting-design.md` (architect xhigh), review K architect xhigh: H1 dibetulkan, H2/M1 jadi bead penghalang flag.
@@ -5427,6 +5437,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Review: architect K xhigh 1 ronde; 1 Medium (batch lama tanpa nilai beku) + 1 Low (akun GL sumber) dibetulkan dengan test gagal-dulu. Temuan Low 3 (repost fee cek config, terlalu ketat) dibiarkan.
 - Idx `_journal.json` dibetulkan: 0538=352, 0539=353, 0546=354, 0568=355; check-journal hijau.
 - Gerbang: 11 berkas test terarah 253/253, tsc api, eslint, prettier, `db:generate` kosong. `edge-received-events-migration` gagal pra-ada (migrasi 0534, bukan 0568; lihat catatan 545).
+
 ## 2026-11-14: Kartu kecil platform, POS, keamanan (cabang ws/platform-pos-security-small)
 
 - legend-bag1: kontrak `GET /api/platform/audit-events` dan `GET /api/platform/health` pindah ke `packages/shared/src/platform` (ops.ts, endpoints.ts); permission `platform.audit.view` + label Indonesia; route `GET /api/platform/health` (database mati = `degraded` di body); guard web audit ikut izin baru. Route audit-events belum dibuat (perlu keputusan masking/filter lintas tenant).
@@ -5434,6 +5445,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - legend-ykam: `/notes` sudah hilang (appHomePath `/member`, commit 04d2836a3). Sisanya dikerjakan: `lib/areas/post-login.ts` `postLoginPath(access)`; sesi dengan `dashboard.management.view` mendarat di `/kelola`, customer di `/member` (`_auth.tsx`, `auth-form.tsx`).
 - legend-2ywn: denylist `SENSITIVE_FUNCTIONS` diganti baseline `pg_init_privs` (privtype 'i'); fail-closed bila baseline kosong (anchor `pg_read_file`, `lo_import`, `pg_switch_wal`). Review architect: tidak ada false negative; celah tersisa (extension 'e', `SENSITIVE_TABLES`) jadi kartu lanjutan.
 - Gerbang: 5 tes root + 3 berkas vitest hijau, 7 berkas kontrak root hijau, prettier+eslint hijau, typecheck api+web hijau, `db:generate` kosong. E2E Playwright tidak dijalankan (scripts/test.mjs tidak bisa memfilter).
+
 ## 2026-11-14: WS-11 laporan + WS-14 ops backend (cabang ghostex/62d6d898)
 
 - legend-rmvu: `GET /api/reports/schedule-recipients` (user tenant pemanggil saja; keluar hanya userId, name, roleName; tanpa email). Resolusi email untuk pengiriman terjadwal (legend-atcu) belum ada kodenya, bukan bagian kartu ini.
@@ -5441,6 +5453,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - legend-qq4k: creator WS-06 terpasang (production order `draft` per baris prep beresep aktif tunggal, tanpa biaya/stok/GL, idempoten, di transaksi sama); service food-safety meneruskan actor. Default tanpa pemasangan tetap no-op.
 - legend-24nl: tidak ada kode; `metrics_daily` (0176, job, sumber non-uang) sudah di m1 lewat legend-5wzoc.
 - Gerbang: 8 berkas tes terarah (138 test) hijau, tes kontrak root 76/76, prettier+eslint hijau, tsc api+web hijau, `db:generate` kosong.
+
 ## ws/hris-leave-flakes (14 Nov 2026)
 
 - Kartu `legend-8ldhb`, `legend-l0qbr`, `legend-4mpqc`: tidak bisa direproduksi di tip m1 (b17554cb9). 3 suite cuti bersama 3x hijau (59/59), 5 suite 1x hijau, 40 file HRIS (hris-holiday/attendance/overtime/leave) bersama 2x hijau (602/602). Tidak ada hitungan global akrual atau QUOTA_EXCEEDED di 5 suite itu; isolasi sebelumnya sudah masuk lewat 44d6876d2. Tidak ada fixture diubah menebak.
@@ -5533,3 +5546,38 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Subagent: total 5, puncak 5 bersamaan; token heavy hanya `test_writer`. Pengukuran biaya otomatis tidak tersedia: session-usage tidak menemukan transkrip Codex; parallel-report hanya menampilkan sesi Claude lain, jadi tidak dipakai sebagai metrik sesi ini. Visual browser/build/e2e tidak dijalankan; perubahan hanya kontrak dan logika nominal tanpa layout.
 
 - Perintah test: `LEGEND_TEST_FILES="src/test/accounting-finance-exceptions.test.ts tests/ws07-finance-exceptions-known-count.test.mjs tests/text-contract.test.mjs" heavy pnpm test` EXIT 0; setelah anotasi helper test diperbaiki, `LEGEND_TEST_FILES="src/test/accounting-finance-exceptions.test.ts" heavy pnpm test` EXIT 0. Log lokal: `/tmp/legend-j4xdb-api-red.log`, `/tmp/legend-j4xdb-web-red.log`, `/tmp/legend-j4xdb-green.log`, `/tmp/legend-j4xdb-api-final.log`, `/tmp/legend-j4xdb-api-typecheck-final.log`, `/tmp/legend-j4xdb-web-typecheck.log`.
+
+
+### 782: perbaikan jalur alarm panik (14 Nov 2026)
+
+- Basis `origin/ui/panic-copy-subnav` (`2c60a4bc8`), cabang kerja `ghostex/157120a3`. Lima kartu: legend-mm029, legend-oi7ub, legend-po3fe, legend-ewmfd, legend-aagpf. Brief dan bukti: `docs/briefs/782-panic-delivery.md`, `docs/qa/782-panic-delivery.md`.
+- Lima implementer terpisah dan satu test-writer; lima reviewer berkonteks segar per area. Total 11 subagent Codex, puncak 6 bersamaan, token heavy hanya test-writer. `session-usage.py` tidak menemukan transkrip Codex; `parallel-report` hanya membaca sesi Claude sehingga biaya dan rata-rata sesi ini tidak tersedia, tidak diperkirakan.
+- Gagal-dulu kelima temuan terbukti. Perbaikan inti: PIN membuka sesi darurat tanpa mengganti kasir; gate memakai respond bawaan; push memakai subscription tersegel; cloud first-create mengantrekan event atomik; recheck receiver membaca pencabutan tersimpan. Tidak mengubah template peran atau skema database.
+- Semua temuan review dibetulkan dan disetujui ulang: field tenant bertingkat, boot-edge berpotensi antre ganda, kelayakan penerima push saat kirim, dan tujuan notifikasi nonpanic. Test terarah hijau: root 187/187, API 176/176; mock legend-jztb7 4/4 hijau (termasuk 390 px). ESLint 22 berkas kode/test dan Prettier kode/test/manifest/lock hijau. Typecheck web hijau pada satu run; API hijau setelah normalisasi alasan pencabutan (TS2322 pada run awal). Test relay/sesi terdampak diulang 95/95 hijau setelah normalisasi; build akhir hijau 2/2 task, 0 cache, 9,717 detik. Seluruh job selesai 20:48 WIB.
+- Diagnosis antrean build: job menunggu sejak 19:47 dengan wrapper lama. Host memperbarui kebijakan resmi founder Q2 saat job masih antre; tiket milik thread ini dihentikan sebelum bundler mulai (exit 143), dibersihkan, lalu satu job identik dijalankan lewat wrapper terbaru. FIFO sempat tertahan tiket lebih tua yang memakai batas sebelumnya. Build sudah selesai; tidak mengubah skrip global, batas, atau proses thread lain. Waktu sesi sekitar 18:50–20:48 WIB, banyak terpakai menunggu antrean global.
+- Batas rilis: kunci VAPID nyata, registrasi subscription/public-key HTTP, dan penyediaan kredensial perangkat browser belum siap. Tidak membuat kunci produksi palsu; mock bukan bukti pengiriman ponsel nyata. Status Beads tetap dikelola CTO.
+
+## 806 Perbaikan second opinion alarm panik (14 Nov 2026 malam, engineer Opus, bead legend-24y9h)
+
+- Cabang `ws/panic-push-registration`, basis e241e9476. Migrasi baru `0370_panic_push_second_opinion.sql` (journal idx 358, merge train boleh menomori ulang). 0375 dan 0379 harus dirilis bersama.
+- Semua temuan P0-1..P0-4 dan P1-1..P1-3 dibetulkan, masing-masing dengan test gagal-dulu. Rincian per temuan: `docs/qa/second-opinion-alarm-panik.md` bagian "Tindak lanjut 806".
+- Review: reviewer sonnet (2 bug dibetulkan) dan architect xhigh (A1-A4 diterima). A1, A3, A4 terbukti gagal-dulu. A2 tidak bisa direproduksi, allowlist dipertahankan sebagai pengerasan.
+- Test terarah API: 26 file, 468/468 lulus.
+- Lanjutan: bead legend-gchkf (cabut HP yang sesinya kedaluwarsa). Uji HP nyata (Android terkunci, iOS PWA) tetap utang gerbang rilis. Tidak di-merge ke m1.
+
+## 820 Cabut HP terdaftar push alarm panik walau sesi kedaluwarsa (15 Nov 2026, engineer, bead legend-gchkf)
+
+- Cabang akhir `fix/panic-push-device-revoke`, basis `c41dacbd7`. Tanpa migrasi. Kartu: legend-gchkf (status review).
+- Akar: daftar sesi menyembunyikan sesi kedaluwarsa, jadi baris `push_subscriptions` yatim (session_id NULL) tidak punya tombol cabut dan tetap menerima alarm.
+- Perbaikan: `GET /api/identity/push-devices` dan `DELETE /api/identity/push-devices/:id` (requireAuth, requireTrustedOrigin untuk DELETE, id UUID divalidasi shared, user_id difilter di SQL, 404 seragam). Daftar tidak membawa endpoint/keys; berisi id, deviceLabel, registeredAt, sessionActive, current. Hanya baris yang masih dikirimi alarm (logika worker) yang tampil. Cabut menghapus baris dan, bila sesinya aktif dan bukan sesi saat ini, ikut mencabut sesi itu agar HP tidak mendaftar ulang sendiri. Sesi support tidak boleh mencabut (CREDENTIAL_PATHS). Web: kartu "Perangkat alarm" di halaman keamanan; mencabut perangkat ini juga mematikan langganan browser.
+- Bukti: test baru `push-devices-revoke.test.ts` (12, gagal 11/12 di basis karena endpoint belum ada) dan `push-devices-revoke-session.test.ts` (7) hijau; 126 test terarah hijau; typecheck shared/api/web hijau; screenshot `docs/screenshots/820-perangkat-{390,1280,dialog-390}.png` (axe 0 pelanggaran, overflow 0).
+- Review: architect xhigh (1 tinggi: HP dicabut mendaftar ulang sendiri; 1 sedang; 2 ringan, semua dibetulkan atau didokumentasi), ui-auditor (7 cacat dibetulkan), reviewer sonnet atas perbaikan (2 temuan web dibetulkan).
+- Belum: perangkat yang terdaftar di tenant LAIN dari tenant sesi login tidak terlihat (butuh fungsi SQL SECURITY DEFINER = migrasi 0380, di luar scope). Panel "Sesi & perangkat" lama punya teks tanggal yang menimpa lencana "Aktif" di 390 px (di luar scope). Uji HP nyata tetap utang gerbang rilis.
+
+## 832 Perangkat alarm panik lintas tenant (15 Nov 2026, engineer, bead legend-fonnr)
+
+- Cabang `fix/panic-device-cross-tenant` dari `origin/fix/panic-push-device-revoke` dd04533e1. Migrasi 0380 (journal idx 359).
+- `app.list_own_push_devices(p_session, p_now)` dan `app.delete_own_push_device(p_session, p_id, p_now)`: SECURITY DEFINER, search_path dikunci, EXECUTE hanya legend_app. Pemilik diturunkan dari sesi login hidup pemanggil (juga terhadap `now()` database), tanpa parameter user/tenant. Filter list = salinan SQL `deliverablePushSubscription` (komentar silang di web-push-provider.ts).
+- Service GET/DELETE `/api/identity/push-devices` memakai fungsi itu; HP di tenant lain terlihat dan bisa dicabut; cabut tetap mengakhiri sesi pendaftar (bukan sesi sekarang). Hapus 0 baris: 409 bila HP masih terdaftar, 401 bila sesi pemanggil mati. DTO dan UI tidak berubah.
+- Test baru `push-devices-cross-tenant.test.ts` (8 kasus), gagal-dulu 4/6 di service base. Review architect xhigh: approve; temuan 1, 2, 4 dibetulkan; 3 dan 5 jadi bead legend-xqkr7 (keputusan CTO soal sesi support) dan legend-nb2mk (indeks user_id).
+- Verifikasi akhir: 6 file 116/116, typecheck API, prettier + eslint bersih, `db:generate` kosong.

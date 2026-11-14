@@ -8,12 +8,14 @@ import {
   Scripts,
   rootRouteId,
   useMatch,
+  useRouteContext,
   useRouter,
 } from "@tanstack/react-router";
 import { createTranslator, type MessageOverrides } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Providers } from "@/components/providers";
 import { Button } from "@/components/ui/button";
+import { PushOwnerGuard } from "@/features/ws05-notifications/components/push-owner-guard";
 import { loadAreaAccess } from "@/lib/areas/load-access";
 import type { AreaAccess } from "@/lib/areas/access";
 import { getSessionFn, type Session } from "@/lib/session";
@@ -84,10 +86,23 @@ export const Route = createRootRouteWithContext<RouterContext>()({
     ],
   }),
   shellComponent: RootDocument,
-  component: Outlet,
+  component: RootLayout,
   notFoundComponent: NotFound,
   errorComponent: ErrorPage,
 });
+
+function RootLayout() {
+  const userId = useRouteContext({
+    from: rootRouteId,
+    select: (context) => context.session?.user.id ?? null,
+  });
+  return (
+    <>
+      <PushOwnerGuard userId={userId} />
+      <Outlet />
+    </>
+  );
+}
 
 /**
  * Marks the document once React has hydrated and committed (`data-hydrated` on

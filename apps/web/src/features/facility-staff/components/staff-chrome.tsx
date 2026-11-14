@@ -48,10 +48,11 @@ export function StaffPageHeader({
 }
 
 // A 2x2 grid below `sm` so every tab, "Darurat" last, stays whole at 390 px,
-// 320 px and 200% zoom ("Kebersihan" cannot wrap; legend-jztb7).
+// 320 px and 200% zoom ("Kebersihan" cannot wrap; legend-jztb7). Each tab is
+// at least 44 px tall below `sm` (touch target, founder Q32).
 const SUBNAV_TRIGGER = cn(
   tabsTriggerClass,
-  "w-full justify-center px-1.5 text-center leading-tight whitespace-normal sm:w-auto sm:px-3.5 sm:whitespace-nowrap",
+  "min-h-11 w-full justify-center px-1.5 text-center leading-tight whitespace-normal sm:min-h-[calc(var(--control-h-sm)-0.5rem)] sm:w-auto sm:px-3.5 sm:whitespace-nowrap",
 );
 
 // Explicit links instead of a data array: each `to` stays a literal so the
