@@ -174,7 +174,8 @@ export function invoiceAmountFromInput(value: string): Idr | null {
 
 /**
  * One draft per PO line: quantity defaults to what was accepted after QC
- * (INV-05), the price to the PO price. A line with nothing accepted starts
+ * (INV-05) minus prior non-rejected invoices, the price to the PO price. A
+ * line with nothing left to invoice starts
  * excluded. These are reference defaults the user may overwrite; the server
  * compares them against the PO and the receipts.
  */
@@ -187,17 +188,30 @@ export function goodsDraftsFromOrder(
   describe: (line: PurchaseOrderLine) => string,
 ): InvoiceLineDraft[] {
   return orderLines.map((line) => {
-    const accepted = acceptedReceivedQuantity(receiptLines, line.id);
+    const remaining = remainingInvoiceQuantity(line, receiptLines);
     return {
       key: line.id,
       kind: "goods",
       purchaseOrderLineId: line.id,
-      included: parseDecimal4(accepted) > 0n,
+      included: parseDecimal4(remaining) > 0n,
       description: describe(line),
-      quantity: formatDecimalText(accepted),
+      quantity: formatDecimalText(remaining),
       unitPrice: formatDecimalText(line.unitPriceIdr),
     };
   });
+}
+
+function remainingInvoiceQuantity(
+  line: PurchaseOrderLine,
+  receiptLines: readonly Pick<
+    GoodsReceiptLine,
+    "purchaseOrderLineId" | "quantityReceived" | "quantityRejected"
+  >[],
+): Decimal4 {
+  const remaining =
+    parseDecimal4(acceptedReceivedQuantity(receiptLines, line.id)) -
+    parseDecimal4(line.quantityInvoiced);
+  return formatDecimal4(remaining > 0n ? remaining : 0n);
 }
 
 export function newServiceDraft(key: string): InvoiceLineDraft {
@@ -233,8 +247,8 @@ export type SupplierInvoiceLinePayload = {
 
 /**
  * Contract-shaped lines for every PO line with something accepted after QC
- * (received − rejected, summed over all receipts, INV-05) at the PO price. A
- * PO line with nothing accepted is left out: an invoice line needs a positive
+ * (received − rejected, summed over all receipts, INV-05) minus prior invoices
+ * at the PO price. A PO line with nothing left is omitted: a line needs a positive
  * quantity. Reference defaults only; the server compares them to PO and
  * receipts.
  */
@@ -248,13 +262,13 @@ export function defaultInvoiceLines(input: {
 }): SupplierInvoiceLinePayload[] {
   const lines: SupplierInvoiceLinePayload[] = [];
   for (const line of input.orderLines) {
-    const accepted = acceptedReceivedQuantity(input.receiptLines, line.id);
-    if (parseDecimal4(accepted) <= 0n) continue;
+    const remaining = remainingInvoiceQuantity(line, input.receiptLines);
+    if (parseDecimal4(remaining) <= 0n) continue;
     lines.push({
       purchaseOrderLineId: line.id,
       kind: "goods",
       description: input.itemNames[line.inventoryItemId] ?? "",
-      quantity: accepted,
+      quantity: remaining,
       unitPriceIdr: line.unitPriceIdr,
     });
   }

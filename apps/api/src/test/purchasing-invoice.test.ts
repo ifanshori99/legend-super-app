@@ -316,6 +316,49 @@ describe("ws-purchasing-apar PI invoice posting and match", () => {
     expect(rows.filter((row) => row.journal_entry_id !== null)).toHaveLength(1);
   });
 
+  it("legend-btcex PO lines expose non-rejected billed quantity and excess cannot add payable or be released", async () => {
+    const po = await receivedPo();
+    const billed = async () => {
+      const res = await api.get(A, buyer, `/purchase-orders/${po.poId}`);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const detail = res.body as {
+        data: { lines: { id: string; quantityInvoiced: string }[] };
+      };
+      return detail.data.lines.find((line) => line.id === po.poLineId)
+        ?.quantityInvoiced;
+    };
+    expect(await billed()).toBe("0.0000");
+    const before = await apLedger(A);
+    await matchedInvoice(po, "4.0000");
+    expect(await billed()).toBe("4.0000");
+    await matchedInvoice(po, "6.0000");
+    expect(await billed()).toBe("10.0000");
+    expect(await apLedger(A)).toBe(before + 100_000);
+
+    const excess = await createInvoice(
+      A,
+      buyer,
+      invoiceBody(A, po, { lines: [goodsLine(po, "0.0001")] }),
+    );
+    expect(excess.status, JSON.stringify(excess.body)).toBe(201);
+    const id = invoiceIdOf(excess);
+    await expectHeldWithoutAp(id);
+    expect(invoiceOf(excess).match?.rows[0]?.issues).toContain(
+      "quantity_exceeds_receipt",
+    );
+    expect(await billed()).toBe("10.0001");
+    const release = await decide(A, finance1, id, "release");
+    expect(release.status, JSON.stringify(release.body)).toBe(409);
+    expect(codeOf(release)).toBe("SUPPLIER_INVOICE_RELEASE_BLOCKED");
+    await expectHeldWithoutAp(id);
+    expect(await apLedger(A)).toBe(before + 100_000);
+
+    const rejected = await decide(A, buyer, id, "reject");
+    expect(rejected.status, JSON.stringify(rejected.body)).toBe(200);
+    expect(await billed()).toBe("10.0000");
+    expect(await apLedger(A)).toBe(before + 100_000);
+  });
+
   it("PI-05 after a return a full-quantity invoice is held; a held invoice cannot be released once a return makes it exceed the receipt", async () => {
     const po = await receivedPo();
     const ret = await returnGoods(A, warehouse, po, "3.0000");

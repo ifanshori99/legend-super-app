@@ -118,6 +118,61 @@ test("legend-0xnm F18 a PO line with nothing accepted starts out of the invoice"
   assert.equal(drafts[1].purchaseOrderLineId, order.lines[1].id);
 });
 
+test("legend-btcex a second invoice defaults to accepted quantity minus non-cancelled invoices", async () => {
+  const { goodsDraftsFromOrder, defaultInvoiceLines } = await model();
+  const order = orderByNumber(KOPI);
+  const lines = order.lines.map((line, index) => ({
+    ...line,
+    quantityInvoiced: index === 0 ? "7.2500" : "5.0000",
+  }));
+  const receipts = receiptLinesFor(order.purchaseOrder.id);
+  const drafts = goodsDraftsFromOrder(lines, receipts, describe);
+  assert.equal(quantityOf(drafts[0]), 4.75);
+  assert.equal(drafts[0].included, true);
+  assert.equal(quantityOf(drafts[1]), 0);
+  assert.equal(drafts[1].included, false);
+  const payload = defaultInvoiceLines({
+    orderLines: lines,
+    receiptLines: receipts,
+    itemNames: {},
+  });
+  assert.equal(payload.length, 1);
+  assert.equal(payload[0].quantity, "4.7500");
+});
+
+test("legend-btcex held invoices above the receipt leave a zero default, never a negative invoice", async () => {
+  const { goodsDraftsFromOrder, defaultInvoiceLines } = await model();
+  const order = orderByNumber(KOPI);
+  const lines = order.lines.map((line) => ({
+    ...line,
+    quantityInvoiced: "99.0000",
+  }));
+  const receipts = receiptLinesFor(order.purchaseOrder.id);
+  const drafts = goodsDraftsFromOrder(lines, receipts, describe);
+  assert.ok(drafts.every((draft) => quantityOf(draft) === 0));
+  assert.ok(drafts.every((draft) => draft.included === false));
+  assert.deepEqual(
+    defaultInvoiceLines({
+      orderLines: lines,
+      receiptLines: receipts,
+      itemNames: {},
+    }),
+    [],
+  );
+});
+
+test("legend-btcex recording an invoice refreshes the PO detail used by the next form", () => {
+  const hooks = read(
+    "apps/web/src/features/ws06-purchasing/receiving-hooks.ts",
+  );
+  const mutation =
+    /useInvalidatingMutation\(api\.createSupplierInvoice, \[([\s\S]*?)\]\)/.exec(
+      hooks,
+    );
+  assert.ok(mutation, "create invoice must invalidate the endpoint queries");
+  assert.match(mutation[1], /\bgetPurchaseOrder\b/);
+});
+
 // ---- buildInvoiceInput -----------------------------------------------------
 
 const KEY = "6f1c2a90-0000-4000-8000-00000000cafe";

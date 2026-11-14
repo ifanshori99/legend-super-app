@@ -196,6 +196,8 @@ export const inventoryReceivingMessages = {
     varianceBp: "{bp} bp",
     issue: {
       quantity_exceeds_receipt: "Qty faktur melebihi penerimaan",
+      quantity_exceeds_receipt_remaining:
+        "Qty faktur melebihi penerimaan. Sisa yang masih bisa difakturkan: {quantity}",
       price_outside_tolerance: "Harga di luar toleransi",
       no_purchase_order_line: "Tanpa baris PO",
       line_total_mismatch: "Total baris tidak sama",

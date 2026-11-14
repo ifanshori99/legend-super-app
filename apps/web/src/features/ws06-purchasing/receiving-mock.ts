@@ -522,6 +522,10 @@ registerMock(postSupplierInvoiceMatch, ({ params, body, headers }) =>
       const invoice = supplierInvoiceSchema.parse({
         ...detail.invoice,
         status: match.status === "matched" ? "matched" : "held",
+        outstandingIdr:
+          match.status === "matched"
+            ? subtractIdr(detail.invoice.payableIdr, detail.invoice.paidIdr)
+            : 0,
         matchStatus: match.status,
         matchedAt: now(),
         matchNote: note === "" ? null : note,
@@ -549,6 +553,10 @@ function decideHeldInvoice(
   detail.invoice = supplierInvoiceSchema.parse({
     ...detail.invoice,
     status: decision,
+    outstandingIdr:
+      decision === "released"
+        ? subtractIdr(detail.invoice.payableIdr, detail.invoice.paidIdr)
+        : 0,
     matchStatus: decision === "released" ? "matched" : "discrepancy",
     matchedAt: detail.invoice.matchedAt ?? now(),
     matchNote: detail.invoice.matchNote ?? note,

@@ -171,6 +171,37 @@ test("PRD §3.18 three-way match flags over-receipt and price deviation, toleran
   assert.equal(loose.status, "discrepancy");
 });
 
+test("legend-btcex receipt quantity issues expose the allowance after previous invoices", () => {
+  const matched = invoiceByNumber("INV/KP/2026/0914");
+  const order = purchaseOrderByNumber("PO/BDG/2026/10/0042");
+  const receipt = receiptByNumber("GR/BDG/2026/11/0017");
+  const line = matched.lines[0];
+  const match = shared.threeWayMatch(
+    {
+      invoice: { ...matched.invoice, goodsIdr: 925_000, servicesIdr: 0 },
+      invoiceLines: [{ ...line, quantity: "5.0000", lineTotalIdr: 925_000 }],
+      purchaseOrderLines: order.lines,
+      goodsReceiptLines: [
+        {
+          ...receipt.lines[0],
+          quantityReceived: "10.0000",
+          quantityRejected: "0.0000",
+        },
+      ],
+      previouslyInvoicedLines: [
+        { ...line, quantity: "6.0000", lineTotalIdr: 1_110_000 },
+      ],
+      toleranceBp: 0,
+      computedAt: matched.invoice.matchedAt,
+    },
+    "half_up",
+  );
+  assert.equal(match.status, "discrepancy");
+  assert.ok(match.rows[0].issues.includes("quantity_exceeds_receipt"));
+  assert.equal(match.rows[0].acceptedQty, "10.0000");
+  assert.equal(match.rows[0].remainingInvoiceableQty, "4.0000");
+});
+
 test("PRD §3.18 three-way match checks line totals and invoice header amounts", () => {
   const matched = invoiceByNumber("INV/KP/2026/0914");
   const order = purchaseOrderByNumber("PO/BDG/2026/10/0042");

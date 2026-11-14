@@ -179,6 +179,7 @@ export const useCreateSupplierInvoice = () =>
   useInvalidatingMutation(api.createSupplierInvoice, [
     listSupplierInvoices,
     getSupplierInvoice,
+    getPurchaseOrder,
   ]);
 
 export const useRunSupplierInvoiceMatch = () =>

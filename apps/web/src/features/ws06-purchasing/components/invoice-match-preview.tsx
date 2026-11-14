@@ -267,10 +267,26 @@ export function InvoiceMatchPreview({ invoiceId }: { invoiceId: string }) {
                           </p>
                         </div>
                         {flagged ? (
-                          <div className="flex flex-wrap gap-2">
+                          <div className="flex min-w-0 max-w-full flex-wrap gap-2">
                             {row.issues.map((issue) => (
-                              <StatusPill key={issue} status="danger">
-                                {t(MATCH_ISSUE_LABEL[issue])}
+                              <StatusPill
+                                key={issue}
+                                status="danger"
+                                className="max-w-full text-left whitespace-normal"
+                              >
+                                <span className="min-w-0 break-words">
+                                  {issue === "quantity_exceeds_receipt" &&
+                                  row.remainingInvoiceableQty !== null
+                                    ? t(
+                                        "inventoryReceiving.invoices.issue.quantity_exceeds_receipt_remaining",
+                                        {
+                                          quantity: qty(
+                                            row.remainingInvoiceableQty,
+                                          ),
+                                        },
+                                      )
+                                    : t(MATCH_ISSUE_LABEL[issue])}
+                                </span>
                               </StatusPill>
                             ))}
                           </div>
