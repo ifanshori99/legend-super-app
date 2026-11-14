@@ -1,0 +1,5 @@
+# 770 Second opinion: rantai refund journal (area uang)
+Peran: second-opinion (Codex, effort xhigh). Read-only: jangan mengedit kode atau push. Tulis temuan ke docs/qa/second-opinion-refund-journals.md di worktree-mu dan laporkan isinya.
+Rantai cabang (bertumpuk, tinjau sebagai satu area): fix/refund-split-journal-fallback (cda602bc1) -> fix/auto-journal-refund-residual (dba3f40b3) -> fix/refund-deposit-parts-key (af0edffd2) -> ghostex/refund-pin-earlierintentwant-per-key (0df6d5e09). Diff total: git diff milestone/m1...origin/ghostex/refund-pin-earlierintentwant-per-key.
+Fokus: aturan founder "jangan sampai rugi": cari jalur apa pun yang membuat pelanggan/karyawan dibayar lebih, refund melebihi intent/pembayaran asli, jurnal tidak seimbang, hitung ganda, atau outlet rugi; idempotensi key; race dua refund bersamaan. Juga nilai legend-zwaro (recoveryWithoutSource).
+Tiap temuan: file:line, skenario konkret (angka), keparahan, dan apakah ada test yang menangkapnya. Boleh menjalankan test terarah lewat heavy untuk membuktikan temuan.
