@@ -215,6 +215,12 @@ setAuditWriter(coreAuditWriter);
 const doitGateway = createDoitGateway();
 registerPaymentGateway(doitGateway);
 if (env.DOIT_REFUNDS_ENABLED) registerPaymentRefundGateway(doitGateway);
+// legend-3gna: the API and the worker must agree on this switch; the value in
+// both startup logs makes a split visible.
+logger.info(
+  { doitRefundsEnabled: env.DOIT_REFUNDS_ENABLED },
+  "DOIT_REFUNDS_ENABLED",
+);
 // Sub-302 D3: Duitku joins the registry when its public callback origin and
 // return page are configured; without them no Duitku intent could be paid,
 // so the provider stays unregistered (fail closed, cannot be enabled on the

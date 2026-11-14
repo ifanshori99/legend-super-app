@@ -184,3 +184,96 @@ grep -F -- '--profile migration run --rm -e DOIT_REFUNDS_ENABLED=true -e LEGEND_
   exit 1
 }
 echo 'legend-8cf3: pre-switch refund reset wrapper checks passed'
+# legend-3gna: api and worker must agree on DOIT_REFUNDS_ENABLED, or the API
+# could queue refunds the worker then ignores (or the reverse). The deploy path
+# gets a read-only check that compares the two env files named in compose.env.
+# Names the implementer must create (this test calls them):
+#   deploy/single-vm/check-refund-flag.sh --env-file /absolute/path/compose.env
+#     reads API_ENV_FILE and WORKER_ENV_FILE from compose.env, exits 0 when both
+#     resolve to the same boolean, exits non-zero (message on stderr naming
+#     DOIT_REFUNDS_ENABLED and both files, never a value or URL) when they
+#     differ. Absent, empty and 0/false all count as false. It must not need
+#     docker. deploy.sh must call it before the first compose up and stop the
+#     deploy on failure (no migration, no api/web/worker/caddy start).
+# Assumption: the spec does not say what happens for an unreadable env file;
+# not tested here.
+cat > "$tmp/bin/docker" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TEST_LOG"
+STUB
+check="$root/check-refund-flag.sh"
+cp "$tmp/api.env.orig" "$tmp/api.env"
+cp "$tmp/worker.env.orig" "$tmp/worker.env"
+set_flag() {
+  # set_flag <file> <value|--absent>; value may be empty (KEY= with no value).
+  grep -v 'DOIT_REFUNDS_ENABLED' "$1" > "$1.new" || true
+  mv "$1.new" "$1"
+  [ "$2" = --absent ] || printf 'DOIT_REFUNDS_ENABLED=%s\n' "$2" >> "$1"
+}
+expect_same() {
+  set_flag "$tmp/api.env" "$1"
+  set_flag "$tmp/worker.env" "$2"
+  "$check" --env-file "$tmp/compose.env" >/dev/null 2>"$tmp/err" || {
+    echo "legend-3gna: api=$1 worker=$2 was refused but means the same" >&2
+    exit 1
+  }
+}
+expect_differ() {
+  set_flag "$tmp/api.env" "$1"
+  set_flag "$tmp/worker.env" "$2"
+  if "$check" --env-file "$tmp/compose.env" >/dev/null 2>"$tmp/err"; then
+    echo "legend-3gna: api=$1 worker=$2 was accepted although they differ" >&2
+    exit 1
+  fi
+  grep -F DOIT_REFUNDS_ENABLED "$tmp/err" >/dev/null || {
+    echo 'legend-3gna: the mismatch message does not name DOIT_REFUNDS_ENABLED' >&2
+    exit 1
+  }
+  if grep -F -e "$password" -e postgresql:// "$tmp/err" >/dev/null; then
+    echo 'legend-3gna: the check printed a database URL' >&2
+    exit 1
+  fi
+}
+[ -x "$check" ] || {
+  echo "legend-3gna: $check does not exist or is not executable" >&2
+  exit 1
+}
+expect_same true true
+expect_same false false
+expect_same --absent --absent
+expect_same '' 0
+expect_same 0 ''
+expect_same '' --absent
+expect_same --absent false
+expect_same false 0
+expect_differ true false
+expect_differ false true
+expect_differ true --absent
+expect_differ --absent true
+expect_differ true ''
+expect_differ 0 true
+# The deploy stops before any docker work when the two files differ.
+set_flag "$tmp/api.env" true
+set_flag "$tmp/worker.env" false
+: > "$TEST_LOG"
+if "$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1; then
+  echo 'legend-3gna: deploy continued with DOIT_REFUNDS_ENABLED differing between api.env and worker.env' >&2
+  exit 1
+fi
+if grep -F -e 'api web worker caddy' -e 'run --rm migrate' -e 'dist/provision-roles.js --audit' "$TEST_LOG" >/dev/null; then
+  echo 'legend-3gna: migration, audit or services ran despite the refund flag mismatch' >&2
+  exit 1
+fi
+# A matching pair still deploys.
+set_flag "$tmp/api.env" true
+set_flag "$tmp/worker.env" true
+: > "$TEST_LOG"
+"$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1 || {
+  echo 'legend-3gna: deploy refused matching DOIT_REFUNDS_ENABLED values' >&2
+  exit 1
+}
+grep -F 'up -d --wait api web worker caddy' "$TEST_LOG" >/dev/null || {
+  echo 'legend-3gna: services did not start with matching values' >&2
+  exit 1
+}
+echo 'legend-3gna: refund flag mismatch checks passed'

@@ -100,6 +100,9 @@ NODE_ENV=production
 DEPLOYMENT_MODE=production
 EDGE_MODE=false
 DATA_CLASSIFICATION=real
+# Pay approved refunds through DOIT. Default off. The API and the worker must
+# have the same value; see "Worker transport and notification settings".
+# DOIT_REFUNDS_ENABLED=false
 DATABASE_URL=postgresql://user:password@database-host:5432/app
 BETTER_AUTH_SECRET=your-random-secret-at-least-32-characters
 # Staff device PINs (PRD §3 F6): its own secret, never derived from
@@ -564,6 +567,16 @@ are configured. Compose sets `WORKER_TRANSPORT=builtin`; put the rest in
 | `NOTIFICATION_EMAIL_PROVIDER`    | `disabled`, `brevo` | Required. `brevo` also needs `BREVO_API_KEY` and `NOTIFICATION_EMAIL_FROM` (optional `NOTIFICATION_EMAIL_FROM_NAME`). The provider account and sender domain (SPF/DKIM) are bead legend-wwuc.                                                                                                                                                     |
 | `NOTIFICATION_PUSH_PROVIDER`     | `disabled`          | Required. Web push (VAPID) is bead legend-hyq.                                                                                                                                                                                                                                                                                                    |
 | `NOTIFICATION_WHATSAPP_PROVIDER` | `disabled`          | Required. WhatsApp templates are bead legend-hyq.                                                                                                                                                                                                                                                                                                 |
+
+`DOIT_REFUNDS_ENABLED` must have the same value in `api.env` and `worker.env`
+(legend-3gna): the API queues approved refunds and the worker pays them, so a
+split would queue refunds nobody pays, or pay refunds the API treats as off.
+Absent, empty, `0` and `false` all mean off; anything else is on.
+`deploy/single-vm/check-refund-flag.sh --env-file /absolute/path/compose.env`
+compares the two files (no docker, prints only file names), and `deploy.sh`
+runs it before the first `compose up`: a mismatch stops the deploy before
+PostgreSQL starts or anything migrates. The API and the worker also log
+`DOIT_REFUNDS_ENABLED` with its resolved value at startup.
 
 A disabled channel is never planned for a recipient: in-app notifications are
 still written and the attempt is skipped, never reported as sent. A gap in an
