@@ -50,7 +50,10 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import type { EventEnvelope } from "@starter/shared/events";
-import type { EdgeMasterSnapshot } from "@starter/shared/edge/master-sync";
+import {
+  edgeMasterUomSchema,
+  type EdgeMasterSnapshot,
+} from "@starter/shared/edge/master-sync";
 import {
   inventoryEvents,
   STANDARD_STOCK_LOCATIONS,
@@ -273,6 +276,7 @@ async function cloudMasters(f: Fixture) {
   // legend-2uqcd: version 2 (brands) is served only to an edge that asks.
   return request(app)
     .get(MASTERS_PATH)
+    .query({ uomIsSystem: "1" })
     .set("Authorization", bearer(f))
     .set("x-edge-snapshot-version", "2");
 }
@@ -511,6 +515,33 @@ afterAll(async () => {
 
 // ---------------------------------------------------------------------------
 describe("legend-9ppw 1 cloud masters endpoint", () => {
+  it("sends legacy UOM rows by default and signs the exact response", async () => {
+    const response = await request(app)
+      .get(MASTERS_PATH)
+      .set("Authorization", bearer(main));
+    expect(response.status).toBe(200);
+    const { snapshot, signature } = response.body as Signed;
+    expect(snapshot.uoms.length).toBeGreaterThan(0);
+    expect(snapshot.uoms.every((row) => !("isSystem" in row))).toBe(true);
+    const legacyUomSchema = edgeMasterUomSchema.pick({
+      id: true,
+      tenantId: true,
+      code: true,
+      name: true,
+      createdAt: true,
+    });
+    expect(
+      snapshot.uoms.every((row) => legacyUomSchema.safeParse(row).success),
+    ).toBe(true);
+    expect(
+      edgeBootstrapSignatureMatches(
+        snapshot,
+        signature,
+        keyOf(main.credential),
+      ),
+    ).toBe(true);
+  });
+
   it("answers a node with a private, uncached snapshot of its own uoms, outlet locations and entity chart", async () => {
     const response = await cloudMasters(main);
     expect(response.status).toBe(200);
@@ -671,6 +702,7 @@ describe("legend-9ppw 2 fresh edge bootstrap", () => {
     const url = urlOf(calls[0]![0]);
     expect(url.host).toBe("cloud.master.test");
     expect(url.pathname).toBe(MASTERS_PATH);
+    expect(url.searchParams.get("uomIsSystem")).toBe("1");
     expect(headerOf(calls[0]![1], "authorization")).toBe(bearer(fresh));
 
     const { snapshot } = capturedFresh.masters;

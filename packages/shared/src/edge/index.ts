@@ -5,6 +5,7 @@ export * from "./wifi.ts";
 export * from "./credential-rotation.ts";
 export * from "./sync-conflicts.ts";
 export * from "./bootstrap.ts";
+export { edgeMasterSnapshotCloudSchema } from "./master-sync.ts";
 export * from "./people-snapshot.ts";
 export * from "./catalog-sync.ts";
 export * from "./catalog-record-event.ts";

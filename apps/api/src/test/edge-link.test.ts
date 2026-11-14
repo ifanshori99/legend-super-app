@@ -68,6 +68,96 @@ function event(
   };
 }
 
+describe("cloud-to-edge frame compatibility", () => {
+  it("strips future frame, batch, envelope, and actor fields only at the edge", () => {
+    const original = event(1);
+    const frame = {
+      type: "batch",
+      futureFrame: true,
+      batch: {
+        tenantId: scope.tenantId,
+        outletId: scope.outletId,
+        id: createUlid(),
+        peerId: scope.edgeNodeId,
+        direction: "cloud_to_edge",
+        fromCursor: "0",
+        toCursor: "1",
+        futureBatch: true,
+        events: [
+          {
+            ...original,
+            futureEnvelope: true,
+            actor: { ...original.actor, futureActor: true },
+          },
+        ],
+      },
+    };
+    const parsed = decodeFrame(JSON.stringify(frame), true);
+    expect(parsed).toEqual({
+      type: "batch",
+      batch: {
+        tenantId: scope.tenantId,
+        outletId: scope.outletId,
+        id: frame.batch.id,
+        peerId: scope.edgeNodeId,
+        direction: "cloud_to_edge",
+        fromCursor: "0",
+        toCursor: "1",
+        events: [original],
+      },
+    });
+    expect(decodeFrame(JSON.stringify(frame))).toBeNull();
+    const payloadEvent = {
+      ...original,
+      payload: { tokenIssuedAt: "valid domain field" },
+    };
+    expect(
+      decodeFrame(
+        JSON.stringify({
+          ...frame,
+          batch: { ...frame.batch, events: [payloadEvent] },
+        }),
+        true,
+      ),
+    ).not.toBeNull();
+    expect(
+      decodeFrame(
+        JSON.stringify({
+          ...frame,
+          batch: {
+            ...frame.batch,
+            events: [{ ...original, apiToken: "secret" }],
+          },
+        }),
+        true,
+      ),
+    ).toBeNull();
+    expect(
+      decodeFrame(
+        JSON.stringify({
+          ...frame,
+          batch: {
+            ...frame.batch,
+            events: [
+              { ...original, actor: { ...original.actor, apiToken: "secret" } },
+            ],
+          },
+        }),
+        true,
+      ),
+    ).toBeNull();
+    expect(
+      decodeFrame(
+        JSON.stringify({
+          ...frame,
+          batch: { ...frame.batch, events: [{ ...original, sequence: "1" }] },
+        }),
+        true,
+      ),
+    ).toBeNull();
+  });
+});
+
 /** Same rules as db-link-store.ts, kept in memory. */
 class MemoryStore implements LinkStore {
   queue: { linkSeq: number; event: EventEnvelope; kind: EdgeEventKind }[] = [];
@@ -355,7 +445,9 @@ describe("EDG-01 edge link resync (in-memory transport)", () => {
       }),
     );
     await probe.idle();
-    const resend = sent.map(decodeFrame).find((f) => f?.type === "resend");
+    const resend = sent
+      .map((raw) => decodeFrame(raw))
+      .find((f) => f?.type === "resend");
     expect(resend).toEqual({
       type: "resend",
       direction: "edge_to_cloud",

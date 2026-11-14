@@ -221,6 +221,7 @@ async function handleEdgeMasters(req: Request, res: Response): Promise<void> {
       snapshotVersion: Number.isFinite(asked) ? asked : undefined,
       brandPage: query.brandPage === "1",
       brandCursor: query.brandCursor,
+      uomIsSystem: query.uomIsSystem === "1",
     }),
   );
 }

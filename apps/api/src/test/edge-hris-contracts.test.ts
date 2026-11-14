@@ -1,6 +1,6 @@
 // HRIS edge replication contracts (design docs/design/hris-edge-replication.md
 // sections 3.2, 5, 6.1, 6.2). Pure schema tests: no database.
-// - people-snapshot: strict whitelist, never password / real email / *_encrypted.
+// - people-snapshot: whitelist, never password / real email / *_encrypted.
 // - selfie seal: LSS1 header + meta, PUT contract, sealed size cap.
 // - attendance: `outlet_device`, new stored flag reasons, and the
 //   `attendance.logged` v2 payload that still accepts the v1 shape.
@@ -21,7 +21,9 @@ import {
   EDGE_PEOPLE_SNAPSHOT_ROLE_KEYS,
   EDGE_PEOPLE_SNAPSHOT_SHIFT_ASSIGNMENT_KEYS,
   EDGE_PEOPLE_SNAPSHOT_USER_KEYS,
+  edgePeopleSnapshotCloudSchema,
   edgePeopleSnapshotSchema,
+  hasUnsafePeopleSnapshotFields,
 } from "@starter/shared/edge/people-snapshot";
 import {
   EDGE_SELFIE_ALG,
@@ -154,6 +156,16 @@ function snapshot() {
 }
 
 describe("edge people snapshot contract", () => {
+  it("strips future envelope and QR fields while the cloud detects disclosure", () => {
+    const data = snapshot();
+    const future = {
+      ...data,
+      future: true,
+      qrKeys: [{ ...data.qrKeys[0]!, future: true }],
+    };
+    expect(edgePeopleSnapshotSchema.parse(future)).toEqual(data);
+    expect(edgePeopleSnapshotCloudSchema.safeParse(future).success).toBe(false);
+  });
   it("parses a full whitelisted snapshot", () => {
     expect(edgePeopleSnapshotSchema.safeParse(snapshot()).success).toBe(true);
   });
@@ -246,6 +258,87 @@ describe("edge people snapshot contract", () => {
     );
   });
 
+  it("rejects credential fields even inside future sections", () => {
+    for (const field of [
+      "token",
+      "passwordHash",
+      "clientSecret",
+      "credential",
+      "seed",
+      "privateKeyPem",
+      "APIKEY",
+      "PinCode",
+      "userPin",
+      "staffPin",
+      "encrypted_pin",
+      "encrypted_pin_hash",
+      "staffPinEncrypted",
+      "pincode",
+      "pinhash",
+      "staffpin",
+      "PINHASH",
+      "auth",
+      "bearer",
+      "session",
+      "otp",
+      "authorization",
+      "accessKey",
+      "clientKey",
+      "passcode",
+    ]) {
+      const bad = { ...snapshot(), future: { [field]: "sensitive" } };
+      expect(edgePeopleSnapshotSchema.safeParse(bad).success).toBe(false);
+      const data = snapshot();
+      const badQr = {
+        ...data,
+        qrKeys: [{ ...data.qrKeys[0]!, [field]: "sensitive" }],
+      };
+      expect(edgePeopleSnapshotSchema.safeParse(badQr).success).toBe(false);
+    }
+    const data = snapshot();
+    expect(
+      edgePeopleSnapshotSchema.safeParse({ ...data, mapping: 1, shipping: 2 })
+        .success,
+    ).toBe(true);
+  });
+
+  it("allows depth eight and rejects depth nine", () => {
+    let within: unknown = "value";
+    for (let index = 0; index < 7; index++) within = { nested: within };
+    expect(
+      edgePeopleSnapshotSchema.safeParse({ ...snapshot(), future: within })
+        .success,
+    ).toBe(true);
+    expect(
+      edgePeopleSnapshotSchema.safeParse({
+        ...snapshot(),
+        future: { nested: within },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("fails closed at the inspection node limit", () => {
+    expect(hasUnsafePeopleSnapshotFields({ future: [1] }, 3)).toBe(false);
+    expect(hasUnsafePeopleSnapshotFields({ future: [1] }, 2)).toBe(true);
+  });
+
+  it("rejects unknown fields in sensitive records", () => {
+    const data = snapshot();
+    for (const section of [
+      "users",
+      "employees",
+      "roles",
+      "shiftAssignments",
+      "attendancePolicies",
+    ] as const) {
+      const bad = {
+        ...data,
+        [section]: [{ ...data[section][0]!, future: true }],
+      };
+      expect(edgePeopleSnapshotSchema.safeParse(bad).success).toBe(false);
+    }
+  });
+
   it("rejects a password on a user", () => {
     const data = snapshot();
     const bad = { ...data, users: [{ ...data.users[0]!, password: "x" }] };
@@ -279,7 +372,7 @@ describe("edge people snapshot contract", () => {
     expect(edgePeopleSnapshotSchema.safeParse(bad).success).toBe(false);
   });
 
-  it("rejects an employee with an encrypted or non-whitelisted column", () => {
+  it("rejects encrypted or non-whitelisted employee columns", () => {
     const data = snapshot();
     for (const extra of [
       { nik_encrypted: "abc" },
@@ -385,11 +478,10 @@ describe("edge people snapshot contract", () => {
     }
   });
 
-  it("rejects an unknown top-level section", () => {
+  it("strips an unknown top-level section", () => {
     expect(
-      edgePeopleSnapshotSchema.safeParse({ ...snapshot(), accounts: [] })
-        .success,
-    ).toBe(false);
+      edgePeopleSnapshotSchema.parse({ ...snapshot(), accounts: [] }),
+    ).not.toHaveProperty("accounts");
   });
 
   it("requires a QR day key of exactly 32 bytes", () => {
@@ -411,7 +503,7 @@ describe("edge people snapshot contract", () => {
     ).toBe(false);
   });
 
-  it("rejects a QR key row with a seed or extra field", () => {
+  it("rejects a QR key seed", () => {
     const data = snapshot();
     const bad = {
       ...data,
@@ -420,7 +512,7 @@ describe("edge people snapshot contract", () => {
     expect(edgePeopleSnapshotSchema.safeParse(bad).success).toBe(false);
   });
 
-  it("rejects a seal key that carries a private key", () => {
+  it("rejects a seal key private key", () => {
     const data = snapshot();
     const bad = {
       ...data,

@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { edgeMasterUomSchema } from "@starter/shared/edge/master-sync";
+import {
+  edgeMasterSnapshotSchema,
+  edgeMasterUomSchema,
+} from "@starter/shared/edge/master-sync";
 
 const legacyUom = {
   id: randomUUID(),
@@ -42,5 +45,28 @@ describe("legend-tkc19 edge UOM snapshot compatibility", () => {
     expect(
       legacySchema.safeParse({ ...legacyUom, isSystem: true }).success,
     ).toBe(false);
+  });
+
+  it("rejects unknown and sensitive fields in inbound UOM rows", () => {
+    const snapshot = {
+      version: 1,
+      issuedAt: legacyUom.createdAt,
+      tenantId: legacyUom.tenantId,
+      outletId: randomUUID(),
+      legalEntityId: randomUUID(),
+      uoms: [legacyUom],
+      stockLocations: [],
+      chartOfAccounts: [],
+      accountMappings: [],
+    };
+    expect(edgeMasterSnapshotSchema.safeParse(snapshot).success).toBe(true);
+    for (const extra of [{ token: "secret" }, { unexpected: true }]) {
+      expect(
+        edgeMasterSnapshotSchema.safeParse({
+          ...snapshot,
+          uoms: [{ ...legacyUom, ...extra }],
+        }).success,
+      ).toBe(false);
+    }
   });
 });

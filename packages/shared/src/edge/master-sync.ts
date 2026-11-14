@@ -1,3 +1,4 @@
+import { hasUnsafeSnapshotFields } from "./snapshot-safety.ts";
 // Edge master sync snapshot (bead legend-9ppw; PRD v1.7 §3 F5 "Server Lokal").
 // The edge node posts stock movements against stock locations, and journals
 // against accounts, that must exist in the cloud with the SAME ids. The cloud
@@ -91,6 +92,8 @@ export const edgeMasterSnapshotQuerySchema = z
     snapshotVersion: z.enum(["1", "2"]).optional(),
     brandPage: z.literal("1").optional(),
     brandCursor: brandIdSchema.optional(),
+    /** Opt-in `uoms[].isSystem`: an older edge rejects the unknown field. */
+    uomIsSystem: z.literal("1").optional(),
   })
   .superRefine((query, ctx) => {
     if (query.brandCursor !== undefined && query.brandPage === undefined)
@@ -121,7 +124,7 @@ export const edgeMasterUomSchema = z.strictObject({
 });
 export type EdgeMasterUom = z.infer<typeof edgeMasterUomSchema>;
 
-export const edgeMasterStockLocationSchema = z.strictObject({
+export const edgeMasterStockLocationSchema = z.object({
   id: stockLocationIdSchema,
   tenantId: tenantIdSchema,
   outletId: outletIdSchema,
@@ -134,7 +137,7 @@ export type EdgeMasterStockLocation = z.infer<
   typeof edgeMasterStockLocationSchema
 >;
 
-export const edgeMasterAccountSchema = z.strictObject({
+export const edgeMasterAccountSchema = z.object({
   id: accountIdSchema,
   tenantId: tenantIdSchema,
   legalEntityId: legalEntityIdSchema,
@@ -149,7 +152,7 @@ export const edgeMasterAccountSchema = z.strictObject({
 });
 export type EdgeMasterAccount = z.infer<typeof edgeMasterAccountSchema>;
 
-export const edgeMasterAccountMappingSchema = z.strictObject({
+export const edgeMasterAccountMappingSchema = z.object({
   tenantId: tenantIdSchema,
   legalEntityId: legalEntityIdSchema,
   /** Any posting role name, known to this build or not (see the header). */
@@ -169,8 +172,8 @@ export type KnownEdgeMasterAccountMapping = Omit<
  * Scope-consistent: one tenant, one outlet, one legal entity, ids unique, and
  * the outlet's own brand (`brandId`) is among `brands`.
  */
-export const edgeMasterSnapshotSchema = z
-  .strictObject({
+const edgeMasterSnapshotObjectSchema = z
+  .object({
     version: z.union([
       z.literal(EDGE_MASTER_SNAPSHOT_MIN_VERSION),
       z.literal(EDGE_MASTER_SNAPSHOT_VERSION),
@@ -295,13 +298,49 @@ export const edgeMasterSnapshotSchema = z
         );
     });
   });
+/** Strict cloud output validation prevents accidentally sending extra columns. */
+export const edgeMasterSnapshotCloudSchema = edgeMasterSnapshotObjectSchema
+  .safeExtend({
+    brands: z
+      .array(edgeMasterBrandSchema.strict())
+      .max(EDGE_MASTER_BRANDS_PAGE_SIZE)
+      .optional(),
+    uoms: z.array(edgeMasterUomSchema.strict()).max(MAX_UOMS),
+    stockLocations: z
+      .array(edgeMasterStockLocationSchema.strict())
+      .max(MAX_LOCATIONS),
+    chartOfAccounts: z
+      .array(edgeMasterAccountSchema.strict())
+      .max(MAX_ACCOUNTS),
+    accountMappings: z
+      .array(edgeMasterAccountMappingSchema.strict())
+      .max(MAX_MAPPINGS),
+  })
+  .strict();
+
+export const edgeMasterSnapshotSchema = z
+  .unknown()
+  .refine(
+    (value) => !hasUnsafeSnapshotFields(value),
+    "Forbidden field or snapshot exceeds inspection limits",
+  )
+  .pipe(edgeMasterSnapshotObjectSchema);
+
 export type EdgeMasterSnapshot = z.infer<typeof edgeMasterSnapshotSchema>;
 
-export const edgeMasterSnapshotResponseSchema = z.strictObject({
-  snapshot: edgeMasterSnapshotSchema,
-  /** HMAC-SHA256 (lowercase hex) over canonicalJson(snapshot). */
-  signature: z.string().regex(/^[0-9a-f]{64}$/),
-});
+export const edgeMasterSnapshotResponseSchema = z
+  .unknown()
+  .refine(
+    (value) => !hasUnsafeSnapshotFields(value),
+    "Forbidden field or snapshot exceeds inspection limits",
+  )
+  .pipe(
+    z.object({
+      snapshot: edgeMasterSnapshotSchema,
+      /** HMAC-SHA256 (lowercase hex) over canonicalJson(snapshot). */
+      signature: z.string().regex(/^[0-9a-f]{64}$/),
+    }),
+  );
 export type EdgeMasterSnapshotResponse = z.infer<
   typeof edgeMasterSnapshotResponseSchema
 >;

@@ -69,6 +69,7 @@ import {
   type CatalogSyncStream,
 } from "@starter/shared/edge";
 import type { ScopedTenantContext } from "@starter/shared/core";
+import { hasUnsafeSnapshotFields } from "@starter/shared/edge/snapshot-safety";
 import {
   EDGE_MASTER_SNAPSHOT_PATH,
   EDGE_MASTER_SNAPSHOT_VERSION,
@@ -289,6 +290,8 @@ async function fetchVerifiedMasterSnapshotPage(
   const query = new URLSearchParams({
     snapshotVersion: String(EDGE_MASTER_SNAPSHOT_VERSION),
     brandPage: "1",
+    // Opt in to `uoms[].isSystem`; the cloud omits it for older edges.
+    uomIsSystem: "1",
   });
   if (cursor !== undefined) query.set("brandCursor", cursor);
   let body: unknown;
@@ -316,6 +319,13 @@ async function fetchVerifiedMasterSnapshotPage(
     );
   }
   if (body === null || typeof body !== "object")
+    throw new EdgeMasterSyncError("BAD_RESPONSE");
+  const extraFields = Object.fromEntries(
+    Object.entries(body).filter(
+      ([key]) => key !== "snapshot" && key !== "signature",
+    ),
+  );
+  if (hasUnsafeSnapshotFields(extraFields))
     throw new EdgeMasterSyncError("BAD_RESPONSE");
   const { snapshot, signature } = body as {
     snapshot?: unknown;

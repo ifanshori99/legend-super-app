@@ -503,7 +503,7 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
       if (!store.onPeerHello) enqueue(sendHello);
     },
     receive(raw) {
-      const frame = decodeFrame(raw);
+      const frame = decodeFrame(raw, outbound === "edge_to_cloud");
       if (!frame) {
         stop();
         transport.close(LINK_CLOSE.protocol, "Invalid frame");

@@ -22,8 +22,7 @@ import {
   EDGE_MASTER_SNAPSHOT_MIN_VERSION,
   EDGE_MASTER_SNAPSHOT_VERSION,
   EDGE_MASTER_BRANDS_PAGE_SIZE,
-  edgeMasterSnapshotSchema,
-  type EdgeMasterSnapshotResponse,
+  edgeMasterSnapshotCloudSchema,
 } from "@starter/shared/edge/master-sync";
 import { db } from "../db/index.ts";
 import { parseEdgeCredential } from "../edge/credential.ts";
@@ -81,6 +80,8 @@ type SnapshotOptions = {
   snapshotVersion?: number;
   brandPage?: boolean;
   brandCursor?: BrandId;
+  /** Include `uoms[].isSystem` (opt-in `uomIsSystem=1`). */
+  uomIsSystem?: boolean;
 };
 
 /**
@@ -91,7 +92,7 @@ export async function buildEdgeMasterSnapshot(
   node: VerifiedEdgeNode,
   presentedCredential: string,
   options: SnapshotOptions = {},
-): Promise<EdgeMasterSnapshotResponse> {
+) {
   // Version 2 (brands) only for an edge that asked; an older edge accepts the
   // literal version 1 only, so the default is exactly the old snapshot.
   const version =
@@ -118,7 +119,21 @@ export async function buildEdgeMasterSnapshot(
     (options.brandCursor !== undefined && !options.brandPage)
   )
     throw new CoreError("VALIDATION_ERROR", "Kursor brand tidak valid.");
-  const snapshot = await readSnapshot(context, verified, version, options);
+  const fullSnapshot = await readSnapshot(context, verified, version, options);
+  // `uoms[].isSystem` only for an edge that asked: an older edge's strict
+  // uom row rejects the unknown field.
+  const snapshot = options.uomIsSystem
+    ? fullSnapshot
+    : {
+        ...fullSnapshot,
+        uoms: fullSnapshot.uoms.map((row) => ({
+          id: row.id,
+          tenantId: row.tenantId,
+          code: row.code,
+          name: row.name,
+          createdAt: row.createdAt,
+        })),
+      };
 
   return {
     snapshot,
@@ -282,7 +297,7 @@ function readSnapshotInTenant(
       )
       .orderBy(asc(accountMappings.role));
 
-    const parsed = edgeMasterSnapshotSchema.safeParse({
+    const parsed = edgeMasterSnapshotCloudSchema.safeParse({
       version: responseVersion,
       issuedAt: new Date().toISOString(),
       tenantId,

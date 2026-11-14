@@ -1,7 +1,8 @@
+import { hasUnsafeSnapshotFields } from "./snapshot-safety.ts";
 // Edge people snapshot (design docs/design/hris-edge-replication.md 3.2).
 // `GET /api/edge-sync/people-snapshot` ships the people an outlet needs to clock
-// offline: a read-only projection, strict so an extra column (password hash,
-// real email, `*_encrypted`, PII) can never slip through on either side.
+// offline: a read-only projection. Unknown fields are discarded on receipt so
+// newer cloud versions remain compatible and extra PII is not retained.
 //
 // - `users`: only id/name/banned/timestamps; `email` is `<id>@edge.invalid` and
 //   `emailVerified` is false.
@@ -20,7 +21,10 @@ import {
   z,
 } from "../core/index.ts";
 import { roleSchema } from "../access/schemas.ts";
-import { roleAssignmentSchema } from "../access/scope.ts";
+import {
+  assignmentScopeSchema,
+  roleAssignmentSchema,
+} from "../access/scope.ts";
 import {
   attendancePolicySchema,
   attendanceSamplingConfigSchema,
@@ -122,7 +126,7 @@ export const EDGE_PEOPLE_SNAPSHOT_ATTENDANCE_POLICY_KEYS = [
 ] as const;
 
 export const edgePeopleSnapshotUserSchema = z
-  .strictObject({
+  .object({
     id: userIdSchema,
     name: z.string().min(1).max(200),
     banned: z.boolean(),
@@ -143,6 +147,15 @@ export type EdgePeopleSnapshotUser = z.infer<
 >;
 
 export const edgePeopleSnapshotRoleAssignmentSchema = roleAssignmentSchema
+  .safeExtend({
+    scope: z.discriminatedUnion("type", [
+      assignmentScopeSchema.options[0].strip(),
+      assignmentScopeSchema.options[1].strip(),
+      assignmentScopeSchema.options[2].strip(),
+      assignmentScopeSchema.options[3].strip(),
+    ]),
+  })
+  .strip()
   .refine((row) => row.assignedBy === row.userId, {
     message: "On the edge assignedBy is the assignee",
     path: ["assignedBy"],
@@ -152,7 +165,7 @@ export const edgePeopleSnapshotRoleAssignmentSchema = roleAssignmentSchema
     path: ["scope"],
   });
 
-export const edgePeopleSnapshotEmployeeSchema = z.strictObject({
+export const edgePeopleSnapshotEmployeeSchema = z.object({
   id: employeeShape.id,
   tenantId: employeeShape.tenantId,
   userId: userIdSchema,
@@ -169,7 +182,7 @@ export type EdgePeopleSnapshotEmployee = z.infer<
   typeof edgePeopleSnapshotEmployeeSchema
 >;
 
-export const edgePeopleSnapshotShiftAssignmentSchema = z.strictObject({
+export const edgePeopleSnapshotShiftAssignmentSchema = z.object({
   id: shiftAssignmentIdSchema,
   tenantId: tenantIdSchema,
   outletId: employeeShape.homeOutletId,
@@ -177,7 +190,7 @@ export const edgePeopleSnapshotShiftAssignmentSchema = z.strictObject({
   shiftTemplateId: z.null(),
   stationId: z.null(),
   businessDate: employeeShape.joinDate,
-  segments: z.array(shiftAssignmentSegmentSchema).min(1).max(2),
+  segments: z.array(shiftAssignmentSegmentSchema.strip()).min(1).max(2),
   breakMinutes: z.number().int().min(0).max(240),
   /** Only `published` and `swapped` shifts are sent (design 3.2). */
   status: z.enum(["published", "swapped"]),
@@ -187,12 +200,12 @@ export const edgePeopleSnapshotShiftAssignmentSchema = z.strictObject({
   createdBy: z.string().min(1).max(100),
 });
 
-export const edgePeopleSnapshotAttendancePolicySchema = z.strictObject({
+export const edgePeopleSnapshotAttendancePolicySchema = z.object({
   id: uuidSchema,
   tenantId: tenantIdSchema,
   outletId: employeeShape.homeOutletId.nullable(),
-  policy: attendancePolicySchema,
-  sampling: attendanceSamplingConfigSchema,
+  policy: attendancePolicySchema.strip(),
+  sampling: attendanceSamplingConfigSchema.strip(),
   updatedBy: z.string().min(1).max(100),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
@@ -202,14 +215,14 @@ export const edgePeopleSnapshotAttendancePolicySchema = z.strictObject({
 export const EDGE_QR_KEY_BASE64_PATTERN =
   /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/;
 
-export const edgePeopleSnapshotQrKeySchema = z.strictObject({
+export const edgePeopleSnapshotQrKeySchema = z.object({
   dayIndex: z.number().int().nonnegative().safe(),
   key: z
     .string()
     .regex(EDGE_QR_KEY_BASE64_PATTERN, "A QR day key is base64 of 32 bytes"),
 });
 
-export const edgePeopleSnapshotSelfieSealKeySchema = z.strictObject({
+export const edgePeopleSnapshotSelfieSealKeySchema = z.object({
   kid: z.string().min(1).max(64),
   publicKeyPem: z
     .string()
@@ -218,14 +231,74 @@ export const edgePeopleSnapshotSelfieSealKeySchema = z.strictObject({
     .startsWith("-----BEGIN PUBLIC KEY-----"),
 });
 
-export const edgePeopleSnapshotSchema = z.strictObject({
-  users: z.array(edgePeopleSnapshotUserSchema),
+// Preserve the existing export for callers and tests.
+export { hasUnsafeSnapshotFields as hasUnsafePeopleSnapshotFields } from "./snapshot-safety.ts";
+
+const noCredentialFields = z.unknown().superRefine((value, ctx) => {
+  if (hasUnsafeSnapshotFields(value)) {
+    ctx.addIssue({
+      code: "custom",
+      message: "Forbidden field or snapshot exceeds inspection limits",
+    });
+  }
+});
+
+export const edgePeopleSnapshotSchema = noCredentialFields.pipe(
+  z.object({
+    users: z.array(edgePeopleSnapshotUserSchema.strict()),
+    roles: z.array(roleSchema),
+    roleAssignments: z.array(
+      edgePeopleSnapshotRoleAssignmentSchema
+        .safeExtend({ scope: assignmentScopeSchema })
+        .strict(),
+    ),
+    employees: z.array(edgePeopleSnapshotEmployeeSchema.strict()),
+    shiftAssignments: z.array(
+      edgePeopleSnapshotShiftAssignmentSchema
+        .extend({
+          segments: z.array(shiftAssignmentSegmentSchema).min(1).max(2),
+        })
+        .strict(),
+    ),
+    attendancePolicies: z.array(
+      edgePeopleSnapshotAttendancePolicySchema
+        .extend({
+          policy: attendancePolicySchema,
+          sampling: attendanceSamplingConfigSchema,
+        })
+        .strict(),
+    ),
+    qrKeys: z.array(edgePeopleSnapshotQrKeySchema),
+    selfieSealKey: edgePeopleSnapshotSelfieSealKeySchema.strict().nullable(),
+  }),
+);
+
+/** Cloud-side output validation detects accidental disclosure of extra fields. */
+export const edgePeopleSnapshotCloudSchema = z.strictObject({
+  users: z.array(edgePeopleSnapshotUserSchema.strict()),
   roles: z.array(roleSchema),
-  roleAssignments: z.array(edgePeopleSnapshotRoleAssignmentSchema),
-  employees: z.array(edgePeopleSnapshotEmployeeSchema),
-  shiftAssignments: z.array(edgePeopleSnapshotShiftAssignmentSchema),
-  attendancePolicies: z.array(edgePeopleSnapshotAttendancePolicySchema),
-  qrKeys: z.array(edgePeopleSnapshotQrKeySchema),
-  selfieSealKey: edgePeopleSnapshotSelfieSealKeySchema.nullable(),
+  roleAssignments: z.array(
+    edgePeopleSnapshotRoleAssignmentSchema
+      .safeExtend({
+        scope: assignmentScopeSchema,
+      })
+      .strict(),
+  ),
+  employees: z.array(edgePeopleSnapshotEmployeeSchema.strict()),
+  shiftAssignments: z.array(
+    edgePeopleSnapshotShiftAssignmentSchema
+      .extend({ segments: z.array(shiftAssignmentSegmentSchema).min(1).max(2) })
+      .strict(),
+  ),
+  attendancePolicies: z.array(
+    edgePeopleSnapshotAttendancePolicySchema
+      .extend({
+        policy: attendancePolicySchema,
+        sampling: attendanceSamplingConfigSchema,
+      })
+      .strict(),
+  ),
+  qrKeys: z.array(edgePeopleSnapshotQrKeySchema.strict()),
+  selfieSealKey: edgePeopleSnapshotSelfieSealKeySchema.strict().nullable(),
 });
 export type EdgePeopleSnapshot = z.infer<typeof edgePeopleSnapshotSchema>;

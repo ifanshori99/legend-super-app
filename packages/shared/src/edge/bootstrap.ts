@@ -1,3 +1,4 @@
+import { hasUnsafeSnapshotFields } from "./snapshot-safety.ts";
 // Edge bootstrap bundle (bead legend-khu5; PRD v1.7 §3 F5 "Server Lokal",
 // TEN-02). A fresh edge node has an empty local database, but its own
 // edge_nodes row (and every link table) needs the tenant and outlet rows as
@@ -57,7 +58,7 @@ const name150 = z.string().min(1).max(150);
 const jsonObjectSchema = z.record(z.string(), z.unknown());
 
 /** `tenants` row as inserted on the edge. */
-export const edgeBootstrapTenantSchema = z.strictObject({
+export const edgeBootstrapTenantSchema = z.object({
   id: tenantIdSchema,
   slug: slugSchema,
   name: name150,
@@ -72,7 +73,7 @@ export const edgeBootstrapTenantSchema = z.strictObject({
 export type EdgeBootstrapTenant = z.infer<typeof edgeBootstrapTenantSchema>;
 
 /** `legal_entities` row without the NPWP columns (stored null on the edge). */
-export const edgeBootstrapLegalEntitySchema = z.strictObject({
+export const edgeBootstrapLegalEntitySchema = z.object({
   id: legalEntityIdSchema,
   tenantId: tenantIdSchema,
   name: name150,
@@ -85,7 +86,7 @@ export type EdgeBootstrapLegalEntity = z.infer<
 >;
 
 /** `brands` row as inserted on the edge. */
-export const edgeBootstrapBrandSchema = z.strictObject({
+export const edgeBootstrapBrandSchema = z.object({
   id: brandIdSchema,
   tenantId: tenantIdSchema,
   slug: slugSchema,
@@ -97,7 +98,7 @@ export const edgeBootstrapBrandSchema = z.strictObject({
 export type EdgeBootstrapBrand = z.infer<typeof edgeBootstrapBrandSchema>;
 
 /** `outlets` row without `region_id` (stored null on the edge). */
-export const edgeBootstrapOutletSchema = z.strictObject({
+export const edgeBootstrapOutletSchema = z.object({
   id: outletIdSchema,
   tenantId: tenantIdSchema,
   brandId: brandIdSchema,
@@ -116,8 +117,8 @@ export const edgeBootstrapOutletSchema = z.strictObject({
 export type EdgeBootstrapOutlet = z.infer<typeof edgeBootstrapOutletSchema>;
 
 /** FK-complete: every row is the tenant's, the outlet's parents are present. */
-export const edgeBootstrapBundleSchema = z
-  .strictObject({
+const edgeBootstrapBundleObjectSchema = z
+  .object({
     version: z.literal(EDGE_BOOTSTRAP_VERSION),
     issuedAt: isoDateTimeSchema,
     tenant: edgeBootstrapTenantSchema,
@@ -151,13 +152,43 @@ export const edgeBootstrapBundleSchema = z
         message: "The outlet's brand is not in the bundle",
       });
   });
+/** Strict cloud output validation prevents accidentally sending extra columns. */
+export const edgeBootstrapBundleCloudSchema = edgeBootstrapBundleObjectSchema
+  .safeExtend({
+    tenant: edgeBootstrapTenantSchema.strict(),
+    legalEntity: edgeBootstrapLegalEntitySchema.strict(),
+    brands: z.array(edgeBootstrapBrandSchema.strict()).min(1).max(1),
+    outlet: edgeBootstrapOutletSchema.strict(),
+  })
+  .strict();
+
+export const edgeBootstrapBundleSchema = z
+  .unknown()
+  .refine(
+    (value) => !hasUnsafeSnapshotFields(value),
+    "Forbidden field or snapshot exceeds inspection limits",
+  )
+  .pipe(edgeBootstrapBundleObjectSchema);
+
 export type EdgeBootstrapBundle = z.infer<typeof edgeBootstrapBundleSchema>;
 
-export const edgeBootstrapResponseSchema = z.strictObject({
-  bundle: edgeBootstrapBundleSchema,
-  /** HMAC-SHA256 (lowercase hex) over canonicalJson(bundle). */
-  signature: z.string().regex(/^[0-9a-f]{64}$/),
-});
+export const edgeBootstrapResponseSchema = z
+  .unknown()
+  .refine((value) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value))
+      return !hasUnsafeSnapshotFields(value);
+    const envelope = Object.fromEntries(
+      Object.entries(value).filter(([key]) => key !== "bundle"),
+    );
+    return !hasUnsafeSnapshotFields(envelope);
+  })
+  .pipe(
+    z.object({
+      bundle: edgeBootstrapBundleSchema,
+      /** HMAC-SHA256 (lowercase hex) over canonicalJson(bundle). */
+      signature: z.string().regex(/^[0-9a-f]{64}$/),
+    }),
+  );
 export type EdgeBootstrapResponse = z.infer<typeof edgeBootstrapResponseSchema>;
 
 /**
