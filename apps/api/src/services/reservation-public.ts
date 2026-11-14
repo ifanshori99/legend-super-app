@@ -80,6 +80,7 @@ import {
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { requestFingerprint } from "./reservation-plan.ts";
 import { requestDepositRefund } from "./reservation-refunds.ts";
+import { assertFreeCancellationWindowOpen } from "./reservation-reschedule.ts";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -537,7 +538,7 @@ async function buildGuestView(
       await loadHeldDeposit(tx, context, row.depositPaymentId, row.depositIdr)
     ).heldIdr;
   const [outlet] = await tx
-    .select({ name: outlets.name })
+    .select({ name: outlets.name, timeZone: outlets.timezone })
     .from(outlets)
     .where(
       and(
@@ -568,10 +569,25 @@ async function buildGuestView(
       .limit(1);
     pending = latest ?? null;
   }
+  // Newest request staff already decided; withdrawn ones are not a decision.
+  const [decided] = await tx
+    .select()
+    .from(reservationRescheduleRequests)
+    .where(
+      and(
+        eq(reservationRescheduleRequests.tenantId, context.tenant.tenantId),
+        eq(reservationRescheduleRequests.reservationId, row.id),
+        inArray(reservationRescheduleRequests.status, ["approved", "declined"]),
+        isNotNull(reservationRescheduleRequests.resolvedAt),
+      ),
+    )
+    .orderBy(desc(reservationRescheduleRequests.resolvedAt))
+    .limit(1);
   return guestReservationViewSchema.parse({
     reservationId: row.id,
     outletId: row.outletId,
     outletName: outlet.name,
+    timeZone: outlet.timeZone,
     guestName: row.guestName,
     partySize: row.pax,
     reservedFor: row.reservedFor.toISOString(),
@@ -593,6 +609,15 @@ async function buildGuestView(
       preview,
     },
     rescheduleRequest: pending ? toRescheduleRequest(pending) : null,
+    rescheduleDecision:
+      decided && decided.resolvedAt
+        ? {
+            outcome: decided.status,
+            decidedAt: decided.resolvedAt.toISOString(),
+            requestedFor: decided.requestedFor.toISOString(),
+            partySize: decided.partySize,
+          }
+        : null,
     linkExpiresAt: link.expiresAt.toISOString(),
   });
 }
@@ -851,6 +876,9 @@ export async function requestGuestReschedule(
         now.getTime() + RESCHEDULE_MAX_AHEAD_DAYS * DAY_MS
     )
       throw rescheduleInvalid();
+    // RSV-03: too late for a free cancel means too late to ask for a move.
+    // Thrown before the insert, so the rollback also drops the idempotency claim.
+    await assertFreeCancellationWindowOpen(tx, context, row, now);
     const [existing] = await tx
       .select({ id: reservationRescheduleRequests.id })
       .from(reservationRescheduleRequests)

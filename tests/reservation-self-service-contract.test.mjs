@@ -27,6 +27,7 @@ const view = {
   outletName: "Cafe Legend",
   guestName: confirmed.guestName,
   partySize: confirmed.pax,
+  timeZone: "Asia/Makassar",
   reservedFor: confirmed.reservedFor,
   status: confirmed.status,
   note: confirmed.note,
@@ -49,6 +50,7 @@ const view = {
     },
   },
   rescheduleRequest: request,
+  rescheduleDecision: null,
   linkExpiresAt: "2026-12-01T00:00:00.000Z",
 };
 

@@ -17,6 +17,7 @@ import {
   idrSchema,
   isoDateTimeSchema,
   outletIdSchema,
+  timeZoneSchema,
   uuidSchema,
   z,
 } from "../core/index.ts";
@@ -86,6 +87,8 @@ export const guestReservationViewSchema = z.strictObject({
   outletName: z.string().min(1),
   guestName: z.string().min(1),
   partySize: z.number().int().min(1),
+  /** IANA zone of the outlet (`outlets.timezone`); the UI shows times in it. */
+  timeZone: timeZoneSchema,
   reservedFor: isoDateTimeSchema,
   status: reservationStatusSchema,
   note: z.string().nullable(),
@@ -110,6 +113,18 @@ export const guestReservationViewSchema = z.strictObject({
   }),
   /** The latest pending request, else null. */
   rescheduleRequest: reservationRescheduleRequestSchema.nullable(),
+  /**
+   * The latest request staff already decided (newest `resolvedAt`), else null.
+   * Separate from `rescheduleRequest`, which stays pending-only.
+   */
+  rescheduleDecision: z
+    .strictObject({
+      outcome: z.enum(["approved", "declined"]),
+      decidedAt: isoDateTimeSchema,
+      requestedFor: isoDateTimeSchema,
+      partySize: z.number().int().min(1).max(50).nullable(),
+    })
+    .nullable(),
   linkExpiresAt: isoDateTimeSchema,
 });
 export type GuestReservationView = z.infer<typeof guestReservationViewSchema>;
