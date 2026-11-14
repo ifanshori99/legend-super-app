@@ -7,6 +7,10 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import * as api from "../packages/shared/src/api/index.ts";
 import * as core from "../packages/shared/src/core/index.ts";
+import {
+  cancelGuestReservation,
+  getGuestReservation,
+} from "../packages/shared/src/reservation/self-service.ts";
 import { ApiError } from "../apps/web/src/lib/api/errors.ts";
 import { createEndpointCaller } from "../apps/web/src/lib/api/endpoint-core.ts";
 import * as control from "../apps/web/src/lib/mock/control.ts";
@@ -431,6 +435,84 @@ describe("typed endpoint caller", () => {
       assert.equal(error.code, "VALIDATION_ERROR");
     }
     assert.equal(calls.length, 1);
+  });
+
+  test("sends a valid X-Reservation-Link-Token and rejects a malformed one", async () => {
+    const token = "A".repeat(43);
+    await call(api.listExampleOutlets, undefined, {
+      headers: { "X-Reservation-Link-Token": token },
+    });
+    assert.deepEqual(calls.at(-1).request.headers, {
+      "X-Reservation-Link-Token": token,
+    });
+    const before = calls.length;
+    for (const bad of ["short", `${"A".repeat(42)}!`, "A".repeat(44)]) {
+      const error = await failure(
+        call(api.listExampleOutlets, undefined, {
+          headers: { "X-Reservation-Link-Token": bad },
+        }),
+      );
+      assert.equal(error.code, "VALIDATION_ERROR");
+    }
+    assert.equal(calls.length, before);
+  });
+
+  // legend-g12il: the public guest page sends its link token in a header.
+  const LINK_TOKEN = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCde";
+  // Records the call and answers with an empty body; no mock handler needed.
+  const tokenCalls = [];
+  const tokenCall = createEndpointCaller(
+    async (path, request) => {
+      tokenCalls.push({ path, request });
+      return { data: {} };
+    },
+    { validateResponse: () => false },
+  );
+  beforeEach(() => {
+    tokenCalls.length = 0;
+  });
+
+  test("legend-g12il forwards a valid X-Reservation-Link-Token header", async () => {
+    await tokenCall(getGuestReservation, undefined, {
+      headers: { "X-Reservation-Link-Token": LINK_TOKEN },
+    });
+    assert.deepEqual(tokenCalls[0].request.headers, {
+      "X-Reservation-Link-Token": LINK_TOKEN,
+    });
+  });
+
+  test("legend-g12il sends the link token together with an Idempotency-Key", async () => {
+    await tokenCall(
+      cancelGuestReservation,
+      { body: {} },
+      {
+        headers: {
+          "X-Reservation-Link-Token": LINK_TOKEN,
+          "Idempotency-Key": "attempt-12345",
+        },
+      },
+    );
+    assert.deepEqual(tokenCalls[0].request.headers, {
+      "X-Reservation-Link-Token": LINK_TOKEN,
+      "Idempotency-Key": "attempt-12345",
+    });
+  });
+
+  test("legend-g12il rejects a malformed link token before any request", async () => {
+    for (const token of [
+      "",
+      "short",
+      `${LINK_TOKEN}x`,
+      `${LINK_TOKEN.slice(1)}+`,
+    ]) {
+      const error = await failure(
+        tokenCall(getGuestReservation, undefined, {
+          headers: { "X-Reservation-Link-Token": token },
+        }),
+      );
+      assert.equal(error.code, "VALIDATION_ERROR");
+    }
+    assert.equal(tokenCalls.length, 0);
   });
 
   test("builds the path, sends parsed query and returns the typed page", async () => {

@@ -1,3 +1,4 @@
+import type { CallHeaders } from "../api/endpoint-core.ts";
 import { API_MOCK } from "../api/mock-flag.ts";
 import { installBrowserControl, setLatencyMs } from "./control.ts";
 import { clearMocks } from "./registry.ts";
@@ -50,7 +51,7 @@ export async function mockFetch<T>(
     query?: Record<string, string | number | boolean | undefined>;
     body?: unknown;
     signal?: AbortSignal;
-    headers?: { "Idempotency-Key"?: string };
+    headers?: CallHeaders;
   },
 ): Promise<T> {
   setup();

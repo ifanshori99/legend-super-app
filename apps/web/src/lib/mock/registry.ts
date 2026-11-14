@@ -4,6 +4,7 @@ import {
   type EndpointOutput,
 } from "@starter/shared/api";
 import type { z } from "zod";
+import type { CallHeaders } from "../api/endpoint-core.ts";
 import type { MockScenario } from "./control.ts";
 
 type Parsed<S> = S extends z.ZodType ? z.output<S> : undefined;
@@ -19,7 +20,7 @@ export type MockContext<E extends AnyEndpoint> = {
   body: Parsed<E["body"]>;
   scenario: MockScenario;
   signal?: AbortSignal;
-  headers?: { "Idempotency-Key"?: string };
+  headers?: CallHeaders;
 };
 
 /**
