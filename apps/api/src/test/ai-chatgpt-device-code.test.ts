@@ -264,11 +264,18 @@ const poll = (attemptId: string, actor = ownerA) =>
     .send({ attemptId });
 const revoke = (actor = ownerA) =>
   actor.client.delete("/api/ai/chatgpt").set(originHeader);
-const ask = (actor = ownerA) =>
+// A UUID can contain a phone-looking digit run, which the PII guard correctly
+// blocks before inference. Encode digits bijectively while keeping questions unique.
+const questionNonce = (nonce: string = randomUUID()) =>
+  nonce.replace(/\d/g, (digit) => String.fromCharCode(103 + Number(digit)));
+const ask = (actor = ownerA, nonce?: string) =>
   actor.client
     .post("/api/ai/ask")
     .set(originHeader)
-    .send({ feature: "AI-02", question: `Pertanyaan ChatGPT ${randomUUID()}` });
+    .send({
+      feature: "AI-02",
+      question: `Pertanyaan ChatGPT ${questionNonce(nonce)}`,
+    });
 async function unlockPoll(tid = tenantA) {
   await inTenant(tid, (c) =>
     c.query(
@@ -915,7 +922,7 @@ describe("legend-z83k B3 kill switch, fallback and billing", () => {
 
   it("legend-z83k B3 kill switch invalidates an already cached ChatGPT answer", async () => {
     await seedConnected();
-    const question = `Jawaban cache ChatGPT ${randomUUID()}`;
+    const question = `Jawaban cache ChatGPT ${questionNonce()}`;
     const askSame = () =>
       ownerA.client
         .post("/api/ai/ask")
@@ -1144,7 +1151,11 @@ describe("legend-z83k B4 leased operations and credential races", () => {
         { status: 401 },
       );
     };
-    const oldInference = ask().then((result) => result);
+    // Regression nonce: its raw prefix matches the PII phone-number pattern.
+    const oldInference = ask(
+      ownerA,
+      "08123456-7890-4abc-8def-123456789abc",
+    ).then((result) => result);
     let refreshing: ReturnType<typeof getChatgptCredentials> | undefined;
     let rotated = "";
     try {
