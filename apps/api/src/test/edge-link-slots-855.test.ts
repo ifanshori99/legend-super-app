@@ -19,7 +19,7 @@
 // - RESTORE_PROOF_MAX_SLOTS is 100_000 (the brief); inboundProof over a wider
 //   range returns the prefix of the first 100_000 slots (to = from + 100_000).
 // - The backfill is the INSERT INTO edge_link_slots statement(s) of the
-//   migration file drizzle/0440_*.sql; the test runs them as written against
+//   migration file drizzle/0376_*.sql; the test runs them as written against
 //   the test database (as the table owner) and only looks at its own node.
 // - Seeded slot-only nodes (no receipts) are enough for the proof tests: the
 //   brief says inboundProof reads edge_link_slots only.
@@ -582,10 +582,10 @@ describe("legend-pz641 inboundProof reads the slot table", () => {
 });
 
 describe("legend-pz641 backfill of the slot migration", () => {
-  /** The statements of drizzle/0440_*.sql that write edge_link_slots. */
+  /** The statements of drizzle/0376_*.sql that write edge_link_slots. */
   function backfillStatements(): string[] {
     const files = readdirSync(drizzleFolder).filter((f) =>
-      /^0440_.*\.sql$/.test(f),
+      /^0376_.*\.sql$/.test(f),
     );
     expect(files, "migration 0376 for edge_link_slots exists").toHaveLength(1);
     const sqlText = readFileSync(join(drizzleFolder, files[0]!), "utf8");
