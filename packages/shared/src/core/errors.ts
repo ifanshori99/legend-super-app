@@ -68,6 +68,8 @@ export const apiErrorBodySchema = z.object({
     remainingAttempts: z.number().int().nonnegative().optional(),
     /** PAYSLIP_PIN_LOCKED (423): ISO datetime the lock ends. */
     lockedUntil: z.string().datetime().optional(),
+    acknowledgedBy: z.object({ displayName: z.string() }).optional(),
+    acknowledgedAt: z.string().datetime().optional(),
     requestId: z.string().optional(),
   }),
 });
@@ -82,6 +84,8 @@ export function apiErrorBody(
     details?: ApiErrorDetail[];
     remainingAttempts?: number;
     lockedUntil?: string;
+    acknowledgedBy?: { displayName: string };
+    acknowledgedAt?: string;
     requestId?: string;
   } = {},
 ): ApiErrorEnvelope {
