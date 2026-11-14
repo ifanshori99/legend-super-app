@@ -2535,6 +2535,13 @@
       "when": 1794680680682,
       "tag": "0375_recipes_resync_edges",
       "breakpoints": true
+    },
+    {
+      "idx": 376,
+      "version": "7",
+      "when": 1794688197727,
+      "tag": "0376_edge_link_slots",
+      "breakpoints": true
     }
   ]
 }

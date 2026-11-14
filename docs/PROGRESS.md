@@ -28,6 +28,14 @@
 - Gerbang: prettier+eslint 27 berkas hijau; `check-workspace-links` hijau; `pnpm run lint` exit 0 (3m); `pnpm run typecheck` 3/3 hijau (3m28s); `heavy pnpm run test` satu run penuh: node:test root 3001/3001 (tahap root hijau, tanpa flake db-role), vitest API 1137 berkas lulus (2 dilewati), 18234 tes lulus, 41 dilewati, 16 todo, 0 gagal (~1j50m total). Tanpa run kedua.
 - Berikut: fast-forward `milestone/m1` ke `int/batch64e`; lalu 64f dan 64g (refund, QRIS 0368-0370 snapshot prevId 0367, `ws/edge-kds-stations` 0371), plus antrean CTO setelah 64g.
 - Biaya sesi (12:32-22:45, termasuk 64a-64d): biaya* total 5613k (utama Sonnet 5.5 5421k; subagent 192k). 3 subagent; parallel-report: rata-rata 0.22 subagent berjalan per agent (11 sesi). Waktu terbanyak menunggu antrean `heavy` dan vitest API.
+## 855 Edge slot per link + sisa (engineer Opus, cabang `fix/edge-slot-855` dari `fix/edge-proof-854` 50818b5f6, 15 Nov 2026 dini hari)
+
+- legend-pz641: tabel `edge_link_slots` (migrasi 0440, backfill idempoten), proof dan reconcileReplay baca slot (index PK), batas proof 100.000.
+- legend-fgd9b: receipt dead-letter memakai peer_seq_offset (juga replay supervisor).
+- legend-rs2xy: keputusan blokir di sumber; depresiasi + jurnal berulang hanya di cloud (worker gate).
+- legend-2uqcd, legend-cgduz: sudah di 87284cbb7 (ws/tax-menu-keyrotation), tidak diulang.
+- Bukti: 32 file test terarah, 608 lulus; typecheck api hijau; review architect xhigh, temuan F1/F2/F6/F7 diperbaiki.
+- Berikut: merge train; migrasi 0368-0439 yang masuk setelah 0440 harus dinomori ulang (drizzle melewati `when` lebih lama).
 
 ## Merge train batch64c (merge train, `int/batch64c` dari `origin/milestone/m1` 9b8433f69, 14 Nov 2026 18:50-20:50 WIB)
 

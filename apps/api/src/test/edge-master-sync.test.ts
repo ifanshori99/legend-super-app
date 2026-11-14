@@ -213,6 +213,7 @@ const ALL_TABLES = [
   "chart_of_accounts",
   "stock_locations",
   "uoms",
+  "edge_link_slots",
   "edge_inbound_events",
   "edge_received_events",
   "edge_sync_conflicts",

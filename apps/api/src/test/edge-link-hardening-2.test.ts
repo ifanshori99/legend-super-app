@@ -232,6 +232,7 @@ afterAll(async () => {
     await client.query("SET LOCAL session_replication_role = replica");
     const tenantIds = fixtures.map((f) => f.tenantId);
     for (const table of [
+      "edge_link_slots",
       "edge_inbound_events",
       "edge_received_events",
       "edge_sync_conflicts",
@@ -249,6 +250,7 @@ afterAll(async () => {
     await client.query("DELETE FROM tenants WHERE id = ANY($1)", [tenantIds]);
     if (seededOutlets.length > 0) {
       for (const table of [
+        "edge_link_slots",
         "edge_inbound_events",
         "edge_received_events",
         "edge_sync_conflicts",

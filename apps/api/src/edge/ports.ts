@@ -31,6 +31,12 @@ export type EdgeApplyMeta = {
    * null/absent = unknown (an old edge that does not send it).
    */
   readonly edgeInstanceId?: string | null;
+  /**
+   * The peer's link sequence offset (sync_cursors.peer_seq_offset) for the
+   * direction being applied; a stored link_seq is the peer's linkSeq + this.
+   * Absent = 0.
+   */
+  readonly peerSeqOffset?: number;
   readonly direction: SyncDirection;
   readonly kind: EdgeEventKind;
   readonly context: ScopedTenantContext;

@@ -72,6 +72,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "backfills paid_idr on existing promotion applications",
   "0065_edge_received_events.sql":
     "copies existing edge inbound events into the renamed table",
+  "0376_edge_link_slots.sql":
+    "backfills edge_link_slots from existing edge_inbound_events: one row per link slot with exactly one counted receipt (legend-pz641); idempotent, ON CONFLICT DO NOTHING, edits no existing row, FORCE RLS lifted for that one statement and restored",
   "0090_pos_day_close_permission.sql":
     "adds a permission string to each tenant's existing roles",
   "0096_menu_station_type_backfill.sql":

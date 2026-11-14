@@ -37,6 +37,7 @@ import {
   LINK_BATCH_MAX_BYTES,
   LINK_BATCH_SIZE,
   LINK_CLOSE,
+  LINK_RESTORE_PROOF_REFUSAL,
   decodeFrame,
   encodeFrame,
   oppositeDirection,
@@ -134,7 +135,41 @@ export type LinkStore = {
    * refuse the link.
    */
   onPeerHello?(peerCursor: number): Promise<void>;
+  /**
+   * Optional, edge (legend-tmar2): proof over the outbound events with
+   * link_seq in (fromSeq, toSeq], ascending (acked rows included), computed
+   * with `restoreProofOf` in this side's own numbering. Rows missing from the
+   * range show up as a lower count.
+   */
+  outboundProof?(fromSeq: number, toSeq: number): Promise<RestoreProof>;
+  /**
+   * Optional, cloud (legend-tmar2): proof over the receipts
+   * of events the edge sent with link_seq in (fromSeq, toSeq] in the EDGE's
+   * numbering (the store adds the peer offset), ascending. The store proves
+   * the longest complete prefix of the range (slots fromSeq+1..fromSeq+k, k
+   * may be 0, capped by its own limit) and returns where it ends in `to`.
+   * Null only when toSeq < fromSeq. The hello always carries the result:
+   * a hole or an oversized range yields a shorter proof, never none.
+   */
+  inboundProof?(
+    fromSeq: number,
+    toSeq: number,
+  ): Promise<(RestoreProof & { to: number }) | null>;
+  /**
+   * Optional, cloud (legend-tmar2 854): checks the part of an edge batch that
+   * lies at or below the cloud's received cursor (a replay) against the
+   * receipts, in the edge's numbering. Resolves when every slot holds the
+   * same event (a missing receipt of a registered event is filled in).
+   * Throws LinkProtocolError (reason starting with LINK_RESTORE_PROOF_REFUSAL)
+   * when a slot holds a different or unknown event: nothing is acknowledged.
+   */
+  reconcileReplay?(input: {
+    events: readonly { linkSeq: number; event: EventEnvelope }[];
+  }): Promise<void>;
 };
+
+export type RestoreProof = { count: number; sha256: string };
+type HelloProof = RestoreProof & { from: number; to?: string };
 
 export type LinkTransport = {
   send(data: string): void;
@@ -160,6 +195,36 @@ export type LinkPeerOptions = {
   /** Backpressure bound on unprocessed received frames (legend-wg5t #1). */
   maxPendingFrames?: number;
   now?: () => Date;
+  /**
+   * Cloud only (legend-tmar2): the edge's acked_out_seq A from the upgrade
+   * header. When set (a modern edge) and the cloud's inbound cursor N is above
+   * it, the hello carries `inboundProof` from `store.inboundProof`, with
+   * `from` = A and `to` only when the proof stops short of N (strict only, see
+   * `restoreProofStrict`; replayed batches are then checked by
+   * `store.reconcileReplay`).
+   */
+  restoreProofAcked?: number;
+  /**
+   * Cloud only (legend-tmar2 854), valid only with `restoreProofAcked`: the
+   * edge sent `x-edge-restore-proof-v2`, so it takes a partial or empty proof
+   * (`to`) and the cloud checks replayed batches. Without it (an 848 edge) the
+   * hello carries a proof only when it covers the whole range (to == cursor),
+   * else none, and replays are not checked: the 848 behaviour.
+   */
+  restoreProofStrict?: boolean;
+  /**
+   * Edge only (legend-tmar2 854): the edge sent the restore proof headers, so a
+   * hello that would ack (cursor above the acked cursor) must carry a proof.
+   * Without one nothing is acked and the link is refused (reason starting with
+   * LINK_RESTORE_PROOF_REFUSAL). Unset: the old behaviour (ack the cursor).
+   */
+  requireRestoreProof?: boolean;
+  /**
+   * Edge only, with `requireRestoreProof`: the upgrade response echoed
+   * `x-edge-restore-proof-v2`, so the cloud supports the proof. Only changes
+   * the refusal message (old cloud vs. a cloud that broke the contract).
+   */
+  peerEchoesRestoreProof?: boolean;
   /** Store/apply failures (no secrets in the error). The link stays up. */
   onError?: (error: unknown) => void;
   /** After an event was moved to the dead-letter store (once per event). */
@@ -358,11 +423,35 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
   let helloSent = false;
   async function sendHello() {
     const cursor = await store.lastReceivedInbound();
+    // Cloud only: the edge announced its acked cursor A (upgrade header), so
+    // when our inbound cursor N is beyond it, prove which events fill (A, N].
+    // Strict (854 edge): the longest complete prefix, possibly empty, never
+    // omitted. Not strict (848 edge): only a proof of the whole range, else the
+    // hello carries none (the 848 fail-open for incomplete history).
+    const proofAcked = options.restoreProofAcked;
+    const strict = options.restoreProofStrict === true;
+    const found =
+      proofAcked !== undefined && cursor > proofAcked && store.inboundProof
+        ? await store.inboundProof(proofAcked, cursor)
+        : null;
+    const proof = found && (strict || found.to === cursor) ? found : null;
     helloSent = true;
     send({
       type: "hello",
       version: options.version,
       inboundCursor: String(cursor),
+      ...(proof && proofAcked !== undefined
+        ? {
+            inboundProof: {
+              from: proofAcked,
+              // Omitted for the whole range so an 848 edge still
+              // accepts it; only a partial or empty proof says where it ends.
+              ...(proof.to !== cursor ? { to: String(proof.to) } : {}),
+              count: proof.count,
+              sha256: proof.sha256,
+            },
+          }
+        : {}),
     });
   }
 
@@ -390,7 +479,11 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
     }
   }
 
-  async function onHello(cursor: number, peerVersion?: unknown) {
+  async function onHello(
+    cursor: number,
+    proof?: HelloProof,
+    peerVersion?: unknown,
+  ) {
     if (!Number.isSafeInteger(cursor) || cursor < 0)
       throw new LinkProtocolError("Hello cursor is not a sequence");
     warnIfEdgeTooOld(peerVersion);
@@ -414,14 +507,51 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
         "Peer cursor is ahead of this side's queue; refusing to resume",
       );
     const acked = await store.lastAckedOutbound();
+    // Highest slot the peer's hello may count as acknowledged: the whole
+    // cursor, or the end of a partial proof (the rest is sent again).
+    let ackTo = cursor;
     if (cursor > acked) {
-      await store.ackOutbound(cursor);
-      options.onAcked?.(cursor);
+      // Restore proof (legend-tmar2): the cursor may only count as an ack when
+      // the events in (acked, cursor] are the ones the peer holds. Checked
+      // before ackOutbound: a mismatch acks nothing and reports nothing.
+      // The range starts at the proof's own `from` (the acked cursor the edge
+      // announced), not at the current acked: an ack that finished after the
+      // header was read must not cause a false refusal.
+      if (proof && store.outboundProof) {
+        const proofTo = proof.to === undefined ? cursor : Number(proof.to);
+        if (proof.from > acked)
+          throw new LinkProtocolError(
+            `${LINK_RESTORE_PROOF_REFUSAL} from ${proof.from} is beyond the acknowledged cursor; refusing to resume`,
+          );
+        if (proofTo < proof.from || proofTo > cursor)
+          throw new LinkProtocolError(
+            `${LINK_RESTORE_PROOF_REFUSAL} to ${proofTo} is outside the proven range; refusing to resume`,
+          );
+        const local = await store.outboundProof(proof.from, proofTo);
+        if (local.count !== proof.count || local.sha256 !== proof.sha256)
+          throw new LinkProtocolError(
+            `${LINK_RESTORE_PROOF_REFUSAL} mismatch: events in the acknowledged range differ from the peer's; refusing to resume`,
+          );
+        ackTo = proofTo;
+      } else if (options.requireRestoreProof) {
+        // No proof, nothing acked: an old cloud cannot prove the range and a
+        // modern one must. Thrown before ackOutbound/onAcked.
+        throw new LinkProtocolError(
+          options.peerEchoesRestoreProof
+            ? `${LINK_RESTORE_PROOF_REFUSAL} missing: the cloud supports it but sent none; refusing to resume`
+            : `${LINK_RESTORE_PROOF_REFUSAL} unsupported: cloud does not support restore proof; upgrade cloud first`,
+        );
+      }
+      if (ackTo > acked) {
+        await store.ackOutbound(ackTo);
+        options.onAcked?.(ackTo);
+      }
     }
     // A cursor below our ack means the peer restored older state: resend
-    // from where it is (the rows are still queued unless pruned).
-    sentUpTo = cursor;
-    ackedUpTo = cursor;
+    // from where it is (the rows are still queued unless pruned). A partial
+    // proof acks only up to ackTo, so (ackTo, cursor] is sent again.
+    sentUpTo = ackTo;
+    ackedUpTo = ackTo;
     ready = true;
     await pump();
   }
@@ -441,6 +571,22 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
       // Gap: something before this batch never arrived.
       send({ type: "resend", direction: inbound, fromCursor: String(last) });
       return;
+    }
+    // A strict edge (854, restore proof v2 header): the part of the batch at or below
+    // our cursor may hold slots whose receipt never closed or whose event is
+    // not the one we hold, so check it before acknowledging anything.
+    const replayEnd = Math.min(last, toSeq);
+    if (
+      options.restoreProofAcked !== undefined &&
+      options.restoreProofStrict === true &&
+      store.reconcileReplay &&
+      replayEnd > fromSeq
+    ) {
+      await store.reconcileReplay({
+        events: batch.events
+          .slice(0, replayEnd - fromSeq)
+          .map((event, index) => ({ linkSeq: fromSeq + 1 + index, event })),
+      });
     }
     if (toSeq <= last) {
       // Duplicate: already applied; acknowledge again, never re-apply.
@@ -481,7 +627,11 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
   async function handle(frame: LinkFrame) {
     switch (frame.type) {
       case "hello":
-        return onHello(Number(frame.inboundCursor), frame.version);
+        return onHello(
+          Number(frame.inboundCursor),
+          frame.inboundProof,
+          frame.version,
+        );
       case "batch":
         if (!ready) throw new LinkProtocolError("Batch before hello");
         return onBatch(frame.batch);

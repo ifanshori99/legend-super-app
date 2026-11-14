@@ -460,10 +460,16 @@ export async function resolveEdgeSyncConflict(
     let error: string | null = null;
     if (input.action === "replay") {
       const event = eventEnvelopeSchema.parse(row.event);
+      // legend-fgd9b: a stored link_seq is the peer's linkSeq + peer_seq_offset
+      // of this node's cursor row, exactly as applyInbound derives it.
+      const offsetResult = await tx.execute(
+        sql`SELECT peer_seq_offset FROM sync_cursors WHERE edge_node_id = ${row.edgeNodeId}::uuid AND direction = ${row.direction}`,
+      );
       const meta: EdgeApplyMeta = {
         edgeNodeId: row.edgeNodeId,
         direction: row.direction,
         kind: row.kind,
+        peerSeqOffset: Number(offsetResult.rows[0]?.peer_seq_offset ?? 0),
         context,
       };
       // A refused replay (409) throws here: nothing is recorded, the

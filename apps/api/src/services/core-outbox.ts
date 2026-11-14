@@ -82,6 +82,9 @@ export async function appendOutbox(
   // worker transport dead-letters a tenant-wide one after the fact). Refuse it
   // at the producer so the domain transaction rolls back with a clear error.
   // Other destinations (identity, notification) never travel the link.
+  // legend-rs2xy: this guard stays (no tenant-scoped sync, no outlet attached).
+  // The worker jobs that would hit it on an edge (depreciation, recurring
+  // journals) are skipped there; see edge-worker-cloud-only-gate-855.test.ts.
   if (
     !event.outletId &&
     input.destination === CLOUD_SYNC_DESTINATION &&

@@ -294,6 +294,7 @@ export const EDGE_REQUIRED_TABLES = [
   "edge_nodes",
   "sync_cursors",
   "edge_outbound_queue",
+  "edge_link_slots",
   "edge_inbound_events",
   "edge_sync_conflicts",
   "edge_pull_checkpoints",

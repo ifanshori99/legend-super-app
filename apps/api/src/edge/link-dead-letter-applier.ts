@@ -78,7 +78,7 @@ export async function applyEdgeLinkDeadLettered(
   // `applied` receipts). Never received for real: its id is not registered in
   // edge_received_events.
   await tx.execute(
-    sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${tenantId}::uuid, ${outletId}::uuid, ${meta.edgeNodeId}::uuid, ${meta.direction}, ${deadUuid}::uuid, ${dead.linkSeq}, ${dead.aggregateType}, ${dead.aggregateId}, ${dead.aggregateSequence}, 'transaction_event', 'applied') ON CONFLICT DO NOTHING`,
+    sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${tenantId}::uuid, ${outletId}::uuid, ${meta.edgeNodeId}::uuid, ${meta.direction}, ${deadUuid}::uuid, ${dead.linkSeq + (meta.peerSeqOffset ?? 0)}, ${dead.aggregateType}, ${dead.aggregateId}, ${dead.aggregateSequence}, 'transaction_event', 'applied') ON CONFLICT DO NOTHING`,
   );
   if (inserted.rows.length === 0) return;
   // Supervisor alert in a savepoint: never fails the batch (the conflict row
