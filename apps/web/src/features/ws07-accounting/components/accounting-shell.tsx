@@ -66,6 +66,13 @@ const SECTIONS = [
     labelKey: "accounting.tabs.recurring",
     to: "/kelola/akuntansi/jurnal-berulang",
   },
+  // Pengecualian finance (legend-4oclu).
+  {
+    key: "exceptions",
+    group: "books",
+    labelKey: "financeExceptions.tab",
+    to: "/kelola/akuntansi/pengecualian",
+  },
   // Kas & Bank (legend-53q; ACC-04, ACC-05).
   {
     key: "cash",
