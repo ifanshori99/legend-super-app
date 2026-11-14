@@ -31,7 +31,8 @@ import { CoreError } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { env } from "../config/env.ts";
-import { checkDatabase } from "../db/index.ts";
+import { checkDatabase, db } from "../db/index.ts";
+import { countBlockedOutboxAggregates } from "../services/core-outbox-dead-alert.ts";
 import {
   catalogOverrideInputSchema,
   catalogOverrideNow,
@@ -251,6 +252,13 @@ edgeRouter.get("/health", async (_req, res) => {
     cloudLink: runtime.link.cloudLink,
     database,
     deviceRegistry: { stale: getDeviceRegistrySyncState()?.stale ?? true },
+    // Count only; no event or tenant identifiers are exposed by health.
+    blockedOutboxAggregates:
+      runtime.identity && database === "ok"
+        ? await countBlockedOutboxAggregates(db, runtime.identity.context, {
+            destinations: ["cloud-sync"],
+          }).catch(() => null)
+        : null,
     // Informational: stale prices/product status never change the HTTP code.
     catalogFreshness: (() => {
       const tracker = getCatalogFreshness();
