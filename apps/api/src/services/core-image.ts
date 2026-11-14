@@ -38,6 +38,32 @@ export class NoopMalwareScanner implements MalwareScanner {
   }
 }
 
+/**
+ * A scanner's explicit content rejection is a caller error. An unavailable
+ * scanner still refuses the selfie, but callers may retry when it recovers.
+ * Keep scanner diagnostics out of the response.
+ */
+export function createSelfieUploadScanner(
+  scanner: MalwareScanner,
+): MalwareScanner {
+  return {
+    acceptsDocuments: scanner.acceptsDocuments,
+    async scan(bytes) {
+      try {
+        await scanner.scan(bytes);
+      } catch (error) {
+        if (error instanceof HttpError && error.status === 422)
+          throw new HttpError(422, "UPLOAD_REJECTED", "Upload rejected.");
+        throw new HttpError(
+          503,
+          "SCANNER_UNAVAILABLE",
+          "File scanning is temporarily unavailable.",
+        );
+      }
+    },
+  };
+}
+
 export interface ImageVariant {
   bytes: Buffer;
   contentType: "image/webp";

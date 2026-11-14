@@ -14,7 +14,11 @@ import { requireAuth } from "../middleware/auth";
 import { noStore } from "../middleware/no-store";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
-import { NoopMalwareScanner } from "../services/core-image";
+import {
+  createSelfieUploadScanner,
+  NoopMalwareScanner,
+  type MalwareScanner,
+} from "../services/core-image";
 import { createCoreStorageRouterWithAccess } from "../services/core-storage-access";
 import {
   authorizePinProofUpload,
@@ -94,7 +98,7 @@ export function createStorageApiRouter(options: {
   // The core-storage router's own paths start with /storage and it requires a
   // session on every request it sees, so only hand it /storage/* requests.
   const storage = env.EDGE_MODE
-    ? edgeStorageRouter(database)
+    ? edgeStorageRouter(database, runtime?.scanner)
     : runtime
       ? createCoreStorageRouterWithAccess({
           database,
@@ -260,7 +264,10 @@ export function createStorageApiRouter(options: {
  * cloud key and written to EDGE_SELFIE_DIR (legend-we0yc); every other purpose
  * answers 503 and no signed URL exists, so the storage port refuses all calls.
  */
-function edgeStorageRouter(database: NodePgDatabase<typeof schema>): Router {
+function edgeStorageRouter(
+  database: NodePgDatabase<typeof schema>,
+  scanner: MalwareScanner = new NoopMalwareScanner(),
+): Router {
   const refuse = (): never => {
     throw new HttpError(
       503,
@@ -276,7 +283,7 @@ function edgeStorageRouter(database: NodePgDatabase<typeof schema>): Router {
       publicUrl: refuse,
       signedGetUrl: refuse,
     } as unknown as ObjectStorage,
-    scanner: new NoopMalwareScanner(),
+    scanner,
     upload: (db, context, metadata, bytes, deps) =>
       uploadEdgeSelfie(db, context, metadata, bytes, {
         authorize: deps.authorize,
@@ -288,7 +295,7 @@ function edgeStorageRouter(database: NodePgDatabase<typeof schema>): Router {
   });
   // A request carrying X-Pin-Proof takes the proof path (no session); every
   // other request keeps the session behaviour of the core-storage router.
-  const proofUpload = pinProofUploadRouter(database);
+  const proofUpload = pinProofUploadRouter(database, scanner);
   const router = Router();
   router.post("/storage/uploads", (req, res, next) =>
     req.get(PIN_PROOF_HEADER) === undefined
@@ -307,8 +314,12 @@ function edgeStorageRouter(database: NodePgDatabase<typeof schema>): Router {
  * outlet and `pin_proof_id` come from the proof and the device, never from the
  * client; only the purpose `selfie` is served. The proof is not consumed here.
  */
-function pinProofUploadRouter(database: NodePgDatabase<typeof schema>): Router {
+function pinProofUploadRouter(
+  database: NodePgDatabase<typeof schema>,
+  scanner: MalwareScanner,
+): Router {
   const router = Router();
+  const selfieScanner = createSelfieUploadScanner(scanner);
   const proofs = new WeakMap<object, PinProofUpload>();
   const authenticate: RequestHandler = async (req, _res, next) => {
     const raw = req.get(DEVICE_TOKEN_HEADER);
@@ -389,7 +400,7 @@ function pinProofUploadRouter(database: NodePgDatabase<typeof schema>): Router {
           authorize: proof.authorize,
           actorUserId: proof.userId,
           pinProofId: proof.proofId,
-          scanner: new NoopMalwareScanner(),
+          scanner: selfieScanner,
           dir: env.EDGE_SELFIE_DIR,
           maxBytes: env.EDGE_SELFIE_MAX_BYTES,
         },

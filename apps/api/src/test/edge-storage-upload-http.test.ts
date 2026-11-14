@@ -71,8 +71,10 @@ import {
   cafeLegendPlatformFixtures,
   DEVICE_TOKEN_HEADER,
 } from "@starter/shared/platform";
+import { FakeObjectStorage } from "@starter/shared/adapters";
 import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 
 const PASSWORD = "Test-password-123!"; // the helpers.ts sign-up password
@@ -91,7 +93,36 @@ const { publicKey } = generateKeyPairSync("rsa", {
 });
 
 const cloud = createApp({ edgeMode: false });
-const edge = createApp({ edgeMode: true });
+const edge = createApp({ edgeMode: true, storageRuntime: null });
+const SCANNER_DIAGNOSTIC = "scanner-internal-diagnostic-sentinel";
+const scanningEdge = (error: Error) =>
+  createApp({
+    edgeMode: true,
+    storageRuntime: {
+      storage: new FakeObjectStorage(),
+      scanner: {
+        async scan() {
+          throw error;
+        },
+      },
+      fileSigner: async () => null,
+      hrisDocumentSigner: async () => null,
+    },
+  });
+const scannerCases = [
+  {
+    label: "content rejection",
+    app: scanningEdge(new HttpError(422, "INVALID_IMAGE", SCANNER_DIAGNOSTIC)),
+    status: 422,
+    code: "UPLOAD_REJECTED",
+  },
+  {
+    label: "scanner outage",
+    app: scanningEdge(new Error(SCANNER_DIAGNOSTIC)),
+    status: 503,
+    code: "SCANNER_UNAVAILABLE",
+  },
+];
 
 const createdUsers: string[] = [];
 const createdDevices: string[] = [];
@@ -146,7 +177,7 @@ async function seedOutlet() {
  * A staff member of both outlets who may clock, signed in on the EDGE app.
  * The user is created on the cloud app (sign-up is cloud only).
  */
-async function edgeStaff(name: string) {
+async function edgeStaff(name: string, app = edge) {
   const signUpClient = agent(cloud);
   const email = await signUp(signUpClient, name);
   const session = await signUpClient.get("/api/auth/get-session");
@@ -190,7 +221,7 @@ async function edgeStaff(name: string) {
     );
   });
 
-  const client = agent(edge);
+  const client = agent(app);
   const signIn = await client
     .post("/api/auth/sign-in/email")
     .set(originHeader)
@@ -415,6 +446,32 @@ afterAll(async () => {
 });
 
 describe("T8 POST /api/storage/uploads on the edge (HTTP)", () => {
+  it.each(scannerCases)(
+    "normalizes $label for session uploads and stores nothing",
+    async ({ app, status, code }) => {
+      const staff = await edgeStaff("Staf Pemindai Sesi", app);
+      const before = filesIn(edgeDir).length;
+      const rowsBefore = await owner.query(
+        "SELECT id FROM core_storage_objects WHERE tenant_id = $1 AND uploaded_by = $2",
+        [tenant.id, staff.userId],
+      );
+      const response = await upload(staff.client, {
+        purpose: "selfie",
+        outletId: sealedOutlet,
+      });
+      expect(response.status, JSON.stringify(response.body)).toBe(status);
+      expect(codeOf(response.body)).toBe(code);
+      expect(JSON.stringify(response.body)).not.toContain(SCANNER_DIAGNOSTIC);
+      expect(captured.join("\n")).not.toContain(SCANNER_DIAGNOSTIC);
+      expect(filesIn(edgeDir)).toHaveLength(before);
+      const rowsAfter = await owner.query(
+        "SELECT id FROM core_storage_objects WHERE tenant_id = $1 AND uploaded_by = $2",
+        [tenant.id, staff.userId],
+      );
+      expect(rowsAfter.rows).toEqual(rowsBefore.rows);
+    },
+  );
+
   it("accepts a selfie for an outlet with a seal key and keeps only a sealed file", async () => {
     const staff = await edgeStaff("Staf Unggah Selfie");
     const response = await upload(staff.client, {
@@ -523,6 +580,36 @@ describe("T8 POST /api/storage/uploads on the edge (HTTP)", () => {
 });
 
 describe("legend-u7g9w POST /api/storage/uploads with X-Pin-Proof (HTTP)", () => {
+  it.each(scannerCases)(
+    "normalizes $label for PIN-proof uploads and stores nothing",
+    async ({ app, status, code }) => {
+      const staff = await edgeStaff("Staf Pemindai Bukti");
+      const device = await seedDevice(sealedOutlet);
+      const proof = await seedProof(device, sealedOutlet, staff.userId);
+      const before = filesIn(edgeDir).length;
+      const response = await proofUpload(
+        { deviceToken: device.token, proof: proof.token },
+        undefined,
+        agent(app),
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(status);
+      expect(codeOf(response.body)).toBe(code);
+      expect(JSON.stringify(response.body)).not.toContain(SCANNER_DIAGNOSTIC);
+      expect(captured.join("\n")).not.toContain(SCANNER_DIAGNOSTIC);
+      expect(filesIn(edgeDir)).toHaveLength(before);
+      const objects = await owner.query(
+        "SELECT id FROM core_storage_objects WHERE tenant_id = $1 AND pin_proof_id = $2",
+        [tenant.id, proof.id],
+      );
+      expect(objects.rows).toHaveLength(0);
+      const proofRow = await owner.query<{ consumed_at: Date | null }>(
+        "SELECT consumed_at FROM staff_pin_proofs WHERE id = $1",
+        [proof.id],
+      );
+      expect(proofRow.rows[0]?.consumed_at).toBeNull();
+    },
+  );
+
   it("stores the selfie with no session; owner, outlet and pin_proof_id come from the proof and the device", async () => {
     const staff = await edgeStaff("Staf Unggah Bukti");
     const device = await seedDevice(sealedOutlet);
