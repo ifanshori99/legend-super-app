@@ -17,6 +17,8 @@ import { orgDomainMessages } from "./org-domain.ts";
 import { accountingMessages } from "./accounting.ts";
 import { accountingApMessages } from "./accounting-ap.ts";
 import { accountingCashMessages } from "./accounting-cash.ts";
+import { edcReconQueueMessages } from "./edc-recon-queue.ts";
+import { edcReconResolveMessages } from "./edc-recon-resolve.ts";
 import { accountingReportMessages } from "./accounting-report.ts";
 import { accountingShareMessages } from "./accounting-share.ts";
 import { accountingTaxMessages } from "./accounting-tax.ts";
@@ -172,6 +174,10 @@ export const id = {
   posKasirPayment: posKasirPaymentMessages,
   posKasirGateway: posKasirGatewayMessages,
   posKasirEdc: posKasirEdcMessages,
+  edcRecon: {
+    queue: edcReconQueueMessages,
+    resolve: edcReconResolveMessages,
+  },
   posKasirCode: posKasirCodeMessages,
   posKasirShift: posKasirShiftMessages,
   posKasirSupervisor: posKasirSupervisorMessages,

@@ -1,0 +1,82 @@
+// EDC reconciliation screen, queue part (bead legend-khi8n). Own file so the
+// parallel parts never edit the same catalog lines. Mounted under
+// `edcRecon.queue` by messages/id.ts. Amounts render with <Money>.
+export const edcReconQueueMessages = {
+  entryLink: "Rekonsiliasi transaksi",
+  breadcrumbLabel: "Jejak halaman",
+  breadcrumbPayments: "Pembayaran",
+  breadcrumbEdc: "EDC",
+  breadcrumbCurrent: "Rekonsiliasi",
+  eyebrow: "Pemeriksaan pembayaran",
+  title: "Rekonsiliasi EDC",
+  subtitle: "Periksa bukti transaksi yang ditandai, lalu tetapkan hasilnya.",
+  accessBand:
+    "Penyelesaian memerlukan izin rekonsiliasi di outlet dan verifikasi MFA. Periksa bukti sebelum menentukan hasil.",
+  filters: {
+    label: "Filter transaksi ditandai",
+    searchLabel: "Cari transaksi atau kasir",
+    searchPlaceholder: "ID transaksi, tagihan, nama kasir…",
+    outletLabel: "Outlet",
+    allOutlets: "Semua outlet",
+    statusLabel: "Status terminal",
+    allStatuses: "Semua status",
+    reload: "Muat ulang",
+    reloading: "Memuat ulang…",
+  },
+  status: {
+    unknown: "Unknown",
+    approved: "Approved",
+    declined: "Declined",
+    pending: "Pending",
+    cancelled: "Cancelled",
+    failed: "Failed",
+    waiting: "Menunggu terminal",
+    tooEarly: "Belum bisa diperiksa",
+  },
+  tooEarlyAt: "Bisa diperiksa pukul {time}",
+  card: {
+    title: "Transaksi ditandai",
+    count: "{count} transaksi · Terlama lebih dulu",
+    ageNote: "Umur dihitung sejak permintaan dibuat.",
+    sampleNote: "Contoh data, bukan transaksi nyata.",
+  },
+  table: {
+    label: "Transaksi EDC ditandai",
+    transaction: "Transaksi / outlet",
+    cashier: "Kasir",
+    amount: "Nominal",
+    time: "Jam (WIB)",
+    status: "Status terminal",
+    age: "Umur",
+    action: "Detail",
+  },
+  field: {
+    cashier: "Kasir",
+    amount: "Nominal",
+    time: "Jam (WIB)",
+    age: "Umur",
+  },
+  noCashier: "Tidak tercatat",
+  inspect: "Periksa",
+  inspectFor: "Periksa transaksi {id}",
+  inspectCard: "Periksa transaksi",
+  inspecting: "Sedang diperiksa",
+  backToList: "Kembali ke daftar",
+  ageMinutes: "{minutes} menit",
+  ageHours: "{hours} jam {minutes} menit",
+  detailMissingTitle: "Transaksi tidak ada di daftar",
+  detailMissingHint:
+    "Transaksi ini mungkin sudah diselesaikan atau tidak cocok dengan filter. Kembali ke daftar untuk memilih transaksi lain.",
+  empty: {
+    title: "Tidak ada transaksi yang ditandai",
+    hint: "Transaksi yang memerlukan pemeriksaan akan muncul di sini. Anda dapat memuat ulang daftar.",
+    reload: "Muat ulang daftar",
+  },
+  error: {
+    title: "Daftar belum dapat dimuat",
+    hint: "Periksa koneksi, lalu coba lagi. Status pembayaran belum dapat dipastikan dari layar ini.",
+    stale:
+      "Daftar belum berhasil diperbarui. Data di bawah mungkin sudah berubah, jangan jadikan dasar keputusan sebelum dimuat ulang.",
+  },
+  loading: "Memuat transaksi ditandai…",
+} as const;
