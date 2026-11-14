@@ -34,7 +34,10 @@ try {
   pool.on("error", () =>
     console.error("The PostgreSQL migration connection was interrupted."),
   );
-  await runMigrations(pool, migrationsFolder, timeouts);
+  // Standalone entrypoint: read EDGE_MODE directly, the API env is not loaded.
+  await runMigrations(pool, migrationsFolder, timeouts, {
+    edgeMode: process.env.EDGE_MODE === "true",
+  });
   console.log("PostgreSQL migrations applied.");
 } catch (error) {
   console.error(migrationError(error, timeouts));

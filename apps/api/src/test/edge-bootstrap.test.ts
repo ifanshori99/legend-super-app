@@ -61,6 +61,7 @@ import {
   verifyEdgeNodeCredential,
 } from "../services/edge-node.service.ts";
 import { setEdgeCredentialVerifier } from "../services/staff-pin-sync.ts";
+import { simulateEdgeModifierRecipeFk } from "./helpers/edge-database.ts";
 
 const CLOUD_LINK_URL = "wss://cloud.bootstrap.test/api/edge-link";
 const BOOTSTRAP_PATH = "/api/edge-sync/bootstrap";
@@ -348,6 +349,7 @@ const bootstrapCalls = (spy: FetchMock) =>
 let nodeA: Fixture; // edge under test, purged locally after capture
 let nodeB: Fixture; // another tenant, purged locally after capture
 let nodeC: Fixture; // stays seeded: the already-bootstrapped edge
+let restoreModifierRecipeFk: () => Promise<void>;
 let capturedA: { bundle: Bundle; signature: string };
 let capturedB: { bundle: Bundle; signature: string };
 /** Cloud's signed masters snapshot per node credential. */
@@ -360,6 +362,9 @@ beforeAll(async () => {
   setAuditWriter(coreAuditWriter);
   // server.ts installs the edge registry verifier; createApp() does not.
   setEdgeCredentialVerifier(verifyEdgeNodeCredential);
+  // The shared test database is cloud-style; startEdgeRuntime refuses it with
+  // modifiers_recipe_fk, so simulate an edge database.
+  restoreModifierRecipeFk = await simulateEdgeModifierRecipeFk(owner);
   nodeA = await createFixture();
   nodeB = await createFixture();
   nodeC = await createFixture();
@@ -374,6 +379,7 @@ afterAll(async () => {
   setAuditWriter(null);
   setEdgeCredentialVerifier(null);
   await purge(...fixtures);
+  await restoreModifierRecipeFk();
   await owner.end();
 });
 
@@ -475,6 +481,8 @@ describe("legend-khu5 edge bootstrapEdgeNodeIfNeeded", () => {
             await request(app)
               .get(MASTERS_PATH)
               .set("Authorization", `Bearer ${node.credential}`)
+              // Version 2 (every brand) is served only to an edge that asks.
+              .set("x-edge-snapshot-version", "2")
           ).body,
         );
       await purge(nodeA, nodeB);
@@ -503,7 +511,11 @@ describe("legend-khu5 edge bootstrapEdgeNodeIfNeeded", () => {
       expect(await rowCount("outlets", "id", nodeA.outletId)).toBe(1);
       // Nothing that was not in the bundle.
       expect(await rowCount("outlets", "id", nodeA.siblingOutletId)).toBe(0);
-      expect(await rowCount("brands", "id", nodeA.strayBrandId)).toBe(0);
+      // legend-2uqcd: the masters sync that follows the bundle brings every
+      // brand of the tenant (recipes of other brands need their brand row), so
+      // the stray brand of the same tenant is present; the bundle itself still
+      // carries only the outlet's brand.
+      expect(await rowCount("brands", "id", nodeA.strayBrandId)).toBe(1);
       expect(await hasTenantRows(nodeB)).toBe(0);
       const outlet = await owner.query(
         "SELECT name, brand_id, legal_entity_id FROM outlets WHERE id = $1",

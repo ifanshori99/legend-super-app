@@ -270,7 +270,11 @@ type Signed = { snapshot: EdgeMasterSnapshot; signature: string };
 
 const bearer = (f: Fixture) => `Bearer ${f.credential}`;
 async function cloudMasters(f: Fixture) {
-  return request(app).get(MASTERS_PATH).set("Authorization", bearer(f));
+  // legend-2uqcd: version 2 (brands) is served only to an edge that asks.
+  return request(app)
+    .get(MASTERS_PATH)
+    .set("Authorization", bearer(f))
+    .set("x-edge-snapshot-version", "2");
 }
 async function captureMasters(f: Fixture): Promise<Signed> {
   const response = await cloudMasters(f);
@@ -513,7 +517,7 @@ describe("legend-9ppw 1 cloud masters endpoint", () => {
     expect(response.headers["cache-control"]).toMatch(/private/);
     expect(response.headers["cache-control"]).toMatch(/no-store/);
     const { snapshot } = response.body as Signed;
-    expect(snapshot.version).toBe(1);
+    expect(snapshot.version).toBe(2); // legend-2uqcd: adds `brands`
     expect(Number.isNaN(Date.parse(snapshot.issuedAt))).toBe(false);
     expect(snapshot.tenantId).toBe(main.tenantId);
     expect(snapshot.outletId).toBe(main.outletA);
@@ -924,6 +928,8 @@ describe("legend-9ppw 3 master change on the cloud", () => {
     const spy = spyCloud({ masters: () => json(changed) });
     const counts = await syncEdgeMasters(config(main));
     expect(counts).toEqual({
+      // Assumption (legend-2uqcd): the counts report the brands upserted.
+      brands: (changed.snapshot.brands ?? []).length,
       uoms: changed.snapshot.uoms.length,
       stockLocations: STANDARD_STOCK_LOCATIONS.length + 1,
       accounts: changed.snapshot.chartOfAccounts.length,
@@ -1068,6 +1074,7 @@ describe("legend-dhbt1 mapping role unknown to this edge build", () => {
       spyCloud({ masters: () => json(signed(newer, main)) });
       const counts = await syncEdgeMasters(config(main));
       expect(counts).toEqual({
+        brands: (newer.brands ?? []).length,
         uoms: newer.uoms.length,
         stockLocations: newer.stockLocations.length,
         accounts: newer.chartOfAccounts.length,

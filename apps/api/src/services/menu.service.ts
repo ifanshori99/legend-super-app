@@ -69,6 +69,7 @@ import {
   outlets,
   priceListItems,
   priceLists,
+  recipes,
   stations,
 } from "../db/schema";
 import { db } from "../db";
@@ -1064,6 +1065,33 @@ async function requireMedia(
   if (!row) throw new CoreError("NOT_FOUND", "Foto tidak ditemukan.");
 }
 
+/**
+ * A recipe a menu row points at must belong to the caller's tenant. The
+ * composite FK (tenant_id, recipe_id) enforces it in the database; this check
+ * turns the violation into a 404 instead of a 500 (legend-3kdd). Recipes are
+ * brand-scoped (the edge only receives them for outlets of that brand), so a
+ * menu item or variant also needs a recipe of its own brand: pass `brandId`.
+ * Modifiers are tenant-level and pass none.
+ */
+async function requireRecipe(
+  tx: Tx,
+  context: ScopedTenantContext,
+  recipeId: string,
+  brandId?: string,
+): Promise<void> {
+  const [row] = await tx
+    .select({ id: recipes.id })
+    .from(recipes)
+    .where(
+      and(
+        eq(recipes.tenantId, context.tenant.tenantId),
+        eq(recipes.id, recipeId),
+        brandId ? eq(recipes.brandId, brandId) : undefined,
+      ),
+    );
+  if (!row) throw new CoreError("NOT_FOUND", "Resep tidak ditemukan.");
+}
+
 /** Rows every outlet of the brand starts with, so 86 can be set on day one. */
 async function seedAvailability(
   tx: Tx,
@@ -1170,6 +1198,8 @@ export async function createItem(
       ? await requireStationOfBrand(tx, context, input.stationId, brandId)
       : null;
     if (input.mediaId) await requireMedia(tx, context, input.mediaId);
+    if (input.recipeId)
+      await requireRecipe(tx, context, input.recipeId, brandId);
     // Q23: every item needs a photo. Creating one as active without a photo is
     // the publish action and is refused; without `isActive` it is a draft.
     if (menuItemPhotoMissing(input)) throwPhotoRequired();
@@ -1269,6 +1299,8 @@ export async function updateItem(
         : null;
     if (input.mediaId !== undefined && input.mediaId !== null)
       await requireMedia(tx, context, input.mediaId);
+    if (input.recipeId !== undefined && input.recipeId !== null)
+      await requireRecipe(tx, context, input.recipeId, existing.brandId);
     // Q23: activation and photo removal are the two writes that could publish
     // an item without a photo. Check the state *after* this patch, so
     // "mediaId + isActive in one request" is allowed. A legacy active item
@@ -1725,6 +1757,8 @@ export async function createVariant(
       item.brandId,
       now,
     );
+    if (input.recipeId)
+      await requireRecipe(tx, context, input.recipeId, item.brandId);
     const [row] = await tx
       .insert(itemVariants)
       .values({
@@ -1790,6 +1824,8 @@ export async function updateVariant(
       item.brandId,
       now,
     );
+    if (input.recipeId !== undefined && input.recipeId !== null)
+      await requireRecipe(tx, context, input.recipeId, item.brandId);
     const [row] = await tx
       .update(itemVariants)
       .set({
@@ -2178,6 +2214,7 @@ export async function createModifier(
     if (input.stationId) {
       await requireStation(tx, context, input.stationId);
     }
+    if (input.recipeId) await requireRecipe(tx, context, input.recipeId);
     const [row] = await tx
       .insert(modifiers)
       .values({
@@ -2255,6 +2292,8 @@ export async function updateModifier(
       );
     if (input.stationId !== undefined && input.stationId !== null)
       await requireStation(tx, context, input.stationId);
+    if (input.recipeId !== undefined && input.recipeId !== null)
+      await requireRecipe(tx, context, input.recipeId);
     const [row] = await tx
       .update(modifiers)
       .set({

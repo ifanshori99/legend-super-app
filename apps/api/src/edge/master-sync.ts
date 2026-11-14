@@ -2,9 +2,16 @@
 // Lokal"). Edge `stock.moved` events name stock locations (and post to the
 // chart of accounts), and the cloud rejects ids it does not know. So the edge
 // copies these masters from the cloud with ids identical to the cloud's:
-// `uoms` (tenant-wide), `stock_locations` (its outlet only), and
-// `chart_of_accounts` + `account_mappings` (its outlet's legal entity only).
+// `brands` (every brand of the tenant, legend-2uqcd), `uoms` (tenant-wide),
+// `stock_locations` (its outlet only), and `chart_of_accounts` +
+// `account_mappings` (its outlet's legal entity only).
 //
+// - brands: bootstrap stores only the outlet's own brand, but the catalog sync
+//   delivers the recipes of every brand of the tenant (a recipe of another
+//   brand may feed an item or modifier here), and each recipe needs its brand
+//   row (FK (tenant_id, brand_id)). Brands are upserted first, by id, never
+//   deleted. A local brand with the same slug under another id is a
+//   LOCAL_CONFLICT, like uoms.
 // - Full snapshot, no cursor: uoms and stock_locations carry no updated_at.
 //   GET /api/edge-sync/bootstrap/masters returns `{ snapshot, signature }`.
 // - The signature is checked over the snapshot exactly as received (same
@@ -55,6 +62,7 @@
 // Never put the credential or SQL parameters in an error: codes only.
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import {
+  CATALOG_PROTOCOL_MIN_VERSION,
   CATALOG_PROTOCOL_VERSION,
   CATALOG_SYNC_LIMIT_DEFAULT,
   EDGE_CATALOG_SYNC_PATH,
@@ -63,6 +71,8 @@ import {
 import type { ScopedTenantContext } from "@starter/shared/core";
 import {
   EDGE_MASTER_SNAPSHOT_PATH,
+  EDGE_MASTER_SNAPSHOT_VERSION,
+  EDGE_MASTER_SNAPSHOT_VERSION_HEADER,
   edgeMasterSnapshotSchema,
   partitionEdgeMasterMappings,
   type EdgeMasterSnapshot,
@@ -72,7 +82,7 @@ import { db } from "../db/index.ts";
 import { accountMappings, chartOfAccounts } from "../db/schema/accounting.ts";
 import { stockLocations, uoms } from "../db/schema/inventory.ts";
 import { edgePullCheckpoints } from "../db/schema/edge-node.ts";
-import { outlets } from "../db/schema/platform-org.ts";
+import { brands, outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   CRITICAL_CATALOG_STREAMS,
@@ -101,6 +111,65 @@ type Tx = Parameters<Parameters<typeof withTenant>[2]>[0];
 const MIN_SYNC_INTERVAL_MS = 60_000;
 /** Catalog pulls in one tick while a stream reports a backlog (bounded). */
 const MAX_CATALOG_ROUNDS = 20;
+/** A corrupt continuation must not keep the master sync running forever. */
+const MAX_MASTER_BRAND_PAGES = 1000;
+
+type MasterCapability = {
+  version: EdgeMasterSnapshot["version"] | null;
+  pending: boolean;
+};
+// The runtime shares its config between bootstrap and the periodic loop. A
+// restart starts conservatively until its boot-time master sync has committed.
+const masterCapabilities = new WeakMap<EdgeBootstrapConfig, MasterCapability>();
+
+export function markEdgeMasterSnapshotPending(
+  config: EdgeBootstrapConfig,
+): void {
+  const previous = masterCapabilities.get(config);
+  masterCapabilities.set(config, {
+    version: previous?.version ?? null,
+    pending: true,
+  });
+}
+
+/** Call only after every signed master page has committed locally. */
+export async function recordAppliedMasterSnapshotVersion(
+  config: EdgeBootstrapConfig,
+  version: EdgeMasterSnapshot["version"],
+  database: typeof db = db,
+): Promise<void> {
+  const previous = masterCapabilities.get(config);
+  if (version === 2 && previous?.version !== 2) {
+    const claims = parseEdgeCredential(config.credential);
+    if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
+    // Protocol 2 may have checkpointed past recipes of other brands. Rewind
+    // only its cursor on widening; retain freshness and all stored documents.
+    try {
+      await withTenant(database, edgeNodeContext(claims), async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended(${`edge-catalog-sync:${claims.tenantId}:recipes`.toLowerCase()}, 0))`,
+        );
+        await tx
+          .update(edgePullCheckpoints)
+          .set({ watermark: null, updatedAt: new Date() })
+          .where(
+            and(
+              eq(edgePullCheckpoints.tenantId, claims.tenantId),
+              eq(edgePullCheckpoints.outletId, claims.outletId),
+              eq(edgePullCheckpoints.edgeNodeId, claims.edgeNodeId),
+              eq(
+                edgePullCheckpoints.stream,
+                catalogCheckpointStream("recipes"),
+              ),
+            ),
+          );
+      });
+    } catch {
+      throw new EdgeMasterSyncError("LOCAL_WRITE");
+    }
+  }
+  masterCapabilities.set(config, { version, pending: false });
+}
 
 /**
  * legend-10nex: the last success of each critical catalog stream, from its
@@ -160,6 +229,7 @@ export async function seedCatalogFreshness(
 }
 
 export type EdgeMasterSyncCounts = {
+  brands: number;
   uoms: number;
   stockLocations: number;
   accounts: number;
@@ -206,14 +276,34 @@ export async function fetchVerifiedMasterSnapshot(
   config: EdgeBootstrapConfig,
   options: EdgeBootstrapOptions = {},
 ): Promise<EdgeMasterSnapshot> {
+  return fetchVerifiedMasterSnapshotPage(config, options);
+}
+
+async function fetchVerifiedMasterSnapshotPage(
+  config: EdgeBootstrapConfig,
+  options: EdgeBootstrapOptions,
+  cursor?: EdgeMasterSnapshot["nextBrandCursor"],
+): Promise<EdgeMasterSnapshot> {
   const claims = parseEdgeCredential(config.credential);
   if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
+  const query = new URLSearchParams({
+    snapshotVersion: String(EDGE_MASTER_SNAPSHOT_VERSION),
+    brandPage: "1",
+  });
+  if (cursor !== undefined) query.set("brandCursor", cursor);
   let body: unknown;
   try {
     body = await cloudGetJson({
       cloudUrl: config.cloudUrl,
       credential: config.credential,
-      path: EDGE_MASTER_SNAPSHOT_PATH,
+      path: `${EDGE_MASTER_SNAPSHOT_PATH}?${query.toString()}`,
+      // Query negotiation survives stripped headers. A cloud predating both
+      // options ignores them and returns version 1, still accepted below.
+      headers: {
+        [EDGE_MASTER_SNAPSHOT_VERSION_HEADER]: String(
+          EDGE_MASTER_SNAPSHOT_VERSION,
+        ),
+      },
       fetchImpl: options.fetchImpl,
       timeoutMs: options.timeoutMs,
       signal: options.signal,
@@ -237,6 +327,47 @@ export async function fetchVerifiedMasterSnapshot(
   if (!parsed.success) throw new EdgeMasterSyncError("BAD_SNAPSHOT");
   assertScope(claims, parsed.data);
   return parsed.data;
+}
+
+/** Bounded memory: validate and apply one signed page before requesting more. */
+export async function* fetchVerifiedMasterSnapshotPages(
+  config: EdgeBootstrapConfig,
+  options: EdgeBootstrapOptions = {},
+): AsyncGenerator<EdgeMasterSnapshot> {
+  let cursor: EdgeMasterSnapshot["nextBrandCursor"];
+  let first: EdgeMasterSnapshot | undefined;
+  for (let page = 0; page < MAX_MASTER_BRAND_PAGES; page += 1) {
+    const snapshot = await fetchVerifiedMasterSnapshotPage(
+      config,
+      options,
+      cursor,
+    );
+    if (first === undefined) first = snapshot;
+    else if (
+      snapshot.version !== first.version ||
+      !sameId(snapshot.legalEntityId, first.legalEntityId) ||
+      snapshot.brandId !== first.brandId
+    )
+      throw new EdgeMasterSyncError("SCOPE_MISMATCH");
+    const others = (snapshot.brands ?? [])
+      .filter((row) => row.id !== snapshot.brandId)
+      .map((row) => row.id.toLowerCase());
+    const next = snapshot.nextBrandCursor;
+    const incomingCursor = cursor?.toLowerCase();
+    if (
+      (incomingCursor !== undefined &&
+        others.some((id) => id <= incomingCursor)) ||
+      (next !== undefined &&
+        ((incomingCursor !== undefined &&
+          next.toLowerCase() <= incomingCursor) ||
+          next.toLowerCase() !== others.sort().at(-1)))
+    )
+      throw new EdgeMasterSyncError("BAD_SNAPSHOT");
+    yield snapshot;
+    if (next === undefined) return;
+    cursor = next;
+  }
+  throw new EdgeMasterSyncError("MASTER_PAGES_EXCEEDED");
 }
 
 function assertScope(claims: Claims, snapshot: EdgeMasterSnapshot): void {
@@ -398,6 +529,28 @@ export async function applyEdgeMasterSnapshotInTransaction(
   }
 
   // Natural-key collisions under another id: refuse, never fork ids.
+  // Version 1 (an older cloud) carries no brands: nothing to write or delete.
+  const snapshotBrands = snapshot.brands ?? [];
+  if (snapshotBrands.length > 0) {
+    const local = await tx
+      .select({ id: brands.id, slug: brands.slug })
+      .from(brands)
+      .where(
+        and(
+          eq(brands.tenantId, tenantId),
+          inArray(
+            brands.slug,
+            snapshotBrands.map((row) => row.slug),
+          ),
+        ),
+      );
+    const bySlug = new Map(local.map((row) => [row.slug, row.id]));
+    for (const row of snapshotBrands) {
+      const existing = bySlug.get(row.slug);
+      if (existing !== undefined && !sameId(existing, row.id))
+        throw new EdgeMasterSyncError("LOCAL_CONFLICT");
+    }
+  }
   if (snapshot.uoms.length > 0) {
     const local = await tx
       .select({ id: uoms.id, code: uoms.code })
@@ -440,6 +593,24 @@ export async function applyEdgeMasterSnapshotInTransaction(
     }
   }
 
+  // Brands first: recipes of other brands (catalog stream) need them.
+  for (const row of snapshotBrands) {
+    const written = await tx
+      .insert(brands)
+      .values({ ...row, createdAt: new Date(row.createdAt) })
+      .onConflictDoUpdate({
+        target: brands.id,
+        set: {
+          slug: row.slug,
+          name: row.name,
+          logoMediaId: row.logoMediaId,
+          themeId: row.themeId,
+        },
+        setWhere: eq(brands.tenantId, tenantId),
+      })
+      .returning({ id: brands.id });
+    if (written.length === 0) throw new EdgeMasterSyncError("SCOPE_MISMATCH");
+  }
   for (const row of snapshot.uoms) {
     await tx
       .insert(uoms)
@@ -526,6 +697,7 @@ export async function applyEdgeMasterSnapshotInTransaction(
       "Edge master sync dropped mappings with roles this build does not know",
     );
   return {
+    brands: snapshotBrands.length,
     uoms: snapshot.uoms.length,
     stockLocations: snapshot.stockLocations.length,
     accounts: accounts.length,
@@ -541,10 +713,11 @@ export async function applyEdgeMasterSnapshotInTransaction(
 export async function applyEdgeMasterSnapshot(
   claims: Claims,
   snapshot: EdgeMasterSnapshot,
+  database: typeof db = db,
 ): Promise<EdgeMasterSyncCounts> {
   assertScope(claims, snapshot);
   try {
-    return await withTenant(db, edgeNodeContext(claims), (tx) =>
+    return await withTenant(database, edgeNodeContext(claims), (tx) =>
       applyEdgeMasterSnapshotInTransaction(tx, claims, snapshot),
     );
   } catch (error) {
@@ -558,12 +731,42 @@ export async function applyEdgeMasterSnapshot(
 export async function syncEdgeMasters(
   config: EdgeBootstrapConfig,
   options: EdgeBootstrapOptions = {},
+  database: typeof db = db,
 ): Promise<EdgeMasterSyncCounts> {
   const claims = parseEdgeCredential(config.credential);
   if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
   guardMasterImport();
-  const snapshot = await fetchVerifiedMasterSnapshot(config, options);
-  return applyEdgeMasterSnapshot(claims, snapshot);
+  try {
+    let counts: EdgeMasterSyncCounts | undefined;
+    let version: EdgeMasterSnapshot["version"] | undefined;
+    let brandCount = 0;
+    for await (const snapshot of fetchVerifiedMasterSnapshotPages(
+      config,
+      options,
+    )) {
+      if (version === undefined) {
+        version = snapshot.version;
+        markEdgeMasterSnapshotPending(config);
+      }
+      const pageCounts = await applyEdgeMasterSnapshot(
+        claims,
+        snapshot,
+        database,
+      );
+      // The outlet's own brand repeats on every page to preserve scope checks.
+      brandCount += pageCounts.brands - (counts === undefined ? 0 : 1);
+      counts = pageCounts;
+    }
+    if (counts === undefined || version === undefined)
+      throw new EdgeMasterSyncError("BAD_SNAPSHOT");
+    await recordAppliedMasterSnapshotVersion(config, version, database);
+    return { ...counts, brands: brandCount };
+  } catch (error) {
+    // A failed master refresh must not stop the outlet's catalog. Downgrade
+    // until a complete v2 sync can rewind recipes and widen the catalog again.
+    masterCapabilities.set(config, { version: null, pending: false });
+    throw error;
+  }
 }
 
 /** A catalog stream stopped early (legend-24318); code only, never record data. */
@@ -596,6 +799,8 @@ export function startEdgeMasterSyncLoop(input: {
   intervalMs: number;
   onError?: (error: unknown) => void;
   options?: EdgeBootstrapOptions;
+  /** Default: local pool; tests can exercise a separate edge database. */
+  database?: typeof db;
   /**
    * Optional overrides of the catalog pull. By default the node's scope and
    * `edge_nodes.id` come from the credential, like the masters apply.
@@ -619,7 +824,7 @@ export function startEdgeMasterSyncLoop(input: {
     onServerTime?: (serverTime: Date) => void;
   };
   catalogOnStart?: boolean;
-}): { stop(): Promise<void> } {
+}): { requestRun(): void; stop(): Promise<void> } {
   if (
     !Number.isFinite(input.intervalMs) ||
     input.intervalMs < MIN_SYNC_INTERVAL_MS
@@ -630,6 +835,8 @@ export function startEdgeMasterSyncLoop(input: {
   const abort = new AbortController();
   let inFlight: Promise<void> | null = null;
   let stopped = false;
+  let wakeTimer: ReturnType<typeof setTimeout> | null = null;
+  let wakePending = false;
 
   const report = (error: unknown) => {
     // stop() aborts an in-flight fetch: a normal shutdown, not an error.
@@ -645,7 +852,13 @@ export function startEdgeMasterSyncLoop(input: {
     cloudGetJson({
       cloudUrl: input.config.cloudUrl,
       credential: input.config.credential,
-      path: catalogPath(stream, since),
+      path: catalogPath(
+        stream,
+        since,
+        masterCapabilities.get(input.config)?.version === 2
+          ? CATALOG_PROTOCOL_VERSION
+          : CATALOG_PROTOCOL_MIN_VERSION,
+      ),
       fetchImpl: input.options?.fetchImpl,
       timeoutMs: input.options?.timeoutMs,
       signal: abort.signal,
@@ -655,6 +868,8 @@ export function startEdgeMasterSyncLoop(input: {
   const pullCatalogRounds = async (): Promise<void> => {
     const claims = parseEdgeCredential(input.config.credential);
     if (!claims) throw new EdgeMasterSyncError("EDGE_NODE_CREDENTIAL");
+    if (masterCapabilities.get(input.config)?.pending)
+      throw new EdgeMasterSyncError("MASTERS_INCOMPLETE");
     guardMasterImport();
     const catalog = input.catalog;
     const context = catalog?.context ?? edgeNodeContext(claims);
@@ -666,6 +881,7 @@ export function startEdgeMasterSyncLoop(input: {
         context,
         edgeNodeId,
         fetchPage: fetchCatalogPage,
+        database: input.database,
         // The persisted success stamp must use the same clock as the live
         // freshness tracker; a rolled-back wall clock must not age a fresh
         // catalog immediately, including after the next restart.
@@ -727,10 +943,11 @@ export function startEdgeMasterSyncLoop(input: {
     const run = (async () => {
       if (withMasters)
         try {
-          const counts = await syncEdgeMasters(input.config, {
-            ...input.options,
-            signal: abort.signal,
-          });
+          const counts = await syncEdgeMasters(
+            input.config,
+            { ...input.options, signal: abort.signal },
+            input.database,
+          );
           logger.debug({ ...counts }, "Edge master sync applied");
         } catch (error) {
           report(error);
@@ -743,6 +960,10 @@ export function startEdgeMasterSyncLoop(input: {
       }
     })().finally(() => {
       if (inFlight === run) inFlight = null;
+      if (!stopped && wakePending) {
+        wakePending = false;
+        tick();
+      }
     });
     inFlight = run;
   };
@@ -752,22 +973,39 @@ export function startEdgeMasterSyncLoop(input: {
   if (input.catalogOnStart === true) tick(false);
 
   return {
+    requestRun() {
+      if (stopped || wakeTimer || wakePending) return;
+      wakeTimer = setTimeout(() => {
+        wakeTimer = null;
+        if (stopped) return;
+        if (inFlight) wakePending = true;
+        else tick();
+      }, 30_000);
+      wakeTimer.unref();
+    },
     async stop() {
       stopped = true;
       abort.abort();
       clearInterval(timer);
+      if (wakeTimer) clearTimeout(wakeTimer);
+      wakeTimer = null;
+      wakePending = false;
       if (inFlight) await inFlight;
     },
   };
 }
 
-function catalogPath(stream: CatalogSyncStream, since: string | null): string {
+function catalogPath(
+  stream: CatalogSyncStream,
+  since: string | null,
+  protocolVersion: number,
+): string {
   const query = new URLSearchParams({
     stream,
     limit: String(CATALOG_SYNC_LIMIT_DEFAULT),
     // Tells the cloud this edge reads the page version. A cloud that predates
     // it rejects the unknown parameter (HTTP 400): see catalog-puller.ts.
-    protocolVersion: String(CATALOG_PROTOCOL_VERSION),
+    protocolVersion: String(protocolVersion),
   });
   if (since !== null) query.set("since", since);
   return `${EDGE_CATALOG_SYNC_PATH}?${query.toString()}`;

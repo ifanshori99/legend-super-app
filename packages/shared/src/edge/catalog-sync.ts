@@ -63,12 +63,17 @@ export const EDGE_CATALOG_SYNC_PATH = "/api/edge-sync/catalog";
 /**
  * Pull order. `stations` and `inventory_items` come first so the rows that
  * items, modifiers and recipes point to (`stationId`, `outputItemId`) already
- * exist on the edge when those streams are applied.
+ * exist on the edge when those streams are applied. `recipes` follow right
+ * after `inventory_items` and before `menu_items` and `item_variants`: those
+ * carry `recipe_id` with a composite foreign key to `recipes` on the edge too
+ * (legend-3kdd). `modifiers` carry `recipe_id` without that key on the edge
+ * (recipes are brand-scoped, modifiers tenant-level) and do not wait.
  */
 export const CATALOG_SYNC_STREAMS = [
   "stations",
   "printers",
   "inventory_items",
+  "recipes",
   "menu_categories",
   "modifier_groups",
   "modifiers",
@@ -76,7 +81,6 @@ export const CATALOG_SYNC_STREAMS = [
   "item_variants",
   "menu_item_modifier_groups",
   "price_lists",
-  "recipes",
   "promotions",
   "vouchers",
 ] as const;
@@ -95,9 +99,15 @@ export const CATALOG_SYNC_LIMIT_DEFAULT = PAGE_LIMIT_MAX;
  * no parameter) gets pages without the field, as before. A newer edge asks for
  * the version; an older cloud rejects the unknown parameter (HTTP 400), which
  * the edge reports as CATALOG_CLOUD_OUTDATED.
+ *
+ * Version 3 (legend-2uqcd): the `recipes` stream carries every recipe of the
+ * tenant, not only the credential's brand. An edge that does not ask for 3
+ * (no parameter, or 2) cannot check the brand of such a recipe, so it keeps
+ * getting the brand-filtered stream. Page shape is unchanged from 2, so a v3
+ * edge still accepts a v2 cloud (it just sees fewer recipes).
  */
-export const CATALOG_PROTOCOL_VERSION = 2;
-/** Oldest cloud version the edge still accepts (first one with `syncTxid`). */
+export const CATALOG_PROTOCOL_VERSION = 3;
+/** Oldest cloud version the edge still accepts (first one with `syncTxid`). Unchanged by 3: the page shape is the same. */
 export const CATALOG_PROTOCOL_MIN_VERSION = 2;
 
 export const catalogSyncQuerySchema = z.strictObject({
@@ -460,6 +470,7 @@ export const catalogSyncPageSchema = z.discriminatedUnion("stream", [
   pageOf("stations"),
   pageOf("printers"),
   pageOf("inventory_items"),
+  pageOf("recipes"),
   pageOf("menu_categories"),
   pageOf("modifier_groups"),
   pageOf("modifiers"),
@@ -467,7 +478,6 @@ export const catalogSyncPageSchema = z.discriminatedUnion("stream", [
   pageOf("item_variants"),
   pageOf("menu_item_modifier_groups"),
   pageOf("price_lists"),
-  pageOf("recipes"),
   pageOf("promotions"),
   pageOf("vouchers"),
 ]);

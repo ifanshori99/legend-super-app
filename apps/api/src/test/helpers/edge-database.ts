@@ -12,13 +12,14 @@
 import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import {
   edgePeopleSnapshotSchema,
   type EdgePeopleSnapshot,
 } from "@starter/shared/edge/people-snapshot";
 import { runMigrations } from "../../db/migration-session.ts";
+import type { db } from "../../db/index.ts";
 import { provisionRoles } from "../../db/provision-roles.ts";
 import { createAppPool } from "../../db/role.ts";
 import * as schema from "../../db/schema/index.ts";
@@ -32,7 +33,7 @@ const migrationsFolder = resolve(
   "../../../drizzle",
 );
 
-export type EdgeTestDatabase = NodePgDatabase<typeof schema>;
+export type EdgeTestDatabase = typeof db;
 export type Row = Record<string, unknown>;
 
 export type EdgeDatabase = {
@@ -173,10 +174,12 @@ export async function createEdgeDatabase(input: {
   };
 
   try {
-    await runMigrations(owner, migrationsFolder, {
-      lockTimeout: "10s",
-      statementTimeout: "0",
-    });
+    await runMigrations(
+      owner,
+      migrationsFolder,
+      { lockTimeout: "10s", statementTimeout: "0" },
+      { edgeMode: true },
+    );
     await provisionRoles({ adminUrl: ownerUrl, appUrl });
     appPool = createAppPool(appUrl, { max: 4 });
     appPool.on("error", ignoreIdleError);
@@ -236,6 +239,28 @@ export async function createEdgeDatabase(input: {
 }
 
 // ------------------------------------------------------------------ claims
+
+/**
+ * The shared test database is cloud-style, so it carries modifiers_recipe_fk
+ * (migration 0374). A real edge database does not, and startEdgeRuntime
+ * refuses to boot with it (assertNoModifierRecipeFk). Tests that boot the edge
+ * runtime on the shared database call this in beforeAll to simulate an edge
+ * database, and call the returned function in afterAll to put the constraint
+ * back for the files that run after them.
+ */
+export async function simulateEdgeModifierRecipeFk(db: {
+  query(text: string): Promise<unknown>;
+}): Promise<() => Promise<void>> {
+  await db.query(
+    "ALTER TABLE public.modifiers DROP CONSTRAINT IF EXISTS modifiers_recipe_fk",
+  );
+  return async () => {
+    await db.query(
+      `ALTER TABLE public.modifiers ADD CONSTRAINT modifiers_recipe_fk
+         FOREIGN KEY (tenant_id, recipe_id) REFERENCES public.recipes (tenant_id, id)`,
+    );
+  };
+}
 
 /** The edge credential claims `applyEdgePeopleSnapshot` takes. */
 export function edgeClaims(tenantId: string, outletId: string) {

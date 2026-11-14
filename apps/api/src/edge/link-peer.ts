@@ -27,7 +27,12 @@
 //     them, so it closes the link (fail closed) for operator recovery.
 import { createUlid } from "@starter/shared/core";
 import type { EventEnvelope, SyncDirection } from "@starter/shared/events";
-import type { SyncAck, SyncBatch } from "@starter/shared/edge";
+import {
+  EDGE_LINK_PLACEHOLDER_MIN_VERSION,
+  type SyncAck,
+  type SyncBatch,
+} from "@starter/shared/edge";
+import { logger } from "../lib/logger.ts";
 import {
   LINK_BATCH_MAX_BYTES,
   LINK_BATCH_SIZE,
@@ -44,6 +49,33 @@ import {
  * peer has about one batch plus a few acks, resends and heartbeats in flight.
  */
 export const LINK_MAX_PENDING_FRAMES = 32;
+
+const PLAIN_SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
+
+/**
+ * True when `version` is plain semver (x.y.z, -prerelease/+build ignored) and
+ * lower than `min`. Unparseable versions (dev, test labels) are never below.
+ */
+export function isEdgeVersionBelow(version: string, min: string): boolean {
+  const v = PLAIN_SEMVER.exec(version);
+  const m = PLAIN_SEMVER.exec(min);
+  if (!v || !m) return false;
+  for (let i = 1; i <= 3; i += 1) {
+    const a = Number(v[i]);
+    const b = Number(m[i]);
+    if (a !== b) return a < b;
+  }
+  return false;
+}
+
+export type LinkPeerWarning = {
+  readonly message: string;
+  readonly peerVersion: string;
+  readonly minVersion: string;
+  readonly tenantId: string;
+  readonly outletId: string;
+  readonly edgeNodeId: string;
+};
 
 export type QueuedEdgeEvent = {
   readonly linkSeq: number;
@@ -135,6 +167,12 @@ export type LinkPeerOptions = {
   onHeartbeat?: (frame: Extract<LinkFrame, { type: "heartbeat" }>) => void;
   /** After the peer acknowledged up to `cursor` (for status/notifications). */
   onAcked?: (cursor: number) => void;
+  /**
+   * Cloud side only: the edge's hello reports a version below the first one
+   * with the brand-move placeholder applier. Never rejects the link; defaults
+   * to logger.warn.
+   */
+  onWarning?: (info: LinkPeerWarning) => void;
 };
 
 export class LinkProtocolError extends Error {
@@ -328,9 +366,34 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
     });
   }
 
-  async function onHello(cursor: number) {
+  function warnIfEdgeTooOld(peerVersion: unknown) {
+    if (outbound !== "cloud_to_edge" || typeof peerVersion !== "string") return;
+    if (!isEdgeVersionBelow(peerVersion, EDGE_LINK_PLACEHOLDER_MIN_VERSION))
+      return;
+    const info: LinkPeerWarning = {
+      message:
+        "Edge below placeholder version; a brand move can stall panic alerts until it is upgraded",
+      peerVersion,
+      minVersion: EDGE_LINK_PLACEHOLDER_MIN_VERSION,
+      tenantId: scope.tenantId,
+      outletId: scope.outletId,
+      edgeNodeId: scope.edgeNodeId,
+    };
+    try {
+      if (options.onWarning) options.onWarning(info);
+      else {
+        const { message, ...fields } = info;
+        logger.warn(fields, message);
+      }
+    } catch {
+      // A warning must never affect the link.
+    }
+  }
+
+  async function onHello(cursor: number, peerVersion?: unknown) {
     if (!Number.isSafeInteger(cursor) || cursor < 0)
       throw new LinkProtocolError("Hello cursor is not a sequence");
+    warnIfEdgeTooOld(peerVersion);
     if (store.onPeerHello) {
       try {
         await store.onPeerHello(cursor);
@@ -418,7 +481,7 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
   async function handle(frame: LinkFrame) {
     switch (frame.type) {
       case "hello":
-        return onHello(Number(frame.inboundCursor));
+        return onHello(Number(frame.inboundCursor), frame.version);
       case "batch":
         if (!ready) throw new LinkProtocolError("Batch before hello");
         return onBatch(frame.batch);

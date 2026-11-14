@@ -1749,8 +1749,10 @@ function periodBounds(period: string): { from: string; toExclusive: string } {
 
 /**
  * Monthly PBJT recap per outlet (§3.14 "Laporan Pajak", D13): one row per
- * (rule code, rate) actually applied to PBJT sales in the period, from the
- * immutable per-sale snapshots. PPN and other tax types are excluded: they are
+ * (rule code, rate, price mode) actually applied to PBJT sales in the period,
+ * from the immutable per-sale snapshots. Inclusive and exclusive sales stay in
+ * separate rows because their gross is not on the same basis; tax and tax base
+ * are summed exactly. PPN and other tax types are excluded: they are
  * not regional PBJT revenue and have their own report. Gross sales are the
  * menu-priced amounts before discounts; the tax base is the DPP the tax was
  * computed on.
@@ -1773,6 +1775,7 @@ export async function getPbjtMonthlyRecap(
       .select({
         taxRuleCode: taxSnapshots.taxRuleCode,
         rateBp: sql<number>`${taxSnapshots.rateBp}::int`,
+        priceIncludesTax: taxSnapshots.priceIncludesTax,
         transactionCount: sql<number>`count(DISTINCT (${taxSnapshots.sourceType}, ${taxSnapshots.sourceId}))::int`,
         grossSalesIdr: sql<string>`sum(${taxSnapshots.grossIdr})`,
         taxBaseIdr: sql<string>`sum(${taxSnapshots.taxBaseIdr})`,
@@ -1791,8 +1794,16 @@ export async function getPbjtMonthlyRecap(
           sql`${taxSnapshots.businessDate} < ${toExclusive}`,
         ),
       )
-      .groupBy(taxSnapshots.taxRuleCode, taxSnapshots.rateBp)
-      .orderBy(asc(taxSnapshots.taxRuleCode), asc(taxSnapshots.rateBp));
+      .groupBy(
+        taxSnapshots.taxRuleCode,
+        taxSnapshots.rateBp,
+        taxSnapshots.priceIncludesTax,
+      )
+      .orderBy(
+        asc(taxSnapshots.taxRuleCode),
+        asc(taxSnapshots.rateBp),
+        asc(taxSnapshots.priceIncludesTax),
+      );
     const regions = await tx
       .selectDistinct({ regionCode: taxRules.regionCode })
       .from(taxSnapshots)
@@ -1820,6 +1831,7 @@ export async function getPbjtMonthlyRecap(
     const recapRows = rows.map((row) => ({
       taxRuleCode: row.taxRuleCode,
       rateBp: Number(row.rateBp),
+      priceIncludesTax: row.priceIncludesTax,
       transactionCount: Number(row.transactionCount),
       grossSalesIdr: idr(Number(row.grossSalesIdr)),
       taxBaseIdr: idr(Number(row.taxBaseIdr)),

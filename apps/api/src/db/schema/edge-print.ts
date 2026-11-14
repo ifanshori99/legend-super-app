@@ -17,6 +17,7 @@
 //   fallback printed, job failed). Append-only except acknowledgement.
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
   customType,
@@ -25,6 +26,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   timestamp,
   unique,
   uuid,
@@ -181,6 +183,35 @@ export const edgePrinterTombstones = pgTable(
       t.syncTxid,
       t.id,
     ),
+  ],
+);
+
+/**
+ * Edge side only (legend-3k41y): the version of the last printer deletion the
+ * edge applied, from the HTTP pull or a live event. A printer without print
+ * jobs is hard-deleted, so this row keeps the version and a live record with a
+ * version at or below it is refused. A printer kept for its jobs carries the
+ * version in its own `sync_txid` instead. Not the cloud's deletion marker
+ * (`edge_printer_tombstones`, which feeds the stream).
+ */
+export const edgePrinterDeleteVersions = pgTable(
+  "edge_printer_delete_versions",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    printerId: uuid("printer_id").notNull(),
+    version: bigint("version", { mode: "bigint" }).notNull(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.printerId] }),
+    foreignKey({
+      name: "edge_printer_delete_versions_outlet_fk",
+      columns: [t.tenantId, t.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
   ],
 );
 

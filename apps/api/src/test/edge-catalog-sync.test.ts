@@ -27,7 +27,10 @@
 //    CatalogMissingRefError, transient: the checkpoint stays). Assumption: its
 //    `code` is "CATALOG_MISSING_REF", as for the old missing-ref error.
 //  - A derived stream is skipped when its parent stream failed (menu_items and
-//    modifiers when stations failed, recipes when inventory_items failed): its
+//    modifiers when stations failed, recipes when inventory_items failed, and
+//    menu_items and item_variants when recipes failed or were skipped,
+//    legend-3kdd; modifiers do NOT wait for recipes, their recipe_id has no
+//    foreign key on the edge): its
 //    error mentions CATALOG_PARENT_FAILED, nothing is fetched for it and its
 //    checkpoint does not move. Assumption: independent streams still run.
 //  - The cloud sends `stationId` on menu_items / modifiers only when the
@@ -113,7 +116,10 @@ import {
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { db, pool } from "../db/index.ts";
-import { pullCatalog } from "../edge/catalog-puller.ts";
+import {
+  catalogCheckpointStream,
+  pullCatalog,
+} from "../edge/catalog-puller.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { applyCatalogRecords } from "../services/edge-catalog-apply.ts";
@@ -252,6 +258,7 @@ const ORDER: Stream[] = [
   "stations",
   "printers",
   "inventory_items",
+  "recipes",
   "menu_categories",
   "modifier_groups",
   "modifiers",
@@ -259,7 +266,6 @@ const ORDER: Stream[] = [
   "item_variants",
   "menu_item_modifier_groups",
   "price_lists",
-  "recipes",
   "promotions",
   "vouchers",
 ];
@@ -267,6 +273,8 @@ const ORDER: Stream[] = [
 const TABLE_ORDER: Table[] = [
   "stations",
   "inventory_items",
+  "recipes",
+  "recipe_lines",
   "menu_categories",
   "modifier_groups",
   "modifiers",
@@ -275,8 +283,6 @@ const TABLE_ORDER: Table[] = [
   "menu_item_modifier_groups",
   "price_lists",
   "price_list_items",
-  "recipes",
-  "recipe_lines",
 ];
 
 // ---------------------------------------------------------------- helpers
@@ -726,10 +732,11 @@ const edgePriceRows = async () =>
     [MINE.price_list_items],
   );
 
+const catalogCursorStreams = CATALOG_SYNC_STREAMS.map(catalogCheckpointStream);
 const checkpoints = () =>
   edge.rows(
-    "SELECT stream, watermark FROM edge_pull_checkpoints WHERE edge_node_id = $1",
-    [node.id],
+    "SELECT stream, watermark FROM edge_pull_checkpoints WHERE edge_node_id = $1 AND stream = ANY($2::varchar[])",
+    [node.id, catalogCursorStreams],
   );
 
 // A scripted cloud: serves the seeded rows (exactly what the real export
@@ -1696,8 +1703,12 @@ describe("97p edge pull: resume and broken connection", () => {
     const cloud = scriptedCloud(data, 100);
     await pullOk(cloud);
     await edge.owner.query(
-      "UPDATE edge_pull_checkpoints SET watermark = $2 WHERE edge_node_id = $1 AND stream LIKE 'catalog:%'",
-      [node.id, encodeCursor(["cat1", "2025-06-01T00:00:00.000000Z", id()])],
+      "UPDATE edge_pull_checkpoints SET watermark = $2 WHERE edge_node_id = $1 AND stream = ANY($3::varchar[])",
+      [
+        node.id,
+        encodeCursor(["cat1", "2025-06-01T00:00:00.000000Z", id()]),
+        catalogCursorStreams,
+      ],
     );
     const before = cloud.calls.length;
     const result = await pullOk(cloud);
@@ -1843,7 +1854,12 @@ describe("97p edge pull: resume and broken connection", () => {
     expect(
       await edge.rows("SELECT id FROM recipes WHERE id = $1", [ids.rec1]),
     ).toHaveLength(0);
-    expect(result.streams.menu_items?.error).toBeFalsy();
+    // 0374: menu rows may point at recipes (composite FK), so they wait for
+    // the recipes stream; a stream with no recipe link still runs.
+    expect(result.streams.menu_items?.error).toMatchObject({
+      code: "CATALOG_PARENT_FAILED",
+    });
+    expect(result.streams.menu_categories?.error).toBeFalsy();
     // The cloud now sends a reference the edge knows (inventory item arrived).
     data.recipes = [{ ...good[0]!, outputItemId: ids.inv1 }];
     const healed = await pullOk(cloud);
@@ -1908,14 +1924,95 @@ describe("97p edge pull: resume and broken connection", () => {
     const stored = await checkpointStreams();
     expect(stored).not.toContain("catalog:recipes");
     expect(stored).not.toContain("catalog:inventory_items");
-    // Streams that do not depend on inventory items ran.
-    expect(result.streams.menu_items?.error).toBeFalsy();
-    expect(stored).toContain("catalog:menu_items");
+    // menu_items and item_variants point at recipes (legend-3kdd), so they are
+    // skipped too. Modifiers carry a recipe id with NO foreign key on the edge
+    // (the recipe may belong to another brand and never be delivered), so the
+    // modifiers stream does not wait for recipes and still runs.
+    for (const stream of ["menu_items", "item_variants"] as const) {
+      expect(errorText(result.streams[stream]?.error), stream).toContain(
+        "CATALOG_PARENT_FAILED",
+      );
+      expect(stored).not.toContain(`catalog:${stream}`);
+    }
+    expect(result.streams.modifiers?.error).toBeFalsy();
+    expect(stored).toContain("catalog:modifiers");
+    expect(result.streams.menu_categories?.error).toBeFalsy();
+    expect(stored).toContain("catalog:menu_categories");
 
     cloud.heal();
     const healed = await pullOk(cloud);
     expect(healed.streams.recipes?.error).toBeFalsy();
     await expectEdgeEqualsCloud();
+  });
+
+  it("legend-3kdd a modifier whose recipe belongs to another brand syncs: the recipe of that brand now reaches this edge too (legend-2uqcd), the modifier keeps its recipe_id, no CATALOG_PARENT_FAILED", async () => {
+    // Assumption (legend-2uqcd): every edge receives ALL recipes of the tenant,
+    // so the recipe of brand2 (ids.recBr2) IS delivered to the edge of O1
+    // (brand A) once its brand row exists on the edge (the master snapshot
+    // carries every brand of the tenant; here the brand row is copied).
+    const data = await exportMine();
+    const allRecipes = (await walk("recipes", { outletId: O1 })).records;
+    expect(idsOf(allRecipes)).toContain(ids.recBr2);
+    data.recipes = allRecipes.filter(
+      (r) => MINE.recipes.includes(String(r.id)) || r.id === ids.recBr2,
+    );
+    data.modifiers = [{ ...data.modifiers[0]!, recipeId: ids.recBr2 }];
+    await copyToEdge("brands", brand2);
+    const cloud = scriptedCloud(data, 100);
+    const result = await pullOk(cloud);
+    expect(result.streams.recipes?.error).toBeFalsy();
+    expect(result.streams.modifiers?.error).toBeFalsy();
+    expect(
+      await edge.rows("SELECT id FROM recipes WHERE id = $1", [ids.recBr2]),
+    ).toHaveLength(1);
+    const rows = await edge.rows(
+      "SELECT id, recipe_id FROM modifiers WHERE id = $1",
+      [ids.mod1],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.recipe_id).toBe(ids.recBr2);
+    expect(await checkpointStreams()).toContain("catalog:modifiers");
+    expect(await checkpointStreams()).toContain("catalog:recipes");
+  });
+
+  it("legend-3kdd the edge database is migrated in edge mode: no modifiers_recipe_fk, but menu_items and item_variants keep theirs", async () => {
+    const rows = await edge.rows(
+      `SELECT conrelid::regclass::text AS tbl FROM pg_constraint
+        WHERE conname IN ('menu_items_recipe_fk', 'item_variants_recipe_fk', 'modifiers_recipe_fk')
+        ORDER BY 1`,
+    );
+    expect(rows.map((r) => String(r.tbl))).toEqual([
+      "item_variants",
+      "menu_items",
+    ]);
+  });
+
+  it("legend-3kdd when the recipes stream fails, modifiers still run while menu_items and item_variants are skipped with CATALOG_PARENT_FAILED", async () => {
+    const cloud = scriptedCloud(await exportMine(), 100);
+    cloud.breakAt("recipes", 1);
+    const result = await pullOk(cloud);
+    expect(result.streams.recipes?.error).toBeTruthy();
+    expect(errorText(result.streams.recipes?.error)).not.toContain(
+      "CATALOG_PARENT_FAILED",
+    );
+    expect(result.streams.modifiers?.error).toBeFalsy();
+    expect(cloud.calls.some((c) => c.stream === "modifiers")).toBe(true);
+    for (const stream of ["menu_items", "item_variants"] as const) {
+      expect(errorText(result.streams[stream]?.error), stream).toContain(
+        "CATALOG_PARENT_FAILED",
+      );
+      expect(
+        cloud.calls.some((c) => c.stream === stream),
+        stream,
+      ).toBe(false);
+    }
+    const stored = await checkpointStreams();
+    expect(stored).toContain("catalog:modifiers");
+    for (const stream of ["recipes", "menu_items", "item_variants"])
+      expect(stored).not.toContain(`catalog:${stream}`);
+    expect(
+      await edge.rows("SELECT id FROM modifiers WHERE id = $1", [ids.mod1]),
+    ).toHaveLength(1);
   });
 
   it("24318 a full pull resets local sync_txid first: an edge row with a huge local txid is corrected by the cloud's smaller txid (empty checkpoints and cat1 checkpoints)", async () => {
@@ -1945,9 +2042,21 @@ describe("97p edge pull: resume and broken connection", () => {
 
     // (b) a cat1 checkpoint counts as no checkpoint.
     await poison();
+    // Model an edge upgrading from the pre-init-marker build: these stamps
+    // are local-origin, so its first initialization must normalize them.
+    // A running edge's marker stays intact during an ordinary cursor rewind
+    // (covered by edge-master-data-applier.test.ts).
     await edge.owner.query(
-      "UPDATE edge_pull_checkpoints SET watermark = $2 WHERE edge_node_id = $1 AND stream LIKE 'catalog:%'",
-      [node.id, encodeCursor(["cat1", "2025-06-01T00:00:00.000000Z", id()])],
+      "DELETE FROM edge_pull_checkpoints WHERE edge_node_id = $1 AND stream LIKE 'catalog:init:%'",
+      [node.id],
+    );
+    await edge.owner.query(
+      "UPDATE edge_pull_checkpoints SET watermark = $2 WHERE edge_node_id = $1 AND stream = ANY($3::varchar[])",
+      [
+        node.id,
+        encodeCursor(["cat1", "2025-06-01T00:00:00.000000Z", id()]),
+        catalogCursorStreams,
+      ],
     );
     await pullOk(cloud);
     await expectEdgeEqualsCloud();
@@ -2367,19 +2476,22 @@ describe("97p brand filter: an outlet only gets the catalog of its own brand", (
   const exportedIds = async (stream: Stream, outletId: string) =>
     (await walk(stream, { outletId })).records.map((r) => String(r.id));
 
-  it("97p an outlet of brand A never receives categories, items or recipes of brand B", async () => {
-    for (const stream of [
-      "menu_categories",
-      "menu_items",
-      "recipes",
-    ] as const) {
+  it("97p an outlet of brand A never receives categories or items of brand B", async () => {
+    // Recipes are the exception since legend-2uqcd: every edge receives all
+    // recipes of the tenant (see the next test).
+    for (const stream of ["menu_categories", "menu_items"] as const) {
       const { records } = await walk(stream, { outletId: O1 });
       expect(records.length).toBeGreaterThan(0);
       for (const rec of records) expect(rec.brandId).toBe(brandId);
     }
     expect(await exportedIds("menu_categories", O1)).not.toContain(ids.catBr2);
     expect(await exportedIds("menu_items", O1)).not.toContain(ids.itemBr2);
-    expect(await exportedIds("recipes", O1)).not.toContain(ids.recBr2);
+  });
+
+  it("legend-2uqcd an outlet of brand A receives the recipes of every brand of its tenant", async () => {
+    const recipes = await exportedIds("recipes", O1);
+    expect(recipes).toContain(ids.rec1);
+    expect(recipes).toContain(ids.recBr2);
   });
 
   it("97p child rows of another brand's items (variants, modifier-group links) do not come through either", async () => {
@@ -2401,10 +2513,10 @@ describe("97p brand filter: an outlet only gets the catalog of its own brand", (
     expect(items).not.toContain(ids.item1);
     const recipes = await exportedIds("recipes", O3);
     expect(recipes).toContain(ids.recBr2);
-    expect(recipes).not.toContain(ids.rec1);
+    expect(recipes).toContain(ids.rec1); // legend-2uqcd: all recipes of the tenant
     expect(await exportedIds("item_variants", O3)).toContain(ids.varBr2);
     expect(await exportedIds("item_variants", O3)).not.toContain(ids.var1);
-    for (const stream of ["menu_categories", "menu_items", "recipes"] as const)
+    for (const stream of ["menu_categories", "menu_items"] as const)
       for (const rec of (await walk(stream, { outletId: O3 })).records)
         expect(rec.brandId).toBe(brand2);
   });
@@ -2542,8 +2654,12 @@ describe("24318 stations and inventory_items streams", () => {
     expect(result.streams.inventory_items?.error).toBeTruthy();
     const stored = (await checkpoints()).map((r) => String(r.stream));
     expect(stored).not.toContain("catalog:inventory_items");
-    expect(result.streams.menu_items?.error).toBeFalsy();
-    expect(stored).toContain("catalog:menu_items");
+    // 0374: menu_items waits for recipes, which waits for inventory_items.
+    expect(result.streams.menu_items?.error).toMatchObject({
+      code: "CATALOG_PARENT_FAILED",
+    });
+    expect(result.streams.menu_categories?.error).toBeFalsy();
+    expect(stored).toContain("catalog:menu_categories");
   });
 
   it("a station of another outlet never leaks: menu_items and modifiers carry stationId only for stations of the credential's outlet, otherwise null", async () => {

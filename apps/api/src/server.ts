@@ -4,7 +4,8 @@ import { guardEdgeUpgrades } from "./edge/mode.ts";
 import { attachEmergencyRealtime } from "./edge/panic-relay-realtime.ts";
 import { expressClientAddress } from "./lib/client-address.ts";
 import { env } from "./config/env";
-import { checkDatabase, pool } from "./db";
+import { checkDatabase, db, pool } from "./db";
+import { startCatalogPublisherWorker } from "./services/edge-master-data-publisher.ts";
 import { logger } from "./lib/logger";
 import { createDoitGateway } from "./services/payment-doit.ts";
 import { createDuitkuGateway } from "./services/payment-duitku.ts";
@@ -154,16 +155,19 @@ let edgeRuntime: EdgeRuntimeHandle | null = null;
 // node's own tenant + outlet once the edge runtime has its identity.
 let printAgent: { stop(): Promise<void> } | null = null;
 let edgeLink: EdgeLinkHandle | null = null;
+let catalogPublisher: { stop(): Promise<void> } | null = null;
 const edgeReady = (async () => {
   try {
     if (env.EDGE_MODE) {
       edgeRuntime = await startEdgeRuntime();
       printAgent = startEdgePrintAgent();
-    } else
+    } else {
       edgeLink = await registerEdgeLink(server, {
         // Upgrade rate limit per real client, not per proxy (legend-wg5t).
         clientAddress: expressClientAddress(app),
       });
+      catalogPublisher = startCatalogPublisherWorker(db);
+    }
   } catch (error) {
     if (error instanceof EdgeBootError) {
       // The message names settings and tables only, never their values.
@@ -215,6 +219,7 @@ async function shutdown(signal: string) {
     await stopKdsWakeups
   )();
   await edgeReady.catch(() => {});
+  await catalogPublisher?.stop();
   await printAgent?.stop();
   await edgeRuntime?.stop();
   await edgeLink?.close();

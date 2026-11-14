@@ -19,6 +19,7 @@
 //
 // Installers are called once at bootstrap; tests pass their own doubles.
 import type { Device } from "@starter/shared/edge";
+import type { CatalogSyncStream } from "@starter/shared/edge";
 import type { EventEnvelope, SyncDirection } from "@starter/shared/events";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import type { EdgeEventKind } from "../db/schema/edge-node.ts";
@@ -87,6 +88,16 @@ export class EdgeApplierUnavailableError extends Error {
       `No ${direction} applier is installed; the batch stays queued at the sender`,
     );
     this.name = "EdgeApplierUnavailableError";
+  }
+}
+
+/** The document needs a catalog/master reference that can arrive by HTTP. */
+export class EdgeApplyDeferredError extends Error {
+  readonly code = "EDGE_APPLY_DEFERRED";
+
+  constructor(readonly stream: CatalogSyncStream) {
+    super("Catalog document awaits a missing reference");
+    this.name = "EdgeApplyDeferredError";
   }
 }
 

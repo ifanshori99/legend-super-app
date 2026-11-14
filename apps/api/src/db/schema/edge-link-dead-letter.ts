@@ -26,7 +26,7 @@ import { outletIdColumn, tenantIdColumn, ulidInUuid } from "../columns.ts";
 import { edgeNodes } from "./edge-node.ts";
 import { outlets, tenants } from "./platform-org.ts";
 
-export type EdgeLinkDeadLetterReason = "frame_too_large";
+export type EdgeLinkDeadLetterReason = "frame_too_large" | "brand_moved";
 
 export const edgeLinkDeadLetters = pgTable(
   "edge_link_dead_letters",
@@ -76,7 +76,7 @@ export const edgeLinkDeadLetters = pgTable(
     ),
     check(
       "edge_link_dead_letters_reason_check",
-      sql`${table.reason} IN ('frame_too_large')`,
+      sql`${table.reason} IN ('frame_too_large', 'brand_moved')`,
     ),
     check(
       "edge_link_dead_letters_size_check",

@@ -136,6 +136,9 @@ test(`${TAG} Laporan Pajak: the PBJT CSV carries every row and a totals line`, (
   const headers = {
     code: "Kode",
     rate: "Tarif",
+    priceMode: "Mode",
+    priceModeIncluded: "Termasuk",
+    priceModeExcluded: "Belum",
     transactions: "Transaksi",
     gross: "Bruto",
     base: "Dasar",
@@ -144,14 +147,17 @@ test(`${TAG} Laporan Pajak: the PBJT CSV carries every row and a totals line`, (
     total: "Total",
   };
   const lines = lib.toPbjtCsv(recap, headers).trimEnd().split("\r\n");
-  assert.equal(lines[0], "Kode,Tarif,Transaksi,Bruto,Dasar,Service,Pajak");
+  assert.equal(lines[0], "Kode,Tarif,Mode,Transaksi,Bruto,Dasar,Service,Pajak");
   assert.equal(
     lines[1],
-    "PBJT-FNB,1000,4812,412350000,398120000,6240000,39812000",
+    "PBJT-FNB,1000,Belum,4812,412350000,398120000,6240000,39812000",
   );
-  assert.equal(lines[2], "PBJT-FASILITAS,1000,386,21840000,21840000,0,2184000");
+  assert.equal(
+    lines[2],
+    "PBJT-FASILITAS,1000,Belum,386,21840000,21840000,0,2184000",
+  );
   // Totals: row sums for the columns the recap does not total itself.
-  assert.equal(lines[3], "Total,,5198,434190000,419960000,6240000,41996000");
+  assert.equal(lines[3], "Total,,,5198,434190000,419960000,6240000,41996000");
   assert.equal(lib.pbjtRowTotals(recap).transactionCount, 5198);
   assert.equal(
     lib.pbjtCsvFileName("2026-11", recap.outletId),
@@ -169,6 +175,9 @@ test(`${TAG} Laporan Pajak: CSV neutralizes formula-looking rule codes (CSV inje
   const headers = {
     code: "Kode",
     rate: "Tarif",
+    priceMode: "Mode",
+    priceModeIncluded: "Termasuk",
+    priceModeExcluded: "Belum",
     transactions: "Transaksi",
     gross: "Bruto",
     base: "Dasar",

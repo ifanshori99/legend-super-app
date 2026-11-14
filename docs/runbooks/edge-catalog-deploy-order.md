@@ -12,6 +12,8 @@ Latar belakang singkat: setiap record katalog dari cloud membawa `syncTxid` (id 
 
 Jangan pernah membalik urutan ini, dan jangan menaikkan edge sambil cloud masih setengah rilis.
 
+Pengecualian yang disengaja: rilis yang mengganti baris katalog basi di antrean edge dengan placeholder `edge_link.dead_lettered` (legend-3k41y) menuntut edge dulu. Aturan dan cara menggabungkannya dengan urutan di atas ada di `docs/deployment.md`, bagian "Edge host".
+
 ## Gejala bila terbalik (edge baru, cloud lama)
 
 - Pull katalog di edge gagal untuk semua stream. Edge menolak dengan pesan `Cloud belum mendukung syncTxid katalog`, bukan gagal parse mentah.
