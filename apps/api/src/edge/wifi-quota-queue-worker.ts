@@ -36,7 +36,7 @@ import {
 } from "@starter/shared/core";
 import { conflictResolution } from "@starter/shared/edge";
 import {
-  wifiQuotaUpdatedEvent,
+  wifiQuotaUpdatedEdgePayloadSchema,
   wifiRemainingMinutes,
 } from "@starter/shared/facility";
 import { db } from "../db/index.ts";
@@ -209,7 +209,7 @@ export async function drainWifiQuotaQueue(
       continue;
     }
     const { event } = claim;
-    const payload = wifiQuotaUpdatedEvent.payloadSchema.parse(event.payload);
+    const payload = wifiQuotaUpdatedEdgePayloadSchema.parse(event.payload);
     // The snapshot is as old as the event: time that passed since then (a late
     // sync, a retry) is already used. Read from `now` on every attempt, so a
     // retry never hands the same time out again.
@@ -377,9 +377,7 @@ async function claimRow(
       return { kind: "superseded" };
     }
 
-    const payload = wifiQuotaUpdatedEvent.payloadSchema.parse(
-      row.event.payload,
-    );
+    const payload = wifiQuotaUpdatedEdgePayloadSchema.parse(row.event.payload);
     if (
       payload.sessionEndsAt !== undefined &&
       new Date(payload.sessionEndsAt).getTime() <= now.getTime()

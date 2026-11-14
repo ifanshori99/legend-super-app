@@ -67,6 +67,13 @@ export const qrOrderPlacedEdgePayloadSchema = z.strictObject({
   order: qrOrderEdgeOrderSchema,
   items: z.array(qrOrderEdgeItemSchema).min(1),
 });
+
+/** Edge receive only: discard fields added by newer clouds at every level. */
+export const qrOrderPlacedEdgeReceivePayloadSchema =
+  qrOrderPlacedEdgePayloadSchema.strip().extend({
+    order: qrOrderEdgeOrderSchema.strip(),
+    items: z.array(qrOrderEdgeItemSchema.strip()).min(1),
+  });
 export type QrOrderPlacedEdgePayload = z.infer<
   typeof qrOrderPlacedEdgePayloadSchema
 >;

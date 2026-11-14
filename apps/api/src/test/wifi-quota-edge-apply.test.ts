@@ -502,6 +502,29 @@ describe("legend-xk7az isolation", () => {
 // ---- 3. apply through the link --------------------------------------------------
 
 describe("legend-xk7az edge applier through the link", () => {
+  it("applies a legacy queued cloud payload with a newly added field", async () => {
+    const s = await scenario();
+    const event = await firstEvent(s);
+    const agent = fakeAgent();
+    await deliver(s.node!, [event]);
+    // Older edge versions stored the original envelope. A queue row already
+    // on disk must remain usable after upgrading its consumer.
+    await owner.query(
+      `UPDATE wifi_quota_apply_queue
+          SET event = jsonb_set(event, '{payload,futureField}', 'true'::jsonb)
+        WHERE tenant_id = $1 AND event_id = $2::uuid`,
+      [s.world.tenantId, ulidToUuid(event.id)],
+    );
+    await drain(s.node!);
+    expect(agent.applySession).toHaveBeenCalledOnce();
+    expect(agent.applySession).toHaveBeenCalledWith(
+      ...appliedWith(s, 180 * 60),
+    );
+    expect((await applyStatus(s.world.tenantId, event.id)).status).toBe(
+      "applied",
+    );
+  });
+
   it("applies the quota once with the controller id of the live grant", async () => {
     const s = await scenario();
     const event = await firstEvent(s);

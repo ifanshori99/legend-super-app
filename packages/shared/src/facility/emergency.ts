@@ -238,6 +238,10 @@ export const panicAlertResolvedEvent = defineDomainEvent({
   }),
 });
 
+/** Edge receive only; cloud publication and edge-to-cloud payloads stay strict. */
+export const panicAlertResolvedEdgePayloadSchema =
+  panicAlertResolvedEvent.payloadSchema.strip();
+
 export const panicAlertEvents = {
   raised: panicAlertRaisedEvent,
   pressed: panicAlertPressedEvent,

@@ -17,7 +17,7 @@ import type { EventEnvelope } from "@starter/shared/events";
 import {
   QR_ORDER_FORWARD_AGGREGATE,
   QR_ORDER_PLACED_EDGE_EVENT,
-  qrOrderPlacedEdgePayloadSchema,
+  qrOrderPlacedEdgeReceivePayloadSchema,
 } from "@starter/shared/qr-order";
 import { tableSessions } from "../db/schema/floor.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
@@ -37,7 +37,9 @@ export async function applyQrOrderPlaced(
   const tenantId = meta.context.tenant.tenantId;
   if (event.tenantId !== tenantId)
     throw new CoreError("FORBIDDEN", "Event tenant does not match the context");
-  const { order, items } = qrOrderPlacedEdgePayloadSchema.parse(event.payload);
+  const { order, items } = qrOrderPlacedEdgeReceivePayloadSchema.parse(
+    event.payload,
+  );
   if (!event.outletId || event.aggregateId !== order.id)
     throw new CoreError("VALIDATION_ERROR", "Event does not match its order");
   const outletId = event.outletId;

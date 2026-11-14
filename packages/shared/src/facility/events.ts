@@ -192,6 +192,10 @@ export const wifiQuotaUpdatedEvent = defineDomainEvent({
   }),
 });
 
+/** Edge receive only; the cloud event contract above remains strict. */
+export const wifiQuotaUpdatedEdgePayloadSchema =
+  wifiQuotaUpdatedEvent.payloadSchema.strip();
+
 /** FAC-08: the emergency button fired; the staff on duty must answer in 5 s. */
 export const facilityIncidentRaisedEvent = defineDomainEvent({
   name: "facility_incident.raised",

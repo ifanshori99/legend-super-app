@@ -26,7 +26,10 @@
 import { and, eq, lt } from "drizzle-orm";
 import { CoreError, type OutletId } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
-import { wifiQuotaUpdatedEvent } from "@starter/shared/facility";
+import {
+  wifiQuotaUpdatedEdgePayloadSchema,
+  wifiQuotaUpdatedEvent,
+} from "@starter/shared/facility";
 import { wifiQuotaApplyQueue } from "../db/schema/index.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
 import {
@@ -51,7 +54,7 @@ export async function applyWifiQuotaUpdated(
     throw new CoreError("FORBIDDEN", "Event tenant does not match the context");
   if (!event.outletId)
     throw new CoreError("VALIDATION_ERROR", "Event has no outlet");
-  const payload = wifiQuotaUpdatedEvent.payloadSchema.parse(event.payload);
+  const payload = wifiQuotaUpdatedEdgePayloadSchema.parse(event.payload);
   const { sessionId, fullSpeedKbps, baseSpeedKbps, sessionEndsAt } = payload;
   if (
     sessionId === null ||
@@ -77,7 +80,7 @@ export async function applyWifiQuotaUpdated(
       eventId: event.id,
       wifiSessionId: sessionId,
       aggregateSequence: event.sequence,
-      event,
+      event: { ...event, payload },
     })
     .onConflictDoNothing()
     .returning({ id: wifiQuotaApplyQueue.id });

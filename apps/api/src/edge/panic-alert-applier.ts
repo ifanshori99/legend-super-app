@@ -35,6 +35,7 @@ import {
   panicAlertDeliveredEvent,
   panicAlertPressedEvent,
   panicAlertRaisedEvent,
+  panicAlertResolvedEdgePayloadSchema,
   panicAlertResolvedEvent,
 } from "@starter/shared/facility";
 import { devices } from "../db/schema/device.ts";
@@ -457,7 +458,7 @@ async function applyResolved(
       "FORBIDDEN",
       "panic_alert.resolved is only accepted from the cloud",
     );
-  const parsed = panicAlertResolvedEvent.payloadSchema.safeParse(event.payload);
+  const parsed = panicAlertResolvedEdgePayloadSchema.safeParse(event.payload);
   if (!parsed.success)
     throw new CoreError(
       "VALIDATION_ERROR",
