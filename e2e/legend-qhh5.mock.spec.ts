@@ -73,6 +73,7 @@ test("legend-qhh5: a Wi-Fi guest returns to the same portal path after WhatsApp 
   await signIn.click();
   await expect(page).toHaveURL(/\/masuk\?redirect=/);
 
+  await waitForHydration(page, "#main-content button");
   await page.getByRole("button", { name: "Masuk dengan WhatsApp" }).click();
   await expect(page.getByText(CODE)).toBeVisible();
 
@@ -80,6 +81,7 @@ test("legend-qhh5: a Wi-Fi guest returns to the same portal path after WhatsApp 
   // the mock's stand-in for the session cookie the API sets on success, so the
   // portal paints its signed-in stage when we land back.
   await page.context().clearCookies({ name: ROLE_COOKIE });
+  await page.getByRole("button", { name: "Ya, masuk" }).click();
 
   await expect(page).toHaveURL(/\/wifi\?/, { timeout: 20_000 });
   const landed = new URL(page.url());
@@ -102,6 +104,7 @@ test("legend-qhh5: an external ?redirect= is ignored and sign-in lands on the me
   await waitForHydration(page, "#main-content button");
   await page.getByRole("button", { name: "Masuk dengan WhatsApp" }).click();
   await expect(page.getByText(CODE)).toBeVisible();
+  await page.getByRole("button", { name: "Ya, masuk" }).click();
 
   // The unsafe value is dropped before render, so the flow keeps its default
   // destination and never navigates to evil.example.

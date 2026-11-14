@@ -50,7 +50,7 @@ test("the ticket page offers a breakfast order with a summary", async ({
   await openBreakfast(page);
   await expect(
     page.getByText(
-      "Pesanan ditahan dan dikirim ke dapur sesuai waktu persiapan",
+      "Bayar dulu, lalu pesanan dikirim ke dapur sesuai waktu persiapan, menjelang akhir sesi.",
     ),
   ).toBeVisible();
   await expect(
@@ -89,19 +89,42 @@ test("a table delivery without a table is refused with a message", async ({
   await expect(page.getByTestId("breakfast-success")).toHaveCount(0);
 });
 
-test("choosing a table, the order is held until the kitchen time", async ({
+test("choosing a table, the order awaits payment before the kitchen time", async ({
   page,
 }) => {
   await openBreakfast(page);
   await addDish(page);
   await chooseTable(page);
+  await expect(
+    page.getByText("Dikirim ke dapur", { exact: true }),
+  ).toBeVisible();
   await submit(page).click();
   const success = page.getByTestId("breakfast-success");
-  await expect(success.getByText("Pesanan sarapan ditahan")).toBeVisible();
+  await expect(
+    success.getByText("Pesanan sarapan menunggu pembayaran"),
+  ).toBeVisible();
+  await expect(
+    success.getByText(/Pesanan yang belum lunas tidak dikirim/),
+  ).toBeVisible();
+  await expect(
+    success.getByRole("button", { name: "Bayar sarapan" }),
+  ).toBeVisible();
+  await expect(success.getByText("Pesanan sarapan sudah lunas")).toHaveCount(0);
+  await expect(
+    success.getByText("Pesanan sarapan sudah dikirim ke dapur"),
+  ).toHaveCount(0);
+  await expect(submit(page)).toHaveCount(0);
+  await success.getByRole("button", { name: "Bayar sarapan" }).click();
+  await page.getByRole("radio", { name: /QRIS/ }).check();
+  await page.getByRole("button", { name: "Lanjutkan pembayaran" }).click();
+  await expect(page.getByText("Pembayaran berhasil")).toBeVisible({
+    timeout: COLD_START_TIMEOUT_MS,
+  });
+  await page.goBack();
+  await expect(success.getByText("Pesanan sarapan sudah lunas")).toBeVisible();
   await expect(
     success.getByText(/Pesanan akan dikirim otomatis ke dapur pukul/),
   ).toBeVisible();
-  await expect(submit(page)).toHaveCount(0);
 });
 
 test("pickup needs no table", async ({ page }) => {
@@ -110,9 +133,20 @@ test("pickup needs no table", async ({ page }) => {
   await page.getByRole("radio", { name: "Ambil di pickup" }).click();
   await expect(page.getByText("Pilih nomor meja")).toHaveCount(0);
   await submit(page).click();
+  const success = page.getByTestId("breakfast-success");
   await expect(
-    page.getByTestId("breakfast-success").getByText("Pesanan sarapan ditahan"),
+    success.getByText("Pesanan sarapan menunggu pembayaran"),
   ).toBeVisible();
+  await expect(
+    success.getByText(/Pesanan yang belum lunas tidak dikirim/),
+  ).toBeVisible();
+  await expect(
+    success.getByRole("button", { name: "Bayar sarapan" }),
+  ).toBeVisible();
+  await expect(success.getByText("Pesanan sarapan sudah lunas")).toHaveCount(0);
+  await expect(
+    success.getByText("Pesanan sarapan sudah dikirim ke dapur"),
+  ).toHaveCount(0);
 });
 
 test("an empty breakfast menu says so", async ({ page }) => {
