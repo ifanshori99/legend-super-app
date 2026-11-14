@@ -45,9 +45,11 @@ import {
   DEVICE_OFFLINE_AFTER_SECONDS,
   deviceHeartbeatBodySchema,
   deviceSchema,
+  isDeviceOffline,
   transitionDevice,
   type Device,
 } from "@starter/shared/edge";
+import type { KitchenScannerStatus } from "@starter/shared/kitchen";
 import { menuUpdatedEvent } from "@starter/shared/menu";
 import type { Request, RequestHandler } from "express";
 import type { z } from "zod";
@@ -644,7 +646,9 @@ export async function listOutletDevices(
 /**
  * Heartbeat from the device itself. `context` is tenant-wide for the token's
  * tenant; `deviceId` comes from the verified token, never from the body. The
- * reported time is capped at `now` and never moves last_seen_at backwards.
+ * reported time is capped at `now` and never moves last_seen_at backwards;
+ * a scanner `observedAt` ahead of `now` is clamped to `now` (a skewed device
+ * clock must not stop the heartbeat, legend-40nvj).
  * Returns false (nothing updated) for an unknown or revoked device.
  */
 export async function recordDeviceHeartbeat(
@@ -655,6 +659,11 @@ export async function recordDeviceHeartbeat(
 ): Promise<boolean> {
   assertTrustedScopedContext(context);
   const occurredAt = new Date(body.occurredAt);
+  const scannerObservedAt = body.scanner
+    ? new Date(
+        Math.min(new Date(body.scanner.observedAt).getTime(), now.getTime()),
+      )
+    : null;
   const rows = await withTenant(db, context, (tx) =>
     tx
       .update(devices)
@@ -662,6 +671,13 @@ export async function recordDeviceHeartbeat(
         lastSeenAt: sql`GREATEST(${devices.lastSeenAt}, LEAST(${occurredAt.toISOString()}::timestamptz, ${now.toISOString()}::timestamptz))`,
         version: body.version,
         capabilities: body.capabilities,
+        // No `scanner` field: both columns stay as they are.
+        ...(body.scanner && scannerObservedAt
+          ? {
+              scannerStatus: body.scanner.status,
+              scannerObservedAt,
+            }
+          : {}),
         updatedAt: dbClock,
       })
       .where(
@@ -706,6 +722,56 @@ export async function listOfflineDevices(
       .orderBy(asc(devices.createdAt), asc(devices.id)),
   );
   return rows.map(toDevice);
+}
+
+/**
+ * Scanner state of the outlet's KDS (legend-40nvj), from its live KDS devices:
+ * not revoked and not `isDeviceOffline`, so a dead tablet never keeps a stale
+ * "connected". Any connected -> connected; live devices that all reported
+ * disconnected -> disconnected; no live device ever reported -> unknown. An
+ * unknown outlet, or one of another tenant, answers 404.
+ */
+export async function getKitchenScannerStatus(
+  context: ScopedTenantContext,
+  outletId: string,
+  now: Date,
+): Promise<{ status: KitchenScannerStatus }> {
+  assertTrustedScopedContext(context);
+  const outlet = outletIdSchema.parse(outletId);
+  assertOutletInScope(context.outletScope, outlet);
+  const rows = await withTenant(db, context, async (tx) => {
+    await outletBrandId(tx, outlet);
+    return tx
+      .select({
+        status: devices.status,
+        lastSeenAt: devices.lastSeenAt,
+        scannerStatus: devices.scannerStatus,
+      })
+      .from(devices)
+      .where(
+        and(
+          eq(devices.tenantId, context.tenant.tenantId),
+          eq(devices.outletId, outlet),
+          eq(devices.type, "kds"),
+          eq(devices.status, "active"),
+          isNull(devices.revokedAt),
+        ),
+      );
+  });
+  const reported = rows.flatMap((row) =>
+    isDeviceOffline(
+      {
+        status: row.status,
+        lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
+      },
+      now,
+    ) || row.scannerStatus === null
+      ? []
+      : [row.scannerStatus],
+  );
+  if (reported.includes("connected")) return { status: "connected" };
+  if (reported.length > 0) return { status: "disconnected" };
+  return { status: "unknown" };
 }
 
 const heartbeatRefused = () =>

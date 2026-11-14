@@ -50,6 +50,7 @@ import {
   stationConfigSchema,
   stationIdSchema,
   stationLabelSchema,
+  kitchenScannerStatusResponseSchema,
   stationSummarySchema,
 } from "./schemas.ts";
 
@@ -136,6 +137,20 @@ export const listKitchenStationLabels = defineEndpoint({
   path: "/api/outlets/:outletId/kitchen/station-labels",
   params: outletParams,
   response: dataResponseSchema(z.array(stationLabelSchema)),
+});
+
+/**
+ * Scanner state of the outlet's KDS (legend-40nvj). Same guard as the station
+ * list: `kds.station.manage` or `kds.ticket.process`. Computed from the
+ * outlet's live (not revoked, not offline) KDS devices, which report the
+ * scanner in their heartbeat: any `connected` -> connected; live devices that
+ * are all `disconnected` -> disconnected; none ever reported -> unknown.
+ */
+export const getKitchenScannerStatus = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/scanner-status",
+  params: outletParams,
+  response: dataResponseSchema(kitchenScannerStatusResponseSchema),
 });
 
 /**

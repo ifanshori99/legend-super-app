@@ -9,7 +9,7 @@
 // EDGE, and the cloud HTTP layer is a scripted `fetchPage`.
 //
 // API (names chosen by the implementer, see docs/briefs/ecf-482-tests.md):
-//  - `CATALOG_PROTOCOL_VERSION` (2) and `CATALOG_PROTOCOL_MIN_VERSION` (2),
+//  - `CATALOG_PROTOCOL_VERSION` (3) and `CATALOG_PROTOCOL_MIN_VERSION` (3),
 //    exported by `@starter/shared/edge`. "Older" = that version minus 1;
 //    "newer" = plus 1 (an edge that is too old: CATALOG_EDGE_OUTDATED).
 //  - every catalog page carries the top-level field `protocolVersion` (number),

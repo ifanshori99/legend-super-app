@@ -26,6 +26,7 @@ import { userIdSchema } from "@starter/shared/core";
 import {
   bumpKitchenTicket,
   deleteMenuLoad,
+  getKitchenScannerStatus,
   getKitchenStationFeed,
   getKitchenStationSummary,
   getKitchenTicket,
@@ -66,6 +67,7 @@ import * as cookReads from "../services/kds-cook-reads.service.ts";
 import * as pacing from "../services/kds-pacing.service.ts";
 import * as stationConfig from "../services/kds-station-config.service.ts";
 import * as kdsPrint from "../services/kds-print.service.ts";
+import * as devices from "../services/device.service.ts";
 import * as kds from "../services/kds.service.ts";
 import type { KdsActor } from "../services/kds.service.ts";
 
@@ -411,6 +413,32 @@ kdsRouter.get("/stations", async (req, res) => {
     data: await stationConfig.listKitchenStationConfigInScope(
       ticketContext(req),
       actor(req),
+      outletId,
+      new Date(),
+    ),
+  });
+});
+
+// legend-40nvj: scanner state the outlet's KDS devices report in their
+// heartbeat. Same guard as GET /stations: `kds.station.manage`, or
+// `kds.ticket.process` somewhere (the KDS board shows the state).
+kdsRouter.get("/scanner-status", async (req, res) => {
+  const { outletId } = getKitchenScannerStatus.params.parse(req.params);
+  if (!(await passesGuard(manageStations, req, res))) {
+    // Denies (403) unless the caller holds `kds.ticket.process` somewhere.
+    await processTicket(req, res, () => undefined);
+    res.json({
+      data: await devices.getKitchenScannerStatus(
+        ticketContext(req),
+        outletId,
+        new Date(),
+      ),
+    });
+    return;
+  }
+  res.json({
+    data: await devices.getKitchenScannerStatus(
+      getScopedTenantContext(req),
       outletId,
       new Date(),
     ),

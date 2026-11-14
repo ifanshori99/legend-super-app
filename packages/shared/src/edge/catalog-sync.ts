@@ -104,14 +104,14 @@ export const CATALOG_SYNC_LIMIT_DEFAULT = PAGE_LIMIT_MAX;
  * the edge reports as CATALOG_CLOUD_OUTDATED.
  *
  * Version 3 (legend-2uqcd): the `recipes` stream carries every recipe of the
- * tenant, not only the credential's brand. An edge that does not ask for 3
- * (no parameter, or 2) cannot check the brand of such a recipe, so it keeps
- * getting the brand-filtered stream. Page shape is unchanged from 2, so a v3
- * edge still accepts a v2 cloud (it just sees fewer recipes).
+ * tenant. An edge that asks for less (or sends no parameter) still gets the
+ * brand-filtered recipe stream. Version 3 also adds `displayOrder`, `isActive`
+ * and `autoPrintFallback` to station records (legend-i78o6). Those fields travel
+ * only when the negotiated version is >= 3.
  */
 export const CATALOG_PROTOCOL_VERSION = 3;
-/** Oldest cloud version the edge still accepts (first one with `syncTxid`). Unchanged by 3: the page shape is the same. */
-export const CATALOG_PROTOCOL_MIN_VERSION = 2;
+/** Oldest cloud version carrying the KDS station fields (v2 added `syncTxid`). */
+export const CATALOG_PROTOCOL_MIN_VERSION = 3;
 
 export const catalogSyncQuerySchema = z.strictObject({
   stream: catalogSyncStreamSchema,
@@ -154,6 +154,15 @@ const stamps = {
   syncTxid: syncTxidSchema,
 };
 
+/** First protocol version whose station record has the KDS fields. */
+export const CATALOG_STATION_KDS_FIELDS_MIN_VERSION = 3;
+/** Station fields only a protocol >= 3 edge understands. */
+export const STATION_KDS_FIELDS = [
+  "displayOrder",
+  "isActive",
+  "autoPrintFallback",
+] as const;
+
 /** Production routing per outlet; scope = the credential's outlet. */
 export const stationSyncRecordSchema = z.object({
   id: uuidSchema,
@@ -164,6 +173,10 @@ export const stationSyncRecordSchema = z.object({
   /** Plain UUID (no `devices` row required on the edge). */
   printerDeviceId: uuidSchema.nullable(),
   targetSeconds: z.number().int().nullable(),
+  /** KDS tab order, left to right. */
+  displayOrder: z.number().int().min(0),
+  isActive: z.boolean(),
+  autoPrintFallback: z.boolean(),
   ...stamps,
 });
 

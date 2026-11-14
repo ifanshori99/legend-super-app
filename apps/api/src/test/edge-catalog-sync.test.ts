@@ -90,6 +90,7 @@ import { Pool } from "pg";
 import request from "supertest";
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -2149,6 +2150,199 @@ describe("97p edge pull: resume and broken connection", () => {
 });
 
 // ----------------------------------------------------------------- 6 money
+
+// legend-i78o6: the KDS station config added by migration 0363 (display_order,
+// is_active, auto_print_fallback) must travel on the stations stream.
+// The stations record carries them in camelCase, like every other record:
+// `displayOrder` (integer >= 0), `isActive` (boolean), `autoPrintFallback`
+// (boolean), only for protocol version 3 or newer. "Older" means a LOWER syncTxid (updatedAt plays no part, see the
+// header). The cloud station is put back to the migration defaults after each
+// test so the other suites of this file compare unchanged rows.
+describe("i78o6 station KDS config travels cloud -> edge", () => {
+  type StationCfg = {
+    displayOrder: number;
+    isActive: boolean;
+    autoPrintFallback: boolean;
+  };
+  const DEFAULTS: StationCfg = {
+    displayOrder: 0,
+    isActive: true,
+    autoPrintFallback: false,
+  };
+
+  const setCloudStation = async (cfg: StationCfg, minute: number) => {
+    await mainOwner.query(
+      `UPDATE stations SET display_order = $2, is_active = $3, auto_print_fallback = $4, updated_at = $5 WHERE id = $1`,
+      [
+        ids.stn1,
+        cfg.displayOrder,
+        cfg.isActive,
+        cfg.autoPrintFallback,
+        at(minute),
+      ],
+    );
+  };
+  afterEach(async () => {
+    await setCloudStation(DEFAULTS, 1);
+  });
+
+  const exportStation = async (): Promise<Rec> =>
+    (await walk("stations")).records.find((r) => r.id === ids.stn1)!;
+  const cfgOf = (rec: Rec): StationCfg => ({
+    displayOrder: rec.displayOrder as number,
+    isActive: rec.isActive as boolean,
+    autoPrintFallback: rec.autoPrintFallback as boolean,
+  });
+  const edgeStation = async (): Promise<StationCfg | undefined> => {
+    const row = (
+      await edge.rows(
+        "SELECT display_order, is_active, auto_print_fallback FROM stations WHERE id = $1",
+        [ids.stn1],
+      )
+    )[0];
+    return row === undefined
+      ? undefined
+      : {
+          displayOrder: row.display_order as number,
+          isActive: row.is_active as boolean,
+          autoPrintFallback: row.auto_print_fallback as boolean,
+        };
+  };
+  const edgeStationTxid = async () =>
+    (
+      await edge.rows(
+        "SELECT sync_txid::text AS t FROM stations WHERE id = $1",
+        [ids.stn1],
+      )
+    )[0]?.t;
+
+  it("i78o6 the cloud export of a station carries the three values, schema-valid", async () => {
+    const changed = {
+      displayOrder: 7,
+      isActive: false,
+      autoPrintFallback: true,
+    };
+    await setCloudStation(changed, 60);
+    const rec = await exportStation();
+    expect(cfgOf(rec)).toEqual(changed);
+    // The strict page schema accepts the record with these fields.
+    const page = await cloudPage("stations", {});
+    expect(() => catalogSyncPageSchema.parse(page)).not.toThrow();
+  });
+
+  it("i78o6 protocol v3 carries the three fields; v2 and no parameter get the station without them", async () => {
+    const changed = {
+      displayOrder: 7,
+      isActive: false,
+      autoPrintFallback: true,
+    };
+    await setCloudStation(changed, 60);
+    await settleCloud(mainOwner);
+    const ask = async (protocolVersion: number | undefined) => {
+      const page = (await listCatalogRecordsSince(db, {
+        tenantId: tenantId as never,
+        outletId: O1 as never,
+        query: catalogSyncQuerySchema.parse({
+          stream: "stations",
+          limit: 100,
+          ...(protocolVersion === undefined ? {} : { protocolVersion }),
+        }),
+      })) as unknown as Page;
+      return page.records.find((r) => r.id === ids.stn1)!;
+    };
+    expect(cfgOf(await ask(3))).toEqual(changed);
+    for (const version of [2, undefined]) {
+      const rec = await ask(version);
+      expect(rec).toBeDefined();
+      expect(rec).not.toHaveProperty("displayOrder");
+      expect(rec).not.toHaveProperty("isActive");
+      expect(rec).not.toHaveProperty("autoPrintFallback");
+    }
+  });
+
+  it("i78o6 a station changed in the cloud arrives on the edge with its new display order, active flag and fallback print flag", async () => {
+    await edgeApplyAll(await exportMine());
+    expect(await edgeStation()).toEqual(DEFAULTS);
+
+    const changed = {
+      displayOrder: 7,
+      isActive: false,
+      autoPrintFallback: true,
+    };
+    await setCloudStation(changed, 61);
+    const cloud = scriptedCloud(await exportMine(), 100);
+    await pullOk(cloud);
+    expect(await edgeStation()).toEqual(changed);
+
+    // A second change (different on every column) replaces the first one.
+    const again = { displayOrder: 2, isActive: true, autoPrintFallback: false };
+    await setCloudStation(again, 62);
+    await pullOk(scriptedCloud(await exportMine(), 100));
+    expect(await edgeStation()).toEqual(again);
+    await expectEdgeEqualsCloud();
+  });
+
+  it("i78o6 an older station record (lower syncTxid) never overwrites a newer one, in any arrival order", async () => {
+    const olderCfg = {
+      displayOrder: 3,
+      isActive: false,
+      autoPrintFallback: true,
+    };
+    await setCloudStation(olderCfg, 63);
+    const old = await exportStation();
+    const newerCfg = {
+      displayOrder: 7,
+      isActive: true,
+      autoPrintFallback: true,
+    };
+    await setCloudStation(newerCfg, 64);
+    const fresh = await exportStation();
+    expect(cfgOf(old)).toEqual(olderCfg);
+    expect(cfgOf(fresh)).toEqual(newerCfg);
+    expect(BigInt(String(fresh.syncTxid))).toBeGreaterThan(
+      BigInt(String(old.syncTxid)),
+    );
+    // A forged old record whose clock claims to be the newest: txid decides.
+    const forged: Rec = { ...old, updatedAt: "2099-01-01T00:00:00.000Z" };
+
+    await edgeApply("stations", [fresh]);
+    await edgeApply("stations", [old]);
+    await edgeApply("stations", [forged]);
+    expect(await edgeStation()).toEqual(newerCfg);
+    expect(await edgeStationTxid()).toBe(String(fresh.syncTxid));
+
+    // Old first, new second: the new one wins.
+    await edge.owner.query("DELETE FROM stations WHERE id = $1", [ids.stn1]);
+    await edgeApply("stations", [old]);
+    expect(await edgeStation()).toEqual(olderCfg);
+    await edgeApply("stations", [fresh]);
+    expect(await edgeStation()).toEqual(newerCfg);
+
+    // A rewound pull that re-serves the old record after the new one: same end state.
+    const parents = await exportMine();
+    await pull(scriptedCloud({ ...parents, stations: [fresh, old] }, 1));
+    expect(await edgeStation()).toEqual(newerCfg);
+  });
+
+  it("i78o6 applying the same station record twice is idempotent", async () => {
+    const changed = {
+      displayOrder: 5,
+      isActive: false,
+      autoPrintFallback: true,
+    };
+    await setCloudStation(changed, 65);
+    const rec = await exportStation();
+    await edgeApply("stations", [rec]);
+    const first = await tableRows(edge.owner, "stations");
+    const firstTxid = await edgeStationTxid();
+    expect(await edgeStation()).toEqual(changed);
+
+    await edgeApply("stations", [rec]);
+    expect(await tableRows(edge.owner, "stations")).toEqual(first);
+    expect(await edgeStationTxid()).toBe(firstTxid);
+    expect(await edgeStation()).toEqual(changed);
+  });
+});
 
 describe("97p money: prices are copied exactly", () => {
   /** Cloud price change; like the cloud service, it bumps the list's updated_at. */

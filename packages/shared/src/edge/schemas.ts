@@ -80,11 +80,26 @@ export function isDeviceOffline(
   );
 }
 
-/** Device heartbeat body; the device id comes from the verified token only. */
+/** Barcode scanner state a KDS device reports (legend-40nvj). */
+export const deviceScannerStatusSchema = z.enum(["connected", "disconnected"]);
+export type DeviceScannerStatus = z.infer<typeof deviceScannerStatusSchema>;
+
+/**
+ * Device heartbeat body; the device id comes from the verified token only.
+ * `scanner` is optional so older shells stay valid; `observedAt` is when the
+ * shell last saw the scanner state change (the server clamps a time ahead of
+ * its own clock to now). A heartbeat without `scanner` leaves the stored state alone.
+ */
 export const deviceHeartbeatBodySchema = z.strictObject({
   version: text,
   capabilities: z.array(text),
   occurredAt: isoDateTimeSchema,
+  scanner: z
+    .strictObject({
+      status: deviceScannerStatusSchema,
+      observedAt: isoDateTimeSchema,
+    })
+    .optional(),
 });
 export type DeviceHeartbeatBody = z.infer<typeof deviceHeartbeatBodySchema>;
 
