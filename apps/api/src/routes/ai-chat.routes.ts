@@ -16,6 +16,7 @@ import {
 } from "@starter/shared/ai";
 import { requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
+import { requireAiPlatformEnabled } from "../middleware/module.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getAccessSnapshot,
@@ -63,16 +64,22 @@ export function createAiChatRouter(): Router {
     });
   });
 
-  router.post("/ask", ...gate, jsonBody, async (req, res) => {
-    const body = askAiEndpoint.body.parse(req.body);
-    res.json({
-      data: await askAi(
-        getAccessSnapshot(req),
-        getScopedTenantContext(req),
-        body,
-      ),
-    });
-  });
+  router.post(
+    "/ask",
+    ...gate,
+    requireAiPlatformEnabled(),
+    jsonBody,
+    async (req, res) => {
+      const body = askAiEndpoint.body.parse(req.body);
+      res.json({
+        data: await askAi(
+          getAccessSnapshot(req),
+          getScopedTenantContext(req),
+          body,
+        ),
+      });
+    },
+  );
 
   router.get("/conversations", ...gate, async (req, res) => {
     const query = listAiConversationsEndpoint.query.parse(req.query);
@@ -85,16 +92,22 @@ export function createAiChatRouter(): Router {
     );
   });
 
-  router.post("/conversations", ...gate, jsonBody, async (req, res) => {
-    const body = createAiConversationEndpoint.body.parse(req.body);
-    res.status(201).json({
-      data: await createConversation(
-        getAccessSnapshot(req),
-        getScopedTenantContext(req),
-        body,
-      ),
-    });
-  });
+  router.post(
+    "/conversations",
+    ...gate,
+    requireAiPlatformEnabled(),
+    jsonBody,
+    async (req, res) => {
+      const body = createAiConversationEndpoint.body.parse(req.body);
+      res.status(201).json({
+        data: await createConversation(
+          getAccessSnapshot(req),
+          getScopedTenantContext(req),
+          body,
+        ),
+      });
+    },
+  );
 
   router.get("/conversations/:conversationId", ...gate, async (req, res) => {
     const { conversationId } = getAiConversationEndpoint.params.parse(

@@ -558,4 +558,50 @@ describe("write permission and execution re-check", () => {
     }
     expect(await availabilityFingerprint(menuItemId)).toBe(before);
   }, 60_000);
+
+  // Platform lock (bead legend-nnufz): a request proposed before the platform
+  // switched `ai_assistant` off must not execute once the chain is approved.
+  // ASSUMPTION: the failure reason wording is not specified; only status
+  // 'failed' and a non-empty reason are asserted.
+  it("a tenant locked after the proposal: approved request fails and creates no target row", async () => {
+    const { menuItemId, requester, approver } = await requesterWithApprover();
+    const before = await availabilityFingerprint(menuItemId);
+    const receipt = (await writeTools["TL-18"]!(
+      await ctxOf(requester),
+      draft(menuItemId),
+    )) as {
+      actionRequestId: string;
+      approvalRequestId: string;
+    };
+    await decide(approver, receipt.approvalRequestId, "approved");
+
+    const flags = await ownerPool.query(
+      "SELECT feature_flags->'modules' AS modules FROM tenants WHERE id = $1",
+      [tenantId],
+    );
+    const originalModules = flags.rows[0].modules as string[];
+    const setModules = (modules: string[]) =>
+      ownerPool.query(
+        `UPDATE tenants SET feature_flags = jsonb_set(feature_flags, '{modules}', $2::jsonb) WHERE id = $1`,
+        [tenantId, JSON.stringify(modules)],
+      );
+    await setModules(originalModules.filter((m) => m !== "ai_assistant"));
+    try {
+      expect(
+        await settleActionRequest(workerContext, receipt.actionRequestId),
+      ).toBe("failed");
+    } finally {
+      await setModules(originalModules);
+    }
+    expect(await availabilityFingerprint(menuItemId)).toBe(before);
+    const row = await ownerPool.query(
+      "SELECT status, failure_reason FROM action_requests WHERE id = $1",
+      [receipt.actionRequestId],
+    );
+    expect(row.rows[0].status).toBe("failed");
+    expect(row.rows[0].failure_reason).toBeTruthy();
+    expect(
+      await eventCount("action_request.executed", receipt.actionRequestId),
+    ).toBe(0);
+  }, 60_000);
 });

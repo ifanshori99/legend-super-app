@@ -1,11 +1,12 @@
 // legend-nnufz: Pengaturan AI wired to the real contract
 // (docs/briefs/sub-ai-settings-wire.md). Behaviours:
-//  (1) The platform kill switch (`?ai=off`, ChatGPT status `platformDisabled`)
-//      locks only the ChatGPT connection. Its notice lives INSIDE the ChatGPT
-//      card (a status, not a page-wide alert banner). The custom model panel
-//      and the budget card stay usable.
-//  (2) The service order card reflects the lock and shows an "unavailable"
-//      line (not "not connected / not ready") when its status failed to load.
+//  (1) The platform lock (`?state=disabled` or `?ai=off`, provider view
+//      `platformLocked`; docs/briefs/sub-ai-settings-v2.md) locks ALL tenant AI
+//      settings: one page-wide alert banner, and every control of the ChatGPT,
+//      custom model and budget cards is disabled. Saved values stay visible.
+//  (2) The service order card keeps the saved status visible under the lock and
+//      shows an "unavailable" line (not "not connected / not ready") when its
+//      status failed to load.
 //  (3) "Simpan kemampuan" / "Kembalikan ke deteksi" call PATCH /api/ai/provider
 //      and never PUT. Saving with no real change is a no-op (no request).
 //  (4) The range rule is strict: output must be LOWER than context.
@@ -54,79 +55,85 @@ async function failFirstTwoCalls(
 }
 
 const PAGE = "/kelola/pengaturan/ai";
-const NOTICE = "Login ChatGPT dimatikan oleh platform";
+const BANNER = "AI dimatikan oleh platform";
+const OLD_NOTICE = "Login ChatGPT dimatikan oleh platform";
 
 const chatgptCard = (page: Page) =>
   page.getByRole("region", { name: "Login ChatGPT" });
 
-test.describe("legend-nnufz platformDisabled locks only ChatGPT", () => {
-  test("notice sits in the ChatGPT card; custom model and budget stay usable", async ({
+// The capability editor sits in a fold that is closed by default.
+async function openCaps(page: Page) {
+  await page
+    .getByText("Ubah kemampuan model", { exact: true })
+    .click({ timeout: 15_000 });
+}
+
+test.describe("legend-nnufz platform lock (provider platformLocked) locks all AI settings", () => {
+  test("banner shows; every control is disabled; saved values stay visible", async ({
     page,
   }) => {
-    await page.goto(`${PAGE}?ai=off&state=detected`);
+    await page.goto(`${PAGE}?state=disabled`);
     await waitForHydration(page);
 
-    // The notice is a status inside the ChatGPT card, never a page alert.
-    const card = chatgptCard(page);
+    // One page-wide alert banner; the ChatGPT card carries no notice of its own.
+    const banner = page.getByRole("alert").filter({ hasText: BANNER });
+    await expect(banner).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("alert")).toHaveCount(1);
+    await expect(page.getByText(OLD_NOTICE)).toHaveCount(0);
     await expect(
-      card.getByRole("status").filter({ hasText: NOTICE }),
-    ).toBeVisible({ timeout: 15_000 });
-    await expect(card.getByText("Dikunci platform").first()).toBeVisible();
-    await expect(page.getByText(NOTICE)).toHaveCount(1);
-    await expect(
-      page.getByRole("alert").filter({ hasText: NOTICE }),
+      chatgptCard(page).getByRole("status").filter({ hasText: BANNER }),
     ).toHaveCount(0);
 
-    // ChatGPT (connected in this scenario): its only action is locked.
+    // ChatGPT: the connection action is locked.
     await expect(
-      card.getByRole("button", { name: "Cabut koneksi" }),
+      chatgptCard(page).getByRole("button", { name: "Cabut koneksi" }),
     ).toBeDisabled();
 
-    // Custom model panel: the saved address and the save button stay usable.
+    // Custom model: the saved values are shown, every control is disabled.
     const baseUrl = page.getByLabel(/Alamat layanan/);
     await expect(baseUrl).toHaveValue("https://model.example.com/v1", {
       timeout: 15_000,
     });
-    await expect(baseUrl).toBeEnabled();
-    await expect(page.getByLabel(/Nama model/)).toBeEnabled();
+    await expect(baseUrl).toBeDisabled();
+    await expect(page.getByLabel(/Nama model/)).toBeDisabled();
+    await expect(page.getByLabel(/API key/)).toBeDisabled();
     await expect(
-      page.getByRole("button", { name: "Simpan dan uji ulang koneksi" }),
-    ).toBeEnabled();
+      page.getByRole("button", { name: "Uji ulang koneksi" }),
+    ).toBeDisabled();
+    await openCaps(page);
+    await expect(page.getByLabel("Konteks (token)")).toBeDisabled();
     await expect(
       page.getByRole("button", { name: "Simpan kemampuan" }),
-    ).toBeEnabled();
+    ).toBeDisabled();
 
-    // Budget card: the field is editable and a save goes through.
+    // Budget: the saved limit is visible, field and save are locked.
     const limit = page.getByLabel(/Batas per bulan/);
-    await expect(limit).toBeEnabled({ timeout: 15_000 });
-    await limit.fill("6000000");
-    const saveBudget = page.getByRole("button", { name: "Simpan anggaran" });
-    await expect(saveBudget).toBeEnabled();
-    await saveBudget.click();
-    await expect(page.getByText("Anggaran disimpan.")).toBeVisible({
-      timeout: 15_000,
-    });
+    await expect(limit).toBeDisabled({ timeout: 15_000 });
+    await expect(limit).not.toHaveValue("");
+    await expect(
+      page.getByRole("button", { name: "Simpan anggaran" }),
+    ).toBeDisabled();
   });
 
-  test("with no model saved yet the custom form is still usable", async ({
+  test("with no model saved yet the lock still disables the custom form and ChatGPT login", async ({
     page,
   }) => {
     await page.goto(`${PAGE}?ai=off`);
     await waitForHydration(page);
     await expect(
-      chatgptCard(page).getByRole("status").filter({ hasText: NOTICE }),
+      page.getByRole("alert").filter({ hasText: BANNER }),
     ).toBeVisible({ timeout: 15_000 });
 
-    await expect(page.getByLabel(/Alamat layanan/)).toBeEnabled({
+    await expect(page.getByLabel(/Alamat layanan/)).toBeDisabled({
       timeout: 15_000,
     });
-    await expect(page.getByLabel(/API key/)).toBeEnabled();
+    await expect(page.getByLabel(/API key/)).toBeDisabled();
     await expect(
       page.getByRole("button", { name: "Hubungkan ChatGPT" }),
     ).toBeDisabled();
   });
 
-  test("without the kill switch nothing is locked and no notice shows", async ({
+  test("without the lock nothing is disabled and no banner shows", async ({
     page,
   }) => {
     await page.goto(`${PAGE}?state=detected`);
@@ -137,19 +144,23 @@ test.describe("legend-nnufz platformDisabled locks only ChatGPT", () => {
     await expect(
       page.getByRole("button", { name: "Cabut koneksi" }),
     ).toBeEnabled();
-    await expect(page.getByText(NOTICE)).toHaveCount(0);
+    await expect(page.getByLabel(/Alamat layanan/)).toBeEnabled();
+    await expect(page.getByText(BANNER)).toHaveCount(0);
+    await expect(page.getByRole("alert")).toHaveCount(0);
   });
 });
 
 test.describe("legend-nnufz service order card", () => {
-  test("shows the lock when the platform switch is on", async ({ page }) => {
-    await page.goto(`${PAGE}?ai=off&state=detected`);
+  test("keeps the saved status visible when the platform lock is on", async ({
+    page,
+  }) => {
+    await page.goto(`${PAGE}?state=disabled`);
     await waitForHydration(page);
-    await expect(page.getByText("Utama · Dikunci platform")).toBeVisible({
+    await expect(page.getByText("Utama · Terhubung")).toBeVisible({
       timeout: 15_000,
     });
-    // The fallback is independent of the switch.
     await expect(page.getByText("Cadangan otomatis · Siap")).toBeVisible();
+    await expect(page.getByText("Dikunci platform")).toHaveCount(0);
   });
 
   test("shows connected and ready without the switch", async ({ page }) => {
@@ -182,7 +193,7 @@ test.describe("legend-nnufz service order card", () => {
     await expect(page.getByText("Utama · Belum terhubung")).toHaveCount(0);
   });
 
-  test("a failed provider read reads as unavailable and hides the readiness note", async ({
+  test("a failed provider read shows a page load error, not locked cards or the platform banner", async ({
     page,
   }) => {
     await failFirstTwoCalls(page, "GET /api/ai/provider", {
@@ -192,22 +203,14 @@ test.describe("legend-nnufz service order card", () => {
     });
     await page.goto(`${PAGE}?state=detected`);
     await waitForHydration(page);
-    await expect(
-      page.getByText("Cadangan otomatis · Status belum bisa dimuat"),
-    ).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("Bagian ini belum bisa dimuat")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByRole("button", { name: "Coba lagi" })).toBeVisible();
+    await expect(page.getByText("AI dimatikan oleh platform")).toHaveCount(0);
     await expect(page.getByText("Cadangan otomatis · Belum siap")).toHaveCount(
       0,
     );
-    await expect(
-      page.getByText(
-        "Siapkan model kustom agar AI memiliki cadangan saat ChatGPT bermasalah.",
-      ),
-    ).toHaveCount(0);
-    await expect(
-      page.getByText(
-        "Cadangan dipakai otomatis bila layanan utama bermasalah.",
-      ),
-    ).toHaveCount(0);
   });
 });
 
@@ -215,6 +218,7 @@ test.describe("legend-nnufz capability save uses PATCH, never PUT", () => {
   test("save then reset succeed without touching PUT", async ({ page }) => {
     await page.goto(`${PAGE}?state=detected`);
     await waitForHydration(page);
+    await openCaps(page);
 
     const context = page.getByLabel("Konteks (token)");
     await expect(context).toHaveValue("128000", { timeout: 15_000 });
@@ -249,6 +253,7 @@ test.describe("legend-nnufz capability save uses PATCH, never PUT", () => {
   test("reset clears every override at once (PATCH null)", async ({ page }) => {
     await page.goto(`${PAGE}?state=detected`);
     await waitForHydration(page);
+    await openCaps(page);
 
     const context = page.getByLabel("Konteks (token)");
     const tools = page.getByLabel("Panggilan alat");
@@ -279,6 +284,7 @@ test.describe("legend-nnufz capability save uses PATCH, never PUT", () => {
   }) => {
     await page.goto(`${PAGE}?state=detected`);
     await waitForHydration(page);
+    await openCaps(page);
     const context = page.getByLabel("Konteks (token)");
     await expect(context).toHaveValue("128000", { timeout: 15_000 });
 
@@ -305,6 +311,7 @@ test.describe("legend-nnufz capability diff against the shown values", () => {
   }) => {
     await page.goto(`${PAGE}?state=detected`);
     await waitForHydration(page);
+    await openCaps(page);
     const context = page.getByLabel("Konteks (token)");
     await expect(context).toHaveValue("128000", { timeout: 15_000 });
 
@@ -331,6 +338,7 @@ test.describe("legend-nnufz capability diff against the shown values", () => {
   }) => {
     await page.goto(`${PAGE}?state=detected`);
     await waitForHydration(page);
+    await openCaps(page);
     const context = page.getByLabel("Konteks (token)");
     await expect(context).toHaveValue("128000", { timeout: 15_000 });
 
@@ -354,6 +362,7 @@ test.describe("legend-nnufz capability diff against the shown values", () => {
   }) => {
     await page.goto(`${PAGE}?state=detected`);
     await waitForHydration(page);
+    await openCaps(page);
     const context = page.getByLabel("Konteks (token)");
     const output = page.getByLabel("Jawaban maks. (token)");
     await expect(context).toHaveValue("128000", { timeout: 15_000 });
@@ -388,6 +397,7 @@ test.describe("legend-nnufz capability diff against the shown values", () => {
   test("changing one field keeps the other stored value", async ({ page }) => {
     await page.goto(`${PAGE}?state=detected`);
     await waitForHydration(page);
+    await openCaps(page);
     const context = page.getByLabel("Konteks (token)");
     const output = page.getByLabel("Jawaban maks. (token)");
     await expect(context).toHaveValue("128000", { timeout: 15_000 });
@@ -415,6 +425,7 @@ test.describe("legend-nnufz capability range is strict (output < context)", () =
   }) => {
     await page.goto(`${PAGE}?state=detected`);
     await waitForHydration(page);
+    await openCaps(page);
     const context = page.getByLabel("Konteks (token)");
     const output = page.getByLabel("Jawaban maks. (token)");
     await expect(context).toHaveValue("128000", { timeout: 15_000 });
@@ -434,6 +445,7 @@ test.describe("legend-nnufz capability range is strict (output < context)", () =
   test("output above context is refused", async ({ page }) => {
     await page.goto(`${PAGE}?state=detected`);
     await waitForHydration(page);
+    await openCaps(page);
     const context = page.getByLabel("Konteks (token)");
     await expect(context).toHaveValue("128000", { timeout: 15_000 });
 
@@ -449,6 +461,7 @@ test.describe("legend-nnufz capability range is strict (output < context)", () =
   test("output one below context is accepted", async ({ page }) => {
     await page.goto(`${PAGE}?state=detected`);
     await waitForHydration(page);
+    await openCaps(page);
     const context = page.getByLabel("Konteks (token)");
     const output = page.getByLabel("Jawaban maks. (token)");
     await expect(context).toHaveValue("128000", { timeout: 15_000 });

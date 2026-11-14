@@ -110,10 +110,15 @@ export const aiProviderConfigSchema = z.strictObject({
 });
 export type AiProviderConfig = z.infer<typeof aiProviderConfigSchema>;
 
-/** `fallbackAvailable`: the platform env provider exists for this tenant. */
+/**
+ * `fallbackAvailable`: the platform env provider exists for this tenant.
+ * `platformLocked`: the platform turned AI off for this tenant; every write
+ * and use path is refused with AI_PLATFORM_DISABLED.
+ */
 export const aiProviderViewSchema = z.strictObject({
   config: aiProviderConfigSchema.nullable(),
   fallbackAvailable: z.boolean(),
+  platformLocked: z.boolean(),
 });
 export type AiProviderView = z.infer<typeof aiProviderViewSchema>;
 

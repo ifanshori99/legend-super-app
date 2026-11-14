@@ -29,6 +29,7 @@ import type {
 } from "@starter/shared/ai";
 import {
   usePatchProviderCapabilities,
+  useChatgptLogin,
   useProvider,
   useSaveProvider,
   useTestProvider,
@@ -90,7 +91,7 @@ type Outcome =
   | { kind: "save"; error: unknown }
   | { kind: "unreachable" };
 
-export function CustomModelPanel() {
+export function CustomModelPanel({ locked = false }: { locked?: boolean }) {
   const t = useT();
   const provider = useProvider();
 
@@ -123,19 +124,28 @@ export function CustomModelPanel() {
   const stored = provider.data.data.config;
   // The ChatGPT login is its own card; only an API-key setup is "custom".
   const config = stored?.connectionType === "api_key" ? stored : null;
-  return <CustomCard config={config} refreshFailed={provider.isError} />;
+  return (
+    <CustomCard
+      config={config}
+      refreshFailed={provider.isError}
+      locked={locked}
+    />
+  );
 }
 
 function CustomCard({
   config,
   refreshFailed,
+  locked,
 }: {
   config: AiProviderConfig | null;
   refreshFailed: boolean;
+  locked: boolean;
 }) {
   const t = useT();
   const save = useSaveProvider();
   const test = useTestProvider();
+  const chatgptConnected = useChatgptLogin().data?.data.state === "connected";
   const formRef = React.useRef<HTMLFormElement>(null);
   const [draft, setDraft] = React.useState<Draft>({
     baseUrl: config?.baseUrl ?? "",
@@ -190,6 +200,7 @@ function CustomCard({
     onChange: set(field),
     onBlur: blur(field),
     spellCheck: false,
+    disabled: locked,
   });
 
   const message = (field: Field): string | undefined => {
@@ -199,7 +210,7 @@ function CustomCard({
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (busy) return;
+    if (busy || locked) return;
     setServerErrors({});
     setOutcome(null);
     const found = validateFields(draft, config);
@@ -262,7 +273,7 @@ function CustomCard({
     <AdminCard aria-labelledby="ai-custom-title" aria-busy={busy || undefined}>
       <div className="flex items-start justify-between gap-3">
         <div className="grid min-w-0 gap-1">
-          <p className="text-xs leading-4 font-semibold tracking-wide text-muted-foreground uppercase">
+          <p className="type-eyebrow text-muted-foreground">
             {t("aiSettingsCustom.custom.eyebrow")}
           </p>
           <div className="flex items-center gap-2.5">
@@ -293,7 +304,7 @@ function CustomCard({
       </div>
 
       <div className="grid min-w-0 gap-4">
-        <p className="text-sm leading-5 text-muted-foreground">
+        <p className="text-base leading-6 text-muted-foreground">
           {t("aiSettingsCustom.custom.description")}
         </p>
         {refreshFailed && (
@@ -309,7 +320,7 @@ function CustomCard({
           ref={formRef}
           onSubmit={(event) => void submit(event)}
           noValidate
-          className="grid gap-4"
+          className="grid gap-4 [&_[id$='-hint']]:text-xs [&_[id$='-hint']]:leading-4 [&_label]:font-semibold"
         >
           <FormField
             label={t("aiSettingsCustom.custom.urlLabel")}
@@ -368,7 +379,15 @@ function CustomCard({
           </FormField>
 
           <div className="grid gap-1.5">
-            <Button type="submit" loading={busy} className="w-fit">
+            <Button
+              type="submit"
+              variant={
+                locked ? "secondary" : chatgptConnected ? "default" : "outline"
+              }
+              loading={busy}
+              disabled={locked}
+              className="w-full sm:w-auto"
+            >
               {busy
                 ? t("aiSettingsCustom.custom.testing")
                 : t(
@@ -377,7 +396,7 @@ function CustomCard({
                       : "aiSettingsCustom.custom.retest",
                   )}
             </Button>
-            <p className="text-sm leading-5 text-muted-foreground">
+            <p className="text-xs leading-4 text-muted-foreground">
               {t("aiSettingsCustom.custom.testNote")}
             </p>
           </div>
@@ -389,7 +408,9 @@ function CustomCard({
           )}
         </form>
 
-        {config !== null && <CapabilitiesBlock config={config} />}
+        {config !== null && (
+          <CapabilitiesBlock config={config} locked={locked} />
+        )}
       </div>
     </AdminCard>
   );
@@ -431,7 +452,13 @@ function Feedback({ outcome }: { outcome: Outcome }) {
   );
 }
 
-function CapabilitiesBlock({ config }: { config: AiProviderConfig }) {
+function CapabilitiesBlock({
+  config,
+  locked,
+}: {
+  config: AiProviderConfig;
+  locked: boolean;
+}) {
   const t = useT();
   const caps: AiModelCapabilities = config.capabilities;
   const yesNo = (value: boolean) =>
@@ -479,7 +506,7 @@ function CapabilitiesBlock({ config }: { config: AiProviderConfig }) {
       <p className="text-sm leading-5 text-muted-foreground">
         {t("aiSettingsCustom.caps.note")}
       </p>
-      <CapabilityEditor config={config} />
+      <CapabilityEditor config={config} locked={locked} />
     </section>
   );
 }
@@ -539,7 +566,13 @@ function draftFrom(caps: AiModelCapabilities): CapsDraft {
 }
 
 /** "Ubah kemampuan model": PATCHes only the changed override fields; the server merges. */
-function CapabilityEditor({ config }: { config: AiProviderConfig }) {
+function CapabilityEditor({
+  config,
+  locked,
+}: {
+  config: AiProviderConfig;
+  locked: boolean;
+}) {
   const t = useT();
   const save = usePatchProviderCapabilities();
   const current: AiModelCapabilities = {
@@ -573,7 +606,7 @@ function CapabilityEditor({ config }: { config: AiProviderConfig }) {
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (save.isPending) return;
+    if (save.isPending || locked) return;
     setSaved(null);
     if (!rangeOk(draft)) {
       setInvalid(true);
@@ -619,7 +652,7 @@ function CapabilityEditor({ config }: { config: AiProviderConfig }) {
   };
 
   const restore = async () => {
-    if (save.isPending) return;
+    if (save.isPending || locked) return;
     setSaved(null);
     setInvalid(false);
     try {
@@ -643,7 +676,7 @@ function CapabilityEditor({ config }: { config: AiProviderConfig }) {
     : undefined;
 
   return (
-    <details open className="group grid gap-3">
+    <details className="group grid gap-3">
       <summary className="inline-flex min-h-11 w-fit cursor-pointer items-center text-base leading-6 font-semibold text-primary select-none focus-visible:rounded-control focus-visible:shadow-focus focus-visible:outline-none">
         {t("aiSettingsCustom.caps.editSummary")}
       </summary>
@@ -670,6 +703,7 @@ function CapabilityEditor({ config }: { config: AiProviderConfig }) {
               value={draft.context}
               onChange={change("context")}
               onBlur={check}
+              disabled={locked}
             />
           </FormField>
           <FormField label={t("aiSettingsCustom.caps.editOutput")} required>
@@ -680,6 +714,7 @@ function CapabilityEditor({ config }: { config: AiProviderConfig }) {
               value={draft.output}
               onChange={change("output")}
               onBlur={check}
+              disabled={locked}
               aria-invalid={invalid || undefined}
               aria-describedby={
                 invalid ? `${CONTEXT_FIELD_ID}-error` : undefined
@@ -691,6 +726,7 @@ function CapabilityEditor({ config }: { config: AiProviderConfig }) {
               name="tools"
               value={draft.tools}
               onChange={change("tools")}
+              disabled={locked}
               className={cn(fieldClass, "h-control px-3")}
             >
               <option value="yes">
@@ -706,6 +742,7 @@ function CapabilityEditor({ config }: { config: AiProviderConfig }) {
               name="reasoning"
               value={draft.reasoning}
               onChange={change("reasoning")}
+              disabled={locked}
               className={cn(fieldClass, "h-control px-3")}
             >
               <option value="yes">
@@ -718,14 +755,19 @@ function CapabilityEditor({ config }: { config: AiProviderConfig }) {
           </FormField>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button type="submit" variant="outline" loading={save.isPending}>
+          <Button
+            type="submit"
+            variant="outline"
+            loading={save.isPending}
+            disabled={locked}
+          >
             {t("aiSettingsCustom.caps.save")}
           </Button>
           {config.capabilityOverrides !== null && (
             <Button
               type="button"
               variant="ghost"
-              disabled={save.isPending}
+              disabled={save.isPending || locked}
               onClick={() => void restore()}
             >
               {t("aiSettingsCustom.caps.reset")}

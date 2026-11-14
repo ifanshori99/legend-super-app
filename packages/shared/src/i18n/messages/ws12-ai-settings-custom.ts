@@ -41,13 +41,13 @@ export const aiSettingsCustomMessages = {
     modelInvalid:
       "Nama model hanya boleh berisi huruf, angka, dan tanda . : / @ + - _ tanpa spasi.",
 
-    // Deviation from the mockup ("Uji koneksi"): the button saves first, so it says so.
-    test: "Simpan dan uji koneksi",
-    retest: "Simpan dan uji ulang koneksi",
+    // Button text follows the mockup; the button still saves first, testNote says so.
+    test: "Uji koneksi",
+    retest: "Uji ulang koneksi",
     testNote: "Pengaturan disimpan lebih dulu, lalu koneksi diuji.",
     refreshError:
       "Data terbaru belum bisa dimuat. Yang tampil mungkin belum yang terbaru.",
-    testing: "Menyimpan dan menguji…",
+    testing: "Menguji koneksi…",
     testOk: "Uji koneksi berhasil.",
     testFailed: "Uji koneksi gagal. {reason}",
     testFailedNoReason:

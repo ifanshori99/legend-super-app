@@ -8,8 +8,9 @@
 //    (stored capabilities with overrides applied); reset sends null.
 //  - An empty diff is a no-op: no request, form reads as saved.
 //  - rangeOk is strict: output < context (equal is refused).
-//  - Only ChatGPT is locked by the platform switch; its notice lives in the
-//    ChatGPT card; custom model and budget take no `disabled` prop.
+//  - The platform lock (docs/briefs/sub-ai-settings-v2.md) reaches every card
+//    (`locked`/`disabled`); the page renders one PlatformLockBanner only when
+//    provider.platformLocked is true; the ChatGPT card has no lock notice.
 //  - Mock PATCH /api/ai/provider mirrors the backend: null resets every
 //    override, an empty patch is a no-op, unsent fields are kept, and a merge
 //    with output >= context is a 422.
@@ -171,25 +172,39 @@ describe("legend-nnufz rangeOk is strict", () => {
   });
 });
 
-describe("legend-nnufz platformDisabled scope", () => {
-  test("ChatGPT is locked by the kill switch", () => {
-    const match = page.match(/<ChatgptPanel\s+disabled=\{([^}]*)\}/);
-    assert.ok(match, "ChatgptPanel receives a disabled prop");
-    assert.match(match[1], /platformOff|platformDisabled|[lL]ocked|isPending/);
+describe("legend-nnufz platform lock scope", () => {
+  const banner = read("components/platform-lock-banner.tsx");
+  const order = read("components/order-card.tsx");
+
+  test("every card receives the lock", () => {
+    const chatgptProp = page.match(/<ChatgptPanel\s+disabled=\{([^}]*)\}/);
+    assert.ok(chatgptProp, "ChatgptPanel receives a disabled prop");
+    assert.match(chatgptProp[1], /locked/i);
+    assert.match(page, /<CustomModelPanel\s+locked=\{[^}]*\}/);
+    assert.match(page, /<BudgetCard\s+locked=\{[^}]*\}/);
+    assert.match(page, /<OrderCard\s+locked=\{[^}]*\}/);
+    assert.match(panel, /export function CustomModelPanel\(\{\s*locked/);
+    assert.match(budget, /export function BudgetCard\(\{\s*locked/);
+    assert.match(order, /locked\?: boolean/);
   });
 
-  test("custom model and budget take no disabled prop", () => {
-    assert.match(page, /<CustomModelPanel\s*\/>/);
-    assert.match(page, /<BudgetCard\s*\/>/);
-    assert.match(panel, /export function CustomModelPanel\(\)/);
-    assert.match(budget, /export function BudgetCard\(\)/);
-  });
-
-  test("the notice is rendered inside the ChatGPT card, not the page", () => {
-    assert.match(chatgpt, /aiSettings\.platformOff\.title/);
-    assert.match(chatgpt, /aiSettings\.platformOff\.body/);
-    assert.doesNotMatch(page, /platformOff\.(title|body)/);
+  test("the banner is an alert rendered by the page only when platformLocked is true", () => {
+    assert.match(banner, /export function PlatformLockBanner/);
+    assert.match(banner, /role="alert"/);
+    const shown = page.indexOf("<PlatformLockBanner");
+    assert.notEqual(shown, -1, "page renders the banner");
+    assert.match(
+      page.slice(Math.max(0, shown - 120), shown),
+      /provider\.data\?\.data\.platformLocked\s*===\s*true/,
+    );
     assert.doesNotMatch(page, /role="alert"/);
+  });
+
+  test("the ChatGPT card carries no tenant lock notice", () => {
+    // The tenant lock is explained once by the page banner. The card only
+    // explains the global ChatGPT switch (env AI_CHATGPT_ENABLED).
+    assert.doesNotMatch(chatgpt, /aiSettings\.platform(Off|Lock)/);
+    assert.match(chatgpt, /aiSettingsChatgpt\.platformOff/);
   });
 });
 

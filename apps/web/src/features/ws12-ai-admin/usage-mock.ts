@@ -31,6 +31,7 @@ import { ApiError } from "../../lib/api/errors.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
+import { settingsBudgetScenario } from "./settings-budget-scenario.ts";
 import { monthOf } from "./usage-format.ts";
 
 const CAP_IDR = 5_000_000;
@@ -106,10 +107,13 @@ function monthsAgo(month: string, now: Date): number {
   return index(current) - index(month);
 }
 
-function budgetFor(usedIdr: number): AiTenantUsage["budget"] {
-  const pct = Math.floor((usedIdr * 100) / CAP_IDR);
+function budgetFor(
+  usedIdr: number,
+  capIdr: number = CAP_IDR,
+): AiTenantUsage["budget"] {
+  const pct = capIdr > 0 ? Math.floor((usedIdr * 100) / capIdr) : 0;
   return {
-    monthlyBudgetIdr: idr(CAP_IDR),
+    monthlyBudgetIdr: idr(capIdr),
     usedIdr: idr(usedIdr),
     warnPct: WARN_PCT,
     stopPct: STOP_PCT,
@@ -158,6 +162,15 @@ function usageFor(month: string): AiTenantUsage {
 
 registerMock(getAiTenantUsage, ({ query, scenario }) => {
   const month = query.month ?? monthOf(new Date());
+  // "Pengaturan AI" mockup states: this month's budget follows `?state=`.
+  const settings = query.month === undefined ? settingsBudgetScenario() : null;
+  if (settings)
+    return {
+      data: {
+        ...emptyUsage(month),
+        budget: budgetFor(settings.usedIdr, settings.capIdr),
+      },
+    };
   return {
     data: scenario === "empty" ? emptyUsage(month) : usageFor(month),
   };

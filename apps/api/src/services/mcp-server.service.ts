@@ -115,6 +115,7 @@ export async function authenticateMcpToken(
     throw new AiError("MCP_TOKEN_EXPIRED");
 
   const settings = await loadMcpSettings(tenantId);
+  if (settings.platformLocked) throw new AiError("AI_PLATFORM_DISABLED");
   if (!settings.aiEnabled) throw new AiError("AI_FEATURE_DISABLED");
   if (!settings.mcpEnabled)
     throw new AiError(

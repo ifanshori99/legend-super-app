@@ -4,12 +4,14 @@
 //
 // Scenario URLs (page /kelola/pengaturan/ai):
 //   ?state=empty|device|connected|failed|expired|detected   starting state
+//   ?state=disabled       platform lock (provider platformLocked), saved settings
+//   ?state=loading|offline|session   page gate: never answers / no connection / 401
 //   ?role=owner|admin     owner may connect/revoke ChatGPT, admin may not
-//   ?ai=off               platform kill switch: ChatGPT status platformDisabled
+//   ?ai=off               same kill switch on any state
 //   ?mock=slow|error|offline|empty    generic scenarios (lib/mock/control.ts)
 // Defaults: empty state as owner. A pending code turns connected after
 // POLLS_TO_CONNECT polls so the whole flow can be walked by hand.
-import { ApiError } from "../../lib/api/errors.ts";
+import { ApiError, NETWORK_ERROR_MESSAGE } from "../../lib/api/errors.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { zodIssuesToDetails } from "@starter/shared/api";
@@ -76,7 +78,7 @@ const loginOf = (
   canManage: boolean,
 ): ChatgptLoginStatus => ({
   state,
-  platformDisabled: urlParam("ai") === "off",
+  platformDisabled: false,
   viewerCanManage: canManage,
   deviceCode: state === "pending" && canManage ? "LGND-4826" : null,
   verificationUrl: state === "pending" && canManage ? DEVICE_URL : null,
@@ -93,11 +95,13 @@ const seed = (): MockState => {
       ? "pending"
       : start === "connected" || start === "detected"
         ? "connected"
-        : start === "failed" || start === "expired"
-          ? start
-          : "disconnected";
+        : start === "disabled"
+          ? "connected"
+          : start === "failed" || start === "expired"
+            ? start
+            : "disconnected";
   return {
-    config: start === "detected" ? readyConfig() : null,
+    config: start === "detected" || start === "disabled" ? readyConfig() : null,
     login: loginOf(loginState, canManage),
     polls: 0,
   };
@@ -105,12 +109,33 @@ const seed = (): MockState => {
 
 const store = createMockStore(seed);
 
-registerMock(getAiProviderConfig, ({ scenario }) => ({
-  data: {
-    config: scenario === "empty" ? null : store.get().config,
-    fallbackAvailable: false,
-  },
-}));
+/** Platform lock for this tenant: `?state=disabled` or `?ai=off` on any state. */
+const platformLocked = () =>
+  urlParam("ai") === "off" || urlParam("state") === "disabled";
+
+/**
+ * Page gate states of the mockup. The two status reads (provider and ChatGPT)
+ * decide the page, so only they act out `loading`, `offline` and `session`.
+ */
+async function pageGate(): Promise<void> {
+  const state = urlParam("state");
+  if (state === "loading") await new Promise<never>(() => undefined);
+  if (state === "offline")
+    throw new ApiError(0, "NETWORK_ERROR", NETWORK_ERROR_MESSAGE);
+  if (state === "session")
+    throw new ApiError(401, "UNAUTHENTICATED", "Sesi Anda sudah habis.");
+}
+
+registerMock(getAiProviderConfig, async ({ scenario }) => {
+  await pageGate();
+  return {
+    data: {
+      config: scenario === "empty" ? null : store.get().config,
+      fallbackAvailable: false,
+      platformLocked: platformLocked(),
+    },
+  };
+});
 
 registerMock(upsertAiProviderConfig, ({ body }) => {
   const state = store.get();
@@ -147,7 +172,13 @@ registerMock(upsertAiProviderConfig, ({ body }) => {
     updatedAt: now(),
   };
   store.set({ ...state, config });
-  return { data: { config, fallbackAvailable: false } };
+  return {
+    data: {
+      config,
+      fallbackAvailable: false,
+      platformLocked: platformLocked(),
+    },
+  };
 });
 
 /** Same merge as the API's mergeCapabilityOverrides: undefined fields are dropped. */
@@ -188,14 +219,26 @@ registerMock(patchAiProviderConfig, ({ body }) => {
   const merged = mergeOverrides(previous, body.capabilityOverrides);
   // No-op edit: the row stays as it was, updatedAt included.
   if (JSON.stringify(previous) === JSON.stringify(merged))
-    return { data: { config: prev, fallbackAvailable: false } };
+    return {
+      data: {
+        config: prev,
+        fallbackAvailable: false,
+        platformLocked: platformLocked(),
+      },
+    };
   const config: AiProviderConfig = {
     ...prev,
     capabilityOverrides: merged,
     updatedAt: now(),
   };
   store.set({ ...state, config });
-  return { data: { config, fallbackAvailable: false } };
+  return {
+    data: {
+      config,
+      fallbackAvailable: false,
+      platformLocked: platformLocked(),
+    },
+  };
 });
 
 registerMock(testAiProviderConfig, () => {
@@ -207,7 +250,10 @@ registerMock(testAiProviderConfig, () => {
   return { data: lastTest };
 });
 
-registerMock(getChatgptLogin, () => ({ data: store.get().login }));
+registerMock(getChatgptLogin, async () => {
+  await pageGate();
+  return { data: store.get().login };
+});
 
 registerMock(startChatgptLogin, () => {
   const state = store.get();

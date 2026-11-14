@@ -5,6 +5,18 @@
 - Keputusan: policy missing pada rekonsiliasi = gagal tertutup (case tetap open); approver default Owner; `required:false` ditolak 409.
 - Berikut: second-opinion Codex area WS-05 payment; bead legend-wghbj (approver tak berwenang menggagalkan refund).
 
+## Pengaturan AI v2 + kunci platform AI per tenant (ui-engineer, legend-nnufz, cabang `ui/ai-settings-v2` dari m1 b17554cb9, 14 Nov 2026 07:10-09:20, brief 684)
+
+- Sudah: layar disamakan dengan mockup W5 Q2 (`design/ai-settings` 08defdc48): state halaman memuat/offline/sesi habis (`page-states.tsx`, login ulang `/masuk?lanjut=`), banner kunci platform (`platform-lock-banner.tsx`) + semua kartu terkunci, kotak risiko amber, pengaturan teknis dilipat, mock `?state=`.
+- Server (founder W16 Q7): AI tenant terkunci bila modul `ai_assistant` mati di `tenants.feature_flags` (fail closed, tanpa migrasi). `AI_PLATFORM_DISABLED` 403 di route tulis/pakai (`requireAiPlatformEnabled`), gateway (preflight/reserve/complete), `systemAiComplete`, MCP (`loadMcpSettings`), eksekusi action request setelah approval. Pencabutan kredensial (DELETE provider/chatgpt, cabut klien MCP) tetap dibuka. `platformLocked` di view provider/governance/usage.
+- Keputusan: `/ask` ditolak di route tanpa baris ledger. Modul `mcp` belum ditegakkan (seed mematikannya; perlu bead). Disk penuh 07:30 sempat menghentikan kerja; `cleanup-ssd --apply` membebaskan 13 GB.
+- Risiko rilis: tenant live tanpa `ai_assistant` langsung terkunci saat deploy; hitung dulu sebelum gerbang rilis.
+- Test: `ai-platform-lock.test.ts` (19 kasus, base 16 gagal), test action request baru.
+- Review: reviewer (banner palsu saat baca provider gagal -> kartu galat halaman), architect xhigh (action request yang sudah disetujui melewati kunci -> dicek di `assertActorStillValid`), ui-auditor, impeccable-finish-reviewer (putaran 3: anggaran mock ikut `?state=`, skeleton muda, tombol full-width mobile, nonaktif abu netral).
+- Status ChatGPT `retryOnMount: false`: gerbang halaman membaca status sebelum kartu dipasang; tanpa ini status gagal diambil ulang diam-diam.
+- Bukti: typecheck api+web lulus, root wire/text-contract/ai-contract lulus, API terarah 32/32, `scripts/ui-check-ai-settings.mjs` 21/22 (gagal: `loading-390` axe `scrollable-region-focusable` di `#main-content` shell bersama, bead), tanpa overflow 320, screenshot `docs/screenshots/ai-settings-v2/`.
+- Biaya (07:15-09:07, 112 menit): biaya* total 8065k (utama Opus 3003k; subagent Sonnet 3700k, Opus 845k, Haiku 517k). 30 subagent, maks 4 bersamaan, rata-rata 0.27 berjalan.
+
 ## WS-06/07 posting faktur pemasok + lanjutan AP (engineer, cabang `ws/purchasing-posting` dari `ws/purchasing-apar` aefe28175, 13 Nov 2026 18:49-19:47 WIB)
 
 - Desain: `docs/briefs/ws-purchasing-posting-design.md` (architect xhigh), review K architect xhigh: H1 dibetulkan, H2/M1 jadi bead penghalang flag.
