@@ -12,13 +12,14 @@
 import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import {
   edgePeopleSnapshotSchema,
   type EdgePeopleSnapshot,
 } from "@starter/shared/edge/people-snapshot";
 import { runMigrations } from "../../db/migration-session.ts";
+import type { db } from "../../db/index.ts";
 import { provisionRoles } from "../../db/provision-roles.ts";
 import { createAppPool } from "../../db/role.ts";
 import * as schema from "../../db/schema/index.ts";
@@ -32,7 +33,7 @@ const migrationsFolder = resolve(
   "../../../drizzle",
 );
 
-export type EdgeTestDatabase = NodePgDatabase<typeof schema>;
+export type EdgeTestDatabase = typeof db;
 export type Row = Record<string, unknown>;
 
 export type EdgeDatabase = {

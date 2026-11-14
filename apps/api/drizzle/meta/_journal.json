@@ -2481,16 +2481,23 @@
       "breakpoints": true
     },
     {
+      "idx": 373,
+      "version": "7",
+      "when": 1794661468925,
+      "tag": "0373_edge_catalog_publisher",
+      "breakpoints": true
+    },
+    {
       "idx": 374,
       "version": "7",
-      "when": 1794629277111,
+      "when": 1794661468926,
       "tag": "0374_menu_recipe_fk",
       "breakpoints": true
     },
     {
       "idx": 377,
       "version": "7",
-      "when": 1794629278111,
+      "when": 1794661468927,
       "tag": "0377_recipes_resync_edges",
       "breakpoints": true
     }

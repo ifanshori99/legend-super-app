@@ -16,10 +16,10 @@
 //   rewound cursor never put an old price or a revived row over a newer one).
 //   `updated_at` is copied but never compared (no clock-skew risk). A local row
 //   stamped by a local transaction (bootstrap, migration default) is not
-//   comparable with the cloud's ids: before the first page of a full pull
-//   (empty or `cat1` checkpoint) the puller calls `resetCatalogSyncTxid`, which
-//   sets the stream's local stamps to 0, so every local row loses to the cloud
-//   (safe to repeat).
+//   comparable with the cloud's ids: before the first HTTP or event apply,
+//   `ensureCatalogStreamInitialized` calls `resetCatalogSyncTxid` once and
+//   records a durable marker. Later cursor rewinds may reset HTTP-only copies,
+//   while versions backed by successfully held link events are preserved.
 // - The edge writes the cloud's `sync_txid`, so every apply (and the parent
 //   repair) first runs `set_config('legend.skip_sync_txid', 'on', true)`, local
 //   to the transaction, which makes the stamp trigger leave the value alone.
@@ -82,14 +82,17 @@ import {
   eq,
   inArray,
   isNull,
-  lt,
   notInArray,
   sql,
   type SQL,
 } from "drizzle-orm";
 import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 import { inventoryItems, uoms } from "../db/schema/inventory.ts";
-import { edgePrintJobs, edgePrinters } from "../db/schema/edge-print.ts";
+import {
+  edgePrintJobs,
+  edgePrinterDeleteVersions,
+  edgePrinters,
+} from "../db/schema/edge-print.ts";
 import { brands } from "../db/schema/platform-org.ts";
 import { user } from "../db/schema/user.ts";
 import {
@@ -111,6 +114,7 @@ import {
   promoSettings,
 } from "../db/schema/crm-promo.ts";
 import type { Tx } from "./menu-internals.ts";
+import { catalogRecordIdFromKeys } from "../lib/edge-catalog-identity.ts";
 
 export type CatalogApplyResult = {
   /** Rows inserted or updated (children of recipes / price lists excluded). */
@@ -378,7 +382,7 @@ async function requirePromotionOutlet(tx: Tx, outletId: string): Promise<void> {
     refuse("Catalog promotion belongs to another outlet.");
 }
 
-const STREAM_TABLES: Readonly<Record<CatalogSyncStream, PgTable>> = {
+export const STREAM_TABLES: Readonly<Record<CatalogSyncStream, PgTable>> = {
   stations,
   printers: edgePrinters,
   inventory_items: inventoryItems,
@@ -394,22 +398,129 @@ const STREAM_TABLES: Readonly<Record<CatalogSyncStream, PgTable>> = {
   vouchers: edgeVoucherCatalog,
 };
 
+/** Highest successfully held event version, scoped to this receiving node. */
+async function heldCatalogEventVersions(
+  tx: Tx,
+  tenantId: TenantId,
+  edgeNodeId: string,
+): Promise<ReadonlyMap<string, bigint>> {
+  // Mirrors heldReceipt in edge/db-link-store.ts, including successful
+  // supervisor replays. Importing that transport here would create a cycle.
+  const receipts = await tx.execute(
+    sql`SELECT i.aggregate_id, MAX(i.aggregate_sequence)::text AS sequence
+        FROM edge_inbound_events i
+        WHERE i.tenant_id = ${tenantId}::uuid
+          AND i.edge_node_id = ${edgeNodeId}::uuid
+          AND i.direction = 'cloud_to_edge'
+          AND i.kind = 'master_data'
+          AND i.aggregate_type = 'catalog_record'
+          AND (i.outcome = 'applied' OR (i.outcome = 'conflict' AND EXISTS (
+            SELECT 1 FROM edge_sync_conflicts c
+            JOIN edge_sync_conflict_resolutions r
+              ON r.tenant_id = c.tenant_id AND r.conflict_id = c.id
+              AND r.outcome = 'applied'
+            WHERE c.tenant_id = i.tenant_id AND c.edge_node_id = i.edge_node_id
+              AND c.direction = i.direction AND c.event_id = i.event_id
+          )))
+        GROUP BY i.aggregate_id`,
+  );
+  return new Map(
+    receipts.rows.map((row) => [
+      String(row.aggregate_id),
+      BigInt(String(row.sequence)),
+    ]),
+  );
+}
+
+/** Full-page validation precedes filtering, including stale duplicate keys. */
+export async function filterCatalogRecordsAfterEvents(
+  tx: Tx,
+  input: ApplyCatalogRecordsInput & { readonly edgeNodeId: string },
+): Promise<readonly unknown[]> {
+  const records = parseRecords(
+    input.stream,
+    input.tenantId,
+    input.records,
+    (record) =>
+      catalogRecordIdFromKeys(
+        input.stream,
+        "id" in record ? [record.id] : [record.menuItemId, record.groupId],
+      ),
+  );
+  const held = await heldCatalogEventVersions(
+    tx,
+    input.tenantId,
+    input.edgeNodeId,
+  );
+  return records.filter((record) => {
+    const id = catalogRecordIdFromKeys(
+      input.stream,
+      "id" in record ? [record.id] : [record.menuItemId, record.groupId],
+    );
+    const version = held.get(id);
+    // A held printer tombstone has no local row to guard an upsert. Receipt
+    // versions therefore protect absent documents as well as existing ones.
+    return version === undefined || BigInt(record.syncTxid) > version;
+  });
+}
+
 /**
- * Before the first page of a full pull (no checkpoint, or a `cat1` one): the
- * stream's local rows carry stamps from local transactions that are not
- * comparable with the cloud's, so they are set to 0 and every cloud record
- * wins over them. Run in the first page's transaction; safe to repeat.
+ * A full HTTP pull may reset HTTP-only versions after a cloud restore. Rows
+ * backed by held link events keep their current version, so an older HTTP
+ * snapshot cannot undo them. The caller holds the same stream apply lock.
  */
 export async function resetCatalogSyncTxid(
   tx: Tx,
   tenantId: TenantId,
   stream: CatalogSyncStream,
+  edgeNodeId: string,
 ): Promise<void> {
   await lockCatalogStream(tx, tenantId, stream);
+  const held = await heldCatalogEventVersions(tx, tenantId, edgeNodeId);
+  const protectedKeys: string[][] = [];
+  if (held.size > 0) {
+    const columns =
+      stream === "menu_item_modifier_groups"
+        ? sql`menu_item_id::text AS key1, group_id::text AS key2`
+        : sql`id::text AS key1`;
+    const stored = await tx.execute(
+      sql`SELECT ${columns} FROM ${STREAM_TABLES[stream]} WHERE tenant_id = ${tenantId}::uuid`,
+    );
+    for (const row of stored.rows) {
+      const keys =
+        stream === "menu_item_modifier_groups"
+          ? [String(row.key1), String(row.key2)]
+          : [String(row.key1)];
+      if (held.has(catalogRecordIdFromKeys(stream, keys)))
+        protectedKeys.push(keys);
+    }
+  }
+  const mayReset =
+    protectedKeys.length === 0
+      ? sql`true`
+      : stream === "menu_item_modifier_groups"
+        ? sql`NOT EXISTS (
+            SELECT 1 FROM jsonb_to_recordset(${JSON.stringify(protectedKeys.map(([itemId, groupId]) => ({ item_id: itemId, group_id: groupId })))}::jsonb)
+              AS kept(item_id uuid, group_id uuid)
+            WHERE kept.item_id = target.menu_item_id AND kept.group_id = target.group_id
+          )`
+        : sql`NOT (target.id = ANY(${`{${protectedKeys.map(([id]) => id).join(",")}}`}::uuid[]))`;
   await tx.execute(
-    sql`UPDATE ${STREAM_TABLES[stream]} SET sync_txid = 0 WHERE tenant_id = ${tenantId}::uuid AND sync_txid <> 0`,
+    sql`UPDATE ${STREAM_TABLES[stream]} AS target SET sync_txid = 0 WHERE target.tenant_id = ${tenantId}::uuid AND target.sync_txid <> 0 AND ${mayReset}`,
   );
-  if (stream === "promotions")
+  if (stream === "printers") {
+    // Same rule for the deletion versions of removed printers.
+    const kept = await tx.execute(
+      sql`SELECT printer_id::text AS id FROM ${edgePrinterDeleteVersions} WHERE tenant_id = ${tenantId}::uuid`,
+    );
+    const heldIds = kept.rows
+      .map((row) => String(row.id))
+      .filter((id) => held.has(catalogRecordIdFromKeys(stream, [id])));
+    await tx.execute(
+      sql`UPDATE ${edgePrinterDeleteVersions} AS target SET version = 0 WHERE target.tenant_id = ${tenantId}::uuid AND target.version <> 0 AND NOT (target.printer_id = ANY(${`{${heldIds.join(",")}}`}::uuid[]))`,
+    );
+  }
+  if (stream === "promotions" && protectedKeys.length === 0)
     await tx.execute(
       sql`UPDATE ${promoSettings} SET sync_txid = 0 WHERE tenant_id = ${tenantId}::uuid AND sync_txid <> 0`,
     );
@@ -1244,6 +1355,10 @@ export async function applyCatalogRecords(
  * print jobs here (the jobs are evidence and point at it) stays with
  * `retired_at` set (edge-owned, never in the cloud record); the print store no
  * longer lists it. A live record with the same id clears `retired_at`.
+ * The deletion version is durable (legend-3k41y): a kept row takes it as its
+ * `sync_txid`, a removed one leaves it in `edge_printer_delete_versions`, so a
+ * live record with a version at or below it (HTTP or event) never brings the
+ * printer back; only a newer one does.
  */
 async function applyPrinters(
   tx: Tx,
@@ -1283,6 +1398,18 @@ async function applyPrinters(
         updatedAt: date(r.updatedAt),
         syncTxid: r.syncTxid,
       };
+      // A deleted printer stays deleted for a version at or below its deletion.
+      const barred = await tx
+        .select({ id: edgePrinterDeleteVersions.printerId })
+        .from(edgePrinterDeleteVersions)
+        .where(
+          and(
+            eq(edgePrinterDeleteVersions.tenantId, tenantId),
+            eq(edgePrinterDeleteVersions.printerId, r.id),
+            sql`${edgePrinterDeleteVersions.version} >= ${r.syncTxid}::bigint`,
+          ),
+        );
+      if (barred.length > 0) return false;
       const rows = await tx
         .insert(t)
         .values({ id: r.id, ...values })
@@ -1333,20 +1460,38 @@ async function applyPrinters(
     write: async (r) => {
       const outletId = outletIdSchema.parse(r.outletId);
       const hasJobs = sql`EXISTS (SELECT 1 FROM ${edgePrintJobs} j WHERE j.tenant_id = ${t.tenantId} AND j.outlet_id = ${t.outletId} AND (j.printer_id = ${t.id} OR j.original_printer_id = ${t.id}))`;
-      const known = await tx
-        .select({ id: t.id })
+      const version = BigInt(r.syncTxid);
+      // Whatever happens to the row, the deletion version outlives it.
+      const remember = () =>
+        tx
+          .insert(edgePrinterDeleteVersions)
+          .values({ tenantId, outletId, printerId: r.id, version })
+          .onConflictDoUpdate({
+            target: [
+              edgePrinterDeleteVersions.tenantId,
+              edgePrinterDeleteVersions.printerId,
+            ],
+            set: {
+              version: sql`GREATEST(${edgePrinterDeleteVersions.version}, excluded.version)`,
+            },
+          });
+      const [current] = await tx
+        .select({ syncTxid: t.syncTxid })
         .from(t)
         .where(
           and(
             eq(t.tenantId, tenantId),
             eq(t.outletId, outletId),
             eq(t.id, r.id),
-            // An already retired printer: replaying its tombstone is a no-op.
-            isNull(t.retiredAt),
-            lt(t.syncTxid, sql`${r.syncTxid}::bigint`),
           ),
         );
-      if (known.length === 0) return false;
+      if (current === undefined) {
+        // Nothing local to remove, but an older live record must not land later.
+        await remember();
+        return false;
+      }
+      // A row at the tombstone's version or newer wins (also a replayed tombstone).
+      if (BigInt(current.syncTxid) >= version) return false;
       await tx
         .update(t)
         .set({ fallbackPrinterId: null })
@@ -1373,7 +1518,11 @@ async function applyPrinters(
         // The jobs are evidence and point at it: keep the row, take it out of use.
         await tx
           .update(t)
-          .set({ retiredAt: sql`COALESCE(${t.retiredAt}, now())` })
+          .set({
+            retiredAt: sql`COALESCE(${t.retiredAt}, now())`,
+            // The deletion version, so an older live record stays refused.
+            syncTxid: r.syncTxid,
+          })
           .where(
             and(
               eq(t.tenantId, tenantId),
@@ -1392,6 +1541,7 @@ async function applyPrinters(
             eq(t.id, r.id),
           ),
         );
+      await remember();
       deleted += 1;
       return true;
     },

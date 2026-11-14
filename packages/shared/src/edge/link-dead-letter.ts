@@ -12,6 +12,14 @@ import {
   eventNameSchema,
 } from "../events/index.ts";
 
+/**
+ * First edge image version that carries the cloud_to_edge
+ * edge_link.dead_lettered no-op applier (legend-3k41y). Edge images must be
+ * tagged at or above this; EDGE_NODE_VERSION (api edge/config.ts) is the
+ * string an edge reports in its hello. The cloud warns on older edges.
+ */
+export const EDGE_LINK_PLACEHOLDER_MIN_VERSION = "0.2.0";
+
 export const EDGE_LINK_AGGREGATE = "edge_link";
 export const EDGE_LINK_DEAD_LETTERED_EVENT = "edge_link.dead_lettered";
 
@@ -25,7 +33,12 @@ export const edgeLinkDeadLetteredPayloadSchema = z.strictObject({
   /** Link sequence the event had on the edge when it was dead-lettered. */
   linkSeq: z.number().int().positive().safe(),
   bytes: z.number().int().min(0).safe(),
-  reason: z.literal("frame_too_large"),
+  /**
+   * frame_too_large: edge -> cloud notice, the event stays on the edge.
+   * brand_moved (legend-3k41y): cloud -> edge no-op placeholder that takes the
+   * link slot of a catalog row the cloud withheld; the edge only advances.
+   */
+  reason: z.enum(["frame_too_large", "brand_moved"]),
 });
 export type EdgeLinkDeadLetteredPayload = z.infer<
   typeof edgeLinkDeadLetteredPayloadSchema

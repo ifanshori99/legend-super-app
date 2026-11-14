@@ -259,17 +259,19 @@ export async function syncEdgeMastersBeforeCatalog(
  * boot-time master sync, without blocking the caller. `syncMasters` false (a
  * node bootstrapped in this very boot already applied the current snapshot)
  * starts right away. `stop` aborts a master sync still in flight and prevents
- * a start that has not happened yet.
+ * a start that has not happened yet. A requested run before the loop starts is
+ * coalesced and forwarded once it is ready.
  */
 export function startAfterBootMasters(input: {
   config: EdgeBootstrapConfig;
   syncMasters: boolean;
   options?: EdgeBootstrapOptions;
-  start: () => { stop(): Promise<void> };
-}): { stop(): Promise<void> } {
+  start: () => { requestRun?(): void; stop(): Promise<void> };
+}): { requestRun(): void; stop(): Promise<void> } {
   const abort = new AbortController();
   let stopped = false;
-  let started: { stop(): Promise<void> } | null = null;
+  let started: ReturnType<typeof input.start> | null = null;
+  let wakePending = false;
   const ready = (
     input.syncMasters
       ? syncEdgeMastersBeforeCatalog(input.config, {
@@ -279,7 +281,13 @@ export function startAfterBootMasters(input: {
       : Promise.resolve(true)
   )
     .then(() => {
-      if (!stopped) started = input.start();
+      if (!stopped) {
+        started = input.start();
+        if (wakePending) {
+          wakePending = false;
+          started.requestRun?.();
+        }
+      }
     })
     .catch((error) =>
       logger.error(
@@ -288,6 +296,11 @@ export function startAfterBootMasters(input: {
       ),
     );
   return {
+    requestRun() {
+      if (stopped) return;
+      if (started) started.requestRun?.();
+      else wakePending = true;
+    },
     async stop() {
       stopped = true;
       abort.abort();

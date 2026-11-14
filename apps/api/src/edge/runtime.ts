@@ -74,13 +74,17 @@ import {
 import { registerQrOrderEdgeApplier } from "./qr-order-applier.ts";
 import { registerAttendanceLoggedEdgeApplier } from "./attendance-logged-applier.ts";
 import { registerWifiQuotaEdgeApplier } from "./wifi-quota-applier.ts";
+import { registerMasterDataEdgeApplier } from "./master-data-applier.ts";
 import {
   startWifiQuotaQueueWorker,
   type WifiQuotaWorkerHandle,
 } from "./wifi-quota-queue-worker.ts";
 import { registerOrderEdgeApplier } from "./order-edge-applier.ts";
 import { registerReceiptRunEdgeApplier } from "./receipt-run-applier.ts";
-import { registerEdgeLinkDeadLetterApplier } from "./link-dead-letter-applier.ts";
+import {
+  registerEdgeLinkDeadLetterApplier,
+  registerEdgeLinkPlaceholderApplier,
+} from "./link-dead-letter-applier.ts";
 import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
 import { registerPanicAlertEdgeApplier } from "./panic-alert-applier.ts";
@@ -849,6 +853,9 @@ export async function startEdgeRuntime(
   // legend-s4r6: cloud -> edge appliers, before the link can deliver.
   registerQrOrderEdgeApplier();
   registerWifiQuotaEdgeApplier();
+  registerMasterDataEdgeApplier();
+  // legend-3k41y: no-op placeholder of a catalog row the cloud withheld.
+  registerEdgeLinkPlaceholderApplier();
   // Section D (legend-khu5): first boot provisions the node from its bundle.
   const bootstrapResult = await bootstrapEdgeNodeIfNeeded(config);
   let local: Awaited<ReturnType<typeof ensureLocalEdgeNode>>;
@@ -944,6 +951,10 @@ export async function startEdgeRuntime(
     lastServerTime = { serverTime, receivedMono: performance.now() };
     applyServerTime();
   };
+  // The link connects before the master loop is ready. Retain an early
+  // deferred receipt until the loop can schedule its recovery pull.
+  let requestMasterSync: (() => void) | null = null;
+  let earlyDeferred = false;
   const client = createEdgeLinkClient({
     url: config.cloudUrl,
     credential: config.credential,
@@ -955,6 +966,10 @@ export async function startEdgeRuntime(
       context: local.context,
       node: local.scope,
       outboundDirection: "edge_to_cloud",
+      onDeferred: () => {
+        if (requestMasterSync) requestMasterSync();
+        else earlyDeferred = true;
+      },
     }),
     onState: (link) => {
       const wasConnected = state.link.cloudLink === "connected";
@@ -1352,6 +1367,11 @@ export async function startEdgeRuntime(
           logger.warn(safeError(error), "Edge master sync failed"),
       }),
   });
+  requestMasterSync = () => masterSync.requestRun();
+  if (earlyDeferred) {
+    earlyDeferred = false;
+    requestMasterSync();
+  }
   // legend-zclb: one-shot, not awaited. A failure is logged by class only
   // (the error can quote hash material) and never stops the runtime.
   resendMateriallessStaffPinSets(local.context.tenant, local.scope.outletId)

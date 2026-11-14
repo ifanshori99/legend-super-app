@@ -26,6 +26,7 @@ import {
   assertOutletInScope,
   assertTrustedScopedContext,
   CoreError,
+  createUlid,
   ulidToUuid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -34,6 +35,12 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { parseEdgeHardeningEnv } from "@starter/shared/env";
+import {
+  catalogRecordUpdatedEvent,
+  EDGE_LINK_AGGREGATE,
+  EDGE_LINK_DEAD_LETTERED_EVENT,
+  edgeLinkDeadLetteredEvent,
+} from "@starter/shared/edge";
 import {
   eventEnvelopeSchema,
   syncDirectionSchema,
@@ -83,6 +90,112 @@ export async function lockSyncCursor(
     received_in_seq: Number(row.received_in_seq),
     last_acked_at: (row.last_acked_at as Date | null) ?? null,
   };
+}
+
+/** Aggregate type of the brand-scoped catalog rows the publisher queues. */
+const CATALOG_AGGREGATE_TYPE = catalogRecordUpdatedEvent.entry.aggregateType;
+
+/** Placeholders written per INSERT statement (bind parameters stay bounded). */
+const PLACEHOLDER_CHUNK = 200;
+
+/** Plain read (no lock): is this node blocked or on a different brand now? */
+async function isCatalogRefused(
+  tx: EdgeTx,
+  node: { edgeNodeId: string },
+): Promise<boolean> {
+  const refused = await tx.execute(
+    sql`SELECT 1 FROM edge_catalog_publisher_cursors c JOIN outlets o ON o.tenant_id = c.tenant_id AND o.id = c.outlet_id WHERE c.edge_node_id = ${node.edgeNodeId}::uuid AND (c.blocked_at IS NOT NULL OR c.brand_id <> o.brand_id) LIMIT 1`,
+  );
+  return refused.rows.length > 0;
+}
+
+/**
+ * Read path (legend-3k41y): check the refusal first WITHOUT the cursor lock, so
+ * a healthy node's read never queues behind the publisher or an ack. Not
+ * refused: nothing to do. Refused: neutralizeCatalogRows takes the lock and
+ * re-checks under it (a refusal cleared meanwhile changes nothing). A brand
+ * move committed before this statement is seen here; one committing after the
+ * check had the same exposure under lock-first (a brand change takes no cursor
+ * lock), so the window does not widen.
+ */
+export async function neutralizeCatalogRowsIfRefused(
+  tx: EdgeTx,
+  node: { tenantId: string; outletId: string; edgeNodeId: string },
+): Promise<number> {
+  if (!(await isCatalogRefused(tx, node))) return 0;
+  return neutralizeCatalogRows(tx, node);
+}
+
+/**
+ * legend-3k41y: a node that is blocked, or whose outlet brand no longer
+ * matches the brand its catalog queue was published for, must never receive a
+ * catalog row. Run it inside the caller's transaction: it takes the same
+ * cursor lock as the enqueue path, re-checks that the node is still refused
+ * and changes nothing when it is not. Then every still-pending cloud_to_edge
+ * catalog row above the acknowledged cursor is copied whole into
+ * edge_link_dead_letters (reason brand_moved) and replaced IN PLACE, on the
+ * same link_seq, by a no-op `edge_link.dead_lettered` placeholder (the notice
+ * of the edge_to_cloud dead letter, reason brand_moved; the edge applier only
+ * lets the receipt and the cursor advance). Nothing is renumbered and no
+ * cursor moves, so a row the receiver already applied or acknowledged keeps
+ * its slot, and there is never a hole. The placeholder is its own aggregate
+ * (the dead event id, sequence 1), so the receiver's per-aggregate ordering
+ * holds. Idempotent: placeholders are not catalog rows. Outlet-scoped events
+ * are untouched. Returns the number of rows replaced.
+ */
+export async function neutralizeCatalogRows(
+  tx: EdgeTx,
+  node: { tenantId: string; outletId: string; edgeNodeId: string },
+): Promise<number> {
+  const cursor = await lockSyncCursor(tx, node, "cloud_to_edge");
+  if (!(await isCatalogRefused(tx, node))) return 0;
+  const where = sql`edge_node_id = ${node.edgeNodeId}::uuid AND direction = 'cloud_to_edge' AND status = 'pending' AND aggregate_type = ${CATALOG_AGGREGATE_TYPE} AND link_seq > ${cursor.acked_out_seq}`;
+  const stale = await tx.execute(
+    sql`SELECT link_seq, event_id, aggregate_type, aggregate_id, aggregate_sequence, octet_length(event::text) AS bytes, event FROM edge_outbound_queue WHERE ${where} ORDER BY link_seq`,
+  );
+  if (!stale.rows.length) return 0;
+  await tx.execute(
+    sql`INSERT INTO edge_link_dead_letters (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, bytes, reason, event) SELECT tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, octet_length(event::text), 'brand_moved', event FROM edge_outbound_queue WHERE ${where} ON CONFLICT DO NOTHING`,
+  );
+  await tx.execute(sql`SELECT set_config('app.edge_dead_letter', 'on', true)`);
+  await tx.execute(sql`DELETE FROM edge_outbound_queue WHERE ${where}`);
+  const placeholders = stale.rows.map((row) => {
+    const dead = eventEnvelopeSchema.parse(row.event);
+    const notice = edgeLinkDeadLetteredEvent.envelopeSchema.parse({
+      id: createUlid(),
+      tenantId: node.tenantId,
+      outletId: node.outletId,
+      name: EDGE_LINK_DEAD_LETTERED_EVENT,
+      version: 1,
+      aggregateType: EDGE_LINK_AGGREGATE,
+      aggregateId: dead.id,
+      sequence: 1,
+      occurredAt: new Date().toISOString(),
+      actor: { type: "system" },
+      deviceId: null,
+      idempotencyKey: `${EDGE_LINK_DEAD_LETTERED_EVENT}:${dead.id}`,
+      payloadSchemaRef: `${EDGE_LINK_DEAD_LETTERED_EVENT}.v1`,
+      payload: {
+        eventId: dead.id,
+        // Nothing of the withheld catalog row travels (it belongs to another
+        // brand now): the full event stays in edge_link_dead_letters.
+        eventName: EDGE_LINK_DEAD_LETTERED_EVENT,
+        aggregateType: EDGE_LINK_AGGREGATE,
+        aggregateId: dead.id,
+        aggregateSequence: 1,
+        linkSeq: Number(row.link_seq),
+        bytes: Number(row.bytes),
+        reason: "brand_moved",
+      },
+    });
+    return sql`(${node.tenantId}::uuid, ${node.outletId}::uuid, ${node.edgeNodeId}::uuid, 'cloud_to_edge', ${Number(row.link_seq)}, ${ulidToUuid(notice.id)}::uuid, ${notice.aggregateType}, ${notice.aggregateId}, ${notice.sequence}, 'transaction_event', ${JSON.stringify(notice)}::jsonb)`;
+  });
+  for (let i = 0; i < placeholders.length; i += PLACEHOLDER_CHUNK)
+    await tx.execute(
+      sql`INSERT INTO edge_outbound_queue (tenant_id, outlet_id, edge_node_id, direction, link_seq, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, event) VALUES ${sql.join(placeholders.slice(i, i + PLACEHOLDER_CHUNK), sql`, `)}`,
+    );
+  await tx.execute(sql`SELECT set_config('app.edge_dead_letter', '', true)`);
+  return placeholders.length;
 }
 
 /** The node row inside the caller's scope (RLS + outlet policy apply). */

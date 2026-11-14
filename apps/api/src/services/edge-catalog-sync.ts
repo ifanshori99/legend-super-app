@@ -99,6 +99,20 @@ const TXID_MAX = 9223372036854775807n;
 const TXID_PATTERN = /^\d{1,19}$/;
 const CURSOR_INVALID_MESSAGE = "Cursor sinkronisasi katalog tidak valid.";
 
+/**
+ * legend-3k41y: streams whose rows are filtered by the outlet's brand. A node
+ * whose outlet brand moved is refused these (fail closed); the other streams
+ * are tenant-level or outlet-scoped and keep flowing.
+ */
+export const BRAND_DEPENDENT_CATALOG_STREAMS: ReadonlySet<CatalogSyncStream> =
+  new Set([
+    "menu_categories",
+    "menu_items",
+    "recipes",
+    "item_variants",
+    "menu_item_modifier_groups",
+  ]);
+
 /** Streams whose cloud table has no `id`: the key is two uuids. */
 const TWO_KEY_STREAMS: ReadonlySet<CatalogSyncStream> = new Set([
   "menu_item_modifier_groups",
@@ -839,16 +853,33 @@ export async function listCatalogRecordsSince(
   const { tenantId, outletId } = verifiedEdgeNodeSchema
     .pick({ tenantId: true, outletId: true })
     .parse({ tenantId: input.tenantId, outletId: input.outletId });
-  const { stream, limit, protocolVersion } = catalogSyncQuerySchema.parse(
-    input.query,
-  );
-  const since = parseCursor(stream, input.query.since);
   const context = outletContext(
     establishTenantContext({ tenantId, brandId: null, source: "device" }),
     outletId,
   );
 
-  const rows = await withTenant(database, context, async (tx) => {
+  return withTenant(database, context, (tx) =>
+    listCatalogRecordsSinceTx(tx, input),
+  );
+}
+
+/** Internal scanner shared with the cloud publisher in its cursor transaction. */
+export async function listCatalogRecordsSinceTx(
+  tx: Parameters<Parameters<typeof withTenant>[2]>[0],
+  input: {
+    readonly tenantId: VerifiedEdgeNode["tenantId"];
+    readonly outletId: VerifiedEdgeNode["outletId"];
+    readonly query: CatalogSyncQuery;
+  },
+): Promise<CatalogSyncPage> {
+  const { tenantId, outletId } = verifiedEdgeNodeSchema
+    .pick({ tenantId: true, outletId: true })
+    .parse({ tenantId: input.tenantId, outletId: input.outletId });
+  const { stream, limit, protocolVersion } = catalogSyncQuerySchema.parse(
+    input.query,
+  );
+  const since = parseCursor(stream, input.query.since);
+  const rows = await (async () => {
     // Fail closed: an inactive tenant or a closed / unknown outlet syncs nothing.
     const [tenantRow] = await tx
       .select({ status: tenants.status })
@@ -881,7 +912,7 @@ export async function listCatalogRecordsSince(
           ? undefined
           : negotiateCatalogProtocolVersion(protocolVersion),
     });
-  });
+  })();
 
   const page = rows.slice(0, limit);
   const last = page.at(-1);

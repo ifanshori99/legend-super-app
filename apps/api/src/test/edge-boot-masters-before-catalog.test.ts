@@ -135,4 +135,58 @@ describe("legend-2uqcd boot: masters before the first catalog pull", () => {
     );
     expect(await syncEdgeMastersBeforeCatalog(config)).toBe(false);
   });
+
+  it("legend-i8fv3 merge keeps and coalesces deferred wakes while boot masters are pending", async () => {
+    let release: () => void = () => undefined;
+    syncEdgeMasters.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const requestRun = vi.fn();
+    const start = vi.fn(() => ({ requestRun, stop: async () => undefined }));
+    const handle: { requestRun?: () => void; stop(): Promise<void> } =
+      startAfterBootMasters({ config, syncMasters: true, start });
+    try {
+      await flush();
+      expect(handle.requestRun).toBeTypeOf("function");
+      handle.requestRun?.();
+      handle.requestRun?.();
+      handle.requestRun?.();
+      expect(start).not.toHaveBeenCalled();
+      expect(requestRun).not.toHaveBeenCalled();
+      release();
+      await flush();
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(requestRun).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      await handle.stop();
+    }
+  });
+
+  it("legend-i8fv3 merge forwards deferred wakes after start and ignores them after stop", async () => {
+    const requestRun = vi.fn();
+    const stop = vi.fn(async () => undefined);
+    const handle: { requestRun?: () => void; stop(): Promise<void> } =
+      startAfterBootMasters({
+        config,
+        syncMasters: false,
+        start: () => ({ requestRun, stop }),
+      });
+    try {
+      await flush();
+      expect(handle.requestRun).toBeTypeOf("function");
+      handle.requestRun?.();
+      handle.requestRun?.();
+      expect(requestRun).toHaveBeenCalledTimes(2);
+      await handle.stop();
+      handle.requestRun?.();
+      expect(requestRun).toHaveBeenCalledTimes(2);
+      expect(stop).toHaveBeenCalledTimes(1);
+    } finally {
+      await handle.stop();
+    }
+  });
 });
