@@ -3,14 +3,17 @@
 // through the typed client, the rest runs on the mock engine in mock mode and
 // fails with CONTRACT_PENDING elsewhere (see ./CONTRACT-GAPS.md).
 import { getPosShift, listPosShiftCounts } from "@starter/shared/pos";
+import { apiFetch } from "@/lib/api/client";
 import { callEndpoint } from "@/lib/api/endpoint";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { contractPending } from "./api";
 import { runPosKasirMock, type PosKasirEngine } from "./mock-engine";
 import { bookVarianceIdr, countLimitReached } from "./shift-extra-logic";
 import type {
+  DecideHeldCashInput,
   ForceCloseInput,
   ForceCloseView,
+  HeldCashDecisionResult,
   HeldCashOutReview,
   OwnCountSummary,
   SubmitForcedCountInput,
@@ -81,6 +84,24 @@ export async function fetchHeldCashOuts(
     cashierCounts: counts.data.length,
     limitReached: countLimitReached(counts.data.length),
   };
+}
+
+/**
+ * A supervisor approves or rejects a held cash out. Outside mock mode this
+ * calls the route directly: the shared endpoint object is not in the contract
+ * package yet, so the result is typed by the local `HeldCashDecisionResult`.
+ */
+export async function decideHeldCashMovement(
+  outletId: string,
+  input: DecideHeldCashInput,
+): Promise<HeldCashDecisionResult> {
+  if (API_MOCK)
+    return runPosKasirMock((engine) => engine.decideHeldCashMovement(input));
+  const { data } = await apiFetch<{ data: HeldCashDecisionResult }>(
+    `/api/outlets/${encodeURIComponent(outletId)}/pos/shifts/${encodeURIComponent(input.shiftId)}/cash-movements/${encodeURIComponent(input.movementId)}/decision`,
+    { method: "POST", body: { decision: input.decision } },
+  );
+  return data;
 }
 
 /** The cashier's latest count. Server side the cashier receipt is the only blind source. */

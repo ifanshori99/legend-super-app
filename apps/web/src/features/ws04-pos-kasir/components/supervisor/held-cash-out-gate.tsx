@@ -1,16 +1,44 @@
 import { useState, type ReactNode } from "react";
+import { useRouteContext } from "@tanstack/react-router";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ApiError } from "@/lib/api/errors";
+import type { AreaAccess } from "@/lib/areas/access";
+import { holdsAny } from "@/lib/areas/guard";
 import { useOutletClock } from "@/lib/tenant-context";
-import { useHeldCashOuts } from "../../hooks";
-import type { HeldCashOut, HeldCashOutReview } from "../../shift-extra-types";
+import { useDecideHeldCashMovement, useHeldCashOuts } from "../../hooks";
+import type {
+  HeldCashDecision,
+  HeldCashOut,
+  HeldCashOutReview,
+} from "../../shift-extra-types";
 import { Notice, PosPanel, StatusPill } from "../shared";
 import { formatShiftTime } from "../shift/shift-format";
 
 const MINUS = "−";
+
+/** Deciding a held cash out needs the same permission as the API route. */
+function useCanDecideHeld(): boolean {
+  const context = useRouteContext({ strict: false }) as {
+    access?: AreaAccess;
+  };
+  return context.access
+    ? holdsAny(context.access, ["shift.cash.approve_close"])
+    : false;
+}
+
+type PendingDecision = { item: HeldCashOut; decision: HeldCashDecision };
 
 /** Signed rupiah text: "−Rp20.000", "+Rp180.000". */
 function signed(amountIdr: number): string {
@@ -43,14 +71,23 @@ function Line({
   );
 }
 
-function HeldRow({ item }: { item: HeldCashOut }) {
+function typeLabelKey(item: HeldCashOut) {
+  return item.type === "drop"
+    ? ("posKasirSupervisor.held.typeDrop" as const)
+    : ("posKasirSupervisor.held.typeCashOut" as const);
+}
+
+function HeldRow({
+  item,
+  onDecide,
+}: {
+  item: HeldCashOut;
+  /** Absent when the user may not decide: the buttons are not shown. */
+  onDecide?: (decision: HeldCashDecision) => void;
+}) {
   const t = useT();
   const { timeZone } = useOutletClock();
-  const type = t(
-    item.type === "drop"
-      ? "posKasirSupervisor.held.typeDrop"
-      : "posKasirSupervisor.held.typeCashOut",
-  );
+  const type = t(typeLabelKey(item));
   return (
     <li className="grid gap-2 border-l-4 border-warning pl-4">
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
@@ -70,22 +107,141 @@ function HeldRow({ item }: { item: HeldCashOut }) {
         </div>
         <Money amount={item.amountIdr} className="font-semibold" />
       </div>
-      <p>
+      <div className="flex flex-wrap items-center gap-2">
         <StatusPill tone="warning">
           {t("posKasirSupervisor.held.needsApproval")}
         </StatusPill>
-      </p>
+        {onDecide && (
+          <div
+            role="group"
+            aria-label={t("posKasirSupervisor.held.decide.groupLabel", {
+              type,
+              amount: formatRupiah(item.amountIdr),
+            })}
+            className="ml-auto flex gap-2"
+          >
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onDecide("rejected")}
+            >
+              {t("posKasirSupervisor.held.decide.reject")}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => onDecide("approved")}
+            >
+              {t("posKasirSupervisor.held.decide.approve")}
+            </Button>
+          </div>
+        )}
+      </div>
     </li>
+  );
+}
+
+/** Confirmation before a verdict: both are final, so the effect is spelled out. */
+function DecideDialog({
+  pending,
+  busy,
+  error,
+  retryable,
+  onConfirm,
+  onClose,
+}: {
+  pending: PendingDecision | null;
+  busy: boolean;
+  error: string | null;
+  retryable: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  const t = useT();
+  // Keep the last item while the dialog animates out.
+  const [shown, setShown] = useState<PendingDecision | null>(pending);
+  if (pending && pending !== shown) setShown(pending);
+  const view = pending ?? shown;
+  const approve = view?.decision === "approved";
+  return (
+    <Dialog open={pending !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        {view && (
+          <>
+            <DialogHeader>
+              <DialogTitle>
+                {t(
+                  approve
+                    ? "posKasirSupervisor.held.decide.approveTitle"
+                    : "posKasirSupervisor.held.decide.rejectTitle",
+                )}
+              </DialogTitle>
+              <DialogDescription>
+                {t(
+                  approve
+                    ? "posKasirSupervisor.held.decide.approveBody"
+                    : "posKasirSupervisor.held.decide.rejectBody",
+                  {
+                    type: t(typeLabelKey(view.item)),
+                    amount: formatRupiah(view.item.amountIdr),
+                    reason: view.item.reasonNote,
+                  },
+                )}
+              </DialogDescription>
+            </DialogHeader>
+            {error && (
+              <Notice
+                tone="danger"
+                title={t("posKasirSupervisor.held.decide.failedTitle")}
+              >
+                {error}
+              </Notice>
+            )}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy}
+                onClick={onClose}
+              >
+                {t("posKasirSupervisor.held.decide.cancel")}
+              </Button>
+              {(error === null || retryable) && (
+                <Button
+                  type="button"
+                  variant={approve ? "default" : "destructive"}
+                  loading={busy}
+                  onClick={onConfirm}
+                >
+                  {t(
+                    busy
+                      ? "posKasirSupervisor.held.decide.pending"
+                      : approve
+                        ? "posKasirSupervisor.held.decide.confirmApprove"
+                        : "posKasirSupervisor.held.decide.confirmReject",
+                  )}
+                </Button>
+              )}
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 
 function HeldPanel({
   review,
+  result,
+  onDecide,
   onBack,
   onContinue,
   onForceClose,
 }: {
   review: HeldCashOutReview;
+  result: ReactNode;
+  onDecide?: (item: HeldCashOut, decision: HeldCashDecision) => void;
   onBack: () => void;
   onContinue: () => void;
   onForceClose?: () => void;
@@ -125,9 +281,14 @@ function HeldPanel({
         <p className="text-base text-muted-foreground">
           {t("posKasirSupervisor.held.intro")}
         </p>
+        {result}
         <ul className="grid gap-4">
           {review.items.map((item) => (
-            <HeldRow key={item.id} item={item} />
+            <HeldRow
+              key={item.id}
+              item={item}
+              onDecide={onDecide && ((decision) => onDecide(item, decision))}
+            />
           ))}
         </ul>
         <div>
@@ -182,7 +343,80 @@ export function HeldCashOutGate({
 }) {
   const t = useT();
   const held = useHeldCashOuts(shiftId);
+  const decide = useDecideHeldCashMovement();
+  const canDecide = useCanDecideHeld();
   const [reviewed, setReviewed] = useState(false);
+  const [pending, setPending] = useState<PendingDecision | null>(null);
+  const [done, setDone] = useState<HeldCashDecision | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  function openDecision(item: HeldCashOut, decision: HeldCashDecision) {
+    decide.reset();
+    setFailure(null);
+    setDone(null);
+    setPending({ item, decision });
+  }
+
+  function closeDecision() {
+    if (decide.isPending) return;
+    setPending(null);
+    setFailure(null);
+  }
+
+  function failureText(error: unknown): string {
+    if (error instanceof ApiError) {
+      if (error.status === 403)
+        return t("posKasirSupervisor.held.decide.forbidden");
+      if (error.status === 404)
+        return t("posKasirSupervisor.held.decide.notFound");
+      // 409 carries a distinct server message per cause; show it as is.
+      if (error.status === 409)
+        return error.message || t("posKasirSupervisor.held.decide.conflict");
+    }
+    return t("posKasirSupervisor.held.decide.failedGeneric");
+  }
+
+  function confirmDecision() {
+    if (!pending) return;
+    const { item, decision } = pending;
+    setFailure(null);
+    decide.mutate(
+      { shiftId, movementId: item.id, decision },
+      {
+        onSuccess: () => {
+          setPending(null);
+          setDone(decision);
+        },
+        onError: (error) => setFailure(failureText(error)),
+      },
+    );
+  }
+
+  // 403, 404 and 409 will not change on a retry; a network or server fault may.
+  const retryable =
+    !(decide.error instanceof ApiError) ||
+    ![403, 404, 409].includes(decide.error.status);
+  const decisionDialog = (
+    <DecideDialog
+      pending={pending}
+      busy={decide.isPending}
+      error={failure}
+      retryable={retryable}
+      onConfirm={confirmDecision}
+      onClose={closeDecision}
+    />
+  );
+  const doneNotice = done && (
+    <Notice
+      tone="info"
+      role="status"
+      title={t(
+        done === "approved"
+          ? "posKasirSupervisor.held.decide.doneApproved"
+          : "posKasirSupervisor.held.decide.doneRejected",
+      )}
+    />
+  );
 
   if (held.isPending)
     return (
@@ -228,16 +462,23 @@ export function HeldCashOutGate({
   const review = held.data;
   if (review.items.length > 0 && !reviewed)
     return (
-      <HeldPanel
-        review={review}
-        onBack={onBack}
-        onContinue={() => setReviewed(true)}
-        onForceClose={review.limitReached ? onForceClose : undefined}
-      />
+      <>
+        <HeldPanel
+          review={review}
+          result={doneNotice}
+          onDecide={canDecide ? openDecision : undefined}
+          onBack={onBack}
+          onContinue={() => setReviewed(true)}
+          onForceClose={review.limitReached ? onForceClose : undefined}
+        />
+        {decisionDialog}
+      </>
     );
 
   return (
     <div className="grid content-start gap-4">
+      {doneNotice}
+      {decisionDialog}
       {review.items.length === 0 && (
         <Notice tone="info" title={t("posKasirSupervisor.held.emptyTitle")}>
           {t("posKasirSupervisor.held.emptyBody")}

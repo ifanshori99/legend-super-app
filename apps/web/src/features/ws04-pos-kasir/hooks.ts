@@ -36,6 +36,7 @@ import {
   submitBlindCount,
 } from "./api";
 import {
+  decideHeldCashMovement,
   forceCloseShift,
   submitForcedCount,
   witnessForcedCount,
@@ -59,6 +60,7 @@ import {
   witnessesQuery,
 } from "./queries";
 import type {
+  DecideHeldCashInput,
   ForceCloseInput,
   SubmitForcedCountInput,
   WitnessForcedCountInput,
@@ -349,6 +351,32 @@ export function useHeldCashOuts(shiftId: string) {
   return useQuery({
     ...heldCashOutsQuery(useOutletId(), shiftId),
     enabled: shiftId !== "",
+  });
+}
+
+/**
+ * Supervisor approves or rejects a held cash out. Refreshes the held list, the
+ * review and the shift: an approval moves the amount into the drawer figures.
+ */
+export function useDecideHeldCashMovement() {
+  const outletId = useOutletId();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: DecideHeldCashInput) =>
+      decideHeldCashMovement(outletId, input),
+    // Settled, not success: a CONFLICT means someone else decided first and
+    // the list must catch up.
+    onSettled: async (_result, _error, input) => {
+      await queryClient.invalidateQueries({
+        queryKey: posKasirKeys.held(outletId, input.shiftId),
+      });
+      await queryClient.invalidateQueries({
+        queryKey: posKasirKeys.review(outletId, input.shiftId),
+      });
+      await queryClient.invalidateQueries({
+        queryKey: posKasirKeys.shift(outletId),
+      });
+    },
   });
 }
 

@@ -67,8 +67,10 @@ import {
   SHIFT_COUNT_LIMIT_CODE,
   SHIFT_COUNT_STALE_CODE,
   shiftExtraDemoSeed,
+  type DecideHeldCashInput,
   type ForceCloseInput,
   type ForceCloseView,
+  type HeldCashDecisionResult,
   type HeldCashOut,
   type HeldCashOutReview,
   type OwnCountSummary,
@@ -1431,6 +1433,48 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
           physical === null ? null : bookVarianceIdr(physical, 0),
         cashierCounts,
         limitReached: countLimitReached(cashierCounts),
+      };
+    },
+
+    /**
+     * Supervisor verdict on a held cash out, same rules as the API: not the
+     * recorder, once, never after close, and an approval must fit the drawer.
+     */
+    decideHeldCashMovement(input: DecideHeldCashInput): HeldCashDecisionResult {
+      const shift = shiftOf(input.shiftId);
+      if (ownShiftView())
+        throw new ApiError(
+          403,
+          "FORBIDDEN",
+          "Anda tidak dapat memutuskan kas keluar yang Anda catat sendiri.",
+        );
+      const movement = state.movements.find(
+        (m) => m.shiftId === shift.id && m.id === input.movementId,
+      );
+      if (!movement) notFound("Catatan kas tidak ditemukan.");
+      if (shift.status === "closed")
+        conflict("SHIFT_CLOSED", "Shift ini sudah ditutup.");
+      const held = extra().heldMovementIds;
+      if (!held.includes(movement.id))
+        conflict(
+          "ALREADY_DECIDED",
+          "Catatan kas ini sudah diputuskan oleh supervisor lain.",
+        );
+      if (input.decision === "approved") {
+        if (movement.amountIdr > expectedCashIdr(shift))
+          conflict(
+            "EXCEEDS_DRAWER_CASH",
+            "Nominal melebihi kas laci saat ini, tidak dapat disetujui.",
+          );
+        if (movement.type === "drop") shift.cashDropIdr += movement.amountIdr;
+        else shift.cashOutIdr += movement.amountIdr;
+      }
+      extra().heldMovementIds = held.filter((id) => id !== movement.id);
+      return {
+        movementId: movement.id,
+        outcome: input.decision,
+        decidedBy: MOCK_SUPERVISOR_ID,
+        decidedAt: iso(clock()),
       };
     },
 

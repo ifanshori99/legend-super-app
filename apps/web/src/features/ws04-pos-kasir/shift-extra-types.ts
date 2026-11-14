@@ -46,6 +46,23 @@ export type HeldCashOut = {
   cashierName: string;
 };
 
+/** Supervisor verdict on a held cash out (route `.../cash-movements/:movementId/decision`). */
+export type HeldCashDecision = "approved" | "rejected";
+
+export type DecideHeldCashInput = {
+  shiftId: string;
+  movementId: string;
+  decision: HeldCashDecision;
+};
+
+/** `data` of the decision route's 200; matches `PosCashMovementDecision` in the contract. */
+export type HeldCashDecisionResult = {
+  movementId: string;
+  outcome: HeldCashDecision;
+  decidedBy: string;
+  decidedAt: string;
+};
+
 /** The supervisor trail of one shift: held cash outs and both variances. */
 export type HeldCashOutReview = {
   shiftId: string;

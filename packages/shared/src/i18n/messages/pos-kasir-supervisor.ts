@@ -75,6 +75,32 @@ export const posKasirSupervisorMessages = {
     emptyTitle: "Tidak ada kas keluar yang ditahan",
     emptyBody:
       "Belum ada kas keluar yang memerlukan persetujuan untuk shift ini.",
+    decide: {
+      approve: "Setujui",
+      reject: "Tolak",
+      groupLabel: "Keputusan untuk {type} {amount}",
+      approveTitle: "Setujui kas keluar ini?",
+      rejectTitle: "Tolak kas keluar ini?",
+      approveBody:
+        "{type} {amount} ({reason}) akan dikurangkan dari kas laci dan dibukukan. Keputusan tidak dapat diubah.",
+      rejectBody:
+        "{type} {amount} ({reason}) tidak dibukukan dan tidak mengurangi kas laci. Keputusan tidak dapat diubah.",
+      confirmApprove: "Ya, setujui",
+      confirmReject: "Ya, tolak",
+      cancel: "Batal",
+      pending: "Memproses…",
+      doneApproved: "Kas keluar disetujui.",
+      doneRejected: "Kas keluar ditolak.",
+      failedTitle: "Keputusan belum tersimpan",
+      failedGeneric: "Periksa koneksi, lalu coba lagi.",
+      forbidden:
+        "Anda tidak berwenang memutuskan catatan ini. Supervisor lain yang bukan pencatat harus memutuskannya.",
+      // 409 carries a distinct server message (already decided, shift closed,
+      // above the drawer cash); it is shown as is, this is the fallback.
+      conflict:
+        "Catatan ini tidak dapat diputuskan lagi. Daftar sudah diperbarui.",
+      notFound: "Catatan kas tidak ditemukan. Muat ulang halaman ini.",
+    },
     loadingTitle: "Memuat pergerakan kas…",
     loadingBody: "Mohon tunggu sebentar.",
     errorTitle: "Pergerakan kas belum dapat dimuat",
