@@ -114,6 +114,8 @@ export type PrintAlertKind =
 
 /** Supervisor alert (EDG-05). Persisted, then handed to the notifier port. */
 export type PrintAlert = {
+  /** Persisted alert ULID, also used as the outbound event id across restarts. */
+  id?: string;
   kind: PrintAlertKind;
   /** Printer id, station id (KDS) or job id, depending on kind. */
   subjectId: string;
@@ -193,6 +195,10 @@ export interface PrintStore {
     alert: PrintAlert,
     notify?: (alert: PrintAlert, tx?: EdgeTx) => void | Promise<void>,
   ): Promise<void | boolean>;
+  /** Retry durable pending notifications atomically with their delivery marker. */
+  retryPendingAlerts?(
+    notify: (alert: PrintAlert, tx?: EdgeTx) => void | Promise<void>,
+  ): Promise<void>;
 }
 
 export type Clock = { now(): Date };

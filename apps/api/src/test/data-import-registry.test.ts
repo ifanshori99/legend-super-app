@@ -62,6 +62,8 @@ const SCRIPT_NOT_A_WRITER: Record<string, string> = {
 // upgrades of existing data, never imports. A new data statement in a
 // migration must be added here with a reason, so it gets looked at.
 const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
+  "0378_print_alert_notification_retry.sql":
+    "marks legacy print alerts delivered because their historical event ids cannot be reconstructed safely; new alerts retain a null marker for durable retry; restores FORCE RLS",
   "0312_public_tarantula.sql":
     "backfills the selected loyalty legal entity and pauses existing claim tokens whose order or split no longer satisfies entity/refund eligibility; restores FORCE RLS and changes no payment amounts",
   "0013_outbox_dispatch_recovery.sql":

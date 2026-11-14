@@ -1,3 +1,14 @@
+## 802 Print retry dan fallback KDS (`fix/print-agent-kds-retry`, 14 Nov 2026)
+
+- Basis: `origin/fix/print-alert-supervisor` `7fcfdb369`; kartu `legend-ge9ur` dan `legend-2lp.3`. CTO mengelola status kartu; thread Codex tidak menjalankan `bd`.
+- Implementasi: alert memakai ID event dari ULID baris tersimpan; enqueue dan penanda terkirim satu transaksi, retry startup/periodik dengan row lock. Layar KDS terpilih dan terlihat mengirim heartbeat setiap 5 detik; sweep tiket persisten melewati `routeStationTicket()` dan mencetak backlog belum di-bump setelah KDS diam lebih dari 15 detik, dengan banner dan dedupe per tiket.
+- Keputusan: migrasi `0378` diperlukan karena detail alert immutable dan event ID lama hanya tersimpan di memori. Baris lama dianggap sudah terkirim agar tidak mengirim ulang alert historis tanpa identitas yang bisa dicocokkan; jaminan pemulihan dimulai dari alert yang dibuat versi baru. Hentikan worker print lama sebelum migrasi dan mulai worker versi baru sesudahnya.
+- Prasyarat: `pnpm worktree:setup`, `pnpm dev:prepare`, dan `pnpm run doctor` lulus. Tidak menambah dev server karena dua server web tim sudah berjalan. Ekspor `.beads/issues.jsonl` tidak tersedia pada worktree maupun checkout utama; scope KDS mengikuti brief CTO dan kode tiket/stasiun persisten yang tersedia.
+- Bukti gagal-dulu: restart tidak mengirim event (expected 1, actual 0); endpoint heartbeat belum tersedia (expected 200, actual 404). Review kedua kartu dan koreksi fixture tanpa temuan penghalang. Run ulang tiga file yang sempat gagal karena fixture: 9/9 hijau. Batch akhir: root 39/39 dan API 267/267 pada 16 file hijau, tanpa skip; typecheck API dan web melalui `heavy` hijau.
+- Perintah test akhir: `LEGEND_TEST_FILES="tests/text-contract.test.mjs tests/edge-contract.test.mjs tests/kitchen-contract.test.mjs src/test/edge-print-alert-retry.test.ts src/test/edge-print-alert-atomic.test.ts src/test/edge-print-alert-notifier.test.ts src/test/edge-print-agent.test.ts src/test/edge-print-runtime.test.ts src/test/edge-print-monitor.test.ts src/test/edge-print-db.test.ts src/test/edge-print-api.test.ts src/test/edge-print-escpos.test.ts src/test/edge-print-transport.test.ts src/test/kds-print-fallback.test.ts src/test/kds.test.ts src/test/station-printer.test.ts src/test/station-printer-binding-cleanup.test.ts src/test/station-printer-revoke.test.ts src/test/data-import-registry.test.ts" heavy pnpm test`. Log `/tmp/legend-802-targeted-final.log`; typecheck: `heavy pnpm --filter @starter/api typecheck` dan `heavy pnpm --filter @starter/web typecheck`, log `/tmp/legend-802-api-typecheck.log` dan `/tmp/legend-802-web-typecheck.log`.
+- Pra-gate: `pnpm exec eslint` dan `pnpm exec prettier --check` untuk semua TS/TSX yang berubah hijau setelah koreksi terakhir; `git diff --check` bersih; `pnpm db:generate` tidak menghasilkan perubahan tambahan. Snapshot hanya menambah penanda dan indeks pada `edge_print_alerts`. Browser dan printer fisik belum diuji; test memakai PostgreSQL nyata dan transport printer fake. Commit/push di cabang kerja, tanpa merge m1.
+- Paralel: total 4 subagent, puncak 4 bersamaan; token `heavy` hanya dipegang `test_writer`. `session-usage.py` tidak menemukan transkrip Codex sesi `01a1da9c-8904-7153-874a-0b89a663c8cd`; `parallel-report` hanya menemukan sesi Claude, jadi biaya dan rata-rata Codex belum tersedia dari alat tersebut.
+
 ## Merge train batch64c (merge train, `int/batch64c` dari `origin/milestone/m1` 9b8433f69, 14 Nov 2026 18:50-20:50 WIB)
 
 - Sudah: payout masuk lewat 3 merge: `fix/finance-exceptions-known-count` (memuat `ui/payout-finance-exceptions`), `fix/payroll-policies-hydration`, `ws/payout-approval-followups` 172a26c77 (memuat `ws/payout-api-gaps`, `ws/payout-evidence-hardening`, `ws/payout-followups`, `ui/payout-wiring`; temuan architect sudah di dalamnya). Konflik hanya `docs/PROGRESS.md` (disimpan kedua sisi) dan journal/snapshot migrasi.
@@ -5411,6 +5422,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Review: architect K xhigh 1 ronde; 1 Medium (batch lama tanpa nilai beku) + 1 Low (akun GL sumber) dibetulkan dengan test gagal-dulu. Temuan Low 3 (repost fee cek config, terlalu ketat) dibiarkan.
 - Idx `_journal.json` dibetulkan: 0538=352, 0539=353, 0546=354, 0568=355; check-journal hijau.
 - Gerbang: 11 berkas test terarah 253/253, tsc api, eslint, prettier, `db:generate` kosong. `edge-received-events-migration` gagal pra-ada (migrasi 0534, bukan 0568; lihat catatan 545).
+
 ## 2026-11-14: Kartu kecil platform, POS, keamanan (cabang ws/platform-pos-security-small)
 
 - legend-bag1: kontrak `GET /api/platform/audit-events` dan `GET /api/platform/health` pindah ke `packages/shared/src/platform` (ops.ts, endpoints.ts); permission `platform.audit.view` + label Indonesia; route `GET /api/platform/health` (database mati = `degraded` di body); guard web audit ikut izin baru. Route audit-events belum dibuat (perlu keputusan masking/filter lintas tenant).
@@ -5418,6 +5430,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - legend-ykam: `/notes` sudah hilang (appHomePath `/member`, commit 04d2836a3). Sisanya dikerjakan: `lib/areas/post-login.ts` `postLoginPath(access)`; sesi dengan `dashboard.management.view` mendarat di `/kelola`, customer di `/member` (`_auth.tsx`, `auth-form.tsx`).
 - legend-2ywn: denylist `SENSITIVE_FUNCTIONS` diganti baseline `pg_init_privs` (privtype 'i'); fail-closed bila baseline kosong (anchor `pg_read_file`, `lo_import`, `pg_switch_wal`). Review architect: tidak ada false negative; celah tersisa (extension 'e', `SENSITIVE_TABLES`) jadi kartu lanjutan.
 - Gerbang: 5 tes root + 3 berkas vitest hijau, 7 berkas kontrak root hijau, prettier+eslint hijau, typecheck api+web hijau, `db:generate` kosong. E2E Playwright tidak dijalankan (scripts/test.mjs tidak bisa memfilter).
+
 ## 2026-11-14: WS-11 laporan + WS-14 ops backend (cabang ghostex/62d6d898)
 
 - legend-rmvu: `GET /api/reports/schedule-recipients` (user tenant pemanggil saja; keluar hanya userId, name, roleName; tanpa email). Resolusi email untuk pengiriman terjadwal (legend-atcu) belum ada kodenya, bukan bagian kartu ini.
@@ -5425,6 +5438,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - legend-qq4k: creator WS-06 terpasang (production order `draft` per baris prep beresep aktif tunggal, tanpa biaya/stok/GL, idempoten, di transaksi sama); service food-safety meneruskan actor. Default tanpa pemasangan tetap no-op.
 - legend-24nl: tidak ada kode; `metrics_daily` (0176, job, sumber non-uang) sudah di m1 lewat legend-5wzoc.
 - Gerbang: 8 berkas tes terarah (138 test) hijau, tes kontrak root 76/76, prettier+eslint hijau, tsc api+web hijau, `db:generate` kosong.
+
 ## ws/hris-leave-flakes (14 Nov 2026)
 
 - Kartu `legend-8ldhb`, `legend-l0qbr`, `legend-4mpqc`: tidak bisa direproduksi di tip m1 (b17554cb9). 3 suite cuti bersama 3x hijau (59/59), 5 suite 1x hijau, 40 file HRIS (hris-holiday/attendance/overtime/leave) bersama 2x hijau (602/602). Tidak ada hitungan global akrual atau QUOTA_EXCEEDED di 5 suite itu; isolasi sebelumnya sudah masuk lewat 44d6876d2. Tidak ada fixture diubah menebak.
@@ -5440,6 +5454,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - 10:35 batch61 (catatan susulan): biaya sesi merge train (session-usage 6e27f3ce, sampai 10:28 WIB) total biaya* 4050k, 184 req utama sonnet-5-5, subagent 2 (test-runner build, Explore SIGTERM), puncak 1 bersamaan; rata-rata subagent berjalan per agent (parallel-report 38 sesi, sejak 02:00) 0,46. Koreksi laporan batch61: subagent total 2, bukan 4.
 - 10:36 batch62 masuk m1 (int/batch62 tip bb12883d3 + progress): 6 dari 7 cabang. Masuk: ws/payroll-payout-so-fixes + fix/edge-migration-rls (0542->0350, 0543->0351, 0538->0352, 0539->0353, 0546->0354, 0568->0355; 0534/0536 dibuang, 0348/0349 batch61 dipertahankan), ws/platform-pos-security-small, ws/reports-ops-backend (0550->0356, idx 356, `when` 1794615000000 agar monoton, snapshot 0356 dibangun ulang di atas 0355 karena 0550 hanya SQL), ws/suite-flakes, ws/loyalty-points-money, ws/hris-leave-flakes. DITOLAK kembali ke thread asal: ws/reports-dashboard-fixes (10f70821c): `tests/ws11-owner-dashboard.test.mjs` DASH-02 merah (17/18) pada cabang itu sendiri, hijau di m1 dan di cabang lain. ws/edge-sync-resilience tidak di batch ini (remote utuh, worktree lokal terhapus pembersihan disk).
 - Gate batch62: check-journal ok (7 entri baru, idx unik, when naik), rantai snapshot 0347-0356 utuh (0351 tanpa snapshot, SQL saja), `db:generate` kosong, lint 0 error, typecheck hijau, root 2916/2916, kontrak 863/863, API run penuh 08:48-10:16: 17728 lulus, 7 berkas gagal: metric-single-path (nyata, payroll-payout-setup.ts baca jurnal settle, diizinkan di bb12883d3, lulus) + 6 flake lulus 3x terarah (coa-backfill-1204, purchase-price-variance-migration, migration-force-rls-guard = legend-odyct; ai-chatgpt-device-code, operations-prep-production-creator, panic-review-e = kartu baru legend-u47g8). edge-received-events-migration hijau. e2e produksi (termasuk auth.spec) 18 lulus 1 skip, 6,8 mnt. Tidak ada SIGTERM di run ini. Disk bebas 8-14 GB (< 30 GB): cleanup-ssd laporan menunjuk hanya s-tier-flakes-ci; worktree lain ditahan, keputusan CTO.
+
 ## 2026-11-14: Dedupe kasus rekonsiliasi + penyetuju Owner/Finance (legend-aegsj, cabang ws/payment-approvals-dedupe)
 
 - Temuan Codex P2: kasus missing `resolved` diabaikan oleh dedupe impor, laporan lain bisa membuat kasus kedua dan event resolusi kedua. Aturan paling membatasi: satu penjualan = paling banyak SATU kasus missing seumur hidup, semua status (open, pending_approval, resolved); ditolak = kembali open, kasus sama. Nominal kasus missing = nominal penjualan, jadi tidak ada "selisih baru".
@@ -5455,6 +5470,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Web: label "Cocok otomatis", tone success, filter status.
 - Tes: test lama `two reports imported at the same time` bergantung urutan impor (3 atau 2 kasus) dan sempat merah acak; kini dibandingkan dengan jumlah baris. Test journal 0574 diubah ke `idx < 574`.
 - Bukti: 6 berkas test terarah hijau (150 + 61 ulang berkas settlement-import), tsc api, web, shared hijau, prettier+eslint, check-journal, db:generate kosong, tes root kontrak hijau. Architect xhigh: aman, 3 temuan kecil dibetulkan (hardening settle, audit chainOutcome, 6 test tambahan).
+
 ## 2026-11-14: Loyalty referral followups Q5/Q6 (ws/loyalty-referral-followups, dari ws/loyalty-points-money 4bf7760b5)
 
 - legend-bijqd (Q6): `qualifyReferral` menolak order pertama dengan `eligibleSpendIdr <= 0` (dibayar penuh poin), apa pun `minFirstOrderIdr`; referral tetap `pending`, refund parsial tidak membalik bonus.
@@ -5472,6 +5488,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti: test baru `loyalty-earn-replay-fix.test.ts` (T1-T7) dan `loyalty-referral-bonus-shortfall.test.ts` (S1-S3). Di base bersih 15ccf6e86: replay-fix 8 merah/10 hijau; shortfall S1 dan S3 merah, S2 (kontrol) hijau. Sekarang 9 berkas terarah 180/180 hijau + `member-ledger` dan `voucher-loyalty-source` 19/19, typecheck api 0 galat, prettier + eslint bersih. Review: architect xhigh dua putaran, putaran akhir tanpa temuan pemblokir; satu pengerasan (event hilang dihitung meminta penuh) sudah dipasang dan dites.
 - Risiko diterima (member rugi, outlet aman): A 50k membalik 50, sisa grant hangus, B 50k membalik 0, tolak A -> member terima 0 (dulu 50).
 - Pemakaian: sesi engineer, biaya* 7527k (sesi ini, termasuk Task 1 sebelum compact); subagent 29 total.
+
 ## 2026-11-14: Brief celah jurnal otomatis GL (ws/auto-journal-gaps, dari ghostex/ab7c7291)
 
 - legend-tgb3: jurnal HPP inventory-gl periode tutup jadi late adjustment (tanggal hari terbuka pertama, deskripsi "(penyesuaian terlambat dari <tanggal>)", audit `accounting.journal.late_adjusted`), sama seperti penjualan. 9 tes baru INV-GL-LATE-01..09, 3 tes lama (parkir PERIOD_CLOSED) ditulis ulang.
@@ -5489,7 +5506,6 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gerbang: lint 0 error, typecheck hijau, kontrak 863/863, root 2917/2917, 24 berkas uang terarah hijau setelah perbaikan, e2e produksi 18 lulus 1 skip (auth.spec 4/4). Run penuh API 10:57-12:20: 9 berkas merah. Bukan regresi: cash-movement-mapping-backfill-migration (tes migrasi 0360 balapan dengan teardown tenant paralel, keluarga legend-odyct; kartu baru legend-zdfsm), akibatnya FORCE RLS tertinggal lepas dan rls.test, accounting-db, migration-force-rls-guard ikut merah; accounting-coa-backfill-1204, purchase-price-variance-migration (legend-odyct), operations-prep-production-creator (legend-u47g8). Semua lulus 3x terarah. Dua sisanya nyata dan diperbaiki (provisioning-race, order-recovery RG-2). Run penuh kedua TIDAK diulang (83 menit); dua perbaikan tes diverifikasi terarah (5 berkas 256/256).
 - Bead ditutup: legend-hcqs, legend-aegsj, legend-27mt, legend-2jyr, legend-89pn, legend-tgb3, legend-wqorb, legend-nipn7, legend-20ucm, legend-vqft5, legend-bijqd, legend-sbxr0, legend-nkp77. legend-hbifd sudah tertutup.
 - Pemakaian: session-usage biaya* 6115k (seluruh sesi merge train sejak batch61); parallel-report sejak 08:00: 13 sesi, rata-rata subagent berjalan 3,38 per sesi. Wave ini 2 subagent (1 Explore, 1 architect), puncak 1 bersamaan; token heavy dipegang thread ini.
-
 
 ## 2026-11-14 10:43: Customer shell scroll focus (legend-wyhzw)
 

@@ -48,6 +48,8 @@ export type PrintAgentOptions = {
   staleClaimMs?: number;
   /** Overrides the module-level notifier (see `setPrintAlertNotifier`). */
   notify?: PrintAlertNotifier;
+  /** Revisit persistent unbumped station tickets for KDS-down fallback. */
+  sweepStationTickets?: (route: StationTicketRouter) => Promise<void>;
 };
 
 export type StationTicketInput = {
@@ -56,6 +58,12 @@ export type StationTicketInput = {
   sourceRef?: string;
   ticket: StationTicketData;
 };
+
+export type StationTicketResult =
+  { printed: false } | { printed: true; job: PrintJobRecord };
+export type StationTicketRouter = (
+  input: StationTicketInput,
+) => Promise<StationTicketResult>;
 
 export type PrintAgent = ReturnType<typeof createPrintAgent>;
 
@@ -93,6 +101,31 @@ export function createPrintAgent(options: PrintAgentOptions) {
   let timer: ReturnType<typeof setInterval> | null = null;
   let ticking: Promise<void> | null = null;
   let healthTicks = 0;
+  let alertSweep: Promise<void> | null = null;
+  let stationSweep: Promise<void> | null = null;
+
+  async function sweepPendingAlerts(): Promise<void> {
+    const notify = options.notify ?? moduleNotifier;
+    if (!notify || !store.retryPendingAlerts) return;
+    alertSweep ??= store
+      .retryPendingAlerts(notify)
+      .catch(() => undefined)
+      .finally(() => {
+        alertSweep = null;
+      });
+    await alertSweep;
+  }
+
+  async function sweepStationTickets(): Promise<void> {
+    if (!options.sweepStationTickets) return;
+    stationSweep ??= options
+      .sweepStationTickets(routeStationTicket)
+      .catch(() => undefined)
+      .finally(() => {
+        stationSweep = null;
+      });
+    await stationSweep;
+  }
 
   async function emit(alert: PrintAlert): Promise<void> {
     const notify = options.notify ?? moduleNotifier;
@@ -104,7 +137,10 @@ export function createPrintAgent(options: PrintAgentOptions) {
       return;
     }
     try {
-      if (!notified) await notify?.(alert);
+      if (!notified) {
+        if (store.retryPendingAlerts) await sweepPendingAlerts();
+        else await notify?.(alert);
+      }
     } catch {
       // Notifier errors never break the agent.
     }
@@ -350,6 +386,8 @@ export function createPrintAgent(options: PrintAgentOptions) {
   async function tick(): Promise<void> {
     await monitor.tick();
     await Promise.all([...pending]);
+    await sweepPendingAlerts();
+    await sweepStationTickets();
     await drain();
   }
 
@@ -358,6 +396,8 @@ export function createPrintAgent(options: PrintAgentOptions) {
     // Alert side effects (reroute, recordAlert, notifier) are not awaited
     // here: a slow notifier or DB must not delay the next probe (EDG-05).
     await monitor.tick();
+    keep(sweepPendingAlerts());
+    keep(sweepStationTickets());
     healthTicks += 1;
     if (healthTicks % STALE_SWEEP_EVERY_TICKS === 0) {
       keep(sweepStaleClaims());
@@ -402,7 +442,7 @@ export function createPrintAgent(options: PrintAgentOptions) {
 
   async function routeStationTicket(
     input: StationTicketInput,
-  ): Promise<{ printed: false } | { printed: true; job: PrintJobRecord }> {
+  ): Promise<StationTicketResult> {
     monitor.watchKds(input.stationId);
     if (monitor.isKdsUp(input.stationId)) return { printed: false };
 
@@ -446,6 +486,7 @@ export function createPrintAgent(options: PrintAgentOptions) {
   function start(): void {
     if (timer) return;
     keep(sweepStaleClaims());
+    keep(sweepPendingAlerts());
     timer = setInterval(() => {
       if (ticking) return;
       ticking = healthTick()
@@ -472,6 +513,7 @@ export function createPrintAgent(options: PrintAgentOptions) {
     tick,
     drain,
     sweepStaleClaims,
+    sweepPendingAlerts,
     enqueue,
     routeStationTicket,
     recordKdsHeartbeat: (stationId: string) =>

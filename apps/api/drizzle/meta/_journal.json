@@ -2479,6 +2479,13 @@
       "when": 1794629276111,
       "tag": "0367_payout_resolution_withdraw_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 378,
+      "version": "7",
+      "when": 1794669343562,
+      "tag": "0378_print_alert_notification_retry",
+      "breakpoints": true
     }
   ]
 }
