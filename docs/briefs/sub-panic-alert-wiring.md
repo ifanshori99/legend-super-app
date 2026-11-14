@@ -94,7 +94,6 @@ Aturan semua subagent: jangan jalankan tsc/vitest/build/Playwright kecuali diseb
 - Kartu/teks "taken": bila `item.takenBy` ada -> "{name} sudah menuju lokasi" (kunci i18n baru
   di `packages/shared/src/i18n/messages/facility-staff.ts`, daftarkan di katalog teks);
   null -> teks lama "rekan lain".
-- Tab "Darurat" 390 px: CTO akan cek lewat screenshot; jangan ubah `staff-chrome.tsx`.
 
 ## Test (test-writer, gagal-dulu)
 
