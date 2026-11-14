@@ -468,6 +468,7 @@ function MappingSection({
         body: {
           mappings: unmatchedLines.map((line) => ({
             lineNo: line.lineNo,
+            externalItemId: line.externalItemId,
             menuItemId: picked[line.lineNo].menuItemId,
             ...(picked[line.lineNo].variantId !== null && {
               variantId: picked[line.lineNo].variantId,

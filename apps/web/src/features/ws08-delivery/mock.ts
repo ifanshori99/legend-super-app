@@ -462,6 +462,11 @@ registerMock(mapDeliveryOrderLines, ({ params, body }) => {
     unmatched.some((line) => !mapped.has(line.lineNo))
   )
     fail("DELIVERY_MAPPING_INCOMPLETE");
+  // The order changed since staff looked (webhook): same lineNo, other item.
+  const changed = unmatched.some(
+    (line) => mapped.get(line.lineNo)?.externalItemId !== line.externalItemId,
+  );
+  if (changed) fail("DELIVERY_ORDER_CHANGED");
   const lines = current.lines.map((line) => {
     const row = mapped.get(line.lineNo);
     if (!lineNeedsMapping(line) || !row) return line;

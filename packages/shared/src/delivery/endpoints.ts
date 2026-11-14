@@ -144,7 +144,8 @@ export const resolveDeliveryOrderSync = defineEndpoint({
  * Idempotent: an order already injected answers 200 with the current row (no
  * second KDS order). 422 `DELIVERY_MAPPING_INCOMPLETE` when a line stays
  * unmatched or sold_out, or maps to an unknown, inactive, unpriced or sold-out
- * item.
+ * item. 409 `DELIVERY_ORDER_CHANGED` when a mapping's `externalItemId` differs
+ * from the stored line (the webhook changed the order); nothing is injected.
  */
 export const mapDeliveryOrderLines = defineEndpoint({
   method: "POST",

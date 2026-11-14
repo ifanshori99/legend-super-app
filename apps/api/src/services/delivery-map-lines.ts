@@ -131,6 +131,21 @@ export async function mapDeliveryOrderLines(
       // each once; matched and price_mismatch lines are never remapped.
       const unmatched = row.lines.filter(isRemappable);
       const byLineNo = new Map(input.mappings.map((m) => [m.lineNo, m]));
+      // The webhook changed the order after staff looked (another item on that
+      // line, whatever its mapping state now): nothing is injected or changed,
+      // staff see the new lines first. An unknown lineNo is a malformed
+      // request instead (422 below).
+      const storedByLineNo = new Map(row.lines.map((l) => [l.lineNo, l]));
+      if (
+        input.mappings.some((mapping) => {
+          const stored = storedByLineNo.get(mapping.lineNo);
+          return (
+            stored !== undefined &&
+            stored.externalItemId !== mapping.externalItemId
+          );
+        })
+      )
+        throw new DeliveryError("DELIVERY_ORDER_CHANGED");
       if (
         unmatched.length !== byLineNo.size ||
         unmatched.some((line) => !byLineNo.has(line.lineNo))

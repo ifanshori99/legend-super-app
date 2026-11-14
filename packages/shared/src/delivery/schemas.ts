@@ -438,6 +438,12 @@ export const mapDeliveryOrderLinesInputSchema = clientInputSchema({
     .array(
       z.strictObject({
         lineNo: z.number().int().min(1).max(200),
+        /**
+         * The platform item id of the line as staff saw it. The server
+         * compares it with the stored line; a different one (the webhook
+         * changed the order meanwhile) answers 409 DELIVERY_ORDER_CHANGED.
+         */
+        externalItemId: reference.nullable(),
         menuItemId: uuidSchema,
         variantId: uuidSchema.nullable().optional(),
       }),

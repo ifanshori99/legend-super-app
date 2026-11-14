@@ -296,6 +296,8 @@ export const deliveryOpsMessages = {
     DELIVERY_CHANNEL_UNKNOWN: "Kanal pengiriman ini belum terhubung.",
     DELIVERY_SYNC_NOT_PENDING:
       "Pesanan ini sudah tidak menunggu tindakan. Muat ulang daftar.",
+    DELIVERY_ORDER_CHANGED:
+      "Item pesanan berubah dari platform. Muat ulang pesanan lalu petakan lagi.",
     fallback: "Permintaan tidak dapat diproses. Coba lagi sebentar lagi.",
   },
 };

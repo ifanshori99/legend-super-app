@@ -26,6 +26,15 @@
 //   not be mapped (422). A variant item needs its variantId; the line then
 //   carries it. A sold-out line is produced by sending the sold-out menu
 //   item's id in the webhook (needs_review, status received, order_id null).
+// - Round 3: every mapping carries `externalItemId` = the platform item id of
+//   that line as staff saw it. The `mapLines` helper fills it from the stored
+//   line (what the staff screen shows) unless a test overrides it (null for a
+//   lineNo that does not exist). A mapped line whose stored externalItemId
+//   differs answers 409 DELIVERY_ORDER_CHANGED, injects nothing and changes
+//   no data. The webhook changing the order is simulated by rewriting the
+//   stored lines' externalItemId/name in the DB (a repeated webhook's update
+//   behavior is not specified). The check runs after the idempotency check: an
+//   already injected order still answers 200 even with a stale id.
 import { randomUUID } from "node:crypto";
 import express, { type Express } from "express";
 import request from "supertest";
@@ -296,6 +305,7 @@ async function setup() {
         commission_idr: string;
         lines: Array<{
           lineNo: number;
+          externalItemId?: string | null;
           externalItemName: string;
           menuItemId: string | null;
           variantId?: string | null;
@@ -357,24 +367,54 @@ async function setup() {
           ?.externalOrderId === externalOrderId,
     ).length;
 
-  const mapLines = (
+  /** Simulates the platform changing the order: every stored line gets another item. */
+  const changeStoredItems = (deliveryOrderId: string) =>
+    asOwnerTenant(tenant.tenantId, async (db) => {
+      await db.query(
+        `UPDATE delivery_channel_orders
+            SET lines = (
+              SELECT jsonb_agg(
+                       jsonb_set(
+                         jsonb_set(l, '{externalItemId}', '"GF-CHANGED-ITEM"'),
+                         '{externalItemName}', '"Item Lain"'))
+                FROM jsonb_array_elements(lines) AS l)
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.tenantId, deliveryOrderId],
+      );
+    });
+
+  type MappingInput = {
+    lineNo: number;
+    menuItemId: string;
+    variantId?: string | null;
+    externalItemId?: string | null;
+  };
+
+  const mapLines = async (
     client: Client,
     deliveryOrderId: string,
-    mappings: Array<{
-      lineNo: number;
-      menuItemId: string;
-      variantId?: string | null;
-    }>,
+    mappings: MappingInput[],
     options: { outletId?: string } = {},
-  ) =>
-    client
+  ) => {
+    // The platform item id staff saw per line: read it from the stored row.
+    const stored = await readRow(deliveryOrderId);
+    const body = mappings.map((mapping) => ({
+      ...mapping,
+      externalItemId:
+        mapping.externalItemId !== undefined
+          ? mapping.externalItemId
+          : (stored?.lines.find((line) => line.lineNo === mapping.lineNo)
+              ?.externalItemId ?? null),
+    }));
+    return client
       .post(
         `/api/outlets/${encodeURIComponent(options.outletId ?? outletA)}/delivery-orders/${encodeURIComponent(deliveryOrderId)}/map-lines`,
       )
       .set({ Host: tenant.hostname })
       .set(originHeader)
       .set("Idempotency-Key", randomUUID())
-      .send({ mappings });
+      .send({ mappings: body });
+  };
 
   return {
     tenant,
@@ -393,6 +433,7 @@ async function setup() {
     auditBy,
     acceptCalls,
     mapLines,
+    changeStoredItems,
   };
 }
 
@@ -825,5 +866,89 @@ describe("legend-5d76 map lines of a needs_review order", () => {
       row.lines.map((l) => l.mapping),
     );
     expect(await s.count("orders", externalOrderId)).toBe(0);
+  });
+
+  it("legend-5d76 answers 409 DELIVERY_ORDER_CHANGED when the platform item of a mapped line differs, and injects nothing", async () => {
+    const s = await setup();
+    const { externalOrderId, deliveryOrderId } = await s.ingest([
+      unknownKopi(),
+    ]);
+    const before = await s.readRow(deliveryOrderId);
+    const lineNo = lineNoOf(before, "Kopi Susu");
+    expect(before.lines[0]!.externalItemId).toEqual(expect.any(String));
+
+    // Staff saw another platform item at this line than the one stored now.
+    const res = await s.mapLines(s.handlerA.client, deliveryOrderId, [
+      { lineNo, menuItemId: s.kopi, externalItemId: "GF-ITEM-YANG-DILIHAT" },
+    ]);
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(errorCode(res.body)).toBe("DELIVERY_ORDER_CHANGED");
+
+    const after = await s.readRow(deliveryOrderId);
+    expect(after.order_id).toBeNull();
+    expect(after.status).toBe("received");
+    expect(after.lines).toEqual(before.lines);
+    expect(after.gross_idr).toBe(before.gross_idr);
+    expect(await s.count("orders", externalOrderId)).toBe(0);
+    expect(await s.count("kitchen_tickets", externalOrderId)).toBe(0);
+    expect(s.acceptCalls(externalOrderId)).toBe(0);
+  });
+
+  it("legend-5d76 answers 409 DELIVERY_ORDER_CHANGED when the order changed after staff looked, and mapping the fresh lines then works", async () => {
+    const s = await setup();
+    const { externalOrderId, deliveryOrderId } = await s.ingest([
+      unknownKopi(),
+    ]);
+    const seen = await s.readRow(deliveryOrderId);
+    const lineNo = lineNoOf(seen, "Kopi Susu");
+    const seenItemId = seen.lines[0]!.externalItemId!;
+
+    // The webhook replaces the item at the same lineNo after staff opened the order.
+    await s.changeStoredItems(deliveryOrderId);
+    const changed = await s.readRow(deliveryOrderId);
+    expect(changed.lines[0]!.externalItemId).not.toBe(seenItemId);
+
+    const stale = await s.mapLines(s.handlerA.client, deliveryOrderId, [
+      { lineNo, menuItemId: s.kopi, externalItemId: seenItemId },
+    ]);
+    expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+    expect(errorCode(stale.body)).toBe("DELIVERY_ORDER_CHANGED");
+    const afterStale = await s.readRow(deliveryOrderId);
+    expect(afterStale.order_id).toBeNull();
+    expect(afterStale.lines).toEqual(changed.lines);
+    expect(await s.count("orders", externalOrderId)).toBe(0);
+    expect(await s.count("kitchen_tickets", externalOrderId)).toBe(0);
+    expect(s.acceptCalls(externalOrderId)).toBe(0);
+
+    // After staff reload and see the new line, mapping it works.
+    const fresh = await s.mapLines(s.handlerA.client, deliveryOrderId, [
+      { lineNo, menuItemId: s.kopi, externalItemId: "GF-CHANGED-ITEM" },
+    ]);
+    expect(fresh.status, JSON.stringify(fresh.body)).toBe(200);
+    expect(fresh.body.data.orderId).toEqual(expect.any(String));
+    expect(await s.count("orders", externalOrderId)).toBe(1);
+  });
+
+  it("legend-5d76 stays idempotent: an already injected order answers 200 even with a stale externalItemId", async () => {
+    const s = await setup();
+    const { externalOrderId, deliveryOrderId } = await s.ingest([
+      unknownKopi(),
+    ]);
+    const row = await s.readRow(deliveryOrderId);
+    const lineNo = lineNoOf(row, "Kopi Susu");
+
+    const first = await s.mapLines(s.handlerA.client, deliveryOrderId, [
+      { lineNo, menuItemId: s.kopi },
+    ]);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+
+    const again = await s.mapLines(s.handlerA.client, deliveryOrderId, [
+      { lineNo, menuItemId: s.kopi, externalItemId: "GF-ITEM-USANG" },
+    ]);
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body.data.orderId).toBe(first.body.data.orderId);
+    expect(await s.count("orders", externalOrderId)).toBe(1);
+    expect(await s.count("kitchen_tickets", externalOrderId)).toBe(1);
+    expect(s.acceptCalls(externalOrderId)).toBe(1);
   });
 });

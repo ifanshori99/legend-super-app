@@ -5526,3 +5526,9 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti: gagal-dulu 6/6 (404 route belum ada) di worktree bersih; setelah ronde 2 (review architect: varian, sold_out, urutan lock, batas halaman) `delivery-map-lines` 9/9; 4 berkas delivery 66 lulus 1 todo; text-contract 11/11; typecheck seluruh monorepo, eslint, prettier hijau.
 - Belum: kolom `review_reason` untuk payload berubah (pesanan sudah ter-inject) tidak dikerjakan; itu bukan alur petakan-lalu-inject. Pemetaan memakai `lineNo` saja (tanpa cek `externalItemId`). Filter "Perlu tindakan" hanya menyaring halaman termuat. Visual browser/e2e tidak dijalankan.
 - Subagent: 9 total (Explore 2, test-writer 2, implementer 4, architect 1; test-runner 1), puncak 3 bersamaan. session-usage: biaya* 2552k (sonnet utama 1008k, subagent sonnet 1302k, opus 172k, haiku 70k).
+
+## 2026-11-15 03:00: 846 ronde 3, map-lines menolak baris yang berubah (legend-5d76)
+
+- Permintaan CTO: tiap mapping membawa `externalItemId` yang dilihat staf per `lineNo`. Bila beda dengan baris tersimpan (webhook mengubah saat staf menyimpan): 409 `DELIVERY_ORDER_CHANGED`, tanpa inject dan tanpa perubahan data. `lineNo` tak dikenal tetap 422. Order yang sudah ter-inject tetap 200 (idempoten, dicek lebih dulu).
+- Web mengirim `externalItemId` dari baris yang tampil; 409 tampil lewat katalog error dan daftar/detail di-invalidate. Mock mengikuti.
+- Bukti: gagal-dulu di HEAD sebelum implementasi (2 tes 409 baru menerima 200, 10 lulus); setelah: 4 berkas delivery 69 lulus 1 todo, text-contract 11/11, typecheck monorepo, eslint, prettier hijau. Tanpa migrasi.
