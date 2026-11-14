@@ -1,0 +1,1 @@
+ALTER TABLE "reservation_reschedule_requests" ADD COLUMN "previous_reserved_for" timestamp with time zone;

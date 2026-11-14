@@ -500,8 +500,11 @@ describe("RSV-03 staff approve a reschedule request (legend-9txo)", () => {
 
     it("RSV-03 inside the free window a paid-DP booking cannot be moved out: 409 RESERVATION_RESCHEDULE_LATE, nothing moves, staff can still decline", async () => {
       const booking = await bookingWithLink();
-      const original = await withDeposit(booking, 10);
+      // The guest asked while no DP was held; the DP lands afterwards (a
+      // guest asking inside the window is refused up front, see
+      // reservation-guest-contract.test.ts).
       const requestId = await guestRequests(booking, at(targetDate()));
+      const original = await withDeposit(booking, 10);
 
       const response = await decide(manager.client, requestId, "approve");
       expect(response.status).toBe(409);

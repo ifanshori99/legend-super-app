@@ -105,10 +105,16 @@ async function markResolved(
   status: "approved" | "declined",
   actorUserId: string,
   now: Date,
+  previousReservedFor: Date | null = null,
 ): Promise<RescheduleRow> {
   const [updated] = await tx
     .update(reservationRescheduleRequests)
-    .set({ status, resolvedAt: now, resolvedBy: actorUserId })
+    .set({
+      status,
+      resolvedAt: now,
+      resolvedBy: actorUserId,
+      previousReservedFor,
+    })
     .where(
       and(
         eq(reservationRescheduleRequests.tenantId, context.tenant.tenantId),
@@ -256,6 +262,7 @@ export async function approveRescheduleRequest(
         "approved",
         actorUserId,
         decidedAt,
+        row.reservedFor,
       );
       await appendEnvelope(
         tx,

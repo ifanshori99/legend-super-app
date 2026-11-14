@@ -530,6 +530,8 @@ describe("RSV-03 guest view", () => {
       new Date(view.reservedFor).getTime() - 24 * HOUR,
     );
     expect(view.rescheduleRequest).toBeNull();
+    expect(view.rescheduleDecision).toBeNull();
+    expect(view.timeZone).toBe("Asia/Jakarta");
     expect(new Date(view.linkExpiresAt).getTime()).toBe(
       new Date(view.reservedFor).getTime() + 24 * HOUR,
     );
@@ -715,6 +717,7 @@ describe("RSV-03 guest reschedule request", () => {
     expect(view.body.data.rescheduleRequest).toMatchObject({
       status: "pending",
     });
+    expect(view.body.data.rescheduleDecision).toBeNull();
 
     const second = await publicPost("reschedule", token, { requestedFor });
     expect(second.status).toBe(409);

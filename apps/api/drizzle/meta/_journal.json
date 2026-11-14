@@ -2437,6 +2437,13 @@
       "when": 1794618263592,
       "tag": "0361_reservation_guest_links_multi_active",
       "breakpoints": true
+    },
+    {
+      "idx": 603,
+      "version": "7",
+      "when": 1794629271111,
+      "tag": "0603_reservation_reschedule_previous_time",
+      "breakpoints": true
     }
   ]
 }

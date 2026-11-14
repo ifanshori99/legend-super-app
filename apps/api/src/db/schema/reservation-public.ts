@@ -104,6 +104,14 @@ export const reservationRescheduleRequests = pgTable(
     createdAt,
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     resolvedBy: text("resolved_by"),
+    /**
+     * The booking time before staff approved the move (legend-z5ygw), so the
+     * guest view can say the old schedule was replaced. NULL while pending,
+     * when declined, and on requests approved before this column existed.
+     */
+    previousReservedFor: timestamp("previous_reserved_for", {
+      withTimezone: true,
+    }),
   },
   (table) => [
     unique("reservation_reschedule_requests_tenant_id_id_key").on(
