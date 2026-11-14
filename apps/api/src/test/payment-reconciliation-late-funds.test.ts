@@ -415,11 +415,11 @@ async function runWorker(chainId: string) {
   return events;
 }
 
-const resolveCase = (caseId: string) =>
+const resolveCase = (caseId: string, key = `res-${randomUUID()}`) =>
   requester
     .post(`${ADMIN}/cases/${caseId}/resolve`)
     .set(originHeader)
-    .set("Idempotency-Key", `res-${randomUUID()}`)
+    .set("Idempotency-Key", key)
     .send({ note: "Bank statement checked, accepted" });
 
 const resolveCorrection = (
@@ -1193,5 +1193,138 @@ describe("EDC-06 legend-oan3p the import and the write-off settle can overlap", 
     await runWorker(request.chain_id);
     expect((await caseStatus(s.caseId)).status).toBe("resolved");
     expect(await correctionsOfCase(s.caseId)).toHaveLength(1);
+  });
+});
+
+// ------------------------- E2 (legend-kbf9v): linked mismatch case is blocked
+// Assumption: the 409 error body carries `error.code`
+// "LATE_FUNDS_CORRECTION_PENDING" (same envelope as SETTLEMENT_CONFLICT).
+// Assumption: a rejected correction returns to `open`, so the block is back.
+
+const BLOCKED = "LATE_FUNDS_CORRECTION_PENDING";
+
+/** Written off 50000, then 48000 arrives: a correction linked to a new mismatch case. */
+async function writeOffThenShortLate() {
+  const s = await writeOffSetup();
+  const late = await post(
+    requester,
+    gatewayBody({
+      day: s.day,
+      reference: `GW-${s.tag}-SHORT`,
+      lines: [{ reference: s.pz, amountIdr: 48000, feeIdr: 0 }],
+    }),
+  );
+  expectOk(late);
+  const mismatch = (await casesByReference(s.pz)).filter(
+    (c) => c.settlement_line_id !== null,
+  );
+  expect(mismatch).toHaveLength(1);
+  const correction = await oneCorrection(s.caseId);
+  expect(await mismatchCaseIdOf(correction.id)).toBe(mismatch[0]!.id);
+  return { ...s, mismatchId: mismatch[0]!.id, correctionId: correction.id };
+}
+
+async function expectBlocked(mismatchId: string) {
+  const response = await resolveCase(mismatchId);
+  expect(response.status, JSON.stringify(response.body)).toBe(409);
+  expect(response.body.error.code).toBe(BLOCKED);
+  // nothing was started: the case stays open and no approval request exists
+  expect((await caseStatus(mismatchId)).status).toBe("open");
+  expect(await requestsOf(CASE_OBJECT, mismatchId)).toHaveLength(0);
+}
+
+describe("EDC-06 legend-kbf9v a mismatch case linked to an undecided correction cannot be resolved yet", () => {
+  it("EDC-06 late funds: 409 LATE_FUNDS_CORRECTION_PENDING while the correction is open and while it is pending approval", async () => {
+    const s = await writeOffThenShortLate();
+    await expectBlocked(s.mismatchId); // correction open
+
+    const asked = await resolveCorrection(requester, s.correctionId);
+    expect(asked.status, JSON.stringify(asked.body)).toBe(200);
+    expect((await oneCorrection(s.caseId)).status).toBe("pending_approval");
+    await expectBlocked(s.mismatchId); // correction pending_approval
+  });
+
+  it("EDC-06 late funds: once the correction is approved and resolved, the mismatch case can be resolved (pending approval)", async () => {
+    const s = await writeOffThenShortLate();
+    await expectBlocked(s.mismatchId);
+
+    const asked = await resolveCorrection(requester, s.correctionId);
+    expect(asked.status, JSON.stringify(asked.body)).toBe(200);
+    const request = await pendingRequest(CORRECTION_OBJECT, s.correctionId);
+    await decide(approverId, request.id, "approved");
+    await runWorker(request.chain_id);
+    expect((await oneCorrection(s.caseId)).status).toBe("resolved");
+
+    const resolved = await resolveCase(s.mismatchId);
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+    expect(resolved.body.data).toMatchObject({
+      id: s.mismatchId,
+      status: "pending_approval",
+    });
+    expect(await requestsOf(CASE_OBJECT, s.mismatchId)).toHaveLength(1);
+  });
+
+  it("EDC-06 late funds: a blocked 409 is not stored under the idempotency key, so the same key succeeds once the correction is resolved", async () => {
+    // Assumption: a failed (409) attempt must not poison its Idempotency-Key.
+    const s = await writeOffThenShortLate();
+    const key = `res-${randomUUID()}`;
+
+    const blocked = await resolveCase(s.mismatchId, key);
+    expect(blocked.status, JSON.stringify(blocked.body)).toBe(409);
+    expect(blocked.body.error.code).toBe(BLOCKED);
+
+    const asked = await resolveCorrection(requester, s.correctionId);
+    expect(asked.status, JSON.stringify(asked.body)).toBe(200);
+    const request = await pendingRequest(CORRECTION_OBJECT, s.correctionId);
+    await decide(approverId, request.id, "approved");
+    await runWorker(request.chain_id);
+    expect((await oneCorrection(s.caseId)).status).toBe("resolved");
+
+    const resolved = await resolveCase(s.mismatchId, key); // SAME key
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+    expect(resolved.body.data).toMatchObject({
+      id: s.mismatchId,
+      status: "pending_approval",
+    });
+    expect(await requestsOf(CASE_OBJECT, s.mismatchId)).toHaveLength(1);
+  });
+
+  it("EDC-06 late funds: when the correction is rejected it is open again and the mismatch case is blocked again", async () => {
+    const s = await writeOffThenShortLate();
+    const asked = await resolveCorrection(requester, s.correctionId);
+    expect(asked.status, JSON.stringify(asked.body)).toBe(200);
+    const request = await pendingRequest(CORRECTION_OBJECT, s.correctionId);
+    await decide(approverId, request.id, "rejected");
+    await runWorker(request.chain_id);
+    expect((await oneCorrection(s.caseId)).status).toBe("open");
+
+    await expectBlocked(s.mismatchId);
+  });
+
+  it("EDC-06 late funds: a mismatch case of another sale, linked to no correction, is not affected", async () => {
+    // Make sure a correction with a linked mismatch case exists in the tenant too.
+    await writeOffThenShortLate();
+
+    const day = nextDay();
+    const tag = uid();
+    const ref = `PR-${tag}-M`;
+    await seedIntent({ providerRef: ref, amountIdr: 50000, day });
+    const imported = await post(
+      requester,
+      gatewayBody({
+        day,
+        reference: `GW-${tag}-M`,
+        lines: [{ reference: ref, amountIdr: 48000, feeIdr: 0 }],
+      }),
+    );
+    expectOk(imported);
+    const [plain] = (await casesByReference(ref)).filter(
+      (c) => c.settlement_line_id !== null,
+    );
+    expect(plain).toMatchObject({ status: "open" });
+
+    const response = await resolveCase(plain!.id);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.data.status).toBe("pending_approval");
   });
 });

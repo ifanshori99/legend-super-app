@@ -1,5 +1,5 @@
 // WS-05 settlement exceptions (PRD §3 F13, EDC-06).
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   assertTrustedScopedContext,
@@ -286,6 +286,30 @@ export async function resolveReconciliationCase(
             existing.status === "pending_approval"
               ? "Reconciliation case is already waiting for approval."
               : "Reconciliation case is already resolved.",
+          );
+        // legend-kbf9v: a mismatch case linked to an undecided late-funds
+        // correction waits for that correction, so finance never books the
+        // same loss twice. The mismatch case is created and linked in one
+        // import transaction, so resolve cannot see it before the link exists;
+        // correction settle never locks a case. A resolved correction no
+        // longer blocks.
+        const [pendingCorrection] = await tx
+          .select({ id: corrections.id })
+          .from(corrections)
+          .where(
+            and(
+              eq(corrections.tenantId, context.tenant.tenantId),
+              eq(corrections.mismatchCaseId, existing.id),
+              inArray(corrections.status, ["open", "pending_approval"]),
+            ),
+          )
+          .limit(1)
+          .for("share");
+        if (pendingCorrection)
+          throw new HttpError(
+            409,
+            "LATE_FUNDS_CORRECTION_PENDING",
+            "Decide the late-funds correction of this sale first: it is linked to this mismatch case.",
           );
         // A case is never closed by its requester alone: it waits for a chain
         // approved by someone else. A missing policy (APPROVAL_POLICY_MISSING)
