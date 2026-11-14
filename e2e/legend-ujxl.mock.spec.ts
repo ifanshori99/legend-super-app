@@ -50,12 +50,17 @@ test("Q21 · the station switch is a neutral segmented control, not buttons", as
   await page.goto("/kds");
   const stations = page.getByRole("radiogroup", { name: "Stasiun" });
   await expect(stations).toBeVisible();
-  await expect(stations.getByRole("radio", { name: /^Kopi/ })).toBeChecked();
+  await expect(
+    stations.getByRole("radio", { name: "Kopi 1", exact: true }),
+  ).toBeChecked();
   // Each station carries its live queue count (DESIGN.md §5: a station group
   // with counts, selected in ink — never an accent-filled chip).
   await expect(
-    stations.getByRole("radio", { name: /^Kopi \(\d+\)$/ }),
+    stations.getByRole("radio", { name: "Kopi 1", exact: true }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Kopi 1", exact: true }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Kopi", exact: true }),
   ).toHaveCount(0);
@@ -73,7 +78,7 @@ test("Q26 · expo orders carry the same state band", async ({ page }) => {
   const readyBand = ready.locator('[data-slot="status-band"]');
   await expect(readyBand).toHaveAttribute("data-tone", "success");
   await expect(readyBand).toContainText("Siap diantar");
-  await expect(readyBand).toContainText("Antrean 14");
+  await expect(readyBand).toContainText("Antrean A-014");
 
   const preparing = page.locator(
     '[data-slot="expo-ticket"][data-complete="false"]',
@@ -106,10 +111,10 @@ test("Q26 · pickup tiles carry the same state band and keep the call flow", asy
   );
   await expect(waiting).toContainText("Menunggu siap");
 
-  await page.getByRole("button", { name: "Panggil nomor 12" }).click();
+  await page.getByRole("button", { name: "Panggil nomor A-012" }).click();
   const newlyCalled = page
     .locator('[data-slot="pickup-call"][data-call-status="called"]')
-    .filter({ hasText: "12" });
+    .filter({ hasText: "A-012" });
   await expect(newlyCalled).toHaveCount(1);
   await expect(
     newlyCalled.locator('[data-slot="status-band"]'),
