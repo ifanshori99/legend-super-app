@@ -92,3 +92,10 @@ LEGEND_TEST_FILES='src/test/dev-seed-domains.test.ts src/test/env.test.ts src/te
 pnpm exec eslint apps/api/src/app.ts apps/api/src/config/env.ts apps/api/src/db/seed-dev-tenant.ts apps/api/src/db/dev-local-tenant-domains.ts apps/api/src/services/dev-local-tenant-resolve.service.ts apps/api/src/services/org.service.ts apps/api/src/test/env.test.ts apps/api/src/test/dev-seed-domains.test.ts
 pnpm exec prettier --check apps/api/src/app.ts apps/api/src/config/env.ts apps/api/src/db/seed-dev-tenant.ts apps/api/src/db/dev-local-tenant-domains.ts apps/api/src/services/dev-local-tenant-resolve.service.ts apps/api/src/services/org.service.ts apps/api/src/test/env.test.ts apps/api/src/test/dev-seed-domains.test.ts docs/local-development.md docs/PROGRESS.md
 ```
+
+### Tindak lanjut review architect — legend-vq14
+
+- CTO menyampaikan review architect auth PASS, dengan satu pengetatan: flag aktif juga harus menolak startup bila `DEPLOYMENT_MODE` bukan `development`. Guard, pesan validasi, contoh env, dan panduan lokal telah disesuaikan.
+- Satu test staging ditambahkan. Bukti gagal-dulu: env-only 1 gagal/4 lulus, karena staging dengan flag aktif masih keluar 0; kontrol flag mati diterima. Setelah patch, keenam suite terarah di atas lulus 71/71. ESLint `apps/api/src/config/env.ts apps/api/src/test/env.test.ts` dan Prettier kedua file serta `docs/local-development.md` lulus.
+- `git fetch origin main` memverifikasi remote `main`, local `main`, dan checkout base sama-sama `1f0b6d2449312d3091f277a71e574f986e078ecb`. Run base 29/30 yang gagal pada `platform-org-api.test.ts:148` berlaku persis untuk main tersebut; tidak perlu menjalankannya ulang pada source identik.
+- Antrean typecheck sebelum pengetatan dibatalkan saat masih menunggu (exit 143, TypeScript belum berjalan). Sesudah patch terakhir, satu `heavy pnpm --filter @starter/api typecheck` sedang berjalan/mengantre menggunakan antrean heavy yang telah diperbaiki. Tidak menjalankan build atau `db:generate` tambahan pada follow-up ini.

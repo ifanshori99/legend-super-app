@@ -43,8 +43,9 @@ For WhatsApp login on a local host, set `DEV_LOCAL_TENANT_HOSTS=true` in your
 private local configuration and restart `pnpm dev`. The development/test seed
 registers `localhost` and `127.0.0.1` idempotently. The opt-in resolver accepts
 only those verified seed domains, with an active tenant, in synthetic development
-and a non-production Node runtime. The flag defaults to `false`; production
-startup rejects `true`. Public domain resolution and the TLS ask route keep
+and a non-production Node runtime. The flag defaults to `false`; startup rejects
+`true` outside development deployments or in a production Node runtime. Public
+domain resolution and the TLS ask route keep
 their existing rules.
 
 ## Origins and ports

@@ -186,10 +186,13 @@ const schema = z
   })
   .refine(
     (values) =>
-      values.NODE_ENV !== "production" || !values.DEV_LOCAL_TENANT_HOSTS,
+      !values.DEV_LOCAL_TENANT_HOSTS ||
+      (values.DEPLOYMENT_MODE === "development" &&
+        values.NODE_ENV !== "production"),
     {
       path: ["DEV_LOCAL_TENANT_HOSTS"],
-      message: "DEV_LOCAL_TENANT_HOSTS must be disabled in production.",
+      message:
+        "DEV_LOCAL_TENANT_HOSTS requires DEPLOYMENT_MODE=development and a non-production NODE_ENV.",
     },
   )
   .superRefine((values, ctx) => {

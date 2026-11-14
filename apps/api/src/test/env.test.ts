@@ -50,4 +50,19 @@ describe("API environment", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("DEV_LOCAL_TENANT_HOSTS");
   });
+
+  it("refuses local tenant hosts outside the development deployment", () => {
+    const staging = {
+      NODE_ENV: "test",
+      DEPLOYMENT_MODE: "staging",
+      DATA_CLASSIFICATION: "synthetic",
+    };
+    expect(
+      loadEnv({ ...staging, DEV_LOCAL_TENANT_HOSTS: "false" }).status,
+    ).toBe(0);
+    const result = loadEnv({ ...staging, DEV_LOCAL_TENANT_HOSTS: "true" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("DEV_LOCAL_TENANT_HOSTS");
+    expect(result.stderr).not.toContain("postgresql://");
+  });
 });
