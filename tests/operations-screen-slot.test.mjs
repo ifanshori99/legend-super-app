@@ -16,6 +16,7 @@ const rootRequire = createRequire(new URL("../package.json", import.meta.url));
 const React = webRequire("react");
 const { renderToStaticMarkup } = webRequire("react-dom/server");
 const ts = rootRequire("typescript");
+globalThis.__stubReact = React;
 const stub = (source) => `data:text/javascript,${encodeURIComponent(source)}`;
 
 registerHooks({
@@ -25,6 +26,12 @@ registerHooks({
       "@/components/theme-scope":
         "export const ThemeScope = ({children}) => children;",
       "@/components/ui/badge": "export const Badge = ({children}) => children;",
+      "@/components/ui/button":
+        'const h = globalThis.__stubReact.createElement; export const Button = ({children, ...p}) => h("button", p, children);',
+      "@/components/ui/sheet":
+        'const h = globalThis.__stubReact.createElement; const box = (tag) => ({children, ...p}) => h(tag, p, children); export const Sheet = box("div"); export const SheetTrigger = ({children}) => children; export const SheetContent = box("section"); export const SheetHeader = box("header"); export const SheetTitle = box("h2"); export const SheetDescription = box("p"); export const SheetClose = ({children}) => children;',
+      "@/components/ui/select":
+        "const n = () => null; export const Select = n, SelectContent = n, SelectItem = n, SelectTrigger = n, SelectValue = n;",
       "@/lib/tenant-context":
         'export const useTenantContext = () => ({outlet:null,station:null}); export const useOutletClock = () => ({timeZone:"Asia/Jakarta",businessDayCutoff:"04:00"});',
     };
@@ -59,6 +66,9 @@ const screen = await import(
 );
 const { OperationsShell } = await import(
   new URL("components/shells/operations-shell.tsx", webRoot).href
+);
+const { OutletList } = await import(
+  new URL("components/layout/outlet-picker.tsx", webRoot).href
 );
 const h = React.createElement;
 
@@ -174,4 +184,95 @@ test("kitchen screens hand their title and actions to the shell slot", () => {
   const kds = read("features/ws04-kds/components/kds-page.tsx");
   assert.match(kds, /useOperationsScreen\(/);
   assert.match(kds, /<h1 className="sr-only">\{t\("kds\.title"\)\}<\/h1>/);
+});
+
+test("the shell without an outlet picker still shows the title and actions", () => {
+  const html = renderToStaticMarkup(
+    h(
+      OperationsShell,
+      {
+        title: "Pickup",
+        online: false,
+        actions: h("button", { "data-slot-action": "refresh" }, "Muat ulang"),
+      },
+      "Body",
+    ),
+  );
+  assert.match(html, />Pickup<\/p>/);
+  assert.match(html, /data-slot-action="refresh"/);
+  assert.doesNotMatch(html, /role="radiogroup"/);
+});
+
+test("an outlet sheet control renders behind a labelled outlet button", () => {
+  const html = renderToStaticMarkup(
+    h(
+      OperationsShell,
+      {
+        title: "Expo",
+        online: true,
+        outlet: "Legend Kopi Panjang Sekali Cabang Tengah",
+        station: "Bar",
+        staffName: "Sari",
+        outletControl: h("div", { "data-desktop-picker": "1" }),
+        outletSheetControl: h("div", { role: "radiogroup" }),
+      },
+      "Body",
+    ),
+  );
+  assert.match(html, /aria-label="area\.ops\.outletButton"/);
+  assert.match(html, /<h2[^>]*>area\.ops\.sheetTitle<\/h2>/);
+  assert.match(html, /role="radiogroup"/);
+  // Full outlet, station and staff sit in the sheet; the phone subtitle names
+  // the outlet next to the station.
+  assert.match(html, /<dd[^>]*>Legend Kopi Panjang Sekali Cabang Tengah<\/dd>/);
+  assert.match(html, /<dd[^>]*>Bar<\/dd>/);
+  assert.match(html, /<dd[^>]*>Sari<\/dd>/);
+  assert.match(
+    html,
+    /sm:hidden[^>]*>Legend Kopi Panjang Sekali Cabang Tengah · Bar<\/p>/,
+  );
+  // Desktop keeps the picker; the staff name leaves the phone bar.
+  assert.match(html, /data-desktop-picker="1"/);
+  assert.match(html, /max-sm:hidden[^>]*>Sari<\/span>/);
+});
+
+test("the phone status bar is one 56px row", () => {
+  const html = renderToStaticMarkup(
+    h(OperationsShell, { title: "Expo", online: true }, "Body"),
+  );
+  const header = html.match(/<header[^>]*class="([^"]*)"/)?.[1] ?? "";
+  assert.match(header, /max-sm:h-14/);
+  assert.match(header, /max-sm:py-1/);
+  assert.doesNotMatch(header, /(^|\s)flex-wrap/);
+  assert.match(header, /sm:min-h-16/);
+  // Round 2: phone clock, subtitle and cluster gap stay compact (Badge is stubbed here).
+  assert.match(html, /max-sm:text-sm/);
+  assert.match(html, /text-sm leading-4 text-muted-foreground sm:hidden/);
+  assert.match(html, /max-sm:gap-1\.5/);
+  // Without a picker or actions no empty wrapper shifts the desktop clock.
+  const bar = html.match(/<header[\s\S]*<\/header>/)?.[0] ?? "";
+  assert.doesNotMatch(
+    bar,
+    /class="flex items-center gap-2 sm:min-w-0 sm:flex-wrap"/,
+  );
+  assert.doesNotMatch(bar, /class="flex min-w-0 flex-wrap items-center gap-2"/);
+});
+
+test("the sheet outlet list marks the active outlet without radio roles", () => {
+  const html = renderToStaticMarkup(
+    h(OutletList, {
+      outlets: [
+        { id: "o1", name: "Cabang Satu" },
+        { id: "o2", name: "Cabang Dua" },
+      ],
+      value: "o2",
+      onChange: () => {},
+    }),
+  );
+  assert.match(html, /role="group"/);
+  assert.match(html, /aria-label="area\.outletPicker"/);
+  assert.match(html, /<button[^>]*aria-current="true"[^>]*>[\s\S]*Cabang Dua/);
+  assert.equal(html.match(/aria-current="true"/g)?.length, 1);
+  assert.doesNotMatch(html, /role="radio/);
+  assert.doesNotMatch(html, /aria-checked/);
 });

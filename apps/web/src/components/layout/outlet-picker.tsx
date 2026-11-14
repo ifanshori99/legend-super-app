@@ -2,6 +2,7 @@
 // shell shows it only when there is a real choice; one outlet needs no control.
 import type { MyOutlet } from "@starter/shared/access";
 import { cn } from "cn";
+import { Check } from "lucide-react";
 import { useT } from "@/components/i18n";
 import {
   Select,
@@ -10,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SheetClose } from "@/components/ui/sheet";
 
 export function OutletPicker({
   outlets,
@@ -42,5 +44,52 @@ export function OutletPicker({
         ))}
       </SelectContent>
     </Select>
+  );
+}
+
+/**
+ * Outlet choice as a list inside the status-bar sheet (phones). Picking a row
+ * calls `onChange` and closes the sheet; it must render inside a `Sheet`.
+ */
+export function OutletList({
+  outlets,
+  value,
+  onChange,
+}: {
+  outlets: readonly MyOutlet[];
+  value: string | null;
+  onChange: (outletId: string) => void;
+}) {
+  const t = useT();
+  return (
+    <div
+      role="group"
+      aria-label={t("area.outletPicker")}
+      className="grid gap-1"
+    >
+      {outlets.map((outlet) => {
+        const active = outlet.id === value;
+        return (
+          <SheetClose key={outlet.id} asChild>
+            <button
+              type="button"
+              aria-current={active ? "true" : undefined}
+              onClick={() => {
+                if (!active) onChange(outlet.id);
+              }}
+              className={cn(
+                "flex min-h-12 w-full items-center justify-between gap-3 rounded-control px-3 text-left text-base hover:bg-accent",
+                active && "font-semibold",
+              )}
+            >
+              <span className="min-w-0 break-words">{outlet.name}</span>
+              {active ? (
+                <Check aria-hidden="true" className="size-icon shrink-0" />
+              ) : null}
+            </button>
+          </SheetClose>
+        );
+      })}
+    </div>
   );
 }

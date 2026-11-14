@@ -38,32 +38,36 @@ export function KitchenScreenHeader({
   if (manual === "tapped" && refreshPending) setManual("busy");
   else if (manual === "busy" && !refreshPending) setManual("idle");
   // The shell status bar names the screen and carries the freshness + refresh.
+  const updatedLabel = updatedAt
+    ? t("expo.updatedAt", { time: formatOutletTime(updatedAt, timeZone) })
+    : undefined;
   useOperationsScreen({
     title,
     actions: (
       <>
-        {updatedAt && (
+        {updatedLabel && (
           <p
             role="status"
-            className="text-sm leading-5 whitespace-nowrap text-muted-foreground tabular"
+            className="text-sm leading-5 whitespace-nowrap text-muted-foreground tabular max-sm:hidden"
           >
-            {t("expo.updatedAt", {
-              time: formatOutletTime(updatedAt, timeZone),
-            })}
+            {updatedLabel}
           </p>
         )}
         <Button
           variant="outline"
           size="sm"
-          className="border-input"
+          className="border-input max-sm:size-11 max-sm:px-0"
           onClick={() => {
             setManual("tapped");
             onRefresh();
           }}
           loading={manual === "busy"}
         >
-          <RotateCw aria-hidden="true" />
-          {t("expo.refresh")}
+          <RotateCw
+            aria-hidden="true"
+            className={manual === "busy" ? "max-sm:hidden" : undefined}
+          />
+          <span className="max-sm:sr-only">{t("expo.refresh")}</span>
         </Button>
       </>
     ),
@@ -83,6 +87,14 @@ export function KitchenScreenHeader({
       <p className="max-w-prose text-sm leading-5 text-muted-foreground">
         {intro}
       </p>
+      {updatedLabel && (
+        <p
+          role="status"
+          className="text-sm leading-5 text-muted-foreground tabular sm:hidden"
+        >
+          {updatedLabel}
+        </p>
+      )}
     </header>
   );
 }

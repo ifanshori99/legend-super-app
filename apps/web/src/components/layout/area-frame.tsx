@@ -9,7 +9,7 @@ import { useT } from "@/components/i18n";
 import { AreaGateScreen } from "@/components/layout/area-gate-screen";
 import { AREA_ICONS } from "@/components/layout/area-icons";
 import { OfflineBannerSlot } from "@/components/layout/offline-banner-slot";
-import { OutletPicker } from "@/components/layout/outlet-picker";
+import { OutletList, OutletPicker } from "@/components/layout/outlet-picker";
 import { RouterShellLink } from "@/components/layout/router-link";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { CustomerShell } from "@/components/shells/customer-shell";
@@ -164,6 +164,7 @@ function OperationsFrame({
   online,
   forcedMode,
   outletControl,
+  outletSheetControl,
   children,
 }: {
   areaTitle: string;
@@ -171,6 +172,7 @@ function OperationsFrame({
   online: boolean;
   forcedMode?: "dark";
   outletControl: ReactNode;
+  outletSheetControl: ReactNode;
   children: ReactNode;
 }) {
   const screen = useOperationsScreenValue();
@@ -181,11 +183,12 @@ function OperationsFrame({
       online={online}
       mode={forcedMode}
       outletControl={outletControl}
+      outletSheetControl={outletSheetControl}
       actions={
         screen.actions || !forcedMode ? (
           <>
             {screen.actions}
-            {forcedMode ? null : <ThemeToggle />}
+            {forcedMode ? null : <ThemeToggle className="max-sm:size-11" />}
           </>
         ) : null
       }
@@ -264,20 +267,30 @@ function AreaFrameBody({
     outletChoice(outlets) === "multiple" &&
     (definition.shell === "operations" ||
       (area === "kelola" && kelolaUsesOutletContext(pathname)));
+  const pickOutlet = (outletId: string) => {
+    onSelectOutlet(outletId);
+    const name = outlets.find((row) => row.id === outletId)?.name;
+    if (name) setAnnouncement(t("area.outletChanged", { name }));
+  };
+  // The operations shell hides the Select below `sm`; phones pick in a sheet.
   const outletPicker = showOutletPicker ? (
     <OutletPicker
       outlets={outlets}
       value={selectedOutletId}
-      onChange={(outletId) => {
-        onSelectOutlet(outletId);
-        const name = outlets.find((row) => row.id === outletId)?.name;
-        if (name) setAnnouncement(t("area.outletChanged", { name }));
-      }}
+      onChange={pickOutlet}
       className={
-        definition.shell === "operations" ? "max-sm:w-full" : undefined
+        definition.shell === "operations" ? "max-sm:hidden" : undefined
       }
     />
   ) : null;
+  const outletSheetList =
+    showOutletPicker && definition.shell === "operations" ? (
+      <OutletList
+        outlets={outlets}
+        value={selectedOutletId}
+        onChange={pickOutlet}
+      />
+    ) : null;
   // A Kelola screen that works in the selected outlet has nothing to load for
   // an account with no outlet (a new tenant): point to where the first outlet
   // is created instead of leaving a skeleton that never resolves.
@@ -389,6 +402,7 @@ function AreaFrameBody({
           online={online}
           forcedMode={definition.forcedMode}
           outletControl={outletPicker}
+          outletSheetControl={outletSheetList}
         >
           {body}
         </OperationsFrame>
