@@ -95,10 +95,20 @@ export const CATALOG_SYNC_LIMIT_DEFAULT = PAGE_LIMIT_MAX;
  * no parameter) gets pages without the field, as before. A newer edge asks for
  * the version; an older cloud rejects the unknown parameter (HTTP 400), which
  * the edge reports as CATALOG_CLOUD_OUTDATED.
+ *
+ * History: v2 added `syncTxid`; v3 added `displayOrder`, `isActive` and
+ * `autoPrintFallback` to the station record. The cloud sends those three only
+ * when the negotiated version is >= 3; an edge that asks for less (or sends no
+ * parameter) gets the station record without them, so it does not stall on its
+ * strict schema.
  */
-export const CATALOG_PROTOCOL_VERSION = 2;
-/** Oldest cloud version the edge still accepts (first one with `syncTxid`). */
-export const CATALOG_PROTOCOL_MIN_VERSION = 2;
+export const CATALOG_PROTOCOL_VERSION = 3;
+/**
+ * Oldest cloud version the edge still accepts (first one whose station record
+ * carries `displayOrder`, `isActive` and `autoPrintFallback`; v2 added
+ * `syncTxid`).
+ */
+export const CATALOG_PROTOCOL_MIN_VERSION = 3;
 
 export const catalogSyncQuerySchema = z.strictObject({
   stream: catalogSyncStreamSchema,
@@ -141,6 +151,15 @@ const stamps = {
   syncTxid: syncTxidSchema,
 };
 
+/** First protocol version whose station record has the KDS fields. */
+export const CATALOG_STATION_KDS_FIELDS_MIN_VERSION = 3;
+/** Station fields only a protocol >= 3 edge understands. */
+export const STATION_KDS_FIELDS = [
+  "displayOrder",
+  "isActive",
+  "autoPrintFallback",
+] as const;
+
 /** Production routing per outlet; scope = the credential's outlet. */
 export const stationSyncRecordSchema = z.strictObject({
   id: uuidSchema,
@@ -151,6 +170,10 @@ export const stationSyncRecordSchema = z.strictObject({
   /** Plain UUID (no `devices` row required on the edge). */
   printerDeviceId: uuidSchema.nullable(),
   targetSeconds: z.number().int().nullable(),
+  /** KDS tab order, left to right. */
+  displayOrder: z.number().int().min(0),
+  isActive: z.boolean(),
+  autoPrintFallback: z.boolean(),
   ...stamps,
 });
 

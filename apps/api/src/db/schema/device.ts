@@ -43,6 +43,8 @@ export type DeviceType =
   | "panic_button"
   | "edc";
 export type DeviceStatus = "active" | "revoked";
+/** Barcode scanner state a KDS device reports in its heartbeat. */
+export type DeviceScannerStatus = "connected" | "disconnected";
 
 export const devices = pgTable(
   "devices",
@@ -61,6 +63,15 @@ export const devices = pgTable(
       .default(sql`'[]'::jsonb`),
     trainingMode: boolean("training_mode").notNull().default(false),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    /**
+     * Scanner state the device last reported (legend-40nvj). NULL = never
+     * reported; a heartbeat without a `scanner` field leaves both columns alone.
+     */
+    scannerStatus: varchar("scanner_status", {
+      length: 20,
+    }).$type<DeviceScannerStatus>(),
+    /** When the device shell last saw the scanner state change. */
+    scannerObservedAt: timestamp("scanner_observed_at", { withTimezone: true }),
     status: varchar("status", { length: 20 })
       .$type<DeviceStatus>()
       .notNull()
@@ -111,6 +122,10 @@ export const devices = pgTable(
     check(
       "devices_status_check",
       sql`(${table.status} = 'active' AND ${table.revokedAt} IS NULL) OR (${table.status} = 'revoked' AND ${table.revokedAt} IS NOT NULL)`,
+    ),
+    check(
+      "devices_scanner_status_check",
+      sql`${table.scannerStatus} IS NULL OR ${table.scannerStatus} IN ('connected', 'disconnected')`,
     ),
   ],
 );

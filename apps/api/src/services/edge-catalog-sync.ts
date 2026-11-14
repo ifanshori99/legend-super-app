@@ -41,6 +41,8 @@
 
 import {
   CATALOG_PROTOCOL_VERSION,
+  CATALOG_STATION_KDS_FIELDS_MIN_VERSION,
+  STATION_KDS_FIELDS,
   catalogSyncPageSchema,
   catalogSyncQuerySchema,
   catalogSyncRecordSchemas,
@@ -273,6 +275,9 @@ const scanners: Record<
         type: row.type,
         printerDeviceId: row.printerDeviceId,
         targetSeconds: row.targetSeconds,
+        displayOrder: row.displayOrder,
+        isActive: row.isActive,
+        autoPrintFallback: row.autoPrintFallback,
         ...stamps(row),
       },
     }));
@@ -802,9 +807,9 @@ const scanners: Record<
 /**
  * The page version for an edge that understands up to `requested`: the lower
  * of that and this cloud's own. A newer edge gets this cloud's version (it
- * decides whether it can read it); an older one gets its own. Only version 2
- * exists, so every page has the v2 shape whatever is stamped; when v3
- * changes the shape, serve the shape of the returned version here.
+ * decides whether it can read it); an older one gets its own. The page shape
+ * follows the returned version (see `listCatalogRecordsSince`): v3 added the
+ * station KDS fields, which a v2 edge or one without the parameter must not get.
  */
 export function negotiateCatalogProtocolVersion(requested: number): number {
   return Math.min(requested, CATALOG_PROTOCOL_VERSION);
@@ -872,12 +877,14 @@ export async function listCatalogRecordsSince(
     last === undefined
       ? null
       : encodeMark({ txid: last.txid, keys: last.keys });
-  return catalogSyncPageSchema.parse({
+  const stamped =
+    protocolVersion === undefined
+      ? undefined
+      : negotiateCatalogProtocolVersion(protocolVersion);
+  const full = catalogSyncPageSchema.parse({
     // Only an edge that asked: an older edge's strict page schema would
     // refuse the field and stop syncing.
-    ...(protocolVersion === undefined
-      ? {}
-      : { protocolVersion: negotiateCatalogProtocolVersion(protocolVersion) }),
+    ...(stamped === undefined ? {} : { protocolVersion: stamped }),
     stream,
     records: page.map(({ record }) =>
       catalogSyncRecordSchemas[stream].parse(record),
@@ -885,4 +892,20 @@ export async function listCatalogRecordsSince(
     nextCursor: lastMark ?? input.query.since ?? null,
     hasMore: rows.length > limit,
   });
+  // Station KDS fields (v3) only for an edge that asked for v3 or newer. An
+  // older edge (v2 or no parameter) has a strict station schema without them.
+  if (
+    full.stream === "stations" &&
+    (stamped ?? 0) < CATALOG_STATION_KDS_FIELDS_MIN_VERSION
+  ) {
+    return {
+      ...full,
+      records: full.records.map((record) => {
+        const legacy: Record<string, unknown> = { ...record };
+        for (const field of STATION_KDS_FIELDS) delete legacy[field];
+        return legacy;
+      }),
+    } as unknown as CatalogSyncPage;
+  }
+  return full;
 }
