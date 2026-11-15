@@ -2493,6 +2493,13 @@
       "when": 1794712541377,
       "tag": "0369_payout_proof_fingerprint_frozen_cash",
       "breakpoints": true
+    },
+    {
+      "idx": 370,
+      "version": "7",
+      "when": 1794800000000,
+      "tag": "0620_payout_skipped_settle_guard",
+      "breakpoints": true
     }
   ]
 }

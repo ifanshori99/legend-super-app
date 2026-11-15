@@ -39,7 +39,16 @@
 //   handover (`source_gl_account_id`, legend-cnpap) and resolves to it, not to
 //   a mapping changed later; a missing cash mapping refuses 409
 //   PAYOUT_SOURCE_ACCOUNT_MISSING before anything is recorded. A legacy pending
-//   cash posting without it falls back to the mapping of the moment.
+//   cash posting without the frozen account fails closed (409): it never
+//   credits cash from today's mapping.
+//   The bank fee of a pending settlement is journaled when it resolves (the
+//   posting says `fee_posted = false` until then; same key, so exactly once),
+//   from the frozen bank account; a missing bank charges mapping leaves
+//   `fee_posted = false` for `repostSkippedFees`, it never blocks the resolve.
+//   A `settle_skipped` posting with a real net (money left while accounting was
+//   off) is turned into `settle` the same way once the consumer has posted the
+//   lock journal (legend-vvzij), so 2103 of that batch does not stay open. If
+//   no source account can be resolved without a throw, it stays skipped.
 // - `payroll.paid` leaves the outbox once, when the run turned paid, with
 //   `settledPerItem: true`: the GL consumer posts nothing for it.
 //
@@ -65,6 +74,7 @@ import {
   payrollPayoutGlPostings,
   type PayoutPostingKind,
 } from "../db/schema/payroll-payout.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
 import {
   PAYROLL_SEAL_KEY_VERSION,
@@ -184,6 +194,24 @@ async function runHasLockedJournal(
       and(
         eq(journalEntries.tenantId, tenantId),
         eq(journalEntries.idempotencyKey, payrollGlKeys.locked(runId)),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+async function journalKeyExists(
+  tx: Tx,
+  tenantId: TenantId,
+  idempotencyKey: string,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: journalEntries.id })
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, tenantId),
+        eq(journalEntries.idempotencyKey, idempotencyKey),
       ),
     )
     .limit(1);
@@ -359,6 +387,48 @@ async function pendingSettleOverride(
 }
 
 /**
+ * The account override of a `settle_skipped` posting that is being turned into
+ * a settle (legend-vvzij). Never throws for a missing account: the consumer
+ * must not stall, so it returns undefined and the posting stays skipped. Bank:
+ * the frozen batch account like a pending settle, only if its GL account is
+ * postable. Cash: the account stored on the posting when it was skipped, else
+ * (older rows) the petty cash mapping of the moment; only if postable.
+ */
+async function skippedSettleOverride(
+  tx: Tx,
+  tenantId: TenantId,
+  batch: Pick<BatchRow, "channel" | "legalEntityId" | "sourceBankAccountId">,
+  posting: { sourceGlAccountId: string | null },
+): Promise<Partial<Record<"bank" | "petty_cash", string>> | undefined> {
+  if (batch.channel === "cash") {
+    const accountId =
+      posting.sourceGlAccountId ??
+      (await mappedPettyCashAccount(tx, tenantId, batch.legalEntityId));
+    if (
+      accountId === null ||
+      !(await glAccountPostable(tx, tenantId, batch.legalEntityId, accountId))
+    )
+      return undefined;
+    return { petty_cash: accountId };
+  }
+  let override: Partial<Record<"bank" | "petty_cash", string>> | undefined;
+  try {
+    override = await pendingSettleOverride(tx, tenantId, batch, posting);
+  } catch (error) {
+    if (error instanceof HttpError) return undefined;
+    throw error;
+  }
+  // A frozen bank GL account that is not postable now would make the journal
+  // fail (ACCOUNT_INACTIVE) and stall the consumer: stay skipped instead.
+  if (
+    override?.bank !== undefined &&
+    !(await glAccountPostable(tx, tenantId, batch.legalEntityId, override.bank))
+  )
+    return undefined;
+  return override;
+}
+
+/**
  * Settles every `succeeded` item of the batch that has no posting yet.
  * Idempotent and safe to call from confirm, cash handover, return and replay:
  * a second call (also a concurrent one, after it waited on the lock) finds
@@ -449,6 +519,22 @@ export async function settleBatchPayouts(
       );
   }
 
+  // A skipped CASH settlement remembers the petty cash account of this moment
+  // when it is usable (best effort, never refuses): if the lock journal comes
+  // later, the settle follows this account, not a later remap.
+  if (kind === "settle_skipped" && batch.channel === "cash") {
+    const mapped = await mappedPettyCashAccount(
+      tx,
+      tenantId,
+      batch.legalEntityId,
+    );
+    pendingCashAccountId =
+      mapped !== null &&
+      (await glAccountPostable(tx, tenantId, batch.legalEntityId, mapped))
+        ? mapped
+        : null;
+  }
+
   // Fail closed on the source account BEFORE the journal branch (legend-ijhe3):
   // with accounting on, an unusable source is refused whether or not the run
   // has a locked journal, so it is never turned into `settle_skipped`. Nothing
@@ -476,6 +562,11 @@ export async function settleBatchPayouts(
         "payout fee not posted: bank charges mapping or source account missing",
       );
   }
+  // A pending settlement journals its fee when it resolves (also with
+  // accounting switched off since): the money left, so the fee must not be
+  // marked posted here (legend-1t65x).
+  if (kind === "settle_pending" && feeIdr > 0 && !feeJournaled)
+    feePosted = false;
   if (journaled || feeJournaled) {
     const context = payoutScope(actor.tenantId);
     const entryDate = payrollEntryDateOf(now.toISOString());
@@ -570,6 +661,8 @@ export async function settleBatchPayouts(
 }
 
 /**
+ * Also turns a `settle_skipped` posting with a net into `settle` (legend-vvzij)
+ * and journals the fee a pending/skipped posting still owes (legend-1t65x).
  * Resolves every `settle_pending` posting of the run once its `payroll.locked`
  * journal exists (legend-2aspe): posts the payout journal under the posting's
  * own settle key (Cr the source account exactly the sealed net, Dr 2103), then
@@ -618,19 +711,32 @@ export async function resolvePendingSettles(
         and(
           eq(payrollPayoutGlPostings.tenantId, tenantId),
           eq(payrollPayoutGlPostings.batchId, batch.id),
-          eq(payrollPayoutGlPostings.kind, "settle_pending"),
+          inArray(payrollPayoutGlPostings.kind, [
+            "settle_pending",
+            "settle_skipped",
+          ]),
         ),
       )
       .orderBy(asc(payrollPayoutGlPostings.id))
       .for("update");
     for (const posting of postings) {
       const netIdr = openPostingTotal(posting, tenantId, "netIdr");
-      const accountOverrides = await pendingSettleOverride(
-        tx,
-        tenantId,
-        batch,
-        posting,
-      );
+      // A skipped posting with a real net: money left while accounting was off
+      // and the lock journal came after (legend-vvzij). It becomes a normal
+      // settle; with no resolvable source account it stays skipped and never
+      // stalls the consumer.
+      const wasSkipped = posting.kind === "settle_skipped";
+      if (wasSkipped && netIdr === 0) continue;
+      const accountOverrides = wasSkipped
+        ? await skippedSettleOverride(tx, tenantId, batch, posting)
+        : await pendingSettleOverride(tx, tenantId, batch, posting);
+      if (accountOverrides === undefined) {
+        logger.warn(
+          { tenantId, batchId: batch.id, reason: "skipped_settle_no_source" },
+          "payout skipped settlement left as is: source account not resolvable",
+        );
+        continue;
+      }
       await postJournalFromRuleInTransaction(
         tx,
         context,
@@ -655,7 +761,7 @@ export async function resolvePendingSettles(
           and(
             eq(payrollPayoutGlPostings.tenantId, tenantId),
             eq(payrollPayoutGlPostings.id, posting.id),
-            eq(payrollPayoutGlPostings.kind, "settle_pending"),
+            eq(payrollPayoutGlPostings.kind, posting.kind),
           ),
         )
         .returning({ id: payrollPayoutGlPostings.id });
@@ -686,6 +792,63 @@ export async function resolvePendingSettles(
           item,
           now,
         );
+      // The bank fee the settle could not journal (pending: `fee_posted =
+      // false`; skipped: accounting was off). Same key as the settle path, so
+      // it posts exactly once; it never changes the net or 2103. A missing
+      // bank charges mapping never blocks the resolve: `fee_posted` stays
+      // false and finance re-posts it (`repostSkippedFees`).
+      const feeIdr = openPostingTotal(posting, tenantId, "feeIdr");
+      if (feeIdr > 0 && (!posting.feePosted || wasSkipped)) {
+        // A fee journal that already exists (earlier fee post or re-post) is
+        // never posted again and never flips the flag back to false.
+        const feeJournalExists = await journalKeyExists(
+          tx,
+          tenantId,
+          payoutGlKeys.fee(posting.itemSetHash),
+        );
+        const feeMapped =
+          feeJournalExists ||
+          (await bankChargesMapped(tx, tenantId, batch.legalEntityId));
+        if (feeJournalExists) {
+          // Nothing to post.
+        } else if (feeMapped)
+          await postJournalFromRuleInTransaction(
+            tx,
+            context,
+            {
+              eventName: "payroll.paid",
+              variant: "payout_fee",
+              amounts: { feeIdr },
+              legalEntityId: batch.legalEntityId,
+              outletId: null,
+              entryDate,
+              sourceId: batch.payrollRunId,
+              postedBy: null,
+              idempotencyKey: payoutGlKeys.fee(posting.itemSetHash),
+              accountOverrides,
+            },
+            now,
+          );
+        else
+          logger.warn(
+            { tenantId, batchId: batch.id, reason: "fee_skipped_no_mapping" },
+            "payout fee not posted: bank charges mapping missing",
+          );
+        // Only false -> true: the posting guard refuses the other direction, so
+        // a skipped posting (flag true from the start) whose fee cannot be
+        // journaled keeps its flag and the resolve still goes through.
+        if (feeMapped && !posting.feePosted)
+          await tx
+            .update(payrollPayoutGlPostings)
+            .set({ feePosted: true })
+            .where(
+              and(
+                eq(payrollPayoutGlPostings.tenantId, tenantId),
+                eq(payrollPayoutGlPostings.id, posting.id),
+                eq(payrollPayoutGlPostings.feePosted, false),
+              ),
+            );
+      }
       resolved += 1;
     }
   }
