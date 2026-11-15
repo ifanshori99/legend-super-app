@@ -90,3 +90,5 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 
 - Second opinion Codex wajib sebelum gerbang rilis (area uang dan payout).
 - Remote `int/batch64f` basi (jangan ditimpa).
+- `fix/edc-agent-867` 569a56005 (base 46f9d1bca = batch65; tanpa migrasi; architect xhigh, 5 temuan dibetulkan; gagal-dulu 8/14). Cabang uang EDC: bukti tanpa sale kedua tetap berlaku. Tes root kontrak belum diulang setelah ronde 2 (server.ts, unit systemd, deployment.md) — fast gate wajib memuatnya.
+- `ghostex/4eda746b` 4db4c178e (868 API antrean rekonsiliasi EDC + UI 865 5fb5f8273 di dalamnya; tanpa migrasi; architect xhigh akses, 4/5 temuan dibetulkan). Menggantikan `ui/edc-rekonsiliasi-865`; jangan antre 865 terpisah.
