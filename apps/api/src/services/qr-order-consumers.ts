@@ -46,6 +46,7 @@
 import { and, asc, eq, inArray, lte, notExists, sql } from "drizzle-orm";
 import { uuidSchema, z, type ScopedTenantContext } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
+import type { PaymentStatus } from "@starter/shared/payment";
 import { PosError } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import {
@@ -130,6 +131,16 @@ export type UnpaidQrOrderState = {
   readonly attempts: number;
   /** A pending code that is not past its expiry plus the late grace. */
   readonly hasOpenIntent: boolean;
+  /** An open or cancelling QR hold of the bill: a code may still be paid. */
+  readonly hasActiveHold: boolean;
+  /**
+   * SO-879: every payment that came into the link has a COMPLETED refund of at
+   * least its amount (and something was paid). A link that is "fully paid" in
+   * that state holds no guest money any more.
+   */
+  readonly netCapturedZero: boolean;
+  /** A refund of the link is pending, approved but not paid out, or failed. */
+  readonly anyRefundOpen: boolean;
   /** End of the last payment window: max(placed at, last code expiry). */
   readonly windowClosedAt: Date;
 };
@@ -149,10 +160,26 @@ export function decideUnpaidQrOrder(
   now: Date,
   providerFinal = false,
 ): UnpaidQrOrderDecision {
-  // Money already covers the bill: payment.paid fires it, never void it.
-  if (state.linkFullyPaid) return { action: "keep", why: "unchanged" };
+  // Money already covers the bill: payment.paid fires it, never void it. The
+  // one exception (SO-879): the money was all paid back (completed refunds
+  // cover every payment, none pending or failed) and every code is dead, so
+  // nothing is captured and nothing can still arrive. Any doubt keeps it.
+  const refundedAndDead =
+    state.linkFullyPaid &&
+    state.netCapturedZero &&
+    !state.anyRefundOpen &&
+    !state.hasOpenIntent &&
+    !state.hasActiveHold;
+  if (state.linkFullyPaid && !refundedAndDead)
+    return { action: "keep", why: "unchanged" };
   if (state.hasOpenIntent) return { action: "keep", why: "unchanged" };
   const idleMs = now.getTime() - state.windowClosedAt.getTime();
+  // A fully paid link takes no new code, so there is no retry to wait for.
+  if (refundedAndDead) {
+    if (!providerFinal && idleMs < LATE_PAYMENT_GRACE_MS)
+      return { action: "keep", why: "awaiting_grace" };
+    return { action: "void", reason: "payment_refunded_codes_dead" };
+  }
   const linkValid =
     state.linkExpiresAt === null ||
     state.linkExpiresAt.getTime() > now.getTime();
@@ -228,6 +255,71 @@ async function supersededIntentIds(
   return new Set(rows.map((row) => row.intentId));
 }
 
+/**
+ * SO-879: where the guest's money stands on a fully paid link, read under the
+ * intent row locks the refund writers hold (lock order: order row -> intents
+ * ascending, as the fire path). `netCapturedZero`: something was paid and every
+ * intent's COMPLETED refunds (of any kind) cover everything that came in for
+ * it; an intent still marked paid with no evidence is unknown, so not zero.
+ * `anyRefundOpen`: any refund of the link that is not completed (pending,
+ * approved but not paid out, failed). Both answer the safe way on doubt.
+ */
+async function refundPositionOfLink(
+  tx: Tx,
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+): Promise<{ netCapturedZero: boolean; anyRefundOpen: boolean }> {
+  const tenantId = context.tenant.tenantId;
+  await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.paymentLinkId, paymentLinkId),
+      ),
+    )
+    .orderBy(asc(paymentIntents.id))
+    .for("update");
+  const result = await tx.execute<{
+    status: string;
+    received: string;
+    completed: string;
+    open_refunds: string;
+  }>(sql`
+    SELECT i.status,
+           coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
+                      WHERE e.tenant_id = i.tenant_id
+                        AND e.payment_intent_id = i.id), 0)::text AS received,
+           coalesce((SELECT sum(r.amount_idr) FROM payment_refunds r
+                      WHERE r.tenant_id = i.tenant_id
+                        AND r.payment_intent_id = i.id
+                        AND r.status = 'completed'), 0)::text AS completed,
+           (SELECT count(*) FROM payment_refunds r
+             WHERE r.tenant_id = i.tenant_id
+               AND r.payment_intent_id = i.id
+               AND r.status <> 'completed')::text AS open_refunds
+      FROM payment_intents i
+     WHERE i.tenant_id = ${tenantId}
+       AND i.payment_link_id = ${paymentLinkId}`);
+  let received = 0n;
+  let netCapturedZero = true;
+  let anyRefundOpen = false;
+  for (const row of result.rows) {
+    const came = BigInt(row.received);
+    received += came;
+    if (BigInt(row.completed) < came) netCapturedZero = false;
+    if (
+      came === 0n &&
+      (HOLDS_REFUNDABLE_MONEY.includes(row.status as PaymentStatus) ||
+        row.status === "refunded")
+    )
+      netCapturedZero = false;
+    if (Number(row.open_refunds) > 0) anyRefundOpen = true;
+  }
+  return { netCapturedZero: netCapturedZero && received > 0n, anyRefundOpen };
+}
+
 async function loadUnpaidState(
   tx: Tx,
   context: ScopedTenantContext,
@@ -243,6 +335,9 @@ async function loadUnpaidState(
       linkFullyPaid: false,
       attempts: 0,
       hasOpenIntent: false,
+      hasActiveHold: false,
+      netCapturedZero: false,
+      anyRefundOpen: false,
       windowClosedAt: order.placedAt,
     };
   const [link] = await tx
@@ -306,12 +401,29 @@ async function loadUnpaidState(
                 ).length,
             ),
         );
+  const linkFullyPaid = link !== undefined && link.paidIdr >= link.totalIdr;
+  const refunds = linkFullyPaid
+    ? await refundPositionOfLink(tx, context, order.paymentLinkId)
+    : { netCapturedZero: false, anyRefundOpen: false };
+  const [activeHold] = await tx
+    .select({ id: posQrisHolds.id })
+    .from(posQrisHolds)
+    .where(
+      and(
+        eq(posQrisHolds.tenantId, tenantId),
+        eq(posQrisHolds.orderId, order.id),
+        inArray(posQrisHolds.state, ["open", "cancelling"]),
+      ),
+    )
+    .limit(1);
   return {
     sessionActive,
     // A missing link row fails closed: treated as expired.
     linkExpiresAt: link ? (link.expiresAt ?? null) : new Date(0),
-    linkFullyPaid: link !== undefined && link.paidIdr >= link.totalIdr,
+    linkFullyPaid,
     attempts,
+    hasActiveHold: activeHold !== undefined,
+    ...refunds,
     hasOpenIntent: intents.some(
       (row) =>
         row.status === "pending" &&

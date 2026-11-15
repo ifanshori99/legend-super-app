@@ -72,6 +72,8 @@ import {
 } from "../services/payment-gateway.ts";
 import { setPaymentRefundGateway } from "../services/payment-refund-gateway.ts";
 import { confirmPayment } from "../services/payment.service.ts";
+import { sweepUnpaidQrOrders } from "../services/qr-order-consumers.ts";
+import { runPosQrisHoldCheckJob } from "../worker/pos-qris-hold-check.job.ts";
 import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
@@ -113,6 +115,8 @@ const GUARD_CODE = "REFUND_INTENT_IN_QR_SALE";
 class FakeGateway implements PaymentGatewayPort {
   readonly provider = "doit";
   created = 0;
+  /** Provider references the provider reports as expired (rawStatus "02"). */
+  readonly dead = new Set<string>();
   async health() {
     return { status: "available" as const };
   }
@@ -138,6 +142,13 @@ class FakeGateway implements PaymentGatewayPort {
     };
   }
   async getStatus(input: { providerRef: string }) {
+    if (this.dead.has(input.providerRef))
+      return {
+        status: "expired" as const,
+        rawStatus: "02",
+        providerRef: input.providerRef,
+        amountIdr: null,
+      };
     return {
       status: "pending" as const,
       providerRef: input.providerRef,
@@ -673,9 +684,44 @@ describe("QR order fire versus refunds committed on the payer intent (legend-9vz
     await deliverToQr(eventA);
     expect(await systemRefunds(intentA)).toEqual(refunded);
 
-    // Not asserted here: the order is not voided once B's hold closes. A's
-    // payment already fills the link, so `payment.failed` for B and the sweep
-    // both answer `unchanged` (open finding, reported with legend-kf104).
+    // Voided later (SO-879): B is proven dead by the hold check job and the
+    // refunds of A are all completed, so the sweep voids the order. A's money
+    // is back in full and not refunded a second time.
+    const { rows: bRows } = await owner.query<{ provider_ref: string }>(
+      `UPDATE payment_intents SET expires_at = now() - interval '15 minutes'
+        WHERE tenant_id = $1 AND id = $2 RETURNING provider_ref`,
+      [tenant.tenantId, intentB],
+    );
+    gateway.dead.add(bRows[0]!.provider_ref);
+    await runPosQrisHoldCheckJob(contextOf(tenant.tenantId), new Date(), {
+      force: true,
+    });
+    await owner.query(
+      `UPDATE payment_refunds SET status = 'completed', completed_at = now()
+        WHERE tenant_id = $1 AND payment_intent_id = $2`,
+      [tenant.tenantId, intentA],
+    );
+    await owner.query(
+      "UPDATE payment_intents SET status = 'refunded' WHERE tenant_id = $1 AND id = $2",
+      [tenant.tenantId, intentA],
+    );
+
+    await sweepUnpaidQrOrders(
+      contextOf(tenant.tenantId),
+      new Date(Date.now() + 10 * 60_000),
+    );
+    await sweepUnpaidQrOrders(
+      contextOf(tenant.tenantId),
+      new Date(Date.now() + 10 * 60_000),
+    );
+
+    expect((await orderRow(orderId)).status).toBe("voided");
+    expect((await orderRow(orderId)).void_reason).toBe(
+      "payment_refunded_codes_dead",
+    );
+    expect(await orderPaidEventCount(orderId)).toBe(0);
+    expect(await refundsOf(intentA)).toHaveLength(2);
+    expect(await refundsOf(intentB)).toEqual([]);
   });
 
   it("QR-FIRE-REFUND-F4 no refund at all: the order fires, fired_at is set and the payer is the paying intent", async () => {

@@ -609,6 +609,7 @@ describe("duitku adapter: getStatus", () => {
       const { port, loadCredentialsById } = gateway({ fetch: fn });
       expect(await port.getStatus(statusRequest())).toEqual({
         ...expected,
+        rawStatus: code,
         providerRef: "REF-1",
         paidAt: null,
       });
