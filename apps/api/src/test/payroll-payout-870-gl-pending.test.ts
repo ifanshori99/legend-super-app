@@ -786,7 +786,8 @@ async function breakGlAccount(code: string, how: "inactive" | "header") {
   );
   return () =>
     W.asTenant(
-      (c) => c.query(`DELETE FROM chart_of_accounts WHERE id = $1`, [child!.id]),
+      (c) =>
+        c.query(`DELETE FROM chart_of_accounts WHERE id = $1`, [child!.id]),
       true,
     );
 }

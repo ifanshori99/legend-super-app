@@ -989,6 +989,10 @@ async function assertProofNotUsedForReturn(
   tenantId: TenantId,
   evidence: string,
 ): Promise<void> {
+  const sha = await evidenceFingerprint(tx, tenantId, evidence);
+  // Two batches racing on the same file content serialize here (lock order:
+  // run row, batch row, batch advisory, proof advisory).
+  if (sha !== null) await lockProofFingerprint(tx, tenantId, sha);
   const [proofUsed] = await tx
     .select({ id: payrollDisbursementItems.id })
     .from(payrollDisbursementItems)
@@ -1011,7 +1015,6 @@ async function assertProofNotUsedForReturn(
     .limit(1);
   if (proofUsed || claimUsed) throw refuseReusedReturnProof();
   // The same file content under another key (a re-upload) is the same proof.
-  const sha = await evidenceFingerprint(tx, tenantId, evidence);
   if (sha === null) return;
   const [shaClaimed] = await tx
     .select({ id: payrollPayoutReturnClaims.id })
@@ -1024,6 +1027,17 @@ async function assertProofNotUsedForReturn(
     )
     .limit(1);
   if (shaClaimed) throw refuseReusedReturnProof();
+}
+
+/** Transaction-scoped lock on one proof content, so two batches cannot both pass the reuse checks. */
+async function lockProofFingerprint(
+  tx: Tx,
+  tenantId: TenantId,
+  sha: string,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`payout-proof:${tenantId}:${sha}`}))`,
+  );
 }
 
 /** SHA-256 stored at upload for an evidence key; null for a proof without one (legacy). */
@@ -1092,6 +1106,10 @@ async function bindReturnClaim(
         .join("\n"),
     )
     .digest("hex");
+  const sha = await evidenceFingerprint(tx, tenantId, evidence);
+  // Two batches racing on the same file content serialize here (lock order:
+  // run row, batch row, batch advisory, proof advisory).
+  if (sha !== null) await lockProofFingerprint(tx, tenantId, sha);
   // The proof must not already free or confirm any item (review F3): a proof
   // that resolved a payslip as failed cannot also return another one.
   const [otherFlow] = await tx
@@ -1108,7 +1126,6 @@ async function bindReturnClaim(
     )
     .limit(1);
   if (otherFlow) throw refuseReusedReturnProof();
-  const sha = await evidenceFingerprint(tx, tenantId, evidence);
   if (sha !== null) {
     // The same file content under ANOTHER key must not already back another
     // return claim, nor any item's payment confirmation or resolution.

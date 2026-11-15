@@ -94,6 +94,7 @@ import {
   assertManualPayoutSetup,
   bankChargesMapped,
   frozenSourceGlAccount,
+  glAccountPostable,
   settledSourceAccount,
 } from "./payroll-payout-setup.ts";
 
@@ -298,8 +299,8 @@ async function mappedPettyCashAccount(
  * left from that account, so a company bank account deactivated since then must
  * not strand the settlement. A batch without a frozen account follows the config
  * (it has nothing else). Cash: the petty cash account stored on the posting at
- * the handover (legend-cnpap); a legacy posting without one follows today's
- * mapping (undefined). Throws 409 when nothing resolves, so the consumer
+ * the handover (legend-cnpap); a posting without one never follows today's
+ * mapping (fail closed). Throws 409 when nothing resolves, so the consumer
  * retries instead of leaving 2103 open for good.
  */
 async function pendingSettleOverride(
@@ -308,10 +309,17 @@ async function pendingSettleOverride(
   batch: Pick<BatchRow, "channel" | "legalEntityId" | "sourceBankAccountId">,
   posting: { sourceGlAccountId: string | null },
 ): Promise<Partial<Record<"bank" | "petty_cash", string>> | undefined> {
-  if (batch.channel === "cash")
-    return posting.sourceGlAccountId === null
-      ? undefined
-      : { petty_cash: posting.sourceGlAccountId };
+  if (batch.channel === "cash") {
+    // A pending cash posting never falls back to today's mapping: the money
+    // left from the account frozen at the handover, so without it fail closed.
+    if (posting.sourceGlAccountId === null)
+      throw payoutRefuse(
+        409,
+        PAYOUT_SOURCE_ACCOUNT_MISSING.code,
+        PAYOUT_SOURCE_ACCOUNT_MISSING.message,
+      );
+    return { petty_cash: posting.sourceGlAccountId };
+  }
   if (batch.sourceBankAccountId !== null) {
     const [row] = await tx
       .select({ glAccountId: bankAccounts.glAccountId })
@@ -397,13 +405,18 @@ export async function settleBatchPayouts(
   const journalKey = payoutGlKeys.settle(hash);
   const journaled =
     netIdr > 0 && (await runHasLockedJournal(tx, tenantId, batch.payrollRunId));
-  // Accounting on and the locked event still queued: keep the settlement
-  // pending (legend-2aspe) instead of dropping it as `settle_skipped`.
+  // Locked event still queued and accounting on, or accounting switched off
+  // after an earlier batch of the same run went pending (the consumer then
+  // posts the lock journal and resolves it): keep this settlement pending too
+  // (legend-2aspe) instead of dropping it as `settle_skipped`, or its net stays
+  // open on 2103.
+  const accountingOn = await accountingEnabled(tx, tenantId);
   const pending =
     !journaled &&
     netIdr > 0 &&
-    (await accountingEnabled(tx, tenantId)) &&
-    (await runLockPending(tx, tenantId, batch.payrollRunId));
+    (await runLockPending(tx, tenantId, batch.payrollRunId)) &&
+    (accountingOn ||
+      (await runHasPendingSettle(tx, tenantId, batch.payrollRunId)));
   const kind: PayoutPostingKind = journaled
     ? "settle"
     : pending
@@ -420,7 +433,15 @@ export async function settleBatchPayouts(
       tenantId,
       batch.legalEntityId,
     );
-    if (pendingCashAccountId === null)
+    if (
+      pendingCashAccountId === null ||
+      !(await glAccountPostable(
+        tx,
+        tenantId,
+        batch.legalEntityId,
+        pendingCashAccountId,
+      ))
+    )
       throw payoutRefuse(
         409,
         PAYOUT_SOURCE_ACCOUNT_MISSING.code,
@@ -432,7 +453,7 @@ export async function settleBatchPayouts(
   // with accounting on, an unusable source is refused whether or not the run
   // has a locked journal, so it is never turned into `settle_skipped`. Nothing
   // is recorded; the confirmation can be sent again once the account is active.
-  if (!journaled && (await accountingEnabled(tx, tenantId)))
+  if (!journaled && (accountingOn || pending))
     await sourceBankOverride(tx, tenantId, batch);
 
   // The fee is real money the PT paid, whether or not the salary journal

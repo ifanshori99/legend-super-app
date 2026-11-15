@@ -84,6 +84,7 @@ import {
   journalLines,
   tenants,
 } from "../db/schema/index.ts";
+import { payrollRuns } from "../db/schema/payroll.ts";
 import {
   postJournalFromRuleInTransaction,
   reverseJournalInTransaction,
@@ -282,6 +283,19 @@ export async function deliverPayrollGlEvent(
     const { runHasPendingSettle } =
       await import("./payroll-payout-gl.service.ts");
     const { payrollRunId } = payrollLocked.payloadSchema.parse(event.payload);
+    // Run row first, like the settle path (legend-2aspe): a settle that read
+    // "accounting on" just before the switch commits before this reads the
+    // pending postings, so it cannot be left open after the event is ignored.
+    await tx
+      .select({ id: payrollRuns.id })
+      .from(payrollRuns)
+      .where(
+        and(
+          eq(payrollRuns.tenantId, context.tenant.tenantId),
+          eq(payrollRuns.id, payrollRunId),
+        ),
+      )
+      .for("update");
     if (!(await runHasPendingSettle(tx, context.tenant.tenantId, payrollRunId)))
       return { status: "ignored" };
   }
