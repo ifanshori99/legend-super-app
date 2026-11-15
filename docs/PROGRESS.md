@@ -5832,3 +5832,12 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gerbang: links, lint (2 peringatan lama), typecheck api+web, tes kontrak root 891/891 (termasuk edc-reconciliation-gate), set cepat dengan semua edc-* + edge-* + *migration* + notification*: 2800 hijau, 1 merah = flake legend-8p74m (edge-master-data-publisher).
 - Run penuh (10:27-11:42): 19186 lulus, 0 tes gagal, 1 Unhandled Error pg 57P01 dari edge-recipes-protocol-compat.test.ts (teardown), vitest exit 1. Berkas itu dari m1 dan tidak disentuh batch ini; sendirian 1 dari 6 run kena error sama, run terakhir 3x berturut-turut hijau. Kartu flake baru legend-4ge79 (P2). Tes tidak dilonggarkan.
 - Biaya: dicatat di entri batch berikut (sesi dipindah akun).
+
+## 2026-11-15: Perbaikan second opinion QRIS hold SO-879 (fix/qris-hold-so-879, di atas m1)
+
+- Cabang dari C2/C3 + merge origin/milestone/m1. Migrasi QRIS hold dinomori ulang 0379-0381 (journal dan snapshot disambung ke m1 0378; snapshot 0381 prevId ke 0376).
+- Kartu: zff37 (release/job baca ulang uang di bawah kunci), ota0l (migrasi membekukan QR lama void-lokal, hold backfilled, indeks unik parsial), w0ows (EDC vs QR, kartu menang Q7), 9ho2v (provider-proof ikut intent expired, fail-closed), kf104 (QR tamu order-utuh satu kode, ORDER_CODE_ACTIVE), eqeu7 (poll split tanpa deadlock, kunci advisory pairing), 5ailc (409 QRIS_HOLD_ACTIVE di void order QR + rollback).
+- Review architect xhigh: 1 P1 (hold backfill tak tertutup saat kode lama dibayar, bill beku), 2 P2 (sweep macet oleh hold, VA lama tak ditahan), 2 P3 (rantai snapshot, proof pending): semua dibetulkan dengan test.
+- Tes merah-dulu: 22 tes merah di pohon pra-fix 478efefe6/0b9ceb9ea, hijau sesudah fix (so879-a/b/c).
+- Terbuka: order QR dengan A (VA) dibayar+refund committed dan B (QR) hold mati tetap awaiting_payment (decideUnpaidQrOrder: linkFullyPaid -> keep); uang aman (A direfund), perlu keputusan jalur void. Hold tamu tanpa baris POS tak bisa dirilis manajer (keputusan CTO).
+- Biaya: session-usage sesi total biaya* ~14.7M sebelum perbaikan akhir (subagent sonnet 576 req, opus 46, haiku 42).

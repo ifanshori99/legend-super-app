@@ -475,10 +475,13 @@ describe("QR pay-first sale emits order.paid (legend-9pz9)", () => {
   it("QR-PAID-03 a superseded payment code that pays pins the paying intent, not the current one", async () => {
     const guest = await seatAtNewTable();
     const { orderId, totalIdr } = await placeOrder(guest);
-    const oldIntent = await openPayment(guest, orderId);
+    // The old code is a VA: a QR old code would hold the bill and refuse the
+    // fresh code until the provider proves it dead (legend-kf104). It lapsed
+    // past the late-payment grace, so a replacement is allowed.
+    const oldIntent = await openPayment(guest, orderId, "va");
     // The first code lapses; the guest opens a fresh one.
     await owner.query(
-      `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '1 minute'
+      `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '10 minutes'
         WHERE tenant_id = $1 AND id = $2`,
       [tenant.tenantId, oldIntent],
     );
@@ -490,6 +493,7 @@ describe("QR pay-first sale emits order.paid (legend-9pz9)", () => {
       oldIntent,
       totalIdr,
       `WEBHOOK-${randomBytes(6).toString("hex")}`,
+      "va",
     );
     await deliver(await onlyEvent("payment.paid", oldIntent));
 

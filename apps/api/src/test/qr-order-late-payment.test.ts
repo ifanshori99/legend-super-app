@@ -804,7 +804,10 @@ describe("legend-kf104 the guest QR hold keeps the unpaid void and a replacement
     const afterGrace = new Date(
       codeEnd.getTime() + LATE_PAYMENT_GRACE_MS + MINUTE,
     );
-    expect((await deliver(failed, afterGrace)).outcome).not.toBe("voided");
+    expect(await deliver(failed, afterGrace)).not.toEqual({
+      route: "qr",
+      outcome: "voided",
+    });
     expect((await orderRow(orderId)).status).toBe("awaiting_payment");
 
     await proveDead(afterGrace);

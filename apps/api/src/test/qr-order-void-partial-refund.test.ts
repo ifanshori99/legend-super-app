@@ -105,11 +105,19 @@ class FakeGateway implements PaymentGatewayPort {
   }
   async createIntent(input: GatewayIntentRequest) {
     this.created += 1;
-    const instructions: PaymentInstructions = {
-      method: "qris",
-      qrPayload: "00020101021226FAKEVOIDPARTIAL",
-      issuer: null,
-    };
+    const instructions: PaymentInstructions =
+      input.method === "va"
+        ? {
+            method: "va",
+            channelCode: input.channelCode ?? "bmri",
+            channelName: "Mandiri",
+            virtualAccountNumber: "8808123456789012",
+          }
+        : {
+            method: "qris",
+            qrPayload: "00020101021226FAKEVOIDPARTIAL",
+            issuer: null,
+          };
     return {
       providerRef: `VPR-${randomBytes(6).toString("hex")}-${this.created}`,
       instructions,
@@ -123,8 +131,8 @@ class FakeGateway implements PaymentGatewayPort {
       amountIdr: null,
     };
   }
-  async channels() {
-    return [];
+  async channels(_context: unknown, method: string) {
+    return method === "va" ? [{ code: "bmri", name: "Mandiri" }] : [];
   }
 }
 const gateway = new FakeGateway();
@@ -218,10 +226,11 @@ function as(guest: Guest) {
       auth(client.post(`${base}/splits/${splitId}/claim`)).send({
         payerSecret,
       }),
-    paySplit: (billSplitId: string) =>
+    paySplit: (billSplitId: string, method: "qris" | "va" = "qris") =>
       auth(client.post(`${base}/payments`)).send({
         target: { kind: "split", billSplitId },
-        method: "qris",
+        method,
+        ...(method === "va" ? { bankCode: "bmri" } : {}),
         payerSecret: secretFor(billSplitId),
         idempotencyKey: randomUUID(),
       }),
@@ -241,8 +250,12 @@ async function splitOrder(count: number) {
   return { guest, orderId, parts: split.body.data.splits as Part[] };
 }
 
-async function openCode(guest: Guest, part: Part): Promise<string> {
-  const response = await as(guest).paySplit(part.id);
+async function openCode(
+  guest: Guest,
+  part: Part,
+  method: "qris" | "va" = "qris",
+): Promise<string> {
+  const response = await as(guest).paySplit(part.id, method);
   expect(response.status, JSON.stringify(response.body)).toBe(201);
   return response.body.data.id as string;
 }
@@ -401,7 +414,11 @@ describe("Void of a partly paid QR order refunds each settled intent (legend-gjf
     const [p0, p1, p2] = w.parts as [Part, Part, Part];
     const paid0 = await payPart(w.guest, p0);
     const paid1 = await payPart(w.guest, p1);
-    const open2 = await openCode(w.guest, p2);
+    // The third code is a VA: an open QR holds the bill and the staff void is
+    // refused (409 QRIS_HOLD_ACTIVE) until the provider proves it dead
+    // (legend-kf104). A VA has no hold, so "a third code still open" keeps its
+    // meaning here; the QR-hold void paths are covered by the hold tests.
+    const open2 = await openCode(w.guest, p2, "va");
 
     const link = await linkOf(w.orderId);
     expect(link.paid).toBe(p0.amountIdr + p1.amountIdr);

@@ -118,11 +118,19 @@ class FakeGateway implements PaymentGatewayPort {
   }
   async createIntent(input: GatewayIntentRequest) {
     this.created += 1;
-    const instructions: PaymentInstructions = {
-      method: "qris",
-      qrPayload: "00020101021226FAKEQRFIRECAP",
-      issuer: null,
-    };
+    const instructions: PaymentInstructions =
+      input.method === "va"
+        ? {
+            method: "va",
+            channelCode: input.channelCode ?? "bmri",
+            channelName: "Mandiri",
+            virtualAccountNumber: "8808123456789012",
+          }
+        : {
+            method: "qris",
+            qrPayload: "00020101021226FAKEQRFIRECAP",
+            issuer: null,
+          };
     return {
       providerRef: `QFC-${randomBytes(6).toString("hex")}-${this.created}`,
       instructions,
@@ -136,8 +144,8 @@ class FakeGateway implements PaymentGatewayPort {
       amountIdr: null,
     };
   }
-  async channels() {
-    return [];
+  async channels(_context: unknown, method: string) {
+    return method === "va" ? [{ code: "bmri", name: "Mandiri" }] : [];
   }
 }
 const gateway = new FakeGateway();
@@ -223,10 +231,11 @@ function as(guest: Guest) {
         expectedCartVersion,
         idempotencyKey: randomUUID(),
       }),
-    pay: (orderId: string) =>
+    pay: (orderId: string, method: "qris" | "va" = "qris") =>
       auth(client.post(`${base}/payments`)).send({
         target: { kind: "order", orderId },
-        method: "qris",
+        method,
+        ...(method === "va" ? { bankCode: "bmri" } : {}),
         idempotencyKey: randomUUID(),
       }),
   };
@@ -244,18 +253,26 @@ async function placeOrder(guest: Guest) {
   };
 }
 
-async function openPayment(guest: Guest, orderId: string): Promise<string> {
-  const paid = await as(guest).pay(orderId);
+async function openPayment(
+  guest: Guest,
+  orderId: string,
+  method: "qris" | "va" = "qris",
+): Promise<string> {
+  const paid = await as(guest).pay(orderId, method);
   expect(paid.status).toBe(201);
   expect(paid.body.data.status).toBe("pending");
   return paid.body.data.id as string;
 }
 
 /** A verified webhook settlement (the trusted source). */
-async function settle(intentId: string, amountIdr: number) {
+async function settle(
+  intentId: string,
+  amountIdr: number,
+  method: "qris" | "va" = "qris",
+) {
   await confirmPayment(contextOf(tenant.tenantId), intentId, {
     source: "verified_webhook",
-    method: "qris",
+    method,
     amountIdr,
     providerRef: `WEBHOOK-${randomBytes(6).toString("hex")}`,
     at: new Date().toISOString(),
@@ -582,17 +599,23 @@ describe("QR order fire versus refunds committed on the payer intent (legend-9vz
     await freshWorld();
     const guest = await seatAtNewTable();
     const { orderId, totalIdr } = await placeOrder(guest);
-    const intentA = await openPayment(guest, orderId);
+    // Code A is a VA: a QR A would hold the bill and refuse B until the
+    // provider proves A dead (legend-kf104). A lapsed past the late-payment
+    // grace, so the replacement B is allowed.
+    const intentA = await openPayment(guest, orderId, "va");
     await owner.query(
-      `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '1 minute'
+      `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '10 minutes'
         WHERE tenant_id = $1 AND id = $2`,
       [tenant.tenantId, intentA],
     );
-    const intentB = await openPayment(guest, orderId);
+    // B is a VA too: with a QR B the consumer cannot void the order for the
+    // refunded A while B's QR hold is open (QRIS_HOLD_ACTIVE out of
+    // `handleQrOrderPaymentPaid`, finding reported with legend-kf104).
+    const intentB = await openPayment(guest, orderId, "va");
     expect(intentB).not.toBe(intentA);
     // The order points at B, yet the guest pays the superseded code A.
     expect((await orderRow(orderId)).payment_intent_id).toBe(intentB);
-    await settle(intentA, totalIdr);
+    await settle(intentA, totalIdr, "va");
     const eventA = await onlyPaidEvent(intentA);
     await filedRefund(intentA, totalIdr, "approved");
 
@@ -608,6 +631,51 @@ describe("QR order fire versus refunds committed on the payer intent (legend-9vz
     expect(await orderPaidEventCount(orderId)).toBe(0);
     expect(await systemRefunds(intentA)).toEqual([]);
     expect(await refundsOf(intentB)).toEqual([]);
+  });
+
+  it("QR-FIRE-REFUND-F3b payer A has a committed refund while code B holds the bill: the event neither fails nor voids, and A is refunded once", async () => {
+    await freshWorld();
+    const guest = await seatAtNewTable();
+    const { orderId, totalIdr } = await placeOrder(guest);
+    // A is a VA that lapsed past the late-payment grace (as F3); B is a QR, so
+    // its hold (legend-kf104) freezes the order against a void.
+    const intentA = await openPayment(guest, orderId, "va");
+    await owner.query(
+      `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '10 minutes'
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, intentA],
+    );
+    const intentB = await openPayment(guest, orderId);
+    const partial = 10_000;
+    await settle(intentA, totalIdr, "va");
+    const eventA = await onlyPaidEvent(intentA);
+    await filedRefund(intentA, partial, "approved");
+
+    // The void is held by B's hold, so it must not throw out of the consumer
+    // (that would retry and dead-letter the event). The refund of what is left
+    // of A still goes out: the direction that limits money.
+    const result = await deliverToQr(eventA);
+
+    expect(result).toMatchObject({ outcome: "late_payment_refund_committed" });
+    expect((await orderRow(orderId)).status).toBe("awaiting_payment");
+    expect((await orderRow(orderId)).fired_at).toBeNull();
+    expect(await orderPaidEventCount(orderId)).toBe(0);
+    const refunded = [
+      expect.objectContaining({
+        status: "pending",
+        amount: String(totalIdr - partial),
+      }),
+    ];
+    expect(await systemRefunds(intentA)).toEqual(refunded);
+    expect(await refundsOf(intentB)).toEqual([]);
+
+    // Redelivery: still one refund, the guest never gets back more than paid.
+    await deliverToQr(eventA);
+    expect(await systemRefunds(intentA)).toEqual(refunded);
+
+    // Not asserted here: the order is not voided once B's hold closes. A's
+    // payment already fills the link, so `payment.failed` for B and the sweep
+    // both answer `unchanged` (open finding, reported with legend-kf104).
   });
 
   it("QR-FIRE-REFUND-F4 no refund at all: the order fires, fired_at is set and the payer is the paying intent", async () => {

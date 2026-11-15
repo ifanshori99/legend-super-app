@@ -746,7 +746,10 @@ export async function handleQrOrderPaymentPaid(
       committedRefund = true;
   }
   if (committedRefund) {
-    await voidAndNotify(tx, context, order, "refund_committed", at);
+    // A live QR hold on the order blocks the void (0380 freeze). The refund of
+    // the committed money is the limiting direction, so it still goes out; the
+    // order is voided later by the hold-closing event or the sweep.
+    await voidUnlessEdcOpen(tx, context, order, "refund_committed", at);
     const refundIds: (string | null)[] = [];
     for (const id of contributors)
       refundIds.push(
