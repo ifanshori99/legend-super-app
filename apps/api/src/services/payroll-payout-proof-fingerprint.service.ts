@@ -32,6 +32,7 @@ import {
   payrollPayoutFailedCorrections,
   payrollPayoutReturnClaims,
 } from "../db/schema/payroll-payout.ts";
+import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./hris-access.ts";
 import { writeFileRecord } from "./payroll-payout-proof-backfill.service.ts";
 
@@ -275,38 +276,107 @@ export {
 export const sha256Of = (content: Uint8Array | string): string =>
   createHash("sha256").update(content).digest("hex");
 
+/** 409 PAYOUT_PROOF_FINGERPRINT_PENDING: the proof's hashes cannot be read or settled now (retryable). */
+export const proofFingerprintPending = () =>
+  new HttpError(
+    409,
+    "PAYOUT_PROOF_FINGERPRINT_PENDING",
+    "Bukti ini belum bisa diperiksa sidik jarinya. Coba lagi sebentar lagi.",
+  );
+
+type ProofStore = {
+  readonly storage: ObjectStorage | null | undefined;
+  readonly context: ScopedTenantContext;
+};
+
+type ProofRecord = { content: string; stored: string | null };
+
+/**
+ * Records the fingerprints of several proofs in ONE lock order (legend-so900
+ * F7): the advisory hash locks of every proof of the call (sorted) first, then
+ * the record rows. The backfill takes the same order, so the two never deadlock.
+ *
+ * 1. reads the records; 2. reads the storage for the keys without a stored hash
+ * (strict: a missing storage or a failed read is 409 PENDING; lenient: the key
+ * is skipped); 3. locks the union of the known and read hashes; 4. writes the
+ * records (a NULL only goes to a value); 5. re-reads them: a hash outside the
+ * locked set (a rival wrote another record in between) is 409 PENDING, strict
+ * and lenient. Returns the records after the write (null: still none).
+ */
+export async function recordProofFingerprints(
+  tx: Tx,
+  store: ProofStore,
+  tenantId: TenantId,
+  batchId: string,
+  keys: Iterable<string>,
+  now: Date,
+  options: { readonly strict: boolean },
+): Promise<Map<string, ProofRecord | null>> {
+  const unique = [...new Set(keys)];
+  const before = new Map<string, ProofRecord | null>();
+  for (const key of unique)
+    before.set(key, await proofFingerprintRecord(tx, tenantId, key));
+
+  const read = new Map<string, string>();
+  for (const [key, record] of before) {
+    if (record?.stored) continue;
+    if (!store.storage) {
+      if (options.strict) throw proofFingerprintPending();
+      continue;
+    }
+    try {
+      const object = await store.storage.get(store.context, {
+        tenantId,
+        outletId: null,
+        reference: "payout-evidence-fingerprint",
+        key,
+        visibility: "private",
+      });
+      read.set(key, sha256Of(object.content));
+    } catch {
+      if (options.strict) throw proofFingerprintPending();
+    }
+  }
+
+  const locked = new Set<string>(read.values());
+  for (const record of before.values())
+    for (const sha of [record?.content ?? null, record?.stored ?? null])
+      if (sha !== null) locked.add(sha);
+  locked.delete(EMPTY_CONTENT_SHA256);
+  await lockProofFingerprints(tx, tenantId, locked);
+
+  for (const [key, storedSha] of read)
+    await writeFileRecord(tx, tenantId, batchId, key, storedSha, now);
+
+  const after = new Map<string, ProofRecord | null>();
+  for (const key of unique) {
+    // Every key, written or not: a record a rival added meanwhile is held too.
+    const record = await proofFingerprintRecord(tx, tenantId, key);
+    for (const sha of [record?.content ?? null, record?.stored ?? null])
+      if (sha !== null && sha !== EMPTY_CONTENT_SHA256 && !locked.has(sha))
+        throw proofFingerprintPending();
+    after.set(key, record);
+  }
+  return after;
+}
+
 /**
  * Before a return claim is made for a proof (legend-8vcsg): a proof without a
  * complete record (a key uploaded before the fingerprints, or a fixture) is
  * read from the storage and recorded now, so the claim ALWAYS carries both
  * hashes and a later re-upload is recognised. An object that cannot be read
- * leaves the record as it is. Never changes an existing hash.
+ * leaves the record as it is. Never changes an existing hash. The lenient
+ * one-key form of `recordProofFingerprints` (hash locks before the row).
  */
 export async function ensureProofFingerprintRecord(
   tx: Tx,
-  store: {
-    readonly storage: ObjectStorage | null | undefined;
-    readonly context: ScopedTenantContext;
-  },
+  store: ProofStore,
   tenantId: TenantId,
   batchId: string,
   key: string,
   now: Date,
 ): Promise<void> {
-  const record = await proofFingerprintRecord(tx, tenantId, key);
-  if (record?.stored || !store.storage) return;
-  let storedSha: string;
-  try {
-    const object = await store.storage.get(store.context, {
-      tenantId,
-      outletId: null,
-      reference: "payout-evidence-fingerprint",
-      key,
-      visibility: "private",
-    });
-    storedSha = sha256Of(object.content);
-  } catch {
-    return;
-  }
-  await writeFileRecord(tx, tenantId, batchId, key, storedSha, now);
+  await recordProofFingerprints(tx, store, tenantId, batchId, [key], now, {
+    strict: false,
+  });
 }

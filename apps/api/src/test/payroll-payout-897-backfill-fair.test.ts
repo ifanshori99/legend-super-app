@@ -16,7 +16,7 @@
 //
 // Assumptions (the design names them, stated so they can be contested):
 // - Table `payroll_payout_proof_backfill_stuck` with columns tenant_id,
-//   evidence_key, reason ('unreadable' | 'hash_conflict' | 'legacy_duplicate'),
+//   evidence_key, reason ('unreadable' | 'hash_conflict' | 'legacy_duplicate' | 'shared_key' | 'bind_failed'),
 //   attempts, next_attempt_at and resolved_at (null while unresolved).
 // - The retry delay of a failing key is a data fact (`next_attempt_at`): the
 //   tests bring a key back into the window by moving that column into the past,
@@ -426,10 +426,22 @@ describe("897 review fixes: phase 2 reaches every key the gate counts", () => {
       expect(failed.failed).toBeGreaterThanOrEqual(1);
       const stuck = await stuckRows([key]);
       expect(stuck, "the failing key is listed").toHaveLength(1);
+      expect(stuck[0]!.reason).toBe("bind_failed");
       expect(Number(stuck[0]!.attempts)).toBeGreaterThanOrEqual(1);
       expect(await financeStuck()).toContain(key);
       expect(await bindingsOf(key)).toHaveLength(0);
 
+      // 900 (F6): the failed key is backed off like phase 1; its retry time
+      // passes before the good run.
+      await W.asTenant(
+        (c) =>
+          c.query(
+            `UPDATE ${STUCK} SET next_attempt_at = now() - interval '1 minute'
+              WHERE tenant_id = $1 AND evidence_key = $2`,
+            [W.tenantId, key],
+          ),
+        true,
+      );
       await bindHistoricalOperations(W.scope(), new Date());
       expect(await bindingsOf(key)).toHaveLength(1);
       expect(await stuckRows([key]), "resolved once bound").toHaveLength(0);

@@ -80,6 +80,8 @@ const DETAIL_KEYS: Record<string, MessageKey> = {
   unreadable: "financeExceptions.details.proofUnreadable",
   hash_conflict: "financeExceptions.details.proofHashConflict",
   legacy_duplicate: "financeExceptions.details.proofLegacyDuplicate",
+  shared_key: "financeExceptions.details.proofSharedKey",
+  bind_failed: "financeExceptions.details.proofBindFailed",
 };
 
 export function isFinanceExceptionKind(

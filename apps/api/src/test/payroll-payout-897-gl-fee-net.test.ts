@@ -455,7 +455,7 @@ describe("897 a new posting never carries NULL settle_net_idr or fee_idr (F7)", 
     expect(row!.fee).toBe(String(FEE));
   });
 
-  it("[897-historical-null-still-flips] a historical row (NULL amounts, trigger off under the owner) is not bricked: a fee journal on the wrong account is refused, one on the right accounts flips without an amount check, and the NULLs stay", async () => {
+  it("[900-historical-null-fee-never-flips] a historical row (NULL amounts, trigger off under the owner) never flips (900 F5, CTO): a fee journal on the wrong account and one on the right accounts are both refused, and the NULLs stay", async () => {
     expect(await hasColumn("fee_idr"), "fee_idr column holds the fee").toBe(
       true,
     );
@@ -488,9 +488,9 @@ describe("897 a new posting never carries NULL settle_net_idr or fee_idr (F7)", 
         { accountId: source, debit: 0, credit: 1 },
       ]),
     ]);
-    expect(right, "no amount check for a historical row").toBeUndefined();
+    expect(right, "no amount to check against: never flips").toBe(GUARD_CODE);
     const after = await committedRow(id);
-    expect(after.fee_posted).toBe(true);
+    expect(after.fee_posted).toBe(false);
     expect(after.settle_net, "history is left as it was").toBeNull();
     expect(
       (

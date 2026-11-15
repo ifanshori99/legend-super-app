@@ -15,6 +15,9 @@
 // - `payout_proof_stuck` (legend-so897) is tenant-wide like the payout kind and
 //   standing like `receipt_pending_stale`: every payout proof the fingerprint
 //   backfill could not complete and has not resolved yet, whatever its date.
+//   The reason (`detail`) is one of unreadable, hash_conflict, legacy_duplicate,
+//   shared_key (more than one operation over one proof; never auto-resolved) or
+//   bind_failed (legend-p2v4s).
 
 import { sql, type SQL } from "drizzle-orm";
 import {

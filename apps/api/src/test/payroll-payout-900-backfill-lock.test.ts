@@ -303,9 +303,9 @@ async function barrier(proofs: Proof[], work: () => Promise<unknown>) {
         await raw.query(
           `INSERT INTO payroll_payout_evidence_files
              (tenant_id, batch_id, evidence_key, content_sha256, stored_sha256, created_by)
-           SELECT $1, b.id, $2, $3, $3, 'backfill-900'
+           SELECT $1::uuid, b.id, $2::text, $3::text, $3::text, 'backfill-900'
              FROM payroll_disbursement_batches b
-            WHERE b.tenant_id = $1 AND $2 LIKE '%/' || b.id::text || '/%'`,
+            WHERE b.tenant_id = $1::uuid AND $2::text LIKE '%/' || b.id::text || '/%'`,
           [W.tenantId, proof.key, sha],
         );
       }

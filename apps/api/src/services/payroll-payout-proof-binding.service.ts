@@ -30,12 +30,10 @@ import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./hris-access.ts";
 import type { PayoutEvidenceStore } from "./payroll-payout-evidence.ts";
 import {
-  countFingerprintTargets,
   EMPTY_CONTENT_SHA256,
   lockProofFingerprints,
-  proofFingerprintRecord,
-  sha256Of,
-  writeFileRecord,
+  proofFingerprintPending,
+  recordProofFingerprints,
 } from "./payroll-payout-proof-fingerprint.service.ts";
 
 export const PROOF_REUSED_TEXT = "Bukti ini sudah dipakai untuk operasi lain.";
@@ -43,13 +41,6 @@ export const PROOF_REUSED_TEXT = "Bukti ini sudah dipakai untuk operasi lain.";
 /** 409 PAYOUT_PROOF_REUSED: the same text inside the tenant and across tenants. */
 export const refuseProofReused = () =>
   new HttpError(409, "PAYOUT_PROOF_REUSED", PROOF_REUSED_TEXT);
-
-const fingerprintPending = () =>
-  new HttpError(
-    409,
-    "PAYOUT_PROOF_FINGERPRINT_PENDING",
-    "Bukti ini belum bisa diperiksa sidik jarinya. Coba lagi sebentar lagi.",
-  );
 
 const fingerprintsHeld = () =>
   new HttpError(
@@ -86,32 +77,14 @@ export async function requireProofFingerprintRecord(
   key: string,
   now: Date,
 ): Promise<ProofFingerprint> {
-  let record = await proofFingerprintRecord(tx, tenantId, key);
-  if (!record?.stored) {
-    if (!store.storage) throw fingerprintPending();
-    let storedSha: string;
-    try {
-      const object = await store.storage.get(store.context, {
-        tenantId,
-        outletId: null,
-        reference: "payout-evidence-fingerprint",
-        key,
-        visibility: "private",
-      });
-      storedSha = sha256Of(object.content);
-    } catch {
-      throw fingerprintPending();
-    }
-    // Same order as the backfill's completeKey: the hash locks (sorted) before
-    // the record's unique key, else the two can deadlock on a legacy key.
-    await lockProofFingerprints(tx, tenantId, [
-      storedSha,
-      ...(record ? [record.content] : []),
-    ]);
-    await writeFileRecord(tx, tenantId, batchId, key, storedSha, now);
-    record = await proofFingerprintRecord(tx, tenantId, key);
-  }
-  if (!record?.content || !record.stored) throw fingerprintPending();
+  // Strict form of the one lock order (legend-so900 F7): the hash locks
+  // (sorted) before the record's unique key, as in the backfill's completeKey.
+  const record = (
+    await recordProofFingerprints(tx, store, tenantId, batchId, [key], now, {
+      strict: true,
+    })
+  ).get(key);
+  if (!record?.content || !record.stored) throw proofFingerprintPending();
   if (
     record.content === EMPTY_CONTENT_SHA256 &&
     record.stored === EMPTY_CONTENT_SHA256
@@ -140,6 +113,14 @@ function isProofClaimViolation(error: unknown): boolean {
     current = (current as { cause?: unknown }).cause;
   }
   return false;
+}
+
+/** True while any tenant has unfinished proof history (migration 0641; one boolean, nothing of the tenant). */
+async function proofHistoryPending(tx: Tx): Promise<boolean> {
+  const result = await tx.execute<{ pending: boolean }>(
+    sql`SELECT app.payout_proof_history_pending() AS pending`,
+  );
+  return result.rows[0]?.pending === true;
 }
 
 /** True when a legacy duplicate in any tenant contested one of these hashes (migration 0640; says nothing about the holder). */
@@ -172,8 +153,9 @@ export type BoundProof = ProofFingerprint & {
 /**
  * Binds the proof to this operation, or confirms it is already bound to it
  * (see the file header). Call under the run, batch and item row locks; takes
- * the proof's advisory locks itself (sorted), then holds the tenant while older
- * operations still lack a binding or a fingerprint (409 PENDING). Throws 409
+ * the proof's advisory locks itself (sorted), then holds every tenant while
+ * older operations in any tenant still lack a binding or a fingerprint (409
+ * PENDING). Throws 409
  * PAYOUT_PROOF_REUSED when the proof backs any other operation, here or in
  * another tenant, or a historical duplicate, or a legacy duplicate contested
  * its hashes in any tenant.
@@ -202,10 +184,13 @@ export async function bindProofToOperation(
   // Two operations over the same bytes serialize here, in every tenant (lock
   // order: run row, batch row, item rows, proof advisory).
   await lockProofFingerprints(tx, tenantId, shas);
-  // Fail closed: while older proofs or operations lack a fingerprint or a
-  // binding, the checks below cannot see them, so a new operation waits.
-  if ((await countFingerprintTargets(tx, tenantId)).total > 0)
-    throw fingerprintsHeld();
+  // Fail closed, globally (legend-so900 F1): while any PT still has a proof or
+  // an operation without a fingerprint or an accounted binding, the checks
+  // below cannot see it, so a new operation waits. Read AFTER the hash locks:
+  // a sweep that claims these bytes either has committed (seen as REUSED
+  // below) or still counts as pending here. One boolean, the same text for the
+  // caller's own history and another PT's.
+  if (await proofHistoryPending(tx)) throw fingerprintsHeld();
   // A legacy duplicate somewhere (any tenant) found these bytes already held:
   // the proof backed two operations before the bindings, so no step of any
   // operation over it goes on, the holder's own included (review P2-1).

@@ -19,7 +19,9 @@
 //   list as the exception kind `payout_proof_stuck`; the log below carries
 //   counts only, no keys;
 // - phase 2 then binds the operations from before the proof bindings (overpaid,
-//   return, correction), so one proof cannot back a second operation.
+//   return, correction), so one proof cannot back a second operation. A proof
+//   key used by more than one operation is contested and listed as shared_key;
+//   a binder that throws is listed as bind_failed (legend-p2v4s).
 
 import {
   assertTrustedScopedContext,
@@ -56,7 +58,13 @@ export async function runPayoutEvidenceBackfillSweep(
     unreadable: 0,
     conflicts: 0,
     stuck: 0,
-    binding: { operations: 0, bound: 0, legacyDuplicates: 0, failed: 0 },
+    binding: {
+      operations: 0,
+      bound: 0,
+      legacyDuplicates: 0,
+      sharedKeys: 0,
+      failed: 0,
+    },
     held: {
       claimsWithoutHash: 0,
       filesWithoutStoredHash: 0,
@@ -83,7 +91,7 @@ export async function runPayoutEvidenceBackfillSweep(
   // list (exception kind payout_proof_stuck), not in the log.
   if (result.held.total > 0 || result.stuck > 0 || binding.failed > 0)
     console.error(
-      `Payout evidence backfill: returns with a new proof are held (claims without hash ${result.held.claimsWithoutHash}, proof records without stored hash ${result.held.filesWithoutStoredHash}, item proof keys without record ${result.held.itemKeysWithoutRecord}, operation proofs without binding ${result.held.opKeysWithoutBinding}; unreadable objects ${result.unreadable}, hash conflicts ${result.conflicts}, stuck ${result.stuck}, bindings failed ${binding.failed})`,
+      `Payout evidence backfill: returns with a new proof are held (claims without hash ${result.held.claimsWithoutHash}, proof records without stored hash ${result.held.filesWithoutStoredHash}, item proof keys without record ${result.held.itemKeysWithoutRecord}, operation proofs without binding ${result.held.opKeysWithoutBinding}; unreadable objects ${result.unreadable}, hash conflicts ${result.conflicts}, stuck ${result.stuck}, shared keys ${binding.sharedKeys}, bindings failed ${binding.failed})`,
     );
   return result;
 }

@@ -88,9 +88,9 @@ import type { Tx } from "./hris-access.ts";
 import {
   claimHoldingFingerprint,
   correctionHoldingProof,
-  ensureProofFingerprintRecord,
   lockProofFingerprints,
   proofFingerprints,
+  recordProofFingerprints,
   twinEvidenceKeys,
 } from "./payroll-payout-proof-fingerprint.service.ts";
 import { bindProofToOperation } from "./payroll-payout-proof-binding.service.ts";
@@ -776,16 +776,20 @@ export async function confirmManualItems(
   );
   // Every proof a confirmation names gets its fingerprint record now (read from
   // the storage when the upload did not write a complete one), so the evidence
-  // key an item keeps always has one (legend-8vcsg).
-  for (const key of proofKeys)
-    await ensureProofFingerprintRecord(
-      tx,
-      proofs,
-      tenantId,
-      batch.id,
-      key,
-      now,
-    );
+  // key an item keeps always has one (legend-8vcsg). One batched call takes the
+  // hash locks of every proof (sorted) before any record row (legend-so900 F7).
+  await recordProofFingerprints(
+    tx,
+    proofs,
+    tenantId,
+    batch.id,
+    proofKeys,
+    now,
+    {
+      strict: false,
+    },
+  );
+  // Already held by the call above: a re-entrant no-op kept as the guard.
   const proofShas = new Set<string>();
   for (const key of proofKeys)
     for (const sha of await proofFingerprints(tx, tenantId, key))
@@ -946,15 +950,20 @@ export async function resolveManualItems(
   // A proof that frees items as failed must not already be a return proof or a
   // return claim (review F3). It MAY equal a payment-confirmation proof: one
   // bank result report legitimately covers paid and failed lines of a batch.
-  await ensureProofFingerprintRecord(
+  // Hash locks before the record row (legend-so900 F7); the check below runs
+  // under those locks.
+  await recordProofFingerprints(
     tx,
     proofs,
     tenantId,
     batch.id,
-    evidence,
+    [evidence],
     now,
+    {
+      strict: false,
+    },
   );
-  await assertProofNotUsedForReturn(tx, tenantId, evidence);
+  await assertProofNotUsedForReturn(tx, tenantId, evidence, true);
 
   let resolved = 0;
   let proposed = 0;

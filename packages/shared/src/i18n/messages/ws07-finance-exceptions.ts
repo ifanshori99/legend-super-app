@@ -48,6 +48,10 @@ export const financeExceptionsMessages = {
     proofHashConflict: "Isi berkas sama dengan bukti lain yang sudah dipakai.",
     proofLegacyDuplicate:
       "Bukti lama ini sudah dipakai operasi lain; langkah berikutnya ditolak.",
+    proofSharedKey:
+      "Bukti ini dipakai lebih dari satu operasi; semua langkah dengan berkas ini ditolak sampai finance menutupnya.",
+    proofBindFailed:
+      "Bukti lama ini belum bisa dikaitkan ke operasinya; dicoba lagi otomatis dan gerbang bukti tetap menahan.",
     receiptOrder: "Order",
     receiptIntent: "Tagihan pembayaran",
     receiptOutbox: "Status pembayaran lunas",

@@ -13,7 +13,9 @@
 // The gate does not change: a stuck target still holds the tenant (fail closed).
 //
 // Phase 2 (`bindHistoricalOperations`) writes the proof binding of the
-// operations that existed before bindings (overpaid, return, correction).
+// operations that existed before bindings (overpaid, return, correction). It
+// works on the unaccounted operations of `app.payout_proof_operations()`, one
+// proof key at a time, and respects the backoff of the stuck table (legend-p2v4s).
 
 import {
   and,
@@ -38,7 +40,6 @@ import { db } from "../db/index.ts";
 import {
   payrollDisbursementItems,
   payrollPayoutEvidenceFiles,
-  payrollPayoutFailedCorrections,
   payrollPayoutOverpaidProposals,
   payrollPayoutProofBackfillStuck,
   payrollPayoutProofBindings,
@@ -264,7 +265,8 @@ const RETRY_MAX_FACTOR = 96;
  * attempt count goes up and the next try is pushed back, 15 min x 2^attempts,
  * at most 24 h; a row resolved earlier starts again). "listed": a fact found by
  * phase 2 (a legacy duplicate), written once and never overwriting an
- * unresolved row, so the reason that holds the key stays.
+ * unresolved row, so the reason that holds the key stays. A `shared_key` row
+ * keeps its reason in both modes (only `listSharedKey` writes it).
  */
 async function markStuck(
   tx: Tx,
@@ -287,7 +289,7 @@ async function markStuck(
     VALUES (${tenantId}::uuid, ${batchId}::uuid, ${key}, ${reason}, 1, ${at}::timestamptz, ${at}::timestamptz,
             ${mode === "retry" ? first : sql`${at}::timestamptz`})
     ON CONFLICT (tenant_id, evidence_key) DO UPDATE SET
-      reason = EXCLUDED.reason,
+      reason = CASE WHEN s.resolved_at IS NULL AND s.reason = 'shared_key' THEN s.reason ELSE EXCLUDED.reason END,
       attempts = CASE WHEN s.resolved_at IS NULL THEN s.attempts + 1 ELSE 1 END,
       first_seen_at = CASE WHEN s.resolved_at IS NULL THEN s.first_seen_at ELSE EXCLUDED.first_seen_at END,
       last_attempt_at = EXCLUDED.last_attempt_at,
@@ -312,6 +314,7 @@ async function resolveStuck(
         eq(payrollPayoutProofBackfillStuck.evidenceKey, key),
         isNull(payrollPayoutProofBackfillStuck.resolvedAt),
         ne(payrollPayoutProofBackfillStuck.reason, "legacy_duplicate"),
+        ne(payrollPayoutProofBackfillStuck.reason, "shared_key"),
       ),
     );
 }
@@ -575,24 +578,53 @@ export const bindHistoricalOperation: HistoricalProofBinder = async (
 };
 
 export type HistoricalBindingResult = {
-  /** Operations looked at this run. */
+  /** Proof keys looked at this run (each key is one unit: all its operations together). */
   readonly operations: number;
   readonly bound: number;
   /** Operations whose proof was already held by another one (listed as stuck). */
   readonly legacyDuplicates: number;
-  /** Operations the binder could not write (left unbound, retried next run). */
+  /** Keys that more than one operation uses (contested and listed, never auto-resolved). */
+  readonly sharedKeys: number;
+  /** Keys the binder could not write (listed as bind_failed, retried after a growing delay). */
   readonly failed: number;
 };
 
+/** One row of `app.payout_proof_operations()`. */
+type OperationRow = {
+  readonly kind: PayoutProofBindingKind;
+  readonly batchId: string;
+  readonly itemSetHash: string;
+  readonly evidenceKey: string;
+  readonly contentSha256: string | null;
+  readonly storedSha256: string | null;
+  readonly firstAt: number;
+  readonly createdBy: string;
+};
+
+const identityOf = (o: {
+  kind: string;
+  batchId: string;
+  itemSetHash: string;
+}): string => `${o.kind}|${o.batchId}|${o.itemSetHash}`;
+
 /**
  * One tenant, phase 2. Binds the overpaid, return and correction operations
- * that have no binding yet, so their proof cannot back a second operation.
- * Only an operation whose proof has both hashes in its upload record is bound
- * (the rest wait for phase 1; a return claim must carry both hashes too). The
- * item set hash is computed here from the item ids. Idempotent: an operation
- * whose key has a binding is not selected, and the unique key backs a race.
- * A key conflict means it is already bound (safe). A hash conflict writes a
- * legacy duplicate and lists the key as stuck (reason legacy_duplicate).
+ * that are not accounted for yet, so their proof cannot back a second
+ * operation. An operation is accounted for when its key has a binding that
+ * names it or holds a contested hash (`app.payout_proof_operations()` is the
+ * one SQL source of operation identity). Only an operation whose proof has both
+ * hashes in its record is bound (the rest wait for phase 1). Idempotent: the
+ * unique key backs a race.
+ * - A key conflict means it is already bound (safe).
+ * - A hash conflict writes a legacy duplicate and lists the key as stuck
+ *   (reason legacy_duplicate).
+ * - A key used by more than one operation (legend-p2v4s F2) is never guessed:
+ *   the earliest identity is bound if the key has no binding, the bytes are
+ *   contested (every later step over them is refused, in any tenant) and the
+ *   key is listed as `shared_key` with every identity. The gate stays clear.
+ * - A binder that throws lists the key as `bind_failed` with a growing retry
+ *   delay, so failing keys leave the window and the ones behind them are
+ *   reached (F6); the global gate still counts them.
  */
 export async function bindHistoricalOperations(
   context: ScopedTenantContext,
@@ -605,272 +637,266 @@ export async function bindHistoricalOperations(
   const tenantId = context.tenant.tenantId;
   const binder = options.binder ?? bindHistoricalOperation;
   const limit = options.limit ?? PROOF_FINGERPRINT_KEYS_PER_RUN;
-  const operations = await withTenant(db, context, (tx) =>
-    unboundOperations(tx, tenantId, limit),
+  const groups = await withTenant(db, context, (tx) =>
+    unaccountedOperations(tx, tenantId, now, limit),
   );
   let bound = 0;
   let legacyDuplicates = 0;
+  let sharedKeys = 0;
   let failed = 0;
-  for (const operation of operations) {
+  for (const group of groups) {
+    const first = group[0]!;
     try {
-      const outcome = await withTenant(db, context, async (tx) => {
-        const result = await binder(tx, tenantId, operation, now);
-        if (result === "legacy_duplicate")
-          await markStuck(
-            tx,
-            tenantId,
-            operation.batchId,
-            operation.evidenceKey,
-            "legacy_duplicate",
-            now,
-            "listed",
-          );
-        else await resolveStuck(tx, tenantId, operation.evidenceKey, now);
-        return result;
-      });
+      const outcome = await withTenant(db, context, (tx) =>
+        bindKey(tx, tenantId, group, binder, now),
+      );
       bound += outcome === "bound" ? 1 : 0;
       legacyDuplicates += outcome === "legacy_duplicate" ? 1 : 0;
+      sharedKeys += outcome === "shared_key" ? 1 : 0;
     } catch {
-      // Left unbound (the tenant stays held); the next operations still run.
+      // Left unbound (the global gate stays closed); the next keys still run.
       // The key is listed (retry mode: attempts and a growing delay) so finance
-      // sees it; a failing list write must not stop the other operations. The
-      // schema has no reason of its own for a failed binding, so it is listed
-      // as "unreadable": the proof could not be processed.
+      // sees it; a failing list write must not stop the other keys.
       failed += 1;
       await withTenant(db, context, (tx) =>
         markStuck(
           tx,
           tenantId,
-          operation.batchId,
-          operation.evidenceKey,
-          "unreadable",
+          first.batchId,
+          first.evidenceKey,
+          "bind_failed",
           now,
           "retry",
         ),
       ).catch(() => undefined);
     }
   }
-  return { operations: operations.length, bound, legacyDuplicates, failed };
+  return {
+    operations: groups.length,
+    bound,
+    legacyDuplicates,
+    sharedKeys,
+    failed,
+  };
 }
 
-/** Operations without a binding, one per proof key (returns, corrections, then overpaid). */
-async function unboundOperations(
+/** Binds one key (all its operations, earliest first) inside one transaction. */
+async function bindKey(
   tx: Tx,
   tenantId: TenantId,
+  group: readonly OperationRow[],
+  binder: HistoricalProofBinder,
+  now: Date,
+): Promise<HistoricalBindOutcome | "shared_key"> {
+  const key = group[0]!.evidenceKey;
+  // The earliest operation that can be bound (both hashes known) gets the key.
+  const candidate = group.find(
+    (o) => o.contentSha256 !== null && o.storedSha256 !== null,
+  );
+  let result: HistoricalBindOutcome = "already_bound";
+  if (candidate)
+    result = await binder(
+      tx,
+      tenantId,
+      {
+        kind: candidate.kind,
+        batchId: candidate.batchId,
+        itemSetHash: candidate.itemSetHash,
+        evidenceKey: key,
+        contentSha256: candidate.contentSha256!,
+        storedSha256: candidate.storedSha256!,
+        createdBy: candidate.createdBy,
+      },
+      now,
+    );
+  // Every identity that uses the key: the operations and the binding itself.
+  const identities = new Map<
+    string,
+    { kind: string; batch_id: string; item_set_hash: string }
+  >();
+  for (const o of group)
+    identities.set(identityOf(o), {
+      kind: o.kind,
+      batch_id: o.batchId,
+      item_set_hash: o.itemSetHash,
+    });
+  const binding = (
+    await tx.execute(
+      sql`SELECT kind, batch_id, item_set_hash FROM payroll_payout_proof_bindings
+           WHERE tenant_id = ${tenantId}::uuid AND evidence_key = ${key}`,
+    )
+  ).rows[0] as
+    { kind: string; batch_id: string; item_set_hash: string } | undefined;
+  if (binding)
+    identities.set(
+      identityOf({
+        kind: binding.kind,
+        batchId: binding.batch_id,
+        itemSetHash: binding.item_set_hash,
+      }),
+      {
+        kind: binding.kind,
+        batch_id: binding.batch_id,
+        item_set_hash: binding.item_set_hash,
+      },
+    );
+  if (identities.size > 1 && binding) {
+    // Same transaction as the binding: the key is never bound and uncontested
+    // while the gate could read it as accounted.
+    await tx.execute(sql`SELECT app.payout_proof_contest_own(${key}::varchar)`);
+    await listSharedKey(
+      tx,
+      tenantId,
+      group[0]!.batchId,
+      key,
+      [...identities.values()],
+      now,
+    );
+    return "shared_key";
+  }
+  if (result === "legacy_duplicate")
+    await markStuck(
+      tx,
+      tenantId,
+      group[0]!.batchId,
+      key,
+      "legacy_duplicate",
+      now,
+      "listed",
+    );
+  else await resolveStuck(tx, tenantId, key, now);
+  return result;
+}
+
+/**
+ * Lists a key that more than one operation uses. Overwrites any other unresolved
+ * reason (it says more); `resolveStuck` never closes it.
+ */
+async function listSharedKey(
+  tx: Tx,
+  tenantId: TenantId,
+  batchId: string,
+  key: string,
+  operations: readonly {
+    kind: string;
+    batch_id: string;
+    item_set_hash: string;
+  }[],
+  now: Date,
+): Promise<void> {
+  const at = now.toISOString();
+  const sorted = [...operations].sort((a, b) =>
+    identityOf({
+      kind: a.kind,
+      batchId: a.batch_id,
+      itemSetHash: a.item_set_hash,
+    }).localeCompare(
+      identityOf({
+        kind: b.kind,
+        batchId: b.batch_id,
+        itemSetHash: b.item_set_hash,
+      }),
+    ),
+  );
+  await tx.execute(sql`
+    INSERT INTO payroll_payout_proof_backfill_stuck AS s
+      (tenant_id, batch_id, evidence_key, reason, attempts, first_seen_at, last_attempt_at, next_attempt_at, operations)
+    VALUES (${tenantId}::uuid, ${batchId}::uuid, ${key}, 'shared_key', 1, ${at}::timestamptz, ${at}::timestamptz,
+            ${at}::timestamptz, ${JSON.stringify(sorted)}::jsonb)
+    ON CONFLICT (tenant_id, evidence_key) DO UPDATE SET
+      reason = 'shared_key',
+      attempts = CASE WHEN s.resolved_at IS NULL THEN s.attempts + 1 ELSE 1 END,
+      first_seen_at = CASE WHEN s.resolved_at IS NULL THEN s.first_seen_at ELSE EXCLUDED.first_seen_at END,
+      last_attempt_at = EXCLUDED.last_attempt_at,
+      next_attempt_at = EXCLUDED.next_attempt_at,
+      operations = EXCLUDED.operations,
+      resolved_at = NULL`);
+}
+
+/**
+ * The operations that are not accounted for yet, grouped by proof key (F2, F6).
+ * One query over `app.payout_proof_operations()` picks the keys: an operation
+ * is unaccounted when no binding of its key names it or holds a contested hash;
+ * keys whose stuck row is backed off are skipped; the never-attempted keys come
+ * first, then the ones tried longest ago (so a failing key does not starve the
+ * ones behind it), then the oldest. A second query loads every identity of the
+ * selected keys, earliest first.
+ */
+async function unaccountedOperations(
+  tx: Tx,
+  tenantId: TenantId,
+  now: Date,
   limit: number,
-): Promise<HistoricalOperation[]> {
-  const unbound = (table: string, key: string) =>
-    sql`NOT EXISTS (SELECT 1 FROM ${sql.raw(
-      "payroll_payout_proof_bindings",
-    )} b WHERE b.tenant_id = ${sql.raw(table)}.tenant_id AND b.evidence_key = ${sql.raw(table)}.${sql.raw(key)})`;
-  const found = new Map<string, HistoricalOperation>();
-  const add = (operation: HistoricalOperation) => {
-    if (!found.has(operation.evidenceKey))
-      found.set(operation.evidenceKey, operation);
-  };
-  // Returns: the claim carries the item set hash; the hashes must be filled in
-  // (phase 1 done) and be those of the upload record, which the database checks.
-  const claims = await tx
-    .select({
-      batchId: payrollPayoutReturnClaims.batchId,
-      itemSetHash: payrollPayoutReturnClaims.itemSetHash,
-      evidenceKey: payrollPayoutReturnClaims.evidenceKey,
-      content: payrollPayoutEvidenceFiles.contentSha256,
-      stored: payrollPayoutEvidenceFiles.storedSha256,
-      createdBy: payrollPayoutReturnClaims.createdBy,
-    })
-    .from(payrollPayoutReturnClaims)
-    .innerJoin(
-      payrollPayoutEvidenceFiles,
-      and(
-        eq(
-          payrollPayoutEvidenceFiles.tenantId,
-          payrollPayoutReturnClaims.tenantId,
-        ),
-        eq(
-          payrollPayoutEvidenceFiles.evidenceKey,
-          payrollPayoutReturnClaims.evidenceKey,
-        ),
-      ),
-    )
-    .where(
-      and(
-        eq(payrollPayoutReturnClaims.tenantId, tenantId),
-        isNotNull(payrollPayoutReturnClaims.contentSha256),
-        isNotNull(payrollPayoutReturnClaims.storedSha256),
-        isNotNull(payrollPayoutEvidenceFiles.storedSha256),
-        unbound("payroll_payout_return_claims", "evidence_key"),
-      ),
-    )
-    .orderBy(asc(payrollPayoutReturnClaims.createdAt))
-    .limit(limit);
-  for (const claim of claims)
-    if (claim.stored !== null)
-      add({
-        kind: "return",
-        batchId: claim.batchId,
-        itemSetHash: claim.itemSetHash,
-        evidenceKey: claim.evidenceKey,
-        contentSha256: claim.content,
-        storedSha256: claim.stored,
-        createdBy: claim.createdBy,
-      });
-  // Item returns from before the claims (pre-0381): the item carries the proof
-  // key and no claim row exists. The items that share the key and batch are one
-  // operation; the proof record must have its stored hash (phase 1 done).
-  const legacyReturns = await tx
-    .select({
-      batchId: payrollDisbursementItems.batchId,
-      evidenceKey: sql<string>`${payrollDisbursementItems.returnEvidenceKey}`,
-      content: payrollPayoutEvidenceFiles.contentSha256,
-      stored: payrollPayoutEvidenceFiles.storedSha256,
-      createdBy: sql<string>`min(coalesce(${payrollDisbursementItems.returnedBy}, ${payrollDisbursementItems.returnedBy2}, 'legacy-backfill'))`,
-      itemIds: sql<string[]>`array_agg(${payrollDisbursementItems.id}::text)`,
-      firstAt: sql<Date>`min(${payrollDisbursementItems.createdAt})`,
-    })
-    .from(payrollDisbursementItems)
-    .innerJoin(
-      payrollPayoutEvidenceFiles,
-      and(
-        eq(
-          payrollPayoutEvidenceFiles.tenantId,
-          payrollDisbursementItems.tenantId,
-        ),
-        eq(
-          payrollPayoutEvidenceFiles.evidenceKey,
-          payrollDisbursementItems.returnEvidenceKey,
-        ),
-      ),
-    )
-    .where(
-      and(
-        eq(payrollDisbursementItems.tenantId, tenantId),
-        isNotNull(payrollDisbursementItems.returnEvidenceKey),
-        isNotNull(payrollPayoutEvidenceFiles.storedSha256),
-        sql`NOT EXISTS (SELECT 1 FROM payroll_payout_return_claims c WHERE c.tenant_id = ${payrollDisbursementItems.tenantId} AND c.evidence_key = ${payrollDisbursementItems.returnEvidenceKey})`,
-        unbound("payroll_disbursement_items", "return_evidence_key"),
-      ),
-    )
-    .groupBy(
-      payrollDisbursementItems.batchId,
-      payrollDisbursementItems.returnEvidenceKey,
-      payrollPayoutEvidenceFiles.contentSha256,
-      payrollPayoutEvidenceFiles.storedSha256,
-    )
-    .orderBy(sql`min(${payrollDisbursementItems.createdAt})`)
-    .limit(limit);
-  for (const group of legacyReturns)
-    if (group.stored !== null)
-      add({
-        kind: "return",
-        batchId: group.batchId,
-        itemSetHash: itemSetHashOf(group.itemIds),
-        evidenceKey: group.evidenceKey,
-        contentSha256: group.content,
-        storedSha256: group.stored,
-        createdBy: group.createdBy,
-      });
-  // Corrections: the first row of a request holds the proof and its hashes; the
-  // items of the request are the rows that share its operation id.
-  const firstRows = await tx
-    .select({
-      id: payrollPayoutFailedCorrections.id,
-      batchId: payrollPayoutFailedCorrections.batchId,
-      evidenceKey: payrollPayoutFailedCorrections.evidenceKey,
-      content: payrollPayoutFailedCorrections.contentSha256,
-      stored: payrollPayoutFailedCorrections.storedSha256,
-      createdBy: payrollPayoutFailedCorrections.proposedBy,
-    })
-    .from(payrollPayoutFailedCorrections)
-    .where(
-      and(
-        eq(payrollPayoutFailedCorrections.tenantId, tenantId),
-        sql`${payrollPayoutFailedCorrections.operationId} = ${payrollPayoutFailedCorrections.id}`,
-        unbound("payroll_payout_failed_corrections", "evidence_key"),
-      ),
-    )
-    .orderBy(asc(payrollPayoutFailedCorrections.proposedAt))
-    .limit(limit);
-  for (const first of firstRows) {
-    const items = await tx
-      .select({ itemId: payrollPayoutFailedCorrections.itemId })
-      .from(payrollPayoutFailedCorrections)
-      .where(
-        and(
-          eq(payrollPayoutFailedCorrections.tenantId, tenantId),
-          eq(payrollPayoutFailedCorrections.operationId, first.id),
-        ),
-      );
-    add({
-      kind: "correction",
-      batchId: first.batchId,
-      itemSetHash: itemSetHashOf(items.map((item) => item.itemId)),
-      evidenceKey: first.evidenceKey,
-      contentSha256: first.content,
-      storedSha256: first.stored,
-      createdBy: first.createdBy,
+): Promise<OperationRow[][]> {
+  const at = now.toISOString();
+  const picked = (
+    await tx.execute(sql`
+      SELECT o.evidence_key
+        FROM app.payout_proof_operations() o
+       WHERE o.content_sha256 IS NOT NULL
+         AND o.stored_sha256 IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM payroll_payout_proof_bindings b
+            WHERE b.tenant_id = ${tenantId}::uuid AND b.evidence_key = o.evidence_key
+              AND ((b.kind = o.kind AND b.batch_id = o.batch_id AND b.item_set_hash = o.item_set_hash)
+                   OR app.payout_proof_contested(ARRAY[b.content_sha256, b.stored_sha256]::varchar[])))
+         AND NOT EXISTS (
+           SELECT 1 FROM payroll_payout_return_claims c
+            WHERE c.tenant_id = ${tenantId}::uuid AND c.evidence_key = o.evidence_key
+              AND (c.content_sha256 IS NULL OR c.stored_sha256 IS NULL))
+         AND NOT EXISTS (
+           SELECT 1 FROM payroll_payout_proof_backfill_stuck s
+            WHERE s.tenant_id = ${tenantId}::uuid AND s.evidence_key = o.evidence_key
+              AND s.resolved_at IS NULL AND s.next_attempt_at > ${at}::timestamptz)
+       GROUP BY o.evidence_key
+       ORDER BY (SELECT s.last_attempt_at FROM payroll_payout_proof_backfill_stuck s
+                  WHERE s.tenant_id = ${tenantId}::uuid AND s.evidence_key = o.evidence_key
+                    AND s.resolved_at IS NULL) ASC NULLS FIRST,
+                min(o.first_at), o.evidence_key
+       LIMIT ${limit}`)
+  ).rows as { evidence_key: string }[];
+  if (picked.length === 0) return [];
+  const rows = (
+    await tx.execute(sql`
+      SELECT o.kind, o.batch_id, o.item_set_hash, o.evidence_key, o.content_sha256,
+             o.stored_sha256, o.first_at, o.created_by
+        FROM app.payout_proof_operations() o
+       WHERE o.evidence_key IN (${sql.join(
+         picked.map((row) => sql`${row.evidence_key}`),
+         sql`, `,
+       )})`)
+  ).rows as {
+    kind: PayoutProofBindingKind;
+    batch_id: string;
+    item_set_hash: string;
+    evidence_key: string;
+    content_sha256: string | null;
+    stored_sha256: string | null;
+    first_at: Date | string;
+    created_by: string;
+  }[];
+  const byKey = new Map<string, OperationRow[]>();
+  for (const row of rows) {
+    const list = byKey.get(row.evidence_key) ?? [];
+    list.push({
+      kind: row.kind,
+      batchId: row.batch_id,
+      itemSetHash: row.item_set_hash,
+      evidenceKey: row.evidence_key,
+      contentSha256: row.content_sha256,
+      storedSha256: row.stored_sha256,
+      firstAt: new Date(row.first_at).getTime(),
+      createdBy: row.created_by,
     });
+    byKey.set(row.evidence_key, list);
   }
-  // Overpaid: the proposals of one batch that share a proof are one operation.
-  const proposalGroups = await tx
-    .select({
-      batchId: payrollPayoutOverpaidProposals.batchId,
-      evidenceKey: payrollPayoutOverpaidProposals.evidenceKey,
-      content: payrollPayoutEvidenceFiles.contentSha256,
-      stored: payrollPayoutEvidenceFiles.storedSha256,
-      createdBy: sql<string>`(array_agg(${payrollPayoutOverpaidProposals.proposedBy} ORDER BY ${payrollPayoutOverpaidProposals.proposedAt}, ${payrollPayoutOverpaidProposals.id}))[1]`,
-      firstAt: sql<Date>`min(${payrollPayoutOverpaidProposals.proposedAt})`,
-    })
-    .from(payrollPayoutOverpaidProposals)
-    .innerJoin(
-      payrollPayoutEvidenceFiles,
-      and(
-        eq(
-          payrollPayoutEvidenceFiles.tenantId,
-          payrollPayoutOverpaidProposals.tenantId,
-        ),
-        eq(
-          payrollPayoutEvidenceFiles.evidenceKey,
-          payrollPayoutOverpaidProposals.evidenceKey,
-        ),
-      ),
-    )
-    .where(
-      and(
-        eq(payrollPayoutOverpaidProposals.tenantId, tenantId),
-        isNotNull(payrollPayoutEvidenceFiles.storedSha256),
-        unbound("payroll_payout_overpaid_proposals", "evidence_key"),
-      ),
-    )
-    .groupBy(
-      payrollPayoutOverpaidProposals.batchId,
-      payrollPayoutOverpaidProposals.evidenceKey,
-      payrollPayoutEvidenceFiles.contentSha256,
-      payrollPayoutEvidenceFiles.storedSha256,
-    )
-    .orderBy(sql`min(${payrollPayoutOverpaidProposals.proposedAt})`)
-    .limit(limit);
-  for (const group of proposalGroups) {
-    if (group.stored === null) continue;
-    const items = await tx
-      .select({ itemId: payrollPayoutOverpaidProposals.itemId })
-      .from(payrollPayoutOverpaidProposals)
-      .where(
-        and(
-          eq(payrollPayoutOverpaidProposals.tenantId, tenantId),
-          eq(payrollPayoutOverpaidProposals.batchId, group.batchId),
-          eq(payrollPayoutOverpaidProposals.evidenceKey, group.evidenceKey),
-        ),
-      );
-    add({
-      kind: "overpaid",
-      batchId: group.batchId,
-      itemSetHash: itemSetHashOf(items.map((item) => item.itemId)),
-      evidenceKey: group.evidenceKey,
-      contentSha256: group.content,
-      storedSha256: group.stored,
-      createdBy: group.createdBy,
-    });
-  }
-  return [...found.values()].slice(0, limit);
+  return picked.flatMap(({ evidence_key }) => {
+    const list = byKey.get(evidence_key);
+    if (!list) return [];
+    list.sort(
+      (a, b) =>
+        a.firstAt - b.firstAt || identityOf(a).localeCompare(identityOf(b)),
+    );
+    return [list];
+  });
 }
