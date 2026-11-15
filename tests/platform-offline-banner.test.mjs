@@ -18,7 +18,7 @@ registerHooks({
   resolve(specifier, context, nextResolve) {
     const stubs = {
       "@tanstack/react-router":
-        "export const useLocation = () => ({pathname: globalThis.__edgeTestPath,searchStr:null,href:globalThis.__edgeTestPath}); export const useParams = () => ({}); export const Link = ({children}) => children;",
+        "export const useLocation = () => ({pathname: globalThis.__edgeTestPath,searchStr:null,href:globalThis.__edgeTestPath}); export const useParams = () => ({}); export const useRouteContext = () => null; export const Link = ({children}) => children;",
       "@/components/i18n": "export const useT = () => (key) => key;",
       "@/components/ui/button":
         "export const Button = ({children}) => children;",
@@ -53,6 +53,8 @@ registerHooks({
     const frameComponents = {
       "@/components/layout/area-gate-screen": "AreaGateScreen",
       "@/components/layout/outlet-picker": "OutletPicker",
+      "@/features/ws05-notifications/components/push-auto-register":
+        "PushAutoRegister",
       "@/components/layout/router-link": "RouterShellLink",
       "@/components/layout/theme-toggle": "ThemeToggle",
       "@/components/shells/customer-shell": "CustomerShell",
