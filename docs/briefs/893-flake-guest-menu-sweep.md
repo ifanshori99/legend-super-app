@@ -1,0 +1,4 @@
+# 893 Flake guest-menu kategori bocor dari ws03-availability-sweep (legend-543rh)
+Peran: engineer kartu S (baca ~/.agents/team/roles/engineer.md). Repo /Users/ifanshori99/Projects/legend super app/legend, worktree sendiri dari `origin/milestone/m1` (9ad4dcee7), cabang `fix/flake-guest-menu-543rh`.
+Masalah: di run penuh batch71, `apps/api/src/test/guest-menu-api.test.ts` (Q23) mengharapkan satu kategori tapi mendapat dua; kategori tambahan "Sapuan Uji" dibuat `ws03-availability-sweep.test.ts` di tenant bersama. Perbaiki isolasi test (tenant/outlet sendiri, atau bersihkan data buatannya), tanpa melonggarkan assertion. Jangan ubah kode produk.
+Bukti: `LEGEND_TEST_FILES="src/test/guest-menu-api.test.ts src/test/ws03-availability-sweep.test.ts" heavy pnpm test` 3x berturut hijau; prettier + eslint berkas yang diubah. Commit, push tanpa force. Lapor: cabang, SHA, bukti. Jangan merge.
