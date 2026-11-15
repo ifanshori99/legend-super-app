@@ -224,6 +224,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "sets menu_items, item_variants and modifiers recipe_id to NULL where it has no recipe of the same tenant, so the new composite foreign key (tenant_id, recipe_id) -> recipes can validate (legend-3kdd); idempotent, edits no other column, no price, tax or amount touched, the modifiers part is skipped on an edge database (session setting legend.edge_mode); FORCE RLS lifted on those tables and recipes for the migration transaction and restored",
   "0375_recipes_resync_edges.sql":
     "re-stamps recipes, menu_items and item_variants with UPDATE ... SET updated_at = updated_at so the sync_txid trigger (0262) gives every row a fresh stamp and each edge pulls them again (legend-2uqcd); idempotent, no value edited, no price, tax or amount touched, skipped on an edge database (session setting legend.edge_mode); FORCE RLS lifted on those tables for the migration transaction and restored",
+  // founder Q6 (15 Nov 2026, 864)
+  "0378_ai_assistant_auto_enable.sql":
+    "switches on the ai_assistant module (feature_flags.modules) for active tenants whose plan is an active package that includes ai_assistant and that already used AI (an ok tanya_ai or mcp usage event, or a user message); idempotent, skips tenants that already have the module, touches no limits, plan or integration providers, writes one tenant.module_auto_enabled audit row per changed tenant; FORCE RLS lifted for the statements that read audit_logs, ai_usage_events and ai_messages and restored",
 };
 
 // Entrypoints that open a database pool but import no data.
