@@ -12,6 +12,7 @@
 //   cashier_shift.closed      blind-count close, variance and approval
 //   day.closed                end-of-day recap for one outlet business date
 //   cash_movement.recorded    kas masuk/keluar/setoran during a shift
+//   cash_movement.approved    a held kas keluar/setoran approved by a supervisor
 //
 // `order.paid` and `order.refunded` carry exactly the amount keys the already
 // merged WS-07 posting rules read (`paidCashIdr`, `paidGatewayIdr`,
@@ -533,6 +534,20 @@ export type CashMovementRecordedPayload = z.infer<
   typeof cashMovementRecordedPayloadSchema
 >;
 
+// ---- cash_movement.approved ----------------------------------------------
+// A held cash out / drop (needs_approval, legend-67dt) approved by a
+// supervisor while the shift is open. Carries every cash_movement.recorded
+// field plus the approval, so the journal consumer reads one shape.
+
+export const cashMovementApprovedPayloadSchema =
+  cashMovementRecordedPayloadSchema.extend({
+    approvedBy: userIdSchema,
+    approvedAt: isoDateTimeSchema,
+  });
+export type CashMovementApprovedPayload = z.infer<
+  typeof cashMovementApprovedPayloadSchema
+>;
+
 // ---- definitions ----------------------------------------------------------
 
 export const posEventNames = [
@@ -544,6 +559,7 @@ export const posEventNames = [
   "cashier_shift.closed",
   "day.closed",
   "cash_movement.recorded",
+  "cash_movement.approved",
 ] as const;
 export type PosEventName = (typeof posEventNames)[number];
 
@@ -559,6 +575,7 @@ export const posEventPayloads: Record<
   "cashier_shift.closed": cashierShiftClosedPayloadSchema,
   "day.closed": dayClosedPayloadSchema,
   "cash_movement.recorded": cashMovementRecordedPayloadSchema,
+  "cash_movement.approved": cashMovementApprovedPayloadSchema,
 };
 
 /**

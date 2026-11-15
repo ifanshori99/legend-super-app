@@ -44,6 +44,25 @@ export type HeldCashOut = {
   reasonNote: string;
   recordedAt: string;
   cashierName: string;
+  /** User who recorded it; that user may not decide it themselves. */
+  recordedBy: string;
+};
+
+/** Supervisor verdict on a held cash out (route `.../cash-movements/:movementId/decision`). */
+export type HeldCashDecision = "approved" | "rejected";
+
+/** Mock-side verdict with plain string ids; the API layer brands it via the shared schema. */
+export interface MockCashMovementDecision {
+  movementId: string;
+  outcome: HeldCashDecision;
+  decidedBy: string;
+  decidedAt: string;
+}
+
+export type DecideHeldCashInput = {
+  shiftId: string;
+  movementId: string;
+  decision: HeldCashDecision;
 };
 
 /** The supervisor trail of one shift: held cash outs and both variances. */
@@ -134,6 +153,8 @@ export type ShiftExtraState = {
     witnessName: string | null;
     witnessOverrideId: string | null;
   } | null;
+  /** Verdicts already given, by movement id: a repeat of the same one is a no-op. */
+  decisions?: Record<string, MockCashMovementDecision>;
   /** Which extra demo seed was applied last. */
   appliedSeed: string | null;
 };

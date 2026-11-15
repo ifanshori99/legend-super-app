@@ -13,12 +13,14 @@ import {
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
+import { useRouteContext } from "@tanstack/react-router";
 import { useMemo, useRef } from "react";
 import { businessDateOf } from "@starter/shared/core";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
 import { noteCatalogSalesBlocked } from "@/features/ws02-edge/hooks";
+import { MOCK_SUPERVISOR_ID } from "./fixtures";
 import {
   approveShiftClose,
   cancelAttempt,
@@ -36,6 +38,7 @@ import {
   submitBlindCount,
 } from "./api";
 import {
+  decideHeldCashMovement,
   forceCloseShift,
   submitForcedCount,
   witnessForcedCount,
@@ -59,6 +62,7 @@ import {
   witnessesQuery,
 } from "./queries";
 import type {
+  DecideHeldCashInput,
   ForceCloseInput,
   SubmitForcedCountInput,
   WitnessForcedCountInput,
@@ -87,6 +91,13 @@ export function isContractPending(error: unknown): boolean {
 /** The outlet this screen works in; "" when none (queries stay idle). */
 function useOutletId(): string {
   return useTenantContext().outlet?.id ?? "";
+}
+
+/** The signed-in user; mock mode acts as the mock supervisor. "" when unknown. */
+export function useCurrentUserId(): string {
+  const session = useRouteContext({ strict: false, select: (c) => c.session });
+  if (API_MOCK) return MOCK_SUPERVISOR_ID;
+  return session?.user.id ?? "";
 }
 
 /** Mock mode needs no outlet; real calls do. */
@@ -349,6 +360,33 @@ export function useHeldCashOuts(shiftId: string) {
   return useQuery({
     ...heldCashOutsQuery(useOutletId(), shiftId),
     enabled: shiftId !== "",
+  });
+}
+
+/**
+ * Supervisor approves or rejects a held cash out. Refreshes the held list, the
+ * review and the shift: an approval moves the amount into the drawer figures.
+ */
+export function useDecideHeldCashMovement() {
+  const outletId = useOutletId();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: DecideHeldCashInput) =>
+      decideHeldCashMovement(outletId, input),
+    // Settled, not success: a CONFLICT means someone else decided first and
+    // the list must catch up. Not awaited: the verdict is already saved, and a
+    // failed refetch must not hold the dialog open or hide the result.
+    onSettled: (_result, _error, input) => {
+      void queryClient.invalidateQueries({
+        queryKey: posKasirKeys.held(outletId, input.shiftId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: posKasirKeys.review(outletId, input.shiftId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: posKasirKeys.shift(outletId),
+      });
+    },
   });
 }
 

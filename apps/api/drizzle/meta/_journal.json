@@ -2605,6 +2605,13 @@
       "when": 1795000000000,
       "tag": "0627_payout_settle_guard_lines",
       "breakpoints": true
+    },
+    {
+      "idx": 373,
+      "version": "7",
+      "when": 1795000000001,
+      "tag": "0385_cash_movement_approval",
+      "breakpoints": true
     }
   ]
 }

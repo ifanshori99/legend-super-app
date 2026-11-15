@@ -4,7 +4,7 @@
 // DTO mappers.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, not, or, sql } from "drizzle-orm";
 import type { PermissionCode } from "@starter/shared/access";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
@@ -56,6 +56,10 @@ import { accessSnapshotInTransaction, type Tx } from "./permission-resolver.ts";
 
 export type ShiftRow = typeof posShifts.$inferSelect;
 export type CashMovementRow = typeof cashMovements.$inferSelect;
+/** A movement with its decision (`cash_movement_outcomes`), null while pending. */
+export type CashMovementWithOutcome = CashMovementRow & {
+  outcome?: "approved" | "rejected" | "expired" | null;
+};
 export type OpenPosShiftInput = z.output<typeof openPosShiftInputSchema>;
 export type ClosePosShiftInput = z.output<typeof closePosShiftInputSchema>;
 export type ForceClosePosShiftInput = z.output<
@@ -356,7 +360,12 @@ export async function computeShiftAggregates(
         eq(cashMovements.tenantId, tenantId),
         eq(cashMovements.outletId, outletId),
         eq(cashMovements.shiftId, shift.id),
-        eq(cashMovements.needsApproval, false),
+        // A held movement books into the drawer only once it has an 'approved'
+        // outcome (EXISTS, so a movement counts once).
+        or(
+          eq(cashMovements.needsApproval, false),
+          decidedMovementExists("approved"),
+        ),
       ),
     )
     .groupBy(cashMovements.type);
@@ -369,6 +378,11 @@ export async function computeShiftAggregates(
     cashOutIdr: byType.get("cash_out") ?? 0,
     cashDropIdr: byType.get("drop") ?? 0,
   };
+}
+
+/** Correlated EXISTS: the movement row has an outcome of this kind. */
+function decidedMovementExists(outcome: "approved" | "rejected") {
+  return sql`EXISTS (SELECT 1 FROM ${cashMovementOutcomes} WHERE ${cashMovementOutcomes.tenantId} = ${cashMovements.tenantId} AND ${cashMovementOutcomes.movementId} = ${cashMovements.id} AND ${cashMovementOutcomes.outcome} = ${outcome})`;
 }
 
 /**
@@ -391,6 +405,11 @@ export async function heldCashOutIdrOf(
         eq(cashMovements.outletId, shift.outletId),
         eq(cashMovements.shiftId, shift.id),
         eq(cashMovements.needsApproval, true),
+        // Decided movements leave the held sum: 'approved' is in the drawer
+        // figures, 'rejected' is not booked. 'expired' stays counted (a closed
+        // shift's figures do not change).
+        not(decidedMovementExists("approved")),
+        not(decidedMovementExists("rejected")),
       ),
     );
   return safeHeldTotal(
@@ -558,7 +577,7 @@ export async function expireHeldCashMovements(
 
 /**
  * legend-q7jj F1: how many cash rows the shift has, held or not: its cash
- * movements, refunds and voids (all insert-only). A count stores it; the
+ * movements, refunds, voids and held-movement outcomes (all insert-only). A count stores it; the
  * close refuses the count as stale when it moved, before any approval is
  * judged, so the stale answer never depends on the held status (no balance
  * oracle). Call under the shift row lock. Never in any DTO.
@@ -597,8 +616,24 @@ export async function cashWatermarkOf(
         eq(posOrderVoids.shiftId, shift.id),
       ),
     );
+  // A decision on a held movement changes the drawer figures, so it moves the
+  // watermark too (backstop: a count goes stale after a decision). 'expired'
+  // outcomes only exist after the close, so counting every outcome is fine.
+  const [outcomes] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(cashMovementOutcomes)
+    .where(
+      and(
+        eq(cashMovementOutcomes.tenantId, shift.tenantId),
+        eq(cashMovementOutcomes.outletId, shift.outletId),
+        eq(cashMovementOutcomes.shiftId, shift.id),
+      ),
+    );
   return (
-    Number(movements?.n ?? 0) + Number(refunds?.n ?? 0) + Number(voids?.n ?? 0)
+    Number(movements?.n ?? 0) +
+    Number(refunds?.n ?? 0) +
+    Number(voids?.n ?? 0) +
+    Number(outcomes?.n ?? 0)
   );
 }
 
@@ -678,10 +713,20 @@ export async function assertShiftOutflowBound(
 export async function movementsOf(
   tx: Tx,
   shift: ShiftRow,
-): Promise<CashMovementRow[]> {
-  return tx
-    .select()
+): Promise<CashMovementWithOutcome[]> {
+  const rows = await tx
+    .select({
+      movement: cashMovements,
+      outcome: cashMovementOutcomes.outcome,
+    })
     .from(cashMovements)
+    .leftJoin(
+      cashMovementOutcomes,
+      and(
+        eq(cashMovementOutcomes.tenantId, cashMovements.tenantId),
+        eq(cashMovementOutcomes.movementId, cashMovements.id),
+      ),
+    )
     .where(
       and(
         eq(cashMovements.tenantId, shift.tenantId),
@@ -690,13 +735,17 @@ export async function movementsOf(
       ),
     )
     .orderBy(asc(cashMovements.recordedAt), asc(cashMovements.id));
+  return rows.map((r) => ({ ...r.movement, outcome: r.outcome }));
 }
 
 // ---- Events and audit -------------------------------------------------------
 
 export type ShiftEventName = Extract<
   PosEventName,
-  "cashier_shift.opened" | "cashier_shift.closed" | "cash_movement.recorded"
+  | "cashier_shift.opened"
+  | "cashier_shift.closed"
+  | "cash_movement.recorded"
+  | "cash_movement.approved"
 >;
 
 /**
@@ -921,9 +970,11 @@ export function countReceiptDto(row: ShiftCountRow): PosShiftCountReceipt {
 /**
  * `withApproval` adds the held flag for callers that see live figures
  * (supervisor reads); never for the record response or the shift's cashier.
+ * The same callers get `outcome` (null while pending) so an approved or
+ * rejected row is not shown as held; rows without a joined outcome send null.
  */
 export function movementDto(
-  row: CashMovementRow,
+  row: CashMovementWithOutcome,
   options: { withApproval?: boolean } = {},
 ): PosCashMovement {
   return posCashMovementSchema.parse({
@@ -937,7 +988,9 @@ export function movementDto(
     recordedBy: row.recordedBy,
     recordedAt: toIsoDateTime(row.recordedAt),
     approvedBy: row.approvedBy,
-    ...(options.withApproval ? { needsApproval: row.needsApproval } : {}),
+    ...(options.withApproval
+      ? { needsApproval: row.needsApproval, outcome: row.outcome ?? null }
+      : {}),
   });
 }
 

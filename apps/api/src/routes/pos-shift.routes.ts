@@ -26,6 +26,7 @@ import { userIdSchema } from "@starter/shared/core";
 import {
   closePosDay,
   closePosShift,
+  decidePosCashMovement,
   forceClosePosShift,
   listPosShiftCounts,
   submitPosShiftCount,
@@ -46,6 +47,7 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import * as day from "../services/pos-day.service.ts";
+import * as cashApproval from "../services/pos-shift-cash-approval.service.ts";
 import * as shifts from "../services/pos-shift.service.ts";
 import { currentDeviceIdOf } from "./device-id.ts";
 
@@ -94,6 +96,7 @@ function canAny(...permissions: PermissionCode[]): RequestHandler {
 
 const operate = can("shift.cash.operate");
 const approveClose = can("shift.cash.approve_close");
+const decideHeldCash = can(cashApproval.HELD_CASH_MOVEMENT_APPROVE_PERMISSION);
 // The cashier counts; a supervisor submits a forced count (the service decides).
 const operateOrApproveClose = canAny(
   "shift.cash.operate",
@@ -270,6 +273,27 @@ posShiftRouter.get(
         query,
       ),
     );
+  },
+);
+
+posShiftRouter.post(
+  "/shifts/:shiftId/cash-movements/:movementId/decision",
+  decideHeldCash,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, shiftId, movementId } =
+      decidePosCashMovement.params.parse(req.params);
+    const body = decidePosCashMovement.body.parse(req.body);
+    res.json({
+      data: await cashApproval.decideHeldCashMovement(
+        getScopedTenantContext(req),
+        await caller(req),
+        outletId,
+        shiftId,
+        movementId,
+        body,
+      ),
+    });
   },
 );
 

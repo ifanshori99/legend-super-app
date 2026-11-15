@@ -36,6 +36,7 @@ import {
   DEMO_EDC_BANK_REF,
   DEMO_QRIS_CONFIRMED_AT,
   MAX_PIN_MISSES,
+  MOCK_CASHIER_ID,
   MOCK_SUPERVISOR_ID,
   MOCK_SUPERVISOR_PIN,
   codeOrder,
@@ -67,10 +68,12 @@ import {
   SHIFT_COUNT_LIMIT_CODE,
   SHIFT_COUNT_STALE_CODE,
   shiftExtraDemoSeed,
+  type DecideHeldCashInput,
   type ForceCloseInput,
   type ForceCloseView,
   type HeldCashOut,
   type HeldCashOutReview,
+  type MockCashMovementDecision,
   type OwnCountSummary,
   type ShiftExtraState,
   type SubmitForcedCountInput,
@@ -454,6 +457,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     ];
     const ex = extra();
     ex.heldMovementIds = [heldId];
+    ex.decisions = {};
     ex.forced = null;
     ex.counts = [];
     const sums = [2_100_000, 2_200_000, 2_230_000].slice(3 - cashierCounts, 3);
@@ -543,6 +547,8 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
         reasonNote: m.reasonNote,
         recordedAt: m.recordedAt,
         cashierName: shift.cashierName,
+        // `?demo=shift-sendiri`: the signed-in supervisor recorded it.
+        recordedBy: ownShiftView() ? MOCK_SUPERVISOR_ID : MOCK_CASHIER_ID,
       }))
       .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
   }
@@ -1432,6 +1438,56 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
         cashierCounts,
         limitReached: countLimitReached(cashierCounts),
       };
+    },
+
+    /**
+     * Supervisor verdict on a held cash out, same rules as the API: not the
+     * recorder, once, never after close, and an approval must fit the drawer.
+     */
+    decideHeldCashMovement(
+      input: DecideHeldCashInput,
+    ): MockCashMovementDecision {
+      const shift = shiftOf(input.shiftId);
+      if (ownShiftView())
+        throw new ApiError(
+          403,
+          "FORBIDDEN",
+          "Anda tidak dapat memutuskan kas keluar yang Anda catat sendiri.",
+        );
+      const movement = state.movements.find(
+        (m) => m.shiftId === shift.id && m.id === input.movementId,
+      );
+      if (!movement) notFound("Catatan kas tidak ditemukan.");
+      const given = extra().decisions?.[movement.id];
+      // Same verdict by the same decider again: the API answers 200 as before.
+      if (given && given.outcome === input.decision) return { ...given };
+      if (shift.status === "closed")
+        conflict("SHIFT_CLOSED", "Shift ini sudah ditutup.");
+      const held = extra().heldMovementIds;
+      if (!held.includes(movement.id))
+        conflict(
+          "ALREADY_DECIDED",
+          "Catatan kas ini sudah diputuskan oleh supervisor lain.",
+        );
+      if (input.decision === "approved") {
+        if (movement.amountIdr > expectedCashIdr(shift))
+          conflict(
+            "EXCEEDS_DRAWER_CASH",
+            "Nominal melebihi kas laci saat ini, tidak dapat disetujui.",
+          );
+        if (movement.type === "drop") shift.cashDropIdr += movement.amountIdr;
+        else shift.cashOutIdr += movement.amountIdr;
+      }
+      extra().heldMovementIds = held.filter((id) => id !== movement.id);
+      const result: MockCashMovementDecision = {
+        movementId: movement.id,
+        outcome: input.decision,
+        decidedBy: MOCK_SUPERVISOR_ID,
+        decidedAt: iso(clock()),
+      };
+      const ex = extra();
+      ex.decisions = { ...ex.decisions, [movement.id]: result };
+      return { ...result };
     },
 
     witnesses(): SupervisorOption[] {

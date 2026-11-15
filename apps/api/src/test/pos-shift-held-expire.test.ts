@@ -633,6 +633,7 @@ function insertOutcome(
   shiftId: string,
   movementId: string,
   outcome: "expired" | "approved" | "rejected",
+  decidedBy: string = supervisor.userId,
 ) {
   return asOwnerTenant(tenant.tenantId, (client) =>
     client.query(
@@ -645,7 +646,7 @@ function insertOutcome(
         shiftId,
         movementId,
         outcome,
-        supervisor.userId,
+        decidedBy,
       ],
     ),
   );
@@ -960,21 +961,33 @@ describe("POS-03 legend-y9bf cash_movement_outcomes (database rules)", () => {
     ]);
   });
 
-  it("legend-y9bf: an 'approved' outcome is refused on an open and on a closed shift (no approval flow updates the drawer yet, legend-3l4q)", async () => {
-    const { cashier, shift } = await shiftWithHeldCashOut();
-    const [held] = await movementsOf(shift.id);
+  it("legend-y9bf: an 'approved' outcome is allowed on an open shift for a decider other than the recorder (legend-3l4q), refused for the recorder and on a closed shift", async () => {
+    // Open shift: the recorder's own approval is refused, another user's is stored.
+    const open = await shiftWithHeldCashOut();
+    const [held] = await movementsOf(open.shift.id);
     expect(
-      await pgCode(() => insertOutcome(shift.id, held!.id, "approved")),
+      await pgCode(() =>
+        insertOutcome(open.shift.id, held!.id, "approved", open.cashier.userId),
+      ),
     ).toBe("23514");
-    expect(await outcomesOf(shift.id)).toEqual([]);
+    expect(await outcomesOf(open.shift.id)).toEqual([]);
+    expect(
+      await pgCode(() => insertOutcome(open.shift.id, held!.id, "approved")),
+    ).toBeUndefined();
+    expect(await outcomesOf(open.shift.id)).toEqual([
+      { movement_id: held!.id, outcome: "approved" },
+    ]);
 
+    // Closed shift: the held movement expired at close, 'approved' is refused.
+    const { cashier, shift } = await shiftWithHeldCashOut();
+    const [heldClosed] = await movementsOf(shift.id);
     const closed = await closeShift(cashier, shift.id, FLOAT_IDR);
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
     expect(
-      await pgCode(() => insertOutcome(shift.id, held!.id, "approved")),
+      await pgCode(() => insertOutcome(shift.id, heldClosed!.id, "approved")),
     ).toBe("23514");
     expect(await outcomesOf(shift.id)).toEqual([
-      { movement_id: held!.id, outcome: "expired" },
+      { movement_id: heldClosed!.id, outcome: "expired" },
     ]);
   });
 
@@ -989,7 +1002,7 @@ describe("POS-03 legend-y9bf cash_movement_outcomes (database rules)", () => {
       { movement_id: held!.id, outcome: "rejected" },
     ]);
     for (const [outcome, code] of [
-      ["approved", "23514"],
+      ["approved", "23505"],
       ["rejected", "23505"],
       ["expired", "23505"],
     ] as const)

@@ -2,13 +2,20 @@
 // limit / force close (legend-7mlf). Same rules as ./api.ts: shared endpoints go
 // through the typed client, the rest runs on the mock engine in mock mode and
 // fails with CONTRACT_PENDING elsewhere (see ./CONTRACT-GAPS.md).
-import { getPosShift, listPosShiftCounts } from "@starter/shared/pos";
+import {
+  decidePosCashMovement,
+  getPosShift,
+  listPosShiftCounts,
+  posCashMovementDecisionSchema,
+  type PosCashMovementDecision,
+} from "@starter/shared/pos";
 import { callEndpoint } from "@/lib/api/endpoint";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { contractPending } from "./api";
 import { runPosKasirMock, type PosKasirEngine } from "./mock-engine";
 import { bookVarianceIdr, countLimitReached } from "./shift-extra-logic";
 import type {
+  DecideHeldCashInput,
   ForceCloseInput,
   ForceCloseView,
   HeldCashOutReview,
@@ -46,7 +53,12 @@ export async function fetchHeldCashOuts(
     ),
   ]);
   const items = report.data.movements
-    .filter((row) => row.needsApproval === true && row.type !== "cash_in")
+    .filter(
+      (row) =>
+        row.needsApproval === true &&
+        row.outcome == null &&
+        row.type !== "cash_in",
+    )
     .map((row) => ({
       id: row.id,
       type: row.type === "drop" ? ("drop" as const) : ("cash_out" as const),
@@ -55,6 +67,7 @@ export async function fetchHeldCashOuts(
       recordedAt: row.recordedAt,
       // The movement carries no cashier name yet (gap): the shift screen has it.
       cashierName: "",
+      recordedBy: row.recordedBy,
     }))
     .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
   const totalHeldIdr = items.reduce((sum, item) => sum + item.amountIdr, 0);
@@ -76,6 +89,26 @@ export async function fetchHeldCashOuts(
     cashierCounts: counts.data.length,
     limitReached: countLimitReached(counts.data.length),
   };
+}
+
+/** A supervisor approves or rejects a held cash out. */
+export async function decideHeldCashMovement(
+  outletId: string,
+  input: DecideHeldCashInput,
+): Promise<PosCashMovementDecision> {
+  if (API_MOCK)
+    return posCashMovementDecisionSchema.parse(
+      await runPosKasirMock((engine) => engine.decideHeldCashMovement(input)),
+    );
+  const { data } = await callEndpoint(decidePosCashMovement, {
+    params: {
+      outletId,
+      shiftId: input.shiftId,
+      movementId: input.movementId,
+    },
+    body: { decision: input.decision },
+  });
+  return data;
 }
 
 /** The cashier's latest count. Server side the cashier receipt is the only blind source. */

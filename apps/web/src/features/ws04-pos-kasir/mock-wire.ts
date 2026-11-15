@@ -344,7 +344,8 @@ export function movementWire(
     recordedBy: MOCK_CASHIER_ID,
     recordedAt: movement.recordedAt,
     approvedBy: null,
-    ...(needsApproval === undefined ? {} : { needsApproval }),
+    // Mock held ids only hold undecided rows, so the outcome is always null.
+    ...(needsApproval === undefined ? {} : { needsApproval, outcome: null }),
   };
 }
 

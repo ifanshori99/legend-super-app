@@ -66,6 +66,7 @@ import { approvalPolicies } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { posOverrides } from "../db/schema/device-pin.ts";
 import {
+  cashMovementOutcomes,
   cashMovementRefusals,
   cashMovements,
   posDailyCloses,
@@ -476,14 +477,27 @@ export async function listCashMovements(
       );
     }
     const rows = await tx
-      .select()
+      .select({
+        movement: cashMovements,
+        outcome: cashMovementOutcomes.outcome,
+      })
       .from(cashMovements)
+      .leftJoin(
+        cashMovementOutcomes,
+        and(
+          eq(cashMovementOutcomes.tenantId, cashMovements.tenantId),
+          eq(cashMovementOutcomes.movementId, cashMovements.id),
+        ),
+      )
       .where(and(...filters))
       .orderBy(
         sql`${cashMovements.recordedAt} asc`,
         sql`${cashMovements.id} asc`,
       )
-      .limit(query.limit + 1);
+      .limit(query.limit + 1)
+      .then((joined) =>
+        joined.map((r) => ({ ...r.movement, outcome: r.outcome })),
+      );
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
     return {
@@ -605,7 +619,10 @@ export async function recordCashMovement(
     // the expected cash by being refused) but held for supervisor review
     // (legend-67dt): the row is flagged, left out of the drawer figures, and
     // audited without any expected figure. The shift row is locked, so the
-    // figures cannot move under this check.
+    // figures cannot move under this check. The cash of a held refund or void
+    // has already left the drawer though the figures leave it out, so it is
+    // taken off the limit too: the physical cash bounds the movement, the same
+    // bound the approval applies (pos-shift-cash-approval.service.ts).
     let needsApproval = false;
     if (input.type !== "cash_in") {
       // Every cash outflow of the shift, held or not and whichever writer
@@ -621,7 +638,8 @@ export async function recordCashMovement(
         live.cashInIdr -
         live.cashOutIdr -
         live.cashDropIdr;
-      needsApproval = input.amountIdr > expected;
+      needsApproval =
+        input.amountIdr > expected - (await heldCorrectionCashIdrOf(tx, shift));
     }
     const [row] = await tx
       .insert(cashMovements)

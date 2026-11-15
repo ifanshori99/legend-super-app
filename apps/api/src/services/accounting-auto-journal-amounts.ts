@@ -71,6 +71,7 @@ import {
 } from "@starter/shared/payment";
 import {
   accountMappings,
+  cashMovementOutcomes,
   cashMovements,
   domainEventOutbox,
   goodsReceiptLines,
@@ -158,6 +159,9 @@ export const AUTO_JOURNAL_EVENTS = [
   "cashier_shift.closed",
   // legend-89pn
   "cash_movement.recorded",
+  // A held cash out booked once a supervisor approves it (same journal key as
+  // cash_movement.recorded).
+  "cash_movement.approved",
   "settlement.reconciled",
   "edc_transaction.settled",
   "goods_receipt.recorded",
@@ -357,6 +361,13 @@ const cashMovementRecordedSchema = z.object({
   recordedAt: time,
 });
 
+// The approval of a held movement: the same fact as the recorded event (amount
+// and type are re-read from the row, the decision from cash_movement_outcomes),
+// so only the movement identity and the decision time ride in the payload.
+const cashMovementApprovedSchema = cashMovementRecordedSchema.extend({
+  approvedAt: time,
+});
+
 // Purchasing (legend-1xbs, legend-v3lh). The payload is the whole fact, there
 // is no backing guard: the emitting transaction already split the value.
 // supplier_invoice.recorded is NOT journaled here: its journal is posted in the
@@ -540,6 +551,11 @@ export function storedEventOf(event: {
     }
     case "cash_movement.recorded": {
       const payload = cashMovementRecordedSchema.parse(event.payload);
+      assertEnvelopeOutlet(event, payload.outletId);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
+    case "cash_movement.approved": {
+      const payload = cashMovementApprovedSchema.parse(event.payload);
       assertEnvelopeOutlet(event, payload.outletId);
       return { ...base, outletId: payload.outletId, occurredAt, payload };
     }
@@ -732,6 +748,7 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
     case "cashier_shift.closed":
       return boundedKey(`aj:shift:${String(p.shiftId)}`);
     case "cash_movement.recorded":
+    case "cash_movement.approved":
       return boundedKey(`aj:cash-movement:${String(p.movementId)}`);
     case "settlement.reconciled":
       return boundedKey(`aj:settlement:${String(p.settlementId)}`);
@@ -1386,9 +1403,11 @@ async function intentOf(tx: Tx, tenantId: TenantId, intentId: string) {
  * - the amount and type come from the stored row; a payload that disagrees is
  *   refused (POSTING_AMOUNTS_MISMATCH), never posted;
  * - a drop stays the outlet's cash: nothing to book;
- * - a movement held for approval (needs_approval, whatever its outcome) is
- *   outside the shift's expected cash, so the close difference already
- *   leaves it alone, and it is never booked here;
+ * - a movement held for approval (needs_approval) is booked only once it has
+ *   an 'approved' outcome, dated at the decision time, under the same key as
+ *   the recorded event (a replay of either event after the approval is
+ *   already_posted); held without a decision, rejected or expired: never
+ *   booked here;
  * - the cash_in that pays an order issue charge is booked as a sale by
  *   order_issue.charge_paid (chargePaidFactOf): booking it again would count
  *   the cash twice.
@@ -1430,7 +1449,24 @@ async function cashMovementFactOf(
       "POSTING_AMOUNTS_MISMATCH",
       "amountIdr does not match the cash movement",
     );
-  if (movement.type === "drop" || movement.needsApproval) return null;
+  if (movement.type === "drop") return null;
+  let moneyTime = movement.recordedAt;
+  if (movement.needsApproval) {
+    const [outcome] = await tx
+      .select({
+        outcome: cashMovementOutcomes.outcome,
+        decidedAt: cashMovementOutcomes.decidedAt,
+      })
+      .from(cashMovementOutcomes)
+      .where(
+        and(
+          eq(cashMovementOutcomes.tenantId, tenantId),
+          eq(cashMovementOutcomes.movementId, p.movementId),
+        ),
+      );
+    if (outcome?.outcome !== "approved") return null;
+    moneyTime = outcome.decidedAt;
+  }
   const [charge] = await tx
     .select({ id: orderIssueCharges.id })
     .from(orderIssueCharges)
@@ -1448,7 +1484,7 @@ async function cashMovementFactOf(
     amounts: { amountIdr },
     sourceId: p.movementId,
     outletId: movement.outletId,
-    moneyTime: movement.recordedAt,
+    moneyTime,
   };
 }
 
@@ -2146,6 +2182,7 @@ export async function autoJournalFactOf(
       };
     }
     case "cash_movement.recorded":
+    case "cash_movement.approved":
       return cashMovementFactOf(tx, tenantId, stored);
     // No backing guard (design section 10): the bank statement is the fact,
     // finance reconciles the clearing account, so an over-settlement is a
