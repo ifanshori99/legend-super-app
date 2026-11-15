@@ -125,12 +125,16 @@ const STATES = [
     name: "loading",
     path: mocked("slow"),
     loading: true,
+    // Shoot the skeleton itself: the old `[aria-busy], [role=status]` match
+    // could hit the support banner and capture the loaded list instead.
+    // "slow" holds every mock call for SLOW_LATENCY_MS (3 s), so run this
+    // state against a production mock build, which hydrates well inside it.
     prepare: async (page) => {
       await page
-        .locator('[aria-busy="true"], [role="status"]')
+        .locator('div[aria-busy="true"]')
+        .filter({ visible: true })
         .first()
-        .waitFor({ state: "visible", timeout: 5000 })
-        .catch(() => {});
+        .waitFor({ state: "visible", timeout: 2500 });
     },
   },
   {
