@@ -5880,3 +5880,12 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Gerbang: links, lint (2 peringatan lama), typecheck api+web, tes kontrak root 891/891 (termasuk edc-reconciliation-gate), set cepat dengan semua edc-* + edge-* + *migration* + notification*: 2800 hijau, 1 merah = flake legend-8p74m (edge-master-data-publisher).
 - Run penuh (10:27-11:42): 19186 lulus, 0 tes gagal, 1 Unhandled Error pg 57P01 dari edge-recipes-protocol-compat.test.ts (teardown), vitest exit 1. Berkas itu dari m1 dan tidak disentuh batch ini; sendirian 1 dari 6 run kena error sama, run terakhir 3x berturut-turut hijau. Kartu flake baru legend-4ge79 (P2). Tes tidak dilonggarkan.
 - Biaya: dicatat di entri batch berikut (sesi dipindah akun).
+
+## 2026-11-15: Merge train batch68 (int/batch68, base m1 69175e58a)
+
+- Isi (7 cabang): fix/flake-866 5c9d29ec4, fix/hris-so-852 2473fc84b, fix/hris-koreksi-so-852 408336d1c, fix/koreksi-identitas-860 e27706496, fix/inv-acct-857 203814737 (HPP), fix/finance-dp-857 4b3bbe148, fix/s3ex8-859 8b5050243.
+- Migrasi: HPP 0383 jadi 0379 (stock_ledger_item_cost_idx) dan 0384 jadi 0380 (inventory_price_variance), snapshot 0380 dibangun ulang, check-journal hijau (peringatan FK FORCE RLS = alarm palsu yang dikenal).
+- Konflik: notification-adapters, auth-form, sign-out-button, jurnal dan snapshot HPP, PROGRESS (semua diselesaikan dengan menjaga dua sisi).
+- Perbaikan integrasi (commit sendiri di cabang batch): stub react-query di push-registration-web.test.mjs plus tes baru cache karyawan dibuang saat sign-out; langkah vitest web di scripts/test.mjs dan test-discovery (disetujui CTO); payment-db.test.ts membuat tenant A sendiri dan hanya menghapus barisnya (keputusan CTO opsi a, asersi isolasi tidak dilonggarkan).
+- Gerbang: links, lint, typecheck, root test, set cepat hijau. Run penuh 3 (21:34-22:40, 3954 dtk): 19343 lulus, 2 gagal, keduanya flake berkartu: data-key-rotation-job (legend-9jhvz) dan edc-agent EDC-02 (legend-mjh1y, tes baris 616). Sendirian: data-key-rotation-job 3 dari 3 hijau; edc-agent 5 dari 6 hijau (run 3 merah dengan asersi yang sama, lalu 3 run berturut-turut hijau). Perbaikan keduanya ada di fix/flake-874 (batch69). Run penuh 1 dan 2 merah karena hal yang sudah diperbaiki di atas (stub, runner, tenant payment-db); run 3 dengan izin CTO (pengecualian sekali).
+- Biaya (sejak batch66): session-usage total 7011k (batch66 mencatat 3536k, jadi batch67 dan 68 sekitar 3475k); parallel-report sesi merge-train 980 menit, 3 spawn subagent, rata-rata 0.01 subagent berjalan per agent.
