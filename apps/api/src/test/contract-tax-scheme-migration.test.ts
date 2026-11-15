@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // Migration test for 0118 (legend-rhq5): employment_contracts.tax_scheme.
 // A contract that existed before 0118 must read 'gross' after it (CTO decision
 // 2026-11-09), new rows must state a scheme (no default left), and the CHECK
@@ -107,10 +108,13 @@ describe("employment_contracts.tax_scheme migration 0118 on a database migrated 
   }, 180_000);
 
   afterAll(async () => {
-    await scratch?.end();
+    if (scratch) await endTestPool(scratch);
     if (admin) {
-      await admin.query(`DROP DATABASE IF EXISTS ${scratchName} WITH (FORCE)`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, scratchName);
+      } finally {
+        await endTestPool(admin);
+      }
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });

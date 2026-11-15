@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // Upgrade test for migration 0065 (beads legend-wg5t item 7). The first draft
 // (then numbered 0063) added a partial UNIQUE index on edge_inbound_events and failed with
 // 23505 on real pre-0065 data where the primary and the standby both hold a
@@ -281,22 +282,6 @@ async function expectMigrationForeignKeysValidated(scratch: Pool) {
   ]);
 }
 
-/**
- * `Pool.end()` resolves before the server has closed the sessions; a
- * `DROP DATABASE ... WITH (FORCE)` racing them terminates a client that is
- * still closing (57P01) and pg raises it as an uncaught error. Wait them out.
- */
-async function waitForNoSessions(admin: Pool, database: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
-      [database],
-    );
-    if (rows[0]?.n === 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
 // legend-pz641 (0376): the slot table is backfilled from the counted receipts
 // only. Every seeded receipt sits at link_seq 1, so the primary's two counted
 // edge_to_cloud receipts share one slot and that slot must stay empty.
@@ -392,11 +377,13 @@ describe("legend-wg5t migration 0065 on pre-0065 duplicate receipts", () => {
   }, 120_000);
 
   afterAll(async () => {
-    await scratch?.end();
+    if (scratch) await endTestPool(scratch);
     if (admin) {
-      await waitForNoSessions(admin, scratchName);
-      await admin.query(`DROP DATABASE IF EXISTS ${scratchName} WITH (FORCE)`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, scratchName);
+      } finally {
+        await endTestPool(admin);
+      }
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });
@@ -488,7 +475,7 @@ describe("legend-wg5t migration 0065 run by a non-superuser table owner", () => 
     // Production shape from here on (drizzle/0001): a plain table owner with
     // CREATEROLE, subject to RLS. ALTER ROLE only applies to new sessions, so
     // the migrator gets a fresh pool.
-    await owner.end();
+    await endTestPool(owner);
     await admin.query(`ALTER ROLE ${ownerRole} NOBYPASSRLS`);
     owner = new Pool({
       connectionString: urlFor(ownerDatabase, ownerRole, ownerPassword),
@@ -497,15 +484,15 @@ describe("legend-wg5t migration 0065 run by a non-superuser table owner", () => 
   }, 120_000);
 
   afterAll(async () => {
-    await owner?.end();
-    await adminInScratch?.end();
+    if (owner) await endTestPool(owner);
+    if (adminInScratch) await endTestPool(adminInScratch);
     if (admin) {
-      await waitForNoSessions(admin, ownerDatabase);
-      await admin.query(
-        `DROP DATABASE IF EXISTS ${ownerDatabase} WITH (FORCE)`,
-      );
-      await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, ownerDatabase);
+        await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
+      } finally {
+        await endTestPool(admin);
+      }
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });

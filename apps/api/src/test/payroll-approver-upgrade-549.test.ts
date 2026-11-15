@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // Payroll549 / G688h P2: legacy maker=approver rows keep their lifecycle and money.
 // Actual migrations run against a scratch database on the disposable server.
 import { randomBytes, randomUUID } from "node:crypto";
@@ -250,19 +251,13 @@ beforeAll(async () => {
 }, 240_000);
 
 afterAll(async () => {
-  await scratch?.end();
+  if (scratch) await endTestPool(scratch);
   if (admin) {
-    // pg can still be closing the last socket after pool.end resolves.
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const result = await admin.query<{ n: number }>(
-        "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
-        [database],
-      );
-      if (result.rows[0]?.n === 0) break;
-      await new Promise((done) => setTimeout(done, 50));
+    try {
+      await dropTestDatabase(admin, database);
+    } finally {
+      await endTestPool(admin);
     }
-    await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
-    await admin.end();
   }
   if (workDir) rmSync(workDir, { recursive: true, force: true });
 });

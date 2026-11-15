@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // Migration test for payroll_pph21_policies (0068 table + 0069 RLS). The two
 // migrations were renumbered from 0063/0064 after main took those numbers, so
 // this suite proves both ways a database can reach them: a fresh database that
@@ -119,10 +120,13 @@ describe("payroll_pph21_policies migrations 0068 and 0069 on a fresh database", 
   }, 120_000);
 
   afterAll(async () => {
-    await scratch?.end();
+    if (scratch) await endTestPool(scratch);
     if (admin) {
-      await admin.query(`DROP DATABASE IF EXISTS ${scratchName} WITH (FORCE)`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, scratchName);
+      } finally {
+        await endTestPool(admin);
+      }
     }
   });
 
@@ -154,10 +158,13 @@ describe("payroll_pph21_policies migrations 0068 and 0069 on a database migrated
   }, 120_000);
 
   afterAll(async () => {
-    await scratch?.end();
+    if (scratch) await endTestPool(scratch);
     if (admin) {
-      await admin.query(`DROP DATABASE IF EXISTS ${scratchName} WITH (FORCE)`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, scratchName);
+      } finally {
+        await endTestPool(admin);
+      }
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });

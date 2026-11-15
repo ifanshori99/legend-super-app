@@ -27,6 +27,7 @@ import {
   mintEdgeCredential,
   parseEdgeCredential,
 } from "../../edge/credential.ts";
+import { dropTestDatabase, endTestPool } from "./database-cleanup.ts";
 
 const migrationsFolder = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -150,28 +151,28 @@ export async function createEdgeDatabase(input: {
   await main.query(`CREATE DATABASE ${name}`);
   const ownerUrl = urlFor(adminBase, name);
   const owner = new Pool({ connectionString: ownerUrl, max: 4 });
-  // DROP DATABASE ... WITH (FORCE) ends any session still open on the edge
-  // database; an idle client then reports it. Nothing to handle: it is going.
-  const ignoreIdleError = () => undefined;
-  main.on("error", ignoreIdleError);
-  owner.on("error", ignoreIdleError);
   let appPool: Pool | undefined;
   const appUrl = urlFor(adminBase, name, login, password);
-  let released = false;
+  let cleanupPromise: Promise<void> | undefined;
 
-  const cleanup = async () => {
-    if (released) return;
-    released = true;
-    await appPool?.end().catch(() => undefined);
-    await owner.end().catch(() => undefined);
-    try {
-      await main.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
-      await main.query(`DROP ROLE IF EXISTS ${login}`);
-    } catch {
-      // Best effort: a leftover database sits on a disposable server.
-    }
-    await main.end().catch(() => undefined);
-  };
+  const cleanup = () =>
+    (cleanupPromise ??= (async () => {
+      try {
+        const closed = await Promise.allSettled([
+          ...(appPool ? [endTestPool(appPool)] : []),
+          endTestPool(owner),
+        ]);
+        const errors = closed.flatMap((result) =>
+          result.status === "rejected" ? [result.reason] : [],
+        );
+        if (errors.length)
+          throw new AggregateError(errors, "Edge test pools failed to close");
+        await dropTestDatabase(main, name);
+        await main.query(`DROP ROLE IF EXISTS ${login}`);
+      } finally {
+        await endTestPool(main);
+      }
+    })());
 
   try {
     await runMigrations(
@@ -182,7 +183,6 @@ export async function createEdgeDatabase(input: {
     );
     await provisionRoles({ adminUrl: ownerUrl, appUrl });
     appPool = createAppPool(appUrl, { max: 4 });
-    appPool.on("error", ignoreIdleError);
 
     const outlet = await main.query<{
       brand_id: string | null;
@@ -204,7 +204,14 @@ export async function createEdgeDatabase(input: {
       );
     await copyRow(main, owner, "outlets", input.outletId);
   } catch (error) {
-    await cleanup();
+    try {
+      await cleanup();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Edge test database setup and cleanup failed",
+      );
+    }
     throw error;
   }
 

@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // Brief 88 section D (beads legend-jtnd, legend-k1np). Proves the production
 // migrator login and the pre-deploy check on scratch databases of the
 // disposable test server (same guard and cleanup as
@@ -50,22 +51,6 @@ function assertDisposableServer() {
     throw new Error(
       "Run this suite through pnpm test so it gets the disposable PostgreSQL server.",
     );
-}
-
-/**
- * `Pool.end()` resolves before the server has closed the sessions; a
- * `DROP DATABASE ... WITH (FORCE)` racing them terminates a client that is
- * still closing (57P01) and pg raises it as an uncaught error. Wait them out.
- */
-async function waitForNoSessions(admin: Pool, database: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
-      [database],
-    );
-    if (rows[0]?.n === 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
 }
 
 // drizzle-orm wraps a failing statement in an error whose message is only the
@@ -188,17 +173,19 @@ describe("legend-jtnd dedicated migrator login owns the database", () => {
   }, 60_000);
 
   afterAll(async () => {
-    await migrator?.end();
+    if (migrator) await endTestPool(migrator);
     if (admin) {
-      await waitForNoSessions(admin, database);
-      await admin.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
-      await dropRoles(admin, [
-        appUser,
-        workerUser,
-        migratorUser,
-        ...(strangerRole ? [strangerRole] : []),
-      ]);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, database);
+        await dropRoles(admin, [
+          appUser,
+          workerUser,
+          migratorUser,
+          ...(strangerRole ? [strangerRole] : []),
+        ]);
+      } finally {
+        await endTestPool(admin);
+      }
     }
   });
 
@@ -473,10 +460,12 @@ describe("legend-jtnd refusal: bootstrap-owned objects in the database", () => {
 
   afterAll(async () => {
     if (admin) {
-      await waitForNoSessions(admin, database);
-      await admin.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
-      await dropRoles(admin, [migratorUser]);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, database);
+        await dropRoles(admin, [migratorUser]);
+      } finally {
+        await endTestPool(admin);
+      }
     }
   });
 
@@ -525,12 +514,14 @@ describe("legend-jtnd contrast: a plain table owner without BYPASSRLS", () => {
   }, 60_000);
 
   afterAll(async () => {
-    await owner?.end();
+    if (owner) await endTestPool(owner);
     if (admin) {
-      await waitForNoSessions(admin, database);
-      await admin.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
-      await dropRoles(admin, [ownerRole]);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, database);
+        await dropRoles(admin, [ownerRole]);
+      } finally {
+        await endTestPool(admin);
+      }
     }
   });
 

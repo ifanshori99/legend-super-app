@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // Profit share carry-over (bead legend-lzvh0, brief docs/briefs/lzvh0-carry.md
 // section B; founder rule Q83). Migration 0219_profit_share_carry adds
 // `distribution_run_shortfalls`, `distribution_carry_deductions` and
@@ -58,19 +59,6 @@ function assertDisposableServer() {
     );
 }
 
-// Same wait as migrator-role.test.ts: DROP DATABASE ... WITH (FORCE) must not
-// race sessions that are still closing.
-async function waitForNoSessions(admin: Pool, database: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
-      [database],
-    );
-    if (rows[0]?.n === 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
 async function dropRoles(admin: Pool, roles: string[]) {
   for (const role of roles)
     await admin.query(`DROP ROLE IF EXISTS "${role}"`).catch(() => undefined);
@@ -129,12 +117,14 @@ describe("legend-lzvh0 migration 0219 profit share carry", () => {
   }, 60_000);
 
   afterAll(async () => {
-    await migrator?.end();
+    if (migrator) await endTestPool(migrator);
     if (admin) {
-      await waitForNoSessions(admin, database);
-      await admin.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
-      await dropRoles(admin, [appUser, workerUser, migratorUser]);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, database);
+        await dropRoles(admin, [appUser, workerUser, migratorUser]);
+      } finally {
+        await endTestPool(admin);
+      }
     }
   });
 
