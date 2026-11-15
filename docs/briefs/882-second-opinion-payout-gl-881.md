@@ -1,0 +1,7 @@
+# 882 Second opinion delta payout GL 881 (gerbang rilis uang)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Uang, migrasi, akses: effort xhigh. Read-only, tanpa edit kode produk.
+Repo: /Users/ifanshori99/Projects/legend super app/legend. Pakai `git show`/`git diff` atau worktree sendiri; jangan checkout di folder utama.
+Cakupan: `git diff d1e259ed4 origin/fix/payout-gl-877` (tip 61102bff0). Laporan sebelumnya: `docs/qa/second-opinion-payout-gl-877.md`, brief perbaikan `docs/briefs/881-payout-gl-877-so-fix.md`. Isi: daftar `GET /payout-fee-reposts` dengan reason, worker `payout-gl-recovery.job.ts`, endpoint `POST /disbursement-batches/:id/postings/:postingId/source` (permission `payroll.disburse.approve` + step-up), migrasi 0626 (trigger cek jurnal).
+Cari: apakah tiga temuan 880 benar-benar tertutup; jurnal ganda dari worker paralel/replay; endpoint sumber yang bisa dipakai lintas tenant, tanpa step-up, oleh pembuat sendiri, atau untuk mengganti sumber yang sudah ada; trigger yang bisa dilewati; keputusan "biaya skipped tanpa jurnal lock tidak otomatis" (reason `accounting_was_off`) apakah bisa membuat GL tidak cocok tanpa terlihat.
+Tanpa heavy kecuali benar perlu satu test terarah.
+Hasil: `docs/qa/second-opinion-payout-gl-881.md` (P0-P3, berkas:baris, skenario, usul test), commit ke cabang baru `qa/second-opinion-payout-gl-881`, push tanpa force. Lapor sekali saat selesai.
