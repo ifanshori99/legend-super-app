@@ -1,0 +1,6 @@
+# 904 Second opinion akhir payout 900 (gerbang rilis uang)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Uang dan migrasi: effort xhigh. Read-only. SO AKHIR area payout: laporkan hanya P0/P1 nyata dengan skenario konkret, P2/P3 singkat.
+Repo /Users/ifanshori99/Projects/legend super app/legend. Diff: `git diff 1c3067deb..origin/fix/payout-so895-897` (tip a06c6bdd4, kode d252a28ef; migrasi 0641-0642).
+Konteks: `docs/qa/second-opinion-payout-897.md` (2 P1 + 5 P2 yang diperbaiki), `docs/briefs/900-payout-so899-fix.md` (keputusan CTO).
+Cari: tiap temuan 897 benar tertutup; gerbang backfill global bisa dilewati (PT baru, balapan, backfill setengah jalan) atau membuka terlalu cepat; kunci bukti sama dipakai dua operasi atau lintas PT; guard fee/settle saat commit bisa dilewati; sumber dana selain akun bank beku; fee historis NULL ikut dibayar; urutan kunci baru (run, baris batch, item, kunci hash, baris) masih bisa deadlock dengan jalur lain (upload bukti, confirm, return, koreksi); pembayaran ganda atau lunas tanpa uang.
+Hasil: `docs/qa/second-opinion-payout-900.md` di worktree-mu (P0-P3, berkas:baris, skenario, usul test), commit dan push cabang qa tanpa force. Lapor hanya saat selesai.
