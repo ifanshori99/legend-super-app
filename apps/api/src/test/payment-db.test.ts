@@ -4,10 +4,14 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { Client, Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 
-const tenantA = cafeLegendPlatformFixtures.tenant.id;
-const outletA = cafeLegendPlatformFixtures.outlets[0]!.id;
+// Both tenants are created fresh. The shared fixture tenant is used by other
+// files (deposit allocations, finance exceptions) that run in parallel, so an
+// isolation proof against it saw their rows and their teardown raced ours.
+const tenantA = randomUUID();
+const brandA = randomUUID();
+const legalEntityA = randomUUID();
+const outletA = randomUUID();
 const tenantB = randomUUID();
 const brandB = randomUUID();
 const legalEntityB = randomUUID();
@@ -90,36 +94,53 @@ async function insertIntent(
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
-  await owner.query(
-    `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-     VALUES ($1, 'uji-payment-b', 'Payment Tenant B', 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', $2, $3)`,
-    [
-      tenantB,
-      JSON.stringify({
-        maxOutlets: 5,
-        maxActiveEmployees: 30,
-        maxDevices: 10,
-        aiRequestsPerMonth: 0,
-        whatsappCostCapIdr: 0,
-        aiCostCapIdr: 0,
-        emailCostCapIdr: 0,
-      }),
-      randomUUID(),
-    ],
-  );
-  await owner.query(
-    "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'uji-payment-brand-b', 'Brand B')",
-    [brandB, tenantB],
-  );
-  await owner.query(
-    "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Payment B', false)",
-    [legalEntityB, tenantB],
-  );
-  await owner.query(
-    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours)
-     VALUES ($1, $2, $3, $4, 'OUT-B', 'Outlet B', 'Jl. B', '{}')`,
-    [outletB, tenantB, brandB, legalEntityB],
-  );
+  const limits = JSON.stringify({
+    maxOutlets: 5,
+    maxActiveEmployees: 30,
+    maxDevices: 10,
+    aiRequestsPerMonth: 0,
+    whatsappCostCapIdr: 0,
+    aiCostCapIdr: 0,
+    emailCostCapIdr: 0,
+  });
+  for (const [tenant, side, brand, entity, outlet] of [
+    [tenantA, "a", brandA, legalEntityA, outletA],
+    [tenantB, "b", brandB, legalEntityB, outletB],
+  ] as const) {
+    const upper = side.toUpperCase();
+    await owner.query(
+      `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+       VALUES ($1, $2, $3, 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', $4, $5)`,
+      [
+        tenant,
+        `uji-payment-${side}-${tenant.slice(0, 8)}`,
+        `Payment Tenant ${upper}`,
+        limits,
+        randomUUID(),
+      ],
+    );
+    await owner.query(
+      "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, $3, $4)",
+      [brand, tenant, `uji-payment-brand-${side}`, `Brand ${upper}`],
+    );
+    await owner.query(
+      "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, $3, false)",
+      [entity, tenant, `PT Payment ${upper}`],
+    );
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, '{}')`,
+      [
+        outlet,
+        tenant,
+        brand,
+        entity,
+        `OUT-${upper}`,
+        `Outlet ${upper}`,
+        `Jl. ${upper}`,
+      ],
+    );
+  }
   await insertLink(linkA, tenantA, outletA, tokenA);
   await insertLink(linkB, tenantB, outletB, tokenB);
   await insertIntent(intentA, tenantA, outletA, linkA);
@@ -127,24 +148,31 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Own rows only: both tenants are this file's, so the deletes go by tenant.
+  const tenants = [tenantA, tenantB];
+  await owner.query("DELETE FROM payment_intents WHERE id = ANY($1::uuid[])", [
+    [intentA, intentB],
+  ]);
   await owner.query(
-    "DELETE FROM payment_intents WHERE tenant_id = ANY($1::uuid[])",
-    [[tenantA, tenantB]],
+    "DELETE FROM payment_links WHERE tenant_id = ANY($1::uuid[])",
+    [tenants],
   );
-  await owner.query("DELETE FROM payment_links WHERE tenant_id = $1", [
-    tenantB,
+  await owner.query("DELETE FROM outlets WHERE tenant_id = ANY($1::uuid[])", [
+    tenants,
   ]);
-  await owner.query("DELETE FROM payment_links WHERE id = $1", [linkA]);
-  await owner.query("DELETE FROM outlets WHERE tenant_id = $1", [tenantB]);
-  await owner.query("DELETE FROM legal_entities WHERE tenant_id = $1", [
-    tenantB,
+  await owner.query(
+    "DELETE FROM legal_entities WHERE tenant_id = ANY($1::uuid[])",
+    [tenants],
+  );
+  await owner.query("DELETE FROM brands WHERE tenant_id = ANY($1::uuid[])", [
+    tenants,
   ]);
-  await owner.query("DELETE FROM brands WHERE tenant_id = $1", [tenantB]);
-  await owner.query("DELETE FROM tenants WHERE id = $1", [tenantB]);
+  await owner.query("DELETE FROM tenants WHERE id = ANY($1::uuid[])", [
+    tenants,
+  ]);
   await appPool.end();
   await owner.end();
 });
-
 describe("TEN-01 payment tables are tenant isolated", () => {
   it("TEN-01 an application login reads only its tenant's links, intents and funds", async () => {
     const rows = await asTenant(tenantA, async (client) => {
