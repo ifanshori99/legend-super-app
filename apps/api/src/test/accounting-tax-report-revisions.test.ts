@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // Tax report revision chain, database rules (beads legend-r3i8w, legend-4uapw;
 // docs/DECISIONS.md 2026-11-10 "Laporan pajak: pembetulan sebagai rantai
 // revisi"; migration 0231_tax_report_revisions). Real PostgreSQL on the
@@ -89,7 +90,7 @@ beforeAll(async () => {
   legalEntityId = seeded.entity;
 });
 afterAll(async () => {
-  await owner.end();
+  await endTestPool(owner);
 });
 
 // Every test takes its own period, so the unique indexes never cross tests.
@@ -957,10 +958,13 @@ describe("legend-r3i8w migration 0231 on a database migrated only to 0230", () =
   }, 180_000);
 
   afterAll(async () => {
-    await scratch?.end();
+    if (scratch) await endTestPool(scratch);
     if (admin) {
-      await admin.query(`DROP DATABASE IF EXISTS ${scratchName} WITH (FORCE)`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, scratchName);
+      } finally {
+        await endTestPool(admin);
+      }
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });

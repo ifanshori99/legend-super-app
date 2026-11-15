@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // Migration test for 0217_profit_share with pre-existing shareholder documents.
 // Before 0217, shareholder_documents.profit_entity_id (0072) was an opaque uuid
 // placeholder with no table behind it, so a database that already holds a
@@ -60,19 +61,6 @@ function copyMigrationsBefore0217(lastIdx = firstProfitShareIdx - 1) {
   journal.entries = journal.entries.filter((entry) => entry.idx <= lastIdx);
   writeFileSync(journalPath, JSON.stringify(journal));
   return { dir, before };
-}
-
-// Pool.end() resolves before the server has closed the sessions; a forced
-// DROP DATABASE racing them terminates a client that is still closing (57P01).
-async function waitForNoSessions(admin: Pool, db: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
-      [db],
-    );
-    if (rows[0]?.n === 0) return;
-    await new Promise((done) => setTimeout(done, 50));
-  }
 }
 
 type Tenant = { id: string; brandId: string };
@@ -201,10 +189,13 @@ describe("0217_profit_share on a database that already holds shareholder documen
   }, 180_000);
 
   afterAll(async () => {
-    await scratch?.end();
+    if (scratch) await endTestPool(scratch);
     if (admin) {
-      await admin.query(`DROP DATABASE IF EXISTS ${scratchName} WITH (FORCE)`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, scratchName);
+      } finally {
+        await endTestPool(admin);
+      }
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });
@@ -334,10 +325,13 @@ describe("0217_profit_share when a tenant has documents but no legal entity", ()
   }, 180_000);
 
   afterAll(async () => {
-    await scratch?.end();
+    if (scratch) await endTestPool(scratch);
     if (admin) {
-      await admin.query(`DROP DATABASE IF EXISTS ${scratchName} WITH (FORCE)`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, scratchName);
+      } finally {
+        await endTestPool(admin);
+      }
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });
@@ -415,13 +409,15 @@ describe("0217_profit_share with a non-superuser table owner", () => {
   }, 180_000);
 
   afterAll(async () => {
-    await owner?.end();
-    await adminInScratch?.end();
+    if (owner) await endTestPool(owner);
+    if (adminInScratch) await endTestPool(adminInScratch);
     if (admin) {
-      await waitForNoSessions(admin, scratchName);
-      await admin.query(`DROP DATABASE IF EXISTS ${scratchName} WITH (FORCE)`);
-      await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, scratchName);
+        await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
+      } finally {
+        await endTestPool(admin);
+      }
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });

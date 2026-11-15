@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // legend-usyi: migration 0187 and the two audit retention functions with a
 // plain (non-superuser) table owner, the way production runs them.
 //
@@ -47,19 +48,6 @@ function assertDisposableServer() {
     throw new Error(
       "Run this suite through pnpm test so it gets the disposable PostgreSQL server.",
     );
-}
-
-// Pool.end() resolves before the server has closed the sessions; a forced
-// DROP DATABASE racing them terminates a client that is still closing (57P01).
-async function waitForNoSessions(admin: Pool, db: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
-      [db],
-    );
-    if (rows[0]?.n === 0) return;
-    await new Promise((done) => setTimeout(done, 50));
-  }
 }
 
 type Journal = {
@@ -300,7 +288,7 @@ describe("legend-usyi migration 0187 and purge with a non-superuser table owner"
       () => null,
       (error: unknown) => error,
     );
-    await owner.end();
+    await endTestPool(owner);
 
     await admin.query(
       `CREATE ROLE ${maintUser} LOGIN PASSWORD '${maintPassword}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT IN ROLE legend_maintenance`,
@@ -309,16 +297,16 @@ describe("legend-usyi migration 0187 and purge with a non-superuser table owner"
   }, 240_000);
 
   afterAll(async () => {
-    await maintenance?.end();
-    await adminInScratch?.end();
+    if (maintenance) await endTestPool(maintenance);
+    if (adminInScratch) await endTestPool(adminInScratch);
     if (admin) {
-      await waitForNoSessions(admin, ownerDatabase);
-      await admin.query(
-        `DROP DATABASE IF EXISTS ${ownerDatabase} WITH (FORCE)`,
-      );
-      await admin.query(`DROP ROLE IF EXISTS ${maintUser}`);
-      await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, ownerDatabase);
+        await admin.query(`DROP ROLE IF EXISTS ${maintUser}`);
+        await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
+      } finally {
+        await endTestPool(admin);
+      }
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });
@@ -380,7 +368,7 @@ describe("legend-usyi migration 0187 and purge with a non-superuser table owner"
   });
 
   it("with the owner NOBYPASSRLS (FORCE RLS applies), the purge still works and stays inside one tenant", async () => {
-    await maintenance.end();
+    await endTestPool(maintenance);
     await admin.query(`ALTER ROLE ${ownerRole} NOBYPASSRLS`);
     maintenance = openMaintenance();
     expect(await ownerBypassesRls()).toBe(false);

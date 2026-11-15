@@ -43,6 +43,7 @@
 - Gerbang: prettier+eslint 27 berkas hijau; `check-workspace-links` hijau; `pnpm run lint` exit 0 (3m); `pnpm run typecheck` 3/3 hijau (3m28s); `heavy pnpm run test` satu run penuh: node:test root 3001/3001 (tahap root hijau, tanpa flake db-role), vitest API 1137 berkas lulus (2 dilewati), 18234 tes lulus, 41 dilewati, 16 todo, 0 gagal (~1j50m total). Tanpa run kedua.
 - Berikut: fast-forward `milestone/m1` ke `int/batch64e`; lalu 64f dan 64g (refund, QRIS 0368-0370 snapshot prevId 0367, `ws/edge-kds-stations` 0371), plus antrean CTO setelah 64g.
 - Biaya sesi (12:32-22:45, termasuk 64a-64d): biaya* total 5613k (utama Sonnet 5.5 5421k; subagent 192k). 3 subagent; parallel-report: rata-rata 0.22 subagent berjalan per agent (11 sesi). Waktu terbanyak menunggu antrean `heavy` dan vitest API.
+
 ## 855 Edge slot per link + sisa (engineer Opus, cabang `fix/edge-slot-855` dari `fix/edge-proof-854` 50818b5f6, 15 Nov 2026 dini hari)
 
 - legend-pz641: tabel `edge_link_slots` (migrasi 0440, backfill idempoten), proof dan reconcileReplay baca slot (index PK), batas proof 100.000.
@@ -5587,7 +5588,6 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 
 - Perintah test: `LEGEND_TEST_FILES="src/test/accounting-finance-exceptions.test.ts tests/ws07-finance-exceptions-known-count.test.mjs tests/text-contract.test.mjs" heavy pnpm test` EXIT 0; setelah anotasi helper test diperbaiki, `LEGEND_TEST_FILES="src/test/accounting-finance-exceptions.test.ts" heavy pnpm test` EXIT 0. Log lokal: `/tmp/legend-j4xdb-api-red.log`, `/tmp/legend-j4xdb-web-red.log`, `/tmp/legend-j4xdb-green.log`, `/tmp/legend-j4xdb-api-final.log`, `/tmp/legend-j4xdb-api-typecheck-final.log`, `/tmp/legend-j4xdb-web-typecheck.log`.
 
-
 ### 782: perbaikan jalur alarm panik (14 Nov 2026)
 
 - Basis `origin/ui/panic-copy-subnav` (`2c60a4bc8`), cabang kerja `ghostex/157120a3`. Lima kartu: legend-mm029, legend-oi7ub, legend-po3fe, legend-ewmfd, legend-aagpf. Brief dan bukti: `docs/briefs/782-panic-delivery.md`, `docs/qa/782-panic-delivery.md`.
@@ -5642,6 +5642,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - `handlePosPaymentPaid` (services/pos-order-payment.ts) mengambil advisory lock tagihan (tenant, outlet:number) setelah kunci baris orders dan pos_orders, sebelum tender (urutan sama dengan `addPosTender`). Bila penjualan EDC untuk tagihan itu masih terbuka (pending/unknown, ditandai rekonsiliasi, atau approved belum jadi tender), kartu menang: tender QRIS di-void dan intent direfund penuh (alasan `edc_request_open`). `assertNoOpenEdcRequest` kini membungkus `hasOpenEdcRequest` (services/pos-order-support.ts), perilaku pemanggil lama sama. Tanpa migrasi.
 - Test baru `pos-qris-edc-lock.test.ts` (8 kasus, termasuk balapan dengan kunci dipegang klien lain). Gagal-dulu: 5 gagal (QRIS ter-capture / webhook tidak menunggu kunci), 3 lulus (perilaku lama yang sudah benar). Hijau: 10 file API 252 test, root kontrak 26/26, typecheck api hijau, prettier+eslint bersih.
 - Architect xhigh: tanpa temuan, tanpa deadlock. Risiko sisa: bila penjualan kartu yang menang lalu ditolak, QRIS sudah direfund dan tagihan terbuka lagi; kasir perlu pemberitahuan (bead lanjutan).
+
 ## 2026-11-14: 800 Resep tenant ke semua edge + perbaikan second opinion (legend-2uqcd, legend-cgduz, legend-rg8yl, legend-3kdd)
 
 - Cabang: `ghostex/800-resep-tenant-ke-semua-edge`, base `98a959b74` (ws/tax-menu-keyrotation).
@@ -5705,6 +5706,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Test hijau final7berkas110/110, termasuk gate/runtime/POS serta recovery (/tmp/legend-834-green.log). Perintah: `LEGEND_TEST_FILES="src/test/edge-second-opinion-master-capabilities.test.ts src/test/edge-master-sync.test.ts src/test/edge-catalog-loop.test.ts src/test/edge-master-sync-deferred-wake.test.ts src/test/edge-master-data-convergence.test.ts src/test/edge-catalog-gate-runtime.test.ts src/test/edge-catalog-sales-gate-pos.test.ts" heavy pnpm test`. Helper menunggu freshness aktual semua stream kritis, bukan selesainya HTTP terakhir, sebelum menghentikan worker. Prettier, ESLint dan git diff --check pada source/test final hijau.
 - Gate akhir: heavy pnpm --filter @starter/api typecheck dijalankan sekali dan EXIT0 (/tmp/legend-834-typecheck-api.log); heavy pnpm db:generate EXIT0 dengan No schema changes, nothing to migrate (/tmp/legend-834-db-generate.log). Tidak ada migrasi atau perubahan shared/web. Seluruh job selesai; siap commit dan push cabang yang sama tanpa force.
 - Subagent: total5 pada task834, puncak4 bersamaan, token heavy dipegang test_writer. Satu reviewer dengan konteks baru memeriksa produksi dan test final. session-usage.py tidak menemukan transkrip Codex 01a1db03-8edf-7791-b056-0423b1e36997; parallel-report hanya mencakup sesi Claude lain, sehingga biaya/token dan rata-rata Codex tidak tersedia.
+
 ## 15 Nov 2026 — ws/edge-reliability (Codex, brief 838)
 
 - Basis b42619abc milestone/m1; worktree legend-93685b7b dipakai ulang, satu worktree. git log --all keenam ID tidak menemukan commit ber-ID sama; tidak menjalankan bd.
@@ -5745,12 +5747,14 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Hijau: 10 file EDC 172 test, typecheck api, prettier+eslint.
 
 ### 08:3x Merge train batch65 (edge chain + EDC struk/failover)
+
 - Isi (6 cabang ujung, dari m1 d1ad35802): fix/edge-so-816 797cd58d6 (memuat edge-master-data-publisher + tax-menu-keyrotation), fix/edge-snapshot-tolerant 92accc51e, ws/edge-reliability af66b0d36, fix/edge-slot-855 0100f11d9 (memuat ghostex/fc38212e + fix/edge-proof-854), fix/receipt-run-861 c5fe91cc3, fix/edc-failover-861 e688b53bd. Tanpa konflik di berkas uang EDC (auto-merge). fix/edge-uom-issystem sudah di m1.
 - Migrasi: 0373 edge_catalog_publisher, 0374 menu_recipe_fk (lepas FORCE pola 0127), 0375 recipes_resync_edges (dulu 0377), 0376 edge_link_slots (dulu 0440). Snapshot 0376 dibangun ulang, `pnpm db:generate` kosong, check-journal ok, registry dan acuan tes diperbarui. Peringatan check-journal terbuka: 0374 FK pada menu_items/item_variants/modifiers tanpa NOT VALID (FORCE dilepas di berkas yang sama, aman).
 - Konflik: snapshot-tolerant x so-816 di 6 berkas edge (subagent Opus, dua sisi dipertahankan, EDG-02 tetap ketat); 855 x so-816 di db-link-store.ts/link-peer.ts (onHello(cursor, proof, peerVersion)); duplikat RENUMBER_PARK dibuang. Benturan kontrak: pitm6 membuat catalogSyncRecordSchemas toleran, tes 3x9l menolak field tak dikenal -> catalog_record.updated memakai catalogSyncCloudRecordSchemas (strict), keputusan CTO: tetap strict. Tes gate sweeps 647: hitungan gate 5+2 (855 menambah gate depresiasi dan jurnal berulang).
-- Gerbang: links+lint 06:36-06:37 hijau; typecheck api+web 06:39 hijau (run pertama merah: duplikat RENUMBER_PARK); tes kontrak root 867/867 hijau; set cepat 188 berkas (edge-*, *migration*, notification*, berkas tersentuh) 2546/2547, 1 gagal flake; run penuh 07:00-08:21 (81 mnt): 19001 lulus, 2 gagal, root node --test 3222/3223 lulus.
+- Gerbang: links+lint 06:36-06:37 hijau; typecheck api+web 06:39 hijau (run pertama merah: duplikat RENUMBER_PARK); tes kontrak root 867/867 hijau; set cepat 188 berkas (edge-_, *migration*, notification_, berkas tersentuh) 2546/2547, 1 gagal flake; run penuh 07:00-08:21 (81 mnt): 19001 lulus, 2 gagal, root node --test 3222/3223 lulus.
 - Dua kegagalan run penuh = flake: edge-master-data-publisher (worker discovers a committed master change, timeout 34-45 dtk, kartu legend-8p74m) dan accounting-petty-cash PC-22 (balance_after 100000 vs 60000; kartu baru; batch tidak menyentuh kas kecil/akuntansi). Keduanya lulus 3x berturut-turut terarah (publisher 5x). Run penuh akhir dilewati sesuai aturan flake (Retro 25), CTO memberi tahu.
 - Biaya: session-usage sesi merge train total biaya* 2268k (utama sonnet 87 req 1958k, subagent opus 29 req 310k). parallel-report: merge train 121 mnt, 1 spawn, rata subagent berjalan 0,03.
+
 ## 2026-11-15: Masker nominal gaji (legend-0a1r1)
 
 - Cabang `fix/pii-salary-false-positive`, base origin/milestone/m1 `7aacd9f68`. Masker AI memisahkan konteks gaji dari nominal: judul slip, kata, dan tanggal tetap terbaca; nominal tanpa Rp, berformat Rp, dan bersufiks juta tetap disamarkan, termasuk sesudah tanggal. Tidak mengubah perhitungan maupun pembayaran gaji.
@@ -5785,6 +5789,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Biaya: session-usage sesi merge train total biaya* 3536k (utama sonnet 140 req 3226k, subagent opus 29 req 310k). parallel-report sejak 07:00: merge train 228 mnt, 1 spawn, rata subagent berjalan 0,02.
 
 ## 2026-11-15: EDC agent heartbeat, hitungan live, pemasangan edge (legend-agran, legend-h4c2f, legend-kwy6d, cabang fix/edc-agent-867)
+
 - agran: heartbeat `SELECT 1` per kunci outlet (default 10 dtk, timeout 15 dtk, hilang setelah 2 probe gagal berturut), unlock punya timeout; opsi `onOutletLost`. h4c2f: `liveWires` hanya panggilan yang masih menunggu adapter; tulis bukti approval setelah jawaban tidak memicu exit (drain `wires` tetap menunggunya). kwy6d: agent dipasang di proses EDGE (bukan worker cloud: edge pemegang terminal), `EDC_AGENT_ENABLED` default mati, `edge/edc/runtime.ts` (retry backoff), unit `deploy/edge/legend-edge.service`, bagian EDC di docs/deployment.md.
 - Timer paksa shutdown edge = saleTimeoutMs + 10 dtk bila EDC aktif (review architect: 5 dtk memotong bukti approval).
 - Tes: edc-agent-867 (17), edc-runtime-867 (9), 12 berkas EDC 165/165 hijau, typecheck api hijau, prettier+eslint hijau. Satu run awal gagal sekali di edc-agent.test.ts:616 (timing cancel), hijau di 2 run ulang.
@@ -5793,6 +5798,20 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 ## 2026-11-15: Merge train batch67 (int/batch67, base m1 479a99525)
 
 - Isi (2 cabang ujung): fix/edc-agent-867 569a56005 (agen EDC dan runtime edge, unit systemd), ghostex/4eda746b 4db4c178e (API 868 antrean rekonsiliasi EDC + UI 865). Tanpa migrasi. Satu konflik: docs/PROGRESS.md (dua sisi dipertahankan).
-- Gerbang: links, lint (2 peringatan lama), typecheck api+web, tes kontrak root 891/891 (termasuk edc-reconciliation-gate), set cepat dengan semua edc-* + edge-* + *migration* + notification*: 2800 hijau, 1 merah = flake legend-8p74m (edge-master-data-publisher).
+- Gerbang: links, lint (2 peringatan lama), typecheck api+web, tes kontrak root 891/891 (termasuk edc-reconciliation-gate), set cepat dengan semua edc-* + edge-* + _migration_ + notification*: 2800 hijau, 1 merah = flake legend-8p74m (edge-master-data-publisher).
 - Run penuh (10:27-11:42): 19186 lulus, 0 tes gagal, 1 Unhandled Error pg 57P01 dari edge-recipes-protocol-compat.test.ts (teardown), vitest exit 1. Berkas itu dari m1 dan tidak disentuh batch ini; sendirian 1 dari 6 run kena error sama, run terakhir 3x berturut-turut hijau. Kartu flake baru legend-4ge79 (P2). Tes tidak dilonggarkan.
 - Biaya: dicatat di entri batch berikut (sesi dipindah akun).
+
+## 2026-11-15: Teardown run penuh dan oracle PC-22 (876)
+
+- Cabang `fix/full-run-teardown-876`, base `origin/milestone/m1` tepat `69175e58a`; tiga kartu `legend-4ge79`, `legend-38g0t`, `legend-4m357`. Tidak memanggil CLI `bd` secara langsung, mengubah produk uang, atau menambah migrasi. Hook Git bawaan Beads ditemukan setelah checkout awal (yang mungkin memicunya otomatis); commit/push memakai `-c core.hooksPath=/dev/null` per perintah untuk menaati larangan `bd`, tanpa mengubah konfigurasi repo.
+- Akar teardown: implementasi pg-pool yang terpasang menghapus idle client dari daftar pool sebelum callback `client.end()` selesai. Karena itu `await pool.end()` saja belum membuktikan backend PostgreSQL sudah lepas; `DROP DATABASE ... FORCE` bisa mengirim `57P01` ke socket yang masih hidup. Audit API menemukan 26 lokasi DROP dalam 18 file test dan helper edge. Referensi: [pg Pool](https://node-postgres.com/apis/pool) dan [PostgreSQL DROP DATABASE](https://www.postgresql.org/docs/current/sql-dropdatabase.html); Context7 tidak tersedia karena kuota bulanan habis.
+- Baseline tujuh berkas: 96/96 hijau, `/tmp/legend-876/baseline-1.log`; flake asli tidak muncul pada percobaan ini. Regresi teardown terhadap helper dengan perilaku lama: 2 merah/1 hijau, `/tmp/legend-876/cleanup-red.log`, membuktikan pool selesai sebelum event socket remove dan FORCE masih menjatuhkan database dengan client hidup.
+- PC-22: regresi timestamp mundur menghasilkan 1 merah/96 hijau pada `/tmp/legend-876/baseline-2.log`, tepat assertion oracle snapshot Rp100.000 vs saldo Rp60.000. Saldo, jurnal pembelian Rp40.000, dan replay tetap benar. Oracle diperbaiki agar setiap snapshot membentuk rantai transisi saldo lengkap, dengan kontrol negatif untuk snapshot rusak dan saldo akhir salah; tidak bergantung urutan timestamp transaksi. Pemeriksaan saldo negatif/pengeluaran bersamaan tetap ada. Perbaikan file kas kecil ini identik dengan `60684dc11` pada `origin/fix/flake-866`, yang sudah masuk `int/batch68`.
+- Bukti uang dibaca tanpa perubahan produk: `lockFund` memakai `FOR UPDATE`, perubahan saldo memakai delta SQL dengan batas saldo cukup, lalu snapshot jurnal memakai saldo hasil transaksi yang sama (`accounting-petty-cash.service.ts`). PC-41 mematok `created_at` untuk urutan/cursor; filter tanggal API tetap memakai `entry_date`, sehingga rentang query aktual tetap diuji.
+- Audit akhir `rg 'DROP DATABASE' apps/api/src/test` hanya menemukan implementasi DROP tanpa FORCE di helper baru. Pola FORCE di `tests/*.mjs` berada di luar scope brief dan belum diubah.
+- Review konteks segar atas seluruh diff dan delta cleanup worker tidak menemukan penghalang. Seluruh error PostgreSQL, termasuk `57P01`, menjadi kegagalan cleanup yang eksplisit; tidak ditelan. Regresi juga membuktikan koneksi hidup tidak dibunuh oleh cleanup.
+- Subagent: total 5 unik, puncak 5 bersamaan, token heavy hanya `heavy_holder`; tiga pemegang kartu, satu pemegang heavy, satu reviewer. `session-usage.py 01a1df4a-b74c-7950-bc8f-9199630694cf` tidak menemukan transkrip Codex; `parallel-report` hanya menghitung sesi Claude, sehingga biaya/token dan rata-rata native Codex tidak tersedia.
+- Implementasi dibekukan sesudah perbaikan lint cleanup worker. Kombinasi identik seluruh 21 file test yang berubah, melalui `LEGEND_TEST_FILES="src/test/..." heavy pnpm test`, lulus 3x sesudah perubahan kode terakhir: masing-masing 218/218, tanpa unhandled error; durasi Vitest 96,14 / 94,99 / 94,66 detik. Log `/tmp/legend-876/verified-{1,2,3}.log`; perintah lengkap `/tmp/legend-876/final-command.txt`.
+- Pra-gate setelah perubahan kode terakhir: `pnpm exec eslint <23 file TS berubah>` EXIT 0 dan `pnpm exec prettier --check <23 file TS berubah>` EXIT 0; daftar argumen lengkap `/tmp/legend-876/gate-commands.txt`. `git diff --check` hijau. Tidak mengulang run penuh, build, atau e2e: perubahan hanya helper/test API sesuai brief; gate penuh tetap milik merge train.
+- `heavy pnpm --filter @starter/api typecheck` EXIT 0, tepat satu run; log `/tmp/legend-876/typecheck-api.log`. Verifikasi selesai pukul 20:17 WIB; seluruh job dan token heavy dilepas. Cabang kerja dicommit dan dipush tanpa force sesuai brief; SHA ada di laporan handoff. Tidak ada merge.

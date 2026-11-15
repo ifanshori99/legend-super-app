@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // Upgrade test for migration 0226 (legend-hwn02, design
 // docs/design/hris-edge-replication.md sections 5, 6.1, 8): it adds the edge
 // HRIS tables edge_people_sync_state, edge_attendance_qr_keys,
@@ -128,22 +129,6 @@ async function seedPre0226(db: Pool) {
   await insertAttendanceLog(db, oldLogId, "selfie_geo", "pre-0226-selfie-geo");
 }
 
-/**
- * `Pool.end()` resolves before the server has closed the sessions; a
- * `DROP DATABASE ... WITH (FORCE)` racing them terminates a client that is
- * still closing (57P01) and pg raises it as an uncaught error. Wait them out.
- */
-async function waitForNoSessions(admin: Pool, database: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
-      [database],
-    );
-    if (rows[0]?.n === 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
 describe("legend-hwn02 migration 0226 run by a non-superuser table owner", () => {
   const ownerRole = `edge_hris_owner_${randomBytes(6).toString("hex")}`;
   const ownerPassword = randomBytes(16).toString("hex");
@@ -182,7 +167,7 @@ describe("legend-hwn02 migration 0226 run by a non-superuser table owner", () =>
     // Production shape from here on (drizzle/0001): a plain table owner with
     // CREATEROLE, subject to RLS. ALTER ROLE only applies to new sessions, so
     // the migrator gets a fresh pool.
-    await owner.end();
+    await endTestPool(owner);
     await admin.query(`ALTER ROLE ${ownerRole} NOBYPASSRLS`);
     owner = new Pool({
       connectionString: urlFor(ownerDatabase, ownerRole, ownerPassword),
@@ -193,15 +178,15 @@ describe("legend-hwn02 migration 0226 run by a non-superuser table owner", () =>
   }, 300_000);
 
   afterAll(async () => {
-    await owner?.end();
-    await adminInScratch?.end();
+    if (owner) await endTestPool(owner);
+    if (adminInScratch) await endTestPool(adminInScratch);
     if (admin) {
-      await waitForNoSessions(admin, ownerDatabase);
-      await admin.query(
-        `DROP DATABASE IF EXISTS ${ownerDatabase} WITH (FORCE)`,
-      );
-      await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, ownerDatabase);
+        await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
+      } finally {
+        await endTestPool(admin);
+      }
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });

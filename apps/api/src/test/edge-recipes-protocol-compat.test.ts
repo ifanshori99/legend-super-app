@@ -16,6 +16,7 @@ import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { listCatalogRecordsSince } from "../services/edge-catalog-sync.ts";
 import { settleCloud } from "./helpers/catalog-cloud.ts";
+import { endTestPool } from "./helpers/database-cleanup.ts";
 
 const cloud = await vi.hoisted(async () => {
   const { createCatalogCloud } = await import("./helpers/catalog-database.ts");
@@ -109,8 +110,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   setAuditWriter(null);
-  await mainOwner.end();
-  await pool.end();
+  await endTestPool(mainOwner);
+  await endTestPool(pool);
   await cloud.cleanup();
 });
 

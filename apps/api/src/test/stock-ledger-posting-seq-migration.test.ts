@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // Bead legend-bsw9: migration 0186 numbers the existing stock ledger rows by
 // (occurred_at, id) while the table is append-only and force-RLS, restores both
 // protections, and restarts the identity after the highest number.
@@ -45,19 +46,6 @@ function assertDisposableServer() {
     throw new Error(
       "Run this suite through pnpm test so it gets the disposable PostgreSQL server.",
     );
-}
-
-// Pool.end() resolves before the server has closed the sessions; a forced
-// DROP DATABASE racing them terminates a client that is still closing (57P01).
-async function waitForNoSessions(admin: Pool, db: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
-      [db],
-    );
-    if (rows[0]?.n === 0) return;
-    await new Promise((done) => setTimeout(done, 50));
-  }
 }
 
 type Journal = {
@@ -201,11 +189,13 @@ describe("legend-bsw9 migration 0186 against a populated ledger", () => {
   }, 240_000);
 
   afterAll(async () => {
-    await scratch?.end();
+    if (scratch) await endTestPool(scratch);
     if (admin) {
-      await waitForNoSessions(admin, database);
-      await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, database);
+      } finally {
+        await endTestPool(admin);
+      }
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });
@@ -366,7 +356,7 @@ describe("legend-bsw9 migration 0186 run by a non-superuser table owner", () => 
     }
 
     // ALTER ROLE applies to new sessions only: reopen the migrator's pool.
-    await owner.end();
+    await endTestPool(owner);
     await admin.query(`ALTER ROLE ${ownerRole} NOBYPASSRLS`);
     owner = new Pool({
       connectionString: urlFor(ownerDatabase, ownerRole, ownerPassword),
@@ -375,15 +365,15 @@ describe("legend-bsw9 migration 0186 run by a non-superuser table owner", () => 
   }, 240_000);
 
   afterAll(async () => {
-    await owner?.end();
-    await adminInScratch?.end();
+    if (owner) await endTestPool(owner);
+    if (adminInScratch) await endTestPool(adminInScratch);
     if (admin) {
-      await waitForNoSessions(admin, ownerDatabase);
-      await admin.query(
-        `DROP DATABASE IF EXISTS ${ownerDatabase} WITH (FORCE)`,
-      );
-      await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, ownerDatabase);
+        await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
+      } finally {
+        await endTestPool(admin);
+      }
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });
@@ -481,7 +471,9 @@ describe("legend-bsw9 migration metadata", () => {
     // Lower idx numbers may be added or skipped by other branches, so look up
     // the snapshot that comes right before 0186 instead of assuming 0170.
     const previous = readdirSync(join(drizzleDir, "meta"))
-      .filter((n) => /^\d{4}_snapshot\.json$/.test(n) && n < "0186_snapshot.json")
+      .filter(
+        (n) => /^\d{4}_snapshot\.json$/.test(n) && n < "0186_snapshot.json",
+      )
       .sort()
       .at(-1);
     expect(previous).toBeDefined();

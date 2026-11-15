@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // Convention test for beads legend-m007: how a migration may add a foreign
 // key into a table that FORCEs tenant row level security.
 //
@@ -21,21 +22,6 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-
-// Pool.end() resolves before the server has closed the sessions; a forced
-// DROP DATABASE racing them terminates a client that is still closing (57P01)
-// and pg raises it as an uncaught error. Wait them out (same as the sibling
-// migration suites).
-async function waitForNoSessions(admin: Pool, db: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
-      [db],
-    );
-    if (rows[0]?.n === 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
 
 const adminUrl = process.env.STARTER_TEST_DATABASE_URL;
 const ownerRole = `fkrls_owner_${randomBytes(6).toString("hex")}`;
@@ -101,12 +87,14 @@ describe("legend-m007 foreign keys into FORCE RLS tables, run by a plain table o
   }, 60_000);
 
   afterAll(async () => {
-    await owner?.end();
+    if (owner) await endTestPool(owner);
     if (admin) {
-      await waitForNoSessions(admin, database);
-      await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
-      await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, database);
+        await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
+      } finally {
+        await endTestPool(admin);
+      }
     }
   });
 

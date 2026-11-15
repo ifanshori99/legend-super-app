@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // Upgrade test for migration 0175_pickup_call_letters. It widens
 // pickup_calls.number from smallint (CHECK 1..999) to integer (CHECK >= 1) and
 // adds the 'delivery' channel. Existing rows (including the old edge numbers 1
@@ -117,22 +118,6 @@ async function seedPreMigrationData(scratch: Pool) {
   }
 }
 
-/**
- * `Pool.end()` resolves before the server has closed the sessions; a
- * `DROP DATABASE ... WITH (FORCE)` racing them terminates a client that is
- * still closing (57P01) and pg raises it as an uncaught error. Wait them out.
- */
-async function waitForNoSessions(admin: Pool, database: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
-      [database],
-    );
-    if (rows[0]?.n === 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
 describe("migration 0175_pickup_call_letters on pre-0175 pickup_calls", () => {
   let admin: Pool;
   let scratch: Pool;
@@ -152,11 +137,13 @@ describe("migration 0175_pickup_call_letters on pre-0175 pickup_calls", () => {
   }, 180_000);
 
   afterAll(async () => {
-    await scratch?.end();
+    if (scratch) await endTestPool(scratch);
     if (admin) {
-      await waitForNoSessions(admin, scratchName);
-      await admin.query(`DROP DATABASE IF EXISTS ${scratchName} WITH (FORCE)`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, scratchName);
+      } finally {
+        await endTestPool(admin);
+      }
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });

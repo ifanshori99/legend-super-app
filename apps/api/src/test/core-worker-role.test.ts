@@ -1,7 +1,25 @@
+import { dropTestDatabase } from "./helpers/database-cleanup.ts";
 import { randomBytes } from "node:crypto";
 import { Client } from "pg";
 import { PgBoss } from "pg-boss";
 import { expect, it } from "vitest";
+
+async function closeWorkerClients(
+  boss: PgBoss | undefined,
+  worker: Client | undefined,
+  fixture: Client | undefined,
+) {
+  const closed = await Promise.allSettled([
+    boss?.stop(),
+    worker?.end(),
+    fixture?.end(),
+  ]);
+  const errors = closed.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : [],
+  );
+  if (errors.length)
+    throw new AggregateError(errors, "Worker test clients failed to close");
+}
 
 it("provisions an isolated queue role that can only read the active tenant registry", async () => {
   if (
@@ -18,6 +36,7 @@ it("provisions an isolated queue role that can only read the active tenant regis
   let fixture: Client | undefined;
   let worker: Client | undefined;
   let boss: PgBoss | undefined;
+  const failures: unknown[] = [];
   try {
     await maintenance.query(`CREATE DATABASE "${database}"`);
     const fixtureUrl = new URL(adminUrl);
@@ -60,14 +79,22 @@ it("provisions an isolated queue role that can only read the active tenant regis
     boss.on("error", () => {});
     await boss.start();
     await boss.createQueue("fixture-queue");
-  } finally {
-    await boss?.stop().catch(() => {});
-    await worker?.end().catch(() => {});
-    await fixture?.end().catch(() => {});
-    await maintenance.query(
-      `DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`,
-    );
-    await maintenance.query(`DROP ROLE IF EXISTS "${role}"`);
-    await maintenance.end();
+  } catch (error) {
+    failures.push(error);
   }
+  try {
+    await closeWorkerClients(boss, worker, fixture);
+    await dropTestDatabase(maintenance, database);
+    await maintenance.query(`DROP ROLE IF EXISTS "${role}"`);
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await maintenance.end();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(failures, "Worker role test and cleanup failed");
 }, 30000);

@@ -1,3 +1,8 @@
+import {
+  dropTestDatabase,
+  endTestPool,
+  waitForNoTestDatabaseSessions as waitForNoSessions,
+} from "./helpers/database-cleanup.ts";
 // Bead legend-2pt9d: migrations 0274-0275 run by a migrator that is a plain
 // table owner (NOSUPERUSER, NOBYPASSRLS) over a database that already holds
 // depreciation reversals and corrections from 0269-0272.
@@ -57,19 +62,6 @@ function assertDisposableServer() {
     throw new Error(
       "Run this suite through pnpm test so it gets the disposable PostgreSQL server.",
     );
-}
-
-// Pool.end() resolves before the server has closed the sessions; a forced
-// DROP DATABASE racing them terminates a client that is still closing (57P01).
-async function waitForNoSessions(admin: Pool, db: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
-      [db],
-    );
-    if (rows[0]?.n === 0) return;
-    await new Promise((done) => setTimeout(done, 50));
-  }
 }
 
 type Journal = { entries: { idx: number; when: number; tag: string }[] };
@@ -240,7 +232,7 @@ describe("legend-2pt9d migrations 0274-0275 run by a NOBYPASSRLS table owner ove
         migrationOptions,
       );
     } finally {
-      await owner.end();
+      await endTestPool(owner);
     }
     await waitForNoSessions(admin, templateDb);
     // ALTER ROLE applies to new sessions only; every scenario opens its own.
@@ -249,12 +241,14 @@ describe("legend-2pt9d migrations 0274-0275 run by a NOBYPASSRLS table owner ove
 
   afterAll(async () => {
     if (admin) {
-      for (const db of [...scenarioDbs, templateDb]) {
-        await waitForNoSessions(admin, db);
-        await admin.query(`DROP DATABASE IF EXISTS ${db} WITH (FORCE)`);
+      try {
+        for (const db of [...scenarioDbs, templateDb]) {
+          await dropTestDatabase(admin, db);
+        }
+        await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
+      } finally {
+        await endTestPool(admin);
       }
-      await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
-      await admin.end();
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });
@@ -307,8 +301,8 @@ describe("legend-2pt9d migrations 0274-0275 run by a NOBYPASSRLS table owner ove
         migrate: () => runMigrations(owner, drizzleDir, migrationOptions),
       });
     } finally {
-      await owner.end();
-      await superuser.end();
+      await endTestPool(owner);
+      await endTestPool(superuser);
     }
   }
 

@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // Bead legend-jluo: the migrator gives up on a blocked table lock after
 // MIGRATION_LOCK_TIMEOUT, rolls back every pending migration, prints a clear
 // message and exits non-zero, while long statements are not cut by default.
@@ -46,19 +47,6 @@ function assertDisposableServer() {
     throw new Error(
       "Run this suite through pnpm test so it gets the disposable PostgreSQL server.",
     );
-}
-
-// Pool.end() resolves before the server has closed the sessions; a forced
-// DROP DATABASE racing them terminates a client that is still closing (57P01).
-async function waitForNoSessions(admin: Pool, db: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
-      [db],
-    );
-    if (rows[0]?.n === 0) return;
-    await new Promise((done) => setTimeout(done, 50));
-  }
 }
 
 // A drizzle folder holding the given migrations, in order.
@@ -265,12 +253,14 @@ describe("legend-jluo migrations against a held lock", () => {
   }, 60_000);
 
   afterAll(async () => {
-    await migrator?.end();
-    await blockerPool?.end();
+    if (migrator) await endTestPool(migrator);
+    if (blockerPool) await endTestPool(blockerPool);
     if (admin) {
-      await waitForNoSessions(admin, database);
-      await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, database);
+      } finally {
+        await endTestPool(admin);
+      }
     }
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });

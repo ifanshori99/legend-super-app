@@ -1,3 +1,4 @@
+import { dropTestDatabase, endTestPool } from "./helpers/database-cleanup.ts";
 // legend-9h0kg: provisionRoles sets idle_in_transaction_session_timeout = 5min
 // on the application and queue logins only. An idle open transaction pins
 // pg_snapshot_xmin and stops edge catalog and PIN sync. Same disposable-server
@@ -43,19 +44,6 @@ function assertDisposableServer() {
     );
 }
 
-// Pool.end() resolves before the server has closed the sessions; wait them out
-// so DROP DATABASE ... WITH (FORCE) does not race a closing client (57P01).
-async function waitForNoSessions(admin: Pool, database: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const { rows } = await admin.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
-      [database],
-    );
-    if (rows[0]?.n === 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
 // Best effort: the whole server is disposable.
 async function dropRoles(admin: Pool, roles: string[]) {
   for (const role of roles)
@@ -95,7 +83,7 @@ describe("legend-9h0kg idle transaction timeout on the runtime logins", () => {
     try {
       await migrate(drizzle(migrator), { migrationsFolder: drizzleFolder });
     } finally {
-      await migrator.end();
+      await endTestPool(migrator);
     }
     // legend_maintenance is cluster-wide: another suite on this server usually
     // created it first, so this migrator did not get the implicit ADMIN that
@@ -108,10 +96,12 @@ describe("legend-9h0kg idle transaction timeout on the runtime logins", () => {
 
   afterAll(async () => {
     if (admin) {
-      await waitForNoSessions(admin, database);
-      await admin.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
-      await dropRoles(admin, [appUser, workerUser, maintUser, migratorUser]);
-      await admin.end();
+      try {
+        await dropTestDatabase(admin, database);
+        await dropRoles(admin, [appUser, workerUser, maintUser, migratorUser]);
+      } finally {
+        await endTestPool(admin);
+      }
     }
   });
 
