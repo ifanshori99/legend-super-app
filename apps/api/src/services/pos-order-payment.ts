@@ -67,7 +67,6 @@ import { freshDetail, mutatePosOrder } from "./pos-order.service.ts";
 import {
   POS_QRIS_LIFETIME_MS,
   assertNoActiveQrisHold,
-  activeHoldOf,
   lockHoldsOfOrder,
   openQrisHold,
 } from "./pos-qris-hold.ts";
@@ -591,6 +590,8 @@ async function voidTendersAndRefundPaidQris(
     pos: PosRow;
     paymentLinkId: string;
     intentId: string;
+    /** The tender whose payment arrived; its own hold ends, no other. */
+    tenderId: string;
     reason: "bill_below_tender" | "business_day_closed" | "refund_reserved";
     now: Date;
     /** Wall-clock time the link closes at, when `now` is a fact time. */
@@ -601,24 +602,25 @@ async function voidTendersAndRefundPaidQris(
   // legend-yhia9: money arrived that the bill cannot take. While the QR's hold
   // is active the 0369 trigger refuses the tender void, so the hold ends first
   // (the payment is real, the refund below returns it; never a second capture).
-  const activeHold = await activeHoldOf(tx, context.tenant.tenantId, order.id);
-  if (activeHold)
-    await tx
-      .update(posQrisHolds)
-      .set({
-        state: "paid",
-        closedAt: now,
-        closeReason: "provider_paid",
-        closeEvidence: { anomaly: input.reason, intentId: input.intentId },
-        nextCheckAt: null,
-      })
-      .where(
-        and(
-          eq(posQrisHolds.tenantId, context.tenant.tenantId),
-          eq(posQrisHolds.id, activeHold.id),
-          inArray(posQrisHolds.state, ["open", "cancelling"]),
-        ),
-      );
+  // The hold is picked by this tender, never by "any active hold of the order":
+  // another QR of the same order keeps its own hold.
+  await tx
+    .update(posQrisHolds)
+    .set({
+      state: "paid",
+      closedAt: now,
+      closeReason: "provider_paid",
+      closeEvidence: { anomaly: input.reason, intentId: input.intentId },
+      nextCheckAt: null,
+    })
+    .where(
+      and(
+        eq(posQrisHolds.tenantId, context.tenant.tenantId),
+        eq(posQrisHolds.orderId, order.id),
+        eq(posQrisHolds.tenderId, input.tenderId),
+        inArray(posQrisHolds.state, ["open", "cancelling"]),
+      ),
+    );
   const voided = await voidPendingQrisTenders(tx, context, {
     orderId: order.id,
     now,
@@ -845,6 +847,7 @@ export async function handlePosPaymentPaid(
         pos,
         paymentLinkId: payload.data.paymentLinkId,
         intentId: paid.id,
+        tenderId: tender.id,
         reason: "business_day_closed",
         now: at,
         linkClosedAt: now,
@@ -862,6 +865,7 @@ export async function handlePosPaymentPaid(
         pos,
         paymentLinkId: payload.data.paymentLinkId,
         intentId: paid.id,
+        tenderId: tender.id,
         reason: "bill_below_tender",
         now: at,
         linkClosedAt: now,
@@ -884,6 +888,7 @@ export async function handlePosPaymentPaid(
         pos,
         paymentLinkId: payload.data.paymentLinkId,
         intentId: paid.id,
+        tenderId: tender.id,
         reason: "refund_reserved",
         now: at,
         linkClosedAt: now,
@@ -914,6 +919,7 @@ export async function handlePosPaymentPaid(
         pos,
         paymentLinkId: payload.data.paymentLinkId,
         intentId: paid.id,
+        tenderId: tender.id,
         reason: "bill_below_tender",
         now: at,
         linkClosedAt: now,

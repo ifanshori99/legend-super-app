@@ -715,6 +715,44 @@ describe("QD-04 pairing", () => {
     expect(secondPairings.rowCount).toBe(0);
   }, 60_000);
 
+  // Assumption (brief gap 1): the SAME terminal that already consumed a code may
+  // retry /pair with that code (lost response, double tap) and gets the same
+  // pairing back; it never creates a second pairing and never revokes the first.
+  // A different terminal reusing the code stays refused (test above).
+  it("QD-04b the same terminal retrying /pair with its consumed code gets the same pairing and no second pairing row", async () => {
+    const display = await newDisplay();
+    const terminal = await newTerminal();
+    const { code } = codeOf(await requestCode(display));
+    const first = await pairWith(terminal, code);
+    expect([200, 201], JSON.stringify(first.body)).toContain(first.status);
+    const firstPairing = customerDisplayPairingSchema.parse(first.body.data);
+
+    // New idempotency key: this is a genuine second request, not a replay of
+    // the first response.
+    const retry = await pairWith(terminal, code);
+    expect([200, 201], JSON.stringify(retry.body)).toContain(retry.status);
+    const retryPairing = customerDisplayPairingSchema.parse(retry.body.data);
+
+    expect(retryPairing.id).toBe(firstPairing.id);
+    expect(retryPairing).toMatchObject({
+      status: "active",
+      terminalDeviceId: terminal.id,
+      displayDeviceId: display.id,
+    });
+    const rows = await owner.query<{ id: string; status: string }>(
+      `SELECT id::text AS id, status FROM customer_display_pairings
+        WHERE tenant_id=$1 AND (terminal_device_id=$2 OR display_device_id=$3)`,
+      [fx.tenant.tenantId, terminal.id, display.id],
+    );
+    expect(rows.rows, "exactly one pairing row, still active").toEqual([
+      { id: firstPairing.id, status: "active" },
+    ]);
+    expect(
+      (await displayGet(display)).status,
+      "the display still reads its state",
+    ).toBe(200);
+  }, 60_000);
+
   it("QD-04 an expired code is refused and the display can ask for a fresh one", async () => {
     const display = await newDisplay();
     const terminal = await newTerminal();

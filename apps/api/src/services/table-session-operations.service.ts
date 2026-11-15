@@ -640,6 +640,12 @@ export async function mergeTableSessionsOperation(
       (sum, order) => sum + order.totalIdr,
       0,
     );
+    // legend-yhia9: re-pointing an order to the target session is not covered
+    // by the 0369 trigger; refuse while any moved order has a live QRIS hold
+    // (the orders are already row-locked above).
+    for (const order of moved)
+      if (await activeHoldOf(tx, order.tenantId, order.id))
+        throw new PosError("QRIS_HOLD_ACTIVE");
     if (moved.length > 0)
       await tx
         .update(orders)
@@ -1070,6 +1076,10 @@ export async function moveSessionItemsOperation(
         .orderBy(asc(orderItems.id));
       const selectedIds = new Set(selected.map((item) => item.id));
       if (liveItems.every((item) => selectedIds.has(item.id))) {
+        // legend-yhia9: re-pointing the order to another session is not
+        // covered by the 0369 trigger; refuse while a QRIS can still be paid.
+        if (await activeHoldOf(tx, order.tenantId, order.id))
+          throw new PosError("QRIS_HOLD_ACTIVE");
         await tx
           .update(orders)
           .set({ tableSessionId: to.id, updatedAt: now })
