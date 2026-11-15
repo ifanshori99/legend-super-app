@@ -50,6 +50,7 @@ export function ApprovalSummary({
   blockKey,
   blockParams,
   busy,
+  stepUpActive = false,
   onApprove,
   showApprove,
   children,
@@ -71,6 +72,8 @@ export function ApprovalSummary({
   /** Values for the reason text, e.g. {count} of the no-snapshot reason. */
   blockParams?: Record<string, string | number>;
   busy: boolean;
+  /** The step-up panel is open: its own submit button is the only way forward. */
+  stepUpActive?: boolean;
   onApprove: () => void;
   showApprove: boolean;
   /** Step-up panel and the server refusal, below the button. */
@@ -147,7 +150,7 @@ export function ApprovalSummary({
           <Button
             type="button"
             className="min-h-11 w-full"
-            disabled={blockKey !== null}
+            disabled={blockKey !== null || stepUpActive}
             aria-describedby={blockKey ? reasonId : undefined}
             loading={busy}
             onClick={onApprove}

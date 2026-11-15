@@ -20,8 +20,9 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
-import { payoutErrorKey } from "../errors";
+import { payoutErrorKey, payoutErrorMessage } from "../errors";
 import { useUpsertPayoutConfig } from "../hooks";
+import { VerifyPanel, useStepUp } from "./approval-verify";
 import { SettingsAside } from "./settings-aside";
 import {
   buildInput,
@@ -34,7 +35,6 @@ import {
   type SettingsDraft,
   type SourceAccount,
 } from "./settings-model";
-import { SettingsStepUp } from "./settings-stepup";
 
 function accountName(account: SourceAccount): string {
   return `${account.label} ${account.maskedNumber}`;
@@ -102,8 +102,11 @@ export function SettingsForm({
   const initial = React.useMemo(() => draftFromConfig(config), [config]);
   const [draft, setDraft] = React.useState<SettingsDraft>(initial);
   const [attempted, setAttempted] = React.useState(false);
-  const [stepUp, setStepUp] = React.useState(false);
+  const stepUp = useStepUp({ acceptsPassword: true });
   const [failure, setFailure] = React.useState<unknown>(null);
+  // isPending flips a macrotask late: a fast double click would save twice, so
+  // a ref closes the gap until the request settles.
+  const inFlightRef = React.useRef(false);
 
   const accountsReady = accountsState === "ready";
   const known = accountsReady ? accounts : null;
@@ -139,12 +142,15 @@ export function SettingsForm({
     setFailure(null);
   };
 
-  const send = () => {
-    if (upsert.isPending) return;
+  // The password only goes along when the step-up panel collected one.
+  const send = (password?: string) => {
+    if (inFlightRef.current || upsert.isPending) return;
     setFailure(null);
-    upsert.mutate(buildInput(draft, config), {
+    const input = buildInput(draft, config);
+    inFlightRef.current = true;
+    upsert.mutate(password ? { ...input, password } : input, {
       onSuccess: () => {
-        setStepUp(false);
+        stepUp.reset();
         setAttempted(false);
         toast({
           title: t("payrollPayoutSettings.save.success"),
@@ -152,12 +158,11 @@ export function SettingsForm({
         });
       },
       onError: (error) => {
-        if (error instanceof ApiError && error.code === "MFA_REQUIRED") {
-          setStepUp(true);
-          return;
-        }
-        setStepUp(false);
+        if (stepUp.capture(error)) return;
         setFailure(error);
+      },
+      onSettled: () => {
+        inFlightRef.current = false;
       },
     });
   };
@@ -383,11 +388,25 @@ export function SettingsForm({
             </p>
           </section>
 
-          {stepUp && (
-            <SettingsStepUp saving={upsert.isPending} onVerified={send} />
+          {stepUp.active && (
+            <VerifyPanel
+              key={stepUp.round}
+              needs={stepUp.needs}
+              busy={upsert.isPending}
+              error={failure === null ? null : payoutErrorMessage(failure, t)}
+              onVerified={send}
+              onCancel={() => {
+                stepUp.reset();
+                setFailure(null);
+              }}
+              copy={{
+                title: t("payrollPayoutSettings.stepUp.title"),
+                mfaHint: t("payrollPayoutSettings.stepUp.hint"),
+              }}
+            />
           )}
 
-          {failure !== null && (
+          {failure !== null && !stepUp.active && (
             <div
               role="alert"
               data-testid="payout-settings-failure"
@@ -423,7 +442,7 @@ export function SettingsForm({
               type="button"
               className="min-h-11 w-full sm:w-auto"
               loading={upsert.isPending}
-              disabled={!canSave}
+              disabled={!canSave || stepUp.active}
               onClick={save}
             >
               {t("payrollPayoutSettings.save.action")}

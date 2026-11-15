@@ -19,7 +19,8 @@ export type StepUpNeeds = { mfa: boolean; password: boolean };
 /**
  * Remembers which proof the server asked for. `capture(error)` returns true
  * when the error is a step-up request (the panel then shows); any other error
- * (including a wrong password) returns false so the caller shows it.
+ * (including a wrong password or a locked password) returns false so the
+ * caller shows it.
  *
  * REAUTH_REQUIRED (401) means the MFA stamp is stale, or, on endpoints that
  * take a password, that no password came with a stamp earned at enrollment.
@@ -34,6 +35,7 @@ export function useStepUp(options: { acceptsPassword?: boolean } = {}) {
     password: false,
   });
   const [round, setRound] = React.useState(0);
+  const reset = () => setNeeds({ mfa: false, password: false });
   const capture = (error: unknown): boolean => {
     if (!(error instanceof ApiError)) return false;
     if (error.code === "MFA_REQUIRED" || error.code === "REAUTH_REQUIRED") {
@@ -45,9 +47,10 @@ export function useStepUp(options: { acceptsPassword?: boolean } = {}) {
       setNeeds({ mfa: true, password: true });
       setRound((value) => value + 1);
     }
+    // Too many wrong passwords: close the panel so the plain error shows.
+    if (error.code === "REAUTH_PASSWORD_LOCKED") reset();
     return false;
   };
-  const reset = () => setNeeds({ mfa: false, password: false });
   return {
     needs,
     round,

@@ -101,7 +101,10 @@ function StatusBatch({
   const line = useEmployeeLine();
   const [dialog, setDialog] = React.useState<ActiveDialog>(null);
   const [exportError, setExportError] = React.useState<string | null>(null);
-  const exportStepUp = useStepUp();
+  const exportStepUp = useStepUp({ acceptsPassword: true });
+  // isPending flips a macrotask late: a fast double click would run the export
+  // twice, so a ref closes the gap until the request settles.
+  const inFlightRef = React.useRef(false);
 
   if (query.isPending) return <StatusSkeleton />;
   if (query.isError || !query.data) {
@@ -148,11 +151,14 @@ function StatusBatch({
     setDialog({ kind: "detail", item });
   };
 
-  const download = () => {
-    if (exportFile.isPending) return;
+  // The password only lives in the panel for the one retry: it is sent as an
+  // argument, never kept in state, logged or stored.
+  const download = (password?: string) => {
+    if (inFlightRef.current || exportFile.isPending) return;
     setExportError(null);
+    inFlightRef.current = true;
     exportFile.mutate(
-      { batchId: batch.id },
+      { batchId: batch.id, ...(password ? { password } : {}) },
       {
         onSuccess: () => {
           exportStepUp.reset();
@@ -164,6 +170,9 @@ function StatusBatch({
         onError: (failure) => {
           if (exportStepUp.capture(failure)) return;
           setExportError(payoutErrorMessage(failure, t));
+        },
+        onSettled: () => {
+          inFlightRef.current = false;
         },
       },
     );
@@ -277,7 +286,7 @@ function StatusBatch({
             className="min-h-11 w-full min-[700px]:w-fit"
             loading={exportFile.isPending && !exportStepUp.active}
             disabled={exportStepUp.active}
-            onClick={download}
+            onClick={() => download()}
           >
             <Download aria-hidden="true" />
             {t("payrollPayoutReview.status.export.button")}

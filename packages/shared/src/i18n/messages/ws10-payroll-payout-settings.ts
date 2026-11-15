@@ -87,14 +87,7 @@ export const payrollPayoutSettingsMessages = {
   },
   stepUp: {
     title: "Verifikasi faktor kedua",
-    hint: "Menyimpan pengaturan pencairan butuh verifikasi ulang. Masukkan kode dari aplikasi autentikator; pengaturan Anda dikirim otomatis.",
-    code: "Kode autentikator",
-    codeInvalid: "Kode terdiri dari 6 angka.",
-    codeRejected: "Kode tidak cocok. Periksa kode terbaru lalu coba lagi.",
-    verify: "Verifikasi dan simpan",
-    noFactor:
-      "Aplikasi autentikator belum terdaftar. Daftarkan di halaman keamanan akun.",
-    loading: "Memeriksa faktor autentikator",
+    hint: "Menyimpan pengaturan pencairan butuh verifikasi ulang. Masukkan kode dari aplikasi autentikator atau kata sandi akun Anda; pengaturan Anda dikirim otomatis.",
   },
   failure: {
     title: "Pengaturan belum tersimpan",
