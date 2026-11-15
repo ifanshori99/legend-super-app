@@ -11,7 +11,8 @@
 //   actually left (refund `completed`).
 // - Fixture policy for `refund`: one level, Finance. Approvers also hold the
 //   supervisor role at the outlet (`pos.refund.approve`, as the refund suite).
-//   A Finance user without that outlet authority is refused (4xx, no payout).
+//   A Finance user without that outlet authority is refused with exactly 403
+//   (missing authority is not a state conflict), leaving every row unchanged.
 // - A rejected or expired approval leaves the fund unresolved. Whether the
 //   fund may be re-requested afterwards is NOT asserted (open product choice);
 //   only that nothing was paid and no second live refund exists meanwhile.
@@ -193,6 +194,39 @@ async function fundRow(fundId: string) {
   );
   if (!rows[0]) throw new Error("fund row missing");
   return rows[0];
+}
+
+/**
+ * Everything observable about one refund request: its row, its approval
+ * request, and the audit and event rows written about it. Used to prove a
+ * refused attempt leaves no trace.
+ */
+async function refundSnapshot(refundId: string) {
+  const refund = await owner.query<{ row: Record<string, unknown> }>(
+    "SELECT to_jsonb(r) AS row FROM payment_refunds r WHERE r.id = $1",
+    [refundId],
+  );
+  const approval = await owner.query<{ row: Record<string, unknown> }>(
+    `SELECT to_jsonb(a) AS row FROM approval_requests a
+     WHERE a.tenant_id = $1 AND a.object_type = 'payment_refund' AND a.object_id = $2`,
+    [tenantId, refundId],
+  );
+  const audits = await owner.query<{ action: string }>(
+    `SELECT event->>'action' AS action FROM audit_logs
+     WHERE tenant_id = $1 AND event->>'objectId' = $2 ORDER BY id`,
+    [tenantId, refundId],
+  );
+  const events = await owner.query<{ name: string }>(
+    `SELECT event->>'name' AS name FROM domain_event_outbox
+     WHERE tenant_id = $1 AND event->>'aggregateId' = $2 ORDER BY id`,
+    [tenantId, refundId],
+  );
+  return {
+    refund: refund.rows[0]!.row as { status: string },
+    approval: approval.rows.map((r) => r.row),
+    audits: audits.rows.map((r) => r.action),
+    events: events.rows.map((r) => r.name),
+  };
 }
 
 /** Resolve the fund and return the single pending refund it opened. */
@@ -420,18 +454,43 @@ describe("PAY-04 unallocated fund: approval decides", () => {
     expect((await fundRow(fundId)).resolution).toBeNull();
   });
 
-  it("PAY-04 a Finance user without outlet supervisor authority cannot approve", async () => {
-    const { fundId } = await seedFund();
+  it("PAY-04 a Finance user without outlet supervisor authority is refused with 403 and nothing changes; the supervisor can still approve", async () => {
+    const { fundId, amountIdr } = await seedFund();
     const refundId = await requestRefundFor(fundId);
+    const before = await refundSnapshot(refundId);
+
     const response = await approve(financeOnly, refundId);
-    // Refused (the server answers 409 today); the code is not the contract.
-    expect(response.status).toBeGreaterThanOrEqual(400);
-    expect(response.status).toBeLessThan(500);
+    // Missing authority is a plain refusal (403), not a conflict: the attempt
+    // must not end the refund as failed or leave any trace.
+    expect(response.status).toBe(403);
     expect(fake.calls).toHaveLength(0);
-    // Observed: the refused attempt also ends the refund as failed. Only the
-    // money-safety part is asserted (nothing completed, fund unresolved).
-    expect((await refundsOfFund(fundId))[0]!.status).not.toBe("completed");
-    expect((await fundRow(fundId)).resolution).toBeNull();
+
+    const after = await refundSnapshot(refundId);
+    expect(after.refund.status).toBe("pending");
+    // Refund row, approval request, audit log and event outbox are untouched.
+    expect(after).toEqual(before);
+    expect((await refundsOfFund(fundId)).map((r) => [r.id, r.status])).toEqual([
+      [refundId, "pending"],
+    ]);
+    // The fund stays unresolved and open: no money has left.
+    expect(await fundRow(fundId)).toMatchObject({
+      resolution: null,
+      resolved_at: null,
+    });
+    expect(await listedStatus(requester, fundId)).toBe("open");
+
+    // The refused attempt did not poison the request: the legitimate
+    // supervisor still approves and the payout happens exactly once.
+    const approved = await approve(financeA, refundId);
+    expect(approved.status).toBe(200);
+    expect(approved.body.data).toMatchObject({
+      status: "completed",
+      amountIdr,
+      approvedBy: financeAId,
+    });
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]).toMatchObject({ refundId, amountIdr });
+    expect((await fundRow(fundId)).resolution).toBe("refund");
   });
 
   it("PAY-04 approval by another person pays out once and resolves the fund, which then cannot be paid again", async () => {
@@ -506,6 +565,130 @@ describe("PAY-04 unallocated fund: approval decides", () => {
     expect((await refundsOfFund(fundId))[0]!.status).not.toBe("completed");
     expect((await fundRow(fundId)).resolution).toBeNull();
     expect(await listedStatus(requester, fundId)).toBe("open");
+  });
+});
+
+// Multi-level chains: the outlet supervisor authority (`pos.refund.approve`)
+// is a property of the whole chain, not of every step.
+// Assumptions: a chain is seeded as one `approval_policies` row per level
+// (same threshold, `levels` = the level number), as the refund suites do.
+// The supervisor authority must come from at least one approver of the chain;
+// a non-final approver without it is accepted (200) and only the last step is
+// refused (403) when nobody in the chain held it. The level-2 approver below
+// also holds Finance because the payment-admin approve path needs
+// `payment.reconcile` for every caller.
+describe("PAY-04 unallocated fund: multi-level approval chain", () => {
+  let financeOnly2: Client; // second Finance without supervisor authority
+
+  async function useTwoLevelChain(level2Template: "supervisor" | "finance") {
+    await owner.query(
+      "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
+      [tenantId],
+    );
+    for (const [level, template] of [
+      [1, "finance"],
+      [2, level2Template],
+    ] as const)
+      await owner.query(
+        `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+         VALUES ($1, 'refund', NULL, $2, $3)`,
+        [tenantId, await roleIdOf(template), level],
+      );
+  }
+
+  async function requestsOf(refundId: string) {
+    const { rows } = await owner.query<{
+      level: number;
+      status: string;
+      decided_by: string | null;
+    }>(
+      `SELECT level, status, decided_by FROM approval_requests
+       WHERE tenant_id = $1 AND object_type = 'payment_refund' AND object_id = $2
+       ORDER BY level`,
+      [tenantId, refundId],
+    );
+    return rows;
+  }
+
+  beforeAll(async () => {
+    ({ client: financeOnly2 } = await signedIn(
+      "finance",
+      "Unallocated finance only 2",
+    ));
+  });
+
+  afterAll(async () => {
+    // Back to the one-level Finance policy the other suites rely on.
+    await owner.query(
+      "DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'refund'",
+      [tenantId],
+    );
+    await owner.query(
+      `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+       VALUES ($1, 'refund', NULL, $2, 1)`,
+      [tenantId, await roleIdOf("finance")],
+    );
+  });
+
+  it("PAY-04 a Finance approver without supervisor authority passes level 1; the supervisor at level 2 completes the refund with one payout", async () => {
+    await useTwoLevelChain("supervisor");
+    const { fundId, amountIdr } = await seedFund();
+    const refundId = await requestRefundFor(fundId);
+
+    // Level 1 is not the last step: no supervisor authority is needed yet.
+    const first = await approve(financeOnly, refundId);
+    expect(first.status).toBe(200);
+    expect(fake.calls).toHaveLength(0);
+    expect((await refundsOfFund(fundId))[0]!.status).toBe("pending");
+    expect(await requestsOf(refundId)).toMatchObject([
+      { level: 1, status: "approved" },
+      { level: 2, status: "pending" },
+    ]);
+    expect((await fundRow(fundId)).resolution).toBeNull();
+
+    const second = await approve(financeA, refundId);
+    expect(second.status).toBe(200);
+    expect(second.body.data).toMatchObject({
+      status: "completed",
+      amountIdr,
+      approvedBy: financeAId,
+    });
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]).toMatchObject({ refundId, amountIdr });
+    expect((await fundRow(fundId)).resolution).toBe("refund");
+  });
+
+  it("PAY-04 a chain where nobody has supervisor authority is refused at the last step with 403 and nothing is written", async () => {
+    await useTwoLevelChain("finance");
+    const { fundId, amountIdr } = await seedFund();
+    const refundId = await requestRefundFor(fundId);
+
+    expect((await approve(financeOnly, refundId)).status).toBe(200);
+    const before = await refundSnapshot(refundId);
+    expect(before.refund.status).toBe("pending");
+
+    const refused = await approve(financeOnly2, refundId);
+    expect(refused.status).toBe(403);
+    expect(fake.calls).toHaveLength(0);
+    expect(await refundSnapshot(refundId)).toEqual(before);
+    expect(await requestsOf(refundId)).toMatchObject([
+      { level: 1, status: "approved" },
+      { level: 2, status: "pending", decided_by: null },
+    ]);
+    expect((await refundsOfFund(fundId)).map((r) => r.status)).toEqual([
+      "pending",
+    ]);
+    expect((await fundRow(fundId)).resolution).toBeNull();
+
+    // The refusal did not poison the request: an approver with supervisor
+    // authority still completes it, paying out exactly once.
+    const approved = await approve(financeA, refundId);
+    expect(approved.status).toBe(200);
+    expect(approved.body.data).toMatchObject({
+      status: "completed",
+      amountIdr,
+    });
+    expect(fake.calls).toHaveLength(1);
   });
 });
 

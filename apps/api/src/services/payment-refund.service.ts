@@ -1491,6 +1491,43 @@ async function decideRefund(
           if (systemRequester && rows[0]?.requestedBy === actor)
             throw new AccessError("APPROVER_IS_REQUESTER");
           const open = rows.find((row) => row.status === "pending");
+          // The decision that would close the chain must leave at least one
+          // supervisor (pos.refund.approve) among the approvers. Settling
+          // would otherwise fail the refund after the chain is resolved, so an
+          // approver without that authority is refused here (403) before any
+          // decision is recorded: no failed row, no event, refund stays pending.
+          if (
+            decision === "approved" &&
+            open !== undefined &&
+            open.level === open.requiredLevels &&
+            rows.filter((row) => row.status === "pending").length === 1
+          ) {
+            let supervisorPresent = await holdsPermission(
+              tx,
+              context,
+              actor,
+              SUPERVISOR_PERMISSION,
+              refund.outletId,
+              now,
+            );
+            for (const row of rows) {
+              if (supervisorPresent) break;
+              if (row.status !== "approved" || !row.decidedBy) continue;
+              supervisorPresent = await holdsPermission(
+                tx,
+                context,
+                row.decidedBy,
+                SUPERVISOR_PERMISSION,
+                refund.outletId,
+                now,
+              );
+            }
+            if (!supervisorPresent)
+              throw new AccessError(
+                "PERMISSION_DENIED",
+                "Your account cannot perform this action.",
+              );
+          }
           return { kind: "decide", requestId: open?.id ?? null };
         },
       );
