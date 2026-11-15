@@ -1076,6 +1076,20 @@ export async function releasePosQris(
           paidIntentId = hold.paymentIntentId;
           throw paidQrisReleaseError();
         }
+        // SO-889 P2-1: the guest's money for this QR sits parked and open
+        // (an amount mismatch). Releasing would let the cashier take the whole
+        // bill again while that money is still owed back. Only money parked
+        // before the release counts; money the recon finds afterwards is
+        // handled by the reconciliation row.
+        if (
+          (await unallocatedFundsOfIntentTx(tx, tenantId, hold.paymentIntentId))
+            .open > 0
+        )
+          throw new HttpError(
+            409,
+            "FUNDS_UNRESOLVED",
+            "Uang pelanggan dari QRIS ini masih tersimpan; kembalikan atau selesaikan dulu sebelum QRIS dirilis.",
+          );
         const [intent] = await tx
           .select({ expiresAt: paymentIntents.expiresAt })
           .from(paymentIntents)

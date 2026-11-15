@@ -64,7 +64,10 @@ import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
 import { activeHoldOf } from "./pos-qris-hold.ts";
 import { failedOrderCodeWithOpenFundTx } from "./payment-failed-funds.ts";
-import { expiredCodeMayStillPay } from "./payment-live-code.ts";
+import {
+  expiredCodeMayStillPay,
+  failedCodeMayStillPay,
+} from "./payment-live-code.ts";
 import {
   getSessionBill,
   lockGuestSessionForPayment,
@@ -191,7 +194,11 @@ export async function listSessionSplitDtosTx(
  * cancel is best effort and the local timeout is not proof.
  */
 function liveCodeWhere() {
-  return or(eq(paymentIntents.status, "pending"), expiredCodeMayStillPay());
+  return or(
+    eq(paymentIntents.status, "pending"),
+    expiredCodeMayStillPay(),
+    failedCodeMayStillPay(),
+  );
 }
 
 /**

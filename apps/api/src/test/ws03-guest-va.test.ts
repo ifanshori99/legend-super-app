@@ -42,6 +42,7 @@ import {
 import {
   confirmPayment,
   expireDueIntents,
+  pollPendingGatewayIntents,
 } from "../services/payment.service.ts";
 import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
@@ -247,13 +248,24 @@ async function placeOrder(guest: Guest) {
  * guest can only switch bank or method once the provider answered final for the
  * old code (a local expiry or the switch itself proves nothing). The provider
  * answers `expired`, the guest's poll records it, and the QR hold check (a QR
- * has a hold) closes the hold past the code's life + margin.
+ * has a hold) closes the hold past the code's life + margin. SO-889: the
+ * answer is final only once the code's life + margin has passed, so the
+ * payment poll asks again at that time.
  */
 async function providerClosesCode(guest: Guest, intentId: string) {
   gateway.providerStatus = "expired";
   try {
     const polled = await as(guest).payment(intentId);
     expect(polled.body.data.status).toBe("expired");
+    const { rows } = await owner.query<{ expires_at: Date }>(
+      "SELECT expires_at FROM payment_intents WHERE tenant_id = $1 AND id = $2::uuid",
+      [tenant.tenantId, intentId],
+    );
+    await pollPendingGatewayIntents(
+      contextOf(tenant.tenantId),
+      new Date(rows[0]!.expires_at.getTime() + 61_000),
+      200,
+    );
     await runPosQrisHoldCheckJob(
       contextOf(tenant.tenantId),
       new Date(Date.now() + 24 * 60 * 60_000),

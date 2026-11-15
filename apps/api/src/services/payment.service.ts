@@ -99,7 +99,10 @@ import {
   outletGatewayHealth,
   selectGatewayForNewIntent,
 } from "./payment-gateway-select";
-import { expiredCodeMayStillPay } from "./payment-live-code";
+import {
+  expiredCodeMayStillPay,
+  providerAnswerFinal,
+} from "./payment-live-code";
 import {
   onlinePaymentMethodSchema,
   resolveRoutingRule,
@@ -682,11 +685,44 @@ async function cancelSupersededAtGateway(
     if (!gateway.cancel) continue;
     try {
       await gateway.cancel(context, intent);
-      // The provider closed the code: final proof (SO-885).
+      // SO-889 P2-2: a cancel that resolved proves nothing (it is best effort).
+      // Read the code's status; only a final answer (the code lapsed on its
+      // own and the provider says expired / failed) marks it dead (SO-885).
+      const now = new Date();
+      const [row] = await withTenant(db, context, async (tx) =>
+        tx
+          .select({
+            expiresAt: paymentIntents.expiresAt,
+            gatewayIntegrationId: paymentIntents.gatewayIntegrationId,
+          })
+          .from(paymentIntents)
+          .where(
+            and(
+              eq(paymentIntents.tenantId, context.tenant.tenantId),
+              eq(paymentIntents.id, intent.intentId),
+            ),
+          ),
+      );
+      if (!row) continue;
+      const answer = await gateway.getStatus({
+        context,
+        outletId: intent.outletId,
+        integrationId: row.gatewayIntegrationId,
+        providerRef: intent.providerRef,
+        intentId: intent.intentId,
+      });
+      if (
+        !providerAnswerFinal(
+          { provider: intent.provider, expiresAt: row.expiresAt },
+          answer,
+          now,
+        )
+      )
+        continue;
       await withTenant(db, context, async (tx) =>
         tx
           .update(paymentIntents)
-          .set({ providerFinalAt: new Date() })
+          .set({ providerFinalAt: now })
           .where(
             and(
               eq(paymentIntents.tenantId, context.tenant.tenantId),
@@ -699,7 +735,7 @@ async function cancelSupersededAtGateway(
       // Identifiers only.
       logger.warn(
         { intentId: intent.intentId, err: error },
-        "Payment: gateway cancel of a superseded code failed",
+        "Payment: gateway cancel or status read of a superseded code failed",
       );
     }
   }
@@ -1102,11 +1138,18 @@ async function failIntent(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   now: Date,
+  /** SO-889: `providerAnswerFinal` held (the code lapsed on its own); a
+   * `failed` answer before `expires_at` + 60 s may be a retryable attempt. */
+  providerFinal = false,
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
     const updated = await tx
       .update(paymentIntents)
-      .set({ status: "failed", updatedAt: now, providerFinalAt: now })
+      .set({
+        status: "failed",
+        updatedAt: now,
+        ...(providerFinal ? { providerFinalAt: now } : {}),
+      })
       .where(
         and(
           eq(paymentIntents.tenantId, context.tenant.tenantId),
@@ -1650,8 +1693,8 @@ async function syncPendingIntentDetailed(
     // reconciled: the code stays collectible and in the poll, and the audit row
     // alerts staff.
     const providerFinal =
-      providerStatus?.status === "expired" ||
-      providerStatus?.status === "failed" ||
+      (providerStatus !== undefined &&
+        providerAnswerFinal(intent, providerStatus, now)) ||
       fundsParked;
     await expireIntent(
       context,
@@ -1673,14 +1716,26 @@ async function syncPendingIntentDetailed(
   }
   if (providerStatus === undefined) return { intent, gatewayError };
   if (providerStatus.status === "expired") {
-    await expireIntent(context, intent, now, "gateway", undefined, true);
+    await expireIntent(
+      context,
+      intent,
+      now,
+      "gateway",
+      undefined,
+      providerAnswerFinal(intent, providerStatus, now),
+    );
     return {
       intent: { ...intent, status: "expired", updatedAt: now },
       gatewayError: false,
     };
   }
   if (providerStatus.status === "failed") {
-    await failIntent(context, intent, now);
+    await failIntent(
+      context,
+      intent,
+      now,
+      providerAnswerFinal(intent, providerStatus, now),
+    );
     return {
       intent: { ...intent, status: "failed", updatedAt: now },
       gatewayError: false,
@@ -2569,6 +2624,8 @@ export async function applyGatewayFailure(
   intentId: string,
   outcome: "expired" | "failed",
   now = new Date(),
+  /** The provider's own code (Duitku `02`) when the caller read it. */
+  rawStatus?: string,
 ): Promise<PaymentIntent> {
   const id = uuidSchema.parse(intentId);
   const load = () =>
@@ -2587,13 +2644,19 @@ export async function applyGatewayFailure(
   const intent = await load();
   if (!intent) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
   assertOutletInScope(context.outletScope, intent.outletId);
+  // SO-889: a verified answer is final only once the code lapsed on its own.
+  const final = providerAnswerFinal(
+    intent,
+    { status: outcome, rawStatus },
+    now,
+  );
   if (intent.status === "pending") {
     if (outcome === "expired")
-      await expireIntent(context, intent, now, "gateway", undefined, true);
-    else await failIntent(context, intent, now);
-  } else if (intent.status === "expired") {
-    // A superseded / timed-out code: the provider's verified final answer is
-    // the proof it is dead (SO-885).
+      await expireIntent(context, intent, now, "gateway", undefined, final);
+    else await failIntent(context, intent, now, final);
+  } else if (intent.status === "expired" && final) {
+    // A superseded / timed-out code: the provider's verified final answer,
+    // after the code lapsed, is the proof it is dead (SO-885).
     await markGatewayReconciled(context, intent, now);
   }
   const current = (await load()) ?? intent;
@@ -2635,7 +2698,10 @@ async function syncExpiredIntentPayment(
     providerStatus.status === "expired" ||
     providerStatus.status === "failed"
   ) {
-    await markGatewayReconciled(context, intent, now);
+    // SO-889: final only once the code lapsed on its own (+ margin); before
+    // that the poll keeps asking.
+    if (providerAnswerFinal(intent, providerStatus, now))
+      await markGatewayReconciled(context, intent, now);
     return { intent, gatewayError: false };
   }
   if (providerStatus.status !== "paid" || providerStatus.amountIdr === null)

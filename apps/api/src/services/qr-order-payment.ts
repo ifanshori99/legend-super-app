@@ -53,7 +53,11 @@ import { HttpError } from "../lib/http-error.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
 import { paymentGatewayFor } from "./payment-gateway.ts";
-import { expiredCodeMayStillPay, noClosedHold } from "./payment-live-code.ts";
+import {
+  expiredCodeMayStillPay,
+  failedCodeMayStillPay,
+  noClosedHold,
+} from "./payment-live-code.ts";
 import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
 import { resolveRoutingRule } from "./payment-routing.service.ts";
 import {
@@ -377,6 +381,7 @@ async function orderLiveCodeTx(
         or(
           and(eq(paymentIntents.status, "pending"), noClosedHold),
           expiredCodeMayStillPay(),
+          failedCodeMayStillPay(),
         ),
       ),
     )

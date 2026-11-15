@@ -16,6 +16,7 @@ import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
 import { settleGatewayIntentNow } from "./payment.service.ts";
 import { paymentGatewayFor } from "./payment-gateway.ts";
+import { providerAnswerFinal } from "./payment-live-code.ts";
 import type { Tx } from "./permission-resolver.ts";
 import { HOLD_CLOSE_MARGIN_MS } from "./pos-qris-hold.ts";
 
@@ -237,8 +238,12 @@ async function askProviderAboutLink(
       continue;
     }
     // Strict: a `pending` answer is never proof of a dead code, whatever the
-    // local status and clock say.
-    if (strict && answer.status === "pending") throw unconfirmed();
+    // local status and clock say (`providerAnswerFinal` is false for it).
+    // SO-889 (strict): any non-paid answer proves the code dead only once it
+    // lapsed on its own (`expires_at` + 60 s); before that the guest can still
+    // pay it (a failed attempt may be retried), whatever the local status says.
+    if (strict && !providerAnswerFinal(intent, answer, now))
+      throw unconfirmed();
     // A code only expired in our books (superseded, or closed before it
     // lapsed) is still payable while the provider says pending and its own
     // lifetime has not run out: no proof that it holds no money.

@@ -216,8 +216,8 @@ async function managerApproval(orderId: string, valueIdr: number) {
   return { approvedBy: userId, overrideId: override.id };
 }
 
-describe("QRIS hold review: wrong amount keeps the hold until a manager releases it", () => {
-  it("the payment is parked once with one alert, the hold stays open, then the release unlocks the bill and keeps the parked money", async () => {
+describe("QRIS hold review: wrong amount keeps the hold; a release waits for the parked money", () => {
+  it("the payment is parked once with one alert, the hold stays open, and a release is refused while that money is parked open", async () => {
     const order = await newSubmittedOrder(fx, 0);
     const qr = await issueQris(fx, order.id);
     const before = await notificationCount();
@@ -237,8 +237,9 @@ describe("QRIS hold review: wrong amount keeps the hold until a manager releases
       Date.now() + 20 * 3_600_000,
     );
 
-    // Past expires_at + 30 min the provider still says paid (30.000); that
-    // money is already parked, so the release is allowed.
+    // Past expires_at + 30 min the provider still says paid (30.000). SO-889
+    // P2-1: that money is parked and still open, so the cashier must not take
+    // the bill again: the release is refused and nothing is voided.
     await owner.query(
       `UPDATE payment_intents SET expires_at = now() - interval '31 minutes'
         WHERE tenant_id=$1 AND id=$2`,
@@ -247,14 +248,12 @@ describe("QRIS hold review: wrong amount keeps the hold until a manager releases
     fx.gateway.script(qr.intentId, { rawStatus: "00", amountIdr: 30_000 });
     const approval = await managerApproval(order.id, 33_000);
     const released = await postRelease(fx, order.id, approval);
-    expect(released.status, JSON.stringify(released.body)).toBeLessThan(300);
-    expect(released.status).toBeGreaterThanOrEqual(200);
+    expect(released.status, JSON.stringify(released.body)).toBe(409);
+    expect(JSON.stringify(released.body)).toContain("FUNDS_UNRESOLVED");
 
-    const closed = await readHold(fx, order.id);
-    expect(closed?.state).toBe("closed");
-    expect(closed?.closeReason).toBe("force_released");
+    expect((await readHold(fx, order.id))?.state).toBe("open");
     expect((await tenderStatuses(fx, order.id)).map((t) => t.status)).toEqual([
-      "voided",
+      "authorized",
     ]);
     const parked = await unallocatedFunds(fx, qr.intentId);
     expect(parked).toHaveLength(1);

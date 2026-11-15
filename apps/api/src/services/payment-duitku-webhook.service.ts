@@ -442,6 +442,7 @@ async function processStoredCallback(
         intent.id,
         now.getTime() >= intent.expiresAt.getTime() ? "expired" : "failed",
         now,
+        answer.statusCode,
       );
     }
     await markRow(
