@@ -138,6 +138,8 @@ const PAYOUT_AUDIT_SAFE_FIELDS = [
   "method",
   "enabled",
   "bankFormat",
+  "postingId",
+  "sourceGlId",
 ] as const;
 
 /**

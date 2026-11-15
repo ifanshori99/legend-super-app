@@ -567,7 +567,7 @@ describe("D (legend-vvzij): settle_skipped becomes settle when the lock journal 
   // Assumption: a settle_skipped bank posting with a fee > 0 only becomes a
   // settle when the bank_charges mapping exists (the fee must then be journaled
   // too). While the mapping is missing the posting stays settle_skipped, nothing
-  // is journaled for the settle or the fee, fee_posted is left untouched and
+  // is journaled for the settle or the fee, fee_posted stays false (legend-pfk3q) and
   // neither the consumer nor a resolve throws. Once the mapping is back, the
   // pending-settle resolve turns it into settle, journaling net and fee once.
   async function bankSkippedWithLockQueued() {
@@ -582,7 +582,7 @@ describe("D (legend-vvzij): settle_skipped becomes settle when the lock journal 
     expect(skipped!.kind, "premise: final settle_skipped").toBe(
       "settle_skipped",
     );
-    expect(skipped!.fee_posted, "premise: fee recorded as posted").toBe(true);
+    expect(skipped!.fee_posted, "premise: fee not yet journaled").toBe(false);
     const { outboxId, event } = await queueLockedViaOutbox(runId, slips);
     return { slips, runId, batchId, outboxId, event };
   }
@@ -599,7 +599,7 @@ describe("D (legend-vvzij): settle_skipped becomes settle when the lock journal 
       ).resolvePendingSettles(tx, tenantId(), runId),
     );
 
-  it("[d-bank-skipped-fee-mapping-missing] bank confirmed with accounting off (settle_skipped, fee > 0, fee_posted true), then the bank_charges mapping is removed and the locked event is consumed: the consumer does not throw, the lock is journaled, the posting stays settle_skipped without settle or fee journal, fee_posted stays true and the bank is not credited; with the mapping back the resolve makes it settle: net and fee credited to the bank once, 2103 net zero, replays add nothing", async () => {
+  it("[d-bank-skipped-fee-mapping-missing] bank confirmed with accounting off (settle_skipped, fee > 0, fee_posted false), then the bank_charges mapping is removed and the locked event is consumed: the consumer does not throw, the lock is journaled, the posting stays settle_skipped without settle or fee journal, fee_posted stays false and the bank is not credited; with the mapping back the resolve makes it settle: net and fee credited to the bank once, 2103 net zero, replays add nothing", async () => {
     const before = await snapshot();
     const { slips, runId, batchId, outboxId, event } =
       await bankSkippedWithLockQueued();
@@ -618,7 +618,7 @@ describe("D (legend-vvzij): settle_skipped becomes settle when the lock journal 
       const postings = await W.postingsOf(batchId);
       expect(postings).toHaveLength(1);
       expect(postings[0]!.kind, "stays settle_skipped").toBe("settle_skipped");
-      expect(postings[0]!.fee_posted, "fee_posted untouched").toBe(true);
+      expect(postings[0]!.fee_posted, "fee_posted untouched").toBe(false);
       skippedKey = postings[0]!.journal_key as string;
       skippedFeeKey = feeKey(postings[0]!);
       expect(await W.journalByKey(skippedKey)).toBe(undefined);
@@ -682,7 +682,7 @@ describe("D (legend-vvzij): settle_skipped becomes settle when the lock journal 
       const postings = await W.postingsOf(batchId);
       expect(postings).toHaveLength(1);
       expect(postings[0]!.kind).toBe("settle_skipped");
-      expect(postings[0]!.fee_posted).toBe(true);
+      expect(postings[0]!.fee_posted).toBe(false);
       expect(await W.journalByKey(postings[0]!.journal_key as string)).toBe(
         undefined,
       );

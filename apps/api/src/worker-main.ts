@@ -141,6 +141,7 @@ import { runAiAnomalyJob } from "./worker/ai-anomaly.job.ts";
 import { runAiDailySummaryJob } from "./worker/ai-daily-summary.job.ts";
 import { runMetricsDailyJob } from "./worker/metrics-daily.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
+import { runPayoutGlRecoverySweep } from "./worker/payout-gl-recovery.job.ts";
 import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
 import { expireDueIntents } from "./services/payment.service.ts";
 import { createDuitkuGateway } from "./services/payment-duitku.ts";
@@ -563,6 +564,17 @@ const relay = createRelayRuntime({
       await runDueDepreciation(context, new Date());
     } catch {
       console.error("Depreciation job sweep failed");
+    }
+    // Payroll payout GL (legend-pfk3q): settlements and bank fees that wait for
+    // a mapping or source account no event will replay. Idempotent per batch,
+    // fail closed; a sweep error never blocks the relay. Cloud only, like the
+    // other sweeps of cloud-owned data.
+    if (sweepsCloudOwnedData) {
+      try {
+        await runPayoutGlRecoverySweep(context, new Date());
+      } catch {
+        console.error("Payout GL recovery sweep failed");
+      }
     }
     // PAY-02/03 (legend-b9i): settle pending intents whose DOIT webhook never
     // arrived and retry stored webhook events. Fail closed like the sweeps.

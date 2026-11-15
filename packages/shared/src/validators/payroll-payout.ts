@@ -71,6 +71,18 @@ export const payoutLegalEntityParamsSchema = z.strictObject({
 });
 export const payoutRunParamsSchema = z.strictObject({ id: z.uuid() });
 export const payoutBatchParamsSchema = z.strictObject({ id: z.uuid() });
+/** Params of a payout GL posting inside its batch (finance source record). */
+export const payoutPostingParamsSchema = z.strictObject({
+  id: z.uuid(),
+  postingId: z.uuid(),
+});
+/**
+ * Finance names the GL account a pending/skipped settlement was paid from when
+ * the handover could not freeze it (legend-zlcsd). Nothing else is accepted.
+ */
+export const recordPostingSourceInputSchema = z.strictObject({
+  glAccountId: z.uuid(),
+});
 /** Query of the proof read path: the key an upload returned (shape is checked by the API). */
 export const payoutEvidenceReadQuerySchema = z.strictObject({
   key: z.string().min(1).max(500),
@@ -264,4 +276,7 @@ export type WithdrawResolutionInput = z.infer<typeof withdrawResolutionSchema>;
 export type ReturnManualItemsInput = z.infer<typeof returnManualItemsSchema>;
 export type ConfirmCashHandoverInput = z.infer<
   typeof confirmCashHandoverInputSchema
+>;
+export type RecordPostingSourceInput = z.infer<
+  typeof recordPostingSourceInputSchema
 >;
