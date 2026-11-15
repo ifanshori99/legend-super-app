@@ -21,6 +21,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   smallint,
   text,
@@ -1234,9 +1235,18 @@ export const PAYOUT_PROOF_STUCK_REASONS = [
   "unreadable",
   "hash_conflict",
   "legacy_duplicate",
+  "shared_key",
+  "bind_failed",
 ] as const;
 export type PayoutProofStuckReason =
   (typeof PAYOUT_PROOF_STUCK_REASONS)[number];
+
+/** One operation identity listed on a `shared_key` stuck row. */
+export type PayoutProofStuckOperation = {
+  readonly kind: PayoutProofBindingKind;
+  readonly batch_id: string;
+  readonly item_set_hash: string;
+};
 
 /**
  * A proof key the fingerprint job could not complete (legend-so897 F4,
@@ -1268,6 +1278,14 @@ export const payrollPayoutProofBackfillStuck = pgTable(
       .notNull()
       .defaultNow(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    /**
+     * Every operation identity found under the key (legend-p2v4s F2, migration
+     * 0641): filled for reason `shared_key`, empty otherwise.
+     */
+    operations: jsonb("operations")
+      .$type<PayoutProofStuckOperation[]>()
+      .notNull()
+      .default([]),
   },
   (table) => [
     unique("payroll_payout_proof_backfill_stuck_tenant_id_key").on(

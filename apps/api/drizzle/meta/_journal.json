@@ -2696,6 +2696,20 @@
       "when": 1795000000640,
       "tag": "0640_payout_proof_hash_contests",
       "breakpoints": true
+    },
+    {
+      "idx": 399,
+      "version": "7",
+      "when": 1795000000641,
+      "tag": "0641_payout_proof_global_gate",
+      "breakpoints": true
+    },
+    {
+      "idx": 400,
+      "version": "7",
+      "when": 1795000000642,
+      "tag": "0642_payout_gl_commit_checks",
+      "breakpoints": true
     }
   ]
 }
