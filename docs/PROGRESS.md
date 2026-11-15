@@ -1661,3 +1661,13 @@ Langkah berikut CTO baru:
 03:27 CTO: mulai 855 (G8c1d Opus edge), 856 (G5oof kas laci), Codex 857/858/859; throttle dilonggarkan untuk perbaikan penting (slot hijau).
 03:57 CTO: 852/855/856 antre merge train; 857 perbaikan architect P2 di G4v70; 860/861 mulai; slot sengaja tidak diisi (antrean >20).
 05:45 CTO: Retro 30 diterima; heavy menghitung bobot sendiri; merge train pakai gerbang cepat sebelum run penuh; cron push+retro terverifikasi aktif.
+
+## CTO 08:58 15 Nov — serah terima CTO (compact 2x)
+- Antre merge train (batch67, setelah batch66): `fix/edc-agent-867` 569a56005, `ghostex/4eda746b` 4db4c178e (868 API + UI 865). Timer paksa shutdown edge 130 dtk bila EDC aktif: disetujui CTO.
+- G1kis (867) dan G61cr (868) di-resolve, worktree dihapus. Bead baru: legend-mjh1y (flake edc-agent.test.ts:616), legend-2l4s8 (penanda antrean terpotong), legend-38g0t (audit pool.end lalu DROP).
+- G73so (866 flake, `fix/flake-866` 60684dc11): review sonnet OK (oracle uang lebih ketat); diminta perbaiki try/finally afterAll publisher. Setelah lapor: antre ke merge train, resolve, tutup legend-5tu68/8p74m setelah merge.
+- G1d06 batch66 full run 2 berjalan. Hijau: m1 fast-forward, tutup legend-xdlxa (863), legend-0m495 (864), kartu PII; lalu batch67.
+- Setelah 867/868 masuk m1: tutup agran/h4c2f/kwy6d, khi8n, p98qi.
+- Terbuka: founder Q8 (W15, 6 mockup UI ops kecil, branch design/ui-ops-kecil); bila setuju, ui-engineer area 5 (lhe4k, z274, 1n5z, v99yu, 5tai0, rxida). Tag Q berikut: Q10.
+- Throttle: antrean merge > 20, hanya kartu penting atau gerbang rilis. Sebelum gerbang rilis: second opinion Codex uang/payout, oh2a5, zn3wl, fgg1h, ofu02.
+- Cron: push hourly cf945076, retro fb250034 (43 1,4,7,...,22). Disk 24 GB: jalankan cleanup-ssd (tahan worktree int/* dan thread aktif).
