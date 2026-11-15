@@ -72,14 +72,17 @@ import {
 import {
   accountMappings,
   cashMovementOutcomes,
+  billSplits,
   cashMovements,
   domainEventOutbox,
   goodsReceiptLines,
   journalEntries,
   loyaltyPrograms,
   orderIssueCharges,
+  orderIssues,
   orders,
   outlets,
+  paymentAdminIdempotency,
   paymentIntents,
   paymentRefunds,
   paymentUnallocatedFunds,
@@ -187,6 +190,16 @@ export class AutoJournalPayloadInvalid extends Error {
  */
 export class AutoJournalReceiptPending extends Error {
   readonly code = "AUTO_JOURNAL_RECEIPT_PENDING";
+}
+
+/**
+ * legend-qte35: a recovery refund (order_issues.id) has no payment_refunds row
+ * and its gateway part cannot be tied to an intent through the order's tenders:
+ * parked retryable. The part is never guessed into gateway_clearing; the sweep
+ * retries once the payment refund is filed or the tender carries its intent.
+ */
+export class AutoJournalRefundSourcePending extends Error {
+  readonly code = "AUTO_JOURNAL_REFUND_SOURCE_PENDING";
 }
 
 /**
@@ -847,6 +860,124 @@ type RefundLine = {
 };
 
 /**
+ * legend-zwaro: customer_deposit and gateway_clearing credits (the gateway part
+ * of the refund, whichever the receipt state chose) an order's EARLIER refund
+ * journals took, net of their reversals, for the refunds nothing else accounts for: not an earlier POS
+ * refund row (its lines are counted from the row) and not an order issue with a
+ * non-failed payment refund on the pinned intent (counted from that refund). What
+ * is left (a payload-only refund, a recovery refund without source) has only its
+ * journal to show it drew on the pinned intent. Over-counting only parks.
+ */
+async function earlierUnbackedRefundDepositIdr(
+  tx: Tx,
+  tenantId: TenantId,
+  p: {
+    orderId: string;
+    refundId: string;
+    pinnedIntentId: string;
+    posRefundIds: readonly string[];
+  },
+): Promise<number> {
+  const orderUuid = orderUuidOf(p.orderId);
+  if (orderUuid === null) return 0;
+  const result = await tx.execute<{ source_id: string | null; net: string }>(
+    sql`
+    SELECT coalesce(re.source_id, je.source_id) AS source_id,
+           sum(jl.credit_idr - jl.debit_idr)::text AS net
+      FROM journal_entries je
+      LEFT JOIN journal_entries re
+        ON re.tenant_id = je.tenant_id AND re.id = je.reversal_of
+      JOIN journal_lines jl
+        ON jl.tenant_id = je.tenant_id AND jl.entry_id = je.id
+     WHERE je.tenant_id = ${tenantId}
+       AND coalesce(re.source_type, je.source_type) = 'refund'
+       AND coalesce(re.order_id, je.order_id) = ${orderUuid}::uuid
+       AND (jl.account_id::text IN (
+              (coalesce(re.posting_account_snapshot, je.posting_account_snapshot))->>'customer_deposit',
+              (coalesce(re.posting_account_snapshot, je.posting_account_snapshot))->>'gateway_clearing')
+            OR jl.account_id IN (
+              SELECT m.account_id FROM account_mappings m
+               WHERE m.tenant_id = je.tenant_id
+                 AND m.role IN ('customer_deposit', 'gateway_clearing')))
+     GROUP BY 1`,
+  );
+  const posIds = new Set(p.posRefundIds.map((id) => id.toLowerCase()));
+  const candidates = result.rows.filter(
+    (row): row is { source_id: string; net: string } =>
+      row.source_id !== null &&
+      row.source_id !== p.refundId &&
+      Number(row.net) > 0 &&
+      !posIds.has(row.source_id.toLowerCase()),
+  );
+  if (candidates.length === 0) return 0;
+  // What a non-failed payment refund on the pinned intent already covers of a
+  // journal: an order issue's own refund, or the refund filed for a POS refund
+  // by its pos-refund-gateway key (a POS refund journaled before this one but
+  // keyed after it is not in posRefundIds). Only the uncovered rest is owed
+  // (a refund clamped to the intent's limit covers less than its journal).
+  const sourceIds = candidates
+    .map((row) => row.source_id.toLowerCase())
+    .filter((id) => UUID_RE.test(id));
+  const covered = new Map<string, number>();
+  if (sourceIds.length > 0) {
+    const byIssue = await tx
+      .select({
+        issueId: paymentRefunds.orderIssueId,
+        amountIdr: paymentRefunds.amountIdr,
+      })
+      .from(paymentRefunds)
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, tenantId),
+          eq(paymentRefunds.paymentIntentId, p.pinnedIntentId),
+          ne(paymentRefunds.status, "failed"),
+          inArray(paymentRefunds.orderIssueId, sourceIds),
+        ),
+      );
+    for (const row of byIssue)
+      if (row.issueId)
+        covered.set(
+          row.issueId.toLowerCase(),
+          (covered.get(row.issueId.toLowerCase()) ?? 0) + Number(row.amountIdr),
+        );
+    const keyOf = (id: string) =>
+      `pos-refund-gateway:${id}:${p.pinnedIntentId}`;
+    const byKey = await tx
+      .select({
+        key: paymentAdminIdempotency.key,
+        amountIdr: paymentRefunds.amountIdr,
+      })
+      .from(paymentAdminIdempotency)
+      .innerJoin(
+        paymentRefunds,
+        and(
+          eq(paymentRefunds.tenantId, paymentAdminIdempotency.tenantId),
+          sql`${paymentRefunds.id}::text = ${paymentAdminIdempotency.response}->>'refundId'`,
+        ),
+      )
+      .where(
+        and(
+          eq(paymentAdminIdempotency.tenantId, tenantId),
+          inArray(paymentAdminIdempotency.key, sourceIds.map(keyOf)),
+          eq(paymentRefunds.paymentIntentId, p.pinnedIntentId),
+          ne(paymentRefunds.status, "failed"),
+        ),
+      );
+    for (const row of byKey) {
+      const id = sourceIds.find((candidate) => keyOf(candidate) === row.key);
+      if (id) covered.set(id, (covered.get(id) ?? 0) + Number(row.amountIdr));
+    }
+  }
+  let total = 0;
+  for (const row of candidates)
+    total += Math.max(
+      0,
+      Number(row.net) - (covered.get(row.source_id.toLowerCase()) ?? 0),
+    );
+  return total;
+}
+
+/**
  * legend-2jyr + legend-27mt: how much of an order refund's gateway part credits
  * customer_deposit (owed until a payout clears it) and how much reverses the
  * sale's gateway_clearing. The refund mirrors the SALE tender by tender, like
@@ -860,7 +991,9 @@ type RefundLine = {
  *   refunds of the order took; a tender without an intent goes to clearing.
  *   The deposit-refund part (pos_deposit_refunds) goes to its source intent;
  * - recovery refund (no POS row): the intent of the payment refund filed with
- *   order_issue_id = refundId;
+ *   order_issue_id = refundId; without that row (legend-qte35) the order's
+ *   gateway tenders give the intent, and a part no intent can be proven for
+ *   parks the refund retryable (never gateway_clearing);
  * - otherwise (payload only): the payload lines as legacy lines.
  * Per intent, receipt "posted" credits customer_deposit, "pending" parks the
  * refund retryable, "none" (money received before the wiring; its payout parks
@@ -921,6 +1054,42 @@ async function refundGatewaySplitOf(
             ),
           )
       : [];
+  // legend-qte35: refundId names an issue of this order, with neither a POS
+  // refund nor a payment refund row yet.
+  const recoveryWithoutSource =
+    !current &&
+    !recovery[0] &&
+    UUID_RE.test(p.refundId) &&
+    (
+      await tx
+        .select({ id: orderIssues.id })
+        .from(orderIssues)
+        .where(
+          and(
+            eq(orderIssues.tenantId, tenantId),
+            eq(orderIssues.id, p.refundId),
+            eq(orderIssues.orderId, p.orderId),
+          ),
+        )
+        .limit(1)
+    ).length > 0;
+  // Gateway part of earlier POS refunds of this order, and whether any part of
+  // this refund has no tender/intent proving its payer (legend-ljs6i).
+  let earlierGatewayIdr = 0;
+  // Earlier gateway lines with an intent, by their pos-refund-gateway key: one
+  // whose payment refund failed (or was never linked) is still owed
+  // (legend-0dgi1).
+  // The intent is kept beside the want: only the pinned intent's own keys
+  // bound the pin (legend-xiz1p).
+  const earlierIntentWant = new Map<
+    string,
+    { intentId: string; wantIdr: number }
+  >();
+  // POS refund rows counted from their lines (not again from their journals).
+  let earlierPosRefundIds: string[] = [];
+  const earlierNoTenderLines: { intentId: string; wantIdr: number }[] = [];
+  let unprovenResidual = false;
+  let tenderNullIdr = 0;
   if (recovery[0]) {
     add(recovery[0].intentId, gatewayIdr);
   } else {
@@ -944,10 +1113,32 @@ async function refundGatewaySplitOf(
     )
       .filter((tender) => isGateway(tender.method))
       .map((tender) => ({ ...tender, left: Number(tender.amountIdr) }));
-    const apply = (lines: readonly RefundLine[], collect: boolean) => {
+    const apply = (
+      lines: readonly RefundLine[],
+      collect: boolean,
+      posRefundId = "",
+    ) => {
       for (const line of lines) {
         if (line.method !== ANY_GATEWAY && !isGateway(line.method)) continue;
         let want = Number(line.amountIdr);
+        if (!collect) {
+          if (!line.paymentIntentId) earlierGatewayIdr += want;
+          else {
+            // legend-izoib: a line naming an intent but no tender has no proof
+            // of its payer when its refund is journaled, so its journal may
+            // have been pinned to ANOTHER intent: counted against the pin too.
+            if (!line.tenderId)
+              earlierNoTenderLines.push({
+                intentId: line.paymentIntentId,
+                wantIdr: want,
+              });
+            const linkKey = `pos-refund-gateway:${posRefundId}:${line.paymentIntentId}`;
+            earlierIntentWant.set(linkKey, {
+              intentId: line.paymentIntentId,
+              wantIdr: (earlierIntentWant.get(linkKey)?.wantIdr ?? 0) + want,
+            });
+          }
+        }
         const named = line.tenderId
           ? tenders.find((tender) => tender.id === line.tenderId)
           : undefined;
@@ -964,11 +1155,20 @@ async function refundGatewaySplitOf(
           if (take <= 0) continue;
           tender.left -= take;
           want -= take;
-          if (collect) add(tender.intentId, take);
+          if (collect) {
+            if (tender.intentId === null) tenderNullIdr += take;
+            add(tender.intentId, take);
+          }
         }
         // A line naming a tender that is gone, or more than the tenders held.
-        if (collect && want > 0)
-          add(line.tenderId ? (line.paymentIntentId ?? null) : null, want);
+        if (collect && want > 0) {
+          const intentId = line.tenderId
+            ? (line.paymentIntentId ?? null)
+            : null;
+          // legend-ljs6i: no tender and no intent proves who paid this part.
+          if (intentId === null) unprovenResidual = true;
+          add(intentId, want);
+        }
       }
     };
     const key = (row: { refundedAt: Date; createdAt: Date; id: string }) =>
@@ -977,7 +1177,39 @@ async function refundGatewaySplitOf(
       .filter((row) => row.id !== p.refundId)
       .filter((row) => !current || key(row) < key(current))
       .sort((a, b) => (key(a) < key(b) ? -1 : 1));
-    for (const row of earlier) apply(row.lines, false);
+    earlierPosRefundIds = earlier.map((row) => row.id);
+    for (const row of earlier) apply(row.lines, false, row.id);
+    // legend-fpy9s: a DP return of an earlier POS refund shares the line's
+    // pos-refund-gateway key (one payment refund per refund + intent), so the
+    // linked refund covers lines + DP. Count the DP in the same want, or the DP
+    // part would cover a shortfall of the line part.
+    if (earlier.length > 0) {
+      const earlierDeposits = await tx
+        .select({
+          posRefundId: posDepositRefunds.posRefundId,
+          intentId: posDepositRefunds.paymentIntentId,
+          amountIdr: posDepositRefunds.amountIdr,
+        })
+        .from(posDepositRefunds)
+        .where(
+          and(
+            eq(posDepositRefunds.tenantId, tenantId),
+            inArray(
+              posDepositRefunds.posRefundId,
+              earlier.map((row) => row.id),
+            ),
+          ),
+        );
+      for (const row of earlierDeposits) {
+        const linkKey = `pos-refund-gateway:${row.posRefundId}:${row.intentId}`;
+        earlierIntentWant.set(linkKey, {
+          intentId: row.intentId,
+          wantIdr:
+            (earlierIntentWant.get(linkKey)?.wantIdr ?? 0) +
+            Number(row.amountIdr),
+        });
+      }
+    }
     // A payload without lines (stored before they were kept): its gateway
     // part walks every gateway tender of the order.
     apply(
@@ -1002,6 +1234,158 @@ async function refundGatewaySplitOf(
           ),
         );
       for (const row of deposits) add(row.intentId, Number(row.amountIdr));
+    }
+  }
+  if (recoveryWithoutSource || unprovenResidual) {
+    let attributedIdr = 0;
+    for (const amountIdr of byIntent.values()) attributedIdr += amountIdr;
+    if (byIntent.has(null) || attributedIdr < gatewayIdr) {
+      // A QR pay-first order has no tender rows: it is pinned to its one
+      // payment intent (orders.payment_intent_id). Only when no tender
+      // attributed anything (never a partial mix), and never more than the
+      // intent was worth; anything else waits, never gateway_clearing.
+      // A pre-cutover tender without an intent mixed with an unproven residual
+      // is parked, not pinned (legend-ljs6i).
+      const untouched =
+        (byIntent.size === 0 ||
+          (byIntent.size === 1 && byIntent.has(null) && attributedIdr > 0)) &&
+        !(unprovenResidual && tenderNullIdr > 0);
+      let pinnedIntentId: string | null = null;
+      if (untouched) {
+        const [pinned] = await tx
+          .select({
+            intentId: orders.paymentIntentId,
+            amountIdr: paymentIntents.amountIdr,
+            status: paymentIntents.status,
+            paidAt: paymentIntents.paidAt,
+            billSplitId: paymentIntents.billSplitId,
+          })
+          .from(orders)
+          .innerJoin(
+            paymentIntents,
+            and(
+              eq(paymentIntents.tenantId, orders.tenantId),
+              eq(paymentIntents.id, orders.paymentIntentId),
+            ),
+          )
+          .where(and(eq(orders.tenantId, tenantId), eq(orders.id, p.orderId)));
+        // Only a settled, whole-bill intent proves the payer; an unpaid or
+        // expired one reads as receipt "none" (= clearing) and a split bill
+        // has several payers (legend-qte35, architect review).
+        if (
+          pinned?.intentId &&
+          pinned.paidAt !== null &&
+          ["paid", "partially_refunded", "refunded"].includes(pinned.status) &&
+          pinned.billSplitId === null
+        ) {
+          const [splits] = await tx
+            .select({ n: sql<number>`count(*)::int` })
+            .from(billSplits)
+            .where(
+              and(
+                eq(billSplits.tenantId, tenantId),
+                eq(billSplits.orderId, p.orderId),
+              ),
+            );
+          // Refunds already filed on the intent count against what it took.
+          const [filed] = await tx
+            .select({
+              total: sql<string>`coalesce(sum(${paymentRefunds.amountIdr}), 0)::text`,
+            })
+            .from(paymentRefunds)
+            .where(
+              and(
+                eq(paymentRefunds.tenantId, tenantId),
+                eq(paymentRefunds.paymentIntentId, pinned.intentId),
+                ne(paymentRefunds.status, "failed"),
+              ),
+            );
+          // An earlier POS refund line or DP return on the PINNED intent counts
+          // unless a non-failed payment refund is linked to it (already in
+          // `filed`). One on another intent is refunded from that intent, so it
+          // cannot draw on this one (legend-xiz1p). A refund re-filed under
+          // another key on the pinned intent stays counted twice: stricter.
+          let earlierUnfiledIdr = 0;
+          const pinnedWant = new Map<string, number>();
+          for (const [linkKey, entry] of earlierIntentWant)
+            if (entry.intentId === pinned.intentId)
+              pinnedWant.set(linkKey, entry.wantIdr);
+          if (pinnedWant.size > 0) {
+            const linked = await tx
+              .select({
+                key: paymentAdminIdempotency.key,
+                amountIdr: paymentRefunds.amountIdr,
+              })
+              .from(paymentAdminIdempotency)
+              .innerJoin(
+                paymentRefunds,
+                and(
+                  eq(paymentRefunds.tenantId, paymentAdminIdempotency.tenantId),
+                  sql`${paymentRefunds.id}::text = ${paymentAdminIdempotency.response}->>'refundId'`,
+                ),
+              )
+              .where(
+                and(
+                  eq(paymentAdminIdempotency.tenantId, tenantId),
+                  inArray(paymentAdminIdempotency.key, [...pinnedWant.keys()]),
+                  // Only a refund filed on the pinned intent offsets its want.
+                  eq(paymentRefunds.paymentIntentId, pinned.intentId),
+                  ne(paymentRefunds.status, "failed"),
+                ),
+              );
+            // The linked refund may be smaller than the POS line (clamped to
+            // the intent's remaining limit): the rest is still owed.
+            const linkedIdr = new Map<string, number>();
+            for (const row of linked)
+              linkedIdr.set(
+                row.key,
+                (linkedIdr.get(row.key) ?? 0) + Number(row.amountIdr),
+              );
+            for (const [linkKey, want] of pinnedWant)
+              earlierUnfiledIdr += Math.max(
+                0,
+                want - (linkedIdr.get(linkKey) ?? 0),
+              );
+          }
+          // legend-zwaro: an earlier refund journal of the order that no POS
+          // refund row or payment refund on the pinned intent accounts for (a
+          // payload-only refund, a recovery without source) still took this
+          // intent's money into customer_deposit: it counts against the pin.
+          let earlierOtherIntentIdr = 0;
+          for (const entry of earlierNoTenderLines)
+            if (entry.intentId !== pinned.intentId)
+              earlierOtherIntentIdr += entry.wantIdr;
+          const earlierJournalIdr = await earlierUnbackedRefundDepositIdr(
+            tx,
+            tenantId,
+            {
+              orderId: p.orderId,
+              refundId: p.refundId,
+              pinnedIntentId: pinned.intentId,
+              posRefundIds: earlierPosRefundIds,
+            },
+          );
+          if (
+            (splits?.n ?? 0) === 0 &&
+            gatewayIdr +
+              Number(filed?.total ?? 0) +
+              earlierGatewayIdr +
+              earlierUnfiledIdr +
+              earlierJournalIdr +
+              earlierOtherIntentIdr <=
+              Number(pinned.amountIdr)
+          )
+            pinnedIntentId = pinned.intentId;
+        }
+      }
+      if (pinnedIntentId === null)
+        throw new AutoJournalRefundSourcePending(
+          recoveryWithoutSource
+            ? "Recovery refund has no payment refund and no provable gateway intent"
+            : "Refund has no provable gateway source",
+        );
+      byIntent.clear();
+      byIntent.set(pinnedIntentId, gatewayIdr);
     }
   }
   const intentIds = [...byIntent.keys()].filter(
