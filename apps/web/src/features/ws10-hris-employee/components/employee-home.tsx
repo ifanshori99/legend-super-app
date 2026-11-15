@@ -12,6 +12,7 @@ import {
   usePositions,
   useQueuedCorrections,
 } from "../hooks.ts";
+import { isRefused } from "../queue.ts";
 import { businessDateIn } from "../state.ts";
 import { Announcements } from "./announcements.tsx";
 import { AttendanceHero } from "./attendance-hero.tsx";
@@ -41,7 +42,9 @@ export function EmployeeHome() {
   const profile = useMyHrisProfile();
   const positions = usePositions(profile.isSuccess);
   useFlushCorrectionQueue();
-  const queued = useQueuedCorrections();
+  // Refused entries are not waiting on the connection: the pending card shows
+  // them with their own actions (legend-nvc7).
+  const waiting = useQueuedCorrections().filter((row) => !isRefused(row));
 
   if (profile.isPending) return <HomeSkeleton />;
   if (profile.isError || !profile.data)
@@ -78,7 +81,7 @@ export function EmployeeHome() {
         </p>
       </header>
 
-      {queued.length > 0 && (
+      {waiting.length > 0 && (
         <div className="flex items-start gap-3 rounded-container bg-info-subtle p-3">
           <CloudOff
             className="mt-0.5 size-5 shrink-0 text-info"
@@ -86,7 +89,7 @@ export function EmployeeHome() {
           />
           <div className="grid gap-0.5">
             <p className="text-sm leading-5 font-semibold">
-              {t("hris.home.queued", { count: queued.length })}
+              {t("hris.home.queued", { count: waiting.length })}
             </p>
             <p className="text-sm leading-5 text-muted-foreground">
               {t("hris.home.queuedHint")}

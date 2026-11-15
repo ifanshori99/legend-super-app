@@ -6,7 +6,7 @@
 // The form is its own component: Radix unmounts the dialog content when it
 // closes, so every opening starts from the row it was opened for (no reset
 // effect, no stale reason from the previous correction).
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,13 +31,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import type { AttendanceLog, AttendanceType } from "@starter/shared/hris";
 import { requestAttendanceCorrection } from "@starter/shared/hris";
-import { useSubmitCorrection } from "../hooks.ts";
+import { useMyEmployeeId, useSubmitCorrection } from "../hooks.ts";
+import { canActOnQueued } from "../identity.ts";
 import {
   fromDateTimeLocalValue,
   toDateTimeLocalValue,
   typeLabelKey,
 } from "../state.ts";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
+import { CorrectionQueueFullError, type QueuedCorrection } from "../queue.ts";
 
 const TYPES: readonly AttendanceType[] = [
   "in",
@@ -54,6 +56,7 @@ export function CorrectionDialog({
   log,
   outletId,
   timeZone,
+  editing,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -62,22 +65,40 @@ export function CorrectionDialog({
   outletId: string;
   /** The outlet's zone: the form edits the same clock the history shows. */
   timeZone: string;
+  /**
+   * A queued correction the server refused, reopened to fix and resend: the
+   * form starts from its body and the old entry is replaced by the new
+   * request once it is sent or queued, never before (legend-nvc7, legend-l5tvy).
+   */
+  editing?: QueuedCorrection;
 }) {
   const t = useT();
   const toast = useToast();
+  const employeeId = useMyEmployeeId();
+  // The session may now name someone else than the entry's owner (another tab
+  // signed in): the edit form closes instead of acting for the new account.
+  const foreign = editing !== undefined && !canActOnQueued(editing, employeeId);
+  useEffect(() => {
+    if (foreign && open) onOpenChange(false);
+  }, [foreign, open, onOpenChange]);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open && !foreign} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{t("hris.correction.title")}</DialogTitle>
-          <DialogDescription>{t("hris.correction.hint")}</DialogDescription>
+          <DialogTitle>
+            {t(editing ? "hris.correction.editTitle" : "hris.correction.title")}
+          </DialogTitle>
+          <DialogDescription>
+            {t(editing ? "hris.correction.editHint" : "hris.correction.hint")}
+          </DialogDescription>
         </DialogHeader>
         <CorrectionForm
-          key={log?.id ?? "unmatched"}
+          key={editing?.key ?? log?.id ?? "unmatched"}
           log={log}
           outletId={outletId}
           timeZone={timeZone}
+          editing={editing}
           onSent={(status) => {
             toast(
               status === "queued"
@@ -99,11 +120,13 @@ function CorrectionForm({
   log,
   outletId,
   timeZone,
+  editing,
   onSent,
 }: {
   log: AttendanceLog | null;
   outletId: string;
   timeZone: string;
+  editing?: QueuedCorrection;
   onSent: (status: "sent" | "queued") => void;
 }) {
   const t = useT();
@@ -113,11 +136,20 @@ function CorrectionForm({
   // a reused key with a different body is IDEMPOTENCY_KEY_REUSED (409).
   const attempt = useRef<{ fingerprint: string; key: string } | null>(null);
 
-  const [type, setType] = useState<AttendanceType>(log?.type ?? "in");
-  const [occurredAt, setOccurredAt] = useState(() =>
-    toDateTimeLocalValue(log ? new Date(log.occurredAt) : new Date(), timeZone),
+  const [type, setType] = useState<AttendanceType>(
+    editing?.body.requestedType ?? log?.type ?? "in",
   );
-  const [reason, setReason] = useState("");
+  const [occurredAt, setOccurredAt] = useState(() =>
+    toDateTimeLocalValue(
+      editing
+        ? new Date(editing.body.requestedOccurredAt)
+        : log
+          ? new Date(log.occurredAt)
+          : new Date(),
+      timeZone,
+    ),
+  );
+  const [reason, setReason] = useState(editing?.body.reason ?? "");
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -129,7 +161,9 @@ function CorrectionForm({
     }
     const request = {
       outletId,
-      attendanceLogId: log?.id ?? null,
+      attendanceLogId: editing
+        ? (editing.body.attendanceLogId ?? null)
+        : (log?.id ?? null),
       requestedType: type,
       requestedOccurredAt: occurredAtIso,
       reason: reason.trim(),
@@ -154,15 +188,18 @@ function CorrectionForm({
     }
     setErrors({});
     setFormError(null);
-    submit.mutate(parsed.data, {
-      onSuccess: (result) => onSent(result.status),
-    });
+    submit.mutate(
+      { body: parsed.data, replaces: editing?.key },
+      {
+        onSuccess: (result) => onSent(result.status),
+      },
+    );
   }
 
   return (
     <>
       <div className="grid gap-4">
-        {log === null && (
+        {log === null && !editing && (
           <p className="text-sm leading-5 text-muted-foreground">
             {t("hris.correction.noLog")}
           </p>
@@ -228,9 +265,11 @@ function CorrectionForm({
               {t("hris.correction.errorTitle")}
             </p>
             <p className="text-sm leading-5">
-              {submit.error instanceof Error
-                ? submit.error.message
-                : t("hris.correction.errorTitle")}
+              {submit.error instanceof CorrectionQueueFullError
+                ? t("hris.correction.queueFull")
+                : submit.error instanceof Error
+                  ? submit.error.message
+                  : t("hris.correction.errorTitle")}
             </p>
             <p className="text-sm leading-5 text-muted-foreground">
               {t("hris.correction.errorHint")}

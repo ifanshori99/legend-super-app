@@ -1,16 +1,19 @@
 import { useState } from "react";
 import { useNavigate, useRouter } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { LogOut } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
 import { endActingStaffMode } from "@/lib/api/acting-staff";
 import { revokePushOnSignOut } from "@/features/ws05-notifications/revoke";
 import { Button } from "@/components/ui/button";
+import { hrisKeys } from "@/features/ws10-hris-employee/queries";
 
 export function SignOutButton() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState(false);
   const router = useRouter();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   async function signOut() {
     setPending(true);
     setError(false);
@@ -22,6 +25,9 @@ export function SignOutButton() {
       if (result.error) throw new Error("Sign out failed");
       // The POS cashier hold belongs to this login; the next one starts clean.
       endActingStaffMode();
+      // The next account on this tab must not see the employee data cached
+      // for this one (profile, history, corrections).
+      queryClient.removeQueries({ queryKey: hrisKeys.all });
       await router.invalidate();
       await navigate({ to: "/sign-in", replace: true });
     } catch {

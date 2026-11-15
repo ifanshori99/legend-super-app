@@ -27,6 +27,18 @@ export type QueuedCorrection = {
   employeeId: string;
   body: CorrectionSubmission;
   queuedAt: string;
+  /**
+   * Set when the server gave a final 4xx answer on replay. The entry stays so
+   * the employee sees why and can retry, edit or discard it (legend-nvc7).
+   */
+  refused?: CorrectionRefusal;
+};
+
+export type CorrectionRefusal = {
+  status: number;
+  code: string;
+  reason: string;
+  at: string;
 };
 
 export const CORRECTION_QUEUE_KEY = "legend-hris-corrections-queue";
@@ -44,6 +56,48 @@ function browserStorage(): StorageLike | null {
   }
 }
 
+function isRefusal(value: unknown): value is CorrectionRefusal {
+  if (typeof value !== "object" || value === null) return false;
+  const refusal = value as Partial<CorrectionRefusal>;
+  return (
+    typeof refusal.status === "number" &&
+    typeof refusal.code === "string" &&
+    typeof refusal.reason === "string" &&
+    typeof refusal.at === "string"
+  );
+}
+
+/**
+ * Thrown when a new entry cannot be stored: the queue is at MAX_QUEUED and
+ * every entry in it is refused. A refused entry waits for the employee's
+ * decision (Coba lagi / Ubah / Buang), so it is never dropped for a newer one,
+ * and the new request is not reported as saved (legend-l5tvy).
+ */
+export class CorrectionQueueFullError extends Error {
+  constructor() {
+    super("The correction queue is full of refused requests.");
+    this.name = "CorrectionQueueFullError";
+  }
+}
+
+/**
+ * Appends `entry` to `rest`, keeping at most MAX_QUEUED. Only waiting
+ * (non-refused) entries are evicted, oldest first; a refused entry is never
+ * dropped and neither is the new one. When that is not enough room the queue
+ * is left as it was and `CorrectionQueueFullError` is thrown.
+ */
+function fitQueue(
+  rest: QueuedCorrection[],
+  entry: QueuedCorrection,
+): QueuedCorrection[] {
+  const excess = rest.length + 1 - MAX_QUEUED;
+  if (excess <= 0) return [...rest, entry];
+  const evictable = rest.filter((row) => row.refused === undefined);
+  if (evictable.length < excess) throw new CorrectionQueueFullError();
+  const dropped = new Set(evictable.slice(0, excess));
+  return [...rest.filter((row) => !dropped.has(row)), entry];
+}
+
 function isQueued(value: unknown): value is QueuedCorrection {
   if (typeof value !== "object" || value === null) return false;
   const row = value as Partial<QueuedCorrection>;
@@ -54,7 +108,8 @@ function isQueued(value: unknown): value is QueuedCorrection {
     row.employeeId.length > 0 &&
     typeof row.queuedAt === "string" &&
     typeof row.body === "object" &&
-    row.body !== null
+    row.body !== null &&
+    (row.refused === undefined || isRefusal(row.refused))
   );
 }
 
@@ -85,7 +140,10 @@ export function writeCorrectionQueue(
   notifyQueueChanged();
 }
 
-/** Adds one attempt; replaying the same key replaces it (idempotent). */
+/**
+ * Adds one attempt; replaying the same key replaces it (idempotent). Throws
+ * `CorrectionQueueFullError` when the queue holds MAX_QUEUED refused entries.
+ */
 export function enqueueCorrection(
   body: CorrectionSubmission,
   employeeId: string,
@@ -101,7 +159,7 @@ export function enqueueCorrection(
   const rest = readCorrectionQueue(storage).filter(
     (row) => row.key !== entry.key,
   );
-  const queue = [...rest, entry].slice(-MAX_QUEUED);
+  const queue = fitQueue(rest, entry);
   writeCorrectionQueue(queue, storage);
   return queue;
 }
@@ -128,13 +186,149 @@ export function queuedFor(
 /**
  * True when replaying again can still succeed: no connection, a timeout, rate
  * limiting or a server fault. A 4xx answer (validation, not found, key reused)
- * is final, so the entry must leave the queue instead of blocking every entry
- * behind it forever.
+ * is final: the entry stays but is marked refused, so it neither blocks every
+ * entry behind it forever nor vanishes without the employee seeing why.
  */
 export function isRetryableReplayError(status: number | undefined): boolean {
   if (status === undefined || status === 0) return true;
   if (status === 408 || status === 429) return true;
   return status >= 500;
+}
+
+export function isRefused(row: QueuedCorrection): boolean {
+  return row.refused !== undefined;
+}
+
+/** Flags one entry as refused by the server; it stays queued. */
+export function markCorrectionRefused(
+  key: string,
+  refusal: CorrectionRefusal,
+  storage: StorageLike | null = browserStorage(),
+): QueuedCorrection[] {
+  const queue = readCorrectionQueue(storage).map((row) =>
+    row.key === key ? { ...row, refused: refusal } : row,
+  );
+  writeCorrectionQueue(queue, storage);
+  return queue;
+}
+
+/** "Coba lagi": drops the refusal flag so the entry is waiting again. */
+export function clearCorrectionRefusal(
+  key: string,
+  storage: StorageLike | null = browserStorage(),
+): QueuedCorrection[] {
+  const queue = readCorrectionQueue(storage).map((row) => {
+    if (row.key !== key || row.refused === undefined) return row;
+    const cleared: QueuedCorrection = { ...row };
+    delete cleared.refused;
+    return cleared;
+  });
+  writeCorrectionQueue(queue, storage);
+  return queue;
+}
+
+/**
+ * "Ubah": the old attempt leaves, the edited one joins under its new key, in
+ * one write, so the queue never holds neither and never grows past the limit.
+ * Only an entry of the same `employeeId` can be replaced; an unknown key or
+ * another employee's entry leaves the queue untouched (nothing is added).
+ */
+export function replaceQueuedCorrection(
+  oldKey: string,
+  body: CorrectionSubmission,
+  employeeId: string,
+  storage: StorageLike | null = browserStorage(),
+  now: Date = new Date(),
+): QueuedCorrection[] {
+  const current = readCorrectionQueue(storage);
+  const owned = current.some(
+    (row) => row.key === oldKey && row.employeeId === employeeId,
+  );
+  if (!owned) return current;
+  const entry: QueuedCorrection = {
+    key: body.idempotencyKey,
+    employeeId,
+    body,
+    queuedAt: now.toISOString(),
+  };
+  const rest = current.filter(
+    (row) => row.key !== oldKey && row.key !== entry.key,
+  );
+  const queue = fitQueue(rest, entry);
+  writeCorrectionQueue(queue, storage);
+  return queue;
+}
+
+/** True when the queue holds an entry with this key filed by this employee. */
+export function hasQueuedCorrection(
+  key: string,
+  employeeId: string,
+  storage: StorageLike | null = browserStorage(),
+): boolean {
+  return readCorrectionQueue(storage).some(
+    (row) => row.key === key && row.employeeId === employeeId,
+  );
+}
+
+export type ReplayOutcome = "sent" | "refused" | "retryLater";
+
+/**
+ * One replay step. The submit function is injected so the hook and the node
+ * test share it. Success removes the entry; a retryable failure keeps it
+ * untouched; a final 4xx keeps it too, marked with the server's reason. An
+ * error that is not an `ApiError` has no status and counts as retryable.
+ */
+export async function replayQueuedCorrection(
+  row: QueuedCorrection,
+  submit: (body: CorrectionSubmission) => Promise<unknown>,
+  storage: StorageLike | null = browserStorage(),
+  now: Date = new Date(),
+): Promise<ReplayOutcome> {
+  try {
+    await submit(row.body);
+  } catch (error) {
+    const detail = error as { status?: unknown; code?: unknown } | null;
+    const status =
+      typeof detail?.status === "number" ? detail.status : undefined;
+    if (isRetryableReplayError(status) || status === undefined)
+      return "retryLater";
+    markCorrectionRefused(
+      row.key,
+      {
+        status,
+        code: typeof detail?.code === "string" ? detail.code : "",
+        reason: error instanceof Error ? error.message : "",
+        at: now.toISOString(),
+      },
+      storage,
+    );
+    return "refused";
+  }
+  removeQueuedCorrection(row.key, storage);
+  return "sent";
+}
+
+/**
+ * Replays the given entries in order. Refused entries are skipped; the first
+ * "retryLater" stops the run (still offline or server down); a 4xx entry does
+ * not block the ones behind it.
+ */
+export async function replayCorrectionQueue(
+  rows: readonly QueuedCorrection[],
+  submit: (body: CorrectionSubmission) => Promise<unknown>,
+  storage: StorageLike | null = browserStorage(),
+  now: Date = new Date(),
+): Promise<{ sent: number; refused: number }> {
+  let sent = 0;
+  let refused = 0;
+  for (const row of rows) {
+    if (isRefused(row)) continue;
+    const outcome = await replayQueuedCorrection(row, submit, storage, now);
+    if (outcome === "retryLater") break;
+    if (outcome === "sent") sent += 1;
+    else refused += 1;
+  }
+  return { sent, refused };
 }
 
 // ---- Reactivity (this page's submissions, without a full reload) ----------
