@@ -40,7 +40,10 @@ const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 3,
 });
-const tenantId = cafeLegendPlatformFixtures.tenant.id;
+// A rebuild sweeps every indexed table in its tenant before reaching banks.
+// Other suites intentionally seed unreadable PII in the shared cafe tenant,
+// so this suite owns a tenant as well as its bank/entity rows.
+const tenantId = randomUUID();
 const PASSWORD = "Test-password-123!";
 const createdUserIds = new Set<string>();
 const entityIds: string[] = [];
@@ -108,9 +111,22 @@ afterEach(() => {
   else process.env.BLIND_INDEX_ACTIVE_VERSION = originalActive;
 });
 
-beforeAll(() => {
+beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
+  const inserted = await owner.query(
+    `INSERT INTO tenants
+       (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+     SELECT $1, $2, 'Bank blind-index rebuild', plan, status, deployment_mode,
+            feature_flags, limits, created_by
+       FROM tenants WHERE id = $3`,
+    [
+      tenantId,
+      `bank-blind-index-${tenantId}`,
+      cafeLegendPlatformFixtures.tenant.id,
+    ],
+  );
+  expect(inserted.rowCount).toBe(1);
 });
 
 afterAll(async () => {
@@ -125,6 +141,7 @@ afterAll(async () => {
   await owner.query("DELETE FROM legal_entities WHERE id = ANY($1::uuid[])", [
     entityIds,
   ]);
+  await owner.query("DELETE FROM tenants WHERE id = $1", [tenantId]);
   if (createdUserIds.size > 0) {
     await owner.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [
       [...createdUserIds],

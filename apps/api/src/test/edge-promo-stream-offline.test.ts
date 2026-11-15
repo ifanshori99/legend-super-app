@@ -89,6 +89,11 @@ import {
 
 type Stream = "promotions" | "vouchers";
 type Rec = Record<string, unknown>;
+type Page = {
+  records: Rec[];
+  nextCursor: string | null;
+  hasMore: boolean;
+};
 
 const HOUR = 60 * 60_000;
 const DISCOUNT = 7_777;
@@ -100,6 +105,9 @@ const budgetId = randomUUID(); // budgetIdr 1_000_000
 const openItem = randomUUID();
 const quotaItem = randomUUID();
 const budgetItem = randomUUID();
+// Other suites retain ended headers in the shared tenant. The catalog must
+// include those revocations, so our own promotion need not be on page one.
+const earlierPromotionIds = Array.from({ length: 100 }, () => randomUUID());
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 3,
@@ -144,7 +152,7 @@ async function seedPromotion(
   );
 }
 
-async function page(stream: Stream, since?: string): Promise<Rec> {
+async function page(stream: Stream, since?: string): Promise<Page> {
   return (await listCatalogRecordsSince(db, {
     tenantId: tenantId as never,
     outletId: outletId as never,
@@ -154,7 +162,21 @@ async function page(stream: Stream, since?: string): Promise<Rec> {
       limit: 100,
       ...(since ? { since } : {}),
     }),
-  })) as unknown as Rec;
+  })) as unknown as Page;
+}
+
+/** Include retained revocations before locating one of this file's fixtures. */
+async function all(stream: Stream) {
+  const records: Rec[] = [];
+  let since: string | undefined;
+  for (let count = 0; count < 1000; count += 1) {
+    const next = await page(stream, since);
+    records.push(...next.records);
+    if (!next.hasMore) return records;
+    expect(next.nextCursor).not.toBeNull();
+    since = next.nextCursor!;
+  }
+  throw new Error("Catalog did not finish paging");
 }
 
 function pull(
@@ -283,6 +305,16 @@ beforeAll(async () => {
     cafeLegendAccessFixtures.outletIds.bandung,
     "Outlet promosi offline",
   );
+  await q(
+    `INSERT INTO promotions
+       (id, tenant_id, name, description, status, voucher_required, starts_at,
+        ends_at, conditions, benefit, stack_group, stackable, priority)
+     SELECT id, $2, 'Earlier ended promo', '', 'ended', false,
+            '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', '[]',
+            '{"kind":"nominal_off","amountIdr":1}', 'earlier', false, 0
+       FROM unnest($1::uuid[]) AS id`,
+    [earlierPromotionIds, tenantId],
+  );
   await seedPromotion(openId, openItem);
   await seedPromotion(quotaId, quotaItem, { quotaTotal: 100 });
   await seedPromotion(budgetId, budgetItem, { budgetIdr: 1_000_000 });
@@ -346,9 +378,10 @@ afterAll(async () => {
   setAuditWriter(null);
   await edge?.cleanup();
   try {
-    await q("DELETE FROM promotions WHERE id = ANY($1::uuid[])", [
-      [openId, quotaId, budgetId],
-    ]);
+    await q(
+      "DELETE FROM promotions WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+      [tenantId, [openId, quotaId, budgetId, ...earlierPromotionIds]],
+    );
   } finally {
     await owner.end();
   }
@@ -410,7 +443,7 @@ describe("533 B2 offline and truncated pulls: uncapped promos live to 24 h, capp
     await pull();
     await openGate();
     expect(await guardedDiscount(openItem)).toBe(DISCOUNT);
-    const source = ((await page("promotions")).records as Rec[]).find(
+    const source = (await all("promotions")).find(
       (record) => record.id === openId,
     )!;
     const nextTxid = String(BigInt(String(source.syncTxid)) + 1n);
@@ -578,7 +611,7 @@ describe("533c P2 a partial promo sync is never completed by a retry that gets n
   const promoD = randomUUID();
 
   async function cloudHistory(): Promise<Rec[]> {
-    const source = ((await page("promotions")).records as Rec[]).find(
+    const source = (await all("promotions")).find(
       (record) => record.id === openId,
     )!;
     const base = BigInt(String(source.syncTxid));

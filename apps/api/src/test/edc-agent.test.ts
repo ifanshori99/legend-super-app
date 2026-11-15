@@ -593,28 +593,52 @@ describe("EDC agent (legend-apt)", () => {
 
   it("EDC-02 cancelling a sale held at the terminal cancels it, resolves the held sale and stays cancelled", async () => {
     // Long sale timeout: the customer is still deciding when the cashier cancels.
-    const f = await fixture({ saleTimeoutMs: 10_000 });
+    let releaseSale!: () => void;
+    const saleReply = new Promise<void>((resolve) => {
+      releaseSale = resolve;
+    });
+    const f = await fixture({
+      saleTimeoutMs: 10_000,
+      wrapBca: (sim) => ({
+        bank: sim.bank,
+        capabilities: sim.capabilities,
+        cancel: (r) => sim.cancel(r),
+        inquiry: (r) => sim.inquiry(r),
+        void: (r) => sim.void(r),
+        sale: async (r) => {
+          const answer = await sim.sale(r);
+          // The simulator's cancel also resolves sale. Hold that separate reply
+          // so this assertion observes the cancel answer before the sale answer.
+          await saleReply;
+          return answer;
+        },
+      }),
+    });
     f.bca.next(f.terminalId, "hold");
     const req = request(f);
     const selling = pay(f, req);
     let rowId = "";
-    await vi.waitFor(async () => {
-      const rows = await rowsFor(f.tenant, { reference: req.reference });
-      expect(rows).toHaveLength(1);
-      expect(rows[0]!.status).toBe("pending");
-      expect(f.bca.callsFor(f.terminalId).sale).toBe(1);
-      rowId = rows[0]!.id;
-    });
+    try {
+      await vi.waitFor(async () => {
+        const rows = await rowsFor(f.tenant, { reference: req.reference });
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.status).toBe("pending");
+        expect(f.bca.callsFor(f.terminalId).sale).toBe(1);
+        rowId = rows[0]!.id;
+      });
 
-    const cancelled = await f.agent.cancel(
-      f.ctx,
-      f.actor,
-      refTo(f, { id: rowId }),
-    );
-    // The cancel answer is no proof the sale is over: the row stays open and
-    // the sale's own answer (below) decides.
-    expect(cancelled.status).toBe("pending");
-    expect(cancelled.completedAt).toBeNull();
+      const cancelled = await f.agent.cancel(
+        f.ctx,
+        f.actor,
+        refTo(f, { id: rowId }),
+      );
+      // The cancel answer is no proof the sale is over: the row stays open and
+      // the sale's own answer (below) decides.
+      expect(cancelled.status).toBe("pending");
+      expect(cancelled.completedAt).toBeNull();
+    } finally {
+      releaseSale();
+    }
 
     const sold = await selling;
     expect(sold.id).toBe(rowId);
@@ -630,6 +654,7 @@ describe("EDC agent (legend-apt)", () => {
     // A cancelled attempt does not block a new attempt for the same bill.
     const retry = await pay(f, request(f, { reference: req.reference }));
     expect(retry.status).toBe("approved");
+    expect(f.bca.chargedCount(f.terminalId)).toBe(1);
   });
 
   it("EDC-02 an approved transaction cannot be cancelled", async () => {

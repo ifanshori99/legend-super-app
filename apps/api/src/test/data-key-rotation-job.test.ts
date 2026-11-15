@@ -23,9 +23,10 @@
 //   - registerDataKeyRotationJob follows the other worker jobs: createQueue
 //     (policy "exclusive"), then a pg-boss cron schedule (5-field cron string,
 //     "daily-ish"), then work. The exact hour is not asserted.
-//   - The test database is shared with other files, so counts are compared
-//     with ">= ours" and our rows are checked directly in the database.
+//   - The test database is shared with other files. Only tenant enumeration is
+//     scoped to this file's fixtures; locks, rotations and read-back use SQL.
 import { randomBytes, randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
 import { Pool, type PoolClient } from "pg";
 import {
   afterAll,
@@ -50,13 +51,14 @@ import {
   upsertIntegration,
 } from "../services/platform-integration.service.ts";
 
-// The job walks every tenant of the shared test database; give it room.
+// Rotations use real database transactions; give a busy test host room.
 vi.setConfig({ testTimeout: 180_000 });
 
 const actor = randomUUID();
 const seededTenantId = cafeLegendPlatformFixtures.tenant.id;
 const KEY2 = randomBytes(32).toString("base64");
 const createdTenants: string[] = [];
+const jobTenantIds: string[] = [];
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
@@ -92,7 +94,7 @@ async function asOwner<T>(
   }
 }
 
-async function createTenant(): Promise<string> {
+async function createTenant(includeInRotation = true): Promise<string> {
   const id = randomUUID();
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
@@ -102,6 +104,7 @@ async function createTenant(): Promise<string> {
     [id, `uji-rotjob-${randomBytes(4).toString("hex")}`, seededTenantId],
   );
   createdTenants.push(id);
+  if (includeInRotation) jobTenantIds.push(id);
   return id;
 }
 
@@ -117,8 +120,8 @@ const aiAad = (tenantId: string, id: string) =>
   `ai_provider_config:${tenantId}:${id}`;
 
 /** Phase 1: one active integration and one AI provider key sealed at version 1. */
-async function seedStaleTenant(): Promise<Seeded> {
-  const tenantId = await createTenant();
+async function seedStaleTenant(includeInRotation = true): Promise<Seeded> {
+  const tenantId = await createTenant(includeInRotation);
   const ctx = contextFor(tenantId);
   const apiKey = `doit-${randomBytes(12).toString("hex")}`;
   const aiKey = `sk-ai-${randomBytes(16).toString("hex")}`;
@@ -198,6 +201,29 @@ async function loadPhase2() {
   const service = await import("../services/platform-integration.service.ts");
   const { db } = await import("../db/index.ts");
   const job = await import("../worker/data-key-rotation.job.ts");
+  // The job's only database.execute call enumerates tenants. Run that original
+  // SQL, limited to our fixture IDs: sweeping other files can meet deliberately
+  // unreadable keys or re-seal their data under this file's private KEY2.
+  // Services and the advisory lock still use their real database connections.
+  const database = new Proxy(db, {
+    get(target, property, receiver) {
+      if (property === "execute") {
+        return (query: Parameters<typeof db.execute>[0]) => {
+          const statement = typeof query === "string" ? sql.raw(query) : query;
+          const scope = jobTenantIds.length
+            ? sql`fixture_tenants.id IN (${sql.join(
+                jobTenantIds.map((id) => sql`${id}::uuid`),
+                sql`, `,
+              )})`
+            : sql`false`;
+          return target.execute(
+            sql`SELECT fixture_tenants.id FROM (${statement}) AS fixture_tenants WHERE ${scope}`,
+          );
+        };
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
   expect(secrets.currentSealVersion()).toBe(2);
   const ctxFor = (id: string) =>
     shared.establishScopedTenantContext(
@@ -208,7 +234,7 @@ async function loadPhase2() {
       }),
       { kind: "tenant" },
     );
-  return { job, db, service, secrets, ctxFor };
+  return { job, db: database, service, secrets, ctxFor };
 }
 
 function captureLog() {
@@ -275,6 +301,20 @@ describe("legend-rg8yl runDataKeyRotation", () => {
   it("legend-rg8yl rotates stale integration and AI keys of every tenant once, readable afterwards, and the second run rotates 0", async () => {
     const a = await seedStaleTenant();
     const b = await seedStaleTenant();
+    // Another file may deliberately keep an unreadable key while proving its
+    // AAD guard. It belongs to that file, not to this job's fixture sweep.
+    const foreign = await seedStaleTenant(false);
+    await asOwner(foreign.tenantId, (client) =>
+      client.query(
+        "UPDATE ai_provider_configs SET api_key_encrypted = $2 WHERE id = $1",
+        [
+          foreign.aiId,
+          sealSecret(foreign.aiKey, aiAad(foreign.tenantId, randomUUID())),
+        ],
+      ),
+    );
+    const foreignIntegration = await integrationRow(foreign.integrationId);
+    const foreignAi = await aiRow(foreign);
     const beforeIntegrationA = await integrationRow(a.integrationId);
     const beforeAiA = await aiRow(a);
 
@@ -285,11 +325,16 @@ describe("legend-rg8yl runDataKeyRotation", () => {
       log: first.log,
     });
 
-    // Both tenants (and possibly other files' leftovers) were visited.
-    expect(result.tenants).toBeGreaterThanOrEqual(2);
-    expect(result.integrationsRotated).toBeGreaterThanOrEqual(2);
-    expect(result.aiRotated).toBeGreaterThanOrEqual(2);
+    // Exactly our two tenants were visited; the foreign canary was untouched.
+    expect(result.tenants).toBe(2);
+    expect(result.integrationsRotated).toBe(2);
+    expect(result.aiRotated).toBe(2);
     expect(result.skipped).toBeFalsy();
+    expect(result.failedTenants).toBe(0);
+    expect(await integrationRow(foreign.integrationId)).toEqual(
+      foreignIntegration,
+    );
+    expect(await aiRow(foreign)).toEqual(foreignAi);
 
     for (const seeded of [a, b]) {
       const integration = await integrationRow(seeded.integrationId);
@@ -331,6 +376,7 @@ describe("legend-rg8yl runDataKeyRotation", () => {
     });
     expect(second.integrationsRotated).toBe(0);
     expect(second.aiRotated).toBe(0);
+    expect(second.failedTenants).toBe(0);
     expect(second.skipped).toBeFalsy();
     expect((await integrationRow(a.integrationId)).credentials_encrypted).toBe(
       afterFirstA.credentials_encrypted,
@@ -368,6 +414,7 @@ describe("legend-rg8yl runDataKeyRotation", () => {
     expect(freed.skipped).toBeFalsy();
     expect(freed.integrationsRotated).toBeGreaterThanOrEqual(1);
     expect(freed.aiRotated).toBeGreaterThanOrEqual(1);
+    expect(freed.failedTenants).toBe(0);
     expect(
       (await integrationRow(seeded.integrationId)).credentials_key_version,
     ).toBe(2);
@@ -386,6 +433,8 @@ describe("legend-rg8yl runDataKeyRotation", () => {
     });
     expect(one.skipped).toBeFalsy();
     expect(two.skipped).toBeFalsy();
+    expect(one.failedTenants).toBe(0);
+    expect(two.failedTenants).toBe(0);
     // The lock is free: this session can take it.
     const release = await holdJobLock(job.DATA_KEY_ROTATION_LOCK_KEY);
     await release();
@@ -410,6 +459,7 @@ describe("legend-rg8yl runDataKeyRotation", () => {
       log: captured.log,
     });
     expect(result.integrationsRotated).toBeGreaterThanOrEqual(1);
+    expect(result.failedTenants).toBe(0);
 
     const sealedAfter = [
       (await integrationRow(seeded.integrationId)).credentials_encrypted,
@@ -531,7 +581,7 @@ describe("legend-rg8yl stale AI key that cannot be opened", () => {
 
       // The broken tenant is counted as failed (and named when a list).
       const failed = (result as { failedTenants?: unknown }).failedTenants;
-      expect(failedCount(failed)).toBeGreaterThanOrEqual(1);
+      expect(failedCount(failed)).toBe(1);
       if (Array.isArray(failed)) {
         const ids = failed.map((entry) =>
           typeof entry === "string"
