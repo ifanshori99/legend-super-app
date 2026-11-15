@@ -35,7 +35,10 @@ import { readFileSync } from "node:fs";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ulidToUuid } from "@starter/shared/core";
-import { holdGatewayAmountMismatch } from "../services/payment.service.ts";
+import {
+  holdGatewayAmountMismatch,
+  pollPendingGatewayIntents,
+} from "../services/payment.service.ts";
 import { setPaymentGateway } from "../services/payment-gateway.ts";
 import { owner } from "./floor-test-helpers.ts";
 import { secretFor } from "./payer-secret-helpers.ts";
@@ -580,7 +583,7 @@ describe("legend-0owye backfill holds failed codes whose money is still parked",
     expect(rows.filter((r) => r.intentId === bill.intentId)).toEqual([]);
   });
 
-  it("legend-0owye guard: a failed VA code with an open fund refuses a replacement code until the fund is returned", async () => {
+  it("legend-0owye guard: a failed VA code with an open fund refuses a replacement code until the fund is returned and the provider answers final", async () => {
     const guest: Guest = await fx.newGuest();
     const order = await fx.qrOrder(guest);
     const va = await fx.guestPost(guest, "/payments", {
@@ -604,6 +607,21 @@ describe("legend-0owye backfill holds failed codes whose money is still parked",
       `the VA money is still parked: ${JSON.stringify(refused.body)}`,
     ).toBe(409);
     await resolveFunds(vaId);
+    // SO-896: the money is back, but the provider never declared the code dead
+    // (a `failed` code stays live until it answers final): still refused.
+    const stillLive = await ask();
+    expect(stillLive.status, JSON.stringify(stillLive.body)).toBe(409);
+    await owner.query(
+      `UPDATE payment_intents SET expires_at = now() - interval '61 seconds'
+        WHERE tenant_id=$1 AND id=$2`,
+      [fx.tenant.tenantId, vaId],
+    );
+    gw.script(vaId, { status: "expired" });
+    await pollPendingGatewayIntents(
+      fx.context,
+      new Date(Date.now() + 2 * 3_600_000),
+      200,
+    );
     const allowed = await ask();
     expect(allowed.status, JSON.stringify(allowed.body)).toBe(201);
   });

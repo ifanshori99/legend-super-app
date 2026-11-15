@@ -7,7 +7,8 @@
 //      proof the code is dead: `provider_final_at` is set only when the provider
 //      then answers final (`providerAnswerFinal`).
 //  (3) A `failed` code (Duitku `02` before `expires_at`) is a retryable attempt:
-//      it stays live (no replacement VA) until `expires_at` + 60 s.
+//      it stays live (no replacement VA) until the provider answers final
+//      (SO-896: local time never kills it).
 //
 // Assumptions:
 // - A bill of the cashier fixture is Rp 33.000; the mismatch pays Rp 30.000.
@@ -23,6 +24,7 @@ import { setPaymentGateway } from "../services/payment-gateway.ts";
 import {
   applyGatewayFailure,
   createPaymentLink,
+  pollPendingGatewayIntents,
 } from "../services/payment.service.ts";
 import { agent } from "./helpers.ts";
 import { owner } from "./floor-test-helpers.ts";
@@ -238,7 +240,19 @@ describe("so-889 gap: a failed code stays live until expires_at + margin", () =>
         WHERE tenant_id=$1 AND id=$2`,
       [fx.tenant.tenantId, intentId, MARGIN_MS + 1_000],
     );
+    // SO-896: local time never kills the code. Past the margin it is still
+    // live while the provider has not answered final (pending here).
     const later = await va(guest, order.id);
-    expect(later.status, JSON.stringify(later.body)).toBe(201);
+    expect(later.status, JSON.stringify(later.body)).toBe(409);
+
+    // The provider's final answer (02, past the margin) frees it.
+    fx.gateway.script(intentId, { rawStatus: "02" });
+    await pollPendingGatewayIntents(
+      fx.context,
+      new Date(Date.now() + 2 * 60 * 60_000),
+      200,
+    );
+    const freed = await va(guest, order.id);
+    expect(freed.status, JSON.stringify(freed.body)).toBe(201);
   });
 });

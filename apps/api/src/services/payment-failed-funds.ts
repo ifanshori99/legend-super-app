@@ -1,12 +1,15 @@
-// SO-885 (legend-0owye): a `failed` code whose money is still parked.
+// SO-885 (legend-0owye), widened by SO-896 (legend-5h8ob): a code whose money
+// is still parked.
 //
-// An amount mismatch (`holdGatewayAmountMismatch`) closes the intent as
-// `failed` AND parks the paid money in `payment_unallocated_funds`. The intent
-// is not collectible again, but the guest already paid: until that money is
+// An amount mismatch (`holdGatewayAmountMismatch`), an underpayment found by the
+// poll, or a late payment on a closed code parks the paid money in
+// `payment_unallocated_funds`. The intent is not collectible again (`failed`,
+// `expired`, `superseded`, ...), but the guest already paid: until that money is
 // refunded or credited (`resolved_at` set) the bill must not ask for a new
-// code, or the guest pays twice. `failed` alone is no proof the money is back.
+// code, or the guest pays twice. No intent status is proof the money is back, so
+// only `paid` is left out (its money is allocated to the bill).
 
-import { and, eq, exists, inArray, or, sql } from "drizzle-orm";
+import { and, eq, exists, inArray, ne, or, sql } from "drizzle-orm";
 import type { TenantId } from "@starter/shared/core";
 import {
   billSplits,
@@ -15,9 +18,9 @@ import {
 } from "../db/schema/index.ts";
 import type { Tx } from "./menu-internals.ts";
 
-function failedWithOpenFund() {
+function intentWithOpenFund() {
   return and(
-    eq(paymentIntents.status, "failed"),
+    ne(paymentIntents.status, "paid"),
     exists(
       sql`(select 1 from ${paymentUnallocatedFunds} f
         where f.tenant_id = ${paymentIntents.tenantId}
@@ -27,7 +30,7 @@ function failedWithOpenFund() {
   );
 }
 
-/** A failed code of the order whose money is still unresolved, if any. ANY
+/** A code of the order (any status but paid) whose money is still unresolved. ANY
  * code counts: a whole-order code, a part code, even of a part voided since
  * (SO-889). Found through the order's link or through its split parts, voided
  * ones included, so a re-split or a whole-order payment cannot step around it. */
@@ -59,14 +62,14 @@ export async function failedOrderCodeWithOpenFundTx(
               ),
           ),
         ),
-        failedWithOpenFund(),
+        intentWithOpenFund(),
       ),
     )
     .limit(1);
   return code ?? null;
 }
 
-/** A failed code of one split part whose money is still unresolved, if any. */
+/** A code of one split part (any status but paid) whose money is still unresolved. */
 export async function failedPartCodeWithOpenFundTx(
   tx: Tx,
   tenantId: TenantId,
@@ -79,7 +82,7 @@ export async function failedPartCodeWithOpenFundTx(
       and(
         eq(paymentIntents.tenantId, tenantId),
         eq(paymentIntents.billSplitId, billSplitId),
-        failedWithOpenFund(),
+        intentWithOpenFund(),
       ),
     )
     .limit(1);

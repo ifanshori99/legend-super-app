@@ -322,6 +322,7 @@ async function mintingIntegrationSecret(
     context,
     PROVIDER,
     integrationId,
+    { forStoredIntent: true },
   );
   if (!loaded) return [];
   const secret = loaded.credentials.webhookSecret;
@@ -551,7 +552,9 @@ async function signedByIntentIntegration(
   if (minted !== null && row.integrationId === minted) return true;
   const loaded =
     minted !== null
-      ? await loadIntegrationCredentialsById(context, PROVIDER, minted)
+      ? await loadIntegrationCredentialsById(context, PROVIDER, minted, {
+          forStoredIntent: true,
+        })
       : await loadActiveIntegrationCredentials(
           context,
           PROVIDER,

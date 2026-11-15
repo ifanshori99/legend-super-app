@@ -53,6 +53,7 @@ import {
   createIntent,
   createPaymentLink,
 } from "./payment.service.ts";
+import { assertNoOpenFundsOfPosOrderTx } from "./pos-order-open-funds.ts";
 import {
   isBusinessDayClosed,
   lockCashierShiftForCash,
@@ -281,6 +282,10 @@ export async function addPosTender(
       if (!settlesEcrRequest) {
         await assertNoActiveQrisHold(tx, context, order.id);
         await assertNoOpenEdcRequest(tx, context, order);
+        // SO-896 (legend-o6q8i): guest money of an earlier QR sits parked
+        // open (e.g. paid late after a force release): no second payment.
+        if (input.method === "cash" || input.method === "qris")
+          await assertNoOpenFundsOfPosOrderTx(tx, tenantId, order);
       } else {
         const lockedHolds = await lockHoldsOfOrder(tx, tenantId, order.id);
         await hasOpenEdcRequest(tx, context, order);

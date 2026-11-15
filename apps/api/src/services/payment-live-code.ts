@@ -2,9 +2,10 @@
 //
 // Local time (the code's expiry, the 24 hour poll window, the late-payment
 // grace) is never proof that a code is dead. A `pending` code is always live
-// (a lapsed one stays pending until the gateway answers). An `expired` code
-// the provider received is live until the provider answered final (expired /
-// failed / cancelled) or its money was reconciled: `provider_final_at`. A code
+// (a lapsed one stays pending until the gateway answers). An `expired` or
+// `failed` code the provider received is live until the provider answered final
+// (expired / failed / cancelled) or its money was reconciled:
+// `provider_final_at`. A code
 // the QR hold proved dead (hold `closed`: provider proof, or the founder's
 // manager release) is dead too.
 //
@@ -37,22 +38,36 @@ export function expiredCodeMayStillPay(): SQL {
 }
 
 /**
- * SO-889: a `failed` code the provider received and has not declared final
+ * SO-896: a `failed` code the provider received and has not declared final
  * (Duitku `02`, DOIT `failed` before the code lapsed) is a retryable attempt:
- * it may still be paid until `expires_at` + `HOLD_CLOSE_MARGIN_MS`, then it is
- * dead (D-03: `02` + time passed). A failed code whose money sits in unallocated
- * funds is not "live": that is `FUNDS_UNRESOLVED` (`payment-failed-funds.ts`).
+ * it may still be paid. Like an `expired` code it stays in the poll until the
+ * provider answers final or its money was reconciled; local time never kills
+ * it, and parked money (resolved or not) does not change that.
  */
-export function failedCodeMayStillPay(): SQL {
+export function failedCodeNotFinal(): SQL {
   return and(
     eq(paymentIntents.status, "failed"),
     isNotNull(paymentIntents.providerRef),
     isNull(paymentIntents.providerFinalAt),
     noClosedHold,
-    sql`${paymentIntents.expiresAt} + (${HOLD_CLOSE_MARGIN_MS / 1000}::int * interval '1 second') > now()`,
+  )!;
+}
+
+/**
+ * SO-889 / SO-896: the `failed` code that blocks a replacement code as a live
+ * code: `failedCodeNotFinal` whose parked money, if any, is already resolved
+ * (refunded or credited). Money still open is not "live" here: it is its own
+ * guard, `FUNDS_UNRESOLVED` (`payment-failed-funds.ts`), which refuses every
+ * new tender, code or split whatever the status. Once the money is resolved the
+ * code is live again until the provider answers final.
+ */
+export function failedCodeMayStillPay(): SQL {
+  return and(
+    failedCodeNotFinal(),
     sql`not exists (select 1 from payment_unallocated_funds f
       where f.tenant_id = ${paymentIntents.tenantId}
-        and f.payment_intent_id = ${paymentIntents.id})`,
+        and f.payment_intent_id = ${paymentIntents.id}
+        and f.resolved_at is null)`,
   )!;
 }
 

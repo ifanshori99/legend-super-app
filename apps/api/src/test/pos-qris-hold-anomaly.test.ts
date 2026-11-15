@@ -395,7 +395,18 @@ describe("QH-14 closed hold, then the old QR is paid", () => {
       depositIdr: 10_000,
     });
 
-    // The bill is still collectible for the new remainder, once.
+    // SO-896: the parked money is owed back first; a new QR is refused.
+    const refused = await requestQris(fx, order.id);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(JSON.stringify(refused.body)).toContain("FUNDS_UNRESOLVED");
+    await owner.query(
+      `UPDATE payment_unallocated_funds
+          SET resolution='refund', resolved_by='test', resolved_at=now()
+        WHERE tenant_id=$1 AND payment_intent_id=$2`,
+      [fx.tenant.tenantId, qr.intentId],
+    );
+
+    // Once resolved, the bill is collectible for the new remainder, once.
     const second = await issueQris(fx, order.id);
     expect(second.amountIdr).toBe(23_000);
     await payNotice(fx, second.intentId, 23_000);

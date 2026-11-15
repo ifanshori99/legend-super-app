@@ -101,6 +101,7 @@ import {
 } from "./payment-gateway-select";
 import {
   expiredCodeMayStillPay,
+  failedCodeNotFinal,
   providerAnswerFinal,
 } from "./payment-live-code";
 import {
@@ -712,6 +713,7 @@ async function cancelSupersededAtGateway(
         intentId: intent.intentId,
       });
       if (
+        answer.providerRef !== intent.providerRef ||
         !providerAnswerFinal(
           { provider: intent.provider, expiresAt: row.expiresAt },
           answer,
@@ -1665,6 +1667,8 @@ async function syncPendingIntentDetailed(
         settlementFailed = true;
     }
   }
+  // SO-896: an answer about another reference says nothing about this code.
+  const aboutThisCode = providerStatus?.providerRef === intent.providerRef;
   if (pastExpiry) {
     // A provider that still says `pending` past our expiry can still take the
     // money (its own expiry may lag ours): only paid / expired / failed are
@@ -1672,6 +1676,7 @@ async function syncPendingIntentDetailed(
     const inconclusive =
       providerStatus === undefined ||
       settlementFailed ||
+      (providerStatus.status !== "paid" && !aboutThisCode) ||
       providerStatus.status === "pending" ||
       (providerStatus.status === "paid" && providerStatus.amountIdr === null);
     if (inconclusive) {
@@ -1694,6 +1699,7 @@ async function syncPendingIntentDetailed(
     // alerts staff.
     const providerFinal =
       (providerStatus !== undefined &&
+        aboutThisCode &&
         providerAnswerFinal(intent, providerStatus, now)) ||
       fundsParked;
     await expireIntent(
@@ -1722,7 +1728,7 @@ async function syncPendingIntentDetailed(
       now,
       "gateway",
       undefined,
-      providerAnswerFinal(intent, providerStatus, now),
+      aboutThisCode && providerAnswerFinal(intent, providerStatus, now),
     );
     return {
       intent: { ...intent, status: "expired", updatedAt: now },
@@ -1734,7 +1740,7 @@ async function syncPendingIntentDetailed(
       context,
       intent,
       now,
-      providerAnswerFinal(intent, providerStatus, now),
+      aboutThisCode && providerAnswerFinal(intent, providerStatus, now),
     );
     return {
       intent: { ...intent, status: "failed", updatedAt: now },
@@ -2654,13 +2660,22 @@ export async function applyGatewayFailure(
     if (outcome === "expired")
       await expireIntent(context, intent, now, "gateway", undefined, final);
     else await failIntent(context, intent, now, final);
-  } else if (intent.status === "expired" && final) {
-    // A superseded / timed-out code: the provider's verified final answer,
-    // after the code lapsed, is the proof it is dead (SO-885).
+  } else if (
+    (intent.status === "expired" || intent.status === "failed") &&
+    final
+  ) {
+    // A superseded / timed-out / failed code: the provider's verified final
+    // answer, after the code lapsed, is the proof it is dead (SO-885, SO-896).
     await markGatewayReconciled(context, intent, now);
   }
   const current = (await load()) ?? intent;
   return toPaymentIntent(current);
+}
+
+/** SO-896: an `expired` or `failed` code (both can still be paid until the
+ * provider answers final) is read by `syncExpiredIntentPayment`. */
+function isClosedPollable(intent: { status: string }): boolean {
+  return intent.status === "expired" || intent.status === "failed";
 }
 
 /**
@@ -2680,7 +2695,7 @@ async function syncExpiredIntentPayment(
   intent: PaymentIntentRow,
   now: Date,
 ): Promise<SyncResult> {
-  if (intent.status !== "expired" || intent.providerRef === null)
+  if (!isClosedPollable(intent) || intent.providerRef === null)
     return { intent, gatewayError: false };
   let providerStatus;
   try {
@@ -2700,7 +2715,10 @@ async function syncExpiredIntentPayment(
   ) {
     // SO-889: final only once the code lapsed on its own (+ margin); before
     // that the poll keeps asking.
-    if (providerAnswerFinal(intent, providerStatus, now))
+    if (
+      providerStatus.providerRef === intent.providerRef &&
+      providerAnswerFinal(intent, providerStatus, now)
+    )
       await markGatewayReconciled(context, intent, now);
     return { intent, gatewayError: false };
   }
@@ -2758,8 +2776,9 @@ async function syncExpiredIntentPayment(
  * SO-885: the provider answered final for an `expired` intent (expired /
  * failed) or its money was reconciled: sets `provider_final_at`, which ends
  * the poll of the code and lets a replacement code or a split change open.
- * Local time never calls this. Touches only an `expired` row without proof, so
- * a settled one is left as the lifecycle wrote it and a replay changes nothing.
+ * Local time never calls this. Touches only an `expired` or `failed` row
+ * without proof, so a settled one is left as the lifecycle wrote it and a
+ * replay changes nothing.
  */
 async function markGatewayReconciled(
   context: ScopedTenantContext,
@@ -2774,7 +2793,7 @@ async function markGatewayReconciled(
         and(
           eq(paymentIntents.tenantId, context.tenant.tenantId),
           eq(paymentIntents.id, intent.id),
-          eq(paymentIntents.status, "expired"),
+          inArray(paymentIntents.status, ["expired", "failed"]),
           isNull(paymentIntents.providerFinalAt),
         ),
       ),
@@ -2839,10 +2858,9 @@ export async function settleGatewayIntentNow(
           outletIds: [row.outletId],
         })
       : context;
-  const result =
-    row.status === "expired"
-      ? await syncExpiredIntentPayment(outletContext, row, now)
-      : await syncPendingIntentDetailed(outletContext, row, now);
+  const result = isClosedPollable(row)
+    ? await syncExpiredIntentPayment(outletContext, row, now)
+    : await syncPendingIntentDetailed(outletContext, row, now);
   return (
     row.status !== result.intent.status &&
     (SETTLED_STATUSES as readonly string[]).includes(result.intent.status)
@@ -2891,8 +2909,8 @@ export async function pollPendingGatewayIntents(
     // skipped without a stamp, so a shared window would fill with them and
     // starve the other providers.
     const candidates: Array<{ id: string }> = [];
-    // SO-885: live (pending) codes and expired codes still without provider
-    // proof get separate quotas, so a backlog of old expired codes (no
+    // SO-885: live (pending) codes and expired / failed codes still without
+    // provider proof get separate quotas, so a backlog of old expired codes (no
     // backfill in 0629) can never delay a live one.
     for (const provider of providers)
       for (const kind of ["pending", "expired"] as const) {
@@ -2906,11 +2924,11 @@ export async function pollPendingGatewayIntents(
                 isNull(paymentIntents.gatewayPollLeaseUntil),
                 lte(paymentIntents.gatewayPollLeaseUntil, leaseNow),
               ),
-              // An expired code stays in the poll until the provider answers
-              // final, however long ago it lapsed (no window).
+              // An expired or failed code stays in the poll until the provider
+              // answers final, however long ago it lapsed (no window).
               kind === "pending"
                 ? eq(paymentIntents.status, "pending")
-                : expiredCodeMayStillPay(),
+                : or(expiredCodeMayStillPay(), failedCodeNotFinal()),
               backoffDue,
               eq(paymentIntents.provider, provider),
               isNotNull(paymentIntents.providerRef),
@@ -3006,10 +3024,9 @@ export async function pollPendingGatewayIntents(
                 outletIds: [row.outletId],
               })
             : context;
-        const result =
-          row.status === "expired"
-            ? await syncExpiredIntentPayment(outletContext, row, now)
-            : await syncPendingIntentDetailed(outletContext, row, now);
+        const result = isClosedPollable(row)
+          ? await syncExpiredIntentPayment(outletContext, row, now)
+          : await syncPendingIntentDetailed(outletContext, row, now);
         consecutiveErrors.set(
           budgetKey,
           result.gatewayError ? (consecutiveErrors.get(budgetKey) ?? 0) + 1 : 0,
