@@ -1,0 +1,6 @@
+# 895 Second opinion payout 888 + 891 (gerbang rilis uang)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Uang: effort xhigh. Read-only, tanpa edit kode produk.
+Repo /Users/ifanshori99/Projects/legend super app/legend; baca lewat `git show`/`git diff` atau worktree sendiri. Ref: `origin/fix/payout-failed-correction-891` 8f7c91126 (memuat 888). Rentang: `1a1480016..8f7c91126` dikurangi isi m1 9ad4dcee7 (`git diff 9ad4dcee7...8f7c91126`).
+Konteks: `docs/qa/second-opinion-payout-area-final.md` (temuan yang ditutup 888), brief 888 dan 891 di `docs/briefs/`.
+Cari: karyawan dibayar dua kali atau dicatat lunas tanpa uang keluar; koreksi failed->succeeded yang bisa dipakai saat sudah ada pembayaran susulan, run direversal, atau oleh pembuat sendiri; bukti bank dipakai ulang lintas koreksi/overpaid/item/tenant; jurnal settle/fee ganda atau tidak cocok nominal; step-up yang bisa dilewati; guard migrasi 0631-0636 yang bisa diakali role aplikasi; balapan koreksi vs retry/overpaid paralel.
+Hasil: tulis `docs/qa/second-opinion-payout-888-891.md` di worktree-mu (P0-P3, berkas:baris, skenario, usul test), commit dan push cabang qa tanpa force. Lapor hanya saat selesai: ringkasan, path, cabang/commit.
