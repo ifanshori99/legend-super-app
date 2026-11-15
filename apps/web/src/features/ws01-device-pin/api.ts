@@ -14,7 +14,14 @@ import {
   type CreatePosOverrideInput,
 } from "@starter/shared/access/override";
 import { defineEndpoint } from "@starter/shared/api";
-import { dataResponseSchema } from "@starter/shared/core";
+import { z } from "zod";
+import {
+  dataResponseSchema,
+  isoDateTimeSchema,
+  outletIdSchema,
+  userIdSchema,
+} from "@starter/shared/core";
+import { panicSessionBodySchema } from "@starter/shared/facility";
 import {
   posSessionRequestSchema,
   posSessionResponseSchema,
@@ -37,6 +44,32 @@ export const endPosSession = defineEndpoint({
   method: "POST",
   path: "/api/staff-pins/pos-session/end",
 });
+
+export const startEmergencySession = defineEndpoint({
+  method: "POST",
+  path: "/api/emergency/sessions",
+  body: panicSessionBodySchema,
+  response: dataResponseSchema(
+    z.strictObject({
+      outletId: outletIdSchema,
+      expiresAt: isoDateTimeSchema,
+      user: z.strictObject({ id: userIdSchema, displayName: z.string() }),
+    }),
+  ),
+});
+
+export const endEmergencySession = defineEndpoint({
+  method: "DELETE",
+  path: "/api/emergency/sessions/current",
+});
+
+/** The API sets an HttpOnly receiver cookie; never start a cashier session. */
+export const startEmergencySessionCall = (input: VerifyStaffPinInput) =>
+  callEndpoint(startEmergencySession, {
+    body: { staffUserId: input.userId, pin: input.pin },
+  });
+
+export const endEmergencySessionCall = () => callEndpoint(endEmergencySession);
 
 export const verifyStaffPinCall = (input: VerifyStaffPinInput) =>
   callEndpoint(verifyStaffPin, { body: input });

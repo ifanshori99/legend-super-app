@@ -37,6 +37,7 @@ import {
 import {
   EMERGENCY_COOKIE_NAME,
   EMERGENCY_PERMISSION_RESPOND,
+  PANIC_SESSION_REVOKE_REASONS,
   type PanicSessionRevokeReason,
 } from "@starter/shared/facility";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
@@ -214,6 +215,30 @@ async function revocationReason(
   session: ReceiverSession,
   now: Date,
 ): Promise<PanicSessionRevokeReason | null> {
+  // A socket retains the object read during upgrade. Logout or replacement
+  // can commit before that socket subscribes to the revocation announcement,
+  // so the cached object alone cannot prove that the session is still live.
+  const [stored] = await tx
+    .select({
+      revokedAt: panicReceiverSessions.revokedAt,
+      revokeReason: panicReceiverSessions.revokeReason,
+    })
+    .from(panicReceiverSessions)
+    .where(
+      and(
+        eq(panicReceiverSessions.tenantId, context.tenant.tenantId),
+        eq(panicReceiverSessions.id, session.id),
+      ),
+    )
+    .limit(1);
+  if (!stored) return "logout";
+  if (stored.revokedAt !== null)
+    return (
+      PANIC_SESSION_REVOKE_REASONS.find(
+        (reason) => reason === stored.revokeReason,
+      ) ?? "logout"
+    );
+
   if (session.expiresAt.getTime() <= now.getTime()) return "expired";
 
   const [device] = await tx

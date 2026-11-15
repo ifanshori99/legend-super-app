@@ -23,6 +23,7 @@ import {
   desc,
   eq,
   gt,
+  getTableColumns,
   inArray,
   isNotNull,
   isNull,
@@ -32,6 +33,7 @@ import {
 } from "drizzle-orm";
 import {
   CoreError,
+  createUlid,
   outletIdSchema,
   toIsoDateTime,
   userIdSchema,
@@ -47,13 +49,19 @@ import {
 } from "@starter/shared/core/server";
 import {
   EMERGENCY_REVOKED_CLOSE_CODE,
+  PANIC_ALERT_AGGREGATE_TYPE,
+  panicAlertRaisedEvent,
   type PanicFallbackItem,
   type PanicPressBody,
   type PanicRealtimeFrame,
 } from "@starter/shared/facility";
 import { db } from "../db/index.ts";
 import { devices } from "../db/schema/device.ts";
-import { facilities, facilityUnits } from "../db/schema/facility.ts";
+import {
+  facilities,
+  facilityAreas,
+  facilityUnits,
+} from "../db/schema/facility.ts";
 import { employees } from "../db/schema/hris.ts";
 import {
   panicAlertDeliveries,
@@ -74,9 +82,17 @@ import { createFixedWindowCounter } from "../lib/fixed-window-counter.ts";
 import { logger } from "../lib/logger.ts";
 import { toLoggableError } from "../lib/safe-error.ts";
 import { outletContext } from "./device-pin-support.ts";
+import { appendOutbox } from "./core-outbox.ts";
 import type { EdgeTx } from "./edge-queue.service.ts";
-import { panicAlertIdFor, queuePanicAlertEvent } from "./panic-alert-outbox.ts";
-import { refuseWhenEdgeServesOutlet } from "./panic-edge-ownership.ts";
+import {
+  panicAlertIdFor,
+  queuePanicAlertEvent,
+  type PanicAlertOutboxEvent,
+} from "./panic-alert-outbox.ts";
+import {
+  isPanicEdgeProcess,
+  refuseWhenEdgeServesOutlet,
+} from "./panic-edge-ownership.ts";
 import {
   recheckReceiverSession,
   type ReceiverSession,
@@ -118,6 +134,21 @@ export function takePanicPressSlot(
 
 type AlertRow = typeof panicAlerts.$inferSelect;
 
+// Location is optional: missing or removed unit/area never removes an alert.
+// Keep qualified identifiers literal: Drizzle strips column qualifiers from
+// single-table selections, including interpolated columns in subqueries.
+const alertAreaName = sql<string | null>`(
+  SELECT area.name FROM facility_units AS unit
+  JOIN facility_areas AS area ON area.tenant_id = unit.tenant_id
+    AND area.outlet_id = unit.outlet_id
+    AND area.facility_id = unit.facility_id
+    AND area.id = unit.area_id
+  WHERE unit.tenant_id = panic_alerts.tenant_id
+    AND unit.outlet_id = panic_alerts.outlet_id
+    AND unit.id = panic_alerts.unit_id
+  LIMIT 1
+)`;
+
 const logFailure = (message: string, error: unknown) =>
   logger.error({ err: toLoggableError(error) }, message);
 
@@ -125,13 +156,19 @@ const tenantWide = (tenant: TenantContext): ScopedTenantContext =>
   establishScopedTenantContext(tenant, { kind: "tenant" });
 
 function frameOf(
-  alert: Pick<AlertRow, "id" | "outletId" | "unitId" | "receivedAt" | "kind">,
+  alert: Pick<
+    AlertRow,
+    "id" | "outletId" | "unitId" | "unitCodeSnapshot" | "receivedAt" | "kind"
+  >,
+  areaName: string | null = null,
 ): PanicRealtimeFrame {
   return {
     type: "panic",
     alertId: alert.id,
     outletId: outletIdSchema.parse(alert.outletId),
     unitId: alert.unitId,
+    unitCode: alert.unitCodeSnapshot || null,
+    areaName,
     receivedAt: toIsoDateTime(alert.receivedAt),
     kind: alert.kind === "test" ? "test" : "press",
   };
@@ -151,6 +188,7 @@ export type PressResult = {
 
 type Outcome = {
   alert: AlertRow;
+  areaName?: string | null;
   replayed: boolean;
   folded: boolean;
   created: boolean;
@@ -206,7 +244,7 @@ export async function ingestPanicPress(
       );
       const alertOf = async (id: string) => {
         const [row] = await tx
-          .select()
+          .select({ ...getTableColumns(panicAlerts), areaName: alertAreaName })
           .from(panicAlerts)
           .where(
             and(eq(panicAlerts.tenantId, tenantId), eq(panicAlerts.id, id)),
@@ -226,16 +264,19 @@ export async function ingestPanicPress(
           ),
         )
         .limit(1);
-      if (prior)
+      if (prior) {
+        const alert = await alertOf(prior.alertId);
         return {
-          alert: await alertOf(prior.alertId),
+          alert,
+          areaName: alert.areaName,
           replayed: true,
           folded: false,
           created: false,
         };
+      }
 
       const [open] = await tx
-        .select()
+        .select({ ...getTableColumns(panicAlerts), areaName: alertAreaName })
         .from(panicAlerts)
         .where(
           and(
@@ -287,7 +328,13 @@ export async function ingestPanicPress(
             },
           },
         });
-        return { alert: folded, replayed: false, folded: true, created: false };
+        return {
+          alert: folded,
+          areaName: open.areaName,
+          replayed: false,
+          folded: true,
+          created: false,
+        };
       }
 
       // The room of the button; a button without a room still raises an alert.
@@ -296,6 +343,7 @@ export async function ingestPanicPress(
           id: facilityUnits.id,
           code: facilityUnits.code,
           facilityName: facilities.name,
+          areaName: facilityAreas.name,
         })
         .from(facilityUnits)
         .innerJoin(
@@ -303,6 +351,15 @@ export async function ingestPanicPress(
           and(
             eq(facilities.tenantId, facilityUnits.tenantId),
             eq(facilities.id, facilityUnits.facilityId),
+          ),
+        )
+        .leftJoin(
+          facilityAreas,
+          and(
+            eq(facilityAreas.tenantId, facilityUnits.tenantId),
+            eq(facilityAreas.outletId, facilityUnits.outletId),
+            eq(facilityAreas.facilityId, facilityUnits.facilityId),
+            eq(facilityAreas.id, facilityUnits.areaId),
           ),
         )
         .where(
@@ -356,29 +413,65 @@ export async function ingestPanicPress(
           receivedAt: now,
         })
         .onConflictDoNothing();
+      const raised: PanicAlertOutboxEvent = {
+        key: "raised",
+        payload: {
+          alertId,
+          outletId: outletIdSchema.parse(created.outletId),
+          deviceId: device.id,
+          unitId: created.unitId,
+          firstDeviceEventId: body.eventId,
+          kind: created.kind === "test" ? "test" : "press",
+          triggeredAt: triggeredAt ? toIsoDateTime(triggeredAt) : null,
+          receivedAt: toIsoDateTime(created.receivedAt),
+          unitCodeSnapshot: created.unitCodeSnapshot,
+          facilityNameSnapshot: created.facilityNameSnapshot,
+          deviceLabelSnapshot: created.deviceLabelSnapshot,
+          linkOffline,
+        },
+      };
       await queuePanicAlertEvent(tx, context, {
         outletId,
         alertId,
         now,
-        event: {
-          key: "raised",
-          payload: {
-            alertId,
-            outletId: outletIdSchema.parse(created.outletId),
-            deviceId: device.id,
-            unitId: created.unitId,
-            firstDeviceEventId: body.eventId,
-            kind: created.kind === "test" ? "test" : "press",
-            triggeredAt: triggeredAt ? toIsoDateTime(triggeredAt) : null,
-            receivedAt: toIsoDateTime(created.receivedAt),
-            unitCodeSnapshot: created.unitCodeSnapshot,
-            facilityNameSnapshot: created.facilityNameSnapshot,
-            deviceLabelSnapshot: created.deviceLabelSnapshot,
-            linkOffline,
-          },
-        },
+        event: raised,
       });
-      return { alert: created, replayed: false, folded: false, created: true };
+      // Edge alerts page staff when up-sync applies them in the cloud. A
+      // cloud-only outlet has no up-sync: queue its first alert here, in the
+      // same transaction. Replay and folded presses return above, so neither
+      // can page staff twice.
+      if (!isPanicEdgeProcess()) {
+        const event = panicAlertRaisedEvent.envelopeSchema.parse({
+          id: createUlid(now.getTime()),
+          tenantId,
+          outletId,
+          name: panicAlertRaisedEvent.name,
+          version: panicAlertRaisedEvent.version,
+          aggregateType: PANIC_ALERT_AGGREGATE_TYPE,
+          aggregateId: alertId,
+          sequence: 1,
+          occurredAt: toIsoDateTime(created.receivedAt),
+          actor: { type: "device", id: device.id },
+          deviceId: device.id,
+          idempotencyKey: `${PANIC_ALERT_AGGREGATE_TYPE}:${alertId}:1`,
+          payloadSchemaRef: panicAlertRaisedEvent.payloadSchemaRef,
+          payload: raised.payload,
+        });
+        await appendOutbox(tx, context, {
+          id: createUlid(now.getTime()),
+          event,
+          destination: "notification",
+          direction: null,
+          peerId: null,
+        });
+      }
+      return {
+        alert: created,
+        areaName: unit?.areaName ?? null,
+        replayed: false,
+        folded: false,
+        created: true,
+      };
     },
   );
 
@@ -387,7 +480,10 @@ export async function ingestPanicPress(
     // After commit: a rolled back press never reaches a screen. A replay or a
     // folded press shows the open alert again (a lost answer must not go silent).
     try {
-      const sent = await fanOutAlert(alert, { force: !outcome.created });
+      const sent = await fanOutAlert(alert, {
+        force: !outcome.created,
+        areaName: outcome.areaName ?? null,
+      });
       if (outcome.created && sent === 0 && alert.unroutedSince === null)
         await markUnrouted(context, alert);
     } catch (error) {
@@ -442,6 +538,10 @@ const sendsInFlight = new WeakMap<
   HubSubscriber,
   Map<string, Promise<boolean>>
 >();
+// A snapshot read before an acknowledgement may finish afterwards. Remember
+// closed IDs for the lifetime of each socket so that stale reads cannot revive
+// an alert; the WeakMap is released when that socket is gone.
+const closedAlerts = new WeakMap<HubSubscriber, Set<string>>();
 
 function sendFrame(
   sub: HubSubscriber,
@@ -449,6 +549,7 @@ function sendFrame(
   alertReceivedAt: number,
   options: { force: boolean },
 ): Promise<boolean> {
+  if (closedAlerts.get(sub)?.has(frame.alertId)) return Promise.resolve(false);
   if (!options.force && sub.alerts.get(frame.alertId)?.received)
     return Promise.resolve(false);
   let inFlight = sendsInFlight.get(sub);
@@ -459,7 +560,9 @@ function sendFrame(
   const running = inFlight.get(frame.alertId);
   if (running) return running;
   const release = () => {
-    if (inFlight.get(frame.alertId) === attempt) inFlight.delete(frame.alertId);
+    if (inFlight.get(frame.alertId) === attempt) {
+      inFlight.delete(frame.alertId);
+    }
   };
   const attempt = doSendFrame(sub, frame, alertReceivedAt, release).finally(
     release,
@@ -475,6 +578,7 @@ async function doSendFrame(
   release: () => void,
 ): Promise<boolean> {
   if (!(await sessionStillLive(sub))) return false;
+  if (closedAlerts.get(sub)?.has(frame.alertId)) return false;
   if (!sub.send(frame)) return false;
   // Read `received` again: a receipt can land while the check was running.
   sub.alerts.set(frame.alertId, {
@@ -502,9 +606,9 @@ async function doSendFrame(
  */
 export async function fanOutAlert(
   alert: AlertRow,
-  options: { force: boolean },
+  options: { force: boolean; areaName?: string | null },
 ): Promise<number> {
-  const frame = frameOf(alert);
+  const frame = frameOf(alert, options.areaName);
   const subs = subscribersOf({
     tenantId: alert.tenantId,
     outletId: alert.outletId,
@@ -559,7 +663,7 @@ export async function sendOpenAlertsTo(sub: HubSubscriber): Promise<void> {
   const context = outletContext(tenantOf(session), session.outletId);
   const rows = await withTenant(db, context, (tx) =>
     tx
-      .select()
+      .select({ ...getTableColumns(panicAlerts), areaName: alertAreaName })
       .from(panicAlerts)
       .where(
         and(
@@ -575,15 +679,19 @@ export async function sendOpenAlertsTo(sub: HubSubscriber): Promise<void> {
       .orderBy(asc(panicAlerts.receivedAt)),
   );
   for (const row of rows)
-    await sendFrame(sub, frameOf(row), row.receivedAt.getTime(), {
+    await sendFrame(sub, frameOf(row, row.areaName), row.receivedAt.getTime(), {
       force: false,
     });
 }
 
 /** Forgets an acknowledged alert on every socket of its outlet: no more resends. */
 function dropAlert(tenantId: string, outletId: string, alertId: string) {
-  for (const sub of subscribersOf({ tenantId, outletId }))
+  for (const sub of subscribersOf({ tenantId, outletId })) {
+    const closed = closedAlerts.get(sub) ?? new Set<string>();
+    closed.add(alertId);
+    closedAlerts.set(sub, closed);
     sub.alerts.delete(alertId);
+  }
 }
 
 let lastRefreshAt = 0;
@@ -665,6 +773,17 @@ async function recoverTenantAlerts(
     kind: "outlets",
     outletIds: outletIds.map((id) => outletIdSchema.parse(id)),
   });
+  // Snapshot before the database read: a later delivery may represent an
+  // alert created after the query's snapshot and must not be discarded.
+  const tracked = outletIds.flatMap((outletId) =>
+    subscribersOf({ tenantId, outletId }).flatMap((sub) =>
+      [...sub.alerts.entries()].map(([alertId, state]) => ({
+        sub,
+        alertId,
+        state,
+      })),
+    ),
+  );
   // Only alerts the resend window still covers: older ones are never sent again.
   const open = await withTenant(db, context, (tx) =>
     tx
@@ -672,6 +791,8 @@ async function recoverTenantAlerts(
         id: panicAlerts.id,
         outletId: panicAlerts.outletId,
         unitId: panicAlerts.unitId,
+        unitCodeSnapshot: panicAlerts.unitCodeSnapshot,
+        areaName: alertAreaName,
         kind: panicAlerts.kind,
         receivedAt: panicAlerts.receivedAt,
         unroutedSince: panicAlerts.unroutedSince,
@@ -692,15 +813,9 @@ async function recoverTenantAlerts(
       .orderBy(asc(panicAlerts.receivedAt)),
   );
   const openIds = new Set(open.map((row) => row.id));
-  for (const outletId of outletIds) {
-    const tracked = new Set(
-      subscribersOf({ tenantId, outletId }).flatMap((s) => [
-        ...s.alerts.keys(),
-      ]),
-    );
-    for (const alertId of tracked)
-      if (!openIds.has(alertId)) dropAlert(tenantId, outletId, alertId);
-  }
+  for (const { sub, alertId, state } of tracked)
+    if (!openIds.has(alertId) && sub.alerts.get(alertId) === state)
+      sub.alerts.delete(alertId);
   if (open.length === 0) return;
   const confirmed = await withTenant(db, context, (tx) =>
     tx
@@ -733,9 +848,14 @@ async function recoverTenantAlerts(
             !confirmedKeys.has(`${outletSub.session.id}:${row.id}`),
         )
         .map((outletSub) =>
-          sendFrame(outletSub, frameOf(row), row.receivedAt.getTime(), {
-            force: false,
-          })
+          sendFrame(
+            outletSub,
+            frameOf(row, row.areaName),
+            row.receivedAt.getTime(),
+            {
+              force: false,
+            },
+          )
             .then((sent) => {
               if (sent && row.unroutedSince !== null) recovered.add(row.id);
             })
@@ -1106,7 +1226,11 @@ export async function acknowledgePanicAlert(
       throw new HttpError(
         409,
         "PANIC_ALREADY_ACKNOWLEDGED",
-        `Peringatan ini sudah ditangani oleh ${who?.fullName ?? "rekan lain"} (${locked.acknowledgedBy}).`,
+        `Peringatan ini sudah ditangani oleh ${who?.fullName ?? "rekan lain"}.`,
+        {
+          acknowledgedBy: { displayName: who?.fullName ?? "rekan lain" },
+          acknowledgedAt: toIsoDateTime(locked.acknowledgedAt),
+        },
       );
     }
     const [row] = await tx
@@ -1141,6 +1265,42 @@ export async function acknowledgePanicAlert(
     return { alert: row, taken: true };
   });
   dropAlert(session.tenantId, session.outletId, alertId);
+  if (result.taken) {
+    // This is best effort after commit: a lookup or socket failure must never
+    // undo or delay the staff member's acknowledgement.
+    void (async () => {
+      const [who] = await withTenant(db, context, (tx) =>
+        tx
+          .select({ fullName: employees.fullName })
+          .from(employees)
+          .where(
+            and(
+              eq(employees.tenantId, session.tenantId as TenantId),
+              eq(employees.userId, session.userId as UserId),
+            ),
+          )
+          .limit(1),
+      ).catch((error: unknown) => {
+        logFailure("panic acknowledgement name lookup failed", error);
+        return [];
+      });
+      const frame = {
+        type: "acknowledged" as const,
+        alertId,
+        acknowledgedAt: toIsoDateTime(result.alert.acknowledgedAt ?? now),
+        byName: who?.fullName ?? "rekan lain",
+      };
+      await Promise.all(
+        subscribersOf(session).map(async (subscriber) => {
+          try {
+            if (await sessionStillLive(subscriber)) subscriber.send(frame);
+          } catch (error) {
+            logFailure("panic acknowledgement frame send failed", error);
+          }
+        }),
+      );
+    })();
+  }
   return {
     alertId,
     acknowledgedAt: toIsoDateTime(result.alert.acknowledgedAt ?? now),

@@ -34,6 +34,7 @@ import { errorHandler, notFound } from "./middleware/error-handler";
 import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
 import { createStorageApiRouter } from "./routes/storage-api.routes";
+import { setPayoutEvidenceStorage } from "./services/payroll-payout-evidence";
 import { createPosCatalogRouter } from "./routes/pos-order.routes.ts";
 import { createMenuMediaUrls } from "./services/menu-media.service.ts";
 import {
@@ -215,6 +216,8 @@ export function createApp({
   const app = express();
   app.disable("x-powered-by");
   setWhatsAppWebhookSecrets(app, whatsappWebhookSecrets);
+  // Resolve, return and confirm check that a payment proof is really stored.
+  setPayoutEvidenceStorage(app, storageRuntime?.storage);
   app.set("trust proxy", trustProxySetting());
 
   // The synthetic tenant fallback exists only where a synthetic dataset does:
@@ -289,7 +292,12 @@ export function createApp({
         "X-Device-Token",
         "X-Pin-Proof",
       ],
-      exposedHeaders: ["X-Request-Id", "Location"],
+      exposedHeaders: [
+        "X-Request-Id",
+        "Location",
+        "Content-Disposition",
+        "X-Content-Checksum-Sha256",
+      ],
       maxAge: 600,
     }),
   );

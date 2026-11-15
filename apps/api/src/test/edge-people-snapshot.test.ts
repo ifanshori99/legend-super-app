@@ -966,7 +966,7 @@ describe("legend-ye4j1 T1 whitelist and strict contract", () => {
     expect(parsed.success, JSON.stringify(parsed)).toBe(true);
   });
 
-  it("T1 a copy with an extra column on a user, employee or shift fails the strict contract", async () => {
+  it("T1 rejects extra fields in sensitive records", async () => {
     const body = await snapshotOf(nodeA.credential);
     expect(body.users.length).toBeGreaterThan(0);
     expect(body.employees.length).toBeGreaterThan(0);

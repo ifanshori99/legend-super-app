@@ -50,9 +50,12 @@ import {
   userIdSchema,
   z,
 } from "../core/index.ts";
+import { hasUnsafeSnapshotFields } from "./snapshot-safety.ts";
 
 import {
   promotionObjectSchema,
+  promotionBenefitSchema,
+  promotionConditionSchema,
   promotionOutletScopeSchema,
   promoStackingPolicySchema,
   voucherObjectSchema,
@@ -63,12 +66,17 @@ export const EDGE_CATALOG_SYNC_PATH = "/api/edge-sync/catalog";
 /**
  * Pull order. `stations` and `inventory_items` come first so the rows that
  * items, modifiers and recipes point to (`stationId`, `outputItemId`) already
- * exist on the edge when those streams are applied.
+ * exist on the edge when those streams are applied. `recipes` follow right
+ * after `inventory_items` and before `menu_items` and `item_variants`: those
+ * carry `recipe_id` with a composite foreign key to `recipes` on the edge too
+ * (legend-3kdd). `modifiers` carry `recipe_id` without that key on the edge
+ * (recipes are brand-scoped, modifiers tenant-level) and do not wait.
  */
 export const CATALOG_SYNC_STREAMS = [
   "stations",
   "printers",
   "inventory_items",
+  "recipes",
   "menu_categories",
   "modifier_groups",
   "modifiers",
@@ -76,7 +84,6 @@ export const CATALOG_SYNC_STREAMS = [
   "item_variants",
   "menu_item_modifier_groups",
   "price_lists",
-  "recipes",
   "promotions",
   "vouchers",
 ] as const;
@@ -95,9 +102,15 @@ export const CATALOG_SYNC_LIMIT_DEFAULT = PAGE_LIMIT_MAX;
  * no parameter) gets pages without the field, as before. A newer edge asks for
  * the version; an older cloud rejects the unknown parameter (HTTP 400), which
  * the edge reports as CATALOG_CLOUD_OUTDATED.
+ *
+ * Version 3 (legend-2uqcd): the `recipes` stream carries every recipe of the
+ * tenant, not only the credential's brand. An edge that does not ask for 3
+ * (no parameter, or 2) cannot check the brand of such a recipe, so it keeps
+ * getting the brand-filtered stream. Page shape is unchanged from 2, so a v3
+ * edge still accepts a v2 cloud (it just sees fewer recipes).
  */
-export const CATALOG_PROTOCOL_VERSION = 2;
-/** Oldest cloud version the edge still accepts (first one with `syncTxid`). */
+export const CATALOG_PROTOCOL_VERSION = 3;
+/** Oldest cloud version the edge still accepts (first one with `syncTxid`). Unchanged by 3: the page shape is the same. */
 export const CATALOG_PROTOCOL_MIN_VERSION = 2;
 
 export const catalogSyncQuerySchema = z.strictObject({
@@ -142,7 +155,7 @@ const stamps = {
 };
 
 /** Production routing per outlet; scope = the credential's outlet. */
-export const stationSyncRecordSchema = z.strictObject({
+export const stationSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   outletId: uuidSchema,
@@ -161,7 +174,7 @@ export const stationSyncRecordSchema = z.strictObject({
  * `status`, `lastSeenAt` and `offlineSince` are measured by the print agent on
  * the edge and never travel. `stationId` and the fallback are plain UUIDs.
  */
-const livePrinterSyncRecordSchema = z.strictObject({
+const livePrinterSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   outletId: uuidSchema,
@@ -179,7 +192,7 @@ const livePrinterSyncRecordSchema = z.strictObject({
   deletedAt: z.null(),
   syncTxid: syncTxidSchema,
 });
-const printerTombstoneSyncRecordSchema = z.strictObject({
+const printerTombstoneSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   outletId: uuidSchema,
@@ -196,7 +209,7 @@ export const printerSyncRecordSchema = z.union([
  * (switched off with `isActive`, never deleted). `idempotencyKey` is not sent.
  * `parMin` / `parMax` are the exact NUMERIC(14,4) decimal strings.
  */
-export const inventoryItemSyncRecordSchema = z.strictObject({
+export const inventoryItemSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   name,
@@ -212,7 +225,7 @@ export const inventoryItemSyncRecordSchema = z.strictObject({
   syncTxid: syncTxidSchema,
 });
 
-export const menuCategorySyncRecordSchema = z.strictObject({
+export const menuCategorySyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   brandId: uuidSchema,
@@ -243,7 +256,7 @@ export const menuItemSyncRecordSchema = z.strictObject({
   ...stamps,
 });
 
-export const itemVariantSyncRecordSchema = z.strictObject({
+export const itemVariantSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   menuItemId: uuidSchema,
@@ -252,7 +265,7 @@ export const itemVariantSyncRecordSchema = z.strictObject({
   ...stamps,
 });
 
-export const modifierGroupSyncRecordSchema = z.strictObject({
+export const modifierGroupSyncRecordSchema = z.object({
   id: uuidSchema,
   tenantId: uuidSchema,
   name,
@@ -274,7 +287,7 @@ export const modifierSyncRecordSchema = z.strictObject({
 });
 
 /** Join row; no `id` column in the cloud: the key is (menuItemId, groupId). */
-export const menuItemModifierGroupSyncRecordSchema = z.strictObject({
+export const menuItemModifierGroupSyncRecordSchema = z.object({
   tenantId: uuidSchema,
   menuItemId: uuidSchema,
   groupId: uuidSchema,
@@ -361,6 +374,8 @@ export const recipeSyncRecordSchema = z.strictObject({
 export const promotionSyncRecordSchema = promotionObjectSchema
   .omit({ codeHash: true })
   .extend({
+    conditions: z.array(promotionConditionSchema),
+    benefit: promotionBenefitSchema,
     codeRef: z
       .string()
       .regex(/^[a-f0-9]{64}$/)
@@ -387,7 +402,8 @@ export const promotionSyncRecordSchema = promotionObjectSchema
         syncTxid: syncTxidSchema,
       })
       .nullable(),
-  });
+  })
+  .strict();
 
 /** Single-use state travels read-only; edge redemption requires cloud authority. */
 export const voucherSyncRecordSchema = voucherObjectSchema
@@ -395,7 +411,8 @@ export const voucherSyncRecordSchema = voucherObjectSchema
   .extend({
     issuedBy: userIdSchema.nullable(),
     syncTxid: syncTxidSchema,
-  });
+  })
+  .strict();
 
 export const catalogSyncRecordSchemas = {
   stations: stationSyncRecordSchema,
@@ -442,7 +459,7 @@ export type CatalogSyncRecordOf<S extends CatalogSyncStream> = z.infer<
 >;
 
 function pageOf<S extends CatalogSyncStream>(stream: S) {
-  return z.strictObject({
+  return z.object({
     /**
      * Explicit protocol version, sent only to an edge that asked for it. The
      * edge checks it before parsing the page and refuses a page without it.
@@ -456,19 +473,80 @@ function pageOf<S extends CatalogSyncStream>(stream: S) {
   });
 }
 
-export const catalogSyncPageSchema = z.discriminatedUnion("stream", [
-  pageOf("stations"),
-  pageOf("printers"),
-  pageOf("inventory_items"),
-  pageOf("menu_categories"),
-  pageOf("modifier_groups"),
-  pageOf("modifiers"),
-  pageOf("menu_items"),
-  pageOf("item_variants"),
-  pageOf("menu_item_modifier_groups"),
-  pageOf("price_lists"),
-  pageOf("recipes"),
-  pageOf("promotions"),
-  pageOf("vouchers"),
-]);
+const noUnsafeCatalogFields = z.unknown().superRefine((value, ctx) => {
+  if (hasUnsafeSnapshotFields(value)) {
+    ctx.addIssue({
+      code: "custom",
+      message: "Forbidden field or snapshot exceeds inspection limits",
+    });
+  }
+});
+
+export const catalogSyncPageSchema = noUnsafeCatalogFields.pipe(
+  z.discriminatedUnion("stream", [
+    pageOf("stations"),
+    pageOf("printers"),
+    pageOf("inventory_items"),
+    pageOf("recipes"),
+    pageOf("menu_categories"),
+    pageOf("modifier_groups"),
+    pageOf("modifiers"),
+    pageOf("menu_items"),
+    pageOf("item_variants"),
+    pageOf("menu_item_modifier_groups"),
+    pageOf("price_lists"),
+    pageOf("promotions"),
+    pageOf("vouchers"),
+  ]),
+);
 export type CatalogSyncPage = z.infer<typeof catalogSyncPageSchema>;
+
+/** Cloud output validation must detect accidental columns, including nested rows. */
+export const catalogSyncCloudRecordSchemas = {
+  stations: stationSyncRecordSchema.strict(),
+  printers: z.union([
+    livePrinterSyncRecordSchema.strict(),
+    printerTombstoneSyncRecordSchema.strict(),
+  ]),
+  inventory_items: inventoryItemSyncRecordSchema.strict(),
+  menu_categories: menuCategorySyncRecordSchema.strict(),
+  modifier_groups: modifierGroupSyncRecordSchema.strict(),
+  modifiers: modifierSyncRecordSchema.strict(),
+  menu_items: menuItemSyncRecordSchema.strict(),
+  item_variants: itemVariantSyncRecordSchema.strict(),
+  menu_item_modifier_groups: menuItemModifierGroupSyncRecordSchema.strict(),
+  price_lists: priceListSyncRecordSchema
+    .extend({ items: z.array(priceListItemRecordSchema.strict()) })
+    .strict(),
+  recipes: recipeSyncRecordSchema
+    .extend({ lines: z.array(recipeLineRecordSchema.strict()) })
+    .strict(),
+  promotions: promotionSyncRecordSchema,
+  vouchers: voucherSyncRecordSchema,
+} as const;
+
+function cloudPageOf<S extends CatalogSyncStream>(stream: S) {
+  return z.strictObject({
+    protocolVersion: z.number().int().min(1).optional(),
+    stream: z.literal(stream),
+    records: z.array(catalogSyncCloudRecordSchemas[stream]),
+    nextCursor: cursorSchema.nullable(),
+    hasMore: z.boolean(),
+  });
+}
+
+export const catalogSyncCloudPageSchema = z.discriminatedUnion("stream", [
+  cloudPageOf("stations"),
+  cloudPageOf("printers"),
+  cloudPageOf("inventory_items"),
+  cloudPageOf("menu_categories"),
+  cloudPageOf("modifier_groups"),
+  cloudPageOf("modifiers"),
+  cloudPageOf("menu_items"),
+  cloudPageOf("item_variants"),
+  cloudPageOf("menu_item_modifier_groups"),
+  cloudPageOf("price_lists"),
+  cloudPageOf("recipes"),
+  cloudPageOf("promotions"),
+  cloudPageOf("vouchers"),
+]);

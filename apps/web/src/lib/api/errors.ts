@@ -11,13 +11,22 @@ export class ApiError extends Error {
   remainingAttempts?: number;
   /** PAYSLIP_PIN_LOCKED (423): ISO datetime the lock ends. */
   lockedUntil?: string;
+  /** PANIC_ALREADY_ACKNOWLEDGED (409): the colleague who answered first. */
+  acknowledgedBy?: { displayName: string };
+  /** PANIC_ALREADY_ACKNOWLEDGED (409): ISO datetime of that answer. */
+  acknowledgedAt?: string;
 
   constructor(
     status: number,
     code: string,
     message: string,
     details?: ApiErrorBody["error"]["details"],
-    extra?: { remainingAttempts?: number; lockedUntil?: string },
+    extra?: {
+      remainingAttempts?: number;
+      lockedUntil?: string;
+      acknowledgedBy?: { displayName: string };
+      acknowledgedAt?: string;
+    },
   ) {
     super(message);
     this.name = "ApiError";
@@ -27,6 +36,10 @@ export class ApiError extends Error {
     if (extra?.remainingAttempts !== undefined)
       this.remainingAttempts = extra.remainingAttempts;
     if (extra?.lockedUntil !== undefined) this.lockedUntil = extra.lockedUntil;
+    if (extra?.acknowledgedBy !== undefined)
+      this.acknowledgedBy = extra.acknowledgedBy;
+    if (extra?.acknowledgedAt !== undefined)
+      this.acknowledgedAt = extra.acknowledgedAt;
   }
 }
 

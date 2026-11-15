@@ -8,9 +8,13 @@ import { fileURLToPath } from "node:url";
 //   pnpm traceability --strict     also exit non-zero while an ID is uncovered
 // It parses the criteria tables of docs/PRD.md, finds the IDs referenced by
 // test files and reports covered versus missing criteria. Coverage is
-// non-blocking until the WS-13 acceptance suites exist (legend-itfk).
+// checked strictly in CI; explicit physical release gates remain manual.
 export const PRD_PATH = "docs/PRD.md";
 export const MATRIX_PATH = "docs/plan/criteria-matrix.md";
+// These criteria require physical verification before release, not CI evidence.
+export const MANUAL_CRITERIA = Object.freeze({
+  "EDG-04": "uji fisik di outlet, gerbang rilis",
+});
 // Used by worktrees and older checkouts where the PRD sits next to the repo.
 export const FALLBACK_PRD = "PRD_Legend_Super_App_v1.7.md";
 
@@ -182,19 +186,29 @@ export function buildReport(parsed, scan) {
   const criteria = flattenCriteria(parsed).map((criterion) => ({
     ...criterion,
     tests: testsById.get(criterion.id) ?? [],
+    manualReason: MANUAL_CRITERIA[criterion.id] ?? null,
   }));
   const sections = parsed.sections.map((section) => {
     const covered = section.criteria.filter(
       (criterion) => (testsById.get(criterion.id) ?? []).length > 0,
     ).length;
+    const manual = section.criteria.filter(
+      (criterion) =>
+        MANUAL_CRITERIA[criterion.id] &&
+        !(testsById.get(criterion.id) ?? []).length,
+    ).length;
     return {
       name: section.name,
       total: section.criteria.length,
       covered,
-      missing: section.criteria.length - covered,
+      manual,
+      missing: section.criteria.length - covered - manual,
     };
   });
   const covered = criteria.filter((criterion) => criterion.tests.length).length;
+  const manual = criteria.filter(
+    (criterion) => !criterion.tests.length && criterion.manualReason,
+  ).length;
   const total = criteria.length;
   const unknown = [];
   const seenUnknown = new Set();
@@ -209,7 +223,8 @@ export function buildReport(parsed, scan) {
     prd: parsed.prd,
     total,
     covered,
-    missing: total - covered,
+    manual,
+    missing: total - covered - manual,
     coverage: total ? Math.round((covered / total) * 1000) / 10 : 0,
     files: scan.files,
     criteria,
@@ -246,17 +261,17 @@ export function renderMatrix(report) {
     "",
     `**Coverage: ${report.covered}/${report.total} criteria (${report.coverage}%), ${report.missing} missing — ${report.files} test files scanned.**`,
     "",
-    "> This report is a non-blocking CI step while the acceptance suites are still being written. `pnpm traceability --strict` exits non-zero while any criterion below has no test reference; enable it once the WS-13 suites land (legend-itfk).",
+    `> CI runs \`pnpm traceability --strict\`: every criterion needs an automated test reference or an explicit manual release gate. ${report.manual} manual release gates remain separate from automated coverage. Unknown references always fail strict mode.`,
     "",
-    "| Area | Criteria | Covered | Missing | Coverage |",
-    "| --- | ---: | ---: | ---: | ---: |",
+    "| Area | Criteria | Covered | Manual | Missing | Coverage |",
+    "| --- | ---: | ---: | ---: | ---: | ---: |",
     ...report.sections.map((section) => {
       const percent = section.total
         ? Math.round((section.covered / section.total) * 1000) / 10
         : 0;
-      return `| ${cell(section.name)} | ${section.total} | ${section.covered} | ${section.missing} | ${percent}% |`;
+      return `| ${cell(section.name)} | ${section.total} | ${section.covered} | ${section.manual} | ${section.missing} | ${percent}% |`;
     }),
-    `| **Total** | **${report.total}** | **${report.covered}** | **${report.missing}** | **${report.coverage}%** |`,
+    `| **Total** | **${report.total}** | **${report.covered}** | **${report.manual}** | **${report.missing}** | **${report.coverage}%** |`,
     "",
     "## Covered criteria",
     "",
@@ -272,12 +287,29 @@ export function renderMatrix(report) {
       );
     lines.push("");
   }
+  const manual = report.criteria.filter(
+    (criterion) => !criterion.tests.length && criterion.manualReason,
+  );
+  lines.push(`## Manual release gates (${report.manual})`, "");
+  if (manual.length) {
+    lines.push("| ID | Criterion | Reason |", "| --- | --- | --- |");
+    for (const criterion of manual)
+      lines.push(
+        `| ${criterion.id} | ${cell(criterion.text)} | ${cell(criterion.manualReason)} |`,
+      );
+    lines.push("");
+  } else {
+    lines.push("No manual release gates without automated references.", "");
+  }
   lines.push(`## Missing criteria (${report.missing})`, "");
   const missing = report.criteria.filter(
-    (criterion) => !criterion.tests.length,
+    (criterion) => !criterion.tests.length && !criterion.manualReason,
   );
   if (!missing.length) {
-    lines.push("Every criterion has an automated test reference.", "");
+    lines.push(
+      "Every criterion has an automated test reference or an explicit manual release gate.",
+      "",
+    );
   } else {
     lines.push("| ID | Criterion | PRD line |", "| --- | --- | --- |");
     for (const criterion of missing)
@@ -359,7 +391,7 @@ const HELP = `Acceptance-criteria traceability (legend-itfk)
 Usage: pnpm traceability [options]
 
   --prd <file>        PRD to parse (default: ${PRD_PATH}, else ${FALLBACK_PRD})
-  --strict            Exit 1 while any criterion has no test reference
+  --strict            Exit 1 for missing non-manual criteria or unknown references
   --root <dir>        Repository root (default: working directory)
   --report <file>     Matrix path (default: ${MATRIX_PATH})
   --help              Show this help`;
@@ -396,7 +428,7 @@ async function main() {
   await writeFile(reportPath, renderMatrix(report));
 
   console.log(
-    `Acceptance criteria: ${report.covered}/${report.total} covered (${report.coverage}%), ${report.missing} missing (${report.files} test files scanned).`,
+    `Acceptance criteria: ${report.covered}/${report.total} covered (${report.coverage}%), ${report.missing} missing, ${report.manual} manual (${report.files} test files scanned).`,
   );
   const missingByArea = report.sections
     .filter((section) => section.missing)
@@ -410,7 +442,7 @@ async function main() {
   console.log(`Report: ${relativeReport}`);
   if (!options.strict) {
     console.log(
-      "Non-blocking run; pass --strict once every criterion has a test reference.",
+      "Non-blocking run; pass --strict to enforce automated references and explicit manual release gates.",
     );
   } else if (report.missing || report.unknown.length) {
     console.error(
@@ -419,7 +451,7 @@ async function main() {
     process.exitCode = 1;
   } else {
     console.log(
-      "Strict traceability passed: every criterion has a test reference.",
+      "Strict traceability passed: every criterion has a test reference or an explicit manual release gate.",
     );
   }
 }

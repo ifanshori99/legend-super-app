@@ -31,7 +31,7 @@ function customRole(name, overrides = {}) {
   });
 }
 
-test("registry has a codec for every section except payroll_settings", () => {
+test("registry has a codec for every section", () => {
   for (const section of [
     "roles",
     "approval_policies",
@@ -43,6 +43,7 @@ test("registry has a codec for every section except payroll_settings", () => {
     "facilities",
     "loyalty_policy",
     "wifi_policies",
+    "payroll_settings",
   ]) {
     const codec = platform.CONFIG_SECTION_CODECS[section];
     assert.ok(codec, section);
@@ -50,9 +51,7 @@ test("registry has a codec for every section except payroll_settings", () => {
     assert.equal(codec.version, 1);
     assert.equal(platform.configSectionCodec(section), codec);
   }
-  // Loyalty has the CRM codec; only payroll has no table yet, so no codec.
-  assert.ok(platform.configSectionCodec("loyalty_policy"));
-  assert.equal(platform.configSectionCodec("payroll_settings"), undefined);
+  assert.ok(platform.configSectionCodec("payroll_settings"));
 });
 
 test("roles: toTemplate is tenant-free, keys are unique and stable", () => {
@@ -337,13 +336,12 @@ test("bundle: parse refuses references that could never be imported", () => {
 
 test("decodeConfigBundle reports sections it has no codec for", () => {
   const raw = structuredClone(platform.cafeLegendPlatformFixtures.configBundle);
-  // payroll_settings has no codec yet (no table), unlike zones.
-  raw.sections.payroll_settings = { version: 1, items: [{ key: "tier" }] };
+  raw.sections.payroll_settings = { version: 1, items: [] };
   const parsed = platform.parseConfigBundle(raw, SOURCE_IDS);
   assert.equal(parsed.ok, true, JSON.stringify(parsed.issues));
   const decoded = platform.decodeConfigBundle(parsed.bundle);
   assert.equal(decoded.ok, true);
-  assert.ok(decoded.withoutCodec.includes("payroll_settings"));
+  assert.ok(!decoded.withoutCodec.includes("payroll_settings"));
   assert.ok(decoded.withoutCodec.includes("modules"));
   assert.ok(!decoded.withoutCodec.includes("wifi_policies"));
   assert.ok(!decoded.withoutCodec.includes("roles"));
@@ -1334,6 +1332,118 @@ test("legend-9k0a5: wifi section item schema in the bundle accepts spendMode", (
   );
   assert.equal(
     schema.safeParse(wifiItem({ spendMode: "weekly" })).success,
+    false,
+  );
+});
+
+// legend-p5vke: payroll policy settings travel without tenant or legal entity IDs.
+test("payroll settings round-trip safely and reject invalid references", () => {
+  const codec = platform.CONFIG_SECTION_CODECS.payroll_settings;
+  const row = {
+    id: crypto.randomUUID(),
+    tenantId: crypto.randomUUID(),
+    legalEntityId: crypto.randomUUID(),
+    name: "Bulanan",
+    employeeGroup: { code: "STAFF", name: "Staff", employmentTypes: ["pkwtt"] },
+    cycle: {
+      frequency: "monthly",
+      cutoffDay: 20,
+      payDay: 25,
+      payMonthOffset: 0,
+    },
+    payDateAdjustment: "previous_working_day",
+    jkkRiskClass: "low",
+    bpjsProgrammes: [],
+    isActive: true,
+    createdAt: "2026-11-01T00:00:00.000Z",
+    updatedAt: "2026-11-01T00:00:00.000Z",
+  };
+  const items = codec.toTemplate([row], {
+    legalEntityKeys: new Map([[row.legalEntityId, "pt-legend"]]),
+  });
+  assert.deepEqual(
+    platform.findBundleIdentifiers(items, [
+      row.id,
+      row.tenantId,
+      row.legalEntityId,
+    ]),
+    [],
+  );
+  const decoded = codec.fromTemplate(items, {
+    legalEntityKeys: new Set(["pt-legend"]),
+  });
+  assert.equal(decoded.ok, true, JSON.stringify(decoded.issues));
+  assert.equal(decoded.drafts[0].cycle.payDay, 25);
+  assert.equal(decoded.drafts[0].legalEntityKey, "pt-legend");
+  assert.equal("legalEntityId" in decoded.drafts[0], false);
+  const bundle = {
+    formatVersion: 1,
+    exportedAt: "2026-11-01T00:00:00.000Z",
+    sections: { payroll_settings: { version: 1, items } },
+  };
+  const parsed = platform.parseConfigBundle(bundle, [
+    row.tenantId,
+    row.legalEntityId,
+  ]);
+  assert.equal(parsed.ok, true, JSON.stringify(parsed.schemaIssues));
+  assert.equal(
+    platform.decodeConfigBundle(parsed.bundle, {
+      lockedPointValueIdr: null,
+      existingLegalEntityKeys: new Set(["pt-legend"]),
+    }).ok,
+    true,
+  );
+  assert.equal(
+    platform.decodeConfigBundle(parsed.bundle, {
+      lockedPointValueIdr: null,
+      existingLegalEntityKeys: new Set(),
+    }).ok,
+    false,
+  );
+  const longKeys = new Map([[row.legalEntityId, "a".repeat(100)]]);
+  const longItems = codec.toTemplate([row], { legalEntityKeys: longKeys });
+  assert.ok(longItems[0].key.length <= 100);
+  assert.deepEqual(
+    codec.toTemplate([row], { legalEntityKeys: longKeys }),
+    longItems,
+  );
+  assert.equal(
+    codec.fromTemplate(items, { legalEntityKeys: new Set() }).ok,
+    false,
+  );
+  assert.equal(codec.fromTemplate([items[0], items[0]]).ok, false);
+  assert.equal(
+    codec.fromTemplate([{ ...items[0], tenantId: row.tenantId }]).ok,
+    false,
+  );
+  assert.equal(
+    codec.fromTemplate([
+      { ...items[0], cycle: { ...items[0].cycle, payDay: 10 } },
+    ]).ok,
+    false,
+  );
+});
+
+test("payroll settings: legacy stored JSON remains readable but cannot be imported", () => {
+  const template = structuredClone(
+    platform.cafeLegendPlatformFixtures.configTemplate,
+  );
+  template.payload.sections.payroll_settings = {
+    version: 1,
+    items: [{ key: "legacy", amountIdr: 5000000 }],
+  };
+  assert.equal(platform.configTemplateSchema.safeParse(template).success, true);
+  assert.equal(
+    platform.parseConfigBundle(template.payload, [], { strictItems: true }).ok,
+    false,
+  );
+  const bad = structuredClone(template);
+  bad.payload.sections.payroll_settings.items[0].tenantId = crypto.randomUUID();
+  assert.equal(platform.configTemplateSchema.safeParse(bad).success, false);
+  const malformed = structuredClone(template);
+  malformed.payload.sections.payroll_settings.items[0].kind = "payroll_policy";
+  assert.equal(
+    platform.configTemplateSchema.safeParse(malformed).success,
     false,
   );
 });

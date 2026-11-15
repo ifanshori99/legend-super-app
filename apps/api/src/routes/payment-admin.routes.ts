@@ -18,7 +18,9 @@ import { sessionMfaVerifiedAt } from "../lib/mfa.ts";
 import * as service from "../services/payment-admin.service.ts";
 import * as config from "../services/payment-admin-config.service.ts";
 import * as funds from "../services/payment-admin-funds.service.ts";
+import * as edcReconciliation from "../services/edc-reconciliation.service.ts";
 import * as reconciliation from "../services/payment-admin-reconciliation.service.ts";
+import * as corrections from "../services/payment-reconciliation-correction.service.ts";
 import * as settlementImport from "../services/payment-settlement-import.service.ts";
 import * as refunds from "../services/payment-refund.service.ts";
 
@@ -76,6 +78,12 @@ const viewQuery = byOutlet(
 // outlets are installed in RLS; services check the actual row's outlet.
 const edcRecord = requireMenuPermission("payment.edc.manage");
 const reconcileRecord = requireMenuPermission("payment.reconcile");
+const reconcileListQuery: RequestHandler = (req, res, next) =>
+  (req.query.outletId == null ? reconcileRecord : reconcileQuery)(
+    req,
+    res,
+    next,
+  );
 
 paymentAdminRouter.get(
   route(contract.getPaymentRouting.path),
@@ -190,6 +198,41 @@ paymentAdminRouter.get(
         scope(req),
         actor(req),
         contract.listRefundablePayments.query.parse(req.query),
+      ),
+    });
+  },
+);
+// Queue behind the reconciliation screen (legend-p98qi): same permission as
+// the resolve below; the service filters tenant and outlet scope in SQL.
+// Without an outlet the gate is the reach of payment.reconcile (a brand grant
+// is not tenant-wide, so a tenant check would 403 it).
+paymentAdminRouter.get(
+  route(contract.listEdcReconciliationQueue.path),
+  reconcileListQuery,
+  async (req, res) => {
+    res.json(
+      await edcReconciliation.listEdcReconciliationQueueForActor(
+        scope(req),
+        actor(req),
+        req.query,
+      ),
+    );
+  },
+);
+// EDC reconciliation (legend-x9zmq): clears a flagged ECR sale after a person
+// checked the terminal. The service re-checks payment.reconcile at the outlet.
+paymentAdminRouter.post(
+  "/edc/transactions/:id/reconciliation",
+  jsonBody,
+  reconcileRecord,
+  async (req, res) => {
+    res.json({
+      data: await edcReconciliation.resolveEdcReconciliationForActor(
+        scope(req),
+        actor(req),
+        req.params,
+        req.body,
+        { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
       ),
     });
   },
@@ -402,6 +445,35 @@ paymentAdminRouter.post(
         actor(req),
         contract.resolveReconciliationCase.params.parse(req.params),
         contract.resolveReconciliationCase.body.parse(req.body),
+        key(req),
+      ),
+    });
+  },
+);
+paymentAdminRouter.get(
+  route(contract.listReconciliationCorrections.path),
+  reconcileQuery,
+  async (req, res) => {
+    res.json(
+      await corrections.listReconciliationCorrections(
+        scope(req),
+        actor(req),
+        contract.listReconciliationCorrections.query.parse(req.query),
+      ),
+    );
+  },
+);
+paymentAdminRouter.post(
+  route(contract.resolveReconciliationCorrection.path),
+  jsonBody,
+  reconcileRecord,
+  async (req, res) => {
+    res.json({
+      data: await corrections.resolveReconciliationCorrection(
+        scope(req),
+        actor(req),
+        contract.resolveReconciliationCorrection.params.parse(req.params),
+        contract.resolveReconciliationCorrection.body.parse(req.body),
         key(req),
       ),
     });

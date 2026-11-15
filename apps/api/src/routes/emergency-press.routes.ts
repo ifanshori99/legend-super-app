@@ -34,6 +34,7 @@ import {
   takePanicPressSlot,
 } from "../services/panic-relay.service.ts";
 import { authenticateReceiverSession } from "../services/panic-receiver-session.ts";
+import { listOpenPanicAlerts } from "../services/panic-open-alerts.service.ts";
 import { registeredDeviceIdOf } from "./device-id.ts";
 
 const unregistered = () =>
@@ -99,4 +100,15 @@ emergencyPressRouter.get("/fallback", async (req, res) => {
   const { tenant, deviceId } = await deviceOf(req);
   const alerts = await readPanicFallback(tenant, deviceId);
   res.json({ data: panicFallbackResponseSchema.parse({ alerts }) });
+});
+
+emergencyPressRouter.get("/open-alerts", async (req, res) => {
+  const session = await authenticateReceiverSession(req.get("cookie"));
+  if (session === null)
+    throw new HttpError(
+      401,
+      "UNAUTHORIZED",
+      "Sesi darurat tidak berlaku. Masuk lagi dengan PIN.",
+    );
+  res.json({ data: { alerts: await listOpenPanicAlerts(session) } });
 });

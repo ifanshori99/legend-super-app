@@ -20,6 +20,10 @@ const cloudOwnedSweeps = [
   "redriveEdgeOrderRefusalsForTenant",
 ] as const;
 
+// legend-rs2xy (855) added two more gated blocks (fixed-asset depreciation and
+// recurring journals); edge-worker-cloud-only-gate-855.test.ts pins those two.
+const accountingGates = 2;
+
 describe("legend-647 cloud-owned data sweeps never run on the edge", () => {
   it("derives the flag from the edge runtime config and fails closed", () => {
     expect(source).toMatch(
@@ -46,7 +50,7 @@ describe("legend-647 cloud-owned data sweeps never run on the edge", () => {
   it("has one gate per cloud-owned sweep and no stray gate", () => {
     expect(
       source.match(/if \(sweepsCloudOwnedData\) \{\s*try \{/g),
-    ).toHaveLength(cloudOwnedSweeps.length);
+    ).toHaveLength(cloudOwnedSweeps.length + accountingGates);
   });
 
   it("does not gate releaseExpiredSlotHolds (facility is served on the edge)", () => {

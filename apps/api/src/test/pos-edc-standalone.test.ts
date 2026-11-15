@@ -482,7 +482,7 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
     );
   });
 
-  it("a supervisor-approved standalone payment writes a flagged ledger row and settles the tender", async () => {
+  it("EDC-04 a supervisor-approved standalone payment writes a flagged ledger row and settles the tender", async () => {
     const order = await newOrder();
     const overrideId = await standaloneOverride({
       objectId: order.orderId,
@@ -536,7 +536,7 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
     expect(uses.rows).toEqual([{ purpose: "edc_standalone" }]);
   });
 
-  it("an override pays one bill once: replay on another bill and a second use are refused", async () => {
+  it("EDC-04 an override pays one bill once: replay on another bill and a second use are refused", async () => {
     const first = await newOrder();
     const second = await newOrder();
     const overrideId = await standaloneOverride({
@@ -555,6 +555,88 @@ describe("POS standalone EDC tender (legend-m4fv, EDC-04)", () => {
       400,
     );
     expect(await standaloneRows(first.number)).toHaveLength(1);
+    const bill = await pos().get(first.orderId);
+    expect(bill.status, JSON.stringify(bill.body)).toBe(200);
+    expect(bill.body.data.totalIdr).toBe(first.totalIdr);
+    expect(bill.body.data.tenders).toHaveLength(1);
+    const tenders = await owner.query<{ count: number; amount_idr: string }>(
+      `SELECT count(*)::int AS count, sum(amount_idr)::text AS amount_idr
+       FROM pos_order_tenders WHERE order_id = $1 AND status = 'captured'`,
+      [ulidToUuid(first.orderId)],
+    );
+    expect(tenders.rows).toEqual([
+      { count: 1, amount_idr: String(first.totalIdr) },
+    ]);
+  });
+
+  it("EDC-04 a missing or wrong supervisor PIN cannot authorize a standalone payment", async () => {
+    const order = await newOrder();
+    for (const pin of [undefined, "000000"]) {
+      const result = await cashier.client
+        .post("/api/pos-overrides")
+        .set(headers)
+        .set(originHeader)
+        .send({
+          outletId: tenant.outletId,
+          action: "edc_standalone",
+          valueIdr: order.totalIdr,
+          reason: "Agen EDC mati, kunci manual",
+          objectType: "pos_order",
+          objectId: order.orderId,
+          approval: {
+            method: "supervisor_pin",
+            approverUserId: supervisor.userId,
+            ...(pin === undefined ? {} : { pin }),
+          },
+        });
+      expect(result.status, JSON.stringify(result.body)).toBe(
+        pin === undefined ? 422 : 401,
+      );
+      if (pin !== undefined) expect(result.body.error.code).toBe("PIN_INVALID");
+      expect(result.body.data?.override).toBeUndefined();
+      await noTender(order.orderId);
+      expect(await standaloneRows(order.number)).toHaveLength(0);
+      const bill = await pos().get(order.orderId);
+      expect(bill.status, JSON.stringify(bill.body)).toBe(200);
+      expect(bill.body.data.totalIdr).toBe(order.totalIdr);
+      expect(bill.body.data.status).toBe(order.status);
+      expect(bill.body.data.tenders).toEqual([]);
+    }
+  });
+
+  it("EDC-04 a missing override or bank reference never records a standalone payment", async () => {
+    const order = await newOrder();
+    const overrideId = await standaloneOverride({
+      objectId: order.orderId,
+      valueIdr: order.totalIdr,
+    });
+    for (const standalone of [
+      { terminalId, bankRef: "112233445566" },
+      { terminalId, overrideId },
+      { terminalId, bankRef: "", overrideId },
+    ]) {
+      const refused = await payStandalone(order, standalone);
+      expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+      await noTender(order.orderId);
+      expect(await standaloneRows(order.number)).toHaveLength(0);
+      const bill = await pos().get(order.orderId);
+      expect(bill.status, JSON.stringify(bill.body)).toBe(200);
+      expect(bill.body.data.totalIdr).toBe(order.totalIdr);
+      expect(bill.body.data.status).toBe(order.status);
+      expect(bill.body.data.tenders).toEqual([]);
+    }
+    // Invalid input cannot spend the valid approval; it still pays exactly once.
+    const paid = await payStandalone(order, {
+      terminalId,
+      bankRef: "112233445566",
+      overrideId,
+    });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    const bill = await pos().get(order.orderId);
+    expect(bill.status, JSON.stringify(bill.body)).toBe(200);
+    expect(bill.body.data.totalIdr).toBe(order.totalIdr);
+    expect(paid.body.data.remainingIdr).toBe(0);
+    expect(await standaloneRows(order.number)).toHaveLength(1);
   });
 
   it("the override must name this bill, this action and exactly the remaining amount", async () => {

@@ -49,6 +49,9 @@ import {
   LINK_PATH,
   LINK_REFUSED_CREDENTIAL,
   LINK_REFUSED_HEADER,
+  LINK_RESTORE_PROOF_HEADER,
+  LINK_RESTORE_PROOF_V2_HEADER,
+  restoreProofAckedFromHeader,
   type LinkFrame,
 } from "./protocol.ts";
 
@@ -78,6 +81,17 @@ export type EdgeLinkIdentity = {
   readonly scope: LinkScope;
   /** From the `x-edge-instance` upgrade header (valid uuid), else null. */
   readonly edgeInstanceId?: string | null;
+  /**
+   * From the `x-edge-restore-proof` upgrade header (legend-tmar2): the edge's
+   * acknowledged cursor, so the hello can prove the slots it would ack. Null
+   * = absent or malformed (old edge; hello carries no proof).
+   */
+  readonly restoreProofAcked?: number | null;
+  /**
+   * From the `x-edge-restore-proof-v2` upgrade header (legend-tmar2 854): the
+   * edge understands partial proofs and replay checks. Absent for an 848 edge.
+   */
+  readonly restoreProofStrict?: boolean;
 };
 
 const INSTANCE_ID_PATTERN =
@@ -177,6 +191,14 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
     noServer: true,
     maxPayload: LINK_MAX_FRAME_BYTES,
   });
+  // Restore proof v2 (legend-tmar2 854): echo the header in the upgrade
+  // response so a 854 edge knows this cloud can send a proof. A cloud without
+  // this echo (848) never proves a partial range, so the edge must not ack on
+  // a hello without proof.
+  wss.on("headers", (headers, request) => {
+    if (request.headers[LINK_RESTORE_PROOF_V2_HEADER] === "1")
+      headers.push(`${LINK_RESTORE_PROOF_V2_HEADER}: 1`);
+  });
   const now = deps.now ?? Date.now;
   const heartbeatWriteIntervalMs =
     deps.heartbeatWriteIntervalMs ?? LINK_HEARTBEAT_WRITE_INTERVAL_MS;
@@ -239,6 +261,14 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
       scope: identity.scope,
       outboundDirection: "cloud_to_edge",
       store: deps.storeFor(identity),
+      ...(identity.restoreProofAcked != null
+        ? {
+            restoreProofAcked: identity.restoreProofAcked,
+            ...(identity.restoreProofStrict
+              ? { restoreProofStrict: true }
+              : {}),
+          }
+        : {}),
       version: deps.version,
       ackTimeoutMs: deps.ackTimeoutMs,
       onError: deps.onError,
@@ -365,6 +395,11 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
           edgeInstanceId: instanceIdFromHeader(
             request.headers[LINK_INSTANCE_HEADER],
           ),
+          restoreProofAcked: restoreProofAckedFromHeader(
+            request.headers[LINK_RESTORE_PROOF_HEADER],
+          ),
+          restoreProofStrict:
+            request.headers[LINK_RESTORE_PROOF_V2_HEADER] === "1",
         };
         wss.handleUpgrade(request, socket, head, (ws) =>
           attach(ws, authenticated),

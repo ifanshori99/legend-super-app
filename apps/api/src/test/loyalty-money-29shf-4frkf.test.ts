@@ -1,7 +1,7 @@
 // legend-29shf + legend-4frkf: loyalty points must never pay out twice.
 // Written BEFORE the fix: the "fix" tests below must fail on the current base.
 // Source of rules: docs/briefs/loyalty-points-money.md and the card texts
-// (`bd show legend-29shf`, `bd show legend-4frkf`), plus the existing LOY-07
+// (`bd show legend-29shf`, `bd show legend-4frkf`), plus the existing
 // expiry contract (crm-expiry.test.ts).
 //
 // legend-29shf  Redeem must settle point expiry first. A grant past its

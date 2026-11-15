@@ -52,7 +52,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { tenantIdSchema } from "@starter/shared/core";
+import { CoreError, tenantIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -96,7 +96,7 @@ const fakeStorage: ObjectStorage = {
   },
   get: async (_context, input) => {
     const found = stored.get(input.key);
-    if (!found) throw new Error(`fake storage: no object ${input.key}`);
+    if (!found) throw new CoreError("NOT_FOUND", "Objek tidak ditemukan.");
     return found;
   },
   delete: async (_context, input) => {
@@ -127,10 +127,26 @@ const REQ = `payout-req-${randomUUID()}`;
 const APP = `payout-app-${randomUUID()}`;
 const APP2 = `payout-app2-${randomUUID()}`;
 const actor = (userId: string) => ({ tenantId: tenant.id as string, userId });
-/** The only evidence key shape accepted (legend-658 L5). */
-const evidenceKeyFor = (batchId: string, file: string) =>
-  `tenants/${tenant.id}/payroll-payout/${batchId}/${file}`;
+/**
+ * Stores a payment proof under the only key shape accepted (legend-658 L5) and
+ * returns its key: confirm, resolve and return refuse a key whose object is not
+ * stored (legend-01gg8).
+ */
+const uploadEvidence = (batchId: string, file: string) => {
+  const key = `tenants/${tenant.id}/payroll-payout/${batchId}/${file}`;
+  stored.set(key, {
+    tenantId: tenant.id,
+    outletId: null,
+    reference: file,
+    key,
+    contentType: "application/pdf",
+    content: "bukti",
+    visibility: "private",
+  } as StorageRequest);
+  return key;
+};
 
+const proofs = () => ({ storage: fakeStorage, context: scope() });
 const scope = () =>
   establishScopedTenantContext(
     establishTenantContext({
@@ -516,10 +532,16 @@ async function createBatch(runId: string, channel = "manual_bank") {
 const submit = (batchId: string, by = REQ) =>
   inTx((tx) => submitDisbursementBatch(tx, actor(by), batchId));
 async function approve(batchId: string, by = APP, contentHash?: string) {
-  const hash =
-    contentHash ?? ((await batchById(batchId)).content_hash as string);
+  const batch = await batchById(batchId);
+  const hash = contentHash ?? (batch.content_hash as string);
   return inTx((tx) =>
-    approveDisbursementBatch(tx, actor(by), batchId, { contentHash: hash }),
+    approveDisbursementBatch(tx, actor(by), batchId, {
+      contentHash: hash,
+      // The account the approver saw (legend-3j9yz): the configured source
+      // for manual_bank, null for other channels.
+      sourceBankAccountId:
+        batch.channel === "manual_bank" ? bankAccountId : null,
+    }),
   );
 }
 async function approvedBatch(runId: string, channel = "manual_bank") {
@@ -721,7 +743,7 @@ const confirm = (
   by = APP,
 ) =>
   inTx((tx) =>
-    confirmManualItems(tx, actor(by), batchId, { results } as never),
+    confirmManualItems(tx, actor(by), batchId, { results } as never, proofs()),
   );
 const resolve = (
   batchId: string,
@@ -731,12 +753,19 @@ const resolve = (
   extra: { evidenceKey?: string; note?: string } = {},
 ) =>
   inTx((tx) =>
-    resolveManualItems(tx, actor(by), batchId, {
-      itemIds,
-      outcome,
-      evidenceKey: extra.evidenceKey ?? evidenceKeyFor(batchId, "resolve.pdf"),
-      note: extra.note ?? "Bank menolak transfer, tidak ada dana keluar",
-    } as never),
+    resolveManualItems(
+      tx,
+      actor(by),
+      batchId,
+      {
+        itemIds,
+        outcome,
+        evidenceKey:
+          extra.evidenceKey ?? uploadEvidence(batchId, "resolve.pdf"),
+        note: extra.note ?? "Bank menolak transfer, tidak ada dana keluar",
+      } as never,
+      proofs(),
+    ),
   );
 const cancelBatch = (batchId: string, by = REQ) =>
   inTx((tx) =>
@@ -790,7 +819,6 @@ const handover = (batchId: string, itemIds: string[], by = APP) =>
   inTx((tx) =>
     confirmCashHandover(tx, actor(by), batchId, {
       itemIds,
-      evidenceKey: evidenceKeyFor(batchId, "cash.jpg"),
     } as never),
   );
 const succeedAll = (items: Row[], batchId: string) =>
@@ -798,7 +826,7 @@ const succeedAll = (items: Row[], batchId: string) =>
     itemId: item.id as string,
     result: "succeeded" as const,
     bankRef: `BCA-REF-${batchId.slice(0, 8)}-${index}`,
-    evidenceKey: evidenceKeyFor(batchId, "laporan.pdf"),
+    evidenceKey: uploadEvidence(batchId, "laporan.pdf"),
   }));
 const liveItems = async (batchId: string) =>
   (await itemsOf(batchId)).filter((i) => i.status !== "cancelled");
@@ -1091,7 +1119,7 @@ describe("confirm manual results (R5, R10)", () => {
         itemId: budi.id as string,
         result: "succeeded",
         bankRef: "BCA-OK-1",
-        evidenceKey: evidenceKeyFor(batchId, "ok.pdf"),
+        evidenceKey: uploadEvidence(batchId, "ok.pdf"),
       },
     ]);
     // H2: one person alone can never free the slip. Two different people
@@ -1120,7 +1148,7 @@ describe("confirm manual results (R5, R10)", () => {
         itemId: budi.id as string,
         result: "succeeded" as const,
         bankRef: "BCA-ONE-1",
-        evidenceKey: evidenceKeyFor(batchId, "one.pdf"),
+        evidenceKey: uploadEvidence(batchId, "one.pdf"),
       },
     ];
     await confirm(batchId, one);
@@ -1235,9 +1263,15 @@ describe("H2 an exported item is freed only by two different people", () => {
     const siti = (await itemOfPerson(batchId, SITI))!;
     const error = await rejected(
       inTx((tx) =>
-        confirmManualItems(tx, actor(APP), batchId, {
-          results: [{ itemId: siti.id as string, result: "failed" }],
-        } as never),
+        confirmManualItems(
+          tx,
+          actor(APP),
+          batchId,
+          {
+            results: [{ itemId: siti.id as string, result: "failed" }],
+          } as never,
+          proofs(),
+        ),
       ),
     );
     expect(error, "'failed' must not be accepted by confirm").not.toBeNull();
@@ -1249,7 +1283,7 @@ describe("H2 an exported item is freed only by two different people", () => {
     const { runId, batchId } = await exportedBatch();
     const siti = (await itemOfPerson(batchId, SITI))!;
     await resolve(batchId, [siti.id as string], "failed", APP, {
-      evidenceKey: evidenceKeyFor(batchId, "resolve-1.pdf"),
+      evidenceKey: uploadEvidence(batchId, "resolve-1.pdf"),
       note: "Mutasi rekening tidak menunjukkan dana keluar",
     });
     const after = (await itemOfPerson(batchId, SITI))!;
@@ -1258,7 +1292,7 @@ describe("H2 an exported item is freed only by two different people", () => {
     expect(after.resolved_by_2).toBeNull();
     expect(after.resolution_outcome).toBe("failed");
     expect(after.resolution_evidence_key).toBe(
-      evidenceKeyFor(batchId, "resolve-1.pdf"),
+      uploadEvidence(batchId, "resolve-1.pdf"),
     );
     expect(after.resolution_note).toBe(
       "Mutasi rekening tidak menunjukkan dana keluar",
@@ -1272,7 +1306,7 @@ describe("H2 an exported item is freed only by two different people", () => {
         itemId: budi.id as string,
         result: "succeeded",
         bankRef: "BCA-OK-RS",
-        evidenceKey: evidenceKeyFor(batchId, "ok.pdf"),
+        evidenceKey: uploadEvidence(batchId, "ok.pdf"),
       },
     ]);
     await expectRefused(createBatch(runId));
@@ -1362,7 +1396,7 @@ describe("H2 an exported item is freed only by two different people", () => {
         itemId: budi.id as string,
         result: "succeeded",
         bankRef: "BCA-OK-2",
-        evidenceKey: evidenceKeyFor(batchId, "ok.pdf"),
+        evidenceKey: uploadEvidence(batchId, "ok.pdf"),
       },
     ]);
     await expectRefused(resolve(batchId, [budi.id as string], "failed", APP), {

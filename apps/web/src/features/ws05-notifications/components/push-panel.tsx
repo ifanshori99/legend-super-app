@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
+import { useRouteContext } from "@tanstack/react-router";
 import {
   BellRing,
   CircleCheck,
@@ -9,6 +10,7 @@ import {
   Smartphone,
 } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { API_MOCK } from "@/lib/api/mock-flag";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,13 +23,20 @@ import {
 } from "@/components/ui/card";
 import { useToast } from "@/components/ui/toast";
 import type { MessageKey } from "@starter/shared/i18n";
-import { useDeletePushSubscription, useSavePushSubscription } from "../hooks";
+import {
+  useDeletePushSubscription,
+  usePushRegistration,
+  useSavePushSubscription,
+} from "../hooks";
 import { pushPublicKeyQuery } from "../queries";
 import {
   deviceLabel,
   detectPushState,
+  forgetSubscriptionId,
   readMockSubscriptionId,
+  readStoredSubscriptionId,
   rememberMockSubscriptionId,
+  rememberSubscriptionId,
   requestPushPermission,
   subscribeThisBrowser,
   unsubscribeThisBrowser,
@@ -43,6 +52,14 @@ const STATUS: Record<PushState, StatusMeta> = {
   checking: { label: "notification.push.checking", tone: "neutral" },
   inactive: { label: "notification.push.stateInactive", tone: "neutral" },
   active: { label: "notification.push.stateActive", tone: "success" },
+  reregistering: {
+    label: "notification.push.stateReregistering",
+    tone: "info",
+  },
+  "needs-reregister": {
+    label: "notification.push.stateNeedsReregister",
+    tone: "warning",
+  },
   blocked: { label: "notification.push.stateBlocked", tone: "danger" },
   unsupported: { label: "notification.push.stateUnsupported", tone: "warning" },
   unavailable: { label: "notification.push.stateUnavailable", tone: "warning" },
@@ -78,8 +95,15 @@ export function PushPanel() {
   const toast = useToast();
   const save = useSavePushSubscription();
   const remove = useDeletePushSubscription();
+  const pushRegistration = usePushRegistration();
   const queryClient = useQueryClient();
   const tenantKey = () => loadTenantKey(queryClient);
+  const sessionUserId = useRouteContext({
+    strict: false,
+    select: (context) => context.session?.user.id,
+  });
+  // Mock mode has no real session; the owner mark only needs to be stable.
+  const userId = sessionUserId ?? (API_MOCK ? "mock-user" : null);
   const [state, setState] = useState<PushState>("checking");
   const [device, setDevice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -93,18 +117,66 @@ export function PushPanel() {
       const next = await detectPushState(await loadTenantKey(queryClient));
       if (!active) return;
       setDevice(label);
-      setSubscriptionId(readMockSubscriptionId());
+      setSubscriptionId(readMockSubscriptionId() ?? readStoredSubscriptionId());
       setState(next);
+      // The browser alone cannot say the channel works: the server must list
+      // this device too. Missing there, the registration is renewed (bead
+      // legend-xdlxa); a renewal that fails asks for a manual retry.
+      if (next !== "active") return;
+      // A subscribed browser without a signed-in user cannot be confirmed.
+      if (!userId) {
+        setState("needs-reregister");
+        return;
+      }
+      setState("reregistering");
+      const result = await pushRegistration.sync(userId);
+      if (!active) return;
+      setSubscriptionId(readMockSubscriptionId() ?? readStoredSubscriptionId());
+      // "active" only after the server listed the device or accepted the
+      // renewal. "skipped" means the browser changed while we checked (mock
+      // mode has no server list), so the browser's own state decides.
+      setState(
+        result.outcome === "failed"
+          ? "needs-reregister"
+          : result.outcome === "skipped"
+            ? result.browserState
+            : "active",
+      );
     })();
     return () => {
       active = false;
     };
-  }, [queryClient]);
+    // The check runs once per mount; the registration helper is recreated on
+    // every render and must not restart it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryClient, userId]);
+
+  const reregister = async () => {
+    setError(null);
+    setBusy(true);
+    setState("reregistering");
+    try {
+      if (!userId) throw new Error("NO_SESSION");
+      setSubscriptionId(await pushRegistration.register(userId));
+      setState("active");
+      toast({
+        title: t("notification.push.enabledToast"),
+        description: t("notification.push.enabledBody"),
+        tone: "success",
+      });
+    } catch {
+      setError(t("notification.push.enableError"));
+      setState("needs-reregister");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const enable = async () => {
     setError(null);
     setBusy(true);
     try {
+      if (!userId) throw new Error("NO_SESSION");
       const next = await detectPushState(await tenantKey());
       if (next !== "inactive" && next !== "active") {
         setState(next);
@@ -121,11 +193,15 @@ export function PushPanel() {
           return;
         }
       }
-      const saved = await save.mutateAsync(
-        await subscribeThisBrowser(await tenantKey()),
+      const input = await subscribeThisBrowser(
+        await tenantKey(),
+        undefined,
+        userId,
       );
+      const saved = await save.mutateAsync(input);
       setSubscriptionId(saved.data.id);
       rememberMockSubscriptionId(saved.data.id);
+      rememberSubscriptionId(saved.data.id, userId, input.endpoint);
       setState("active");
       toast({
         title: t("notification.push.enabledToast"),
@@ -144,15 +220,22 @@ export function PushPanel() {
     setError(null);
     setBusy(true);
     try {
-      let id = subscriptionId ?? readMockSubscriptionId();
+      if (!userId) throw new Error("NO_SESSION");
+      let id =
+        subscriptionId ??
+        readMockSubscriptionId() ??
+        readStoredSubscriptionId();
       // Saving again returns this browser's row (upsert), which the revoke
       // call needs after a reload.
       if (!id)
         id = (
-          await save.mutateAsync(await subscribeThisBrowser(await tenantKey()))
+          await save.mutateAsync(
+            await subscribeThisBrowser(await tenantKey(), undefined, userId),
+          )
         ).data.id;
       await remove.mutateAsync(id);
       await unsubscribeThisBrowser();
+      forgetSubscriptionId();
       setSubscriptionId(null);
       setState("inactive");
       toast({ title: t("notification.push.disabledToast"), tone: "success" });
@@ -173,7 +256,9 @@ export function PushPanel() {
           ? t("notification.push.unavailableHint")
           : state === "ios-outdated"
             ? t("notification.push.iosOutdatedHint")
-            : null;
+            : state === "needs-reregister"
+              ? t("notification.push.reregisterHint")
+              : null;
 
   return (
     <Card>
@@ -189,8 +274,8 @@ export function PushPanel() {
       </CardHeader>
       <CardContent className="grid gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          {state === "checking" ? (
-            <Badge tone="neutral">
+          {state === "checking" || state === "reregistering" ? (
+            <Badge tone={meta.tone}>
               <LoaderCircle className="animate-spin" aria-hidden="true" />
               {t(meta.label)}
             </Badge>
@@ -239,9 +324,16 @@ export function PushPanel() {
           </p>
         )}
       </CardContent>
-      {(state === "inactive" || state === "active") && (
+      {(state === "inactive" ||
+        state === "active" ||
+        state === "needs-reregister") && (
         <CardFooter>
-          {state === "active" ? (
+          {state === "needs-reregister" ? (
+            <Button variant="outline" onClick={reregister} loading={busy}>
+              <BellRing aria-hidden="true" />
+              {t("notification.push.reregisterAction")}
+            </Button>
+          ) : state === "active" ? (
             <Button variant="outline" onClick={disable} loading={busy}>
               {t("notification.push.disable")}
             </Button>

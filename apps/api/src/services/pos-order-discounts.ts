@@ -41,6 +41,7 @@ import {
 import {
   appendOrderEvent,
   assertMutable,
+  assertNoOpenEdcRequest,
   assertNoPendingGatewayTender,
   auditPos,
   bumpPos,
@@ -67,6 +68,7 @@ async function assertBeforeSettlement(
   assertMutable(locked.order);
   // legend-yhia9 D-01: no discount while a QR can still be paid.
   await assertNoActiveQrisHold(tx, context, locked.order.id);
+  await assertNoOpenEdcRequest(tx, context, locked.order);
   const tenders = await tendersOf(tx, context, locked.order.id);
   if (capturedIdr(tenders) > 0)
     throw new CoreError(

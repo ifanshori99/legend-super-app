@@ -25,7 +25,11 @@ export const edgeReceiptSkips = pgTable(
     outletId: outletIdColumn(() => outlets.id).notNull(),
     orderId: ulidInUuid("order_id").notNull(),
     receiptNumber: varchar("receipt_number", { length: 64 }).notNull(),
-    /** Permanent ingest refusal (`order_exists`, `legacy_payload`). */
+    /**
+     * Permanent ingest refusal (`order_exists`, `legacy_payload`) or
+     * `link_dead_lettered` (the edge dead-lettered the order's paid
+     * event, legend-n2d3g).
+     */
     reason: varchar("reason", { length: 40 }).notNull(),
     /** The `receipt_run.reported` event that first recorded the skip. */
     eventId: ulidInUuid("event_id").notNull(),

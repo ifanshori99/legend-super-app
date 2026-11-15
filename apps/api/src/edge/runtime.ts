@@ -63,7 +63,10 @@ import {
   pruneAckedEdgeQueue,
 } from "../services/edge-queue.service.ts";
 import { startEdgeReceiptRunReporter } from "../services/edge-receipt-run-reporter.ts";
-import { bootstrapEdgeNodeIfNeeded } from "./bootstrap.ts";
+import {
+  bootstrapEdgeNodeIfNeeded,
+  startAfterBootMasters,
+} from "./bootstrap.ts";
 import {
   registerEdgeDeferredFallback,
   registerPosDeferredEdgeApplier,
@@ -71,13 +74,17 @@ import {
 import { registerQrOrderEdgeApplier } from "./qr-order-applier.ts";
 import { registerAttendanceLoggedEdgeApplier } from "./attendance-logged-applier.ts";
 import { registerWifiQuotaEdgeApplier } from "./wifi-quota-applier.ts";
+import { registerMasterDataEdgeApplier } from "./master-data-applier.ts";
 import {
   startWifiQuotaQueueWorker,
   type WifiQuotaWorkerHandle,
 } from "./wifi-quota-queue-worker.ts";
 import { registerOrderEdgeApplier } from "./order-edge-applier.ts";
 import { registerReceiptRunEdgeApplier } from "./receipt-run-applier.ts";
-import { registerEdgeLinkDeadLetterApplier } from "./link-dead-letter-applier.ts";
+import {
+  registerEdgeLinkDeadLetterApplier,
+  registerEdgeLinkPlaceholderApplier,
+} from "./link-dead-letter-applier.ts";
 import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
 import { registerPanicAlertEdgeApplier } from "./panic-alert-applier.ts";
@@ -287,6 +294,7 @@ export const EDGE_REQUIRED_TABLES = [
   "edge_nodes",
   "sync_cursors",
   "edge_outbound_queue",
+  "edge_link_slots",
   "edge_inbound_events",
   "edge_sync_conflicts",
   "edge_pull_checkpoints",
@@ -524,6 +532,21 @@ export async function assertEdgeSchemaReady(): Promise<void> {
   if (result.rows.length > 0)
     throw new EdgeBootError(
       `The local database is missing ${result.rows.map((row) => String(row.name)).join(", ")}; run the migrator against the edge PostgreSQL before starting the API.`,
+    );
+}
+
+/**
+ * Boot guard (legend-3kdd): modifiers.recipe_id has no FK on an edge database
+ * (recipes sync later than modifiers). The FK appears when the migrator ran
+ * without EDGE_MODE / legend.edge_mode=on. Never dropped automatically.
+ */
+export async function assertNoModifierRecipeFk(): Promise<void> {
+  const result = await db.execute(
+    sql`SELECT 1 FROM pg_constraint WHERE conname = 'modifiers_recipe_fk' AND conrelid = to_regclass('public.modifiers')`,
+  );
+  if (result.rows.length > 0)
+    throw new EdgeBootError(
+      "The FK modifiers_recipe_fk must not exist on an edge database: the migrations were probably run without EDGE_MODE / legend.edge_mode=on. Re-provision the edge database with the migrator in edge mode; the API does not drop the constraint automatically.",
     );
 }
 
@@ -827,11 +850,15 @@ export async function startEdgeRuntime(
   // Connection credentials/role are probed later with runtime cleanup on error.
   const auditRetentionDisabled = resolveEdgeAuditRetentionUrl(source) === null;
   await assertEdgeSchemaReady();
+  await assertNoModifierRecipeFk();
   // legend-s4r6: cloud -> edge appliers, before the link can deliver.
   registerQrOrderEdgeApplier();
   registerWifiQuotaEdgeApplier();
+  registerMasterDataEdgeApplier();
+  // legend-3k41y: no-op placeholder of a catalog row the cloud withheld.
+  registerEdgeLinkPlaceholderApplier();
   // Section D (legend-khu5): first boot provisions the node from its bundle.
-  await bootstrapEdgeNodeIfNeeded(config);
+  const bootstrapResult = await bootstrapEdgeNodeIfNeeded(config);
   let local: Awaited<ReturnType<typeof ensureLocalEdgeNode>>;
   try {
     local = await ensureLocalEdgeNode(config.credential, {
@@ -925,6 +952,10 @@ export async function startEdgeRuntime(
     lastServerTime = { serverTime, receivedMono: performance.now() };
     applyServerTime();
   };
+  // The link connects before the master loop is ready. Retain an early
+  // deferred receipt until the loop can schedule its recovery pull.
+  let requestMasterSync: (() => void) | null = null;
+  let earlyDeferred = false;
   const client = createEdgeLinkClient({
     url: config.cloudUrl,
     credential: config.credential,
@@ -936,6 +967,10 @@ export async function startEdgeRuntime(
       context: local.context,
       node: local.scope,
       outboundDirection: "edge_to_cloud",
+      onDeferred: () => {
+        if (requestMasterSync) requestMasterSync();
+        else earlyDeferred = true;
+      },
     }),
     onState: (link) => {
       const wasConnected = state.link.cloudLink === "connected";
@@ -1309,20 +1344,35 @@ export async function startEdgeRuntime(
     onError: (error) =>
       logger.warn(safeError(error), "Edge promo freshness step failed"),
   });
-  const masterSync = startEdgeMasterSyncLoop({
+  // legend-2uqcd: a node bootstrapped before the all-tenant brands has no
+  // brand rows for other brands' recipes, and the catalog waits on recipes.
+  // Sync the masters once first (best effort, not awaited), then start the
+  // loop and its first catalog pull. A node bootstrapped in this very boot
+  // has just applied the current snapshot.
+  const masterSync = startAfterBootMasters({
     config,
-    intervalMs: EDGE_MASTER_SYNC_INTERVAL_MS,
-    catalog: {
-      context: local.context,
-      edgeNodeId: local.scope.edgeNodeId,
-      freshness,
-      // 533b: the Date header of each catalog page is more proof of the clock.
-      onServerTime: recordServerTime,
-    },
-    catalogOnStart: true,
-    onError: (error) =>
-      logger.warn(safeError(error), "Edge master sync failed"),
+    syncMasters: bootstrapResult === "present",
+    start: () =>
+      startEdgeMasterSyncLoop({
+        config,
+        intervalMs: EDGE_MASTER_SYNC_INTERVAL_MS,
+        catalog: {
+          context: local.context,
+          edgeNodeId: local.scope.edgeNodeId,
+          freshness,
+          // 533b: the Date header of each catalog page is more proof of the clock.
+          onServerTime: recordServerTime,
+        },
+        catalogOnStart: true,
+        onError: (error) =>
+          logger.warn(safeError(error), "Edge master sync failed"),
+      }),
   });
+  requestMasterSync = () => masterSync.requestRun();
+  if (earlyDeferred) {
+    earlyDeferred = false;
+    requestMasterSync();
+  }
   // legend-zclb: one-shot, not awaited. A failure is logged by class only
   // (the error can quote hash material) and never stops the runtime.
   resendMateriallessStaffPinSets(local.context.tenant, local.scope.outletId)

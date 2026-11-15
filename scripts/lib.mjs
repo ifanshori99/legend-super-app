@@ -1,7 +1,7 @@
 import { createServer } from "node:net";
 import { spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { createECDH, randomBytes } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { localDatabaseUrl, databaseUrl } from "./postgres.mjs";
@@ -85,6 +85,27 @@ export async function prepareEnvironment(cwd = root) {
   if (!process.env.VITE_API_URL)
     additions.VITE_API_URL =
       process.env.BETTER_AUTH_URL || additions.BETTER_AUTH_URL;
+  // Throwaway web push (VAPID) pair so the panic alarm can be tried locally.
+  // Existing values always win; production keys come from the server's secret
+  // store, never from here. Values are never printed.
+  if (!process.env.NOTIFICATION_PUSH_PROVIDER) {
+    if (
+      !process.env.VAPID_PUBLIC_KEY &&
+      !process.env.VAPID_PRIVATE_KEY &&
+      !process.env.VAPID_SUBJECT
+    ) {
+      const pair = createECDH("prime256v1");
+      pair.generateKeys();
+      additions.NOTIFICATION_PUSH_PROVIDER = "web_push";
+      // getPrivateKey() drops leading zero bytes; VAPID needs exactly 32.
+      additions.VAPID_PUBLIC_KEY = pair.getPublicKey().toString("base64url");
+      additions.VAPID_PRIVATE_KEY = Buffer.from(
+        pair.getPrivateKey().toString("hex").padStart(64, "0"),
+        "hex",
+      ).toString("base64url");
+      additions.VAPID_SUBJECT = "mailto:dev@localhost.invalid";
+    }
+  }
   if (!process.env.DATABASE_URL) {
     const local = {
       POSTGRES_USER: process.env.POSTGRES_USER || "starter",

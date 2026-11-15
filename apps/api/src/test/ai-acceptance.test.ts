@@ -31,6 +31,7 @@ import {
   aiToolSummarySchema,
   aiUsageSummarySchema,
   getSalesSummaryOutputSchema,
+  searchSopOutputSchema,
 } from "@starter/shared/ai";
 import {
   establishScopedTenantContext,
@@ -38,6 +39,12 @@ import {
 } from "@starter/shared/core/server";
 import { setAiProviderForTests } from "../lib/ai/provider-factory.ts";
 import { createSopDocument } from "../services/hris-sop.service.ts";
+import { readToolsA } from "../services/ai-tools/read-a/index.ts";
+import { readToolsB } from "../services/ai-tools/read-b/index.ts";
+import {
+  loadTenantAccess,
+  resolveAccessSnapshot,
+} from "../services/permission-resolver.ts";
 import {
   ScriptedProvider,
   allToolResults,
@@ -369,6 +376,110 @@ describe("[wave 2: G] AIG-02 prohibited personal data never reaches the provider
     },
   );
 
+  // Regression for bead legend-70xou: the real search_sop result used to send a
+  // customer's email unchanged in the next provider request's tool_result. The
+  // positive control below proves the employee can read the seeded SOP
+  // containing that email.
+  it("AIG-02 personal data in an SOP tool result never reaches the next provider turn", async () => {
+    const marker = `PIISOP${randomUUID().replace(/-/g, "")}`;
+    const email = `private.${randomUUID()}@example.com`;
+    const hr = await signedIn("HR SOP pribadi");
+    await grantCustomRole(hr.userId, ["hr.sop.manage"], { type: "tenant" });
+    const doc = await createSopDocument(
+      establishScopedTenantContext(
+        establishTenantContext({
+          tenantId,
+          brandId: null,
+          source: "session",
+        }),
+        { kind: "tenant" },
+      ),
+      hr.userId,
+      {
+        title: `Prosedur ${marker}`,
+        body: `Hubungi pelanggan di ${email} untuk prosedur ${marker}.`,
+        mediaIds: [],
+        requiresAcknowledgement: false,
+        effectiveFrom: "2026-01-01",
+        stationId: null,
+        positionId: null,
+      } as never,
+    );
+    const employeeId = randomUUID();
+    try {
+      const provider = use(
+        new ScriptedProvider(
+          callToolThenAnswer(
+            "search_sop",
+            { query: marker },
+            () => "Prosedur ditemukan.",
+          ),
+        ),
+      )!;
+      const employee = await newEmployee();
+      await asTenant((db) =>
+        db.query(
+          `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
+          employment_type, join_date, status)
+         VALUES ($1, $2, $3, $4, 'Karyawan SOP AI', $5, 'pkwtt', '2025-03-01', 'active')`,
+          [
+            employeeId,
+            tenantId,
+            employee.userId,
+            `AI-${employeeId.slice(0, 8).toUpperCase()}`,
+            outletA,
+          ],
+        ),
+      );
+      const tenant = establishTenantContext({
+        tenantId,
+        brandId: null,
+        source: "session",
+      });
+      const scope = establishScopedTenantContext(tenant, { kind: "tenant" });
+      const access = resolveAccessSnapshot({
+        tenant,
+        userId: employee.userId,
+        ...(await loadTenantAccess(scope, employee.userId)),
+        mfaVerified: false,
+        now: new Date(),
+      });
+      const sop = searchSopOutputSchema.parse(
+        await readToolsB["TL-10"]!(
+          { access, channel: "tanya_ai", mcpClientId: null, now: new Date() },
+          { query: marker },
+        ),
+      );
+      expect(
+        sop.results.find(
+          (result) => String(result.knowledgeChunkId) === String(doc.id),
+        )?.snippet,
+      ).toContain(email);
+      const res = await ask(employee, {
+        feature: "AI-04",
+        question: `Bagaimana prosedur ${marker}?`,
+      });
+      expect([200, 422]).toContain(res.status);
+      if (res.status === 422) expect(codeOf(res)).toBe("AI_PII_BLOCKED");
+      // The first call is clean; the follow-up must block or redact actual SOP data.
+      expect(provider.requests.length).toBeGreaterThan(0);
+      expect(provider.allSentText()).not.toContain(email);
+    } finally {
+      await asTenant((db) =>
+        db.query("DELETE FROM employees WHERE tenant_id = $1 AND id = $2", [
+          tenantId,
+          employeeId,
+        ]),
+      );
+      await asTenant((db) =>
+        db.query(
+          "DELETE FROM sop_documents WHERE tenant_id = $1 AND published_by = $2",
+          [tenantId, hr.userId],
+        ),
+      );
+    }
+  });
+
   it("AIG-02 an ordinary question still goes through", async () => {
     const provider = use(plainAnswer("Buka pukul delapan."))!;
     const employee = await newEmployee();
@@ -381,8 +492,346 @@ describe("[wave 2: G] AIG-02 prohibited personal data never reaches the provider
   });
 });
 
-describe("[wave 2: G] AIG-04 quota, budget and kill switches", () => {
-  it("AIG-04 an employee gets 30 questions a day, the 31st is AI_QUOTA_EXCEEDED", async () => {
+// AIG-02 across PII kinds x tools (bead legend-70xou). Free text that a tenant
+// user typed into the system (SOP body, inventory item name, facility name)
+// can carry personal data. The tool result is the user's own view and stays
+// unchanged; the next provider request (which carries it as a tool_result)
+// must contain no raw PII: blocked (422 AI_PII_BLOCKED) or redacted are both
+// accepted. ASSUMPTION: the PRD "Data sensitif yang dilarang" list used by the
+// question test above (NIK, NPWP, email, phone, bank account, salary, login
+// code) applies to tool results too; this matrix covers email, phone, NIK and
+// bank account.
+const randomDigits = (n: number) =>
+  Array.from({ length: n }, () => Math.floor(Math.random() * 10)).join("");
+
+const PII_KINDS: {
+  kind: string;
+  raw: () => string;
+  text: (r: string) => string;
+}[] = [
+  {
+    kind: "email",
+    raw: () => `pelanggan.${randomUUID()}@example.com`,
+    text: (r) => `Hubungi pelanggan di ${r}`,
+  },
+  {
+    kind: "phone number",
+    raw: () => `0812${randomDigits(8)}`,
+    text: (r) => `Hubungi pelanggan di ${r}`,
+  },
+  {
+    kind: "NIK",
+    raw: () => `3171${randomDigits(12)}`,
+    text: (r) => `Data NIK ${r} atas nama Budi`,
+  },
+  {
+    kind: "bank account",
+    raw: () => `0987${randomDigits(9)}`,
+    text: (r) => `Transfer ke rekening BCA ${r} milik Siti`,
+  },
+];
+
+async function accessFor(userId: string) {
+  const tenant = establishTenantContext({
+    tenantId,
+    brandId: null,
+    source: "session",
+  });
+  const scope = establishScopedTenantContext(tenant, { kind: "tenant" });
+  return resolveAccessSnapshot({
+    tenant,
+    userId,
+    ...(await loadTenantAccess(scope, userId)),
+    mfaVerified: false,
+    now: new Date(),
+  });
+}
+
+type PiiToolSeed = {
+  input: unknown;
+  cleanup: () => Promise<void>;
+};
+type PiiToolCase = {
+  tool: string;
+  run: (actor: Actor, input: unknown) => Promise<unknown>;
+  actor: () => Promise<Actor>;
+  seed: (label: string, marker: string) => Promise<PiiToolSeed>;
+};
+
+let sopHr: Actor | null = null;
+let sopEmployee: Actor | null = null;
+let sopEmployeeId: string | null = null;
+
+async function sopActors() {
+  if (!sopHr) {
+    sopHr = await signedIn("HR SOP matriks");
+    await grantCustomRole(sopHr.userId, ["hr.sop.manage"], { type: "tenant" });
+  }
+  if (!sopEmployee) {
+    const created = await newEmployee("Karyawan matriks");
+    const createdId = randomUUID();
+    sopEmployee = created;
+    sopEmployeeId = createdId;
+    await asTenant((db) =>
+      db.query(
+        `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
+          employment_type, join_date, status)
+         VALUES ($1, $2, $3, $4, 'Karyawan Matriks AI', $5, 'pkwtt', '2025-03-01', 'active')`,
+        [
+          createdId,
+          tenantId,
+          created.userId,
+          `AM-${createdId.slice(0, 8).toUpperCase()}`,
+          outletA,
+        ],
+      ),
+    );
+  }
+  return { hr: sopHr, employee: sopEmployee };
+}
+
+const PII_TOOL_CASES: PiiToolCase[] = [
+  {
+    tool: "search_sop",
+    actor: async () => (await sopActors()).employee,
+    run: async (actor, input) =>
+      readToolsB["TL-10"]!(
+        {
+          access: await accessFor(actor.userId),
+          channel: "tanya_ai",
+          mcpClientId: null,
+          now: new Date(),
+        },
+        input,
+      ),
+    seed: async (label, marker) => {
+      const { hr } = await sopActors();
+      const doc = await createSopDocument(
+        establishScopedTenantContext(
+          establishTenantContext({
+            tenantId,
+            brandId: null,
+            source: "session",
+          }),
+          { kind: "tenant" },
+        ),
+        hr.userId,
+        {
+          title: `Prosedur ${marker}`,
+          body: `${label} untuk prosedur ${marker}.`,
+          mediaIds: [],
+          requiresAcknowledgement: false,
+          effectiveFrom: "2026-01-01",
+          stationId: null,
+          positionId: null,
+        } as never,
+      );
+      return {
+        input: { query: marker },
+        cleanup: async () => {
+          await asTenant((db) =>
+            db.query(
+              "DELETE FROM sop_documents WHERE tenant_id = $1 AND id = $2",
+              [tenantId, doc.id],
+            ),
+          );
+        },
+      };
+    },
+  },
+  {
+    tool: "get_stock_levels",
+    // TL-03 minRoles: warehouse, kitchen_lead, purchasing (no owner template).
+    // The tool reads permissions through the minRoles template itself, and
+    // accessFor() runs with mfaVerified=false, so use the non-MFA warehouse
+    // template (outlet-scoped, holds inventory.stock.view + ai.ask) on outletA,
+    // where the seed puts its stock. purchasing is mfaRequired and would lose
+    // its permissions here.
+    actor: async () => {
+      const who = await signedIn("Gudang stok PII");
+      await grantTemplateRole(who.userId, "warehouse", {
+        type: "outlet",
+        id: outletA,
+      });
+      return who;
+    },
+    run: async (actor, input) =>
+      readToolsA["TL-03"]!(
+        {
+          access: await accessFor(actor.userId),
+          channel: "tanya_ai",
+          mcpClientId: null,
+          now: new Date(),
+        },
+        input,
+      ),
+    seed: async (label, marker) => {
+      const uomId = randomUUID();
+      const locationId = randomUUID();
+      const itemId = randomUUID();
+      await asTenant(async (db) => {
+        await db.query(
+          "INSERT INTO uoms (id, tenant_id, code, name) VALUES ($1, $2, $3, 'Kilogram')",
+          [uomId, tenantId, `kg${randomDigits(5)}`],
+        );
+        await db.query(
+          `INSERT INTO stock_locations (id, tenant_id, outlet_id, name, type)
+           VALUES ($1, $2, $3, 'Gudang PII', 'warehouse')`,
+          [locationId, tenantId, outletA],
+        );
+        await db.query(
+          `INSERT INTO inventory_items (id, tenant_id, name, category, base_uom_id, par_min)
+           VALUES ($1, $2, $3, 'bahan', $4, '10')`,
+          [itemId, tenantId, `${marker} ${label}`, uomId],
+        );
+        await db.query(
+          `INSERT INTO stock_balances (tenant_id, outlet_id, location_id, inventory_item_id, quantity, avg_cost_idr)
+           VALUES ($1, $2, $3, $4, '4', 1000)`,
+          [tenantId, outletA, locationId, itemId],
+        );
+      });
+      return {
+        input: { search: marker },
+        cleanup: async () => {
+          await asTenant(async (db) => {
+            await db.query(
+              "DELETE FROM stock_balances WHERE tenant_id = $1 AND inventory_item_id = $2",
+              [tenantId, itemId],
+            );
+            await db.query(
+              "DELETE FROM inventory_items WHERE tenant_id = $1 AND id = $2",
+              [tenantId, itemId],
+            );
+            await db.query(
+              "DELETE FROM stock_locations WHERE tenant_id = $1 AND id = $2",
+              [tenantId, locationId],
+            );
+            await db.query(
+              "DELETE FROM uoms WHERE tenant_id = $1 AND id = $2",
+              [tenantId, uomId],
+            );
+          });
+        },
+      };
+    },
+  },
+  {
+    tool: "get_facility_utilization",
+    actor: () => newOwner("Owner fasilitas PII"),
+    run: async (actor, input) =>
+      readToolsB["TL-20"]!(
+        {
+          access: await accessFor(actor.userId),
+          channel: "tanya_ai",
+          mcpClientId: null,
+          now: new Date(),
+        },
+        input,
+      ),
+    seed: async (label, marker) => {
+      const id = randomUUID();
+      await asTenant((db) =>
+        db.query(
+          `INSERT INTO facilities (id, tenant_id, outlet_id, name, type, session_minutes, cleaning_minutes,
+                                   arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy)
+           VALUES ($1, $2, $3, $4, 'shower', 60, 10, 10, $5, $6, $7)`,
+          [
+            id,
+            tenantId,
+            outletA,
+            `${marker} ${label}`,
+            JSON.stringify([
+              {
+                daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+                opensAt: "08:00",
+                closesAt: "20:00",
+              },
+            ]),
+            JSON.stringify({
+              graceMinutes: 5,
+              blockMinutes: 15,
+              feePerBlockIdr: 5000,
+            }),
+            JSON.stringify({
+              freeCancelMinutesBefore: 30,
+              lateCancelResolution: "no_refund",
+              lateCancelFeeIdr: 0,
+              noShowResolution: "no_refund",
+            }),
+          ],
+        ),
+      );
+      return {
+        input: { period: SALES_INPUT.period, facilityId: id },
+        cleanup: async () => {
+          await asTenant((db) =>
+            db.query(
+              "DELETE FROM facilities WHERE tenant_id = $1 AND id = $2",
+              [tenantId, id],
+            ),
+          );
+        },
+      };
+    },
+  },
+];
+
+describe("[wave 2: G] AIG-02 personal data in tool results never reaches the provider", () => {
+  afterAll(async () => {
+    if (sopEmployeeId)
+      await asTenant((db) =>
+        db.query("DELETE FROM employees WHERE tenant_id = $1 AND id = $2", [
+          tenantId,
+          sopEmployeeId,
+        ]),
+      ).catch(() => undefined);
+  });
+
+  for (const toolCase of PII_TOOL_CASES) {
+    it.each(PII_KINDS)(
+      `AIG-02 ${toolCase.tool} result carrying $kind is shown to the user but not sent to the provider`,
+      async ({ raw, text }) => {
+        const value = raw();
+        const marker = `PIIM${randomUUID().replace(/-/g, "").slice(0, 20)}`;
+        const actor = await toolCase.actor();
+        const seeded = await toolCase.seed(text(value), marker);
+        try {
+          // What the user sees: the tool result, unchanged, with the value.
+          const shown = JSON.stringify(await toolCase.run(actor, seeded.input));
+          expect(
+            shown,
+            "positive control: user sees the stored text",
+          ).toContain(value);
+
+          const provider = use(
+            new ScriptedProvider(
+              callToolThenAnswer(toolCase.tool, seeded.input, () => "Selesai."),
+            ),
+          )!;
+          const res = await ask(actor, {
+            feature: "AI-02",
+            question: `Ringkas data ${marker} untuk saya.`,
+          });
+          expect([200, 422]).toContain(res.status);
+          if (res.status === 422) expect(codeOf(res)).toBe("AI_PII_BLOCKED");
+          // The first provider call is clean; the tool-result follow-up must
+          // be blocked or redacted.
+          expect(provider.requests.length).toBeGreaterThan(0);
+          expect(provider.allSentText()).not.toContain(value);
+
+          // Asking never rewrites the stored data the user can read.
+          const after = JSON.stringify(await toolCase.run(actor, seeded.input));
+          expect(after).toContain(value);
+        } finally {
+          await seeded.cleanup();
+        }
+      },
+    );
+  }
+});
+
+describe("[wave 2: G] AI governance quota, budget and kill switches", () => {
+  it("AI governance an employee gets 30 questions a day, the 31st is AI_QUOTA_EXCEEDED", async () => {
     use(plainAnswer());
     const employee = await newEmployee();
     for (let i = 1; i <= 30; i++) {
@@ -407,7 +856,7 @@ describe("[wave 2: G] AIG-04 quota, budget and kill switches", () => {
     expect(feature?.usedToday).toBe(30);
   }, 90_000);
 
-  it("AIG-04 an admin can lower the daily limit per role", async () => {
+  it("AI governance an admin can lower the daily limit per role", async () => {
     use(plainAnswer());
     const set = await patchGovernance(admin, {
       features: [
@@ -434,7 +883,7 @@ describe("[wave 2: G] AIG-04 quota, budget and kill switches", () => {
     expect(codeOf(over)).toBe("AI_QUOTA_EXCEEDED");
   });
 
-  it("AIG-04 the tenant budget warns at 80% (event) and stops at 100% with AI_BUDGET_EXCEEDED", async () => {
+  it("AI governance the tenant budget warns at 80% (event) and stops at 100% with AI_BUDGET_EXCEEDED", async () => {
     // Heavy token usage so the cost is a visible number of rupiah.
     const heavy = { inputTokens: 2_000_000, outputTokens: 500_000 };
     use(plainAnswer("Jawaban mahal.", heavy));
@@ -498,7 +947,7 @@ describe("[wave 2: G] AIG-04 quota, budget and kill switches", () => {
     expect((await usedNow()).state).toBe("stopped");
   }, 60_000);
 
-  it("AIG-04 the per-feature kill switch answers AI_FEATURE_DISABLED without calling the model", async () => {
+  it("AI governance the per-feature kill switch answers AI_FEATURE_DISABLED without calling the model", async () => {
     const provider = use(plainAnswer())!;
     const owner = await newOwner();
     const off = await patchGovernance(admin, {
@@ -519,7 +968,7 @@ describe("[wave 2: G] AIG-04 quota, budget and kill switches", () => {
     ).toBe(200);
   });
 
-  it("AIG-04 turning AI off for the tenant disables every ask but not the usage page", async () => {
+  it("AI governance turning AI off for the tenant disables every ask but not the usage page", async () => {
     const provider = use(plainAnswer())!;
     const owner = await newOwner();
     expect((await patchGovernance(admin, { aiEnabled: false })).status).toBe(
@@ -534,7 +983,7 @@ describe("[wave 2: G] AIG-04 quota, budget and kill switches", () => {
     expect(aiUsageSummarySchema.parse(usage.body.data).aiEnabled).toBe(false);
   });
 
-  it("AIG-04 the per-tool kill switch hides the tool and blocks its use (AI_TOOL_DISABLED)", async () => {
+  it("AI governance the per-tool kill switch hides the tool and blocks its use (AI_TOOL_DISABLED)", async () => {
     const provider = use(
       new ScriptedProvider(
         callToolThenAnswer("get_sales_summary", SALES_INPUT, () => "Selesai."),
@@ -560,7 +1009,7 @@ describe("[wave 2: G] AIG-04 quota, budget and kill switches", () => {
       expect(result.isError, "a disabled tool never returns data").toBe(true);
   });
 
-  it("AIG-04 governance settings are admin-only, validated and round-trip", async () => {
+  it("AI governance governance settings are admin-only, validated and round-trip", async () => {
     const plain = await newEmployee();
     expect((await plain.client.get("/api/ai/governance")).status).toBe(403);
     expect(

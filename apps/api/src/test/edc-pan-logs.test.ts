@@ -52,6 +52,7 @@ import { createEdcAgent } from "../edge/edc/agent.ts";
 import { logger } from "../lib/logger.ts";
 import { EdcProviderRegistry } from "../edge/edc/registry.ts";
 import { EcrSimulator } from "../edge/edc/simulator.ts";
+import { ensureBill } from "./edc-agent-bill-helper.ts";
 import { agent as httpAgent, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -334,8 +335,10 @@ const request = (f: Fixture): EdcPaymentRequest =>
     method: "card",
   }) as EdcPaymentRequest;
 
-const pay = (f: Fixture, req: EdcPaymentRequest) =>
-  f.agent.requestPayment(f.ctx, f.actor, req);
+const pay = async (f: Fixture, req: EdcPaymentRequest) => {
+  await ensureBill(owner, req);
+  return f.agent.requestPayment(f.ctx, f.actor, req);
+};
 
 const refTo = (f: Fixture, tx: Pick<EdcTransaction, "id">) => ({
   tenantId: tenantIdSchema.parse(f.tenant.tenantId),
@@ -515,7 +518,7 @@ describe("EDC agent never logs or stores a card number (legend-5gub)", () => {
     expectLedgerClean(await ledger(f.tenant));
   });
 
-  it("PAN-08 a late PAN-laden approval after a cancel flags the row without logging or storing the PAN", async () => {
+  it("PAN-08 a PAN-laden approval that arrives after a cancel answer is recorded approved without logging or storing the PAN", async () => {
     let open!: () => void;
     const gate = new Promise<void>((resolve) => {
       open = resolve;
@@ -548,13 +551,14 @@ describe("EDC agent never logs or stores a card number (legend-5gub)", () => {
       f.actor,
       refTo(f, { id: rowId }),
     );
-    expect(cancelled.status).toBe("cancelled");
+    // The cancel answer alone never finalizes a dispatched sale: still open.
+    expect(cancelled.status).toBe("pending");
 
     open();
     const sold = await selling;
-    expect(sold.status).toBe("cancelled");
+    expect(sold.status).toBe("approved");
     expectDtoClean(sold);
-    expect(loggedMessages()).toContain(
+    expect(loggedMessages()).not.toContain(
       "EDC approval arrived after the row was final: approved late",
     );
     expectNoPan("log output", loggedText());

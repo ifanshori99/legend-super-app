@@ -1,9 +1,13 @@
 // One-time device token (bead legend-2lp.9). The token arrives only in the
 // answer to enroll / reissue and is never persisted: it lives in the caller's
-// state, which clears it when this dialog closes. No query cache, no storage.
+// state, which clears it when this dialog closes. No query cache. The one
+// exception is the explicit "Pakai di perangkat ini" action (bead
+// legend-ofq4f): staff choose to keep the token in this browser so it can send
+// X-Device-Token (lib/device-token-store.ts).
 import * as React from "react";
-import { Check, Copy, TriangleAlert } from "lucide-react";
+import { Check, Copy, Smartphone, TriangleAlert } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { setDeviceToken } from "@/lib/device-token-store";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -34,17 +38,24 @@ export function DeviceTokenDialog({
     token: string;
     status: "copied" | "error";
   } | null>(null);
+  const [stored, setStored] = React.useState<{
+    token: string;
+    status: "saved" | "error";
+  } | null>(null);
   const token = issued?.token ?? null;
   const copy = result?.token === token ? result.status : "idle";
+  const storedState = stored?.token === token ? stored.status : "idle";
 
   // Nothing about the token may outlive the dialog, copy feedback included.
   const close = () => {
     setResult(null);
+    setStored(null);
     onClose();
   };
   // The parent can also drop the token without going through close(); clear
   // the stored copy while rendering (React's "adjust state on prop change").
   if (token === null && result !== null) setResult(null);
+  if (token === null && stored !== null) setStored(null);
 
   const copyToken = async () => {
     if (!token) return;
@@ -54,6 +65,11 @@ export function DeviceTokenDialog({
     } catch {
       setResult({ token, status: "error" });
     }
+  };
+
+  const useHere = () => {
+    if (!token) return;
+    setStored({ token, status: setDeviceToken(token) ? "saved" : "error" });
   };
 
   return (
@@ -116,7 +132,32 @@ export function DeviceTokenDialog({
             {t("deviceRegistry.token.copyFailed")}
           </p>
         )}
+        {storedState === "saved" && (
+          <p role="status" className="text-sm text-muted-foreground">
+            {t("deviceRegistry.token.usedHereHint")}
+          </p>
+        )}
+        {storedState === "error" && (
+          <p role="alert" className="text-sm text-danger">
+            {t("deviceRegistry.token.useHereFailed")}
+          </p>
+        )}
         <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={useHere}
+            disabled={storedState === "saved"}
+          >
+            {storedState === "saved" ? (
+              <Check aria-hidden="true" />
+            ) : (
+              <Smartphone aria-hidden="true" />
+            )}
+            {storedState === "saved"
+              ? t("deviceRegistry.token.usedHere")
+              : t("deviceRegistry.token.useHere")}
+          </Button>
           <Button type="button" variant="outline" onClick={copyToken}>
             {copy === "copied" ? (
               <Check aria-hidden="true" />

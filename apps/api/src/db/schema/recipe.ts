@@ -9,7 +9,7 @@
 // foreign keys keep every reference inside one tenant. Quantities and unit
 // costs are NUMERIC(14,4) decimal strings, money is BIGINT rupiah (D-CORE-2).
 // `menu_items.recipe_id`, `item_variants.recipe_id` and `modifiers.recipe_id`
-// have no foreign key yet (menu.ts predates these tables).
+// reference `recipes (tenant_id, id)` (menu.ts, legend-3kdd).
 
 import { sql } from "drizzle-orm";
 import {

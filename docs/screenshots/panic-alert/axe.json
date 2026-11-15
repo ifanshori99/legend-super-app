@@ -1,0 +1,353 @@
+{
+  "base": "http://localhost:3367",
+  "path": "/fasilitas/darurat",
+  "totals": {
+    "serious": 0,
+    "critical": 0
+  },
+  "axe": {
+    "incoming-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "incoming-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "multiple-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "multiple-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "mine-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "mine-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "acknowledged-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "acknowledged-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "taken-remote-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "taken-remote-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "restore-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "restore-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "board-incoming-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "board-incoming-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tabs-idle-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "tabs-idle-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "reconnecting-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "reconnecting-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "unreachable-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "unreachable-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "revoked-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "revoked-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "idle-1280": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "idle-390": {
+      "serious": 0,
+      "critical": 0,
+      "rules": []
+    }
+  },
+  "overflow320": {
+    "incoming": {
+      "scrollWidth": 320,
+      "clientWidth": 320,
+      "overflow": false
+    },
+    "multiple": {
+      "scrollWidth": 320,
+      "clientWidth": 320,
+      "overflow": false
+    },
+    "board-incoming": {
+      "scrollWidth": 320,
+      "clientWidth": 320,
+      "overflow": false
+    },
+    "tabs-idle": {
+      "scrollWidth": 320,
+      "clientWidth": 320,
+      "overflow": false
+    }
+  },
+  "tabs": {
+    "tabs-idle-1280": {
+      "viewportWidth": 1280,
+      "list": {
+        "scrollWidth": 371,
+        "clientWidth": 371
+      },
+      "listClipped": false,
+      "links": [
+        {
+          "text": "Papan bilik",
+          "current": null,
+          "left": 70,
+          "right": 169.59375,
+          "width": 99.59375,
+          "boundingBox": {
+            "x": 70,
+            "y": 290,
+            "width": 99.59375,
+            "height": 48
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Kebersihan",
+          "current": null,
+          "left": 171.59375,
+          "right": 274.78125,
+          "width": 103.1875,
+          "boundingBox": {
+            "x": 171.59375,
+            "y": 290,
+            "width": 103.1875,
+            "height": 48
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Insiden",
+          "current": null,
+          "left": 276.78125,
+          "right": 353.125,
+          "width": 76.34375,
+          "boundingBox": {
+            "x": 276.78125,
+            "y": 290,
+            "width": 76.34375,
+            "height": 48
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Darurat",
+          "current": "page",
+          "left": 355.125,
+          "right": 433.46875,
+          "width": 78.34375,
+          "boundingBox": {
+            "x": 355.125,
+            "y": 290,
+            "width": 78.34375,
+            "height": 48
+          },
+          "withinViewport": true
+        }
+      ]
+    },
+    "tabs-idle-390": {
+      "viewportWidth": 390,
+      "list": {
+        "scrollWidth": 354,
+        "clientWidth": 354
+      },
+      "listClipped": false,
+      "links": [
+        {
+          "text": "Papan bilik",
+          "current": null,
+          "left": 22,
+          "right": 194,
+          "width": 172,
+          "boundingBox": {
+            "x": 22,
+            "y": 502,
+            "width": 172,
+            "height": 44
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Kebersihan",
+          "current": null,
+          "left": 196,
+          "right": 368,
+          "width": 172,
+          "boundingBox": {
+            "x": 196,
+            "y": 502,
+            "width": 172,
+            "height": 44
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Insiden",
+          "current": null,
+          "left": 22,
+          "right": 194,
+          "width": 172,
+          "boundingBox": {
+            "x": 22,
+            "y": 548,
+            "width": 172,
+            "height": 44
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Darurat",
+          "current": "page",
+          "left": 196,
+          "right": 368,
+          "width": 172,
+          "boundingBox": {
+            "x": 196,
+            "y": 548,
+            "width": 172,
+            "height": 44
+          },
+          "withinViewport": true
+        }
+      ]
+    },
+    "tabs-idle-320": {
+      "viewportWidth": 320,
+      "list": {
+        "scrollWidth": 284,
+        "clientWidth": 284
+      },
+      "listClipped": false,
+      "links": [
+        {
+          "text": "Papan bilik",
+          "current": null,
+          "left": 22,
+          "right": 159,
+          "width": 137,
+          "boundingBox": {
+            "x": 22,
+            "y": 502,
+            "width": 137,
+            "height": 44
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Kebersihan",
+          "current": null,
+          "left": 161,
+          "right": 298,
+          "width": 137,
+          "boundingBox": {
+            "x": 161,
+            "y": 502,
+            "width": 137,
+            "height": 44
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Insiden",
+          "current": null,
+          "left": 22,
+          "right": 159,
+          "width": 137,
+          "boundingBox": {
+            "x": 22,
+            "y": 548,
+            "width": 137,
+            "height": 44
+          },
+          "withinViewport": true
+        },
+        {
+          "text": "Darurat",
+          "current": "page",
+          "left": 161,
+          "right": 298,
+          "width": 137,
+          "boundingBox": {
+            "x": 161,
+            "y": 548,
+            "width": 137,
+            "height": 44
+          },
+          "withinViewport": true
+        }
+      ]
+    }
+  },
+  "failures": []
+}

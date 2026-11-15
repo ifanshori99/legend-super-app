@@ -70,6 +70,7 @@ import {
   saveDeviceRegistryCheckpoint,
 } from "../services/edge-device-sync-store.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
+import { simulateEdgeModifierRecipeFk } from "./helpers/edge-database.ts";
 
 const { tenant, outlets } = cafeLegendFixtures;
 const tenantId = tenant.id;
@@ -323,10 +324,15 @@ async function edgeStatus() {
   };
 }
 
+let restoreModifierRecipeFk: () => Promise<void>;
+
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   setAuditWriter(coreAuditWriter);
+  // The shared test database is cloud-style; startEdgeRuntime refuses it with
+  // modifiers_recipe_fk, so simulate an edge database.
+  restoreModifierRecipeFk = await simulateEdgeModifierRecipeFk(owner);
   await asOwner(
     `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
      SELECT $1, tenant_id, brand_id, legal_entity_id, $2, 'Outlet uji tarik registri', address, timezone, opening_hours, status
@@ -372,6 +378,7 @@ afterAll(async () => {
   } catch {
     // leave rows behind; harmless for other files, see above
   }
+  await restoreModifierRecipeFk();
   await owner.end();
 });
 
@@ -767,6 +774,14 @@ describe("legend-6xcy the runtime runs the master sync loop", () => {
             ? input.href
             : (input as Request).url;
       if (!href.includes(MASTERS_PATH)) return cloudAnswer(input);
+      // legend-2uqcd: masters calls made before the loop's timer exists (the
+      // bootstrap's and the boot-time sync before the catalog) are answered, so
+      // the boot sync does not hang until its 5 s timeout; only calls after the
+      // loop started hang.
+      const loopStarted = intervalSpy.mock.calls.some(
+        ([, delay]) => delay === MASTER_SYNC_INTERVAL_MS,
+      );
+      if (!loopStarted) return cloudAnswer(input);
       hangingSignal = init?.signal ?? null;
       // Never answers; only an abort ends it, like a dead link.
       return new Promise<Response>((_resolve, reject) => {
@@ -779,10 +794,18 @@ describe("legend-6xcy the runtime runs the master sync loop", () => {
 
     const handle = await boot();
 
-    const masterTimer = intervalSpy.mock.calls.findIndex(
-      ([, delay]) => delay === MASTER_SYNC_INTERVAL_MS,
+    // legend-2uqcd: the loop starts after the boot-time masters sync (not
+    // awaited by boot), so its timer appears a moment after boot() returns.
+    let masterTimer = -1;
+    await vi.waitFor(
+      () => {
+        masterTimer = intervalSpy.mock.calls.findIndex(
+          ([, delay]) => delay === MASTER_SYNC_INTERVAL_MS,
+        );
+        expect(masterTimer).toBeGreaterThanOrEqual(0);
+      },
+      { timeout: 5_000, interval: 25 },
     );
-    expect(masterTimer).toBeGreaterThanOrEqual(0);
     // Fire the first tick by hand instead of waiting 5 minutes. The boot-time
     // bootstrap also hit the masters path (its own signal is already spent), and
     // the loop's start run (catalog only, legend-24318) may still be in flight,

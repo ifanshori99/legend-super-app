@@ -3,9 +3,12 @@
 // outlet, and each cashier has a default method/terminal without retyping the
 // amount at the EDC. The amount itself always comes from POS (EDC-01).
 import * as React from "react";
+import { Link, useRouteContext } from "@tanstack/react-router";
 import { useAttemptKey } from "../use-attempt-key";
-import { Pencil, Plus } from "lucide-react";
+import { Pencil, Plus, Scale } from "lucide-react";
 import { useT } from "@/components/i18n";
+import type { AreaAccess } from "@/lib/areas/access";
+import { holdsAny } from "@/lib/areas/guard";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -68,8 +71,19 @@ const CASHIER_METHODS: readonly CashierDefaultMethod[] = [
   "qris_doit",
 ];
 
+/** The reconciliation page needs payment.reconcile, like its API route. */
+function useCanReconcileEdc(): boolean {
+  const context = useRouteContext({ strict: false }) as {
+    access?: AreaAccess;
+  };
+  return context.access
+    ? holdsAny(context.access, ["payment.reconcile"])
+    : false;
+}
+
 export function EdcPanel() {
   const t = useT();
+  const canReconcile = useCanReconcileEdc();
   const routing = usePaymentRouting(null);
   const outlets = routing.data?.data.outlets ?? [];
   const [outletId, setOutletId] = React.useState<string | null>(null);
@@ -109,27 +123,37 @@ export function EdcPanel() {
             {t("paymentAdmin.edc.terminalsHint")}
           </p>
         </div>
-        <FormField
-          label={t("paymentAdmin.routing.outlet")}
-          required
-          className="sm:w-64"
-        >
-          <Select value={selectedOutletId} onValueChange={setOutletId}>
-            <SelectTrigger
-              className="w-full"
-              aria-label={t("paymentAdmin.routing.outlet")}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {outlets.map((outlet) => (
-                <SelectItem key={outlet.id} value={outlet.id}>
-                  {outlet.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </FormField>
+        <div className="grid gap-3 sm:flex sm:items-end">
+          {canReconcile && (
+            <Button asChild variant="outline">
+              <Link to="/kelola/pembayaran/edc-rekonsiliasi">
+                <Scale aria-hidden="true" />
+                {t("edcRecon.queue.entryLink")}
+              </Link>
+            </Button>
+          )}
+          <FormField
+            label={t("paymentAdmin.routing.outlet")}
+            required
+            className="sm:w-64"
+          >
+            <Select value={selectedOutletId} onValueChange={setOutletId}>
+              <SelectTrigger
+                className="w-full"
+                aria-label={t("paymentAdmin.routing.outlet")}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {outlets.map((outlet) => (
+                  <SelectItem key={outlet.id} value={outlet.id}>
+                    {outlet.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FormField>
+        </div>
       </div>
       <TerminalsTable
         outletId={selectedOutletId}

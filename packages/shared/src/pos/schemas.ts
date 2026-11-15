@@ -2178,12 +2178,26 @@ export const customerDisplayQrisSchema = z.strictObject({
 });
 export type CustomerDisplayQris = z.infer<typeof customerDisplayQrisSchema>;
 
+export const customerDisplayPromotionSchema = z.strictObject({
+  title: z.string().min(1),
+  body: z.string().min(1),
+  validUntil: isoDateTimeSchema,
+});
+export type CustomerDisplayPromotion = z.infer<
+  typeof customerDisplayPromotionSchema
+>;
+
 export const customerDisplayStateSchema = z
   .strictObject({
     ...scope,
-    terminalDeviceId: uuidSchema,
+    terminalDeviceId: uuidSchema.nullable(),
     displayDeviceId: uuidSchema,
     state: z.enum(["idle", "ordering", "awaiting_payment", "paid"]),
+    promotions: z.array(customerDisplayPromotionSchema),
+    pairingCode: z
+      .string()
+      .regex(/^\d{6}$/)
+      .nullable(),
     orderId: orderIdSchema.nullable(),
     orderNumber: orderNumber.nullable(),
     lines: z.array(customerDisplayLineSchema),
@@ -2207,6 +2221,43 @@ export const customerDisplayStateSchema = z
     updatedAt: isoDateTimeSchema,
   })
   .superRefine((state, ctx) => {
+    if (
+      state.terminalDeviceId === null &&
+      (state.state !== "idle" || state.pairingCode === null)
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["pairingCode"],
+        message: "An unpaired display needs a pairing code and an idle state",
+      });
+    if (state.terminalDeviceId !== null && state.pairingCode !== null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["pairingCode"],
+        message: "A paired display has no pairing code",
+      });
+    if (
+      state.terminalDeviceId === null &&
+      (state.orderId !== null ||
+        state.orderNumber !== null ||
+        state.lines.length > 0 ||
+        Number(state.subtotalIdr) !== 0 ||
+        Number(state.discountIdr) !== 0 ||
+        Number(state.serviceChargeIdr) !== 0 ||
+        Number(state.taxIdr) !== 0 ||
+        Number(state.roundingIdr) !== 0 ||
+        Number(state.totalIdr) !== 0 ||
+        Number(state.depositAppliedIdr) !== 0 ||
+        (state.remainingIdr !== undefined &&
+          Number(state.remainingIdr) !== 0) ||
+        state.qris !== null ||
+        state.tenders.length > 0 ||
+        state.changeIdr !== null)
+    )
+      ctx.addIssue({
+        code: "custom",
+        message: "An unpaired display has no bill data",
+      });
     if (state.state === "idle" && state.orderId !== null)
       ctx.addIssue({
         code: "custom",

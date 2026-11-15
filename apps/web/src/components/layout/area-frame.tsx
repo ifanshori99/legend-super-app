@@ -2,7 +2,11 @@
 // Hangat → CustomerShell, Kontras Tinggi → OperationsShell, Padat →
 // ManagementShell. Route layouts render <AreaFrame> around their <Outlet />.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useLocation, useParams } from "@tanstack/react-router";
+import {
+  useLocation,
+  useParams,
+  useRouteContext,
+} from "@tanstack/react-router";
 import type { MyOutlet } from "@starter/shared/access";
 import type { BusinessDayCutoff } from "@starter/shared/core";
 import { useT } from "@/components/i18n";
@@ -44,6 +48,7 @@ import { ORG_OUTLET_STORE_EVENT } from "@/features/ws01-org/outlet-store";
 import { TenantProvider, useTenantContext } from "@/lib/tenant-context";
 import { useCloudConnection } from "@/features/ws02-edge/hooks";
 import { TableCustomerFrame } from "@/features/ws03-qr-order/components/table-frame";
+import { PushAutoRegister } from "@/features/ws05-notifications/components/push-auto-register";
 import { IdleSessionWarning } from "@/features/ws01-auth/components/idle-session-warning";
 import { ApprovalInboxBadge } from "@/features/ws01-approvals/components/inbox-badge";
 import { SupportSessionBar } from "@/features/ws01-support-access/components/session-banner";
@@ -84,6 +89,11 @@ type AreaFrameProps = {
  */
 export function AreaFrame(props: AreaFrameProps) {
   const { pathname, searchStr } = useLocation();
+  // The signed-in user, for the push registration check below (null = none).
+  const userId = useRouteContext({
+    strict: false,
+    select: (context) => context.session?.user.id ?? null,
+  });
   const accessOutlets = props.access.outlets;
   // Server-safe list: the session's outlets, or the fixture outlet in mock
   // mode (none for ?tenant=none).
@@ -137,6 +147,8 @@ export function AreaFrame(props: AreaFrameProps) {
   );
   return (
     <TenantProvider config={config}>
+      {/* Renews a push registration the server no longer lists (legend-xdlxa). */}
+      <PushAutoRegister userId={userId} />
       <AreaFrameBody
         {...props}
         outlets={outlets}
@@ -262,7 +274,7 @@ function AreaFrameBody({
           className="mb-4"
         />
       ) : null}
-      <OfflineBannerSlot />
+      {area !== "platform" ? <OfflineBannerSlot /> : null}
       {outletPicker ? (
         <div role="status" aria-live="polite" className="sr-only">
           {announcement}

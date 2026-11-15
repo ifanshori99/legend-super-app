@@ -518,8 +518,8 @@ describe("legend-18qw notification recipient resolver", () => {
     });
     // A web push subscription and a stored preference for one approver.
     await owner.query(
-      `INSERT INTO push_subscriptions (tenant_id, id, user_id, endpoint_hash, subscription_ciphertext, key_version)
-     VALUES ($1, $2, $3, 'hash-18qw', 'cipher', 'v1')`,
+      `INSERT INTO push_subscriptions (tenant_id, id, user_id, endpoint_hash, subscription_ciphertext, key_version, registered_at)
+     VALUES ($1, $2, $3, 'hash-18qw', 'cipher', 'v1', now())`,
       [tenantId, randomUUID(), users.outletApprover],
     );
     await owner.query(

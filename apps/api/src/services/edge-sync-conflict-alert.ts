@@ -158,6 +158,8 @@ export type SupervisorAlert = {
   payload: Record<string, string>;
   title: string;
   body: string;
+  /** Persist a dedupe marker even if nobody can receive this alert. */
+  recordEmpty?: boolean;
 };
 
 /**
@@ -170,7 +172,7 @@ export async function notifyOutletSupervisors(
   context: ScopedTenantContext,
   alert: SupervisorAlert,
   now: Date,
-): Promise<void> {
+): Promise<boolean> {
   const userIds = [
     ...new Set([
       ...(await supervisorIds(
@@ -182,7 +184,32 @@ export async function notifyOutletSupervisors(
       ...(alert.alsoUserIds ?? []),
     ]),
   ];
-  if (userIds.length === 0) return;
+  if (userIds.length === 0) {
+    if (alert.recordEmpty) {
+      const event = eventEnvelopeSchema.parse({
+        id: alert.id,
+        tenantId: alert.tenantId,
+        outletId: alert.outletId,
+        name: alert.eventName,
+        version: 1,
+        aggregateType: alert.aggregateType,
+        aggregateId: alert.aggregateId,
+        sequence: 1,
+        occurredAt: toIsoDateTime(now),
+        actor: { type: "system" },
+        deviceId: null,
+        idempotencyKey: `${alert.eventName}:${ulidToUuid(alert.id)}`,
+        payloadSchemaRef: `${alert.eventName}.v1`,
+        payload: alert.payload,
+      });
+      await createNotificationConsumer(context, async () => [])(
+        event,
+        event.idempotencyKey,
+        tx,
+      );
+    }
+    return false;
+  }
   const [policyRow] = await tx
     .select()
     .from(notificationPolicies)
@@ -248,6 +275,7 @@ export async function notifyOutletSupervisors(
     event.idempotencyKey,
     tx,
   );
+  return true;
 }
 
 /**

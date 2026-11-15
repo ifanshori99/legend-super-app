@@ -38,13 +38,14 @@ const PATTERNS: [PiiKind, RegExp][] = [
     "bank_account",
     /\b(?:rek(?:ening)?\.?|no\.?\s*rek\.?|account(?:\s+(?:no|number))?\.?|acc\.?\s*no\.?)\s*(?:[A-Za-z]{2,12}\s+)?:?\s*\d[\d\s.-]{7,20}\d/gi,
   ],
-  // Salary or payroll words followed by an amount: "gaji Rp 8.500.000",
-  // "salary: 12000000", "THP 7,5jt". Words may sit up to a few tokens away.
+  // Salary context is separate from its amount so dates and words stay intact.
   [
     "salary",
-    /\b(?:gaji|salary|thp|take[\s-]?home(?:[\s-]?pay)?|payroll|upah|penghasilan)\b[^\d\n]{0,25}(?:rp\.?\s*)?\d[\d.,]*(?:\s*(?:jt|juta|rb|ribu|k|m))?/gi,
+    /\b(?:gaji|salary|thp|take[\s-]?home(?:[\s-]?pay)?|payroll|upah|penghasilan)\b/gi,
   ],
-  ["phone", /(\+62|62|0)8\d{1,3}[\s.-]?\d{3,4}[\s.-]?\d{3,5}\b/g],
+  // No word character or hyphen directly before the number: a UUID segment or
+  // a longer digit string must not be read as a phone number.
+  ["phone", /(?<![\w-])(\+62|62|0)8\d{1,3}[\s.-]?\d{3,4}[\s.-]?\d{3,5}\b/g],
 ];
 
 export type PiiFinding = {
@@ -54,14 +55,65 @@ export type PiiFinding = {
   end: number;
 };
 
+const DATE_MONTH =
+  "(?:jan(?:uari|uary)?|feb(?:ruari|ruary)?|mar(?:et|ch)?|apr(?:il)?|mei|may|jun[ie]?|jul[iy]?|agu(?:stus)?|aug(?:ust)?|sep(?:t(?:ember)?)?|okt(?:ober)?|oct(?:ober)?|nov(?:ember)?|des(?:ember)?|dec(?:ember)?)";
+const SALARY_DATES = new RegExp(
+  `\\b(?:(?:19|20)\\d{2}[-/.]\\d{1,2}[-/.]\\d{1,2}|(?:19|20)\\d{2}[-/]\\d{1,2}|\\d{1,2}[-/.]\\d{1,2}[-/.](?:\\d{2}|(?:19|20)\\d{2})|${DATE_MONTH}\\.?\\s+\\d{1,2}(?:,?\\s+(?:19|20)\\d{2})?|\\d{1,2}\\s+${DATE_MONTH}\\.?(?:\\s+(?:19|20)\\d{2})?|${DATE_MONTH}\\.?\\s+(?:19|20)\\d{2})\\b`,
+  "gi",
+);
+
+function salaryAmountAfter(
+  text: string,
+  contextEnd: number,
+): PiiFinding | null {
+  const newline = text.indexOf("\n", contextEnd);
+  const tail = text.slice(contextEnd, newline < 0 ? undefined : newline);
+  // A title/date is not salary PII. Explicit currency or a magnitude suffix
+  // still wins, including small amounts such as "Rp 2026".
+  const dates = [...tail.matchAll(SALARY_DATES)];
+  for (const match of tail.matchAll(
+    /(?:\brp\.?\s*)?\d(?:[\d.,]*\d)?(?:\s*(?:juta|jt|ribu|rb|k|m)\b)?/gi,
+  )) {
+    const offset = match.index ?? 0;
+    const amount = match[0];
+    const explicitAmount = /^(?:rp\.?)/i.test(amount) || /[a-z]$/i.test(amount);
+    if (
+      !explicitAmount &&
+      dates.some((date) => {
+        const dateStart = date.index ?? 0;
+        return (
+          offset >= dateStart &&
+          offset + amount.length <= dateStart + date[0].length
+        );
+      })
+    )
+      continue;
+    const skippedDateLength = dates.reduce((length, date) => {
+      const dateEnd = (date.index ?? 0) + date[0].length;
+      return dateEnd <= offset ? length + date[0].length : length;
+    }, 0);
+    if (offset - skippedDateLength > 25) break;
+    const start = contextEnd + offset;
+    return { kind: "salary", text: amount, start, end: start + amount.length };
+  }
+  return null;
+}
+
 function findAll(text: string): PiiFinding[] {
   const findings: PiiFinding[] = [];
   for (const [kind, pattern] of PATTERNS)
     for (const match of text.matchAll(pattern)) {
-      const start = match.index ?? 0;
-      const end = start + match[0].length;
+      let start = match.index ?? 0;
+      let value = match[0];
+      if (kind === "salary") {
+        const amount = salaryAmountAfter(text, start + value.length);
+        if (!amount) continue;
+        start = amount.start;
+        value = amount.text;
+      }
+      const end = start + value.length;
       if (findings.some((f) => start < f.end && end > f.start)) continue;
-      findings.push({ kind, text: match[0], start, end });
+      findings.push({ kind, text: value, start, end });
     }
   return findings.sort((a, b) => a.start - b.start);
 }
@@ -78,13 +130,70 @@ export function redactPii(text: string): string {
   return result;
 }
 
-/** Deep copy of a JSON value with every string passed through redactPii. */
+// Keys that name a personal-data field. Matched on whole words after splitting
+// camelCase and snake_case, so ids and chart-of-accounts fields (accountId,
+// accountCode, microphone) stay intact.
+const SENSITIVE_WORDS = new Set([
+  "phone",
+  "telp",
+  "telepon",
+  "mobile",
+  "whatsapp",
+  "email",
+  "nik",
+  "npwp",
+  "rekening",
+]);
+
+function isSensitiveKey(key: string): boolean {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  return words.some(
+    (word, i) =>
+      SENSITIVE_WORDS.has(word) ||
+      (word === "account" && ["number", "no"].includes(words[i + 1] ?? "")) ||
+      (word === "bank" && words[i + 1] === "account"),
+  );
+}
+
+/**
+ * Deep copy of a JSON value with every string passed through redactPii.
+ * Object keys are redacted too, and a string or number stored under a key that
+ * names personal data (phone, email, nik, npwp, rekening ...) is masked whole,
+ * because a bare value like "1234567890" has no context for the patterns.
+ */
 export function redactJson(value: unknown): unknown {
   if (typeof value === "string") return redactPii(value);
   if (Array.isArray(value)) return value.map(redactJson);
   if (value && typeof value === "object")
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, redactJson(item)]),
+      Object.entries(value).map(([key, item]) => [
+        redactPii(key),
+        isSensitiveKey(key) &&
+        (typeof item === "string" || typeof item === "number")
+          ? "[redacted]"
+          : redactJson(item),
+      ]),
     );
   return value;
+}
+
+/**
+ * Tool results are JSON text (or an error message) that is sent back to the
+ * provider on the next turn (AIG-02). Redact every string value inside a JSON
+ * result; text that is not JSON is redacted as plain text. Content with no
+ * personal data is returned unchanged, byte for byte.
+ */
+export function redactToolResultContent(content: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return redactPii(content);
+  }
+  const redacted = JSON.stringify(redactJson(parsed));
+  return redacted === JSON.stringify(parsed) ? content : redacted;
 }

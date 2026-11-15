@@ -1,7 +1,8 @@
 // Edge master sync snapshot, cloud side (bead legend-9ppw; PRD v1.7 §3 F5
 // "Server Lokal"). The edge node posts stock movements against stock
 // locations that must exist in the cloud with the same ids, so it pulls the
-// masters it needs: uoms (tenant-wide), stock locations (its outlet only),
+// masters it needs: brands (every brand of the tenant, so recipes of another
+// brand have their FK parent), uoms (tenant-wide), stock locations (its outlet only),
 // and the chart of accounts with its posting-role mappings (its outlet's
 // legal entity only). Contract: packages/shared/src/edge/master-sync.ts.
 //
@@ -13,21 +14,22 @@
 //   (integrity and misrouting only; authenticity comes from TLS).
 // - Full snapshot, deterministic order (id, or code for accounts), parsed
 //   with the shared schema before it is signed.
-import { and, asc, DrizzleQueryError, eq } from "drizzle-orm";
+import { and, asc, DrizzleQueryError, eq, gt, ne } from "drizzle-orm";
 import { DatabaseError } from "pg";
-import { CoreError } from "@starter/shared/core";
+import { brandIdSchema, CoreError, type BrandId } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import {
+  EDGE_MASTER_SNAPSHOT_MIN_VERSION,
   EDGE_MASTER_SNAPSHOT_VERSION,
-  edgeMasterSnapshotSchema,
-  type EdgeMasterSnapshotResponse,
+  EDGE_MASTER_BRANDS_PAGE_SIZE,
+  edgeMasterSnapshotCloudSchema,
 } from "@starter/shared/edge/master-sync";
 import { db } from "../db/index.ts";
 import { parseEdgeCredential } from "../edge/credential.ts";
 import { accountMappings, chartOfAccounts } from "../db/schema/accounting.ts";
 import { edgeNodes } from "../db/schema/edge-node.ts";
 import { stockLocations, uoms } from "../db/schema/inventory.ts";
-import { outlets, tenants } from "../db/schema/platform-org.ts";
+import { brands, outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import { outletContext } from "./device-pin-support.ts";
@@ -74,6 +76,14 @@ const denied = () =>
     "Edge node tidak dapat mengambil data master outlet ini.",
   );
 
+type SnapshotOptions = {
+  snapshotVersion?: number;
+  brandPage?: boolean;
+  brandCursor?: BrandId;
+  /** Include `uoms[].isSystem` (opt-in `uomIsSystem=1`). */
+  uomIsSystem?: boolean;
+};
+
 /**
  * The signed master snapshot for one verified edge node. `presentedCredential`
  * is the bearer token that `verifyEdgeCredential` accepted for `node`.
@@ -81,7 +91,14 @@ const denied = () =>
 export async function buildEdgeMasterSnapshot(
   node: VerifiedEdgeNode,
   presentedCredential: string,
-): Promise<EdgeMasterSnapshotResponse> {
+  options: SnapshotOptions = {},
+) {
+  // Version 2 (brands) only for an edge that asked; an older edge accepts the
+  // literal version 1 only, so the default is exactly the old snapshot.
+  const version =
+    (options.snapshotVersion ?? 0) >= EDGE_MASTER_SNAPSHOT_VERSION
+      ? EDGE_MASTER_SNAPSHOT_VERSION
+      : EDGE_MASTER_SNAPSHOT_MIN_VERSION;
   const verified = verifiedEdgeNodeSchema.parse(node);
   const { tenantId, outletId, edgeNodeId } = verified;
   const presented = parseEdgeCredential(presentedCredential);
@@ -97,7 +114,26 @@ export async function buildEdgeMasterSnapshot(
     outletId,
   );
 
-  const snapshot = await readSnapshot(context, verified);
+  if (
+    (options.brandPage && version < 2) ||
+    (options.brandCursor !== undefined && !options.brandPage)
+  )
+    throw new CoreError("VALIDATION_ERROR", "Kursor brand tidak valid.");
+  const fullSnapshot = await readSnapshot(context, verified, version, options);
+  // `uoms[].isSystem` only for an edge that asked: an older edge's strict
+  // uom row rejects the unknown field.
+  const snapshot = options.uomIsSystem
+    ? fullSnapshot
+    : {
+        ...fullSnapshot,
+        uoms: fullSnapshot.uoms.map((row) => ({
+          id: row.id,
+          tenantId: row.tenantId,
+          code: row.code,
+          name: row.name,
+          createdAt: row.createdAt,
+        })),
+      };
 
   return {
     snapshot,
@@ -113,9 +149,11 @@ type SnapshotScope = Pick<
 async function readSnapshot(
   context: ReturnType<typeof outletContext>,
   scope: SnapshotScope,
+  version: number,
+  options: SnapshotOptions,
 ) {
   try {
-    return await readSnapshotInTenant(context, scope);
+    return await readSnapshotInTenant(context, scope, version, options);
   } catch (error) {
     if (!isDatabaseError(error)) throw error;
     throw masterReadFailed(error);
@@ -125,6 +163,8 @@ async function readSnapshot(
 function readSnapshotInTenant(
   context: ReturnType<typeof outletContext>,
   { tenantId, outletId, edgeNodeId }: SnapshotScope,
+  version: number,
+  options: SnapshotOptions,
 ) {
   return withTenant(db, context, async (tx) => {
     const [tenant] = await tx
@@ -135,6 +175,7 @@ function readSnapshotInTenant(
     const [outlet] = await tx
       .select({
         legalEntityId: outlets.legalEntityId,
+        brandId: outlets.brandId,
         status: outlets.status,
       })
       .from(outlets)
@@ -157,6 +198,69 @@ function readSnapshotInTenant(
     if (!edgeNode) throw denied();
     const { legalEntityId } = outlet;
 
+    let brandRows: (typeof brands.$inferSelect)[] = [];
+    let nextBrandCursor: BrandId | undefined;
+    let responseVersion = version;
+    if (version >= 2 && options.brandPage) {
+      // A cursor is an existing non-outlet brand in this tenant. An arbitrary
+      // or foreign id must not silently skip some of this tenant's brands.
+      if (options.brandCursor !== undefined) {
+        const [cursor] = await tx
+          .select({ id: brands.id })
+          .from(brands)
+          .where(
+            and(
+              eq(brands.tenantId, tenantId),
+              eq(brands.id, options.brandCursor),
+              ne(brands.id, outlet.brandId),
+            ),
+          )
+          .limit(1);
+        if (!cursor)
+          throw new CoreError("VALIDATION_ERROR", "Kursor brand tidak valid.");
+      }
+      const [ownBrand] = await tx
+        .select()
+        .from(brands)
+        .where(
+          and(eq(brands.tenantId, tenantId), eq(brands.id, outlet.brandId)),
+        )
+        .limit(1);
+      if (!ownBrand) throw denied();
+      const page = await tx
+        .select()
+        .from(brands)
+        .where(
+          and(
+            eq(brands.tenantId, tenantId),
+            ne(brands.id, outlet.brandId),
+            options.brandCursor === undefined
+              ? undefined
+              : gt(brands.id, options.brandCursor),
+          ),
+        )
+        .orderBy(asc(brands.id))
+        // Reserve one slot for the outlet brand. The extra row is lookahead.
+        .limit(EDGE_MASTER_BRANDS_PAGE_SIZE);
+      const others = page.slice(0, EDGE_MASTER_BRANDS_PAGE_SIZE - 1);
+      brandRows = [ownBrand, ...others];
+      const lastOther = others[others.length - 1];
+      if (page.length === EDGE_MASTER_BRANDS_PAGE_SIZE && lastOther)
+        nextBrandCursor = brandIdSchema.parse(lastOther.id);
+    } else if (version >= 2) {
+      brandRows = await tx
+        .select()
+        .from(brands)
+        .where(eq(brands.tenantId, tenantId))
+        .orderBy(asc(brands.id))
+        .limit(EDGE_MASTER_BRANDS_PAGE_SIZE + 1);
+      // Older edges understand a complete v1 snapshot. Do not send a silent
+      // partial brand list or lose all non-brand masters on a large tenant.
+      if (brandRows.length > EDGE_MASTER_BRANDS_PAGE_SIZE) {
+        responseVersion = EDGE_MASTER_SNAPSHOT_MIN_VERSION;
+        brandRows = [];
+      }
+    }
     const uomRows = await tx
       .select()
       .from(uoms)
@@ -193,17 +297,33 @@ function readSnapshotInTenant(
       )
       .orderBy(asc(accountMappings.role));
 
-    const parsed = edgeMasterSnapshotSchema.safeParse({
-      version: EDGE_MASTER_SNAPSHOT_VERSION,
+    const parsed = edgeMasterSnapshotCloudSchema.safeParse({
+      version: responseVersion,
       issuedAt: new Date().toISOString(),
       tenantId,
       outletId,
       legalEntityId,
+      ...(responseVersion >= 2
+        ? {
+            brandId: outlet.brandId,
+            ...(nextBrandCursor === undefined ? {} : { nextBrandCursor }),
+            brands: brandRows.map((row) => ({
+              id: row.id,
+              tenantId: row.tenantId,
+              slug: row.slug,
+              name: row.name,
+              logoMediaId: row.logoMediaId,
+              themeId: row.themeId,
+              createdAt: row.createdAt.toISOString(),
+            })),
+          }
+        : {}),
       uoms: uomRows.map((row) => ({
         id: row.id,
         tenantId: row.tenantId,
         code: row.code,
         name: row.name,
+        isSystem: row.isSystem,
         createdAt: row.createdAt.toISOString(),
       })),
       stockLocations: locationRows.map((row) => ({

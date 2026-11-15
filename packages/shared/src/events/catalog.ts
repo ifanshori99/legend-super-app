@@ -37,7 +37,7 @@ const namesByWorkstream = {
   "WS-01":
     "login_challenge.created login_challenge.completed identity.linked session.created session.revoked action_request.created action_request.approved action_request.executed role.updated employee_access.updated role.created role_assignment.granted role_assignment.ended approval_policy.changed approval.requested approval.decided approval.resolved tenant.created tenant.status_changed tenant.package_changed brand.created brand.updated outlet.created outlet.updated outlet.status_changed legal_entity.created legal_entity.updated tenant_domain.added tenant_domain.verified tenant_domain.removed tenant_integration.updated tenant_integration.status_changed tenant_theme.activated support_access.requested support_access.granted support_access.ended tenant_owner.changed config_import.completed usage_limit.reached staff_pin.set staff_pin.locked pos_override.recorded",
   "WS-02":
-    "device.registered device.revoked print_job.created sync.batch_applied edge_link.dead_lettered",
+    "device.registered device.revoked print_job.created sync.batch_applied edge_link.dead_lettered edge_outbox.blocked catalog_record.updated",
   "WS-03":
     "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored table_session.closed table_session.moved table_session.merged table_session.items_moved order.placed item.failed order_issue.resolved order_issue.manual_refund_approved order_issue.refund_reversal_requested order_issue.charge_paid service_request.created service_request.overdue open_bill.inactive open_bill.limit_exceeded table.status_changed table_session.linked table_session.unlinked",
   "WS-04":

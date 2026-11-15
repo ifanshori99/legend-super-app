@@ -102,6 +102,7 @@ import {
   assertExpectedStatus,
   assertExpectedVersion,
   assertMutable,
+  assertNoOpenEdcRequest,
   assertNoPendingGatewayTender,
   auditPos,
   businessDateFor,
@@ -1605,6 +1606,7 @@ export async function voidPosOrder(
       // the approval is consumed).
       await assertNoActiveQrisHold(tx, context, order.id);
       const next = transitionPosOrder(order.status, "void");
+      await assertNoOpenEdcRequest(tx, context, order);
       const tenders = await tendersOf(tx, context, order.id);
       if (capturedIdr(tenders) > 0)
         throw new CoreError(
@@ -1802,6 +1804,7 @@ export async function voidPosOrderItem(
           "CONFLICT",
           "Ini item terakhir pesanan; void pesanannya.",
         );
+      await assertNoOpenEdcRequest(tx, context, order);
       assertNoPendingGatewayTender(await tendersOf(tx, context, order.id));
       const discounts = await liveDiscountsOf(tx, context, order.id);
       if (discounts.some((row) => row.source !== "manual"))

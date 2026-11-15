@@ -19,6 +19,8 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { db } from "../db/index.ts";
+import { createPrintAgent } from "../edge/print/agent.ts";
+import { FakePrinterTransport } from "../edge/print/transport.ts";
 import { createDbPrintStore, toPrintJobDto } from "../edge/print/store.ts";
 import type { NewPrintJob, PrintStore } from "../edge/print/types.ts";
 
@@ -918,4 +920,165 @@ describe("print job immutability", () => {
       ),
     ).resolves.toBeDefined();
   });
+});
+
+describe("legend-z76q station printer dispatch", () => {
+  it.each([
+    "revoked",
+    "other outlet",
+    "wrong type",
+    "inactive",
+    "receipt revoked",
+  ])("does not send a queued job when its device is %s", async (invalid) => {
+    const printerId = randomUUID();
+    const stationId = randomUUID();
+    await asOwner(async (client) => {
+      await client.query(
+        `INSERT INTO devices (id, tenant_id, outlet_id, type, label, status)
+           VALUES ($1, $2, $3, $4, 'Dispatch test', 'active')`,
+        [
+          printerId,
+          tenantId,
+          invalid === "other outlet" ? outletB : outletA,
+          invalid === "wrong type" ? "pos" : "printer",
+        ],
+      );
+      await client.query(
+        `INSERT INTO stations (id, tenant_id, outlet_id, name, type, printer_device_id)
+           VALUES ($1, $2, $3, $5, 'hot_kitchen', $4)`,
+        [stationId, tenantId, outletA, printerId, `Dispatch ${stationId}`],
+      );
+      await client.query(
+        `INSERT INTO edge_printers (id, tenant_id, outlet_id, label, role, station_id, transport, host, port)
+           VALUES ($1, $2, $3, 'Dispatch test', 'station', $4, 'network', '192.168.1.50', 9100)`,
+        [printerId, tenantId, outletA, stationId],
+      );
+    });
+    const queued = await storeA.enqueue(
+      job(printerId, `dispatch-${invalid}`, {
+        kind: invalid === "receipt revoked" ? "receipt" : "station_ticket",
+      }),
+    );
+    await asOwner(async (client) => {
+      if (
+        invalid === "revoked" ||
+        invalid === "inactive" ||
+        invalid === "receipt revoked"
+      )
+        await client.query(
+          "UPDATE devices SET status = 'revoked', revoked_at = now() WHERE id = $1",
+          [printerId],
+        );
+    });
+    const transport = new FakePrinterTransport();
+    const agent = createPrintAgent({
+      store: storeA,
+      transportFor: () => transport,
+    });
+    await agent.drain(printerId);
+    expect(transport.printed).toHaveLength(0);
+    const result = await asOwner((client) =>
+      client.query<{ status: string; last_error: string | null }>(
+        "SELECT status, last_error FROM edge_print_jobs WHERE id = $1",
+        [ulidToUuid(queued.job.id)],
+      ),
+    );
+    expect(result.rows[0]?.status).toBe("failed");
+    expect(result.rows[0]?.last_error).toBeTruthy();
+  });
+
+  it.each([
+    "valid",
+    "binding changed",
+    "fallback valid",
+    "fallback revoked",
+    "fallback receipt original revoked",
+  ])(
+    "checks the station binding and actual destination: %s",
+    async (scenario) => {
+      const stationPrinter = randomUUID();
+      const stationId = randomUUID();
+      const fallback = randomUUID();
+      const usesFallback = scenario.startsWith("fallback");
+      await asOwner(async (client) => {
+        for (const id of usesFallback
+          ? [stationPrinter, fallback]
+          : [stationPrinter]) {
+          await client.query(
+            `INSERT INTO devices (id, tenant_id, outlet_id, type, label, status)
+             VALUES ($1, $2, $3, 'printer', 'Dispatch test', 'active')`,
+            [id, tenantId, outletA],
+          );
+        }
+        await client.query(
+          `INSERT INTO stations (id, tenant_id, outlet_id, name, type, printer_device_id)
+           VALUES ($1, $2, $3, $4, 'hot_kitchen', $5)`,
+          [
+            stationId,
+            tenantId,
+            outletA,
+            `Dispatch ${stationId}`,
+            stationPrinter,
+          ],
+        );
+        await client.query(
+          `INSERT INTO edge_printers (id, tenant_id, outlet_id, label, role, station_id, transport, host, port)
+           VALUES ($1, $2, $3, 'Station test', 'station', $4, 'network', '192.168.1.50', 9100)`,
+          [stationPrinter, tenantId, outletA, stationId],
+        );
+        if (usesFallback)
+          await client.query(
+            `INSERT INTO edge_printers (id, tenant_id, outlet_id, label, role, transport, host, port)
+             VALUES ($1, $2, $3, 'Fallback test', 'receipt', 'network', '192.168.1.51', 9100)`,
+            [fallback, tenantId, outletA],
+          );
+      });
+      const target = usesFallback ? fallback : stationPrinter;
+      const queued = await storeA.enqueue(
+        job(target, `dispatch-${scenario}`, {
+          kind:
+            scenario === "fallback receipt original revoked"
+              ? "receipt"
+              : "station_ticket",
+          ...(usesFallback
+            ? {
+                printedFallback: true,
+                fallbackReason: "printer_offline",
+                originalPrinterId: stationPrinter,
+              }
+            : {}),
+        }),
+      );
+      await asOwner(async (client) => {
+        if (scenario === "binding changed")
+          await client.query(
+            "UPDATE stations SET printer_device_id = NULL WHERE id = $1",
+            [stationId],
+          );
+        if (
+          scenario === "fallback revoked" ||
+          scenario === "fallback receipt original revoked"
+        )
+          await client.query(
+            "UPDATE devices SET status = 'revoked', revoked_at = now() WHERE id = $1",
+            [scenario === "fallback revoked" ? fallback : stationPrinter],
+          );
+      });
+      const transport = new FakePrinterTransport();
+      const agent = createPrintAgent({
+        store: storeA,
+        transportFor: () => transport,
+      });
+      await agent.drain(target);
+      const allowed = scenario === "valid" || scenario === "fallback valid";
+      expect(transport.printed).toHaveLength(allowed ? 1 : 0);
+      const result = await asOwner((client) =>
+        client.query<{ status: string }>(
+          "SELECT status FROM edge_print_jobs WHERE id = $1",
+          [ulidToUuid(queued.job.id)],
+        ),
+      );
+      expect(result.rows[0]?.status).toBe(allowed ? "printed" : "failed");
+    },
+  );
 });

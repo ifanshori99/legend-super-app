@@ -33,17 +33,23 @@
 //   as a record with `deletedAt`; live rows and markers are merged in
 //   (sync_txid, id) order. Edge-measured status never travels.
 // Scope: price_lists, stations and printers are outlet-owned (only the
-// credential's outlet). menu_categories, menu_items and recipes are limited to the brand of
-// the credential's outlet (`outlets.brand_id`); item_variants and
+// credential's outlet). menu_categories and menu_items are limited to the brand
+// of the credential's outlet (`outlets.brand_id`); item_variants and
 // menu_item_modifier_groups follow their menu item's brand. modifier_groups,
 // modifiers and inventory_items have no brand column: they are tenant-level.
+// recipes are tenant-level too (legend-2uqcd): a modifier or an item of this
+// brand may use a recipe of another brand, so every edge gets all recipes of
+// the tenant (the other brands arrive with the master snapshot). Only for an
+// edge that negotiated protocol 3: an older edge has no brand check for them
+// (FK failure, permanent CATALOG_PULL_FAILED), so it keeps the credential's
+// brand only.
 // Prices are read as the stored integer rupiah and passed through untouched.
 
 import {
   CATALOG_PROTOCOL_VERSION,
-  catalogSyncPageSchema,
+  catalogSyncCloudPageSchema,
   catalogSyncQuerySchema,
-  catalogSyncRecordSchemas,
+  catalogSyncCloudRecordSchemas,
   type CatalogSyncPage,
   type CatalogSyncQuery,
   type CatalogSyncStream,
@@ -81,6 +87,7 @@ import { promotions, vouchers } from "../db/schema/crm-promo.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
+import { isCatalogDeliveryRefusedTx } from "./edge-queue.service.ts";
 import type { VerifiedEdgeNode } from "./staff-pin-sync.ts";
 import { verifiedEdgeNodeSchema } from "./staff-pin-sync.ts";
 
@@ -92,6 +99,20 @@ const CURSOR_TAG = "cat2";
 const TXID_MAX = 9223372036854775807n;
 const TXID_PATTERN = /^\d{1,19}$/;
 const CURSOR_INVALID_MESSAGE = "Cursor sinkronisasi katalog tidak valid.";
+
+/**
+ * legend-3k41y: streams whose rows are filtered by the outlet's brand. A node
+ * whose outlet brand moved is refused these (fail closed); the other streams
+ * are tenant-level or outlet-scoped and keep flowing.
+ */
+export const BRAND_DEPENDENT_CATALOG_STREAMS: ReadonlySet<CatalogSyncStream> =
+  new Set([
+    "menu_categories",
+    "menu_items",
+    "recipes",
+    "item_variants",
+    "menu_item_modifier_groups",
+  ]);
 
 /** Streams whose cloud table has no `id`: the key is two uuids. */
 const TWO_KEY_STREAMS: ReadonlySet<CatalogSyncStream> = new Set([
@@ -240,6 +261,11 @@ type Scan = {
   readonly since: Mark | null;
   /** Fetch one more than the page to learn `hasMore`. */
   readonly take: number;
+  /**
+   * Negotiated protocol of the request: undefined for an edge that did not
+   * ask (it predates versioning). `recipes` is tenant-wide from 3 on.
+   */
+  readonly protocolVersion: number | undefined;
 };
 
 const scanners: Record<
@@ -738,7 +764,8 @@ const scanners: Record<
       },
     }));
   },
-  async recipes({ tx, tenantId, brandId, since, take }) {
+  async recipes({ tx, tenantId, brandId, since, take, protocolVersion }) {
+    const allTenant = protocolVersion !== undefined && protocolVersion >= 3;
     const t = recipes;
     const rows = await tx
       .select({
@@ -768,7 +795,7 @@ const scanners: Record<
       .where(
         and(
           eq(t.tenantId, tenantId),
-          eq(t.brandId, brandId),
+          allTenant ? undefined : eq(t.brandId, brandId),
           committed(t.syncTxid),
           after(t.syncTxid, [t.id], since),
         ),
@@ -802,9 +829,10 @@ const scanners: Record<
 /**
  * The page version for an edge that understands up to `requested`: the lower
  * of that and this cloud's own. A newer edge gets this cloud's version (it
- * decides whether it can read it); an older one gets its own. Only version 2
- * exists, so every page has the v2 shape whatever is stamped; when v3
- * changes the shape, serve the shape of the returned version here.
+ * decides whether it can read it); an older one gets its own. Versions 2 and 3
+ * share one page shape, so every page has it whatever is stamped; when v3
+ * changes the shape, serve the shape of the returned version here. Version 3
+ * only widens the `recipes` stream (all brands of the tenant); same shape.
  */
 export function negotiateCatalogProtocolVersion(requested: number): number {
   return Math.min(requested, CATALOG_PROTOCOL_VERSION);
@@ -815,8 +843,62 @@ export function negotiateCatalogProtocolVersion(requested: number): number {
  * order. Tenant and outlet come only from the arguments (the verified edge
  * credential); `query` carries the stream, the cursor and the limit only.
  */
+export async function listCatalogRecordsForNode(
+  database: typeof appDb,
+  input: VerifiedEdgeNode & { readonly query: CatalogSyncQuery },
+): Promise<CatalogSyncPage> {
+  const node = verifiedEdgeNodeSchema.parse({
+    tenantId: input.tenantId,
+    outletId: input.outletId,
+    edgeNodeId: input.edgeNodeId,
+  });
+  const query = catalogSyncQuerySchema.parse(input.query);
+  const context = outletContext(
+    establishTenantContext({
+      tenantId: node.tenantId,
+      brandId: null,
+      source: "device",
+    }),
+    node.outletId,
+  );
+  return withTenant(database, context, async (tx) => {
+    if (
+      BRAND_DEPENDENT_CATALOG_STREAMS.has(query.stream) &&
+      (await isCatalogDeliveryRefusedTx(tx, node))
+    )
+      throw new CoreError(
+        "FORBIDDEN",
+        "Edge node diblokir: brand outlet berubah, provisi ulang node.",
+      );
+    return listCatalogRecordsSinceTx(tx, { ...node, query });
+  });
+}
+
+/** Trusted internal scanner; authenticated HTTP delivery uses the node guard above. */
 export async function listCatalogRecordsSince(
   database: typeof appDb,
+  input: {
+    readonly tenantId: VerifiedEdgeNode["tenantId"];
+    readonly outletId: VerifiedEdgeNode["outletId"];
+    readonly query: CatalogSyncQuery;
+  },
+): Promise<CatalogSyncPage> {
+  const { tenantId, outletId } = verifiedEdgeNodeSchema
+    .pick({ tenantId: true, outletId: true })
+    .parse({ tenantId: input.tenantId, outletId: input.outletId });
+  const context = outletContext(
+    establishTenantContext({ tenantId, brandId: null, source: "device" }),
+    outletId,
+  );
+
+  return withTenant(database, context, (tx) =>
+    listCatalogRecordsSinceTx(tx, input),
+  );
+}
+
+/** Internal scanner shared with the cloud publisher in its cursor transaction. */
+export async function listCatalogRecordsSinceTx(
+  tx: Parameters<Parameters<typeof withTenant>[2]>[0],
   input: {
     readonly tenantId: VerifiedEdgeNode["tenantId"];
     readonly outletId: VerifiedEdgeNode["outletId"];
@@ -830,12 +912,7 @@ export async function listCatalogRecordsSince(
     input.query,
   );
   const since = parseCursor(stream, input.query.since);
-  const context = outletContext(
-    establishTenantContext({ tenantId, brandId: null, source: "device" }),
-    outletId,
-  );
-
-  const rows = await withTenant(database, context, async (tx) => {
+  const rows = await (async () => {
     // Fail closed: an inactive tenant or a closed / unknown outlet syncs nothing.
     const [tenantRow] = await tx
       .select({ status: tenants.status })
@@ -863,8 +940,12 @@ export async function listCatalogRecordsSince(
       brandId: outletRow.brandId,
       since,
       take: limit + 1,
+      protocolVersion:
+        protocolVersion === undefined
+          ? undefined
+          : negotiateCatalogProtocolVersion(protocolVersion),
     });
-  });
+  })();
 
   const page = rows.slice(0, limit);
   const last = page.at(-1);
@@ -872,7 +953,7 @@ export async function listCatalogRecordsSince(
     last === undefined
       ? null
       : encodeMark({ txid: last.txid, keys: last.keys });
-  return catalogSyncPageSchema.parse({
+  return catalogSyncCloudPageSchema.parse({
     // Only an edge that asked: an older edge's strict page schema would
     // refuse the field and stop syncing.
     ...(protocolVersion === undefined
@@ -880,7 +961,7 @@ export async function listCatalogRecordsSince(
       : { protocolVersion: negotiateCatalogProtocolVersion(protocolVersion) }),
     stream,
     records: page.map(({ record }) =>
-      catalogSyncRecordSchemas[stream].parse(record),
+      catalogSyncCloudRecordSchemas[stream].parse(record),
     ),
     nextCursor: lastMark ?? input.query.since ?? null,
     hasMore: rows.length > limit,

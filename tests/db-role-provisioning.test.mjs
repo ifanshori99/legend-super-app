@@ -19,6 +19,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Pool } from "pg";
 import { pnpmCommand, root } from "../scripts/lib.mjs";
+import { useRoleAuditLock } from "./helpers/role-audit-lock.mjs";
+
+useRoleAuditLock();
 
 const hex = (bytes) => randomBytes(bytes).toString("hex");
 const tenantA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -151,6 +154,25 @@ function login(url, user) {
 const serverVersion = async (pool) =>
   (await pool.query("SELECT current_setting('server_version_num')::int AS v"))
     .rows[0].v;
+
+test("role provisioning runs on the PostgreSQL major requested by CI", async (t) => {
+  const expected = process.env.LEGEND_EXPECT_POSTGRES_MAJOR;
+  if (!expected) return t.skip("No PostgreSQL major requested.");
+  const shared = process.env.STARTER_TEST_DATABASE_URL;
+  assert.ok(
+    shared && process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"),
+    "Run pnpm test to create an isolated database.",
+  );
+  const pool = new Pool({ connectionString: shared });
+  try {
+    assert.equal(
+      Math.floor((await serverVersion(pool)) / 10000),
+      Number(expected),
+    );
+  } finally {
+    await pool.end();
+  }
+});
 
 test("legend-zoqc job provisions restricted roles on a fresh database, idempotently", async (t) => {
   const shared = process.env.STARTER_TEST_DATABASE_URL;

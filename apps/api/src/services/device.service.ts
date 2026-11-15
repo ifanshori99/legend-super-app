@@ -360,6 +360,13 @@ export async function issueDeviceToken(
       .returning();
     if (!updated)
       throw new CoreError("CONFLICT", "Perangkat berubah, coba lagi.");
+    // Web push registrations made with an older token stop with it (a lost or
+    // stolen phone must not keep getting alarms). Same transaction and the
+    // device row is locked FOR UPDATE, so a registration (FOR SHARE) either
+    // commits first and is deleted here or waits and then sees the new floor.
+    await tx.execute(
+      sql`DELETE FROM push_subscriptions WHERE tenant_id=${tenantId}::uuid AND device_id=${updated.id}::uuid`,
+    );
     const brandId = await outletBrandId(tx, updated.outletId);
     const token = mintForRow(updated, tenantId, brandId, issuedAt);
     await recordAudit(

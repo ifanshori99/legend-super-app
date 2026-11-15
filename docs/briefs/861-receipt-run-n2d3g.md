@@ -1,0 +1,16 @@
+# 861 legend-n2d3g receipt-run vs dead-letter (cabang fix/receipt-run-861, worktree .worktrees/receipt-run-861)
+
+Basis: btx4d (fa6ed2460) sudah ada. `edge_link.dead_lettered` notice memakai slot link yang sama dengan event mati dan tiba di cloud SEBELUM event lain; cloud mencatat conflict `link_event_dead_lettered` (edge/link-dead-letter-applier.ts) di edge_sync_conflicts (aggregate_id = aggregate event mati, detail "<reason> <eventName> link seq ..."). Edge menyimpan event mati di edge_link_dead_letters; notice di edge_outbound_queue (aggregate_type EDGE_LINK_AGGREGATE, aggregate_id = id ULID event mati).
+Uang: aman (tidak ada pembayaran keluar). Aturan: bila ragu, tahan (jangan lewati struk).
+
+## Desain
+1. Cloud (apps/api/src/edge/receipt-run-applier.ts): `permanentlyRefusedOrders` mendapat sumber kedua: order yang event `order.paid` atau `order.placed`-nya tercatat conflict `link_event_dead_lettered` (edge_sync_conflicts, tenant + aggregate order; cocokkan nama event dari kolom detail/event). Dicatat sebagai skip dengan reason `link_dead_lettered` di edge_receipt_skips (varchar(40), tanpa migrasi; perbarui komentar di db/schema/edge-receipt-skip.ts). Verifikasi format aggregate_id (uuid vs ULID) sebelum mencocokkan.
+2. Edge (apps/api/src/services/edge-receipt-run-reporter.ts): untuk `order.paid`, pesanan dihitung siap lapor bila (a) acked seperti sekarang, ATAU (b) event paid-nya ada di edge_link_dead_letters DAN tidak ada baris notice di edge_outbound_queue (aggregate_type EDGE_LINK_AGGREGATE, aggregate_id = event id ULID) berstatus <> 'acked' (notice terkirim dan di-ack, atau sudah dipangkas setelah ack). Struk itu ikut chunk; cloud melewatinya (poin 1). `order.voided` dead-lettered TETAP menahan (fail closed).
+3. Alarm: struk yang tertahan karena event paid/voided yang dead-letter dan TIDAK bisa lanjut (mis. voided dead-lettered, atau paid dead-lettered yang notice-nya belum di-ack) tidak boleh diam: laporkan jumlah tertahan di hasil reportEdgeReceiptRuns (`held`) dan kirim alarm ke supervisor outlet sekali per (tenant, order, event) dengan pola dedupe core-outbox-dead-alert.ts (sha256 -> uuid, advisory lock, cek notification_outbox.source_event_id). Hanya untuk dead-letter permanen (voided, atau paid yang notice-nya sudah di-ack namun tidak diterima), bukan penundaan biasa.
+Tanpa migrasi. Lapor bila ternyata perlu.
+
+## Ronde 2 (architect xhigh)
+F1 (high): di receipt-run-applier.ts (permanentlyRefusedOrders, sumber conflict dead-letter) tambahkan `AND outlet_id = <outlet run>` (teruskan outletId), dan JANGAN lewati order yang cloud sudah punya: buang dari hasil order dengan edge_order_ingests state in ('ingested','voided','cancelled') atau baris pos_orders (satu query tambahan per chunk). Bila ragu, jangan skip.
+F2 (medium): hapus `order.placed` dari pemicu skip (cloud mengingest order hanya dari order.paid); hanya dead-lettered `order.paid` yang boleh men-skip. Perbarui komentar header reporter/brief bila menyebut placed.
+Tes baru (edge-receipt-run-deadletter-861.test.ts): notice lintas-outlet tidak men-skip; order yang sudah ter-ingest dengan conflict dead-paid tidak di-skip; dead `placed` dengan `paid` acked tidak di-skip.
+F3-F5 dicatat, tidak diubah (F4 butuh migrasi/indeks: bead lanjutan).

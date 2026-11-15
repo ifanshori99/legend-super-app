@@ -47,6 +47,15 @@ export function StaffPageHeader({
   );
 }
 
+// A 2x2 grid below `sm` so every tab, "Darurat" last, stays whole at 390 px,
+// 320 px and 200% zoom ("Kebersihan" cannot wrap; legend-jztb7). Each tab is
+// at least 44 px tall below `sm`, and at `sm` and up on touch screens (coarse
+// pointer, e.g. a portrait tablet; founder Q32, legend-7tuml).
+const SUBNAV_TRIGGER = cn(
+  tabsTriggerClass,
+  "min-h-11 w-full justify-center px-1.5 text-center leading-tight whitespace-normal sm:min-h-[calc(var(--control-h-sm)-0.5rem)] sm:pointer-coarse:min-h-11 sm:w-auto sm:px-3.5 sm:whitespace-nowrap",
+);
+
 // Explicit links instead of a data array: each `to` stays a literal so the
 // router's generated route types check every path and its search shape.
 export function StaffSubNav({
@@ -62,14 +71,17 @@ export function StaffSubNav({
     <nav aria-label={t("facilityStaff.subnav.label")}>
       <ul
         data-slot="facility-staff-subnav"
-        className={cn(tabsListClass, "list-none")}
+        className={cn(
+          tabsListClass,
+          "grid w-full list-none grid-cols-2 sm:inline-flex sm:w-fit",
+        )}
       >
         <li>
           <Link
             to="/fasilitas"
             search={{ facilityId }}
             aria-current={link("board")}
-            className={tabsTriggerClass}
+            className={SUBNAV_TRIGGER}
           >
             {t("facilityStaff.subnav.board")}
           </Link>
@@ -79,7 +91,7 @@ export function StaffSubNav({
             to="/fasilitas/kebersihan"
             search={{ facilityId }}
             aria-current={link("cleaning")}
-            className={tabsTriggerClass}
+            className={SUBNAV_TRIGGER}
           >
             {t("facilityStaff.subnav.cleaning")}
           </Link>
@@ -89,7 +101,7 @@ export function StaffSubNav({
             to="/fasilitas/insiden"
             search={{ facilityId }}
             aria-current={link("incidents")}
-            className={tabsTriggerClass}
+            className={SUBNAV_TRIGGER}
           >
             {t("facilityStaff.subnav.incidents")}
           </Link>
@@ -99,7 +111,7 @@ export function StaffSubNav({
             to="/fasilitas/darurat"
             search={{ facilityId }}
             aria-current={link("emergency")}
-            className={tabsTriggerClass}
+            className={SUBNAV_TRIGGER}
           >
             {t("facilityStaff.subnav.emergency")}
           </Link>

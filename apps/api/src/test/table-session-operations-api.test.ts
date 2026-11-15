@@ -1766,3 +1766,260 @@ describe("review fixes (legend-685n)", () => {
     return { target, source };
   }
 });
+
+// ===========================================================================
+// EDC-01 (legend-ig2sl): move-items is a total-changing action. While an ECR
+// (EDC) request on the order's bill is not final (pending / unknown), moving or
+// splitting its items is refused 409 EDC_REQUEST_OPEN, so the amount the EDC
+// charges always equals the POS bill. Once the request is final (declined /
+// cancelled / failed) the lock lifts.
+//
+// Assumptions (spec: docs/PRD.md EDC-01; brief):
+// - An ECR request is an `edc_transactions` row (mode 'ecr', type 'sale') whose
+//   `reference` is the order number and `amount_idr` the bill total, as in
+//   pos-edc-tender.test.ts.
+// - The refusal carries the code EDC_REQUEST_OPEN somewhere in the error body.
+// - Moving items out of the locked order is refused for a whole-order move and
+//   for a partial split alike.
+// ===========================================================================
+
+describe("move session items while an ECR request is open (EDC-01)", () => {
+  const edcTransactionIds: string[] = [];
+  const terminalIds: string[] = [];
+
+  afterAll(async () => {
+    await owner.query(
+      "DELETE FROM edc_transactions WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+      [seededTenantId, edcTransactionIds],
+    );
+    await owner.query(
+      "DELETE FROM payment_edc_terminals WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+      [seededTenantId, terminalIds],
+    );
+  });
+
+  /** Two running sessions; the target already has an order (so it is live). */
+  async function twoSessions() {
+    const from = await openSession();
+    const to = await openSession();
+    await seedOrder(to.sessionId, [{ quantity: 1, unit: 18000 }]);
+    return { from, to };
+  }
+
+  /** A two-line order, so a partial selection is a real split. */
+  function twoLineOrder(sessionId: string) {
+    return seedOrder(sessionId, [
+      { quantity: 1, unit: 25000 },
+      { quantity: 1, unit: 30000 },
+    ]);
+  }
+
+  /** The ECR request for the order's current bill, in the given status. */
+  async function ecrRequest(orderUuid: string, status: string) {
+    const { rows } = await owner.query<{
+      outlet_id: string;
+      number: string;
+      total: number;
+    }>(
+      "SELECT outlet_id, number, total_idr::int AS total FROM orders WHERE id = $1",
+      [orderUuid],
+    );
+    const order = rows[0]!;
+    const terminalId = randomUUID();
+    terminalIds.push(terminalId);
+    await owner.query(
+      `INSERT INTO payment_edc_terminals
+         (id, tenant_id, outlet_id, bank_code, terminal_id, merchant_id, model,
+          connection, ip_address, supported_methods, status)
+       VALUES ($1, $2, $3, 'bca', $4, $5, 'Test EDC', 'lan', '10.0.0.9',
+               ARRAY['card','qris'], 'active')`,
+      [
+        terminalId,
+        seededTenantId,
+        order.outlet_id,
+        `TID-${terminalId.slice(0, 8)}`,
+        `MID-${terminalId.slice(0, 8)}`,
+      ],
+    );
+    const id = randomUUID();
+    edcTransactionIds.push(id);
+    const final = ["approved", "declined", "cancelled", "failed"].includes(
+      status,
+    );
+    await owner.query(
+      `INSERT INTO edc_transactions
+         (id, tenant_id, outlet_id, terminal_id, bank, reference, idempotency_key,
+          request_fingerprint, amount_idr, method, status, type, mode, trace,
+          approval_code, rrn, completed_at, dispatched_at)
+       VALUES ($1, $2, $3, $4, 'bca', $5, $6, 'fp', $7, 'card', $8, 'sale', 'ecr', $9,
+               'APP123', $10, $11, now())`,
+      [
+        id,
+        seededTenantId,
+        order.outlet_id,
+        terminalId,
+        order.number,
+        randomUUID(),
+        order.total,
+        status,
+        randomUUID().slice(0, 12),
+        "RRN" + randomUUID().replace(/-/g, "").slice(0, 9),
+        final ? new Date() : null,
+      ],
+    );
+    return id;
+  }
+
+  async function finalise(edcTransactionId: string, status: string) {
+    await owner.query(
+      "UPDATE edc_transactions SET status = $2, completed_at = now() WHERE id = $1",
+      [edcTransactionId, status],
+    );
+  }
+
+  function expectEdcRefusal(response: Awaited<ReturnType<typeof moveItems>>) {
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(JSON.stringify(response.body)).toContain("EDC_REQUEST_OPEN");
+  }
+
+  it("control: without an ECR request a whole-order move and a split are accepted", async () => {
+    const { from, to } = await twoSessions();
+    const whole = await twoLineOrder(from.sessionId);
+    const whole2 = await twoLineOrder(from.sessionId);
+
+    const wholeMove = await moveItems(
+      from.sessionId,
+      to.sessionId,
+      whole.items.map((item) => item.id),
+    );
+    expect(wholeMove.status, JSON.stringify(wholeMove.body)).toBe(200);
+    expect(await sessionOfItem(whole.items[0]!.uuid)).toBe(to.sessionId);
+
+    const split = await moveItems(from.sessionId, to.sessionId, [
+      whole2.items[0]!.id,
+    ]);
+    expect(split.status, JSON.stringify(split.body)).toBe(200);
+    expect(await sessionOfItem(whole2.items[0]!.uuid)).toBe(to.sessionId);
+    expect(await sessionOfItem(whole2.items[1]!.uuid)).toBe(from.sessionId);
+  });
+
+  it.each(["pending", "unknown"])(
+    "refuses a whole-order move with 409 EDC_REQUEST_OPEN while the ECR request is %s",
+    async (status) => {
+      const { from, to } = await twoSessions();
+      const order = await twoLineOrder(from.sessionId);
+      await ecrRequest(order.uuid, status);
+      const totalBefore = (await orderRow(order.uuid)).total;
+      const fromBill = await billOf(from.sessionId);
+      const toBill = await billOf(to.sessionId);
+      const fromOrders = (await ordersOf(from.sessionId)).length;
+      const toOrders = (await ordersOf(to.sessionId)).length;
+      const before = await eventCounts(
+        "table_session.items_moved",
+        from.sessionId,
+      );
+
+      const response = await moveItems(
+        from.sessionId,
+        to.sessionId,
+        order.items.map((item) => item.id),
+      );
+
+      expectEdcRefusal(response);
+      const after = await orderRow(order.uuid);
+      expect(after.table_session_id).toBe(from.sessionId);
+      expect(after.total).toBe(totalBefore);
+      for (const item of order.items)
+        expect(await sessionOfItem(item.uuid)).toBe(from.sessionId);
+      expect(await billOf(from.sessionId)).toBe(fromBill);
+      expect(await billOf(to.sessionId)).toBe(toBill);
+      expect((await ordersOf(from.sessionId)).length).toBe(fromOrders);
+      expect((await ordersOf(to.sessionId)).length).toBe(toOrders);
+      await expectEventsAdded(
+        "table_session.items_moved",
+        from.sessionId,
+        before,
+        0,
+      );
+    },
+  );
+
+  it.each(["pending", "unknown"])(
+    "refuses a split of the order with 409 EDC_REQUEST_OPEN while the ECR request is %s: total unchanged, no new order",
+    async (status) => {
+      const { from, to } = await twoSessions();
+      const order = await twoLineOrder(from.sessionId);
+      await ecrRequest(order.uuid, status);
+      const totalBefore = (await orderRow(order.uuid)).total;
+      const fromOrders = (await ordersOf(from.sessionId)).length;
+      const toOrders = (await ordersOf(to.sessionId)).length;
+      const toBill = await billOf(to.sessionId);
+      const before = await eventCounts(
+        "table_session.items_moved",
+        from.sessionId,
+      );
+
+      const response = await moveItems(from.sessionId, to.sessionId, [
+        order.items[0]!.id,
+      ]);
+
+      expectEdcRefusal(response);
+      // A second try is refused the same way: nothing was half applied.
+      expectEdcRefusal(
+        await moveItems(from.sessionId, to.sessionId, [order.items[0]!.id]),
+      );
+      const after = await orderRow(order.uuid);
+      expect(after.table_session_id).toBe(from.sessionId);
+      expect(after.total).toBe(totalBefore);
+      expect(after.subtotal).toBe(55000);
+      expect(await sessionOfItem(order.items[0]!.uuid)).toBe(from.sessionId);
+      expect(await sessionOfItem(order.items[1]!.uuid)).toBe(from.sessionId);
+      expect((await ordersOf(from.sessionId)).length).toBe(fromOrders);
+      expect((await ordersOf(to.sessionId)).length).toBe(toOrders);
+      expect(await billOf(to.sessionId)).toBe(toBill);
+      await expectEventsAdded(
+        "table_session.items_moved",
+        from.sessionId,
+        before,
+        0,
+      );
+    },
+  );
+
+  it.each(["declined", "cancelled", "failed"])(
+    "accepts the move again once the ECR request is final (%s)",
+    async (finalStatus) => {
+      const { from, to } = await twoSessions();
+      const order = await twoLineOrder(from.sessionId);
+      const request = await ecrRequest(order.uuid, "pending");
+
+      expectEdcRefusal(
+        await moveItems(from.sessionId, to.sessionId, [order.items[0]!.id]),
+      );
+
+      // The inquiry answers with a final status: the lock opens.
+      await finalise(request, finalStatus);
+      const split = await moveItems(from.sessionId, to.sessionId, [
+        order.items[0]!.id,
+      ]);
+      expect(split.status, JSON.stringify(split.body)).toBe(200);
+      expect(await sessionOfItem(order.items[0]!.uuid)).toBe(to.sessionId);
+      expect(await sessionOfItem(order.items[1]!.uuid)).toBe(from.sessionId);
+    },
+  );
+
+  it("accepts a move whose request is already final when it is made", async () => {
+    const { from, to } = await twoSessions();
+    const order = await twoLineOrder(from.sessionId);
+    await ecrRequest(order.uuid, "declined");
+
+    const response = await moveItems(
+      from.sessionId,
+      to.sessionId,
+      order.items.map((item) => item.id),
+    );
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await orderRow(order.uuid)).table_session_id).toBe(to.sessionId);
+  });
+});

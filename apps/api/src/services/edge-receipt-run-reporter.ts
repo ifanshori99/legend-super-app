@@ -48,6 +48,15 @@
 // refuses a chunk whose order was refused for good (order_exists, legacy
 // payload), and later chunks of that run then hit the same hole.
 //
+// Dead letters (legend-btx4d, legend-n2d3g): an `order.paid` the edge moved to
+// edge_link_dead_letters never reaches the cloud, but its
+// `edge_link.dead_lettered` notice does and the cloud skips that order's
+// receipts (receipt-run-applier.ts, reason `link_dead_lettered`). So a paid
+// dead letter counts as ready once its notice is acknowledged (or pruned after
+// the ack). Until then the receipt is held. A dead-lettered `order.voided` has
+// no such path and holds the run for good (fail closed): the pass counts it in
+// `held` and alerts the outlet supervisors once per (order, dead event).
+//
 // Scope: only runs bound to this edge node and database instance, never the
 // cloud-owned sequence (device id = outlet id), never an empty run. Never logs
 // payloads.
@@ -56,8 +65,10 @@ import {
   createUlid,
   outletIdSchema,
   ulidToUuid,
+  uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { EDGE_LINK_AGGREGATE } from "@starter/shared/edge";
 import {
   RECEIPT_RUN_AGGREGATE,
   receiptRunReportedEvent,
@@ -67,6 +78,10 @@ import { domainEventOutbox } from "../db/schema/core-events.ts";
 import { posReceipts, receiptSequences } from "../db/schema/pos-receipt.ts";
 import { withTenant } from "../db/tenant.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import {
+  alertHeldReceiptRun,
+  type HeldReceiptRun,
+} from "./edge-receipt-run-held-alert.ts";
 import { toPosReceipt } from "./pos-receipt.service.ts";
 
 const EVENT_DESTINATION = "cloud-sync";
@@ -112,6 +127,55 @@ async function acknowledgedOrders(
   return new Set((result.rows as { id: string }[]).map((row) => row.id));
 }
 
+/**
+ * Order aggregate id (uuid) -> dead-lettered event of `name`: its id (uuid) and
+ * whether its `edge_link.dead_lettered` notice is settled (acknowledged, or
+ * pruned after the ack; no notice row still pending).
+ */
+async function deadLetteredOrders(
+  tx: ReportTx,
+  tenantId: string,
+  orderUuids: string[],
+  name: "order.paid" | "order.voided",
+): Promise<Map<string, { eventUuid: string; settled: boolean }>> {
+  const out = new Map<string, { eventUuid: string; settled: boolean }>();
+  if (orderUuids.length === 0) return out;
+  const dead = await tx.execute(
+    sql`SELECT o.aggregate_id::text AS id, o.event_id::text AS event_id FROM domain_event_outbox o
+        WHERE o.tenant_id = ${tenantId}::uuid AND o.destination = ${EVENT_DESTINATION}
+          AND o.aggregate_id IN (${sql.join(
+            orderUuids.map((id) => sql`${id}::uuid`),
+            sql`, `,
+          )})
+          AND o.event ->> 'name' = ${name} AND o.status = 'delivered'
+          AND EXISTS (
+            SELECT 1 FROM edge_link_dead_letters d
+            WHERE d.tenant_id = o.tenant_id AND d.direction = 'edge_to_cloud'
+              AND d.event_id = o.event_id)`,
+  );
+  const rows = dead.rows as { id: string; event_id: string }[];
+  if (rows.length === 0) return out;
+  // The notice is its own aggregate keyed by the dead event id (ULID).
+  const notices = await tx.execute(
+    sql`SELECT lower(q.aggregate_id) AS id FROM edge_outbound_queue q
+        WHERE q.tenant_id = ${tenantId}::uuid AND q.direction = 'edge_to_cloud'
+          AND q.aggregate_type = ${EDGE_LINK_AGGREGATE} AND q.status <> 'acked'
+          AND lower(q.aggregate_id) IN (${sql.join(
+            rows.map((row) => sql`${uuidToUlid(row.event_id).toLowerCase()}`),
+            sql`, `,
+          )})`,
+  );
+  const pending = new Set(
+    (notices.rows as { id: string }[]).map((row) => row.id),
+  );
+  for (const row of rows)
+    out.set(row.id, {
+      eventUuid: row.event_id,
+      settled: !pending.has(uuidToUlid(row.event_id).toLowerCase()),
+    });
+  return out;
+}
+
 function receiptEntry(row: ReceiptRowOf) {
   return {
     receipt: toPosReceipt(row),
@@ -126,7 +190,8 @@ function receiptEntry(row: ReceiptRowOf) {
 
 /**
  * Appends the new chunk and void events of every device run of this edge
- * database; returns how many events it appended. Each run is its own
+ * database; returns how many events it appended and, when a run is held by a
+ * dead-lettered event, how many runs are (`held`). Each run is its own
  * transaction (the sequence row is locked, so a sale on that device waits
  * instead of racing).
  */
@@ -134,7 +199,7 @@ export async function reportEdgeReceiptRuns(
   context: ScopedTenantContext,
   input: { outletId: string; edgeNodeId: string; edgeInstanceId: string },
   limits: { chunk?: number; maxChunks?: number; maxVoids?: number } = {},
-): Promise<{ reported: number; errors?: unknown[] }> {
+): Promise<{ reported: number; held?: number; errors?: unknown[] }> {
   const chunkSize = limits.chunk ?? RECEIPT_RUN_REPORT_CHUNK;
   const maxChunks = limits.maxChunks ?? RECEIPT_RUN_REPORT_MAX_CHUNKS;
   const maxVoids = limits.maxVoids ?? RECEIPT_RUN_REPORT_MAX_VOIDS;
@@ -157,19 +222,33 @@ export async function reportEdgeReceiptRuns(
       .orderBy(asc(receiptSequences.prefix)),
   );
   let reported = 0;
+  let held = 0;
   const errors: unknown[] = [];
   for (const candidate of candidates)
     try {
-      reported += await reportRun(candidate.id);
+      const run = await reportRun(candidate.id);
+      reported += run.appended;
+      held += run.held.length;
+      // Alerts run after the report transaction; a failure never fails the pass.
+      for (const entry of run.held.filter((item) => item.alert))
+        await alertHeldReceiptRun(context, outletId, entry);
     } catch (error) {
       // One run failing (a receipt the contract cannot encode, a lock timeout)
       // must not stop the other runs of the pass.
       errors.push(error);
     }
-  return errors.length > 0 ? { reported, errors } : { reported };
+  return {
+    reported,
+    ...(held > 0 ? { held } : {}),
+    ...(errors.length > 0 ? { errors } : {}),
+  };
 
-  async function reportRun(sequenceId: string): Promise<number> {
+  async function reportRun(sequenceId: string): Promise<{
+    appended: number;
+    held: (HeldReceiptRun & { alert: boolean })[];
+  }> {
     return withTenant(db, context, async (tx) => {
+      const heldRuns: (HeldReceiptRun & { alert: boolean })[] = [];
       const [sequence] = await tx
         .select()
         .from(receiptSequences)
@@ -182,7 +261,8 @@ export async function reportEdgeReceiptRuns(
           ),
         )
         .for("update");
-      if (!sequence || sequence.lastNumber <= 0) return 0;
+      if (!sequence || sequence.lastNumber <= 0)
+        return { appended: 0, held: heldRuns };
       const { deviceId, prefix } = sequence;
       const keyOf = (kind: string) =>
         `${receiptRunReportedEvent.name}:${deviceId}:${prefix}:${kind}`;
@@ -268,11 +348,52 @@ export async function reportEdgeReceiptRuns(
             .map((row) => ulidToUuid(row.orderId)),
           "order.voided",
         );
+        // A paid event moved to the dead letters is as good as acknowledged
+        // once its notice is: the cloud skips that order's receipts.
+        const deadPaid = await deadLetteredOrders(
+          tx,
+          tenantId,
+          uuids.filter((id) => !paid.has(id)),
+          "order.paid",
+        );
+        const deadVoided = await deadLetteredOrders(
+          tx,
+          tenantId,
+          rows
+            .filter((row) => row.status === "voided")
+            .map((row) => ulidToUuid(row.orderId))
+            .filter((id) => !voidedAck.has(id)),
+          "order.voided",
+        );
         const ready: ReceiptRowOf[] = [];
         for (const row of rows) {
           const orderUuid = ulidToUuid(row.orderId);
-          if (!paid.has(orderUuid)) break;
-          if (row.status === "voided" && !voidedAck.has(orderUuid)) break;
+          if (!paid.has(orderUuid)) {
+            const dead = deadPaid.get(orderUuid);
+            if (!dead?.settled) {
+              // Notice not acknowledged yet: an ordinary delay, no alert.
+              if (dead)
+                heldRuns.push({
+                  orderUuid,
+                  eventUuid: dead.eventUuid,
+                  eventName: "order.paid",
+                  alert: false,
+                });
+              break;
+            }
+          }
+          if (row.status === "voided" && !voidedAck.has(orderUuid)) {
+            const dead = deadVoided.get(orderUuid);
+            // Permanent: the cloud never gets this void. Hold and alert.
+            if (dead)
+              heldRuns.push({
+                orderUuid,
+                eventUuid: dead.eventUuid,
+                eventName: "order.voided",
+                alert: true,
+              });
+            break;
+          }
           ready.push(row);
         }
         const last = ready.at(-1);
@@ -323,8 +444,35 @@ export async function reportEdgeReceiptRuns(
           for (const row of voided)
             await append(`v:${row.sequenceNumber}`, highWater, [row]);
         }
+        // Voids the cloud will never get: their `order.voided` is in the dead
+        // letters, so the query above skips them for good. Count and alert
+        // (fail closed: nothing is sent), bounded like the pass itself.
+        const unsent = await tx.execute(
+          sql`SELECT r.order_id::text AS id FROM pos_receipts r
+              WHERE r.tenant_id = ${tenantId}::uuid AND r.sequence_id = ${sequence.id}::uuid
+                AND r.status = 'voided' AND r.sequence_number <= ${highWater}
+                AND NOT EXISTS (
+                  SELECT 1 FROM domain_event_outbox e
+                  WHERE e.tenant_id = r.tenant_id AND e.destination = ${EVENT_DESTINATION}
+                    AND e.aggregate_type = ${RECEIPT_RUN_AGGREGATE} AND e.aggregate_id = r.device_id
+                    AND e.event ->> 'idempotencyKey' = ${`${receiptRunReportedEvent.name}:${deviceId}:${prefix}:v:`} || r.sequence_number::text)
+              ORDER BY r.sequence_number LIMIT ${RECEIPT_RUN_REPORT_MAX_VOIDS * 5}`,
+        );
+        const deadVoids = await deadLetteredOrders(
+          tx,
+          tenantId,
+          (unsent.rows as { id: string }[]).map((row) => row.id),
+          "order.voided",
+        );
+        for (const [orderUuid, dead] of deadVoids)
+          heldRuns.push({
+            orderUuid,
+            eventUuid: dead.eventUuid,
+            eventName: "order.voided",
+            alert: true,
+          });
       }
-      return appended;
+      return { appended, held: heldRuns };
     });
   }
 }

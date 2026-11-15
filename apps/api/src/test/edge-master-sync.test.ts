@@ -50,7 +50,10 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import type { EventEnvelope } from "@starter/shared/events";
-import type { EdgeMasterSnapshot } from "@starter/shared/edge/master-sync";
+import {
+  edgeMasterUomSchema,
+  type EdgeMasterSnapshot,
+} from "@starter/shared/edge/master-sync";
 import {
   inventoryEvents,
   STANDARD_STOCK_LOCATIONS,
@@ -210,6 +213,7 @@ const ALL_TABLES = [
   "chart_of_accounts",
   "stock_locations",
   "uoms",
+  "edge_link_slots",
   "edge_inbound_events",
   "edge_received_events",
   "edge_sync_conflicts",
@@ -270,7 +274,12 @@ type Signed = { snapshot: EdgeMasterSnapshot; signature: string };
 
 const bearer = (f: Fixture) => `Bearer ${f.credential}`;
 async function cloudMasters(f: Fixture) {
-  return request(app).get(MASTERS_PATH).set("Authorization", bearer(f));
+  // legend-2uqcd: version 2 (brands) is served only to an edge that asks.
+  return request(app)
+    .get(MASTERS_PATH)
+    .query({ uomIsSystem: "1" })
+    .set("Authorization", bearer(f))
+    .set("x-edge-snapshot-version", "2");
 }
 async function captureMasters(f: Fixture): Promise<Signed> {
   const response = await cloudMasters(f);
@@ -507,13 +516,40 @@ afterAll(async () => {
 
 // ---------------------------------------------------------------------------
 describe("legend-9ppw 1 cloud masters endpoint", () => {
+  it("sends legacy UOM rows by default and signs the exact response", async () => {
+    const response = await request(app)
+      .get(MASTERS_PATH)
+      .set("Authorization", bearer(main));
+    expect(response.status).toBe(200);
+    const { snapshot, signature } = response.body as Signed;
+    expect(snapshot.uoms.length).toBeGreaterThan(0);
+    expect(snapshot.uoms.every((row) => !("isSystem" in row))).toBe(true);
+    const legacyUomSchema = edgeMasterUomSchema.pick({
+      id: true,
+      tenantId: true,
+      code: true,
+      name: true,
+      createdAt: true,
+    });
+    expect(
+      snapshot.uoms.every((row) => legacyUomSchema.safeParse(row).success),
+    ).toBe(true);
+    expect(
+      edgeBootstrapSignatureMatches(
+        snapshot,
+        signature,
+        keyOf(main.credential),
+      ),
+    ).toBe(true);
+  });
+
   it("answers a node with a private, uncached snapshot of its own uoms, outlet locations and entity chart", async () => {
     const response = await cloudMasters(main);
     expect(response.status).toBe(200);
     expect(response.headers["cache-control"]).toMatch(/private/);
     expect(response.headers["cache-control"]).toMatch(/no-store/);
     const { snapshot } = response.body as Signed;
-    expect(snapshot.version).toBe(1);
+    expect(snapshot.version).toBe(2); // legend-2uqcd: adds `brands`
     expect(Number.isNaN(Date.parse(snapshot.issuedAt))).toBe(false);
     expect(snapshot.tenantId).toBe(main.tenantId);
     expect(snapshot.outletId).toBe(main.outletA);
@@ -667,6 +703,7 @@ describe("legend-9ppw 2 fresh edge bootstrap", () => {
     const url = urlOf(calls[0]![0]);
     expect(url.host).toBe("cloud.master.test");
     expect(url.pathname).toBe(MASTERS_PATH);
+    expect(url.searchParams.get("uomIsSystem")).toBe("1");
     expect(headerOf(calls[0]![1], "authorization")).toBe(bearer(fresh));
 
     const { snapshot } = capturedFresh.masters;
@@ -838,6 +875,47 @@ describe("legend-9ppw 2 fresh edge bootstrap", () => {
 
 // ---------------------------------------------------------------------------
 describe("legend-9ppw 3 master change on the cloud", () => {
+  it("syncs the cloud system flag and defaults old snapshots to false", async () => {
+    const before = await captureMasters(main);
+    const uom = before.snapshot.uoms[0]!;
+    await owner.query("UPDATE uoms SET is_system = true WHERE id = $1", [
+      uom.id,
+    ]);
+    const cloud = await captureMasters(main);
+    expect(cloud.snapshot.uoms.find((row) => row.id === uom.id)?.isSystem).toBe(
+      true,
+    );
+
+    // The database represents a stale edge before applying the cloud response.
+    await owner.query("UPDATE uoms SET is_system = false WHERE id = $1", [
+      uom.id,
+    ]);
+    let response: unknown = cloud;
+    spyCloud({ masters: () => json(response) });
+    await syncEdgeMasters(config(main));
+    const readFlag = async () =>
+      (
+        await owner.query<{ is_system: boolean }>(
+          "SELECT is_system FROM uoms WHERE id = $1",
+          [uom.id],
+        )
+      ).rows[0]!.is_system;
+    expect(await readFlag()).toBe(true);
+
+    // An older cloud signs a snapshot without the field at all.
+    const legacy = {
+      ...cloud.snapshot,
+      uoms: cloud.snapshot.uoms.map((row) => {
+        const legacyRow: Partial<typeof row> = { ...row };
+        delete legacyRow.isSystem;
+        return legacyRow;
+      }),
+    };
+    response = signed(legacy, main);
+    await syncEdgeMasters(config(main));
+    expect(await readFlag()).toBe(false);
+  });
+
   it("applies a renamed location, a new location and a remapped role, and a re-run changes nothing", async () => {
     const before = await dbView(main);
     const bar = before.stockLocations.find((l) => l.type === "bar")!;
@@ -883,6 +961,8 @@ describe("legend-9ppw 3 master change on the cloud", () => {
     const spy = spyCloud({ masters: () => json(changed) });
     const counts = await syncEdgeMasters(config(main));
     expect(counts).toEqual({
+      // Assumption (legend-2uqcd): the counts report the brands upserted.
+      brands: (changed.snapshot.brands ?? []).length,
       uoms: changed.snapshot.uoms.length,
       stockLocations: STANDARD_STOCK_LOCATIONS.length + 1,
       accounts: changed.snapshot.chartOfAccounts.length,
@@ -1027,6 +1107,7 @@ describe("legend-dhbt1 mapping role unknown to this edge build", () => {
       spyCloud({ masters: () => json(signed(newer, main)) });
       const counts = await syncEdgeMasters(config(main));
       expect(counts).toEqual({
+        brands: (newer.brands ?? []).length,
         uoms: newer.uoms.length,
         stockLocations: newer.stockLocations.length,
         accounts: newer.chartOfAccounts.length,

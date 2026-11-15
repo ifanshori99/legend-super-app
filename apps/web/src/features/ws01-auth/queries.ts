@@ -5,6 +5,7 @@ import {
   fetchCurrentAuth,
   fetchMfaFactors,
   fetchMfaRecoveryStatus,
+  fetchPushDevices,
   fetchSessions,
 } from "./api";
 
@@ -13,6 +14,7 @@ export const staffAuthKeys = {
   current: () => [...staffAuthKeys.all, "current"] as const,
   factors: () => [...staffAuthKeys.all, "factors"] as const,
   sessions: () => [...staffAuthKeys.all, "sessions"] as const,
+  pushDevices: () => [...staffAuthKeys.all, "push-devices"] as const,
   recovery: () => [...staffAuthKeys.all, "recovery"] as const,
 };
 
@@ -41,6 +43,13 @@ export function securitySessionsQuery() {
   return queryOptions({
     queryKey: staffAuthKeys.sessions(),
     queryFn: ({ signal }) => fetchSessions(signal),
+  });
+}
+
+export function pushDevicesQuery() {
+  return queryOptions({
+    queryKey: staffAuthKeys.pushDevices(),
+    queryFn: ({ signal }) => fetchPushDevices(signal),
   });
 }
 

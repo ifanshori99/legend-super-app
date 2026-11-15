@@ -2,12 +2,16 @@
 // that re-reads the token row on every request (revocation is immediate, no
 // cache), a per-token rate limit, and the MCP `Server` that exposes the AI tool
 // catalog. Tool listing and calls go through the invoke layer (AIG-01), which
-// does scope, permission, row-cap and audit work.
+// does scope, permission, row-cap and audit work. One exit point: every handler
+// returns through sealMcpResponse (PII) and throws through guarded/toMcpError
+// (redacted message, no `data`), so nothing leaves the server unmasked.
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
+  ErrorCode,
   ListResourcesRequestSchema,
   ListToolsRequestSchema,
+  McpError,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { and, eq, sql } from "drizzle-orm";
@@ -18,7 +22,13 @@ import { db } from "../db/index.ts";
 import { mcpClients, mcpTokens } from "../db/schema/ai.ts";
 import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
+import {
+  redactJson,
+  redactPii,
+  redactToolResultContent,
+} from "../lib/ai/pii.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { logger } from "../lib/logger.ts";
 import {
   loadTenantAccess,
   resolveAccessSnapshot,
@@ -179,6 +189,71 @@ function jsonText(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function sealItem(item: unknown): unknown {
+  if (!item || typeof item !== "object" || Array.isArray(item))
+    return redactJson(item);
+  return Object.fromEntries(
+    Object.entries(item).map(([key, value]) => [
+      key,
+      key === "text" && typeof value === "string"
+        ? redactToolResultContent(value)
+        : redactJson(value),
+    ]),
+  );
+}
+
+/**
+ * Single exit for every MCP response (AIG-02): personal data never leaves the
+ * server. `content[].text` and `contents[].text` hold JSON text, so they go
+ * through redactToolResultContent; `structuredContent` and every other field go
+ * through redactJson. Both walk the same rules, so structuredContent stays equal
+ * to the redacted JSON in the text. Booleans such as `isError` are untouched.
+ */
+export function sealMcpResponse<T>(response: T): T {
+  if (!response || typeof response !== "object" || Array.isArray(response))
+    return redactJson(response) as T;
+  return Object.fromEntries(
+    Object.entries(response).map(([key, value]) => [
+      key,
+      (key === "content" || key === "contents") && Array.isArray(value)
+        ? value.map(sealItem)
+        : redactJson(value),
+    ]),
+  ) as T;
+}
+
+/**
+ * Errors leave through one door too. A handler may throw anything (a database
+ * error carries row values, a tool error may echo user text), so every error
+ * becomes an `McpError` with a redacted message and no `data`. The SDK adds the
+ * "MCP error <code>:" prefix itself, so an incoming McpError loses its own.
+ */
+function toMcpError(error: unknown): McpError {
+  if (error instanceof McpError)
+    return new McpError(
+      error.code,
+      redactPii(error.message.replace(/^MCP error -?\d+: /, "")),
+    );
+  // HttpError messages are static text written by this code base.
+  if (error instanceof HttpError)
+    return new McpError(ErrorCode.InternalError, redactPii(error.message));
+  logger.error({ err: error }, "MCP handler failed");
+  return new McpError(ErrorCode.InternalError, "Internal error");
+}
+
+/** Wrap a handler so a thrown error is rewritten by `toMcpError`. */
+function guarded<A extends unknown[], R>(
+  handler: (...args: A) => Promise<R>,
+): (...args: A) => Promise<R> {
+  return async (...args) => {
+    try {
+      return await handler(...args);
+    } catch (error) {
+      throw toMcpError(error);
+    }
+  };
+}
+
 /** A fresh stateless `Server` bound to one authenticated principal. */
 export function createMcpServer(principal: McpPrincipal): Server {
   const ctx = (): AiToolContext => ({
@@ -194,116 +269,130 @@ export function createMcpServer(principal: McpPrincipal): Server {
     { capabilities: { tools: {}, resources: {} } },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const tools = await listCallableTools(ctx(), { scopes });
-    const specs = new Map(toToolSpecs(tools).map((s) => [s.name, s]));
-    return {
-      tools: tools.map((tool) => ({
-        name: tool.name,
-        title: tool.titleId,
-        description: specs.get(tool.name)?.description ?? tool.description,
-        inputSchema: {
-          type: "object" as const,
-          ...(specs.get(tool.name)?.inputSchema ?? {}),
-        },
-        annotations: {
-          readOnlyHint: tool.mcpAnnotations.readOnlyHint,
-          destructiveHint: tool.mcpAnnotations.destructiveHint,
-          idempotentHint: tool.mcpAnnotations.idempotentHint,
-          openWorldHint: tool.mcpAnnotations.openWorldHint,
-        },
-      })),
-    };
-  });
-
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const result = await invokeAiTool(
-      ctx(),
-      request.params.name,
-      request.params.arguments ?? {},
-      { scopes },
-    );
-    if (!result.ok)
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text" as const,
-            text: jsonText({
-              errorCode: result.errorCode,
-              message: result.message,
-            }),
-          },
-        ],
-      };
-    const out = result.output;
-    return {
-      content: [{ type: "text" as const, text: jsonText(out) }],
-      ...(out && typeof out === "object" && !Array.isArray(out)
-        ? { structuredContent: out as Record<string, unknown> }
-        : {}),
-    };
-  });
-
-  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-    resources: [
-      {
-        uri: CATALOG_URI,
-        name: "Katalog alat",
-        description: "Alat yang boleh dipakai token ini.",
-        mimeType: "application/json",
-      },
-      {
-        uri: GLOSSARY_URI,
-        name: "Definisi metrik",
-        description: "Kamus metrik baku (kode, nama, satuan, rumus).",
-        mimeType: "application/json",
-      },
-    ],
-  }));
-
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    const uri = request.params.uri;
-    if (uri === CATALOG_URI) {
+  server.setRequestHandler(
+    ListToolsRequestSchema,
+    guarded(async () => {
       const tools = await listCallableTools(ctx(), { scopes });
-      return {
-        contents: [
+      const specs = new Map(toToolSpecs(tools).map((s) => [s.name, s]));
+      return sealMcpResponse({
+        tools: tools.map((tool) => ({
+          name: tool.name,
+          title: tool.titleId,
+          description: specs.get(tool.name)?.description ?? tool.description,
+          inputSchema: {
+            type: "object" as const,
+            ...(specs.get(tool.name)?.inputSchema ?? {}),
+          },
+          annotations: {
+            readOnlyHint: tool.mcpAnnotations.readOnlyHint,
+            destructiveHint: tool.mcpAnnotations.destructiveHint,
+            idempotentHint: tool.mcpAnnotations.idempotentHint,
+            openWorldHint: tool.mcpAnnotations.openWorldHint,
+          },
+        })),
+      });
+    }),
+  );
+
+  server.setRequestHandler(
+    CallToolRequestSchema,
+    guarded(async (request) => {
+      const result = await invokeAiTool(
+        ctx(),
+        request.params.name,
+        request.params.arguments ?? {},
+        { scopes },
+      );
+      if (!result.ok)
+        return sealMcpResponse({
+          isError: true,
+          content: [
+            {
+              type: "text" as const,
+              text: jsonText({
+                errorCode: result.errorCode,
+                message: result.message,
+              }),
+            },
+          ],
+        });
+      const out = result.output;
+      return sealMcpResponse({
+        content: [{ type: "text" as const, text: jsonText(out) }],
+        ...(out && typeof out === "object" && !Array.isArray(out)
+          ? { structuredContent: out as Record<string, unknown> }
+          : {}),
+      });
+    }),
+  );
+
+  server.setRequestHandler(
+    ListResourcesRequestSchema,
+    guarded(async () =>
+      sealMcpResponse({
+        resources: [
           {
-            uri,
+            uri: CATALOG_URI,
+            name: "Katalog alat",
+            description: "Alat yang boleh dipakai token ini.",
             mimeType: "application/json",
-            text: jsonText(
-              tools.map((t) => ({
-                name: t.name,
-                code: t.code,
-                kind: t.kind,
-                title: t.titleId,
-                description: t.description,
-                scope: t.scope,
-              })),
-            ),
+          },
+          {
+            uri: GLOSSARY_URI,
+            name: "Definisi metrik",
+            description: "Kamus metrik baku (kode, nama, satuan, rumus).",
+            mimeType: "application/json",
           },
         ],
-      };
-    }
-    if (uri === GLOSSARY_URI)
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: "application/json",
-            text: jsonText(
-              cafeLegendMetricDefinitions.map((m) => ({
-                code: m.code,
-                name: m.name,
-                description: m.description,
-                unit: m.unit,
-              })),
-            ),
-          },
-        ],
-      };
-    throw new HttpError(404, "NOT_FOUND", "Resource tidak ditemukan.");
-  });
+      }),
+    ),
+  );
+
+  server.setRequestHandler(
+    ReadResourceRequestSchema,
+    guarded(async (request) => {
+      const uri = request.params.uri;
+      if (uri === CATALOG_URI) {
+        const tools = await listCallableTools(ctx(), { scopes });
+        return sealMcpResponse({
+          contents: [
+            {
+              uri,
+              mimeType: "application/json",
+              text: jsonText(
+                tools.map((t) => ({
+                  name: t.name,
+                  code: t.code,
+                  kind: t.kind,
+                  title: t.titleId,
+                  description: t.description,
+                  scope: t.scope,
+                })),
+              ),
+            },
+          ],
+        });
+      }
+      if (uri === GLOSSARY_URI)
+        return sealMcpResponse({
+          contents: [
+            {
+              uri,
+              mimeType: "application/json",
+              text: jsonText(
+                cafeLegendMetricDefinitions.map((m) => ({
+                  code: m.code,
+                  name: m.name,
+                  description: m.description,
+                  unit: m.unit,
+                })),
+              ),
+            },
+          ],
+        });
+      throw new HttpError(404, "NOT_FOUND", "Resource tidak ditemukan.");
+    }),
+  );
 
   return server;
 }

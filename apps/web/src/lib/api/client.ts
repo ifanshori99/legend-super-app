@@ -3,6 +3,7 @@ import { API_URL } from "@/lib/env";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api/errors";
 import { bearerHeaderFor } from "@/lib/api/credentials";
 import type { CallHeaders } from "@/lib/api/endpoint-core";
+import { clearDeviceToken, deviceTokenHeader } from "@/lib/device-token-store";
 import {
   ACTING_STAFF_HELD_MESSAGE,
   actingStaffHeaderFor,
@@ -101,6 +102,9 @@ export async function apiFetch<T>(
         ...bearerHeaderFor(path),
         // Browser only, POS paths only (see acting-staff.ts).
         ...actingHeader,
+        // Browser only: the registered device's token, when this browser holds
+        // one (device-token-store.ts). The API verifies it on every call.
+        ...deviceTokenHeader(),
         ...headers,
         // Per-call headers are allow-listed (contracts.md "Typed web client &
         // idempotency headers"): only Idempotency-Key and X-Reservation-Link-Token
@@ -133,9 +137,14 @@ export async function apiFetch<T>(
       | (ApiErrorBody["error"] & {
           remainingAttempts?: number;
           lockedUntil?: string;
+          acknowledgedBy?: { displayName?: unknown };
+          acknowledgedAt?: string;
         })
       | undefined;
     if (error?.code) handleActingStaffRejection(error.code, method);
+    // The registry no longer accepts the stored token (rotated or revoked):
+    // drop it so later calls stop sending a token that can only fail.
+    if (error?.code === "DEVICE_TOKEN_INVALID") clearDeviceToken();
     throw new ApiError(
       response.status,
       error?.code ?? "HTTP_ERROR",
@@ -149,6 +158,14 @@ export async function apiFetch<T>(
         lockedUntil:
           typeof error?.lockedUntil === "string"
             ? error.lockedUntil
+            : undefined,
+        acknowledgedBy:
+          typeof error?.acknowledgedBy?.displayName === "string"
+            ? { displayName: error.acknowledgedBy.displayName }
+            : undefined,
+        acknowledgedAt:
+          typeof error?.acknowledgedAt === "string"
+            ? error.acknowledgedAt
             : undefined,
       },
     );

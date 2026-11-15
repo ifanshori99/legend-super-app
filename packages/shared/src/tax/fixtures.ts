@@ -210,6 +210,7 @@ const pbjtRecap = pbjtMonthlyRecapSchema.parse({
     {
       taxRuleCode: "PBJT-FNB",
       rateBp: 1000,
+      priceIncludesTax: false,
       transactionCount: 4_812,
       grossSalesIdr: 412_350_000,
       taxBaseIdr: 398_120_000,
@@ -219,6 +220,7 @@ const pbjtRecap = pbjtMonthlyRecapSchema.parse({
     {
       taxRuleCode: "PBJT-FASILITAS",
       rateBp: 1000,
+      priceIncludesTax: false,
       transactionCount: 386,
       grossSalesIdr: 21_840_000,
       taxBaseIdr: 21_840_000,

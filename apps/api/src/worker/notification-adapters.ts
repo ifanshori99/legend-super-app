@@ -9,9 +9,10 @@
 // Provider selection is explicit: every channel provider env var is required
 // (`disabled` is a deliberate value, not a default), so a deployment can never
 // silently run without a channel. Secrets are never logged or put in errors.
-import { createHash } from "node:crypto";
+import { createECDH, createHash } from "node:crypto";
 import {
   and,
+  desc,
   eq,
   gt,
   inArray,
@@ -27,6 +28,7 @@ import {
   assertOutletInScope,
   assertTrustedScopedContext,
   toIsoDateTime,
+  ulidToUuid,
   z,
   type OutletId,
   type ScopedTenantContext,
@@ -40,7 +42,11 @@ import {
 } from "@starter/shared/adapters";
 import type { EventEnvelope } from "@starter/shared/events";
 import { INVITATION_LINK_TTL_MINUTES } from "@starter/shared/identity";
-import { facilityIncidentRaisedEvent } from "@starter/shared/facility";
+import {
+  EMERGENCY_PERMISSION_RESPOND,
+  facilityIncidentRaisedEvent,
+  panicAlertRaisedEvent,
+} from "@starter/shared/facility";
 import {
   approvalRequestedEvent,
   approvalResolvedEvent,
@@ -55,6 +61,7 @@ import {
   subscriptionInvoiceCreatedEvent,
   type NotificationPreference,
   type Reachability,
+  type Notification,
 } from "@starter/shared/notification";
 import { shiftCancelled, shiftPublished } from "@starter/shared/hris";
 import { operationsEventPayloadSchemas } from "@starter/shared/operations";
@@ -68,25 +75,39 @@ import type * as schema from "../db/schema/index.ts";
 import { aiDailySummaries } from "../db/schema/ai-insights.ts";
 import {
   notificationPolicies,
+  notificationOutbox,
   notificationPreferences,
   pushSubscriptions,
   whatsappReservations,
 } from "../db/schema/notification.ts";
 import { customerProfiles } from "../db/schema/crm-member.ts";
 import { facilityIncidents } from "../db/schema/facility.ts";
+import { panicAlerts } from "../db/schema/panic-alert.ts";
 import { employees } from "../db/schema/hris.ts";
 import { roleAssignments, roles } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
+import { logger } from "../lib/logger.ts";
 import { isReservedAddress } from "../services/identity-email-login.service.ts";
 import { notifyBrevoAuthFailed } from "../services/edge-sync-conflict-alert.ts";
+import {
+  dutyWindowEnd,
+  employeeOfStaff,
+} from "../services/panic-receiver-duty.ts";
 import { issueInvitationLink } from "../services/identity-invitation.service.ts";
 import type { NotificationRecipientResolver } from "../services/notification-consumer.ts";
 import type { NotificationRecipient } from "../services/notification-core.ts";
 import { prepareReservationEmail } from "../services/reservation-guest-notify.ts";
 import type { deliverNotificationAttempt } from "../services/notification-delivery.ts";
+import { openPushSubscription } from "../lib/push-subscription.ts";
+import {
+  createWebPushProvider,
+  deliverablePushSubscription,
+  pushOutletMatches,
+  type WebPushSend,
+} from "./web-push-provider.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 type Tx = Parameters<NotificationRecipientResolver>[2];
@@ -186,6 +207,7 @@ async function loadRecipientState(
         and(
           eq(pushSubscriptions.tenantId, tenantId),
           inArray(pushSubscriptions.userId, userIds),
+          deliverablePushSubscription(now),
         ),
       );
     for (const row of rows) subscribed.add(row.userId);
@@ -324,7 +346,10 @@ async function activeAssignees(
   return rows.map((row) => row.userId).sort();
 }
 
-async function audienceOf(tx: Tx, event: EventEnvelope): Promise<Audience> {
+async function audienceOf(
+  tx: Tx,
+  event: Pick<EventEnvelope, "tenantId" | "outletId">,
+): Promise<Audience> {
   if (!event.outletId) return { kind: "tenant" };
   const [outlet] = await tx
     .select({ brandId: outlets.brandId })
@@ -641,6 +666,89 @@ async function facilityIncidentRaisedRule(input: RuleInput): Promise<Rule> {
           eq(roles.templateKey, "owner"),
           { kind: "tenant" },
         );
+  return { userIds, content };
+}
+
+/** FAC-08 (legend-kmjax): web push fallback outside the LAN. The audience is
+ * the staff ON DUTY at the alert's outlet (same duty rule as the receiver
+ * session, D-04) who hold `facility.emergency.respond` in a scope that covers
+ * that outlet. Nobody on duty means nobody is paged: there is no owner
+ * fallback. The `emergency` category bypasses quiet hours. The link carries
+ * the alert reference (alertId, outletId, unitId, kind, receivedAt) so a push
+ * provider can open the emergency screen on it; the visible text names only
+ * the facility and unit labels. */
+/** Same 24 h window as the receiver's CONNECT_LOOKBACK_MS (panic-relay.service,
+ * not exported): an alert older than this is never paged. */
+const PANIC_PAGE_MAX_AGE_MS = 24 * 60 * 60_000;
+
+async function panicAlertRaisedRule(input: RuleInput): Promise<Rule> {
+  const payload = panicAlertRaisedEvent.payloadSchema.parse(
+    input.event.payload,
+  );
+  if (!input.event.outletId)
+    throw new Error("Panic alert notification requires an outlet");
+  if (payload.outletId !== input.event.outletId)
+    throw new Error("Panic alert outlet does not match the event");
+  const [row] = await input.tx
+    .select({
+      outletId: panicAlerts.outletId,
+      acknowledgedAt: panicAlerts.acknowledgedAt,
+      resolvedAt: panicAlerts.resolvedAt,
+      receivedAt: panicAlerts.receivedAt,
+      unitCodeSnapshot: panicAlerts.unitCodeSnapshot,
+      facilityNameSnapshot: panicAlerts.facilityNameSnapshot,
+    })
+    .from(panicAlerts)
+    .where(
+      and(
+        eq(panicAlerts.tenantId, input.tenantId),
+        eq(panicAlerts.id, payload.alertId),
+      ),
+    );
+  if (!row) throw new Error("Panic alert not found for notification");
+  if (row.outletId !== input.event.outletId)
+    throw new Error("Panic alert outlet does not match the stored alert");
+  const query = new URLSearchParams({
+    alertId: payload.alertId,
+    outletId: payload.outletId,
+    kind: payload.kind,
+    receivedAt: payload.receivedAt,
+  });
+  if (payload.unitId) query.set("unitId", payload.unitId);
+  const place = [row.facilityNameSnapshot, row.unitCodeSnapshot]
+    .filter((part) => part.length > 0)
+    .join(" ");
+  const isTest = payload.kind === "test";
+  const content: Content = {
+    category: "emergency",
+    title: isTest ? "UJI tombol darurat" : "Tombol darurat ditekan",
+    body: `${isTest ? "UJI: " : ""}Tombol darurat ditekan${place ? ` di ${place}` : ""}. Segera tanggapi.`,
+    link: `/fasilitas/darurat?${query.toString()}`,
+  };
+  // A delayed event for an alert someone already answered pages nobody.
+  if (row.acknowledgedAt !== null || row.resolvedAt !== null)
+    return { userIds: [], content };
+  const now = new Date();
+  // A long link outage can deliver the event hours late: never page "Segera
+  // tanggapi" for a stale alert.
+  if (now.getTime() - row.receivedAt.getTime() > PANIC_PAGE_MAX_AGE_MS)
+    return { userIds: [], content };
+  const holders = await permissionHolders(input, EMERGENCY_PERMISSION_RESPOND);
+  const userIds: string[] = [];
+  for (const userId of holders) {
+    const employee = await employeeOfStaff(input.tx, {
+      tenantId: input.tenantId,
+      userId,
+    });
+    if (!employee?.active) continue;
+    const end = await dutyWindowEnd(input.tx, {
+      tenantId: input.tenantId,
+      outletId: payload.outletId,
+      employeeId: employee.id,
+      now,
+    });
+    if (end !== null) userIds.push(userId);
+  }
   return { userIds, content };
 }
 
@@ -1030,6 +1138,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return shiftCancelledRule(input);
     case "facility_incident.raised":
       return facilityIncidentRaisedRule(input);
+    case "panic_alert.raised":
+      return panicAlertRaisedRule(input);
     case "ai_insight.anomaly_detected":
       return aiAnomalyRule(input);
     case "ai_insight.daily_summary_ready":
@@ -1086,9 +1196,84 @@ export function createNotificationRecipientResolver(
 
 // ---- Delivery-time lookup ----------------------------------------------------
 
-/** Re-reads policy, preference and reachability right before a send, so a
- * change since the plan was made is honoured. Push decryption belongs to bead
- * legend-hyq: the endpoint stays null and push reachability false until then. */
+/** Enqueue-time eligibility cannot authorize a delayed emergency send. */
+async function panicRecipientStillEligible(
+  tx: Tx,
+  notification: Notification,
+  now: Date,
+): Promise<boolean> {
+  if (notification.category !== "emergency") return true;
+  if (notification.sourceEventId === null) return false;
+  const [source] = await tx
+    .select({
+      eventType: notificationOutbox.eventType,
+      payload: notificationOutbox.payload,
+    })
+    .from(notificationOutbox)
+    .where(
+      and(
+        eq(notificationOutbox.tenantId, notification.tenantId),
+        eq(
+          notificationOutbox.sourceEventId,
+          ulidToUuid(notification.sourceEventId),
+        ),
+      ),
+    );
+  if (!source) return false;
+  // Other emergency events keep their own established audience rule.
+  if (source.eventType !== "panic_alert.raised") return true;
+  const payload = panicAlertRaisedEvent.payloadSchema.parse(source.payload);
+  if (notification.outletId !== payload.outletId) return false;
+  const [alert] = await tx
+    .select({
+      outletId: panicAlerts.outletId,
+      acknowledgedAt: panicAlerts.acknowledgedAt,
+      resolvedAt: panicAlerts.resolvedAt,
+      receivedAt: panicAlerts.receivedAt,
+    })
+    .from(panicAlerts)
+    .where(
+      and(
+        eq(panicAlerts.tenantId, notification.tenantId),
+        eq(panicAlerts.id, payload.alertId),
+      ),
+    );
+  if (
+    !alert ||
+    alert.outletId !== notification.outletId ||
+    alert.acknowledgedAt !== null ||
+    alert.resolvedAt !== null ||
+    now.getTime() - alert.receivedAt.getTime() > PANIC_PAGE_MAX_AGE_MS
+  )
+    return false;
+  const holders = await activeAssignees(
+    tx,
+    notification.tenantId,
+    required(
+      and(
+        sql`${roles.permissions} @> ${JSON.stringify([EMERGENCY_PERMISSION_RESPOND])}::jsonb`,
+        eq(roleAssignments.userId, notification.userId),
+      ),
+    ),
+    await audienceOf(tx, notification),
+  );
+  if (!holders.includes(notification.userId)) return false;
+  const employee = await employeeOfStaff(tx, {
+    tenantId: notification.tenantId,
+    userId: notification.userId,
+  });
+  return (
+    employee?.active === true &&
+    (await dutyWindowEnd(tx, {
+      tenantId: notification.tenantId,
+      outletId: alert.outletId,
+      employeeId: employee.id,
+      now,
+    })) !== null
+  );
+}
+
+/** Re-read saved subscription and account state immediately before sending. */
 export function createDeliveryRecipientLookup(
   database: Database,
   channels: NotificationChannels,
@@ -1109,9 +1294,57 @@ export function createDeliveryRecipientLookup(
       );
       const userState = state.users.get(notification.userId);
       if (!userState) throw new Error("Recipient state missing");
+      const eligible =
+        userState.active &&
+        (await panicRecipientStillEligible(tx, notification, new Date()));
+      let pushEndpoint: string | null = null;
+      if (channels.push && eligible && userState.hasPushSubscription) {
+        // An emergency alarm only reaches browsers of its own outlet; only
+        // recent verified registrations of unrevoked sessions on active
+        // devices count (deliverablePushSubscription); the newest first.
+        const subscriptions = await tx
+          .select()
+          .from(pushSubscriptions)
+          .where(
+            and(
+              eq(pushSubscriptions.tenantId, notification.tenantId),
+              eq(pushSubscriptions.userId, notification.userId),
+              deliverablePushSubscription(new Date()),
+              pushOutletMatches(
+                notification.category === "emergency"
+                  ? notification.outletId
+                  : null,
+              ),
+            ),
+          )
+          .orderBy(desc(pushSubscriptions.registeredAt));
+        // The attempt names one endpoint (the newest readable one); the push
+        // provider then sends to every deliverable browser of the recipient.
+        // A subscription that cannot be opened is skipped, never fatal.
+        for (const subscription of subscriptions) {
+          try {
+            pushEndpoint = openPushSubscription(
+              subscription.subscriptionCiphertext,
+              notification.tenantId,
+              notification.userId,
+              subscription.endpointHash,
+            ).endpoint;
+            break;
+          } catch {
+            logger.warn(
+              { subscriptionId: subscription.id },
+              "Push subscription could not be opened; skipped",
+            );
+          }
+        }
+      }
+      const currentReachability = reachabilityOf(userState, channels);
       const reachability = {
-        ...reachabilityOf(userState, channels),
-        hasPushSubscription: false,
+        ...currentReachability,
+        hasVerifiedEmail: eligible && currentReachability.hasVerifiedEmail,
+        hasUnverifiedEmail: eligible && currentReachability.hasUnverifiedEmail,
+        whatsappOptIn: eligible && currentReachability.whatsappOptIn,
+        hasPushSubscription: pushEndpoint !== null,
       };
       return {
         policy: state.policy,
@@ -1124,7 +1357,7 @@ export function createDeliveryRecipientLookup(
             reachability.hasUnverifiedEmail)
             ? userState.email
             : null,
-        pushEndpoint: null,
+        pushEndpoint,
         whatsappNumber: null,
       };
     });
@@ -1286,7 +1519,14 @@ export type NotificationProviderConfig = {
   email:
     | { provider: "disabled" }
     | { provider: "brevo"; apiKey: string; from: string; fromName?: string };
-  push: { provider: "disabled" };
+  push:
+    | { provider: "disabled" }
+    | {
+        provider: "web_push";
+        subject: string;
+        publicKey: string;
+        privateKey: string;
+      };
   whatsapp: { provider: "disabled" };
 };
 
@@ -1317,9 +1557,57 @@ export function parseNotificationProviderEnv(
     "disabled",
     "brevo",
   ]);
-  choice("NOTIFICATION_PUSH_PROVIDER", ["disabled"]);
+  const pushProvider = choice("NOTIFICATION_PUSH_PROVIDER", [
+    "disabled",
+    "web_push",
+  ]);
   choice("NOTIFICATION_WHATSAPP_PROVIDER", ["disabled"]);
   let email: NotificationProviderConfig["email"] = { provider: "disabled" };
+  let push: NotificationProviderConfig["push"] = { provider: "disabled" };
+  if (pushProvider === "web_push") {
+    const publicKey = present(env, "VAPID_PUBLIC_KEY");
+    const privateKey = present(env, "VAPID_PRIVATE_KEY");
+    const subject = present(env, "VAPID_SUBJECT");
+    for (const key of [
+      "VAPID_PUBLIC_KEY",
+      "VAPID_PRIVATE_KEY",
+      "VAPID_SUBJECT",
+    ])
+      if (present(env, key) === undefined)
+        problems.push(`${key} is required when the push provider is web_push`);
+    if (
+      subject !== undefined &&
+      !(
+        (subject.startsWith("mailto:") &&
+          z.email().safeParse(subject.slice(7)).success) ||
+        (z.url().safeParse(subject).success && subject.startsWith("https://"))
+      )
+    )
+      problems.push("VAPID_SUBJECT must be a mailto address or HTTPS URL");
+    if (publicKey !== undefined && privateKey !== undefined) {
+      try {
+        if (
+          !/^[A-Za-z0-9_-]{87}$/.test(publicKey) ||
+          !/^[A-Za-z0-9_-]{43}$/.test(privateKey)
+        )
+          throw new Error("Invalid key encoding");
+        const key = createECDH("prime256v1");
+        key.setPrivateKey(Buffer.from(privateKey, "base64url"));
+        if (!key.getPublicKey().equals(Buffer.from(publicKey, "base64url")))
+          throw new Error("Key pair mismatch");
+      } catch {
+        problems.push(
+          "VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY must be a matching P-256 key pair",
+        );
+      }
+    }
+    if (
+      publicKey !== undefined &&
+      privateKey !== undefined &&
+      subject !== undefined
+    )
+      push = { provider: "web_push", publicKey, privateKey, subject };
+  }
   if (emailProvider === "brevo") {
     const apiKey = present(env, "BREVO_API_KEY");
     const from = present(env, "NOTIFICATION_EMAIL_FROM");
@@ -1352,7 +1640,7 @@ export function parseNotificationProviderEnv(
     );
   return {
     email,
-    push: { provider: "disabled" },
+    push,
     whatsapp: { provider: "disabled" },
   };
 }
@@ -1361,7 +1649,7 @@ export function parseNotificationProviderEnv(
 export function createWorkerNotificationHandlers(
   database: Database,
   env: Env,
-  options: { fetch?: FetchLike } = {},
+  options: { fetch?: FetchLike; webPushSend?: WebPushSend } = {},
 ): {
   resolveNotificationRecipients: NotificationRecipientResolver;
   notificationDelivery: DeliveryDependencies;
@@ -1369,7 +1657,7 @@ export function createWorkerNotificationHandlers(
   const config = parseNotificationProviderEnv(env);
   const channels: NotificationChannels = {
     email: config.email.provider !== "disabled",
-    push: false,
+    push: config.push.provider !== "disabled",
   };
   const email =
     config.email.provider === "brevo"
@@ -1388,13 +1676,26 @@ export function createWorkerNotificationHandlers(
             ),
         })
       : (disabledProvider("email") satisfies EmailProvider);
+  const resolveRecipients = createNotificationRecipientResolver(channels);
   return {
-    resolveNotificationRecipients:
-      createNotificationRecipientResolver(channels),
+    resolveNotificationRecipients: async (context, event, tx) => {
+      // Without push configuration the in-app notification is still created
+      // and the event completes; only the push channel is skipped. Operators
+      // see this error in the log (no keys or subscription data in it).
+      if (event.name === "panic_alert.raised" && !channels.push)
+        logger.error(
+          { event: event.name },
+          "Panic web push skipped: set NOTIFICATION_PUSH_PROVIDER=web_push with VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY and VAPID_SUBJECT",
+        );
+      return resolveRecipients(context, event, tx);
+    },
     notificationDelivery: {
       resolve: createDeliveryRecipientLookup(database, channels),
       email,
-      push: disabledProvider("push") satisfies PushProvider,
+      push:
+        config.push.provider === "web_push"
+          ? createWebPushProvider(database, config.push, options.webPushSend)
+          : (disabledProvider("push") satisfies PushProvider),
       // legend-fy5y: the link origin is always WEB_URL, never a request origin.
       // A missing WEB_URL returns null: delivery fails closed, no link is sent.
       invitationLink: async (context, notification) => {

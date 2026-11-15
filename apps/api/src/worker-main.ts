@@ -158,6 +158,7 @@ import { registerAttendanceSelfiePurgeJob } from "./worker/attendance-selfie-pur
 import { registerEdgeSelfieOrphanSweepJob } from "./worker/edge-selfie-orphan-sweep.job.ts";
 import { registerBlindIndexRebuildJob } from "./worker/blind-index-rebuild.job.ts";
 import { registerHrisPiiResealJob } from "./worker/hris-pii-reseal.job.ts";
+import { registerDataKeyRotationJob } from "./worker/data-key-rotation.job.ts";
 import { logger } from "./lib/logger";
 
 assertDeploymentEnv(process.env);
@@ -185,6 +186,10 @@ const sweepsRefunds = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // may emit tenant-wide cloud-sync events, which an edge node must never
 // produce (appendOutbox refuses them). Same fail-closed rule. Facility slot
 // holds are NOT gated: /api/facility is served on the edge (offline smart lock).
+// legend-rs2xy: the same holds for the two accounting jobs that reach tenant-wide
+// producers without a route gate: runDueDepreciation (fixed-asset posting) and
+// runDueRecurringJournals (journal posting + approval). Both run inside
+// `if (sweepsCloudOwnedData)`; edge-worker-cloud-only-gate-855.test.ts pins it.
 const sweepsCloudOwnedData = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // legend-usyi: the audit retention purge runs on the cloud only, as its own
 // maintenance login. A production cloud worker without the URL fails here at
@@ -560,10 +565,13 @@ const relay = createRelayRuntime({
     }
     // §3.19 Aset Tetap (legend-hpgo): post last month's depreciation once per
     // legal entity (idempotent per entity+period and asset+period). Fail closed.
-    try {
-      await runDueDepreciation(context, new Date());
-    } catch {
-      console.error("Depreciation job sweep failed");
+    // Cloud only (legend-rs2xy): the posting emits tenant-wide events.
+    if (sweepsCloudOwnedData) {
+      try {
+        await runDueDepreciation(context, new Date());
+      } catch {
+        console.error("Depreciation job sweep failed");
+      }
     }
     // PAY-02/03 (legend-b9i): settle pending intents whose DOIT webhook never
     // arrived and retry stored webhook events. Fail closed like the sweeps.
@@ -635,17 +643,20 @@ const relay = createRelayRuntime({
     }
     // §3.19 Jurnal Berulang (legend-vmyg): post due occurrences of approved
     // templates, one transaction per period. Fail closed, next tick resumes.
-    try {
-      const recurring = await runDueRecurringJournals(context, new Date());
-      // Counts only (no template data); the per-template reason is stored on
-      // recurring_journals.last_error for finance.
-      if (recurring.failed > 0)
-        logger.warn(
-          { job: "recurring_journals", ...recurring },
-          "recurring journal generation had failures",
-        );
-    } catch {
-      console.error("Recurring journal sweep failed");
+    // Cloud only (legend-rs2xy): posting and its approval emit tenant-wide events.
+    if (sweepsCloudOwnedData) {
+      try {
+        const recurring = await runDueRecurringJournals(context, new Date());
+        // Counts only (no template data); the per-template reason is stored on
+        // recurring_journals.last_error for finance.
+        if (recurring.failed > 0)
+          logger.warn(
+            { job: "recurring_journals", ...recurring },
+            "recurring journal generation had failures",
+          );
+      } catch {
+        console.error("Recurring journal sweep failed");
+      }
     }
     // §3 F16 par-level critical + FEFO expiry alerts (legend-ugo); self-throttled.
     try {
@@ -920,6 +931,12 @@ try {
   }
   // legend-33mj: on-demand re-seal of HRIS PII after a key rotation.
   await registerHrisPiiResealJob({
+    boss,
+    database: db,
+    log: consoleLikeLog(logger),
+  });
+  // legend-rg8yl: daily re-seal of integration and AI keys left on an old data key.
+  await registerDataKeyRotationJob({
     boss,
     database: db,
     log: consoleLikeLog(logger),

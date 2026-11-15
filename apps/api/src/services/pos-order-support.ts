@@ -21,6 +21,9 @@ import {
   isNotNull,
   isNull,
   ne,
+  notExists,
+  notInArray,
+  or,
   sql,
 } from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
@@ -38,7 +41,9 @@ import {
   type ScopedTenantContext,
   type UserId,
 } from "@starter/shared/core";
+import { EdcError } from "@starter/shared/edc";
 import {
+  canSettlePosOrder,
   PosError,
   posEvents,
   posOrderDetailSchema,
@@ -70,6 +75,7 @@ import {
   posOrders,
   posOrderTenders,
 } from "../db/schema/pos-order.ts";
+import { edcTransactions } from "../db/schema/edc.ts"; // legend-ig2sl
 import { orderIssues } from "../db/schema/kds-issues.ts"; // legend-kxoyf
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
@@ -375,6 +381,126 @@ export function assertNoPendingGatewayTender(
       "CONFLICT",
       "Masih ada QRIS yang menunggu pembayaran; total pesanan tidak dapat diubah.",
     );
+}
+
+/**
+ * EDC-01 (legend-ig2sl): while an ECR sale for this bill is still open, the
+ * terminal was asked to charge the amount at that time. Any total-changing
+ * action (and any other tender) fails closed (409) until the request is final
+ * or the bill is settled. Open means: `pending`/`unknown`; a late approval
+ * kept as declined/cancelled/failed (`needs_reconciliation`); or `approved`
+ * without a live tender yet (money taken, not booked). An approved sale that
+ * already is a live tender does not lock. Call it after the order row is
+ * locked, inside the mutating transaction: it takes the same advisory lock as
+ * the edge write-ahead (tenant, outlet:reference), so the two never interleave.
+ */
+export async function assertNoOpenEdcRequest(
+  tx: Tx,
+  context: ScopedTenantContext,
+  order: Pick<OrderRow, "outletId" | "number">,
+): Promise<void> {
+  if (await hasOpenEdcRequest(tx, context, order))
+    throw new PosError("EDC_REQUEST_OPEN");
+}
+
+/**
+ * The check behind `assertNoOpenEdcRequest`, for callers that must decide
+ * instead of throw (the QRIS payment webhook voids and refunds, it never
+ * throws). Same advisory lock and query; true when a request is open.
+ */
+export async function hasOpenEdcRequest(
+  tx: Tx,
+  context: ScopedTenantContext,
+  order: Pick<OrderRow, "outletId" | "number">,
+): Promise<boolean> {
+  const tenantId = context.tenant.tenantId;
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${tenantId}), hashtext(${`${order.outletId}:${order.number}`}))`,
+  );
+  const [open] = await tx
+    .select({ id: edcTransactions.id })
+    .from(edcTransactions)
+    .where(
+      and(
+        eq(edcTransactions.tenantId, tenantId),
+        eq(edcTransactions.outletId, order.outletId),
+        eq(edcTransactions.type, "sale"),
+        eq(edcTransactions.reference, order.number),
+        or(
+          inArray(edcTransactions.status, ["pending", "unknown"]),
+          eq(edcTransactions.needsReconciliation, true),
+          and(
+            eq(edcTransactions.status, "approved"),
+            notExists(
+              tx
+                .select({ one: sql`1` })
+                .from(posOrderTenders)
+                .where(
+                  and(
+                    eq(posOrderTenders.tenantId, tenantId),
+                    eq(posOrderTenders.edcTransactionId, edcTransactions.id),
+                    notInArray(posOrderTenders.status, ["voided", "failed"]),
+                  ),
+                ),
+            ),
+          ),
+        ),
+      ),
+    )
+    .limit(1);
+  return open !== undefined;
+}
+
+/**
+ * An EDC sale may only ask the terminal for what the bill can book as a card
+ * tender right now (legend-xcbs7). The bill is the POS order whose number is
+ * the request reference. Refused with ORDER_NOT_PAYABLE when it is missing, not
+ * a POS order, not open for payment, or still carries a legacy order-level
+ * payment link (the card tender path refuses those, so the money could never
+ * be booked); with EDC_AMOUNT_MISMATCH when `amountIdr` is not exactly the
+ * remaining balance. The caller holds the (tenant, outlet:reference) advisory
+ * lock; the order row is not locked here (lock order).
+ */
+export async function assertEdcSaleBillPayable(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    readonly outletId: OutletId;
+    readonly reference: string;
+    readonly amountIdr: number;
+  },
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const [found] = await tx
+    .select({ order: orders, posOrderId: posOrders.orderId })
+    .from(orders)
+    .leftJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, orders.tenantId),
+        eq(posOrders.orderId, orders.id),
+      ),
+    )
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.outletId, input.outletId),
+        eq(orders.number, input.reference),
+      ),
+    )
+    .limit(1);
+  if (
+    !found ||
+    found.posOrderId === null ||
+    !canSettlePosOrder(found.order.status) ||
+    found.order.paymentLinkId !== null
+  )
+    throw new PosError("ORDER_NOT_PAYABLE");
+  if (
+    input.amountIdr !==
+    remainingIdr(found.order, await tendersOf(tx, context, found.order.id))
+  )
+    throw new EdcError("EDC_AMOUNT_MISMATCH");
 }
 
 /** Stale-screen guard (contract `expectedStatus`): 412 when it moved on. */

@@ -312,7 +312,7 @@ export const edgeInboundEvents = pgTable(
     }).notNull(),
     kind: varchar("kind", { length: 20 }).$type<EdgeEventKind>().notNull(),
     outcome: varchar("outcome", { length: 20 })
-      .$type<"applied" | "superseded" | "conflict">()
+      .$type<"applied" | "superseded" | "conflict" | "deferred">()
       .notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true })
       .notNull()
@@ -346,8 +346,48 @@ export const edgeInboundEvents = pgTable(
     check("edge_inbound_events_kind_check", kindCheck(table.kind)),
     check(
       "edge_inbound_events_outcome_check",
-      sql`${table.outcome} IN ('applied', 'superseded', 'conflict')`,
+      sql`${table.outcome} IN ('applied', 'superseded', 'conflict', 'deferred')`,
     ),
+  ],
+);
+
+// legend-pz641: one row per link slot that a counted receipt holds, so the
+// restore proof (db-link-store inboundProof) and replay reconcile read an
+// index range instead of scanning every receipt of the node. A slot is
+// claimed by the receipt that counts (cloud_to_edge always; edge_to_cloud only
+// when the event is in edge_received_events). Dead-letter receipts write no
+// slot. link_seq is the stored number (peer numbering + peer_seq_offset), like
+// edge_inbound_events.link_seq. Append-only. Migration 0376.
+export const edgeLinkSlots = pgTable(
+  "edge_link_slots",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    edgeNodeId: uuid("edge_node_id").notNull(),
+    direction: varchar("direction", { length: 20 })
+      .$type<SyncDirection>()
+      .notNull(),
+    linkSeq: bigint("link_seq", { mode: "number" }).notNull(),
+    eventId: ulidInUuid("event_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.tenantId,
+        table.edgeNodeId,
+        table.direction,
+        table.linkSeq,
+      ],
+    }),
+    foreignKey({
+      name: "edge_link_slots_edge_node_fk",
+      columns: [table.tenantId, table.outletId, table.edgeNodeId],
+      foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
+    }),
+    check("edge_link_slots_direction_check", directionCheck(table.direction)),
   ],
 );
 
@@ -454,6 +494,8 @@ export const edgePullCheckpoints = pgTable(
         | "device_registry"
         | "staff_pins"
         | `catalog:${CatalogSyncStream}`
+        // Local stamp normalization, independent of HTTP progress/freshness.
+        | `catalog:init:${CatalogSyncStream}`
         // Pending menu_categories parent links of the catalog pull (legend-24318).
         | "catalog:menu_categories:parents"
         // Pending printers fallback links of the catalog pull (legend-fbf4v).
@@ -481,6 +523,33 @@ export const edgePullCheckpoints = pgTable(
       // the menu, price and recipe down-sync (legend-97p, 10 streams).
       sql`${table.stream} IN ('device_registry', 'staff_pins') OR ${table.stream} LIKE 'catalog:%'`,
     ),
+  ],
+);
+
+/** Cloud publisher progress, independent of the edge HTTP pull cursor. */
+export const edgeCatalogPublisherCursors = pgTable(
+  "edge_catalog_publisher_cursors",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    edgeNodeId: uuid("edge_node_id").notNull(),
+    brandId: uuid("brand_id").notNull(),
+    stream: varchar("stream", { length: 40 })
+      .$type<CatalogSyncStream>()
+      .notNull(),
+    watermark: text("watermark"),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    blockedAt: timestamp("blocked_at", { withTimezone: true }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.edgeNodeId, table.stream] }),
+    foreignKey({
+      name: "edge_catalog_publisher_cursors_edge_node_fk",
+      columns: [table.tenantId, table.outletId, table.edgeNodeId],
+      foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
+    }),
   ],
 );
 

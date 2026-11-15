@@ -1,3 +1,4 @@
+import { hasUnsafeSnapshotFields } from "./snapshot-safety.ts";
 import {
   z,
   cursorSchema,
@@ -110,7 +111,7 @@ export type DeviceSyncRecord = z.infer<typeof deviceSyncRecordSchema>;
  * to the new database, so a number is never issued twice (legend-zsdd). An
  * edge refuses a sequence whose binding is not its own.
  */
-export const deviceReceiptSequenceSyncSchema = z.strictObject({
+const deviceReceiptSequenceSyncObjectSchema = z.object({
   id: uuidSchema,
   outletId: outletIdSchema,
   deviceId: uuidSchema,
@@ -121,6 +122,13 @@ export const deviceReceiptSequenceSyncSchema = z.strictObject({
   /** legend-zsdd: that node's database (changes when the edge is rebuilt). */
   edgeInstanceId: uuidSchema,
 });
+export const deviceReceiptSequenceSyncSchema = z
+  .unknown()
+  .refine(
+    (value) => !hasUnsafeSnapshotFields(value),
+    "Forbidden field or snapshot exceeds inspection limits",
+  )
+  .pipe(deviceReceiptSequenceSyncObjectSchema);
 export type DeviceReceiptSequenceSync = z.infer<
   typeof deviceReceiptSequenceSyncSchema
 >;
@@ -147,11 +155,10 @@ export const RECEIPT_WRITEOFF_SYNC_MAX = 1000;
  * when it holds the named run with the same outlet and prefix and the run has
  * reached `sequenceNumber`, and no local receipt carries that number.
  *
- * Strict per row, and the edge parses the list as a whole: one bad row refuses
- * the whole list. So a new row field needs a new opt-in query parameter; older
- * edges would refuse every list that carries it.
+ * Known fields are validated per row, and the edge parses the list as a whole:
+ * one invalid row refuses the whole list. Unknown fields are discarded.
  */
-export const deviceReceiptWriteoffSyncSchema = z.strictObject({
+const deviceReceiptWriteoffSyncObjectSchema = z.object({
   id: uuidSchema,
   outletId: outletIdSchema,
   sequenceId: uuidSchema,
@@ -161,6 +168,13 @@ export const deviceReceiptWriteoffSyncSchema = z.strictObject({
   writtenOffBy: uuidSchema,
   createdAt: isoDateTimeSchema,
 });
+export const deviceReceiptWriteoffSyncSchema = z
+  .unknown()
+  .refine(
+    (value) => !hasUnsafeSnapshotFields(value),
+    "Forbidden field or snapshot exceeds inspection limits",
+  )
+  .pipe(deviceReceiptWriteoffSyncObjectSchema);
 export type DeviceReceiptWriteoffSync = z.infer<
   typeof deviceReceiptWriteoffSyncSchema
 >;
@@ -298,7 +312,7 @@ export const receiptRunRefusalQuerySchema = z
     message: "Bad receipt run refusal report.",
   });
 
-export const deviceSyncPageSchema = z.strictObject({
+const deviceSyncPageObjectSchema = z.object({
   data: z.array(deviceSyncRecordSchema),
   /**
    * legend-3yqy: every device receipt sequence of the outlet, sent in full on
@@ -325,7 +339,7 @@ export const deviceSyncPageSchema = z.strictObject({
    * apart from the page, so it never refuses the page.
    */
   receiptRunAlert: z.literal(true).optional(),
-  meta: z.strictObject({
+  meta: z.object({
     limit: z.number().int().min(1).max(PAGE_LIMIT_MAX),
     /** Non-null while more rows follow: request again with `since` = this. */
     nextCursor: cursorSchema.nullable(),
@@ -333,6 +347,34 @@ export const deviceSyncPageSchema = z.strictObject({
     watermark: cursorSchema.nullable(),
   }),
 });
+/** Validate cloud output without silently dropping unintended fields. */
+export const deviceSyncCloudPageSchema = deviceSyncPageObjectSchema
+  .extend({
+    data: z.array(deviceSyncRecordSchema.strict()),
+    receiptSequences: z
+      .array(deviceReceiptSequenceSyncObjectSchema.strict())
+      .optional(),
+    receiptWriteoffs: z
+      .array(deviceReceiptWriteoffSyncObjectSchema.strict())
+      .max(RECEIPT_WRITEOFF_SYNC_MAX)
+      .optional(),
+    meta: deviceSyncPageObjectSchema.shape.meta.strict(),
+  })
+  .strict();
+export const deviceSyncPageSchema = z
+  .unknown()
+  .refine((value) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value))
+      return !hasUnsafeSnapshotFields(value);
+    const envelope = Object.fromEntries(
+      Object.entries(value).filter(
+        ([key]) =>
+          !["data", "receiptSequences", "receiptWriteoffs"].includes(key),
+      ),
+    );
+    return !hasUnsafeSnapshotFields(envelope);
+  })
+  .pipe(deviceSyncPageObjectSchema);
 export type DeviceSyncPage = z.infer<typeof deviceSyncPageSchema>;
 export const edgeNodeSchema = z.strictObject({
   ...scope,

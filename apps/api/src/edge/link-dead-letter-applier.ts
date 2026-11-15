@@ -9,6 +9,12 @@
 //     that sequence counts as used and the next event of the aggregate is not
 //     refused as a `sequence_gap`.
 // Both writes are idempotent per dead event id.
+//
+// legend-3k41y: the same event, with reason `brand_moved`, also travels
+// cloud -> edge as a no-op placeholder that takes the link slot of a catalog
+// row the cloud withheld (edge-queue.service.ts `neutralizeCatalogRows`). The
+// edge applies it as nothing: the receipt and the cursor advance, no data
+// changes.
 import { sql } from "drizzle-orm";
 import {
   CoreError,
@@ -28,6 +34,7 @@ import { notifyEdgeSyncConflictRecorded } from "../services/edge-sync-conflict-a
 import type { EdgeTx } from "../services/edge-queue.service.ts";
 import {
   registerEdgeAggregateKind,
+  registerEdgeAggregateLastSequence,
   registerEdgeEventHandler,
 } from "./applier-registry.ts";
 import type { EdgeEventHandler } from "./applier-registry.ts";
@@ -71,7 +78,7 @@ export async function applyEdgeLinkDeadLettered(
   // `applied` receipts). Never received for real: its id is not registered in
   // edge_received_events.
   await tx.execute(
-    sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${tenantId}::uuid, ${outletId}::uuid, ${meta.edgeNodeId}::uuid, ${meta.direction}, ${deadUuid}::uuid, ${dead.linkSeq}, ${dead.aggregateType}, ${dead.aggregateId}, ${dead.aggregateSequence}, 'transaction_event', 'applied') ON CONFLICT DO NOTHING`,
+    sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${tenantId}::uuid, ${outletId}::uuid, ${meta.edgeNodeId}::uuid, ${meta.direction}, ${deadUuid}::uuid, ${dead.linkSeq + (meta.peerSeqOffset ?? 0)}, ${dead.aggregateType}, ${dead.aggregateId}, ${dead.aggregateSequence}, 'transaction_event', 'applied') ON CONFLICT DO NOTHING`,
   );
   if (inserted.rows.length === 0) return;
   // Supervisor alert in a savepoint: never fails the batch (the conflict row
@@ -92,6 +99,30 @@ export async function applyEdgeLinkDeadLettered(
   }
 }
 
+/**
+ * Edge side (cloud_to_edge): the placeholder of a withheld catalog row. It
+ * validates the notice and changes no data; the link records the receipt and
+ * advances the cursor like for any applied event.
+ */
+export async function applyEdgeLinkPlaceholder(
+  _tx: EdgeTx,
+  event: EventEnvelope,
+  meta: EdgeApplyMeta,
+): Promise<void> {
+  const parsed = edgeLinkDeadLetteredPayloadSchema.safeParse(event.payload);
+  if (
+    meta.direction !== "cloud_to_edge" ||
+    !parsed.success ||
+    parsed.data.reason !== "brand_moved" ||
+    event.aggregateType !== EDGE_LINK_AGGREGATE ||
+    event.aggregateId !== parsed.data.eventId
+  )
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      `Invalid ${EDGE_LINK_DEAD_LETTERED_EVENT} placeholder`,
+    );
+}
+
 // Stable identity: the registry treats a different handler as a wiring bug.
 const handleEdgeLinkDeadLettered: EdgeEventHandler = applyEdgeLinkDeadLettered;
 
@@ -105,6 +136,33 @@ export function registerEdgeLinkDeadLetterApplier(): void {
     "edge_to_cloud",
     EDGE_LINK_DEAD_LETTERED_EVENT,
     handleEdgeLinkDeadLettered,
+  );
+  registerEdgeAggregateKind(EDGE_LINK_AGGREGATE, "transaction_event");
+}
+
+const handleEdgeLinkPlaceholder: EdgeEventHandler = applyEdgeLinkPlaceholder;
+
+// A placeholder is stateless and its aggregate (the withheld event id) has
+// exactly one event, so nothing is held for it; a redelivery is dropped by its
+// event id. Without this the default counts rows of the same aggregate in the
+// queue (a database shared with the sender) as already held.
+const placeholderLastSequence = async () => 0;
+
+/**
+ * Edge boot (legend-3k41y): accepts the cloud's `edge_link.dead_lettered`
+ * placeholder so a withheld catalog row never leaves a hole in the receive
+ * cursor. Idempotent.
+ */
+export function registerEdgeLinkPlaceholderApplier(): void {
+  registerEdgeEventHandler(
+    "cloud_to_edge",
+    EDGE_LINK_DEAD_LETTERED_EVENT,
+    handleEdgeLinkPlaceholder,
+  );
+  registerEdgeAggregateLastSequence(
+    "cloud_to_edge",
+    EDGE_LINK_AGGREGATE,
+    placeholderLastSequence,
   );
   registerEdgeAggregateKind(EDGE_LINK_AGGREGATE, "transaction_event");
 }

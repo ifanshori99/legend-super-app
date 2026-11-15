@@ -191,8 +191,8 @@ test("builds covered, missing and unknown counts per area", () => {
   assert.equal(report.missing, 2);
   assert.equal(report.coverage, 33.3);
   assert.deepEqual(report.sections, [
-    { name: "multi-tenant", total: 2, covered: 1, missing: 1 },
-    { name: "Operasional Harian", total: 1, covered: 0, missing: 1 },
+    { name: "multi-tenant", total: 2, covered: 1, manual: 0, missing: 1 },
+    { name: "Operasional Harian", total: 1, covered: 0, manual: 0, missing: 1 },
   ]);
   assert.deepEqual(
     report.unknown.map((reference) => reference.id),
@@ -327,4 +327,73 @@ test("CLI honours --prd and reports a missing PRD with a clear error", async (t)
   const alternate = run(["--prd", "alternate.md"], root);
   assert.equal(alternate.status, 0, alternate.stderr);
   assert.match(alternate.stdout, /0\/1 covered/);
+});
+
+const manualId = ["EDG", "04"].join("-");
+const automaticId = ["EDG", "03"].join("-");
+const unknownId = ["EDG", "99"].join("-");
+
+test("strict allows the physical failover release gate without counting it as automated coverage", async (t) => {
+  const root = await tempRoot(t);
+  await writeFile(
+    path.join(root, PRD_PATH),
+    `*Kriteria penerimaan edge node:*
+| ID | Kriteria wajib |
+|----|----------------|
+| ${manualId} | Physical standby failover |
+| ${automaticId} | Automatic edge check |
+`,
+  );
+  await writeFile(
+    path.join(root, "sample.test.ts"),
+    `test("${automaticId} automatic check", () => {});`,
+  );
+  const result = run(["--strict"], root);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /1\/2 covered/);
+  assert.match(result.stdout, /1 manual/);
+  const matrix = await readFile(path.join(root, MATRIX_PATH), "utf8");
+  assert.match(matrix, /## Manual release gates \(1\)/);
+  assert.match(matrix, /uji fisik di outlet, gerbang rilis/);
+  assert.match(matrix, /## Missing criteria \(0\)/);
+  const covered = matrix.split("## Covered criteria")[1].split("##")[0];
+  assert.equal(covered.includes(manualId), false);
+
+  await writeFile(path.join(root, "sample.test.ts"), "");
+  const missing = run(["--strict"], root);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /Strict traceability failed: 1 criteria/);
+
+  await writeFile(
+    path.join(root, "sample.test.ts"),
+    `test("${automaticId} automatic check", () => {});
+test("${unknownId} typo", () => {});`,
+  );
+  const unknown = run(["--strict"], root);
+  assert.equal(unknown.status, 1);
+  assert.match(unknown.stderr, /1 unknown references/);
+});
+
+test("manual criteria remain visible in report counts and do not suppress automated evidence", () => {
+  const parsed = parseCriteria(`*Kriteria penerimaan edge node:*
+| ID | Kriteria wajib |
+|----|----------------|
+| ${manualId} | Physical failover |
+| ${automaticId} | Automatic edge check |
+`);
+  parsed.prd = { file: "PRD.md", criteria: 2, sections: 1 };
+  const report = buildReport(parsed, { files: 0, references: [] });
+  assert.equal(report.covered, 0);
+  assert.equal(report.manual, 1);
+  assert.equal(report.missing, 1);
+  assert.equal(report.coverage, 0);
+  assert.equal(report.sections[0].manual, 1);
+  assert.equal(report.sections[0].missing, 1);
+  const automated = buildReport(parsed, {
+    files: 1,
+    references: [{ id: manualId, known: true, file: "a.test.ts", line: 1 }],
+  });
+  assert.equal(automated.covered, 1);
+  assert.equal(automated.manual, 0);
+  assert.equal(automated.missing, 1);
 });

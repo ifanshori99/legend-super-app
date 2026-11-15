@@ -470,7 +470,11 @@ async function redeliver(event: EventEnvelope) {
       "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
       [tenantId],
     );
-    for (const table of ["edge_inbound_events", "edge_received_events"])
+    for (const table of [
+      "edge_link_slots",
+      "edge_inbound_events",
+      "edge_received_events",
+    ])
       await client.query(
         `DELETE FROM ${table} WHERE tenant_id = $1 AND event_id = $2::uuid`,
         [tenantId, ulidToUuid(event.id)],
@@ -632,6 +636,7 @@ afterAll(async () => {
       "menu_categories",
       "edge_deferred_events",
       "domain_event_outbox",
+      "edge_link_slots",
       "edge_inbound_events",
       "edge_received_events",
       "edge_sync_conflicts",

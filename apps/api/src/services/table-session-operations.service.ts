@@ -33,6 +33,7 @@ import {
   type TableSession,
 } from "@starter/shared/qr-order";
 import { PosError } from "@starter/shared/pos";
+import { assertNoOpenEdcRequest } from "./pos-order-support";
 import { sealSecret } from "../lib/secrets";
 import { db } from "../db";
 import {
@@ -1054,6 +1055,9 @@ export async function moveSessionItemsOperation(
           "CONFLICT",
           "Item yang sudah dibatalkan tidak dapat dipindah.",
         );
+      // EDC-01: an open ECR request was sent for this order's total; a split
+      // or move would change it. Checked before any write (orders locked above).
+      await assertNoOpenEdcRequest(tx, context, order);
       lockedOrders.set(id, order);
     }
 

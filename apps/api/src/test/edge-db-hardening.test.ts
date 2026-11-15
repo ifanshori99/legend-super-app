@@ -124,10 +124,14 @@ function orderEvent(
   };
 }
 
-async function inboundCount(tenantId: string, eventId?: string) {
+async function inboundCount(
+  tenantId: string,
+  eventId?: string,
+  outcome?: string,
+) {
   const result = await owner.query(
-    `SELECT count(*)::int AS n FROM edge_inbound_events WHERE tenant_id = $1 AND ($2::text IS NULL OR event_id::text = $2)`,
-    [tenantId, eventId ? ulidToUuid(eventId) : null],
+    `SELECT count(*)::int AS n FROM edge_inbound_events WHERE tenant_id = $1 AND ($2::text IS NULL OR event_id::text = $2) AND ($3::text IS NULL OR outcome = $3)`,
+    [tenantId, eventId ? ulidToUuid(eventId) : null, outcome ?? null],
   );
   return result.rows[0].n as number;
 }
@@ -179,6 +183,7 @@ afterAll(async () => {
     await client.query("BEGIN");
     await client.query("SET LOCAL session_replication_role = replica");
     for (const table of [
+      "edge_link_slots",
       "edge_inbound_events",
       "edge_received_events",
       "edge_sync_conflicts",
@@ -346,7 +351,10 @@ describe("legend-wg5t cross-node dedupe", () => {
       events: [{ linkSeq: 1, event }],
     });
     expect(applied).toEqual([event.id]);
-    expect(await inboundCount(one.tenantId, event.id)).toBe(1);
+    expect(await inboundCount(one.tenantId, event.id, "applied")).toBe(1);
+    // The skipped duplicate still leaves a receipt for its link slot, so the
+    // restore proof (legend-tmar2) sees no hole.
+    expect(await inboundCount(one.tenantId, event.id, "superseded")).toBe(1);
     // Skipped, but the standby's cursor still moves so its queue drains.
     expect(await fromStandby.lastReceivedInbound()).toBe(1);
   });
@@ -381,7 +389,7 @@ describe("legend-wg5t cross-node dedupe", () => {
       await store.applyInbound(batch(await store.lastReceivedInbound()));
     }
     expect(applied).toEqual([event.id]);
-    expect(await inboundCount(one.tenantId, event.id)).toBe(1);
+    expect(await inboundCount(one.tenantId, event.id, "applied")).toBe(1);
   });
 
   it("edge_to_cloud: a duplicate racing an uncommitted registry row fails on the primary key, then the retry skips it", async () => {
@@ -445,7 +453,8 @@ describe("legend-wg5t cross-node dedupe", () => {
       toSeq: from + 1,
       events: [{ linkSeq: from + 1, event }],
     });
-    expect(await inboundCount(one.tenantId, event.id)).toBe(0);
+    expect(await inboundCount(one.tenantId, event.id, "applied")).toBe(0);
+    expect(await inboundCount(one.tenantId, event.id, "superseded")).toBe(1);
     expect(await fromStandby.lastReceivedInbound()).toBe(from + 1);
   });
 

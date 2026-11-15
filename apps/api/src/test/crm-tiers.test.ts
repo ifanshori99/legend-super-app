@@ -277,19 +277,19 @@ async function earnedWithTier(
   return earn ? Number(earn.points) : 0;
 }
 
-describe("LOY-05 the tier multiplier in earn", () => {
-  it("LOY-05 a member without a tier earns at 1x (10 000 bp regression)", async () => {
+describe("the tier multiplier in earn", () => {
+  it("a member without a tier earns at 1x (10 000 bp regression)", async () => {
     const world = await tierWorld();
     expect(await earnedWithTier(world, null)).toBe(10);
   });
 
-  it("LOY-05 a 10 000 bp tier earns exactly the same as no tier", async () => {
+  it("a 10 000 bp tier earns exactly the same as no tier", async () => {
     const world = await tierWorld();
     const base = { id: await seedTier(world.tenantId, { rank: 1 }) };
     expect(await earnedWithTier(world, base)).toBe(10);
   });
 
-  it("LOY-05 a 15 000 bp tier earns 1.5x and a 20 000 bp tier 2x", async () => {
+  it("a 15 000 bp tier earns 1.5x and a 20 000 bp tier 2x", async () => {
     const world = await tierWorld();
     const gold = {
       id: await seedTier(world.tenantId, { rank: 2, multiplierBp: 15_000 }),
@@ -301,7 +301,7 @@ describe("LOY-05 the tier multiplier in earn", () => {
     expect(await earnedWithTier(world, platinum)).toBe(20);
   });
 
-  it("LOY-05 the multiplied points round down (2 base points at 1.5x = 3)", async () => {
+  it("the multiplied points round down (2 base points at 1.5x = 3)", async () => {
     const world = await tierWorld();
     const gold = {
       id: await seedTier(world.tenantId, { rank: 2, multiplierBp: 15_000 }),
@@ -309,7 +309,7 @@ describe("LOY-05 the tier multiplier in earn", () => {
     expect(await earnedWithTier(world, gold, 25_000)).toBe(3);
   });
 
-  it("LOY-05 an inactive tier gives 1x", async () => {
+  it("an inactive tier gives 1x", async () => {
     const world = await tierWorld();
     const off = {
       id: await seedTier(world.tenantId, {
@@ -324,8 +324,8 @@ describe("LOY-05 the tier multiplier in earn", () => {
 
 // ---- tier evaluation ------------------------------------------------------------
 
-describe("LOY-05 tier evaluation", () => {
-  it("LOY-05 a member who reaches a threshold gets the tier, one history row and one tier.changed event", async () => {
+describe("tier evaluation", () => {
+  it("a member who reaches a threshold gets the tier, one history row and one tier.changed event", async () => {
     const world = await tierWorld();
     const silver = await seedTier(world.tenantId, {
       rank: 1,
@@ -372,7 +372,7 @@ describe("LOY-05 tier evaluation", () => {
     });
   });
 
-  it("LOY-05 evaluating twice in the same period writes one history row and one event", async () => {
+  it("evaluating twice in the same period writes one history row and one event", async () => {
     const world = await tierWorld();
     const silver = await seedTier(world.tenantId, {
       rank: 1,
@@ -393,7 +393,7 @@ describe("LOY-05 tier evaluation", () => {
     ).toHaveLength(1);
   });
 
-  it("LOY-05 a member who qualifies for nothing stays without a tier, with no history", async () => {
+  it("a member who qualifies for nothing stays without a tier, with no history", async () => {
     const world = await tierWorld();
     await seedTier(world.tenantId, { rank: 1, spend: 500_000, visits: 5 });
     const member = await seedMember(world.tenantId);
@@ -410,7 +410,7 @@ describe("LOY-05 tier evaluation", () => {
     ).toHaveLength(0);
   });
 
-  it("LOY-05 the highest qualifying rank wins, spend alone is enough, and an inactive tier is ignored", async () => {
+  it("the highest qualifying rank wins, spend alone is enough, and an inactive tier is ignored", async () => {
     const world = await tierWorld();
     const silver = await seedTier(world.tenantId, {
       rank: 1,
@@ -440,7 +440,7 @@ describe("LOY-05 tier evaluation", () => {
     expect((await tierOf(world.tenantId, small.id)).tier_id).toBe(silver);
   });
 
-  it("LOY-05 only visits inside the rolling window count", async () => {
+  it("only visits inside the rolling window count", async () => {
     const world = await tierWorld();
     await seedTier(world.tenantId, { rank: 1, spend: 100_000, visits: 100 });
     const member = await seedMember(world.tenantId);
@@ -461,7 +461,7 @@ describe("LOY-05 tier evaluation", () => {
     });
   });
 
-  it("LOY-05 a member whose visits leave the window drops to no tier, with history and event", async () => {
+  it("a member whose visits leave the window drops to no tier, with history and event", async () => {
     const world = await tierWorld();
     const silver = await seedTier(world.tenantId, {
       rank: 1,
@@ -493,7 +493,7 @@ describe("LOY-05 tier evaluation", () => {
     expect(events.map((event) => event.payload.toTierId)).toContain(null);
   });
 
-  it("LOY-05 the tier change, the history row and tier.changed commit together or not at all", async () => {
+  it("the tier change, the history row and tier.changed commit together or not at all", async () => {
     const world = await tierWorld();
     const silver = await seedTier(world.tenantId, {
       rank: 1,
@@ -529,8 +529,8 @@ describe("LOY-05 tier evaluation", () => {
   });
 });
 
-describe("LOY-05 customer_tier_history is append-only for legend_app", () => {
-  it("LOY-05 UPDATE, DELETE and TRUNCATE of a history row are refused", async () => {
+describe("customer_tier_history is append-only for legend_app", () => {
+  it("UPDATE, DELETE and TRUNCATE of a history row are refused", async () => {
     const world = await tierWorld();
     await seedTier(world.tenantId, { rank: 1, spend: 10_000, visits: 100 });
     const member = await seedMember(world.tenantId);
@@ -681,8 +681,8 @@ const referralBonuses = async (tenantId: string, profileId: string) =>
     (row) => row.type === "bonus" && row.source_type === "referral",
   );
 
-describe("LOY-06 referral sign-up", () => {
-  it("LOY-06 a referral code at sign-up creates one pending referral with the program points copied", async () => {
+describe("referral sign-up", () => {
+  it("a referral code at sign-up creates one pending referral with the program points copied", async () => {
     const world = await referralWorld();
     const referrer = await referrerOf(world);
     const referee = await seedMember(world.tenantId);
@@ -709,7 +709,7 @@ describe("LOY-06 referral sign-up", () => {
     });
   });
 
-  it("LOY-06 an unknown code, a disabled program and a self-referral are silently ignored", async () => {
+  it("an unknown code, a disabled program and a self-referral are silently ignored", async () => {
     const world = await referralWorld();
     const referrer = await referrerOf(world);
     const stranger = await seedMember(world.tenantId);
@@ -730,7 +730,7 @@ describe("LOY-06 referral sign-up", () => {
     expect(await referralsOf(world.tenantId)).toHaveLength(0);
   });
 
-  it("LOY-06 a referee has one referrer: a second sign-up code adds no row, and the table refuses a duplicate", async () => {
+  it("a referee has one referrer: a second sign-up code adds no row, and the table refuses a duplicate", async () => {
     const world = await referralWorld();
     const first = await referrerOf(world);
     const second = await referrerOf(world);
@@ -755,7 +755,7 @@ describe("LOY-06 referral sign-up", () => {
     expect(duplicate).toMatch(/unique|duplicate/i);
   });
 
-  it("LOY-06 the table refuses a referral of a customer to themselves", async () => {
+  it("the table refuses a referral of a customer to themselves", async () => {
     const world = await referralWorld();
     const member = await seedMember(world.tenantId);
     const message = await rejection(
@@ -770,7 +770,7 @@ describe("LOY-06 referral sign-up", () => {
     expect(message).toMatch(/check|referrals/i);
   });
 
-  it("LOY-06 ensureReferralCode makes one stable 8-character code when referral is on, and null when it is off", async () => {
+  it("ensureReferralCode makes one stable 8-character code when referral is on, and null when it is off", async () => {
     const world = await referralWorld();
     const member = await seedMember(world.tenantId);
     const ensure = (profileId: string) =>
@@ -790,7 +790,7 @@ describe("LOY-06 referral sign-up", () => {
   });
 });
 
-describe("LOY-06 referral through real HTTP sign-up and profile", () => {
+describe("referral through real HTTP sign-up and profile", () => {
   const POLICY = "2026-01";
 
   // The seeded tenant is shared: these tests turn its referral rules on and
@@ -818,7 +818,7 @@ describe("LOY-06 referral through real HTTP sign-up and profile", () => {
     return { ...user, code };
   }
 
-  it("LOY-06 a new member who signs up over HTTP with a referral code gets one pending referral and an own code", async () => {
+  it("a new member who signs up over HTTP with a referral code gets one pending referral and an own code", async () => {
     const referrer = await codedReferrer();
     const referee = await newMemberUser(app, {
       profile: false,
@@ -858,7 +858,7 @@ describe("LOY-06 referral through real HTTP sign-up and profile", () => {
     });
   });
 
-  it("LOY-06 GET /api/member/profile gives an existing member without a code a stable one when referral is on", async () => {
+  it("GET /api/member/profile gives an existing member without a code a stable one when referral is on", async () => {
     const member = await newMemberUser(app, {
       profile: "active",
       verifiedWhatsapp: true,
@@ -879,7 +879,7 @@ describe("LOY-06 referral through real HTTP sign-up and profile", () => {
     expect(second.body.data.referralCode).toBe(first.body.data.referralCode);
   });
 
-  it("LOY-06 GET /api/member/profile gives no code when the referral program is off", async () => {
+  it("GET /api/member/profile gives no code when the referral program is off", async () => {
     await setReferralRules(seededTenantId, { enabled: false });
     try {
       const member = await newMemberUser(app, {
@@ -897,8 +897,8 @@ describe("LOY-06 referral through real HTTP sign-up and profile", () => {
   });
 });
 
-describe("LOY-06 referral qualification", () => {
-  it("LOY-06 an order blocked as self-serve does not qualify the referral", async () => {
+describe("referral qualification", () => {
+  it("an order blocked as self-serve does not qualify the referral", async () => {
     const world = await referralWorld();
     const referrer = await referrerOf(world);
     const referee = await seedMember(world.tenantId);
@@ -925,7 +925,7 @@ describe("LOY-06 referral qualification", () => {
     expect(await referralBonuses(world.tenantId, referee.id)).toHaveLength(0);
   });
 
-  it("LOY-06 the referee's first paid order rewards both sides once", async () => {
+  it("the referee's first paid order rewards both sides once", async () => {
     const world = await referralWorld();
     const referrer = await referrerOf(world);
     const referee = await seedMember(world.tenantId);
@@ -959,7 +959,7 @@ describe("LOY-06 referral qualification", () => {
     expect(await balanceOf(world.tenantId, referee.id)).toBe(60);
   });
 
-  it("LOY-06 a second paid order, or a replayed event, pays nothing more", async () => {
+  it("a second paid order, or a replayed event, pays nothing more", async () => {
     const world = await referralWorld();
     const referrer = await referrerOf(world);
     const referee = await seedMember(world.tenantId);
@@ -983,7 +983,7 @@ describe("LOY-06 referral qualification", () => {
     expect((await referralsOf(world.tenantId))[0]!.status).toBe("rewarded");
   });
 
-  it("LOY-06 a side whose points are 0 gets no bonus row", async () => {
+  it("a side whose points are 0 gets no bonus row", async () => {
     const world = await referralWorld({ refereePoints: 0 });
     const referrer = await referrerOf(world);
     const referee = await seedMember(world.tenantId);
@@ -996,7 +996,7 @@ describe("LOY-06 referral qualification", () => {
     expect((await referralsOf(world.tenantId))[0]!.status).toBe("rewarded");
   });
 
-  it("LOY-06 a first order below the minimum pays no bonus to either side", async () => {
+  it("a first order below the minimum pays no bonus to either side", async () => {
     const world = await referralWorld({ minFirstOrderIdr: 150_000 });
     const referrer = await referrerOf(world);
     const referee = await seedMember(world.tenantId);
@@ -1009,7 +1009,7 @@ describe("LOY-06 referral qualification", () => {
     expect((await referralsOf(world.tenantId))[0]!.status).not.toBe("rewarded");
   });
 
-  it("LOY-06 when the program turns referral off before the first order, nothing is paid", async () => {
+  it("when the program turns referral off before the first order, nothing is paid", async () => {
     const world = await referralWorld();
     const referrer = await referrerOf(world);
     const referee = await seedMember(world.tenantId);
@@ -1022,7 +1022,7 @@ describe("LOY-06 referral qualification", () => {
     expect(await referralBonuses(world.tenantId, referee.id)).toHaveLength(0);
   });
 
-  it("LOY-06 the referrer's monthly cap: the referral over the cap expires with no bonus", async () => {
+  it("the referrer's monthly cap: the referral over the cap expires with no bonus", async () => {
     const world = await referralWorld({ maxReferralsPerCustomerPerMonth: 1 });
     const referrer = await referrerOf(world);
     const one = await seedMember(world.tenantId);
@@ -1044,7 +1044,7 @@ describe("LOY-06 referral qualification", () => {
     expect(await balanceOf(world.tenantId, two.id)).toBe(10);
   });
 
-  it("LOY-06 a referrer who is no longer active at qualification gets the referral expired, no bonus", async () => {
+  it("a referrer who is no longer active at qualification gets the referral expired, no bonus", async () => {
     const world = await referralWorld();
     const referrer = await referrerOf(world);
     const referee = await seedMember(world.tenantId);
@@ -1063,7 +1063,7 @@ describe("LOY-06 referral qualification", () => {
     expect(await referralBonuses(world.tenantId, referee.id)).toHaveLength(0);
   });
 
-  it("LOY-06 a referee whose WhatsApp number already had another profile is refused, no bonus", async () => {
+  it("a referee whose WhatsApp number already had another profile is refused, no bonus", async () => {
     const world = await referralWorld();
     const referrer = await referrerOf(world);
     const hash = hex64();
@@ -1085,8 +1085,8 @@ describe("LOY-06 referral qualification", () => {
 
 // ---- isolation of the new tables ------------------------------------------------
 
-describe("LOY-06 referrals isolation", () => {
-  it("LOY-06 referrals has tenant RLS and a restrictive member policy", async () => {
+describe("referrals isolation", () => {
+  it("referrals has tenant RLS and a restrictive member policy", async () => {
     const { rows } = await owner.query<{ permissive: string }>(
       "SELECT permissive FROM pg_policies WHERE tablename = 'referrals'",
     );
@@ -1104,7 +1104,7 @@ describe("LOY-06 referrals isolation", () => {
     });
   });
 
-  it("LOY-06 with app.customer_profile_id set a member sees only referrals they are in; staff see all", async () => {
+  it("with app.customer_profile_id set a member sees only referrals they are in; staff see all", async () => {
     const world = await tierWorld();
     const a = await seedMember(world.tenantId);
     const b = await seedMember(world.tenantId);
@@ -1195,8 +1195,8 @@ async function createTierAsBoss(overrides: Record<string, unknown> = {}) {
   return { body, response };
 }
 
-describe("LOY-05 tier administration over HTTP (crm.loyalty.manage)", () => {
-  it("LOY-05 the owner creates, lists and updates a tier; tiers are deactivated, not deleted", async () => {
+describe("tier administration over HTTP (crm.loyalty.manage)", () => {
+  it("the owner creates, lists and updates a tier; tiers are deactivated, not deleted", async () => {
     const { body, response } = await createTierAsBoss();
     expect([200, 201], JSON.stringify(response.body)).toContain(
       response.status,
@@ -1239,7 +1239,7 @@ describe("LOY-05 tier administration over HTTP (crm.loyalty.manage)", () => {
     ).toMatchObject({ isActive: false });
   });
 
-  it("LOY-05 an invalid tier body is 422 and a taken rank is refused", async () => {
+  it("an invalid tier body is 422 and a taken rank is refused", async () => {
     for (const bad of [
       { rank: 0 },
       { name: "" },
@@ -1260,7 +1260,7 @@ describe("LOY-05 tier administration over HTTP (crm.loyalty.manage)", () => {
     expect([400, 409, 422]).toContain(duplicate.status);
   });
 
-  it("LOY-05 a cashier (no crm.loyalty.manage) gets 403 on list, create and update, and changes nothing", async () => {
+  it("a cashier (no crm.loyalty.manage) gets 403 on list, create and update, and changes nothing", async () => {
     const { response } = await createTierAsBoss({ name: "Tier Kasir Uji" });
     const tierId = response.body.data.id as string;
 
@@ -1286,7 +1286,7 @@ describe("LOY-05 tier administration over HTTP (crm.loyalty.manage)", () => {
     ).toBe("Tier Kasir Uji");
   });
 
-  it("LOY-05 a visitor without a session gets 401 and a member session gets 403", async () => {
+  it("a visitor without a session gets 401 and a member session gets 403", async () => {
     const anonymous = await agent(app).get("/api/loyalty/tiers").set(headers);
     expect(anonymous.status).toBe(401);
 

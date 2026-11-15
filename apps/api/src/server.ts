@@ -4,7 +4,8 @@ import { guardEdgeUpgrades } from "./edge/mode.ts";
 import { attachEmergencyRealtime } from "./edge/panic-relay-realtime.ts";
 import { expressClientAddress } from "./lib/client-address.ts";
 import { env } from "./config/env";
-import { checkDatabase, pool } from "./db";
+import { checkDatabase, db, pool } from "./db";
+import { startCatalogPublisherWorker } from "./services/edge-master-data-publisher.ts";
 import { logger } from "./lib/logger";
 import { createDoitGateway } from "./services/payment-doit.ts";
 import { createDuitkuGateway } from "./services/payment-duitku.ts";
@@ -38,6 +39,7 @@ import {
   type EdgeLinkHandle,
   type EdgeRuntimeHandle,
 } from "./edge/runtime.ts";
+import { edgeShutdownForceMs, startEdgeEdcAgent } from "./edge/edc/runtime.ts";
 import { startEdgePrintAgent } from "./edge/print/runtime.ts";
 
 const app = createApp();
@@ -153,17 +155,23 @@ let edgeRuntime: EdgeRuntimeHandle | null = null;
 // Print Agent (legend-46p, PRD §3 F5, EDG-05): edge mode only, bound to the
 // node's own tenant + outlet once the edge runtime has its identity.
 let printAgent: { stop(): Promise<void> } | null = null;
+// EDC agent (legend-kwy6d): edge primary only, off unless EDC_AGENT_ENABLED.
+let edcAgent: { stop(): Promise<void> } | null = null;
 let edgeLink: EdgeLinkHandle | null = null;
+let catalogPublisher: { stop(): Promise<void> } | null = null;
 const edgeReady = (async () => {
   try {
     if (env.EDGE_MODE) {
       edgeRuntime = await startEdgeRuntime();
       printAgent = startEdgePrintAgent();
-    } else
+      edcAgent = await startEdgeEdcAgent();
+    } else {
       edgeLink = await registerEdgeLink(server, {
         // Upgrade rate limit per real client, not per proxy (legend-wg5t).
         clientAddress: expressClientAddress(app),
       });
+      catalogPublisher = startCatalogPublisherWorker(db);
+    }
   } catch (error) {
     if (error instanceof EdgeBootError) {
       // The message names settings and tables only, never their values.
@@ -196,10 +204,13 @@ async function shutdown(signal: string) {
   if (stopping) return;
   stopping = true;
   logger.info({ signal }, "Shutting down");
+  // 5 s normally; with the EDC agent on, long enough for a sale on the wire
+  // (its approval evidence is written before stop() returns).
+  const forceMs = edgeShutdownForceMs();
   const force = setTimeout(() => {
-    logger.warn("Forcing exit after 5s");
+    logger.warn({ forceMs }, "Forcing exit after the shutdown timer");
     process.exit(1);
-  }, 5000);
+  }, forceMs);
   force.unref();
   await realtime.close();
   await (
@@ -215,6 +226,12 @@ async function shutdown(signal: string) {
     await stopKdsWakeups
   )();
   await edgeReady.catch(() => {});
+  await catalogPublisher?.stop();
+  // Waits for sales already on the wire (up to the sale timeout); the force
+  // timer above is sized for that when EDC is on. Cutting it short is NOT
+  // safe: the approval evidence of a sale on the wire would be lost
+  // (docs/deployment.md, EDC agent).
+  await edcAgent?.stop();
   await printAgent?.stop();
   await edgeRuntime?.stop();
   await edgeLink?.close();

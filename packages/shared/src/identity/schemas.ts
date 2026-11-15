@@ -356,6 +356,22 @@ export const sessionViewSchema = z.strictObject({
 });
 export type SessionView = z.infer<typeof sessionViewSchema>;
 
+/**
+ * legend-gchkf: one browser registered for panic-alarm web push by the
+ * caller. Listed even when its login session has expired (`sessionActive`
+ * false), so a lost phone can still be revoked. Never carries the push
+ * endpoint, keys, ciphertext or hash.
+ */
+export const pushDeviceSchema = z.strictObject({
+  id: uuidSchema,
+  deviceLabel: z.string().nullable(),
+  registeredAt: isoDateTimeSchema,
+  sessionActive: z.boolean(),
+  /** True when the device was registered by the caller's current login session. */
+  current: z.boolean(),
+});
+export type PushDevice = z.infer<typeof pushDeviceSchema>;
+
 /** What a completed login yields: the session cookie plus MFA next steps. */
 export const loginResultSchema = z.strictObject({
   session: sessionSchema,

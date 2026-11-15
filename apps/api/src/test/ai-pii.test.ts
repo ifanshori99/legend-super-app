@@ -1,6 +1,12 @@
 // PII scanner for AI input and audit params (PRD §27 Input Minimum, AIG-02).
 import { describe, expect, it } from "vitest";
-import { redactJson, redactPii, scanPii } from "../lib/ai/pii.ts";
+import {
+  redactJson,
+  redactPii,
+  redactToolResultContent,
+  scanPii,
+} from "../lib/ai/pii.ts";
+import { prepareAiRequest } from "../lib/ai/request-policy.ts";
 
 const kinds = (text: string) => scanPii(text).found;
 
@@ -38,12 +44,75 @@ describe("scanPii", () => {
     expect(kinds("penjualan Rp 8.500.000")).toEqual([]);
   });
 
+  it.each([
+    "Slip gaji Oktober 2026",
+    "Slip gaji 31 Oktober 2026",
+    "Slip gaji 31 Oktober",
+    "Payroll 2026-10-31",
+    "Upah tanggal 31/10/2026",
+    "Slip gaji 31 Okt 2026",
+    "Slip gaji 31 Okt. 2026",
+    "Slip gaji 31.10.26",
+    "salary October 31, 2026",
+    "Gaji bulan ini belum dibayar",
+  ])("does not classify words or dates as salary amounts: %s", (text) => {
+    expect(kinds(text)).toEqual([]);
+    expect(redactPii(text)).toBe(text);
+  });
+
   it("does not report one value twice", () => {
     expect(kinds("3174011501900001")).toEqual(["nik"]);
   });
 });
 
 describe("redactPii", () => {
+  it.each([
+    ["gaji Budi Rp 8.500.000", "gaji Budi [salary amount]"],
+    ["salary: 12000000", "salary: [salary amount]"],
+    ["salary: 2026", "salary: [salary amount]"],
+    ["THP 2000", "THP [salary amount]"],
+    ["THP 7,5 juta", "THP [salary amount]"],
+    ["Gaji 5000", "Gaji [salary amount]"],
+    ["Gaji Rp 2.026", "Gaji [salary amount]"],
+    ["salary: 2026.50", "salary: [salary amount]"],
+    ["gaji 2026,50", "gaji [salary amount]"],
+    ["gaji Mei 4500", "gaji Mei [salary amount]"],
+    ["gaji Juni 9000", "gaji Juni [salary amount]"],
+    ["salary Oct 31, 4500", "salary Oct 31, [salary amount]"],
+    ["gaji 10.10.000", "gaji [salary amount]"],
+    [
+      "Slip gaji Oktober 2026: Rp 8.500.000",
+      "Slip gaji Oktober 2026: [salary amount]",
+    ],
+    [
+      "Gaji 31 Oktober 2026 Rp 8.500.000",
+      "Gaji 31 Oktober 2026 [salary amount]",
+    ],
+    [
+      "Slip gaji 31 Okt 2026 Rp 8.500.000",
+      "Slip gaji 31 Okt 2026 [salary amount]",
+    ],
+    ["Slip gaji 31.10.26 Rp 8.500.000", "Slip gaji 31.10.26 [salary amount]"],
+    [
+      "Slip gaji 31 Oktober Rp 8.500.000",
+      "Slip gaji 31 Oktober [salary amount]",
+    ],
+    [
+      "Slip gaji tanggal 31 Oktober 2026 sebesar Rp 8.500.000",
+      "Slip gaji tanggal 31 Oktober 2026 sebesar [salary amount]",
+    ],
+    [
+      "Gaji dibayar pada tanggal 31 Oktober 2026 Rp 8.500.000",
+      "Gaji dibayar pada tanggal 31 Oktober 2026 [salary amount]",
+    ],
+  ])(
+    "redacts salary amounts while preserving context: %s",
+    (text, expected) => {
+      expect(kinds(text)).toEqual(["salary"]);
+      expect(redactPii(text)).toBe(expected);
+    },
+  );
+
   it("replaces each finding with a neutral placeholder", () => {
     const out = redactPii("Hubungi budi@example.com atau 081234567890.");
     expect(out).toBe("Hubungi [email address] atau [phone number].");
@@ -76,5 +145,111 @@ describe("redactJson", () => {
     const input = { q: "budi@example.com" };
     redactJson(input);
     expect(input.q).toBe("budi@example.com");
+  });
+});
+
+describe("redactToolResultContent (AIG-02)", () => {
+  it("redacts string values in JSON and keeps numbers and keys", () => {
+    const content = JSON.stringify({
+      total: 6200000000,
+      rows: [{ note: "hubungi budi@example.com atau 0812 3456 7890" }],
+    });
+    const out = JSON.parse(redactToolResultContent(content));
+    expect(out).toEqual({
+      total: 6200000000,
+      rows: [{ note: "hubungi [email address] atau [phone number]" }],
+    });
+  });
+
+  it("returns clean JSON byte for byte, even with large integers", () => {
+    const content = '{"id":12345678901234567890,"name":"Kopi"}';
+    expect(redactToolResultContent(content)).toBe(content);
+  });
+
+  it("redacts non-JSON error text as plain text", () => {
+    expect(redactToolResultContent("gagal untuk budi@example.com")).toBe(
+      "gagal untuk [email address]",
+    );
+  });
+
+  it("prepareAiRequest masks tool_result blocks and leaves the input intact", () => {
+    const messages = [
+      {
+        role: "user" as const,
+        content: [{ type: "text" as const, text: "SOP?" }],
+      },
+      {
+        role: "assistant" as const,
+        content: [
+          {
+            type: "tool_use" as const,
+            id: "t1",
+            name: "search_sop",
+            input: {},
+          },
+        ],
+      },
+      {
+        role: "user" as const,
+        content: [
+          {
+            type: "tool_result" as const,
+            toolUseId: "t1",
+            content: JSON.stringify({ snippet: "email budi@example.com" }),
+          },
+        ],
+      },
+    ];
+    const prepared = prepareAiRequest(
+      {
+        system: "s",
+        messages,
+        tools: [],
+        maxTokens: 100,
+      } as never,
+      {
+        contextWindow: 100000,
+        maxOutputTokens: 1000,
+        supportsTools: true,
+        supportsReasoning: false,
+        reasoningEfforts: [],
+      } as never,
+    );
+    expect(JSON.stringify(prepared.messages)).not.toContain("budi@example.com");
+    expect(JSON.stringify(prepared.messages)).toContain("[email address]");
+    expect(JSON.stringify(messages)).toContain("budi@example.com");
+  });
+});
+
+describe("redactJson structured data and phone boundaries (AIG-02)", () => {
+  it.each([
+    ["bank account by key", { accountNumber: "1234567890" }],
+    ["phone without prefix by key", { phone: "812 3456 7890" }],
+    ["nik as number by key", { nik: 3201234567890123 }],
+    ["email by snake_case key", { customer_email: "x" }],
+  ])("masks %s", (_name, input) => {
+    expect(JSON.stringify(redactJson(input))).toContain("[redacted]");
+  });
+
+  it("redacts personal data used as an object key", () => {
+    expect(JSON.stringify(redactJson({ "budi@example.com": 5 }))).not.toContain(
+      "budi@example.com",
+    );
+  });
+
+  it("keeps ids and chart-of-accounts fields intact", () => {
+    const input = {
+      accountId: "c0812345-6789-4abc-8def-0123456789ab",
+      accountCode: "1100",
+      accountName: "Kas",
+      amount: "120812345678",
+    };
+    expect(redactJson(input)).toEqual(input);
+  });
+
+  it("does not read a UUID segment or longer digit string as a phone", () => {
+    expect(redactPii("c0812345-6789-4abc")).toBe("c0812345-6789-4abc");
+    expect(redactPii("120812345678")).toBe("120812345678");
+    expect(redactPii("telp 0812 3456 7890")).toBe("telp [phone number]");
   });
 });

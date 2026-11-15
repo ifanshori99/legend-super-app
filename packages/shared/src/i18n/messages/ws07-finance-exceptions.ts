@@ -1,0 +1,110 @@
+// Finance exceptions list (legend-4oclu).
+// Own file so parallel beads never edit the same catalog lines.
+export const financeExceptionsMessages = {
+  tab: "Pengecualian finance",
+  title: "Pengecualian finance",
+  subtitle:
+    "Periksa transaksi edge dan biaya pencairan gaji yang belum tercatat lengkap.",
+  readOnly: "Hanya baca",
+  kinds: {
+    edge_tax_unsnapshotted: "Pajak edge belum tersnapshot",
+    edge_void_unsupported: "Void edge tidak didukung",
+    edge_receipt_skipped: "Struk edge dilewati",
+    edge_link_dead_letter: "Link edge dead-letter",
+    payout_fee_not_posted: "Biaya payout belum dijurnal",
+  },
+  kindHelp: {
+    edge_tax_unsnapshotted:
+      "Order dari edge punya pajak, tetapi snapshot pajaknya belum tercatat. Laporan pajak bisa kurang.",
+    edge_void_unsupported:
+      "Pembatalan dari edge belum bisa dijurnal otomatis. Jurnal pembalik perlu diperiksa manual.",
+    edge_receipt_skipped:
+      "Struk dari edge dilewati saat sinkronisasi, jadi order ini belum lengkap di pusat.",
+    edge_link_dead_letter:
+      "Tautan kejadian edge gagal diproses berulang kali dan berhenti di antrean gagal.",
+    payout_fee_not_posted:
+      "Biaya transfer pencairan gaji belum masuk jurnal. Berlaku untuk seluruh PT.",
+  },
+  refTypes: {
+    order: "Order edge",
+    auto_journal: "Jurnal otomatis",
+    receipt_skip: "Struk dilewati",
+    link_event: "Kejadian tautan",
+    payout_posting: "Jurnal pencairan gaji",
+  },
+  refTypeUnknown: "Sumber lain",
+  details: {
+    tax_missing: "Pajak tidak ada pada data edge.",
+    tax_mismatch: "Pajak pada data edge tidak cocok dengan total order.",
+    batchPrefix: "Batch pencairan",
+  },
+  filters: {
+    label: "Filter pengecualian",
+    kind: "Jenis pengecualian",
+    kindAll: "Semua jenis",
+    outlet: "Outlet",
+    outletAll: "Semua outlet",
+    outletLoading: "Memuat outlet",
+    from: "Dari tanggal",
+    to: "Sampai tanggal",
+    hint: "Tanggal bisnis · Maksimal {days} hari",
+    apply: "Terapkan filter",
+    reset: "Atur ulang",
+    errors: {
+      required: "Isi tanggal awal dan akhir.",
+      order: "Tanggal akhir tidak boleh sebelum tanggal awal.",
+      span: "Rentang tanggal paling lama {days} hari.",
+    },
+  },
+  payoutNote:
+    "Biaya payout berlaku untuk seluruh PT dan tampil saat filter outlet menggunakan “Semua outlet”.",
+  summary: {
+    title: "Ringkasan per jenis",
+    hint: "Jumlah kejadian dan nilai yang tersedia. Nilai antarjenis bukan total kewajiban atau kerugian.",
+    selectHint: "Pilih satu jenis untuk menyaring daftar.",
+    countUnit: "kejadian",
+    noEvents: "Tidak ada kejadian",
+    unavailable: "Tidak tersedia",
+    partial: "dari nilai yang tersedia",
+    notForOutlet: "Tidak dihitung untuk filter outlet",
+    payoutScope: "Hanya tampil untuk akses seluruh PT",
+    errorTitle: "Ringkasan belum dapat dimuat",
+  },
+  list: {
+    title: "Daftar pengecualian",
+    hint: "Terbaru lebih dulu · Tanggal bisnis mengikuti outlet",
+    count: "{count} kejadian",
+    columns: {
+      time: "Waktu",
+      kind: "Jenis & referensi",
+      outlet: "Outlet",
+      amount: "Nilai rupiah",
+    },
+    wholeEntity: "Seluruh PT",
+    unknownOutlet: "Outlet tidak dikenal",
+    amountUnavailable: "Tidak tersedia",
+    allShown:
+      "Semua hasil pada filter ini ditampilkan. Maksimal 500 kejadian terbaru per pencarian; ringkasan tetap menghitung seluruh hasil.",
+    truncated:
+      "Menampilkan 500 kejadian terbaru dari {total}. Persempit tanggal, jenis, atau outlet untuk melihat sisanya. Ringkasan menghitung seluruh hasil.",
+    refSource: "Sumber",
+    refId: "Nomor referensi",
+    refDetail: "Keterangan",
+    refOpen: "Lihat rincian {ref}",
+    wib: "WIB",
+  },
+  states: {
+    loadingTitle: "Memuat pengecualian finance",
+    loadingHint: "Mohon tunggu sebentar.",
+    emptyTitle: "Tidak ada pengecualian pada filter ini",
+    emptyHint:
+      "Tidak ada kejadian pada rentang dan filter yang dipilih. Hasil ini hanya berlaku untuk filter yang aktif.",
+    errorTitle: "Pengecualian finance belum dapat dimuat",
+    errorHint:
+      "Ringkasan dan daftar tidak ditampilkan sebagai nol. Periksa koneksi lalu coba lagi.",
+    retry: "Coba lagi",
+    invalidTitle: "Filter belum valid",
+    invalidHint:
+      "Perbaiki tanggal pada filter, lalu terapkan agar data dimuat.",
+  },
+} as const;

@@ -8,7 +8,10 @@
 // Per socket the hub remembers, for each open alert, when the frame was last
 // sent and whether the phone confirmed it (`received`). The relay service
 // (services/panic-relay.service.ts) drives sending, resending and receipts.
-import type { PanicRealtimeFrame } from "@starter/shared/facility";
+import type {
+  PanicRealtimeFrame,
+  PanicServerFrame,
+} from "@starter/shared/facility";
 import type { ReceiverSession } from "../services/panic-receiver-session.ts";
 
 export type HubKey = { tenantId: string; outletId: string };
@@ -28,7 +31,7 @@ export type HubSubscriber = {
   /** The receiver session of the socket (tenant, outlet, device, staff). */
   readonly session: ReceiverSession;
   /** Sends one frame; false when the socket is not open. */
-  send(frame: PanicRealtimeFrame): boolean;
+  send(frame: PanicServerFrame): boolean;
   /** Closes the socket with a WebSocket close code. */
   close(code: number): void;
   readonly alerts: Map<string, SocketAlertState>;

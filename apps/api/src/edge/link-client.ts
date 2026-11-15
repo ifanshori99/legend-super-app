@@ -22,6 +22,9 @@ import {
   LINK_MAX_FRAME_BYTES,
   LINK_REFUSED_CREDENTIAL,
   LINK_REFUSED_HEADER,
+  LINK_RESTORE_PROOF_HEADER,
+  LINK_RESTORE_PROOF_REFUSAL,
+  LINK_RESTORE_PROOF_V2_HEADER,
   encodeFrame,
   type CatalogStale,
 } from "./protocol.ts";
@@ -123,13 +126,48 @@ export function createEdgeLinkClient(
     retry.unref?.();
   }
 
+  // Restore proof (legend-tmar2): the acked cursor is read from the store
+  // before every connect (a reconnect reads it again) and sent as an upgrade
+  // header, so the cloud can prove the events behind its hello cursor. Only
+  // when the store can verify that proof. A failed read retries with backoff:
+  // connecting without the header would skip the check.
   function connect() {
     if (stopped) return;
+    if (!options.store.outboundProof) {
+      open(null);
+      return;
+    }
+    options.store.lastAckedOutbound().then(
+      (acked) => {
+        if (!stopped) open(acked);
+      },
+      (error: unknown) => {
+        options.onError?.(error);
+        schedule();
+      },
+    );
+  }
+
+  function open(restoreProofAcked: number | null) {
+    if (stopped) return;
+    // A refused restore proof must not look like a healthy link: `attempt`
+    // resets when the socket opens, so it is put back when the peer refuses.
+    const attemptAtStart = attempt;
+    let proofRefused = false;
+    // Set by the upgrade response (below) before the socket opens, so before
+    // the first hello is read: only a 854 cloud echoes the v2 header.
+    let peerEchoesRestoreProof = false;
     const ws = new WebSocket(options.url, {
       headers: {
         authorization: `Bearer ${options.credential}`,
         ...(options.instanceId
           ? { [LINK_INSTANCE_HEADER]: options.instanceId }
+          : {}),
+        ...(restoreProofAcked !== null
+          ? {
+              [LINK_RESTORE_PROOF_HEADER]: String(restoreProofAcked),
+              [LINK_RESTORE_PROOF_V2_HEADER]: "1",
+            }
           : {}),
       },
       maxPayload: LINK_MAX_FRAME_BYTES,
@@ -140,6 +178,13 @@ export function createEdgeLinkClient(
       scope: options.scope,
       outboundDirection: "edge_to_cloud",
       store: options.store,
+      // The v2 header is sent with the proof header: a hello that would ack
+      // without proof is then refused (legend-tmar2 854).
+      requireRestoreProof: restoreProofAcked !== null,
+      // A live getter: the upgrade response arrives after the peer is built.
+      get peerEchoesRestoreProof() {
+        return peerEchoesRestoreProof;
+      },
       version: options.version,
       ackTimeoutMs: options.ackTimeoutMs,
       onError: options.onError,
@@ -148,13 +193,19 @@ export function createEdgeLinkClient(
         send: (data) => {
           if (ws.readyState === WebSocket.OPEN) ws.send(data);
         },
-        close: (code, reason) => ws.close(code, reason.slice(0, 120)),
+        close: (code, reason) => {
+          if (reason.startsWith(LINK_RESTORE_PROOF_REFUSAL))
+            proofRefused = true;
+          ws.close(code, reason.slice(0, 120));
+        },
       },
     });
     // 533b: the Date of the upgrade response is kept and delivered only once
     // the socket is open, so a handshake that never completes proves nothing.
     let upgradeServerTime: Date | undefined;
     ws.on("upgrade", (response) => {
+      peerEchoesRestoreProof =
+        response.headers[LINK_RESTORE_PROOF_V2_HEADER] === "1";
       const header = response.headers.date;
       if (typeof header !== "string") return;
       const serverTime = new Date(header);
@@ -229,8 +280,14 @@ export function createEdgeLinkClient(
       options.onError?.(new Error(`Edge link socket error: ${error.message}`));
     });
     ws.on("close", (code, reason) => {
-      options.onClose?.(code, reason.toString("utf8"));
+      const closeReason = reason.toString("utf8");
+      options.onClose?.(code, closeReason);
       linkPeer.stop();
+      // The cloud can refuse the proof too (a replayed slot holding another
+      // event): no fast reconnect loop either (legend-tmar2).
+      if (closeReason.startsWith(LINK_RESTORE_PROOF_REFUSAL))
+        proofRefused = true;
+      if (proofRefused) attempt = Math.max(attempt, attemptAtStart);
       if (heartbeat) clearInterval(heartbeat);
       heartbeat = undefined;
       if (peer === linkPeer) peer = undefined;

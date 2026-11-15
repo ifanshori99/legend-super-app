@@ -46,6 +46,7 @@
 import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
 import { uuidSchema, z, type ScopedTenantContext } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
+import { PosError } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import {
   billSplits,
@@ -420,6 +421,34 @@ async function voidAndNotify(
       orderId: order.id,
       status: "voided",
     });
+}
+
+/**
+ * legend-kiibf: the unpaid-order void refuses (409 EDC_REQUEST_OPEN) while an
+ * ECR sale for the bill is still open. The guard throws before any write, so
+ * the consumption transaction stays clean: the order is left awaiting payment
+ * (false), the event is consumed, and the relay sweep retries the void once
+ * the request is final. Any other error propagates.
+ */
+async function voidUnlessEdcOpen(
+  tx: Tx,
+  context: ScopedTenantContext,
+  order: QrOrderRow,
+  reason: string,
+  now: Date,
+): Promise<boolean> {
+  try {
+    await voidAndNotify(tx, context, order, reason, now);
+    return true;
+  } catch (error) {
+    if (!(error instanceof PosError) || error.code !== "EDC_REQUEST_OPEN")
+      throw error;
+    logger.warn(
+      { orderId: order.id, reason },
+      "unpaid QR order not voided: EDC request still open",
+    );
+    return false;
+  }
 }
 
 // ---- payment.paid ---------------------------------------------------------------
@@ -828,7 +857,8 @@ export async function handleQrOrderPaymentClosed(
     providerFinal,
   );
   if (decision.action === "keep") return decision.why;
-  await voidAndNotify(tx, context, order, decision.reason, now);
+  if (!(await voidUnlessEdcOpen(tx, context, order, decision.reason, now)))
+    return "unchanged";
   return "voided";
 }
 
@@ -880,8 +910,7 @@ export async function sweepUnpaidQrOrders(
         now,
       );
       if (decision.action === "keep") return false;
-      await voidAndNotify(tx, context, order, decision.reason, now);
-      return true;
+      return voidUnlessEdcOpen(tx, context, order, decision.reason, now);
     });
     if (done) voided += 1;
   }

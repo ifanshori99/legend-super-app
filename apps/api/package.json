@@ -41,6 +41,7 @@
     "pino": "catalog:",
     "pino-http": "11.0.0",
     "sharp": "^0.35.5",
+    "web-push": "3.6.7",
     "ws": "^8.22.1",
     "zod": "catalog:"
   },
@@ -52,6 +53,7 @@
     "@types/nodemailer": "8.0.2",
     "@types/pg": "catalog:",
     "@types/supertest": "7.2.1",
+    "@types/web-push": "3.6.4",
     "@types/ws": "^8.18.2",
     "@vitest/coverage-v8": "5.0.3",
     "drizzle-kit": "0.31.11",

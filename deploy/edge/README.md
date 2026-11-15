@@ -11,6 +11,7 @@ background: `docs/design/hris-edge-replication.md`.
 - `test-check-edge-host.sh`: stubbed test for the preflight (`sh deploy/edge/test-check-edge-host.sh`).
 - `chrony.conf.example`: NTP client configuration.
 - `Caddyfile.edge.example`: HTTPS front for outlet devices.
+- `legend-edge.service`: example systemd unit (`Restart=always`), required when `EDC_AGENT_ENABLED=true`.
 
 ## Host requirements
 
@@ -45,6 +46,15 @@ screen, because the edge only holds today plus that many day keys.
    ```
 
 7. Start the API and Caddy, then confirm `GET /api/edge/health` over HTTPS.
+
+## Database migrations
+
+Run the migrator (`node dist/migrate.js`) on the edge database with
+`EDGE_MODE=true` in its environment, never with a copy of the cloud
+environment file. Edge mode skips the `modifiers.recipe_id` foreign key
+(migration 0374): modifiers are tenant-level but an edge only receives the
+recipes of its own brand, so the key would refuse the modifiers page of any
+modifier that points at another brand's recipe.
 
 ## Local audit retention login
 
@@ -87,6 +97,16 @@ heartbeats. An edge without `MAINTENANCE_DATABASE_URL` sends the new field;
 an older cloud rejects that heartbeat because its schema is strict. Edges
 with a valid maintenance URL omit the field. Keep local startup-error
 monitoring in place, including during the upgrade and offline operation.
+
+### Image version and the queue placeholder (legend-3k41y)
+
+Set `EDGE_NODE_VERSION` to the image's semver tag when the image is built or
+deployed (for example `0.2.0`). It defaults to `dev`, and a version that is
+not plain semver never triggers the cloud's warning. Edge images must be
+`>= EDGE_LINK_PLACEHOLDER_MIN_VERSION` (`packages/shared/src/edge/link-dead-letter.ts`)
+before a cloud that replaces stale catalog rows with the
+`edge_link.dead_lettered` no-op is released; an older edge cannot classify it
+and its batches stall. See `docs/deployment.md`, section "Edge host".
 
 ## Checklist
 

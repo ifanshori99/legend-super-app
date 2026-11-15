@@ -208,6 +208,10 @@ Both servers write one JSON object per line to stdout with `level`, `time`, `ser
 
 The API uses one node-postgres pool with at most ten connections per process. Multiple instances multiply the connection count: use your provider's pooler and tune limits. Better Auth's rate-limit storage is in memory per instance; for several API instances configure shared rate-limit storage (see Better Auth's rate-limit docs). The web server keeps no state.
 
+## Object storage permissions
+
+Payout payment proofs are checked with a read of the object before resolve, return, confirm or an overpaid record. On S3-compatible storage the API key must hold `s3:ListBucket` on the private bucket as well as `s3:GetObject` and `s3:PutObject`. Without `ListBucket`, a missing object answers AccessDenied instead of NoSuchKey, and a key that was never uploaded then fails with a 500 instead of 422 `PAYOUT_EVIDENCE_INVALID`. No payment is recorded either way.
+
 ## Public API rate limits
 
 The API's session-free reads — the guest QR scan and menu (`/api/qr/*`), the brand website and its menu (`/api/public/site/*`), the SSR brand context (`/api/tenant/*`) and customer payment links (`/api/payments/links/*`) — are capped by one in-memory limiter in the API. Authenticated routes are bounded by their session and permissions; these have no session at all, and the menu reads return the whole catalogue.
@@ -285,9 +289,17 @@ The cloud sends staff PIN changes to each outlet's edge in commit order, using `
 
    Restored or cloned database (legend-a9iby). The cloud refuses the link with close 1008 when the edge's hello cursor is below what the cloud already saw it acknowledge. The hello cursor is the highest `cloud_to_edge` link sequence the edge applied without a gap. The cloud writes nothing and acknowledges nothing. The close reason reads `Edge database is older than the cloud's link cursor (restored or cloned); refusing to resume`. The edge keeps retrying with backoff, and the cloud refuses it each time, because 1008 is not final on the client. The edge database must also run with `synchronous_commit = on` and `fsync = on`. An edge that loses an applied and acknowledged batch in a power cut looks the same as a restore, and the cloud refuses it the same way.
 
-   The cloud detects this only when the edge had acknowledged `cloud_to_edge` events newer than the backup. Today only QR orders produce them (`apps/api/src/edge/qr-order-forwarding.ts`). An outlet without QR orders, or with none since the backup, is not detected. Its restored database resumes. Events it creates under link numbers the cloud already received are marked acknowledged without being sent, so the cloud loses them. An old machine I1 that comes back after a rebuild to I2 at an outlet without QR has cursor 0. The cloud rebases it instead of refusing it. Event id dedupe prevents data loss, but the two machines rebase each other.
+   The cursor check above detects a restore only when the edge had acknowledged `cloud_to_edge` events newer than the backup. Today only QR orders produce them (`apps/api/src/edge/qr-order-forwarding.ts`).
 
-   If the edge log shows the warning `Edge link refused by protocol` with code 1008 and that reason:
+   Restore proof (legend-tmar2). An outlet without QR orders, or with none since the backup, has no such events, so its restored database used to resume and mark events it created under link numbers the cloud already received as acknowledged without sending them. An edge on this release now sends the header `x-edge-restore-proof` with its acknowledged outbound cursor A on every connect. When the cloud's received cursor N is above A, the cloud adds `inboundProof` (`from`, `count`, SHA-256 over the event ids of every `edge_to_cloud` link slot in (A, N], in slot order) to its hello. Before acknowledging N, the edge recomputes the same digest from its own outbound queue. A different id, a missing row or a different count refuses the link with close 1008 and a reason that starts with `Restore proof`. Nothing is acknowledged, and an unsent event, such as a panic alert, stays pending. The edge backs off between retries and never resets its backoff on this refusal.
+
+   Release order: cloud first, then the edges. Full protection needs both sides on the 854 release. An older edge sends no header and gets the old hello. An edge on 854 or later against an older cloud (848 or earlier) gets no proof and no echo of `x-edge-restore-proof-v2`: when its hello cursor is above its acknowledged cursor, the edge refuses to resume (close 1008, reason `Restore proof unsupported: cloud does not support restore proof; upgrade cloud first`), acknowledges nothing, and stays on its reconnect backoff. It stays connected as before when the hello cursor is not above the acknowledged cursor. An older edge (848 or earlier) against a 854 cloud keeps the older behaviour: a proof only when it covers the whole range, and a restore at an outlet without newer QR orders is not detected for a longer range.
+
+   Fail-closed proof (legend-tmar2, 854). An edge on this release sends a second header, `x-edge-restore-proof-v2: 1`, next to `x-edge-restore-proof`. For such an edge the cloud no longer omits the proof when it cannot cover the whole range. It proves the longest complete prefix of (A, N], at most 20000 slots, where each slot has exactly one receipt. When that prefix stops before N (a range longer than 20000 slots, a slot with no receipt, or a slot with more than one receipt), the proof also carries `to`, the last slot it covers, and may be empty (`to` = A, count 0). The hello omits `to` when the proof covers all of (A, N]. The edge checks the proof up to `to`, acknowledges only up to `to`, and sends (`to`, N] again. An edge from the previous release (848) sends only the first header. For it the cloud behaves as in 848: it sends a proof only when it covers all of (A, N], otherwise the hello carries no proof (the link resumes as before, no restore protection for that range), and it never sends `to`. An 848 edge therefore keeps working unchanged and is not looped by a refusal it cannot back off from. A refusal by the cloud (a replayed slot holding another event) also keeps the 854 edge on its reconnect backoff. The cloud 854 answers the upgrade with the header `x-edge-restore-proof-v2: 1` when the request carried it. When the cloud's hello cursor is above the edge's acknowledged cursor and the hello carries no proof, a 854 edge that read no such header from its cloud, or that got a hello without proof from a cloud that echoed it, refuses to acknowledge (reason starts with `Restore proof`) and keeps its backoff.
+
+   Replayed batches. For an edge that sent `x-edge-restore-proof-v2` (854 only, not an 848 edge), the cloud checks every slot of a batch that is at or below its received cursor against its receipts before acknowledging the batch. A slot with the same event passes. A slot with no receipt whose event the cloud already holds gets a `superseded` receipt. A slot that holds a different event, or an event the cloud never received, refuses the link with close 1008 and a reason that starts with `Restore proof`, and nothing in that batch is acknowledged. A partial proof closes receipt holes this way: the edge sends the slots after `to` again and the cloud settles them. Each reconnect with N above A still scans the receipts of that node, because `edge_inbound_events` has no index on `link_seq`.
+
+   If the edge log shows the warning `Edge link refused by protocol` with code 1008 and either restore reason (`Edge database is older ...` or `Restore proof ...`):
 
    - Stop that edge.
    - Keep its database for audit.
@@ -343,6 +355,8 @@ Rotasi dua rollout. Alasannya: proses yang ring-nya belum mengenal versi N tidak
    `pnpm db:rotate-data-key [--tenant <id>] [--force] [--dry-run]`.
    Skrip berjalan atas semua tenant (termasuk yang suspended atau archived), memanggil `rotateIntegrationCredentials` (integrasi platform) dan `rotateAiProviderKeys` (kunci penyedia AI) dengan aktor `system`, dan mencetak laporan JSON (jumlah per tenant, `totals`, `remaining`, `remainingComplete`; tanpa nilai rahasia, galat non-database memakai pesan tetap). Tenant yang galat dicatat di `totals.failedTenants` dan tenant lain tetap jalan. `--dry-run` hanya menghitung baris yang masih di versi lama dan tidak menulis apa pun. Baris yang sudah di versi aktif dilewati, jadi aman diulang. Kode keluar 1 bila ada tenant gagal, `remainingComplete` false (hitungan sisa satu tenant gagal; tenant itu masuk `failedTenants` dan `remaining` hanya batas bawah), atau `remaining` > 0 setelah jalan sungguhan. Kunci AI yang tidak bisa dibuka dilewati dan dilaporkan di `error` tenantnya. `remaining` menghitung baris semua tenant, juga saat `--tenant` dipakai.
 4. Jangan membuang kunci lama dari ring selama masih ada nilai tersegel di bawahnya, termasuk backup yang mungkin dipulihkan. Jangan menurunkan versi aktif.
+
+Rotasi terjadwal (legend-rg8yl): worker menjalankan job `data-key-rotation` tiap hari pukul 03:15 Asia/Jakarta (pg-boss, antrean `exclusive`). Job memanggil fungsi yang sama dengan skrip (`rotateIntegrationCredentials` dan `rotateAiProviderKeys`, tanpa `force`) atas semua tenant, jadi setelah langkah 3 baris yang tertinggal di versi lama ikut tersegel ulang tanpa menunggu operator. Satu instance saja yang berjalan: job mengambil advisory lock `pg_try_advisory_xact_lock(hashtextextended('data-key-rotation', 0))`; bila lock dipegang sesi lain, run dilewati (`skipped: true`) dan tidak menulis apa pun. Lock lepas saat transaksi selesai atau proses mati. Tenant yang galat dicatat dengan id-nya dan job gagal supaya pg-boss mencatatnya; tenant lain tetap jalan dan run berikutnya mencoba lagi. Log hanya berisi jumlah dan id tenant, tidak pernah kunci, ciphertext, atau pesan galat database. Cara memeriksa: cari log worker `Data key rotation finished {...}` (`tenants`, `integrationsRotated`, `aiRotated`, `failedTenants`, `skipped`); run kedua setelah rotasi selesai harus melaporkan `integrationsRotated` dan `aiRotated` 0. Untuk hitungan baris yang tersisa tanpa menulis, pakai `pnpm db:rotate-data-key --dry-run`. Skrip tetap dipakai untuk `--force`, `--dry-run`, dan satu tenant (`--tenant`). Kunci lama tetap tidak boleh dibuang dari ring sebelum job melaporkan 0 dan `--dry-run` menunjukkan `remaining` 0.
 
 Cakupan skrip: hanya `tenant_integrations.credentials_encrypted` dan `ai_provider_configs.api_key_encrypted`, yaitu tabel yang punya kolom versi kunci. Pemakai `sealSecret` lain tidak punya kolom versi dan tidak di-reseal; nilainya tetap terbuka karena amplop membawa versinya selama kunci lama masih ada di ring (jadi kunci lama belum boleh dipensiunkan):
 
@@ -425,6 +439,8 @@ Versi 1 belum boleh dihapus dari kode: itu butuh kartu lanjutan yang membuktikan
 
 Ringkasan untuk host edge di outlet. Langkah lengkap ada di `deploy/edge/README.md`, dan respons jika edge hilang atau dicuri ada di `docs/runbooks/edge-hilang-dicuri.md`.
 
+- **Urutan rilis placeholder antrean (legend-3k41y): update semua edge dulu, baru cloud.** Saat brand outlet pindah, cloud mengganti baris katalog basi di antrean node dengan event no-op `edge_link.dead_lettered` pada nomor urut yang sama (salinan lengkap event disimpan di `edge_link_dead_letters`, reason `brand_moved`), supaya `panic_alert`, `qr_order`, dan `wifi_quota` di belakangnya tetap sampai tanpa lubang nomor. Edge yang belum membawa applier no-op itu (`registerEdgeLinkPlaceholderApplier`) tidak bisa mengklasifikasi event tersebut, sehingga seluruh batch ditolak dan alarm panik di belakangnya macet sampai edge dinaikkan. Karena itu image edge harus berversi `EDGE_NODE_VERSION` >= `EDGE_LINK_PLACEHOLDER_MIN_VERSION` (`packages/shared/src/edge/link-dead-letter.ts`) sebelum cloud yang membawa perubahan ini dirilis. Link tidak ditolak untuk edge lama, tetapi cloud mencatat peringatan `Edge below placeholder version` di log setiap hello dari edge di bawah versi itu; pelanggaran urutan terlihat di sana. Peringatan itu hanya muncul bila `EDGE_NODE_VERSION` diisi semver (default `dev` tidak pernah memicunya): beri image edge tag semver saat build atau deploy (`deploy/edge/README.md`). Tidak ada edge lama di production saat ini (kode edge belum dirilis), jadi aturan ini mencegah masalah, bukan memulihkannya.
+  - **Beda dengan urutan sync katalog.** `docs/runbooks/edge-catalog-deploy-order.md` mewajibkan cloud dulu, edge kemudian (legend-dciax). Rilis pertama yang membawa keduanya: belum ada edge lama di lapangan dan edge baru belum punya katalog tersinkron, jadi cloud dulu aman asalkan tidak ada perpindahan brand outlet sebelum semua edge berversi >= `EDGE_LINK_PLACEHOLDER_MIN_VERSION`. Begitu ada edge lama di lapangan, rilis berikutnya yang menyentuh antrean ini memakai urutan edge dulu: sync katalog edge berhenti sementara (gejala "edge baru, cloud lama" di runbook itu: data lama dipakai, checkpoint tidak maju, tidak ada data hilang) sampai cloud naik beberapa saat kemudian; naikkan cloud segera setelah edge outlet percobaan sehat.
 - **Volume selfie.** Selfie yang menunggu upload disimpan di `EDGE_SELFIE_DIR` (default `/var/lib/legend/edge-selfies`, volume Docker). Direktori tenant dibuat dengan mode 0700 dan file `.lss` dengan mode 0600. Batas `EDGE_SELFIE_MAX_BYTES` (default 2 GiB). Di atas batas itu edge menjawab 507 `EDGE_SELFIE_STORAGE_FULL`.
 - **Volume state.** Antrean alarm owner (jam tak terbukti dan katalog basi) disimpan di `EDGE_STATE_DIR` (default `/var/lib/legend/edge-state`), volume tersendiri, terpisah dari volume selfie. Buat direktori ini sebelum edge pertama jalan: dimiliki service user, mode 0700. API membuatnya sendiri hanya bila direktori induknya bisa ditulis, dan bila gagal alarm hanya hidup di memori sampai restart. `deploy/edge/check-edge-host.sh` memeriksa keberadaan, mode 0700, dan pemilik (opsi `--state-dir`). Alarm lama di `EDGE_SELFIE_DIR/catalog-alarms` diimpor sekali lalu dihapus saat edge pertama jalan dengan versi ini.
 - **NTP wajib.** Jam edge dan jam HP harus berada dalam satu jendela QR 30 detik, jadi edge memakai chrony (lihat `deploy/edge/chrony.conf.example`).
@@ -432,6 +448,17 @@ Ringkasan untuk host edge di outlet. Langkah lengkap ada di `deploy/edge/README.
 - **Enkripsi disk penuh (FDE) dengan unlock TPM** pada mini PC edge sebagai lapisan tambahan. Wajib jika enkripsi selfie cadangan dengan AES dipakai.
 - **Kunci publik seal datang lewat snapshot.** Edge menyegel selfie dengan kunci publik cloud dari snapshot data orang (`edge_people_sync_state.selfie_seal_public_key`, `selfie_seal_kid`). Tidak ada kunci yang disalin manual ke disk edge.
 - **Edge tidak pernah memegang kunci privat.** `ATTENDANCE_SELFIE_SEAL_KEYS` dan `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID` hanya ada di cloud. Prosedur kunci produksi ada di section "Attendance selfie seal key" di atas, jangan diduplikasi.
+
+### EDC agent (legend-kwy6d)
+
+Agen EDC (mesin kartu) jalan di proses edge, bukan di worker cloud, karena edge yang memegang perangkat. Dihidupkan dengan `EDC_AGENT_ENABLED=true` (default mati) di file env edge. Identitas tenant dan outlet diambil dari kredensial node, tidak pernah dari request. Registry produksi tidak punya simulator; adapter bank menyusul (legend-vpx), jadi sebelum itu setiap bank dijawab `EDC_PROVIDER_UNKNOWN` dan tidak ada transaksi yang dikirim.
+
+- **Satu agent per outlet.** Agen mengambil advisory lock Postgres untuk outletnya. Proses kedua untuk outlet yang sama gagal start (`EDC_AGENT_NOT_READY`): kegagalan itu dicatat, edge tetap jalan tanpa agen EDC dan mencoba lagi dengan backoff (lihat Retry).
+- **Standby tidak menjalankan.** Hanya node `EDGE_NODE_ROLE=primary` yang memulai agen. Standby tidak pernah membuka pertukaran dengan terminal.
+- **Siapa yang merestart.** Bila kunci outlet hilang saat ada sale di kawat, agen mengakhiri proses (`process.exit(1)`) supaya proses lain tidak mengirim sale yang sama. Supervisor wajib menyalakannya lagi: systemd `Restart=always` dengan `RestartSec` (contoh `deploy/edge/legend-edge.service`), atau `restart: always` bila edge jalan di Docker. Tanpa supervisor, EDC mati sampai ada yang menyalakan edge.
+- **Marker kawat dibiarkan.** Saat proses mati, `sale_wire_open_at` pada transaksi tetap ada. Hanya proses yang sudah lewat jendela late-response yang membersihkannya (sapuan agen tiap 60 detik). Restart cepat tidak membersihkannya dan tidak mengirim ulang sale itu: baris `pending` milik proses mati menjadi `unknown` untuk rekonsiliasi.
+- **Shutdown.** Agen berhenti sebelum runtime edge dan menunggu sale yang sedang di kawat sampai `saleTimeoutMs` (120 detik). Dengan EDC aktif, timer paksa di `server.ts` adalah `saleTimeoutMs` + 10 detik (130 detik), bukan 5 detik, dan `TimeoutStopSec` unit systemd harus lebih besar (contoh: 150). Memotongnya TIDAK aman: bukti approval sale yang sedang di kawat bisa hilang. Matinya proses memang melepas lock outlet dan marker kawat tetap sampai jendela late-response lewat, tetapi itu hanya mencegah sale kedua, bukan menyimpan hasil sale pertama. Deploy edge berarti menunggu sampai 2 menit bila ada sale berjalan.
+- **Retry.** Start yang gagal (outlet dipegang proses lain yang sedang mati, database mati) dan kunci outlet yang hilang tanpa sale di kawat tidak mematikan agen untuk selamanya: edge membangun agen baru dan mencoba lagi dengan backoff (1 detik, berlipat, maksimum 30 detik) sampai edge berhenti. Selama itu `getEdgeEdcAgent()` null. Unit systemd memakai `StartLimitIntervalSec=0` di `[Unit]` supaya restart setelah fail-stop tidak pernah berhenti.
 
 ## Support read_write owner approval release (legend-c9kbk)
 
@@ -562,8 +589,42 @@ are configured. Compose sets `WORKER_TRANSPORT=builtin`; put the rest in
 | -------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `WORKER_TRANSPORT`               | `builtin`           | Built-in outbox transport. On the cloud a `cloud-sync` event is consumed locally (the consumption row is the durable, idempotent acknowledgement). With `EDGE_MODE=true` it is queued on the authenticated edge link (`/api/edge-link`) to the cloud. `WORKER_TRANSPORT_MODULE` / `WORKER_CONFIG_MODULE` still override it with a trusted module. |
 | `NOTIFICATION_EMAIL_PROVIDER`    | `disabled`, `brevo` | Required. `brevo` also needs `BREVO_API_KEY` and `NOTIFICATION_EMAIL_FROM` (optional `NOTIFICATION_EMAIL_FROM_NAME`). The provider account and sender domain (SPF/DKIM) are bead legend-wwuc.                                                                                                                                                     |
-| `NOTIFICATION_PUSH_PROVIDER`     | `disabled`          | Required. Web push (VAPID) is bead legend-hyq.                                                                                                                                                                                                                                                                                                    |
+| `NOTIFICATION_PUSH_PROVIDER`     | `disabled`          | Required. `web_push` turns on browser alarms (VAPID values below).                                                                                                                                                                                                                                                                                |
 | `NOTIFICATION_WHATSAPP_PROVIDER` | `disabled`          | Required. WhatsApp templates are bead legend-hyq.                                                                                                                                                                                                                                                                                                 |
+
+Web push (browser alarm for the panic button, legend-ofq4f): set
+`NOTIFICATION_PUSH_PROVIDER=web_push` and the same three `VAPID_*` values in
+**both** the API and `worker.env`. The API serves only the public key to signed-in
+browsers (`GET /api/notifications/push-key`, `null` while push is off) and
+refuses to boot if a value is missing or the pair does not match; the worker
+signs and sends.
+
+- `VAPID_PUBLIC_KEY`: base64url, 65-byte uncompressed P-256 point (87 characters).
+- `VAPID_PRIVATE_KEY`: base64url, 32 bytes (43 characters).
+- `VAPID_SUBJECT`: `mailto:` address or `https://` URL the push service can contact.
+
+Generate the production pair once, on the server, with
+`npx web-push generate-vapid-keys`, and keep it in the secret store. Never
+commit it, paste it in chat, or reuse the local dev pair that `pnpm run setup`
+creates. Rotating the pair invalidates every stored subscription: all browsers
+must register again (the panic alarm falls back to its other channels until they
+do). Subscriptions are sealed with `DATA_ENCRYPTION_KEY`. The keys and the
+subscription endpoints are never logged.
+
+Release checklist: the panic alarm is not ready until
+`NOTIFICATION_PUSH_PROVIDER=web_push` and the three `VAPID_*` values are set in
+both the API and the worker. With the default `disabled` the worker only logs an
+operator error per alarm (no secrets) and the in-app notification is still
+written; nothing reaches a locked phone.
+
+Known limits of push registration:
+
+- A push subscription is bound to the login session, not to the PIN. Switching
+  user with a PIN on a device does not revoke it.
+- Residual risk: a session that expires from idleness without a sign-out, after
+  which another user signs in on the same browser and never opens `/fasilitas`.
+  The previous user's alarm (while still on duty and authorized) keeps showing
+  until 30 days pass or the new user registers.
 
 A disabled channel is never planned for a recipient: in-app notifications are
 still written and the attempt is skipped, never reported as sent. A gap in an
@@ -617,8 +678,12 @@ user, provision the restricted application and queue roles (next section), and
 confirm a successful base backup to both repositories. Provisioning is a
 first-boot prerequisite; the deploy script does not perform it. See
 `deploy/backup/README.md` for the supplied systemd timer example and
-restore-drill procedure. Once those prerequisites and the transport adapter are
-ready, use the deploy script for subsequent releases.
+restore-drill procedure. Set `pg1-user` in the private pgBackRest configuration
+to the same PostgreSQL login as `POSTGRES_USER` in `compose.env`. Export that
+same `POSTGRES_USER` when running the isolated restore drill; its example default
+is `replace_me` and must be replaced with the actual login. Once those
+prerequisites and the transport adapter are ready, use the deploy script for
+subsequent releases.
 
 #### Create the migrator login (legend-jtnd)
 

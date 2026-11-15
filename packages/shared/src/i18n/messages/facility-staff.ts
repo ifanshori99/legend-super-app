@@ -3,6 +3,28 @@
 // "Keselamatan", acceptance FAC-06/FAC-08). Own file so parallel beads never
 // edit the same catalog lines.
 export const facilityStaffMessages = {
+  // Panic alarm push opt-in strip above the facility screens (bead
+  // legend-ofq4f): this browser can be reached when the app is in the background.
+  alarmPush: {
+    label: "Notifikasi alarm panik",
+    enableHint:
+      "Aktifkan agar alarm panik sampai ke perangkat ini saat layar tertutup.",
+    enable: "Aktifkan notifikasi alarm",
+    enabled: "Notifikasi alarm aktif di perangkat ini.",
+    binding: "Menyambungkan notifikasi alarm ke outlet ini…",
+    unbound:
+      "Notifikasi alarm belum tersambung ke outlet ini. Alarm panik bisa tidak sampai ke perangkat ini.",
+    retry: "Coba lagi",
+    enableError: "Notifikasi alarm belum bisa diaktifkan. Coba lagi.",
+    blocked:
+      "Izin notifikasi diblokir. Izinkan notifikasi untuk situs ini di pengaturan browser, lalu muat ulang.",
+    unsupported:
+      "Browser ini tidak mendukung notifikasi alarm. Pakai Chrome, Edge, atau Safari terbaru.",
+    unavailable:
+      "Kanal web push belum diaktifkan tenant. Alarm tetap tampil di layar ini.",
+    iosInstall:
+      "Di iPhone, pasang aplikasi ke Layar Utama dulu, lalu aktifkan notifikasi alarm.",
+  },
   nav: {
     board: "Papan bilik",
     cleaning: "Kebersihan",
@@ -195,6 +217,98 @@ export const facilityStaffMessages = {
     error: {
       title: "Log insiden tidak dapat dimuat",
       hint: "Periksa koneksi, lalu coba lagi.",
+    },
+  },
+  // Full-screen panic alert layer (bead legend-alovk, Arah A): copy approved
+  // with the mockups in design/mockups/panic. No cause is guessed for a
+  // revoked device and "Saya tangani" means "on my way", never "resolved".
+  panic: {
+    title: "Alert darurat",
+    titleQueue: "Darurat · {count} alert menunggu",
+    deviceTitle: "Perangkat staf · Fasilitas",
+    connection: {
+      connecting: "Menyambung…",
+      open: "Terhubung ke outlet",
+      reconnecting: "Menyambung ulang…",
+      unreachable: "Tidak terjangkau",
+      revoked: "Penerimaan dihentikan",
+      stopped: "Penerimaan alert berhenti",
+    },
+    banner:
+      "Koneksi terputus, mencoba menyambung. Alert di bawah mungkin bukan yang terbaru.",
+    bannerAdvice:
+      "Jangan menunggu koneksi pulih untuk memeriksa lokasi dan menghubungi staf lain.",
+    test: "UJI",
+    locationLabel: "Lokasi darurat",
+    locationUnknown: "Lokasi belum diketahui",
+    receivedLabel: "Alert diterima",
+    statusLabel: "Status",
+    status: {
+      idle: "Belum ditanggapi",
+      sending: "Mengirim tanggapan",
+      failed: "Tanggapan belum terkirim",
+      session: "Sesi habis",
+      mine: "Anda menuju lokasi",
+      taken: "Sudah ditangani rekan lain",
+      takenBy: "{name} sudah menuju lokasi",
+    },
+    alert: {
+      eyebrow: "Tombol panik ditekan",
+      eyebrowTest: "Uji coba tombol panik",
+      heading: "Segera ke lokasi",
+      headingTest: "Tombol panik sedang diuji",
+      ackHint: "Tekan saat Anda bersiap menuju lokasi.",
+      footer:
+        "Tanggapan Anda mencatat bahwa Anda menuju lokasi. Insiden tetap terbuka.",
+    },
+    queue: {
+      eyebrow: "Alert masuk beruntun",
+      heading: "{count} lokasi perlu bantuan",
+      hint: "Pilih alert yang akan Anda tangani. Alert lain tetap terlihat.",
+      footer: "Menangani satu alert tidak menyelesaikan alert lainnya.",
+    },
+    ack: "Saya tangani",
+    ackFor: "Saya tangani {location}",
+    ackForAlert: "Saya tangani alert {number}",
+    sending: "Mengirim…",
+    retry: "Coba lagi",
+    failed: "Tanggapan belum terkirim. Alert tetap menunggu, coba lagi.",
+    session: "Sesi Anda habis. Masuk lagi dengan PIN, lalu tangani alert ini.",
+    pinLink: "Ke layar PIN",
+    close: "Kembali ke pemantauan",
+    settled: {
+      title: "Respons alert",
+      footer: "Tetap siaga untuk alert berikutnya.",
+      note: "Respons tercatat belum berarti keadaan sudah aman.",
+      conditionLabel: "Kondisi",
+      condition: "Sudah direspons · Belum dinyatakan selesai",
+      mineEyebrow: "Respons terkirim",
+      mineHeading: "Anda menuju {location}",
+      mineHeadingAlert: "Anda menuju lokasi alert {number}",
+      takenEyebrow: "Respons sudah diterima",
+      takenHeading: "Sudah ditangani rekan lain",
+      takenHeadingBy: "{name} sudah menuju lokasi",
+      takenHint: "Alert ini sudah diambil rekan lain.",
+    },
+    unreachable: {
+      eyebrow: "Penerimaan alert terganggu",
+      heading: "Alert panik tidak dapat diterima",
+      body: "Koneksi ke layanan darurat belum pulih. Jangan mengandalkan perangkat ini untuk menerima alert baru.",
+      pinHeading: "Masuk kembali dengan PIN",
+      pinBody:
+        "Buka layar PIN untuk masuk kembali sebagai penerima alert. Jika koneksi tetap gagal, beri tahu penanggung jawab outlet.",
+      footnote:
+        "Koneksi masih dicoba otomatis. Status ini tidak berarti tidak ada keadaan darurat.",
+    },
+    revoked: {
+      title: "Penerima alert staf",
+      eyebrow: "Akses dicabut",
+      heading: "Perangkat ini berhenti menerima alert darurat.",
+      body: "Perangkat ini tidak menerima alert panik baru.",
+      warning: "Jangan gunakan perangkat ini untuk memantau alert.",
+      next: "Gunakan perangkat staf lain yang masih aktif.",
+      pinLink: "Buka layar PIN",
+      footnote: "Menyegarkan halaman tidak memulihkan akses yang dicabut.",
     },
   },
   emergency: {

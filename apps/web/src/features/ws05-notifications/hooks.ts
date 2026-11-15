@@ -5,6 +5,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useState } from "react";
+import { API_MOCK } from "@/lib/api/mock-flag";
 import type { CursorPage } from "@starter/shared/core";
 import type { Notification } from "@starter/shared/notification";
 import {
@@ -15,10 +16,22 @@ import {
   savePushSubscription,
 } from "./api";
 import {
+  detectPushState,
+  readPushOwner,
+  readStoredSubscriptionId,
+  rememberMockSubscriptionId,
+  rememberSubscriptionId,
+  subscribeThisBrowser,
+  type PushState,
+} from "./push";
+import { syncPushRegistration, type PushSyncOutcome } from "./push-sync";
+import {
   notificationsKeys,
   notificationsPageQuery,
   notificationPolicyQuery,
   notificationPreferencesQuery,
+  pushDevicesQuery,
+  pushPublicKeyQuery,
   type NotificationFilters,
   unreadCountQuery,
 } from "./queries";
@@ -215,4 +228,86 @@ export function useSavePushSubscription() {
 
 export function useDeletePushSubscription() {
   return useMutation({ mutationFn: deletePushSubscription });
+}
+
+// One check at a time: the notification card and the area frame both ask on
+// the first visit, and two parallel registrations would race each other.
+let syncing: {
+  userId: string;
+  promise: Promise<{ browserState: PushState; outcome: PushSyncOutcome }>;
+} | null = null;
+
+/**
+ * Register this browser with the server again and check that the server still
+ * lists it (bead legend-xdlxa). `register` subscribes, saves and remembers the
+ * new row id; `sync` does that only when the browser is subscribed but the
+ * server's own device list does not hold the stored id. It never asks for
+ * permission: only a browser that is already "active" is touched. Mock mode has
+ * no server list, so `sync` reports "skipped" there.
+ */
+export function usePushRegistration() {
+  const queryClient = useQueryClient();
+  const save = useSavePushSubscription();
+
+  const tenantKey = async () => {
+    try {
+      return (await queryClient.fetchQuery(pushPublicKeyQuery())).data
+        .vapidPublicKey;
+    } catch {
+      return null;
+    }
+  };
+
+  const register = async (
+    userId: string,
+    options?: { adoptUnowned?: boolean },
+  ) => {
+    const input = await subscribeThisBrowser(
+      await tenantKey(),
+      undefined,
+      userId,
+      options,
+    );
+    const saved = await save.mutateAsync(input);
+    rememberMockSubscriptionId(saved.data.id);
+    rememberSubscriptionId(saved.data.id, userId, input.endpoint);
+    return saved.data.id;
+  };
+
+  const runSync = async (
+    userId: string,
+  ): Promise<{ browserState: PushState; outcome: PushSyncOutcome }> => {
+    const browserState = await detectPushState(await tenantKey());
+    if (API_MOCK) return { browserState, outcome: "skipped" };
+    const outcome = await syncPushRegistration({
+      browserState,
+      storedId: readStoredSubscriptionId(),
+      listDevices: async () =>
+        (await queryClient.fetchQuery(pushDevicesQuery())).data,
+      register: async () => {
+        // Renewing swaps the browser's subscription when someone else owns
+        // it (another account, or an impersonating admin). Without a user
+        // action only this user's own subscription is renewed, or one with
+        // no recorded owner, which keeps its endpoint and lets the server
+        // refuse it (409) when another account holds it. A known other
+        // owner waits for the manual button on the notification card.
+        const owner = readPushOwner();
+        if (owner !== null && owner !== userId)
+          throw new Error("PUSH_OWNER_UNKNOWN");
+        await register(userId, { adoptUnowned: true });
+      },
+    });
+    return { browserState, outcome };
+  };
+
+  const sync = (userId: string) => {
+    if (syncing?.userId === userId) return syncing.promise;
+    const promise = runSync(userId).finally(() => {
+      if (syncing?.promise === promise) syncing = null;
+    });
+    syncing = { userId, promise };
+    return promise;
+  };
+
+  return { register, sync };
 }

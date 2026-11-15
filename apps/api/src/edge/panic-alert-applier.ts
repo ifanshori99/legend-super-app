@@ -43,6 +43,7 @@ import { facilityUnits } from "../db/schema/facility.ts";
 import { panicAlerts, panicPressEvents } from "../db/schema/panic-alert.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
 import { notifyEdgeSyncConflictRecorded } from "../services/edge-sync-conflict-alert.ts";
+import { appendOutbox } from "../services/core-outbox.ts";
 import { panicAlertIdFor } from "../services/panic-alert-outbox.ts";
 import {
   registerEdgeAggregateKind,
@@ -53,6 +54,9 @@ import {
 import { logger } from "../lib/logger.ts";
 import { redactEdgeEnvelopeSecrets } from "./envelope-secrets.ts";
 import type { EdgeApplyMeta } from "./ports.ts";
+
+/** Outbox destination the notification worker reads (same as facility incidents). */
+const PANIC_NOTIFICATION_DESTINATION = "notification";
 
 export const PANIC_ALERT_UNKNOWN_REF_REASON = "panic_alert_unknown_ref";
 export const PANIC_PRESS_ALERT_CONFLICT_REASON = "panic_press_alert_conflict";
@@ -282,6 +286,17 @@ async function applyRaised(
   });
   // A re-delivered `raised` resets nothing and checks nothing twice.
   if (inserted.length === 0) return;
+
+  // FAC-08 (legend-kmjax): page the staff on duty outside the LAN. Only the
+  // first insert queues it, in this same transaction, so a replay never pages
+  // twice. The worker rule (panicAlertRaisedRule) picks the recipients.
+  await appendOutbox(tx, meta.context, {
+    id: createUlid(),
+    event,
+    destination: PANIC_NOTIFICATION_DESTINATION,
+    direction: null,
+    peerId: null,
+  });
 
   const [device] = await tx
     .select({ id: devices.id })

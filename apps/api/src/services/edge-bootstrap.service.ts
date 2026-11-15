@@ -28,7 +28,7 @@ import { establishTenantContext } from "@starter/shared/core/server";
 import {
   canonicalJson,
   EDGE_BOOTSTRAP_VERSION,
-  edgeBootstrapBundleSchema,
+  edgeBootstrapBundleCloudSchema,
   type EdgeBootstrapBundle,
   type EdgeBootstrapResponse,
 } from "@starter/shared/edge";
@@ -196,7 +196,7 @@ export async function buildEdgeBootstrapBundle(
     // The composite FKs make both present; a missing one is corrupt data.
     if (!legalEntity || brandRows.length === 0)
       throw new Error("Outlet parent rows are missing");
-    const draft: EdgeBootstrapBundle = edgeBootstrapBundleSchema.parse({
+    const draft: EdgeBootstrapBundle = edgeBootstrapBundleCloudSchema.parse({
       version: EDGE_BOOTSTRAP_VERSION,
       issuedAt: (options.now ?? new Date()).toISOString(),
       tenant: { ...tenant, createdAt: tenant.createdAt.toISOString() },

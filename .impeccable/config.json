@@ -18,6 +18,15 @@
         "files": ["docs/review/539-u4-hris-pengajuan.html"],
         "createdAt": "2026-11-12T05:46:11.310Z",
         "reason": "agent: Ghostex page kit (gx-*) owns heading/body sizes; page CSS only sizes screenshots, same pattern as 539-U2 review page"
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "apps/web/src/features/facility-staff/components/panic-alert-layer.tsx"
+        ],
+        "createdAt": "2026-11-14T01:06:39.351Z",
+        "reason": "Founder-approved mockup Arah A (W10 Q8, 14 Nov; design/mockups/panic/multiple-desktop.png) specifies red left bar on alert cards as emergency marker"
       }
     ]
   }

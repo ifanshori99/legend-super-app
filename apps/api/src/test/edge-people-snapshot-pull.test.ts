@@ -23,6 +23,7 @@ import { outletIdSchema, tenantIdSchema } from "@starter/shared/core";
 import {
   EDGE_PEOPLE_SNAPSHOT_GENERATED_AT_HEADER,
   EDGE_PEOPLE_SNAPSHOT_PATH,
+  edgePeopleSnapshotSchema,
 } from "@starter/shared/edge/people-snapshot";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { pullPeopleSnapshotOnce } from "../edge/people-snapshot-pull.ts";
@@ -164,6 +165,34 @@ const person = () => {
 };
 
 describe("legend-tkycp the edge pulls the people snapshot", () => {
+  it("accepts and drops future fields on the envelope and QR keys", async () => {
+    const a = person();
+    const key = qrKey(20_400);
+    const clean = build.snapshot({
+      users: [a.user],
+      employees: [a.employee],
+      qrKeys: [key],
+    });
+    const future = {
+      ...clean,
+      futureField: "future-envelope-value",
+      qrKeys: [{ ...key, futureField: "future-qr-value" }],
+    };
+
+    expect(edgePeopleSnapshotSchema.parse(future)).toEqual(clean);
+    expect(
+      await pull(
+        cloudThatAnswers(() => snapshotResponse(future)).fetchImpl,
+        T1,
+      ),
+    ).toMatchObject({ status: "applied" });
+    expect(await userIds()).toEqual([a.user.id]);
+    const stored = await dump();
+    expect(stored.qrKeys).toHaveLength(1);
+    expect(JSON.stringify(stored)).not.toContain("future-envelope-value");
+    expect(JSON.stringify(stored)).not.toContain("future-qr-value");
+  });
+
   it("first pull sends no If-None-Match and applies; the next one sends the stored ETag and a 304 moves only last_checked_at", async () => {
     const a = person();
     const body = build.snapshot({
@@ -268,6 +297,20 @@ describe("legend-tkycp the edge pulls the people snapshot", () => {
     ).rejects.toMatchObject({ code: "BAD_SNAPSHOT" });
     expect(await dump()).toEqual(before);
     expect(await syncState()).toEqual(stateBefore);
+  });
+
+  it("rejects snapshots exceeding inspection limits without applying them", async () => {
+    const base = build.rawSnapshot({});
+    let deep: unknown = "value";
+    for (let index = 0; index < 9; index++) deep = { nested: deep };
+    for (const future of [deep]) {
+      const body = { ...base, future };
+      await expect(
+        pull(cloudThatAnswers(() => snapshotResponse(body)).fetchImpl),
+      ).rejects.toMatchObject({ code: "BAD_SNAPSHOT" });
+      expect(await userIds()).toEqual([]);
+      expect(await syncState()).toBeUndefined();
+    }
   });
 
   it("a 200 without an ETag is refused and nothing is applied", async () => {

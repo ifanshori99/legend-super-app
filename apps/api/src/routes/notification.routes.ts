@@ -1,4 +1,4 @@
-import { Router, type RequestHandler } from "express";
+import { Router, type Request, type RequestHandler } from "express";
 import {
   assertTrustedScopedContext,
   type ScopedTenantContext,
@@ -7,6 +7,7 @@ import {
 import {
   getNotificationPolicy,
   getNotificationPreferences,
+  getPushPublicKey,
   getUnreadNotificationCount,
   listNotificationTemplates,
   listNotifications,
@@ -31,14 +32,29 @@ export type NotificationOperation =
   | "getPreferences"
   | "updatePreferences"
   | "registerPush"
+  | "getPushKey"
   | "removePush"
   | "getPolicy"
   | "updatePolicy"
   | "listTemplates";
+/** Server-verified request facts a push registration binds to; never client data. */
+export type NotificationCaller = {
+  /** The login session making the request (Better Auth session id). */
+  sessionId: string;
+  /** The device named by a valid X-Device-Token, else null. */
+  deviceId: string | null;
+  /**
+   * `iat` (epoch seconds) of that verified token. The registration needs it to
+   * prove the token is not older than the device's current generation; a
+   * caller with a device but no value is refused (legend-806 P1-2).
+   */
+  deviceTokenIssuedAt?: number | null;
+};
 export type NotificationInput = {
   params?: unknown;
   query?: unknown;
   body?: unknown;
+  caller?: NotificationCaller;
 };
 export interface NotificationServicePort {
   execute(
@@ -59,6 +75,11 @@ export interface NotificationRoutePorts {
     userId: string,
     operation: NotificationOperation,
   ): Promise<boolean>;
+  /**
+   * Session and device of a push registration. Throws 401 for a device token
+   * the registry no longer accepts. Without it a registration is refused.
+   */
+  resolveCaller?(req: Request): Promise<NotificationCaller>;
   service: NotificationServicePort;
 }
 
@@ -72,6 +93,7 @@ const routes = [
   [getNotificationPreferences, "getPreferences"],
   [updateNotificationPreferences, "updatePreferences"],
   [registerPushSubscription, "registerPush"],
+  [getPushPublicKey, "getPushKey"],
   [removePushSubscription, "removePush"],
   [getNotificationPolicy, "getPolicy"],
   [updateNotificationPolicy, "updatePolicy"],
@@ -103,6 +125,10 @@ export function createNotificationRouter(ports?: NotificationRoutePorts) {
       )
         throw denied();
       const input: NotificationInput = {};
+      if (operation === "registerPush") {
+        if (!ports.resolveCaller) throw denied();
+        input.caller = await ports.resolveCaller(req);
+      }
       if (endpoint.params) input.params = endpoint.params.parse(req.params);
       if (endpoint.query) input.query = endpoint.query.parse(req.query);
       if (endpoint.body) input.body = endpoint.body.parse(req.body);

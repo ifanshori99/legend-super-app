@@ -1,0 +1,40 @@
+# 848 desain tmar2 (restore proof) — konteks bersama implementer/test-writer
+Kartu: legend-tmar2 (utama), legend-g1799 (hanya bila kecil; kalau tidak, lapor usulan). Scope file: apps/api/src/edge/{protocol,link-peer,link-server,link-client,db-link-store}.ts, runtime.ts hanya bila wajib (opsi client), test baru di apps/api/src/test/edge-link-restore-*.test.ts, docs/deployment.md. DILARANG: master-sync.ts, edge/edc, cash-out, test/baseline e2e.
+
+## Fakta kode
+- hello = strictObject {type,version,inboundCursor} (protocol.ts:57). onHello di link-peer.ts:331: cursor<=head, lalu `ackOutbound(cursor)` bila cursor>acked (link-peer.ts:353-357). Celah: antrean edge direstore sampai head >= cursor tapi isi slot (acked, cursor] beda -> di-ack tanpa kirim (alarm panik hilang).
+- Edge: edge_outbound_queue(link_seq, event_id uuid, status). ackOutbound hanya ubah status='acked' (baris tetap ada), jadi event_id rentang (A,N] bisa dibaca ulang dari antrean (readOutbound(afterSeq), db-link-store.ts:364). Ada peerNumbering offset (db-link-store.ts:258) — hitung dengan penomoran edge.
+- Cloud: receipt edge_inbound_events(tenant_id, edge_node_id, direction, event_id uuid, link_seq) append-only, tidak di-prune; link_seq di sana = seq edge + peer_seq_offset (sync_cursors). Tidak ada index link_seq.
+- Header upgrade edge: link-client.ts:128-134 (LINK_INSTANCE_HEADER); cloud baca link-server.ts:364-369 -> options db-link-store.ts:178. Connect sinkron: nilai A (= store.lastAckedOutbound()) harus dibaca sebelum connect / lewat opsi.
+
+## Rancangan (keputusan CTO: proof seluruh rentang)
+1. protocol.ts: konstanta `LINK_RESTORE_PROOF_HEADER = "x-edge-restore-proof"` (nilai: A, desimal = acked_out_seq edge, validasi linkCursorSchema). hello tambah field opsional `inboundProof: strictObject{count: int>=0, sha256: hex64}`.
+2. Digest: SHA-256 atas string `eventIdUuidLowercase + "\n"` tiap event, urut link_seq naik, rentang (A, N] (penomoran edge). count = jumlah baris.
+3. Edge (link-client): kirim header hanya bila store tersedia; A dibaca sebelum connect tiap kali (reconnect membaca ulang).
+4. Cloud (link-server/db-link-store): bila header valid DAN N > A, hello cloud memuat inboundProof dihitung dari edge_inbound_events (link_seq di (A+offset, N+offset], urut). Header hilang/rusak: perilaku lama persis (edge lama tetap jalan). N <= A: tidak ada proof (tidak ada ack).
+5. Edge (link-peer onHello): bila hello membawa inboundProof dan cursor > acked: hitung ulang dari antrean (acked, cursor]; count atau sha256 beda ATAU baris kurang -> throw LinkProtocolError("Restore proof mismatch ...") SEBELUM ackOutbound; tidak ada ack, tidak ada onAcked. Hello tanpa proof: perilaku lama (cloud lama).
+6. LinkStore tambah method opsional `outboundProof?(fromSeq, toSeq)` (edge) dan `inboundProof?(fromSeq, toSeq)` (cloud) sehingga link-peer tetap generik.
+7. Cloud boleh menambah index (tenant_id, edge_node_id, direction, link_seq) bila perlu performa -> migrasi 0389 (cek FK/registry aturan AGENTS.md). Bila ditambah: data-import-registry test.
+
+## Test wajib (vitest apps/api/src/test/)
+a. Restore instance sama tanpa trafik cloud_to_edge: edge DB punya event berbeda di slot (acked,N] -> LinkProtocolError, lastAckedOutbound tak berubah, event tidak berstatus acked.
+b. Alarm panik belum terkirim di slot (acked,N] tidak pernah di-ack (assert status tetap pending, dan dikirim/diretensi sesuai jalur).
+c. Edge lama (tanpa header): cloud hello tanpa inboundProof, tersambung & ack normal. Cloud lama (hello tanpa proof): edge tetap jalan.
+d. Rentang cocok: ack normal, digest cocok.
+e. Digest mencakup seluruh rentang: event tengah (bukan terakhir) beda -> ditolak (bukti merah prototipe: proof hanya ID terakhir lolos).
+f. Hello strict: field tak dikenal tetap ditolak.
+
+## Kontrak antar-potongan (tetap, jangan ubah tanpa lapor)
+- protocol.ts (implementer A): `LINK_RESTORE_PROOF_HEADER`, hello `inboundProof?: {count:number; sha256:string}`, `export function restoreProofOf(eventIds: Iterable<string>): {count:number; sha256:string}` (uuid lowercase, "\n" separator, SHA-256 hex), `export function restoreProofAckedFromHeader(value: string|string[]|undefined): number|null`.
+- link-peer.ts (A): `LinkStore.outboundProof?(fromSeq:number,toSeq:number): Promise<{count:number; sha256:string}>` (edge) dan `inboundProof?(fromSeq:number,toSeq:number): Promise<{count:number; sha256:string}>` (cloud; seq penomoran edge, store yang menambah offset). `LinkPeerOptions.restoreProofAcked?: number` (cloud saja, = A dari header; bila ada dan N>A, sendHello memanggil store.inboundProof(A,N) dan menaruh hasil di hello.inboundProof). onHello(cursor, proof?) verifikasi lewat store.outboundProof sebelum ackOutbound. link-client.ts (A): kirim header A. Edge: A dibaca dari store.lastAckedOutbound() sebelum tiap connect.
+- db-link-store.ts + link-server.ts + migrasi/index (implementer B): implement outboundProof (edge_outbound_queue, penomoran edge incl. offset bila relevan) dan inboundProof (edge_inbound_events link_seq di (A+offset,N+offset] urut link_seq), pakai `restoreProofOf`; link-server parse header dan teruskan `restoreProofAcked` ke createLinkPeer.
+- A tidak menyentuh db-link-store/link-server; B tidak menyentuh protocol/link-peer/link-client.
+
+## Revisi 1 (hasil review architect; menimpa kontrak di atas bila bentrok)
+Tanpa migrasi (index/tabel slot -> usulan ke CTO, bukan dikerjakan).
+R1. hello.inboundProof = {from, count, sha256}; `from` = A header (cloud mengisi dari restoreProofAcked). Edge: wajib from <= lastAckedOutbound() (else LinkProtocolError); hitung ulang outboundProof(from, cursor) (BUKAN dari acked sekarang) -> tidak ada penolakan palsu bila ack terlambat selesai setelah A dibaca.
+R2. LinkStore.inboundProof(from,to): Promise<{count,sha256}|null>; null = cloud tidak bisa membuktikan (slot bolong / rentang > 20000) -> hello TANPA inboundProof (fail-open disengaja untuk riwayat tak lengkap; catat via options.onError? tidak; cukup komentar). Hitung di SQL (agregat sha256 + count) agar memori ringan.
+R3. inboundProof untuk edge_to_cloud hanya menghitung receipt yang event-nya ada di edge_received_events (tenant_id, event_id): receipt dead-letter (link-dead-letter-applier) tidak ikut. Lengkap = count == to-from; selain itu null.
+R4. Penolakan karena proof mismatch/from invalid tidak boleh mereset backoff link-client (attempt tetap naik sampai batas backoff), supaya tidak loop cepat. Cari di link-client.ts:~191 tempat attempt=0.
+R5. protocol.ts: perbaiki format `z.discriminatedUnion` (prettier).
+R6. Tes tambahan: from header lebih kecil dari acked sekarang tetap diverifikasi; mismatch tidak reset backoff; inboundProof null -> hello tanpa proof; receipt dead-letter tidak dihitung.

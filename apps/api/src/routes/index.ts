@@ -56,6 +56,7 @@ import { platformConfigRouter } from "./platform-config.routes";
 import { platformPaymentGatewaysRouter } from "./platform-payment-gateways.routes";
 import { platformKirimdevSendersRouter } from "./platform-kirimdev-senders.routes";
 import { createNotificationRouter } from "./notification.routes";
+import { createNotificationPushPorts } from "../services/notification-push-ports";
 import { taxRouter } from "./tax.routes";
 import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
 import { websiteAdminRouter } from "./website-admin.routes";
@@ -160,6 +161,7 @@ import { memberRouter } from "./member.routes.ts";
 import { loyaltyProgramRouter } from "./loyalty-program.routes.ts";
 import { customersRouter } from "./customers.routes.ts"; // legend-ts50
 import { identityWaUnlinkRouter } from "./identity-wa-unlink.routes.ts"; // legend-7wzy
+import { identityPushDevicesRouter } from "./identity-push-devices.routes.ts"; // legend-gchkf
 import { segmentsRouter } from "./segments.routes.ts"; // legend-ts50
 import { feedbackRouter } from "./feedback.routes.ts"; // legend-ts50
 import { memberFeedbackRouter } from "./member-feedback.routes.ts"; // legend-ts50
@@ -251,8 +253,12 @@ apiRouter.use("/payments/admin", paymentAdminRouter);
 // DOIT recurring billing back office (legend-6c6); before the public /payments router.
 apiRouter.use("/payments/recurring", paymentRecurringRouter);
 apiRouter.use("/payments", paymentRouter);
-// Fail closed until production tenant membership and role resolvers are wired.
-apiRouter.use("/notifications", createNotificationRouter());
+// Only web push registration is wired (active staff assignment); every other
+// notification operation stays denied until its resolver exists.
+apiRouter.use(
+  "/notifications",
+  createNotificationRouter(createNotificationPushPorts()),
+);
 // WS-03 floor: zones/tables editor, live board, signed table QR and the staff
 // table-session lifecycle; /qr is the public guest scan (legend-irw).
 apiRouter.use("/floor", floorRouter);
@@ -372,6 +378,7 @@ apiRouter.use("/member", memberFeedbackRouter); // legend-ts50
 apiRouter.use(loyaltyProgramRouter);
 apiRouter.use(customersRouter); // legend-ts50
 apiRouter.use(identityWaUnlinkRouter); // legend-7wzy
+apiRouter.use("/identity/push-devices", identityPushDevicesRouter); // legend-gchkf
 apiRouter.use(segmentsRouter); // legend-ts50
 apiRouter.use(feedbackRouter); // legend-ts50
 apiRouter.use(loyaltyRewardsRouter); // legend-m4p5

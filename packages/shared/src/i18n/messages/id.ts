@@ -17,6 +17,8 @@ import { orgDomainMessages } from "./org-domain.ts";
 import { accountingMessages } from "./accounting.ts";
 import { accountingApMessages } from "./accounting-ap.ts";
 import { accountingCashMessages } from "./accounting-cash.ts";
+import { edcReconQueueMessages } from "./edc-recon-queue.ts";
+import { edcReconResolveMessages } from "./edc-recon-resolve.ts";
 import { accountingReportMessages } from "./accounting-report.ts";
 import { accountingShareMessages } from "./accounting-share.ts";
 import { accountingTaxMessages } from "./accounting-tax.ts";
@@ -76,6 +78,10 @@ import { learningMessages } from "./ws10-learning.ts";
 import { lifecycleMessages } from "./ws10-lifecycle.ts";
 import { payrollConfigMessages } from "./ws10-payroll-config.ts";
 import { payrollRunMessages } from "./ws10-payroll-run.ts";
+import { payrollPayoutMessages } from "./ws10-payroll-payout.ts";
+import { payrollPayoutSettingsMessages } from "./ws10-payroll-payout-settings.ts";
+import { payrollPayoutReviewMessages } from "./ws10-payroll-payout-review.ts";
+import { financeExceptionsMessages } from "./ws07-finance-exceptions.ts";
 import { payslipMessages } from "./ws10-payslip.ts";
 import { payslipPinMessages } from "./ws10-payslip-pin.ts";
 import { payslipPinSetupMessages } from "./ws10-payslip-pin-setup.ts";
@@ -168,6 +174,10 @@ export const id = {
   posKasirPayment: posKasirPaymentMessages,
   posKasirGateway: posKasirGatewayMessages,
   posKasirEdc: posKasirEdcMessages,
+  edcRecon: {
+    queue: edcReconQueueMessages,
+    resolve: edcReconResolveMessages,
+  },
   posKasirCode: posKasirCodeMessages,
   posKasirShift: posKasirShiftMessages,
   posKasirSupervisor: posKasirSupervisorMessages,
@@ -254,6 +264,10 @@ export const id = {
   lifecycle: lifecycleMessages,
   payrollConfig: payrollConfigMessages,
   payrollRun: payrollRunMessages,
+  payrollPayout: payrollPayoutMessages,
+  payrollPayoutSettings: payrollPayoutSettingsMessages,
+  payrollPayoutReview: payrollPayoutReviewMessages,
+  financeExceptions: financeExceptionsMessages,
   payslip: payslipMessages,
   payslipPin: {
     ...payslipPinMessages,
@@ -1533,12 +1547,17 @@ export const id = {
       device: "Perangkat ini: {device}",
       checking: "Memeriksa dukungan perangkat…",
       stateActive: "Aktif di perangkat ini",
+      stateReregistering: "Mendaftarkan ulang perangkat…",
+      stateNeedsReregister: "Perlu diaktifkan ulang",
       stateInactive: "Belum aktif di perangkat ini",
       stateBlocked: "Izin notifikasi diblokir",
       stateUnsupported: "Perangkat tidak mendukung web push",
       stateUnavailable: "Belum diaktifkan tenant",
       stateIosInstall: "Perlu dipasang ke Layar Utama",
       enable: "Aktifkan notifikasi",
+      reregisterAction: "Daftarkan ulang",
+      reregisterHint:
+        "Server belum mengenali perangkat ini, jadi pemberitahuan belum sampai. Daftarkan ulang agar notifikasi masuk lagi.",
       disable: "Matikan di perangkat ini",
       enabledToast: "Notifikasi perangkat aktif",
       enabledBody: "Pemberitahuan akan muncul meskipun aplikasi tertutup.",
@@ -3680,12 +3699,15 @@ export const id = {
       columns: {
         rule: "Aturan pajak",
         rate: "Tarif",
+        priceMode: "Mode harga",
         transactions: "Transaksi",
         gross: "Penjualan bruto",
         base: "Dasar pajak",
         service: "Service charge",
         tax: "Pajak",
       },
+      priceModeIncluded: "Harga termasuk pajak",
+      priceModeExcluded: "Harga belum termasuk pajak",
       totalRow: "Total",
       totalTax: "Total pajak",
       totalBase: "Total dasar pajak",
@@ -3695,6 +3717,7 @@ export const id = {
       csv: {
         code: "Kode aturan",
         rate: "Tarif (basis poin)",
+        priceMode: "Mode harga",
         transactions: "Transaksi",
         gross: "Penjualan bruto (Rp)",
         base: "Dasar pajak (Rp)",

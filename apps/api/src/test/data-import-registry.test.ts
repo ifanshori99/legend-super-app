@@ -72,6 +72,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "backfills paid_idr on existing promotion applications",
   "0065_edge_received_events.sql":
     "copies existing edge inbound events into the renamed table",
+  "0376_edge_link_slots.sql":
+    "backfills edge_link_slots from existing edge_inbound_events: one row per link slot with exactly one counted receipt (legend-pz641); idempotent, ON CONFLICT DO NOTHING, edits no existing row, FORCE RLS lifted for that one statement and restored",
   "0090_pos_day_close_permission.sql":
     "adds a permission string to each tenant's existing roles",
   "0096_menu_station_type_backfill.sql":
@@ -218,9 +220,16 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "numbers stations.display_order of existing stations per outlet (name, created_at, id) so the KDS tabs keep the order they had (legend-bopi2); idempotent, edits no other column, is_active and auto_print_fallback take their column defaults, no amount touched; FORCE RLS lifted for that one statement and restored",
   "0364_kitchen_ticket_no.sql":
     "fills kitchen_tickets.business_date (outlet business day of fired_at, from the outlet zone and cutoff) and numbers kitchen_tickets.ticket_no 1.. per tenant, outlet and business day by fired_at, id for every existing ticket (legend-tzyj2); idempotent for tickets without a number, edits no other column, no amount touched; FORCE RLS lifted on kitchen_tickets and outlets for that one statement and restored",
-  "0368_pos_qris_holds.sql":
+  "0374_menu_recipe_fk.sql":
+    "sets menu_items, item_variants and modifiers recipe_id to NULL where it has no recipe of the same tenant, so the new composite foreign key (tenant_id, recipe_id) -> recipes can validate (legend-3kdd); idempotent, edits no other column, no price, tax or amount touched, the modifiers part is skipped on an edge database (session setting legend.edge_mode); FORCE RLS lifted on those tables and recipes for the migration transaction and restored",
+  "0375_recipes_resync_edges.sql":
+    "re-stamps recipes, menu_items and item_variants with UPDATE ... SET updated_at = updated_at so the sync_txid trigger (0262) gives every row a fresh stamp and each edge pulls them again (legend-2uqcd); idempotent, no value edited, no price, tax or amount touched, skipped on an edge database (session setting legend.edge_mode); FORCE RLS lifted on those tables for the migration transaction and restored",
+  // founder Q6 (15 Nov 2026, 864)
+  "0378_ai_assistant_auto_enable.sql":
+    "switches on the ai_assistant module (feature_flags.modules) for active tenants whose plan is an active package that includes ai_assistant and that already used AI (an ok tanya_ai or mcp usage event, or a user message); idempotent, skips tenants that already have the module, touches no limits, plan or integration providers, writes one tenant.module_auto_enabled audit row per changed tenant; FORCE RLS lifted for the statements that read audit_logs, ai_usage_events and ai_messages and restored",
+  "0379_pos_qris_holds.sql":
     "backfills one open pos_qris_holds row (backfilled = true) for each existing authorized QRIS tender with an unpaid payment link and for each pending QRIS bill-split intent, aborting first if a bill has more than one collectible QRIS; only inserts into the new table, edits no existing row, no amount touched; FORCE RLS lifted on bill_splits, payment_intents, pos_order_tenders and pos_orders for those statements and restored",
-  "0370_pos_customer_display.sql":
+  "0381_pos_customer_display.sql":
     "no backfill: the only UPDATE statements are trigger bodies that bump customer_display_sessions.version when the selected order, QRIS hold or tender changes at runtime; touches no existing row at migration time, no amount touched",
 };
 

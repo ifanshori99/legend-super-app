@@ -34,6 +34,10 @@ import {
   type Response,
 } from "express";
 import { CoreError } from "@starter/shared/core";
+import {
+  EDGE_MASTER_SNAPSHOT_VERSION_HEADER,
+  edgeMasterSnapshotQuerySchema,
+} from "@starter/shared/edge/master-sync";
 import { parseEdgeCredential } from "../edge/credential.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
@@ -200,7 +204,26 @@ async function handleEdgeBootstrap(req: Request, res: Response): Promise<void> {
 async function handleEdgeMasters(req: Request, res: Response): Promise<void> {
   const { node, credential } = await authenticateEdgeNode(req);
   res.setHeader("Cache-Control", "private, no-store");
-  res.json(await buildEdgeMasterSnapshot(node, credential));
+  // The query survives a proxy stripping our custom header. With neither,
+  // the response remains the old version 1 shape.
+  const query = edgeMasterSnapshotQuerySchema.parse(req.query);
+  const asked = Number.parseInt(
+    query.snapshotVersion ?? req.get(EDGE_MASTER_SNAPSHOT_VERSION_HEADER) ?? "",
+    10,
+  );
+  if (query.brandPage !== undefined && !(asked >= 2))
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Halaman brand memerlukan snapshot versi 2.",
+    );
+  res.json(
+    await buildEdgeMasterSnapshot(node, credential, {
+      snapshotVersion: Number.isFinite(asked) ? asked : undefined,
+      brandPage: query.brandPage === "1",
+      brandCursor: query.brandCursor,
+      uomIsSystem: query.uomIsSystem === "1",
+    }),
+  );
 }
 
 export const edgeBootstrapRouter = createEdgeBootstrapRouter();

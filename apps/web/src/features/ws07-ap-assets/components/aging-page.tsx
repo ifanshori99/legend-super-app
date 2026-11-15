@@ -41,11 +41,13 @@ import {
   filterAgingRows,
   type AgingBucketDescriptor,
 } from "../lib";
+import { useHydrated } from "@/features/ws10-attendance-qr/use-hydrated";
 import { AgingRowStatusBadge } from "./status-badge";
 
 const KINDS: readonly OpenItemKind[] = ["payable", "receivable"];
 
 export function AgingPage({ legalEntityId }: { legalEntityId: string }) {
+  const hydrated = useHydrated();
   const t = useT();
   const [kind, setKind] = React.useState<OpenItemKind>("payable");
   const [search, setSearch] = React.useState("");
@@ -53,8 +55,15 @@ export function AgingPage({ legalEntityId }: { legalEntityId: string }) {
   const [expanded, setExpanded] = React.useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  const asOf = React.useMemo(() => businessDateToday(), []);
-  const reportQuery = useAgingReport({ legalEntityId, kind, asOf });
+  const asOf = React.useMemo(
+    () => (hydrated ? businessDateToday() : ""),
+    [hydrated],
+  );
+  const reportQuery = useAgingReport({
+    legalEntityId,
+    kind,
+    asOf,
+  });
   const report = reportQuery.data;
 
   const descriptors = React.useMemo(
@@ -163,9 +172,10 @@ export function AgingPage({ legalEntityId }: { legalEntityId: string }) {
           label={t("accounting.ap.kind.label")}
         />
         <p className="text-sm leading-5 text-muted-foreground">
-          {t("accounting.ap.aging.asOf", {
-            date: formatBusinessDate(asOf),
-          })}
+          {asOf &&
+            t("accounting.ap.aging.asOf", {
+              date: formatBusinessDate(asOf),
+            })}
         </p>
       </div>
 

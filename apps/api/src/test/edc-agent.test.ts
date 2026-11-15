@@ -19,9 +19,10 @@
 //   is the simulator's constructor option too.
 // - A second approval is forced by inserting an approved row for the same
 //   reference, then resolving an unknown row of that reference by inquiry.
-// - Late approval (F2): a wrapper provider lets the held sale resolve
-//   `approved` after the cancel answered `cancelled`; the stored status stays
-//   `cancelled` and the row is flagged `needsReconciliation`.
+// - Late approval (F2, rule of legend-ftsq0): a wrapper provider lets the held
+//   sale resolve `approved` after the cancel answered `cancelled`. A cancel
+//   answer alone never finalizes a dispatched sale, so the row stays `pending`
+//   until the sale's own answer and ends `approved`, not flagged.
 // - Stale pending (F2): a row that is `pending` but not in flight (set up by
 //   flipping an unknown row back to pending, dispatched_at old) is inquired
 //   by the retry like an unknown one.
@@ -61,6 +62,7 @@ import {
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { createEdcAgent } from "../edge/edc/agent.ts";
+import { ensureBill } from "./edc-agent-bill-helper.ts";
 import { EdcProviderRegistry } from "../edge/edc/registry.ts";
 import { EcrSimulator } from "../edge/edc/simulator.ts";
 import { agent as httpAgent, signUp } from "./helpers.ts";
@@ -344,8 +346,10 @@ function request(
   } as EdcPaymentRequest;
 }
 
-const pay = (f: Fixture, req: EdcPaymentRequest) =>
-  f.agent.requestPayment(f.ctx, f.actor, req);
+const pay = async (f: Fixture, req: EdcPaymentRequest) => {
+  await ensureBill(owner, req);
+  return f.agent.requestPayment(f.ctx, f.actor, req);
+};
 
 const refTo = (f: Fixture, tx: Pick<EdcTransaction, "id">) => ({
   tenantId: tenantIdSchema.parse(f.tenant.tenantId),
@@ -428,6 +432,7 @@ describe("EDC agent (legend-apt)", () => {
     const tx = await pay(f, first);
     expect(tx.status).toBe("unknown");
     expect(tx.completedAt).toBeNull();
+    expect(tx.amountIdr).toBe(AMOUNT);
     expect(f.bca.chargedCount(f.terminalId)).toBe(1);
 
     // Cashier presses "pay" again: same bill, new idempotency key.
@@ -441,6 +446,10 @@ describe("EDC agent (legend-apt)", () => {
     // The unknown attempt was resolved to what really happened.
     const rows = await rowsFor(f.tenant, { reference: first.reference });
     expect(rows.map((r) => r.status)).toEqual(["approved"]);
+    const settled = await f.agent.get(f.ctx, f.actor, refTo(f, tx));
+    expect(settled.id).toBe(tx.id);
+    expect(settled.amountIdr).toBe(AMOUNT);
+    expect(settled.reference).toBe(first.reference);
   });
 
   it("EDC-03 a sale that never reached the terminal is failed by inquiry and the retry is charged once", async () => {
@@ -602,8 +611,10 @@ describe("EDC agent (legend-apt)", () => {
       f.actor,
       refTo(f, { id: rowId }),
     );
-    expect(cancelled.status).toBe("cancelled");
-    expect(cancelled.completedAt).not.toBeNull();
+    // The cancel answer is no proof the sale is over: the row stays open and
+    // the sale's own answer (below) decides.
+    expect(cancelled.status).toBe("pending");
+    expect(cancelled.completedAt).toBeNull();
 
     const sold = await selling;
     expect(sold.id).toBe(rowId);
@@ -716,6 +727,7 @@ describe("EDC agent (legend-apt)", () => {
     // After the owner stops, the lock is free and the second agent takes over.
     await f.agent.stop(f.ctx);
     await startAgent(second, f.ctx);
+    await ensureBill(owner, req);
     const tx = await second.requestPayment(f.ctx, f.actor, req);
     expect(tx.status).toBe("approved");
   });
@@ -998,7 +1010,7 @@ describe("EDC agent (legend-apt)", () => {
     expect(rows.filter((r) => r.status === "approved")).toHaveLength(1);
   });
 
-  it("EDC-03 a held sale that is approved after the cancel stays cancelled and is flagged for reconciliation", async () => {
+  it("EDC-03 a held sale that is approved after the cancel answer is approved: the cancel answer alone never finalizes it", async () => {
     // Wrapper: the terminal answers the cancel (cancelled), but the sale
     // call itself later settles approved (the customer paid anyway).
     let open!: () => void;
@@ -1042,16 +1054,15 @@ describe("EDC agent (legend-apt)", () => {
       f.actor,
       refTo(f, { id: rowId }),
     );
-    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.status).toBe("pending");
 
-    open(); // the sale now answers approved, too late
+    open(); // the sale now answers approved: the customer paid
     const sold = await selling;
-    expect(sold.status).toBe("cancelled");
+    expect(sold.status).toBe("approved");
     const rows = await rowsFor(f.tenant, { reference: req.reference });
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.status).toBe("cancelled");
-    expect(rows[0]!.needs_reconciliation).toBe(true);
-    expect(rows[0]!.message ?? "").toContain("approved after cancelled");
+    expect(rows[0]!.status).toBe("approved");
+    expect(rows[0]!.needs_reconciliation).toBe(false);
   });
 
   it("EDC-03 a stale pending row that is not in flight is inquired by the retry: approved at the terminal refuses a second charge", async () => {
