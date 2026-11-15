@@ -730,6 +730,18 @@ describe("ORD-02 payment.expired / payment.failed for QR orders (legend-x4qy)", 
       expect(await outboxEvents("payment.paid", "intentId", intentId)).toEqual(
         [],
       );
+      // The refused money is parked, not lost: one unresolved fund row of the
+      // whole amount waits for a refund decision.
+      const { rows: parked } = await owner.query<{
+        amount_idr: number;
+        resolution: string | null;
+      }>(
+        `SELECT amount_idr::int AS amount_idr, resolution
+           FROM payment_unallocated_funds
+          WHERE tenant_id = $1 AND payment_intent_id = $2`,
+        [tenant.tenantId, intentId],
+      );
+      expect(parked).toEqual([{ amount_idr: totalIdr, resolution: null }]);
       expect((await orderRow(orderId)).status).toBe("voided");
       expect(await placedStatuses(orderId)).toEqual(["awaiting_payment"]);
       expect(promo.released).toEqual([orderId]);

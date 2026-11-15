@@ -40,6 +40,7 @@ import {
   runHoldCheck,
   type HoldFixture,
 } from "./pos-qris-hold-test-helpers.ts";
+import { secretFor } from "./payer-secret-helpers.ts";
 import { enableVaBank } from "./qris-hold-so879-va-gateway.ts";
 
 vi.setConfig({ testTimeout: 120_000 });
@@ -89,14 +90,14 @@ async function world() {
   return { guest, orderId: order.id as string, aId, bId };
 }
 
-async function payA(aId: string) {
+async function payA(aId: string, amountIdr = BILL_IDR) {
   await confirmPayment(
     fx.context,
     aId,
     {
       source: "verified_webhook",
       method: "va",
-      amountIdr: BILL_IDR,
+      amountIdr,
       providerRef: `WEBHOOK-${randomBytes(6).toString("hex")}`,
       at: new Date().toISOString(),
     },
@@ -314,6 +315,129 @@ describe("SO-879 sweep voids a fully paid QR order only when the money is refund
     await paidAThen(w, () =>
       refundRow(w.aId, 10_000, "completed", "partially_refunded"),
     );
+    await killB(w);
+
+    await sweep();
+
+    expect((await orderRow(w.orderId)).status).toBe("awaiting_payment");
+  });
+
+  it("(g) split bill, two paid codes: one part only partly refunded keeps the order; both fully refunded and every code dead voids it once", async () => {
+    const guest = await fx.newGuest();
+    const order = await fx.qrOrder(guest);
+    const split = await fx.guestPost(guest, "/splits", {
+      method: "equal",
+      parts: 2,
+      idempotencyKey: randomUUID(),
+    });
+    expect(split.status, JSON.stringify(split.body)).toBe(201);
+    const parts = split.body.data.splits as { id: string; amountIdr: number }[];
+    expect(parts.map((part) => part.amountIdr)).toEqual([16_500, 16_500]);
+    const codes: string[] = [];
+    for (const part of parts) {
+      const paid = await fx.guestPost(guest, "/payments", {
+        target: { kind: "split", billSplitId: part.id },
+        method: "va",
+        bankCode: "bmri",
+        payerSecret: secretFor(part.id),
+        idempotencyKey: randomUUID(),
+      });
+      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+      codes.push(paid.body.data.id as string);
+    }
+    // Both parts are paid at the provider; the paid events are still queued,
+    // so the order is awaiting payment with a fully paid link.
+    for (const code of codes) await payA(code, 16_500);
+    // The sweep waits for the end of the last code's life window (a paid code
+    // still counts): let both lapse, as they do in time.
+    await owner.query(
+      `UPDATE payment_intents SET expires_at = now() - interval '15 minutes'
+        WHERE tenant_id=$1 AND id = ANY($2::uuid[])`,
+      [fx.tenant.tenantId, codes],
+    );
+    await refundRow(codes[0]!, 5_000, "completed", "partially_refunded");
+    await refundRow(codes[1]!, 16_500, "completed", "refunded");
+
+    await sweep();
+
+    expect((await orderRow(order.id)).status).toBe("awaiting_payment");
+
+    await refundRow(codes[0]!, 11_500, "completed", "refunded");
+
+    await sweep();
+
+    const voided = await orderRow(order.id);
+    expect(voided.status).toBe("voided");
+    expect(voided.void_reason).toBe("payment_refunded_codes_dead");
+    const refunds = [
+      await refundsOfIntent(fx, codes[0]!),
+      await refundsOfIntent(fx, codes[1]!),
+    ];
+    expect(refunds.map((rows) => rows.length)).toEqual([2, 1]);
+
+    await sweep();
+    await sweep();
+
+    expect((await orderRow(order.id)).snapshot).toEqual(voided.snapshot);
+    expect([
+      await refundsOfIntent(fx, codes[0]!),
+      await refundsOfIntent(fx, codes[1]!),
+    ]).toEqual(refunds);
+  });
+
+  it("(h) a VA paid after the sweep voided the order is refunded automatically exactly once, replays included", async () => {
+    const guest = await fx.newGuest();
+    const order = await fx.qrOrder(guest);
+    const a = await payWhole(guest, order.id, "va");
+    expect(a.status, JSON.stringify(a.body)).toBe(201);
+    const aId = a.body.data.id as string;
+    await owner.query(
+      `UPDATE payment_intents SET status='expired', expires_at = now() - interval '10 minutes'
+        WHERE tenant_id=$1 AND id=$2`,
+      [fx.tenant.tenantId, aId],
+    );
+
+    await sweepUnpaidQrOrders(fx.context, new Date(Date.now() + 20 * 60_000));
+    expect((await orderRow(order.id)).status).toBe("voided");
+    expect(await refundsOfIntent(fx, aId)).toEqual([]);
+
+    await payA(aId);
+    const { rows } = await owner.query<{ event: unknown }>(
+      `SELECT event FROM domain_event_outbox WHERE tenant_id=$1
+         AND event->>'name'='payment.paid' AND event->'payload'->>'intentId'=$2
+        ORDER BY created_at, id`,
+      [fx.tenant.tenantId, aId],
+    );
+    expect(rows).toHaveLength(1);
+    const event = eventEnvelopeSchema.parse(rows[0]!.event);
+    for (let i = 0; i < 3; i += 1)
+      await withTenant(db, fx.context, (tx) =>
+        deliverOrderPaymentEvent(fx.context, event, tx, new Date()),
+      );
+
+    expect((await orderRow(order.id)).status).toBe("voided");
+    expect(await refundsOfIntent(fx, aId)).toEqual([
+      expect.objectContaining({
+        amountIdr: BILL_IDR,
+        requestedBy: "system:qr",
+      }),
+    ]);
+  });
+
+  it("(i) a code marked paid with no payment evidence is unknown money: the order is kept", async () => {
+    const w = await world();
+    await owner.query(
+      `UPDATE payment_intents SET status='paid', paid_at=now()
+        WHERE tenant_id=$1 AND id=$2`,
+      [fx.tenant.tenantId, w.aId],
+    );
+    await owner.query(
+      `UPDATE payment_links SET paid_idr = total_idr
+        WHERE tenant_id=$1 AND id = (SELECT payment_link_id FROM payment_intents
+                                      WHERE tenant_id=$1 AND id=$2)`,
+      [fx.tenant.tenantId, w.aId],
+    );
+    await refundRow(w.aId, BILL_IDR, "completed");
     await killB(w);
 
     await sweep();
