@@ -261,12 +261,19 @@ async function pendingSettleOverride(
   const legacy = await sourceBankOverride(tx, tenantId, batch, {
     optional: true,
   });
-  if (legacy === null)
+  if (legacy === null) {
+    // The consumer retries and then dead-letters this lock event: say why, so
+    // finance can fix the source account and replay it.
+    logger.error(
+      { tenantId, runBatchSource: "pending-settle-source-missing" },
+      "payout pending settlement cannot resolve its source account",
+    );
     throw payoutRefuse(
       409,
       PAYOUT_SOURCE_ACCOUNT_MISSING.code,
       PAYOUT_SOURCE_ACCOUNT_MISSING.message,
     );
+  }
   return legacy;
 }
 

@@ -743,6 +743,8 @@ export async function confirmManualItems(
     input.results.map((result) => result.itemId),
     "exported",
   );
+  for (const key of new Set(evidenceByItem.values()))
+    if (key !== null) await assertProofNotUsedForReturn(tx, tenantId, key);
 
   let confirmed = 0;
   for (const result of input.results) {
@@ -896,27 +898,7 @@ export async function resolveManualItems(
   // A proof that frees items as failed must not already be a return proof or a
   // return claim (review F3). It MAY equal a payment-confirmation proof: one
   // bank result report legitimately covers paid and failed lines of a batch.
-  const [proofUsed] = await tx
-    .select({ id: payrollDisbursementItems.id })
-    .from(payrollDisbursementItems)
-    .where(
-      and(
-        eq(payrollDisbursementItems.tenantId, tenantId),
-        eq(payrollDisbursementItems.returnEvidenceKey, evidence),
-      ),
-    )
-    .limit(1);
-  const [claimUsed] = await tx
-    .select({ id: payrollPayoutReturnClaims.id })
-    .from(payrollPayoutReturnClaims)
-    .where(
-      and(
-        eq(payrollPayoutReturnClaims.tenantId, tenantId),
-        eq(payrollPayoutReturnClaims.evidenceKey, evidence),
-      ),
-    )
-    .limit(1);
-  if (proofUsed || claimUsed) throw refuseReusedReturnProof();
+  await assertProofNotUsedForReturn(tx, tenantId, evidence);
 
   let resolved = 0;
   let proposed = 0;
@@ -986,6 +968,40 @@ export async function resolveManualItems(
     },
   );
   return { batchStatus: closed ?? batch.status, resolved, proposed };
+}
+
+/**
+ * A proof already used for a return (as a return proof or a return claim) can
+ * neither free items as failed nor confirm a payment (review F3/F6): the
+ * return's second step would then be refused for good, leaving money back in
+ * the bank with no return journal.
+ */
+async function assertProofNotUsedForReturn(
+  tx: Tx,
+  tenantId: TenantId,
+  evidence: string,
+): Promise<void> {
+  const [proofUsed] = await tx
+    .select({ id: payrollDisbursementItems.id })
+    .from(payrollDisbursementItems)
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, tenantId),
+        eq(payrollDisbursementItems.returnEvidenceKey, evidence),
+      ),
+    )
+    .limit(1);
+  const [claimUsed] = await tx
+    .select({ id: payrollPayoutReturnClaims.id })
+    .from(payrollPayoutReturnClaims)
+    .where(
+      and(
+        eq(payrollPayoutReturnClaims.tenantId, tenantId),
+        eq(payrollPayoutReturnClaims.evidenceKey, evidence),
+      ),
+    )
+    .limit(1);
+  if (proofUsed || claimUsed) throw refuseReusedReturnProof();
 }
 
 const refuseReusedReturnProof = () =>
