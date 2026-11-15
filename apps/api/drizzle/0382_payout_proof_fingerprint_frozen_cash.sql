@@ -33,7 +33,11 @@ ALTER TABLE "payroll_payout_return_claims" ADD CONSTRAINT "payroll_payout_return
 ALTER TABLE "payroll_payout_gl_postings" ADD COLUMN "source_gl_account_id" uuid;--> statement-breakpoint
 -- Validating the new FK scans the existing postings rows through the RLS policy,
 -- which needs a tenant context a migration owner without BYPASSRLS does not have.
+-- The referenced chart_of_accounts is FORCE RLS too: the foreign key check reads it
+-- under the same policy, so it is lifted and restored with the posting table.
 -- FORCE RLS is lifted for this one statement and restored, as in 0348 and 0381.
 ALTER TABLE "payroll_payout_gl_postings" NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.chart_of_accounts NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "payroll_payout_gl_postings" ADD CONSTRAINT "payroll_payout_gl_postings_source_account_fk" FOREIGN KEY ("tenant_id","source_gl_account_id") REFERENCES "public"."chart_of_accounts"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.chart_of_accounts FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "payroll_payout_gl_postings" FORCE ROW LEVEL SECURITY;
