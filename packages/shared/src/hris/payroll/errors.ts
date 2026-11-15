@@ -101,11 +101,17 @@ export class PayrollError extends Error {
   readonly remainingAttempts?: number;
   /** PAYSLIP_PIN_LOCKED only: ISO datetime the lock ends. */
   readonly lockedUntil?: string;
+  /** Machine-readable context sent as `{ field, message }` error details. */
+  readonly details?: readonly { field: string; message: string }[];
 
   constructor(
     code: PayrollErrorCode,
     message: string = defaultMessages[code],
-    extra: { remainingAttempts?: number; lockedUntil?: string } = {},
+    extra: {
+      remainingAttempts?: number;
+      lockedUntil?: string;
+      details?: readonly { field: string; message: string }[];
+    } = {},
   ) {
     super(message);
     this.name = "PayrollError";
@@ -114,5 +120,6 @@ export class PayrollError extends Error {
     if (extra.remainingAttempts !== undefined)
       this.remainingAttempts = extra.remainingAttempts;
     if (extra.lockedUntil !== undefined) this.lockedUntil = extra.lockedUntil;
+    if (extra.details !== undefined) this.details = extra.details;
   }
 }

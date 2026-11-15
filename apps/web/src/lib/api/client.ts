@@ -139,6 +139,7 @@ export async function apiFetch<T>(
           lockedUntil?: string;
           acknowledgedBy?: { displayName?: unknown };
           acknowledgedAt?: string;
+          retryAfterSeconds?: number;
         })
       | undefined;
     if (error?.code) handleActingStaffRejection(error.code, method);
@@ -166,6 +167,12 @@ export async function apiFetch<T>(
         acknowledgedAt:
           typeof error?.acknowledgedAt === "string"
             ? error.acknowledgedAt
+            : undefined,
+        retryAfterSeconds:
+          typeof error?.retryAfterSeconds === "number" &&
+          Number.isFinite(error.retryAfterSeconds) &&
+          error.retryAfterSeconds > 0
+            ? Math.ceil(error.retryAfterSeconds)
             : undefined,
       },
     );

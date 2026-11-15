@@ -15,6 +15,8 @@ export class ApiError extends Error {
   acknowledgedBy?: { displayName: string };
   /** PANIC_ALREADY_ACKNOWLEDGED (409): ISO datetime of that answer. */
   acknowledgedAt?: string;
+  /** RATE_LIMITED (429): whole seconds until a new request may succeed. */
+  retryAfterSeconds?: number;
 
   constructor(
     status: number,
@@ -26,6 +28,7 @@ export class ApiError extends Error {
       lockedUntil?: string;
       acknowledgedBy?: { displayName: string };
       acknowledgedAt?: string;
+      retryAfterSeconds?: number;
     },
   ) {
     super(message);
@@ -40,6 +43,8 @@ export class ApiError extends Error {
       this.acknowledgedBy = extra.acknowledgedBy;
     if (extra?.acknowledgedAt !== undefined)
       this.acknowledgedAt = extra.acknowledgedAt;
+    if (extra?.retryAfterSeconds !== undefined)
+      this.retryAfterSeconds = extra.retryAfterSeconds;
   }
 }
 

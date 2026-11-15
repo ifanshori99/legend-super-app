@@ -22,6 +22,7 @@ import {
   useStartWaReset,
   useSubmitWaResetPin,
   useWaResetStatus,
+  waResetRetryAfterSeconds,
 } from "../wa-reset-hooks.ts";
 import { SuccessCard } from "./success-card.tsx";
 import { WaResetBlocked } from "./wa-reset/blocked.tsx";
@@ -56,6 +57,10 @@ export function PinForgot() {
   const [blockedKind, setBlockedKind] = useState<WaResetBlockedKind>(
     "service-unavailable",
   );
+  // Server wait of a 429, for the countdown on the rate-limited screen.
+  const [retryAfterSeconds, setRetryAfterSeconds] = useState<
+    number | undefined
+  >();
   const [pinFailure, setPinFailure] = useState<WaResetPinFailure | null>(null);
   const [startFailed, setStartFailed] = useState(false);
   // The code of a challenge that just expired, shown struck through on the
@@ -112,8 +117,9 @@ export function PinForgot() {
     void navigate({ to: "/karyawan/slip-gaji" });
   }
 
-  function block(kind: WaResetBlockedKind) {
+  function block(kind: WaResetBlockedKind, waitSeconds?: number) {
     closeChallenge();
+    setRetryAfterSeconds(waitSeconds);
     setExpiredCode(kind === "expired" ? challenge?.code : undefined);
     setChallenge(null);
     setBlockedKind(kind);
@@ -221,7 +227,7 @@ export function PinForgot() {
       closeChallenge();
       const kind = classifyWaResetError(error);
       if (kind !== null) {
-        block(kind);
+        block(kind, waResetRetryAfterSeconds(error));
       } else if (
         error instanceof ApiError &&
         error.code === "PAYSLIP_PIN_NOT_SET"
@@ -282,12 +288,16 @@ export function PinForgot() {
   } else if (step === "blocked") {
     content = (
       <WaResetBlocked
+        // A fresh 429 restarts the countdown.
+        key={`${blockedKind}:${retryAfterSeconds ?? ""}`}
         kind={blockedKind}
+        retryAfterSeconds={retryAfterSeconds}
         senderHint={challenge?.senderHint}
         code={blockedKind === "expired" ? expiredCode : undefined}
         onRetry={
           blockedKind === "expired" ||
           blockedKind === "service-unavailable" ||
+          blockedKind === "rate-limited" ||
           blockedKind === "mismatch"
             ? () => void begin()
             : undefined

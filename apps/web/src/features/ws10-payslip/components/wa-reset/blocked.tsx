@@ -20,6 +20,7 @@ type WaResetBlockedKind =
   | "mismatch"
   | "rate-limited"
   | "no-wa"
+  | "needs-update"
   | "too-new"
   | "unavailable-generic"
   | "service-unavailable";
@@ -110,7 +111,8 @@ function WaResetBlocked({
   const secondsLeft = useCountdown(
     kind === "rate-limited" ? retryAfterSeconds : undefined,
   );
-  // Without a server wait there is nothing to count down: retry is offered.
+  // Retry is offered once the countdown reaches 0, or at once when the server
+  // gave no wait (secondsLeft null); it needs the container's `onRetry`.
   const canRetryNow =
     kind === "rate-limited" &&
     (secondsLeft === null || secondsLeft === 0) &&
@@ -130,19 +132,25 @@ function WaResetBlocked({
       </Button>
     );
 
-  const hrButton = (primary: boolean) => (
-    <Button
-      type="button"
-      size="lg"
-      variant={primary ? "default" : "outline"}
-      className={WRAP_BUTTON_CLASS}
-      onClick={onHrHelp}
-    >
-      {kind === "expired" || kind === "service-unavailable"
-        ? t("payslipWaReset.blocked.hrHelpUrgent")
-        : t("payslipWaReset.common.hrHelpLink")}
-    </Button>
-  );
+  // HR help is a link while it is the side road ("Lihat cara minta bantuan");
+  // it is a button where it is the main way on, or the urgent wording.
+  const hrButton = (primary: boolean) => {
+    const urgent = kind === "expired" || kind === "service-unavailable";
+    const asLink = !primary && !urgent;
+    return (
+      <Button
+        type="button"
+        size={asLink ? "sm" : "lg"}
+        variant={primary ? "default" : asLink ? "link" : "outline"}
+        className={asLink ? "min-h-6 w-fit py-1" : WRAP_BUTTON_CLASS}
+        onClick={onHrHelp}
+      >
+        {urgent
+          ? t("payslipWaReset.blocked.hrHelpUrgent")
+          : t("payslipWaReset.common.hrHelpLink")}
+      </Button>
+    );
+  };
   const backButton = (
     <Button
       type="button"
@@ -258,6 +266,26 @@ function WaResetBlocked({
           title={t("payslipWaReset.blocked.outletHelpTitle")}
         >
           {t("payslipWaReset.blocked.noWaNotice")}
+        </WaNotice>
+        {hrButton(true)}
+        {backButton}
+      </PinLayout>
+    );
+  }
+
+  if (kind === "needs-update") {
+    return (
+      <PinLayout
+        backLink={<WaBackLink />}
+        title={t("payslipWaReset.blocked.needsUpdateTitle")}
+        description={t("payslipWaReset.blocked.needsUpdateDescription")}
+        side={<WaPrivatePinSide />}
+      >
+        <WaNotice
+          tone="neutral"
+          title={t("payslipWaReset.blocked.outletHelpTitle")}
+        >
+          {t("payslipWaReset.blocked.needsUpdateNotice")}
         </WaNotice>
         {hrButton(true)}
         {backButton}

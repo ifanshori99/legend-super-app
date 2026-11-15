@@ -48,6 +48,7 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
       lockedUntil?: string;
       acknowledgedBy?: { displayName: string };
       acknowledgedAt?: string;
+      retryAfterSeconds?: number;
     } = {},
   ) =>
     res.status(status).json(
@@ -68,15 +69,32 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
       return send(error.status, error.code, error.message, details);
   }
 
-  if (error instanceof PayrollError)
+  // RATE_LIMITED with a known wait: body `retryAfterSeconds` plus the standard
+  // `Retry-After` header.
+  if (error instanceof CoreError && error.retryAfterSeconds !== undefined) {
+    res.setHeader("Retry-After", String(error.retryAfterSeconds));
     return send(error.status, error.code, error.message, undefined, {
-      ...(error.remainingAttempts !== undefined
-        ? { remainingAttempts: error.remainingAttempts }
-        : {}),
-      ...(error.lockedUntil !== undefined
-        ? { lockedUntil: error.lockedUntil }
-        : {}),
+      retryAfterSeconds: error.retryAfterSeconds,
     });
+  }
+
+  if (error instanceof PayrollError)
+    return send(
+      error.status,
+      error.code,
+      error.message,
+      error.details && error.details.length > 0
+        ? [...error.details]
+        : undefined,
+      {
+        ...(error.remainingAttempts !== undefined
+          ? { remainingAttempts: error.remainingAttempts }
+          : {}),
+        ...(error.lockedUntil !== undefined
+          ? { lockedUntil: error.lockedUntil }
+          : {}),
+      },
+    );
 
   if (error instanceof HttpError && error.context)
     return send(
