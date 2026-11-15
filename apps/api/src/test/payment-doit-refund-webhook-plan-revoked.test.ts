@@ -46,7 +46,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import type { ScopedTenantContext } from "@starter/shared/core";
+import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
 import { createDoitGateway } from "../services/payment-doit";
@@ -158,7 +158,7 @@ async function seedIntegration(
   const created = await upsertIntegration(
     context,
     {
-      outletId: options.outletId ?? null,
+      outletId: (options.outletId ?? null) as OutletId | null,
       provider: "doit",
       config: { baseUrl: doit.baseUrl },
       credentials: { apiKey: options.apiKey ?? apiKeyA, webhookSecret },
