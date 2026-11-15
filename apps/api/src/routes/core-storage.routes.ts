@@ -18,6 +18,7 @@ import { requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { signedStorageUrl, uploadStorage } from "../services/core-storage";
+import { createSelfieUploadScanner } from "../services/core-image";
 
 type UploadDependencies = Parameters<typeof uploadStorage>[4];
 type Database = Parameters<typeof uploadStorage>[0];
@@ -41,32 +42,7 @@ export function createStorageRouter(options: {
 }) {
   const router = Router();
   router.use(requireAuth, requireTrustedOrigin);
-  // A scanner's explicit content rejection is a caller error. An unavailable
-  // scanner still refuses the selfie, but callers may retry when it recovers.
-  // Keep scanner diagnostics out of the response and leave other purposes to
-  // their existing scanner contracts.
-  const selfieScanner: UploadDependencies["scanner"] = {
-    acceptsDocuments: options.scanner.acceptsDocuments,
-    async scan(bytes, context) {
-      try {
-        await options.scanner.scan(bytes, context);
-      } catch (error) {
-        if (error instanceof HttpError && error.status === 422)
-          throw new HttpError(422, "UPLOAD_REJECTED", "Upload rejected.");
-        if (
-          error instanceof HttpError &&
-          error.status === 503 &&
-          error.code === "SCANNER_OVERLOADED"
-        )
-          throw error;
-        throw new HttpError(
-          503,
-          "SCANNER_UNAVAILABLE",
-          "File scanning is temporarily unavailable.",
-        );
-      }
-    },
-  };
+  const selfieScanner = createSelfieUploadScanner(options.scanner);
   const multipart = multer({
     storage: multer.memoryStorage(),
     limits: {

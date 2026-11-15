@@ -36,6 +36,14 @@
 - Aturan QRIS saat kartu terbuka: satu konstanta `QRIS_CAPTURED_WHILE_CARD_SALE_OPEN` (founder Q5 pending). Perilaku tetap: QRIS di-refund langsung, juga bila kartu kemudian ditolak.
 - Bukti: 15 file test terarah, 369 lulus; test merah-dulu `edc-so-829.test.ts` (6 kasus merah di base). Review architect xhigh 2 ronde, temuan ditutup.
 - Berikut: second-opinion Codex ulang bila CTO minta; UI rekonsiliasi (web) belum menampilkan `unknown` tanpa flag.
+## Edge selfie scanner (legend-xn214, `fix/edge-selfie-scanner`, 15 Nov 2026)
+
+- Perubahan: jalur selfie edge sesi dan PIN-proof menerima scanner dari runtime bersama; edge tanpa runtime tetap memakai fallback scanner gambar. Wrapper galat selfie bersama mempertahankan HTTP 422 UPLOAD_REJECTED untuk deteksi dan 503 SCANNER_UNAVAILABLE untuk gangguan scanner, tanpa membocorkan diagnostik. Tidak mengubah autentikasi, izin, atau format segel.
+- Bukti gagal-dulu: `LEGEND_TEST_FILES="src/test/edge-storage-upload-http.test.ts" heavy pnpm test` sebelum perubahan produksi, 2 regresi gagal (HTTP 201 diterima alih-alih 422 dari scanner), 12 tes lama lulus; log `/tmp/legend-edge-red.log`.
+- Review menemukan normalisasi galat PIN-proof belum sama dengan jalur sesi. Regresi lanjutan sebelum helper dipasang: 2 gagal/14 lulus (kode rejection bocor, scanner gagal memberi 500 bukan 503), log `/tmp/legend-edge-review-red.log`. Helper asli core-storage dipindah tanpa mengubah kebijakan.
+- Validasi akhir: `LEGEND_TEST_FILES="src/test/edge-storage-upload-http.test.ts src/test/edge-selfie-upload.test.ts src/test/hris-attendance-selfie-bind.test.ts" heavy pnpm test` hijau, 3 berkas/54 tes (exit 0; `/tmp/legend-edge-green.log`). `heavy pnpm --filter @starter/api typecheck` hijau sekali (exit 0; `/tmp/legend-edge-typecheck.log`). Review architect konteks segar menyetujui setelah temuan diperbaiki. Token heavy hanya satu, dikelola parent lalu dipindahkan ke implementer edge untuk dua perintah akhir berurutan.
+- Pra-gate: ESLint empat berkas TypeScript dan Prettier kelima berkas berubah hijau. Tidak ada migrasi, tabel, izin, atau teks UI baru.
+- Batas: basis `origin/milestone/m1` 7aacd9f68 belum memiliki pipeline ClamAV; perubahan ini memakai port scanner runtime yang tersedia tanpa menarik cabang lain.
 
 ## Merge train batch64e (merge train, `int/batch64e` dari `origin/milestone/m1` b42619abc, 14 Nov 2026 20:20-22:45 WIB)
 
