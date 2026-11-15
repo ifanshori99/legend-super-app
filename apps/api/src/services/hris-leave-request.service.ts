@@ -530,8 +530,16 @@ async function presentRequest(
   signer: HrisFileSigner,
   now: Date,
 ): Promise<LeaveRequest> {
+  // The requester needs a live self.leave.request grant at the leave's
+  // outlet (same rule as the storage read route, legend-9ujp5); otherwise an
+  // approver at that outlet. The row itself stays visible either way.
   const canOpenAttachment =
-    (access.own !== null && lower(access.own.id) === lower(row.employeeId)) ||
+    (access.own !== null &&
+      lower(access.own.id) === lower(row.employeeId) &&
+      access.snapshot.allows("self.leave.request", {
+        type: "outlet",
+        id: row.outletId,
+      })) ||
     access.snapshot.allows("hr.leave.approve", {
       type: "outlet",
       id: row.outletId,

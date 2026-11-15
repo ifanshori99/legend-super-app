@@ -80,14 +80,12 @@ test("OPS-04 breakdown ticket marks the equipment broken and disables its mapped
   await dialog
     .getByLabel("Deskripsi kerusakan")
     .fill("Pompa tidak mengalir dan mesin berhenti saat ekstraksi.");
-  await dialog.getByLabel("Foto kerusakan").setInputFiles({
-    name: "espresso-rusak.jpg",
-    mimeType: "image/jpeg",
-    buffer: Buffer.from("fixture-photo"),
-  });
-  await expect(
-    dialog.getByText("Foto dipilih: espresso-rusak.jpg"),
-  ).toBeVisible();
+  await dialog.getByLabel("Foto kerusakan").setInputFiles(
+    // A real image: the browser re-encodes it before upload.
+    "apps/web/demo/sample/menu/croissant-mentega.jpg",
+  );
+  // The photo uploads before the ticket can be sent (mock storage).
+  await expect(dialog.getByText("Foto terunggah.")).toBeVisible();
 
   // OPS-04 preview: the equipment's mapped menu items before submitting.
   const preview = dialog.locator('[data-slot="affected-menu-preview"]');

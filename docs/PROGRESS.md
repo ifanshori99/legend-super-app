@@ -146,6 +146,13 @@
 - Run penuh 1 dan 2 (`heavy pnpm run test`) berhenti di tahap node:test: run 1 gagal 2 (wire test akibat perbaikan lint pertama, sudah dibetulkan; `db-role-provisioning` zoqc), run 2 gagal 1 (zoqc). Zoqc lulus 3x sendiri; diperbaiki `fix/flake-db-role-snapshot` (bead legend-nagq0), terarah 53/53 hijau. Vitest API belum pernah jalan di dua run itu, maka dijalankan terpisah (`LEGEND_TEST_FILES=src/test`, 4499 dtk): 17443 lulus, 26 gagal di 4 berkas (cash-movement-mapping-backfill-migration 15, accounting-coa-backfill-1204 6, purchase-price-variance-migration 4, accounting-db TEN-01 1), semuanya galat FK `chart_of_accounts_tenant_id_tenants_id_fk` saat replay migrasi berlomba dengan teardown tenant. Keempat berkas lulus 3x berturut terarah (35/35). Kartu flake baru: legend-odyct belum cukup. Run penuh ketiga tidak dijalankan (batas Retro 27); keputusan CTO.
 - Berikut: CTO memutuskan menerima gerbang lewat aturan flake atau meminta perbaikan replay; lalu maju ke `milestone/m1`.
 - Biaya sesi (12:32-15:19): biaya* total 1996k (utama Sonnet 5.5 1869k; subagent 127k). 2 subagent, rata-rata 0.0 berjalan (kerja merge train sebagian besar menunggu antrean `heavy`; satu run e2e orang lain menahan jalur >55 menit). parallel-report: rata-rata 0.21 subagent/agent.
+## 787 Foto dan tanda tangan sungguhan di fasilitas (ui-engineer, cabang dari `origin/ws/media-screens-upload` 94a165b19, 14 Nov 2026 sore WIB)
+
+- Sudah: layar kebersihan, tiket kerusakan, dan checklist (foto + tanda tangan) mengunggah file sungguhan lewat klien storage yang sama dengan layar stok (`PhotoField`, `uploadStorageFile`); tidak ada lagi id media acak. Progres, gagal + "Coba lagi", batal unggah, batas ukuran/jenis dari API. Tanda tangan: coretan diekspor PNG; nama ketik saja digambar ke kanvas (alternatif keyboard).
+- Kontrak: source kind baru `cleaning_task`, `maintenance_ticket`, `checklist_evidence` (purpose `receipt`), izin unggah = guard rute fitur, baca = itu + kode manajer fitur. Migrasi `0373_storage_facility_source_kinds` (hanya DROP/ADD check constraint; journal idx 361, merge train renumber).
+- legend-0una sudah selesai di cabang basis (M3 94a165b19), tidak dikerjakan ulang.
+- Keputusan: foto bukti tidak ke pihak ketiga (founder Q30); unggah kebersihan memakai outlet tugas, bukan outlet header (temuan architect).
+- Berikut: bead legend-mg2bz (ikat media lampiran ke source kind + pengunggah di service).
 
 ## WS-05 persetujuan dana tak teralokasi + kasus rekonsiliasi (engineer, cabang `ws/payment-approvals` dari `origin/milestone/m1` b17554cb9, 14 Nov 2026 06:36 WIB)
 

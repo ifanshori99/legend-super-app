@@ -9,7 +9,8 @@
 
 import { apiErrorBodySchema } from "@starter/shared/core";
 import { getMyAttendancePolicy } from "@starter/shared/hris";
-import { uploadStorageObject } from "@starter/shared/storage";
+import { uploadStorageFile } from "@/features/storage/api";
+import { normalizeImageFile } from "@/features/storage/image";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { API_URL } from "@/lib/env";
@@ -65,35 +66,11 @@ export async function captureSelfieFrame(
 export async function normalizeSelfieFile(file: File): Promise<Blob> {
   const problem = selfieFileProblem(file);
   if (problem) throw new Error(problem);
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(
-    1,
-    SELFIE_MAX_EDGE_PX / Math.max(bitmap.width, bitmap.height),
-  );
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("Peramban tidak bisa menggambar foto.");
-  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  bitmap.close();
-  return canvasToBlob(canvas);
-}
-
-async function mockRef(blob: Blob): Promise<string> {
-  try {
-    const digest = await crypto.subtle.digest(
-      "SHA-256",
-      await blob.arrayBuffer(),
-    );
-    const hex = [...new Uint8Array(digest)]
-      .slice(0, 8)
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
-    return `mock-selfie/${hex}`;
-  } catch {
-    return `mock-selfie/${Math.random().toString(16).slice(2, 18)}`;
-  }
+  return normalizeImageFile(file, {
+    maxEdgePx: SELFIE_MAX_EDGE_PX,
+    quality: SELFIE_JPEG_QUALITY,
+    maxBytes: SELFIE_MAX_BYTES,
+  });
 }
 
 async function selfieRequest(
@@ -126,16 +103,17 @@ async function selfieRequest(
 
 /** Uploads the selfie and returns the private object id the clock accepts. */
 export async function uploadAttendanceSelfie(blob: Blob): Promise<string> {
-  if (API_MOCK) return mockRef(blob);
-  const { data: policy } = getMyAttendancePolicy.response.parse(
-    await selfieRequest(getMyAttendancePolicy.path),
-  );
-  const body = new FormData();
-  body.set("purpose", "selfie");
-  body.set("outletId", policy.outletId);
-  body.set("file", blob, "selfie.jpg");
-  const { data } = uploadStorageObject.response.parse(
-    await selfieRequest(uploadStorageObject.path, { method: "POST", body }),
-  );
-  return data.id;
+  const outletId = API_MOCK
+    ? (await import("@starter/shared/hris")).cafeLegendHrisFixtures.outlets[0]
+        .id
+    : getMyAttendancePolicy.response.parse(
+        await selfieRequest(getMyAttendancePolicy.path),
+      ).data.outletId;
+  const object = await uploadStorageFile({
+    purpose: "selfie",
+    outletId,
+    file: blob,
+    filename: "selfie.jpg",
+  });
+  return object.id;
 }
