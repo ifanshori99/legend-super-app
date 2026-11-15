@@ -15,6 +15,7 @@ import { db } from "../db/index.ts";
 import { printableMenuRenders } from "../db/schema/menu-import.ts";
 import { withTenant } from "../db/tenant.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
+import { validPdfBytes } from "./helpers/pdf-fixtures.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import {
   regenerateMenuPrint,
@@ -36,7 +37,8 @@ class CountingRenderer implements MenuPdfRenderer {
   calls = 0;
   async render() {
     this.calls += 1;
-    return new Uint8Array(Buffer.from("%PDF-1.4 fake"));
+    // A real PDF: storage parses document uploads (legend-851ef).
+    return validPdfBytes();
   }
 }
 

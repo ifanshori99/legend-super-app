@@ -38,6 +38,7 @@ import { addBusinessDays } from "@starter/shared/hris";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
+import { validPdfBytes } from "./helpers/pdf-fixtures.ts";
 import {
   createSecondTenant,
   removeSecondTenant,
@@ -1842,7 +1843,11 @@ describe("legend-hvh9x scoped shift context without roster access", () => {
 
 describe("legend-0ldcp private leave attachment uploads", () => {
   const url = "/api/hris/leave/attachments";
-  const pdf = Buffer.from("%PDF-1.4\n%%EOF\n");
+  // A real PDF: storage parses document uploads (legend-851ef).
+  let pdf: Buffer;
+  beforeAll(async () => {
+    pdf = Buffer.from(await validPdfBytes());
+  });
   const upload = (client: Client, bytes: Buffer, filename: string) =>
     client.post(url).set(originHeader).attach("file", bytes, filename);
 

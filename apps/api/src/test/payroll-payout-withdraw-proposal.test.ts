@@ -52,6 +52,7 @@ import { NoopMalwareScanner } from "../services/core-image.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import { withdrawResolutionProposal } from "../services/payroll-payout-withdraw.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import { validPdfBytes } from "./helpers/pdf-fixtures.ts";
 import {
   BUDI,
   REQ,
@@ -147,14 +148,14 @@ afterAll(async () => {
 
 // ---- Helpers --------------------------------------------------------------
 
-const pdfBytes = () =>
-  Buffer.from(`%PDF-1.4\n1 0 obj<<>>endobj\nbukti ${randomUUID()}\n%%EOF\n`);
+const pdfBytes = async () =>
+  Buffer.from(await validPdfBytes({ marker: `bukti ${randomUUID()}` }));
 
 async function uploadProof(who: Staff, batchId: string) {
   const res = await who.client
     .post(`${BASE}/${batchId}/evidence`)
     .set(originHeader)
-    .attach("file", pdfBytes(), {
+    .attach("file", await pdfBytes(), {
       filename: "bukti.pdf",
       contentType: "application/pdf",
     });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
 import { NoopMalwareScanner, processImage } from "../services/core-image.ts";
+import { HttpError } from "../lib/http-error.ts";
 
 const scanner = new NoopMalwareScanner();
 
@@ -46,7 +47,34 @@ describe("legend-ruf image pipeline (PRD §2, §7)", () => {
     };
     await expect(
       processImage(await sample(), 10_000_000, rejecting),
-    ).rejects.toThrow("malware detected");
+    ).rejects.toMatchObject({ status: 503, code: "SCANNER_UNAVAILABLE" });
+  });
+
+  it("preserves a typed malware rejection", async () => {
+    const rejecting = {
+      scan: async () => {
+        throw new HttpError(422, "MALWARE_FOUND", "malware detected");
+      },
+    };
+    await expect(
+      processImage(await sample(), 10_000_000, rejecting),
+    ).rejects.toMatchObject({ status: 422, code: "MALWARE_FOUND" });
+  });
+
+  it("sanitizes a scanner's typed server failure", async () => {
+    const rejecting = {
+      scan: async () => {
+        throw new HttpError(500, "SCANNER_FAILURE", "internal socket secret");
+      },
+    };
+    const error = await processImage(await sample(), 10_000_000, rejecting)
+      .then(() => null)
+      .catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(HttpError);
+    expect(error).toMatchObject({ status: 503, code: "SCANNER_UNAVAILABLE" });
+    expect((error as HttpError).message).not.toContain(
+      "internal socket secret",
+    );
   });
 
   it("rejects forged image headers and undecodable image bodies", async () => {

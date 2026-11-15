@@ -85,6 +85,31 @@
 - Dua baseline awal menemukan constraint fixture yang kemudian dibetulkan. Baseline valid `/tmp/legend-857-b-red3.log`: 59 lulus, 5 assertion gagal sesuai bug. Final `LEGEND_TEST_FILES=src/test/accounting-finance-exceptions.test.ts heavy pnpm test`: 64/64 lulus (`/tmp/legend-857-b-final-tests.log`). `heavy pnpm --filter @starter/api typecheck` lulus exit 0 (`/tmp/legend-857-b-final-api-typecheck.log`). Keduanya berurutan setelah patch terakhir.
 - ESLint, Prettier, dan diff-check service/test hijau; review produksi dan test B tanpa temuan blocker. Ranking outbox kemudian dikoreksi setelah review architect menjadi `delivered < missing < pending < dead_lettered` (lihat bagian perbaikan P2 di atas). Tidak ada schema/migrasi baru; gate penuh/build/e2e tidak dijalankan di thread.
 - Subagent gabungan brief 857: total 8, puncak 6 bersamaan; token heavy dipegang test-writer A/B bergantian. Alat biaya tidak menemukan transkrip Codex; parallel-report hanya mencakup sesi Claude sehingga biaya dan rata-rata paralel sesi Codex tidak tersedia.
+## Perbaikan temuan second opinion payout (engineer, cabang `fix/payout-second-opinion-870`, 15 Nov 2026 09:11-09:55 WIB, brief 870)
+
+- Sudah: legend-2aspe `settle_pending` (settlement menunggu jurnal `payroll.locked`, diselesaikan idempoten oleh consumer, sumber bank beku, tanpa jurnal ganda); legend-yjbjb POST ekspor bank lama selalu 409 `LEGACY_BANK_EXPORT_DISABLED` (GET arsip tetap); legend-w3691 bukti return diikat ke satu operasi (tabel `payroll_payout_return_claims`, konsumsi atomik, `PAYOUT_RETURN_PROOF_REUSED`).
+- Review architect xhigh 2 putaran: 4 celah uang dibetulkan (pending macet bila rekening dinonaktifkan, overpaid saat jurnal kunci tertunda `PAYOUT_LOCK_JOURNAL_PENDING`, bukti dipakai lintas resolve/return/konfirmasi, claim tanpa guard tulis).
+- Migrasi: `0368_payout_pending_settle_return_claims` (nomor berikutnya di basis; merge train menomori ulang). Basis: `ghostex/pemindai-bersama-bukti-payout-m6` (53b0db393) + gap web `a9657bd37` tidak ikut (hanya web).
+- Gate: 27 file test terarah 372 lulus, text-contract dan contract 864 lulus, prettier + eslint bersih, typecheck API 0, `db:generate` kosong.
+- Berikut: UI `ws10-payroll-run` masih memanggil POST ekspor lama (`api.ts:240`); daftar item return setengah jalan sebelum deploy (F5).
+
+## M6 pemindai bersama bukti payout + capabilities (engineer, cabang `ws/storage-scanner-pdf`, 14-15 Nov 2026 23:20-00:40 WIB)
+
+- Sudah: legend-egrrp (ba10ec7f4) `scanUploadBytes` dipakai `uploadStorage`, dokumen pemegang saham, dan `uploadPayoutEvidence`; `GET /api/storage/capabilities`; pemilih bukti payout web hanya menawarkan PDF bila `documentsAccepted`.
+- Perubahan perilaku sengaja: bukti payout saat pemindai mati sekarang 503 (dulu 422); deteksi tetap 422 PAYOUT_EVIDENCE_REJECTED.
+- Bukti gagal-dulu: 7 dari 12 test baru merah di basis f93f33660 (PDF ber-JS diterima, pemindai mati 422, gambar fail-open 422, route capabilities 404/503).
+- Uang: bukti ditolak tidak tersimpan; resolve/confirm/return/overpaid dengan kunci tak tersimpan 422, tanpa perubahan item atau posting.
+- Review architect xhigh: aman untuk uang; 3 celah test + 1 kosmetik dibetulkan.
+- Gate: 29 file test terarah (399 lulus), text-contract 11/11, prettier + eslint bersih, typecheck api/shared/web 0, build API 0.
+- Berikut: second opinion Codex area M4-M6; `CLAMD_HOST` boleh diisi setelah cabang ini masuk m1 dan VPS siap (Q-media-1). Tindak lanjut: form cuti HRIS masih menawarkan PDF tanpa cek capabilities.
+
+## M4 ClamdMalwareScanner + M5 assertSafePdf (engineer, cabang `ws/storage-scanner-pdf` dari `origin/fix/storage-scanner-typed-error` d4c02fa0a, 14 Nov 2026 22:06-23:15 WIB, brief 801)
+
+- Sudah: M4 legend-w9hwh (adb1b107b) klien clamd INSTREAM, env `CLAMD_*`, pemilihan runtime, `scanner` di `/api/health`, bagian ClamAV di `docs/deployment.md`. M5 legend-851ef (ec1b06495) `assertSafePdf` di worker (5 dtk, 256 MB, batas dekode 64 MiB, 2 jalan + 16 antre), dipasang di `uploadStorage` dan jalur dokumen pemegang saham.
+- Review architect xhigh 3 putaran: bypass hex huruf kecil, objek ganda/xref, header tersembunyi, ObjStm tanpa Type, `/S` referensi, bom Flate, jalur shareholder, `AlertExceedsMax` semua dibetulkan dan diuji.
+- Gate: 15 file test terarah 245 lulus, prettier + eslint bersih, typecheck API 0, build API 0, smoke `dist/pdf-safety.worker.js` (sah, JS, bom 200 MB).
+- Berikut: M6 legend-egrrp (payout pakai pipa yang sama). Jangan isi `CLAMD_HOST` produksi sebelum M6 masuk.
+- Biaya sesi* 4849k; subagent 14 (puncak 6 bersamaan).
 
 ## Merge train batch64c (merge train, `int/batch64c` dari `origin/milestone/m1` 9b8433f69, 14 Nov 2026 18:50-20:50 WIB)
 
@@ -5918,3 +5943,12 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Implementasi dibekukan sesudah perbaikan lint cleanup worker. Kombinasi identik seluruh 21 file test yang berubah, melalui `LEGEND_TEST_FILES="src/test/..." heavy pnpm test`, lulus 3x sesudah perubahan kode terakhir: masing-masing 218/218, tanpa unhandled error; durasi Vitest 96,14 / 94,99 / 94,66 detik. Log `/tmp/legend-876/verified-{1,2,3}.log`; perintah lengkap `/tmp/legend-876/final-command.txt`.
 - Pra-gate setelah perubahan kode terakhir: `pnpm exec eslint <23 file TS berubah>` EXIT 0 dan `pnpm exec prettier --check <23 file TS berubah>` EXIT 0; daftar argumen lengkap `/tmp/legend-876/gate-commands.txt`. `git diff --check` hijau. Tidak mengulang run penuh, build, atau e2e: perubahan hanya helper/test API sesuai brief; gate penuh tetap milik merge train.
 - `heavy pnpm --filter @starter/api typecheck` EXIT 0, tepat satu run; log `/tmp/legend-876/typecheck-api.log`. Verifikasi selesai pukul 20:17 WIB; seluruh job dan token heavy dilepas. Cabang kerja dicommit dan dipush tanpa force sesuai brief; SHA ada di laporan handoff. Tidak ada merge.
+## 15 Nov: payout 870 tindak lanjut (brief 873), cabang `fix/payout-second-opinion-870`
+- Kartu legend-2aspe (F1 P1), legend-w3691 (F2 P2), legend-cnpap (F3 P2) selesai, status review. Commit di atas 9f75ea558: 5e63ebb5c (tes merah F1-F3), cb5a01203 (perbaikan + migrasi 0369), 5b7d564c3 (tes merah putaran 2), b8e12e7be (perbaikan putaran 2). Didorong tanpa force.
+- F1: `payroll.locked` dengan akuntansi mati tetap diproses bila run punya `settle_pending` (`runHasPendingSettle`); tanpa pending tetap `ignored`. Putaran 2: batch kedua run yang sama saat akuntansi mati juga dicatat `settle_pending` (bukan skipped) bila run sudah punya pending; konsumen mengunci baris run `FOR UPDATE` sebelum cek pending.
+- F2: SHA-256 isi berkas disimpan saat unggah (`payroll_payout_evidence_files`), klaim retur membawa `content_sha256` (unik parsial per tenant). Klaim ditolak 409 `PAYOUT_RETURN_PROOF_REUSED` bila sidik jari sudah dipakai operasi retur lain (lintas batch juga); satu laporan untuk beberapa item dalam satu operasi tetap sah. Konfirmasi/resolusi yang memakai ulang sidik jari bukti retur juga ditolak. Kunci advisory `payout-proof:<tenant>:<sha>` menutup balapan lintas batch.
+- F3: akun kas (`petty_cash`) dibekukan di baris pending saat serah terima (`source_gl_account_id`); resolver memakainya. Akun wajib aktif dan bukan header (409 `PAYOUT_SOURCE_ACCOUNT_MISSING`); pending kas tanpa akun beku (data lama) gagal tertutup 409.
+- Migrasi baru 0369 `0369_payout_proof_fingerprint_frozen_cash.sql` (tabel baru FK inline, RLS, REVOKE UPDATE/DELETE/TRUNCATE; FK postings dalam pembungkus NO FORCE/FORCE; tanpa NOT VALID). Merge train: renomor bila bentrok.
+- Bukti: tes baru merah di 9f75ea558 dan hijau setelah perbaikan (19 berkas payout/GL/ekspor, 325 lulus), typecheck API hijau, prettier dan eslint bersih, `pnpm db:generate` kosong. Review architect xhigh 1x: temuan P2/P3 (R1, R3b, R4, R5, R6) sudah dikerjakan.
+- Sisa risiko (keputusan CTO/founder): (1) berkas diubah sedikit mendapat hash baru dan lolos; butuh kolom referensi transaksi bank (kartu legend-nsqhm). (2) Bukti lama tanpa sidik jari tetap dicek hanya per kunci. (3) Satu laporan bank untuk retur di dua batch ditolak di batch kedua (sisi aman, pesan minta satu bukti per batch). (4) Celah lama: skip saat akuntansi mati lalu akuntansi dinyalakan sebelum event lock diproses. (5) Cek pra-deploy: item `returned_by` terisi dan `returned_by_2` kosong yang berbagi kunci. (6) `apps/web/src/features/ws10-payroll-run/api.ts:240` masih memanggil POST lama yang sudah ditutup (di luar lingkup).
+- Biaya dan paralel (session-usage, sesi 2b0aace0): konteks awal 69k, puncak 270k, compact 2, subagent 30 (haiku 100 req, opus 101 req, sonnet 276 req), biaya total 10272k. parallel-report sejak 10:00: spawn 30, maks 5 bersamaan, rata 0,07, 125 langkah sendiri. Subagent test-runner gagal sekali karena error langganan akun #1 (bukan kode); verifikasi akhir saya jalankan sendiri lewat `heavy`.

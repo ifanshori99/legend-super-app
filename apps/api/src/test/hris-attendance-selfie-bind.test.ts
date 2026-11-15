@@ -40,7 +40,7 @@ import { FakeObjectStorage } from "@starter/shared/adapters";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { NoopMalwareScanner } from "../services/core-image.ts";
+import { NoopMalwareScanner, processImage } from "../services/core-image.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 import {
@@ -470,6 +470,15 @@ const expectClientError = (status: number, body: unknown) => {
 };
 
 describe("[bf20] selfie upload through POST /api/storage/uploads", () => {
+  it("[legend-bkoim] image processing reports scanner outages as typed 503 errors", async () => {
+    await expect(
+      processImage(jpeg, 10_000_000, {
+        scan: async () => {
+          throw new Error("internal scanner socket failure");
+        },
+      }),
+    ).rejects.toMatchObject({ status: 503, code: "SCANNER_UNAVAILABLE" });
+  });
   it("[legend-bf20 HR-01] an employee cannot select another selfie owner in multipart metadata", async () => {
     const staff = await newStaff(appWithStorage, "owner-spoof");
     const victim = await newStaff(appWithStorage, "owner-victim");

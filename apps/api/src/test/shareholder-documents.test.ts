@@ -16,6 +16,7 @@ import express from "express";
 import { fromNodeHeaders, toNodeHandler } from "better-auth/node";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { PDFDocument, PDFName, PDFString } from "pdf-lib";
 import {
   listShareholderDocuments,
   shareholderDocumentSchema,
@@ -35,6 +36,7 @@ import {
 import { resolveHostname } from "../services/org-resolve.service";
 import { deviceTenantCredential } from "../services/platform-tenant.service";
 import { agent, originHeader, signUp } from "./helpers";
+import { validPdfBytes } from "./helpers/pdf-fixtures";
 
 const tenantA = cafeLegendPlatformFixtures.tenant.id;
 const tenantB = randomUUID();
@@ -236,8 +238,17 @@ async function shareholder(entityIds: string[]) {
 /** A signed-in user with no role at all. */
 const nobody = () => signedIn(appA, "Docs Nobody");
 
-const pdf = (extra = "") =>
-  Buffer.from(`%PDF-1.4\n1 0 obj<<>>endobj\n${extra}%%EOF\n`);
+const pdf = async (extra = "") =>
+  Buffer.from(await validPdfBytes({ marker: extra || undefined }));
+
+/** A structurally valid PDF whose bytes contain the scanner marker in clear
+ * (content streams are compressed, so the marker rides in the catalog). */
+async function infectedPdf(): Promise<Buffer> {
+  const doc = await PDFDocument.create();
+  doc.addPage([200, 200]);
+  doc.catalog.set(PDFName.of("Note"), PDFString.of(INFECTED));
+  return Buffer.from(await doc.save({ useObjectStreams: false }));
+}
 const png = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
 ]);
@@ -260,7 +271,7 @@ async function uploadOk(who: Person, entityId: string) {
   const response = await upload(
     who,
     entityId,
-    pdf(randomBytes(8).toString("hex")),
+    await pdf(randomBytes(8).toString("hex")),
   );
   expect(response.status).toBe(201);
   return response.body.data as {
@@ -431,7 +442,8 @@ describe("legend-69yq shareholder documents", () => {
     const mgr = await manager();
     const entityId = await entity();
 
-    const uploaded = await upload(mgr, entityId, pdf());
+    const bytes = await pdf();
+    const uploaded = await upload(mgr, entityId, bytes);
     expect(uploaded.status).toBe(201);
     expect(uploaded.body.data.fileKey).toMatch(
       /^shareholder-documents\/[0-9a-f-]{36}\.pdf$/,
@@ -439,7 +451,7 @@ describe("legend-69yq shareholder documents", () => {
     // Never the user's file name.
     expect(uploaded.body.data.fileKey).not.toContain("laporan");
     expect(uploaded.body.data.contentType).toBe("application/pdf");
-    expect(uploaded.body.data.sizeBytes).toBe(pdf().length);
+    expect(uploaded.body.data.sizeBytes).toBe(bytes.length);
 
     const created = await createDoc(mgr, {
       profitEntityId: entityId,
@@ -520,14 +532,14 @@ describe("legend-69yq shareholder documents", () => {
       .post(`${BASE}/files`)
       .set(originHeader)
       .field("profitEntityId", entityId)
-      .attach("file", pdf(), {
+      .attach("file", await pdf(), {
         filename: "a.pdf",
         contentType: "application/pdf",
       });
     expect(anon.status).toBe(401);
 
     const stranger = await nobody();
-    expect((await upload(stranger, entityId, pdf())).status).toBe(403);
+    expect((await upload(stranger, entityId, await pdf())).status).toBe(403);
 
     // Nothing was stored for the rejected uploads.
     const rows = await owner.query(
@@ -544,16 +556,16 @@ describe("legend-69yq shareholder documents", () => {
     const putsBefore = storage.puts;
 
     const infectedMgr = await manager(appInfection);
-    const infected = await upload(infectedMgr, entityId, pdf(INFECTED));
+    const infected = await upload(infectedMgr, entityId, await infectedPdf());
     expect(infected.status).toBeGreaterThanOrEqual(400);
     expect(infected.status).not.toBe(201);
     // A clean PDF through the same scanner is accepted.
-    expect((await upload(infectedMgr, entityId, pdf())).status).toBe(201);
+    expect((await upload(infectedMgr, entityId, await pdf())).status).toBe(201);
 
     const mgr = await manager(appNoScanner);
-    expect((await upload(mgr, entityId, pdf())).status).toBe(503);
+    expect((await upload(mgr, entityId, await pdf())).status).toBe(503);
     const stranger = await signedIn(appNoScanner, "Docs Nobody No Scanner");
-    expect((await upload(stranger, entityId, pdf())).status).toBe(403);
+    expect((await upload(stranger, entityId, await pdf())).status).toBe(403);
 
     // Only the one clean upload was written and recorded.
     expect(storage.puts).toBe(putsBefore + 1);
@@ -568,7 +580,7 @@ describe("legend-69yq shareholder documents", () => {
     const entityId = await entity();
     const putsBefore = storage.puts;
     const mgr = await manager(appNoDocScanner);
-    const res = await upload(mgr, entityId, pdf());
+    const res = await upload(mgr, entityId, await pdf());
     expect(res.status, JSON.stringify(res.body)).toBe(503);
     expect(res.body.error.message).toContain("pemindai malware");
     expect(storage.puts).toBe(putsBefore);
@@ -733,7 +745,7 @@ describe("legend-69yq shareholder documents", () => {
     ).toBe(401);
 
     // A shareholder cannot upload, create or publish.
-    expect((await upload(holder, entityA, pdf())).status).toBe(403);
+    expect((await upload(holder, entityA, await pdf())).status).toBe(403);
     expect(
       (
         await createDoc(holder, {
@@ -894,10 +906,10 @@ describe("legend-69yq shareholder documents", () => {
   it("9. without storage, upload is 503 for a manager but permission (403) wins for a user without a role", async () => {
     const mgr = await manager(appNoStorage);
     const entityId = await entity();
-    expect((await upload(mgr, entityId, pdf())).status).toBe(503);
+    expect((await upload(mgr, entityId, await pdf())).status).toBe(503);
 
     const stranger = await signedIn(appNoStorage, "Docs Nobody No Storage");
-    expect((await upload(stranger, entityId, pdf())).status).toBe(403);
+    expect((await upload(stranger, entityId, await pdf())).status).toBe(403);
     const rows = await owner.query(
       "SELECT 1 FROM shareholder_document_files WHERE tenant_id = $1 AND profit_entity_id = $2",
       [tenantA, entityId],
@@ -1015,7 +1027,11 @@ describe("legend-69yq shareholder documents", () => {
     const mgr = await manager();
     for (const profitEntityId of [randomUUID(), await entity(tenantB)]) {
       const putsBefore = storage.puts;
-      const response = await upload(mgr, profitEntityId, pdf("fk-refused"));
+      const response = await upload(
+        mgr,
+        profitEntityId,
+        await pdf("fk-refused"),
+      );
       expect(response.status).toBe(422);
       expect(response.body.error?.code).toBe("PROFIT_ENTITY_NOT_FOUND");
       expect(storage.puts).toBe(putsBefore);
@@ -1055,7 +1071,7 @@ describe("legend-69yq shareholder documents", () => {
     const putsBefore = storage.puts;
     const deletesBefore = storage.deletes;
     const objectsBefore = storage.objectCount;
-    const response = await upload(mgr, profitEntityId, pdf("fk-race"));
+    const response = await upload(mgr, profitEntityId, await pdf("fk-race"));
     expect(response.status).toBe(422);
     expect(response.body.error?.code).toBe("PROFIT_ENTITY_NOT_FOUND");
     expect(storage.puts).toBe(putsBefore + 1);

@@ -691,15 +691,10 @@ export function installPayoutWorld(label: string) {
       evidenceKey?: string;
     }[],
     by = APP2,
+    store: PayoutEvidenceStore = proofs(),
   ) =>
     inTx((tx) =>
-      confirmManualItems(
-        tx,
-        actorOf(by),
-        batchId,
-        { results } as never,
-        proofs(),
-      ),
+      confirmManualItems(tx, actorOf(by), batchId, { results } as never, store),
     );
   const resolve = (
     batchId: string,

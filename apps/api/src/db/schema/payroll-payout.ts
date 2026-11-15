@@ -32,6 +32,7 @@ import {
 import type { UserId } from "@starter/shared/core";
 import type { PayrollRunId, PayslipId } from "@starter/shared/hris/payroll";
 import { idrColumn, tenantIdColumn } from "../columns.ts";
+import { chartOfAccounts } from "./accounting.ts";
 import { bankAccounts } from "./accounting-cash-bank.ts";
 import { employees } from "./hris.ts";
 import { payrollRuns, payslipBankSnapshots, payslips } from "./payroll.ts";
@@ -327,6 +328,7 @@ export const payrollDisbursementBatches = pgTable(
 
 export const PAYOUT_POSTING_KINDS = [
   "settle",
+  "settle_pending",
   "settle_skipped",
   "return",
   "overpaid",
@@ -338,6 +340,10 @@ export type PayoutPostingKind = (typeof PAYOUT_POSTING_KINDS)[number];
  * `journal_key` equals the idempotency key of the journal entry
  * (`payroll-payout:<item_set_hash>`); a `settle_skipped` row has no journal
  * (the run had no locked entry) and is kept so the same items never retry.
+ * A `settle_pending` row (legend-2aspe) has no journal yet either: accounting
+ * is on and the run's `payroll.locked` event is still waiting in the outbox.
+ * The GL consumer resolves it when the locked journal posts (journal under the
+ * same key, kind flipped to `settle`).
  * Items point at their row through `payroll_disbursement_items.gl_posting_id`.
  */
 export const payrollPayoutGlPostings = pgTable(
@@ -362,6 +368,15 @@ export const payrollPayoutGlPostings = pgTable(
      * (`repostSkippedFees`); the fee journal key is `payroll-payout-fee:<hash>`.
      */
     feePosted: boolean("fee_posted").notNull().default(true),
+    /**
+     * Cash source GL account frozen when a cash settlement is recorded as
+     * `settle_pending` (legend-cnpap): the account that was mapped to
+     * `petty_cash` when the money left. The resolver credits this account, not
+     * the mapping of the day the lock journal finally posts. Null for bank
+     * settlements (their source is frozen on the batch) and for any posting
+     * that was not pending cash.
+     */
+    sourceGlAccountId: uuid("source_gl_account_id"),
   },
   (table) => [
     unique("payroll_payout_gl_postings_tenant_id_key").on(
@@ -382,6 +397,11 @@ export const payrollPayoutGlPostings = pgTable(
       table.batchId,
     ),
     foreignKey({
+      name: "payroll_payout_gl_postings_source_account_fk",
+      columns: [table.tenantId, table.sourceGlAccountId],
+      foreignColumns: [chartOfAccounts.tenantId, chartOfAccounts.id],
+    }),
+    foreignKey({
       name: "payroll_payout_gl_postings_batch_fk",
       columns: [table.tenantId, table.batchId],
       foreignColumns: [
@@ -400,6 +420,142 @@ export const payrollPayoutGlPostings = pgTable(
     check(
       "payroll_payout_gl_postings_key_version_check",
       sql`${table.piiKeyVersion} >= 1`,
+    ),
+  ],
+);
+
+// ------------------------------------------------------------ evidence files
+
+/**
+ * One row per stored payout proof (legend-w3691): the SHA-256 of the file
+ * content as uploaded, written by the upload service in the same request that
+ * stores the object. A return claim reads it to refuse the same file content a
+ * second time, whatever new key a re-upload received. Append only.
+ */
+export const payrollPayoutEvidenceFiles = pgTable(
+  "payroll_payout_evidence_files",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    batchId: uuid("batch_id").notNull(),
+    evidenceKey: varchar("evidence_key", { length: 500 }).notNull(),
+    contentSha256: varchar("content_sha256", { length: 64 }).notNull(),
+    createdBy: actor("created_by").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    unique("payroll_payout_evidence_files_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_evidence_files_evidence_key").on(
+      table.tenantId,
+      table.evidenceKey,
+    ),
+    index("payroll_payout_evidence_files_tenant_sha_idx").on(
+      table.tenantId,
+      table.contentSha256,
+    ),
+    foreignKey({
+      name: "payroll_payout_evidence_files_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    check(
+      "payroll_payout_evidence_files_sha_check",
+      sql`${table.contentSha256} ~ ${sql.raw(SHA256_FORMAT)}`,
+    ),
+  ],
+);
+
+// ------------------------------------------------------------- return claims
+
+export const PAYOUT_RETURN_CLAIM_STATUSES = ["open", "consumed"] as const;
+export type PayoutReturnClaimStatus =
+  (typeof PAYOUT_RETURN_CLAIM_STATUSES)[number];
+
+/**
+ * A return payment proof is bound to ONE return operation (legend-w3691): the
+ * claim ties the stored proof (`evidence_key`) to the item set of the request
+ * that first used it. Step one of the two-person return creates it `open`,
+ * step two consumes it atomically in the same transaction that moves the items
+ * to `returned`. A different item set, or a consumed claim, can never reuse the
+ * key (`UNIQUE (tenant_id, evidence_key)`), so one transfer's proof cannot
+ * release another person's payslip for a second payment. No amount is stored:
+ * the items' own sealed amounts are frozen and the hash fixes the item set.
+ */
+export const payrollPayoutReturnClaims = pgTable(
+  "payroll_payout_return_claims",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    batchId: uuid("batch_id").notNull(),
+    evidenceKey: varchar("evidence_key", { length: 500 }).notNull(),
+    /** SHA-256 of the sorted item ids of the return request. */
+    itemSetHash: varchar("item_set_hash", { length: 64 }).notNull(),
+    status: varchar("status", { length: 8 })
+      .$type<PayoutReturnClaimStatus>()
+      .notNull()
+      .default("open"),
+    createdBy: actor("created_by").notNull(),
+    createdAt: createdAt(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    /**
+     * SHA-256 of the proof file's content, copied from its upload record
+     * (`payroll_payout_evidence_files`, legend-w3691). One file content is
+     * claimed by ONE return operation per tenant, so uploading the same report
+     * again (a new evidence key) cannot free another payslip. Null only for a
+     * proof uploaded before fingerprints existed.
+     */
+    contentSha256: varchar("content_sha256", { length: 64 }),
+  },
+  (table) => [
+    unique("payroll_payout_return_claims_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_return_claims_tenant_batch_id_key").on(
+      table.tenantId,
+      table.batchId,
+      table.id,
+    ),
+    unique("payroll_payout_return_claims_evidence_key").on(
+      table.tenantId,
+      table.evidenceKey,
+    ),
+    uniqueIndex("payroll_payout_return_claims_content_sha_key")
+      .on(table.tenantId, table.contentSha256)
+      .where(sql`${table.contentSha256} IS NOT NULL`),
+    check(
+      "payroll_payout_return_claims_sha_check",
+      sql`${table.contentSha256} IS NULL OR ${table.contentSha256} ~ ${sql.raw(SHA256_FORMAT)}`,
+    ),
+    index("payroll_payout_return_claims_tenant_batch_idx").on(
+      table.tenantId,
+      table.batchId,
+    ),
+    foreignKey({
+      name: "payroll_payout_return_claims_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    check(
+      "payroll_payout_return_claims_status_check",
+      sql`${table.status} IN (${inList(PAYOUT_RETURN_CLAIM_STATUSES)})`,
+    ),
+    check(
+      "payroll_payout_return_claims_hash_check",
+      sql`${table.itemSetHash} ~ ${sql.raw(SHA256_FORMAT)}`,
+    ),
+    check(
+      "payroll_payout_return_claims_consumed_check",
+      sql`(${table.status} = 'open' AND ${table.consumedAt} IS NULL) OR (${table.status} = 'consumed' AND ${table.consumedAt} IS NOT NULL)`,
     ),
   ],
 );
@@ -514,6 +670,8 @@ export const payrollDisbursementItems = pgTable(
     returnedBy2: actor("returned_by_2"),
     returnEvidenceKey: varchar("return_evidence_key", { length: 500 }),
     returnNote: varchar("return_note", { length: 500 }),
+    /** The return operation whose proof this return belongs to (w3691). */
+    returnClaimId: uuid("return_claim_id"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -580,6 +738,15 @@ export const payrollDisbursementItems = pgTable(
         payrollPayoutGlPostings.tenantId,
         payrollPayoutGlPostings.batchId,
         payrollPayoutGlPostings.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_disbursement_items_return_claim_fk",
+      columns: [table.tenantId, table.batchId, table.returnClaimId],
+      foreignColumns: [
+        payrollPayoutReturnClaims.tenantId,
+        payrollPayoutReturnClaims.batchId,
+        payrollPayoutReturnClaims.id,
       ],
     }),
     foreignKey({

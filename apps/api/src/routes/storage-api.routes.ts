@@ -91,6 +91,18 @@ export function createStorageApiRouter(options: {
   const router = Router();
   router.use(noStore);
 
+  // legend-egrrp: whether PDFs can be vetted. Any signed-in user; reads the
+  // runtime configuration only (never the scanner's health). Answered before
+  // the /storage/* router so it works without a runtime.
+  router.get("/storage/capabilities", requireAuth, (_req, res) => {
+    res.json({
+      data: {
+        documentsAccepted:
+          runtime !== null && runtime.scanner.acceptsDocuments !== false,
+      },
+    });
+  });
+
   // The core-storage router's own paths start with /storage and it requires a
   // session on every request it sees, so only hand it /storage/* requests.
   const storage = env.EDGE_MODE

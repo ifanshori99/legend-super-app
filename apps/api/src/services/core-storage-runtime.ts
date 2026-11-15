@@ -4,6 +4,7 @@ import { CoreError } from "@starter/shared/core";
 import type { ObjectStorage } from "@starter/shared/adapters";
 import type * as schema from "../db/schema";
 import { NoopMalwareScanner, type MalwareScanner } from "./core-image";
+import { ClamdMalwareScanner } from "./clamd-scanner";
 import { S3ObjectStorage } from "./core-storage-provider";
 import { signedStorageUrl, signedStorageUrlInTx } from "./core-storage";
 import type { HrisFileSigner } from "./hris-contract.service";
@@ -157,12 +158,43 @@ export function createHrisDocumentSigner(deps: {
 }
 
 /**
- * Storage runtime from env, or null when storage is not configured. The
- * scanner is the no-op one: images are re-encoded by `processImage` and SVG is
- * refused, but no malware engine is wired yet (report risk, legend-dzh9q). PDF
- * documents are not re-encoded, so production refuses them until a real
- * scanner replaces the no-op one.
+ * The malware scanner from env (legend-w9hwh). CLAMD_HOST set: a clamd client.
+ * Unset: the no-op one, which accepts documents only outside production, so
+ * production refuses PDFs (they are not re-encoded) until clamd is wired.
  */
+export function createMalwareScannerFromEnv(
+  source: StorageEnv,
+): MalwareScanner {
+  const host = source.CLAMD_HOST?.trim();
+  if (host)
+    return new ClamdMalwareScanner({
+      host,
+      port: clamdNumber(source, "CLAMD_PORT", 3310, 1, 65_535),
+      timeoutMs: clamdNumber(source, "CLAMD_TIMEOUT_MS", 15_000, 1000, 60_000),
+    });
+  return new NoopMalwareScanner({
+    acceptsDocuments: source.NODE_ENV !== "production",
+  });
+}
+
+/** An integer setting in range, or the default when blank. A bad value is a
+ * deployment error: refuse to boot instead of passing NaN to the socket. */
+function clamdNumber(
+  source: StorageEnv,
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = source[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max)
+    throw new Error(`${name} must be an integer from ${min} to ${max}.`);
+  return value;
+}
+
+/** Storage runtime from env, or null when storage is not configured. */
 export function createStorageRuntimeFromEnv(
   source: StorageEnv,
   database: Database,
@@ -172,9 +204,7 @@ export function createStorageRuntimeFromEnv(
   if (!storage) return null;
   return {
     storage,
-    scanner: new NoopMalwareScanner({
-      acceptsDocuments: source.NODE_ENV !== "production",
-    }),
+    scanner: createMalwareScannerFromEnv(source),
     fileSigner: createAttendanceSelfieSigner({ database, storage, log }),
     hrisDocumentSigner: createHrisDocumentSigner({ database, storage, log }),
   };

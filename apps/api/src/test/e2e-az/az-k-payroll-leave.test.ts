@@ -35,8 +35,19 @@ import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
-import { cafeLegendPayrollFixtures } from "@starter/shared/hris/payroll";
+import { FakeObjectStorage } from "@starter/shared/adapters";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import {
+  cafeLegendPayrollFixtures,
+  payrollRunIdSchema,
+} from "@starter/shared/hris/payroll";
 import { createApp } from "../../app.ts";
+import { NoopMalwareScanner } from "../../services/core-image.ts";
+import type { StorageRuntime } from "../../services/core-storage-runtime.ts";
+import { createBankTransferFile } from "../../services/payroll-export.service.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "../helpers.ts";
 import { describeUntilBuilt } from "./pending-branch.ts";
 
@@ -602,6 +613,7 @@ describeUntilBuilt(
   "Alur K payroll bulanan: simulasi, dua approval, kunci, jurnal, slip, pembatalan [PAYR-01][PAYR-02][PAYR-03][PAYR-04][PAYR-05][HR-01][HR-03]",
   () => {
     let financeClient: Client;
+    let financeUserId: string;
     let policyId: string;
     let baseSalaryComponentId: string;
     let runId: string;
@@ -681,6 +693,7 @@ describeUntilBuilt(
         { type: "tenant" },
       );
       financeClient = finance.client;
+      financeUserId = finance.userId;
 
       // Rates in force: publish a table version for every type that has none.
       const existing = await hrClient.get(
@@ -916,18 +929,42 @@ describeUntilBuilt(
     });
 
     it("[PAYR-04] the bank transfer file holds the bank payslips and its total equals the net pay", async () => {
-      const file = await post(
+      // The legacy POST route is closed (legend-yjbjb); the file builder is
+      // exercised directly with the same permission holder.
+      const refused = await post(
         financeClient,
         `${PAYROLL}/runs/${runId}/bank-transfer-files`,
         { format: "generic_csv", idempotencyKey: key() },
       );
-      expect(file.status, JSON.stringify(file.body)).toBeLessThan(300);
-      expect(file.body.data.totalIdr).toBe(lockedTotals.bankTransferIdr);
-      expect(file.body.data.rowCount).toBeGreaterThanOrEqual(1);
+      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+      expect(refused.body.error.code).toBe("LEGACY_BANK_EXPORT_DISABLED");
+
+      const storageRuntime: StorageRuntime = {
+        storage: new FakeObjectStorage(),
+        scanner: new NoopMalwareScanner(),
+        fileSigner: async () => null,
+        hrisDocumentSigner: async () => null,
+      };
+      const file = await createBankTransferFile(
+        establishScopedTenantContext(
+          establishTenantContext({
+            tenantId: tenant.id,
+            brandId: null,
+            source: "session",
+          }),
+          { kind: "tenant" },
+        ),
+        financeUserId,
+        payrollRunIdSchema.parse(runId),
+        { format: "generic_csv", idempotencyKey: key() },
+        storageRuntime,
+      );
+      expect(file.totalIdr).toBe(lockedTotals.bankTransferIdr);
+      expect(file.rowCount).toBeGreaterThanOrEqual(1);
       expect(lockedTotals.netIdr).toBe(
         lockedTotals.bankTransferIdr! + lockedTotals.cashIdr!,
       );
-      expect(file.body.data.fileUrl).toMatch(/^https?:\/\//);
+      expect(file.fileUrl).toMatch(/^https?:\/\//);
     });
 
     it("the employee finds the payslip in the app, sees no amounts before the PIN, and a wrong PIN is refused [HR-01]", async () => {

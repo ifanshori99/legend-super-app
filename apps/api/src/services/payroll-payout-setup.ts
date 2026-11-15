@@ -90,7 +90,7 @@ export async function bankChargesMapped(
  * counts as usable while its GL account is too: a journal that credits an
  * inactive or header account would fail late, after the money has moved.
  */
-async function glAccountPostable(
+export async function glAccountPostable(
   tx: Tx,
   tenantId: TenantId,
   legalEntityId: string,

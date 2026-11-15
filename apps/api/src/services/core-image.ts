@@ -1,13 +1,41 @@
 import sharp from "sharp";
 import { HttpError } from "../lib/http-error.ts";
+import { logger } from "../lib/logger";
+import { assertSafePdf } from "./pdf-safety.ts";
 
 /** Replace the no-op with an actual scanner before relying on malware detection. */
 export interface MalwareScanner {
-  /** Resolves only when the object is accepted; rejects on detection or failure. */
+  /** Resolves only when the object is accepted; rejects on detection or failure.
+   * A detection MUST throw `HttpError(422, ...)`. Any other error is treated as
+   * the scanner being unavailable (503), which a scanner with
+   * `failOpenForImages` lets an image skip. */
   scan(bytes: Uint8Array): Promise<void>;
   /** False when this scanner cannot vet non-image documents (PDF); uploads of
    * those are refused. Absent means true. */
   readonly acceptsDocuments?: boolean;
+  /** True when an image may still be processed (sharp re-encodes it) while the
+   * scanner is unavailable (503). Never applies to a detection (422) or a PDF.
+   * Absent means false: fail closed. */
+  readonly failOpenForImages?: boolean;
+  /** Liveness probe for the readiness report; resolves false, never throws. */
+  ping?(): Promise<boolean>;
+}
+
+/** Fail closed when the scanner cannot complete, without exposing its diagnostics. */
+export async function scanUpload(
+  scanner: MalwareScanner,
+  bytes: Uint8Array,
+): Promise<void> {
+  try {
+    await scanner.scan(bytes);
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 422) throw error;
+    throw new HttpError(
+      503,
+      "SCANNER_UNAVAILABLE",
+      "File scanning is temporarily unavailable.",
+    );
+  }
 }
 
 /**
@@ -23,6 +51,54 @@ export function assertScannerAcceptsDocuments(scanner: MalwareScanner): void {
       "SERVICE_UNAVAILABLE",
       "Unggah dokumen PDF belum tersedia: pemindai malware belum dipasang.",
     );
+}
+
+/** An image may pass while the scanner is unavailable only when the scanner
+ * opted in (`failOpenForImages`): the re-encode that follows strips everything
+ * but pixels. A detection (422) is never skipped. */
+async function scanImageBytes(
+  scanner: MalwareScanner,
+  bytes: Uint8Array,
+): Promise<void> {
+  try {
+    await scanUpload(scanner, bytes);
+  } catch (error) {
+    if (
+      scanner.failOpenForImages === true &&
+      error instanceof HttpError &&
+      error.status === 503
+    )
+      logger.warn(
+        {},
+        "Malware scanner unavailable; image accepted after re-encode",
+      );
+    else throw error;
+  }
+}
+
+export type UploadBytesKind = "image" | "pdf";
+
+/**
+ * One scan pipeline for every upload path (legend-egrrp). `pdf`: refuse a
+ * scanner that cannot vet documents (503), check the structure in a capped
+ * worker (422 or 503), then scan (422 on detection, 503 when unavailable).
+ * `image`: scan with the image fail-open rule only. Call it BEFORE any blob is
+ * stored. The image decode and re-encode stay with the caller.
+ */
+export async function scanUploadBytes(
+  bytes: Uint8Array,
+  options: { kind: UploadBytesKind; scanner: MalwareScanner; maxBytes: number },
+): Promise<{ pageCount?: number }> {
+  if (options.kind === "image") {
+    await scanImageBytes(options.scanner, bytes);
+    return {};
+  }
+  assertScannerAcceptsDocuments(options.scanner);
+  const { pageCount } = await assertSafePdf(bytes, {
+    maxBytes: options.maxBytes,
+  });
+  await scanUpload(options.scanner, bytes);
+  return { pageCount };
 }
 
 /** Development fake only; it does not detect malicious content. */
@@ -131,7 +207,7 @@ async function processImageVariants(
       "UNSUPPORTED_MEDIA_TYPE",
       "Unsupported image type.",
     );
-  await scanner.scan(bytes);
+  await scanImageBytes(scanner, bytes);
   try {
     const image = sharp(bytes, {
       limitInputPixels: 50_000_000,

@@ -50,19 +50,17 @@ export function createPayrollExportRouter(options: {
     route(createBankTransferFile.path),
     requireTenantPermission("payroll.lock"),
     jsonBody,
-    async (req, res) => {
-      const { payrollRunId } = createBankTransferFile.params.parse(req.params);
-      const { idempotencyKey, format } = createBankTransferFile.body.parse(
-        req.body,
+    async (req) => {
+      createBankTransferFile.params.parse(req.params);
+      createBankTransferFile.body.parse(req.body);
+      // Legacy path closed (bead legend-yjbjb): a bank file made outside an
+      // approved payout batch is a payment instruction without the batch's
+      // approval, sealed amounts, and return proof. Refuse before any DB work.
+      throw new HttpError(
+        409,
+        "LEGACY_BANK_EXPORT_DISABLED",
+        "Pembuatan berkas transfer lama sudah ditutup. Ekspor pembayaran lewat batch payout yang disetujui.",
       );
-      const data = await exports_.createBankTransferFile(
-        getScopedTenantContext(req),
-        getAuth(req).user.id,
-        payrollRunId,
-        { format, idempotencyKey },
-        runtime(),
-      );
-      res.status(201).json({ data });
     },
   );
 

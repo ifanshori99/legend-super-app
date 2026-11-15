@@ -86,6 +86,8 @@ import { FakeObjectStorage } from "@starter/shared/adapters";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
+import type { StorageRuntime } from "../services/core-storage-runtime.ts";
+import { createBankTransferFile } from "../services/payroll-export.service.ts";
 import { createLogger } from "../lib/logger.ts";
 import { openPayrollValue } from "../lib/payroll-sealed.ts";
 import { db } from "../db/index.ts";
@@ -109,14 +111,15 @@ const logStream = new Writable({
     done();
   },
 });
+const storageRuntime: StorageRuntime = {
+  storage: new FakeObjectStorage(),
+  scanner: new NoopMalwareScanner(),
+  fileSigner: async () => null,
+  hrisDocumentSigner: async () => null,
+};
 const app = createApp({
   logger: createLogger({ level: "debug", destination: logStream }),
-  storageRuntime: {
-    storage: new FakeObjectStorage(),
-    scanner: new NoopMalwareScanner(),
-    fileSigner: async () => null,
-    hrisDocumentSigner: async () => null,
-  },
+  storageRuntime,
 });
 
 const tenant = cafeLegendPlatformFixtures.tenant;
@@ -207,7 +210,6 @@ async function grantRole(userId: string, permissions: string[]) {
 }
 
 type Client = Awaited<ReturnType<typeof signedInClient>>["client"];
-let exporter: Client;
 let exporterUserId: string;
 let hr: Client;
 
@@ -499,7 +501,6 @@ beforeAll(async () => {
     throw new Error("Requires the disposable test database");
   const lock = await signedInClient("THR gross-up locker");
   await grantRole(lock.userId, ["payroll.view", "payroll.run", "payroll.lock"]);
-  exporter = lock.client;
   exporterUserId = lock.userId;
   const hrUser = await signedInClient("THR gross-up HR");
   await grantRole(hrUser.userId, ["hr.employee.manage", "hr.employee.view"]);
@@ -763,12 +764,17 @@ describe("[thr-gross-up-run-totals] a THR run with a gross_up and a gross employ
     // Everything paid out is THR + the gross_up allowance - the employee's tax.
     expect(netTotal).toBe(guThr + (grThr - grSlip.tax.pph21WithheldIdr));
 
-    const made = await exporter
-      .post(`/api/hris/payroll/runs/${runId}/bank-transfer-files`)
-      .set(originHeader)
-      .send({ format: "generic_csv", idempotencyKey: key() });
-    expect(made.status, JSON.stringify(made.body)).toBe(201);
-    const file = bankTransferFileSchema.parse(made.body.data);
+    // The legacy POST route is closed (legend-yjbjb: 409
+    // LEGACY_BANK_EXPORT_DISABLED); the file builder is exercised directly.
+    const file = bankTransferFileSchema.parse(
+      await createBankTransferFile(
+        tenantScope(),
+        exporterUserId,
+        payrollRunIdSchema.parse(runId),
+        { format: "generic_csv", idempotencyKey: key() },
+        storageRuntime,
+      ),
+    );
     expect(file.rowCount).toBe(2);
     expect(file.totalIdr).toBe(netTotal);
     expect(file.totalIdr).toBe(totals.bankTransferIdr);

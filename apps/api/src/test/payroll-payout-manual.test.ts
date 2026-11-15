@@ -36,8 +36,10 @@
 //   confirm, missing bank reference: only "4xx HttpError, nothing changed".
 // - The audit action names are unknown, so audit rows are not asserted here.
 // Fix round 1 (648-fix1.md) assumptions:
-// - H1: the legacy bank file is the HTTP route
-//   POST /api/hris/payroll/runs/:id/bank-transfer-files (user with payroll.lock);
+// - H1: the legacy bank file is the internal builder `createBankTransferFile`
+//   (user with payroll.lock), called directly because the HTTP route
+//   POST /api/hris/payroll/runs/:id/bank-transfer-files is closed (legend-yjbjb,
+//   409 LEGACY_BANK_EXPORT_DISABLED, see payroll-payout-870-legacy-export.test.ts);
 //   a cash batch never blocks it and a cancelled batch does not either.
 // - H2: only the codes named in the brief are asserted exactly
 //   (PAYOUT_RESOLVE_SAME_PERSON 403, PAYOUT_RESOLVE_OUTCOME_MISMATCH 409).
@@ -57,7 +59,10 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { payrollConfigSnapshotSchema } from "@starter/shared/hris/payroll";
+import {
+  payrollConfigSnapshotSchema,
+  payrollRunIdSchema,
+} from "@starter/shared/hris/payroll";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
@@ -68,6 +73,7 @@ import {
   sealPayrollValue,
 } from "../lib/payroll-sealed.ts";
 import type { Tx } from "../services/hris-access.ts";
+import { createBankTransferFile } from "../services/payroll-export.service.ts";
 import { snapshotPayeeBankForLock } from "../services/payroll-bank-snapshot.service.ts";
 import {
   approveDisbursementBatch,
@@ -86,8 +92,8 @@ import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import type { ObjectStorage, StorageRequest } from "@starter/shared/adapters";
 import { agent, originHeader, signUp } from "./helpers.ts";
 
-// In-memory object storage: the legacy bank file route (H1) answers 503
-// without a storage runtime.
+// In-memory object storage: the legacy bank file builder (H1) needs a storage
+// runtime.
 const stored = new Map<string, StorageRequest>();
 const fakeStorage: ObjectStorage = {
   put: async (_context, input) => {
@@ -274,7 +280,7 @@ const createdRuns: string[] = [];
 const createdEmployees: string[] = [];
 let bankAccountId = "";
 let hr: Awaited<ReturnType<typeof signedInClient>>["client"];
-let locker: Awaited<ReturnType<typeof signedInClient>>["client"]; // payroll.lock: legacy bank file
+let lockerUserId: string; // payroll.lock: legacy bank file builder
 
 const day = (n: number) =>
   new Date(Date.UTC(2042, 0, 1 + n)).toISOString().slice(0, 10);
@@ -563,7 +569,7 @@ beforeAll(async () => {
     "payroll.run",
     "payroll.lock",
   ]);
-  locker = lockUser.client;
+  lockerUserId = lockUser.userId;
 
   await asTenant(async (c) => {
     await c.query(
@@ -796,16 +802,33 @@ async function cloneRow(table: string, id: string, overrides: string) {
     await c.query(`INSERT INTO ${table} SELECT * FROM payout_clone`);
   });
 }
-const legacyPath = (runId: string) =>
-  `/api/hris/payroll/runs/${runId}/bank-transfer-files`;
-const legacyExport = (runId: string) =>
-  locker
-    .post(legacyPath(runId))
-    .set(originHeader)
-    .send({
-      format: "generic_csv",
-      idempotencyKey: `payout-legacy-${randomUUID()}`,
-    });
+/**
+ * The HTTP route is closed (legend-yjbjb: 409 LEGACY_BANK_EXPORT_DISABLED), so
+ * the H1 tests drive the internal file builder directly, as the payroll.lock
+ * user. Same result shape as the route used to give: a status and the code.
+ */
+const legacyExport = async (runId: string) => {
+  try {
+    const file = await createBankTransferFile(
+      scope(),
+      lockerUserId,
+      payrollRunIdSchema.parse(runId),
+      {
+        format: "generic_csv",
+        idempotencyKey: `payout-legacy-${randomUUID()}`,
+      },
+      storageRuntime,
+    );
+    return { status: 201, body: { data: file } };
+  } catch (error) {
+    if (error instanceof HttpError)
+      return {
+        status: error.status,
+        body: { error: { code: error.code } },
+      };
+    throw error;
+  }
+};
 const bankFileCount = async (runId: string) =>
   Number(
     (
@@ -1504,7 +1527,7 @@ describe("H1 the legacy bank file and a disbursement batch exclude each other", 
         response.status,
         `${stage}: ${JSON.stringify(response.body)}`,
       ).toBe(409);
-      expect(response.body.error.code).toBe("PAYOUT_RUN_HAS_PAYOUT_BATCH");
+      expect(response.body.error?.code).toBe("PAYOUT_RUN_HAS_PAYOUT_BATCH");
       expect(await bankFileCount(runId)).toBe(0);
     }
   });

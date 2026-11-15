@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Money } from "@/components/ui/money";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { useStorageCapabilities } from "../../storage/hooks";
 import { formatDateTime } from "../../ws10-payroll-run/lib";
 import { evidenceUploadMessage } from "../errors";
 import {
@@ -44,7 +45,8 @@ import { reviewErrorMessage } from "./status-errors";
 type Person = { name: string; bank: string };
 type Outcome = "succeeded" | "failed" | "not_sent";
 
-const PROOF_TYPES = ["image/jpeg", "image/png"];
+const PHOTO_TYPES = ["image/jpeg", "image/png"];
+const PDF_TYPE = "application/pdf";
 
 /**
  * A proof photo and a note, shared by "failed / not sent" and "funds came
@@ -54,6 +56,8 @@ const PROOF_TYPES = ["image/jpeg", "image/png"];
 function useProofForm(batchId: string, options: { noFile?: boolean } = {}) {
   const t = useT();
   const upload = useUploadPayoutEvidence();
+  // A PDF is offered only once the server says it can scan one.
+  const { documentsAccepted } = useStorageCapabilities();
   const [file, setFile] = React.useState<File | null>(null);
   const [note, setNote] = React.useState("");
   const [fileProblem, setFileProblem] = React.useState<string | null>(null);
@@ -62,9 +66,19 @@ function useProofForm(batchId: string, options: { noFile?: boolean } = {}) {
 
   const pick = (next: File | null) => {
     setFileProblem(null);
-    if (next && !PROOF_TYPES.includes(next.type)) {
+    if (
+      next &&
+      !PHOTO_TYPES.includes(next.type) &&
+      !(documentsAccepted && next.type === PDF_TYPE)
+    ) {
       setFile(null);
-      setFileProblem(t("payrollPayoutReview.error.evidencePhotoOnly"));
+      setFileProblem(
+        t(
+          documentsAccepted
+            ? "payrollPayoutReview.error.evidenceFileOnly"
+            : "payrollPayoutReview.error.evidencePhotoOnly",
+        ),
+      );
       return;
     }
     if (next && next.size > PAYOUT_EVIDENCE_MAX_BYTES) {
@@ -136,6 +150,7 @@ function useProofForm(batchId: string, options: { noFile?: boolean } = {}) {
     },
     fileProblem,
     noteProblem,
+    documentsAccepted,
     pick,
     reset,
     validate,
@@ -154,10 +169,12 @@ type ProofForm = ReturnType<typeof useProofForm>;
 function EvidencePicker({
   file,
   disabled,
+  documentsAccepted,
   onPick,
   ...inputProps
 }: Omit<React.ComponentProps<"input">, "onChange" | "type" | "value"> & {
   file: File | null;
+  documentsAccepted: boolean;
   onPick: (file: File | null) => void;
 }) {
   const t = useT();
@@ -168,7 +185,11 @@ function EvidencePicker({
         {...inputProps}
         ref={input}
         type="file"
-        accept="image/jpeg,image/png"
+        accept={
+          documentsAccepted
+            ? "image/jpeg,image/png,application/pdf"
+            : "image/jpeg,image/png"
+        }
         data-testid="payout-evidence-file"
         disabled={disabled}
         tabIndex={-1}
@@ -223,8 +244,12 @@ function ProofFields({
             label={t("payrollPayoutReview.result.evidenceFile")}
             hint={t(
               variant === "return"
-                ? "payrollPayoutReview.result.returnFileHint"
-                : "payrollPayoutReview.result.evidenceFileHint",
+                ? form.documentsAccepted
+                  ? "payrollPayoutReview.result.returnFileHintPdf"
+                  : "payrollPayoutReview.result.returnFileHint"
+                : form.documentsAccepted
+                  ? "payrollPayoutReview.result.evidenceFileHintPdf"
+                  : "payrollPayoutReview.result.evidenceFileHint",
             )}
             error={form.fileProblem ?? undefined}
             required
@@ -232,6 +257,7 @@ function ProofFields({
             <EvidencePicker
               file={form.file}
               disabled={busy}
+              documentsAccepted={form.documentsAccepted}
               onPick={form.pick}
             />
           </FormField>

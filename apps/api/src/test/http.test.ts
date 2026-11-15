@@ -11,6 +11,7 @@ describe("HTTP plumbing", () => {
   it("reports liveness and readiness", async () => {
     expect((await request(app).get("/api/health")).body).toEqual({
       status: "ok",
+      scanner: "disabled",
     });
     expect((await request(app).get("/api/health/ready")).body).toEqual({
       status: "ok",

@@ -2,6 +2,13 @@
 // docs/briefs/ws10-payroll-bank-coretax.md rules 1-5; PRD v1.7 §3 D.30
 // "Pembayaran Gaji", PAYR-04, HR-03).
 //
+// LEGACY POST CLOSED (bead legend-yjbjb): POST .../bank-transfer-files now
+// always answers 409 LEGACY_BANK_EXPORT_DISABLED (payroll-payout-870-legacy-export
+// test covers that). The file-building tests below call the internal service
+// `createBankTransferFile` directly (same actor, tenant context and storage
+// runtime the route used); route-level checks that still hold (401, 403, 422
+// bad body, GET list) stay on HTTP.
+//
 // ROUTE UNDER TEST (shared contract endpoints.ts `createBankTransferFile` /
 // `listBankTransferFiles`; implemented in routes/payroll-export.routes.ts and
 // services/payroll-export.service.ts, mounted by routes/storage-api.routes.ts):
@@ -41,7 +48,11 @@ import { randomUUID, createHash } from "node:crypto";
 import { Writable } from "node:stream";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { bankTransferFileSchema } from "@starter/shared/hris/payroll";
+import {
+  bankTransferFileSchema,
+  type BankTransferFormat,
+  type PayrollRunId,
+} from "@starter/shared/hris/payroll";
 import { tenantIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
@@ -57,6 +68,7 @@ import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { snapshotPayeeBankForLock } from "../services/payroll-bank-snapshot.service.ts";
+import { createBankTransferFile } from "../services/payroll-export.service.ts";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import { createLogger } from "../lib/logger.ts";
@@ -191,6 +203,7 @@ async function grantRole(userId: string, permissions: string[]) {
 
 type Client = Awaited<ReturnType<typeof signedInClient>>["client"];
 let exporter: Client; // payroll.lock: may export
+let exporterId: string;
 let runner: Client; // payroll.view + payroll.run, no lock: may not export
 let stranger: Client; // no payroll permission at all
 let hr: Client; // writes employee PII through the real route
@@ -457,6 +470,43 @@ const exportRun = (
     .set(originHeader)
     .send({ format, idempotencyKey });
 
+/** The scoped tenant context the route hands to the service. */
+const tenantContext = (tenantId: string = tenant.id) =>
+  establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(tenantId),
+      brandId: null,
+      source: "domain",
+    }),
+    { kind: "tenant" },
+  );
+
+/** The legacy builder, called directly (the HTTP route is closed). */
+const exportViaService = (
+  runId: string,
+  format: string = "generic_csv",
+  idempotencyKey: string = key(),
+) =>
+  createBankTransferFile(
+    tenantContext(),
+    exporterId,
+    runId as PayrollRunId,
+    { format: format as BankTransferFormat, idempotencyKey },
+    storageRuntime,
+  );
+
+type Refusal = { status: number; code: string; message: string };
+
+/** Awaits a service call that must be refused and returns the error. */
+async function refusalOf(call: Promise<unknown>): Promise<Refusal> {
+  try {
+    await call;
+  } catch (error) {
+    return error as Refusal;
+  }
+  throw new Error("expected the bank file export to be refused");
+}
+
 // ---- CSV helpers --------------------------------------------------------------
 
 /** RFC 4180 parser: quoted cells, doubled quotes, CRLF or LF, BOM tolerated. */
@@ -514,9 +564,7 @@ type Exported = {
 };
 
 async function exportOk(runId: string): Promise<Exported> {
-  const response = await exportRun(exporter, runId);
-  expect(response.status, JSON.stringify(response.body)).toBe(201);
-  const file = bankTransferFileSchema.parse(response.body.data);
+  const file = bankTransferFileSchema.parse(await exportViaService(runId));
   const text = downloadCsv(file.fileUrl);
   const rows = parseCsv(text);
   return { file, text, rows, data: rows.slice(1) };
@@ -533,6 +581,7 @@ beforeAll(async () => {
   const lock = await signedInClient("Bank export locker");
   await grantRole(lock.userId, ["payroll.view", "payroll.run", "payroll.lock"]);
   exporter = lock.client;
+  exporterId = lock.userId;
   const run = await signedInClient("Bank export runner");
   await grantRole(run.userId, ["payroll.view", "payroll.run"]);
   runner = run.client;
@@ -702,12 +751,9 @@ describe("bank transfer file export: permission and run state", () => {
       "approved",
     ] as const) {
       const runId = await seedRun(tenant.id, { status });
-      const response = await exportRun(exporter, runId);
-      expect(
-        response.status,
-        `${status}: ${JSON.stringify(response.body)}`,
-      ).toBe(409);
-      expect(response.body.error.code).toBe("PAYROLL_RUN_NOT_LOCKED");
+      const refusal = await refusalOf(exportViaService(runId));
+      expect(refusal.status, `${status}: ${refusal.message}`).toBe(409);
+      expect(refusal.code).toBe("PAYROLL_RUN_NOT_LOCKED");
       expect(await bankFileCount(runId)).toBe(0);
       expect(storedKeysOf(runId)).toEqual([]);
     }
@@ -720,15 +766,11 @@ describe("bank transfer file export: permission and run state", () => {
       totals: totalsOf(BANK_TOTAL, CASH_TOTAL),
     });
     for (const format of ["mandiri", "bni", "bjb"]) {
-      const response = await exportRun(exporter, runId, format);
-      expect(
-        response.status,
-        `${format}: ${JSON.stringify(response.body)}`,
-      ).toBe(422);
-      expect(response.body.error.code).toBe(
-        "PAYROLL_BANK_FORMAT_NOT_SUPPORTED",
-      );
+      const refusal = await refusalOf(exportViaService(runId, format));
+      expect(refusal.status, `${format}: ${refusal.message}`).toBe(422);
+      expect(refusal.code).toBe("PAYROLL_BANK_FORMAT_NOT_SUPPORTED");
     }
+    // An unknown format fails the route's body schema (before the closed-route 409).
     expect((await exportRun(exporter, runId, "not-a-bank")).status).toBe(422);
     expect(await bankFileCount(runId)).toBe(0);
     expect(storedKeysOf(runId)).toEqual([]);
@@ -739,9 +781,9 @@ describe("bank transfer file export: permission and run state", () => {
       status: "locked",
       totals: totalsOf(0, 0),
     });
-    expect((await exportRun(exporter, foreign)).status).toBe(404);
+    expect((await refusalOf(exportViaService(foreign))).status).toBe(404);
     expect((await exporter.get(runPath(foreign))).status).toBe(404);
-    expect((await exportRun(exporter, randomUUID())).status).toBe(404);
+    expect((await refusalOf(exportViaService(randomUUID()))).status).toBe(404);
     const foreignFiles = await owner.query(
       "SELECT 1 FROM bank_transfer_files WHERE tenant_id = $1",
       [otherTenant],
@@ -816,9 +858,9 @@ describe("bank transfer file export: generic_csv content", () => {
       ],
       totals: totalsOf(3_500_000, 0),
     });
-    const response = await exportRun(exporter, runId);
-    expect(response.status, JSON.stringify(response.body)).toBe(409);
-    expect(response.body.error.code).toBe("PAYROLL_BANK_FILE_MISMATCH");
+    const refusal = await refusalOf(exportViaService(runId));
+    expect(refusal.status, refusal.message).toBe(409);
+    expect(refusal.code).toBe("PAYROLL_BANK_FILE_MISMATCH");
     expect(await bankFileCount(runId)).toBe(0);
     expect(storedKeysOf(runId)).toEqual([]);
   });
@@ -836,9 +878,9 @@ describe("bank transfer file export: generic_csv content", () => {
       ],
       totals: totalsOf(0, cash.net),
     });
-    const response = await exportRun(exporter, runId);
-    expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(response.body.error.code).toBe("PAYROLL_BANK_FILE_EMPTY");
+    const refusal = await refusalOf(exportViaService(runId));
+    expect(refusal.status, refusal.message).toBe(422);
+    expect(refusal.code).toBe("PAYROLL_BANK_FILE_EMPTY");
     expect(await bankFileCount(runId)).toBe(0);
     expect(storedKeysOf(runId)).toEqual([]);
   });
@@ -860,8 +902,9 @@ describe("bank transfer file export: generic_csv content", () => {
         return rows.rows[0];
       });
     const before = await snapshot();
-    const response = await exportRun(exporter, runId);
-    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const file = await exportViaService(runId);
+    expect(file.rowCount).toBe(bankPeople.length);
+    expect(await bankFileCount(runId)).toBe(1);
     expect(await snapshot()).toEqual(before);
   });
 
@@ -894,14 +937,9 @@ describe("bank transfer file export: run reversed after export", () => {
       totals: totalsOf(BANK_TOTAL, CASH_TOTAL),
     });
     const idempotencyKey = key();
-    const created = await exportRun(
-      exporter,
-      runId,
-      "generic_csv",
-      idempotencyKey,
+    const file = bankTransferFileSchema.parse(
+      await exportViaService(runId, "generic_csv", idempotencyKey),
     );
-    expect(created.status, JSON.stringify(created.body)).toBe(201);
-    const file = bankTransferFileSchema.parse(created.body.data);
     expect(await bankFileCount(runId)).toBe(1);
 
     // Reverse the run straight in the database, as the other payroll tests
@@ -930,15 +968,12 @@ describe("bank transfer file export: run reversed after export", () => {
     expect(list.body.error.code).toBe("PAYROLL_RUN_NOT_LOCKED");
     noUrl(list.text);
 
-    const replay = await exportRun(
-      exporter,
-      runId,
-      "generic_csv",
-      idempotencyKey,
+    const replay = await refusalOf(
+      exportViaService(runId, "generic_csv", idempotencyKey),
     );
-    expect(replay.status, JSON.stringify(replay.body)).toBe(409);
-    expect(replay.body.error.code).toBe("PAYROLL_RUN_NOT_LOCKED");
-    noUrl(replay.text);
+    expect(replay.status, replay.message).toBe(409);
+    expect(replay.code).toBe("PAYROLL_RUN_NOT_LOCKED");
+    noUrl(JSON.stringify(replay));
 
     // No URL was even minted for the reversed run, and no second file exists.
     expect(signedLookups.length).toBe(signedBefore);
@@ -965,6 +1000,12 @@ describe("bank transfer file export: PII handling", () => {
 
   it("[bank-export-no-pii-in-logs] the export request logs no account number, NIK, NPWP, employee name or file content", async () => {
     logLines.length = 0;
+    // The route is closed (409), but the request is still logged: it must carry
+    // no PII. The file is then built through the service, which must not log
+    // PII either (it has no logger of its own).
+    const closed = await exportRun(exporter, lockedRun);
+    expect(closed.status).toBe(409);
+    expect(closed.body.error.code).toBe("LEGACY_BANK_EXPORT_DISABLED");
     const { text } = await exportOk(lockedRun);
     const logged = logLines.join("");
     expect(logged.length).toBeGreaterThan(0); // the request itself was logged
@@ -1017,12 +1058,11 @@ describe("bank transfer file export: PII handling", () => {
       slips: mainSlips(),
       totals: totalsOf(BANK_TOTAL, CASH_TOTAL),
     });
-    const created = await exportRun(exporter, runId);
-    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const created = await exportViaService(runId);
     const list = await exporter.get(runPath(runId));
     expect(list.status).toBe(200);
     const ids = (list.body.data as { id: string }[]).map((item) => item.id);
-    expect(ids).toContain(created.body.data.id);
+    expect(ids).toContain(created.id);
     for (const person of PEOPLE) {
       expect(list.text).not.toContain(person.account);
       expect(list.text).not.toContain(person.name);

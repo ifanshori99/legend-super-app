@@ -254,7 +254,9 @@ export const payrollPayoutReviewMessages = {
     cashSubmit: "Konfirmasi diterima",
     evidenceFile: "Berkas bukti dari bank",
     evidenceFileHint:
-      "Foto atau screenshot bukti (JPG atau PNG, maks 5 MB). Item ini tetap tercatat diekspor sampai dua orang berbeda menandai hasil yang sama.",
+      "Foto atau screenshot bukti (JPG atau PNG, maks 5 MB). PDF belum tersedia. Item ini tetap tercatat diekspor sampai dua orang berbeda menandai hasil yang sama.",
+    evidenceFileHintPdf:
+      "Foto, screenshot, atau PDF bukti (JPG, PNG, atau PDF, maks 5 MB). Item ini tetap tercatat diekspor sampai dua orang berbeda menandai hasil yang sama.",
     evidenceFileRequired: "Pilih berkas bukti dulu.",
     pickFile: "Pilih foto",
     changeFile: "Ganti foto",
@@ -269,7 +271,9 @@ export const payrollPayoutReviewMessages = {
     resolved: "Hasil tercatat. Slip gaji ini bisa dicairkan ulang.",
     uploading: "Mengunggah bukti…",
     returnFileHint:
-      "Foto atau screenshot bukti dana masuk kembali dari bank (JPG atau PNG, maks 5 MB). Item tetap tercatat dibayar sampai dua orang berbeda mencatat dana kembali.",
+      "Foto atau screenshot bukti dana masuk kembali dari bank (JPG atau PNG, maks 5 MB). PDF belum tersedia. Item tetap tercatat dibayar sampai dua orang berbeda mencatat dana kembali.",
+    returnFileHintPdf:
+      "Foto, screenshot, atau PDF bukti dana masuk kembali dari bank (JPG, PNG, atau PDF, maks 5 MB). Item tetap tercatat dibayar sampai dua orang berbeda mencatat dana kembali.",
     returnWarning:
       "Dana kembali membalik catatan pembayaran gaji ini. Jangan bayar ulang sebelum dua orang mencatatnya.",
     returnTitle: "Catat dana kembali",
@@ -307,6 +311,7 @@ export const payrollPayoutReviewMessages = {
     evidenceInvalid:
       "Berkas bukti tidak dikenali untuk pencairan ini. Tidak ada hasil yang dicatat.",
     evidencePhotoOnly: "Unggah foto atau screenshot bukti.",
+    evidenceFileOnly: "Unggah foto, screenshot, atau PDF bukti.",
     evidenceTooLarge: "Berkas lebih dari 5 MB. Kecilkan foto lalu coba lagi.",
     evidenceRejected:
       "Berkas bukti ditolak pemeriksaan keamanan. Pakai foto atau screenshot lain.",

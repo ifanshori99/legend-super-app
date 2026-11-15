@@ -47,10 +47,7 @@ import {
   uniqueViolation,
   type TenantTransaction,
 } from "./accounting-shared";
-import {
-  assertScannerAcceptsDocuments,
-  type MalwareScanner,
-} from "./core-image";
+import { scanUploadBytes, type MalwareScanner } from "./core-image";
 
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
 
@@ -183,11 +180,14 @@ export async function uploadShareholderDocumentFileService(
   await withTenant(db, context, (tx) =>
     assertProfitEntityExists(tx, context.tenant.tenantId, profitEntityId),
   );
-  // A scanner that cannot vet documents (production noop) refuses before any
-  // blob is stored (legend-0w2wy).
-  assertScannerAcceptsDocuments(deps.scanner);
-  // Rejects on detection or scanner failure: nothing is stored either way.
-  await deps.scanner.scan(bytes);
+  // Before any blob is stored: a scanner that cannot vet documents (production
+  // noop) refuses (legend-0w2wy), then structure (malformed, encrypted, active
+  // content) and the malware scan (legend-851ef, legend-egrrp).
+  await scanUploadBytes(bytes, {
+    kind: "pdf",
+    scanner: deps.scanner,
+    maxBytes: MAX_PDF_BYTES,
+  });
   const id = randomUUID();
   const fileKey = `shareholder-documents/${id}.pdf`;
   const lookup = {

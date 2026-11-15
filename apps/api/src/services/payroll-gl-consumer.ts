@@ -6,6 +6,10 @@
 // accounting module on are bridged; others are `ignored`. Paid and reversed
 // follow the locked entry instead: once a run's journal exists they post even
 // if the module was switched off since. An all-zero journal is `skipped`.
+// `payroll.locked` follows a pending payout too: when the run already has a
+// `settle_pending` payout posting (money left before this journal), it is posted
+// and resolved even if the module was switched off since (legend-2aspe); the
+// flag only decides NEW payroll, so with no pending settlement it is `ignored`.
 //
 // - `payroll.locked`: the run journal (`payroll.locked` rule) on the period
 //   end, amounts from `payrollJournalAmounts(totals)`. When the entity's
@@ -14,7 +18,9 @@
 //   service charge payout debits salary_expense, never revenue. Other types
 //   (liability, or a legacy mapping saved before the type guard) debit the
 //   mapped account, where the POS credited it. No service_charge mapping: the base rule, which then fails
-//   ACCOUNT_MAPPING_MISSING when the service charge is above 0.
+//   ACCOUNT_MAPPING_MISSING when the service charge is above 0. After the journal
+//   it resolves the run's `settle_pending` payout postings
+//   (`resolvePendingSettles`, legend-2aspe).
 // - `payroll.paid`: Dr salaries_payable net, Cr bank / petty_cash, on the
 //   business date of the payment. With `settledPerItem: true` it posts nothing:
 //   the payout settle (payroll-payout-gl.service.ts) journaled every item. Skipped when the run has no locked entry
@@ -78,6 +84,7 @@ import {
   journalLines,
   tenants,
 } from "../db/schema/index.ts";
+import { payrollRuns } from "../db/schema/payroll.ts";
 import {
   postJournalFromRuleInTransaction,
   reverseJournalInTransaction,
@@ -265,11 +272,33 @@ export async function deliverPayrollGlEvent(
   assertTrustedScopedContext(context);
   // Paid and reversed follow the locked entry, not the current flag: once the
   // run's payable is booked, switching accounting off later must not leave
-  // 2103 open (paid) or the run journal standing (reversed).
+  // 2103 open (paid) or the run journal standing (reversed). A locked event
+  // follows a pending payout settlement the same way (legend-2aspe): the money
+  // already left, so its journal is posted and the pending settle resolved.
   const followsLock =
     event.name === payrollPaid.name || event.name === payrollReversed.name;
-  if (!followsLock && !(await accountingEnabled(tx, context)))
-    return { status: "ignored" };
+  if (!followsLock && !(await accountingEnabled(tx, context))) {
+    if (event.name !== payrollLocked.name) return { status: "ignored" };
+    // Loaded on demand: the payout GL service imports this module.
+    const { runHasPendingSettle } =
+      await import("./payroll-payout-gl.service.ts");
+    const { payrollRunId } = payrollLocked.payloadSchema.parse(event.payload);
+    // Run row first, like the settle path (legend-2aspe): a settle that read
+    // "accounting on" just before the switch commits before this reads the
+    // pending postings, so it cannot be left open after the event is ignored.
+    await tx
+      .select({ id: payrollRuns.id })
+      .from(payrollRuns)
+      .where(
+        and(
+          eq(payrollRuns.tenantId, context.tenant.tenantId),
+          eq(payrollRuns.id, payrollRunId),
+        ),
+      )
+      .for("update");
+    if (!(await runHasPendingSettle(tx, context.tenant.tenantId, payrollRunId)))
+      return { status: "ignored" };
+  }
 
   if (event.name === payrollLocked.name) {
     const payload = payrollLocked.payloadSchema.parse(event.payload);
@@ -295,6 +324,17 @@ export async function deliverPayrollGlEvent(
         postedBy: null,
         idempotencyKey: payrollGlKeys.locked(payload.payrollRunId),
       },
+      now,
+    );
+    // Payouts settled before this journal existed wait as `settle_pending`
+    // (legend-2aspe): post them now that the payable is booked. Loaded on
+    // demand: the payout GL service imports this module.
+    const { resolvePendingSettles } =
+      await import("./payroll-payout-gl.service.ts");
+    await resolvePendingSettles(
+      tx,
+      context.tenant.tenantId,
+      payload.payrollRunId,
       now,
     );
     return { status: "posted", journalEntryId: entry.id };

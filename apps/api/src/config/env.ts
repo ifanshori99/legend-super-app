@@ -439,6 +439,15 @@ const schema = z
       .min(1000)
       .max(300_000)
       .default(30_000),
+    // ClamAV daemon (legend-w9hwh): the malware scanner for uploads. Empty
+    // CLAMD_HOST means no scanner (production then refuses PDF uploads).
+    CLAMD_HOST: blankToUndefined(z.string().trim().min(1).optional()),
+    CLAMD_PORT: blankToUndefined(
+      z.coerce.number().int().min(1).max(65_535).default(3310),
+    ),
+    CLAMD_TIMEOUT_MS: blankToUndefined(
+      z.coerce.number().int().min(1000).max(60_000).default(15_000),
+    ),
     // Google sign-in for customers (legend-k2l, AUTH-05). Both or neither: with
     // neither set Google sign-in is OFF (no provider is registered in
     // lib/auth.ts); one without the other refuses to boot (below).

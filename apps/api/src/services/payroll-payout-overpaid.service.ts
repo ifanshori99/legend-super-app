@@ -38,6 +38,7 @@ import {
 } from "../lib/payroll-sealed.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
 import type { Tx } from "./hris-access.ts";
+import { lockJournalPending } from "./payroll-payout-gl.service.ts";
 import { payrollEntryDateOf, payrollGlKeys } from "./payroll-gl-consumer.ts";
 import {
   assertEvidenceKeyForBatchStored,
@@ -184,6 +185,15 @@ export async function recordOverpaidItem(
   const journalKey = overpaidJournalKey(item.id);
   // The fee actually journaled (0 when nothing is journaled).
   let feeIdr = 0;
+
+  // The locked journal is queued, not posted yet: only the fee would post and
+  // the second transfer's net would never reach the GL. Wait for the consumer.
+  if (await lockJournalPending(tx, tenantId, item.payrollRunId))
+    throw payoutRefuse(
+      409,
+      "PAYOUT_LOCK_JOURNAL_PENDING",
+      "Jurnal kunci payroll belum diposting, coba lagi setelah diproses.",
+    );
 
   // Like the settle: a run without a locked journal has no salary side, the
   // item is still recorded. The fee is journaled when the run has a locked

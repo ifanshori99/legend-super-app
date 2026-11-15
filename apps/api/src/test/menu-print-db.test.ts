@@ -13,6 +13,7 @@ import { PDFDocument } from "pdf-lib";
 import { createApp } from "../app";
 import { createMenuPdfRenderer } from "../services/menu-pdf-renderer";
 import { allText } from "./pdf-text";
+import { validPdfBytes } from "./helpers/pdf-fixtures";
 import { NoopMalwareScanner } from "../services/core-image";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
@@ -66,7 +67,8 @@ class CountingRenderer implements MenuPdfRenderer {
   async render(menu: PrintableMenu) {
     this.calls += 1;
     this.drawn = JSON.stringify(buildMenuPdfSpec(menu));
-    return new Uint8Array(Buffer.from(`%PDF-1.4 fake ${this.calls}`));
+    // A real PDF: storage parses document uploads (legend-851ef).
+    return validPdfBytes({ marker: `fake ${this.calls}` });
   }
 }
 
