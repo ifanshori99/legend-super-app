@@ -648,6 +648,12 @@ export const requestAttendanceCorrection = defineEndpoint({
     requestedType: attendanceTypeSchema,
     requestedOccurredAt: isoDateTimeSchema,
     reason: z.string().min(1).max(500),
+    /**
+     * Optional guard (legend-2boxs): the employee the client believes it acts
+     * for. The server rejects the request when it differs from the session
+     * user's own employee id.
+     */
+    expectedEmployeeId: employeeIdSchema.optional(),
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(attendanceCorrectionSchema),
