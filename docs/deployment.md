@@ -100,6 +100,9 @@ NODE_ENV=production
 DEPLOYMENT_MODE=production
 EDGE_MODE=false
 DATA_CLASSIFICATION=real
+# Pay approved refunds through DOIT. Default off. The API and the worker must
+# have the same value; see "Worker transport and notification settings".
+# DOIT_REFUNDS_ENABLED=false
 DATABASE_URL=postgresql://user:password@database-host:5432/app
 BETTER_AUTH_SECRET=your-random-secret-at-least-32-characters
 # Staff device PINs (PRD §3 F6): its own secret, never derived from
@@ -653,6 +656,21 @@ Known limits of push registration:
   which another user signs in on the same browser and never opens `/fasilitas`.
   The previous user's alarm (while still on duty and authorized) keeps showing
   until 30 days pass or the new user registers.
+`DOIT_REFUNDS_ENABLED` must have the same value in `api.env` and `worker.env`
+(legend-3gna): the API queues approved refunds and the worker pays them, so a
+split would queue refunds nobody pays, or pay refunds the API treats as off.
+A missing line, `0` and `false` mean off; `1` and `true` mean on. An empty
+value (`DOIT_REFUNDS_ENABLED=` or empty quotes) and a bare `DOIT_REFUNDS_ENABLED`
+line (no `=` or `:`) are refused, like `env.ts`: write the value out. A trailing
+comment counts only after a space and `#`; a TAB before `#` makes the value
+invalid.
+`deploy/single-vm/check-refund-flag.sh --env-file /absolute/path/compose.env`
+compares the two files (no docker, prints only file names). Like Compose, it
+lets an exported `API_ENV_FILE` or `WORKER_ENV_FILE` override the path in
+`compose.env`; an exported but empty one fails the check. `deploy.sh`
+runs it before the first `compose up`: a mismatch stops the deploy before
+PostgreSQL starts or anything migrates. The API and the worker also log
+`DOIT_REFUNDS_ENABLED` with its resolved value at startup.
 
 A disabled channel is never planned for a recipient: in-app notifications are
 still written and the attempt is skipped, never reported as sent. A gap in an

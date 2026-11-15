@@ -2,6 +2,8 @@
 # Exercise deploy ordering without contacting Docker or exposing environment values.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# The caller's shell must not leak into the checks (shell wins over env files).
+unset API_ENV_FILE WORKER_ENV_FILE DOIT_REFUNDS_ENABLED
 tmp=$(mktemp -d /tmp/legend-deploy-test.XXXXXXXX)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 mkdir "$tmp/bin"
@@ -184,3 +186,307 @@ grep -F -- '--profile migration run --rm -e DOIT_REFUNDS_ENABLED=true -e LEGEND_
   exit 1
 }
 echo 'legend-8cf3: pre-switch refund reset wrapper checks passed'
+# legend-3gna: api and worker must agree on DOIT_REFUNDS_ENABLED, or the API
+# could queue refunds the worker then ignores (or the reverse). The deploy path
+# gets a read-only check that compares the two env files named in compose.env.
+# Names the implementer must create (this test calls them):
+#   deploy/single-vm/check-refund-flag.sh --env-file /absolute/path/compose.env
+#     reads API_ENV_FILE and WORKER_ENV_FILE from compose.env, exits 0 when both
+#     resolve to the same boolean, exits non-zero (message on stderr naming
+#     DOIT_REFUNDS_ENABLED and both files, never a value or URL) when they
+#     differ. Absent, empty and 0/false all count as false. It must not need
+#     docker. deploy.sh must call it before the first compose up and stop the
+#     deploy on failure (no migration, no api/web/worker/caddy start).
+# Assumption: the spec does not say what happens for an unreadable env file;
+# not tested here.
+cat > "$tmp/bin/docker" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TEST_LOG"
+STUB
+check="$root/check-refund-flag.sh"
+cp "$tmp/api.env.orig" "$tmp/api.env"
+cp "$tmp/worker.env.orig" "$tmp/worker.env"
+set_flag() {
+  # set_flag <file> <value|--absent>; value may be empty (KEY= with no value).
+  grep -v 'DOIT_REFUNDS_ENABLED' "$1" > "$1.new" || true
+  mv "$1.new" "$1"
+  [ "$2" = --absent ] || printf 'DOIT_REFUNDS_ENABLED=%s\n' "$2" >> "$1"
+}
+expect_same() {
+  set_flag "$tmp/api.env" "$1"
+  set_flag "$tmp/worker.env" "$2"
+  "$check" --env-file "$tmp/compose.env" >/dev/null 2>"$tmp/err" || {
+    echo "legend-3gna: api=$1 worker=$2 was refused but means the same" >&2
+    exit 1
+  }
+}
+expect_differ() {
+  set_flag "$tmp/api.env" "$1"
+  set_flag "$tmp/worker.env" "$2"
+  if "$check" --env-file "$tmp/compose.env" >/dev/null 2>"$tmp/err"; then
+    echo "legend-3gna: api=$1 worker=$2 was accepted although they differ" >&2
+    exit 1
+  fi
+  grep -F DOIT_REFUNDS_ENABLED "$tmp/err" >/dev/null || {
+    echo 'legend-3gna: the mismatch message does not name DOIT_REFUNDS_ENABLED' >&2
+    exit 1
+  }
+  if grep -F -e "$password" -e postgresql:// "$tmp/err" >/dev/null; then
+    echo 'legend-3gna: the check printed a database URL' >&2
+    exit 1
+  fi
+}
+[ -x "$check" ] || {
+  echo "legend-3gna: $check does not exist or is not executable" >&2
+  exit 1
+}
+expect_same true true
+expect_same false false
+expect_same --absent --absent
+expect_same --absent false
+expect_same false 0
+expect_differ true false
+expect_differ false true
+expect_differ true --absent
+expect_differ --absent true
+expect_differ 0 true
+# Compose drops a trailing ` #comment` on an unquoted value; so does the check.
+expect_differ 'false # off' true
+expect_same 'false # off' false
+expect_same 'true # on' 1
+expect_same '"false" # off' 0
+# env.ts accepts only lower case true/false/1/0, so anything else fails here too.
+expect_invalid() {
+  set_flag "$tmp/api.env" "$1"
+  set_flag "$tmp/worker.env" true
+  if "$check" --env-file "$tmp/compose.env" >/dev/null 2>"$tmp/err"; then
+    echo "legend-3gna: api=$1 was accepted but env.ts rejects it" >&2
+    exit 1
+  fi
+  # Wording is the implementer's; it must name the flag and the allowed values.
+  { grep -F DOIT_REFUNDS_ENABLED "$tmp/err" && grep -F 'true, false, 1 or 0' "$tmp/err"; } >/dev/null || {
+    echo "legend-3gna: api=$1 did not fail with the allowed-values message" >&2
+    exit 1
+  }
+  if grep -F -e "$password" -e postgresql:// "$tmp/err" >/dev/null; then
+    echo 'legend-3gna: the check printed a database URL' >&2
+    exit 1
+  fi
+}
+expect_invalid TRUE
+expect_invalid yes
+expect_invalid garbage
+# The deploy stops before any docker work when the two files differ.
+set_flag "$tmp/api.env" true
+set_flag "$tmp/worker.env" false
+: > "$TEST_LOG"
+if "$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1; then
+  echo 'legend-3gna: deploy continued with DOIT_REFUNDS_ENABLED differing between api.env and worker.env' >&2
+  exit 1
+fi
+if grep -F -e 'api web worker caddy' -e 'run --rm migrate' -e 'dist/provision-roles.js --audit' "$TEST_LOG" >/dev/null; then
+  echo 'legend-3gna: migration, audit or services ran despite the refund flag mismatch' >&2
+  exit 1
+fi
+# A matching pair still deploys.
+set_flag "$tmp/api.env" true
+set_flag "$tmp/worker.env" true
+: > "$TEST_LOG"
+"$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1 || {
+  echo 'legend-3gna: deploy refused matching DOIT_REFUNDS_ENABLED values' >&2
+  exit 1
+}
+grep -F 'up -d --wait api web worker caddy' "$TEST_LOG" >/dev/null || {
+  echo 'legend-3gna: services did not start with matching values' >&2
+  exit 1
+}
+echo 'legend-3gna: refund flag mismatch checks passed'
+# legend-3gna follow-up (brief 797, T1): Compose gives a shell variable
+# (API_ENV_FILE, WORKER_ENV_FILE) priority over compose.env, so the check must
+# compare the files Compose will really use. A set but empty variable is an
+# error (fail closed). Assumption: the message wording is the implementer's;
+# the tests need exit status, DOIT_REFUNDS_ENABLED in the message, no value or
+# URL printed, and no `up` call to docker.
+write_flag() {
+  # write_flag <file> <flag line, may be empty>: keep the file's other lines,
+  # replace every DOIT_REFUNDS_ENABLED line with the given one.
+  [ -f "$1" ] || printf 'APP_DATABASE_URL=%s\n' "$app" > "$1"
+  set_flag "$1" --absent
+  [ -z "$2" ] || printf '%s\n' "$2" >> "$1"
+}
+no_compose_up() {
+  # $1 = what the case is; the stub logged every docker call.
+  if grep -F -e ' up ' -e 'run --rm migrate' -e 'api web worker caddy' "$TEST_LOG" >/dev/null ||
+    grep -E '^up ' "$TEST_LOG" >/dev/null; then
+    echo "legend-3gna: compose up or the migration ran with $1" >&2
+    exit 1
+  fi
+}
+check_refuses() {
+  # check_refuses <case> [word the message must name, default the flag];
+  # env assignments are inherited from the caller.
+  if "$check" --env-file "$tmp/compose.env" >/dev/null 2>"$tmp/err"; then
+    echo "legend-3gna: the check accepted $1" >&2
+    exit 1
+  fi
+  grep -F "${2:-DOIT_REFUNDS_ENABLED}" "$tmp/err" >/dev/null || {
+    echo "legend-3gna: the refusal for $1 does not name ${2:-DOIT_REFUNDS_ENABLED}" >&2
+    exit 1
+  }
+  if grep -F -e "$password" -e postgresql:// -e 'DOIT_REFUNDS_ENABLED=' "$tmp/err" >/dev/null; then
+    echo "legend-3gna: the refusal for $1 printed a value or URL" >&2
+    exit 1
+  fi
+}
+deploy_refuses() {
+  : > "$TEST_LOG"
+  if "$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1; then
+    echo "legend-3gna: deploy continued with $1" >&2
+    exit 1
+  fi
+  no_compose_up "$1"
+}
+# compose.env names api.env and worker.env, both on here.
+write_flag "$tmp/api.env" 'DOIT_REFUNDS_ENABLED=true'
+write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED=true'
+write_flag "$tmp/worker-off.env" 'DOIT_REFUNDS_ENABLED=false'
+write_flag "$tmp/api-off.env" 'DOIT_REFUNDS_ENABLED=false'
+# T1: the shell overrides the worker file with one that has the flag off.
+WORKER_ENV_FILE="$tmp/worker-off.env"
+export WORKER_ENV_FILE
+check_refuses 'a WORKER_ENV_FILE override with a different flag'
+deploy_refuses 'a WORKER_ENV_FILE override with a different flag'
+unset WORKER_ENV_FILE
+# The same for API_ENV_FILE.
+API_ENV_FILE="$tmp/api-off.env"
+export API_ENV_FILE
+check_refuses 'an API_ENV_FILE override with a different flag'
+deploy_refuses 'an API_ENV_FILE override with a different flag'
+unset API_ENV_FILE
+# Reverse: the files named in compose.env differ, but the override makes the
+# effective files equal, so the check accepts (the override is what counts).
+write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED=false'
+write_flag "$tmp/worker-on.env" 'DOIT_REFUNDS_ENABLED=true'
+WORKER_ENV_FILE="$tmp/worker-on.env" "$check" --env-file "$tmp/compose.env" >/dev/null 2>"$tmp/err" || {
+  echo 'legend-3gna: the check ignored a WORKER_ENV_FILE override that makes both files agree' >&2
+  exit 1
+}
+# A set but empty override fails closed.
+WORKER_ENV_FILE=""
+export WORKER_ENV_FILE
+check_refuses 'an empty WORKER_ENV_FILE' WORKER_ENV_FILE
+deploy_refuses 'an empty WORKER_ENV_FILE'
+unset WORKER_ENV_FILE
+API_ENV_FILE=""
+export API_ENV_FILE
+check_refuses 'an empty API_ENV_FILE' API_ENV_FILE
+deploy_refuses 'an empty API_ENV_FILE'
+unset API_ENV_FILE
+# T2: a bare DOIT_REFUNDS_ENABLED line (no = or :) is refused, whatever the
+# shell holds, because Compose would read it from the shell. api.env true then
+# a bare line, worker false: refused (deploy stops).
+write_flag "$tmp/api.env" 'DOIT_REFUNDS_ENABLED=true'
+printf 'DOIT_REFUNDS_ENABLED\n' >> "$tmp/api.env"
+write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED=false'
+check_refuses 'a bare key in api.env (true then bare, worker false)'
+deploy_refuses 'a bare key in api.env (true then bare, worker false)'
+# Reverse: the bare key in worker.env.
+write_flag "$tmp/api.env" 'DOIT_REFUNDS_ENABLED=false'
+write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED=true'
+printf 'DOIT_REFUNDS_ENABLED\n' >> "$tmp/worker.env"
+check_refuses 'a bare key in worker.env (worker true then bare, api false)'
+deploy_refuses 'a bare key in worker.env (worker true then bare, api false)'
+# With a value in the shell that would make the two sides agree, a bare key is
+# still refused (the old behavior read it from the shell and accepted).
+write_flag "$tmp/api.env" 'DOIT_REFUNDS_ENABLED=true'
+printf 'DOIT_REFUNDS_ENABLED\n' >> "$tmp/api.env"
+write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED=false'
+DOIT_REFUNDS_ENABLED=false
+export DOIT_REFUNDS_ENABLED
+check_refuses 'a bare key in api.env with DOIT_REFUNDS_ENABLED=false in the shell'
+deploy_refuses 'a bare key in api.env with DOIT_REFUNDS_ENABLED=false in the shell'
+unset DOIT_REFUNDS_ENABLED
+write_flag "$tmp/api.env" 'DOIT_REFUNDS_ENABLED=false'
+write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED=true'
+printf 'export DOIT_REFUNDS_ENABLED\n' >> "$tmp/worker.env"
+DOIT_REFUNDS_ENABLED=false
+export DOIT_REFUNDS_ENABLED
+check_refuses 'an exported bare key in worker.env with DOIT_REFUNDS_ENABLED=false in the shell'
+deploy_refuses 'an exported bare key in worker.env with DOIT_REFUNDS_ENABLED=false in the shell'
+unset DOIT_REFUNDS_ENABLED
+# A lone bare key in both files with the shell on is refused too.
+write_flag "$tmp/api.env" 'DOIT_REFUNDS_ENABLED'
+write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED'
+DOIT_REFUNDS_ENABLED=true
+export DOIT_REFUNDS_ENABLED
+check_refuses 'bare keys in both files with DOIT_REFUNDS_ENABLED=true in the shell'
+deploy_refuses 'bare keys in both files with DOIT_REFUNDS_ENABLED=true in the shell'
+unset DOIT_REFUNDS_ENABLED
+# A normal KEY=value pair still deploys after all of this.
+write_flag "$tmp/api.env" 'DOIT_REFUNDS_ENABLED=true'
+write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED=true'
+: > "$TEST_LOG"
+"$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1 || {
+  echo 'legend-3gna: deploy refused two files with the same explicit value' >&2
+  exit 1
+}
+echo 'legend-3gna: shell override and bare key checks passed'
+# T4 (CTO approved): an empty DOIT_REFUNDS_ENABLED value is refused in api.env
+# and in worker.env (KEY=, KEY="" and KEY=''), because env.ts rejects it and
+# the API would not start. A key absent from both files still means off. A
+# tab before a trailing comment is refused (Compose only drops a space-led
+# ` #comment`); a space before it stays valid.
+# Assumption: the message wording is the implementer's; the tests need exit
+# status, DOIT_REFUNDS_ENABLED in the message, no value or URL printed, and no
+# `up` call to docker.
+tab=$(printf '\t')
+for empty in 'DOIT_REFUNDS_ENABLED=' 'DOIT_REFUNDS_ENABLED=""' "DOIT_REFUNDS_ENABLED=''"; do
+  for other in 'DOIT_REFUNDS_ENABLED=false' 'DOIT_REFUNDS_ENABLED=true' 'DOIT_REFUNDS_ENABLED='; do
+    write_flag "$tmp/api.env" "$empty"
+    write_flag "$tmp/worker.env" "$other"
+    check_refuses "an empty value in api.env ($empty, other side $other)"
+    deploy_refuses "an empty value in api.env ($empty, other side $other)"
+    write_flag "$tmp/api.env" "$other"
+    write_flag "$tmp/worker.env" "$empty"
+    check_refuses "an empty value in worker.env ($empty, other side $other)"
+    deploy_refuses "an empty value in worker.env ($empty, other side $other)"
+  done
+done
+# Both files without the key: off on both sides, the deploy goes ahead.
+write_flag "$tmp/api.env" ''
+write_flag "$tmp/worker.env" ''
+"$check" --env-file "$tmp/compose.env" >/dev/null 2>"$tmp/err" || {
+  echo 'legend-3gna: the check refused two files that both lack DOIT_REFUNDS_ENABLED' >&2
+  exit 1
+}
+: > "$TEST_LOG"
+"$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1 || {
+  echo 'legend-3gna: deploy refused two files that both lack DOIT_REFUNDS_ENABLED' >&2
+  exit 1
+}
+grep -F 'up -d --wait api web worker caddy' "$TEST_LOG" >/dev/null || {
+  echo 'legend-3gna: services did not start with the flag absent from both files' >&2
+  exit 1
+}
+# A tab then a comment is refused, in either file.
+write_flag "$tmp/api.env" "DOIT_REFUNDS_ENABLED=true${tab}#c"
+write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED=true'
+check_refuses 'a tab before a comment in api.env'
+deploy_refuses 'a tab before a comment in api.env'
+write_flag "$tmp/api.env" 'DOIT_REFUNDS_ENABLED=true'
+write_flag "$tmp/worker.env" "DOIT_REFUNDS_ENABLED=true${tab}#c"
+check_refuses 'a tab before a comment in worker.env'
+deploy_refuses 'a tab before a comment in worker.env'
+# A space then a comment stays valid and deploys.
+write_flag "$tmp/api.env" 'DOIT_REFUNDS_ENABLED=true #c'
+write_flag "$tmp/worker.env" 'DOIT_REFUNDS_ENABLED=true'
+"$check" --env-file "$tmp/compose.env" >/dev/null 2>"$tmp/err" || {
+  echo 'legend-3gna: the check refused a space before a comment' >&2
+  exit 1
+}
+: > "$TEST_LOG"
+"$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1 || {
+  echo 'legend-3gna: deploy refused a space before a comment' >&2
+  exit 1
+}
+echo 'legend-3gna: empty value and comment checks passed'

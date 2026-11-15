@@ -184,6 +184,14 @@ type Fund = typeof paymentUnallocatedFunds.$inferSelect;
 type Locked = { intent: Intent; fund: Fund | null; refund: Refund };
 type DecideOptions = { readonly mfaVerified: boolean };
 
+/**
+ * The reopen marker lives in audit_2y, which is deleted after 2 years. A refund
+ * older than this (a margin under 730 days) can no longer prove it was never
+ * reopened, so its single-approver decision is treated fail-closed and needs
+ * MFA even without an audit row (legend-tx8x).
+ */
+const REOPEN_AUDIT_RETENTION_DAYS = 700;
+
 // ------------------------------------------------------------------ locks
 
 /** Locks authority group -> POS order -> intent -> fund -> refund, then re-reads. */
@@ -1475,6 +1483,30 @@ async function decideRefund(
                     "PERMISSION_DENIED",
                     "Your account cannot perform this action.",
                   );
+                // A refund re-opened from quarantine lost its old chain and is
+                // decided again by one approver: that decision needs MFA
+                // (legend-tx8x). The throw rolls back the opened request, so the
+                // refund stays pending with no chain row.
+                if (!opts.mfaVerified) {
+                  const { rows: reopened } = await tx.execute<{
+                    one: number;
+                  }>(
+                    sql`SELECT 1 AS one FROM audit_logs
+                        WHERE tenant_id = ${refund.tenantId}
+                          AND created_at >= ${refund.createdAt.toISOString()}::timestamptz
+                          AND event->>'objectId' = ${refund.id}::text
+                          AND event->>'action' = 'payment.refund_quarantine_reopened'
+                        LIMIT 1`,
+                  );
+                  if (reopened.length > 0)
+                    throw new AccessError("MFA_REQUIRED");
+                  // The marker may already be purged (audit_2y): fail closed.
+                  if (
+                    now.getTime() - refund.createdAt.getTime() >
+                    REOPEN_AUDIT_RETENTION_DAYS * 86_400_000
+                  )
+                    throw new AccessError("MFA_REQUIRED");
+                }
                 const applied = await applyApproval(
                   tx,
                   context,

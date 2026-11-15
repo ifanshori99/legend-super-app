@@ -278,6 +278,46 @@ async function cachedWebhookSecrets(
 }
 
 /**
+ * Refund-only event (no payment reference): the integration that minted the
+ * payment of the refund it names, by idempotency key (`refund:<uuid>`) or by
+ * the refund id DOIT gave earlier. Tenant scoped; unknown, ambiguous or
+ * foreign refunds give null. The body only picks which secret to try.
+ */
+async function refundMintingIntegrationId(
+  context: ScopedTenantContext,
+  json: unknown,
+): Promise<string | null> {
+  if (typeof json !== "object" || json === null) return null;
+  const { type, data } = json as { type?: unknown; data?: unknown };
+  if (typeof type !== "string" || !isDoitRefundEvent(type)) return null;
+  const match = matchDoitRefundEvent(type, readDoitRefundFacts(data));
+  if (match.kind !== "key" && match.kind !== "refund_id") return null;
+  return withTenant(db, context, async (tx) => {
+    const rows = await tx
+      .select({ integrationId: paymentIntents.gatewayIntegrationId })
+      .from(paymentRefunds)
+      .innerJoin(
+        paymentIntents,
+        and(
+          eq(paymentIntents.tenantId, paymentRefunds.tenantId),
+          eq(paymentIntents.id, paymentRefunds.paymentIntentId),
+        ),
+      )
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.provider, PROVIDER),
+          match.kind === "key"
+            ? eq(paymentRefunds.id, match.refundId)
+            : eq(paymentRefunds.providerRef, match.providerRef),
+        ),
+      )
+      .limit(2);
+    return rows.length === 1 ? (rows[0]!.integrationId ?? null) : null;
+  });
+}
+
+/**
  * Secret of the integration that minted the intent a delivery names, when that
  * row is no longer among the active ones (disabled since): a payment already
  * in flight on it must still be verifiable. The body is not trusted here; it
@@ -298,21 +338,25 @@ async function mintingIntegrationSecret(
       ? (data as { reference?: unknown }).reference
       : undefined,
   );
-  if (!reference.success) return [];
-  const integrationId = await withTenant(db, context, async (tx) => {
-    const [found] = await tx
-      .select({ integrationId: paymentIntents.gatewayIntegrationId })
-      .from(paymentIntents)
-      .where(
-        and(
-          eq(paymentIntents.tenantId, context.tenant.tenantId),
-          eq(paymentIntents.id, reference.data),
-          eq(paymentIntents.provider, PROVIDER),
-        ),
-      )
-      .limit(1);
-    return found?.integrationId ?? null;
-  });
+  let integrationId: string | null;
+  if (reference.success) {
+    integrationId = await withTenant(db, context, async (tx) => {
+      const [found] = await tx
+        .select({ integrationId: paymentIntents.gatewayIntegrationId })
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tenantId, context.tenant.tenantId),
+            eq(paymentIntents.id, reference.data),
+            eq(paymentIntents.provider, PROVIDER),
+          ),
+        )
+        .limit(1);
+      return found?.integrationId ?? null;
+    });
+  } else {
+    integrationId = await refundMintingIntegrationId(context, json);
+  }
   if (
     integrationId === null ||
     tried.some((entry) => entry.integrationId === integrationId)
@@ -322,6 +366,7 @@ async function mintingIntegrationSecret(
     context,
     PROVIDER,
     integrationId,
+    { forStoredIntent: true },
   );
   if (!loaded) return [];
   const secret = loaded.credentials.webhookSecret;
@@ -551,7 +596,9 @@ async function signedByIntentIntegration(
   if (minted !== null && row.integrationId === minted) return true;
   const loaded =
     minted !== null
-      ? await loadIntegrationCredentialsById(context, PROVIDER, minted)
+      ? await loadIntegrationCredentialsById(context, PROVIDER, minted, {
+          forStoredIntent: true,
+        })
       : await loadActiveIntegrationCredentials(
           context,
           PROVIDER,
