@@ -232,7 +232,7 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   "0378_ai_assistant_auto_enable.sql":
     "switches on the ai_assistant module (feature_flags.modules) for active tenants whose plan is an active package that includes ai_assistant and that already used AI (an ok tanya_ai or mcp usage event, or a user message); idempotent, skips tenants that already have the module, touches no limits, plan or integration providers, writes one tenant.module_auto_enabled audit row per changed tenant; FORCE RLS lifted for the statements that read audit_logs, ai_usage_events and ai_messages and restored",
   // legend-wcd24 (888)
-  "0632_payout_frozen_payable_account.sql":
+  "0390_payout_frozen_payable_account.sql":
     "backfills payroll_payout_gl_postings.salaries_payable_account_id (the salaries payable account the lock journal of the run credited, read from that journal's own account snapshot) and payable_account_hold (uncertain accounts are held for finance reconciliation) on existing settle postings only; changes no amount, journal or other column; the posting guard trigger is disabled for those two statements and re-enabled, FORCE RLS lifted on the posting, chart, journal and batch tables for the migration transaction and restored",
 };
 

@@ -14,8 +14,8 @@
 --     update outside the listed moves is refused, PAYOUT-30), and the flip needs
 --     the debit total of the settle journal to equal it. NULL stays only on the
 --     rows written before this migration, whose sealed total cannot be read in
---     SQL: for them the guard keeps its 0385/0632 checks (accounts, balance).
--- The function below is 0632's (frozen salaries payable account), not 0385's, with
+--     SQL: for them the guard keeps its 0385/0390 checks (accounts, balance).
+-- The function below is 0390's (frozen salaries payable account), not 0385's, with
 -- the two changes marked.
 ALTER TABLE "payroll_payout_gl_postings" ADD COLUMN "settle_net_idr" bigint;--> statement-breakpoint
 ALTER TABLE "payroll_payout_gl_postings" ADD CONSTRAINT "payroll_payout_gl_postings_settle_net_check" CHECK ("payroll_payout_gl_postings"."settle_net_idr" IS NULL OR "payroll_payout_gl_postings"."settle_net_idr" >= 0);--> statement-breakpoint

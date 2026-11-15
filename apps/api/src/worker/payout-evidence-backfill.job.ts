@@ -2,7 +2,7 @@
 // services/payroll-payout-proof-fingerprint.service.ts).
 //
 // Proofs that existed before the fingerprints (migration 0382 and the stored
-// hash of 0631) lack hashes, and a byte-identical re-upload of one would not be
+// hash of 0389) lack hashes, and a byte-identical re-upload of one would not be
 // recognised as the same proof. This sweep (one tenant per call, tenant-wide
 // worker context) reads the stored objects of the proof keys that a return
 // claim or an item points at and fills the hashes in. Until a tenant's claims

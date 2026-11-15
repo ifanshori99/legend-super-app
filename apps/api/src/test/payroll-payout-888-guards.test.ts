@@ -579,7 +579,7 @@ async function bankPosting(kind: "settle_pending" | "settle_skipped") {
   else await withAccountingOff(confirm);
   const [posting] = await W.postingsOf(batchId);
   expect(posting!.kind, "premise: stored as the expected kind").toBe(kind);
-  // Migration 0632: the flip is checked against the salaries payable account
+  // Migration 0390: the flip is checked against the salaries payable account
   // frozen on the posting; a pending/skipped one has none until its lock
   // journal exists (the service freezes it then). Freeze it as the service
   // would, so only the AMOUNT decides these cases (triggers off: test setup).

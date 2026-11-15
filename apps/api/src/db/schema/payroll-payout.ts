@@ -383,7 +383,7 @@ export const payrollPayoutGlPostings = pgTable(
     sourceGlAccountId: uuid("source_gl_account_id"),
     /**
      * The `salaries_payable` GL account the run's lock journal credited
-     * (legend-wcd24, migration 0632), frozen on the posting. Settle and return
+     * (legend-wcd24, migration 0390), frozen on the posting. Settle and return
      * use this account, never today's mapping, so a later remap cannot move the
      * debit or reopen the payable on another account. Null while the lock
      * journal does not exist yet (pending/skipped) or when it cannot be proven.
@@ -392,7 +392,7 @@ export const payrollPayoutGlPostings = pgTable(
     /**
      * True when the payable account of a settled posting is uncertain (lock
      * journal without a provable account, or the settle journal debited another
-     * account than the lock credited). Set by the 0632 backfill only. A held
+     * account than the lock credited). Set by the 0390 backfill only. A held
      * posting refuses new returns and is listed for finance reconciliation.
      */
     payableAccountHold: boolean("payable_account_hold")
@@ -400,7 +400,7 @@ export const payrollPayoutGlPostings = pgTable(
       .default(false),
     /**
      * The principal (net) of the group in plain, written once with the posting
-     * (legend-8vcsg, migration 0634). The guard compares the debit total of the
+     * (legend-8vcsg, migration 0392). The guard compares the debit total of the
      * settle journal with it when a pending/skipped settlement flips to
      * `settle`; the sealed total cannot be opened in SQL. Null only on rows
      * written before the migration.
@@ -908,7 +908,7 @@ export type PayoutOverpaidProposalStatus =
 
 /**
  * Two-person record of a transfer that turned out paid twice (legend-v6gtp,
- * migration 0633). Step one (a non-requester) proposes with proof and note and
+ * migration 0391). Step one (a non-requester) proposes with proof and note and
  * the item stays `failed`; step two (a DIFFERENT person) records the overpaid
  * item and the proposal becomes `recorded`. One proposal per item, ever. Never
  * deleted; the database guard allows only a re-proposal by the same person and
@@ -985,7 +985,7 @@ export type PayoutFailedCorrectionStatus =
 
 /**
  * Two-person correction of a `failed` item that did reach the employee after
- * all, with no other attempt paid (legend-mejr2, migration 0635/0636). Step one
+ * all, with no other attempt paid (legend-mejr2, migration 0393/0394). Step one
  * (a non-requester who resolved nothing of the item) proposes with a bank proof
  * and a note and the item stays `failed`; step two (a DIFFERENT person with the
  * same restrictions and the same proof) marks the row `corrected` and, in the

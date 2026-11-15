@@ -12,7 +12,7 @@
 //   by another person with the SAME proof, moves each item `failed ->
 //   succeeded` and settles it. Neither person may be the batch requester or one
 //   of the two who resolved the item as failed (403). The database repeats all
-//   of it (migrations 0635, 0636): `failed -> succeeded` exists only with
+//   of it (migrations 0393, 0394): `failed -> succeeded` exists only with
 //   `app.payout_correction` set and a `corrected` row of the item.
 // - The proof is bound to ONE operation: its key and both hashes (uploaded and
 //   stored bytes) must not back a return claim, an overpaid proposal, another

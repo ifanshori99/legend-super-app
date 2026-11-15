@@ -54,7 +54,7 @@
 //   lock journal (legend-vvzij), so 2103 of that batch does not stay open. If
 //   no source account can be resolved, it stays skipped.
 // - The salaries payable account is the one the run's LOCK journal credited
-//   (legend-wcd24, migration 0632), frozen on the posting
+//   (legend-wcd24, migration 0390), frozen on the posting
 //   (`salaries_payable_account_id`). Settle, resolve of a pending settle and
 //   return use it through the `salaries_payable` account override, never
 //   today's mapping. Taken from the lock journal's account snapshot; not
@@ -1557,7 +1557,7 @@ export async function payoutRecoveryReason(
   batch: RecoveryBatch,
   posting: FeePosting,
 ): Promise<PayoutRecoveryReason> {
-  // Settled but the payable account is uncertain (0632): finance reconciles.
+  // Settled but the payable account is uncertain (0390): finance reconciles.
   if (posting.payableAccountHold) return "payable_account_unknown";
   const owed = await settleOwed(tx, tenantId, batch, posting);
   const feeIdr = postingFeeIdr(posting, tenantId);
@@ -1687,7 +1687,7 @@ function recoveryCandidateWhere(tenantId: TenantId) {
     eq(payrollPayoutGlPostings.tenantId, tenantId),
     or(
       eq(payrollPayoutGlPostings.feePosted, false),
-      // Settled, but the payable account is uncertain (0632): reconciliation.
+      // Settled, but the payable account is uncertain (0390): reconciliation.
       eq(payrollPayoutGlPostings.payableAccountHold, true),
       // A pending/skipped settlement is only open once the run's lock
       // journal exists (its net is sealed, so the net > 0 test is in code).

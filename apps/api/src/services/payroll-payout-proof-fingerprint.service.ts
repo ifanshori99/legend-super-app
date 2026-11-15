@@ -9,7 +9,7 @@
 // an image can be neither downloaded and uploaded again nor used under a new key.
 //
 // Proofs from before the fingerprints (migration 0382, or the stored hash of
-// 0631) lack hashes. `backfillProofFingerprints` reads their stored objects and
+// 0389) lack hashes. `backfillProofFingerprints` reads their stored objects and
 // fills the hashes in (a claim or file row only goes from NULL to a value; an
 // item evidence key without a record gets one). The state "backfill not
 // finished" is derived from the data, not stored (`countFingerprintTargets`):
@@ -142,7 +142,7 @@ export async function twinEvidenceKeys(
 export type FingerprintTargetCounts = {
   /** Return claims lacking the uploaded or the stored hash. */
   readonly claimsWithoutHash: number;
-  /** Proof records lacking the stored hash (written before 0631). */
+  /** Proof records lacking the stored hash (written before 0389). */
   readonly filesWithoutStoredHash: number;
   /** Evidence keys of items (resolve, confirm, return) without any proof record. */
   readonly itemKeysWithoutRecord: number;

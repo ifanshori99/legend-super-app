@@ -5,7 +5,7 @@
 -- (Dr salaries payable / Cr the source account) posts exactly once. Step one
 -- writes a proposal here (the item stays `failed`, no journal); step two, by
 -- another person with the same proof, marks the rows `corrected` and the
--- service moves the items (guard in 0636). One row per item, ever.
+-- service moves the items (guard in 0394). One row per item, ever.
 -- All items of one request share `operation_id` (the id of the first row of the
 -- request). The proof is bound to that ONE operation: its evidence key and each
 -- of its two hashes (uploaded bytes, stored bytes) are unique per tenant over

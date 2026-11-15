@@ -1,6 +1,6 @@
 -- legend-mejr2: a `failed` item that did reach the employee after all, with no
 -- other attempt paid, can become `succeeded` again, once, and only through a
--- correction (table payroll_payout_failed_corrections, 0635). One guard
+-- correction (table payroll_payout_failed_corrections, 0393). One guard
 -- change, no table change:
 --  1. PAYOUT-12 (a failed item is final) lets exactly one move through while
 --     the service has set `app.payout_correction` for its transaction: the

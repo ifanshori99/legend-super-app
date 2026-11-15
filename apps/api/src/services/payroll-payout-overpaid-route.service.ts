@@ -6,7 +6,7 @@
 //   writes a proposal (proof + note) and the item stays `failed`: no journal.
 //   Step two, by a DIFFERENT non-requester with the SAME proof, calls
 //   `recordOverpaidItem` for each item and marks the proposal `recorded`.
-//   The database guard repeats the rule (migration 0633).
+//   The database guard repeats the rule (migration 0391).
 // - Exactly once: the run and batch are locked first (same order as every
 //   payout step), so two callers are serialized; a replay finds an item that is
 //   no longer `failed` and is refused (409) with nothing changed. The journal

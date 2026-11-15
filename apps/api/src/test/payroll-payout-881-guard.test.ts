@@ -20,9 +20,9 @@
 //   cash source branch (posting.source_gl_account_id) and an unbalanced
 //   journal or one with no lines (the ledger refuses to commit them).
 //
-// - Migration 0632 freezes the salaries payable account on the posting: the flip
+// - Migration 0390 freezes the salaries payable account on the posting: the flip
 //   is checked against it, so the seeded postings carry the mapped account.
-// - Migration 0634 lets `fee_posted` go false -> true only with the fee journal
+// - Migration 0392 lets `fee_posted` go false -> true only with the fee journal
 //   of the posting (see payroll-payout-888-guards.test.ts for the refusals).
 //
 // Everything runs as `legend_app` with the tenant context (the role the API
@@ -596,7 +596,7 @@ describe("legend-63qhw: source account of an unresolved settle", () => {
         ),
       true,
     );
-    // Since 0634 the flip also needs the fee journal of the posting.
+    // Since 0392 the flip also needs the fee journal of the posting.
     const result = await tryUpdate(
       posting.id,
       "fee_posted = true",
