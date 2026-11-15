@@ -194,7 +194,11 @@ orgRouter.get("/domains", manage, async (req, res) => {
 
 orgRouter.post("/domains", manage, jsonBody, async (req, res) => {
   const input = addDomainInputSchema.parse(req.body);
-  const domain = await addDomain(getScopedTenantContext(req), input);
+  const domain = await addDomain(
+    getScopedTenantContext(req),
+    input,
+    getAuth(req).user.id,
+  );
   res.status(201).location(`/api/org/domains/${domain.id}`).json({
     data: domain,
   });
@@ -203,22 +207,39 @@ orgRouter.post("/domains", manage, jsonBody, async (req, res) => {
 orgRouter.post("/domains/:domainId/verify", manage, async (req, res) => {
   const domainId = tenantDomainIdSchema.parse(req.params.domainId);
   const context = getScopedTenantContext(req);
-  const retryAfter = await reserveDomainVerificationAttempt(context, domainId);
-  if (retryAfter !== null) {
-    res.setHeader("Retry-After", String(retryAfter));
-    res.setHeader("Cache-Control", "no-store");
-    throw new HttpError(
-      429,
-      "DOMAIN_VERIFICATION_RATE_LIMITED",
-      "Terlalu banyak percobaan verifikasi domain. Coba lagi nanti.",
-    );
-  }
-  res.json({ data: await verifyDomain(context, domainId) });
+  res.json({
+    data: await verifyDomain(
+      context,
+      domainId,
+      getAuth(req).user.id,
+      async () => {
+        // The shared (database) budget is spent only after tenant ownership of
+        // the domain is established, so unknown ids never consume anyone's slots.
+        const retryAfter = await reserveDomainVerificationAttempt(
+          context,
+          domainId,
+        );
+        if (retryAfter !== null) {
+          res.setHeader("Retry-After", String(retryAfter));
+          res.setHeader("Cache-Control", "no-store");
+          throw new HttpError(
+            429,
+            "DOMAIN_VERIFICATION_RATE_LIMITED",
+            "Terlalu banyak percobaan verifikasi domain. Coba lagi nanti.",
+          );
+        }
+      },
+    ),
+  });
 });
 
 orgRouter.delete("/domains/:domainId", manage, async (req, res) => {
   const domainId = tenantDomainIdSchema.parse(req.params.domainId);
-  await removeDomain(getScopedTenantContext(req), domainId);
+  await removeDomain(
+    getScopedTenantContext(req),
+    domainId,
+    getAuth(req).user.id,
+  );
   res.status(204).end();
 });
 

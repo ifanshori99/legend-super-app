@@ -110,6 +110,10 @@ async function codeOf(promise: Promise<unknown>): Promise<unknown> {
   }
 }
 
+// Audit actor of every service call (legend-ix04y); the audit rows are asserted in
+// tenant-domain-audit.test.ts.
+const actor = randomUUID();
+
 let a: Tenant;
 let b: Tenant;
 
@@ -133,8 +137,16 @@ afterAll(async () => {
 describe("tenant domain claims", () => {
   it("lets B add A's unverified host; A verifies and wins resolution", async () => {
     const hostname = host();
-    const claimA = await addDomain(a.context, { brandId: a.brandId, hostname });
-    const claimB = await addDomain(b.context, { brandId: b.brandId, hostname });
+    const claimA = await addDomain(
+      a.context,
+      { brandId: a.brandId, hostname },
+      actor,
+    );
+    const claimB = await addDomain(
+      b.context,
+      { brandId: b.brandId, hostname },
+      actor,
+    );
     expect(claimA.verification).toMatchObject({
       type: "TXT",
       name: `_legend-verification.${hostname}`,
@@ -148,7 +160,7 @@ describe("tenant domain claims", () => {
     publish({
       [claimA.verification!.name]: [[claimA.verification!.value]],
     });
-    const verified = await verifyDomain(a.context, claimA.id);
+    const verified = await verifyDomain(a.context, claimA.id, actor);
     expect(verified.verifiedAt).not.toBeNull();
     expect(verified.verification).toBeNull();
 
@@ -158,7 +170,11 @@ describe("tenant domain claims", () => {
 
   it("joins TXT chunks and returns an already verified row unchanged", async () => {
     const hostname = host();
-    const claim = await addDomain(a.context, { brandId: a.brandId, hostname });
+    const claim = await addDomain(
+      a.context,
+      { brandId: a.brandId, hostname },
+      actor,
+    );
     const value = claim.verification!.value;
     publish({
       [claim.verification!.name]: [
@@ -166,26 +182,34 @@ describe("tenant domain claims", () => {
         [value.slice(0, 20), value.slice(20)],
       ],
     });
-    const verified = await verifyDomain(a.context, claim.id);
+    const verified = await verifyDomain(a.context, claim.id, actor);
     expect(verified.verifiedAt).not.toBeNull();
     setDomainTxtResolver(async () => {
       throw new Error("must not look up a verified row");
     });
-    expect(await verifyDomain(a.context, claim.id)).toEqual(verified);
+    expect(await verifyDomain(a.context, claim.id, actor)).toEqual(verified);
   });
 
   it("refuses B's verification once A holds the host", async () => {
     const hostname = host();
-    const claimA = await addDomain(a.context, { brandId: a.brandId, hostname });
-    const claimB = await addDomain(b.context, { brandId: b.brandId, hostname });
+    const claimA = await addDomain(
+      a.context,
+      { brandId: a.brandId, hostname },
+      actor,
+    );
+    const claimB = await addDomain(
+      b.context,
+      { brandId: b.brandId, hostname },
+      actor,
+    );
     publish({
       [claimA.verification!.name]: [
         [claimA.verification!.value],
         [claimB.verification!.value],
       ],
     });
-    await verifyDomain(a.context, claimA.id);
-    expect(await codeOf(verifyDomain(b.context, claimB.id))).toBe(
+    await verifyDomain(a.context, claimA.id, actor);
+    expect(await codeOf(verifyDomain(b.context, claimB.id, actor))).toBe(
       "DOMAIN_TAKEN",
     );
     const rows = await listDomains(b.context);
@@ -200,29 +224,33 @@ describe("tenant domain claims", () => {
 
   it("keeps a row unverified when the proof is wrong, missing or the lookup fails", async () => {
     const hostname = host();
-    const claim = await addDomain(a.context, { brandId: a.brandId, hostname });
+    const claim = await addDomain(
+      a.context,
+      { brandId: a.brandId, hostname },
+      actor,
+    );
     const name = claim.verification!.name;
 
     publish({ [name]: [["legend-domain-verification=wrong"]] });
-    expect(await codeOf(verifyDomain(a.context, claim.id))).toBe(
+    expect(await codeOf(verifyDomain(a.context, claim.id, actor))).toBe(
       "DOMAIN_VERIFICATION_FAILED",
     );
     publish({});
-    expect(await codeOf(verifyDomain(a.context, claim.id))).toBe(
+    expect(await codeOf(verifyDomain(a.context, claim.id, actor))).toBe(
       "DOMAIN_VERIFICATION_FAILED",
     );
     for (const code of ["ENOTFOUND", "ESERVFAIL", "ETIMEOUT"]) {
       setDomainTxtResolver(async () => {
         throw Object.assign(new Error(code), { code });
       });
-      expect(await codeOf(verifyDomain(a.context, claim.id))).toBe(
+      expect(await codeOf(verifyDomain(a.context, claim.id, actor))).toBe(
         "DOMAIN_VERIFICATION_FAILED",
       );
     }
     setDomainTxtResolver(async () => {
       throw new Error("boom");
     });
-    expect(await codeOf(verifyDomain(a.context, claim.id))).toBe(
+    expect(await codeOf(verifyDomain(a.context, claim.id, actor))).toBe(
       "DOMAIN_VERIFICATION_FAILED",
     );
 
@@ -235,19 +263,27 @@ describe("tenant domain claims", () => {
   });
 
   it("verifies only the caller's own row", async () => {
-    const claim = await addDomain(a.context, {
-      brandId: a.brandId,
-      hostname: host(),
-    });
+    const claim = await addDomain(
+      a.context,
+      {
+        brandId: a.brandId,
+        hostname: host(),
+      },
+      actor,
+    );
     publish({ [claim.verification!.name]: [[claim.verification!.value]] });
-    expect(await codeOf(verifyDomain(b.context, claim.id))).toBe("NOT_FOUND");
+    expect(await codeOf(verifyDomain(b.context, claim.id, actor))).toBe(
+      "NOT_FOUND",
+    );
   });
 
   it("rejects the same tenant adding a host twice", async () => {
     const hostname = host();
-    await addDomain(a.context, { brandId: a.brandId, hostname });
+    await addDomain(a.context, { brandId: a.brandId, hostname }, actor);
     expect(
-      await codeOf(addDomain(a.context, { brandId: a.brandId, hostname })),
+      await codeOf(
+        addDomain(a.context, { brandId: a.brandId, hostname }, actor),
+      ),
     ).toBe("DOMAIN_TAKEN");
   });
 
@@ -257,13 +293,19 @@ describe("tenant domain claims", () => {
       "cafe.platform.claim.example",
     ]) {
       expect(
-        await codeOf(addDomain(a.context, { brandId: a.brandId, hostname })),
+        await codeOf(
+          addDomain(a.context, { brandId: a.brandId, hostname }, actor),
+        ),
       ).toBe("DOMAIN_RESERVED");
     }
-    const lookalike = await addDomain(a.context, {
-      brandId: a.brandId,
-      hostname: "notplatform.claim.example",
-    });
+    const lookalike = await addDomain(
+      a.context,
+      {
+        brandId: a.brandId,
+        hostname: "notplatform.claim.example",
+      },
+      actor,
+    );
     expect(lookalike.kind).toBe("custom");
   });
 });

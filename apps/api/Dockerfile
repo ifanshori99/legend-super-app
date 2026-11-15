@@ -7,7 +7,7 @@
 #
 # Run the migrator once per release, then start the API. See docs/deployment.md.
 
-ARG NODE_VERSION=22-slim
+ARG NODE_VERSION=22.18.0-slim
 
 FROM node:${NODE_VERSION} AS base
 ENV PNPM_HOME=/pnpm
@@ -85,7 +85,13 @@ CMD ["node", "--enable-source-maps", "dist/server.js"]
 # An edge deployment uses the identical application bundle and runs with
 # EDGE_MODE=true; choose the edge target or set the variable on runner.
 FROM runner AS edge
-ENV EDGE_MODE=true
+# This is the edge image release version, independent of the API package.
+ARG EDGE_NODE_VERSION=0.2.0
+COPY --chown=node:node deploy/edge/check-image-version.mjs /tmp/check-image-version.mjs
+RUN EDGE_NODE_VERSION="$EDGE_NODE_VERSION" node /tmp/check-image-version.mjs \
+    && rm /tmp/check-image-version.mjs
+ENV EDGE_MODE=true \
+    EDGE_NODE_VERSION=${EDGE_NODE_VERSION}
 
 # Keep the API as the default build target.
 FROM runner AS default

@@ -12,6 +12,16 @@ background: `docs/design/hris-edge-replication.md`.
 - `chrony.conf.example`: NTP client configuration.
 - `Caddyfile.edge.example`: HTTPS front for outlet devices.
 - `legend-edge.service`: example systemd unit (`Restart=always`), required when `EDC_AGENT_ENABLED=true`.
+- `check-image-version.mjs`: Validates the edge image release version at build time.
+
+Build the edge image from the repository root with
+`docker build -f apps/api/Dockerfile --target edge -t legend-edge .`.
+The edge target's `EDGE_NODE_VERSION` build argument is the release version
+reported to the cloud; its default in the Dockerfile is the source of truth.
+Use `--build-arg EDGE_NODE_VERSION=<release>` when building a different
+release. The build rejects missing, invalid, prerelease, or pre-0.2.0 versions.
+Do not override `EDGE_NODE_VERSION` at runtime with a different value. Run
+`sh deploy/edge/test-image-version.sh` to check the validator without Docker.
 
 ## Host requirements
 
