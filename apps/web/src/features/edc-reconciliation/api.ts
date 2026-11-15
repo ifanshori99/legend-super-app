@@ -15,7 +15,8 @@ type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
 
 export const fetchEdcReconciliationQueue = (
   query: Query<typeof listEdcReconciliationQueueEndpoint>,
-) => callEndpoint(listEdcReconciliationQueueEndpoint, { query });
+  options?: { signal?: AbortSignal },
+) => callEndpoint(listEdcReconciliationQueueEndpoint, { query }, options);
 
 export const submitEdcReconciliation = (
   params: Params<typeof resolveEdcReconciliationEndpoint>,

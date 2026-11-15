@@ -1,3 +1,11 @@
+## 868 API daftar rekonsiliasi EDC (engineer, legend-p98qi, cabang dari `ui/edc-rekonsiliasi-865` 5fb5f8273, 15 Nov 2026)
+
+- `GET /api/payments/admin/edc/reconciliation-queue` (payment-admin.routes.ts, `listEdcReconciliationQueueForActor` di services/edc-reconciliation.service.ts). Kontrak shared tidak diubah; aksi yang diizinkan diturunkan klien dari field (status, needsReconciliation, saleWireOpenAt, dispatchedAt) lewat `reconciliationGate`. Isi: sale dengan needs_reconciliation ATAU status unknown (unknown <10 menit ikut, terkunci di klien). Tanpa `outletId`: `requireMenuPermission("payment.reconcile")` + jangkauan outlet `payment.reconcile` dihitung service (grant lain, mis. kasir-only, tidak menambah); dengan `outletId`: `requireOutletPermission`. Tenant + outlet difilter di SQL, `q` di-escape, urut createdAt desc + id desc, cursor dibulatkan ms, cursor rusak 422, tender dimuat satu query. Tanpa migrasi.
+- Web: antrean mengambil halaman berurutan sampai nextCursor habis (maks 20 halaman x 100). Layar belum menandai bila terpotong.
+- Bukti gagal-dulu: di HEAD bersih 39 dari 41 gagal 404 (2 lulus: 401 anonim dan outletId tenant lain). Hijau: queue + POST resolve 86/86, tsc api dan web, eslint+prettier file berubah, e2e mock EDC 31/31.
+- Review architect (xhigh): tanpa kebocoran tenant/outlet dan tanpa PAN; temuan 1 (403 untuk Finance brand), 2 (baris >100 tersembunyi), 3 (N+1), 4 (cursor 500) dibetulkan. Temuan 5 (indeks parsial untuk query ini) jadi bead lanjutan.
+- Subagent: total 9 (Explore 3, test-writer 1, implementer 4, architect 1), puncak 3 bersamaan, token heavy dipegang engineer.
+
 ## 865 UI rekonsiliasi EDC (ui-engineer, legend-khi8n, cabang `ui/edc-rekonsiliasi-865` dari `origin/milestone/m1` d1ad35802, 15 Nov 2026)
 
 - Sudah: layar `/kelola/pembayaran/edc-rekonsiliasi` (Owner/Finance, guard `payment.reconcile`), daftar flagged + unknown tanpa flag (terkunci sampai 10 menit), bukti, penyelesaian approved/declined dengan konfirmasi + step-up MFA, terkunci selama `saleWireOpenAt`. Link dari tab EDC. Commit de82fb7e2, dee7fa9e5.
